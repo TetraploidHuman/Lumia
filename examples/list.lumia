@@ -1,0 +1,8 @@
+module ListDemo
+
+import std.io.{println}
+
+val main = {
+    val xs = listOf(1, 2, 3)
+    println(40 + 2)
+}

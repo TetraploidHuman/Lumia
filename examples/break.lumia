@@ -1,0 +1,17 @@
+module BreakDemo
+
+import std.io.{println}
+
+val main = {
+    var acc = 0
+    for i in 1..=10 {
+        if i == 4 {
+            break
+        }
+        if i == 2 {
+            continue
+        }
+        acc = acc + i
+    }
+    println(acc)
+}

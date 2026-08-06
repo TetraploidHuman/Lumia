@@ -1,0 +1,11 @@
+module ListFor
+
+import std.io.{println}
+
+val main = {
+    var acc = 0
+    for x in listOf(10, 20, 30) {
+        acc = acc + x
+    }
+    println(acc)
+}

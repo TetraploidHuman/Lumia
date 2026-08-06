@@ -1,0 +1,9 @@
+module UsePriv
+
+import std.io.{println}
+import math_priv.{add, inc}
+
+val main = {
+    println(add(10, 32))
+    println(inc(41))
+}

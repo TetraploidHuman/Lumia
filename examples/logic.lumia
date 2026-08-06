@@ -1,0 +1,17 @@
+module Logic
+
+import std.io.{println}
+
+val main = {
+    val a = true and false
+    val b = true or false
+    val c = not a
+    if a {
+        println(0)
+    } else if b {
+        println(1)
+    } else {
+        println(2)
+    }
+    println(if c { 10 } else { 20 })
+}

@@ -1,0 +1,13 @@
+module StringInterp
+
+import std.io.{println}
+
+val main = {
+    val name = "Lumia"
+    val n = 42
+    println("hello ${name}")
+    println("n=$n")
+    println("${n + 1}")
+    println("plain")
+    println("dollar=\$n")
+}

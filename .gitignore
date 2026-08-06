@@ -1,0 +1,8 @@
+/target
+**/*.rs.bk
+*.o
+*.ll
+/hello
+/out/
+.idea/
+.vscode/

@@ -1,0 +1,13 @@
+module StringEq
+
+import std.io.{println}
+
+val main = {
+    val a = "ab"
+    val b = "a".concat("b")
+    val c = "ac"
+    println(if a == "ab" { 1 } else { 0 })
+    println(if a == b { 1 } else { 0 })
+    println(if a != c { 1 } else { 0 })
+    println(1.5)
+}

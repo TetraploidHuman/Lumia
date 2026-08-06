@@ -1,0 +1,15 @@
+module ListMatch
+
+import std.io.{println}
+
+val head_or_zero = { xs ->
+    xs match {
+        [] -> 0
+        [h, ..rest] -> h
+    }
+}
+
+val main = {
+    println(head_or_zero(listOf()))
+    println(head_or_zero(listOf(7, 8, 9)))
+}

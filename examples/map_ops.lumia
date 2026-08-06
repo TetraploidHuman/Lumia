@@ -1,0 +1,49 @@
+module MapOps
+
+import std.io.{println}
+
+type Option {
+    Some(value)
+    None
+}
+
+val unwrap_or = { opt, d ->
+    opt match {
+        None -> d
+        Some(n) -> n
+    }
+}
+
+val main = {
+    val m = mapOf(1 to 10, 2 to 20)
+    println(m.contains(1))
+    println(unwrap_or(m.get(2), -1))
+    println(unwrap_or(m[1], -1))
+    println(unwrap_or(m.get(9), -1))
+    println(m.contains(9))
+
+    val m2 = m.set(3, 30)
+    println(m2.len())
+    println(m2.contains(3))
+    println(unwrap_or(m2.get(3), -1))
+    println(m.len())
+
+    val m3 = m2.remove(1)
+    println(m3.len())
+    println(m3.contains(1))
+
+    val s = setOf(1, 2, 3)
+    println(s.contains(2))
+    println(s.contains(9))
+
+    println(m.keys().len())
+    println(m.values().get(0))
+
+    val kv0 = m.items().get(0)
+    kv0 match {
+        (k, v) -> {
+            println(k)
+            println(v)
+        }
+    }
+}

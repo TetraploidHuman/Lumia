@@ -1,0 +1,36 @@
+module PointDemo
+
+import std.io.{println}
+
+type Point {
+    val x
+    val y
+}
+
+val sum_xy = { p ->
+    p match {
+        Point { x, y } -> x + y
+    }
+}
+
+val on_axis = { p ->
+    p match {
+        Point { x, y = 0 } -> x
+        Point { x = 0, y } -> y
+        Point { x, y } -> x + y
+    }
+}
+
+val main = {
+    val p = Point { x = 3, y = 4 }
+    println(p.x)
+    println(p.y)
+    val p2 = p with { x = 10 }
+    println(p2.x)
+    println(p2.y)
+    println(p.x)
+    println(sum_xy(p))
+    println(on_axis(Point { x = 5, y = 0 }))
+    println(on_axis(Point { x = 0, y = 8 }))
+    println(on_axis(Point { x = 1, y = 2 }))
+}

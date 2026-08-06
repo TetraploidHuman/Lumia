@@ -1,0 +1,7 @@
+[package]
+name = "lumia_hir"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+lumia_syntax.workspace = true

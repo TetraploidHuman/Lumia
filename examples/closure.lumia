@@ -1,0 +1,16 @@
+module Closure
+
+import std.io.{println}
+
+val add1(x) = {
+    x + 1
+}
+
+val main = {
+    val f = { x ->
+        x + 1
+    }
+    val g = add1
+    println(f(41))
+    println(g(10))
+}

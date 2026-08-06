@@ -1,0 +1,31 @@
+module ListHofFn
+
+import std.io.{println}
+
+val make_mul = { n ->
+    { x ->
+        x * n
+    }
+}
+
+val add = { a, b ->
+    a + b
+}
+
+val main = {
+    val f = make_mul(10)
+    val xs = listOf(1, 2, 3)
+    val ys = xs.map(f)
+    println(ys.get(0))
+    println(ys.get(2))
+
+    val gt2 = { x ->
+        x > 2
+    }
+    val zs = xs.filter(gt2)
+    println(zs.len())
+    println(zs.get(0))
+
+    val s = xs.fold(0, add)
+    println(s)
+}

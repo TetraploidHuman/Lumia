@@ -1,0 +1,7 @@
+module Hello
+
+import std.io.{println}
+
+val main = {
+    println(42)
+}

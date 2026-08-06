@@ -1,0 +1,17 @@
+module MatchGuard
+
+import std.io.{println}
+
+val classify(n) = {
+    n match {
+        x if x > 100 -> 1
+        x if x > 0 -> 2
+        _ -> 0
+    }
+}
+
+val main = {
+    println(classify(150))
+    println(classify(5))
+    println(classify(-1))
+}

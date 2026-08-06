@@ -1,0 +1,256 @@
+# Lumia 构建与实现计划
+
+> **状态**：最终形态技术栈已落地（骨架可跑）  
+> **配套**：语言语义见 [DESIGN.md](DESIGN.md)  
+> **最后更新**：2026-08-07
+
+本文档记录 **怎么实现 / 怎么编译**，避免事后忘记选型与约定。语义不妥协版仍以 DESIGN 为准；实现分期可以瘦，**架构不能换**。
+
+---
+
+## 1. 总原则
+
+- **目的地即路线**：Rust 编译器 → Core SSA IR → LLVM → 原生可执行文件 + 可插拔 GC 运行时。
+- **必须**：必须编写优雅、统一的代码，健康的项目架构，便于后期维护与发展。
+- **本编译器需要支持 Linux、Windows 平台**；在 GitHub（[TetraploidHuman/Lumia](https://github.com/TetraploidHuman/Lumia)）上维护仓库，并以 CI 跑相关测试用例（`cargo test` + examples e2e）。
+- **不做**：树遍历解释器、字节码 VM、Cranelift 并行后端、JVM / 自托管编译器作为主路径。
+- **允许**：功能子集（少优化 Pass），但 **执行路径始终是 LLVM 产出的机器码**。
+- **内存**：回收器可更换；**先轻量 tracing GC（STW mark-sweep）**，以后可换更强 GC 或 ARC 模式。
+
+```text
+Source.lumia
+  → Parse (lumia_syntax)
+  → HIR (lumia_hir)
+  → HM + effect infer (lumia_ty)
+  → Core SSA (lumia_core)
+  → Opt passes (lumia_opt)     §7.1.1：能证则特化，否则默认
+  → LLVM codegen (lumia_codegen)
+  → link lumia_rt
+  → 原生可执行文件
+```
+
+一句话：
+
+> **Rust 编译器 + Core SSA + LLVM codegen + 可插拔 GC ABI（首发 mark-sweep）**；优化与表示选择是语言契约；执行物永远是原生代码；**目标平台：Linux 与 Windows**。
+
+---
+
+## 2. 技术栈选型（已钉死）
+
+| 层 | 选择 |
+|----|------|
+| 编译器宿主 | **Rust**（本机 `rustc`/`cargo`，不另装） |
+| LLVM | **本机 LLVM 21**（inkwell feature `llvm21-1`）；`LLVM_SYS_211_PREFIX` 指向 `llvm-*-dev` |
+| 链接 | `clang` + 系统 lld；用户程序再链 `liblumia_rt.a` |
+| 解析 | 手写 recursive descent（`lumia_syntax`） |
+| 优化 IR | 唯一中端 **Core**（ANF / SSA-ish） |
+| 后端 | **唯一 LLVM**（Debug / Release 都走 LLVM） |
+| 泛型 | **单态化**（最终形态） |
+| 运行时 | `lumia_rt`：Rust，对外 **C ABI**；GC 为可替换模块 |
+| 首发 GC | STW **mark-sweep** + shadow stack 根 + 空写屏障 |
+
+### 明确拒绝
+
+- 解释器 / 字节码 VM 作为产品执行路径
+- 宿主改用 OCaml / C++ / Zig / JVM
+- 用户可见 GC 调参、`HashMap`/`TreeMap` 分型、容量 API
+- LLVM + Cranelift 双后端并行维护
+- 把 retain/release 或某一收集算法写死进 IR（导致无法换 mm）
+
+---
+
+## 3. Cargo workspace
+
+```text
+crates/
+  lumia          CLI：check / build / fmt(stub)
+  lumia_syntax   词法 + 递归下降解析，带 Span
+  lumia_hir      语法糖降级后的具名 IR
+  lumia_ty       HM 推断 + 效应集合 ε
+  lumia_core     Core SSA + AST/HIR→Core
+  lumia_opt      Pass 管道（§7.1.1）
+  lumia_codegen  inkwell → .o → clang 链接
+  lumia_rt       GC ABI + mark-sweep + println*
+examples/        示例 .lumia
+scripts/env.sh   NixOS：LLVM_SYS_211_PREFIX + 共享库 PATH（排除 *-static）
+scripts/e2e.sh   端到端：编译并跑 hello / add
+```
+
+根目录 `[workspace.dependencies]` 已钉 `inkwell` 的 `llvm21-1`。
+
+---
+
+## 4. 本机构建步骤
+
+### 4.1 环境（NixOS / 本机已装 LLVM 21）
+
+```bash
+source scripts/env.sh
+# 应打印：Lumia env: LLVM_SYS_211_PREFIX=/nix/store/...-llvm-21.1.8-dev
+```
+
+要点：
+
+- 必须用 **共享** zlib/libffi/libxml2；**不要**把 `*-zlib-*-static` 放进 `LIBRARY_PATH`（会与 rust-lld 冲突：`incompatible with elf64-x86-64`）。
+- `scripts/env.sh` 已过滤 `*-static`。
+
+### 4.2 编译编译器与运行时
+
+```bash
+source scripts/env.sh
+cargo build -p lumia -p lumia_rt
+```
+
+### 4.3 编译用户程序
+
+```bash
+cargo run -p lumia -- check examples/hello.lumia
+cargo run -p lumia -- build examples/hello.lumia -o /tmp/hello
+/tmp/hello    # → 42
+
+cargo run -p lumia -- build examples/add.lumia -o /tmp/add --show-ir
+```
+
+`lumia build` 会：`check` → Core → opt → 必要时 `cargo build -p lumia_rt` → LLVM 目标文件 → `clang` 链接 `liblumia_rt.a`。
+
+### 4.4 测试
+
+```bash
+source scripts/env.sh
+cargo test --workspace
+./scripts/e2e.sh
+```
+
+---
+
+## 5. GC ABI（稳定合同）
+
+Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumia_rt` 内实现。
+
+| 符号 | 作用 |
+|------|------|
+| `lumia_alloc(nbytes, type_id) -> *mut u8` | 堆分配（可触发收集）；返回 **payload** 指针（头在前） |
+| `lumia_root_push(*mut *mut u8)` / `lumia_root_pop()` | shadow stack 根 |
+| `lumia_write_barrier(obj, field, new)` | 写屏障钩子；首发 **空实现** |
+| `lumia_gc_collect()` | 强制 STW 收集 |
+| `lumia_println_int` / `_cstr` / `_str` / `_bool` | 效应 I/O |
+
+对象头：`type_id`、`size`、`marked`（见 `crates/lumia_rt`）。
+
+**更换难度**：
+
+| 难度 | 场景 |
+|------|------|
+| 易 | 同属 tracing：mark-sweep ↔ semispace ↔ 分代 |
+| 中 | tracing ↔ ARC（需 codegen 模式开关） |
+| 难 | 无对象头 / 无根约定的裸 malloc 与精确 GC 混用 |
+
+`List`/`Map`/`Set` 更新先走新分配 / overlay；**不依赖 ARC 唯一性**。以后若上 `--mm=arc`，再加 `is_unique` 做原地优化。
+
+---
+
+## 6. 优化与表示选择
+
+- Pass 接口在 `lumia_opt`：`inline`、`cse`、`escape`、`fusion`、`repr_select`、`copy_elim`、`memo_l0`（多数可先 stub，接口按最终形态留）。
+- **纪律（DESIGN §7.1.1）**：分析能证明 → 特化；不能证明 → **默认稳定路径**：
+  - `List` → `HeapList` / `COWList`
+  - `Map`/`Set` → `HashOrdered` + COW / Overlay
+- Debug：少融合 / 少特化，仍走 LLVM；语义与 Release 一致。
+
+---
+
+## 7. 分期交付（架构不变）
+
+| 阶段 | 内容 |
+|------|------|
+| **已完成骨架** | parse 子集 → 推断 + 效应 → Core → LLVM → 链 `lumia_rt` → `main` + `println` + `Int`；`listOf`→`AllocList`；CSE + ReprSelect 默认路径 |
+| **已完成下一步（部分）** | match 穷尽/守卫/裸表达式臂；积类型；元组；Map；`import`/`priv`；List HOF/`concat`（字面量内联 + 一等函数值）；管道糖；堆 `String`/`Char` + **插值**；`Float` 算术；一等闭包（无捕获 + 按值捕获）；递归 |
+| **仍待** | 逃逸 / 融合（需管道表示） |
+| **再后** | Memo L2+、自动并行、包管理、LSP、FFI；可选更强 GC / `--mm=arc` |
+
+每一阶段用户看到的都是 **`lumia build` 产出的原生程序**。
+
+### 示例
+
+```bash
+cargo run -p lumia -- build examples/match.lumia -o /tmp/m && /tmp/m   # 20
+cargo run -p lumia -- build examples/for.lumia -o /tmp/f && /tmp/f     # 15\\n3
+cargo run -p lumia -- build examples/list_for.lumia -o /tmp/l && /tmp/l # 60
+cargo run -p lumia -- build examples/break.lumia -o /tmp/b && /tmp/b   # 4
+cargo run -p lumia -- build examples/list_match.lumia -o /tmp/lm && /tmp/lm  # 0\\n7
+cargo run -p lumia -- build examples/to_map.lumia -o /tmp/tm && /tmp/tm # 2
+cargo run -p lumia -- build examples/map_ops.lumia -o /tmp/mo && /tmp/mo
+cargo run -p lumia -- build examples/option_match.lumia -o /tmp/om && /tmp/om  # 0\\n7
+cargo run -p lumia -- build examples/point.lumia -o /tmp/pt && /tmp/pt  # 3\\n4\\n10\\n4\\n3
+cargo run -p lumia -- build examples/use_math.lumia -o /tmp/um && /tmp/um  # 42\\n42
+cargo run -p lumia -- build examples/use_priv.lumia -o /tmp/up && /tmp/up  # 42\\n42
+cargo run -p lumia -- build examples/use_pkg.lumia -o /tmp/upkg && /tmp/upkg  # 42\\n42
+cargo run -p lumia -- build examples/list_hof.lumia -o /tmp/hof && /tmp/hof  # 5\\n2\\n3\\n24
+cargo run -p lumia -- build examples/list_hof_fn.lumia -o /tmp/lhof && /tmp/lhof  # 10\\n30\\n1\\n3\\n6
+cargo run -p lumia -- build examples/list_concat.lumia -o /tmp/lc && /tmp/lc  # 5\\n1\\n5\\n30
+cargo run -p lumia -- build examples/list_pipe.lumia -o /tmp/lp && /tmp/lp  # 3\\n6\\n10
+cargo run -p lumia -- build examples/match_guard.lumia -o /tmp/mg && /tmp/mg  # 1\\n2\\n0
+cargo run -p lumia -- build examples/logic.lumia -o /tmp/lg && /tmp/lg  # 1\\n10
+cargo run -p lumia -- build examples/string_ops.lumia -o /tmp/so && /tmp/so  # 5\\nhello\\n2
+cargo run -p lumia -- build examples/string_interp.lumia -o /tmp/si && /tmp/si  # hello Lumia\\nn=42\\n43\\nplain\\ndollar=$n
+cargo run -p lumia -- build examples/string_eq.lumia -o /tmp/se && /tmp/se  # 1\\n1\\n1\\n1.5
+cargo run -p lumia -- build examples/fib.lumia -o /tmp/fib && /tmp/fib  # 55
+cargo run -p lumia -- build examples/char.lumia -o /tmp/ch && /tmp/ch  # A\\n1\\n1\\nZ
+cargo run -p lumia -- build examples/float_ops.lumia -o /tmp/fo && /tmp/fo  # 3.75\\n6\\n1\\n-1.5
+cargo run -p lumia -- build examples/closure.lumia -o /tmp/cl && /tmp/cl  # 42\\n11
+cargo run -p lumia -- build examples/closure_capture.lumia -o /tmp/cc && /tmp/cc  # 42\\n101\\n42
+cargo run -p lumia -- build examples/mapset.lumia -o /tmp/ms && /tmp/ms
+```
+---
+
+## 8. CLI 约定
+
+| 命令 | 职责 |
+|------|------|
+| `lumia check <file>` | 解析 + 类型 / 效应 |
+| `lumia build <file> [-o out] [--release] [--show-ir] [--emit-llvm]` | 原生二进制 |
+| `lumia fmt` | 后期（当前 stub） |
+
+包管理：最终由 `lumia` 内置依赖 + lockfile；**不**把 Cargo 暴露给用户程序。
+
+---
+
+## 8.1 平台与 CI
+
+- **目标 OS**：Linux、Windows（x86_64）；macOS 非当前必达。
+- **仓库**：[https://github.com/TetraploidHuman/Lumia](https://github.com/TetraploidHuman/Lumia)
+- **CI**：GitHub Actions（`.github/workflows/ci.yml`）在 `ubuntu-latest` 与 `windows-latest` 上：
+  1. 安装 LLVM 21 + `clang`
+  2. `cargo test --workspace`
+  3. `cargo test -p lumia --test e2e_examples`（编译并运行 examples 期望输出）
+- 本地 Linux：`source scripts/env.sh && ./scripts/e2e.sh`
+- 本地亦可：`cargo test -p lumia --test e2e_examples`
+
+---
+
+## 9. 常见问题
+
+**链接报 `libz.a ... incompatible with elf64-x86-64`**  
+`LIBRARY_PATH` 里混入了 Nix 的 **static** zlib。重新 `source scripts/env.sh`，确认路径中无 `*-static*`。
+
+**找不到 `llvm-config` / inkwell 编不过**  
+设置或检查 `LLVM_SYS_211_PREFIX` 指向带 `bin/llvm-config` 的 `llvm-21.1.8-dev` store 路径。
+
+**`liblumia_rt.a` not found**  
+先 `cargo build -p lumia_rt`；或直接 `lumia build`（会自动构建 runtime）。
+
+---
+
+## 10. 相关文件
+
+| 路径 | 说明 |
+|------|------|
+| [DESIGN.md](DESIGN.md) | 语言设计（语义合同） |
+| `scripts/env.sh` | 本机构建环境 |
+| `scripts/e2e.sh` | Linux 冒烟端到端 |
+| `crates/lumia/tests/e2e_examples.rs` | 跨平台 examples e2e |
+| `.github/workflows/ci.yml` | Linux / Windows CI |
+| `crates/lumia_rt/src/lib.rs` | GC ABI + mark-sweep |
+| `crates/lumia_opt/src/lib.rs` | Pass 管道 |
+| `Cargo.toml` | workspace + inkwell LLVM 21 |
+

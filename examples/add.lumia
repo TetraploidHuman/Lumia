@@ -1,0 +1,11 @@
+module Add
+
+import std.io.{println}
+
+val add = { a, b ->
+    a + b
+}
+
+val main = {
+    println(add(40, 2))
+}

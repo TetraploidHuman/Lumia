@@ -1,0 +1,9 @@
+module UseMath
+
+import std.io.{println}
+import math.{add, double}
+
+val main = {
+    println(add(20, 22))
+    println(double(21))
+}

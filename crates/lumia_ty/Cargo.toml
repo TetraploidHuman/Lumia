@@ -1,0 +1,9 @@
+[package]
+name = "lumia_ty"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+lumia_syntax.workspace = true
+lumia_hir.workspace = true
+thiserror.workspace = true

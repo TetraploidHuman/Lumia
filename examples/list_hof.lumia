@@ -1,0 +1,20 @@
+module ListHof
+
+import std.io.{println}
+
+val main = {
+    val xs = listOf(1, 2, 3, 4, 5)
+    val ys = xs.map({ x ->
+        x * 2
+    })
+    val zs = ys.filter({ y ->
+        y > 4
+    })
+    val s = zs.fold(0, { acc, z ->
+        acc + z
+    })
+    println(ys.len())
+    println(ys.get(0))
+    println(zs.len())
+    println(s)
+}

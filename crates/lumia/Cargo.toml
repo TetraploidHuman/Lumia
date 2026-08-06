@@ -1,0 +1,19 @@
+[package]
+name = "lumia"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "lumia"
+path = "src/main.rs"
+
+[dependencies]
+lumia_syntax.workspace = true
+lumia_hir.workspace = true
+lumia_ty.workspace = true
+lumia_core.workspace = true
+lumia_opt.workspace = true
+lumia_codegen.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+thiserror.workspace = true

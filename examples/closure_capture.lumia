@@ -1,0 +1,26 @@
+module ClosureCapture
+
+import std.io.{println}
+
+val make_adder = { n ->
+    { x ->
+        x + n
+    }
+}
+
+val main = {
+    val add10 = make_adder(10)
+    println(add10(32))
+
+    var base = 100
+    val add_base = { x ->
+        x + base
+    }
+    base = 999
+    println(add_base(1))
+
+    val f = { x ->
+        x + 1
+    }
+    println(f(41))
+}

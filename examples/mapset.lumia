@@ -1,0 +1,15 @@
+module MapSetDemo
+
+import std.io.{println}
+
+val main = {
+    val s = setOf(1, 2, 3)
+    println(s.len())
+
+    val m = mapOf()
+    println(m.len())
+
+    // flat key/value ints for MVP: mapOf(k, v, ...)
+    val m2 = mapOf(1, 10, 2, 20)
+    println(m2.len())
+}

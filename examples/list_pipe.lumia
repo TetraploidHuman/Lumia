@@ -1,0 +1,11 @@
+module ListPipe
+
+import std.io.{println}
+
+val main = {
+    val xs = [1, 2, 3, 4, 5]
+    val ys = xs >> map { it * 2 } >> filter { it > 4 }
+    println(ys.len())
+    println(ys[0])
+    println(ys[2])
+}

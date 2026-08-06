@@ -1,0 +1,14 @@
+module ListConcat
+
+import std.io.{println}
+
+val main = {
+    val a = listOf(1, 2)
+    val b = listOf(3, 4, 5)
+    val c = a.concat(b)
+    val d = c.map { it * 10 }
+    println(c.len())
+    println(c.get(0))
+    println(c.get(4))
+    println(d.get(2))
+}

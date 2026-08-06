@@ -1,0 +1,15 @@
+module Fib
+
+import std.io.{println}
+
+val fib(n) = {
+    n match {
+        0 -> 0
+        1 -> 1
+        _ -> fib(n - 1) + fib(n - 2)
+    }
+}
+
+val main = {
+    println(fib(10))
+}

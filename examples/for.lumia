@@ -1,0 +1,19 @@
+module ForDemo
+
+import std.io.{println}
+
+val main = {
+    var acc = 0
+    for i in 1..=5 {
+        acc = acc + i
+    }
+    println(acc)
+
+    var j = 0
+    var sum = 0
+    for j < 3 {
+        sum = sum + j
+        j = j + 1
+    }
+    println(sum)
+}

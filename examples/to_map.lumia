@@ -1,0 +1,8 @@
+module ToMap
+
+import std.io.{println}
+
+val main = {
+    val m = mapOf(1 to 10, 2 to 20)
+    println(m.len())
+}

@@ -1,0 +1,7 @@
+module BadImportPriv
+
+import math_priv.{helper}
+
+val main = {
+    helper(1)
+}

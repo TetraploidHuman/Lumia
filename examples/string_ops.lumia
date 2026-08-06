@@ -1,0 +1,12 @@
+module StringOps
+
+import std.io.{println}
+
+val main = {
+    val a = "hel"
+    val b = "lo"
+    val c = a.concat(b)
+    println(c.len())
+    println(c)
+    println("hi".len())
+}

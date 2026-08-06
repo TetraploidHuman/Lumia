@@ -1,0 +1,20 @@
+module OptionMatch
+
+import std.io.{println}
+
+type Option {
+    Some(value)
+    None
+}
+
+val unwrap_or_zero = { opt ->
+    opt match {
+        None -> 0
+        Some(n) -> n
+    }
+}
+
+val main = {
+    println(unwrap_or_zero(None))
+    println(unwrap_or_zero(Some(7)))
+}

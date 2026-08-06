@@ -1,0 +1,32 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/lumia",
+    "crates/lumia_syntax",
+    "crates/lumia_hir",
+    "crates/lumia_ty",
+    "crates/lumia_core",
+    "crates/lumia_opt",
+    "crates/lumia_codegen",
+    "crates/lumia_rt",
+]
+default-members = ["crates/lumia"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/TetraploidHuman/Lumia"
+
+[workspace.dependencies]
+lumia_syntax = { path = "crates/lumia_syntax" }
+lumia_hir = { path = "crates/lumia_hir" }
+lumia_ty = { path = "crates/lumia_ty" }
+lumia_core = { path = "crates/lumia_core" }
+lumia_opt = { path = "crates/lumia_opt" }
+lumia_codegen = { path = "crates/lumia_codegen" }
+lumia_rt = { path = "crates/lumia_rt" }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+thiserror = "2"
+inkwell = { version = "0.10", default-features = false, features = ["llvm21-1", "target-x86"] }

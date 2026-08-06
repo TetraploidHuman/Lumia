@@ -1,0 +1,9 @@
+module UsePkg
+
+import std.io.{println}
+import pkg.math.{mul, double}
+
+val main = {
+    println(mul(6, 7))
+    println(double(21))
+}

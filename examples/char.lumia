@@ -1,0 +1,13 @@
+module CharDemo
+
+import std.io.{println}
+
+val main = {
+    val a = 'A'
+    val b = 'A'
+    val c = 'B'
+    println(a)
+    println(if a == b { 1 } else { 0 })
+    println(if a != c { 1 } else { 0 })
+    println('Z')
+}
