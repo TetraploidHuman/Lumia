@@ -163,6 +163,7 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumia_rt` 内�
   - **Escape**：保守逃逸分析；`ReprSelect` 对**未逃逸**小 `List`/`Map` 标 `LitList` / `SmallMap`（codegen 仍可走堆布局，hint 已接上）。
   - **CopyElim**：折叠 `let x = y` SSA 别名。
   - **Fusion**：HIR 主融合 + Core 消 `concat([])` 恒等；空 `listOf()` → `lumia_list_empty` 永生单例。
+  - **稳健性**：foreign `String` 临时 cstr 在调用期间入根（防 GC UAF）；Iota 物化 / 取下标用 checked 算术并对过大物化 trap；跨 product 同名字段的 `with` 报歧义。
   - **List Iota**：`range` / `rangeInclusive` → `TYPE_LIST_IOTA`（`[start,end)`，O(1)）；`len`/`get`/eq/hash/`take`/`slice` 虚拟；修改类 API `force` 成 HeapList（见 `examples/range_iota.lumia`）。
 - GC：mark-sweep + **shadow-stack 根**（`lumia_root_push`/`pop`；**嵌套块 / 循环体作用域弹出**，`break`/`continue` 对齐循环入口深度）+ 软阈值自动收集（默认 256KiB）；见 `examples/gc_roots.lumia`。
 - Map：小表线性 Assoc；超过 8 对晋升 **HashOrdered**；大表 `set` 走 **Overlay** 差分（满 8 条再压实）；见 `examples/map_hash.lumia`。

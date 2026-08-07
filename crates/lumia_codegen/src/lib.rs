@@ -1593,11 +1593,40 @@ impl<'ctx> Codegen<'ctx> {
                     .with_context(|| format!("unknown function {fun}"))?;
                 let is_ext = self.external_funs.contains(fun);
                 let param_tys = self.fun_param_tys.get(fun).cloned().unwrap_or_default();
+                // Temporary `lumia_string_cstr` buffers are unmarked heap objects;
+                // root them until after the foreign call so a later arg alloc / GC
+                // cannot collect an earlier cstr (UAF).
+                let cstr_root_depth = self.root_depth;
                 let mut av: Vec<BasicMetadataValueEnum> = vec![];
                 for (i, a) in args.iter().enumerate() {
                     let pty = param_tys.get(i).unwrap_or(&Type::Int);
                     if is_ext {
-                        av.push(self.emit_c_abi_arg(*a, pty)?);
+                        if matches!(pty, Type::String) {
+                            let s_i = self.coerce_i64(self.local(*a)?)?;
+                            let ptr_ty = self.context.ptr_type(AddressSpace::default());
+                            let s = self
+                                .builder
+                                .build_int_to_ptr(s_i, ptr_ty, "cstr_in")
+                                .unwrap();
+                            let f = self.module.get_function("lumia_string_cstr").unwrap();
+                            let call = self
+                                .builder
+                                .build_call(f, &[s.into()], "cstr")
+                                .unwrap();
+                            let cstr = call
+                                .try_as_basic_value()
+                                .basic()
+                                .unwrap()
+                                .into_pointer_value();
+                            let bits = self
+                                .builder
+                                .build_ptr_to_int(cstr, self.i64_ty, "cstr_bits")
+                                .unwrap();
+                            self.root_push_i64(bits)?;
+                            av.push(cstr.into());
+                        } else {
+                            av.push(self.emit_c_abi_arg(*a, pty)?);
+                        }
                     } else {
                         let v = self.coerce_i64(self.local(*a)?)?;
                         av.push(v.into());
@@ -1605,6 +1634,7 @@ impl<'ctx> Codegen<'ctx> {
                 }
                 let call = self.builder.build_call(callee, &av, "call").unwrap();
                 if is_ext {
+                    self.root_pop_to(cstr_root_depth);
                     return self.restore_c_abi_ret(fun, call);
                 }
                 let raw = call

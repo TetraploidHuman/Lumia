@@ -1000,7 +1000,8 @@ fn list_len_of(list: *mut u8) -> i64 {
                 let start = *base;
                 let end = *base.add(1);
                 if end > start {
-                    end - start
+                    end.checked_sub(start)
+                        .unwrap_or_else(|| panic!("lumia: iota length overflow"))
                 } else {
                     0
                 }
@@ -1024,7 +1025,9 @@ fn list_get_of(list: *mut u8, index: i64) -> i64 {
                 if index >= len {
                     panic!("lumia: list get out of bounds");
                 }
-                start + index
+                start
+                    .checked_add(index)
+                    .unwrap_or_else(|| panic!("lumia: iota index overflow"))
             }
             _ => {
                 let len = *(list as *const i64);
@@ -1048,14 +1051,26 @@ fn force_heap_list(list: *mut u8) -> *mut u8 {
     }
     let _guard = GcInhibitGuard::enter();
     let n = list_len_of(list);
-    let dest = lumia_alloc((1 + n as u64) * 8, TYPE_LIST);
+    if n < 0 {
+        panic!("lumia: iota length overflow");
+    }
+    // ObjectHeader.size is u32; reject materializations that cannot fit.
+    let nbytes = (n as u64)
+        .checked_add(1)
+        .and_then(|words| words.checked_mul(8))
+        .filter(|&b| b <= u32::MAX as u64)
+        .unwrap_or_else(|| panic!("lumia: iota too large to materialize (len={n})"));
+    let dest = lumia_alloc(nbytes, TYPE_LIST);
     unsafe {
         let dst = dest as *mut i64;
         *dst = n;
         let base = list as *const i64;
         let start = *base;
         for i in 0..n as usize {
-            *dst.add(1 + i) = start + i as i64;
+            let v = start
+                .checked_add(i as i64)
+                .unwrap_or_else(|| panic!("lumia: iota element overflow"));
+            *dst.add(1 + i) = v;
         }
     }
     dest
@@ -1118,9 +1133,7 @@ pub extern "C" fn lumia_list_par_map(
             *(list as *const i64)
         };
         if n <= 0 {
-            let dest = lumia_alloc(8, TYPE_LIST);
-            *(dest as *mut i64) = 0;
-            return dest;
+            return lumia_list_empty();
         }
         let src = list as *const i64;
         // Sequential for tiny lists.
@@ -3058,6 +3071,15 @@ mod tests {
         assert_eq!(id, xs);
         assert_eq!(lumia_list_len(id), 3);
         assert_eq!(lumia_list_concat(xs, lumia_list_empty()), xs);
+    }
+
+    #[test]
+    #[should_panic(expected = "too large to materialize")]
+    fn force_huge_iota_traps_without_alloc() {
+        // Length that cannot fit in ObjectHeader.size (u32) when stored as bytes.
+        let n = (u32::MAX as i64 / 8) + 8;
+        let r = lumia_range(0, n);
+        let _ = force_heap_list(r);
     }
 }
 

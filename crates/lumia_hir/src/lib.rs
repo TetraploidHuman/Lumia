@@ -151,6 +151,7 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
     let mut ctors = HashMap::new();
     let mut product_map = HashMap::new();
     let mut product_fields = HashMap::new();
+    let mut ambiguous_product_fields: HashSet<String> = HashSet::new();
     for item in &m.items {
         if let lumia_syntax::Item::Type(t) = item {
             match &t.kind {
@@ -183,7 +184,16 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
                 }
                 lumia_syntax::TypeKind::Product(fields) => {
                     for (i, f) in fields.iter().enumerate() {
-                        product_fields.insert(f.clone(), (t.name.clone(), i));
+                        match product_fields.get(f) {
+                            Some((prev, _)) if prev != &t.name => {
+                                // Same field name on two products → `with { f = … }` is ambiguous.
+                                ambiguous_product_fields.insert(f.clone());
+                            }
+                            None => {
+                                product_fields.insert(f.clone(), (t.name.clone(), i));
+                            }
+                            Some(_) => {} // same type re-decl shouldn't happen
+                        }
                     }
                     product_map.insert(t.name.clone(), fields.clone());
                     products.push(ProductDef {
@@ -233,6 +243,9 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
     });
 
     LOWER_ERR.with(|e| *e.borrow_mut() = None);
+    for f in &ambiguous_product_fields {
+        product_fields.remove(f);
+    }
     let module = with_ctors(ctors, || {
         with_products(product_map, product_fields, || {
             let mut items = Vec::new();
@@ -1505,14 +1518,25 @@ fn lower_struct_lit(name: &str, fields: &[(String, lumia_syntax::Expr)], span: S
 }
 
 fn lower_with(base: &lumia_syntax::Expr, fields: &[(String, lumia_syntax::Expr)], span: Span) -> Expr {
-    // Infer product from first updated field name (MVP: unique field names).
-    let Some((type_name, _)) = fields
-        .first()
-        .and_then(|(f, _)| lookup_product_field(f))
-    else {
+    // Infer product from first updated field name. Shared field names across
+    // product types are stripped from the map (ambiguous) and must error here.
+    let Some((fname, _)) = fields.first() else {
+        return lower_expr(base);
+    };
+    let Some((type_name, _)) = lookup_product_field(fname) else {
+        set_lower_err(
+            format!(
+                "cannot resolve `with` field `{fname}` (unknown or ambiguous across product types)"
+            ),
+            span,
+        );
         return lower_expr(base);
     };
     let Some(order) = lookup_product(&type_name) else {
+        set_lower_err(
+            format!("unknown product type `{type_name}` in `with`"),
+            span,
+        );
         return lower_expr(base);
     };
     let base_e = lower_expr(base);
@@ -3503,5 +3527,24 @@ val f = { o ->
         let err = lower_module(&ast).unwrap_err().to_string();
         assert!(err.contains("non-exhaustive"), "{err}");
         assert!(err.contains("List"), "{err}");
+    }
+
+    #[test]
+    fn with_rejects_ambiguous_product_field() {
+        let src = r#"
+module M
+type Point { val x val y }
+type Rect { val x val w }
+val main = {
+    val p = Point { x = 1, y = 2 }
+    p with { x = 9 }
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let err = lower_module(&ast).unwrap_err().to_string();
+        assert!(
+            err.contains("ambiguous") || err.contains("cannot resolve"),
+            "{err}"
+        );
     }
 }
