@@ -249,6 +249,16 @@ fn declare_runtime<'ctx>(context: &'ctx Context, module: &LlvmModule<'ctx>) {
     );
     module.add_function("lumia_list_empty", ptr_ty.fn_type(&[], false), None);
     module.add_function(
+        "lumia_map_finish",
+        ptr_ty.fn_type(&[ptr_ty.into()], false),
+        None,
+    );
+    module.add_function(
+        "lumia_set_finish",
+        ptr_ty.fn_type(&[ptr_ty.into()], false),
+        None,
+    );
+    module.add_function(
         "lumia_len",
         i64_ty.fn_type(&[ptr_ty.into()], false),
         None,
@@ -2685,8 +2695,34 @@ impl<'ctx> Codegen<'ctx> {
                 let _ = repr;
                 self.emit_heap_array(elems, 3 /* TYPE_LIST */)
             }
-            Value::AllocSet { elems } => self.emit_heap_array(elems, 5 /* TYPE_SET */),
-            Value::AllocMap { flat_pairs, .. } => {
+            Value::AllocSet { elems } => {
+                let v = self.emit_heap_array(elems, 5 /* TYPE_SET */)?;
+                if elems.len() > 8 {
+                    let ptr_ty = self.context.ptr_type(AddressSpace::default());
+                    let bits = self.coerce_i64(v)?;
+                    let p = self
+                        .builder
+                        .build_int_to_ptr(bits, ptr_ty, "set_lin")
+                        .unwrap();
+                    let f = self.module.get_function("lumia_set_finish").unwrap();
+                    let out = self
+                        .builder
+                        .build_call(f, &[p.into()], "set_fin")
+                        .unwrap()
+                        .try_as_basic_value()
+                        .basic()
+                        .unwrap()
+                        .into_pointer_value();
+                    Ok(self
+                        .builder
+                        .build_ptr_to_int(out, self.i64_ty, "set_i64")
+                        .unwrap()
+                        .into())
+                } else {
+                    Ok(v)
+                }
+            }
+            Value::AllocMap { flat_pairs, repr } => {
                 // Layout: [len][k0][v0]... — len = pair count
                 if flat_pairs.len() % 2 != 0 {
                     bail!("mapOf expects even number of key/value args");
@@ -2730,6 +2766,18 @@ impl<'ctx> Codegen<'ctx> {
                     };
                     self.builder.build_store(slot, v).unwrap();
                 }
+                let ptr = if n_pairs > 8 || matches!(repr, lumia_core::MapRepr::HashOrdered) {
+                    let f = self.module.get_function("lumia_map_finish").unwrap();
+                    self.builder
+                        .build_call(f, &[ptr.into()], "map_fin")
+                        .unwrap()
+                        .try_as_basic_value()
+                        .basic()
+                        .unwrap()
+                        .into_pointer_value()
+                } else {
+                    ptr
+                };
                 Ok(self
                     .builder
                     .build_ptr_to_int(ptr, self.i64_ty, "map_as_i64")

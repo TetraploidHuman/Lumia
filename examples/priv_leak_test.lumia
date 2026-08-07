@@ -1,0 +1,9 @@
+module PrivLeak
+
+import std.io.{println}
+import math_priv.{add}
+
+val main = {
+    // `helper` is priv in math_priv — must not resolve when only `add` is imported.
+    println(helper(1))
+}

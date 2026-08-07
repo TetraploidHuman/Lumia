@@ -1,9 +1,36 @@
-//! Hindley-Milner style type inference + effect sets (MVP).
+//! Hindley-Milner style type inference + effect sets.
 
 use lumia_hir::{Builtin, Expr, Fun, Item, Module};
 use lumia_syntax::{BinOp, UnOp};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use thiserror::Error;
+
+/// Cross-file name visibility after import inlining (entry must not see `priv`).
+#[derive(Debug, Clone, Default)]
+pub struct NameVisibility {
+    pub name_origin: HashMap<String, u32>,
+    pub cross_file_visible: HashSet<String>,
+    pub entry_file: u32,
+}
+
+impl NameVisibility {
+    /// Entry module may only name locally declared or explicitly imported symbols.
+    /// Dependency modules (inlined for linking) may use the full inlined namespace
+    /// so public APIs can call their private/sibling helpers.
+    pub fn allows(&self, name: &str, from_file: u32) -> bool {
+        if self.name_origin.is_empty() {
+            return true;
+        }
+        if from_file != self.entry_file {
+            return true;
+        }
+        match self.name_origin.get(name) {
+            Some(&origin) if origin == from_file => true,
+            Some(_) => self.cross_file_visible.contains(name),
+            None => true,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
@@ -197,17 +224,20 @@ struct Infer {
     env: Vec<HashMap<String, Type>>,
     type_at: Vec<(lumia_syntax::Span, Type)>,
     decls: HashMap<String, lumia_syntax::Span>,
+    vis: NameVisibility,
+    /// File id of the function/val body currently being inferred.
+    current_file: u32,
 }
 
 impl Infer {
-    fn new() -> Self {
+    fn new(vis: NameVisibility) -> Self {
         let mut builtins = HashMap::new();
-        // println overload simplified: accept Int or String → Unit / IO
+        // println: Int or String → Unit / IO (overloads via Call special-case)
         builtins.insert(
             "println".into(),
             Type::Fun(vec![Type::Int], Box::new(Type::Unit), Effect::io()),
         );
-        // listOf is variadic in spirit; MVP: 0-arg empty list of fresh elem type via special-case in Call
+        // listOf / mapOf / setOf: 0-arg empty; Call site special-cases arity
         builtins.insert(
             "listOf".into(),
             Type::Fun(vec![], Box::new(Type::List(Box::new(Type::Int))), Effect::pure()),
@@ -232,6 +262,19 @@ impl Infer {
             env: vec![builtins],
             type_at: Vec::new(),
             decls: HashMap::new(),
+            vis,
+            current_file: 0,
+        }
+    }
+
+    fn check_name_visible(&self, name: &str, span: lumia_syntax::Span) -> Result<(), TypeError> {
+        if self.vis.allows(name, self.current_file) {
+            Ok(())
+        } else {
+            Err(at(
+                span,
+                format!("`{name}` is private or not imported into this module"),
+            ))
         }
     }
 
@@ -450,7 +493,10 @@ impl Infer {
             Expr::Char(_, _) => Ok((Type::Char, Effect::pure())),
             Expr::Unit(_) => Ok((Type::Unit, Effect::pure())),
             Expr::Var(name, span) => {
-                let t = self.lookup(name).ok_or_else(|| at(*span, format!("unbound variable `{name}`")))?;
+                let t = self
+                    .lookup(name)
+                    .ok_or_else(|| at(*span, format!("unbound variable `{name}`")))?;
+                self.check_name_visible(name, *span)?;
                 Ok((t, Effect::pure()))
             }
             Expr::Let {
@@ -1360,13 +1406,20 @@ fn parse_foreign_type(name: &str) -> Result<Type, TypeError> {
         "Unit" => Ok(Type::Unit),
         "String" => Ok(Type::String),
         other => Err(TypeError::Message(format!(
-            "unsupported foreign type `{other}` (MVP: Int, Bool, Float, Unit, String)"
+            "unsupported foreign type `{other}` (supported: Int, Bool, Float, Unit, String)"
         ))),
     }
 }
 
 pub fn infer_module(module: &Module) -> Result<TypedModule, TypeError> {
-    let mut inf = Infer::new();
+    infer_module_with_visibility(module, NameVisibility::default())
+}
+
+pub fn infer_module_with_visibility(
+    module: &Module,
+    vis: NameVisibility,
+) -> Result<TypedModule, TypeError> {
+    let mut inf = Infer::new(vis);
     let mut fun_types = HashMap::new();
     let mut main_effect = Effect::pure();
 
@@ -1381,6 +1434,7 @@ pub fn infer_module(module: &Module) -> Result<TypedModule, TypeError> {
     for item in &module.items {
         match item {
             Item::Fun(f) => {
+                inf.current_file = expr_span(&f.body).file;
                 let (ty, eff) = if let Some((ptys, ret)) = &f.foreign_sig {
                     let ps: Result<Vec<_>, _> = ptys.iter().map(|t| parse_foreign_type(t)).collect();
                     let ps = ps?;
@@ -1409,6 +1463,7 @@ pub fn infer_module(module: &Module) -> Result<TypedModule, TypeError> {
                 }
             }
             Item::Val { name, body } => {
+                inf.current_file = expr_span(body).file;
                 let (ty, eff) = inf.infer_expr(body)?;
                 if inf.prune_eff(eff).has_io() {
                     return Err(at(

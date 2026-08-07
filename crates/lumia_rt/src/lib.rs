@@ -3,7 +3,9 @@
 //! C ABI contract used by codegen:
 //! - `lumia_alloc(nbytes, type_id) -> *mut u8`
 //! - `lumia_root_push(*mut *mut u8)` / `lumia_root_pop()`
-//! - `lumia_write_barrier(obj, field_index, new_ptr)` (no-op for now)
+//! - `lumia_write_barrier(obj, field_index, new_ptr)` — empty under STW mark-sweep
+//!   (precise shadow-stack roots; barrier is part of the stable MmBackend ABI and
+//!   becomes meaningful for concurrent / generational collectors).
 //! - `lumia_gc_collect()`
 //! - `lumia_println_int(i64)` / `lumia_println_str(*const u8, len)`
 
@@ -1138,7 +1140,8 @@ pub extern "C" fn lumia_list_append(list: *mut u8, elem: i64) -> *mut u8 {
     }
 }
 
-/// Parallel map over List[Int] with a C ABI `fn(i64) -> i64` (auto-parallelism MVP).
+/// Parallel map over List[scalar] with a C ABI `fn(i64) -> i64`.
+/// Type checker requires concrete Int/Bool/Float elems; workers must not heap-allocate.
 /// Falls back to sequential for small lists; inhibits GC while workers run.
 #[no_mangle]
 pub extern "C" fn lumia_list_par_map(
@@ -2121,6 +2124,25 @@ pub extern "C" fn lumia_map_remove(map: *mut u8, key: i64) -> *mut u8 {
     }
 }
 
+/// If `map` is a linear table larger than [`MAP_SMALL_MAX`], promote to HashOrdered.
+#[no_mangle]
+pub extern "C" fn lumia_map_finish(map: *mut u8) -> *mut u8 {
+    if map.is_null() {
+        return map;
+    }
+    unsafe {
+        if map_is_overlay(map) || map_is_hash(map) {
+            return map;
+        }
+        let n = *(map as *const i64);
+        if n > MAP_SMALL_MAX {
+            map_from_linear_to_hash(map, None)
+        } else {
+            map
+        }
+    }
+}
+
 /// Keys in insertion order as HeapList.
 #[no_mangle]
 pub extern "C" fn lumia_map_keys(map: *mut u8) -> *mut u8 {
@@ -2309,6 +2331,25 @@ unsafe fn set_hash_find_slot(set: *mut u8, elem: i64) -> Option<usize> {
         idx = (idx + 1) % cap;
     }
     None
+}
+
+/// If `set` is a linear table larger than [`SET_SMALL_MAX`], promote to HashOrdered.
+#[no_mangle]
+pub extern "C" fn lumia_set_finish(set: *mut u8) -> *mut u8 {
+    if set.is_null() {
+        return set;
+    }
+    unsafe {
+        if set_is_hash(set) {
+            return set;
+        }
+        let n = *(set as *const i64);
+        if n > SET_SMALL_MAX {
+            set_from_linear_to_hash(set, None)
+        } else {
+            set
+        }
+    }
 }
 
 #[no_mangle]
@@ -2914,7 +2955,7 @@ mod tests {
     }
 
     #[test]
-    fn write_barrier_noop() {
+    fn write_barrier_empty_under_stw() {
         let p = lumia_alloc(8, TYPE_BYTES);
         lumia_write_barrier(p, 0, ptr::null_mut());
     }

@@ -1,16 +1,17 @@
 mod load;
 mod lsp;
 mod pkg;
+mod vis;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use load::{load_program, LoadedProgram};
+use crate::load::{load_program, LoadedProgram};
 use lumia_codegen::{compile_module, find_runtime_lib_prefer, CodegenOptions};
 use lumia_core::{format_module, lower_hir};
 use lumia_hir::{lower_module, set_parallel_map};
 use lumia_opt::{optimize, OptOptions};
 use lumia_syntax::{format_diagnostic, parse_module, stamp_module, Span};
-use lumia_ty::{check_effect_boundaries, infer_module, TypeError};
+use lumia_ty::{check_effect_boundaries, infer_module_with_visibility, TypeError};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -196,7 +197,8 @@ fn check_file(file: &Path, parallel: bool) -> Result<(lumia_ty::TypedModule, Loa
         diag_err(&loaded, e.span, "lower", &e.message)
     })?;
     set_parallel_map(false);
-    let typed = infer_module(&hir).map_err(|e| type_err(&loaded, e))?;
+    let typed = infer_module_with_visibility(&hir, loaded.visibility.clone())
+        .map_err(|e| type_err(&loaded, e))?;
     check_effect_boundaries(&typed).map_err(|e| type_err(&loaded, e))?;
     Ok((typed, loaded))
 }

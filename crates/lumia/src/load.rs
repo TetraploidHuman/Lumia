@@ -1,9 +1,15 @@
 //! Multi-file module loading: resolve non-`std` imports relative to the entry file.
+//!
+//! Entire dependency modules are inlined so private callees of public APIs remain
+//! linkable, but [`lumia_ty::NameVisibility`] ensures `priv` names cannot be
+//! referenced from the entry module's own code.
 
+use crate::vis::{extend_visibility, import_visible_names, item_is_priv, item_name};
 use anyhow::{bail, Context, Result};
 use lumia_syntax::{
     format_diagnostic, parse_module, stamp_module, Import, ImportNames, Item, Module,
 };
+use lumia_ty::NameVisibility;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -22,6 +28,8 @@ pub struct LoadedProgram {
     pub module: Module,
     /// Linker flags from `Lumia.toml` `package.link`.
     pub link_args: Vec<String>,
+    /// Cross-file name visibility for type checking.
+    pub visibility: NameVisibility,
 }
 
 impl LoadedProgram {
@@ -44,7 +52,6 @@ pub fn load_program_with_overlays(
             .canonicalize()
             .with_context(|| format!("canonicalize {}", entry.display()))?
     } else {
-        // Unsaved buffer: keep as absolute if possible.
         if entry.is_absolute() {
             entry.to_path_buf()
         } else {
@@ -57,7 +64,6 @@ pub fn load_program_with_overlays(
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
-    // Package roots: entry dir + Lumia.toml path dependencies (+ lock verify).
     let mut search_roots = vec![package_root.clone()];
     let mut link_args = Vec::new();
     if let Some(manifest_path) = crate::pkg::find_manifest(&entry) {
@@ -89,17 +95,23 @@ pub fn load_program_with_overlays(
     let overlay_by_canon = normalize_overlays(overlays);
     let mut visited = HashSet::new();
     let mut files = Vec::new();
+    let mut visibility = NameVisibility::default();
     let module = load_module_file(
         &entry,
         &search_roots,
         &overlay_by_canon,
         &mut visited,
         &mut files,
+        &mut visibility,
+        true,
     )?;
+    let entry_file = 0; // entry is always stamped as the first file pushed
+    visibility.entry_file = entry_file;
     Ok(LoadedProgram {
         files,
         module,
         link_args,
+        visibility,
     })
 }
 
@@ -116,19 +128,15 @@ fn is_std(path: &[String]) -> bool {
     path.first().map(|s| s.as_str() == "std").unwrap_or(false)
 }
 
-/// Candidate files for an import path segment list, e.g. `["pkg","math"]`.
 fn path_candidates(base: &Path, rel: &[&str]) -> Vec<PathBuf> {
     let mut out = Vec::new();
     if rel.is_empty() {
         return out;
     }
-    // pkg/math.lumia
     out.push(base.join(rel.join("/")).with_extension("lumia"));
-    // pkg/math/mod.lumia
     let mut mod_dir = base.join(rel.join("/"));
     mod_dir.push("mod.lumia");
     out.push(mod_dir);
-    // pkg.math.lumia (flat dotted file)
     out.push(base.join(format!("{}.lumia", rel.join("."))));
     out
 }
@@ -200,7 +208,8 @@ fn filter_items(items: Vec<Item>, names: &ImportNames) -> Result<Vec<Item>> {
             if !pubs.iter().any(|it| item_name(it) == Some(name.as_str())) {
                 bail!("module has no public `{name}`");
             }
-            // MVP: inlining pulls the whole module so callees resolve.
+            // Keep whole module for private callees of public APIs; visibility
+            // is enforced separately via NameVisibility.
             let mut out = pubs;
             out.extend(privs);
             Ok(out)
@@ -221,28 +230,14 @@ fn filter_items(items: Vec<Item>, names: &ImportNames) -> Result<Vec<Item>> {
     }
 }
 
-fn item_name(it: &Item) -> Option<&str> {
-    match it {
-        Item::Val(v) => Some(v.name.as_str()),
-        Item::Type(t) => Some(t.name.as_str()),
-        Item::Foreign(f) => Some(f.name.as_str()),
-    }
-}
-
-fn item_is_priv(it: &Item) -> bool {
-    match it {
-        Item::Val(v) => v.is_priv,
-        Item::Type(t) => t.is_priv,
-        Item::Foreign(_) => false,
-    }
-}
-
 fn load_module_file(
     path: &Path,
     search_roots: &[PathBuf],
     overlays: &HashMap<PathBuf, String>,
     visited: &mut HashSet<PathBuf>,
     files: &mut Vec<SourceFile>,
+    visibility: &mut NameVisibility,
+    is_entry: bool,
 ) -> Result<Module> {
     if !visited.insert(path.to_path_buf()) {
         bail!("cyclic import involving {}", path.display());
@@ -273,18 +268,53 @@ fn load_module_file(
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
 
+    let entry_file = if is_entry { file_id } else { visibility.entry_file };
+    if is_entry {
+        visibility.entry_file = file_id;
+    }
+    let _ = entry_file;
+
     let mut imported_items = Vec::new();
     for imp in &m.imports {
         if is_std(&imp.path) {
             continue;
         }
         let file = resolve_import_file(&importer_dir, search_roots, imp)?;
-        let dep = load_module_file(&file, search_roots, overlays, visited, files)?;
+        let dep = load_module_file(
+            &file,
+            search_roots,
+            overlays,
+            visited,
+            files,
+            visibility,
+            false,
+        )?;
+        let visible = import_visible_names(&dep.items, &imp.names);
+        // Only the entry module's imports expand the user-facing scope.
+        if is_entry {
+            extend_visibility(visibility, &dep.items, &visible);
+        } else {
+            // Nested deps: record origins only (no new entry-visible names).
+            let empty = HashSet::new();
+            extend_visibility(visibility, &dep.items, &empty);
+        }
         imported_items.extend(filter_items(dep.items, &imp.names)?);
     }
 
-    // Keep only std imports (decorative / builtins); user modules are inlined.
     m.imports.retain(|i| is_std(&i.path));
+    // Record this file's declarations (entry or dep). Entry names are visible
+    // via same-file origin; deps rely on import_visible_names above.
+    let local_visible: HashSet<String> = if is_entry {
+        m.items
+            .iter()
+            .filter_map(item_name)
+            .map(|s| s.to_string())
+            .collect()
+    } else {
+        HashSet::new()
+    };
+    extend_visibility(visibility, &m.items, &local_visible);
+
     imported_items.append(&mut m.items);
     m.items = imported_items;
     Ok(m)

@@ -1,0 +1,11 @@
+module EffectBlock
+
+import std.io.{println}
+
+val main = {
+    // `effect { }` is a visual region; same as a normal block (DESIGN §2.2.1).
+    effect {
+        val x = 40
+        println(x + 2)
+    }
+}

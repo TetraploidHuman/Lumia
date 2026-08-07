@@ -990,6 +990,11 @@ impl<'a> Parser<'a> {
             }
             TokenKind::If => self.parse_if(),
             TokenKind::Match => self.parse_match_cond(),
+            // `effect { … }` — visual effect region; same as a block (DESIGN §2.2.1).
+            TokenKind::Effect => {
+                self.bump();
+                self.parse_lambda_or_block()
+            }
             TokenKind::LBrace => self.parse_lambda_or_block(),
             TokenKind::LParen => {
                 let start = self.bump().span;

@@ -149,13 +149,15 @@ pub enum Value {
     },
 }
 
-/// List multi-representation (§3.5) — default HeapList when unsure.
+/// List representation hint on `AllocList` (§3.5 / §7.1.1).
+/// Runtime Iota ranges use `TYPE_LIST_IOTA` via `lumia_range`, not this enum.
+/// Deforestation lives in HIR (`try_fuse_hof_*`), not as an AllocList tag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListRepr {
+    /// Default heap `[len][elems…]`.
     HeapList,
+    /// Empty list only — codegen emits immortal `lumia_list_empty`.
     LitList,
-    Iota,
-    Fused,
 }
 
 /// Map default path.

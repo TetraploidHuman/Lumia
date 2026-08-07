@@ -487,6 +487,11 @@ fn e2e_effect_hof() {
 }
 
 #[test]
+fn e2e_effect_block() {
+    run_example("examples/effect_block.lumia", &["42"]);
+}
+
+#[test]
 fn e2e_nested_match() {
     run_example(
         "examples/nested_match.lumia",
@@ -506,6 +511,30 @@ fn e2e_bad_import_priv_rejected() {
     assert!(
         !status.success(),
         "priv import should fail type/check"
+    );
+}
+
+#[test]
+fn e2e_priv_leak_rejected() {
+    let root = workspace_root();
+    let src = root.join("examples/priv_leak_test.lumia");
+    let out = Command::new(lumia_bin())
+        .current_dir(&root)
+        .args(["check", src.to_str().unwrap()])
+        .output()
+        .expect("check priv_leak_test");
+    assert!(
+        !out.status.success(),
+        "priv helper must not be visible via unrelated import"
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        combined.contains("private") || combined.contains("unbound") || combined.contains("helper"),
+        "expected priv/visibility error, got: {combined}"
     );
 }
 

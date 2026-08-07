@@ -757,8 +757,9 @@ fn list_patterns_exhaustive(pats: &[&Pattern]) -> bool {
 pub struct Module {
     pub name: String,
     pub items: Vec<Item>,
-    /// Sum types declared in this module (product types ignored for now).
+    /// Sum types declared in this module.
     pub adts: Vec<AdtDef>,
+    /// Product types declared in this module.
     pub products: Vec<ProductDef>,
 }
 

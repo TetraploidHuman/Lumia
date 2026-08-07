@@ -344,23 +344,24 @@ fn select_value(v: &mut Value, bound: Local, escaping: &HashSet<Local>) {
     match v {
         Value::AllocList { elems, repr } => {
             if elems.is_empty() {
+                // Empty → immortal singleton (`lumia_list_empty`).
                 *repr = ListRepr::LitList;
-            } else if local_ok && elems.len() <= 8 {
-                // Non-escaping small list → lit specialization hint.
-                *repr = ListRepr::LitList;
-            } else if elems.len() <= 8 {
-                *repr = ListRepr::HeapList;
             } else {
-                *repr = default_list_repr();
+                // Non-empty always HeapList (codegen path).
+                *repr = ListRepr::HeapList;
             }
         }
         Value::AllocMap { flat_pairs, repr } => {
             let n_pairs = flat_pairs.len() / 2;
-            if flat_pairs.is_empty() || (local_ok && n_pairs <= 8) {
+            // Codegen emits linear layout; runtime promotes above MAP_SMALL_MAX.
+            // Prefer SmallMap whenever n ≤ 8 (matches runtime). Large literals → HashOrdered hint.
+            if n_pairs <= 8 {
                 *repr = MapRepr::SmallMap;
             } else {
                 *repr = default_map_repr();
             }
+            let _ = local_ok;
+            let _ = flat_pairs;
         }
         Value::AllocSet { .. } => {}
         Value::AllocAdt { .. } => {}
@@ -462,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn repr_select_marks_nonescaping_small_list_lit() {
+    fn repr_select_marks_nonescaping_small_list_heap() {
         let mut module = CoreModule {
             name: "M".into(),
             functions: vec![CoreFun {
@@ -504,6 +505,44 @@ mod tests {
         };
         ReprSelect.run(&mut module);
         let Op::Let { value, .. } = &module.functions[0].body.ops[1] else {
+            panic!("expected let");
+        };
+        match value {
+            Value::AllocList { repr, .. } => assert_eq!(*repr, ListRepr::HeapList),
+            other => panic!("expected AllocList, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn repr_select_empty_list_is_lit() {
+        let mut module = CoreModule {
+            name: "M".into(),
+            functions: vec![CoreFun {
+                name: "f".into(),
+                params: vec![],
+                param_names: vec![],
+                param_tys: vec![],
+                body: Block {
+                    params: vec![],
+                    ops: vec![Op::Let {
+                        local: Local(0),
+                        value: Value::AllocList {
+                            elems: vec![],
+                            repr: ListRepr::HeapList,
+                        },
+                        pure_region: true,
+                    }],
+                    result: Some(Local(0)),
+                },
+                ret_ty: Type::List(Box::new(Type::Int)),
+                effect: Effect::pure(),
+                is_main: false,
+                memo: None,
+                external: None,
+            }],
+        };
+        ReprSelect.run(&mut module);
+        let Op::Let { value, .. } = &module.functions[0].body.ops[0] else {
             panic!("expected let");
         };
         match value {
