@@ -217,11 +217,8 @@ fn declare_runtime<'ctx>(context: &'ctx Context, module: &LlvmModule<'ctx>) {
         None,
     );
     module.add_function("lumia_root_pop", void_ty.fn_type(&[], false), None);
-    module.add_function(
-        "lumia_write_barrier",
-        void_ty.fn_type(&[ptr_ty.into(), i32_ty.into(), ptr_ty.into()], false),
-        None,
-    );
+    // `lumia_write_barrier` stays in `lumia_rt` ABI for future concurrent GC;
+    // STW mark-sweep does not emit calls.
     module.add_function(
         "lumia_list_len",
         i64_ty.fn_type(&[ptr_ty.into()], false),

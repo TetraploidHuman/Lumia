@@ -48,7 +48,7 @@ Source.lumia
 | 后端    | **唯一 LLVM**（Debug / Release 都走 LLVM）                                             |
 | 泛型    | **单态化**（最终形态）                                                                    |
 | 运行时   | `lumia_rt`：Rust，对外 **C ABI**；GC 为可替换模块                                           |
-| 首发 GC | STW **mark-sweep** + shadow stack 根 + 空写屏障                                       |
+| 首发 GC | STW **mark-sweep** + shadow stack 根；写屏障在 STW 下为空（正确，非缺口） |
 
 
 ### 明确拒绝
@@ -135,7 +135,7 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumia_rt` 内�
 | ---------------------------------------------------- | --------------------------------- |
 | `lumia_alloc(nbytes, type_id) -> *mut u8`            | 堆分配（可触发收集）；返回 **payload** 指针（头在前） |
 | `lumia_root_push(*mut *mut u8)` / `lumia_root_pop()` | shadow stack 根                    |
-| `lumia_write_barrier(obj, field, new)`               | 写屏障钩子；首发 **空实现**                  |
+| `lumia_write_barrier(obj, field, new)`               | 写屏障钩子；**STW mark-sweep 下为空是正确的**（精确根，无需屏障；换并发 GC 时再实现） |
 | `lumia_gc_collect()`                                 | 强制 STW 收集                         |
 | `lumia_println_int` / `_cstr` / `_str` / `_bool`     | 效应 I/O                            |
 
@@ -196,7 +196,7 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumia_rt` 内�
 | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | **已完成骨架**       | parse 子集 → 推断 + 效应 → Core → LLVM → 链 `lumia_rt` → `main` + `println` + `Int`；`listOf`→`AllocList`；CSE + ReprSelect 默认路径                       |
 | **已完成下一步（部分）**  | …；**sortBy / assert+行号**；**定位诊断（多文件）**；**Map Overlay**；**WordCount**；**lumia fmt**；…                                                          |
-| **下一里程碑**    | Trait / instance；外置 `std/`（`.lumia`）；非逃逸小对象栈分配；`--mm=arc` 或并发 GC（写屏障生效） |
+| **下一里程碑**    | Trait / instance 语义；将 builtins 迁入可加载的 `std/*.lumia`；非逃逸小对象栈分配；`--mm=arc` / 并发 GC（届时写屏障生效） |
 | **工具链已落地**   | **自动并行**（`--parallel` + `ListParMap`）；**包管理**（`Lumia.toml` / `lumia pkg`）；**LSP**（`lumia lsp`）；**FFI**（`foreign "C" fn`）；`priv` 跨文件可见性；`effect { }` 块；Map/Set `finish` 晋升 |
 
 

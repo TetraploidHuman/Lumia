@@ -1,0 +1,6 @@
+/// Standard I/O surface (`import std.io.{println, …}`).
+///
+/// Implementations are compiler builtins; the loader validates import names
+/// against this module's documented exports. Do not treat this file as a
+/// loadable library body yet — it exists so `std/` is not an empty lie.
+module io

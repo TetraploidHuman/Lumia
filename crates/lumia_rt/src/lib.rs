@@ -3,7 +3,8 @@
 //! C ABI contract used by codegen:
 //! - `lumia_alloc(nbytes, type_id) -> *mut u8`
 //! - `lumia_root_push(*mut *mut u8)` / `lumia_root_pop()`
-//! - `lumia_write_barrier(obj, field_index, new_ptr)` — empty under STW mark-sweep
+//! - `lumia_write_barrier(obj, field_index, new_ptr)` — no-op under STW mark-sweep
+//!   (roots are exact; concurrent/incremental collectors would use a real barrier)
 //!   (precise shadow-stack roots; barrier is part of the stable MmBackend ABI and
 //!   becomes meaningful for concurrent / generational collectors).
 //! - `lumia_gc_collect()`
@@ -1391,16 +1392,38 @@ const MAP_ST_FULL: i64 = 1;
 const MAP_ST_TOMB: i64 = 2;
 
 fn map_linear_nbytes(n: i64) -> usize {
-    (1 + 2 * n as usize) * 8
+    if n < 0 {
+        panic!("lumia: negative map length");
+    }
+    (n as u64)
+        .checked_mul(2)
+        .and_then(|pairs| pairs.checked_add(1))
+        .and_then(|words| words.checked_mul(8))
+        .filter(|&b| b <= u32::MAX as u64)
+        .map(|b| b as usize)
+        .unwrap_or_else(|| panic!("lumia: map too large (n={n})"))
 }
 
 fn map_hash_nbytes(cap: usize) -> usize {
     // [count][cap] + order[cap] + (key,val,state)[cap]
-    (2 + cap + 3 * cap) * 8
+    cap.checked_mul(4)
+        .and_then(|w| w.checked_add(2))
+        .and_then(|words| words.checked_mul(8))
+        .filter(|&b| b <= u32::MAX as usize)
+        .unwrap_or_else(|| panic!("lumia: map hash table too large (cap={cap})"))
 }
 
 fn map_overlay_nbytes(dn: i64) -> usize {
-    (3 + 2 * dn as usize) * 8
+    if dn < 0 {
+        panic!("lumia: negative overlay delta");
+    }
+    (dn as u64)
+        .checked_mul(2)
+        .and_then(|kv| kv.checked_add(3))
+        .and_then(|words| words.checked_mul(8))
+        .filter(|&b| b <= u32::MAX as u64)
+        .map(|b| b as usize)
+        .unwrap_or_else(|| panic!("lumia: map overlay too large (dn={dn})"))
 }
 
 fn map_is_overlay(map: *mut u8) -> bool {
@@ -2241,7 +2264,12 @@ fn set_linear_nbytes(n: i64) -> usize {
 }
 
 fn set_hash_nbytes(cap: usize) -> usize {
-    (2 + cap + 2 * cap) * 8
+    // [n][cap] + order[cap] + (elem,state)[cap]
+    cap.checked_mul(3)
+        .and_then(|w| w.checked_add(2))
+        .and_then(|words| words.checked_mul(8))
+        .filter(|&b| b <= u32::MAX as usize)
+        .unwrap_or_else(|| panic!("lumia: set hash table too large (cap={cap})"))
 }
 
 fn set_is_hash(set: *mut u8) -> bool {

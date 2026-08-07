@@ -128,6 +128,66 @@ fn is_std(path: &[String]) -> bool {
     path.first().map(|s| s.as_str() == "std").unwrap_or(false)
 }
 
+/// Compiler-provided `std.*` modules (implemented as builtins / prelude).
+/// Unknown modules or names are rejected — no silent skip.
+fn std_exports(path: &[String]) -> Option<&'static [&'static str]> {
+    let key: Vec<&str> = path.iter().map(|s| s.as_str()).collect();
+    match key.as_slice() {
+        ["std", "io"] => Some(&[
+            "println",
+            "readStdin",
+            "assert",
+        ]),
+        ["std", "string"] => Some(&[
+            "trim",
+            "split",
+            "substring",
+            "toLower",
+            "toUpper",
+            "startsWith",
+            "endsWith",
+            "join",
+        ]),
+        _ => None,
+    }
+}
+
+fn validate_std_import(imp: &Import) -> Result<()> {
+    let Some(exports) = std_exports(&imp.path) else {
+        bail!(
+            "unknown standard module `{}` (known: std.io, std.string)",
+            imp.path.join(".")
+        );
+    };
+    let export_set: HashSet<&str> = exports.iter().copied().collect();
+    match &imp.names {
+        ImportNames::All => Ok(()),
+        ImportNames::Single(name) => {
+            if export_set.contains(name.as_str()) {
+                Ok(())
+            } else {
+                bail!(
+                    "`{name}` is not exported by `{}` (exports: {})",
+                    imp.path.join("."),
+                    exports.join(", ")
+                )
+            }
+        }
+        ImportNames::Selective(names) => {
+            for n in names {
+                if !export_set.contains(n.as_str()) {
+                    bail!(
+                        "`{n}` is not exported by `{}` (exports: {})",
+                        imp.path.join("."),
+                        exports.join(", ")
+                    );
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
 fn path_candidates(base: &Path, rel: &[&str]) -> Vec<PathBuf> {
     let mut out = Vec::new();
     if rel.is_empty() {
@@ -277,6 +337,7 @@ fn load_module_file(
     let mut imported_items = Vec::new();
     for imp in &m.imports {
         if is_std(&imp.path) {
+            validate_std_import(imp)?;
             continue;
         }
         let file = resolve_import_file(&importer_dir, search_roots, imp)?;

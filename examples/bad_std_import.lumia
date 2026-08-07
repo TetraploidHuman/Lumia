@@ -1,0 +1,7 @@
+module BadStd
+
+import std.nonsense.{foo}
+
+val main = {
+    0
+}

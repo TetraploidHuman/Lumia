@@ -1,0 +1,4 @@
+/// Standard string surface (`import std.string.{trim, split, …}`).
+///
+/// Implementations are compiler builtins; the loader validates import names.
+module string

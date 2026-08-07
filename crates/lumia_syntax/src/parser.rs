@@ -247,6 +247,13 @@ impl<'a> Parser<'a> {
             let mut t = self.parse_type_item()?;
             t.is_priv = is_priv;
             Ok(Item::Type(t))
+        } else if matches!(
+            self.cur.kind,
+            TokenKind::Trait | TokenKind::Instance | TokenKind::Requires
+        ) {
+            Err(self.error(
+                "`trait` / `instance` / `requires` are reserved but not implemented yet (DESIGN §3.6 / §8.2)",
+            ))
         } else {
             Err(self.error("expected `val`, `type`, or `foreign` item"))
         }
@@ -995,6 +1002,9 @@ impl<'a> Parser<'a> {
                 self.bump();
                 self.parse_lambda_or_block()
             }
+            TokenKind::Trait | TokenKind::Instance | TokenKind::Requires => Err(self.error(
+                "`trait` / `instance` / `requires` are reserved but not implemented yet",
+            )),
             TokenKind::LBrace => self.parse_lambda_or_block(),
             TokenKind::LParen => {
                 let start = self.bump().span;

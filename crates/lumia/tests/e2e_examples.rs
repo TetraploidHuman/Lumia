@@ -780,3 +780,45 @@ fn e2e_par_map_capture() {
     let got: Vec<&str> = stdout.lines().collect();
     assert_eq!(got, ["5", "10", "14"]);
 }
+
+#[test]
+fn e2e_unknown_std_module_rejected() {
+    let root = workspace_root();
+    let src = root.join("examples/bad_std_import.lumia");
+    let out = Command::new(lumia_bin())
+        .current_dir(&root)
+        .args(["check", src.to_str().unwrap()])
+        .output()
+        .expect("check bad_std_import");
+    assert!(!out.status.success());
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        combined.contains("unknown standard module") || combined.contains("not exported"),
+        "expected std allowlist error, got: {combined}"
+    );
+}
+
+#[test]
+fn e2e_trait_keyword_rejected() {
+    let root = workspace_root();
+    let src = root.join("examples/bad_trait.lumia");
+    let out = Command::new(lumia_bin())
+        .current_dir(&root)
+        .args(["check", src.to_str().unwrap()])
+        .output()
+        .expect("check bad_trait");
+    assert!(!out.status.success());
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        combined.contains("not implemented") || combined.contains("reserved"),
+        "expected reserved-keyword error, got: {combined}"
+    );
+}
