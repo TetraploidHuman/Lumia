@@ -979,10 +979,11 @@ impl Infer {
                             return Err(at(*span, format!("map: expected List, got {other:?}")));
                         }
                     };
-                    // Parallel workers use TLS heaps — restrict to scalar Int/Bool/Float.
+                    // Parallel workers use TLS heaps — require *concrete* scalar
+                    // Int/Bool/Float (reject open Vars that could later be heap types).
                     let elem = self.prune(elem);
                     match &elem {
-                        Type::Int | Type::Bool | Type::Float | Type::Var(_) => {}
+                        Type::Int | Type::Bool | Type::Float => {}
                         other => {
                             return Err(at(
                                 *span,
@@ -1004,7 +1005,7 @@ impl Infer {
                     )?;
                     let out = self.prune(out);
                     match &out {
-                        Type::Int | Type::Bool | Type::Float | Type::Var(_) => {}
+                        Type::Int | Type::Bool | Type::Float => {}
                         other => {
                             return Err(at(
                                 *span,

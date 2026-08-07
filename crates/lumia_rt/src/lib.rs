@@ -44,6 +44,9 @@ thread_local! {
     /// Nestable: RT helpers that allocate multiple objects before they are reachable
     /// from roots must hold this to avoid soft-threshold GC UAF.
     static GC_INHIBIT: Cell<u32> = const { Cell::new(0) };
+    /// Parallel map workers use a separate TLS heap; allocations there would leak /
+    /// never be marked on the main heap. Forbid them (scalar Int/Bool/Float only).
+    static PAR_WORKER: Cell<bool> = const { Cell::new(false) };
 }
 
 static HEAP_LIMIT: Mutex<usize> = Mutex::new(256 * 1024);
@@ -160,6 +163,12 @@ fn mark_value(x: i64) {
 
 impl MmBackend for MarkSweep {
     fn alloc(&mut self, nbytes: usize, type_id: u32) -> *mut u8 {
+        if PAR_WORKER.get() {
+            panic!(
+                "lumia: heap allocation inside parallel map worker \
+                 (use scalar Int/Bool/Float callbacks only)"
+            );
+        }
         let inhibit = GC_INHIBIT.get();
         if inhibit == 0 {
             let limit = *HEAP_LIMIT.lock().unwrap();
@@ -184,6 +193,18 @@ impl MmBackend for MarkSweep {
         Self::mark_from_roots();
         Self::sweep();
     }
+}
+
+/// Payload bytes for a HeapList of `len` elements (`[len][e…]`), overflow-safe.
+fn list_payload_bytes(len: i64) -> u64 {
+    if len < 0 {
+        panic!("lumia: negative list length");
+    }
+    (len as u64)
+        .checked_add(1)
+        .and_then(|words| words.checked_mul(8))
+        .filter(|&b| b <= u32::MAX as u64)
+        .unwrap_or_else(|| panic!("lumia: list too large (len={len})"))
 }
 
 struct GcInhibitGuard;
@@ -359,7 +380,11 @@ pub extern "C" fn lumia_string_cstr(s: *mut u8) -> *mut u8 {
     }
     unsafe {
         let n = (*header_from_payload(s)).size as usize;
-        let dest = lumia_alloc((n + 1) as u64, TYPE_BYTES);
+        let nbytes = (n as u64)
+            .checked_add(1)
+            .filter(|&b| b <= u32::MAX as u64)
+            .unwrap_or_else(|| panic!("lumia: cstr buffer too large"));
+        let dest = lumia_alloc(nbytes, TYPE_BYTES);
         ptr::copy_nonoverlapping(s, dest, n);
         *dest.add(n) = 0;
         dest
@@ -608,7 +633,11 @@ pub extern "C" fn lumia_str_concat(a: *mut u8, b: *mut u8) -> *mut u8 {
         } else {
             (*header_from_payload(b)).size as u64
         };
-        let dest = lumia_alloc(na + nb, TYPE_STRING);
+        let total = na
+            .checked_add(nb)
+            .filter(|&t| t <= u32::MAX as u64)
+            .unwrap_or_else(|| panic!("lumia: string too large to concat"));
+        let dest = lumia_alloc(total, TYPE_STRING);
         if dest.is_null() {
             panic!("lumia: str concat OOM");
         }
@@ -744,7 +773,7 @@ pub extern "C" fn lumia_str_split(s: *mut u8, sep_ch: i64) -> *mut u8 {
             parts.push(lumia_alloc_string(slice.as_ptr(), slice.len() as u64));
         }
         let n = parts.len() as i64;
-        let dest = lumia_alloc((1 + parts.len() as u64) * 8, TYPE_LIST);
+        let dest = lumia_alloc(list_payload_bytes(n), TYPE_LIST);
         unsafe {
             let dst = dest as *mut i64;
             *dst = n;
@@ -787,13 +816,13 @@ pub extern "C" fn lumia_list_take(list: *mut u8, n: i64) -> *mut u8 {
             len
         } else {
             n
-        } as u64;
-        let dest = lumia_alloc((1 + take) * 8, TYPE_LIST);
+        };
+        let dest = lumia_alloc(list_payload_bytes(take), TYPE_LIST);
         if dest.is_null() {
             panic!("lumia: list take OOM");
         }
         let dst = dest as *mut i64;
-        *dst = take as i64;
+        *dst = take;
         if !list.is_null() && take > 0 {
             let src = list as *const i64;
             for i in 0..take as usize {
@@ -814,17 +843,17 @@ pub extern "C" fn lumia_list_reverse(list: *mut u8) -> *mut u8 {
         } else {
             *(list as *const i64)
         };
-        let n = len as u64;
-        let dest = lumia_alloc((1 + n) * 8, TYPE_LIST);
+        let dest = lumia_alloc(list_payload_bytes(len), TYPE_LIST);
         if dest.is_null() {
             panic!("lumia: list reverse OOM");
         }
         let dst = dest as *mut i64;
         *dst = len;
-        if !list.is_null() && n > 0 {
+        if !list.is_null() && len > 0 {
             let src = list as *const i64;
-            for i in 0..n as usize {
-                *dst.add(1 + i) = *src.add(n as usize - i);
+            let n = len as usize;
+            for i in 0..n {
+                *dst.add(1 + i) = *src.add(n - i);
             }
         }
         dest
@@ -842,7 +871,7 @@ pub extern "C" fn lumia_list_sort(list: *mut u8) -> *mut u8 {
             *(list as *const i64)
         };
         let n = len as usize;
-        let dest = lumia_alloc((1 + n as u64) * 8, TYPE_LIST);
+        let dest = lumia_alloc(list_payload_bytes(len), TYPE_LIST);
         if dest.is_null() {
             panic!("lumia: list sort OOM");
         }
@@ -879,7 +908,7 @@ pub extern "C" fn lumia_list_sort_by_keys(values: *mut u8, keys: *mut u8) -> *mu
         if n != nk {
             panic!("lumia: sortBy keys/values length mismatch");
         }
-        let dest = lumia_alloc((1 + n as u64) * 8, TYPE_LIST);
+        let dest = lumia_alloc(list_payload_bytes(n), TYPE_LIST);
         if dest.is_null() {
             panic!("lumia: list sortBy OOM");
         }
@@ -1054,13 +1083,7 @@ fn force_heap_list(list: *mut u8) -> *mut u8 {
     if n < 0 {
         panic!("lumia: iota length overflow");
     }
-    // ObjectHeader.size is u32; reject materializations that cannot fit.
-    let nbytes = (n as u64)
-        .checked_add(1)
-        .and_then(|words| words.checked_mul(8))
-        .filter(|&b| b <= u32::MAX as u64)
-        .unwrap_or_else(|| panic!("lumia: iota too large to materialize (len={n})"));
-    let dest = lumia_alloc(nbytes, TYPE_LIST);
+    let dest = lumia_alloc(list_payload_bytes(n), TYPE_LIST);
     unsafe {
         let dst = dest as *mut i64;
         *dst = n;
@@ -1097,7 +1120,7 @@ pub extern "C" fn lumia_list_append(list: *mut u8, elem: i64) -> *mut u8 {
         } else {
             *(list as *const i64)
         };
-        let nbytes = (1 + n as u64 + 1) * 8;
+        let nbytes = list_payload_bytes(n.checked_add(1).expect("lumia: list append length overflow"));
         let dest = lumia_alloc(nbytes, TYPE_LIST);
         if dest.is_null() {
             panic!("lumia: list append OOM");
@@ -1138,7 +1161,7 @@ pub extern "C" fn lumia_list_par_map(
         let src = list as *const i64;
         // Sequential for tiny lists.
         if n < 64 {
-            let dest = lumia_alloc((1 + n as u64) * 8, TYPE_LIST);
+            let dest = lumia_alloc(list_payload_bytes(n), TYPE_LIST);
             let dst = dest as *mut i64;
             *dst = n;
             for i in 0..n as usize {
@@ -1157,9 +1180,11 @@ pub extern "C" fn lumia_list_par_map(
         for w in 0..workers {
             let start = w * chunk;
             let end = ((w + 1) * chunk).min(n as usize);
-            // SAFETY: list is immutable during map; GC inhibited.
+            // SAFETY: list is immutable during map; GC inhibited on main;
+            // workers must not allocate (PAR_WORKER).
             let base = src as usize;
             handles.push(std::thread::spawn(move || {
+                PAR_WORKER.with(|c| c.set(true));
                 let src = base as *const i64;
                 let mut out = Vec::with_capacity(end.saturating_sub(start));
                 for i in start..end {
@@ -1172,7 +1197,7 @@ pub extern "C" fn lumia_list_par_map(
             .into_iter()
             .map(|h| h.join().expect("par_map worker"))
             .collect();
-        let dest = lumia_alloc((1 + n as u64) * 8, TYPE_LIST);
+        let dest = lumia_alloc(list_payload_bytes(n), TYPE_LIST);
         let dst = dest as *mut i64;
         *dst = n;
         let mut i = 0usize;
@@ -1198,7 +1223,7 @@ pub extern "C" fn lumia_list_set(list: *mut u8, index: i64, elem: i64) -> *mut u
         if index >= n {
             panic!("lumia: list set out of bounds");
         }
-        let nbytes = (1 + n as u64) * 8;
+        let nbytes = list_payload_bytes(n);
         let dest = lumia_alloc(nbytes, TYPE_LIST);
         if dest.is_null() {
             panic!("lumia: list set OOM");
@@ -1237,8 +1262,10 @@ pub extern "C" fn lumia_list_concat(a: *mut u8, b: *mut u8) -> *mut u8 {
         if nb == 0 {
             return a;
         }
-        let n = na + nb;
-        let nbytes = (1 + n as u64) * 8;
+        let n = na
+            .checked_add(nb)
+            .expect("lumia: list concat length overflow");
+        let nbytes = list_payload_bytes(n);
         let dest = lumia_alloc(nbytes, TYPE_LIST);
         if dest.is_null() {
             panic!("lumia: list concat OOM");
@@ -1282,11 +1309,7 @@ pub extern "C" fn lumia_list_empty() -> *mut u8 {
 #[no_mangle]
 pub extern "C" fn lumia_list_slice(list: *mut u8, start: i64) -> *mut u8 {
     if list.is_null() {
-        let dest = lumia_alloc(8, TYPE_LIST);
-        unsafe {
-            *(dest as *mut i64) = 0;
-        }
-        return dest;
+        return lumia_list_empty();
     }
     if list_tid(list) == TYPE_LIST_IOTA {
         unsafe {
@@ -1304,17 +1327,16 @@ pub extern "C" fn lumia_list_slice(list: *mut u8, start: i64) -> *mut u8 {
     unsafe {
         let len = *(list as *const i64);
         let start = if start < 0 { 0 } else { start };
-        let n = if start >= len { 0 } else { (len - start) as u64 };
-        let nbytes = (1 + n) * 8;
-        let dest = lumia_alloc(nbytes, TYPE_LIST);
+        let n = if start >= len { 0i64 } else { len - start };
+        let dest = lumia_alloc(list_payload_bytes(n), TYPE_LIST);
         if dest.is_null() {
             panic!("lumia: slice OOM");
         }
-        *(dest as *mut i64) = n as i64;
+        *(dest as *mut i64) = n;
         let src = list as *const i64;
         let dst = dest as *mut i64;
-        for i in 0..n {
-            *dst.add(1 + i as usize) = *src.add(1 + start as usize + i as usize);
+        for i in 0..n as usize {
+            *dst.add(1 + i) = *src.add(1 + start as usize + i);
         }
         dest
     }
@@ -1807,7 +1829,7 @@ pub extern "C" fn lumia_map_get(
 }
 
 fn alloc_adt(tag: i64, fields: &[i64]) -> *mut u8 {
-    let nbytes = (1 + fields.len() as u64) * 8;
+    let nbytes = list_payload_bytes(fields.len() as i64);
     let dest = lumia_alloc(nbytes, TYPE_ADT);
     if dest.is_null() {
         panic!("lumia: adt OOM");
@@ -2113,7 +2135,7 @@ pub extern "C" fn lumia_map_keys(map: *mut u8) -> *mut u8 {
         } else {
             *(map as *const i64)
         };
-        let nbytes = (1 + n as u64) * 8;
+        let nbytes = list_payload_bytes(n);
         let dest = lumia_alloc(nbytes, TYPE_LIST);
         let dst = dest as *mut i64;
         *dst = n;
@@ -2141,7 +2163,7 @@ pub extern "C" fn lumia_map_values(map: *mut u8) -> *mut u8 {
         } else {
             *(map as *const i64)
         };
-        let nbytes = (1 + n as u64) * 8;
+        let nbytes = list_payload_bytes(n);
         let dest = lumia_alloc(nbytes, TYPE_LIST);
         let dst = dest as *mut i64;
         *dst = n;
@@ -2170,7 +2192,7 @@ pub extern "C" fn lumia_map_items(map: *mut u8) -> *mut u8 {
         } else {
             *(map as *const i64)
         };
-        let nbytes = (1 + n as u64) * 8;
+        let nbytes = list_payload_bytes(n);
         let dest = lumia_alloc(nbytes, TYPE_LIST);
         let dst = dest as *mut i64;
         *dst = n;
@@ -2193,7 +2215,7 @@ const SET_ST_FULL: i64 = 1;
 const SET_ST_TOMB: i64 = 2;
 
 fn set_linear_nbytes(n: i64) -> usize {
-    (1 + n as usize) * 8
+    list_payload_bytes(n) as usize
 }
 
 fn set_hash_nbytes(cap: usize) -> usize {
@@ -3074,12 +3096,26 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "too large to materialize")]
+    #[should_panic(expected = "list too large")]
     fn force_huge_iota_traps_without_alloc() {
         // Length that cannot fit in ObjectHeader.size (u32) when stored as bytes.
         let n = (u32::MAX as i64 / 8) + 8;
         let r = lumia_range(0, n);
         let _ = force_heap_list(r);
+    }
+
+    #[test]
+    #[should_panic(expected = "list too large")]
+    fn list_payload_bytes_rejects_overflow() {
+        let _ = list_payload_bytes(i64::MAX);
+    }
+
+    #[test]
+    #[should_panic(expected = "parallel map worker")]
+    fn par_worker_alloc_is_forbidden() {
+        PAR_WORKER.with(|c| c.set(true));
+        // Call Rust path (not `extern "C"`) so the panic can unwind for should_panic.
+        let _ = MarkSweep.alloc(8, TYPE_LIST);
     }
 }
 

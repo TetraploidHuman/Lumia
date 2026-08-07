@@ -178,7 +178,7 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumia_rt` 内�
 - **包管理**：`Lumia.toml` path 依赖 + `lumia pkg init|lock|add`；有 deps 时**必须**有 `Lumia.lock`；`package.link` 自动并入链接参数（见 `examples/use_path_dep.lumia`）。
 - **LSP**：`lumia lsp`（stdio；未保存 buffer overlay；诊断；hover；跨文件定义；补全；formatting）。
 - **FFI**：`foreign "C" [pure] fn …`（`Int`/`Bool`/`Float`/`Unit`/`String↔cstr`）+ `--link` / `package.link`（`examples/ffi_abs.lumia` / `ffi_strlen.lumia` / `ffi_getenv.lumia`）。
-- **自动并行**：`lumia build --parallel` 将无捕获 lambda 或**顶层函数名**的标量 `List.map` 降为 `ListParMap`（`examples/par_map.lumia` / `par_map_fn.lumia`）；捕获闭包仍顺序（`par_map_capture.lumia`）。
+- **自动并行**：`lumia build --parallel` 将无捕获 lambda 或**顶层函数名**的标量 `List.map` 降为 `ListParMap`（`examples/par_map.lumia` / `par_map_fn.lumia`）；捕获闭包仍顺序（`par_map_capture.lumia`）。元素/结果须为具体 `Int`/`Bool`/`Float`（拒开放 `Var`）；worker 内禁止堆分配（TLS 堆隔离）。
 - Memo 性能：`scripts/bench_memo.sh`（同参热命中，约 **20×** vs `--no-memo`）；`examples/memo_dense.lumia` 的 `fib` 下标表约 **1000×+**。
   - `**bench_cpu` 整套**：收益几乎只来自 `fib`（其余核是单遍扫参，无跨调用复用 → 理论无命中）。曾有成本模型把「循环里调用一次」当成命中证据、误挂 4 槽表导致 Collatz **变慢**，已改为要求递归或静态同参复用；稠密表仅结构递减自递归。
 - CPU 计算密集：`scripts/bench_cpu.sh`（素数 / matmul / Mandelbrot / Collatz / fib）。
@@ -196,7 +196,7 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumia_rt` 内�
 | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | **已完成骨架**       | parse 子集 → 推断 + 效应 → Core → LLVM → 链 `lumia_rt` → `main` + `println` + `Int`；`listOf`→`AllocList`；CSE + ReprSelect 默认路径                       |
 | **已完成下一步（部分）**  | …；**sortBy / assert+行号**；**定位诊断（多文件）**；**Map Overlay**；**WordCount**；**lumia fmt**；…                                                          |
-| **仍待**          | 更深 Core Fusion；栈分配 / COWList；Trait；外置 `std/`；可选 `--mm=arc` |
+| **仍待**          | 更深 Core Fusion；栈分配 / COWList；Trait；外置 `std/`；可选 `--mm=arc`；写屏障仍为空（仅 STW 根精确） |
 | **再后（MVP 已落地）** | **自动并行**（`--parallel` + `ListParMap`）；**包管理**（`Lumia.toml` / `lumia pkg`）；**LSP**（`lumia lsp`）；**FFI**（`foreign "C" fn`）；可选更强 GC / `--mm=arc` |
 
 

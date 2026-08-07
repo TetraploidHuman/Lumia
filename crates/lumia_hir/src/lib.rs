@@ -6,7 +6,8 @@ use std::collections::{HashMap, HashSet};
 
 thread_local! {
     static CTORS: RefCell<HashMap<String, CtorInfo>> = RefCell::new(HashMap::new());
-    /// Product field name → (type name, field index). MVP: names unique per module.
+    /// Product field name → (type name, field index). Names shared by ≥2 products
+    /// are omitted (ambiguous for `with`).
     static PRODUCT_FIELDS: RefCell<HashMap<String, (String, usize)>> = RefCell::new(HashMap::new());
     static PRODUCTS: RefCell<HashMap<String, Vec<String>>> = RefCell::new(HashMap::new());
     static LOWER_ERR: RefCell<Option<LowerError>> = const { RefCell::new(None) };
