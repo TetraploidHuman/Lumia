@@ -2833,6 +2833,8 @@ fn link_executable(
             "-luserenv",
             "-lbcrypt",
             "-lntdll",
+            // Match the compiler binary stack (see .cargo/config.toml).
+            "-Wl,/STACK:16777216",
         ]);
     } else {
         cmd.arg("-lpthread").arg("-ldl").arg("-lm").arg("-lrt").arg("-lutil");

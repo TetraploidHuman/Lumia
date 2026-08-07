@@ -1,0 +1,3 @@
+# Windows default stack is 1MiB; recursive compiler passes overflow it.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "link-arg=/STACK:16777216"]
