@@ -2824,9 +2824,18 @@ fn link_executable(
 ) -> Result<()> {
     let mut cmd = Command::new("clang");
     cmd.arg(obj).arg(runtime).arg("-o").arg(output);
-    // Unix shared libs; on Windows the clang driver uses the MSVC linker.
-    if !cfg!(target_os = "windows") {
-        cmd.arg("-lpthread").arg("-ldl").arg("-lm");
+    // `lumia_rt` is a Rust staticlib: pull in the host libs Rust std needs.
+    // (Matches `cargo rustc -p lumia_rt -- --print=native-static-libs`.)
+    if cfg!(target_os = "windows") {
+        cmd.args([
+            "-ladvapi32",
+            "-lws2_32",
+            "-luserenv",
+            "-lbcrypt",
+            "-lntdll",
+        ]);
+    } else {
+        cmd.arg("-lpthread").arg("-ldl").arg("-lm").arg("-lrt").arg("-lutil");
     }
     for a in extra {
         cmd.arg(a);
