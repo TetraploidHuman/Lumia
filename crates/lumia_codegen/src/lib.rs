@@ -2621,7 +2621,10 @@ impl<'ctx> Codegen<'ctx> {
                     .build_load(self.i64_ty, slot, "cap")
                     .unwrap())
             }
-            Value::AllocList { elems, .. } => {
+            Value::AllocList { elems, repr } => {
+                // LitList / HeapList share heap layout today; Iota is produced by
+                // `lumia_range` (TYPE_LIST_IOTA), not AllocList.
+                let _ = repr;
                 self.emit_heap_array(elems, 3 /* TYPE_LIST */)
             }
             Value::AllocSet { elems } => self.emit_heap_array(elems, 5 /* TYPE_SET */),

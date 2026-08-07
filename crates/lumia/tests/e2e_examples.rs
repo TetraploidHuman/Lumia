@@ -317,6 +317,14 @@ fn e2e_range_map() {
 }
 
 #[test]
+fn e2e_range_iota() {
+    run_example(
+        "examples/range_iota.lumia",
+        &["1000000", "0", "999999", "2", "10", "3", "3"],
+    );
+}
+
+#[test]
 fn e2e_fuse_hof() {
     run_example("examples/fuse_hof.lumia", &["24", "250500"]);
 }

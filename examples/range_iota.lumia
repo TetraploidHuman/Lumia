@@ -1,0 +1,16 @@
+module RangeIota
+
+import std.io.{println}
+
+val main = {
+    // Million-element range stays Iota (O(1) alloc); len/get do not materialize.
+    val xs = 0..1_000_000
+    println(xs.len())
+    println(xs.get(0))
+    println(xs.get(999_999))
+    println(xs.take(3).get(2))
+    println(xs.slice(10).get(0))
+    // Inclusive
+    println((1..=3).len())
+    println((1..=3).get(2))
+}

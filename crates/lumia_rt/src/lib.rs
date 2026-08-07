@@ -32,6 +32,8 @@ pub const TYPE_ADT: u32 = 6;
 pub const TYPE_CHAR: u32 = 7;
 /// Heap closure: `[fn_ptr:i64][cap0:i64]…`
 pub const TYPE_CLOSURE: u32 = 8;
+/// Virtual Int range list: payload `[start:i64][end_exclusive:i64]` (DESIGN §3.5 Iota).
+pub const TYPE_LIST_IOTA: u32 = 9;
 
 thread_local! {
     static HEAP: RefCell<Vec<*mut ObjectHeader>> = const { RefCell::new(Vec::new()) };
@@ -117,6 +119,9 @@ fn mark(obj: *mut ObjectHeader) {
                 for i in 0..n as usize {
                     mark_value(*base.add(1 + i));
                 }
+            }
+            TYPE_LIST_IOTA => {
+                // Scalar bounds only — no child pointers.
             }
             TYPE_SET => {
                 set_mark_payload(payload, (*obj).size as usize);
@@ -425,10 +430,26 @@ pub extern "C" fn lumia_eq(a: i64, b: i64) -> i64 {
     unsafe {
         let ha = header_from_payload(pa);
         let hb = header_from_payload(pb);
-        if (*ha).type_id != (*hb).type_id {
+        let ta = (*ha).type_id;
+        let tb = (*hb).type_id;
+        // HeapList ↔ Iota: same user type `List`, compare by content.
+        if is_list_tid(ta) && is_list_tid(tb) {
+            let na = list_len_of(pa);
+            let nb = list_len_of(pb);
+            if na != nb {
+                return 0;
+            }
+            for i in 0..na {
+                if lumia_eq(list_get_of(pa, i), list_get_of(pb, i)) == 0 {
+                    return 0;
+                }
+            }
+            return 1;
+        }
+        if ta != tb {
             return 0;
         }
-        match (*ha).type_id {
+        match ta {
             TYPE_STRING => {
                 let na = (*ha).size as usize;
                 let nb = (*hb).size as usize;
@@ -451,21 +472,6 @@ pub extern "C" fn lumia_eq(a: i64, b: i64) -> i64 {
                 } else {
                     0
                 }
-            }
-            TYPE_LIST => {
-                let na = *(pa as *const i64);
-                let nb = *(pb as *const i64);
-                if na != nb {
-                    return 0;
-                }
-                let ba = pa as *const i64;
-                let bb = pb as *const i64;
-                for i in 0..na as usize {
-                    if lumia_eq(*ba.add(1 + i), *bb.add(1 + i)) == 0 {
-                        return 0;
-                    }
-                }
-                1
             }
             TYPE_SET => set_eq(pa, pb),
             TYPE_MAP => map_eq(pa, pb),
@@ -572,7 +578,8 @@ pub extern "C" fn lumia_len(obj: *mut u8) -> i64 {
         let h = header_from_payload(obj);
         match (*h).type_id {
             TYPE_STRING => (*h).size as i64,
-            TYPE_LIST | TYPE_SET => *(obj as *const i64),
+            TYPE_LIST | TYPE_LIST_IOTA => list_len_of(obj),
+            TYPE_SET => *(obj as *const i64),
             TYPE_MAP => map_count(obj),
             _ => panic!("lumia: len on unsupported type {}", (*h).type_id),
         }
@@ -743,6 +750,22 @@ pub extern "C" fn lumia_str_split(s: *mut u8, sep_ch: i64) -> *mut u8 {
 /// Prefix of length `n` (clamped).
 #[no_mangle]
 pub extern "C" fn lumia_list_take(list: *mut u8, n: i64) -> *mut u8 {
+    // Iota take can stay virtual: [start, start+take).
+    if list_tid(list) == TYPE_LIST_IOTA {
+        let len = list_len_of(list);
+        let take = if n < 0 {
+            0
+        } else if n > len {
+            len
+        } else {
+            n
+        };
+        unsafe {
+            let base = list as *const i64;
+            let start = *base;
+            return lumia_range(start, start + take);
+        }
+    }
     unsafe {
         let len = if list.is_null() {
             0i64
@@ -775,6 +798,7 @@ pub extern "C" fn lumia_list_take(list: *mut u8, n: i64) -> *mut u8 {
 /// Reverse element order into a new list.
 #[no_mangle]
 pub extern "C" fn lumia_list_reverse(list: *mut u8) -> *mut u8 {
+    let list = force_heap_list(list);
     unsafe {
         let len = if list.is_null() {
             0i64
@@ -801,6 +825,7 @@ pub extern "C" fn lumia_list_reverse(list: *mut u8) -> *mut u8 {
 /// Sort `List[Int]` ascending (stable via slice::sort).
 #[no_mangle]
 pub extern "C" fn lumia_list_sort(list: *mut u8) -> *mut u8 {
+    let list = force_heap_list(list);
     unsafe {
         let len = if list.is_null() {
             0i64
@@ -829,6 +854,8 @@ pub extern "C" fn lumia_list_sort(list: *mut u8) -> *mut u8 {
 /// Stable permute of `values` by parallel Ord keys (Int / String / Char).
 #[no_mangle]
 pub extern "C" fn lumia_list_sort_by_keys(values: *mut u8, keys: *mut u8) -> *mut u8 {
+    let values = force_heap_list(values);
+    let keys = force_heap_list(keys);
     unsafe {
         let n = if values.is_null() {
             0i64
@@ -910,6 +937,7 @@ fn lumia_ord_cmp(a: i64, b: i64) -> std::cmp::Ordering {
 /// Join `List[String]` with a separator string.
 #[no_mangle]
 pub extern "C" fn lumia_list_join(list: *mut u8, sep: *mut u8) -> *mut u8 {
+    let list = force_heap_list(list);
     let sep_bytes = with_str_bytes(sep, |b| b.to_vec());
     let parts: Vec<Vec<u8>> = unsafe {
         let len = if list.is_null() {
@@ -937,33 +965,108 @@ pub extern "C" fn lumia_list_join(list: *mut u8, sep: *mut u8) -> *mut u8 {
     lumia_alloc_string(buf.as_ptr(), buf.len() as u64)
 }
 
-/// List payload layout: `[len:i64][elem0:i64]...` (matches codegen AllocList).
-#[no_mangle]
-pub extern "C" fn lumia_list_len(list: *mut u8) -> i64 {
+#[inline]
+fn is_list_tid(tid: u32) -> bool {
+    tid == TYPE_LIST || tid == TYPE_LIST_IOTA
+}
+
+#[inline]
+fn list_tid(list: *mut u8) -> u32 {
+    if list.is_null() {
+        TYPE_LIST
+    } else {
+        unsafe { (*header_from_payload(list)).type_id }
+    }
+}
+
+/// HeapList: `[len][elem…]`; Iota: `[start][end_exclusive]`.
+fn list_len_of(list: *mut u8) -> i64 {
     if list.is_null() {
         return 0;
     }
-    unsafe { *(list as *const i64) }
+    unsafe {
+        match (*header_from_payload(list)).type_id {
+            TYPE_LIST_IOTA => {
+                let base = list as *const i64;
+                let start = *base;
+                let end = *base.add(1);
+                if end > start {
+                    end - start
+                } else {
+                    0
+                }
+            }
+            _ => *(list as *const i64),
+        }
+    }
 }
 
-#[no_mangle]
-pub extern "C" fn lumia_list_get(list: *mut u8, index: i64) -> i64 {
+fn list_get_of(list: *mut u8, index: i64) -> i64 {
     if list.is_null() || index < 0 {
         panic!("lumia: list get out of bounds");
     }
     unsafe {
-        let len = *(list as *const i64);
-        if index >= len {
-            panic!("lumia: list get out of bounds");
+        match (*header_from_payload(list)).type_id {
+            TYPE_LIST_IOTA => {
+                let base = list as *const i64;
+                let start = *base;
+                let end = *base.add(1);
+                let len = if end > start { end - start } else { 0 };
+                if index >= len {
+                    panic!("lumia: list get out of bounds");
+                }
+                start + index
+            }
+            _ => {
+                let len = *(list as *const i64);
+                if index >= len {
+                    panic!("lumia: list get out of bounds");
+                }
+                let base = list as *const i64;
+                *base.add(1 + index as usize)
+            }
         }
-        let base = list as *const i64;
-        *base.add(1 + index as usize)
     }
+}
+
+/// Materialize Iota → HeapList (identity for HeapList / null).
+fn force_heap_list(list: *mut u8) -> *mut u8 {
+    if list.is_null() {
+        return list;
+    }
+    if list_tid(list) != TYPE_LIST_IOTA {
+        return list;
+    }
+    let _guard = GcInhibitGuard::enter();
+    let n = list_len_of(list);
+    let dest = lumia_alloc((1 + n as u64) * 8, TYPE_LIST);
+    unsafe {
+        let dst = dest as *mut i64;
+        *dst = n;
+        let base = list as *const i64;
+        let start = *base;
+        for i in 0..n as usize {
+            *dst.add(1 + i) = start + i as i64;
+        }
+    }
+    dest
+}
+
+/// List payload layout: HeapList `[len:i64][elem0:i64]…`; Iota `[start][end)`.
+#[no_mangle]
+pub extern "C" fn lumia_list_len(list: *mut u8) -> i64 {
+    list_len_of(list)
+}
+
+#[no_mangle]
+pub extern "C" fn lumia_list_get(list: *mut u8, index: i64) -> i64 {
+    list_get_of(list, index)
 }
 
 /// Return a new HeapList with `elem` appended.
 #[no_mangle]
 pub extern "C" fn lumia_list_append(list: *mut u8, elem: i64) -> *mut u8 {
+    let list = force_heap_list(list);
     unsafe {
         let n = if list.is_null() {
             0i64
@@ -998,6 +1101,7 @@ pub extern "C" fn lumia_list_par_map(
     let Some(f) = f else {
         panic!("lumia: list_par_map null function");
     };
+    let list = force_heap_list(list);
     unsafe {
         let n = if list.is_null() {
             0i64
@@ -1063,6 +1167,7 @@ pub extern "C" fn lumia_list_par_map(
 /// Immutable update: new List with index `i` set to `elem` (bounds trap).
 #[no_mangle]
 pub extern "C" fn lumia_list_set(list: *mut u8, index: i64, elem: i64) -> *mut u8 {
+    let list = force_heap_list(list);
     unsafe {
         if list.is_null() || index < 0 {
             panic!("lumia: list set out of bounds");
@@ -1090,6 +1195,8 @@ pub extern "C" fn lumia_list_set(list: *mut u8, index: i64, elem: i64) -> *mut u
 /// Return a new HeapList that is `a` followed by `b`.
 #[no_mangle]
 pub extern "C" fn lumia_list_concat(a: *mut u8, b: *mut u8) -> *mut u8 {
+    let a = force_heap_list(a);
+    let b = force_heap_list(b);
     unsafe {
         let na = if a.is_null() {
             0i64
@@ -1125,7 +1232,7 @@ pub extern "C" fn lumia_list_concat(a: *mut u8, b: *mut u8) -> *mut u8 {
     }
 }
 
-/// Return a new HeapList with elements from `start` to end.
+/// Return a new list with elements from `start` to end (Iota stays virtual).
 #[no_mangle]
 pub extern "C" fn lumia_list_slice(list: *mut u8, start: i64) -> *mut u8 {
     if list.is_null() {
@@ -1134,6 +1241,19 @@ pub extern "C" fn lumia_list_slice(list: *mut u8, start: i64) -> *mut u8 {
             *(dest as *mut i64) = 0;
         }
         return dest;
+    }
+    if list_tid(list) == TYPE_LIST_IOTA {
+        unsafe {
+            let base = list as *const i64;
+            let s0 = *base;
+            let end = *base.add(1);
+            let start = if start < 0 { 0 } else { start };
+            let abs = s0 + start;
+            if abs >= end {
+                return lumia_range(s0, s0);
+            }
+            return lumia_range(abs, end);
+        }
     }
     unsafe {
         let len = *(list as *const i64);
@@ -1154,18 +1274,15 @@ pub extern "C" fn lumia_list_slice(list: *mut u8, start: i64) -> *mut u8 {
     }
 }
 
-/// Build `[start, end)` as HeapList of i64.
+/// Build `[start, end)` as Iota (`TYPE_LIST_IOTA`) — O(1), no element materialization.
 #[no_mangle]
 pub extern "C" fn lumia_range(start: i64, end: i64) -> *mut u8 {
-    let n = if end > start { (end - start) as u64 } else { 0 };
-    let nbytes = (1 + n) * 8;
-    let dest = lumia_alloc(nbytes, TYPE_LIST);
+    let end = if end > start { end } else { start };
+    let dest = lumia_alloc(16, TYPE_LIST_IOTA);
     unsafe {
-        *(dest as *mut i64) = n as i64;
         let base = dest as *mut i64;
-        for i in 0..n {
-            *base.add(1 + i as usize) = start + i as i64;
-        }
+        *base = start;
+        *base.add(1) = end;
     }
     dest
 }
@@ -1439,14 +1556,13 @@ fn hash_value(key: i64, depth: u32) -> u64 {
                 acc
             }
             TYPE_CHAR => splitmix64(*(p as *const i64) as u64),
-            TYPE_LIST => {
-                let base = p as *const i64;
-                let n = *base;
+            TYPE_LIST | TYPE_LIST_IOTA => {
+                let n = list_len_of(p);
                 let mut acc = splitmix64(0x4c495354u64 ^ (n as u64));
-                for i in 0..n as usize {
+                for i in 0..n {
                     acc = acc
                         .rotate_left(7)
-                        .wrapping_add(hash_value(*base.add(1 + i), depth + 1));
+                        .wrapping_add(hash_value(list_get_of(p, i), depth + 1));
                 }
                 acc
             }
@@ -1847,7 +1963,7 @@ pub extern "C" fn lumia_set(obj: *mut u8, key_or_index: i64, val: i64) -> *mut u
     }
     let tid = unsafe { (*header_from_payload(obj)).type_id };
     match tid {
-        TYPE_LIST => lumia_list_set(obj, key_or_index, val),
+        TYPE_LIST | TYPE_LIST_IOTA => lumia_list_set(obj, key_or_index, val),
         TYPE_MAP => lumia_map_set(obj, key_or_index, val),
         _ => panic!("lumia: set on unsupported type_id={tid}"),
     }
@@ -2379,7 +2495,7 @@ pub extern "C" fn lumia_get(
     let h = header_from_payload(obj);
     unsafe {
         match (*h).type_id {
-            TYPE_LIST => lumia_list_get(obj, key_or_index),
+            TYPE_LIST | TYPE_LIST_IOTA => lumia_list_get(obj, key_or_index),
             TYPE_SET => {
                 let n = *(obj as *const i64);
                 if key_or_index < 0 || key_or_index >= n {
@@ -2870,6 +2986,28 @@ mod tests {
         assert!(lumia_memo_idx_hits() >= 1);
         assert!(lumia_memo_idx_misses() >= 1);
         lumia_memo_idx_reset();
+    }
+
+    #[test]
+    fn range_is_iota_not_materialized() {
+        let r = lumia_range(0, 1_000_000);
+        assert!(!r.is_null());
+        unsafe {
+            assert_eq!((*header_from_payload(r)).type_id, TYPE_LIST_IOTA);
+            assert_eq!((*header_from_payload(r)).size, 16);
+        }
+        assert_eq!(lumia_list_len(r), 1_000_000);
+        assert_eq!(lumia_list_get(r, 0), 0);
+        assert_eq!(lumia_list_get(r, 999_999), 999_999);
+        // Content-equal to a small heap list of the same prefix.
+        let h = lumia_range(10, 13);
+        let forced = force_heap_list(h);
+        unsafe {
+            assert_eq!((*header_from_payload(forced)).type_id, TYPE_LIST);
+        }
+        assert_eq!(lumia_eq(h as i64, forced as i64), 1);
+        assert_eq!(lumia_list_len(lumia_list_take(r, 3)), 3);
+        assert_eq!(lumia_list_get(lumia_list_slice(r, 5), 0), 5);
     }
 }
 

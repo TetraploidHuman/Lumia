@@ -163,6 +163,7 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumia_rt` 内�
   - **Escape**：保守逃逸分析；`ReprSelect` 对**未逃逸**小 `List`/`Map` 标 `LitList` / `SmallMap`（codegen 仍可走堆布局，hint 已接上）。
   - **CopyElim**：折叠 `let x = y` SSA 别名。
   - **Fusion**：仍主要在 HIR（`try_fuse_hof_fold`）；Core `FusionStub` 占位。
+  - **List Iota**：`range` / `rangeInclusive` → `TYPE_LIST_IOTA`（`[start,end)`，O(1)）；`len`/`get`/eq/hash/`take`/`slice` 虚拟；修改类 API `force` 成 HeapList（见 `examples/range_iota.lumia`）。
 - GC：mark-sweep + **shadow-stack 根**（`lumia_root_push`/`pop`；**嵌套块 / 循环体作用域弹出**，`break`/`continue` 对齐循环入口深度）+ 软阈值自动收集（默认 256KiB）；见 `examples/gc_roots.lumia`。
 - Map：小表线性 Assoc；超过 8 对晋升 **HashOrdered**；大表 `set` 走 **Overlay** 差分（满 8 条再压实）；见 `examples/map_hash.lumia`。
 - Set：同哲学 — ≤8 线性，更大 **HashOrdered**（开址 + 插入序）；见 `examples/set_hash.lumia`。
@@ -194,7 +195,7 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumia_rt` 内�
 | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | **已完成骨架**       | parse 子集 → 推断 + 效应 → Core → LLVM → 链 `lumia_rt` → `main` + `println` + `Int`；`listOf`→`AllocList`；CSE + ReprSelect 默认路径                       |
 | **已完成下一步（部分）**  | …；**sortBy / assert+行号**；**定位诊断（多文件）**；**Map Overlay**；**WordCount**；**lumia fmt**；…                                                          |
-| **仍待**          | Core Fusion 加深；`ListRepr` codegen 特化（Iota/栈分配）；Trait；外置 `std/`；可选 `--mm=arc` |
+| **仍待**          | Core Fusion 加深；栈分配 / COWList；Trait；外置 `std/`；可选 `--mm=arc` |
 | **再后（MVP 已落地）** | **自动并行**（`--parallel` + `ListParMap`）；**包管理**（`Lumia.toml` / `lumia pkg`）；**LSP**（`lumia lsp`）；**FFI**（`foreign "C" fn`）；可选更强 GC / `--mm=arc` |
 
 
