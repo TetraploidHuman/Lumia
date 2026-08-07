@@ -5,10 +5,12 @@
 //! Escape analysis + small pure inlining live in [`escape`] / [`inline`].
 
 mod escape;
+mod fusion;
 mod inline;
 mod memo;
 
 pub use escape::{escaping_locals, is_non_escaping, EscapePass};
+pub use fusion::FusionPass;
 pub use inline::InlinePass;
 pub use memo::{
     apply_memo_plan, plan_memo_tf, MemoL0Pass, MemoL1Pass, MemoTfPass, MEMO_IDX_CAP,
@@ -67,7 +69,7 @@ pub fn optimize(module: &mut CoreModule, opts: &OptOptions) {
     if opts.release {
         passes.push(Box::new(InlinePass));
         passes.push(Box::new(EscapePass));
-        passes.push(Box::new(FusionStub));
+        passes.push(Box::new(FusionPass));
         passes.push(Box::new(ReprSelect));
         passes.push(Box::new(CopyElimPass));
     } else {
@@ -110,16 +112,6 @@ impl Pass for CsePass {
     }
     fn run(&self, module: &mut CoreModule) {
         cse_module(module);
-    }
-}
-
-struct FusionStub;
-impl Pass for FusionStub {
-    fn name(&self) -> &str {
-        "fusion"
-    }
-    fn run(&self, _module: &mut CoreModule) {
-        // List `map`/`filter`/`fold` fusion runs in HIR (`try_fuse_hof_fold`).
     }
 }
 
