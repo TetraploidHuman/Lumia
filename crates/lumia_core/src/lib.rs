@@ -3,7 +3,7 @@
 use lumia_hir::{Builtin, Expr as HirExpr, Item, Module as HirModule};
 use lumia_syntax::{BinOp, UnOp};
 use lumia_ty::{Effect, Type};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Local(pub u32);
@@ -19,10 +19,25 @@ pub struct CoreFun {
     pub name: String,
     pub params: Vec<Local>,
     pub param_names: Vec<String>,
+    /// Parameter types (for float ABI / future typed SSA).
+    pub param_tys: Vec<Type>,
     pub body: Block,
     pub ret_ty: Type,
     pub effect: Effect,
     pub is_main: bool,
+    /// Transparent Memo `T_f` (DESIGN §7.5.1-B). `None` = capacity 0.
+    pub memo: Option<MemoTf>,
+    /// When set, this is a C ABI import (`foreign`); no body emitted.
+    pub external: Option<String>,
+}
+
+/// Bounded cross-call memo table — one mechanism, representation is a parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoTf {
+    /// Fixed small associative table (hot keys / irregular args).
+    Slots { id: u32 },
+    /// Dense Int domain `[0, CAP)` — prefer for structural recursion on `n`.
+    DenseInt { id: u32 },
 }
 
 #[derive(Debug, Clone)]
@@ -155,15 +170,20 @@ struct LowerCtx {
     name_to_local: HashMap<String, Local>,
     mutables: std::collections::HashSet<String>,
     toplevel_funs: std::collections::HashSet<String>,
+    toplevel_vals: std::collections::HashSet<String>,
 }
 
 impl LowerCtx {
-    fn new(toplevel_funs: std::collections::HashSet<String>) -> Self {
+    fn new(
+        toplevel_funs: std::collections::HashSet<String>,
+        toplevel_vals: std::collections::HashSet<String>,
+    ) -> Self {
         Self {
             next: 0,
             name_to_local: HashMap::new(),
             mutables: std::collections::HashSet::new(),
             toplevel_funs,
+            toplevel_vals,
         }
     }
 
@@ -192,30 +212,68 @@ pub fn lower_hir(module: &HirModule, fun_types: &HashMap<String, Type>) -> CoreM
             _ => None,
         })
         .collect();
+    let toplevel_vals: std::collections::HashSet<String> = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Val { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
     let mut functions = vec![];
     for item in &module.items {
-        if let Item::Fun(f) = item {
-            let mut ctx = LowerCtx::new(toplevel_funs.clone());
-            let mut params = vec![];
-            for p in &f.params {
-                let l = ctx.fresh();
-                ctx.bind_name(p.clone(), l);
-                params.push(l);
+        match item {
+            Item::Fun(f) => {
+                let mut ctx = LowerCtx::new(toplevel_funs.clone(), toplevel_vals.clone());
+                let mut params = vec![];
+                for p in &f.params {
+                    let l = ctx.fresh();
+                    ctx.bind_name(p.clone(), l);
+                    params.push(l);
+                }
+                let (body, _) = lower_expr_block(&mut ctx, &f.body);
+                let (ret_ty, effect, param_tys) = match fun_types.get(&f.name) {
+                    Some(Type::Fun(ps, r, e)) => ((**r).clone(), *e, ps.clone()),
+                    _ => (
+                        Type::Unit,
+                        if f.is_main {
+                            Effect::io()
+                        } else {
+                            Effect::pure()
+                        },
+                        vec![Type::Int; f.params.len()],
+                    ),
+                };
+                functions.push(CoreFun {
+                    name: f.name.clone(),
+                    params,
+                    param_names: f.params.clone(),
+                    param_tys,
+                    body,
+                    ret_ty,
+                    effect,
+                    is_main: f.is_main,
+                    memo: None,
+                    external: f.external.clone(),
+                });
             }
-            let (body, _) = lower_expr_block(&mut ctx, &f.body);
-            let (ret_ty, effect) = match fun_types.get(&f.name) {
-                Some(Type::Fun(_, r, e)) => ((**r).clone(), *e),
-                _ => (Type::Unit, if f.is_main { Effect::io() } else { Effect::pure() }),
-            };
-            functions.push(CoreFun {
-                name: f.name.clone(),
-                params,
-                param_names: f.params.clone(),
-                body,
-                ret_ty,
-                effect,
-                is_main: f.is_main,
-            });
+            Item::Val { name, body } => {
+                // Module-level `val` → zero-arg getter `__val_<name>` (pure).
+                let mut ctx = LowerCtx::new(toplevel_funs.clone(), toplevel_vals.clone());
+                let (body, _) = lower_expr_block(&mut ctx, body);
+                functions.push(CoreFun {
+                    name: format!("__val_{name}"),
+                    params: vec![],
+                    param_names: vec![],
+                    param_tys: vec![],
+                    body,
+                    ret_ty: Type::Int,
+                    effect: Effect::pure(),
+                    is_main: false,
+                    memo: None,
+                    external: None,
+                });
+            }
         }
     }
     let mut core = CoreModule {
@@ -223,7 +281,259 @@ pub fn lower_hir(module: &HirModule, fun_types: &HashMap<String, Type>) -> CoreM
         functions,
     };
     lift_lambdas(&mut core);
+    directize_funref_calls(&mut core);
     core
+}
+
+/// When a local is bound to `FunRef(name)`, rewrite `IndirectCall` of that local
+/// into a direct `Call` so float/int ABI (`param_tys` / `ret_ty`) applies.
+fn directize_funref_calls(module: &mut CoreModule) {
+    for fun in &mut module.functions {
+        directize_block(&mut fun.body);
+    }
+}
+
+fn directize_block(block: &mut Block) {
+    let mut funref_of: HashMap<u32, String> = HashMap::new();
+    for op in &mut block.ops {
+        match op {
+            Op::Let { local, value, .. } => {
+                directize_value(value, &funref_of);
+                walk_nested_blocks_directize(value);
+                if let Value::FunRef(name) = value {
+                    funref_of.insert(local.0, name.clone());
+                } else {
+                    funref_of.remove(&local.0);
+                }
+            }
+            Op::Effect { value } => {
+                directize_value(value, &funref_of);
+                walk_nested_blocks_directize(value);
+            }
+            Op::Assign { .. } | Op::Break | Op::Continue => {}
+        }
+    }
+}
+
+fn walk_nested_blocks_directize(value: &mut Value) {
+    match value {
+        Value::If {
+            then_block,
+            else_block,
+            ..
+        } => {
+            directize_block(then_block);
+            directize_block(else_block);
+        }
+        Value::Loop {
+            header,
+            body,
+            latch,
+            ..
+        } => {
+            directize_block(header);
+            directize_block(body);
+            directize_block(latch);
+        }
+        Value::Lambda { body, .. } => directize_block(body),
+        _ => {}
+    }
+}
+
+fn directize_value(value: &mut Value, funref_of: &HashMap<u32, String>) {
+    if let Value::IndirectCall { callee, args } = value {
+        if let Some(name) = funref_of.get(&callee.0) {
+            *value = Value::Call {
+                fun: name.clone(),
+                args: args.clone(),
+            };
+        }
+    }
+}
+
+/// Infer per-parameter / return ABI for lifted lambdas.
+/// Avoids the old bug: “body mentions any float ⇒ every param is Float”.
+fn lambda_param_ret_tys(params: &[Local], body: &Block) -> (Vec<Type>, Type) {
+    let float_params = params_used_as_float(body, params);
+    let param_tys = params
+        .iter()
+        .map(|p| {
+            if float_params.contains(&p.0) {
+                Type::Float
+            } else {
+                Type::Int
+            }
+        })
+        .collect();
+    let ret_ty = if block_result_is_float(body) {
+        Type::Float
+    } else if block_result_may_heap(body) {
+        // Conservative heap marker so codegen roots the Call result (§GC).
+        Type::List(Box::new(Type::Int))
+    } else {
+        Type::Int
+    };
+    (param_tys, ret_ty)
+}
+
+fn params_used_as_float(block: &Block, params: &[Local]) -> HashSet<u32> {
+    let param_set: HashSet<u32> = params.iter().map(|p| p.0).collect();
+    let mut float_locals: HashSet<u32> = HashSet::new();
+    let mut used: HashSet<u32> = HashSet::new();
+    mark_float_uses(block, &param_set, &mut float_locals, &mut used);
+    used
+}
+
+fn mark_float_uses(
+    block: &Block,
+    params: &HashSet<u32>,
+    float_locals: &mut HashSet<u32>,
+    used: &mut HashSet<u32>,
+) {
+    for op in &block.ops {
+        match op {
+            Op::Let { local, value, .. } => {
+                mark_float_in_value(value, params, float_locals, used);
+                if value_is_float_producing(value, float_locals) {
+                    float_locals.insert(local.0);
+                }
+            }
+            Op::Effect { value } => mark_float_in_value(value, params, float_locals, used),
+            _ => {}
+        }
+    }
+}
+
+fn mark_float_in_value(
+    v: &Value,
+    params: &HashSet<u32>,
+    float_locals: &mut HashSet<u32>,
+    used: &mut HashSet<u32>,
+) {
+    match v {
+        Value::Binary { left, right, .. } => {
+            let lf = float_locals.contains(&left.0);
+            let rf = float_locals.contains(&right.0);
+            if lf || rf {
+                touch_param(left.0, params, used);
+                touch_param(right.0, params, used);
+            }
+        }
+        Value::Unary { operand, .. } => {
+            if float_locals.contains(&operand.0) {
+                touch_param(operand.0, params, used);
+            }
+        }
+        Value::If {
+            then_block,
+            else_block,
+            ..
+        } => {
+            mark_float_uses(then_block, params, float_locals, used);
+            mark_float_uses(else_block, params, float_locals, used);
+        }
+        Value::Loop {
+            header,
+            body,
+            latch,
+        } => {
+            mark_float_uses(header, params, float_locals, used);
+            mark_float_uses(body, params, float_locals, used);
+            mark_float_uses(latch, params, float_locals, used);
+        }
+        _ => {}
+    }
+}
+
+fn touch_param(id: u32, params: &HashSet<u32>, used: &mut HashSet<u32>) {
+    if params.contains(&id) {
+        used.insert(id);
+    }
+}
+
+fn value_is_float_producing(v: &Value, float_locals: &HashSet<u32>) -> bool {
+    match v {
+        Value::Float(_) => true,
+        Value::Local(Local(id)) => float_locals.contains(id),
+        Value::Binary { left, right, .. } => {
+            float_locals.contains(&left.0) || float_locals.contains(&right.0)
+        }
+        Value::Unary { operand, .. } => float_locals.contains(&operand.0),
+        _ => false,
+    }
+}
+
+fn block_result_is_float(block: &Block) -> bool {
+    let Some(Local(r)) = block.result else {
+        return false;
+    };
+    let mut float_locals: HashSet<u32> = HashSet::new();
+    for op in &block.ops {
+        if let Op::Let { local, value, .. } = op {
+            if value_is_float_producing(value, &float_locals) || matches!(value, Value::Float(_)) {
+                float_locals.insert(local.0);
+            }
+            if matches!(value, Value::Float(_)) {
+                float_locals.insert(local.0);
+            }
+            // Propagate through float binaries more carefully:
+            if let Value::Binary { left, right, .. } = value {
+                if float_locals.contains(&left.0) || float_locals.contains(&right.0) {
+                    float_locals.insert(local.0);
+                }
+            }
+            if let Value::Local(Local(src)) = value {
+                if float_locals.contains(src) {
+                    float_locals.insert(local.0);
+                }
+            }
+        }
+    }
+    float_locals.contains(&r)
+}
+
+fn block_result_may_heap(block: &Block) -> bool {
+    let Some(Local(r)) = block.result else {
+        return false;
+    };
+    for op in &block.ops {
+        if let Op::Let { local, value, .. } = op {
+            if local.0 == r {
+                return value_produces_heap(value);
+            }
+        }
+    }
+    false
+}
+
+fn value_produces_heap(v: &Value) -> bool {
+    match v {
+        Value::String(_)
+        | Value::Char(_)
+        | Value::AllocList { .. }
+        | Value::AllocSet { .. }
+        | Value::AllocMap { .. }
+        | Value::AllocAdt { .. }
+        | Value::AllocClosure { .. }
+        | Value::FunRef(_) => true,
+        Value::Builtin { name, .. } => !matches!(
+            name,
+            Builtin::ListLen
+                | Builtin::Contains
+                | Builtin::Println
+                | Builtin::PrintlnInt
+                | Builtin::PrintlnStr
+                | Builtin::Assert
+        ),
+        Value::Call { .. } | Value::IndirectCall { .. } => true,
+        Value::If {
+            then_block,
+            else_block,
+            ..
+        } => block_result_may_heap(then_block) || block_result_may_heap(else_block),
+        Value::Local(_) => false, // unknown alias; Call path uses ret_ty
+        _ => false,
+    }
 }
 
 /// Lift nested `Value::Lambda` to top-level `__lam_N` functions.
@@ -241,15 +551,21 @@ fn lift_lambdas(module: &mut CoreModule) {
 fn max_local_in_module(module: &CoreModule) -> u32 {
     let mut max = 0u32;
     for fun in &module.functions {
-        for p in &fun.params {
-            max = max.max(p.0);
-        }
-        max = max.max(max_local_in_block(&fun.body));
+        max = max.max(max_local_in_fun(fun));
     }
     max
 }
 
-fn max_local_in_block(block: &Block) -> u32 {
+/// Highest `Local` id used in a function (params + body).
+pub fn max_local_in_fun(fun: &CoreFun) -> u32 {
+    let mut max = 0u32;
+    for p in &fun.params {
+        max = max.max(p.0);
+    }
+    max.max(max_local_in_block(&fun.body))
+}
+
+pub fn max_local_in_block(block: &Block) -> u32 {
     let mut max = 0u32;
     for p in &block.params {
         max = max.max(p.0);
@@ -391,14 +707,18 @@ fn lift_value(
             if captures.is_empty() {
                 let param_names: Vec<String> =
                     (0..params.len()).map(|i| format!("p{i}")).collect();
+                let (param_tys, ret_ty) = lambda_param_ret_tys(params, body);
                 extras.push(CoreFun {
                     name: name.clone(),
                     params: params.clone(),
                     param_names,
+                    param_tys,
                     body: *body.clone(),
-                    ret_ty: Type::Int,
+                    ret_ty,
                     effect: Effect::pure(),
                     is_main: false,
+                    memo: None,
+                    external: None,
                 });
                 *value = Value::FunRef(name);
                 return;
@@ -442,14 +762,22 @@ fn lift_value(
             let mut param_names = vec!["env".into()];
             param_names.extend((0..params.len()).map(|i| format!("p{i}")));
 
+            let (user_param_tys, ret_ty) = lambda_param_ret_tys(params, &new_body);
             extras.push(CoreFun {
                 name: name.clone(),
                 params: fun_params,
                 param_names,
+                param_tys: {
+                    let mut tys = vec![Type::Int]; // env pointer bits
+                    tys.extend(user_param_tys);
+                    tys
+                },
                 body: new_body,
-                ret_ty: Type::Int,
+                ret_ty,
                 effect: Effect::pure(),
                 is_main: false,
+                memo: None,
+                external: None,
             });
             *value = Value::AllocClosure {
                 fun: name,
@@ -639,7 +967,8 @@ fn collect_uses_in_value(
     }
 }
 
-fn rewrite_block_locals(block: &mut Block, remap: &HashMap<u32, u32>) {
+/// Remap SSA locals in-place (used by opt inlining / lifting).
+pub fn rewrite_block_locals(block: &mut Block, remap: &HashMap<u32, u32>) {
     if remap.is_empty() {
         return;
     }
@@ -865,6 +1194,17 @@ fn lower_expr(
                     pure_region,
                 });
                 Some(l)
+            } else if ctx.toplevel_vals.contains(name) {
+                let l = ctx.fresh();
+                ops.push(Op::Let {
+                    local: l,
+                    value: Value::Call {
+                        fun: format!("__val_{name}"),
+                        args: vec![],
+                    },
+                    pure_region,
+                });
+                Some(l)
             } else {
                 let l = ctx.fresh();
                 ops.push(Op::Let {
@@ -897,7 +1237,19 @@ fn lower_expr(
             lower_expr(ctx, body, ops, pure_region)
         }
         HirExpr::Assign { name, value, .. } => {
-            let v = lower_expr(ctx, value, ops, pure_region).unwrap();
+            let v = match lower_expr(ctx, value, ops, pure_region) {
+                Some(l) => l,
+                None => {
+                    // Unit RHS: materialize a 0 local so assign never panics.
+                    let l = ctx.fresh();
+                    ops.push(Op::Let {
+                        local: l,
+                        value: Value::Unit,
+                        pure_region,
+                    });
+                    l
+                }
+            };
             ops.push(Op::Assign {
                 name: name.clone(),
                 value: v,
@@ -996,7 +1348,10 @@ fn lower_expr(
             }
             let is_io = matches!(
                 name,
-                Builtin::Println | Builtin::PrintlnInt | Builtin::PrintlnStr
+                Builtin::Println
+                    | Builtin::PrintlnInt
+                    | Builtin::PrintlnStr
+                    | Builtin::ReadStdin
             );
             let dest = ctx.fresh();
             ops.push(Op::Let {
@@ -1099,6 +1454,7 @@ fn lower_expr(
                 name_to_local: ctx.name_to_local.clone(),
                 mutables: ctx.mutables.clone(),
                 toplevel_funs: ctx.toplevel_funs.clone(),
+                toplevel_vals: ctx.toplevel_vals.clone(),
             };
             let mut pls = vec![];
             for p in params {
@@ -1128,10 +1484,11 @@ pub fn format_module(m: &CoreModule) -> String {
     out.push_str(&format!("module {}\n", m.name));
     for f in &m.functions {
         out.push_str(&format!(
-            "\nfun {}({}) effect.io={} {{\n",
+            "\nfun {}({}) effect.io={} memo={:?} {{\n",
             f.name,
             f.param_names.join(", "),
-            f.effect.io
+            f.effect.has_io(),
+            f.memo
         ));
         format_block(&f.body, &mut out, 1);
         out.push_str("}\n");

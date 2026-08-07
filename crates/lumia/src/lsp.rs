@@ -1,0 +1,532 @@
+//! LSP over stdio (JSON-RPC + Content-Length).
+//!
+//! - textDocument/didOpen|didChange → publishDiagnostics (editor overlays)
+//! - textDocument/hover → type from TypedModule.type_at / fun_types
+//! - textDocument/definition → decls (cross-file via Span.file)
+//! - textDocument/completion → in-scope names + common methods
+//! - textDocument/formatting → `lumia fmt` pretty-print
+
+use crate::load::{load_program_with_overlays, SourceFile};
+use anyhow::Result;
+use lumia_hir::lower_module;
+use lumia_syntax::{
+    byte_to_line_col, format_module_src, line_starts, parse_module, stamp_module, BytePos, Span,
+};
+use lumia_ty::{check_effect_boundaries, infer_module, Type, TypedModule};
+use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::io::{self, BufRead, Write};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+struct Analysis {
+    typed: TypedModule,
+    /// Primary document source (for hover/completion cursor).
+    src: String,
+    files: Vec<SourceFile>,
+}
+
+struct State {
+    docs: HashMap<String, String>,
+    /// uri → last successful analysis
+    analysis: HashMap<String, Analysis>,
+}
+
+static STATE: Mutex<Option<State>> = Mutex::new(None);
+
+pub fn run_lsp() -> Result<()> {
+    *STATE.lock().unwrap() = Some(State {
+        docs: HashMap::new(),
+        analysis: HashMap::new(),
+    });
+    let stdin = io::stdin();
+    let mut stdin = stdin.lock();
+    let mut stdout = io::stdout();
+    loop {
+        let msg = match read_message(&mut stdin)? {
+            Some(m) => m,
+            None => break,
+        };
+        if let Some(resp) = handle_message(msg)? {
+            write_message(&mut stdout, &resp)?;
+        }
+    }
+    Ok(())
+}
+
+fn read_message(r: &mut impl BufRead) -> Result<Option<Value>> {
+    let mut content_length = None;
+    loop {
+        let mut line = String::new();
+        let n = r.read_line(&mut line)?;
+        if n == 0 {
+            return Ok(None);
+        }
+        let line = line.trim_end();
+        if line.is_empty() {
+            break;
+        }
+        if let Some(rest) = line.strip_prefix("Content-Length:") {
+            content_length = Some(rest.trim().parse::<usize>()?);
+        }
+    }
+    let len = match content_length {
+        Some(l) => l,
+        None => return Ok(None),
+    };
+    let mut buf = vec![0u8; len];
+    r.read_exact(&mut buf)?;
+    Ok(Some(serde_json::from_slice(&buf)?))
+}
+
+fn write_message(w: &mut impl Write, v: &Value) -> Result<()> {
+    let body = serde_json::to_vec(v)?;
+    write!(w, "Content-Length: {}\r\n\r\n", body.len())?;
+    w.write_all(&body)?;
+    w.flush()?;
+    Ok(())
+}
+
+fn handle_message(msg: Value) -> Result<Option<Value>> {
+    let method = msg.get("method").and_then(|m| m.as_str());
+    let id = msg.get("id").cloned();
+    match method {
+        Some("initialize") => Ok(Some(json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": {
+                "capabilities": {
+                    "textDocumentSync": 1,
+                    "hoverProvider": true,
+                    "definitionProvider": true,
+                    "completionProvider": { "triggerCharacters": ["."] },
+                    "documentFormattingProvider": true
+                },
+                "serverInfo": { "name": "lumia-lsp", "version": "0.3.0" }
+            }
+        }))),
+        Some("initialized") | Some("shutdown") => {
+            if id.is_some() {
+                Ok(Some(json!({ "jsonrpc": "2.0", "id": id, "result": null })))
+            } else {
+                Ok(None)
+            }
+        }
+        Some("exit") => std::process::exit(0),
+        Some("textDocument/didOpen") => {
+            if let Some(params) = msg.get("params") {
+                on_did_open(params)?;
+            }
+            Ok(None)
+        }
+        Some("textDocument/didChange") => {
+            if let Some(params) = msg.get("params") {
+                on_did_change(params)?;
+            }
+            Ok(None)
+        }
+        Some("textDocument/hover") => {
+            let result = on_hover(msg.get("params"))?;
+            Ok(Some(json!({ "jsonrpc": "2.0", "id": id, "result": result })))
+        }
+        Some("textDocument/definition") => {
+            let result = on_definition(msg.get("params"))?;
+            Ok(Some(json!({ "jsonrpc": "2.0", "id": id, "result": result })))
+        }
+        Some("textDocument/completion") => {
+            let result = on_completion(msg.get("params"))?;
+            Ok(Some(json!({ "jsonrpc": "2.0", "id": id, "result": result })))
+        }
+        Some("textDocument/formatting") => {
+            let result = on_formatting(msg.get("params"))?;
+            Ok(Some(json!({ "jsonrpc": "2.0", "id": id, "result": result })))
+        }
+        Some(_) => {
+            if id.is_some() {
+                Ok(Some(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": { "code": -32601, "message": "Method not found" }
+                })))
+            } else {
+                Ok(None)
+            }
+        }
+        None => Ok(None),
+    }
+}
+
+fn uri_to_path(uri: &str) -> PathBuf {
+    PathBuf::from(uri.strip_prefix("file://").unwrap_or(uri))
+}
+
+fn path_to_uri(path: &Path) -> String {
+    format!("file://{}", path.display())
+}
+
+fn on_did_open(params: &Value) -> Result<()> {
+    let doc = &params["textDocument"];
+    let uri = doc["uri"].as_str().unwrap_or("").to_string();
+    let text = doc["text"].as_str().unwrap_or("").to_string();
+    {
+        let mut st = STATE.lock().unwrap();
+        if let Some(s) = st.as_mut() {
+            s.docs.insert(uri.clone(), text.clone());
+        }
+    }
+    publish_diagnostics(&uri, &text)?;
+    Ok(())
+}
+
+fn on_did_change(params: &Value) -> Result<()> {
+    let uri = params["textDocument"]["uri"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    let text = params["contentChanges"]
+        .as_array()
+        .and_then(|a| a.last())
+        .and_then(|c| c.get("text"))
+        .and_then(|t| t.as_str())
+        .unwrap_or("")
+        .to_string();
+    {
+        let mut st = STATE.lock().unwrap();
+        if let Some(s) = st.as_mut() {
+            s.docs.insert(uri.clone(), text.clone());
+        }
+    }
+    publish_diagnostics(&uri, &text)?;
+    Ok(())
+}
+
+fn publish_diagnostics(uri: &str, text: &str) -> Result<()> {
+    let overlays = current_overlays();
+    let (diags, analysis) = analyze_buffer(uri, text, &overlays);
+    if let Some(a) = analysis {
+        let mut st = STATE.lock().unwrap();
+        if let Some(s) = st.as_mut() {
+            s.analysis.insert(uri.to_string(), a);
+        }
+    }
+    let mut stdout = io::stdout();
+    write_message(
+        &mut stdout,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": { "uri": uri, "diagnostics": diags }
+        }),
+    )?;
+    Ok(())
+}
+
+fn current_overlays() -> HashMap<PathBuf, String> {
+    let st = STATE.lock().unwrap();
+    let Some(state) = st.as_ref() else {
+        return HashMap::new();
+    };
+    state
+        .docs
+        .iter()
+        .map(|(uri, text)| (uri_to_path(uri), text.clone()))
+        .collect()
+}
+
+/// Prefer multi-file load with overlays when the path exists; else buffer-only.
+fn analyze_buffer(
+    uri: &str,
+    text: &str,
+    overlays: &HashMap<PathBuf, String>,
+) -> (Vec<Value>, Option<Analysis>) {
+    let path = uri_to_path(uri);
+    if path.is_file() || overlays.contains_key(&path) {
+        let mut ov = overlays.clone();
+        ov.insert(path.clone(), text.to_string());
+        match load_program_with_overlays(&path, &ov).and_then(|loaded| {
+            let hir = lower_module(&loaded.module).map_err(|e| anyhow::anyhow!(e.message))?;
+            let typed = infer_module(&hir).map_err(|e| anyhow::anyhow!("{}", e.message()))?;
+            check_effect_boundaries(&typed).map_err(|e| anyhow::anyhow!("{}", e.message()))?;
+            Ok((loaded, typed))
+        }) {
+            Ok((loaded, typed)) => {
+                let entry_src = loaded
+                    .files
+                    .first()
+                    .map(|f| f.src.clone())
+                    .unwrap_or_else(|| text.to_string());
+                return (
+                    vec![],
+                    Some(Analysis {
+                        typed,
+                        src: entry_src,
+                        files: loaded.files,
+                    }),
+                );
+            }
+            Err(e) => {
+                // Fall through to single-buffer parse for a located span when possible.
+                if let Err((span, msg)) = check_source(text) {
+                    return (vec![diag_from_span(text, span, &msg)], None);
+                }
+                return (vec![diag_json(1, 1, 1, 2, &format!("{e}"))], None);
+            }
+        }
+    }
+    match check_source(text) {
+        Ok(typed) => (
+            vec![],
+            Some(Analysis {
+                typed,
+                src: text.to_string(),
+                files: vec![SourceFile {
+                    path: path.clone(),
+                    src: text.to_string(),
+                }],
+            }),
+        ),
+        Err((span, msg)) => (vec![diag_from_span(text, span, &msg)], None),
+    }
+}
+
+fn check_source(text: &str) -> Result<TypedModule, (Span, String)> {
+    let mut m = parse_module(text).map_err(|e| (e.span, e.message))?;
+    stamp_module(&mut m, 0);
+    let hir = lower_module(&m).map_err(|e| (e.span, e.message))?;
+    let typed = infer_module(&hir).map_err(|e| {
+        (
+            e.span().unwrap_or_default(),
+            e.message().to_string(),
+        )
+    })?;
+    check_effect_boundaries(&typed).map_err(|e| {
+        (
+            e.span().unwrap_or_default(),
+            e.message().to_string(),
+        )
+    })?;
+    Ok(typed)
+}
+
+fn diag_from_span(src: &str, span: Span, msg: &str) -> Value {
+    let starts = line_starts(src);
+    let (line, col) = byte_to_line_col(&starts, span.start);
+    let (eline, ecol) = byte_to_line_col(&starts, span.end);
+    diag_json(line, col, eline, ecol.max(col + 1), msg)
+}
+
+fn diag_json(line: u32, col: u32, eline: u32, ecol: u32, msg: &str) -> Value {
+    json!({
+        "range": {
+            "start": { "line": line.saturating_sub(1), "character": col.saturating_sub(1) },
+            "end": { "line": eline.saturating_sub(1), "character": ecol.saturating_sub(1) }
+        },
+        "severity": 1,
+        "source": "lumia",
+        "message": msg
+    })
+}
+
+fn pos_to_byte(src: &str, line: u32, character: u32) -> u32 {
+    let starts = line_starts(src);
+    let idx = line as usize;
+    let start = starts.get(idx).copied().unwrap_or(0);
+    start.saturating_add(character)
+}
+
+fn on_hover(params: Option<&Value>) -> Result<Value> {
+    let Some(params) = params else {
+        return Ok(Value::Null);
+    };
+    let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
+    let line = params["position"]["line"].as_u64().unwrap_or(0) as u32;
+    let character = params["position"]["character"].as_u64().unwrap_or(0) as u32;
+    let st = STATE.lock().unwrap();
+    let Some(state) = st.as_ref() else {
+        return Ok(Value::Null);
+    };
+    let Some(a) = state.analysis.get(uri) else {
+        return Ok(Value::Null);
+    };
+    let byte = pos_to_byte(&a.src, line, character);
+    // Prefer tightest spanning type_at entry.
+    let mut best: Option<&(Span, Type)> = None;
+    for entry in &a.typed.type_at {
+        let (sp, _) = entry;
+        if sp.file == 0 && sp.start.0 <= byte && byte < sp.end.0.max(sp.start.0 + 1) {
+            match best {
+                None => best = Some(entry),
+                Some((bsp, _)) => {
+                    let bw = bsp.end.0.saturating_sub(bsp.start.0);
+                    let w = sp.end.0.saturating_sub(sp.start.0);
+                    if w < bw {
+                        best = Some(entry);
+                    }
+                }
+            }
+        }
+    }
+    if let Some((_, ty)) = best {
+        return Ok(json!({
+            "contents": {
+                "kind": "markdown",
+                "value": format!("```lumia\n{ty}\n```")
+            }
+        }));
+    }
+    if let Some(name) = ident_at(&a.src, byte) {
+        if let Some(ty) = a.typed.fun_types.get(&name) {
+            return Ok(json!({
+                "contents": {
+                    "kind": "markdown",
+                    "value": format!("```lumia\n{name}: {ty}\n```")
+                }
+            }));
+        }
+    }
+    Ok(Value::Null)
+}
+
+fn on_definition(params: Option<&Value>) -> Result<Value> {
+    let Some(params) = params else {
+        return Ok(Value::Null);
+    };
+    let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
+    let line = params["position"]["line"].as_u64().unwrap_or(0) as u32;
+    let character = params["position"]["character"].as_u64().unwrap_or(0) as u32;
+    let st = STATE.lock().unwrap();
+    let Some(state) = st.as_ref() else {
+        return Ok(Value::Null);
+    };
+    let Some(a) = state.analysis.get(uri) else {
+        return Ok(Value::Null);
+    };
+    let byte = pos_to_byte(&a.src, line, character);
+    let Some(name) = ident_at(&a.src, byte) else {
+        return Ok(Value::Null);
+    };
+    let Some(span) = a.typed.decls.get(&name) else {
+        return Ok(Value::Null);
+    };
+    let file = a
+        .files
+        .get(span.file as usize)
+        .unwrap_or_else(|| a.files.first().expect("analysis files"));
+    let starts = line_starts(&file.src);
+    let (sl, sc) = byte_to_line_col(&starts, span.start);
+    let (el, ec) = byte_to_line_col(&starts, span.end);
+    let target_uri = if file.path.as_os_str().is_empty() {
+        uri.to_string()
+    } else {
+        path_to_uri(&file.path)
+    };
+    Ok(json!({
+        "uri": target_uri,
+        "range": {
+            "start": { "line": sl.saturating_sub(1), "character": sc.saturating_sub(1) },
+            "end": { "line": el.saturating_sub(1), "character": ec.saturating_sub(1) }
+        }
+    }))
+}
+
+fn on_completion(params: Option<&Value>) -> Result<Value> {
+    let Some(params) = params else {
+        return Ok(json!([]));
+    };
+    let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
+    let st = STATE.lock().unwrap();
+    let Some(state) = st.as_ref() else {
+        return Ok(json!([]));
+    };
+    let mut items = Vec::new();
+    let methods = [
+        "map", "filter", "fold", "flatMap", "len", "get", "set", "contains", "items", "keys",
+        "values", "sortBy", "take", "reverse", "concat", "join", "trim", "split", "toLower",
+        "toUpper",
+    ];
+    for m in methods {
+        items.push(json!({ "label": m, "kind": 2 })); // Method
+    }
+    if let Some(a) = state.analysis.get(uri) {
+        for name in a.typed.fun_types.keys() {
+            items.push(json!({ "label": name, "kind": 3 })); // Function
+        }
+        for name in a.typed.decls.keys() {
+            if !a.typed.fun_types.contains_key(name) {
+                items.push(json!({ "label": name, "kind": 6 })); // Variable
+            }
+        }
+    }
+    for kw in [
+        "val", "var", "match", "if", "else", "for", "in", "type", "import", "foreign", "pure",
+    ] {
+        items.push(json!({ "label": kw, "kind": 14 })); // Keyword
+    }
+    Ok(Value::Array(items))
+}
+
+fn on_formatting(params: Option<&Value>) -> Result<Value> {
+    let Some(params) = params else {
+        return Ok(json!([]));
+    };
+    let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
+    let st = STATE.lock().unwrap();
+    let Some(state) = st.as_ref() else {
+        return Ok(json!([]));
+    };
+    let Some(text) = state.docs.get(uri) else {
+        return Ok(json!([]));
+    };
+    let mut m = match parse_module(text) {
+        Ok(m) => m,
+        Err(_) => return Ok(json!([])),
+    };
+    stamp_module(&mut m, 0);
+    let formatted = format_module_src(&m);
+    if formatted == *text {
+        return Ok(json!([]));
+    }
+    let starts = line_starts(text);
+    let last_line = starts.len().saturating_sub(1) as u32;
+    let last_col = text
+        .lines()
+        .last()
+        .map(|l| l.len() as u32)
+        .unwrap_or(0);
+    Ok(json!([{
+        "range": {
+            "start": { "line": 0, "character": 0 },
+            "end": { "line": last_line, "character": last_col }
+        },
+        "newText": formatted
+    }]))
+}
+
+fn ident_at(src: &str, byte: u32) -> Option<String> {
+    let bytes = src.as_bytes();
+    let mut i = byte as usize;
+    if i >= bytes.len() {
+        i = bytes.len().saturating_sub(1);
+    }
+    while i > 0 && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+        i -= 1;
+    }
+    if i < bytes.len() && !(bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+        i += 1;
+    }
+    let start = i;
+    while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+        i += 1;
+    }
+    if start >= i {
+        return None;
+    }
+    std::str::from_utf8(&bytes[start..i])
+        .ok()
+        .map(|s| s.to_string())
+}
+
+#[allow(dead_code)]
+fn _byte_pos(p: u32) -> BytePos {
+    BytePos(p)
+}

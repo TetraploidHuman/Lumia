@@ -1,0 +1,31 @@
+module ResultMatch
+
+import std.io.{println}
+
+type Result {
+    Ok(value)
+    Err(error)
+}
+
+val unwrap_or = { r, d ->
+    r match {
+        Ok(v) -> v
+        Err(_) -> d
+    }
+}
+
+val div = { a, b ->
+    match {
+        b == 0 -> Err(1)
+        _ -> Ok(a / b)
+    }
+}
+
+val main = {
+    println(unwrap_or(div(10, 2), -1))
+    println(unwrap_or(div(10, 0), -1))
+    div(9, 3) match {
+        Ok(v) -> println(v)
+        Err(e) -> println(e)
+    }
+}

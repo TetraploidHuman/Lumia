@@ -8,8 +8,8 @@
 //! - `lumia_println_int(i64)` / `lumia_println_str(*const u8, len)`
 
 use std::alloc::{alloc, dealloc, Layout};
-use std::cell::RefCell;
-use std::io::{self, Write};
+use std::cell::{Cell, RefCell};
+use std::io::{self, Read, Write};
 use std::ptr;
 use std::sync::Mutex;
 
@@ -37,6 +37,9 @@ thread_local! {
     static HEAP: RefCell<Vec<*mut ObjectHeader>> = const { RefCell::new(Vec::new()) };
     static ROOTS: RefCell<Vec<*mut *mut u8>> = const { RefCell::new(Vec::new()) };
     static BYTES_ALLOCATED: RefCell<usize> = const { RefCell::new(0) };
+    /// Nestable: RT helpers that allocate multiple objects before they are reachable
+    /// from roots must hold this to avoid soft-threshold GC UAF.
+    static GC_INHIBIT: Cell<u32> = const { Cell::new(0) };
 }
 
 static HEAP_LIMIT: Mutex<usize> = Mutex::new(256 * 1024);
@@ -69,7 +72,8 @@ impl MarkSweep {
             for root in r.borrow().iter() {
                 unsafe {
                     let p = **root;
-                    if !p.is_null() {
+                    // Slot may hold Int / FunRef bits; only mark real heap payloads.
+                    if is_heap_payload(p) {
                         mark(header_from_payload(p));
                     }
                 }
@@ -105,28 +109,58 @@ fn mark(obj: *mut ObjectHeader) {
             return;
         }
         (*obj).marked = 1;
-        // MVP: no pointer fields traced yet (scalars / opaque blobs)
-        let _ = (*obj).type_id;
+        let payload = payload_ptr(obj);
+        match (*obj).type_id {
+            TYPE_LIST => {
+                let n = *(payload as *const i64);
+                let base = payload as *const i64;
+                for i in 0..n as usize {
+                    mark_value(*base.add(1 + i));
+                }
+            }
+            TYPE_SET => {
+                set_mark_payload(payload, (*obj).size as usize);
+            }
+            TYPE_MAP => {
+                map_mark_payload(payload, (*obj).size as usize);
+            }
+            TYPE_ADT | TYPE_CLOSURE => {
+                let words = ((*obj).size as usize) / 8;
+                let base = payload as *const i64;
+                // ADT: [tag][fields…]; Closure: [fn_ptr][caps…] — skip word0 as non-heap.
+                for i in 1..words {
+                    mark_value(*base.add(i));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn mark_value(x: i64) {
+    let p = x as *mut u8;
+    if is_heap_payload(p) {
+        mark(header_from_payload(p));
     }
 }
 
 impl MmBackend for MarkSweep {
     fn alloc(&mut self, nbytes: usize, type_id: u32) -> *mut u8 {
-        let limit = *HEAP_LIMIT.lock().unwrap();
-        let used = BYTES_ALLOCATED.with(|b| *b.borrow());
-        if used + nbytes > limit {
-            self.collect();
+        let inhibit = GC_INHIBIT.get();
+        if inhibit == 0 {
+            let limit = *HEAP_LIMIT.lock().unwrap();
+            BYTES_ALLOCATED.with(|b| {
+                if *b.borrow() >= limit {
+                    Self::mark_from_roots();
+                    Self::sweep();
+                }
+            });
         }
         let layout = header_layout(nbytes);
         unsafe {
             let mem = alloc(layout);
             if mem.is_null() {
-                self.collect();
-                let mem = alloc(layout);
-                if mem.is_null() {
-                    panic!("lumia: out of memory");
-                }
-                return finish_alloc(mem, nbytes, type_id);
+                panic!("lumia: out of memory");
             }
             finish_alloc(mem, nbytes, type_id)
         }
@@ -138,7 +172,23 @@ impl MmBackend for MarkSweep {
     }
 }
 
+struct GcInhibitGuard;
+impl GcInhibitGuard {
+    fn enter() -> Self {
+        GC_INHIBIT.set(GC_INHIBIT.get().saturating_add(1));
+        Self
+    }
+}
+impl Drop for GcInhibitGuard {
+    fn drop(&mut self) {
+        GC_INHIBIT.set(GC_INHIBIT.get().saturating_sub(1));
+    }
+}
+
 unsafe fn finish_alloc(mem: *mut u8, nbytes: usize, type_id: u32) -> *mut u8 {
+    if nbytes > u32::MAX as usize {
+        panic!("lumia: allocation too large (exceeds u32 size field)");
+    }
     let header = mem as *mut ObjectHeader;
     (*header).type_id = type_id;
     (*header).size = nbytes as u32;
@@ -184,6 +234,54 @@ pub extern "C" fn lumia_gc_collect() {
 pub extern "C" fn lumia_println_int(n: i64) {
     let mut out = io::stdout().lock();
     let _ = writeln!(out, "{n}");
+}
+
+/// Read all of stdin into a heap String (UTF-8 bytes).
+#[no_mangle]
+pub extern "C" fn lumia_read_stdin() -> *mut u8 {
+    let mut buf = Vec::new();
+    let _ = io::stdin().read_to_end(&mut buf);
+    lumia_alloc_string(buf.as_ptr(), buf.len() as u64)
+}
+
+#[no_mangle]
+pub extern "C" fn lumia_str_starts_with(s: *mut u8, prefix: *mut u8) -> i64 {
+    with_str_bytes(s, |bytes| {
+        with_str_bytes(prefix, |p| {
+            if bytes.starts_with(p) {
+                1
+            } else {
+                0
+            }
+        })
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn lumia_str_ends_with(s: *mut u8, suffix: *mut u8) -> i64 {
+    with_str_bytes(s, |bytes| {
+        with_str_bytes(suffix, |p| {
+            if bytes.ends_with(p) {
+                1
+            } else {
+                0
+            }
+        })
+    })
+}
+
+/// Substring search (`haystack.contains(needle)`).
+#[no_mangle]
+pub extern "C" fn lumia_str_contains(s: *mut u8, needle: *mut u8) -> i64 {
+    with_str_bytes(s, |bytes| {
+        with_str_bytes(needle, |n| {
+            if n.is_empty() || bytes.windows(n.len()).any(|w| w == n) {
+                1
+            } else {
+                0
+            }
+        })
+    })
 }
 
 #[no_mangle]
@@ -235,6 +333,43 @@ pub extern "C" fn lumia_alloc_string(ptr: *const u8, len: u64) -> *mut u8 {
     dest
 }
 
+/// NUL-terminated C string copy of a Lumia String (for `foreign` String arguments).
+#[no_mangle]
+pub extern "C" fn lumia_string_cstr(s: *mut u8) -> *mut u8 {
+    if s.is_null() {
+        let dest = lumia_alloc(1, TYPE_BYTES);
+        unsafe {
+            *dest = 0;
+        }
+        return dest;
+    }
+    unsafe {
+        let n = (*header_from_payload(s)).size as usize;
+        let dest = lumia_alloc((n + 1) as u64, TYPE_BYTES);
+        ptr::copy_nonoverlapping(s, dest, n);
+        *dest.add(n) = 0;
+        dest
+    }
+}
+
+/// Build a Lumia String from a NUL-terminated C string (foreign String returns).
+#[no_mangle]
+pub extern "C" fn lumia_cstr_to_string(cstr: *const u8) -> *mut u8 {
+    if cstr.is_null() {
+        return lumia_alloc_string(std::ptr::null(), 0);
+    }
+    unsafe {
+        let mut n = 0usize;
+        while *cstr.add(n) != 0 {
+            n += 1;
+            if n > 1 << 28 {
+                panic!("lumia: cstr too long");
+            }
+        }
+        lumia_alloc_string(cstr, n as u64)
+    }
+}
+
 fn is_heap_payload(payload: *mut u8) -> bool {
     if payload.is_null() {
         return false;
@@ -276,16 +411,25 @@ pub extern "C" fn lumia_println_float(n: f64) {
     let _ = writeln!(out, "{n}");
 }
 
-/// Structural equality: heap Strings compare by bytes; otherwise i64 identity.
+/// Structural equality for scalars and heap objects (DESIGN: recursive `==`).
 #[no_mangle]
 pub extern "C" fn lumia_eq(a: i64, b: i64) -> i64 {
+    if a == b {
+        return 1;
+    }
     let pa = a as *mut u8;
     let pb = b as *mut u8;
-    if is_heap_payload(pa) && is_heap_payload(pb) {
-        unsafe {
-            let ha = header_from_payload(pa);
-            let hb = header_from_payload(pb);
-            if (*ha).type_id == TYPE_STRING && (*hb).type_id == TYPE_STRING {
+    if !is_heap_payload(pa) || !is_heap_payload(pb) {
+        return 0;
+    }
+    unsafe {
+        let ha = header_from_payload(pa);
+        let hb = header_from_payload(pb);
+        if (*ha).type_id != (*hb).type_id {
+            return 0;
+        }
+        match (*ha).type_id {
+            TYPE_STRING => {
                 let na = (*ha).size as usize;
                 let nb = (*hb).size as usize;
                 if na != nb {
@@ -293,19 +437,78 @@ pub extern "C" fn lumia_eq(a: i64, b: i64) -> i64 {
                 }
                 let sa = std::slice::from_raw_parts(pa, na);
                 let sb = std::slice::from_raw_parts(pb, nb);
-                return if sa == sb { 1 } else { 0 };
+                if sa == sb {
+                    1
+                } else {
+                    0
+                }
             }
-            if (*ha).type_id == TYPE_CHAR && (*hb).type_id == TYPE_CHAR {
+            TYPE_CHAR => {
                 let ca = *(pa as *const i64);
                 let cb = *(pb as *const i64);
-                return if ca == cb { 1 } else { 0 };
+                if ca == cb {
+                    1
+                } else {
+                    0
+                }
             }
+            TYPE_LIST => {
+                let na = *(pa as *const i64);
+                let nb = *(pb as *const i64);
+                if na != nb {
+                    return 0;
+                }
+                let ba = pa as *const i64;
+                let bb = pb as *const i64;
+                for i in 0..na as usize {
+                    if lumia_eq(*ba.add(1 + i), *bb.add(1 + i)) == 0 {
+                        return 0;
+                    }
+                }
+                1
+            }
+            TYPE_SET => set_eq(pa, pb),
+            TYPE_MAP => map_eq(pa, pb),
+            TYPE_ADT => {
+                let words_a = ((*ha).size as usize) / 8;
+                let words_b = ((*hb).size as usize) / 8;
+                if words_a != words_b || words_a == 0 {
+                    return 0;
+                }
+                let ba = pa as *const i64;
+                let bb = pb as *const i64;
+                for i in 0..words_a {
+                    if lumia_eq(*ba.add(i), *bb.add(i)) == 0 {
+                        return 0;
+                    }
+                }
+                1
+            }
+            _ => 0,
         }
     }
-    if a == b {
-        1
-    } else {
-        0
+}
+
+#[no_mangle]
+pub extern "C" fn lumia_match_fail() {
+    panic!("lumia: non-exhaustive match");
+}
+
+/// Abort if `cond` is false (0). `msg` is a UTF-8 message (e.g. `path:line: assert failed`).
+#[no_mangle]
+pub extern "C" fn lumia_assert(cond: i64, msg: *const u8, msg_len: i64) {
+    if cond == 0 {
+        let text = if msg.is_null() || msg_len <= 0 {
+            "lumia: assert failed".to_string()
+        } else {
+            let slice = unsafe { std::slice::from_raw_parts(msg, msg_len as usize) };
+            match std::str::from_utf8(slice) {
+                Ok(s) => format!("lumia: {s}"),
+                Err(_) => "lumia: assert failed".to_string(),
+            }
+        };
+        eprintln!("{text}");
+        std::process::abort();
     }
 }
 
@@ -369,7 +572,8 @@ pub extern "C" fn lumia_len(obj: *mut u8) -> i64 {
         let h = header_from_payload(obj);
         match (*h).type_id {
             TYPE_STRING => (*h).size as i64,
-            TYPE_LIST | TYPE_MAP | TYPE_SET => *(obj as *const i64),
+            TYPE_LIST | TYPE_SET => *(obj as *const i64),
+            TYPE_MAP => map_count(obj),
             _ => panic!("lumia: len on unsupported type {}", (*h).type_id),
         }
     }
@@ -424,6 +628,315 @@ pub extern "C" fn lumia_concat(a: *mut u8, b: *mut u8) -> *mut u8 {
     lumia_list_concat(a, b)
 }
 
+fn with_str_bytes<R>(s: *mut u8, f: impl FnOnce(&[u8]) -> R) -> R {
+    if s.is_null() {
+        return f(&[]);
+    }
+    unsafe {
+        let n = (*header_from_payload(s)).size as usize;
+        f(std::slice::from_raw_parts(s, n))
+    }
+}
+
+fn char_codepoint(ch: i64) -> u32 {
+    let p = ch as *mut u8;
+    if !p.is_null() && is_heap_payload(p) {
+        unsafe {
+            if (*header_from_payload(p)).type_id == TYPE_CHAR {
+                return *(p as *const i64) as u32;
+            }
+        }
+    }
+    ch as u32
+}
+
+/// Trim ASCII whitespace from both ends.
+#[no_mangle]
+pub extern "C" fn lumia_str_trim(s: *mut u8) -> *mut u8 {
+    with_str_bytes(s, |bytes| {
+        let start = bytes
+            .iter()
+            .position(|b| !b.is_ascii_whitespace())
+            .unwrap_or(bytes.len());
+        let end = bytes
+            .iter()
+            .rposition(|b| !b.is_ascii_whitespace())
+            .map(|i| i + 1)
+            .unwrap_or(start);
+        let slice = &bytes[start..end];
+        lumia_alloc_string(slice.as_ptr(), slice.len() as u64)
+    })
+}
+
+/// Substring `[start, end)` in byte offsets (clamped).
+#[no_mangle]
+pub extern "C" fn lumia_str_substring(s: *mut u8, start: i64, end: i64) -> *mut u8 {
+    with_str_bytes(s, |bytes| {
+        let n = bytes.len() as i64;
+        let a = start.clamp(0, n) as usize;
+        let b = end.clamp(0, n) as usize;
+        let b = b.max(a);
+        let slice = &bytes[a..b];
+        lumia_alloc_string(slice.as_ptr(), slice.len() as u64)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn lumia_str_to_lower(s: *mut u8) -> *mut u8 {
+    with_str_bytes(s, |bytes| {
+        let lower: Vec<u8> = bytes.iter().map(|b| b.to_ascii_lowercase()).collect();
+        lumia_alloc_string(lower.as_ptr(), lower.len() as u64)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn lumia_str_to_upper(s: *mut u8) -> *mut u8 {
+    with_str_bytes(s, |bytes| {
+        let upper: Vec<u8> = bytes.iter().map(|b| b.to_ascii_uppercase()).collect();
+        lumia_alloc_string(upper.as_ptr(), upper.len() as u64)
+    })
+}
+
+/// Split `s` on separator Char (or raw codepoint). Returns List[String].
+#[no_mangle]
+pub extern "C" fn lumia_str_split(s: *mut u8, sep_ch: i64) -> *mut u8 {
+    let _gc = GcInhibitGuard::enter();
+    let cp = char_codepoint(sep_ch);
+    let mut sep_buf = [0u8; 4];
+    let sep = match char::from_u32(cp) {
+        Some(c) => c.encode_utf8(&mut sep_buf).as_bytes().to_vec(),
+        None => vec![cp as u8],
+    };
+    with_str_bytes(s, |bytes| {
+        let mut parts: Vec<*mut u8> = Vec::new();
+        if sep.is_empty() {
+            parts.push(lumia_alloc_string(bytes.as_ptr(), bytes.len() as u64));
+        } else {
+            let mut start = 0usize;
+            let mut i = 0usize;
+            while i + sep.len() <= bytes.len() {
+                if &bytes[i..i + sep.len()] == sep.as_slice() {
+                    let slice = &bytes[start..i];
+                    parts.push(lumia_alloc_string(slice.as_ptr(), slice.len() as u64));
+                    i += sep.len();
+                    start = i;
+                } else {
+                    i += 1;
+                }
+            }
+            let slice = &bytes[start..];
+            parts.push(lumia_alloc_string(slice.as_ptr(), slice.len() as u64));
+        }
+        let n = parts.len() as i64;
+        let dest = lumia_alloc((1 + parts.len() as u64) * 8, TYPE_LIST);
+        unsafe {
+            let dst = dest as *mut i64;
+            *dst = n;
+            for (i, p) in parts.into_iter().enumerate() {
+                *dst.add(1 + i) = p as i64;
+            }
+        }
+        dest
+    })
+}
+
+/// Prefix of length `n` (clamped).
+#[no_mangle]
+pub extern "C" fn lumia_list_take(list: *mut u8, n: i64) -> *mut u8 {
+    unsafe {
+        let len = if list.is_null() {
+            0i64
+        } else {
+            *(list as *const i64)
+        };
+        let take = if n < 0 {
+            0
+        } else if n > len {
+            len
+        } else {
+            n
+        } as u64;
+        let dest = lumia_alloc((1 + take) * 8, TYPE_LIST);
+        if dest.is_null() {
+            panic!("lumia: list take OOM");
+        }
+        let dst = dest as *mut i64;
+        *dst = take as i64;
+        if !list.is_null() && take > 0 {
+            let src = list as *const i64;
+            for i in 0..take as usize {
+                *dst.add(1 + i) = *src.add(1 + i);
+            }
+        }
+        dest
+    }
+}
+
+/// Reverse element order into a new list.
+#[no_mangle]
+pub extern "C" fn lumia_list_reverse(list: *mut u8) -> *mut u8 {
+    unsafe {
+        let len = if list.is_null() {
+            0i64
+        } else {
+            *(list as *const i64)
+        };
+        let n = len as u64;
+        let dest = lumia_alloc((1 + n) * 8, TYPE_LIST);
+        if dest.is_null() {
+            panic!("lumia: list reverse OOM");
+        }
+        let dst = dest as *mut i64;
+        *dst = len;
+        if !list.is_null() && n > 0 {
+            let src = list as *const i64;
+            for i in 0..n as usize {
+                *dst.add(1 + i) = *src.add(n as usize - i);
+            }
+        }
+        dest
+    }
+}
+
+/// Sort `List[Int]` ascending (stable via slice::sort).
+#[no_mangle]
+pub extern "C" fn lumia_list_sort(list: *mut u8) -> *mut u8 {
+    unsafe {
+        let len = if list.is_null() {
+            0i64
+        } else {
+            *(list as *const i64)
+        };
+        let n = len as usize;
+        let dest = lumia_alloc((1 + n as u64) * 8, TYPE_LIST);
+        if dest.is_null() {
+            panic!("lumia: list sort OOM");
+        }
+        let dst = dest as *mut i64;
+        *dst = len;
+        if !list.is_null() && n > 0 {
+            let src = list as *const i64;
+            for i in 0..n {
+                *dst.add(1 + i) = *src.add(1 + i);
+            }
+            let slice = std::slice::from_raw_parts_mut(dst.add(1), n);
+            slice.sort();
+        }
+        dest
+    }
+}
+
+/// Stable permute of `values` by parallel Ord keys (Int / String / Char).
+#[no_mangle]
+pub extern "C" fn lumia_list_sort_by_keys(values: *mut u8, keys: *mut u8) -> *mut u8 {
+    unsafe {
+        let n = if values.is_null() {
+            0i64
+        } else {
+            *(values as *const i64)
+        };
+        let nk = if keys.is_null() {
+            0i64
+        } else {
+            *(keys as *const i64)
+        };
+        if n != nk {
+            panic!("lumia: sortBy keys/values length mismatch");
+        }
+        let dest = lumia_alloc((1 + n as u64) * 8, TYPE_LIST);
+        if dest.is_null() {
+            panic!("lumia: list sortBy OOM");
+        }
+        let dst = dest as *mut i64;
+        *dst = n;
+        if n == 0 {
+            return dest;
+        }
+        let mut order: Vec<(i64, usize)> = Vec::with_capacity(n as usize);
+        let kbase = keys as *const i64;
+        for i in 0..n as usize {
+            order.push((*kbase.add(1 + i), i));
+        }
+        order.sort_by(|a, b| lumia_ord_cmp(a.0, b.0).then(a.1.cmp(&b.1)));
+        let vbase = values as *const i64;
+        for (w, &(_, i)) in order.iter().enumerate() {
+            *dst.add(1 + w) = *vbase.add(1 + i);
+        }
+        dest
+    }
+}
+
+/// Total order for sortBy keys: Int (scalar bits), String (bytes), Char (codepoint).
+fn lumia_ord_cmp(a: i64, b: i64) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    if a == b {
+        return Ordering::Equal;
+    }
+    let pa = a as *mut u8;
+    let pb = b as *mut u8;
+    let ha = is_heap_payload(pa);
+    let hb = is_heap_payload(pb);
+    if !ha && !hb {
+        return a.cmp(&b);
+    }
+    if ha && hb {
+        unsafe {
+            let ta = (*header_from_payload(pa)).type_id;
+            let tb = (*header_from_payload(pb)).type_id;
+            if ta != tb {
+                panic!("lumia: sortBy keys have mixed heap types");
+            }
+            match ta {
+                TYPE_STRING => {
+                    let na = (*header_from_payload(pa)).size as usize;
+                    let nb = (*header_from_payload(pb)).size as usize;
+                    let sa = std::slice::from_raw_parts(pa, na);
+                    let sb = std::slice::from_raw_parts(pb, nb);
+                    sa.cmp(sb)
+                }
+                TYPE_CHAR => {
+                    let ca = *(pa as *const i64);
+                    let cb = *(pb as *const i64);
+                    ca.cmp(&cb)
+                }
+                _ => panic!("lumia: sortBy key type_id={ta} is not Ord"),
+            }
+        }
+    } else {
+        panic!("lumia: sortBy cannot compare scalar with heap key");
+    }
+}
+
+/// Join `List[String]` with a separator string.
+#[no_mangle]
+pub extern "C" fn lumia_list_join(list: *mut u8, sep: *mut u8) -> *mut u8 {
+    let sep_bytes = with_str_bytes(sep, |b| b.to_vec());
+    let parts: Vec<Vec<u8>> = unsafe {
+        let len = if list.is_null() {
+            0i64
+        } else {
+            *(list as *const i64)
+        };
+        let mut out = Vec::with_capacity(len as usize);
+        if !list.is_null() {
+            let base = list as *const i64;
+            for i in 0..len as usize {
+                let p = *base.add(1 + i) as *mut u8;
+                out.push(with_str_bytes(p, |b| b.to_vec()));
+            }
+        }
+        out
+    };
+    let mut buf: Vec<u8> = Vec::new();
+    for (i, p) in parts.iter().enumerate() {
+        if i > 0 {
+            buf.extend_from_slice(&sep_bytes);
+        }
+        buf.extend_from_slice(p);
+    }
+    lumia_alloc_string(buf.as_ptr(), buf.len() as u64)
+}
+
 /// List payload layout: `[len:i64][elem0:i64]...` (matches codegen AllocList).
 #[no_mangle]
 pub extern "C" fn lumia_list_len(list: *mut u8) -> i64 {
@@ -471,6 +984,105 @@ pub extern "C" fn lumia_list_append(list: *mut u8, elem: i64) -> *mut u8 {
             }
         }
         *dst.add(1 + n as usize) = elem;
+        dest
+    }
+}
+
+/// Parallel map over List[Int] with a C ABI `fn(i64) -> i64` (auto-parallelism MVP).
+/// Falls back to sequential for small lists; inhibits GC while workers run.
+#[no_mangle]
+pub extern "C" fn lumia_list_par_map(
+    list: *mut u8,
+    f: Option<extern "C" fn(i64) -> i64>,
+) -> *mut u8 {
+    let Some(f) = f else {
+        panic!("lumia: list_par_map null function");
+    };
+    unsafe {
+        let n = if list.is_null() {
+            0i64
+        } else {
+            *(list as *const i64)
+        };
+        if n <= 0 {
+            let dest = lumia_alloc(8, TYPE_LIST);
+            *(dest as *mut i64) = 0;
+            return dest;
+        }
+        let src = list as *const i64;
+        // Sequential for tiny lists.
+        if n < 64 {
+            let dest = lumia_alloc((1 + n as u64) * 8, TYPE_LIST);
+            let dst = dest as *mut i64;
+            *dst = n;
+            for i in 0..n as usize {
+                *dst.add(1 + i) = f(*src.add(1 + i));
+            }
+            return dest;
+        }
+        let _gc = GcInhibitGuard::enter();
+        let workers = std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(4)
+            .min(n as usize)
+            .max(1);
+        let chunk = (n as usize + workers - 1) / workers;
+        let mut handles = Vec::new();
+        for w in 0..workers {
+            let start = w * chunk;
+            let end = ((w + 1) * chunk).min(n as usize);
+            // SAFETY: list is immutable during map; GC inhibited.
+            let base = src as usize;
+            handles.push(std::thread::spawn(move || {
+                let src = base as *const i64;
+                let mut out = Vec::with_capacity(end.saturating_sub(start));
+                for i in start..end {
+                    out.push(f(*src.add(1 + i)));
+                }
+                out
+            }));
+        }
+        let parts: Vec<Vec<i64>> = handles
+            .into_iter()
+            .map(|h| h.join().expect("par_map worker"))
+            .collect();
+        let dest = lumia_alloc((1 + n as u64) * 8, TYPE_LIST);
+        let dst = dest as *mut i64;
+        *dst = n;
+        let mut i = 0usize;
+        for part in parts {
+            for v in part {
+                *dst.add(1 + i) = v;
+                i += 1;
+            }
+        }
+        dest
+    }
+}
+
+/// Immutable update: new List with index `i` set to `elem` (bounds trap).
+#[no_mangle]
+pub extern "C" fn lumia_list_set(list: *mut u8, index: i64, elem: i64) -> *mut u8 {
+    unsafe {
+        if list.is_null() || index < 0 {
+            panic!("lumia: list set out of bounds");
+        }
+        let n = *(list as *const i64);
+        if index >= n {
+            panic!("lumia: list set out of bounds");
+        }
+        let nbytes = (1 + n as u64) * 8;
+        let dest = lumia_alloc(nbytes, TYPE_LIST);
+        if dest.is_null() {
+            panic!("lumia: list set OOM");
+        }
+        let src = list as *const i64;
+        let dst = dest as *mut i64;
+        *dst = n;
+        for j in 0..n as usize {
+            *dst.add(1 + j) = *src.add(1 + j);
+        }
+        *dst.add(1 + index as usize) = elem;
         dest
     }
 }
@@ -564,19 +1176,441 @@ pub extern "C" fn lumia_range_inclusive(start: i64, end: i64) -> *mut u8 {
     if end < start {
         return lumia_range(start, start);
     }
-    lumia_range(start, end + 1)
+    match end.checked_add(1) {
+        Some(excl) => lumia_range(start, excl),
+        None => panic!("lumia: rangeInclusive overflow"),
+    }
 }
 
-/// Map payload: `[n_pairs:i64][k0][v0]...` (insertion order; last key wins on set).
-unsafe fn map_find(map: *mut u8, key: i64) -> Option<usize> {
+#[no_mangle]
+pub extern "C" fn lumia_trap_div0() {
+    panic!("lumia: division by zero");
+}
+
+#[no_mangle]
+pub extern "C" fn lumia_trap_overflow() {
+    panic!("lumia: integer overflow");
+}
+
+/// Map: small maps stay linear `[n][k0][v0]…`; larger use HashOrdered
+/// `[n][cap][order×cap][key,val,state × cap]` (DESIGN default path).
+/// Hash writes may produce Overlay: `[-1][parent][dn][k0][v0]…` (delta ≤ 8).
+const MAP_SMALL_MAX: i64 = 8;
+const MAP_OVERLAY_MARK: i64 = -1;
+const MAP_OVERLAY_MAX: i64 = 8;
+const MAP_ST_EMPTY: i64 = 0;
+const MAP_ST_FULL: i64 = 1;
+const MAP_ST_TOMB: i64 = 2;
+
+fn map_linear_nbytes(n: i64) -> usize {
+    (1 + 2 * n as usize) * 8
+}
+
+fn map_hash_nbytes(cap: usize) -> usize {
+    // [count][cap] + order[cap] + (key,val,state)[cap]
+    (2 + cap + 3 * cap) * 8
+}
+
+fn map_overlay_nbytes(dn: i64) -> usize {
+    (3 + 2 * dn as usize) * 8
+}
+
+fn map_is_overlay(map: *mut u8) -> bool {
+    if map.is_null() {
+        return false;
+    }
+    unsafe { *(map as *const i64) == MAP_OVERLAY_MARK }
+}
+
+fn map_is_hash(map: *mut u8) -> bool {
+    if map.is_null() || map_is_overlay(map) {
+        return false;
+    }
+    unsafe {
+        let n = *(map as *const i64);
+        if n < 0 {
+            return false;
+        }
+        (*header_from_payload(map)).size as usize != map_linear_nbytes(n)
+    }
+}
+
+unsafe fn map_overlay_parent(map: *mut u8) -> *mut u8 {
+    *(map as *const i64).add(1) as *mut u8
+}
+
+unsafe fn map_overlay_dn(map: *mut u8) -> i64 {
+    *(map as *const i64).add(2)
+}
+
+/// Logical entry count (insertion-unique keys).
+fn map_count(map: *mut u8) -> i64 {
+    if map.is_null() {
+        return 0;
+    }
+    unsafe {
+        if map_is_overlay(map) {
+            let parent = map_overlay_parent(map);
+            let dn = map_overlay_dn(map) as usize;
+            let base = map as *const i64;
+            let mut n = map_count(parent);
+            for i in 0..dn {
+                let k = *base.add(3 + i * 2);
+                // Count as new if not in parent and not earlier in delta.
+                let mut seen = false;
+                for j in 0..i {
+                    if lumia_eq(*base.add(3 + j * 2), k) != 0 {
+                        seen = true;
+                        break;
+                    }
+                }
+                if seen {
+                    continue;
+                }
+                if map_find(parent, k).is_none() {
+                    n += 1;
+                }
+            }
+            n
+        } else {
+            *(map as *const i64)
+        }
+    }
+}
+
+/// Lookup value through overlay chain then base map.
+unsafe fn map_lookup_val(map: *mut u8, key: i64) -> Option<i64> {
     if map.is_null() {
         return None;
+    }
+    if map_is_overlay(map) {
+        let dn = map_overlay_dn(map) as usize;
+        let base = map as *const i64;
+        for i in (0..dn).rev() {
+            if lumia_eq(*base.add(3 + i * 2), key) != 0 {
+                return Some(*base.add(4 + i * 2));
+            }
+        }
+        return map_lookup_val(map_overlay_parent(map), key);
+    }
+    match map_find(map, key) {
+        Some(i) if map_is_hash(map) => {
+            let base = map as *const i64;
+            let cap = *base.add(1) as usize;
+            let cell = base.add(2 + cap + i * 3);
+            Some(*cell.add(1))
+        }
+        Some(i) => {
+            let base = map as *const i64;
+            Some(*base.add(2 + i * 2))
+        }
+        None => None,
+    }
+}
+
+/// Flatten overlay (and nested overlays) into a HashOrdered or linear map.
+unsafe fn map_materialize(map: *mut u8) -> *mut u8 {
+    if map.is_null() || !map_is_overlay(map) {
+        return map;
+    }
+    let parent = map_materialize(map_overlay_parent(map));
+    let dn = map_overlay_dn(map) as usize;
+    let base = map as *const i64;
+    let mut dest = if map_is_hash(parent) || map_count(parent) + dn as i64 > MAP_SMALL_MAX {
+        // Start from hash clone of parent
+        if map_is_hash(parent) {
+            let pbase = parent as *const i64;
+            let n = *pbase;
+            let cap = *pbase.add(1) as usize;
+            let out = map_alloc_hash(cap, 0);
+            let mut w = 0usize;
+            for i in 0..n as usize {
+                let s = *pbase.add(2 + i) as usize;
+                let cell = pbase.add(2 + cap + s * 3);
+                map_hash_put_new(out, *cell, *cell.add(1), w);
+                w += 1;
+            }
+            *(out as *mut i64) = n;
+            out
+        } else {
+            map_from_linear_to_hash(parent, None)
+        }
+    } else {
+        // Stay linear: copy parent then apply deltas via set path below
+        let n = map_count(parent);
+        let nbytes = map_linear_nbytes(n) as u64;
+        let out = lumia_alloc(nbytes, TYPE_MAP);
+        ptr::copy_nonoverlapping(parent, out, nbytes as usize);
+        out
+    };
+    for i in 0..dn {
+        let k = *base.add(3 + i * 2);
+        let v = *base.add(4 + i * 2);
+        dest = map_clone_hash_upsert_or_linear(dest, k, v);
+    }
+    dest
+}
+
+unsafe fn map_clone_hash_upsert_or_linear(map: *mut u8, key: i64, val: i64) -> *mut u8 {
+    if map_is_hash(map) {
+        map_clone_hash_upsert(map, key, val)
+    } else {
+        // linear upsert (same as lumia_map_set linear branch)
+        let (n, base) = if map.is_null() {
+            (0i64, ptr::null())
+        } else {
+            (*(map as *const i64), map as *const i64)
+        };
+        if let Some(i) = map_find(map, key) {
+            let nbytes = map_linear_nbytes(n) as u64;
+            let dest = lumia_alloc(nbytes, TYPE_MAP);
+            let dst = dest as *mut i64;
+            *dst = n;
+            for j in 0..(n as usize * 2) {
+                *dst.add(1 + j) = *base.add(1 + j);
+            }
+            *dst.add(2 + i * 2) = val;
+            return dest;
+        }
+        let n2 = n + 1;
+        if n2 > MAP_SMALL_MAX {
+            return map_from_linear_to_hash(map, Some((key, val)));
+        }
+        let nbytes = map_linear_nbytes(n2) as u64;
+        let dest = lumia_alloc(nbytes, TYPE_MAP);
+        let dst = dest as *mut i64;
+        *dst = n2;
+        for j in 0..(n as usize * 2) {
+            *dst.add(1 + j) = *base.add(1 + j);
+        }
+        *dst.add(1 + n as usize * 2) = key;
+        *dst.add(2 + n as usize * 2) = val;
+        dest
+    }
+}
+
+unsafe fn map_alloc_overlay(parent: *mut u8, pairs: &[(i64, i64)]) -> *mut u8 {
+    let dn = pairs.len() as i64;
+    let nbytes = map_overlay_nbytes(dn) as u64;
+    let dest = lumia_alloc(nbytes, TYPE_MAP);
+    let dst = dest as *mut i64;
+    *dst = MAP_OVERLAY_MARK;
+    *dst.add(1) = parent as i64;
+    *dst.add(2) = dn;
+    for (i, (k, v)) in pairs.iter().enumerate() {
+        *dst.add(3 + i * 2) = *k;
+        *dst.add(4 + i * 2) = *v;
+    }
+    dest
+}
+
+fn splitmix64(mut x: u64) -> u64 {
+    x = x.wrapping_add(0x9E3779B97F4A7C15);
+    let mut z = x;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+    z ^ (z >> 31)
+}
+
+/// Stable content hash for Map/Set keys — must agree with `lumia_eq` (DESIGN §3.5.1).
+pub fn lumia_hash(key: i64) -> u64 {
+    hash_value(key, 0)
+}
+
+fn hash_value(key: i64, depth: u32) -> u64 {
+    if depth > 64 {
+        return splitmix64(key as u64);
+    }
+    let p = key as *mut u8;
+    if !is_heap_payload(p) {
+        return splitmix64(key as u64);
+    }
+    unsafe {
+        let h = header_from_payload(p);
+        match (*h).type_id {
+            TYPE_STRING => {
+                let n = (*h).size as usize;
+                let bytes = std::slice::from_raw_parts(p, n);
+                let mut acc = 0xcbf29ce484222325u64;
+                for &b in bytes {
+                    acc ^= b as u64;
+                    acc = acc.wrapping_mul(0x100000001b3);
+                }
+                acc
+            }
+            TYPE_CHAR => splitmix64(*(p as *const i64) as u64),
+            TYPE_LIST => {
+                let base = p as *const i64;
+                let n = *base;
+                let mut acc = splitmix64(0x4c495354u64 ^ (n as u64));
+                for i in 0..n as usize {
+                    acc = acc
+                        .rotate_left(7)
+                        .wrapping_add(hash_value(*base.add(1 + i), depth + 1));
+                }
+                acc
+            }
+            TYPE_ADT => {
+                let words = ((*h).size as usize) / 8;
+                let base = p as *const i64;
+                let mut acc = splitmix64(0x414454u64 ^ (words as u64));
+                for i in 0..words {
+                    acc = acc
+                        .rotate_left(11)
+                        .wrapping_add(hash_value(*base.add(i), depth + 1));
+                }
+                acc
+            }
+            TYPE_MAP => {
+                // Unordered mix so content-equal maps collide regardless of insert order.
+                let n = map_count(p);
+                let mut acc = splitmix64(0x4d4150u64 ^ (n as u64));
+                for i in 0..n as usize {
+                    let (k, v) = map_pair_at(p, i);
+                    let hk = hash_value(k, depth + 1);
+                    let hv = hash_value(v, depth + 1);
+                    acc ^= hk.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(hv);
+                }
+                acc
+            }
+            TYPE_SET => {
+                let n = *(p as *const i64);
+                let mut acc = splitmix64(0x534554u64 ^ (n as u64));
+                for i in 0..n as usize {
+                    let e = set_elem_at(p, i);
+                    acc ^= hash_value(e, depth + 1);
+                }
+                acc
+            }
+            TYPE_CLOSURE | TYPE_BYTES => splitmix64(key as u64),
+            _ => splitmix64(key as u64),
+        }
+    }
+}
+
+fn map_mark_payload(payload: *mut u8, size: usize) {
+    unsafe {
+        let base = payload as *const i64;
+        let n0 = *base;
+        if n0 == MAP_OVERLAY_MARK {
+            let parent = map_overlay_parent(payload);
+            if is_heap_payload(parent) {
+                mark(header_from_payload(parent));
+            }
+            let dn = map_overlay_dn(payload) as usize;
+            for i in 0..dn {
+                mark_value(*base.add(3 + i * 2));
+                mark_value(*base.add(4 + i * 2));
+            }
+            return;
+        }
+        let n = n0;
+        if size == map_linear_nbytes(n) {
+            for i in 0..n as usize {
+                mark_value(*base.add(1 + i * 2));
+                mark_value(*base.add(2 + i * 2));
+            }
+            return;
+        }
+        // HashOrdered
+        let cap = *base.add(1) as usize;
+        let order = base.add(2);
+        for i in 0..n as usize {
+            let slot = *order.add(i) as usize;
+            let cell = base.add(2 + cap + slot * 3);
+            mark_value(*cell);
+            mark_value(*cell.add(1));
+        }
+    }
+}
+
+fn map_eq(a: *mut u8, b: *mut u8) -> i64 {
+    unsafe {
+        let a = if map_is_overlay(a) {
+            map_materialize(a)
+        } else {
+            a
+        };
+        let b = if map_is_overlay(b) {
+            map_materialize(b)
+        } else {
+            b
+        };
+        let na = if a.is_null() { 0 } else { *(a as *const i64) };
+        let nb = if b.is_null() { 0 } else { *(b as *const i64) };
+        if na != nb {
+            return 0;
+        }
+        for i in 0..na as usize {
+            let (ka, va) = map_pair_at(a, i);
+            let mut found = false;
+            for j in 0..nb as usize {
+                let (kb, vb) = map_pair_at(b, j);
+                if lumia_eq(ka, kb) != 0 && lumia_eq(va, vb) != 0 {
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                return 0;
+            }
+        }
+        1
+    }
+}
+
+/// i-th pair in insertion order.
+unsafe fn map_pair_at(map: *mut u8, i: usize) -> (i64, i64) {
+    let map = if map_is_overlay(map) {
+        map_materialize(map)
+    } else {
+        map
+    };
+    let base = map as *const i64;
+    if map_is_hash(map) {
+        let cap = *base.add(1) as usize;
+        let slot = *base.add(2 + i) as usize;
+        let cell = base.add(2 + cap + slot * 3);
+        (*cell, *cell.add(1))
+    } else {
+        (*base.add(1 + i * 2), *base.add(2 + i * 2))
+    }
+}
+
+unsafe fn map_hash_find_slot(map: *mut u8, key: i64) -> Option<usize> {
+    let base = map as *const i64;
+    let cap = *base.add(1) as usize;
+    if cap == 0 {
+        return None;
+    }
+    let mut idx = (lumia_hash(key) as usize) % cap;
+    for _ in 0..cap {
+        let cell = base.add(2 + cap + idx * 3);
+        let st = *cell.add(2);
+        if st == MAP_ST_EMPTY {
+            return None;
+        }
+        if st == MAP_ST_FULL && lumia_eq(*cell, key) != 0 {
+            return Some(idx);
+        }
+        idx = (idx + 1) % cap;
+    }
+    None
+}
+
+/// Map payload helpers — linear or HashOrdered (see above).
+unsafe fn map_find(map: *mut u8, key: i64) -> Option<usize> {
+    if map.is_null() || map_is_overlay(map) {
+        return None;
+    }
+    if map_is_hash(map) {
+        return map_hash_find_slot(map, key);
     }
     let n = *(map as *const i64);
     let base = map as *const i64;
     let mut found = None;
     for i in 0..n as usize {
-        if *base.add(1 + i * 2) == key {
+        if lumia_eq(*base.add(1 + i * 2), key) != 0 {
             found = Some(i);
         }
     }
@@ -585,7 +1619,13 @@ unsafe fn map_find(map: *mut u8, key: i64) -> Option<usize> {
 
 #[no_mangle]
 pub extern "C" fn lumia_map_contains(map: *mut u8, key: i64) -> i64 {
-    unsafe { if map_find(map, key).is_some() { 1 } else { 0 } }
+    unsafe {
+        if map_lookup_val(map, key).is_some() {
+            1
+        } else {
+            0
+        }
+    }
 }
 
 /// Missing key → None ADT; hit → Some(value). Tags come from the program's `Option` decl.
@@ -597,12 +1637,8 @@ pub extern "C" fn lumia_map_get(
     none_tag: i64,
 ) -> *mut u8 {
     unsafe {
-        match map_find(map, key) {
-            Some(i) => {
-                let base = map as *const i64;
-                let val = *base.add(2 + i * 2);
-                alloc_adt(some_tag, &[val])
-            }
+        match map_lookup_val(map, key) {
+            Some(val) => alloc_adt(some_tag, &[val]),
             None => alloc_adt(none_tag, &[]),
         }
     }
@@ -624,35 +1660,171 @@ fn alloc_adt(tag: i64, fields: &[i64]) -> *mut u8 {
     dest
 }
 
+unsafe fn map_alloc_hash(cap: usize, count: i64) -> *mut u8 {
+    let nbytes = map_hash_nbytes(cap) as u64;
+    let dest = lumia_alloc(nbytes, TYPE_MAP);
+    if dest.is_null() {
+        panic!("lumia: map hash OOM");
+    }
+    let dst = dest as *mut i64;
+    *dst = count;
+    *dst.add(1) = cap as i64;
+    for i in 0..cap {
+        *dst.add(2 + i) = -1;
+        let cell = dst.add(2 + cap + i * 3);
+        *cell = 0;
+        *cell.add(1) = 0;
+        *cell.add(2) = MAP_ST_EMPTY;
+    }
+    dest
+}
+
+unsafe fn map_hash_put_new(dest: *mut u8, key: i64, val: i64, order_i: usize) {
+    let base = dest as *mut i64;
+    let cap = *base.add(1) as usize;
+    let mut idx = (lumia_hash(key) as usize) % cap;
+    for _ in 0..cap {
+        let cell = base.add(2 + cap + idx * 3);
+        let st = *cell.add(2);
+        if st == MAP_ST_EMPTY || st == MAP_ST_TOMB {
+            *cell = key;
+            *cell.add(1) = val;
+            *cell.add(2) = MAP_ST_FULL;
+            *base.add(2 + order_i) = idx as i64;
+            return;
+        }
+        idx = (idx + 1) % cap;
+    }
+    panic!("lumia: map hash full");
+}
+
+/// Insert or replace during hash-table build. Returns true if a new key was added.
+unsafe fn map_hash_upsert_build(dest: *mut u8, key: i64, val: i64) -> bool {
+    if let Some(slot) = map_hash_find_slot(dest, key) {
+        let base = dest as *mut i64;
+        let cap = *base.add(1) as usize;
+        let cell = base.add(2 + cap + slot * 3);
+        *cell.add(1) = val; // last wins
+        return false;
+    }
+    let base = dest as *mut i64;
+    let n = *base as usize;
+    map_hash_put_new(dest, key, val, n);
+    *base = (n as i64) + 1;
+    true
+}
+
+unsafe fn map_from_linear_to_hash(src: *mut u8, extra_key: Option<(i64, i64)>) -> *mut u8 {
+    let n = if src.is_null() {
+        0i64
+    } else {
+        *(src as *const i64)
+    };
+    let n2 = n + if extra_key.is_some() { 1 } else { 0 };
+    let mut cap = 16usize;
+    while (cap as i64) < n2 * 2 {
+        cap *= 2;
+    }
+    let dest = map_alloc_hash(cap, 0); // count filled by upserts
+    let base = src as *const i64;
+    for i in 0..n as usize {
+        let k = *base.add(1 + i * 2);
+        let v = *base.add(2 + i * 2);
+        map_hash_upsert_build(dest, k, v);
+    }
+    if let Some((k, v)) = extra_key {
+        map_hash_upsert_build(dest, k, v);
+    }
+    dest
+}
+
+unsafe fn map_clone_hash_upsert(src: *mut u8, key: i64, val: i64) -> *mut u8 {
+    let base = src as *const i64;
+    let n = *base;
+    let cap = *base.add(1) as usize;
+    let replace = map_hash_find_slot(src, key);
+    let n2 = if replace.is_some() { n } else { n + 1 };
+    let need_grow = replace.is_none() && (n2 as usize * 2 > cap);
+    let new_cap = if need_grow { cap * 2 } else { cap };
+    let dest = map_alloc_hash(new_cap, n2);
+    let mut w = 0usize;
+    for i in 0..n as usize {
+        let slot = *base.add(2 + i) as usize;
+        let cell = base.add(2 + cap + slot * 3);
+        let k = *cell;
+        let v = if replace == Some(slot) {
+            val
+        } else {
+            *cell.add(1)
+        };
+        map_hash_put_new(dest, k, v, w);
+        w += 1;
+    }
+    if replace.is_none() {
+        map_hash_put_new(dest, key, val, w);
+    }
+    dest
+}
+
 /// Immutable upsert: new Map with `key → val` (overwrite keeps insertion slot).
 #[no_mangle]
 pub extern "C" fn lumia_map_set(map: *mut u8, key: i64, val: i64) -> *mut u8 {
     unsafe {
-        let (n, base) = if map.is_null() {
-            (0i64, ptr::null())
-        } else {
-            (*(map as *const i64), map as *const i64)
-        };
-        if let Some(i) = map_find(map, key) {
-            let nbytes = (1 + n as u64 * 2) * 8;
-            let dest = lumia_alloc(nbytes, TYPE_MAP);
-            if dest.is_null() {
-                panic!("lumia: map set OOM");
+        if map_is_overlay(map) {
+            let parent = map_overlay_parent(map);
+            let dn = map_overlay_dn(map);
+            let base = map as *const i64;
+            // Replace existing delta key in-place in a new overlay copy.
+            for i in (0..dn as usize).rev() {
+                if lumia_eq(*base.add(3 + i * 2), key) != 0 {
+                    let mut pairs = Vec::with_capacity(dn as usize);
+                    for j in 0..dn as usize {
+                        let k = *base.add(3 + j * 2);
+                        let v = if j == i {
+                            val
+                        } else {
+                            *base.add(4 + j * 2)
+                        };
+                        pairs.push((k, v));
+                    }
+                    return map_alloc_overlay(parent, &pairs);
+                }
             }
-            let dst = dest as *mut i64;
-            *dst = n;
-            for j in 0..(n as usize * 2) {
-                *dst.add(1 + j) = *base.add(1 + j);
+            if dn < MAP_OVERLAY_MAX {
+                let mut pairs = Vec::with_capacity(dn as usize + 1);
+                for j in 0..dn as usize {
+                    pairs.push((*base.add(3 + j * 2), *base.add(4 + j * 2)));
+                }
+                pairs.push((key, val));
+                return map_alloc_overlay(parent, &pairs);
             }
-            *dst.add(2 + i * 2) = val;
-            dest
-        } else {
+            // Delta full → flatten then upsert.
+            let flat = map_materialize(map);
+            return lumia_map_set(flat, key, val);
+        }
+        if map.is_null() || !map_is_hash(map) {
+            let (n, base) = if map.is_null() {
+                (0i64, ptr::null())
+            } else {
+                (*(map as *const i64), map as *const i64)
+            };
+            if let Some(i) = map_find(map, key) {
+                let nbytes = map_linear_nbytes(n) as u64;
+                let dest = lumia_alloc(nbytes, TYPE_MAP);
+                let dst = dest as *mut i64;
+                *dst = n;
+                for j in 0..(n as usize * 2) {
+                    *dst.add(1 + j) = *base.add(1 + j);
+                }
+                *dst.add(2 + i * 2) = val;
+                return dest;
+            }
             let n2 = n + 1;
-            let nbytes = (1 + n2 as u64 * 2) * 8;
-            let dest = lumia_alloc(nbytes, TYPE_MAP);
-            if dest.is_null() {
-                panic!("lumia: map set OOM");
+            if n2 > MAP_SMALL_MAX {
+                return map_from_linear_to_hash(map, Some((key, val)));
             }
+            let nbytes = map_linear_nbytes(n2) as u64;
+            let dest = lumia_alloc(nbytes, TYPE_MAP);
             let dst = dest as *mut i64;
             *dst = n2;
             for j in 0..(n as usize * 2) {
@@ -660,8 +1832,24 @@ pub extern "C" fn lumia_map_set(map: *mut u8, key: i64, val: i64) -> *mut u8 {
             }
             *dst.add(1 + n as usize * 2) = key;
             *dst.add(2 + n as usize * 2) = val;
-            dest
+            return dest;
         }
+        // HashOrdered → Overlay (avoid full table clone on each set).
+        map_alloc_overlay(map, &[(key, val)])
+    }
+}
+
+/// Dispatch `set` for List (index update) or Map (key upsert).
+#[no_mangle]
+pub extern "C" fn lumia_set(obj: *mut u8, key_or_index: i64, val: i64) -> *mut u8 {
+    if obj.is_null() {
+        return lumia_map_set(obj, key_or_index, val);
+    }
+    let tid = unsafe { (*header_from_payload(obj)).type_id };
+    match tid {
+        TYPE_LIST => lumia_list_set(obj, key_or_index, val),
+        TYPE_MAP => lumia_map_set(obj, key_or_index, val),
+        _ => panic!("lumia: set on unsupported type_id={tid}"),
     }
 }
 
@@ -669,29 +1857,71 @@ pub extern "C" fn lumia_map_set(map: *mut u8, key: i64, val: i64) -> *mut u8 {
 #[no_mangle]
 pub extern "C" fn lumia_map_remove(map: *mut u8, key: i64) -> *mut u8 {
     unsafe {
-        let (n, base) = if map.is_null() {
-            (0i64, ptr::null())
+        let map = if map_is_overlay(map) {
+            map_materialize(map)
         } else {
-            (*(map as *const i64), map as *const i64)
+            map
         };
-        let Some(idx) = map_find(map, key) else {
-            // unchanged — copy
-            if map.is_null() {
-                let dest = lumia_alloc(8, TYPE_MAP);
-                *(dest as *mut i64) = 0;
+        if map.is_null() {
+            let dest = lumia_alloc(8, TYPE_MAP);
+            *(dest as *mut i64) = 0;
+            return dest;
+        }
+        if map_is_hash(map) {
+            let base = map as *const i64;
+            let n = *base;
+            let cap = *base.add(1) as usize;
+            let Some(slot) = map_hash_find_slot(map, key) else {
+                let nbytes = map_hash_nbytes(cap) as u64;
+                let dest = lumia_alloc(nbytes, TYPE_MAP);
+                ptr::copy_nonoverlapping(map, dest, nbytes as usize);
+                return dest;
+            };
+            let n2 = n - 1;
+            if n2 <= MAP_SMALL_MAX {
+                // Demote to linear
+                let nbytes = map_linear_nbytes(n2) as u64;
+                let dest = lumia_alloc(nbytes, TYPE_MAP);
+                let dst = dest as *mut i64;
+                *dst = n2;
+                let mut w = 0usize;
+                for i in 0..n as usize {
+                    let s = *base.add(2 + i) as usize;
+                    if s == slot {
+                        continue;
+                    }
+                    let cell = base.add(2 + cap + s * 3);
+                    *dst.add(1 + w * 2) = *cell;
+                    *dst.add(2 + w * 2) = *cell.add(1);
+                    w += 1;
+                }
                 return dest;
             }
-            let nbytes = (1 + n as u64 * 2) * 8;
+            let dest = map_alloc_hash(cap, n2);
+            let mut w = 0usize;
+            for i in 0..n as usize {
+                let s = *base.add(2 + i) as usize;
+                if s == slot {
+                    continue;
+                }
+                let cell = base.add(2 + cap + s * 3);
+                map_hash_put_new(dest, *cell, *cell.add(1), w);
+                w += 1;
+            }
+            return dest;
+        }
+
+        let n = *(map as *const i64);
+        let base = map as *const i64;
+        let Some(idx) = map_find(map, key) else {
+            let nbytes = map_linear_nbytes(n) as u64;
             let dest = lumia_alloc(nbytes, TYPE_MAP);
             ptr::copy_nonoverlapping(map, dest, nbytes as usize);
             return dest;
         };
         let n2 = n - 1;
-        let nbytes = (1 + n2 as u64 * 2) * 8;
+        let nbytes = map_linear_nbytes(n2) as u64;
         let dest = lumia_alloc(nbytes, TYPE_MAP);
-        if dest.is_null() {
-            panic!("lumia: map remove OOM");
-        }
         let dst = dest as *mut i64;
         *dst = n2;
         let mut w = 0usize;
@@ -711,6 +1941,11 @@ pub extern "C" fn lumia_map_remove(map: *mut u8, key: i64) -> *mut u8 {
 #[no_mangle]
 pub extern "C" fn lumia_map_keys(map: *mut u8) -> *mut u8 {
     unsafe {
+        let map = if map_is_overlay(map) {
+            map_materialize(map)
+        } else {
+            map
+        };
         let n = if map.is_null() {
             0i64
         } else {
@@ -718,15 +1953,12 @@ pub extern "C" fn lumia_map_keys(map: *mut u8) -> *mut u8 {
         };
         let nbytes = (1 + n as u64) * 8;
         let dest = lumia_alloc(nbytes, TYPE_LIST);
-        if dest.is_null() {
-            panic!("lumia: map keys OOM");
-        }
         let dst = dest as *mut i64;
         *dst = n;
         if !map.is_null() {
-            let base = map as *const i64;
             for i in 0..n as usize {
-                *dst.add(1 + i) = *base.add(1 + i * 2);
+                let (k, _) = map_pair_at(map, i);
+                *dst.add(1 + i) = k;
             }
         }
         dest
@@ -737,6 +1969,11 @@ pub extern "C" fn lumia_map_keys(map: *mut u8) -> *mut u8 {
 #[no_mangle]
 pub extern "C" fn lumia_map_values(map: *mut u8) -> *mut u8 {
     unsafe {
+        let map = if map_is_overlay(map) {
+            map_materialize(map)
+        } else {
+            map
+        };
         let n = if map.is_null() {
             0i64
         } else {
@@ -744,15 +1981,12 @@ pub extern "C" fn lumia_map_values(map: *mut u8) -> *mut u8 {
         };
         let nbytes = (1 + n as u64) * 8;
         let dest = lumia_alloc(nbytes, TYPE_LIST);
-        if dest.is_null() {
-            panic!("lumia: map values OOM");
-        }
         let dst = dest as *mut i64;
         *dst = n;
         if !map.is_null() {
-            let base = map as *const i64;
             for i in 0..n as usize {
-                *dst.add(1 + i) = *base.add(2 + i * 2);
+                let (_, v) = map_pair_at(map, i);
+                *dst.add(1 + i) = v;
             }
         }
         dest
@@ -762,7 +1996,13 @@ pub extern "C" fn lumia_map_values(map: *mut u8) -> *mut u8 {
 /// Insertion-ordered list of `(k, v)` pairs (each pair is ADT tag0 + 2 fields).
 #[no_mangle]
 pub extern "C" fn lumia_map_items(map: *mut u8) -> *mut u8 {
+    let _gc = GcInhibitGuard::enter();
     unsafe {
+        let map = if map_is_overlay(map) {
+            map_materialize(map)
+        } else {
+            map
+        };
         let n = if map.is_null() {
             0i64
         } else {
@@ -770,16 +2010,11 @@ pub extern "C" fn lumia_map_items(map: *mut u8) -> *mut u8 {
         };
         let nbytes = (1 + n as u64) * 8;
         let dest = lumia_alloc(nbytes, TYPE_LIST);
-        if dest.is_null() {
-            panic!("lumia: map items OOM");
-        }
         let dst = dest as *mut i64;
         *dst = n;
         if !map.is_null() {
-            let base = map as *const i64;
             for i in 0..n as usize {
-                let k = *base.add(1 + i * 2);
-                let v = *base.add(2 + i * 2);
+                let (k, v) = map_pair_at(map, i);
                 let pair = alloc_adt(0, &[k, v]);
                 *dst.add(1 + i) = pair as i64;
             }
@@ -788,21 +2023,345 @@ pub extern "C" fn lumia_map_items(map: *mut u8) -> *mut u8 {
     }
 }
 
-/// Set payload shares list layout `[len][e0]...`.
+/// Set: small stays linear `[n][e0]…`; larger HashOrdered
+/// `[n][cap][order×cap][elem,state × cap]`.
+const SET_SMALL_MAX: i64 = 8;
+const SET_ST_EMPTY: i64 = 0;
+const SET_ST_FULL: i64 = 1;
+const SET_ST_TOMB: i64 = 2;
+
+fn set_linear_nbytes(n: i64) -> usize {
+    (1 + n as usize) * 8
+}
+
+fn set_hash_nbytes(cap: usize) -> usize {
+    (2 + cap + 2 * cap) * 8
+}
+
+fn set_is_hash(set: *mut u8) -> bool {
+    if set.is_null() {
+        return false;
+    }
+    unsafe {
+        let n = *(set as *const i64);
+        if n < 0 {
+            return false;
+        }
+        (*header_from_payload(set)).size as usize != set_linear_nbytes(n)
+    }
+}
+
+fn set_mark_payload(payload: *mut u8, size: usize) {
+    unsafe {
+        let base = payload as *const i64;
+        let n = *base;
+        if size == set_linear_nbytes(n) {
+            for i in 0..n as usize {
+                mark_value(*base.add(1 + i));
+            }
+            return;
+        }
+        let cap = *base.add(1) as usize;
+        let order = base.add(2);
+        for i in 0..n as usize {
+            let slot = *order.add(i) as usize;
+            let cell = base.add(2 + cap + slot * 2);
+            mark_value(*cell);
+        }
+    }
+}
+
+fn set_eq(a: *mut u8, b: *mut u8) -> i64 {
+    unsafe {
+        let na = if a.is_null() { 0 } else { *(a as *const i64) };
+        let nb = if b.is_null() { 0 } else { *(b as *const i64) };
+        if na != nb {
+            return 0;
+        }
+        for i in 0..na as usize {
+            let ea = set_elem_at(a, i);
+            let mut found = false;
+            for j in 0..nb as usize {
+                if lumia_eq(ea, set_elem_at(b, j)) != 0 {
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                return 0;
+            }
+        }
+        1
+    }
+}
+
+unsafe fn set_elem_at(set: *mut u8, i: usize) -> i64 {
+    let base = set as *const i64;
+    if set_is_hash(set) {
+        let cap = *base.add(1) as usize;
+        let slot = *base.add(2 + i) as usize;
+        *base.add(2 + cap + slot * 2)
+    } else {
+        *base.add(1 + i)
+    }
+}
+
+unsafe fn set_hash_find_slot(set: *mut u8, elem: i64) -> Option<usize> {
+    let base = set as *const i64;
+    let cap = *base.add(1) as usize;
+    if cap == 0 {
+        return None;
+    }
+    let mut idx = (lumia_hash(elem) as usize) % cap;
+    for _ in 0..cap {
+        let cell = base.add(2 + cap + idx * 2);
+        let st = *cell.add(1);
+        if st == SET_ST_EMPTY {
+            return None;
+        }
+        if st == SET_ST_FULL && lumia_eq(*cell, elem) != 0 {
+            return Some(idx);
+        }
+        idx = (idx + 1) % cap;
+    }
+    None
+}
+
 #[no_mangle]
 pub extern "C" fn lumia_set_contains(set: *mut u8, elem: i64) -> i64 {
     if set.is_null() {
         return 0;
     }
     unsafe {
+        if set_is_hash(set) {
+            return if set_hash_find_slot(set, elem).is_some() {
+                1
+            } else {
+                0
+            };
+        }
         let n = *(set as *const i64);
         let base = set as *const i64;
         for i in 0..n as usize {
-            if *base.add(1 + i) == elem {
+            if lumia_eq(*base.add(1 + i), elem) != 0 {
                 return 1;
             }
         }
         0
+    }
+}
+
+unsafe fn set_alloc_hash(cap: usize, count: i64) -> *mut u8 {
+    let dest = lumia_alloc(set_hash_nbytes(cap) as u64, TYPE_SET);
+    let dst = dest as *mut i64;
+    *dst = count;
+    *dst.add(1) = cap as i64;
+    for i in 0..cap {
+        *dst.add(2 + i) = -1;
+        let cell = dst.add(2 + cap + i * 2);
+        *cell = 0;
+        *cell.add(1) = SET_ST_EMPTY;
+    }
+    dest
+}
+
+unsafe fn set_hash_put_new(dest: *mut u8, elem: i64, order_i: usize) {
+    let base = dest as *mut i64;
+    let cap = *base.add(1) as usize;
+    let mut idx = (lumia_hash(elem) as usize) % cap;
+    for _ in 0..cap {
+        let cell = base.add(2 + cap + idx * 2);
+        let st = *cell.add(1);
+        if st == SET_ST_EMPTY || st == SET_ST_TOMB {
+            *cell = elem;
+            *cell.add(1) = SET_ST_FULL;
+            *base.add(2 + order_i) = idx as i64;
+            return;
+        }
+        idx = (idx + 1) % cap;
+    }
+    panic!("lumia: set hash full");
+}
+
+/// Insert during hash build; skip if already present. Returns true if newly added.
+unsafe fn set_hash_insert_build(dest: *mut u8, elem: i64) -> bool {
+    if set_hash_find_slot(dest, elem).is_some() {
+        return false;
+    }
+    let base = dest as *mut i64;
+    let n = *base as usize;
+    set_hash_put_new(dest, elem, n);
+    *base = (n as i64) + 1;
+    true
+}
+
+unsafe fn set_from_linear_to_hash(src: *mut u8, extra: Option<i64>) -> *mut u8 {
+    let n = if src.is_null() {
+        0i64
+    } else {
+        *(src as *const i64)
+    };
+    let n2 = n + if extra.is_some() { 1 } else { 0 };
+    let mut cap = 16usize;
+    while (cap as i64) < n2 * 2 {
+        cap *= 2;
+    }
+    let dest = set_alloc_hash(cap, 0);
+    let base = src as *const i64;
+    for i in 0..n as usize {
+        set_hash_insert_build(dest, *base.add(1 + i));
+    }
+    if let Some(e) = extra {
+        set_hash_insert_build(dest, e);
+    }
+    dest
+}
+
+/// Immutable insert: new Set with `elem` (no-op copy if already present).
+#[no_mangle]
+pub extern "C" fn lumia_set_insert(set: *mut u8, elem: i64) -> *mut u8 {
+    unsafe {
+        if lumia_set_contains(set, elem) != 0 {
+            if set.is_null() {
+                let dest = lumia_alloc(8, TYPE_SET);
+                *(dest as *mut i64) = 0;
+                return dest;
+            }
+            let nbytes = (*header_from_payload(set)).size as u64;
+            let dest = lumia_alloc(nbytes, TYPE_SET);
+            ptr::copy_nonoverlapping(set, dest, nbytes as usize);
+            return dest;
+        }
+        if set.is_null() || !set_is_hash(set) {
+            let n = if set.is_null() {
+                0i64
+            } else {
+                *(set as *const i64)
+            };
+            let n2 = n + 1;
+            if n2 > SET_SMALL_MAX {
+                return set_from_linear_to_hash(set, Some(elem));
+            }
+            let nbytes = set_linear_nbytes(n2) as u64;
+            let dest = lumia_alloc(nbytes, TYPE_SET);
+            let dst = dest as *mut i64;
+            *dst = n2;
+            if !set.is_null() {
+                let src = set as *const i64;
+                for i in 0..n as usize {
+                    *dst.add(1 + i) = *src.add(1 + i);
+                }
+            }
+            *dst.add(1 + n as usize) = elem;
+            return dest;
+        }
+        // Hash insert
+        let base = set as *const i64;
+        let n = *base;
+        let cap = *base.add(1) as usize;
+        let n2 = n + 1;
+        let need_grow = (n2 as usize * 2) > cap;
+        let new_cap = if need_grow { cap * 2 } else { cap };
+        let dest = set_alloc_hash(new_cap, n2);
+        for i in 0..n as usize {
+            set_hash_put_new(dest, set_elem_at(set, i), i);
+        }
+        set_hash_put_new(dest, elem, n as usize);
+        dest
+    }
+}
+
+/// Drop element if present; returns new Set (insertion order of remaining elems).
+#[no_mangle]
+pub extern "C" fn lumia_set_remove(set: *mut u8, elem: i64) -> *mut u8 {
+    unsafe {
+        if set.is_null() {
+            let dest = lumia_alloc(8, TYPE_SET);
+            *(dest as *mut i64) = 0;
+            return dest;
+        }
+        if set_is_hash(set) {
+            let base = set as *const i64;
+            let n = *base;
+            let cap = *base.add(1) as usize;
+            let Some(slot) = set_hash_find_slot(set, elem) else {
+                let nbytes = set_hash_nbytes(cap) as u64;
+                let dest = lumia_alloc(nbytes, TYPE_SET);
+                ptr::copy_nonoverlapping(set, dest, nbytes as usize);
+                return dest;
+            };
+            let n2 = n - 1;
+            if n2 <= SET_SMALL_MAX {
+                let dest = lumia_alloc(set_linear_nbytes(n2) as u64, TYPE_SET);
+                let dst = dest as *mut i64;
+                *dst = n2;
+                let mut w = 0usize;
+                for i in 0..n as usize {
+                    let s = *base.add(2 + i) as usize;
+                    if s == slot {
+                        continue;
+                    }
+                    *dst.add(1 + w) = *base.add(2 + cap + s * 2);
+                    w += 1;
+                }
+                return dest;
+            }
+            let dest = set_alloc_hash(cap, n2);
+            let mut w = 0usize;
+            for i in 0..n as usize {
+                let s = *base.add(2 + i) as usize;
+                if s == slot {
+                    continue;
+                }
+                set_hash_put_new(dest, *base.add(2 + cap + s * 2), w);
+                w += 1;
+            }
+            return dest;
+        }
+
+        let n = *(set as *const i64);
+        let base = set as *const i64;
+        let mut idx = None;
+        for i in 0..n as usize {
+            if lumia_eq(*base.add(1 + i), elem) != 0 {
+                idx = Some(i);
+                break;
+            }
+        }
+        let Some(idx) = idx else {
+            let nbytes = set_linear_nbytes(n) as u64;
+            let dest = lumia_alloc(nbytes, TYPE_SET);
+            ptr::copy_nonoverlapping(set, dest, nbytes as usize);
+            return dest;
+        };
+        let n2 = n - 1;
+        let dest = lumia_alloc(set_linear_nbytes(n2) as u64, TYPE_SET);
+        let dst = dest as *mut i64;
+        *dst = n2;
+        let mut w = 0usize;
+        for j in 0..n as usize {
+            if j == idx {
+                continue;
+            }
+            *dst.add(1 + w) = *base.add(1 + j);
+            w += 1;
+        }
+        dest
+    }
+}
+
+/// Dispatch remove for Map or Set.
+#[no_mangle]
+pub extern "C" fn lumia_remove(obj: *mut u8, key_or_elem: i64) -> *mut u8 {
+    if obj.is_null() {
+        // Ambiguous empty — prefer Map (same historical default as typed `remove`).
+        return lumia_map_remove(obj, key_or_elem);
+    }
+    let tid = unsafe { (*header_from_payload(obj)).type_id };
+    match tid {
+        TYPE_MAP => lumia_map_remove(obj, key_or_elem),
+        TYPE_SET => lumia_set_remove(obj, key_or_elem),
+        _ => panic!("lumia: remove on unsupported type_id={tid}"),
     }
 }
 
@@ -820,7 +2379,14 @@ pub extern "C" fn lumia_get(
     let h = header_from_payload(obj);
     unsafe {
         match (*h).type_id {
-            TYPE_LIST | TYPE_SET => lumia_list_get(obj, key_or_index),
+            TYPE_LIST => lumia_list_get(obj, key_or_index),
+            TYPE_SET => {
+                let n = *(obj as *const i64);
+                if key_or_index < 0 || key_or_index >= n {
+                    panic!("lumia: set get OOB");
+                }
+                set_elem_at(obj, key_or_index as usize)
+            }
             TYPE_MAP => {
                 let opt = lumia_map_get(obj, key_or_index, some_tag, none_tag);
                 opt as i64
@@ -840,6 +2406,7 @@ pub extern "C" fn lumia_contains(obj: *mut u8, key: i64) -> i64 {
         match (*h).type_id {
             TYPE_MAP => lumia_map_contains(obj, key),
             TYPE_SET => lumia_set_contains(obj, key),
+            TYPE_STRING => lumia_str_contains(obj, key as *mut u8),
             other => panic!("lumia: contains unsupported type_id {other}"),
         }
     }
@@ -859,9 +2426,277 @@ pub extern "C" fn lumia_adt_field(obj: *mut u8, index: i64) -> i64 {
         panic!("lumia: adt_field OOB");
     }
     unsafe {
+        let h = header_from_payload(obj);
+        let words = ((*h).size as usize) / 8;
+        // Layout: [tag][field0]… → field count = words - 1
+        if words == 0 || (index as usize) + 1 >= words {
+            panic!("lumia: adt_field OOB");
+        }
         let base = obj as *const i64;
         *base.add(1 + index as usize)
     }
+}
+
+/// Transparent Memo `T_f` — fixed small associative tables (DESIGN §7.5.1-B).
+/// Internal symbol prefix `memo_l2_*` kept for ABI stability.
+pub const MEMO_L2_MAX_FUNS: usize = 64;
+pub const MEMO_L2_SLOTS: usize = 4;
+pub const MEMO_L2_MAX_ARGS: usize = 4;
+
+/// Process-level hard bound on transparent Memo bytes (slots + dense), versioned (§7.5.0).
+pub const MEMO_PROCESS_BYTE_CAP: usize = 2 * 1024 * 1024;
+
+#[derive(Clone, Copy)]
+struct MemoL2Slot {
+    valid: bool,
+    nargs: u8,
+    args: [i64; MEMO_L2_MAX_ARGS],
+    result: i64,
+}
+
+impl MemoL2Slot {
+    const EMPTY: Self = Self {
+        valid: false,
+        nargs: 0,
+        args: [0; MEMO_L2_MAX_ARGS],
+        result: 0,
+    };
+
+    fn matches(&self, nargs: u8, args: &[i64; MEMO_L2_MAX_ARGS]) -> bool {
+        self.valid
+            && self.nargs == nargs
+            && self.args[..nargs as usize] == args[..nargs as usize]
+    }
+}
+
+struct MemoL2Table {
+    slots: [MemoL2Slot; MEMO_L2_SLOTS],
+    next_victim: usize,
+    hits: u64,
+    misses: u64,
+}
+
+impl MemoL2Table {
+    const EMPTY: Self = Self {
+        slots: [MemoL2Slot::EMPTY; MEMO_L2_SLOTS],
+        next_victim: 0,
+        hits: 0,
+        misses: 0,
+    };
+}
+
+thread_local! {
+    static MEMO_L2: RefCell<[MemoL2Table; MEMO_L2_MAX_FUNS]> =
+        const { RefCell::new([MemoL2Table::EMPTY; MEMO_L2_MAX_FUNS]) };
+}
+
+fn pack_args(a0: i64, a1: i64, a2: i64, a3: i64) -> [i64; MEMO_L2_MAX_ARGS] {
+    [a0, a1, a2, a3]
+}
+
+/// Lookup: returns 1 and writes `*out_result` on hit; else 0.
+#[no_mangle]
+pub extern "C" fn lumia_memo_l2_lookup(
+    fun_id: i64,
+    nargs: i64,
+    a0: i64,
+    a1: i64,
+    a2: i64,
+    a3: i64,
+    out_result: *mut i64,
+) -> i64 {
+    if fun_id < 0 || fun_id as usize >= MEMO_L2_MAX_FUNS || out_result.is_null() {
+        return 0;
+    }
+    let nargs = nargs.clamp(0, MEMO_L2_MAX_ARGS as i64) as u8;
+    let args = pack_args(a0, a1, a2, a3);
+    MEMO_L2.with(|t| {
+        let mut tables = t.borrow_mut();
+        let table = &mut tables[fun_id as usize];
+        for slot in &table.slots {
+            if slot.matches(nargs, &args) {
+                table.hits += 1;
+                unsafe {
+                    *out_result = slot.result;
+                }
+                return 1;
+            }
+        }
+        table.misses += 1;
+        0
+    })
+}
+
+/// Store result into a slot (round-robin eviction).
+#[no_mangle]
+pub extern "C" fn lumia_memo_l2_store(
+    fun_id: i64,
+    nargs: i64,
+    a0: i64,
+    a1: i64,
+    a2: i64,
+    a3: i64,
+    result: i64,
+) {
+    if fun_id < 0 || fun_id as usize >= MEMO_L2_MAX_FUNS {
+        return;
+    }
+    let nargs = nargs.clamp(0, MEMO_L2_MAX_ARGS as i64) as u8;
+    let args = pack_args(a0, a1, a2, a3);
+    MEMO_L2.with(|t| {
+        let mut tables = t.borrow_mut();
+        let table = &mut tables[fun_id as usize];
+        for slot in &mut table.slots {
+            if slot.matches(nargs, &args) {
+                slot.result = result;
+                return;
+            }
+        }
+        let i = table.next_victim % MEMO_L2_SLOTS;
+        table.next_victim = i + 1;
+        let mut stored = [0i64; MEMO_L2_MAX_ARGS];
+        stored[..nargs as usize].copy_from_slice(&args[..nargs as usize]);
+        table.slots[i] = MemoL2Slot {
+            valid: true,
+            nargs,
+            args: stored,
+            result,
+        };
+    });
+}
+
+/// Test / `--show-memo-stats` helper: total hits across tables.
+#[no_mangle]
+pub extern "C" fn lumia_memo_l2_hits() -> i64 {
+    MEMO_L2.with(|t| {
+        t.borrow().iter().map(|x| x.hits as i64).sum()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn lumia_memo_l2_misses() -> i64 {
+    MEMO_L2.with(|t| {
+        t.borrow().iter().map(|x| x.misses as i64).sum()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn lumia_memo_l2_reset() {
+    MEMO_L2.with(|t| {
+        *t.borrow_mut() = [MemoL2Table::EMPTY; MEMO_L2_MAX_FUNS];
+    });
+}
+
+/// Dense Int-key `T_f` for structural recursion (DESIGN §7.5.3) — prefer over hashing.
+pub const MEMO_IDX_MAX_FUNS: usize = 16;
+pub const MEMO_IDX_CAP: usize = 4096;
+/// Bytes reserved per dense table when allocated (valid bitmap + values).
+pub const MEMO_IDX_TABLE_BYTES: usize = MEMO_IDX_CAP * (1 + 8);
+
+struct MemoIdxTable {
+    valid: [u8; MEMO_IDX_CAP],
+    values: [i64; MEMO_IDX_CAP],
+    hits: u64,
+    misses: u64,
+}
+
+impl MemoIdxTable {
+    fn new() -> Box<Self> {
+        Box::new(Self {
+            valid: [0; MEMO_IDX_CAP],
+            values: [0; MEMO_IDX_CAP],
+            hits: 0,
+            misses: 0,
+        })
+    }
+}
+
+thread_local! {
+    // Lazy: allocate a dense table only on first use of that `fun_id` (§7.5 low occupancy).
+    static MEMO_IDX: RefCell<[Option<Box<MemoIdxTable>>; MEMO_IDX_MAX_FUNS]> =
+        const { RefCell::new([const { None }; MEMO_IDX_MAX_FUNS]) };
+}
+
+fn memo_idx_table(
+    tables: &mut [Option<Box<MemoIdxTable>>; MEMO_IDX_MAX_FUNS],
+    fun_id: usize,
+) -> &mut MemoIdxTable {
+    if tables[fun_id].is_none() {
+        tables[fun_id] = Some(MemoIdxTable::new());
+    }
+    tables[fun_id].as_mut().unwrap()
+}
+
+/// Lookup by Int key in `0..MEMO_IDX_CAP`. Returns 1 + writes result on hit.
+#[no_mangle]
+pub extern "C" fn lumia_memo_idx_lookup(fun_id: i64, key: i64, out_result: *mut i64) -> i64 {
+    if fun_id < 0
+        || fun_id as usize >= MEMO_IDX_MAX_FUNS
+        || out_result.is_null()
+        || key < 0
+        || key as usize >= MEMO_IDX_CAP
+    {
+        return 0;
+    }
+    let k = key as usize;
+    MEMO_IDX.with(|t| {
+        let mut tables = t.borrow_mut();
+        let table = memo_idx_table(&mut tables, fun_id as usize);
+        if table.valid[k] != 0 {
+            table.hits += 1;
+            unsafe {
+                *out_result = table.values[k];
+            }
+            1
+        } else {
+            table.misses += 1;
+            0
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn lumia_memo_idx_store(fun_id: i64, key: i64, result: i64) {
+    if fun_id < 0 || fun_id as usize >= MEMO_IDX_MAX_FUNS || key < 0 || key as usize >= MEMO_IDX_CAP
+    {
+        return;
+    }
+    let k = key as usize;
+    MEMO_IDX.with(|t| {
+        let mut tables = t.borrow_mut();
+        let table = memo_idx_table(&mut tables, fun_id as usize);
+        table.valid[k] = 1;
+        table.values[k] = result;
+    });
+}
+
+#[no_mangle]
+pub extern "C" fn lumia_memo_idx_hits() -> i64 {
+    MEMO_IDX.with(|t| {
+        t.borrow()
+            .iter()
+            .filter_map(|x| x.as_ref())
+            .map(|x| x.hits as i64)
+            .sum()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn lumia_memo_idx_misses() -> i64 {
+    MEMO_IDX.with(|t| {
+        t.borrow()
+            .iter()
+            .filter_map(|x| x.as_ref())
+            .map(|x| x.misses as i64)
+            .sum()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn lumia_memo_idx_reset() {
+    MEMO_IDX.with(|t| {
+        *t.borrow_mut() = [const { None }; MEMO_IDX_MAX_FUNS];
+    });
 }
 
 #[cfg(test)]
@@ -903,6 +2738,138 @@ mod tests {
     #[test]
     fn println_int_smoke() {
         lumia_println_int(7);
+    }
+
+    #[test]
+    fn rooted_survives_soft_threshold() {
+        // Lower limit temporarily via many small allocs with a rooted object.
+        let mut slot: *mut u8 = lumia_alloc(64, TYPE_STRING);
+        lumia_root_push(&mut slot as *mut *mut u8);
+        for _ in 0..5000 {
+            let _ = lumia_alloc(64, TYPE_BYTES);
+        }
+        assert!(!slot.is_null());
+        let h = header_from_payload(slot);
+        unsafe {
+            assert_eq!((*h).type_id, TYPE_STRING);
+            assert_eq!((*h).size, 64);
+        }
+        lumia_root_pop();
+    }
+
+    #[test]
+    fn map_promotes_to_hash_and_looks_up() {
+        let mut m: *mut u8 = ptr::null_mut();
+        for i in 0..20 {
+            m = lumia_map_set(m, i, i * 10);
+        }
+        assert!(!m.is_null());
+        assert!(map_is_hash(m) || map_is_overlay(m));
+        assert_eq!(map_count(m), 20);
+        for i in 0..20 {
+            assert_eq!(lumia_map_contains(m, i), 1);
+            let opt = lumia_map_get(m, i, 0, 1);
+            // Some(v) tag 0 with field
+            unsafe {
+                let base = opt as *const i64;
+                assert_eq!(*base, 0);
+                assert_eq!(*base.add(1), i * 10);
+            }
+        }
+        assert_eq!(lumia_map_contains(m, 99), 0);
+        m = lumia_map_remove(m, 5);
+        assert_eq!(lumia_map_contains(m, 5), 0);
+        assert_eq!(map_count(m), 19);
+        // Still insertion-ordered keys without 5
+        let keys = lumia_map_keys(m);
+        unsafe {
+            assert_eq!(*(keys as *const i64), 19);
+            assert_eq!(*((keys as *const i64).add(1)), 0);
+        }
+    }
+
+    #[test]
+    fn map_overlay_set_avoids_full_clone() {
+        let mut m: *mut u8 = ptr::null_mut();
+        for i in 0..9 {
+            m = lumia_map_set(m, i, i);
+        }
+        assert!(map_is_hash(m), "expected hash after promoting past small max");
+        m = lumia_map_set(m, 100, 42);
+        assert!(map_is_overlay(m));
+        assert_eq!(map_count(m), 10);
+        assert_eq!(lumia_map_contains(m, 100), 1);
+        assert_eq!(lumia_map_contains(m, 3), 1);
+        // Another set extends delta (still overlay).
+        m = lumia_map_set(m, 101, 7);
+        assert!(map_is_overlay(m));
+        unsafe {
+            assert_eq!(map_overlay_dn(m), 2);
+        }
+        assert_eq!(map_count(m), 11);
+        assert_eq!(lumia_map_contains(m, 101), 1);
+    }
+
+    #[test]
+    fn set_promotes_to_hash_and_contains() {
+        let mut s: *mut u8 = ptr::null_mut();
+        for i in 0..20 {
+            s = lumia_set_insert(s, i);
+        }
+        assert!(!s.is_null());
+        assert!(set_is_hash(s));
+        assert_eq!(unsafe { *(s as *const i64) }, 20);
+        for i in 0..20 {
+            assert_eq!(lumia_set_contains(s, i), 1);
+            assert_eq!(unsafe { set_elem_at(s, i as usize) }, i);
+        }
+        assert_eq!(lumia_set_contains(s, 99), 0);
+        s = lumia_set_remove(s, 5);
+        assert_eq!(lumia_set_contains(s, 5), 0);
+        assert_eq!(unsafe { *(s as *const i64) }, 19);
+        assert_eq!(unsafe { set_elem_at(s, 0) }, 0);
+        assert_eq!(unsafe { set_elem_at(s, 5) }, 6);
+        // Shrink far enough to demote to linear
+        for i in 0..12 {
+            s = lumia_set_remove(s, i);
+        }
+        assert!(!set_is_hash(s));
+        assert_eq!(unsafe { *(s as *const i64) }, 8);
+    }
+
+    #[test]
+    fn memo_l2_hit_miss() {
+        lumia_memo_l2_reset();
+        let mut out = 0i64;
+        assert_eq!(lumia_memo_l2_lookup(0, 1, 42, 0, 0, 0, &mut out), 0);
+        lumia_memo_l2_store(0, 1, 42, 0, 0, 0, 99);
+        assert_eq!(lumia_memo_l2_lookup(0, 1, 42, 0, 0, 0, &mut out), 1);
+        assert_eq!(out, 99);
+        assert_eq!(lumia_memo_l2_lookup(0, 1, 7, 0, 0, 0, &mut out), 0);
+        // 4-arg key
+        lumia_memo_l2_store(1, 4, 1, 2, 3, 4, 77);
+        assert_eq!(lumia_memo_l2_lookup(1, 4, 1, 2, 3, 4, &mut out), 1);
+        assert_eq!(out, 77);
+        assert_eq!(lumia_memo_l2_lookup(1, 4, 1, 2, 3, 5, &mut out), 0);
+        assert!(lumia_memo_l2_hits() >= 2);
+        assert!(lumia_memo_l2_misses() >= 2);
+        lumia_memo_l2_reset();
+    }
+
+    #[test]
+    fn memo_idx_hit_miss() {
+        lumia_memo_idx_reset();
+        let mut out = 0i64;
+        assert_eq!(lumia_memo_idx_lookup(0, 10, &mut out), 0);
+        lumia_memo_idx_store(0, 10, 55);
+        assert_eq!(lumia_memo_idx_lookup(0, 10, &mut out), 1);
+        assert_eq!(out, 55);
+        assert_eq!(lumia_memo_idx_lookup(0, 11, &mut out), 0);
+        assert_eq!(lumia_memo_idx_lookup(0, -1, &mut out), 0);
+        assert_eq!(lumia_memo_idx_lookup(0, MEMO_IDX_CAP as i64, &mut out), 0);
+        assert!(lumia_memo_idx_hits() >= 1);
+        assert!(lumia_memo_idx_misses() >= 1);
+        lumia_memo_idx_reset();
     }
 }
 

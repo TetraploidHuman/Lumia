@@ -1,14 +1,20 @@
 //! Hand-written lexer and recursive-descent parser for Lumia.
 //! Spans are preserved for diagnostics and LSP.
 
+mod diag;
+mod pretty;
 mod lexer;
 mod parser;
 mod span;
+mod stamp;
 mod token;
 
+pub use diag::{byte_to_line_col, format_diagnostic, line_starts};
+pub use pretty::format_module_src;
 pub use lexer::Lexer;
 pub use parser::{parse_expr_str, parse_module, ParseError};
 pub use span::{BytePos, Span};
+pub use stamp::stamp_module;
 pub use token::{StringPart, Token};
 
 use std::fmt;
@@ -43,6 +49,19 @@ pub enum ImportNames {
 pub enum Item {
     Val(ValItem),
     Type(TypeItem),
+    /// `foreign "C" fn name(x: Int) -> Int`
+    Foreign(ForeignItem),
+}
+
+#[derive(Debug, Clone)]
+pub struct ForeignItem {
+    pub abi: String,
+    pub name: String,
+    pub params: Vec<(String, String)>,
+    pub ret: String,
+    /// `foreign "C" pure fn` — typed as Pure (math-like libc).
+    pub is_pure: bool,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -137,6 +156,11 @@ pub enum Expr {
         arms: Vec<MatchArm>,
         span: Span,
     },
+    /// Kotlin-style subjectless `match { cond -> …; _ -> … }`.
+    MatchCond {
+        arms: Vec<MatchCondArm>,
+        span: Span,
+    },
     Field {
         base: Box<Expr>,
         field: String,
@@ -180,6 +204,14 @@ pub enum InterpPart {
 pub struct MatchArm {
     pub pattern: Pattern,
     pub guard: Option<Expr>,
+    pub body: Expr,
+    pub span: Span,
+}
+
+/// Arm of subjectless `match { }`. `cond: None` means `_` (else).
+#[derive(Debug, Clone)]
+pub struct MatchCondArm {
+    pub cond: Option<Expr>,
     pub body: Expr,
     pub span: Span,
 }
@@ -231,7 +263,7 @@ pub enum Stmt {
     },
     Expr(Expr),
     ForIn {
-        binding: String,
+        binding: ForBinding,
         iter: Expr,
         body: Expr,
         span: Span,
@@ -245,7 +277,14 @@ pub enum Stmt {
     Continue(Span),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// `for x in …` or `for (k, v) in …` (Map pairs).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ForBinding {
+    Name(String),
+    Pair(String, String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BinOp {
     Add,
     Sub,
@@ -262,7 +301,7 @@ pub enum BinOp {
     Or,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UnOp {
     Neg,
     Not,
@@ -276,8 +315,7 @@ impl Expr {
             | Expr::Bool(_, s)
             | Expr::String(_, s)
             | Expr::Char(_, s)
-            | Expr::Ident(_, s) => *s,
-            Expr::Interp { span, .. }
+            | Expr::Ident(_, s) => *s, Expr::Interp { span, .. }
             | Expr::Block { span, .. }
             | Expr::Lambda { span, .. }
             | Expr::Call { span, .. }
@@ -285,6 +323,7 @@ impl Expr {
             | Expr::Unary { span, .. }
             | Expr::If { span, .. }
             | Expr::Match { span, .. }
+            | Expr::MatchCond { span, .. }
             | Expr::Field { span, .. }
             | Expr::ListLit { span, .. }
             | Expr::Pipeline { span, .. }

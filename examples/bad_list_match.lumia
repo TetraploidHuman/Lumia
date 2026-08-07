@@ -1,0 +1,9 @@
+module BadListMatch
+
+/// Intentionally non-exhaustive: lengths >= 2 uncovered.
+val main = {
+    listOf(1, 2) match {
+        [] -> 0
+        [x] -> x
+    }
+}

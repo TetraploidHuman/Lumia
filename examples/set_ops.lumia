@@ -1,0 +1,23 @@
+module SetOps
+
+import std.io.{println}
+
+val main = {
+    val s0 = setOf()
+    val s1 = s0.insert(1).insert(2).insert(3)
+    println(s1.len())
+    println(s1.contains(2))
+    println(s1.contains(9))
+
+    val s2 = s1.insert(2)
+    println(s2.len())
+
+    val s3 = s1.remove(2)
+    println(s3.len())
+    println(s3.contains(2))
+    println(s3.contains(1))
+
+    // Original unchanged (value semantics).
+    println(s1.len())
+    println(s1.contains(2))
+}

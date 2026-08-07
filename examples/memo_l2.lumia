@@ -1,0 +1,15 @@
+module MemoL2
+
+import std.io.{println}
+
+/// Non-trivial pure function — Release builds attach transparent Memo L2
+/// (4-slot hot cache). Calling twice with the same argument reuses the result.
+val sqsum(n) = {
+    (0..n).fold(0, { a, i -> a + i * i })
+}
+
+val main = {
+    println(sqsum(200))
+    println(sqsum(200))
+    println(sqsum(10))
+}

@@ -1,0 +1,9 @@
+[[package]]
+name = "demo_lib"
+version = "1.2.3"
+path = "deps/demo_lib"
+
+[[package]]
+name = "lumia-examples"
+version = "0.1.0"
+path = "."

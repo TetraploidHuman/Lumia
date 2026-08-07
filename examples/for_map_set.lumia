@@ -1,0 +1,20 @@
+module ForMapSet
+
+import std.io.{println}
+
+val main = {
+    var sum = 0
+    for x in setOf(1, 2, 3) {
+        sum = sum + x
+    }
+    println(sum)
+
+    var ksum = 0
+    var vsum = 0
+    for (k, v) in mapOf(1 to 10, 2 to 20) {
+        ksum = ksum + k
+        vsum = vsum + v
+    }
+    println(ksum)
+    println(vsum)
+}

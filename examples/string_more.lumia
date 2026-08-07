@@ -1,0 +1,36 @@
+module StringMore
+
+import std.io.{println}
+
+val main = {
+    val s = "  Hello Lumia  "
+    val t = s.trim()
+    println(t.len())
+    println(t)
+
+    val parts = t.split(' ')
+    println(parts.len())
+    println(parts.get(0))
+    println(parts.get(1))
+
+    println(t.toLower())
+    println(t.toUpper())
+    println(t.substring(0, 5))
+
+    val xs = listOf(1, 2, 3, 4, 5)
+    val a = xs.take(3)
+    println(a.len())
+    println(a.get(2))
+    val b = xs.drop(2)
+    println(b.len())
+    println(b.get(0))
+
+    // DESIGN-style pipeline fragment
+    val words = "  foo BAR baz  "
+        >> trim
+        >> toLower
+        >> split(' ')
+        >> filter { it.len() > 0 }
+    println(words.len())
+    println(words.get(1))
+}

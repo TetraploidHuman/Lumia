@@ -1,0 +1,28 @@
+module MapStringKeys
+
+import std.io.{println}
+
+val main = {
+    // Distinct string literals → content-equal keys via lumia_eq.
+    val m = mapOf("a" to 1, "b" to 2)
+    println(m.len())
+    println(m.contains("a"))
+    println(m.contains("z"))
+
+    m.get("b") match {
+        Some(n) -> println(n)
+        None -> println(-1)
+    }
+
+    // Rebuild key with concat so pointer ≠ original, equality still holds.
+    val key = "a".concat("")
+    m.get(key) match {
+        Some(n) -> println(n)
+        None -> println(-1)
+    }
+
+    val s = setOf("x", "y")
+    println(s.contains("x"))
+    println(s.contains("x".concat("")))
+    println(s.contains("z"))
+}

@@ -1,0 +1,30 @@
+module SetHash
+
+import std.io.{println}
+
+/// Build a set large enough to promote past SmallSet into HashOrdered.
+val main = {
+    var s = setOf()
+    var i = 0
+    for i < 40 {
+        s = s.insert(i)
+        i = i + 1
+    }
+    println(s.len())
+    println(s.contains(0))
+    println(s.contains(39))
+    println(s.contains(100))
+
+    // Duplicate insert is a no-op on membership
+    s = s.insert(7)
+    println(s.len())
+    println(s.contains(7))
+
+    s = s.remove(0)
+    println(s.len())
+    println(s.contains(0))
+    println(s.contains(1))
+
+    // Insertion order: after removing 0, first elem is 1
+    println(s.get(0))
+}

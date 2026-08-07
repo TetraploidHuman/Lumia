@@ -1,0 +1,41 @@
+module ListText
+import std.io.{println}
+
+val main = {
+    val nums = listOf(3, 1, 2)
+    val rev = nums.reverse()
+    println(rev.get(0))
+    println(rev.get(2))
+    val sorted = nums.sort()
+    println(sorted.get(0))
+    println(sorted.get(1))
+    println(sorted.get(2))
+
+    val parts = listOf("a", "b", "c")
+    println(parts.join("-"))
+    println(parts.join("").len())
+
+    val text = "x\ny\nz"
+    val ls = text.lines()
+    println(ls.len())
+    println(ls.get(0))
+    println(ls.get(2))
+
+    println("hello".contains("ell"))
+    println("hello".contains("xyz"))
+
+    // for-in + assign + match (must not misparse as struct lit)
+    var counts = mapOf()
+    val words = listOf("a", "b", "a")
+    for w in words {
+        counts = counts.get(w) match {
+            Some(n) -> counts.set(w, n + 1)
+            None -> counts.set(w, 1)
+        }
+    }
+    println(counts.len())
+    println(counts.get("a") match {
+        Some(n) -> n
+        None -> 0
+    })
+}

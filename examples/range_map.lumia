@@ -1,0 +1,23 @@
+module RangeMap
+
+import std.io.{println}
+
+val main = {
+    // Counter map/filter — range itself is not HeapList-materialized.
+    val doubled = (1..=5).map({ x -> x * 2 })
+    println(doubled.len())
+    println(doubled.get(0))
+    println(doubled.get(4))
+
+    val odds = (0..10).filter({ x -> x % 2 == 1 })
+    println(odds.len())
+    println(odds.get(0))
+    println(odds.get(4))
+
+    // Large range + filter + fold fuses to a counter (no million-elem lists).
+    val n = 1_000_000
+    val even_sum = (0..n)
+        .filter({ x -> x % 2 == 0 })
+        .fold(0, { acc, x -> acc + x })
+    println(even_sum)
+}

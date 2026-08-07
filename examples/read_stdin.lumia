@@ -1,0 +1,27 @@
+module ReadStdinDemo
+
+import std.io.{println}
+
+val main = {
+    val text = readStdin()
+    val words = text.trim().split(' ').filter({ w ->
+        w.len() > 0
+    })
+    println(words.len())
+    println(words.get(0))
+
+    var counts = mapOf()
+    for w in words {
+        val next = counts.get(w) match {
+            Some(n) -> counts.set(w, n + 1)
+            None -> counts.set(w, 1)
+        }
+        counts = next
+    }
+    counts.get("hi") match {
+        Some(n) -> println(n)
+        None -> println(0)
+    }
+    println("hello".startsWith("he"))
+    println("hello".endsWith("lo"))
+}

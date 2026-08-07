@@ -1,0 +1,9 @@
+module UsePathDep
+
+import std.io.{println}
+import demo.{answer, bump}
+
+val main = {
+    println(answer)
+    println(bump(41))
+}

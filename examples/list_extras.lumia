@@ -1,0 +1,34 @@
+module ListExtras
+
+import std.io.{println}
+
+val main = {
+    val xs = listOf(1, 2, 3)
+    println(xs.isEmpty())
+    println(listOf().isEmpty())
+
+    val ys = xs.append(4)
+    println(ys.len())
+    println(ys.get(3))
+
+    val flat = listOf(1, 2).flatMap({ x ->
+        listOf(x, x * 10)
+    })
+    println(flat.len())
+    println(flat.get(0))
+    println(flat.get(3))
+
+    println(xs.any({ x -> x > 2 }))
+    println(xs.any({ x -> x > 9 }))
+    println(xs.all({ x -> x > 0 }))
+    println(xs.all({ x -> x > 1 }))
+
+    xs.find({ x -> x == 2 }) match {
+        Some(n) -> println(n)
+        None -> println(-1)
+    }
+    xs.find({ x -> x == 9 }) match {
+        Some(n) -> println(n)
+        None -> println(-1)
+    }
+}

@@ -2,13 +2,72 @@
 
 use lumia_syntax::{BinOp, Pattern, Span, UnOp, VariantFields};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 thread_local! {
     static CTORS: RefCell<HashMap<String, CtorInfo>> = RefCell::new(HashMap::new());
     /// Product field name → (type name, field index). MVP: names unique per module.
     static PRODUCT_FIELDS: RefCell<HashMap<String, (String, usize)>> = RefCell::new(HashMap::new());
     static PRODUCTS: RefCell<HashMap<String, Vec<String>>> = RefCell::new(HashMap::new());
+    static LOWER_ERR: RefCell<Option<LowerError>> = const { RefCell::new(None) };
+    /// When true, pure `List.map` lowers to `ListParMap` (auto-parallelism).
+    static PARALLEL_MAP: RefCell<bool> = const { RefCell::new(false) };
+    /// Capture-free top-level function names (safe FunRef for parallel map).
+    static TOPLEVEL_FUNS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+}
+
+/// Enable/disable auto-parallel `map` lowering for the next `lower_module`.
+pub fn set_parallel_map(on: bool) {
+    PARALLEL_MAP.with(|p| *p.borrow_mut() = on);
+}
+
+fn parallel_map_enabled() -> bool {
+    PARALLEL_MAP.with(|p| *p.borrow())
+}
+
+/// Lowering / exhaustiveness failure with optional source span.
+#[derive(Debug, Clone)]
+pub struct LowerError {
+    pub message: String,
+    pub span: Span,
+}
+
+impl std::fmt::Display for LowerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for LowerError {}
+
+/// Short-circuit `and` as `if left { right } else { false }` (avoids OOB field/get).
+fn short_and(left: Expr, right: Expr, span: Span) -> Expr {
+    Expr::If {
+        cond: Box::new(left),
+        then_branch: Box::new(right),
+        else_branch: Box::new(Expr::Bool(false, span)),
+        span,
+    }
+}
+
+fn short_or(left: Expr, right: Expr, span: Span) -> Expr {
+    Expr::If {
+        cond: Box::new(left),
+        then_branch: Box::new(Expr::Bool(true, span)),
+        else_branch: Box::new(right),
+        span,
+    }
+}
+
+fn set_lower_err(msg: String, span: Span) {
+    LOWER_ERR.with(|slot| {
+        if slot.borrow().is_none() {
+            *slot.borrow_mut() = Some(LowerError {
+                message: msg,
+                span,
+            });
+        }
+    });
 }
 
 fn with_ctors<R>(ctors: HashMap<String, CtorInfo>, f: impl FnOnce() -> R) -> R {
@@ -49,8 +108,44 @@ fn lookup_product(name: &str) -> Option<Vec<String>> {
     PRODUCTS.with(|c| c.borrow().get(name).cloned())
 }
 
+/// If `name` is absent, register a sum type with the given `(variant, arity)` list (tags = index).
+fn ensure_prelude_adt(
+    adts: &mut Vec<AdtDef>,
+    ctors: &mut HashMap<String, CtorInfo>,
+    name: &str,
+    variants: &[(&str, usize)],
+) {
+    if adts.iter().any(|a| a.name == name) {
+        return;
+    }
+    let mut vs = Vec::new();
+    for (tag, (vname, arity)) in variants.iter().enumerate() {
+        if ctors.contains_key(*vname) {
+            // User already bound this ctor name to another ADT — skip prelude.
+            return;
+        }
+        ctors.insert(
+            (*vname).into(),
+            CtorInfo {
+                adt_name: name.into(),
+                tag: tag as i64,
+                arity: *arity,
+            },
+        );
+        vs.push(AdtVariant {
+            name: (*vname).into(),
+            tag: tag as i64,
+            arity: *arity,
+        });
+    }
+    adts.push(AdtDef {
+        name: name.into(),
+        variants: vs,
+    });
+}
+
 /// Lower syntax AST → HIR with desugaring.
-pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, String> {
+pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
     let mut adts = Vec::new();
     let mut products = Vec::new();
     let mut ctors = HashMap::new();
@@ -100,9 +195,45 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, String> {
         }
     }
 
-    check_module_matches(m, &ctors, &adts)?;
+    // Prelude ADTs: inject Option / Result when the module does not declare them.
+    ensure_prelude_adt(
+        &mut adts,
+        &mut ctors,
+        "Option",
+        &[("Some", 1), ("None", 0)],
+    );
+    ensure_prelude_adt(
+        &mut adts,
+        &mut ctors,
+        "Result",
+        &[("Ok", 1), ("Err", 1)],
+    );
 
-    Ok(with_ctors(ctors, || {
+    check_module_matches(m, &ctors, &adts, &product_map)?;
+
+    // Pre-register top-level function names for `--parallel` FunRef maps.
+    TOPLEVEL_FUNS.with(|t| {
+        let mut set = t.borrow_mut();
+        set.clear();
+        for item in &m.items {
+            match item {
+                lumia_syntax::Item::Val(v) => {
+                    let is_fun = v.params.is_some()
+                        || matches!(v.body, lumia_syntax::Expr::Lambda { .. });
+                    if is_fun {
+                        set.insert(v.name.clone());
+                    }
+                }
+                lumia_syntax::Item::Foreign(f) => {
+                    set.insert(f.name.clone());
+                }
+                _ => {}
+            }
+        }
+    });
+
+    LOWER_ERR.with(|e| *e.borrow_mut() = None);
+    let module = with_ctors(ctors, || {
         with_products(product_map, product_fields, || {
             let mut items = Vec::new();
             for item in &m.items {
@@ -129,6 +260,9 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, String> {
                                     params,
                                     body: *body,
                                     is_main: v.name == "main",
+                                    external: None,
+                                    foreign_sig: None,
+                                    foreign_pure: false,
                                 }));
                             }
                             other => {
@@ -138,6 +272,9 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, String> {
                                         params: vec![],
                                         body: other,
                                         is_main: true,
+                                        external: None,
+                                        foreign_sig: None,
+                                    foreign_pure: false,
                                     }));
                                 } else {
                                     items.push(Item::Val {
@@ -149,6 +286,26 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, String> {
                         }
                     }
                     lumia_syntax::Item::Type(_) => {}
+                    lumia_syntax::Item::Foreign(f) => {
+                        if f.abi != "C" {
+                            set_lower_err(
+                                format!("unsupported foreign ABI `{}` (only \"C\")", f.abi),
+                                f.span,
+                            );
+                        }
+                        let params: Vec<String> = f.params.iter().map(|(n, _)| n.clone()).collect();
+                        let param_tys: Vec<String> =
+                            f.params.iter().map(|(_, t)| t.clone()).collect();
+                        items.push(Item::Fun(Fun {
+                            name: f.name.clone(),
+                            params,
+                            body: Expr::Unit(f.span),
+                            is_main: false,
+                            external: Some(f.name.clone()),
+                            foreign_sig: Some((param_tys, f.ret.clone())),
+                            foreign_pure: f.is_pure,
+                        }));
+                    }
                 }
             }
             Module {
@@ -158,17 +315,22 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, String> {
                 products,
             }
         })
-    }))
+    });
+    if let Some(err) = LOWER_ERR.with(|e| e.borrow_mut().take()) {
+        return Err(err);
+    }
+    Ok(module)
 }
 
 fn check_module_matches(
     m: &lumia_syntax::Module,
     ctors: &HashMap<String, CtorInfo>,
     adts: &[AdtDef],
-) -> Result<(), String> {
+    products: &HashMap<String, Vec<String>>,
+) -> Result<(), LowerError> {
     for item in &m.items {
         if let lumia_syntax::Item::Val(v) = item {
-            check_expr_matches(&v.body, ctors, adts)?;
+            check_expr_matches(&v.body, ctors, adts, products)?;
         }
     }
     Ok(())
@@ -178,16 +340,47 @@ fn check_expr_matches(
     e: &lumia_syntax::Expr,
     ctors: &HashMap<String, CtorInfo>,
     adts: &[AdtDef],
-) -> Result<(), String> {
+    products: &HashMap<String, Vec<String>>,
+) -> Result<(), LowerError> {
     use lumia_syntax::Expr as S;
     match e {
-        S::Match { arms, .. } => {
-            check_match_exhaustiveness(arms, ctors, adts)?;
-            for a in arms {
-                check_expr_matches(&a.body, ctors, adts)?;
-                if let Some(g) = &a.guard {
-                    check_expr_matches(g, ctors, adts)?;
+        S::Match { arms, span, .. } => {
+            check_match_exhaustiveness(arms, ctors, adts, products).map_err(|message| {
+                LowerError {
+                    message,
+                    span: *span,
                 }
+            })?;
+            for a in arms {
+                check_expr_matches(&a.body, ctors, adts, products)?;
+                if let Some(g) = &a.guard {
+                    check_expr_matches(g, ctors, adts, products)?;
+                }
+            }
+        }
+        S::MatchCond { arms, span, .. } => {
+            if !arms.iter().any(|a| a.cond.is_none()) {
+                return Err(LowerError {
+                    message:
+                        "subjectless `match { }` used as expression requires a `_` arm".into(),
+                    span: *span,
+                });
+            }
+            // `_` must be last (Kotlin else is last)
+            if let Some((last, rest)) = arms.split_last() {
+                if last.cond.is_some() || rest.iter().any(|a| a.cond.is_none()) {
+                    return Err(LowerError {
+                        message:
+                            "subjectless `match { }`: `_` arm must be last and unique".into(),
+                        span: *span,
+                    });
+                }
+            }
+            for a in arms {
+                if let Some(c) = &a.cond {
+                    check_expr_matches(c, ctors, adts, products)?;
+                }
+                check_expr_matches(&a.body, ctors, adts, products)?;
             }
         }
         S::Block { stmts, tail, .. } => {
@@ -196,32 +389,34 @@ fn check_expr_matches(
                     lumia_syntax::Stmt::Val { expr, .. }
                     | lumia_syntax::Stmt::Var { expr, .. }
                     | lumia_syntax::Stmt::Assign { expr, .. }
-                    | lumia_syntax::Stmt::Expr(expr) => check_expr_matches(expr, ctors, adts)?,
+                    | lumia_syntax::Stmt::Expr(expr) => {
+                        check_expr_matches(expr, ctors, adts, products)?
+                    }
                     lumia_syntax::Stmt::ForIn { iter, body, .. }
                     | lumia_syntax::Stmt::ForCond { cond: iter, body, .. } => {
-                        check_expr_matches(iter, ctors, adts)?;
-                        check_expr_matches(body, ctors, adts)?;
+                        check_expr_matches(iter, ctors, adts, products)?;
+                        check_expr_matches(body, ctors, adts, products)?;
                     }
                     lumia_syntax::Stmt::Break(_) | lumia_syntax::Stmt::Continue(_) => {}
                 }
             }
             if let Some(t) = tail {
-                check_expr_matches(t, ctors, adts)?;
+                check_expr_matches(t, ctors, adts, products)?;
             }
         }
-        S::Lambda { body, .. } => check_expr_matches(body, ctors, adts)?,
+        S::Lambda { body, .. } => check_expr_matches(body, ctors, adts, products)?,
         S::Call { callee, args, .. } => {
-            check_expr_matches(callee, ctors, adts)?;
+            check_expr_matches(callee, ctors, adts, products)?;
             for a in args {
-                check_expr_matches(a, ctors, adts)?;
+                check_expr_matches(a, ctors, adts, products)?;
             }
         }
         S::Binary { left, right, .. } | S::Pipeline { left, right, .. } => {
-            check_expr_matches(left, ctors, adts)?;
-            check_expr_matches(right, ctors, adts)?;
+            check_expr_matches(left, ctors, adts, products)?;
+            check_expr_matches(right, ctors, adts, products)?;
         }
         S::Unary { expr, .. } | S::Field { base: expr, .. } => {
-            check_expr_matches(expr, ctors, adts)?
+            check_expr_matches(expr, ctors, adts, products)?
         }
         S::If {
             cond,
@@ -229,38 +424,38 @@ fn check_expr_matches(
             else_branch,
             ..
         } => {
-            check_expr_matches(cond, ctors, adts)?;
-            check_expr_matches(then_branch, ctors, adts)?;
+            check_expr_matches(cond, ctors, adts, products)?;
+            check_expr_matches(then_branch, ctors, adts, products)?;
             if let Some(e) = else_branch {
-                check_expr_matches(e, ctors, adts)?;
+                check_expr_matches(e, ctors, adts, products)?;
             }
         }
         S::ListLit { elems, .. } => {
             for a in elems {
-                check_expr_matches(a, ctors, adts)?;
+                check_expr_matches(a, ctors, adts, products)?;
             }
         }
         S::StructLit { fields, .. } => {
             for (_, v) in fields {
-                check_expr_matches(v, ctors, adts)?;
+                check_expr_matches(v, ctors, adts, products)?;
             }
         }
         S::With { base, fields, .. } => {
-            check_expr_matches(base, ctors, adts)?;
+            check_expr_matches(base, ctors, adts, products)?;
             for (_, v) in fields {
-                check_expr_matches(v, ctors, adts)?;
+                check_expr_matches(v, ctors, adts, products)?;
             }
         }
         S::TupleLit { elems, .. } => {
             for a in elems {
-                check_expr_matches(a, ctors, adts)?;
+                check_expr_matches(a, ctors, adts, products)?;
             }
         }
         S::Int(..) | S::Float(..) | S::Bool(..) | S::String(..) | S::Char(..) | S::Ident(..) => {}
         S::Interp { parts, .. } => {
             for p in parts {
                 if let lumia_syntax::InterpPart::Expr(e) = p {
-                    check_expr_matches(e, ctors, adts)?;
+                    check_expr_matches(e, ctors, adts, products)?;
                 }
             }
         }
@@ -272,79 +467,276 @@ fn check_match_exhaustiveness(
     arms: &[lumia_syntax::MatchArm],
     ctors: &HashMap<String, CtorInfo>,
     adts: &[AdtDef],
+    products: &HashMap<String, Vec<String>>,
 ) -> Result<(), String> {
-    use std::collections::HashSet;
-    let mut covered: HashMap<String, HashSet<i64>> = HashMap::new();
-    let mut catch_all = false;
-    let mut saw_sum = false;
-
-    for arm in arms {
-        collect_pat_coverage(&arm.pattern, ctors, &mut covered, &mut catch_all, &mut saw_sum);
-    }
-    if !saw_sum || catch_all {
-        return Ok(());
-    }
-    for (adt_name, tags) in &covered {
-        let Some(def) = adts.iter().find(|a| a.name == *adt_name) else {
-            continue;
-        };
-        let missing: Vec<&str> = def
-            .variants
-            .iter()
-            .filter(|v| !tags.contains(&v.tag))
-            .map(|v| v.name.as_str())
-            .collect();
-        if !missing.is_empty() {
-            return Err(format!(
-                "non-exhaustive match on `{adt_name}`: missing variant(s) {}",
-                missing.join(", ")
-            ));
-        }
-    }
-    Ok(())
+    let pats: Vec<&Pattern> = arms
+        .iter()
+        // Guards refine payloads; a guarded arm does not exhaust a constructor.
+        .filter(|a| a.guard.is_none())
+        .map(|a| &a.pattern)
+        .collect();
+    check_pats_cover(&pats, ctors, adts, products, "")
 }
 
-fn collect_pat_coverage(
-    pat: &Pattern,
-    ctors: &HashMap<String, CtorInfo>,
-    covered: &mut HashMap<String, std::collections::HashSet<i64>>,
-    catch_all: &mut bool,
-    saw_sum: &mut bool,
-) {
+fn flatten_or<'a>(pat: &'a Pattern, out: &mut Vec<&'a Pattern>) {
     match pat {
-        Pattern::Wildcard(_) => *catch_all = true,
-        Pattern::Ident(name, _) => {
-            if let Some(c) = ctors.get(name) {
-                if c.arity == 0 {
-                    *saw_sum = true;
+        Pattern::Or(ps, _) => {
+            for p in ps {
+                flatten_or(p, out);
+            }
+        }
+        other => out.push(other),
+    }
+}
+
+/// Irrefutable at this level for coverage: `_`, binders, or products/tuples whose
+/// fields are all catch-alls. Nullary ctor names (`None`) are refutable.
+fn coverage_catch_all(pat: &Pattern, ctors: &HashMap<String, CtorInfo>) -> bool {
+    match pat {
+        Pattern::Wildcard(_) => true,
+        Pattern::Ident(name, _) => !ctors.get(name).is_some_and(|c| c.arity == 0),
+        Pattern::Or(ps, _) => ps.iter().any(|p| coverage_catch_all(p, ctors)),
+        Pattern::Struct { fields, .. } => fields
+            .iter()
+            .all(|(_, sub)| coverage_catch_all(sub, ctors)),
+        Pattern::Tuple { elems, .. } => elems.iter().all(|e| coverage_catch_all(e, ctors)),
+        Pattern::Variant { .. } | Pattern::List { .. } | Pattern::Int(_, _) => false,
+    }
+}
+
+/// Whether `pats` (alternatives) cover all values at this pattern depth.
+/// Recurses into variant payloads, product fields, and tuple elements.
+fn check_pats_cover(
+    pats: &[&Pattern],
+    ctors: &HashMap<String, CtorInfo>,
+    adts: &[AdtDef],
+    products: &HashMap<String, Vec<String>>,
+    path: &str,
+) -> Result<(), String> {
+    use std::collections::HashSet;
+
+    let mut flat = Vec::new();
+    for p in pats {
+        flatten_or(p, &mut flat);
+    }
+    if flat.is_empty() || flat.iter().any(|p| coverage_catch_all(p, ctors)) {
+        return Ok(());
+    }
+
+    let mut covered: HashMap<String, HashSet<i64>> = HashMap::new();
+    let mut ctor_args: HashMap<String, Vec<Vec<&Pattern>>> = HashMap::new();
+    let mut product_fields: HashMap<String, HashMap<String, Vec<&Pattern>>> = HashMap::new();
+    let mut tuple_rows: Vec<Vec<&Pattern>> = Vec::new();
+    let mut list_pats: Vec<&Pattern> = Vec::new();
+    let mut saw_sum = false;
+    let mut saw_product = false;
+    let mut saw_list = false;
+    let mut saw_int = false;
+
+    for p in &flat {
+        match *p {
+            Pattern::Ident(name, _) => {
+                if let Some(c) = ctors.get(name) {
+                    if c.arity == 0 {
+                        saw_sum = true;
+                        covered
+                            .entry(c.adt_name.clone())
+                            .or_default()
+                            .insert(c.tag);
+                    }
+                }
+            }
+            Pattern::Variant { name, args, .. } => {
+                if let Some(c) = ctors.get(name) {
+                    saw_sum = true;
                     covered
                         .entry(c.adt_name.clone())
                         .or_default()
                         .insert(c.tag);
-                    return;
+                    ctor_args
+                        .entry(name.clone())
+                        .or_default()
+                        .push(args.iter().collect());
                 }
             }
-            *catch_all = true;
-        }
-        Pattern::Variant { name, .. } => {
-            if let Some(c) = ctors.get(name) {
-                *saw_sum = true;
-                covered
-                    .entry(c.adt_name.clone())
-                    .or_default()
-                    .insert(c.tag);
+            Pattern::Struct { name, fields, .. } => {
+                saw_product = true;
+                let entry = product_fields.entry(name.clone()).or_default();
+                for (fname, sub) in fields {
+                    entry.entry(fname.clone()).or_default().push(sub);
+                }
             }
-        }
-        Pattern::Or(pats, _) => {
-            for p in pats {
-                collect_pat_coverage(p, ctors, covered, catch_all, saw_sum);
+            Pattern::Tuple { elems, .. } => {
+                saw_product = true;
+                tuple_rows.push(elems.iter().collect());
             }
+            Pattern::List { .. } => {
+                saw_list = true;
+                list_pats.push(*p);
+            }
+            Pattern::Int(_, _) => {
+                saw_int = true;
+            }
+            Pattern::Wildcard(_) | Pattern::Or(_, _) => {}
         }
-        Pattern::Struct { .. }
-        | Pattern::Tuple { .. }
-        | Pattern::List { .. }
-        | Pattern::Int(_, _) => {}
     }
+
+    if saw_sum {
+        for (adt_name, tags) in &covered {
+            let Some(def) = adts.iter().find(|a| a.name == *adt_name) else {
+                continue;
+            };
+            let missing: Vec<&str> = def
+                .variants
+                .iter()
+                .filter(|v| !tags.contains(&v.tag))
+                .map(|v| v.name.as_str())
+                .collect();
+            if !missing.is_empty() {
+                let where_ = if path.is_empty() {
+                    format!("`{adt_name}`")
+                } else {
+                    format!("`{adt_name}` (in {path})")
+                };
+                return Err(format!(
+                    "non-exhaustive match on {where_}: missing variant(s) {}",
+                    missing.join(", ")
+                ));
+            }
+            for v in &def.variants {
+                if v.arity == 0 {
+                    continue;
+                }
+                let Some(rows) = ctor_args.get(&v.name) else {
+                    continue;
+                };
+                for slot in 0..v.arity {
+                    let col: Vec<&Pattern> = rows
+                        .iter()
+                        .filter_map(|r| r.get(slot).copied())
+                        .collect();
+                    if col.len() != rows.len() {
+                        continue;
+                    }
+                    let nested = if path.is_empty() {
+                        v.name.clone()
+                    } else {
+                        format!("{path}.{}", v.name)
+                    };
+                    check_pats_cover(&col, ctors, adts, products, &nested)?;
+                }
+            }
+        }
+    }
+
+    if saw_product {
+        for (pname, fields) in &product_fields {
+            let order = products.get(pname).cloned().unwrap_or_default();
+            for fname in &order {
+                let Some(subs) = fields.get(fname) else {
+                    continue;
+                };
+                let nested = if path.is_empty() {
+                    format!("{pname}.{fname}")
+                } else {
+                    format!("{path}.{pname}.{fname}")
+                };
+                check_pats_cover(subs, ctors, adts, products, &nested)?;
+            }
+        }
+        if !tuple_rows.is_empty() {
+            let arity = tuple_rows[0].len();
+            if tuple_rows.iter().all(|r| r.len() == arity) {
+                for slot in 0..arity {
+                    let col: Vec<&Pattern> = tuple_rows
+                        .iter()
+                        .filter_map(|r| r.get(slot).copied())
+                        .collect();
+                    let nested = if path.is_empty() {
+                        format!(".{}", slot)
+                    } else {
+                        format!("{path}.{}", slot)
+                    };
+                    check_pats_cover(&col, ctors, adts, products, &nested)?;
+                }
+            }
+        }
+    }
+
+    // Int / List have infinite (or open) domains: without a catch-all binder/`_`,
+    // finite literal arms are never enough. List is exhaustive only when every
+    // length is covered (`[]` + `[…, ..rest]` style).
+    if !saw_sum && !saw_product && (saw_int || saw_list) {
+        let where_ = if path.is_empty() {
+            "scrutinee".into()
+        } else {
+            path.to_string()
+        };
+        if saw_list {
+            if !list_patterns_exhaustive(&list_pats) {
+                return Err(format!(
+                    "non-exhaustive match on List (in {where_}): add `[]` / `[..rest]` arms or `_`"
+                ));
+            }
+            // Nested element columns (fixed prefix positions).
+            let max_fixed = list_pats
+                .iter()
+                .filter_map(|p| match p {
+                    Pattern::List { elems, .. } => Some(elems.len()),
+                    _ => None,
+                })
+                .max()
+                .unwrap_or(0);
+            for slot in 0..max_fixed {
+                let col: Vec<&Pattern> = list_pats
+                    .iter()
+                    .filter_map(|p| match p {
+                        Pattern::List { elems, .. } => elems.get(slot),
+                        _ => None,
+                    })
+                    .collect();
+                if col.len() == list_pats.len() {
+                    let nested = if path.is_empty() {
+                        format!("[{slot}]")
+                    } else {
+                        format!("{path}[{slot}]")
+                    };
+                    check_pats_cover(&col, ctors, adts, products, &nested)?;
+                }
+            }
+        } else if saw_int {
+            return Err(format!(
+                "non-exhaustive match on Int (in {where_}): integer literals need a `_` arm"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// `[]` covers length 0; `[e0,…,ek-1, ..rest]` covers all lengths `>= k`.
+/// Together they must cover `0..`.
+fn list_patterns_exhaustive(pats: &[&Pattern]) -> bool {
+    use std::collections::HashSet;
+    let mut exact: HashSet<usize> = HashSet::new();
+    let mut rest_mins: Vec<usize> = Vec::new();
+    for p in pats {
+        match p {
+            Pattern::List { elems, rest, .. } => {
+                if rest.is_some() {
+                    rest_mins.push(elems.len());
+                } else {
+                    exact.insert(elems.len());
+                }
+            }
+            _ => return false,
+        }
+    }
+    let Some(min_rest) = rest_mins.into_iter().min() else {
+        // Only fixed-length arms — infinitely many lengths remain.
+        return false;
+    };
+    (0..min_rest).all(|len| exact.contains(&len))
 }
 
 #[derive(Debug, Clone)]
@@ -396,6 +788,12 @@ pub struct Fun {
     pub body: Expr,
     /// True if this is the program entry `main`
     pub is_main: bool,
+    /// C ABI symbol when declared via `foreign "C" fn …`
+    pub external: Option<String>,
+    /// When `external` is set: (param type names, return type name), e.g. `Int`.
+    pub foreign_sig: Option<(Vec<String>, String)>,
+    /// `foreign "C" pure fn` → Effect::pure().
+    pub foreign_pure: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -490,8 +888,10 @@ pub enum Builtin {
     Contains,
     /// Immutable map upsert: `m.set(k, v)` → new Map.
     MapSet,
-    /// Immutable map delete: `m.remove(k)` → new Map.
+    /// Immutable delete: `m.remove(k)` / `s.remove(x)` → new Map/Set.
     MapRemove,
+    /// Immutable set add: `s.insert(x)` → new Set (no-op if already present).
+    SetInsert,
     MapKeys,
     MapValues,
     MapItems,
@@ -499,6 +899,32 @@ pub enum Builtin {
     RangeInclusive,
     /// Format any scalar / String / Char as a heap String (interpolation).
     Show,
+    /// String ops.
+    StrTrim,
+    StrSplit,
+    StrSubstring,
+    StrToLower,
+    StrToUpper,
+    StrStartsWith,
+    StrEndsWith,
+    /// Read entire stdin → String (IO).
+    ReadStdin,
+    /// Non-exhaustive / failed match (runtime abort).
+    MatchFail,
+    /// `xs.take(n)` → prefix List.
+    ListTake,
+    /// `xs.reverse()` → new List (same element order reversed).
+    ListReverse,
+    /// `xs.sort()` → new List[Int] ascending.
+    ListSort,
+    /// `xs.sortBy(f)` → permute by Ord keys (stable); runtime takes (values, keys).
+    ListSortByKeys,
+    /// Auto-parallel `xs.map(f)` under `--parallel`.
+    ListParMap,
+    /// `assert(cond)` — abort if false (programming error).
+    Assert,
+    /// `xs.join(sep)` for List[String] → String.
+    ListJoin,
     /// ADT tag / payload access (match desugar).
     AdtTag,
     AdtField,
@@ -540,11 +966,30 @@ fn lower_expr(e: &lumia_syntax::Expr) -> Expr {
             left,
             right,
             span,
-        } => Expr::Binary {
-            op: *op,
-            left: Box::new(lower_expr(left)),
-            right: Box::new(lower_expr(right)),
-            span: *span,
+        } => {
+            // DESIGN: `and` / `or` short-circuit — desugar to `if`.
+            let l = lower_expr(left);
+            let r = lower_expr(right);
+            match op {
+                BinOp::And => Expr::If {
+                    cond: Box::new(l),
+                    then_branch: Box::new(r),
+                    else_branch: Box::new(Expr::Bool(false, *span)),
+                    span: *span,
+                },
+                BinOp::Or => Expr::If {
+                    cond: Box::new(l),
+                    then_branch: Box::new(Expr::Bool(true, *span)),
+                    else_branch: Box::new(r),
+                    span: *span,
+                },
+                _ => Expr::Binary {
+                    op: *op,
+                    left: Box::new(l),
+                    right: Box::new(r),
+                    span: *span,
+                },
+            }
         },
         lumia_syntax::Expr::Unary { op, expr, span } => Expr::Unary {
             op: *op,
@@ -567,22 +1012,44 @@ fn lower_expr(e: &lumia_syntax::Expr) -> Expr {
             ),
             span: *span,
         },
-        lumia_syntax::Expr::Pipeline { left, right, span } => match right.as_ref() {
-            lumia_syntax::Expr::Call { callee, args, .. } => {
-                let mut new_args = vec![lower_expr(left)];
-                new_args.extend(args.iter().map(lower_expr));
-                lower_call_from_parts(lower_expr(callee), new_args, *span)
+        lumia_syntax::Expr::Pipeline { left, right, span } => {
+            // Fuse `xs >> map … >> filter … >> fold(z, g)` before expanding intermediates.
+            if let lumia_syntax::Expr::Call { callee, args, .. } = right.as_ref() {
+                if let lumia_syntax::Expr::Ident(name, _) = callee.as_ref() {
+                    if name == "fold" && args.len() == 2 {
+                        if let Some(fused) =
+                            try_fuse_hof_fold(left, &args[0], &args[1], *span)
+                        {
+                            return fused;
+                        }
+                    }
+                }
             }
-            other => {
-                lower_call_from_parts(lower_expr(other), vec![lower_expr(left)], *span)
+            match right.as_ref() {
+                lumia_syntax::Expr::Call { callee, args, .. } => {
+                    let mut new_args = vec![lower_expr(left)];
+                    new_args.extend(args.iter().map(lower_expr));
+                    lower_call_from_parts(lower_expr(callee), new_args, *span)
+                }
+                other => {
+                    lower_call_from_parts(lower_expr(other), vec![lower_expr(left)], *span)
+                }
             }
-        },
+        }
         lumia_syntax::Expr::Field { base, field, span } => {
-            // `xs.len` → len(xs); product fields → adt_field; else call field(base)
+            // `xs.len` → len(xs); product fields → adt_field; `p.0` → adt_field;
+            // else call field(base)
             if field == "len" {
                 Expr::BuiltinCall {
                     name: Builtin::ListLen,
                     args: vec![lower_expr(base)],
+                    span: *span,
+                }
+            } else if let Ok(idx) = field.parse::<i64>() {
+                // Tuple / positional projection (DESIGN: `p.0`)
+                Expr::BuiltinCall {
+                    name: Builtin::AdtField,
+                    args: vec![lower_expr(base), Expr::Int(idx, *span)],
                     span: *span,
                 }
             } else if let Some((_ty, idx)) = lookup_product_field(field) {
@@ -620,6 +1087,35 @@ fn lower_expr(e: &lumia_syntax::Expr) -> Expr {
             arms,
             span,
         } => lower_match(scrutinee, arms, *span),
+        lumia_syntax::Expr::MatchCond { arms, span } => lower_match_cond(arms, *span),
+    }
+}
+
+/// Subjectless `match { c -> a; _ -> b }` → nested if/else.
+fn lower_match_cond(arms: &[lumia_syntax::MatchCondArm], span: Span) -> Expr {
+    fold_match_cond_arms(arms, span)
+}
+
+fn fold_match_cond_arms(arms: &[lumia_syntax::MatchCondArm], span: Span) -> Expr {
+    if arms.is_empty() {
+        return Expr::Unit(span);
+    }
+    let (arm, rest) = arms.split_first().unwrap();
+    match &arm.cond {
+        None => lower_expr(&arm.body),
+        Some(cond) => {
+            let else_body = if rest.is_empty() {
+                Expr::Unit(span)
+            } else {
+                fold_match_cond_arms(rest, span)
+            };
+            Expr::If {
+                cond: Box::new(lower_expr(cond)),
+                then_branch: Box::new(lower_expr(&arm.body)),
+                else_branch: Box::new(else_body),
+                span,
+            }
+        }
     }
 }
 
@@ -632,8 +1128,26 @@ fn lower_call(callee: &lumia_syntax::Expr, args: &[lumia_syntax::Expr], span: Sp
                 span,
             };
         }
+        if name == "assert" {
+            return Expr::BuiltinCall {
+                name: Builtin::Assert,
+                args: args.iter().map(lower_expr).collect(),
+                span,
+            };
+        }
+        if name == "fold" && args.len() == 3 {
+            if let Some(fused) = try_fuse_hof_fold(&args[0], &args[1], &args[2], span) {
+                return fused;
+            }
+        }
     }
+    // Method call: fuse `….map(…).filter(…).fold(z, g)` on the syntax tree.
     if let lumia_syntax::Expr::Field { base, field, .. } = callee {
+        if field == "fold" && args.len() == 2 {
+            if let Some(fused) = try_fuse_hof_fold(base, &args[0], &args[1], span) {
+                return fused;
+            }
+        }
         let mut call_args = vec![lower_expr(base)];
         call_args.extend(args.iter().map(lower_expr));
         return lower_call_from_parts(Expr::Var(field.clone(), span), call_args, span);
@@ -679,6 +1193,9 @@ fn lower_call_from_parts(callee: Expr, args: Vec<Expr>, span: Span) -> Expr {
             "filter" if args.len() == 2 => {
                 return lower_list_filter(args[0].clone(), args[1].clone(), span);
             }
+            "flatMap" if args.len() == 2 => {
+                return lower_list_flat_map(args[0].clone(), args[1].clone(), span);
+            }
             "fold" if args.len() == 3 => {
                 return lower_list_fold(
                     args[0].clone(),
@@ -686,6 +1203,52 @@ fn lower_call_from_parts(callee: Expr, args: Vec<Expr>, span: Span) -> Expr {
                     args[2].clone(),
                     span,
                 );
+            }
+            "any" if args.len() == 2 => {
+                return lower_list_any(args[0].clone(), args[1].clone(), span);
+            }
+            "all" if args.len() == 2 => {
+                return lower_list_all(args[0].clone(), args[1].clone(), span);
+            }
+            "find" if args.len() == 2 => {
+                return lower_list_find(args[0].clone(), args[1].clone(), span);
+            }
+            "append" if args.len() == 2 => {
+                return Expr::BuiltinCall {
+                    name: Builtin::ListAppend,
+                    args,
+                    span,
+                };
+            }
+            "isEmpty" if args.len() == 1 => {
+                return Expr::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(Expr::BuiltinCall {
+                        name: Builtin::ListLen,
+                        args: vec![args[0].clone()],
+                        span,
+                    }),
+                    right: Box::new(Expr::Int(0, span)),
+                    span,
+                };
+            }
+            "toSet" if args.len() == 1 => {
+                return lower_to_set(args[0].clone(), span);
+            }
+            "toList" if args.len() == 1 => {
+                return lower_to_list(args[0].clone(), span);
+            }
+            "toMap" if args.len() == 1 => {
+                return lower_to_map(args[0].clone(), span);
+            }
+            "union" if args.len() == 2 => {
+                return lower_set_union(args[0].clone(), args[1].clone(), span);
+            }
+            "intersect" if args.len() == 2 => {
+                return lower_set_intersect(args[0].clone(), args[1].clone(), span);
+            }
+            "diff" if args.len() == 2 => {
+                return lower_set_diff(args[0].clone(), args[1].clone(), span);
             }
             "contains" if args.len() == 2 => {
                 return Expr::BuiltinCall {
@@ -704,6 +1267,13 @@ fn lower_call_from_parts(callee: Expr, args: Vec<Expr>, span: Span) -> Expr {
             "remove" if args.len() == 2 => {
                 return Expr::BuiltinCall {
                     name: Builtin::MapRemove,
+                    args,
+                    span,
+                };
+            }
+            "insert" if args.len() == 2 => {
+                return Expr::BuiltinCall {
+                    name: Builtin::SetInsert,
                     args,
                     span,
                 };
@@ -732,6 +1302,107 @@ fn lower_call_from_parts(callee: Expr, args: Vec<Expr>, span: Span) -> Expr {
             "slice" if args.len() == 2 => {
                 return Expr::BuiltinCall {
                     name: Builtin::ListSlice,
+                    args,
+                    span,
+                };
+            }
+            "drop" if args.len() == 2 => {
+                return Expr::BuiltinCall {
+                    name: Builtin::ListSlice,
+                    args,
+                    span,
+                };
+            }
+            "take" if args.len() == 2 => {
+                return Expr::BuiltinCall {
+                    name: Builtin::ListTake,
+                    args,
+                    span,
+                };
+            }
+            "reverse" if args.len() == 1 => {
+                return Expr::BuiltinCall {
+                    name: Builtin::ListReverse,
+                    args,
+                    span,
+                };
+            }
+            "sort" if args.len() == 1 => {
+                return Expr::BuiltinCall {
+                    name: Builtin::ListSort,
+                    args,
+                    span,
+                };
+            }
+            "sortBy" if args.len() == 2 => {
+                return lower_list_sort_by(args[0].clone(), args[1].clone(), span);
+            }
+            "join" if args.len() == 2 => {
+                return Expr::BuiltinCall {
+                    name: Builtin::ListJoin,
+                    args,
+                    span,
+                };
+            }
+            "lines" if args.len() == 1 => {
+                return Expr::BuiltinCall {
+                    name: Builtin::StrSplit,
+                    args: vec![args[0].clone(), Expr::Char('\n', span)],
+                    span,
+                };
+            }
+            "trim" if args.len() == 1 => {
+                return Expr::BuiltinCall {
+                    name: Builtin::StrTrim,
+                    args,
+                    span,
+                };
+            }
+            "split" if args.len() == 2 => {
+                return Expr::BuiltinCall {
+                    name: Builtin::StrSplit,
+                    args,
+                    span,
+                };
+            }
+            "substring" if args.len() == 3 => {
+                return Expr::BuiltinCall {
+                    name: Builtin::StrSubstring,
+                    args,
+                    span,
+                };
+            }
+            "toLower" if args.len() == 1 => {
+                return Expr::BuiltinCall {
+                    name: Builtin::StrToLower,
+                    args,
+                    span,
+                };
+            }
+            "toUpper" if args.len() == 1 => {
+                return Expr::BuiltinCall {
+                    name: Builtin::StrToUpper,
+                    args,
+                    span,
+                };
+            }
+            "startsWith" if args.len() == 2 => {
+                return Expr::BuiltinCall {
+                    name: Builtin::StrStartsWith,
+                    args,
+                    span,
+                };
+            }
+            "endsWith" if args.len() == 2 => {
+                return Expr::BuiltinCall {
+                    name: Builtin::StrEndsWith,
+                    args,
+                    span,
+                };
+            }
+            "readStdin" if args.is_empty() => {
+                return Expr::BuiltinCall {
+                    name: Builtin::ReadStdin,
                     args,
                     span,
                 };
@@ -804,15 +1475,25 @@ fn lower_struct_lit(name: &str, fields: &[(String, lumia_syntax::Expr)], span: S
     };
     let mut by_name: HashMap<String, Expr> = HashMap::new();
     for (f, e) in fields {
-        by_name.insert(f.clone(), lower_expr(e));
+        if by_name.insert(f.clone(), lower_expr(e)).is_some() {
+            set_lower_err(format!("duplicate field `{f}` in `{name}` struct literal"), span);
+        }
     }
     let mut args = Vec::with_capacity(order.len());
     for f in &order {
         if let Some(e) = by_name.remove(f) {
             args.push(e);
         } else {
-            args.push(Expr::Int(0, span)); // missing field → 0 MVP
+            set_lower_err(format!("missing field `{f}` in `{name}` struct literal"), span);
+            // Placeholder; `lower_module` aborts on LOWER_ERR.
+            args.push(Expr::Int(0, span));
         }
+    }
+    if let Some((extra, _)) = by_name.iter().next() {
+        set_lower_err(
+            format!("unknown field `{extra}` in `{name}` struct literal"),
+            span,
+        );
     }
     Expr::AdtNew {
         adt_name: name.into(),
@@ -877,7 +1558,8 @@ fn lower_match(
     span: Span,
 ) -> Expr {
     let scrut = "__match_s".to_string();
-    let body = fold_match_arms(arms, &scrut, span);
+    let expanded = expand_or_arms(arms);
+    let body = fold_match_arms(&expanded, &scrut, span);
     Expr::Let {
         name: scrut,
         value: Box::new(lower_expr(scrutinee)),
@@ -886,12 +1568,34 @@ fn lower_match(
     }
 }
 
+/// Top-level `A | B -> body` → two arms (correct bindings per alternative).
+fn expand_or_arms(arms: &[lumia_syntax::MatchArm]) -> Vec<lumia_syntax::MatchArm> {
+    let mut out = Vec::new();
+    for arm in arms {
+        match &arm.pattern {
+            Pattern::Or(pats, _) if pats.len() > 1 => {
+                for p in pats {
+                    out.push(lumia_syntax::MatchArm {
+                        pattern: p.clone(),
+                        guard: arm.guard.clone(),
+                        body: arm.body.clone(),
+                        span: arm.span,
+                    });
+                }
+            }
+            _ => out.push(arm.clone()),
+        }
+    }
+    out
+}
+
 fn fold_match_arms(arms: &[lumia_syntax::MatchArm], scrut: &str, span: Span) -> Expr {
     if arms.is_empty() {
         return Expr::Unit(span);
     }
+    let scrut_e = Expr::Var(scrut.into(), span);
     let (arm, rest) = arms.split_first().unwrap();
-    let (pat_cond, binds) = pattern_cond(&arm.pattern, scrut, span);
+    let (pat_cond, binds) = pattern_cond(&arm.pattern, &scrut_e, span);
     let cond = if let Some(g) = &arm.guard {
         // Pattern bindings must be in scope for the guard (`x if x > 0`).
         let mut guard_e = lower_expr(g);
@@ -903,12 +1607,8 @@ fn fold_match_arms(arms: &[lumia_syntax::MatchArm], scrut: &str, span: Span) -> 
                 mutable: false,
             };
         }
-        Expr::Binary {
-            op: BinOp::And,
-            left: Box::new(pat_cond),
-            right: Box::new(guard_e),
-            span,
-        }
+        // Short-circuit: do not evaluate guard (or its field loads) if pat fails.
+        short_and(pat_cond, guard_e, span)
     } else {
         pat_cond
     };
@@ -921,9 +1621,21 @@ fn fold_match_arms(arms: &[lumia_syntax::MatchArm], scrut: &str, span: Span) -> 
             mutable: false,
         };
     }
-    // Last arm: no else (MVP assumes match is exhaustive / last arm is catch-all).
+    // Always test the pattern — including the last arm (unless irrefutable).
     if rest.is_empty() {
-        return then_body;
+        if pattern_irrefutable(&arm.pattern) {
+            return then_body;
+        }
+        return Expr::If {
+            cond: Box::new(cond),
+            then_branch: Box::new(then_body),
+            else_branch: Box::new(Expr::BuiltinCall {
+                name: Builtin::MatchFail,
+                args: vec![],
+                span,
+            }),
+            span,
+        };
     }
     let else_body = fold_match_arms(rest, scrut, span);
     Expr::If {
@@ -934,13 +1646,23 @@ fn fold_match_arms(arms: &[lumia_syntax::MatchArm], scrut: &str, span: Span) -> 
     }
 }
 
-fn pattern_cond(pat: &Pattern, scrut: &str, span: Span) -> (Expr, Vec<(String, Expr)>) {
+fn pattern_irrefutable(pat: &Pattern) -> bool {
+    match pat {
+        Pattern::Wildcard(_) | Pattern::Ident(_, _) => true,
+        Pattern::Or(ps, _) => !ps.is_empty() && ps.iter().all(pattern_irrefutable),
+        _ => false,
+    }
+}
+
+/// Build match condition + binder equations for `pat` against scrutinee expression `scrut`.
+/// Nested patterns compose field/get paths (no temps), so binders stay valid in the arm body.
+fn pattern_cond(pat: &Pattern, scrut: &Expr, span: Span) -> (Expr, Vec<(String, Expr)>) {
     match pat {
         Pattern::Wildcard(_) => (Expr::Bool(true, span), vec![]),
         Pattern::Int(n, s) => (
             Expr::Binary {
                 op: BinOp::Eq,
-                left: Box::new(Expr::Var(scrut.into(), span)),
+                left: Box::new(scrut.clone()),
                 right: Box::new(Expr::Int(*n, *s)),
                 span,
             },
@@ -951,7 +1673,7 @@ fn pattern_cond(pat: &Pattern, scrut: &str, span: Span) -> (Expr, Vec<(String, E
                 if c.arity == 0 {
                     let tag = Expr::BuiltinCall {
                         name: Builtin::AdtTag,
-                        args: vec![Expr::Var(scrut.into(), span)],
+                        args: vec![scrut.clone()],
                         span,
                     };
                     return (
@@ -967,23 +1689,26 @@ fn pattern_cond(pat: &Pattern, scrut: &str, span: Span) -> (Expr, Vec<(String, E
             }
             (
                 Expr::Bool(true, span),
-                vec![(name.clone(), Expr::Var(scrut.into(), span))],
+                vec![(name.clone(), scrut.clone())],
             )
         }
         Pattern::Or(pats, _) => {
+            // Nested or-patterns with binders are ambiguous; top-level or is expanded.
             let mut cond = Expr::Bool(false, span);
             let mut binds = vec![];
             for p in pats {
                 let (c, b) = pattern_cond(p, scrut, span);
-                if !b.is_empty() && binds.is_empty() {
+                if !b.is_empty() {
+                    set_lower_err(
+                        "nested or-pattern with bindings is not supported; use separate match arms"
+                            .into(),
+                        span,
+                    );
+                }
+                if binds.is_empty() {
                     binds = b;
                 }
-                cond = Expr::Binary {
-                    op: BinOp::Or,
-                    left: Box::new(cond),
-                    right: Box::new(c),
-                    span,
-                };
+                cond = short_or(cond, c, span);
             }
             (cond, binds)
         }
@@ -993,7 +1718,7 @@ fn pattern_cond(pat: &Pattern, scrut: &str, span: Span) -> (Expr, Vec<(String, E
             };
             let tag = Expr::BuiltinCall {
                 name: Builtin::AdtTag,
-                args: vec![Expr::Var(scrut.into(), span)],
+                args: vec![scrut.clone()],
                 span,
             };
             let mut cond = Expr::Binary {
@@ -1006,29 +1731,20 @@ fn pattern_cond(pat: &Pattern, scrut: &str, span: Span) -> (Expr, Vec<(String, E
             for (i, ep) in args.iter().enumerate() {
                 let field = Expr::BuiltinCall {
                     name: Builtin::AdtField,
-                    args: vec![
-                        Expr::Var(scrut.into(), span),
-                        Expr::Int(i as i64, span),
-                    ],
+                    args: vec![scrut.clone(), Expr::Int(i as i64, span)],
                     span,
                 };
                 match ep {
-                    Pattern::Ident(n, _) => binds.push((n.clone(), field)),
-                    Pattern::Wildcard(_) => {}
-                    Pattern::Int(n, s) => {
-                        cond = Expr::Binary {
-                            op: BinOp::And,
-                            left: Box::new(cond),
-                            right: Box::new(Expr::Binary {
-                                op: BinOp::Eq,
-                                left: Box::new(field),
-                                right: Box::new(Expr::Int(*n, *s)),
-                                span,
-                            }),
-                            span,
-                        };
+                    Pattern::Ident(n, _) if lookup_ctor(n).is_none_or(|c| c.arity != 0) => {
+                        // Binder (not a nullary ctor name).
+                        binds.push((n.clone(), field));
                     }
-                    _ => {}
+                    Pattern::Wildcard(_) => {}
+                    sub => {
+                        let (sub_cond, sub_binds) = pattern_cond(sub, &field, span);
+                        cond = short_and(cond, sub_cond, span);
+                        binds.extend(sub_binds);
+                    }
                 }
             }
             (cond, binds)
@@ -1045,29 +1761,19 @@ fn pattern_cond(pat: &Pattern, scrut: &str, span: Span) -> (Expr, Vec<(String, E
                 };
                 let field = Expr::BuiltinCall {
                     name: Builtin::AdtField,
-                    args: vec![
-                        Expr::Var(scrut.into(), span),
-                        Expr::Int(idx as i64, span),
-                    ],
+                    args: vec![scrut.clone(), Expr::Int(idx as i64, span)],
                     span,
                 };
                 match sub {
-                    Pattern::Ident(n, _) => binds.push((n.clone(), field)),
-                    Pattern::Wildcard(_) => {}
-                    Pattern::Int(n, s) => {
-                        cond = Expr::Binary {
-                            op: BinOp::And,
-                            left: Box::new(cond),
-                            right: Box::new(Expr::Binary {
-                                op: BinOp::Eq,
-                                left: Box::new(field),
-                                right: Box::new(Expr::Int(*n, *s)),
-                                span,
-                            }),
-                            span,
-                        };
+                    Pattern::Ident(n, _) if lookup_ctor(n).is_none_or(|c| c.arity != 0) => {
+                        binds.push((n.clone(), field));
                     }
-                    _ => {}
+                    Pattern::Wildcard(_) => {}
+                    sub => {
+                        let (sub_cond, sub_binds) = pattern_cond(sub, &field, span);
+                        cond = short_and(cond, sub_cond, span);
+                        binds.extend(sub_binds);
+                    }
                 }
             }
             (cond, binds)
@@ -1078,29 +1784,19 @@ fn pattern_cond(pat: &Pattern, scrut: &str, span: Span) -> (Expr, Vec<(String, E
             for (i, ep) in elems.iter().enumerate() {
                 let field = Expr::BuiltinCall {
                     name: Builtin::AdtField,
-                    args: vec![
-                        Expr::Var(scrut.into(), span),
-                        Expr::Int(i as i64, span),
-                    ],
+                    args: vec![scrut.clone(), Expr::Int(i as i64, span)],
                     span,
                 };
                 match ep {
-                    Pattern::Ident(n, _) => binds.push((n.clone(), field)),
-                    Pattern::Wildcard(_) => {}
-                    Pattern::Int(n, s) => {
-                        cond = Expr::Binary {
-                            op: BinOp::And,
-                            left: Box::new(cond),
-                            right: Box::new(Expr::Binary {
-                                op: BinOp::Eq,
-                                left: Box::new(field),
-                                right: Box::new(Expr::Int(*n, *s)),
-                                span,
-                            }),
-                            span,
-                        };
+                    Pattern::Ident(n, _) if lookup_ctor(n).is_none_or(|c| c.arity != 0) => {
+                        binds.push((n.clone(), field));
                     }
-                    _ => {}
+                    Pattern::Wildcard(_) => {}
+                    sub => {
+                        let (sub_cond, sub_binds) = pattern_cond(sub, &field, span);
+                        cond = short_and(cond, sub_cond, span);
+                        binds.extend(sub_binds);
+                    }
                 }
             }
             (cond, binds)
@@ -1108,12 +1804,11 @@ fn pattern_cond(pat: &Pattern, scrut: &str, span: Span) -> (Expr, Vec<(String, E
         Pattern::List { elems, rest, .. } => {
             let len = Expr::BuiltinCall {
                 name: Builtin::ListLen,
-                args: vec![Expr::Var(scrut.into(), span)],
+                args: vec![scrut.clone()],
                 span,
             };
             let min = elems.len() as i64;
-            let cond = if rest.is_some() {
-                // len >= min
+            let mut cond = if rest.is_some() {
                 Expr::Binary {
                     op: BinOp::Ge,
                     left: Box::new(len),
@@ -1132,57 +1827,32 @@ fn pattern_cond(pat: &Pattern, scrut: &str, span: Span) -> (Expr, Vec<(String, E
             for (i, ep) in elems.iter().enumerate() {
                 let get = Expr::BuiltinCall {
                     name: Builtin::ListGet,
-                    args: vec![
-                        Expr::Var(scrut.into(), span),
-                        Expr::Int(i as i64, span),
-                    ],
+                    args: vec![scrut.clone(), Expr::Int(i as i64, span)],
                     span,
                 };
                 match ep {
-                    Pattern::Ident(name, _) => binds.push((name.clone(), get)),
-                    Pattern::Wildcard(_) => {}
-                    Pattern::Int(n, s) => {
-                        // refine cond: get(i) == n
-                        // fold into cond via And — handled by wrapping
-                        let eq = Expr::Binary {
-                            op: BinOp::Eq,
-                            left: Box::new(get),
-                            right: Box::new(Expr::Int(*n, *s)),
-                            span,
-                        };
-                        // We'll And later — push as synthetic via cond update below
-                        binds.push((format!("__pat_eq_{i}"), eq));
+                    Pattern::Ident(name, _)
+                        if lookup_ctor(name).is_none_or(|c| c.arity != 0) =>
+                    {
+                        binds.push((name.clone(), get));
                     }
-                    _ => {}
-                }
-            }
-            // Convert Int equality "binds" into cond Ands
-            let mut cond = cond;
-            let mut real_binds = vec![];
-            for (name, val) in binds {
-                if name.starts_with("__pat_eq_") {
-                    cond = Expr::Binary {
-                        op: BinOp::And,
-                        left: Box::new(cond),
-                        right: Box::new(val),
-                        span,
-                    };
-                } else {
-                    real_binds.push((name, val));
+                    Pattern::Wildcard(_) => {}
+                    sub => {
+                        let (sub_cond, sub_binds) = pattern_cond(sub, &get, span);
+                        cond = short_and(cond, sub_cond, span);
+                        binds.extend(sub_binds);
+                    }
                 }
             }
             if let Some(rname) = rest {
                 let slice = Expr::BuiltinCall {
                     name: Builtin::ListSlice,
-                    args: vec![
-                        Expr::Var(scrut.into(), span),
-                        Expr::Int(min, span),
-                    ],
+                    args: vec![scrut.clone(), Expr::Int(min, span)],
                     span,
                 };
-                real_binds.push((rname.clone(), slice));
+                binds.push((rname.clone(), slice));
             }
-            (cond, real_binds)
+            (cond, binds)
         }
     }
 }
@@ -1313,8 +1983,15 @@ fn lower_interp(parts: &[lumia_syntax::InterpPart], span: Span) -> Expr {
 }
 
 /// `xs.map(f)` → accumulate via append.
-/// Literal `{ x -> e }` is inlined; any other function value is called each step.
+/// With `--parallel`, emit `ListParMap` only when `f` has no captures (FunRef-safe).
 fn lower_list_map(list: Expr, f: Expr, span: Span) -> Expr {
+    if parallel_map_enabled() && map_callback_is_parallel_safe(&f) {
+        return Expr::BuiltinCall {
+            name: Builtin::ListParMap,
+            args: vec![list, f],
+            span,
+        };
+    }
     match &f {
         Expr::Lambda { params, body, .. } if params.len() == 1 => {
             lower_list_map_inline(list, params[0].clone(), *body.clone(), span)
@@ -1327,9 +2004,113 @@ fn lower_list_map(list: Expr, f: Expr, span: Span) -> Expr {
     }
 }
 
+/// Parallel map: capture-free lambda, or a top-level function name (FunRef).
+fn map_callback_is_parallel_safe(f: &Expr) -> bool {
+    match f {
+        Expr::Lambda { params, body, .. } => {
+            let mut bound: Vec<String> = params.clone();
+            free_vars_expr(body, &mut bound).is_empty()
+        }
+        Expr::Var(n, _) => TOPLEVEL_FUNS.with(|t| t.borrow().contains(n)),
+        _ => false,
+    }
+}
+
+fn free_vars_expr(e: &Expr, bound: &mut Vec<String>) -> Vec<String> {
+    let mut out = Vec::new();
+    fn walk(e: &Expr, bound: &mut Vec<String>, out: &mut Vec<String>) {
+        match e {
+            Expr::Var(n, _) => {
+                if !bound.iter().any(|b| b == n) && !out.iter().any(|x| x == n) {
+                    out.push(n.clone());
+                }
+            }
+            Expr::Let {
+                name, value, body, ..
+            } => {
+                walk(value, bound, out);
+                bound.push(name.clone());
+                walk(body, bound, out);
+                bound.pop();
+            }
+            Expr::Lambda { params, body, .. } => {
+                let n = bound.len();
+                for p in params {
+                    bound.push(p.clone());
+                }
+                walk(body, bound, out);
+                bound.truncate(n);
+            }
+            Expr::Assign { value, .. } | Expr::Unary { expr: value, .. } => walk(value, bound, out),
+            Expr::Call { callee, args, .. } => {
+                walk(callee, bound, out);
+                for a in args {
+                    walk(a, bound, out);
+                }
+            }
+            Expr::BuiltinCall { args, .. } | Expr::AdtNew { args, .. } => {
+                for a in args {
+                    walk(a, bound, out);
+                }
+            }
+            Expr::Binary { left, right, .. } => {
+                walk(left, bound, out);
+                walk(right, bound, out);
+            }
+            Expr::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                walk(cond, bound, out);
+                walk(then_branch, bound, out);
+                walk(else_branch, bound, out);
+            }
+            Expr::Loop {
+                cond, body, step, ..
+            } => {
+                walk(cond, bound, out);
+                walk(body, bound, out);
+                if let Some(s) = step {
+                    walk(s, bound, out);
+                }
+            }
+            Expr::Seq { stmts, .. } => {
+                for s in stmts {
+                    walk(s, bound, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    walk(e, bound, &mut out);
+    out
+}
+
+/// `xs.sortBy(f)` — key must be Int / String / Char; stable permute of elements.
+fn lower_list_sort_by(list: Expr, f: Expr, span: Span) -> Expr {
+    let xs = format!("__sby_xs_{}", span.start.0);
+    let keys = format!("__sby_keys_{}", span.start.0);
+    Expr::Let {
+        name: xs.clone(),
+        value: Box::new(list),
+        body: Box::new(Expr::Let {
+            name: keys.clone(),
+            value: Box::new(lower_list_map(Expr::Var(xs.clone(), span), f, span)),
+            body: Box::new(Expr::BuiltinCall {
+                name: Builtin::ListSortByKeys,
+                args: vec![Expr::Var(xs, span), Expr::Var(keys, span)],
+                span,
+            }),
+            mutable: false,
+        }),
+        mutable: false,
+    }
+}
+
 fn lower_list_map_inline(list: Expr, x: String, body: Expr, span: Span) -> Expr {
     let acc = format!("__map_acc_{}", span.start.0);
-    let xs = format!("__map_xs_{}", span.start.0);
     let step = Expr::Assign {
         name: acc.clone(),
         value: Box::new(Expr::BuiltinCall {
@@ -1340,31 +2121,21 @@ fn lower_list_map_inline(list: Expr, x: String, body: Expr, span: Span) -> Expr 
         span,
     };
     Expr::Let {
-        name: xs.clone(),
-        value: Box::new(list),
-        body: Box::new(Expr::Let {
-            name: acc.clone(),
-            value: Box::new(Expr::Call {
-                callee: Box::new(Expr::Var("listOf".into(), span)),
-                args: vec![],
-                span,
-            }),
-            body: Box::new(Expr::Seq {
-                stmts: vec![
-                    list_for_in(&x, Expr::Var(xs, span), step, span),
-                    Expr::Var(acc, span),
-                ],
-                span,
-            }),
-            mutable: true,
+        name: acc.clone(),
+        value: Box::new(empty_list(span)),
+        body: Box::new(Expr::Seq {
+            stmts: vec![
+                for_each_elem(&x, list, step, span),
+                Expr::Var(acc, span),
+            ],
+            span,
         }),
-        mutable: false,
+        mutable: true,
     }
 }
 
 fn lower_list_map_call(list: Expr, f: Expr, f_name: String, x: String, span: Span) -> Expr {
     let acc = format!("__map_acc_{}", span.start.0);
-    let xs = format!("__map_xs_{}", span.start.0);
     let mapped = Expr::Call {
         callee: Box::new(Expr::Var(f_name.clone(), span)),
         args: vec![Expr::Var(x.clone(), span)],
@@ -1383,25 +2154,16 @@ fn lower_list_map_call(list: Expr, f: Expr, f_name: String, x: String, span: Spa
         name: f_name,
         value: Box::new(f),
         body: Box::new(Expr::Let {
-            name: xs.clone(),
-            value: Box::new(list),
-            body: Box::new(Expr::Let {
-                name: acc.clone(),
-                value: Box::new(Expr::Call {
-                    callee: Box::new(Expr::Var("listOf".into(), span)),
-                    args: vec![],
-                    span,
-                }),
-                body: Box::new(Expr::Seq {
-                    stmts: vec![
-                        list_for_in(&x, Expr::Var(xs, span), step, span),
-                        Expr::Var(acc, span),
-                    ],
-                    span,
-                }),
-                mutable: true,
+            name: acc.clone(),
+            value: Box::new(empty_list(span)),
+            body: Box::new(Expr::Seq {
+                stmts: vec![
+                    for_each_elem(&x, list, step, span),
+                    Expr::Var(acc, span),
+                ],
+                span,
             }),
-            mutable: false,
+            mutable: true,
         }),
         mutable: false,
     }
@@ -1421,7 +2183,6 @@ fn lower_list_filter(list: Expr, f: Expr, span: Span) -> Expr {
 
 fn lower_list_filter_inline(list: Expr, x: String, body: Expr, span: Span) -> Expr {
     let acc = format!("__flt_acc_{}", span.start.0);
-    let xs = format!("__flt_xs_{}", span.start.0);
     let append = Expr::Assign {
         name: acc.clone(),
         value: Box::new(Expr::BuiltinCall {
@@ -1441,31 +2202,21 @@ fn lower_list_filter_inline(list: Expr, x: String, body: Expr, span: Span) -> Ex
         span,
     };
     Expr::Let {
-        name: xs.clone(),
-        value: Box::new(list),
-        body: Box::new(Expr::Let {
-            name: acc.clone(),
-            value: Box::new(Expr::Call {
-                callee: Box::new(Expr::Var("listOf".into(), span)),
-                args: vec![],
-                span,
-            }),
-            body: Box::new(Expr::Seq {
-                stmts: vec![
-                    list_for_in(&x, Expr::Var(xs, span), step, span),
-                    Expr::Var(acc, span),
-                ],
-                span,
-            }),
-            mutable: true,
+        name: acc.clone(),
+        value: Box::new(empty_list(span)),
+        body: Box::new(Expr::Seq {
+            stmts: vec![
+                for_each_elem(&x, list, step, span),
+                Expr::Var(acc, span),
+            ],
+            span,
         }),
-        mutable: false,
+        mutable: true,
     }
 }
 
 fn lower_list_filter_call(list: Expr, f: Expr, f_name: String, x: String, span: Span) -> Expr {
     let acc = format!("__flt_acc_{}", span.start.0);
-    let xs = format!("__flt_xs_{}", span.start.0);
     let pred = Expr::Call {
         callee: Box::new(Expr::Var(f_name.clone(), span)),
         args: vec![Expr::Var(x.clone(), span)],
@@ -1493,31 +2244,315 @@ fn lower_list_filter_call(list: Expr, f: Expr, f_name: String, x: String, span: 
         name: f_name,
         value: Box::new(f),
         body: Box::new(Expr::Let {
-            name: xs.clone(),
-            value: Box::new(list),
-            body: Box::new(Expr::Let {
-                name: acc.clone(),
-                value: Box::new(Expr::Call {
-                    callee: Box::new(Expr::Var("listOf".into(), span)),
-                    args: vec![],
-                    span,
-                }),
-                body: Box::new(Expr::Seq {
-                    stmts: vec![
-                        list_for_in(&x, Expr::Var(xs, span), step, span),
-                        Expr::Var(acc, span),
-                    ],
-                    span,
-                }),
-                mutable: true,
+            name: acc.clone(),
+            value: Box::new(empty_list(span)),
+            body: Box::new(Expr::Seq {
+                stmts: vec![
+                    for_each_elem(&x, list, step, span),
+                    Expr::Var(acc, span),
+                ],
+                span,
             }),
-            mutable: false,
+            mutable: true,
         }),
         mutable: false,
     }
 }
 
+fn apply_pred(f: &Expr, x: Expr, span: Span) -> Expr {
+    match f {
+        Expr::Lambda { params, body, .. } if params.len() == 1 => Expr::Let {
+            name: params[0].clone(),
+            value: Box::new(x),
+            body: body.clone(),
+            mutable: false,
+        },
+        _ => Expr::Call {
+            callee: Box::new(f.clone()),
+            args: vec![x],
+            span,
+        },
+    }
+}
+
+/// `xs.flatMap(f)` where `f: T -> List[U]` → concat mapped lists.
+fn lower_list_flat_map(list: Expr, f: Expr, span: Span) -> Expr {
+    let acc = format!("__fmap_acc_{}", span.start.0);
+    let x = format!("__fmap_x_{}", span.start.0);
+    match &f {
+        Expr::Lambda { params, body, .. } if params.len() == 1 => {
+            let mapped = Expr::Let {
+                name: params[0].clone(),
+                value: Box::new(Expr::Var(x.clone(), span)),
+                body: body.clone(),
+                mutable: false,
+            };
+            let step = Expr::Assign {
+                name: acc.clone(),
+                value: Box::new(Expr::BuiltinCall {
+                    name: Builtin::ListConcat,
+                    args: vec![Expr::Var(acc.clone(), span), mapped],
+                    span,
+                }),
+                span,
+            };
+            Expr::Let {
+                name: acc.clone(),
+                value: Box::new(empty_list(span)),
+                body: Box::new(Expr::Seq {
+                    stmts: vec![
+                        for_each_elem(&x, list, step, span),
+                        Expr::Var(acc, span),
+                    ],
+                    span,
+                }),
+                mutable: true,
+            }
+        }
+        _ => {
+            let f_name = format!("__fmap_f_{}", span.start.0);
+            let mapped = Expr::Call {
+                callee: Box::new(Expr::Var(f_name.clone(), span)),
+                args: vec![Expr::Var(x.clone(), span)],
+                span,
+            };
+            let step = Expr::Assign {
+                name: acc.clone(),
+                value: Box::new(Expr::BuiltinCall {
+                    name: Builtin::ListConcat,
+                    args: vec![Expr::Var(acc.clone(), span), mapped],
+                    span,
+                }),
+                span,
+            };
+            Expr::Let {
+                name: f_name,
+                value: Box::new(f),
+                body: Box::new(Expr::Let {
+                    name: acc.clone(),
+                    value: Box::new(empty_list(span)),
+                    body: Box::new(Expr::Seq {
+                        stmts: vec![
+                            for_each_elem(&x, list, step, span),
+                            Expr::Var(acc, span),
+                        ],
+                        span,
+                    }),
+                    mutable: true,
+                }),
+                mutable: false,
+            }
+        }
+    }
+}
+
+fn option_some(x: Expr, span: Span) -> Expr {
+    match lookup_ctor("Some") {
+        Some(c) => Expr::AdtNew {
+            adt_name: c.adt_name,
+            variant: "Some".into(),
+            tag: c.tag,
+            args: vec![x],
+            span,
+        },
+        None => Expr::Call {
+            callee: Box::new(Expr::Var("Some".into(), span)),
+            args: vec![x],
+            span,
+        },
+    }
+}
+
+fn option_none(span: Span) -> Expr {
+    match lookup_ctor("None") {
+        Some(c) => Expr::AdtNew {
+            adt_name: c.adt_name,
+            variant: "None".into(),
+            tag: c.tag,
+            args: vec![],
+            span,
+        },
+        None => Expr::Call {
+            callee: Box::new(Expr::Var("None".into(), span)),
+            args: vec![],
+            span,
+        },
+    }
+}
+
+/// Bind non-lambda `f` to a temp; lambdas stay inline.
+fn bind_fun(f: Expr, span: Span) -> (Option<(String, Expr)>, Expr) {
+    match &f {
+        Expr::Lambda { .. } => (None, f),
+        _ => {
+            let name = format!("__pred_f_{}", span.start.0);
+            (Some((name.clone(), f)), Expr::Var(name, span))
+        }
+    }
+}
+
+fn lower_list_any(list: Expr, f: Expr, span: Span) -> Expr {
+    let acc = format!("__any_acc_{}", span.start.0);
+    let x = format!("__any_x_{}", span.start.0);
+    let (f_bind, pred_f) = bind_fun(f, span);
+    let pred = apply_pred(&pred_f, Expr::Var(x.clone(), span), span);
+    let hit = Expr::Seq {
+        stmts: vec![
+            Expr::Assign {
+                name: acc.clone(),
+                value: Box::new(Expr::Bool(true, span)),
+                span,
+            },
+            Expr::Break(span),
+        ],
+        span,
+    };
+    let step = Expr::If {
+        cond: Box::new(pred),
+        then_branch: Box::new(hit),
+        else_branch: Box::new(Expr::Unit(span)),
+        span,
+    };
+    let core = Expr::Let {
+        name: acc.clone(),
+        value: Box::new(Expr::Bool(false, span)),
+        body: Box::new(Expr::Seq {
+            stmts: vec![
+                for_each_elem(&x, list, step, span),
+                Expr::Var(acc, span),
+            ],
+            span,
+        }),
+        mutable: true,
+    };
+    match f_bind {
+        Some((name, val)) => Expr::Let {
+            name,
+            value: Box::new(val),
+            body: Box::new(core),
+            mutable: false,
+        },
+        None => core,
+    }
+}
+
+fn lower_list_all(list: Expr, f: Expr, span: Span) -> Expr {
+    let acc = format!("__all_acc_{}", span.start.0);
+    let x = format!("__all_x_{}", span.start.0);
+    let (f_bind, pred_f) = bind_fun(f, span);
+    let pred = apply_pred(&pred_f, Expr::Var(x.clone(), span), span);
+    let miss = Expr::Seq {
+        stmts: vec![
+            Expr::Assign {
+                name: acc.clone(),
+                value: Box::new(Expr::Bool(false, span)),
+                span,
+            },
+            Expr::Break(span),
+        ],
+        span,
+    };
+    let step = Expr::If {
+        cond: Box::new(pred),
+        then_branch: Box::new(Expr::Unit(span)),
+        else_branch: Box::new(miss),
+        span,
+    };
+    let core = Expr::Let {
+        name: acc.clone(),
+        value: Box::new(Expr::Bool(true, span)),
+        body: Box::new(Expr::Seq {
+            stmts: vec![
+                for_each_elem(&x, list, step, span),
+                Expr::Var(acc, span),
+            ],
+            span,
+        }),
+        mutable: true,
+    };
+    match f_bind {
+        Some((name, val)) => Expr::Let {
+            name,
+            value: Box::new(val),
+            body: Box::new(core),
+            mutable: false,
+        },
+        None => core,
+    }
+}
+
+fn lower_list_find(list: Expr, f: Expr, span: Span) -> Expr {
+    let acc = format!("__find_acc_{}", span.start.0);
+    let x = format!("__find_x_{}", span.start.0);
+    let (f_bind, pred_f) = bind_fun(f, span);
+    let pred = apply_pred(&pred_f, Expr::Var(x.clone(), span), span);
+    let hit = Expr::Seq {
+        stmts: vec![
+            Expr::Assign {
+                name: acc.clone(),
+                value: Box::new(option_some(Expr::Var(x.clone(), span), span)),
+                span,
+            },
+            Expr::Break(span),
+        ],
+        span,
+    };
+    let step = Expr::If {
+        cond: Box::new(pred),
+        then_branch: Box::new(hit),
+        else_branch: Box::new(Expr::Unit(span)),
+        span,
+    };
+    let core = Expr::Let {
+        name: acc.clone(),
+        value: Box::new(option_none(span)),
+        body: Box::new(Expr::Seq {
+            stmts: vec![
+                for_each_elem(&x, list, step, span),
+                Expr::Var(acc, span),
+            ],
+            span,
+        }),
+        mutable: true,
+    };
+    match f_bind {
+        Some((name, val)) => Expr::Let {
+            name,
+            value: Box::new(val),
+            body: Box::new(core),
+            mutable: false,
+        },
+        None => core,
+    }
+}
+
 fn lower_list_fold(list: Expr, init: Expr, f: Expr, span: Span) -> Expr {
+    // `range(a,b).fold(...)` → counter loop (no HeapList materialization).
+    if let Expr::BuiltinCall { name, args, .. } = &list {
+        if matches!(name, Builtin::Range | Builtin::RangeInclusive) && args.len() == 2 {
+            let inclusive = matches!(name, Builtin::RangeInclusive);
+            let start = args[0].clone();
+            let end = args[1].clone();
+            return match &f {
+                Expr::Lambda { params, body, .. } if params.len() == 2 => range_fold_inline(
+                    start,
+                    end,
+                    inclusive,
+                    init,
+                    params[0].clone(),
+                    params[1].clone(),
+                    *body.clone(),
+                    span,
+                ),
+                _ => {
+                    let f_name = format!("__fold_f_{}", span.start.0);
+                    let x = format!("__fold_x_{}", span.start.0);
+                    let acc = format!("__fold_acc_{}", span.start.0);
+                    range_fold_call(start, end, inclusive, init, f, f_name, acc, x, span)
+                }
+            };
+        }
+    }
     match &f {
         Expr::Lambda { params, body, .. } if params.len() == 2 => {
             return lower_list_fold_inline(
@@ -1537,41 +2572,39 @@ fn lower_list_fold(list: Expr, init: Expr, f: Expr, span: Span) -> Expr {
     lower_list_fold_call(list, init, f, f_name, acc, x, span)
 }
 
-fn lower_list_fold_inline(
-    list: Expr,
+fn range_fold_inline(
+    start: Expr,
+    end: Expr,
+    inclusive: bool,
     init: Expr,
     acc: String,
     x: String,
     body: Expr,
     span: Span,
 ) -> Expr {
-    let xs = format!("__fold_xs_{}", span.start.0);
     let step = Expr::Assign {
         name: acc.clone(),
         value: Box::new(body),
         span,
     };
     Expr::Let {
-        name: xs.clone(),
-        value: Box::new(list),
-        body: Box::new(Expr::Let {
-            name: acc.clone(),
-            value: Box::new(init),
-            body: Box::new(Expr::Seq {
-                stmts: vec![
-                    list_for_in(&x, Expr::Var(xs, span), step, span),
-                    Expr::Var(acc, span),
-                ],
-                span,
-            }),
-            mutable: true,
+        name: acc.clone(),
+        value: Box::new(init),
+        body: Box::new(Expr::Seq {
+            stmts: vec![
+                counter_for_in(&x, start, end, inclusive, step, span),
+                Expr::Var(acc, span),
+            ],
+            span,
         }),
-        mutable: false,
+        mutable: true,
     }
 }
 
-fn lower_list_fold_call(
-    list: Expr,
+fn range_fold_call(
+    start: Expr,
+    end: Expr,
+    inclusive: bool,
     init: Expr,
     f: Expr,
     f_name: String,
@@ -1579,7 +2612,6 @@ fn lower_list_fold_call(
     x: String,
     span: Span,
 ) -> Expr {
-    let xs = format!("__fold_xs_{}", span.start.0);
     let applied = Expr::Call {
         callee: Box::new(Expr::Var(f_name.clone(), span)),
         args: vec![Expr::Var(acc.clone(), span), Expr::Var(x.clone(), span)],
@@ -1594,43 +2626,173 @@ fn lower_list_fold_call(
         name: f_name,
         value: Box::new(f),
         body: Box::new(Expr::Let {
-            name: xs.clone(),
-            value: Box::new(list),
-            body: Box::new(Expr::Let {
-                name: acc.clone(),
-                value: Box::new(init),
-                body: Box::new(Expr::Seq {
-                    stmts: vec![
-                        list_for_in(&x, Expr::Var(xs, span), step, span),
-                        Expr::Var(acc, span),
-                    ],
-                    span,
-                }),
-                mutable: true,
+            name: acc.clone(),
+            value: Box::new(init),
+            body: Box::new(Expr::Seq {
+                stmts: vec![
+                    counter_for_in(&x, start, end, inclusive, step, span),
+                    Expr::Var(acc, span),
+                ],
+                span,
             }),
-            mutable: false,
+            mutable: true,
         }),
         mutable: false,
     }
 }
 
-/// `for x in range(a,b)` → counter loop; otherwise list len/get loop.
+fn lower_list_fold_inline(
+    list: Expr,
+    init: Expr,
+    acc: String,
+    x: String,
+    body: Expr,
+    span: Span,
+) -> Expr {
+    let step = Expr::Assign {
+        name: acc.clone(),
+        value: Box::new(body),
+        span,
+    };
+    Expr::Let {
+        name: acc.clone(),
+        value: Box::new(init),
+        body: Box::new(Expr::Seq {
+            stmts: vec![
+                for_each_elem(&x, list, step, span),
+                Expr::Var(acc, span),
+            ],
+            span,
+        }),
+        mutable: true,
+    }
+}
+
+fn lower_list_fold_call(
+    list: Expr,
+    init: Expr,
+    f: Expr,
+    f_name: String,
+    acc: String,
+    x: String,
+    span: Span,
+) -> Expr {
+    let applied = Expr::Call {
+        callee: Box::new(Expr::Var(f_name.clone(), span)),
+        args: vec![Expr::Var(acc.clone(), span), Expr::Var(x.clone(), span)],
+        span,
+    };
+    let step = Expr::Assign {
+        name: acc.clone(),
+        value: Box::new(applied),
+        span,
+    };
+    Expr::Let {
+        name: f_name,
+        value: Box::new(f),
+        body: Box::new(Expr::Let {
+            name: acc.clone(),
+            value: Box::new(init),
+            body: Box::new(Expr::Seq {
+                stmts: vec![
+                    for_each_elem(&x, list, step, span),
+                    Expr::Var(acc, span),
+                ],
+                span,
+            }),
+            mutable: true,
+        }),
+        mutable: false,
+    }
+}
+
+/// `for x in range(a,b)` → counter loop; `for (k,v) in m` → items + destructure;
+/// `for (k,v) in pairs` (already a List of 2-tuples) → destructure only;
+/// otherwise indexed len/get loop (List / Set).
 fn lower_for_in(
-    binding: &str,
+    binding: &lumia_syntax::ForBinding,
     iter: &lumia_syntax::Expr,
     body: &lumia_syntax::Expr,
     span: Span,
 ) -> Expr {
-    let lowered_iter = lower_expr(iter);
-    if let Expr::BuiltinCall { name, args, .. } = &lowered_iter {
-        if matches!(name, Builtin::Range | Builtin::RangeInclusive) && args.len() == 2 {
-            let inclusive = matches!(name, Builtin::RangeInclusive);
-            let start = args[0].clone();
-            let end = args[1].clone();
-            return counter_for_in(binding, start, end, inclusive, lower_expr(body), span);
+    let body_e = lower_expr(body);
+    match binding {
+        lumia_syntax::ForBinding::Pair(k, v) => {
+            let lowered = lower_expr(iter);
+            let items = if expr_yields_pair_list(&lowered) {
+                lowered
+            } else {
+                Expr::BuiltinCall {
+                    name: Builtin::MapItems,
+                    args: vec![lowered],
+                    span,
+                }
+            };
+            let pair = format!("__kv_{}", span.start.0);
+            let bind_k = Expr::Let {
+                name: k.clone(),
+                value: Box::new(Expr::BuiltinCall {
+                    name: Builtin::AdtField,
+                    args: vec![Expr::Var(pair.clone(), span), Expr::Int(0, span)],
+                    span,
+                }),
+                body: Box::new(Expr::Let {
+                    name: v.clone(),
+                    value: Box::new(Expr::BuiltinCall {
+                        name: Builtin::AdtField,
+                        args: vec![Expr::Var(pair.clone(), span), Expr::Int(1, span)],
+                        span,
+                    }),
+                    body: Box::new(body_e),
+                    mutable: false,
+                }),
+                mutable: false,
+            };
+            list_for_in(&pair, items, bind_k, span)
+        }
+        lumia_syntax::ForBinding::Name(name) => {
+            let lowered_iter = lower_expr(iter);
+            if let Expr::BuiltinCall { name: b, args, .. } = &lowered_iter {
+                if matches!(b, Builtin::Range | Builtin::RangeInclusive) && args.len() == 2 {
+                    let inclusive = matches!(b, Builtin::RangeInclusive);
+                    return counter_for_in(
+                        name,
+                        args[0].clone(),
+                        args[1].clone(),
+                        inclusive,
+                        body_e,
+                        span,
+                    );
+                }
+            }
+            list_for_in(name, lowered_iter, body_e, span)
         }
     }
-    list_for_in(binding, lowered_iter, lower_expr(body), span)
+}
+
+/// True when `e` is already a List of pairs (e.g. `m.items()`, `….sortBy(…)`).
+fn expr_yields_pair_list(e: &Expr) -> bool {
+    match e {
+        Expr::BuiltinCall { name, .. } => matches!(
+            name,
+            Builtin::MapItems
+                | Builtin::ListSortByKeys
+                | Builtin::ListSort
+                | Builtin::ListAppend
+                | Builtin::ListConcat
+                | Builtin::ListTake
+                | Builtin::ListReverse
+                | Builtin::ListSlice
+                | Builtin::ListGet
+                | Builtin::ListParMap
+        ),
+        Expr::Let { body, .. } => expr_yields_pair_list(body),
+        Expr::Seq { stmts, .. } => stmts
+            .last()
+            .map(expr_yields_pair_list)
+            .unwrap_or(false),
+        _ => false,
+    }
 }
 
 fn counter_for_in(
@@ -1641,7 +2803,7 @@ fn counter_for_in(
     body: Expr,
     span: Span,
 ) -> Expr {
-    let i = "__i".to_string();
+    let i = format!("__i_{}", span.start.0);
     let cmp = if inclusive { BinOp::Le } else { BinOp::Lt };
     let cond = Expr::Binary {
         op: cmp,
@@ -1740,6 +2902,381 @@ fn list_for_in(binding: &str, list: Expr, body: Expr, span: Span) -> Expr {
     }
 }
 
+/// Iterate with a custom per-element step, using either a counter (range) or indexed get.
+fn for_each_elem(x: &str, list: Expr, step: Expr, span: Span) -> Expr {
+    if let Expr::BuiltinCall { name, args, .. } = &list {
+        if matches!(name, Builtin::Range | Builtin::RangeInclusive) && args.len() == 2 {
+            let inclusive = matches!(name, Builtin::RangeInclusive);
+            return counter_for_in(x, args[0].clone(), args[1].clone(), inclusive, step, span);
+        }
+    }
+    list_for_in(x, list, step, span)
+}
+
+fn empty_list(span: Span) -> Expr {
+    Expr::Call {
+        callee: Box::new(Expr::Var("listOf".into(), span)),
+        args: vec![],
+        span,
+    }
+}
+
+fn empty_set(span: Span) -> Expr {
+    Expr::Call {
+        callee: Box::new(Expr::Var("setOf".into(), span)),
+        args: vec![],
+        span,
+    }
+}
+
+fn empty_map(span: Span) -> Expr {
+    Expr::Call {
+        callee: Box::new(Expr::Var("mapOf".into(), span)),
+        args: vec![],
+        span,
+    }
+}
+
+fn lower_to_set(list: Expr, span: Span) -> Expr {
+    let acc = format!("__toset_acc_{}", span.start.0);
+    let x = format!("__toset_x_{}", span.start.0);
+    let step = Expr::Assign {
+        name: acc.clone(),
+        value: Box::new(Expr::BuiltinCall {
+            name: Builtin::SetInsert,
+            args: vec![Expr::Var(acc.clone(), span), Expr::Var(x.clone(), span)],
+            span,
+        }),
+        span,
+    };
+    Expr::Let {
+        name: acc.clone(),
+        value: Box::new(empty_set(span)),
+        body: Box::new(Expr::Seq {
+            stmts: vec![
+                for_each_elem(&x, list, step, span),
+                Expr::Var(acc, span),
+            ],
+            span,
+        }),
+        mutable: true,
+    }
+}
+
+fn lower_to_list(col: Expr, span: Span) -> Expr {
+    let acc = format!("__tolist_acc_{}", span.start.0);
+    let x = format!("__tolist_x_{}", span.start.0);
+    let step = Expr::Assign {
+        name: acc.clone(),
+        value: Box::new(Expr::BuiltinCall {
+            name: Builtin::ListAppend,
+            args: vec![Expr::Var(acc.clone(), span), Expr::Var(x.clone(), span)],
+            span,
+        }),
+        span,
+    };
+    Expr::Let {
+        name: acc.clone(),
+        value: Box::new(empty_list(span)),
+        body: Box::new(Expr::Seq {
+            stmts: vec![
+                for_each_elem(&x, col, step, span),
+                Expr::Var(acc, span),
+            ],
+            span,
+        }),
+        mutable: true,
+    }
+}
+
+/// `pairs.toMap()` — each element is a 2-tuple `(k, v)`.
+fn lower_to_map(pairs: Expr, span: Span) -> Expr {
+    let acc = format!("__tomap_acc_{}", span.start.0);
+    let p = format!("__tomap_p_{}", span.start.0);
+    let k = Expr::BuiltinCall {
+        name: Builtin::AdtField,
+        args: vec![Expr::Var(p.clone(), span), Expr::Int(0, span)],
+        span,
+    };
+    let v = Expr::BuiltinCall {
+        name: Builtin::AdtField,
+        args: vec![Expr::Var(p.clone(), span), Expr::Int(1, span)],
+        span,
+    };
+    let step = Expr::Assign {
+        name: acc.clone(),
+        value: Box::new(Expr::BuiltinCall {
+            name: Builtin::MapSet,
+            args: vec![Expr::Var(acc.clone(), span), k, v],
+            span,
+        }),
+        span,
+    };
+    Expr::Let {
+        name: acc.clone(),
+        value: Box::new(empty_map(span)),
+        body: Box::new(Expr::Seq {
+            stmts: vec![
+                list_for_in(&p, pairs, step, span),
+                Expr::Var(acc, span),
+            ],
+            span,
+        }),
+        mutable: true,
+    }
+}
+
+fn lower_set_union(a: Expr, b: Expr, span: Span) -> Expr {
+    let acc = format!("__union_acc_{}", span.start.0);
+    let x = format!("__union_x_{}", span.start.0);
+    let step = Expr::Assign {
+        name: acc.clone(),
+        value: Box::new(Expr::BuiltinCall {
+            name: Builtin::SetInsert,
+            args: vec![Expr::Var(acc.clone(), span), Expr::Var(x.clone(), span)],
+            span,
+        }),
+        span,
+    };
+    Expr::Let {
+        name: acc.clone(),
+        value: Box::new(a),
+        body: Box::new(Expr::Seq {
+            stmts: vec![
+                list_for_in(&x, b, step, span),
+                Expr::Var(acc, span),
+            ],
+            span,
+        }),
+        mutable: true,
+    }
+}
+
+fn lower_set_intersect(a: Expr, b: Expr, span: Span) -> Expr {
+    let acc = format!("__isect_acc_{}", span.start.0);
+    let other = format!("__isect_b_{}", span.start.0);
+    let x = format!("__isect_x_{}", span.start.0);
+    let insert = Expr::Assign {
+        name: acc.clone(),
+        value: Box::new(Expr::BuiltinCall {
+            name: Builtin::SetInsert,
+            args: vec![Expr::Var(acc.clone(), span), Expr::Var(x.clone(), span)],
+            span,
+        }),
+        span,
+    };
+    let step = Expr::If {
+        cond: Box::new(Expr::BuiltinCall {
+            name: Builtin::Contains,
+            args: vec![Expr::Var(other.clone(), span), Expr::Var(x.clone(), span)],
+            span,
+        }),
+        then_branch: Box::new(insert),
+        else_branch: Box::new(Expr::Unit(span)),
+        span,
+    };
+    Expr::Let {
+        name: other.clone(),
+        value: Box::new(b),
+        body: Box::new(Expr::Let {
+            name: acc.clone(),
+            value: Box::new(empty_set(span)),
+            body: Box::new(Expr::Seq {
+                stmts: vec![
+                    list_for_in(&x, a, step, span),
+                    Expr::Var(acc, span),
+                ],
+                span,
+            }),
+            mutable: true,
+        }),
+        mutable: false,
+    }
+}
+
+fn lower_set_diff(a: Expr, b: Expr, span: Span) -> Expr {
+    let acc = format!("__diff_acc_{}", span.start.0);
+    let x = format!("__diff_x_{}", span.start.0);
+    let step = Expr::Assign {
+        name: acc.clone(),
+        value: Box::new(Expr::BuiltinCall {
+            name: Builtin::MapRemove,
+            args: vec![Expr::Var(acc.clone(), span), Expr::Var(x.clone(), span)],
+            span,
+        }),
+        span,
+    };
+    Expr::Let {
+        name: acc.clone(),
+        value: Box::new(a),
+        body: Box::new(Expr::Seq {
+            stmts: vec![
+                list_for_in(&x, b, step, span),
+                Expr::Var(acc, span),
+            ],
+            span,
+        }),
+        mutable: true,
+    }
+}
+
+/// Peel trailing `.map(f)` / `.filter(p)` / `map(…)` / `filter(…)` / pipeline hops.
+fn peel_hof_maps_filters<'a>(
+    mut e: &'a lumia_syntax::Expr,
+) -> (
+    &'a lumia_syntax::Expr,
+    Vec<&'a lumia_syntax::Expr>,
+    Vec<&'a lumia_syntax::Expr>,
+) {
+    let mut maps: Vec<&lumia_syntax::Expr> = Vec::new();
+    let mut filters: Vec<&lumia_syntax::Expr> = Vec::new();
+    loop {
+        match e {
+            lumia_syntax::Expr::Pipeline { left, right, .. } => match right.as_ref() {
+                lumia_syntax::Expr::Call { callee, args, .. } => match callee.as_ref() {
+                    lumia_syntax::Expr::Ident(n, _) if n == "map" && args.len() == 1 => {
+                        maps.push(&args[0]);
+                        e = left;
+                        continue;
+                    }
+                    lumia_syntax::Expr::Ident(n, _) if n == "filter" && args.len() == 1 => {
+                        filters.push(&args[0]);
+                        e = left;
+                        continue;
+                    }
+                    _ => break,
+                },
+                _ => break,
+            },
+            lumia_syntax::Expr::Call { callee, args, .. } => {
+                if let lumia_syntax::Expr::Field { base, field, .. } = callee.as_ref() {
+                    if field == "map" && args.len() == 1 {
+                        maps.push(&args[0]);
+                        e = base;
+                        continue;
+                    }
+                    if field == "filter" && args.len() == 1 {
+                        filters.push(&args[0]);
+                        e = base;
+                        continue;
+                    }
+                }
+                if let lumia_syntax::Expr::Ident(n, _) = callee.as_ref() {
+                    if n == "map" && args.len() == 2 {
+                        maps.push(&args[1]);
+                        e = &args[0];
+                        continue;
+                    }
+                    if n == "filter" && args.len() == 2 {
+                        filters.push(&args[1]);
+                        e = &args[0];
+                        continue;
+                    }
+                }
+                break;
+            }
+            _ => break,
+        }
+    }
+    maps.reverse();
+    filters.reverse();
+    (e, maps, filters)
+}
+
+fn apply_hof_fn(f: &lumia_syntax::Expr, arg: Expr, span: Span) -> Expr {
+    match f {
+        lumia_syntax::Expr::Lambda { params, body, .. } if params.len() == 1 => Expr::Let {
+            name: params[0].clone(),
+            value: Box::new(arg),
+            body: Box::new(lower_expr(body)),
+            mutable: false,
+        },
+        _ => Expr::Call {
+            callee: Box::new(lower_expr(f)),
+            args: vec![arg],
+            span,
+        },
+    }
+}
+
+fn apply_fold_fn(f: &lumia_syntax::Expr, acc: Expr, x: Expr, span: Span) -> Expr {
+    match f {
+        lumia_syntax::Expr::Lambda { params, body, .. } if params.len() == 2 => Expr::Let {
+            name: params[0].clone(),
+            value: Box::new(acc),
+            body: Box::new(Expr::Let {
+                name: params[1].clone(),
+                value: Box::new(x),
+                body: Box::new(lower_expr(body)),
+                mutable: false,
+            }),
+            mutable: false,
+        },
+        _ => Expr::Call {
+            callee: Box::new(lower_expr(f)),
+            args: vec![acc, x],
+            span,
+        },
+    }
+}
+
+/// Single-pass `source.map*.filter*.fold` — no intermediate lists.
+fn try_fuse_hof_fold(
+    coll: &lumia_syntax::Expr,
+    init: &lumia_syntax::Expr,
+    f: &lumia_syntax::Expr,
+    span: Span,
+) -> Option<Expr> {
+    let (source, maps, filters) = peel_hof_maps_filters(coll);
+    if maps.is_empty() && filters.is_empty() {
+        return None;
+    }
+    let acc = format!("__fuse_acc_{}", span.start.0);
+    let x0 = format!("__fuse_x_{}", span.start.0);
+    let mut cur = Expr::Var(x0.clone(), span);
+    for m in &maps {
+        cur = apply_hof_fn(m, cur, span);
+    }
+    let x_mapped = format!("__fuse_xm_{}", span.start.0);
+    let mut body = Expr::Assign {
+        name: acc.clone(),
+        value: Box::new(apply_fold_fn(
+            f,
+            Expr::Var(acc.clone(), span),
+            Expr::Var(x_mapped.clone(), span),
+            span,
+        )),
+        span,
+    };
+    for p in filters.iter().rev() {
+        body = Expr::If {
+            cond: Box::new(apply_hof_fn(p, Expr::Var(x_mapped.clone(), span), span)),
+            then_branch: Box::new(body),
+            else_branch: Box::new(Expr::Unit(span)),
+            span,
+        };
+    }
+    let step = Expr::Let {
+        name: x_mapped,
+        value: Box::new(cur),
+        body: Box::new(body),
+        mutable: false,
+    };
+    let source_e = lower_expr(source);
+    Some(Expr::Let {
+        name: acc.clone(),
+        value: Box::new(lower_expr(init)),
+        body: Box::new(Expr::Seq {
+            stmts: vec![
+                for_each_elem(&x0, source_e, step, span),
+                Expr::Var(acc, span),
+            ],
+            span,
+        }),
+        mutable: true,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::lower_module;
@@ -1757,7 +3294,7 @@ val f = { o ->
 }
 "#;
         let ast = parse_module(src).unwrap();
-        let err = lower_module(&ast).unwrap_err();
+        let err = lower_module(&ast).unwrap_err().to_string();
         assert!(err.contains("non-exhaustive"), "{err}");
         assert!(err.contains("Some"), "{err}");
     }
@@ -1776,5 +3313,195 @@ val f = { o ->
 "#;
         let ast = parse_module(src).unwrap();
         assert!(lower_module(&ast).is_ok());
+    }
+
+    #[test]
+    fn exhaustiveness_rejects_nested_missing() {
+        let src = r#"
+module M
+type Option { Some(value) None }
+val f = { o ->
+    o match {
+        None -> { 0 }
+        Some(None) -> { 1 }
+    }
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let err = lower_module(&ast).unwrap_err().to_string();
+        assert!(err.contains("non-exhaustive"), "{err}");
+        assert!(err.contains("Some"), "{err}");
+        assert!(err.contains("in Some"), "{err}");
+    }
+
+    #[test]
+    fn exhaustiveness_accepts_nested_option() {
+        let src = r#"
+module M
+type Option { Some(value) None }
+val f = { o ->
+    o match {
+        None -> { 0 }
+        Some(None) -> { 1 }
+        Some(Some(n)) -> { n }
+    }
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        assert!(lower_module(&ast).is_ok());
+    }
+
+    #[test]
+    fn exhaustiveness_rejects_nested_result_missing_err() {
+        let src = r#"
+module M
+type Option { Some(value) None }
+type Result { Ok(value) Err(msg) }
+val f = { o ->
+    o match {
+        None -> { 0 }
+        Some(Ok(n)) -> { n }
+    }
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let err = lower_module(&ast).unwrap_err().to_string();
+        assert!(err.contains("non-exhaustive"), "{err}");
+        assert!(err.contains("Err"), "{err}");
+    }
+
+    #[test]
+    fn exhaustiveness_rejects_product_field_gap() {
+        let src = r#"
+module M
+type Option { Some(value) None }
+type Box { val inner }
+val f = { b ->
+    b match {
+        Box { inner = Some(n) } -> { n }
+    }
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let err = lower_module(&ast).unwrap_err().to_string();
+        assert!(err.contains("non-exhaustive"), "{err}");
+        assert!(err.contains("None"), "{err}");
+    }
+
+    #[test]
+    fn exhaustiveness_accepts_nested_catch_all_payload() {
+        let src = r#"
+module M
+type Option { Some(value) None }
+type Result { Ok(value) Err(msg) }
+val f = { o ->
+    o match {
+        None -> { 0 }
+        Some(_) -> { 1 }
+    }
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        assert!(lower_module(&ast).is_ok());
+    }
+
+    #[test]
+    fn exhaustiveness_rejects_int_literals_without_wildcard() {
+        let src = r#"
+module M
+val f = { n ->
+    n match {
+        0 -> { 1 }
+        1 -> { 2 }
+    }
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let err = lower_module(&ast).unwrap_err().to_string();
+        assert!(err.contains("non-exhaustive"), "{err}");
+        assert!(err.contains("Int"), "{err}");
+    }
+
+    #[test]
+    fn exhaustiveness_accepts_int_with_wildcard() {
+        let src = r#"
+module M
+val f = { n ->
+    n match {
+        0 -> { 1 }
+        _ -> { 2 }
+    }
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        assert!(lower_module(&ast).is_ok());
+    }
+
+    #[test]
+    fn exhaustiveness_rejects_partial_list() {
+        let src = r#"
+module M
+val f = { xs ->
+    xs match {
+        [] -> { 0 }
+        [x] -> { x }
+    }
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let err = lower_module(&ast).unwrap_err().to_string();
+        assert!(err.contains("non-exhaustive"), "{err}");
+        assert!(err.contains("List"), "{err}");
+    }
+
+    #[test]
+    fn exhaustiveness_accepts_list_empty_and_rest() {
+        let src = r#"
+module M
+val f = { xs ->
+    xs match {
+        [] -> { 0 }
+        [h, ..rest] -> { h }
+    }
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        assert!(lower_module(&ast).is_ok());
+    }
+
+    #[test]
+    fn exhaustiveness_rejects_nested_int_literal_gap() {
+        let src = r#"
+module M
+type Option { Some(value) None }
+val f = { o ->
+    o match {
+        None -> { 0 }
+        Some(3) -> { 1 }
+    }
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let err = lower_module(&ast).unwrap_err().to_string();
+        assert!(err.contains("non-exhaustive"), "{err}");
+        assert!(err.contains("Int"), "{err}");
+    }
+
+    #[test]
+    fn exhaustiveness_rejects_nested_partial_list() {
+        let src = r#"
+module M
+type Option { Some(value) None }
+val f = { o ->
+    o match {
+        None -> { 0 }
+        Some([a]) -> { a }
+    }
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let err = lower_module(&ast).unwrap_err().to_string();
+        assert!(err.contains("non-exhaustive"), "{err}");
+        assert!(err.contains("List"), "{err}");
     }
 }

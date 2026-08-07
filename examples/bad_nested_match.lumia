@@ -1,0 +1,15 @@
+module BadNestedMatch
+
+type Option {
+    Some(value)
+    None
+}
+
+/// Intentionally non-exhaustive: missing `Some(Some(_))`.
+val main = {
+    val o = Some(None)
+    o match {
+        None -> 0
+        Some(None) -> 1
+    }
+}

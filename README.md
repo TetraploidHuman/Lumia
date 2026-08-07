@@ -16,6 +16,8 @@ Cross-platform example suite:
 
 ```bash
 cargo test -p lumia --test e2e_examples
+# or full local smoke (lib + e2e):
+./scripts/check.sh
 ```
 
 Workspace crates: `lumia` (CLI), `lumia_syntax`, `lumia_hir`, `lumia_ty`, `lumia_core`, `lumia_opt`, `lumia_codegen`, `lumia_rt`.

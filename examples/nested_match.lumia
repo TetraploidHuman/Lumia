@@ -1,0 +1,60 @@
+module NestedMatch
+
+import std.io.{println}
+
+type Option {
+    Some(value)
+    None
+}
+
+type Result {
+    Ok(value)
+    Err(msg)
+}
+
+type Box {
+    val inner
+}
+
+val main = {
+    // Nested variant binders
+    val r1 = Some(Ok(7))
+    r1 match {
+        Some(Ok(n)) -> println(n)
+        Some(Err(m)) -> println(m)
+        None -> println(-1)
+    }
+
+    val r2 = Some(Err(99))
+    r2 match {
+        Some(Ok(n)) -> println(n)
+        Some(Err(m)) -> println(m)
+        None -> println(-1)
+    }
+
+    // Nested list inside variant
+    val r3 = Some(listOf(1, 2, 3))
+    r3 match {
+        Some([a, b, ..rest]) -> {
+            println(a)
+            println(b)
+            println(rest.len())
+        }
+        Some(_) -> println(0)
+        None -> println(-1)
+    }
+
+    // Nested product field pattern
+    val b = Box { inner = Some(42) }
+    b match {
+        Box { inner = Some(n) } -> println(n)
+        Box { inner = None } -> println(0)
+    }
+
+    // Nested int literal
+    Some(3) match {
+        Some(3) -> println(1)
+        Some(_) -> println(0)
+        None -> println(-1)
+    }
+}

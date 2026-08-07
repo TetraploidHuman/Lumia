@@ -1,0 +1,17 @@
+module MatchCond
+
+import std.io.{println}
+
+val classify = { n ->
+    match {
+        n > 0 -> 1
+        n == 0 -> 0
+        _ -> -1
+    }
+}
+
+val main = {
+    println(classify(5))
+    println(classify(0))
+    println(classify(-3))
+}

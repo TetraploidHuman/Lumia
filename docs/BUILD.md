@@ -37,17 +37,19 @@ Source.lumia
 
 ## 2. 技术栈选型（已钉死）
 
-| 层 | 选择 |
-|----|------|
-| 编译器宿主 | **Rust**（本机 `rustc`/`cargo`，不另装） |
-| LLVM | **本机 LLVM 21**（inkwell feature `llvm21-1`）；`LLVM_SYS_211_PREFIX` 指向 `llvm-*-dev` |
-| 链接 | `clang` + 系统 lld；用户程序再链 `liblumia_rt.a` |
-| 解析 | 手写 recursive descent（`lumia_syntax`） |
-| 优化 IR | 唯一中端 **Core**（ANF / SSA-ish） |
-| 后端 | **唯一 LLVM**（Debug / Release 都走 LLVM） |
-| 泛型 | **单态化**（最终形态） |
-| 运行时 | `lumia_rt`：Rust，对外 **C ABI**；GC 为可替换模块 |
-| 首发 GC | STW **mark-sweep** + shadow stack 根 + 空写屏障 |
+
+| 层     | 选择                                                                               |
+| ----- | -------------------------------------------------------------------------------- |
+| 编译器宿主 | **Rust**（本机 `rustc`/`cargo`，不另装）                                                 |
+| LLVM  | **本机 LLVM 21**（inkwell feature `llvm21-1`）；`LLVM_SYS_211_PREFIX` 指向 `llvm-*-dev` |
+| 链接    | `clang` + 系统 lld；用户程序再链 `liblumia_rt.a`                                          |
+| 解析    | 手写 recursive descent（`lumia_syntax`）                                             |
+| 优化 IR | 唯一中端 **Core**（ANF / SSA-ish）                                                     |
+| 后端    | **唯一 LLVM**（Debug / Release 都走 LLVM）                                             |
+| 泛型    | **单态化**（最终形态）                                                                    |
+| 运行时   | `lumia_rt`：Rust，对外 **C ABI**；GC 为可替换模块                                           |
+| 首发 GC | STW **mark-sweep** + shadow stack 根 + 空写屏障                                       |
+
 
 ### 明确拒绝
 
@@ -63,17 +65,18 @@ Source.lumia
 
 ```text
 crates/
-  lumia          CLI：check / build / fmt(stub)
+  lumia          CLI：check / build / fmt / lsp / pkg
   lumia_syntax   词法 + 递归下降解析，带 Span
   lumia_hir      语法糖降级后的具名 IR
   lumia_ty       HM 推断 + 效应集合 ε
   lumia_core     Core SSA + AST/HIR→Core
-  lumia_opt      Pass 管道（§7.1.1）
+  lumia_opt      Pass 管道（§7.1.1）：CSE / Memo / Inline / Escape / ReprSelect / CopyElim
   lumia_codegen  inkwell → .o → clang 链接
   lumia_rt       GC ABI + mark-sweep + println*
 examples/        示例 .lumia
 scripts/env.sh   NixOS：LLVM_SYS_211_PREFIX + 共享库 PATH（排除 *-static）
 scripts/e2e.sh   端到端：编译并跑 hello / add
+scripts/check.sh 本地 CI 冒烟：`cargo test` workspace lib + lumia e2e
 ```
 
 根目录 `[workspace.dependencies]` 已钉 `inkwell` 的 `llvm21-1`。
@@ -127,23 +130,27 @@ cargo test --workspace
 
 Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumia_rt` 内实现。
 
-| 符号 | 作用 |
-|------|------|
-| `lumia_alloc(nbytes, type_id) -> *mut u8` | 堆分配（可触发收集）；返回 **payload** 指针（头在前） |
-| `lumia_root_push(*mut *mut u8)` / `lumia_root_pop()` | shadow stack 根 |
-| `lumia_write_barrier(obj, field, new)` | 写屏障钩子；首发 **空实现** |
-| `lumia_gc_collect()` | 强制 STW 收集 |
-| `lumia_println_int` / `_cstr` / `_str` / `_bool` | 效应 I/O |
+
+| 符号                                                   | 作用                                |
+| ---------------------------------------------------- | --------------------------------- |
+| `lumia_alloc(nbytes, type_id) -> *mut u8`            | 堆分配（可触发收集）；返回 **payload** 指针（头在前） |
+| `lumia_root_push(*mut *mut u8)` / `lumia_root_pop()` | shadow stack 根                    |
+| `lumia_write_barrier(obj, field, new)`               | 写屏障钩子；首发 **空实现**                  |
+| `lumia_gc_collect()`                                 | 强制 STW 收集                         |
+| `lumia_println_int` / `_cstr` / `_str` / `_bool`     | 效应 I/O                            |
+
 
 对象头：`type_id`、`size`、`marked`（见 `crates/lumia_rt`）。
 
 **更换难度**：
 
-| 难度 | 场景 |
-|------|------|
-| 易 | 同属 tracing：mark-sweep ↔ semispace ↔ 分代 |
-| 中 | tracing ↔ ARC（需 codegen 模式开关） |
-| 难 | 无对象头 / 无根约定的裸 malloc 与精确 GC 混用 |
+
+| 难度  | 场景                                     |
+| --- | -------------------------------------- |
+| 易   | 同属 tracing：mark-sweep ↔ semispace ↔ 分代 |
+| 中   | tracing ↔ ARC（需 codegen 模式开关）          |
+| 难   | 无对象头 / 无根约定的裸 malloc 与精确 GC 混用         |
+
 
 `List`/`Map`/`Set` 更新先走新分配 / overlay；**不依赖 ARC 唯一性**。以后若上 `--mm=arc`，再加 `is_unique` 做原地优化。
 
@@ -151,7 +158,28 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumia_rt` 内�
 
 ## 6. 优化与表示选择
 
-- Pass 接口在 `lumia_opt`：`inline`、`cse`、`escape`、`fusion`、`repr_select`、`copy_elim`、`memo_l0`（多数可先 stub，接口按最终形态留）。
+- Pass 接口在 `lumia_opt`：`cse` / `memo_l0` / `memo_l1`（Debug+Release，局部消重）+ Release 的 `memo_tf`（有界 `T_f`：Slots / DenseInt；**CSE 前**做建表规划）；`--no-memo`（别名 `--no-memo-l2`）可关 runtime Memo 做对比。
+  - **Inline**：小纯函数直调内联（跳过 `main` / `foreign` / memo / 递归 / 效应）。
+  - **Escape**：保守逃逸分析；`ReprSelect` 对**未逃逸**小 `List`/`Map` 标 `LitList` / `SmallMap`（codegen 仍可走堆布局，hint 已接上）。
+  - **CopyElim**：折叠 `let x = y` SSA 别名。
+  - **Fusion**：仍主要在 HIR（`try_fuse_hof_fold`）；Core `FusionStub` 占位。
+- GC：mark-sweep + **shadow-stack 根**（`lumia_root_push`/`pop`；**嵌套块 / 循环体作用域弹出**，`break`/`continue` 对齐循环入口深度）+ 软阈值自动收集（默认 256KiB）；见 `examples/gc_roots.lumia`。
+- Map：小表线性 Assoc；超过 8 对晋升 **HashOrdered**；大表 `set` 走 **Overlay** 差分（满 8 条再压实）；见 `examples/map_hash.lumia`。
+- Set：同哲学 — ≤8 线性，更大 **HashOrdered**（开址 + 插入序）；见 `examples/set_hash.lumia`。
+- 元组投影：`p.0` / `p.1`（`examples/tuple_fields.lumia`）；Fun 效应变量 + HOF 拾取 IO（`examples/effect_hof.lumia`）。
+- 集合字面量糖：`[:]` / `[k : v]` → `mapOf`；`#{}` / `#{a,b}` → `setOf`（`examples/coll_lit.lumia`）。
+- `sortBy`：键为 `Int` / `String` / `Char`（稳定）；`assert(cond)` 失败即中止，并打印 `path:line`（`examples/assert_ok.lumia`）。
+- 诊断：`path:line:col: kind: message` + 源码行与 `^`（parse / lower / type）；**多文件**按 `Span.file` 归到正确源文件（`examples/bad_import_type.lumia`）。
+- `for (k, v) in m` 自动 `.items()`；若迭代器已是 pair 列表（`m.items()` / `….sortBy(…)`）则不再套一层（WordCount）。
+- `lumia fmt`：基础 pretty-print（4 空格）；`--check` 只校验。
+- 旗舰示例：`examples/word_count.lumia`（DESIGN §14：stdin → 分词计数 → `items().sortBy` 打印）。
+- **包管理**：`Lumia.toml` path 依赖 + `lumia pkg init|lock|add`；有 deps 时**必须**有 `Lumia.lock`；`package.link` 自动并入链接参数（见 `examples/use_path_dep.lumia`）。
+- **LSP**：`lumia lsp`（stdio；未保存 buffer overlay；诊断；hover；跨文件定义；补全；formatting）。
+- **FFI**：`foreign "C" [pure] fn …`（`Int`/`Bool`/`Float`/`Unit`/`String↔cstr`）+ `--link` / `package.link`（`examples/ffi_abs.lumia` / `ffi_strlen.lumia` / `ffi_getenv.lumia`）。
+- **自动并行**：`lumia build --parallel` 将无捕获 lambda 或**顶层函数名**的标量 `List.map` 降为 `ListParMap`（`examples/par_map.lumia` / `par_map_fn.lumia`）；捕获闭包仍顺序（`par_map_capture.lumia`）。
+- Memo 性能：`scripts/bench_memo.sh`（同参热命中，约 **20×** vs `--no-memo`）；`examples/memo_dense.lumia` 的 `fib` 下标表约 **1000×+**。
+  - `**bench_cpu` 整套**：收益几乎只来自 `fib`（其余核是单遍扫参，无跨调用复用 → 理论无命中）。曾有成本模型把「循环里调用一次」当成命中证据、误挂 4 槽表导致 Collatz **变慢**，已改为要求递归或静态同参复用；稠密表仅结构递减自递归。
+- CPU 计算密集：`scripts/bench_cpu.sh`（素数 / matmul / Mandelbrot / Collatz / fib）。
 - **纪律（DESIGN §7.1.1）**：分析能证明 → 特化；不能证明 → **默认稳定路径**：
   - `List` → `HeapList` / `COWList`
   - `Map`/`Set` → `HashOrdered` + COW / Overlay
@@ -161,14 +189,16 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumia_rt` 内�
 
 ## 7. 分期交付（架构不变）
 
-| 阶段 | 内容 |
-|------|------|
-| **已完成骨架** | parse 子集 → 推断 + 效应 → Core → LLVM → 链 `lumia_rt` → `main` + `println` + `Int`；`listOf`→`AllocList`；CSE + ReprSelect 默认路径 |
-| **已完成下一步（部分）** | match 穷尽/守卫/裸表达式臂；积类型；元组；Map；`import`/`priv`；List HOF/`concat`（字面量内联 + 一等函数值）；管道糖；堆 `String`/`Char` + **插值**；`Float` 算术；一等闭包（无捕获 + 按值捕获）；递归 |
-| **仍待** | 逃逸 / 融合（需管道表示） |
-| **再后** | Memo L2+、自动并行、包管理、LSP、FFI；可选更强 GC / `--mm=arc` |
 
-每一阶段用户看到的都是 **`lumia build` 产出的原生程序**。
+| 阶段              | 内容                                                                                                                                            |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| **已完成骨架**       | parse 子集 → 推断 + 效应 → Core → LLVM → 链 `lumia_rt` → `main` + `println` + `Int`；`listOf`→`AllocList`；CSE + ReprSelect 默认路径                       |
+| **已完成下一步（部分）**  | …；**sortBy / assert+行号**；**定位诊断（多文件）**；**Map Overlay**；**WordCount**；**lumia fmt**；…                                                          |
+| **仍待**          | Core Fusion 加深；`ListRepr` codegen 特化（Iota/栈分配）；Trait；外置 `std/`；可选 `--mm=arc` |
+| **再后（MVP 已落地）** | **自动并行**（`--parallel` + `ListParMap`）；**包管理**（`Lumia.toml` / `lumia pkg`）；**LSP**（`lumia lsp`）；**FFI**（`foreign "C" fn`）；可选更强 GC / `--mm=arc` |
+
+
+每一阶段用户看到的都是 `**lumia build` 产出的原生程序**。
 
 ### 示例
 
@@ -189,7 +219,9 @@ cargo run -p lumia -- build examples/list_hof.lumia -o /tmp/hof && /tmp/hof  # 5
 cargo run -p lumia -- build examples/list_hof_fn.lumia -o /tmp/lhof && /tmp/lhof  # 10\\n30\\n1\\n3\\n6
 cargo run -p lumia -- build examples/list_concat.lumia -o /tmp/lc && /tmp/lc  # 5\\n1\\n5\\n30
 cargo run -p lumia -- build examples/list_pipe.lumia -o /tmp/lp && /tmp/lp  # 3\\n6\\n10
+cargo run -p lumia -- build examples/list_set.lumia -o /tmp/ls && /tmp/ls  # 1\\n99\\n3\\n2\\n3
 cargo run -p lumia -- build examples/match_guard.lumia -o /tmp/mg && /tmp/mg  # 1\\n2\\n0
+cargo run -p lumia -- build examples/match_cond.lumia -o /tmp/mc && /tmp/mc  # 1\\n0\\n-1
 cargo run -p lumia -- build examples/logic.lumia -o /tmp/lg && /tmp/lg  # 1\\n10
 cargo run -p lumia -- build examples/string_ops.lumia -o /tmp/so && /tmp/so  # 5\\nhello\\n2
 cargo run -p lumia -- build examples/string_interp.lumia -o /tmp/si && /tmp/si  # hello Lumia\\nn=42\\n43\\nplain\\ndollar=$n
@@ -199,19 +231,46 @@ cargo run -p lumia -- build examples/char.lumia -o /tmp/ch && /tmp/ch  # A\\n1\\
 cargo run -p lumia -- build examples/float_ops.lumia -o /tmp/fo && /tmp/fo  # 3.75\\n6\\n1\\n-1.5
 cargo run -p lumia -- build examples/closure.lumia -o /tmp/cl && /tmp/cl  # 42\\n11
 cargo run -p lumia -- build examples/closure_capture.lumia -o /tmp/cc && /tmp/cc  # 42\\n101\\n42
+cargo run -p lumia -- build examples/range_fold.lumia -o /tmp/rf && /tmp/rf  # 499999500000\\n5050
+cargo run -p lumia -- build examples/range_map.lumia -o /tmp/rm && /tmp/rm  # 5\\n2\\n10\\n5\\n1\\n9\\n249999500000
+cargo run -p lumia -- build examples/set_ops.lumia -o /tmp/so2 && /tmp/so2  # 3\\n1\\n0\\n3\\n2\\n0\\n1\\n3\\n1
+cargo run -p lumia -- build examples/set_algebra.lumia -o /tmp/sa && /tmp/sa
+cargo run -p lumia -- build examples/coll_conv.lumia -o /tmp/cc2 && /tmp/cc2
+cargo run -p lumia -- build examples/for_map_set.lumia -o /tmp/fms && /tmp/fms  # 6\\n3\\n30
+cargo run -p lumia -- build examples/fuse_hof.lumia -o /tmp/fh && /tmp/fh  # 24\\n250500
+cargo run -p lumia -- build examples/result_match.lumia -o /tmp/rmatch && /tmp/rmatch  # 5\\n-1\\n3
+cargo run -p lumia -- build examples/list_extras.lumia -o /tmp/lex && /tmp/lex
+cargo run -p lumia -- build examples/prelude_option.lumia -o /tmp/po && /tmp/po  # 10\\n-1\\n42\\n7
+cargo run -p lumia -- build examples/string_more.lumia -o /tmp/sm && /tmp/sm
+cargo run -p lumia -- build examples/map_string_keys.lumia -o /tmp/msk && /tmp/msk
+printf '  hi hi there  ' | $(cargo run -q -p lumia -- build examples/read_stdin.lumia -o /tmp/rs >/dev/null && echo /tmp/rs)
+printf 'Hello World\nhello there\nWORLD\n' | $(cargo run -q -p lumia -- build examples/word_count.lumia -o /tmp/wc >/dev/null && echo /tmp/wc)
+cargo run -p lumia -- build examples/list_text.lumia -o /tmp/lt && /tmp/lt
+cargo run -p lumia -- build --release examples/memo_l2.lumia -o /tmp/memo && /tmp/memo
+cargo run -p lumia -- build examples/memo_l0l1.lumia -o /tmp/m01 && /tmp/m01
+# Memo L2 microbench (with vs without cache):
+#   ./scripts/bench_memo.sh
+# CPU compute suite (primes / matmul / Mandelbrot / Collatz / fib):
+#   ./scripts/bench_cpu.sh
+#   COMPARE_DEBUG=1 ./scripts/bench_cpu.sh   # also time Debug vs Release
 cargo run -p lumia -- build examples/mapset.lumia -o /tmp/ms && /tmp/ms
 ```
+
 ---
 
 ## 8. CLI 约定
 
-| 命令 | 职责 |
-|------|------|
-| `lumia check <file>` | 解析 + 类型 / 效应 |
-| `lumia build <file> [-o out] [--release] [--show-ir] [--emit-llvm]` | 原生二进制 |
-| `lumia fmt` | 后期（当前 stub） |
 
-包管理：最终由 `lumia` 内置依赖 + lockfile；**不**把 Cargo 暴露给用户程序。
+| 命令                                                                                                         | 职责                                                                |
+| ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `lumia check <file>`                                                                                       | 解析 + 类型 / 效应                                                      |
+| `lumia build <file> [-o out] [--release] [--no-memo] [--parallel] [--link ARG]… [--show-ir] [--emit-llvm]` | 原生二进制；`--parallel` 无捕获 `map`；`--link` 追加链接参数；`--no-memo` 关 `T_f`  |
+| `lumia fmt [files…] [--check]`                                                                             | 基础 pretty-print（4 空格）；`--check` 不写回                               |
+| `lumia lsp`                                                                                                | LSP（overlay 诊断 + hover + 跨文件定义 + 补全 + format）                     |
+| `lumia pkg init` / `lumia pkg lock` / `lumia pkg add`                                                      | `Lumia.toml` / `Lumia.lock`；有 deps 时构建要求 lock；`package.link` 并入链接 |
+
+
+包管理：`Lumia.toml` + lockfile 由 `lumia pkg` 管理；**不**把 Cargo 暴露给用户程序。
 
 ---
 
@@ -223,7 +282,7 @@ cargo run -p lumia -- build examples/mapset.lumia -o /tmp/ms && /tmp/ms
   1. 安装 LLVM 21 + `clang`
   2. `cargo test --workspace`
   3. `cargo test -p lumia --test e2e_examples`（编译并运行 examples 期望输出）
-- 本地 Linux：`source scripts/env.sh && ./scripts/e2e.sh`
+- 本地 Linux：`source scripts/env.sh && ./scripts/check.sh`（或 `./scripts/e2e.sh`）
 - 本地亦可：`cargo test -p lumia --test e2e_examples`
 
 ---
@@ -231,26 +290,28 @@ cargo run -p lumia -- build examples/mapset.lumia -o /tmp/ms && /tmp/ms
 ## 9. 常见问题
 
 **链接报 `libz.a ... incompatible with elf64-x86-64`**  
-`LIBRARY_PATH` 里混入了 Nix 的 **static** zlib。重新 `source scripts/env.sh`，确认路径中无 `*-static*`。
+`LIBRARY_PATH` 里混入了 Nix 的 **static** zlib。重新 `source scripts/env.sh`，确认路径中无 `*-static`*。
 
 **找不到 `llvm-config` / inkwell 编不过**  
 设置或检查 `LLVM_SYS_211_PREFIX` 指向带 `bin/llvm-config` 的 `llvm-21.1.8-dev` store 路径。
 
-**`liblumia_rt.a` not found**  
+`**liblumia_rt.a` not found**  
 先 `cargo build -p lumia_rt`；或直接 `lumia build`（会自动构建 runtime）。
 
 ---
 
 ## 10. 相关文件
 
-| 路径 | 说明 |
-|------|------|
-| [DESIGN.md](DESIGN.md) | 语言设计（语义合同） |
-| `scripts/env.sh` | 本机构建环境 |
-| `scripts/e2e.sh` | Linux 冒烟端到端 |
-| `crates/lumia/tests/e2e_examples.rs` | 跨平台 examples e2e |
-| `.github/workflows/ci.yml` | Linux / Windows CI |
-| `crates/lumia_rt/src/lib.rs` | GC ABI + mark-sweep |
-| `crates/lumia_opt/src/lib.rs` | Pass 管道 |
-| `Cargo.toml` | workspace + inkwell LLVM 21 |
+
+| 路径                                   | 说明                          |
+| ------------------------------------ | --------------------------- |
+| [DESIGN.md](DESIGN.md)               | 语言设计（语义合同）                  |
+| `scripts/env.sh`                     | 本机构建环境                      |
+| `scripts/e2e.sh`                     | Linux 冒烟端到端                 |
+| `crates/lumia/tests/e2e_examples.rs` | 跨平台 examples e2e            |
+| `.github/workflows/ci.yml`           | Linux / Windows CI          |
+| `crates/lumia_rt/src/lib.rs`         | GC ABI + mark-sweep         |
+| `crates/lumia_opt/src/lib.rs`        | Pass 管道                     |
+| `Cargo.toml`                         | workspace + inkwell LLVM 21 |
+
 

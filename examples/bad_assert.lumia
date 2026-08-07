@@ -1,0 +1,6 @@
+module BadAssert
+
+/// Intentionally fails at runtime.
+val main = {
+    assert(false)
+}

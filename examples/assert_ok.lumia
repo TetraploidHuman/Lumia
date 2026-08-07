@@ -1,0 +1,10 @@
+module AssertOk
+
+import std.io.{println}
+
+val main = {
+    assert(true)
+    assert(1 == 1)
+    assert(not (1 == 0))
+    println(1)
+}

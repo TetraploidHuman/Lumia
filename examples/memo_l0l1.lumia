@@ -1,0 +1,26 @@
+module MemoL0L1
+
+import std.io.{println}
+
+/// L0: duplicate pure ops in one block share one SSA value (CSE / const-fold).
+/// L1: loop-invariant pure lets are hoisted (LICM).
+val main = {
+    val a = 21
+    val b = 21
+    // CSE should share the two identical adds after const keys align.
+    val x = a + b
+    val y = a + b
+    println(x)
+    println(y)
+
+    var i = 0
+    var acc = 0
+    val base = 10
+    val step = 3
+    // `base + step` is invariant — L1 LICM can hoist it out of the loop.
+    for i < 5 {
+        acc = acc + (base + step)
+        i = i + 1
+    }
+    println(acc)
+}

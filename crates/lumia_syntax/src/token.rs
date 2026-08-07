@@ -53,6 +53,7 @@ pub enum TokenKind {
     Requires,
     With,
     Effect,
+    Foreign,
 
     // Punctuation
     LParen,
@@ -117,6 +118,7 @@ impl TokenKind {
             "requires" => TokenKind::Requires,
             "with" => TokenKind::With,
             "effect" => TokenKind::Effect,
+            "foreign" => TokenKind::Foreign,
             _ => return None,
         })
     }

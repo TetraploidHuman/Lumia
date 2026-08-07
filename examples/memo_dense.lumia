@@ -1,0 +1,17 @@
+module MemoDense
+
+import std.io.{println}
+
+/// Unary Int structural recursion — Release attaches dense `T_f` (index table).
+val fib(n) = {
+    if n < 2 {
+        n
+    } else {
+        fib(n - 1) + fib(n - 2)
+    }
+}
+
+val main = {
+    println(fib(30))
+    println(fib(10))
+}

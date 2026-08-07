@@ -1,0 +1,22 @@
+module SetAlgebra
+
+import std.io.{println}
+
+val main = {
+    val a = setOf(1, 2, 3)
+    val b = setOf(2, 3, 4)
+    val u = a.union(b)
+    println(u.len())
+    println(u.contains(1))
+    println(u.contains(4))
+
+    val i = a.intersect(b)
+    println(i.len())
+    println(i.contains(2))
+    println(i.contains(1))
+
+    val d = a.diff(b)
+    println(d.len())
+    println(d.contains(1))
+    println(d.contains(2))
+}

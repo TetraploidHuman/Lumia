@@ -1,0 +1,16 @@
+module TupleFields
+
+import std.io.{println}
+
+val main = {
+    val p = (10, 20, 30)
+    println(p.0)
+    println(p.1)
+    println(p.2)
+
+    val pairs = listOf((2, 100), (1, 200), (2, 300))
+    val by_fst = pairs.sortBy({ t -> t.0 })
+    println(by_fst.get(0).1)
+    println(by_fst.get(1).1)
+    println(by_fst.get(2).1)
+}

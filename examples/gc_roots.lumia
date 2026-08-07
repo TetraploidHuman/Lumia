@@ -1,0 +1,20 @@
+module GcRoots
+
+import std.io.{println}
+
+/// Keep an early heap object live across many allocations that trip soft GC.
+/// Loop-body temps must not stay rooted for the whole function (precise scopes).
+val main = {
+    val keep = listOf(1, 2, 3)
+    var i = 0
+    for i < 8000 {
+        val junk = listOf(i, i + 1, i + 2, i + 3)
+        // Touch junk so it is not DCE'd; keep must survive collects.
+        if junk.len() < 0 {
+            println(0)
+        }
+        i = i + 1
+    }
+    println(keep.get(0))
+    println(keep.len())
+}

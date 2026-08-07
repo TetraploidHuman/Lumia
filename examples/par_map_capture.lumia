@@ -1,0 +1,15 @@
+module ParMapCapture
+
+import std.io.{println}
+
+// Capturing lambdas stay sequential under `--parallel` (FunRef-only parallel map).
+val main = {
+    val k = 10
+    val xs = range(0, 5)
+    val ys = xs.map({ x ->
+        x + k
+    })
+    println(ys.len())
+    println(ys.get(0))
+    println(ys.get(4))
+}

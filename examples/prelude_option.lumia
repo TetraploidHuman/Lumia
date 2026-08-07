@@ -1,0 +1,25 @@
+module PreludeOption
+
+import std.io.{println}
+
+// No local `type Option` — uses injected prelude.
+val main = {
+    val m = mapOf(1 to 10)
+    m.get(1) match {
+        Some(v) -> println(v)
+        None -> println(-1)
+    }
+    m.get(9) match {
+        Some(v) -> println(v)
+        None -> println(-1)
+    }
+
+    Ok(42) match {
+        Ok(v) -> println(v)
+        Err(e) -> println(e)
+    }
+    Err(7) match {
+        Ok(v) -> println(v)
+        Err(e) -> println(e)
+    }
+}

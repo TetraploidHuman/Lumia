@@ -1,0 +1,9 @@
+module BadIntMatch
+
+/// Intentionally non-exhaustive: Int literals without `_`.
+val main = {
+    1 match {
+        0 -> 0
+        1 -> 1
+    }
+}

@@ -1,0 +1,7 @@
+module Demo
+
+val answer = 42
+
+val bump = { x ->
+    x + 1
+}

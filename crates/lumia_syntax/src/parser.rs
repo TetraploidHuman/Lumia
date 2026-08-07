@@ -4,8 +4,8 @@ use crate::lexer::Lexer;
 use crate::span::Span;
 use crate::token::{StringPart, Token, TokenKind};
 use crate::{
-    BinOp, Expr, Import, ImportNames, InterpPart, Item, MatchArm, Module, Pattern, Stmt, TypeItem,
-    TypeKind, UnOp, ValItem, Variant, VariantFields,
+    BinOp, Expr, ForBinding, Import, ImportNames, InterpPart, Item, MatchArm, MatchCondArm, Module,
+    Pattern, Stmt, TypeItem, TypeKind, UnOp, ValItem, Variant, VariantFields,
 };
 
 #[derive(Debug, Clone)]
@@ -38,6 +38,7 @@ pub fn parse_expr_str(src: &str) -> Result<Expr, ParseError> {
 }
 
 struct Parser<'a> {
+    src: &'a str,
     lexer: Lexer<'a>,
     cur: Token,
     /// When false, `{` is not consumed as a trailing closure (e.g. `for x in xs {`).
@@ -49,6 +50,7 @@ impl<'a> Parser<'a> {
         let mut lexer = Lexer::new(src);
         let cur = lexer.next_token();
         Self {
+            src,
             lexer,
             cur,
             allow_trailing_closure: true,
@@ -67,6 +69,16 @@ impl<'a> Parser<'a> {
 
     fn at(&self, kind: &TokenKind) -> bool {
         std::mem::discriminant(&self.cur.kind) == std::mem::discriminant(kind)
+    }
+
+    /// True if the source slice between two byte positions contains a newline.
+    fn newline_between(&self, from: crate::span::BytePos, to: crate::span::BytePos) -> bool {
+        let a = from.0 as usize;
+        let b = to.0 as usize;
+        if a >= b || b > self.src.len() {
+            return false;
+        }
+        self.src[a..b].contains('\n')
     }
 
     /// After seeing `TypeName {`, true if next tokens are `ident =` (struct lit vs trailing closure).
@@ -221,6 +233,12 @@ impl<'a> Parser<'a> {
         } else {
             false
         };
+        if self.at(&TokenKind::Foreign) {
+            if is_priv {
+                return Err(self.error("`priv foreign` is not supported"));
+            }
+            return self.parse_foreign_item();
+        }
         if self.at(&TokenKind::Val) {
             let mut v = self.parse_val_item()?;
             v.is_priv = is_priv;
@@ -230,8 +248,58 @@ impl<'a> Parser<'a> {
             t.is_priv = is_priv;
             Ok(Item::Type(t))
         } else {
-            Err(self.error("expected `val` or `type` item"))
+            Err(self.error("expected `val`, `type`, or `foreign` item"))
         }
+    }
+
+    /// `foreign "C" [pure] fn name(x: Int, y: Int) -> Int`
+    fn parse_foreign_item(&mut self) -> Result<Item, ParseError> {
+        let start = self.bump().span; // foreign
+        let abi = match &self.cur.kind {
+            TokenKind::String(s) => {
+                let s = s.clone();
+                self.bump();
+                s
+            }
+            _ => return Err(self.error("expected ABI string after `foreign` (e.g. \"C\")")),
+        };
+        let is_pure = if matches!(self.cur.kind, TokenKind::Ident(ref s) if s == "pure") {
+            self.bump();
+            true
+        } else {
+            false
+        };
+        let (kw, _) = self.expect_ident()?;
+        if kw != "fn" {
+            return Err(self.error("expected `fn` after foreign ABI"));
+        }
+        let (name, _) = self.expect_ident()?;
+        self.expect(TokenKind::LParen)?;
+        let mut params = vec![];
+        if !self.at(&TokenKind::RParen) {
+            loop {
+                let (pname, _) = self.expect_ident()?;
+                self.expect(TokenKind::Colon)?;
+                let (pty, _) = self.expect_ident()?;
+                params.push((pname, pty));
+                if self.at(&TokenKind::Comma) {
+                    self.bump();
+                    continue;
+                }
+                break;
+            }
+        }
+        self.expect(TokenKind::RParen)?;
+        self.expect(TokenKind::Arrow)?;
+        let (ret, ret_span) = self.expect_ident()?;
+        Ok(Item::Foreign(crate::ForeignItem {
+            abi,
+            name,
+            params,
+            ret,
+            is_pure,
+            span: start.merge(ret_span),
+        }))
     }
 
     fn parse_val_item(&mut self) -> Result<ValItem, ParseError> {
@@ -355,8 +423,10 @@ impl<'a> Parser<'a> {
                 span,
             };
         }
-        // infix match: expr match { ... }
-        if self.at(&TokenKind::Match) {
+        // infix match: expr match { ... } — same line only (newline `match {` is subjectless).
+        if self.at(&TokenKind::Match)
+            && !self.newline_between(left.span().end, self.cur.span.start)
+        {
             left = self.parse_match_suffix(left)?;
         }
         Ok(left)
@@ -375,6 +445,42 @@ impl<'a> Parser<'a> {
             scrutinee: Box::new(scrutinee),
             arms,
             span,
+        })
+    }
+
+    /// Kotlin-style `match { cond -> body; _ -> body }`.
+    fn parse_match_cond(&mut self) -> Result<Expr, ParseError> {
+        let start = self.expect(TokenKind::Match)?.span;
+        self.expect(TokenKind::LBrace)?;
+        let mut arms = vec![];
+        while !self.at(&TokenKind::RBrace) {
+            arms.push(self.parse_match_cond_arm()?);
+        }
+        let end = self.expect(TokenKind::RBrace)?;
+        Ok(Expr::MatchCond {
+            arms,
+            span: start.merge(end.span),
+        })
+    }
+
+    fn parse_match_cond_arm(&mut self) -> Result<MatchCondArm, ParseError> {
+        let start = self.cur.span;
+        let cond = if self.at(&TokenKind::Underscore) {
+            self.bump();
+            None
+        } else {
+            Some(self.parse_expr()?)
+        };
+        self.expect(TokenKind::Arrow)?;
+        let body = if self.at(&TokenKind::LBrace) {
+            self.parse_block_expr()?
+        } else {
+            self.parse_expr()?
+        };
+        Ok(MatchCondArm {
+            cond,
+            body: body.clone(),
+            span: start.merge(body.span()),
         })
     }
 
@@ -744,10 +850,13 @@ impl<'a> Parser<'a> {
                     args,
                     span,
                 };
-            } else if self.at(&TokenKind::LBrace)
+            } else if self.allow_trailing_closure
+                && self.at(&TokenKind::LBrace)
                 && matches!(expr, Expr::Ident(_, _))
                 && self.looks_like_struct_lit()
             {
+                // Same gate as trailing closures: in `for x in xs {` / `if c {`, the `{`
+                // starts the statement body — not `xs { field = ... }` struct sugar.
                 let name = match &expr {
                     Expr::Ident(n, _) => n.clone(),
                     _ => unreachable!(),
@@ -787,15 +896,37 @@ impl<'a> Parser<'a> {
                 };
             } else if self.at(&TokenKind::Dot) {
                 self.bump();
-                let (field, fspan) = self.expect_ident()?;
+                let (field, fspan) = match &self.cur.kind {
+                    TokenKind::Ident(s) => {
+                        let s = s.clone();
+                        let span = self.cur.span;
+                        self.bump();
+                        (s, span)
+                    }
+                    // Tuple projection: `p.0`, `p.1`, …
+                    TokenKind::Int(n) => {
+                        if *n < 0 {
+                            return Err(self.error("tuple field index must be non-negative"));
+                        }
+                        let s = n.to_string();
+                        let span = self.cur.span;
+                        self.bump();
+                        (s, span)
+                    }
+                    _ => {
+                        return Err(self.error("expected field name or tuple index after `.`"));
+                    }
+                };
                 let span = expr.span().merge(fspan);
                 expr = Expr::Field {
                     base: Box::new(expr),
                     field,
                     span,
                 };
-            } else if self.at(&TokenKind::LBracket) {
-                // index sugar: xs[i] -> xs.get(i) as Call for now via Field get
+            } else if self.at(&TokenKind::LBracket)
+                && !self.newline_between(expr.span().end, self.cur.span.start)
+            {
+                // index sugar: xs[i] — same-line only so `0\n[h, ..]` is next match arm
                 self.bump();
                 let idx = self.parse_expr()?;
                 let end = self.expect(TokenKind::RBracket)?;
@@ -858,6 +989,7 @@ impl<'a> Parser<'a> {
                 Ok(Expr::Ident(name, s))
             }
             TokenKind::If => self.parse_if(),
+            TokenKind::Match => self.parse_match_cond(),
             TokenKind::LBrace => self.parse_lambda_or_block(),
             TokenKind::LParen => {
                 let start = self.bump().span;
@@ -883,27 +1015,53 @@ impl<'a> Parser<'a> {
             }
             TokenKind::LBracket => {
                 let start = self.bump().span;
-                let mut elems = vec![];
-                if !self.at(&TokenKind::RBracket) {
-                    // map literal [:] or [k : v] — detect colon
-                    if self.at(&TokenKind::Colon) {
+                if self.at(&TokenKind::RBracket) {
+                    let end = self.bump().span;
+                    return Ok(Expr::ListLit {
+                        elems: vec![],
+                        span: start.merge(end),
+                    });
+                }
+                // Empty map `[:]`
+                if self.at(&TokenKind::Colon) {
+                    self.bump();
+                    let end = self.expect(TokenKind::RBracket)?;
+                    return Ok(Expr::Call {
+                        callee: Box::new(Expr::Ident("mapOf".into(), start)),
+                        args: vec![],
+                        span: start.merge(end.span),
+                    });
+                }
+                let first = self.parse_expr()?;
+                // Map literal `[k : v, …]` → `mapOf(k to v, …)`
+                if self.at(&TokenKind::Colon) {
+                    self.bump();
+                    let v0 = self.parse_expr()?;
+                    let mut args = vec![Self::map_pair_to(first, v0)];
+                    while self.at(&TokenKind::Comma) {
                         self.bump();
-                        let end = self.expect(TokenKind::RBracket)?;
-                        // empty map — represent as call mapOf() for now
-                        return Ok(Expr::Call {
-                            callee: Box::new(Expr::Ident("mapOf".into(), start)),
-                            args: vec![],
-                            span: start.merge(end.span),
-                        });
-                    }
-                    loop {
-                        elems.push(self.parse_expr()?);
-                        if self.at(&TokenKind::Comma) {
-                            self.bump();
-                            continue;
+                        if self.at(&TokenKind::RBracket) {
+                            break;
                         }
+                        let k = self.parse_expr()?;
+                        self.expect(TokenKind::Colon)?;
+                        let v = self.parse_expr()?;
+                        args.push(Self::map_pair_to(k, v));
+                    }
+                    let end = self.expect(TokenKind::RBracket)?;
+                    return Ok(Expr::Call {
+                        callee: Box::new(Expr::Ident("mapOf".into(), start)),
+                        args,
+                        span: start.merge(end.span),
+                    });
+                }
+                let mut elems = vec![first];
+                while self.at(&TokenKind::Comma) {
+                    self.bump();
+                    if self.at(&TokenKind::RBracket) {
                         break;
                     }
+                    elems.push(self.parse_expr()?);
                 }
                 let end = self.expect(TokenKind::RBracket)?;
                 Ok(Expr::ListLit {
@@ -911,8 +1069,43 @@ impl<'a> Parser<'a> {
                     span: start.merge(end.span),
                 })
             }
+            // Set literal `#{}` / `#{a, b}` → `setOf(…)`
+            TokenKind::Hash => {
+                let start = self.bump().span;
+                self.expect(TokenKind::LBrace)?;
+                let mut args = vec![];
+                if !self.at(&TokenKind::RBrace) {
+                    loop {
+                        args.push(self.parse_expr()?);
+                        if self.at(&TokenKind::Comma) {
+                            self.bump();
+                            if self.at(&TokenKind::RBrace) {
+                                break;
+                            }
+                            continue;
+                        }
+                        break;
+                    }
+                }
+                let end = self.expect(TokenKind::RBrace)?;
+                Ok(Expr::Call {
+                    callee: Box::new(Expr::Ident("setOf".into(), start)),
+                    args,
+                    span: start.merge(end.span),
+                })
+            }
             TokenKind::For => self.parse_for_as_expr(),
             _ => Err(self.error(format!("unexpected token in expression: {:?}", self.cur.kind))),
+        }
+    }
+
+    /// `k to v` call used by `[k : v]` map sugar.
+    fn map_pair_to(k: Expr, v: Expr) -> Expr {
+        let span = k.span().merge(v.span());
+        Expr::Call {
+            callee: Box::new(Expr::Ident("to".into(), span)),
+            args: vec![k, v],
+            span,
         }
     }
 
@@ -1154,11 +1347,39 @@ impl<'a> Parser<'a> {
 
     fn parse_for_stmt(&mut self) -> Result<Stmt, ParseError> {
         let start = self.bump().span; // for
-        // for x in xs { }  OR  for cond { }
-        // Trailing `{` belongs to the loop body, not a closure on the iter/cond.
+        // for x in xs { }  |  for (k, v) in m { }  |  for cond { }
         let saved = self.allow_trailing_closure;
         self.allow_trailing_closure = false;
         let result = (|| {
+            if self.at(&TokenKind::LParen) {
+                let cp = self.checkpoint();
+                self.bump();
+                if matches!(self.peek(), TokenKind::Ident(_)) {
+                    let (k, _) = self.expect_ident()?;
+                    if self.at(&TokenKind::Comma) {
+                        self.bump();
+                        if matches!(self.peek(), TokenKind::Ident(_)) {
+                            let (v, _) = self.expect_ident()?;
+                            if self.at(&TokenKind::RParen) {
+                                self.bump();
+                                if self.at(&TokenKind::In) {
+                                    self.bump();
+                                    let iter = self.parse_expr()?;
+                                    self.allow_trailing_closure = saved;
+                                    let body = self.parse_block_expr()?;
+                                    return Ok(Stmt::ForIn {
+                                        binding: ForBinding::Pair(k, v),
+                                        iter,
+                                        body: body.clone(),
+                                        span: start.merge(body.span()),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                self.restore(cp);
+            }
             if matches!(self.peek(), TokenKind::Ident(_)) {
                 let cp = self.checkpoint();
                 let (binding, _) = self.expect_ident()?;
@@ -1168,7 +1389,7 @@ impl<'a> Parser<'a> {
                     self.allow_trailing_closure = saved;
                     let body = self.parse_block_expr()?;
                     return Ok(Stmt::ForIn {
-                        binding,
+                        binding: ForBinding::Name(binding),
                         iter,
                         body: body.clone(),
                         span: start.merge(body.span()),
@@ -1244,6 +1465,12 @@ fn expr_uses_ident(expr: &Expr, name: &str) -> bool {
                         || a.guard.as_ref().is_some_and(|g| expr_uses_ident(g, name))
                 })
         }
+        Expr::MatchCond { arms, .. } => arms.iter().any(|a| {
+            a.cond
+                .as_ref()
+                .is_some_and(|c| expr_uses_ident(c, name))
+                || expr_uses_ident(&a.body, name)
+        }),
         Expr::ListLit { elems, .. } => elems.iter().any(|e| expr_uses_ident(e, name)),
         Expr::StructLit { fields, .. } => fields.iter().any(|(_, e)| expr_uses_ident(e, name)),
         Expr::With { base, fields, .. } => {
@@ -1277,6 +1504,24 @@ fn stmt_uses_ident(stmt: &Stmt, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_for_in_ident_body_starts_with_assign() {
+        // Regression: `for w in words { counts = ... }` must not parse
+        // `words { counts = ... }` as a struct literal.
+        let src = r#"
+module T
+val main = {
+    var counts = 0
+    val words = listOf(1)
+    for w in words {
+        counts = w
+    }
+    counts
+}
+"#;
+        parse_module(src).expect("parse for-in with assign body");
+    }
 
     #[test]
     fn parse_hello() {
@@ -1324,6 +1569,49 @@ val f = { n ->
         assert!(!matches!(arms[1].body, Expr::Block { .. }));
         assert!(!matches!(arms[2].body, Expr::Block { .. }));
         assert!(matches!(arms[3].body, Expr::Block { .. }));
+    }
+
+
+    #[test]
+    fn parse_map_set_literal_sugars() {
+        let m = parse_module(
+            r#"
+module M
+val main = {
+    val a = [:]
+    val b = [1 : 10, 2 : 20]
+    val c = #{}
+    val d = #{1, 2, 3}
+    a
+}
+"#,
+        )
+        .expect("parse map/set sugars");
+        let Item::Val(v) = &m.items[0] else {
+            panic!("expected val");
+        };
+        let Expr::Block { stmts, .. } = &v.body else {
+            panic!("expected block");
+        };
+        assert_eq!(stmts.len(), 4);
+        // [:] / [k:v] / #{} / #{…} desugar to mapOf/setOf calls
+        for s in stmts {
+            let Stmt::Val { expr, .. } = s else {
+                panic!("expected val stmt");
+            };
+            assert!(
+                matches!(expr, Expr::Call { .. }),
+                "expected call sugar, got {expr:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_list_patterns_variants() {
+        parse_module("module M\nval f = { xs -> xs match { [] -> 0 _ -> 1 }\n}\n").unwrap();
+        parse_module("module M\nval f = { xs -> xs match { [h] -> h _ -> 0 }\n}\n").unwrap();
+        parse_module("module M\nval f = { xs -> xs match { [..rest] -> 0 _ -> 1 }\n}\n").unwrap();
+        parse_module("module M\nval f = { xs -> xs match { [h, ..rest] -> h _ -> 0 }\n}\n").expect("h, ..rest");
     }
 
     #[test]

@@ -1,0 +1,38 @@
+module WordCount
+
+import std.io.{println}
+
+/// DESIGN §14 flagship: read stdin, count words, print sorted by word.
+val normalize = { line ->
+    line
+        >> trim
+        >> split(' ')
+        >> filter({ w ->
+            w.len() > 0
+        })
+        >> map({ w ->
+            w.toLower()
+        })
+}
+
+val count_words = { lines ->
+    lines
+        .flatMap(normalize)
+        .fold([:], { acc, word ->
+            acc.get(word) match {
+                Some(n) -> acc.set(word, n + 1)
+                None -> acc.set(word, 1)
+            }
+        })
+}
+
+val main = {
+    val text = readStdin()
+    val lines = text.lines()
+    val counts = count_words(lines)
+    for (word, n) in counts.items().sortBy({ p ->
+        p.0
+    }) {
+        println("${word}: ${n}")
+    }
+}

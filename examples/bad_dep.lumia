@@ -1,0 +1,6 @@
+module BadDep
+
+val boom = {
+    // type error: Int vs Bool
+    1 + true
+}

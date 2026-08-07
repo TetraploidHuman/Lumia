@@ -1,0 +1,34 @@
+module CollLit
+
+import std.io.{println}
+
+type Option {
+    Some(value)
+    None
+}
+
+val main = {
+    val empty_m = [:]
+    println(empty_m.len())
+
+    val m = [1 : 10, 2 : 20, 3 : 30]
+    println(m.len())
+    println(m.contains(2))
+    m.get(2) match {
+        Some(n) -> println(n)
+        None -> println(-1)
+    }
+
+    val empty_s = #{}
+    println(empty_s.len())
+
+    val s = #{1, 2, 3}
+    println(s.len())
+    println(s.contains(2))
+    println(s.contains(9))
+
+    // Still a list
+    val xs = [1, 2, 3]
+    println(xs.len())
+    println(xs.get(0))
+}

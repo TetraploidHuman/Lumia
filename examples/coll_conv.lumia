@@ -1,0 +1,19 @@
+module CollConv
+
+import std.io.{println}
+
+val main = {
+    val xs = listOf(1, 2, 2, 3)
+    val s = xs.toSet()
+    println(s.len())
+    println(s.contains(2))
+    println(s.contains(9))
+
+    val ys = s.toList()
+    println(ys.len())
+
+    val pairs = listOf((1, 10), (2, 20))
+    val m = pairs.toMap()
+    println(m.len())
+    println(m.contains(1))
+}

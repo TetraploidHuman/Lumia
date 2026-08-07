@@ -1,0 +1,7 @@
+module BadImportType
+
+import bad_dep.{boom}
+
+val main = {
+    boom()
+}

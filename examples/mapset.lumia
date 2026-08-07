@@ -12,4 +12,12 @@ val main = {
     // flat key/value ints for MVP: mapOf(k, v, ...)
     val m2 = mapOf(1, 10, 2, 20)
     println(m2.len())
+
+    val s2 = s.insert(4).remove(1)
+    println(s2.len())
+    println(s2.contains(4))
+    println(s2.contains(1))
+
+    val s3 = s.union(setOf(3, 4))
+    println(s3.len())
 }

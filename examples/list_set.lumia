@@ -1,0 +1,13 @@
+module ListSet
+
+import std.io.{println}
+
+val main = {
+    val xs = listOf(1, 2, 3)
+    val ys = xs.set(1, 99)
+    println(ys.get(0))
+    println(ys.get(1))
+    println(ys.get(2))
+    println(xs.get(1))
+    println(ys.len())
+}

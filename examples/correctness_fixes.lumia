@@ -1,0 +1,46 @@
+module CorrectnessFixes
+
+import std.io.{println}
+
+val side() = {
+    println(99)
+    true
+}
+
+val addHalf(x) = {
+    x + 0.5
+}
+
+val main = {
+    // Short-circuit: must not print 99
+    val a = false and side()
+    println(if a { 1 } else { 0 })
+
+    val b = true or side()
+    println(if b { 1 } else { 0 })
+
+    // Structural equality
+    println(if listOf(1, 2) == listOf(1, 2) { 1 } else { 0 })
+    println(if Some(7) == Some(7) { 1 } else { 0 })
+    println(if listOf(1) == listOf(2) { 1 } else { 0 })
+
+    // Match last arm must test pattern
+    val n = 2
+    val r = n match {
+        1 -> 10
+        _ -> 0
+    }
+    println(r)
+
+    // Float call + if
+    println(addHalf(1.5))
+    val y = if true { 1.25 } else { 9.0 }
+    println(y)
+
+    // Float lambda + mutable (bitcast ABI)
+    val f = { x -> x + 0.5 }
+    println(f(1.5))
+    var z = 1.5
+    z = z + 0.5
+    println(z)
+}

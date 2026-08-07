@@ -1,0 +1,13 @@
+module ParMap
+
+import std.io.{println}
+
+val main = {
+    val xs = range(0, 200)
+    val ys = xs.map({ x ->
+        x * 2
+    })
+    println(ys.len())
+    println(ys.get(0))
+    println(ys.get(199))
+}

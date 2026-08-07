@@ -1,0 +1,36 @@
+module SortBy
+
+import std.io.{println}
+
+type Pair {
+    val k
+    val v
+}
+
+val main = {
+    val xs = listOf(3, 1, 4, 1, 5)
+    val asc = xs.sortBy({ x -> x })
+    println(asc.get(0))
+    println(asc.get(1))
+    println(asc.get(2))
+    println(asc.get(4))
+
+    // Descending via negated key; equal keys stay stable (both 1s keep order).
+    val desc = xs.sortBy({ x -> 0 - x })
+    println(desc.get(0))
+    println(desc.get(1))
+    println(desc.get(2))
+
+    val pairs = listOf(Pair { k = 2, v = 10 }, Pair { k = 1, v = 20 }, Pair { k = 2, v = 30 })
+    val by_k = pairs.sortBy({ p -> p.k })
+    println(by_k.get(0).v)
+    println(by_k.get(1).v)
+    println(by_k.get(2).v)
+
+    // String Ord keys
+    val words = listOf("banana", "apple", "cherry")
+    val by_word = words.sortBy({ s -> s })
+    println(by_word.get(0))
+    println(by_word.get(1))
+    println(by_word.get(2))
+}

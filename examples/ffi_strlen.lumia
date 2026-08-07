@@ -1,0 +1,10 @@
+module FfiStrlen
+
+import std.io.{println}
+
+foreign "C" pure fn strlen(s: String) -> Int
+
+val main = {
+    println(strlen("hello"))
+    println(strlen(""))
+}

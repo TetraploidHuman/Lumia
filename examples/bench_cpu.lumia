@@ -1,0 +1,147 @@
+module BenchCpu
+
+import std.io.{println}
+
+/// CPU-bound kernels for Release timing (`scripts/bench_cpu.sh`).
+/// Each printed line is a checksum so Debug/Release and reruns stay comparable.
+///
+/// Kernels (ALU / branch / call pressure, almost no I/O):
+///   1. trial-division prime count
+///   2. dense integer matmul (synthetic A/B, no heap matrix)
+///   3. Mandelbrot escape-time (float; stepped coords — language has no Int→Float)
+///   4. Collatz step totals (branchy integer)
+///   5. naive recursive fib (call-tree heavy)
+
+val isPrime(n) = {
+    if n < 2 {
+        false
+    } else {
+        var d = 2
+        var ok = true
+        for d * d <= n {
+            if n % d == 0 {
+                ok = false
+                break
+            }
+            d = d + 1
+        }
+        ok
+    }
+}
+
+val countPrimes(limit) = {
+    var n = 2
+    var c = 0
+    for n <= limit {
+        if isPrime(n) {
+            c = c + 1
+        }
+        n = n + 1
+    }
+    c
+}
+
+/// C[i][j] = sum_k A[i][k]*B[k][j] with A[i][k]=i*n+k+1, B[k][j]=k*n+j+1.
+val matmulChecksum(n) = {
+    var sum = 0
+    var i = 0
+    for i < n {
+        var j = 0
+        for j < n {
+            var k = 0
+            var cell = 0
+            for k < n {
+                cell = cell + (i * n + k + 1) * (k * n + j + 1)
+                k = k + 1
+            }
+            sum = sum + (cell % 1000003)
+            j = j + 1
+        }
+        i = i + 1
+    }
+    sum
+}
+
+/// Escape-time Mandelbrot on a fixed 200×140 grid over [-2.5,1]×[-1,1].
+val mandelbrotChecksum(maxIt) = {
+    val w = 200
+    val h = 140
+    val dx = 3.5 / 200.0
+    val dy = 2.0 / 140.0
+    var cy = 0.0 - 1.0
+    var y = 0
+    var acc = 0
+    for y < h {
+        var cx = 0.0 - 2.5
+        var x = 0
+        for x < w {
+            var zx = 0.0
+            var zy = 0.0
+            var it = 0
+            var escaped = false
+            for it < maxIt {
+                val zx2 = zx * zx
+                val zy2 = zy * zy
+                if zx2 + zy2 > 4.0 {
+                    escaped = true
+                    break
+                }
+                val nzy = 2.0 * zx * zy + cy
+                zx = zx2 - zy2 + cx
+                zy = nzy
+                it = it + 1
+            }
+            if escaped {
+                acc = acc + it
+            } else {
+                acc = acc + maxIt
+            }
+            cx = cx + dx
+            x = x + 1
+        }
+        cy = cy + dy
+        y = y + 1
+    }
+    acc
+}
+
+val collatzSteps(n) = {
+    var x = n
+    var steps = 0
+    for x > 1 {
+        if x % 2 == 0 {
+            x = x / 2
+        } else {
+            x = 3 * x + 1
+        }
+        steps = steps + 1
+    }
+    steps
+}
+
+val collatzTotal(limit) = {
+    var n = 1
+    var total = 0
+    for n <= limit {
+        total = total + collatzSteps(n)
+        n = n + 1
+    }
+    total
+}
+
+val fib(n) = {
+    n match {
+        0 -> 0
+        1 -> 1
+        _ -> fib(n - 1) + fib(n - 2)
+    }
+}
+
+val main = {
+    // Sized so Release wall time is typically ~1–3s on a laptop CPU.
+    println(countPrimes(80000))
+    println(matmulChecksum(160))
+    println(mandelbrotChecksum(120))
+    println(collatzTotal(250000))
+    println(fib(37))
+}

@@ -1,0 +1,10 @@
+module FfiAbs
+
+import std.io.{println}
+
+foreign "C" pure fn llabs(x: Int) -> Int
+
+val main = {
+    println(llabs(0 - 42))
+    println(llabs(7))
+}

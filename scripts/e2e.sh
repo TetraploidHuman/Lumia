@@ -78,6 +78,10 @@ out="$(/tmp/lumia_e2e_concat | tr '\n' ' ' | sed 's/ $//')"
 out="$(/tmp/lumia_e2e_pipe | tr '\n' ' ' | sed 's/ $//')"
 [[ "$out" == "3 6 10" ]] || { echo "list_pipe failed: $out"; exit 1; }
 
+"$LUMIA" build examples/list_set.lumia -o /tmp/lumia_e2e_lset
+out="$(/tmp/lumia_e2e_lset | tr '\n' ' ' | sed 's/ $//')"
+[[ "$out" == "1 99 3 2 3" ]] || { echo "list_set failed: $out"; exit 1; }
+
 "$LUMIA" build examples/match_guard.lumia -o /tmp/lumia_e2e_guard
 out="$(/tmp/lumia_e2e_guard | tr '\n' ' ' | sed 's/ $//')"
 [[ "$out" == "1 2 0" ]] || { echo "match_guard failed: $out"; exit 1; }
@@ -121,5 +125,81 @@ out="$(/tmp/lumia_e2e_hoffn | tr '\n' ' ' | sed 's/ $//')"
 "$LUMIA" build examples/string_interp.lumia -o /tmp/lumia_e2e_interp
 out="$(/tmp/lumia_e2e_interp | tr '\n' ' ' | sed 's/ $//')"
 [[ "$out" == "hello Lumia n=42 43 plain dollar=\$n" ]] || { echo "string_interp failed: [$out]"; exit 1; }
+
+"$LUMIA" build examples/range_fold.lumia -o /tmp/lumia_e2e_rf
+out="$(/tmp/lumia_e2e_rf | tr '\n' ' ' | sed 's/ $//')"
+[[ "$out" == "499999500000 5050" ]] || { echo "range_fold failed: [$out]"; exit 1; }
+
+"$LUMIA" build examples/set_ops.lumia -o /tmp/lumia_e2e_set
+out="$(/tmp/lumia_e2e_set | tr '\n' ' ' | sed 's/ $//')"
+[[ "$out" == "3 1 0 3 2 0 1 3 1" ]] || { echo "set_ops failed: [$out]"; exit 1; }
+
+"$LUMIA" build examples/mapset.lumia -o /tmp/lumia_e2e_mapset
+out="$(/tmp/lumia_e2e_mapset | tr '\n' ' ' | sed 's/ $//')"
+[[ "$out" == "3 0 2 3 1 0 4" ]] || { echo "mapset failed: [$out]"; exit 1; }
+
+"$LUMIA" build examples/coll_conv.lumia -o /tmp/lumia_e2e_cc
+out="$(/tmp/lumia_e2e_cc | tr '\n' ' ' | sed 's/ $//')"
+[[ "$out" == "3 1 0 3 2 1" ]] || { echo "coll_conv failed: [$out]"; exit 1; }
+
+"$LUMIA" build examples/set_algebra.lumia -o /tmp/lumia_e2e_sa
+out="$(/tmp/lumia_e2e_sa | tr '\n' ' ' | sed 's/ $//')"
+[[ "$out" == "4 1 1 2 1 0 1 1 0" ]] || { echo "set_algebra failed: [$out]"; exit 1; }
+
+"$LUMIA" build examples/for_map_set.lumia -o /tmp/lumia_e2e_fms
+out="$(/tmp/lumia_e2e_fms | tr '\n' ' ' | sed 's/ $//')"
+[[ "$out" == "6 3 30" ]] || { echo "for_map_set failed: [$out]"; exit 1; }
+
+"$LUMIA" build examples/range_map.lumia -o /tmp/lumia_e2e_rm
+out="$(/tmp/lumia_e2e_rm | tr '\n' ' ' | sed 's/ $//')"
+[[ "$out" == "5 2 10 5 1 9 249999500000" ]] || { echo "range_map failed: [$out]"; exit 1; }
+
+"$LUMIA" build examples/fuse_hof.lumia -o /tmp/lumia_e2e_fuse
+out="$(/tmp/lumia_e2e_fuse | tr '\n' ' ' | sed 's/ $//')"
+[[ "$out" == "24 250500" ]] || { echo "fuse_hof failed: [$out]"; exit 1; }
+
+"$LUMIA" build examples/result_match.lumia -o /tmp/lumia_e2e_res
+out="$(/tmp/lumia_e2e_res | tr '\n' ' ' | sed 's/ $//')"
+[[ "$out" == "5 -1 3" ]] || { echo "result_match failed: [$out]"; exit 1; }
+
+"$LUMIA" build examples/list_extras.lumia -o /tmp/lumia_e2e_lex
+out="$(/tmp/lumia_e2e_lex | tr '\n' ' ' | sed 's/ $//')"
+[[ "$out" == "0 1 4 4 4 1 20 1 0 1 0 2 -1" ]] || { echo "list_extras failed: [$out]"; exit 1; }
+
+"$LUMIA" build examples/prelude_option.lumia -o /tmp/lumia_e2e_po
+out="$(/tmp/lumia_e2e_po | tr '\n' ' ' | sed 's/ $//')"
+[[ "$out" == "10 -1 42 7" ]] || { echo "prelude_option failed: [$out]"; exit 1; }
+
+"$LUMIA" build examples/string_more.lumia -o /tmp/lumia_e2e_sm
+out="$(/tmp/lumia_e2e_sm | tr '\n' ' ' | sed 's/ $//')"
+[[ "$out" == "11 Hello Lumia 2 Hello Lumia hello lumia HELLO LUMIA Hello 3 3 3 3 3 bar" ]] || { echo "string_more failed: [$out]"; exit 1; }
+
+"$LUMIA" build examples/map_string_keys.lumia -o /tmp/lumia_e2e_msk
+out="$(/tmp/lumia_e2e_msk | tr '\n' ' ' | sed 's/ $//')"
+[[ "$out" == "2 1 0 2 1 1 1 0" ]] || { echo "map_string_keys failed: [$out]"; exit 1; }
+
+"$LUMIA" build examples/read_stdin.lumia -o /tmp/lumia_e2e_rs
+out="$(printf '  hi hi there  ' | /tmp/lumia_e2e_rs | tr '\n' ' ' | sed 's/ $//')"
+[[ "$out" == "3 hi 2 1 1" ]] || { echo "read_stdin failed: [$out]"; exit 1; }
+
+"$LUMIA" build examples/word_count.lumia -o /tmp/lumia_e2e_wc
+out="$(printf 'Hello World\nhello there\nWORLD\n' | /tmp/lumia_e2e_wc | tr '\n' ' ' | sed 's/ $//')"
+[[ "$out" == "hello: 2 there: 1 world: 2" ]] || { echo "word_count failed: [$out]"; exit 1; }
+
+"$LUMIA" build examples/list_text.lumia -o /tmp/lumia_e2e_lt
+out="$(/tmp/lumia_e2e_lt | tr '\n' ' ' | sed 's/ $//')"
+[[ "$out" == "2 3 1 2 3 a-b-c 3 3 x z 1 0 2 2" ]] || { echo "list_text failed: [$out]"; exit 1; }
+
+"$LUMIA" build --release examples/memo_l2.lumia -o /tmp/lumia_e2e_memo
+out="$(/tmp/lumia_e2e_memo | tr '\n' ' ' | sed 's/ $//')"
+[[ "$out" == "2646700 2646700 285" ]] || { echo "memo_l2 failed: [$out]"; exit 1; }
+
+"$LUMIA" build examples/memo_l0l1.lumia -o /tmp/lumia_e2e_m01
+out="$(/tmp/lumia_e2e_m01 | tr '\n' ' ' | sed 's/ $//')"
+[[ "$out" == "42 42 65" ]] || { echo "memo_l0l1 failed: [$out]"; exit 1; }
+
+"$LUMIA" build examples/correctness_fixes.lumia -o /tmp/lumia_e2e_cf
+out="$(/tmp/lumia_e2e_cf | tr '\n' ' ' | sed 's/ $//')"
+[[ "$out" == "0 1 1 1 0 0 2 1.25" ]] || { echo "correctness_fixes failed: [$out]"; exit 1; }
 
 echo "e2e ok"

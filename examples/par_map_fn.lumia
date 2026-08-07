@@ -1,0 +1,15 @@
+module ParMapFn
+
+import std.io.{println}
+
+val double = { x ->
+    x * 2
+}
+
+val main = {
+    val xs = range(0, 50)
+    val ys = xs.map(double)
+    println(ys.len())
+    println(ys.get(0))
+    println(ys.get(49))
+}
