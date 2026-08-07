@@ -16,6 +16,22 @@ fn lumia_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_lumia"))
 }
 
+fn e2e_out_dir() -> PathBuf {
+    let out_dir = std::env::temp_dir().join("lumia_e2e");
+    let _ = std::fs::create_dir_all(&out_dir);
+    out_dir
+}
+
+/// Platform executable path under the shared e2e output directory.
+fn e2e_exe(stem: &str) -> PathBuf {
+    let name = if cfg!(windows) {
+        format!("{stem}.exe")
+    } else {
+        stem.to_string()
+    };
+    e2e_out_dir().join(name)
+}
+
 fn run_example(rel: &str, expected_lines: &[&str]) {
     run_example_build(rel, None, expected_lines, false);
 }
@@ -33,19 +49,12 @@ fn run_example_build(rel: &str, stdin: Option<&str>, expected_lines: &[&str], re
     let src = root.join(rel);
     assert!(src.is_file(), "missing example {}", src.display());
 
-    let out_dir = std::env::temp_dir().join("lumia_e2e");
-    let _ = std::fs::create_dir_all(&out_dir);
     let stem = Path::new(rel)
         .file_stem()
         .unwrap()
         .to_string_lossy()
         .to_string();
-    let exe_name = if cfg!(windows) {
-        format!("{stem}.exe")
-    } else {
-        stem.clone()
-    };
-    let exe = out_dir.join(exe_name);
+    let exe = e2e_exe(&stem);
 
     let mut args = vec![
         "build".to_string(),
@@ -584,9 +593,7 @@ fn e2e_assert_ok() {
 fn e2e_bad_assert_aborts() {
     let root = workspace_root();
     let src = root.join("examples/bad_assert.lumia");
-    let out_dir = std::env::temp_dir().join("lumia_e2e");
-    let _ = std::fs::create_dir_all(&out_dir);
-    let bin = out_dir.join("bad_assert");
+    let bin = e2e_exe("bad_assert");
     let status = Command::new(lumia_bin())
         .current_dir(&root)
         .args([
@@ -677,9 +684,7 @@ fn e2e_use_path_dep() {
 fn e2e_par_map() {
     let root = workspace_root();
     let src = root.join("examples/par_map.lumia");
-    let out_dir = std::env::temp_dir().join("lumia_e2e");
-    let _ = std::fs::create_dir_all(&out_dir);
-    let exe = out_dir.join("par_map");
+    let exe = e2e_exe("par_map");
     let status = Command::new(lumia_bin())
         .current_dir(&root)
         .args([
@@ -703,9 +708,7 @@ fn e2e_par_map() {
 fn e2e_par_map_fn() {
     let root = workspace_root();
     let src = root.join("examples/par_map_fn.lumia");
-    let out_dir = std::env::temp_dir().join("lumia_e2e");
-    let _ = std::fs::create_dir_all(&out_dir);
-    let exe = out_dir.join("par_map_fn");
+    let exe = e2e_exe("par_map_fn");
     let status = Command::new(lumia_bin())
         .current_dir(&root)
         .args([
@@ -729,9 +732,7 @@ fn e2e_par_map_fn() {
 fn e2e_par_map_capture() {
     let root = workspace_root();
     let src = root.join("examples/par_map_capture.lumia");
-    let out_dir = std::env::temp_dir().join("lumia_e2e");
-    let _ = std::fs::create_dir_all(&out_dir);
-    let exe = out_dir.join("par_map_capture");
+    let exe = e2e_exe("par_map_capture");
     let status = Command::new(lumia_bin())
         .current_dir(&root)
         .args([

@@ -101,18 +101,28 @@ pub fn compile_module(core: &CoreModule, opts: &CodegenOptions) -> Result<()> {
     } else {
         OptimizationLevel::None
     };
+    // PIC is fine on ELF/Mach-O; MSVC COFF expects the default reloc model.
+    let reloc = if cfg!(target_os = "windows") {
+        RelocMode::Default
+    } else {
+        RelocMode::PIC
+    };
     let tm = target
         .create_target_machine(
             &triple,
             &cpu,
             &features,
             opt,
-            RelocMode::PIC,
+            reloc,
             CodeModel::Default,
         )
         .context("create target machine")?;
 
-    let obj_path = opts.output.with_extension("o");
+    let obj_path = if cfg!(target_os = "windows") {
+        opts.output.with_extension("obj")
+    } else {
+        opts.output.with_extension("o")
+    };
     tm.write_to_file(&cg.module, FileType::Object, &obj_path)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -2814,7 +2824,7 @@ fn link_executable(
 ) -> Result<()> {
     let mut cmd = Command::new("clang");
     cmd.arg(obj).arg(runtime).arg("-o").arg(output);
-    // Unix shared libs; skip on Windows MSVC/clang-cl style targets.
+    // Unix shared libs; on Windows the clang driver uses the MSVC linker.
     if !cfg!(target_os = "windows") {
         cmd.arg("-lpthread").arg("-ldl").arg("-lm");
     }

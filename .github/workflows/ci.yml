@@ -13,6 +13,7 @@ jobs:
   test:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -24,37 +25,81 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install LLVM 21
+      # Linux: official LLVM tarballs include llvm-config + libs (install-llvm-action).
+      - name: Install LLVM 21 (Linux)
+        if: runner.os == 'Linux'
         uses: KyleMayes/install-llvm-action@v2
         with:
           version: "21.1"
-          env: true
+          directory: ${{ github.workspace }}/llvm
 
-      - name: Ensure clang on PATH (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          # install-llvm-action places llvm-config; clang should sit beside it
-          $llvm = $env:LLVM_SYS_211_PREFIX
-          if (-not $llvm) { $llvm = $env:LLVM_PATH }
-          Write-Host "LLVM prefix: $llvm"
-          if ($llvm) {
-            echo "$llvm/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          }
-
-      - name: Ensure clang on PATH (Linux)
+      - name: Configure LLVM env (Linux)
         if: runner.os == 'Linux'
         run: |
-          echo "LLVM_SYS_211_PREFIX=${LLVM_SYS_211_PREFIX:-}"
-          if [ -n "${LLVM_SYS_211_PREFIX:-}" ]; then
-            echo "${LLVM_SYS_211_PREFIX}/bin" >> "$GITHUB_PATH"
-          fi
-          which llvm-config || true
+          echo "LLVM_SYS_211_PREFIX=${{ github.workspace }}/llvm" >> "$GITHUB_ENV"
+          echo "${{ github.workspace }}/llvm/bin" >> "$GITHUB_PATH"
+          "${{ github.workspace }}/llvm/bin/llvm-config" --version
           if ! command -v clang >/dev/null 2>&1; then
             sudo apt-get update
             sudo apt-get install -y clang
           fi
-          which clang
+          command -v clang
+          clang --version
+
+      # Windows official installers ship clang/tools only — no llvm-config / C++ libs.
+      # llvm-sys needs a full development prefix (no spaces in path).
+      - name: Cache LLVM SDK (Windows)
+        if: runner.os == 'Windows'
+        id: cache-llvm-win
+        uses: actions/cache@v4
+        with:
+          path: C:\LLVM
+          key: llvm-sdk-21.1.1-windows-amd64-msvc17-msvcrt-v1
+
+      - name: Install LLVM 21 SDK (Windows)
+        if: runner.os == 'Windows' && steps.cache-llvm-win.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $ver = "21.1.1"
+          $root = "C:\LLVM"
+          $llvmName = "llvm-$ver-windows-amd64-msvc17-msvcrt"
+          $clangName = "clang-$ver-windows-amd64-msvc17-msvcrt"
+          $llvmUrl = "https://github.com/vovkos/llvm-package-windows/releases/download/llvm-$ver/$llvmName.7z"
+          $clangUrl = "https://github.com/vovkos/llvm-package-windows/releases/download/clang-$ver/$clangName.7z"
+          $tmp = "$env:RUNNER_TEMP\llvm-sdk"
+          if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
+          New-Item -ItemType Directory -Path $tmp | Out-Null
+          if (Test-Path $root) { Remove-Item -Recurse -Force $root }
+          New-Item -ItemType Directory -Path $root | Out-Null
+
+          Write-Host "Downloading $llvmUrl"
+          Invoke-WebRequest -Uri $llvmUrl -OutFile "$tmp\$llvmName.7z"
+          & 7z x "$tmp\$llvmName.7z" "-o$tmp\llvm" -y | Out-Host
+          Copy-Item -Recurse -Force "$tmp\llvm\$llvmName\*" $root
+
+          Write-Host "Downloading $clangUrl"
+          Invoke-WebRequest -Uri $clangUrl -OutFile "$tmp\$clangName.7z"
+          & 7z x "$tmp\$clangName.7z" "-o$tmp\clang" -y | Out-Host
+          Copy-Item -Recurse -Force "$tmp\clang\$clangName\*" $root
+
+      - name: Configure LLVM env (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $root = "C:\LLVM"
+          if (-not (Test-Path "$root\bin\llvm-config.exe")) {
+            throw "llvm-config.exe missing under $root\bin"
+          }
+          if (-not (Test-Path "$root\bin\clang.exe")) {
+            throw "clang.exe missing under $root\bin"
+          }
+          "LLVM_SYS_211_PREFIX=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "LLVM_PATH=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "$root\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & "$root\bin\llvm-config.exe" --version
+          & "$root\bin\clang.exe" --version
 
       - name: Cargo test (library crates)
         run: cargo test --workspace --exclude lumia

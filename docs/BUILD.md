@@ -280,9 +280,9 @@ cargo run -p lumia -- build examples/mapset.lumia -o /tmp/ms && /tmp/ms
 - **目标 OS**：Linux、Windows（x86_64）；macOS 非当前必达。
 - **仓库**：[https://github.com/TetraploidHuman/Lumia](https://github.com/TetraploidHuman/Lumia)
 - **CI**：GitHub Actions（`.github/workflows/ci.yml`）在 `ubuntu-latest` 与 `windows-latest` 上：
-  1. 安装 LLVM 21 + `clang`
-  2. `cargo test --workspace`
-  3. `cargo test -p lumia --test e2e_examples`（编译并运行 examples 期望输出）
+  1. 安装 LLVM 21 开发前缀 + `clang`（Linux：`install-llvm-action`；Windows：`vovkos/llvm-package-windows` 完整 SDK，因官方 Windows 安装包不含 `llvm-config`/C++ libs）
+  2. 设置 `LLVM_SYS_211_PREFIX`（路径不含空格）
+  3. `cargo test --workspace --exclude lumia` 与 `cargo test -p lumia --tests`（含 e2e examples）
 - 本地 Linux：`source scripts/env.sh && ./scripts/check.sh`（或 `./scripts/e2e.sh`）
 - 本地亦可：`cargo test -p lumia --test e2e_examples`
 
