@@ -38,6 +38,8 @@ pub const TYPE_LIST_IOTA: u32 = 9;
 thread_local! {
     static HEAP: RefCell<Vec<*mut ObjectHeader>> = const { RefCell::new(Vec::new()) };
     static ROOTS: RefCell<Vec<*mut *mut u8>> = const { RefCell::new(Vec::new()) };
+    /// Immortal payloads (empty-list singleton, …) — always marked.
+    static PERM_OBJECTS: RefCell<Vec<*mut u8>> = const { RefCell::new(Vec::new()) };
     static BYTES_ALLOCATED: RefCell<usize> = const { RefCell::new(0) };
     /// Nestable: RT helpers that allocate multiple objects before they are reachable
     /// from roots must hold this to avoid soft-threshold GC UAF.
@@ -78,6 +80,13 @@ impl MarkSweep {
                     if is_heap_payload(p) {
                         mark(header_from_payload(p));
                     }
+                }
+            }
+        });
+        PERM_OBJECTS.with(|p| {
+            for obj in p.borrow().iter() {
+                if is_heap_payload(*obj) {
+                    mark(header_from_payload(*obj));
                 }
             }
         });
@@ -1208,6 +1217,13 @@ pub extern "C" fn lumia_list_concat(a: *mut u8, b: *mut u8) -> *mut u8 {
         } else {
             *(b as *const i64)
         };
+        // Immutable lists: concat with empty is identity (share the other).
+        if na == 0 {
+            return if nb == 0 { lumia_list_empty() } else { b };
+        }
+        if nb == 0 {
+            return a;
+        }
         let n = na + nb;
         let nbytes = (1 + n as u64) * 8;
         let dest = lumia_alloc(nbytes, TYPE_LIST);
@@ -1216,20 +1232,37 @@ pub extern "C" fn lumia_list_concat(a: *mut u8, b: *mut u8) -> *mut u8 {
         }
         let dst = dest as *mut i64;
         *dst = n;
-        if !a.is_null() {
-            let src = a as *const i64;
-            for i in 0..na as usize {
-                *dst.add(1 + i) = *src.add(1 + i);
-            }
+        let src = a as *const i64;
+        for i in 0..na as usize {
+            *dst.add(1 + i) = *src.add(1 + i);
         }
-        if !b.is_null() {
-            let src = b as *const i64;
-            for i in 0..nb as usize {
-                *dst.add(1 + na as usize + i) = *src.add(1 + i);
-            }
+        let src = b as *const i64;
+        for i in 0..nb as usize {
+            *dst.add(1 + na as usize + i) = *src.add(1 + i);
         }
         dest
     }
+}
+
+/// Shared empty `List` (`LitList` / `listOf()`). Immortal — survives GC.
+#[no_mangle]
+pub extern "C" fn lumia_list_empty() -> *mut u8 {
+    thread_local! {
+        static EMPTY: Cell<*mut u8> = const { Cell::new(ptr::null_mut()) };
+    }
+    EMPTY.with(|c| {
+        let cur = c.get();
+        if !cur.is_null() {
+            return cur;
+        }
+        let dest = lumia_alloc(8, TYPE_LIST);
+        unsafe {
+            *(dest as *mut i64) = 0;
+        }
+        PERM_OBJECTS.with(|p| p.borrow_mut().push(dest));
+        c.set(dest);
+        dest
+    })
 }
 
 /// Return a new list with elements from `start` to end (Iota stays virtual).
@@ -3008,6 +3041,23 @@ mod tests {
         assert_eq!(lumia_eq(h as i64, forced as i64), 1);
         assert_eq!(lumia_list_len(lumia_list_take(r, 3)), 3);
         assert_eq!(lumia_list_get(lumia_list_slice(r, 5), 0), 5);
+    }
+
+    #[test]
+    fn empty_list_singleton_survives_gc() {
+        let a = lumia_list_empty();
+        let b = lumia_list_empty();
+        assert_eq!(a, b);
+        assert_eq!(lumia_list_len(a), 0);
+        // Force a collection; permanent root must keep the singleton alive.
+        lumia_gc_collect();
+        assert_eq!(lumia_list_empty(), a);
+        // Identity concat on a heap list (Iota would be forced first).
+        let xs = force_heap_list(lumia_range(1, 4));
+        let id = lumia_list_concat(lumia_list_empty(), xs);
+        assert_eq!(id, xs);
+        assert_eq!(lumia_list_len(id), 3);
+        assert_eq!(lumia_list_concat(xs, lumia_list_empty()), xs);
     }
 }
 

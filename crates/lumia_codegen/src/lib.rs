@@ -247,6 +247,7 @@ fn declare_runtime<'ctx>(context: &'ctx Context, module: &LlvmModule<'ctx>) {
         ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
         None,
     );
+    module.add_function("lumia_list_empty", ptr_ty.fn_type(&[], false), None);
     module.add_function(
         "lumia_len",
         i64_ty.fn_type(&[ptr_ty.into()], false),
@@ -2632,8 +2633,25 @@ impl<'ctx> Codegen<'ctx> {
                     .unwrap())
             }
             Value::AllocList { elems, repr } => {
-                // LitList / HeapList share heap layout today; Iota is produced by
-                // `lumia_range` (TYPE_LIST_IOTA), not AllocList.
+                // Empty list → immortal singleton (`lumia_list_empty`). Non-empty
+                // LitList/HeapList share heap layout; Iota comes from `lumia_range`.
+                if elems.is_empty() {
+                    let _ = repr;
+                    let f = self.module.get_function("lumia_list_empty").unwrap();
+                    let ptr = self
+                        .builder
+                        .build_call(f, &[], "list_empty")
+                        .unwrap()
+                        .try_as_basic_value()
+                        .basic()
+                        .unwrap()
+                        .into_pointer_value();
+                    return Ok(self
+                        .builder
+                        .build_ptr_to_int(ptr, self.i64_ty, "empty_i64")
+                        .unwrap()
+                        .into());
+                }
                 let _ = repr;
                 self.emit_heap_array(elems, 3 /* TYPE_LIST */)
             }
