@@ -856,28 +856,83 @@ impl Infer {
                     Ok((Type::Int, e))
                 }
                 Builtin::AdtField => {
-                    if args.len() != 2 {
-                        return Err(at(*span, "adt_field takes 2 arguments"));
+                    // 2 args: tuple/positional `.0`; 3 args: product field with expected ADT name.
+                    if args.len() != 2 && args.len() != 3 {
+                        return Err(at(*span, "adt_field takes 2 or 3 arguments"));
                     }
-                    let (at, ae) = self.infer_expr(&args[0])?;
+                    let (recv_ty, ae) = self.infer_expr(&args[0])?;
                     let (it, ie) = self.infer_expr(&args[1])?;
                     self.unify_at(*span, it, Type::Int)?;
+                    let mut eff = ae.union(ie);
+                    let expect_adt = if args.len() == 3 {
+                        let (nt, ne) = self.infer_expr(&args[2])?;
+                        self.unify_at(*span, nt, Type::String)?;
+                        eff = eff.union(ne);
+                        match &args[2] {
+                            Expr::String(s, _) => Some(s.as_str()),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
                     let idx = match &args[1] {
                         Expr::Int(n, _) if *n >= 0 => *n as usize,
-                        _ => 0,
+                        _ => {
+                            return Err(at(*span, "adt_field index must be a non-negative literal"));
+                        }
                     };
-                    let elem = match self.prune(at) {
-                        Type::Adt { params, .. } => params
-                            .get(idx)
-                            .cloned()
-                            .unwrap_or_else(|| self.fresh()),
-                        Type::Tuple(ts) => ts
-                            .get(idx)
-                            .cloned()
-                            .unwrap_or_else(|| self.fresh()),
-                        _ => self.fresh(),
+                    let elem = match self.prune(recv_ty.clone()) {
+                        Type::Adt { name, params } => {
+                            if let Some(want) = expect_adt {
+                                if name != want {
+                                    return Err(at(
+                                        *span,
+                                        format!(
+                                            "field projection expects type `{want}`, got `{name}`"
+                                        ),
+                                    ));
+                                }
+                            }
+                            params.get(idx).cloned().ok_or_else(|| {
+                                at(
+                                    *span,
+                                    format!(
+                                        "field index {idx} out of range for `{name}` (arity {})",
+                                        params.len()
+                                    ),
+                                )
+                            })?
+                        }
+                        Type::Tuple(ts) => {
+                            if expect_adt.is_some() {
+                                return Err(at(
+                                    *span,
+                                    "named product field applied to a tuple",
+                                ));
+                            }
+                            ts.get(idx).cloned().ok_or_else(|| {
+                                at(
+                                    *span,
+                                    format!(
+                                        "tuple index {idx} out of range (arity {})",
+                                        ts.len()
+                                    ),
+                                )
+                            })?
+                        }
+                        Type::Var(_) => {
+                            // Receiver still open (match desugar / inference order).
+                            // Concrete Adt/Tuple checks apply once the type is known.
+                            self.fresh()
+                        }
+                        other => {
+                            return Err(at(
+                                *span,
+                                format!("field projection: expected product/tuple, got {other:?}"),
+                            ));
+                        }
                     };
-                    Ok((elem, ae.union(ie)))
+                    Ok((elem, eff))
                 }
                 Builtin::ListSlice => {
                     if args.len() != 2 {

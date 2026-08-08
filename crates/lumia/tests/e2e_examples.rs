@@ -803,6 +803,29 @@ fn e2e_unknown_std_module_rejected() {
 }
 
 #[test]
+fn e2e_bad_field_proj_rejected() {
+    let root = workspace_root();
+    let src = root.join("examples/bad_field_proj.lumia");
+    let out = Command::new(lumia_bin())
+        .current_dir(&root)
+        .args(["check", src.to_str().unwrap()])
+        .output()
+        .expect("check bad_field_proj");
+    assert!(!out.status.success(), "wrong product field must fail");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        combined.contains("expects type")
+            || combined.contains("field projection")
+            || combined.contains("cannot resolve"),
+        "expected field-type error, got: {combined}"
+    );
+}
+
+#[test]
 fn e2e_trait_keyword_rejected() {
     let root = workspace_root();
     let src = root.join("examples/bad_trait.lumia");

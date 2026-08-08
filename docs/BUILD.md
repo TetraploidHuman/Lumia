@@ -196,7 +196,7 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumia_rt` 内�
 | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | **已完成骨架**       | parse 子集 → 推断 + 效应 → Core → LLVM → 链 `lumia_rt` → `main` + `println` + `Int`；`listOf`→`AllocList`；CSE + ReprSelect 默认路径                       |
 | **已完成下一步（部分）**  | …；**sortBy / assert+行号**；**定位诊断（多文件）**；**Map Overlay**；**WordCount**；**lumia fmt**；…                                                          |
-| **下一里程碑**    | Trait / instance 语义；将 builtins 迁入可加载的 `std/*.lumia`；非逃逸小对象栈分配；`--mm=arc` / 并发 GC（届时写屏障生效） |
+| **下一里程碑**    | Trait / instance 语义；可执行的 `std/*.lumia` 体（现已以 `@exports` 为唯一导入真相）；非逃逸小对象栈分配；`--mm=arc` / 并发 GC（届时写屏障生效） |
 | **工具链已落地**   | **自动并行**（`--parallel` + `ListParMap`）；**包管理**（`Lumia.toml` / `lumia pkg`）；**LSP**（`lumia lsp`）；**FFI**（`foreign "C" fn`）；`priv` 跨文件可见性；`effect { }` 块；Map/Set `finish` 晋升 |
 
 

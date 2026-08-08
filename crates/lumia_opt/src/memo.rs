@@ -977,6 +977,7 @@ mod tests {
             is_main: false,
             memo: None,
             external: None,
+        escaping: std::collections::HashSet::new(),
         }
     }
 
@@ -1283,6 +1284,7 @@ mod tests {
             is_main: true,
             memo: None,
             external: None,
+        escaping: std::collections::HashSet::new(),
         };
         let module = CoreModule {
             name: "M".into(),

@@ -65,10 +65,11 @@ pub fn optimize(module: &mut CoreModule, opts: &OptOptions) {
         Box::new(CsePass),
         Box::new(MemoL0Pass),
         Box::new(MemoL1Pass),
+        // Escape always — ReprSelect and future codegen consume `CoreFun::escaping`.
+        Box::new(EscapePass),
     ];
     if opts.release {
         passes.push(Box::new(InlinePass));
-        passes.push(Box::new(EscapePass));
         passes.push(Box::new(FusionPass));
         passes.push(Box::new(ReprSelect));
         passes.push(Box::new(CopyElimPass));
@@ -92,15 +93,15 @@ pub fn pass_names(release: bool) -> Vec<&'static str> {
             "cse",
             "memo_l0",
             "memo_l1",
-            "inline",
             "escape",
+            "inline",
             "fusion",
             "repr_select",
             "copy_elim",
             "memo_tf",
         ]
     } else {
-        vec!["cse", "memo_l0", "memo_l1", "repr_select"]
+        vec!["cse", "memo_l0", "memo_l1", "escape", "repr_select"]
     }
 }
 
@@ -325,7 +326,8 @@ impl Pass for ReprSelect {
     }
     fn run(&self, module: &mut CoreModule) {
         for f in &mut module.functions {
-            let escaping = escaping_locals(f);
+            // EscapePass always runs first and fills `f.escaping`.
+            let escaping = f.escaping.clone();
             select_in_fun(f, &escaping);
         }
     }
@@ -454,6 +456,7 @@ mod tests {
                 is_main: false,
                 memo: None,
                 external: None,
+            escaping: std::collections::HashSet::new(),
             }],
         };
         CopyElimPass.run(&mut module);
@@ -501,8 +504,10 @@ mod tests {
                 is_main: false,
                 memo: None,
                 external: None,
+            escaping: std::collections::HashSet::new(),
             }],
         };
+        EscapePass.run(&mut module);
         ReprSelect.run(&mut module);
         let Op::Let { value, .. } = &module.functions[0].body.ops[1] else {
             panic!("expected let");
@@ -539,8 +544,10 @@ mod tests {
                 is_main: false,
                 memo: None,
                 external: None,
+            escaping: std::collections::HashSet::new(),
             }],
         };
+        EscapePass.run(&mut module);
         ReprSelect.run(&mut module);
         let Op::Let { value, .. } = &module.functions[0].body.ops[0] else {
             panic!("expected let");

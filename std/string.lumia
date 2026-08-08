@@ -1,4 +1,7 @@
 /// Standard string surface (`import std.string.{trim, split, …}`).
 ///
-/// Implementations are compiler builtins; the loader validates import names.
+/// Implementations are compiler builtins. The loader reads `@exports` from this
+/// file as the single source of truth for allowed import names.
+///
+/// @exports trim, split, substring, toLower, toUpper, startsWith, endsWith, join
 module string

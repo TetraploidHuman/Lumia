@@ -7,8 +7,9 @@ use std::collections::{HashMap, HashSet};
 thread_local! {
     static CTORS: RefCell<HashMap<String, CtorInfo>> = RefCell::new(HashMap::new());
     /// Product field name → (type name, field index). Names shared by ≥2 products
-    /// are omitted (ambiguous for `with`).
+    /// are omitted here and listed in `AMBIGUOUS_PRODUCT_FIELDS`.
     static PRODUCT_FIELDS: RefCell<HashMap<String, (String, usize)>> = RefCell::new(HashMap::new());
+    static AMBIGUOUS_PRODUCT_FIELDS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static PRODUCTS: RefCell<HashMap<String, Vec<String>>> = RefCell::new(HashMap::new());
     static LOWER_ERR: RefCell<Option<LowerError>> = const { RefCell::new(None) };
     /// When true, pure `List.map` lowers to `ListParMap` (auto-parallelism).
@@ -83,16 +84,21 @@ fn with_ctors<R>(ctors: HashMap<String, CtorInfo>, f: impl FnOnce() -> R) -> R {
 fn with_products<R>(
     products: HashMap<String, Vec<String>>,
     fields: HashMap<String, (String, usize)>,
+    ambiguous: HashSet<String>,
     f: impl FnOnce() -> R,
 ) -> R {
     PRODUCTS.with(|p| {
         PRODUCT_FIELDS.with(|pf| {
-            *p.borrow_mut() = products;
-            *pf.borrow_mut() = fields;
-            let r = f();
-            p.borrow_mut().clear();
-            pf.borrow_mut().clear();
-            r
+            AMBIGUOUS_PRODUCT_FIELDS.with(|af| {
+                *p.borrow_mut() = products;
+                *pf.borrow_mut() = fields;
+                *af.borrow_mut() = ambiguous;
+                let r = f();
+                p.borrow_mut().clear();
+                pf.borrow_mut().clear();
+                af.borrow_mut().clear();
+                r
+            })
         })
     })
 }
@@ -103,6 +109,10 @@ fn lookup_ctor(name: &str) -> Option<CtorInfo> {
 
 fn lookup_product_field(name: &str) -> Option<(String, usize)> {
     PRODUCT_FIELDS.with(|c| c.borrow().get(name).cloned())
+}
+
+fn is_ambiguous_product_field(name: &str) -> bool {
+    AMBIGUOUS_PRODUCT_FIELDS.with(|c| c.borrow().contains(name))
 }
 
 fn lookup_product(name: &str) -> Option<Vec<String>> {
@@ -248,7 +258,7 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
         product_fields.remove(f);
     }
     let module = with_ctors(ctors, || {
-        with_products(product_map, product_fields, || {
+        with_products(product_map, product_fields, ambiguous_product_fields, || {
             let mut items = Vec::new();
             for item in &m.items {
                 match item {
@@ -1067,10 +1077,24 @@ fn lower_expr(e: &lumia_syntax::Expr) -> Expr {
                     args: vec![lower_expr(base), Expr::Int(idx, *span)],
                     span: *span,
                 }
-            } else if let Some((_ty, idx)) = lookup_product_field(field) {
+            } else if is_ambiguous_product_field(field) {
+                set_lower_err(
+                    format!(
+                        "cannot resolve field `{field}` (ambiguous across product types)"
+                    ),
+                    *span,
+                );
+                Expr::Unit(*span)
+            } else if let Some((adt_name, idx)) = lookup_product_field(field) {
+                // Carry expected product name so ty can reject wrong receivers
+                // (global name→index alone is unsound across distinct products).
                 Expr::BuiltinCall {
                     name: Builtin::AdtField,
-                    args: vec![lower_expr(base), Expr::Int(idx as i64, *span)],
+                    args: vec![
+                        lower_expr(base),
+                        Expr::Int(idx as i64, *span),
+                        Expr::String(adt_name, *span),
+                    ],
                     span: *span,
                 }
             } else {

@@ -21,8 +21,7 @@ pub fn escaping_locals(fun: &CoreFun) -> HashSet<Local> {
     escaping
 }
 
-/// Fill `CoreFun`-level analysis is not stored; consumers call [`escaping_locals`].
-/// This pass exists so the pipeline name is real and unit-tests can hook it.
+/// Escape analysis: write results onto each [`CoreFun::escaping`] for later passes.
 pub struct EscapePass;
 
 impl crate::Pass for EscapePass {
@@ -30,14 +29,9 @@ impl crate::Pass for EscapePass {
         "escape"
     }
     fn run(&self, module: &mut CoreModule) {
-        // Analysis-only for now: prove locals that escape so ReprSelect / CopyElim
-        // can specialize. Results are recomputed by consumers (cheap on Core size).
-        let _ = module
-            .functions
-            .iter()
-            .map(escaping_locals)
-            .map(|s| s.len())
-            .sum::<usize>();
+        for f in &mut module.functions {
+            f.escaping = escaping_locals(f);
+        }
     }
 }
 
@@ -242,6 +236,7 @@ mod tests {
             is_main: false,
             memo: None,
             external: None,
+        escaping: std::collections::HashSet::new(),
         }
     }
 

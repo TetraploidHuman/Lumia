@@ -129,37 +129,64 @@ fn is_std(path: &[String]) -> bool {
 }
 
 /// Compiler-provided `std.*` modules (implemented as builtins / prelude).
-/// Unknown modules or names are rejected — no silent skip.
-fn std_exports(path: &[String]) -> Option<&'static [&'static str]> {
+/// Export sets are read from `std/<mod>.lumia` `@exports` lines — no hardcoded dual list.
+fn std_exports(path: &[String]) -> Result<Vec<String>> {
     let key: Vec<&str> = path.iter().map(|s| s.as_str()).collect();
-    match key.as_slice() {
-        ["std", "io"] => Some(&[
-            "println",
-            "readStdin",
-            "assert",
-        ]),
-        ["std", "string"] => Some(&[
-            "trim",
-            "split",
-            "substring",
-            "toLower",
-            "toUpper",
-            "startsWith",
-            "endsWith",
-            "join",
-        ]),
-        _ => None,
+    let rel = match key.as_slice() {
+        ["std", "io"] => "io.lumia",
+        ["std", "string"] => "string.lumia",
+        _ => {
+            bail!(
+                "unknown standard module `{}` (known: std.io, std.string)",
+                path.join(".")
+            );
+        }
+    };
+    let file = workspace_std_dir().join(rel);
+    let src = fs::read_to_string(&file).with_context(|| {
+        format!(
+            "read standard module {} (expected at {})",
+            path.join("."),
+            file.display()
+        )
+    })?;
+    parse_std_exports(&src).with_context(|| format!("parse @exports in {}", file.display()))
+}
+
+fn workspace_std_dir() -> PathBuf {
+    // crates/lumia -> workspace root
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("std")
+}
+
+fn parse_std_exports(src: &str) -> Result<Vec<String>> {
+    for line in src.lines() {
+        let t = line.trim();
+        let Some(rest) = t.strip_prefix("///") else {
+            continue;
+        };
+        let rest = rest.trim();
+        let Some(list) = rest.strip_prefix("@exports") else {
+            continue;
+        };
+        let list = list.trim().trim_start_matches(':').trim();
+        let names: Vec<String> = list
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if names.is_empty() {
+            bail!("@exports list is empty");
+        }
+        return Ok(names);
     }
+    bail!("missing `/// @exports …` line in standard module source")
 }
 
 fn validate_std_import(imp: &Import) -> Result<()> {
-    let Some(exports) = std_exports(&imp.path) else {
-        bail!(
-            "unknown standard module `{}` (known: std.io, std.string)",
-            imp.path.join(".")
-        );
-    };
-    let export_set: HashSet<&str> = exports.iter().copied().collect();
+    let exports = std_exports(&imp.path)?;
+    let export_set: HashSet<&str> = exports.iter().map(|s| s.as_str()).collect();
     match &imp.names {
         ImportNames::All => Ok(()),
         ImportNames::Single(name) => {

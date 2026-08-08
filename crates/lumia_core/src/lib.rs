@@ -29,6 +29,8 @@ pub struct CoreFun {
     pub memo: Option<MemoTf>,
     /// When set, this is a C ABI import (`foreign`); no body emitted.
     pub external: Option<String>,
+    /// Locals that may escape (always filled by EscapePass before ReprSelect).
+    pub escaping: HashSet<Local>,
 }
 
 /// Bounded cross-call memo table — one mechanism, representation is a parameter.
@@ -257,6 +259,7 @@ pub fn lower_hir(module: &HirModule, fun_types: &HashMap<String, Type>) -> CoreM
                     is_main: f.is_main,
                     memo: None,
                     external: f.external.clone(),
+                    escaping: HashSet::new(),
                 });
             }
             Item::Val { name, body } => {
@@ -274,6 +277,7 @@ pub fn lower_hir(module: &HirModule, fun_types: &HashMap<String, Type>) -> CoreM
                     is_main: false,
                     memo: None,
                     external: None,
+                    escaping: HashSet::new(),
                 });
             }
         }
@@ -721,6 +725,7 @@ fn lift_value(
                     is_main: false,
                     memo: None,
                     external: None,
+                escaping: std::collections::HashSet::new(),
                 });
                 *value = Value::FunRef(name);
                 return;
@@ -780,6 +785,7 @@ fn lift_value(
                 is_main: false,
                 memo: None,
                 external: None,
+            escaping: std::collections::HashSet::new(),
             });
             *value = Value::AllocClosure {
                 fun: name,
@@ -1343,7 +1349,14 @@ fn lower_expr(
         }
         HirExpr::BuiltinCall { name, args, .. } => {
             let mut arg_locals = vec![];
-            for a in args {
+            // Product field checks carry an expected-ADT name as a 3rd HIR arg;
+            // Core/runtime only need (obj, index).
+            let use_args: &[HirExpr] = if matches!(name, Builtin::AdtField) && args.len() == 3 {
+                &args[..2]
+            } else {
+                args
+            };
+            for a in use_args {
                 if let Some(l) = lower_expr(ctx, a, ops, true) {
                     arg_locals.push(l);
                 }

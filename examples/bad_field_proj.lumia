@@ -1,0 +1,17 @@
+module BadFieldProj
+
+type Point {
+    val x
+    val y
+}
+
+type Size {
+    val w
+    val h
+}
+
+val main = {
+    val p = Point { x = 1, y = 2 }
+    // `w` belongs to Size — must not project onto Point.
+    p.w
+}

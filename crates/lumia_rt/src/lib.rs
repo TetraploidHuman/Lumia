@@ -260,6 +260,9 @@ pub extern "C" fn lumia_root_pop() {
 
 #[no_mangle]
 pub extern "C" fn lumia_write_barrier(obj: *mut u8, field: u32, new_ptr: *mut u8) {
+    // STW mark-sweep + precise shadow-stack roots: mutations are stopped during
+    // collection, so a write barrier is unnecessary. Concurrent/incremental GCs
+    // must replace this with a real barrier; the ABI stays stable.
     BACKEND.with(|b| b.borrow_mut().write_barrier(obj, field, new_ptr));
 }
 

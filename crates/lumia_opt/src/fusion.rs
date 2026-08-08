@@ -172,6 +172,7 @@ mod tests {
                 is_main: false,
                 memo: None,
                 external: None,
+            escaping: std::collections::HashSet::new(),
             }],
         };
         FusionPass.run(&mut module);
