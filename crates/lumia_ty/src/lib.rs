@@ -1224,6 +1224,18 @@ impl Infer {
                         }
                     }
                     let out = self.fresh();
+                    // `unify_eff` treats Pure ⊑ Io, so requiring Fun(..., Pure) does
+                    // not reject IO callbacks — check the concrete effect bit.
+                    let cb_eff = match self.prune(ft.clone()) {
+                        Type::Fun(_, _, e) => self.prune_eff(e),
+                        _ => Effect::pure(),
+                    };
+                    if cb_eff.has_io() {
+                        return Err(at(
+                            *span,
+                            "parallel map: callback must be pure (no I/O); omit --parallel for effectful maps",
+                        ));
+                    }
                     self.unify_at(
                         *span,
                         ft,
@@ -1637,9 +1649,9 @@ pub fn infer_module_with_visibility(
                     let ps = ps?;
                     let r = parse_foreign_type(ret)?;
                     // `foreign "C" pure` is an honor-system annotation: the
-                    // callee may still have side effects. Opts must not delete
-                    // external calls (see inline skipping `external`); users
-                    // who lie about purity can still observe wrong reorderings.
+                    // callee may still have side effects. Opts must not CSE /
+                    // memo / inline external calls (see `lumia_opt`); lying
+                    // about purity must not collapse distinct call sites.
                     let eff = if f.foreign_pure {
                         Effect::pure()
                     } else {
@@ -2094,6 +2106,32 @@ val main = {
         let hir = lower_module(&ast).expect("lower");
         let typed = infer_module(&hir).expect("infer");
         check_effect_boundaries(&typed).unwrap();
+    }
+
+    #[test]
+    fn parallel_map_rejects_io_callback() {
+        use lumia_hir::set_parallel_map;
+        let src = r#"
+module ParIo
+import std.io.{println}
+val boom(x) = {
+    println(x + 0)
+    x + 1
+}
+val main = {
+    listOf(1, 2, 3).map(boom)
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        set_parallel_map(true);
+        let hir = lower_module(&ast).expect("lower");
+        set_parallel_map(false);
+        let err = infer_module(&hir).expect_err("IO callback must fail under --parallel");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("parallel map") && msg.contains("pure"),
+            "expected parallel purity error, got {msg}"
+        );
     }
 }
 

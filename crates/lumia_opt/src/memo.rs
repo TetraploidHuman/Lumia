@@ -115,10 +115,13 @@ enum ExprKey {
 }
 
 pub fn cse_module(module: &mut CoreModule) {
+    // Foreign (`external`) must never be CSE'd: `foreign "C" pure` is an
+    // honor-system annotation and libc calls like `getpid` / `getenv` are not
+    // referentially transparent. Inline already skips `external`.
     let pure_funs: HashSet<String> = module
         .functions
         .iter()
-        .filter(|f| f.effect.is_pure())
+        .filter(|f| f.effect.is_pure() && f.external.is_none())
         .map(|f| f.name.clone())
         .collect();
     for f in &mut module.functions {
@@ -632,7 +635,7 @@ fn builtin_may_trap_or_effect(b: &Builtin) -> bool {
 // ─── T_f eligibility ───────────────────────────────────────────────────────
 
 fn eligible_dense(f: &CoreFun) -> bool {
-    if f.is_main || !f.effect.is_pure() {
+    if f.is_main || !f.effect.is_pure() || f.external.is_some() {
         return false;
     }
     if f.param_names.first().map(|s| s.as_str()) == Some("env") {
@@ -775,7 +778,7 @@ fn merge_struct_rec(dst: &mut StructRec<'_>, a: StructRec<'_>, b: StructRec<'_>)
 }
 
 fn slots_cost_ok(f: &CoreFun, module: &CoreModule) -> bool {
-    if f.is_main || !f.effect.is_pure() {
+    if f.is_main || !f.effect.is_pure() || f.external.is_some() {
         return false;
     }
     if f.param_names.first().map(|s| s.as_str()) == Some("env") {
@@ -1042,6 +1045,77 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn cse_preserves_distinct_external_calls() {
+        let mut getpid = bare_fun(
+            "getpid",
+            vec![],
+            Block {
+                params: vec![],
+                ops: vec![],
+                result: None,
+            },
+        );
+        getpid.external = Some("getpid".into());
+        getpid.effect = Effect::pure();
+        let mut module = CoreModule {
+            name: "C".into(),
+            functions: vec![
+                getpid,
+                bare_fun(
+                    "main",
+                    vec![],
+                    Block {
+                        params: vec![],
+                        ops: vec![
+                            Op::Let {
+                                local: Local(0),
+                                value: Value::Call {
+                                    fun: "getpid".into(),
+                                    args: vec![],
+                                },
+                                pure_region: true,
+                            },
+                            Op::Let {
+                                local: Local(1),
+                                value: Value::Call {
+                                    fun: "getpid".into(),
+                                    args: vec![],
+                                },
+                                pure_region: true,
+                            },
+                        ],
+                        result: Some(Local(1)),
+                    },
+                ),
+            ],
+        };
+        module.functions[1].is_main = true;
+        module.functions[1].effect = Effect::io();
+        cse_module(&mut module);
+        let ops = &module.functions[1].body.ops;
+        assert!(
+            matches!(
+                &ops[0],
+                Op::Let {
+                    value: Value::Call { fun, .. },
+                    ..
+                } if fun == "getpid"
+            ),
+            "first foreign call must remain"
+        );
+        assert!(
+            matches!(
+                &ops[1],
+                Op::Let {
+                    value: Value::Call { fun, .. },
+                    ..
+                } if fun == "getpid"
+            ),
+            "second foreign call must not be CSE'd into the first"
+        );
     }
 
     #[test]
