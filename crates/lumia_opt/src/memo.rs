@@ -297,6 +297,9 @@ fn const_fold_block(block: &mut Block) {
                     Value::Int(n) => {
                         known_int.insert(local.0, *n);
                     }
+                    Value::Bool(b) => {
+                        known_int.insert(local.0, if *b { 1 } else { 0 });
+                    }
                     Value::Local(Local(src)) => {
                         // Track constants through aliases; keep Local for CSE sharing.
                         if let Some(&n) = known_int.get(src) {
@@ -320,9 +323,9 @@ fn const_fold_block(block: &mut Block) {
                         operand,
                     } => {
                         if let Some(&n) = known_int.get(&operand.0) {
-                            let r = if n == 0 { 1 } else { 0 };
-                            *value = Value::Int(r);
-                            known_int.insert(local.0, r);
+                            let r = n == 0;
+                            *value = Value::Bool(r);
+                            known_int.insert(local.0, if r { 1 } else { 0 });
                         }
                     }
                     Value::Binary { op, left, right } => {
@@ -330,7 +333,22 @@ fn const_fold_block(block: &mut Block) {
                             (known_int.get(&left.0), known_int.get(&right.0))
                         {
                             if let Some(r) = fold_bin(*op, a, b) {
-                                *value = Value::Int(r);
+                                // Keep Bool for cmp/logic so println / ABI typing stay correct.
+                                *value = if matches!(
+                                    op,
+                                    BinOp::Eq
+                                        | BinOp::Ne
+                                        | BinOp::Lt
+                                        | BinOp::Le
+                                        | BinOp::Gt
+                                        | BinOp::Ge
+                                        | BinOp::And
+                                        | BinOp::Or
+                                ) {
+                                    Value::Bool(r != 0)
+                                } else {
+                                    Value::Int(r)
+                                };
                                 known_int.insert(local.0, r);
                             }
                         }
@@ -1156,6 +1174,50 @@ mod tests {
             &module.functions[0].body.ops[2],
             Op::Let {
                 value: Value::Int(6),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn memo_l0_folds_cmp_to_bool() {
+        let mut module = CoreModule {
+            name: "C".into(),
+            functions: vec![bare_fun(
+                "f",
+                vec![],
+                Block {
+                    params: vec![],
+                    ops: vec![
+                        Op::Let {
+                            local: Local(0),
+                            value: Value::Int(1),
+                            pure_region: true,
+                        },
+                        Op::Let {
+                            local: Local(1),
+                            value: Value::Int(2),
+                            pure_region: true,
+                        },
+                        Op::Let {
+                            local: Local(2),
+                            value: Value::Binary {
+                                op: BinOp::Lt,
+                                left: Local(0),
+                                right: Local(1),
+                            },
+                            pure_region: true,
+                        },
+                    ],
+                    result: Some(Local(2)),
+                },
+            )],
+        };
+        MemoL0Pass.run(&mut module);
+        assert!(matches!(
+            &module.functions[0].body.ops[2],
+            Op::Let {
+                value: Value::Bool(true),
                 ..
             }
         ));

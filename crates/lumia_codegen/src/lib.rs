@@ -161,6 +161,11 @@ fn declare_runtime<'ctx>(context: &'ctx Context, module: &LlvmModule<'ctx>) {
         None,
     );
     module.add_function(
+        "lumia_cmp",
+        i64_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false),
+        None,
+    );
+    module.add_function(
         "lumia_println_str",
         void_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
         None,
@@ -1832,40 +1837,33 @@ impl<'ctx> Codegen<'ctx> {
                             .build_int_z_extend(c, self.i64_ty, "nez")
                             .unwrap()
                     }
-                    BinOp::Lt => {
-                        let c = self
+                    BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                        // Structural Ord via runtime (String/Char); Int/Bool use signed bits.
+                        // Never SLT heap pointers — that is not language Ord.
+                        let f = self.module.get_function("lumia_cmp").unwrap();
+                        let call = self
                             .builder
-                            .build_int_compare(IntPredicate::SLT, l, r, "lt")
+                            .build_call(f, &[l.into(), r.into()], "cmp")
                             .unwrap();
-                        self.builder
-                            .build_int_z_extend(c, self.i64_ty, "ltz")
+                        let cmp = call
+                            .try_as_basic_value()
+                            .basic()
                             .unwrap()
-                    }
-                    BinOp::Le => {
+                            .into_int_value();
+                        let z = self.i64_ty.const_int(0, false);
+                        let pred = match op {
+                            BinOp::Lt => IntPredicate::SLT,
+                            BinOp::Le => IntPredicate::SLE,
+                            BinOp::Gt => IntPredicate::SGT,
+                            BinOp::Ge => IntPredicate::SGE,
+                            _ => unreachable!(),
+                        };
                         let c = self
                             .builder
-                            .build_int_compare(IntPredicate::SLE, l, r, "le")
+                            .build_int_compare(pred, cmp, z, "ord")
                             .unwrap();
                         self.builder
-                            .build_int_z_extend(c, self.i64_ty, "lez")
-                            .unwrap()
-                    }
-                    BinOp::Gt => {
-                        let c = self
-                            .builder
-                            .build_int_compare(IntPredicate::SGT, l, r, "gt")
-                            .unwrap();
-                        self.builder
-                            .build_int_z_extend(c, self.i64_ty, "gtz")
-                            .unwrap()
-                    }
-                    BinOp::Ge => {
-                        let c = self
-                            .builder
-                            .build_int_compare(IntPredicate::SGE, l, r, "ge")
-                            .unwrap();
-                        self.builder
-                            .build_int_z_extend(c, self.i64_ty, "gez")
+                            .build_int_z_extend(c, self.i64_ty, "ordz")
                             .unwrap()
                     }
                     BinOp::And => self.builder.build_and(l, r, "and").unwrap(),
@@ -3307,23 +3305,42 @@ pub fn find_runtime_lib(target_dir: &Path) -> Result<PathBuf> {
 }
 
 pub fn find_runtime_lib_prefer(target_dir: &Path, release: bool) -> Result<PathBuf> {
-    let profiles = if release {
-        ["release", "debug"]
-    } else {
-        ["debug", "release"]
-    };
-    let mut candidates = Vec::new();
+    let preferred = if release { "release" } else { "debug" };
+    let fallback = if release { "debug" } else { "release" };
+    let profiles = [preferred, fallback];
+    let mut found_preferred: Option<PathBuf> = None;
+    let mut found_fallback: Option<PathBuf> = None;
     for p in profiles {
-        candidates.push(target_dir.join(p).join("liblumia_rt.a"));
-        candidates.push(target_dir.join(p).join("lumia_rt.lib"));
-        candidates.push(target_dir.join(p).join("lumia_rt.dll.lib"));
+        for name in ["liblumia_rt.a", "lumia_rt.lib", "lumia_rt.dll.lib"] {
+            let c = target_dir.join(p).join(name);
+            if c.exists() {
+                if p == preferred {
+                    found_preferred = Some(c);
+                } else if found_fallback.is_none() {
+                    found_fallback = Some(c);
+                }
+                break;
+            }
+        }
     }
-    candidates.push(target_dir.join("liblumia_rt.a"));
-    candidates.push(target_dir.join("lumia_rt.lib"));
-    for c in candidates {
+    if let Some(c) = found_preferred {
+        return Ok(c);
+    }
+    for name in ["liblumia_rt.a", "lumia_rt.lib"] {
+        let c = target_dir.join(name);
         if c.exists() {
             return Ok(c);
         }
+    }
+    if let Some(c) = found_fallback {
+        eprintln!(
+            "warning: linking {} lumia_rt into a {} build ({}); run `cargo build -p lumia_rt{}` for a matching runtime",
+            fallback,
+            preferred,
+            c.display(),
+            if release { " --release" } else { "" },
+        );
+        return Ok(c);
     }
     bail!(
         "liblumia_rt.a / lumia_rt.lib not found under {} — run `cargo build -p lumia_rt` first",

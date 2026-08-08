@@ -1556,9 +1556,29 @@ impl Infer {
                             }
                         }
                     }
-                    BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                    BinOp::Eq | BinOp::Ne => {
                         self.unify_at(*span, lt.clone(), rt)?;
                         Ok((Type::Bool, eff))
+                    }
+                    BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                        // DESIGN Ord: Int/Float/Bool/String/Char until type classes land.
+                        // Rejecting List/Map/ADT/… avoids pointer-bit compares at runtime.
+                        self.unify_at(*span, lt.clone(), rt.clone())?;
+                        let t = self.prune(lt);
+                        match &t {
+                            Type::Int
+                            | Type::Float
+                            | Type::Bool
+                            | Type::String
+                            | Type::Char
+                            | Type::Var(_) => Ok((Type::Bool, eff)),
+                            other => Err(at(
+                                *span,
+                                format!(
+                                    "`<`/`<=`/`>`/`>=` need Ord (Int, Float, Bool, String, or Char), got {other}"
+                                ),
+                            )),
+                        }
                     }
                     BinOp::And | BinOp::Or => {
                         self.unify_at(*span, lt, Type::Bool)?;
@@ -2048,6 +2068,24 @@ val main = {
         let typed = infer_module(&hir).unwrap();
         check_effect_boundaries(&typed).unwrap();
         assert!(typed.main_effect.has_io());
+    }
+
+    #[test]
+    fn ord_rejects_list_compare() {
+        let src = r#"
+module BadOrd
+val main = {
+    listOf(1) < listOf(2)
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let hir = lower_module(&ast).expect("lower");
+        let err = infer_module(&hir).expect_err("List is not Ord");
+        assert!(
+            err.message().contains("Ord") || err.message().contains("List"),
+            "unexpected: {}",
+            err.message()
+        );
     }
 
     #[test]

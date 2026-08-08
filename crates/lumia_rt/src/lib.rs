@@ -1009,7 +1009,8 @@ pub extern "C" fn lumia_list_sort_by_keys(values: *mut u8, keys: *mut u8) -> *mu
     }
 }
 
-/// Total order for sortBy keys: Int (scalar bits), String (bytes), Char (codepoint).
+/// Total order for Ord scalars: Int/Bool (signed bits), String (bytes), Char (codepoint).
+/// Used by `sortBy` and by `<`/`<=`/`>`/`>=` codegen (must not pointer-compare heap values).
 fn lumia_ord_cmp(a: i64, b: i64) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     if a == b {
@@ -1027,7 +1028,7 @@ fn lumia_ord_cmp(a: i64, b: i64) -> std::cmp::Ordering {
             let ta = (*header_from_payload(pa)).type_id;
             let tb = (*header_from_payload(pb)).type_id;
             if ta != tb {
-                panic!("lumia: sortBy keys have mixed heap types");
+                panic!("lumia: Ord operands have mixed heap types");
             }
             match ta {
                 TYPE_STRING => {
@@ -1042,11 +1043,21 @@ fn lumia_ord_cmp(a: i64, b: i64) -> std::cmp::Ordering {
                     let cb = *(pb as *const i64);
                     ca.cmp(&cb)
                 }
-                _ => panic!("lumia: sortBy key type_id={ta} is not Ord"),
+                _ => panic!("lumia: type_id={ta} is not Ord (use Int/Float/Bool/String/Char)"),
             }
         }
     } else {
-        panic!("lumia: sortBy cannot compare scalar with heap key");
+        panic!("lumia: cannot compare scalar with heap value under Ord");
+    }
+}
+
+/// C ABI for `<`/`<=`/`>`/`>=`: returns -1 / 0 / 1.
+#[no_mangle]
+pub extern "C" fn lumia_cmp(a: i64, b: i64) -> i64 {
+    match lumia_ord_cmp(a, b) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
     }
 }
 

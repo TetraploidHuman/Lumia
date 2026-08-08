@@ -189,7 +189,18 @@ fn uri_to_path(uri: &str) -> PathBuf {
     } else {
         rest
     };
-    PathBuf::from(percent_decode(path_part))
+    let decoded = percent_decode(path_part);
+    // `file:///C:/Users/...` yields `/C:/Users/...`; strip the extra slash so
+    // Windows APIs see a drive-letter path.
+    let bytes = decoded.as_bytes();
+    if bytes.len() >= 3
+        && bytes[0] == b'/'
+        && bytes[1].is_ascii_alphabetic()
+        && bytes[2] == b':'
+    {
+        return PathBuf::from(&decoded[1..]);
+    }
+    PathBuf::from(decoded)
 }
 
 fn percent_decode(input: &str) -> String {
@@ -221,8 +232,17 @@ fn from_hex(b: u8) -> Option<u8> {
 
 fn path_to_uri(path: &Path) -> String {
     let s = path.to_string_lossy();
+    // RFC 8089: absolute paths use `file:///…`. Windows drive paths need a
+    // leading slash (`file:///C:/…`); bare `file://C:/…` treats `C:` as host.
+    let path_str: std::borrow::Cow<'_, str> = if s.starts_with('/') {
+        s
+    } else if s.len() >= 2 && s.as_bytes().get(1) == Some(&b':') {
+        std::borrow::Cow::Owned(format!("/{s}"))
+    } else {
+        std::borrow::Cow::Owned(format!("/{s}"))
+    };
     let mut enc = String::from("file://");
-    for &b in s.as_bytes() {
+    for &b in path_str.as_bytes() {
         match b {
             b'A'..=b'Z'
             | b'a'..=b'z'
@@ -618,6 +638,12 @@ mod tests {
         assert_eq!(p, PathBuf::from("/tmp/hello world.lumia"));
         let p = uri_to_path("file://localhost/tmp/x.lumia");
         assert_eq!(p, PathBuf::from("/tmp/x.lumia"));
+        let p = uri_to_path("file:///C:/Users/me/x.lumia");
+        assert_eq!(p, PathBuf::from("C:/Users/me/x.lumia"));
+        assert_eq!(
+            path_to_uri(Path::new("C:/Users/me/x.lumia")),
+            "file:///C:/Users/me/x.lumia"
+        );
     }
 
     #[test]
