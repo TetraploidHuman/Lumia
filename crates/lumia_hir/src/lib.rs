@@ -1766,6 +1766,10 @@ fn pattern_cond(pat: &Pattern, scrut: &Expr, span: Span) -> (Expr, Vec<(String, 
         }
         Pattern::Variant { name, args, .. } => {
             let Some(c) = lookup_ctor(name) else {
+                set_lower_err(
+                    format!("unknown variant `{name}` in pattern"),
+                    span,
+                );
                 return (Expr::Bool(false, span), vec![]);
             };
             if args.len() != c.arity {
@@ -1821,12 +1825,20 @@ fn pattern_cond(pat: &Pattern, scrut: &Expr, span: Span) -> (Expr, Vec<(String, 
         }
         Pattern::Struct { name, fields, .. } => {
             let Some(order) = lookup_product(name) else {
+                set_lower_err(
+                    format!("unknown product type `{name}` in struct pattern"),
+                    span,
+                );
                 return (Expr::Bool(false, span), vec![]);
             };
             let mut cond = Expr::Bool(true, span);
             let mut binds = vec![];
             for (fname, sub) in fields {
                 let Some(idx) = order.iter().position(|f| f == fname) else {
+                    set_lower_err(
+                        format!("unknown field `{fname}` in `{name}` struct pattern"),
+                        span,
+                    );
                     continue;
                 };
                 // Nominal product name so ty rejects `Rect` matched as `Point`.
@@ -3599,5 +3611,41 @@ val main = {
             err.contains("ambiguous") || err.contains("cannot resolve"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn struct_pattern_rejects_unknown_field() {
+        let src = r#"
+module M
+type Point { val x val y }
+val f = { p ->
+    p match {
+        Point { z } -> z
+        _ -> 0
+    }
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let err = lower_module(&ast).unwrap_err().to_string();
+        assert!(err.contains("unknown field"), "{err}");
+        assert!(err.contains('z'), "{err}");
+    }
+
+    #[test]
+    fn struct_pattern_rejects_unknown_product() {
+        let src = r#"
+module M
+type Point { val x val y }
+val f = { p ->
+    p match {
+        Piont { x } -> x
+        _ -> 0
+    }
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let err = lower_module(&ast).unwrap_err().to_string();
+        assert!(err.contains("unknown product"), "{err}");
+        assert!(err.contains("Piont"), "{err}");
     }
 }
