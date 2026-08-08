@@ -277,11 +277,27 @@ pub extern "C" fn lumia_println_int(n: i64) {
     let _ = writeln!(out, "{n}");
 }
 
+/// Soft cap so a hostile/huge stdin cannot force unbounded host allocation.
+const MAX_STDIN_BYTES: usize = 64 * 1024 * 1024;
+
 /// Read all of stdin into a heap String (UTF-8 bytes).
 #[no_mangle]
 pub extern "C" fn lumia_read_stdin() -> *mut u8 {
     let mut buf = Vec::new();
-    let _ = io::stdin().read_to_end(&mut buf);
+    let mut stdin = io::stdin().lock();
+    let mut chunk = [0u8; 8192];
+    loop {
+        let n = match stdin.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        if buf.len().saturating_add(n) > MAX_STDIN_BYTES {
+            eprintln!("lumia: stdin exceeds {MAX_STDIN_BYTES} bytes");
+            std::process::abort();
+        }
+        buf.extend_from_slice(&chunk[..n]);
+    }
     lumia_alloc_string(buf.as_ptr(), buf.len() as u64)
 }
 

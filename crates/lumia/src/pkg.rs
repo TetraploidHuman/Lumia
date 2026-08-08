@@ -221,65 +221,107 @@ fn collect_link_args_rec(
     Ok(())
 }
 
+/// Where a link flag comes from — package manifests are confined to the
+/// package root; CLI `--link` may use absolute paths (explicit user intent).
+#[derive(Debug, Clone, Copy)]
+enum LinkArgKind {
+    Package,
+    Cli,
+}
+
 /// Validate a `package.link` entry and resolve relative `-L` / archive paths
 /// against `package_root` (manifest parent), then canonicalize under that root.
 fn resolve_link_arg(package_root: &Path, arg: &str) -> Result<String> {
+    resolve_link_arg_inner(package_root, arg, LinkArgKind::Package)
+}
+
+/// Validate a CLI `--link` flag. Same allowlist as `package.link`, but paths
+/// may be absolute and are resolved against `cwd` (not confined to a package).
+pub fn validate_cli_link_arg(cwd: &Path, arg: &str) -> Result<String> {
+    resolve_link_arg_inner(cwd, arg, LinkArgKind::Cli)
+}
+
+fn resolve_link_arg_inner(base: &Path, arg: &str, kind: LinkArgKind) -> Result<String> {
+    let label = match kind {
+        LinkArgKind::Package => "package.link",
+        LinkArgKind::Cli => "--link",
+    };
     if arg.is_empty() {
-        bail!("empty package.link entry");
+        bail!("empty {label} entry");
     }
     if arg.starts_with('@') {
-        bail!("package.link response files (@…) are not allowed: `{arg}`");
+        bail!("{label} response files (@…) are not allowed: `{arg}`");
     }
-    if arg == "-Wl" || arg.starts_with("-Wl,") {
-        bail!("package.link `-Wl` flags are not allowed: `{arg}`");
+    if arg == "-Wl"
+        || arg.starts_with("-Wl,")
+        || arg == "-Xlinker"
+        || arg.starts_with("-Xlinker=")
+    {
+        bail!("{label} linker-passthrough flags are not allowed: `{arg}`");
     }
     if let Some(path) = arg.strip_prefix("-L") {
         if path.is_empty() {
-            bail!("package.link `-L` requires a path");
+            bail!("{label} `-L` requires a path");
         }
-        let abs = resolve_link_path(package_root, path, arg)?;
+        let abs = resolve_link_path(base, path, arg, kind)?;
         return Ok(format!("-L{}", abs.display()));
     }
     if arg.starts_with("-l") || arg.starts_with("-framework") {
         // Library names only — no path separators.
         let rest = arg.trim_start_matches("-framework").trim_start_matches("-l");
         if rest.contains('/') || rest.contains('\\') || rest.contains("..") {
-            bail!("package.link library name must not contain path segments: `{arg}`");
+            bail!("{label} library name must not contain path segments: `{arg}`");
         }
         return Ok(arg.to_string());
     }
-    // Allow plain archive/object paths (relative, no `..`).
+    // Allow plain archive/object paths.
     if arg.ends_with(".a") || arg.ends_with(".lib") || arg.ends_with(".o") || arg.ends_with(".obj")
     {
-        let abs = resolve_link_path(package_root, arg, arg)?;
+        let abs = resolve_link_path(base, arg, arg, kind)?;
         return Ok(abs.display().to_string());
     }
     bail!(
-        "package.link entry `{arg}` not allowed (use -lNAME, -Lrel/path, -framework, or a .a/.o path)"
+        "{label} entry `{arg}` not allowed (use -lNAME, -Lpath, -framework, or a .a/.o path)"
     );
 }
 
-fn validate_link_path(path: &str, original: &str) -> Result<()> {
+fn validate_link_path(path: &str, original: &str, kind: LinkArgKind) -> Result<()> {
+    let label = match kind {
+        LinkArgKind::Package => "package.link",
+        LinkArgKind::Cli => "--link",
+    };
     if Path::new(path).is_absolute() {
-        bail!("package.link path must be relative (got absolute in `{original}`)");
+        if matches!(kind, LinkArgKind::Package) {
+            bail!("{label} path must be relative (got absolute in `{original}`)");
+        }
+        return Ok(());
     }
     if path.split(['/', '\\']).any(|seg| seg == "..") {
-        bail!("package.link path must not contain `..`: `{original}`");
+        bail!("{label} path must not contain `..`: `{original}`");
     }
     Ok(())
 }
 
-fn resolve_link_path(package_root: &Path, path: &str, original: &str) -> Result<PathBuf> {
-    validate_link_path(path, original)?;
-    let joined = package_root.join(path);
-    let root_canon = package_root
+fn resolve_link_path(
+    base: &Path,
+    path: &str,
+    original: &str,
+    kind: LinkArgKind,
+) -> Result<PathBuf> {
+    validate_link_path(path, original, kind)?;
+    if Path::new(path).is_absolute() {
+        // CLI only (validated above).
+        return Ok(PathBuf::from(path));
+    }
+    let joined = base.join(path);
+    let root_canon = base
         .canonicalize()
-        .unwrap_or_else(|_| package_root.to_path_buf());
-    // Prefer real path when present; otherwise keep join relative to package root
-    // (already `..`-free) so link flags do not depend on process cwd.
+        .unwrap_or_else(|_| base.to_path_buf());
+    // Prefer real path when present; otherwise keep join relative to base
+    // (already `..`-free) so link flags do not depend on process cwd for packages.
     let resolved = if joined.exists() {
         let canon = joined.canonicalize().unwrap_or_else(|_| joined.clone());
-        if !canon.starts_with(&root_canon) {
+        if matches!(kind, LinkArgKind::Package) && !canon.starts_with(&root_canon) {
             bail!(
                 "package.link path `{}` escapes package root {}",
                 original,
@@ -522,5 +564,25 @@ link = ["-Llib", "-lm"]
             "expected …/lib, got {lflag}"
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cli_link_rejects_response_file_and_wl() {
+        let cwd = Path::new(".");
+        let err = validate_cli_link_arg(cwd, "@evil.rsp").unwrap_err();
+        assert!(err.to_string().contains("@"), "{err}");
+        let err = validate_cli_link_arg(cwd, "-Wl,-foo").unwrap_err();
+        assert!(err.to_string().contains("-Wl") || err.to_string().contains("passthrough"), "{err}");
+        let err = validate_cli_link_arg(cwd, "-Xlinker").unwrap_err();
+        assert!(err.to_string().contains("passthrough") || err.to_string().contains("-Xlinker"), "{err}");
+    }
+
+    #[test]
+    fn cli_link_allows_absolute_l_and_libname() {
+        let cwd = Path::new(".");
+        let a = validate_cli_link_arg(cwd, "-lm").unwrap();
+        assert_eq!(a, "-lm");
+        let a = validate_cli_link_arg(cwd, "-L/usr/lib").unwrap();
+        assert_eq!(a, "-L/usr/lib");
     }
 }

@@ -108,13 +108,18 @@ fn main() -> Result<()> {
                     .map(PathBuf::from)
                     .unwrap_or_else(|| PathBuf::from("a.out"))
             });
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let mut validated_link = Vec::with_capacity(link.len());
+            for a in &link {
+                validated_link.push(pkg::validate_cli_link_arg(&cwd, a)?);
+            }
             build_file(
                 &file,
                 &out,
                 release,
                 !no_memo,
                 parallel,
-                link,
+                validated_link,
                 show_ir,
                 emit_llvm,
             )?;

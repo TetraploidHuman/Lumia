@@ -34,8 +34,12 @@ struct State {
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
 
+fn state_lock() -> std::sync::MutexGuard<'static, Option<State>> {
+    STATE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 pub fn run_lsp() -> Result<()> {
-    *STATE.lock().unwrap() = Some(State {
+    *state_lock() = Some(State {
         docs: HashMap::new(),
         analysis: HashMap::new(),
     });
@@ -53,6 +57,9 @@ pub fn run_lsp() -> Result<()> {
     }
     Ok(())
 }
+
+/// Cap LSP message bodies so a malicious/buggy client cannot OOM the server.
+const MAX_LSP_CONTENT_LENGTH: usize = 16 * 1024 * 1024;
 
 fn read_message(r: &mut impl BufRead) -> Result<Option<Value>> {
     let mut content_length = None;
@@ -74,6 +81,11 @@ fn read_message(r: &mut impl BufRead) -> Result<Option<Value>> {
         Some(l) => l,
         None => return Ok(None),
     };
+    if len > MAX_LSP_CONTENT_LENGTH {
+        anyhow::bail!(
+            "LSP Content-Length {len} exceeds limit {MAX_LSP_CONTENT_LENGTH}"
+        );
+    }
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf)?;
     Ok(Some(serde_json::from_slice(&buf)?))
@@ -157,11 +169,74 @@ fn handle_message(msg: Value) -> Result<Option<Value>> {
 }
 
 fn uri_to_path(uri: &str) -> PathBuf {
-    PathBuf::from(uri.strip_prefix("file://").unwrap_or(uri))
+    let rest = match uri.strip_prefix("file:") {
+        Some(r) => r,
+        None => return PathBuf::from(uri),
+    };
+    // Accept `file:///path`, `file://localhost/path`, and `file:/path`.
+    let path_part = if let Some(after_slashes) = rest.strip_prefix("//") {
+        if let Some(slash) = after_slashes.find('/') {
+            let host = &after_slashes[..slash];
+            if host.is_empty() || host.eq_ignore_ascii_case("localhost") {
+                &after_slashes[slash..]
+            } else {
+                // Non-local hosts are not supported; still take the path segment.
+                &after_slashes[slash..]
+            }
+        } else {
+            after_slashes
+        }
+    } else {
+        rest
+    };
+    PathBuf::from(percent_decode(path_part))
+}
+
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(h), Some(l)) = (from_hex(bytes[i + 1]), from_hex(bytes[i + 2])) {
+                out.push((h << 4) | l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn from_hex(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn path_to_uri(path: &Path) -> String {
-    format!("file://{}", path.display())
+    let s = path.to_string_lossy();
+    let mut enc = String::from("file://");
+    for &b in s.as_bytes() {
+        match b {
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'/'
+            | b'_'
+            | b'-'
+            | b'.'
+            | b'~'
+            | b':' => enc.push(b as char),
+            _ => enc.push_str(&format!("%{b:02X}")),
+        }
+    }
+    enc
 }
 
 fn on_did_open(params: &Value) -> Result<()> {
@@ -169,7 +244,7 @@ fn on_did_open(params: &Value) -> Result<()> {
     let uri = doc["uri"].as_str().unwrap_or("").to_string();
     let text = doc["text"].as_str().unwrap_or("").to_string();
     {
-        let mut st = STATE.lock().unwrap();
+        let mut st = state_lock();
         if let Some(s) = st.as_mut() {
             s.docs.insert(uri.clone(), text.clone());
         }
@@ -191,7 +266,7 @@ fn on_did_change(params: &Value) -> Result<()> {
         .unwrap_or("")
         .to_string();
     {
-        let mut st = STATE.lock().unwrap();
+        let mut st = state_lock();
         if let Some(s) = st.as_mut() {
             s.docs.insert(uri.clone(), text.clone());
         }
@@ -204,7 +279,7 @@ fn publish_diagnostics(uri: &str, text: &str) -> Result<()> {
     let overlays = current_overlays();
     let (diags, analysis) = analyze_buffer(uri, text, &overlays);
     if let Some(a) = analysis {
-        let mut st = STATE.lock().unwrap();
+        let mut st = state_lock();
         if let Some(s) = st.as_mut() {
             s.analysis.insert(uri.to_string(), a);
         }
@@ -222,7 +297,7 @@ fn publish_diagnostics(uri: &str, text: &str) -> Result<()> {
 }
 
 fn current_overlays() -> HashMap<PathBuf, String> {
-    let st = STATE.lock().unwrap();
+    let st = state_lock();
     let Some(state) = st.as_ref() else {
         return HashMap::new();
     };
@@ -342,7 +417,7 @@ fn on_hover(params: Option<&Value>) -> Result<Value> {
     let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
     let line = params["position"]["line"].as_u64().unwrap_or(0) as u32;
     let character = params["position"]["character"].as_u64().unwrap_or(0) as u32;
-    let st = STATE.lock().unwrap();
+    let st = state_lock();
     let Some(state) = st.as_ref() else {
         return Ok(Value::Null);
     };
@@ -395,7 +470,7 @@ fn on_definition(params: Option<&Value>) -> Result<Value> {
     let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
     let line = params["position"]["line"].as_u64().unwrap_or(0) as u32;
     let character = params["position"]["character"].as_u64().unwrap_or(0) as u32;
-    let st = STATE.lock().unwrap();
+    let st = state_lock();
     let Some(state) = st.as_ref() else {
         return Ok(Value::Null);
     };
@@ -435,7 +510,7 @@ fn on_completion(params: Option<&Value>) -> Result<Value> {
         return Ok(json!([]));
     };
     let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
-    let st = STATE.lock().unwrap();
+    let st = state_lock();
     let Some(state) = st.as_ref() else {
         return Ok(json!([]));
     };
@@ -471,7 +546,7 @@ fn on_formatting(params: Option<&Value>) -> Result<Value> {
         return Ok(json!([]));
     };
     let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
-    let st = STATE.lock().unwrap();
+    let st = state_lock();
     let Some(state) = st.as_ref() else {
         return Ok(json!([]));
     };
@@ -530,4 +605,30 @@ fn ident_at(src: &str, byte: u32) -> Option<String> {
 #[allow(dead_code)]
 fn _byte_pos(p: u32) -> BytePos {
     BytePos(p)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn uri_to_path_decodes_and_strips_file_prefix() {
+        let p = uri_to_path("file:///tmp/hello%20world.lumia");
+        assert_eq!(p, PathBuf::from("/tmp/hello world.lumia"));
+        let p = uri_to_path("file://localhost/tmp/x.lumia");
+        assert_eq!(p, PathBuf::from("/tmp/x.lumia"));
+    }
+
+    #[test]
+    fn read_message_rejects_huge_content_length() {
+        let huge = MAX_LSP_CONTENT_LENGTH + 1;
+        let raw = format!("Content-Length: {huge}\r\n\r\n");
+        let mut cur = Cursor::new(raw.into_bytes());
+        let err = read_message(&mut cur).expect_err("must reject oversized body");
+        assert!(
+            err.to_string().contains("exceeds limit"),
+            "got {err}"
+        );
+    }
 }
