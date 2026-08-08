@@ -1,0 +1,18 @@
+module TcoSum
+
+import std.io.{println}
+
+/// Pure Int self-recursion in tail position — must get TCO (DESIGN §4.4).
+/// Without musttail, ~2e6 frames would overflow a typical stack.
+val sumTo(n, acc) = {
+    if n == 0 {
+        acc
+    } else {
+        sumTo(n - 1, acc + n)
+    }
+}
+
+val main = {
+    // 2_000_000 * 2_000_001 / 2 = 2_000_001_000_000
+    println(sumTo(2000000, 0))
+}

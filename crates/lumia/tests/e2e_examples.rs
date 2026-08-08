@@ -138,6 +138,12 @@ fn e2e_poly_id() {
 }
 
 #[test]
+fn e2e_tco_sum() {
+    // 2e6 tail calls — overflows without musttail; result = n(n+1)/2.
+    run_example("examples/tco_sum.lumia", &["2000001000000"]);
+}
+
+#[test]
 fn e2e_list_for() {
     run_example("examples/list_for.lumia", &["60"]);
 }

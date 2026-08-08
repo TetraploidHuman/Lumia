@@ -560,6 +560,10 @@ struct Codegen<'ctx> {
     rooted_slots: HashSet<String>,
     /// Function entry block — all GC root allocas go here (avoid loop stack growth).
     entry_bb: Option<BasicBlock<'ctx>>,
+    /// Current Core function name (for self-TCO).
+    current_fun: String,
+    /// Pure Int self-recursion may use `musttail` when `root_depth == 0`.
+    tco_self: bool,
 }
 
 impl<'ctx> Codegen<'ctx> {
@@ -587,6 +591,8 @@ impl<'ctx> Codegen<'ctx> {
             root_depth: 0,
             rooted_slots: HashSet::new(),
             entry_bb: None,
+            current_fun: String::new(),
+            tco_self: false,
         }
     }
 
@@ -748,6 +754,30 @@ impl<'ctx> Codegen<'ctx> {
         self.builder.build_return(Some(&ret)).unwrap();
     }
 
+    /// Emit `musttail call` + `ret` for pure Int self-recursion (no GC roots live).
+    /// Returns true if the call was emitted as a terminator.
+    fn emit_musttail_self_call(&mut self, fun: &str, args: &[Local]) -> Result<bool> {
+        let callee = match self.functions.get(fun).copied() {
+            Some(f) => f,
+            None => return Ok(false),
+        };
+        let mut av: Vec<BasicMetadataValueEnum> = Vec::with_capacity(args.len());
+        for a in args {
+            av.push(self.coerce_i64(self.local(*a)?)?.into());
+        }
+        let call = self.builder.build_call(callee, &av, "tco").unwrap();
+        call.set_tail_call_kind(inkwell::values::LLVMTailCallKind::LLVMTailCallKindMustTail);
+        let ret = call
+            .try_as_basic_value()
+            .basic()
+            .unwrap_or_else(|| self.i64_ty.const_int(0, false).into())
+            .into_int_value();
+        // No root epilogue: musttail requires call immediately followed by ret.
+        debug_assert_eq!(self.root_depth, 0);
+        self.builder.build_return(Some(&ret)).unwrap();
+        Ok(true)
+    }
+
     fn emit_function(&mut self, fun: &CoreFun) -> Result<()> {
         let fv = *self
             .functions
@@ -767,6 +797,12 @@ impl<'ctx> Codegen<'ctx> {
         self.funref_locals.clear();
         self.local_tys.clear();
         self.slot_tys.clear();
+        self.current_fun = fun.name.clone();
+        self.tco_self = fun.memo.is_none()
+            && fun.external.is_none()
+            && !fun.effect.has_io()
+            && matches!(fun.ret_ty, Type::Int)
+            && fun.param_tys.iter().all(|t| matches!(t, Type::Int));
 
         for (i, p) in fun.params.iter().enumerate() {
             let av = fv.get_nth_param(i as u32).unwrap();
@@ -798,6 +834,15 @@ impl<'ctx> Codegen<'ctx> {
         }
 
         let result = self.emit_block(&fun.body, fv)?;
+        // Tail-call / break paths may already have terminated the block.
+        if self
+            .builder
+            .get_insert_block()
+            .and_then(|bb| bb.get_terminator())
+            .is_some()
+        {
+            return Ok(());
+        }
         let ret = result.unwrap_or_else(|| self.i64_ty.const_int(0, false).into());
         let ret_i = if matches!(fun.ret_ty, Type::Float) {
             match ret {
@@ -1414,6 +1459,21 @@ impl<'ctx> Codegen<'ctx> {
             }
             match op {
                 Op::Let { local, value, .. } => {
+                    // Pure Int self-recursion in tail position → musttail (DESIGN §4.4).
+                    let is_block_tail = block.result == Some(*local)
+                        && matches!(
+                            block.ops.last(),
+                            Some(Op::Let { local: last, .. }) if last == local
+                        );
+                    if self.tco_self && self.root_depth == 0 && is_block_tail {
+                        if let Value::Call { fun, args } = value {
+                            if fun == &self.current_fun
+                                && self.emit_musttail_self_call(fun, args)?
+                            {
+                                return Ok(None);
+                            }
+                        }
+                    }
                     let v = self.emit_value(value, fv)?;
                     if self.value_may_heap(value) {
                         if let Ok(bits) = self.coerce_i64(v) {
