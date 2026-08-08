@@ -138,6 +138,12 @@ fn e2e_poly_id() {
 }
 
 #[test]
+fn e2e_poly_inc() {
+    // Float monomorphization of `{ x -> x + x }` (not just identity).
+    run_example("examples/poly_inc.lumia", &["2", "3"]);
+}
+
+#[test]
 fn e2e_tco_sum() {
     // 2e6 tail calls — overflows without musttail; result = n(n+1)/2.
     run_example("examples/tco_sum.lumia", &["2000001000000"]);

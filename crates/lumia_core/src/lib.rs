@@ -307,7 +307,257 @@ pub fn lower_hir(module: &HirModule, fun_types: &HashMap<String, Type>) -> CoreM
     };
     lift_lambdas(&mut core);
     directize_funref_calls(&mut core);
+    specialize_mono_calls(&mut core);
     core
+}
+
+/// Clone lifted lambdas for Float call sites (BUILD monomorphization MVP).
+fn specialize_mono_calls(module: &mut CoreModule) {
+    let mut needed: HashSet<String> = HashSet::new();
+    for fun in &module.functions {
+        let mut local_tys: HashMap<u32, Type> = HashMap::new();
+        for (i, p) in fun.params.iter().enumerate() {
+            local_tys.insert(
+                p.0,
+                fun.param_tys.get(i).cloned().unwrap_or(Type::Int),
+            );
+        }
+        scan_mono_block(&fun.body, &mut local_tys, &module.functions, &mut needed);
+    }
+
+    let mut renames: HashMap<String, String> = HashMap::new();
+    let mut clones = Vec::new();
+    for name in needed {
+        if name.contains("$Float") || !name.starts_with("__lam_") {
+            continue;
+        }
+        let Some(orig) = module.functions.iter().find(|f| f.name == name) else {
+            continue;
+        };
+        if orig.params.is_empty() {
+            continue;
+        }
+        if orig.param_tys.iter().all(|t| matches!(t, Type::Float)) {
+            continue;
+        }
+        // Skip clearly non-numeric returns (e.g. String identity).
+        if matches!(orig.ret_ty, Type::String | Type::Char) {
+            continue;
+        }
+        let new_name = format!("{name}$Float");
+        if module.functions.iter().any(|f| f.name == new_name)
+            || clones.iter().any(|f: &CoreFun| f.name == new_name)
+        {
+            renames.insert(name, new_name);
+            continue;
+        }
+        let mut clone = orig.clone();
+        clone.name = new_name.clone();
+        clone.param_tys = vec![Type::Float; clone.params.len()];
+        clone.ret_ty = Type::Float;
+        clone.memo = None;
+        renames.insert(name, new_name);
+        clones.push(clone);
+    }
+    module.functions.append(&mut clones);
+
+    if renames.is_empty() {
+        return;
+    }
+    for fun in &mut module.functions {
+        let mut local_tys: HashMap<u32, Type> = HashMap::new();
+        for (i, p) in fun.params.iter().enumerate() {
+            local_tys.insert(
+                p.0,
+                fun.param_tys.get(i).cloned().unwrap_or(Type::Int),
+            );
+        }
+        rewrite_mono_block(&mut fun.body, &mut local_tys, &renames);
+    }
+}
+
+fn scan_mono_block(
+    block: &Block,
+    local_tys: &mut HashMap<u32, Type>,
+    functions: &[CoreFun],
+    needed: &mut HashSet<String>,
+) {
+    for op in &block.ops {
+        match op {
+            Op::Let { local, value, .. } => {
+                note_mono_call(value, local_tys, functions, needed);
+                let ty = mono_value_ty(value, local_tys, functions);
+                local_tys.insert(local.0, ty);
+                walk_mono_nested_scan(value, local_tys, functions, needed);
+            }
+            Op::Effect { value } => {
+                note_mono_call(value, local_tys, functions, needed);
+                walk_mono_nested_scan(value, local_tys, functions, needed);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn walk_mono_nested_scan(
+    value: &Value,
+    local_tys: &mut HashMap<u32, Type>,
+    functions: &[CoreFun],
+    needed: &mut HashSet<String>,
+) {
+    match value {
+        Value::If {
+            then_block,
+            else_block,
+            ..
+        } => {
+            scan_mono_block(then_block, local_tys, functions, needed);
+            scan_mono_block(else_block, local_tys, functions, needed);
+        }
+        Value::Loop {
+            header,
+            body,
+            latch,
+        } => {
+            scan_mono_block(header, local_tys, functions, needed);
+            scan_mono_block(body, local_tys, functions, needed);
+            scan_mono_block(latch, local_tys, functions, needed);
+        }
+        _ => {}
+    }
+}
+
+fn note_mono_call(
+    value: &Value,
+    local_tys: &HashMap<u32, Type>,
+    functions: &[CoreFun],
+    needed: &mut HashSet<String>,
+) {
+    let Value::Call { fun, args } = value else {
+        return;
+    };
+    if args.is_empty() || !fun.starts_with("__lam_") || fun.contains("$Float") {
+        return;
+    }
+    let all_float = args.iter().all(|a| {
+        matches!(local_tys.get(&a.0), Some(Type::Float))
+    });
+    if !all_float {
+        return;
+    }
+    let Some(f) = functions.iter().find(|f| f.name == *fun) else {
+        return;
+    };
+    if f.param_tys.iter().all(|t| matches!(t, Type::Float)) {
+        return;
+    }
+    needed.insert(fun.clone());
+}
+
+fn mono_value_ty(
+    value: &Value,
+    local_tys: &HashMap<u32, Type>,
+    functions: &[CoreFun],
+) -> Type {
+    match value {
+        Value::Float(_) => Type::Float,
+        Value::Int(_) | Value::Bool(_) => Type::Int,
+        Value::String(_) => Type::String,
+        Value::Char(_) => Type::Char,
+        Value::Local(l) | Value::Unary { operand: l, .. } => local_tys
+            .get(&l.0)
+            .cloned()
+            .unwrap_or(Type::Int),
+        Value::Binary { left, right, .. } => {
+            let lt = local_tys.get(&left.0).cloned().unwrap_or(Type::Int);
+            let rt = local_tys.get(&right.0).cloned().unwrap_or(Type::Int);
+            if matches!(lt, Type::Float) || matches!(rt, Type::Float) {
+                Type::Float
+            } else {
+                Type::Int
+            }
+        }
+        Value::Call { fun, .. } => functions
+            .iter()
+            .find(|f| f.name == *fun)
+            .map(|f| f.ret_ty.clone())
+            .unwrap_or(Type::Int),
+        Value::FunRef(_) => Type::Int,
+        _ => Type::Int,
+    }
+}
+
+fn rewrite_mono_block(
+    block: &mut Block,
+    local_tys: &mut HashMap<u32, Type>,
+    renames: &HashMap<String, String>,
+) {
+    for op in &mut block.ops {
+        match op {
+            Op::Let { local, value, .. } => {
+                rewrite_mono_value(value, local_tys, renames);
+                let ty = mono_value_ty_rewrite(value, local_tys, renames);
+                local_tys.insert(local.0, ty);
+            }
+            Op::Effect { value } => rewrite_mono_value(value, local_tys, renames),
+            _ => {}
+        }
+    }
+}
+
+fn rewrite_mono_value(
+    value: &mut Value,
+    local_tys: &mut HashMap<u32, Type>,
+    renames: &HashMap<String, String>,
+) {
+    match value {
+        Value::Call { fun, args } => {
+            if !args.is_empty()
+                && args
+                    .iter()
+                    .all(|a| matches!(local_tys.get(&a.0), Some(Type::Float)))
+            {
+                if let Some(new) = renames.get(fun) {
+                    *fun = new.clone();
+                }
+            }
+        }
+        Value::If {
+            then_block,
+            else_block,
+            ..
+        } => {
+            rewrite_mono_block(then_block, local_tys, renames);
+            rewrite_mono_block(else_block, local_tys, renames);
+        }
+        Value::Loop {
+            header,
+            body,
+            latch,
+        } => {
+            rewrite_mono_block(header, local_tys, renames);
+            rewrite_mono_block(body, local_tys, renames);
+            rewrite_mono_block(latch, local_tys, renames);
+        }
+        _ => {}
+    }
+}
+
+fn mono_value_ty_rewrite(
+    value: &Value,
+    local_tys: &HashMap<u32, Type>,
+    renames: &HashMap<String, String>,
+) -> Type {
+    match value {
+        Value::Call { fun, .. } => {
+            if fun.ends_with("$Float") || renames.values().any(|n| n == fun) {
+                Type::Float
+            } else {
+                Type::Int
+            }
+        }
+        other => mono_value_ty(other, local_tys, &[]),
+    }
 }
 
 /// When a local is bound to `FunRef(name)`, rewrite `IndirectCall` of that local

@@ -1699,6 +1699,28 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
+    /// Convert an operand for float arithmetic: numeric Int → sitofp; Float bits → bitcast.
+    fn arith_as_f64(
+        &self,
+        v: BasicValueEnum<'ctx>,
+        ty: &Type,
+    ) -> Result<inkwell::values::FloatValue<'ctx>> {
+        let fty = self.context.f64_type();
+        match v {
+            BasicValueEnum::FloatValue(f) => Ok(f),
+            BasicValueEnum::IntValue(i) if matches!(ty, Type::Float) => Ok(self
+                .builder
+                .build_bit_cast(i, fty, "fbits_arith")
+                .unwrap()
+                .into_float_value()),
+            BasicValueEnum::IntValue(i) => Ok(self
+                .builder
+                .build_signed_int_to_float(i, fty, "sitofp")
+                .unwrap()),
+            _ => bail!("expected numeric for float arith"),
+        }
+    }
+
     fn emit_checked_neg(
         &mut self,
         o: IntValue<'ctx>,
@@ -1894,8 +1916,10 @@ impl<'ctx> Codegen<'ctx> {
                             | BinOp::Ge
                     )
                 {
-                    let l = self.promote_f64(lv)?;
-                    let r = self.promote_f64(rv)?;
+                    // Float-typed locals are IEEE bits in i64; Int locals are numeric
+                    // (sitofp) so `{ x -> x + 1 }` works after Float monomorphization.
+                    let l = self.arith_as_f64(lv, &lt)?;
+                    let r = self.arith_as_f64(rv, &rt)?;
                     let v = match op {
                         BinOp::Add => self.builder.build_float_add(l, r, "fadd").unwrap(),
                         BinOp::Sub => self.builder.build_float_sub(l, r, "fsub").unwrap(),

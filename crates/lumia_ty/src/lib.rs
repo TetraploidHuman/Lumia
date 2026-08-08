@@ -763,6 +763,7 @@ impl Infer {
         let a = self.prune(a);
         let b = self.prune(b);
         match (a, b) {
+            (Type::Var(v), Type::Var(u)) if v == u => Ok(()),
             (Type::Var(v), t) | (t, Type::Var(v)) => {
                 if occurs(v, &t) {
                     return Err(TypeError::Message("infinite type".into()));
@@ -1764,6 +1765,12 @@ impl Infer {
                                 self.unify_at(*span, rt, Type::Float)?;
                                 Ok((Type::Float, eff))
                             }
+                            // Leave open for let-poly (`{ x -> x + x }` at Int/Float sites).
+                            // `x + 1` still pins Int until Num / polymorphic literals.
+                            (Type::Var(_), Type::Var(_)) => {
+                                self.unify_at(*span, lt.clone(), rt)?;
+                                Ok((self.prune(lt), eff))
+                            }
                             _ => {
                                 self.unify_at(*span, lt, Type::Int)?;
                                 self.unify_at(*span, rt, Type::Int)?;
@@ -1809,6 +1816,7 @@ impl Infer {
                         let t = self.prune(t);
                         match t {
                             Type::Float => Ok((Type::Float, e)),
+                            Type::Var(_) => Ok((t, e)),
                             _ => {
                                 self.unify_at(*span, t, Type::Int)?;
                                 Ok((Type::Int, e))
