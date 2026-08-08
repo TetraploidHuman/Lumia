@@ -889,7 +889,7 @@ pub struct Fun {
     pub external: Option<String>,
     /// When `external` is set: (param type names, return type name), e.g. `Int`.
     pub foreign_sig: Option<(Vec<String>, String)>,
-    /// `foreign "C" pure fn` → Effect::pure().
+    /// `foreign "C" pure fn` → Effect::pure() only when trust is enabled.
     pub foreign_pure: bool,
 }
 

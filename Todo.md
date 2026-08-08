@@ -11,7 +11,7 @@
 ## 语义与运行时
 
 - [x] **Float 作 Map/Set 键与 `lumia_eq`**：`TYPE_MAP_F64` / `TYPE_SET_F64` + IEEE `float_key_eq`/`float_key_hash`（±0 碰撞、NaN 永不命中）；codegen 在 Float 键/`set` 时 `lumia_ensure_*_f64`；e2e `float_map_keys`。标量 `lumia_eq` 对未装箱 Float 仍为 bit 短路（与堆键路径分离）。
-- [ ] **`foreign "C" pure` 荣誉系统**：效应检查信任注解；撒谎的 `pure` 可把 C 副作用带进纯上下文。opts 已隔离 external，但效应边界仍信任标注。需 `unsafe`/显式信任开关或默认 IO。
+- [x] **`foreign "C" pure` 荣誉系统**：默认 foreign 为 IO；`pure` 需 `--trust-foreign-pure` 或 `package.trust_foreign_pure`；opts 仍不 CSE/memo external。
 - [ ] **stdin 超大输入**：`lumia_rt` 在约 64MiB 后 `abort`，非可恢复错误。
 - [ ] **CLI `--link`**：绝对 `-L`/`.a` 故意放行（本机链接）；对不可信树等同原生 RCE 面，文档/沙箱策略待定。
 - [x] **`extern "C"` 其余 `panic!`**：已统一经 `trap_abort`（非 test 构建 abort；`cfg(test)` 下仍 panic 以便单测）。
@@ -46,3 +46,4 @@
 - **poly identity Float**：call-site 对堆哨兵 `ret_ty` + Float 实参恢复 Float，避免 `println(id(1.5))` 打印 bit pattern。
 - **`import … as`**：模块别名导入与原名不可见。
 - **Float Map/Set 键**：IEEE eq/hash 专用 type_id；与 `==` 对齐的 ±0 / NaN 行为。
+- **`foreign "C" pure`**：默认 IO；`pure` 需显式信任开关。

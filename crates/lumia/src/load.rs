@@ -82,6 +82,8 @@ pub struct LoadedProgram {
     pub module: Module,
     /// Linker flags from `Lumia.toml` `package.link`.
     pub link_args: Vec<String>,
+    /// From `Lumia.toml` `package.trust_foreign_pure`.
+    pub trust_foreign_pure: bool,
     /// Cross-file name visibility for type checking.
     pub visibility: NameVisibility,
 }
@@ -120,6 +122,7 @@ pub fn load_program_with_overlays(
         .unwrap_or_else(|| PathBuf::from("."));
     let mut search_roots = vec![package_root.clone()];
     let mut link_args = Vec::new();
+    let mut trust_foreign_pure = false;
     if let Some(manifest_path) = crate::pkg::find_manifest(&entry) {
         let m = crate::pkg::load_manifest(&manifest_path)
             .with_context(|| format!("load {}", manifest_path.display()))?;
@@ -139,6 +142,7 @@ pub fn load_program_with_overlays(
             crate::pkg::verify_lockfile(&manifest_path, &m, &lock)?;
         }
         link_args = crate::pkg::collect_link_args(&manifest_path, &m)?;
+        trust_foreign_pure = m.package.trust_foreign_pure;
         let roots = crate::pkg::dependency_roots(&manifest_path, &m)?;
         for r in roots {
             if !search_roots.iter().any(|x| x == &r) {
@@ -169,6 +173,7 @@ pub fn load_program_with_overlays(
         files,
         module,
         link_args,
+        trust_foreign_pure,
         visibility,
     })
 }

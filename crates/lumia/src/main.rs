@@ -11,7 +11,9 @@ use lumia_core::{format_module, lower_hir};
 use lumia_hir::{lower_module, set_parallel_map};
 use lumia_opt::{optimize, OptOptions};
 use lumia_syntax::{format_diagnostic, parse_module, stamp_module, Span};
-use lumia_ty::{check_effect_boundaries, infer_module_with_visibility, TypeError};
+use lumia_ty::{
+    check_effect_boundaries, infer_module_with_options, InferOptions, TypeError,
+};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -31,6 +33,9 @@ enum Commands {
         /// Type-check as if `build --parallel` (reject effectful `List.map` callbacks).
         #[arg(long)]
         parallel: bool,
+        /// Trust `foreign "C" pure` (FFI purity is not verified).
+        #[arg(long = "trust-foreign-pure")]
+        trust_foreign_pure: bool,
     },
     /// Compile to a native executable
     Build {
@@ -45,6 +50,9 @@ enum Commands {
         /// Auto-parallel pure `List.map` (DESIGN §11.1).
         #[arg(long)]
         parallel: bool,
+        /// Trust `foreign "C" pure` (FFI purity is not verified).
+        #[arg(long = "trust-foreign-pure")]
+        trust_foreign_pure: bool,
         /// Extra linker args (repeatable), e.g. `--link -lm --link -L/opt/lib`.
         #[arg(long = "link", value_name = "ARG")]
         link: Vec<String>,
@@ -93,8 +101,12 @@ enum PkgCmd {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
-        Commands::Check { file, parallel } => {
-            let _ = check_file(&file, parallel)?;
+        Commands::Check {
+            file,
+            parallel,
+            trust_foreign_pure,
+        } => {
+            let _ = check_file(&file, parallel, trust_foreign_pure)?;
             println!("ok");
             Ok(())
         }
@@ -104,6 +116,7 @@ fn main() -> Result<()> {
             release,
             no_memo,
             parallel,
+            trust_foreign_pure,
             link,
             show_ir,
             emit_llvm,
@@ -124,6 +137,7 @@ fn main() -> Result<()> {
                 release,
                 !no_memo,
                 parallel,
+                trust_foreign_pure,
                 validated_link,
                 show_ir,
                 emit_llvm,
@@ -200,14 +214,21 @@ fn type_err(loaded: &LoadedProgram, e: TypeError) -> anyhow::Error {
     }
 }
 
-fn check_file(file: &Path, parallel: bool) -> Result<(lumia_ty::TypedModule, LoadedProgram)> {
+fn check_file(
+    file: &Path,
+    parallel: bool,
+    trust_foreign_pure: bool,
+) -> Result<(lumia_ty::TypedModule, LoadedProgram)> {
     let loaded = load_program(file)?;
     set_parallel_map(parallel);
     let hir = lower_module(&loaded.module).map_err(|e| {
         diag_err(&loaded, e.span, "lower", &e.message)
     })?;
     set_parallel_map(false);
-    let typed = infer_module_with_visibility(&hir, loaded.visibility.clone())
+    let opts = InferOptions {
+        trust_foreign_pure: trust_foreign_pure || loaded.trust_foreign_pure,
+    };
+    let typed = infer_module_with_options(&hir, loaded.visibility.clone(), opts)
         .map_err(|e| type_err(&loaded, e))?;
     check_effect_boundaries(&typed).map_err(|e| type_err(&loaded, e))?;
     Ok((typed, loaded))
@@ -219,11 +240,12 @@ fn build_file(
     release: bool,
     memo_tf: bool,
     parallel: bool,
+    trust_foreign_pure: bool,
     link_args: Vec<String>,
     show_ir: bool,
     emit_llvm: bool,
 ) -> Result<()> {
-    let (mut typed, loaded) = check_file(file, parallel)?;
+    let (mut typed, loaded) = check_file(file, parallel, trust_foreign_pure)?;
     annotate_assert_messages(&mut typed.module, &loaded);
     let option_tags = option_ctor_tags(&typed.module.adts);
     let mut core = lower_hir(&typed.module, &typed.fun_types);

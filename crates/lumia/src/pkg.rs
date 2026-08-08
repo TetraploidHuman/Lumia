@@ -21,6 +21,9 @@ pub struct PackageMeta {
     /// Extra linker flags, e.g. `["-lm", "-L/opt/lib"]`.
     #[serde(default)]
     pub link: Vec<String>,
+    /// Trust `foreign "C" pure` annotations (FFI purity is not verified).
+    #[serde(default)]
+    pub trust_foreign_pure: bool,
 }
 
 fn default_version() -> String {
@@ -491,6 +494,7 @@ pub fn init_manifest(dir: &Path, name: &str) -> Result<PathBuf> {
             name: name.to_string(),
             version: default_version(),
             link: vec![],
+            trust_foreign_pure: false,
         },
         dependencies: BTreeMap::new(),
     };

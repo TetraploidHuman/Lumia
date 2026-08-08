@@ -1983,6 +1983,14 @@ fn parse_foreign_type(name: &str) -> Result<Type, TypeError> {
     }
 }
 
+/// Options for module inference (FFI trust, etc.).
+#[derive(Debug, Clone, Default)]
+pub struct InferOptions {
+    /// Honor `foreign "C" pure` as [`Effect::Pure`]. Without this, `pure` is rejected
+    /// (FFI purity is not verified; default foreign effect is IO).
+    pub trust_foreign_pure: bool,
+}
+
 pub fn infer_module(module: &Module) -> Result<TypedModule, TypeError> {
     infer_module_with_visibility(module, NameVisibility::default())
 }
@@ -1990,6 +1998,14 @@ pub fn infer_module(module: &Module) -> Result<TypedModule, TypeError> {
 pub fn infer_module_with_visibility(
     module: &Module,
     vis: NameVisibility,
+) -> Result<TypedModule, TypeError> {
+    infer_module_with_options(module, vis, InferOptions::default())
+}
+
+pub fn infer_module_with_options(
+    module: &Module,
+    vis: NameVisibility,
+    opts: InferOptions,
 ) -> Result<TypedModule, TypeError> {
     let mut inf = Infer::new(vis);
     let mut fun_types = HashMap::new();
@@ -2011,11 +2027,18 @@ pub fn infer_module_with_visibility(
                     let ps: Result<Vec<_>, _> = ptys.iter().map(|t| parse_foreign_type(t)).collect();
                     let ps = ps?;
                     let r = parse_foreign_type(ret)?;
-                    // `foreign "C" pure` is an honor-system annotation: the
-                    // callee may still have side effects. Opts must not CSE /
-                    // memo / inline external calls (see `lumia_opt`); lying
-                    // about purity must not collapse distinct call sites.
+                    // Default: foreign is IO. `pure` is an honor-system claim and
+                    // requires `--trust-foreign-pure` / `package.trust_foreign_pure`.
+                    // Opts still never CSE/memo/inline externals (`lumia_opt`).
                     let eff = if f.foreign_pure {
+                        if !opts.trust_foreign_pure {
+                            return Err(at(
+                                expr_span(&f.body),
+                                "`foreign \"C\" pure` requires `--trust-foreign-pure` \
+                                 (or `package.trust_foreign_pure = true`); FFI purity is \
+                                 not verified — omit `pure` to type the import as IO",
+                            ));
+                        }
                         Effect::pure()
                     } else {
                         Effect::io()
@@ -2640,5 +2663,61 @@ val main = {
             typed.fun_types.get("sneak")
         );
         check_effect_boundaries(&typed).unwrap();
+    }
+
+    #[test]
+    fn foreign_pure_requires_trust() {
+        let src = r#"
+module F
+foreign "C" pure fn llabs(x: Int) -> Int
+val main = { llabs(1) }
+"#;
+        let ast = parse_module(src).unwrap();
+        let hir = lower_module(&ast).expect("lower");
+        let err = infer_module(&hir).expect_err("pure without trust");
+        assert!(
+            err.message().contains("trust-foreign-pure"),
+            "got {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn foreign_pure_trusted_is_pure() {
+        let src = r#"
+module F
+foreign "C" pure fn llabs(x: Int) -> Int
+val main = { llabs(1) }
+"#;
+        let ast = parse_module(src).unwrap();
+        let hir = lower_module(&ast).expect("lower");
+        let typed = infer_module_with_options(
+            &hir,
+            NameVisibility::default(),
+            InferOptions {
+                trust_foreign_pure: true,
+            },
+        )
+        .expect("trusted pure");
+        assert!(matches!(
+            typed.fun_types.get("llabs"),
+            Some(Type::Fun(_, _, Effect::Pure))
+        ));
+    }
+
+    #[test]
+    fn foreign_without_pure_is_io() {
+        let src = r#"
+module F
+foreign "C" fn getenv(s: String) -> String
+val main = { getenv("PATH") }
+"#;
+        let ast = parse_module(src).unwrap();
+        let hir = lower_module(&ast).expect("lower");
+        let typed = infer_module(&hir).expect("infer");
+        assert!(matches!(
+            typed.fun_types.get("getenv"),
+            Some(Type::Fun(_, _, Effect::Io))
+        ));
     }
 }

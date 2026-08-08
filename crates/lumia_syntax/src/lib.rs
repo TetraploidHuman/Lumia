@@ -89,7 +89,7 @@ pub struct ForeignItem {
     pub name: String,
     pub params: Vec<(String, String)>,
     pub ret: String,
-    /// `foreign "C" pure fn` — typed as Pure (math-like libc).
+    /// `foreign "C" pure fn` — Pure only with `--trust-foreign-pure`.
     pub is_pure: bool,
     pub span: Span,
 }

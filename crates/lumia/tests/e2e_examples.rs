@@ -831,19 +831,84 @@ fn e2e_bad_dep_rejected() {
     );
 }
 
+fn run_example_trust_foreign_pure(rel: &str, expected_lines: &[&str]) {
+    let root = workspace_root();
+    let src = root.join(rel);
+    let stem = Path::new(rel)
+        .file_stem()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let exe = e2e_exe(&stem);
+    let status = Command::new(lumia_bin())
+        .current_dir(&root)
+        .args([
+            "build",
+            "--trust-foreign-pure",
+            src.to_str().unwrap(),
+            "-o",
+            exe.to_str().unwrap(),
+        ])
+        .status()
+        .expect("spawn lumia build");
+    assert!(
+        status.success(),
+        "lumia build failed for {rel}: {status}"
+    );
+    let output = Command::new(&exe)
+        .output()
+        .unwrap_or_else(|e| panic!("run {}: {e}", exe.display()));
+    assert!(
+        output.status.success(),
+        "{rel} exited {}: stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let got: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        got, expected_lines,
+        "{rel}: stdout mismatch\n got: {got:?}\n want: {expected_lines:?}"
+    );
+}
+
 #[test]
 fn e2e_ffi_abs() {
-    run_example("examples/ffi_abs.lumia", &["42", "7"]);
+    run_example_trust_foreign_pure("examples/ffi_abs.lumia", &["42", "7"]);
 }
 
 #[test]
 fn e2e_ffi_strlen() {
-    run_example("examples/ffi_strlen.lumia", &["5", "0"]);
+    run_example_trust_foreign_pure("examples/ffi_strlen.lumia", &["5", "0"]);
 }
 
 #[test]
 fn e2e_ffi_getenv() {
     run_example("examples/ffi_getenv.lumia", &["true", "0"]);
+}
+
+#[test]
+fn e2e_bad_foreign_pure_rejected() {
+    let root = workspace_root();
+    let src = root.join("examples/bad_foreign_pure.lumia");
+    let out = Command::new(lumia_bin())
+        .current_dir(&root)
+        .args(["check", src.to_str().unwrap()])
+        .output()
+        .expect("check bad_foreign_pure");
+    assert!(
+        !out.status.success(),
+        "bad_foreign_pure should fail without --trust-foreign-pure"
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        combined.contains("trust-foreign-pure") && combined.contains("pure"),
+        "expected trust-foreign-pure diagnostic, got: {combined}"
+    );
 }
 
 #[test]

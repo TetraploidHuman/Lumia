@@ -115,9 +115,9 @@ enum ExprKey {
 }
 
 pub fn cse_module(module: &mut CoreModule) {
-    // Foreign (`external`) must never be CSE'd: `foreign "C" pure` is an
-    // honor-system annotation and libc calls like `getpid` / `getenv` are not
-    // referentially transparent. Inline already skips `external`.
+    // Foreign (`external`) must never be CSE'd: even trusted
+    // `foreign "C" pure` is an honor-system claim; libc calls like `getpid` /
+    // `getenv` are not referentially transparent. Inline already skips `external`.
     let pure_funs: HashSet<String> = module
         .functions
         .iter()
