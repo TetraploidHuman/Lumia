@@ -339,16 +339,31 @@ impl<'a> Lexer<'a> {
                                 break;
                             }
                         } else if ch == b'"' {
-                            // skip string literal inside ${} (best-effort)
+                            // Skip nested string literal inside `${…}`.
                             self.pos += 1;
                             while self.pos < self.bytes.len() {
                                 let sc = self.bytes[self.pos];
                                 if sc == b'\\' {
-                                    self.pos += 2;
+                                    self.pos = self.pos.saturating_add(2);
                                     continue;
                                 }
                                 self.pos += 1;
                                 if sc == b'"' {
+                                    break;
+                                }
+                            }
+                            continue;
+                        } else if ch == b'\'' {
+                            // Skip char literal so `'}'` does not close `${…}`.
+                            self.pos += 1;
+                            while self.pos < self.bytes.len() {
+                                let sc = self.bytes[self.pos];
+                                if sc == b'\\' {
+                                    self.pos = self.pos.saturating_add(2);
+                                    continue;
+                                }
+                                self.pos += 1;
+                                if sc == b'\'' {
                                     break;
                                 }
                             }
@@ -450,5 +465,30 @@ mod tests {
         assert!(matches!(kinds[0], TokenKind::Val));
         assert!(matches!(kinds[3], TokenKind::Int(1)));
         assert!(kinds.iter().any(|k| matches!(k, TokenKind::PipePipe)));
+    }
+
+    #[test]
+    fn interp_skips_char_literal_braces() {
+        let mut lx = Lexer::new(r#""x${'}'}y""#);
+        let t = lx.next_token();
+        match t.kind {
+            TokenKind::InterpString(parts) => {
+                assert!(
+                    parts.iter().any(|p| matches!(
+                        p,
+                        crate::token::StringPart::ExprSrc(s) if s.contains('\'')
+                    )),
+                    "char literal must stay inside ExprSrc, got {parts:?}"
+                );
+                assert!(
+                    !parts.iter().any(|p| matches!(
+                        p,
+                        crate::token::StringPart::Lit(s) if s.contains('}')
+                    )),
+                    "closing brace of char must not end interpolation early: {parts:?}"
+                );
+            }
+            other => panic!("expected InterpString, got {other:?}"),
+        }
     }
 }
