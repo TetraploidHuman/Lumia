@@ -245,7 +245,10 @@ fn e2e_char() {
 
 #[test]
 fn e2e_float_ops() {
-    run_example("examples/float_ops.lumia", &["3.75", "6", "1", "-1.5"]);
+    run_example(
+        "examples/float_ops.lumia",
+        &["3.75", "6", "1", "-1.5", "4"],
+    );
 }
 
 #[test]

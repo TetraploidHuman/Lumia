@@ -1416,8 +1416,10 @@ fn lower_expr(
         HirExpr::Binary {
             op, left, right, ..
         } => {
-            let l = lower_expr(ctx, left, ops, pure_region).unwrap();
-            let r = lower_expr(ctx, right, ops, pure_region).unwrap();
+            let l = lower_expr(ctx, left, ops, pure_region)
+                .expect("ICE: binary operand lowered to Unit; type checker should reject");
+            let r = lower_expr(ctx, right, ops, pure_region)
+                .expect("ICE: binary operand lowered to Unit; type checker should reject");
             let dest = ctx.fresh();
             ops.push(Op::Let {
                 local: dest,
@@ -1431,7 +1433,8 @@ fn lower_expr(
             Some(dest)
         }
         HirExpr::Unary { op, expr, .. } => {
-            let o = lower_expr(ctx, expr, ops, pure_region).unwrap();
+            let o = lower_expr(ctx, expr, ops, pure_region)
+                .expect("ICE: unary operand lowered to Unit; type checker should reject");
             let dest = ctx.fresh();
             ops.push(Op::Let {
                 local: dest,
@@ -1533,7 +1536,8 @@ fn lower_expr(
             else_branch,
             ..
         } => {
-            let c = lower_expr(ctx, cond, ops, pure_region).unwrap();
+            let c = lower_expr(ctx, cond, ops, pure_region)
+                .expect("ICE: if condition lowered to Unit; type checker should reject");
             // Isolate arm bindings so `val`/`var` inside then/else cannot leak.
             let saved = ctx.save_bindings();
             let (then_block, _) = lower_expr_block(ctx, then_branch);
