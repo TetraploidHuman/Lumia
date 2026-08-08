@@ -214,7 +214,16 @@ fn expr_key(value: &Value, pure_funs: &HashSet<String>) -> Option<ExprKey> {
         Value::Float(f) => Some(ExprKey::Float(f.to_bits())),
         Value::Char(c) => Some(ExprKey::Char(*c)),
         Value::String(s) => Some(ExprKey::String(s.clone())),
+        // Trapping arithmetic must not CSE across divergent paths (§2.4).
+        Value::Unary {
+            op: UnOp::Neg,
+            ..
+        } => None,
         Value::Unary { op, operand } => Some(ExprKey::Unary(*op, operand.0)),
+        Value::Binary {
+            op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem,
+            ..
+        } => None,
         Value::Binary { op, left, right } => Some(ExprKey::Binary(*op, left.0, right.0)),
         Value::Builtin { name, args } if builtin_is_pure(name) => Some(ExprKey::Builtin(
             format!("{name:?}"),
@@ -605,10 +614,13 @@ fn is_hoistable(value: &Value, loop_defs: &HashSet<u32>) -> bool {
         | Value::AllocAdt { .. }
         | Value::AllocClosure { .. }
         | Value::IndirectCall { .. } => false,
-        // Div/Rem may trap — hoisting past effects would violate §2.2 / §2.4.
+        // Checked Int arithmetic / Neg may trap — must not hoist past break (§2.4).
         Value::Binary {
-            op: BinOp::Div | BinOp::Rem,
+            op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem,
             ..
+        } => false,
+        Value::Unary {
+            op: UnOp::Neg, ..
         } => false,
         Value::Int(_)
         | Value::Float(_)
@@ -646,6 +658,10 @@ fn builtin_may_trap_or_effect(b: &Builtin) -> bool {
             | Builtin::MatchFail
             | Builtin::Assert
             | Builtin::ListParMap
+            | Builtin::Range
+            | Builtin::RangeInclusive
+            | Builtin::AdtField
+            | Builtin::AdtTag
     )
 }
 
@@ -1002,7 +1018,8 @@ mod tests {
     }
 
     #[test]
-    fn cse_dedups_int_and_binary() {
+    fn cse_dedups_int_and_nontrapping_binary() {
+        // Add/Sub/Mul/Div/Rem are not CSE'd (may trap). Eq is pure and may share.
         let mut module = CoreModule {
             name: "C".into(),
             functions: vec![bare_fun(
@@ -1024,7 +1041,7 @@ mod tests {
                         Op::Let {
                             local: Local(2),
                             value: Value::Binary {
-                                op: BinOp::Add,
+                                op: BinOp::Eq,
                                 left: Local(0),
                                 right: Local(1),
                             },
@@ -1033,7 +1050,7 @@ mod tests {
                         Op::Let {
                             local: Local(3),
                             value: Value::Binary {
-                                op: BinOp::Add,
+                                op: BinOp::Eq,
                                 left: Local(0),
                                 right: Local(1),
                             },
@@ -1224,12 +1241,13 @@ mod tests {
     }
 
     #[test]
-    fn memo_l1_licm_hoists_invariant() {
+    fn memo_l1_licm_hoists_not_but_not_trapping_add() {
+        // Checked Add may trap — must stay in-loop (§2.4). Pure Bool `not` is safe to hoist.
         let mut module = CoreModule {
             name: "L".into(),
             functions: vec![bare_fun(
                 "f",
-                vec![Local(0), Local(1)],
+                vec![Local(0)],
                 Block {
                     params: vec![],
                     ops: vec![Op::Let {
@@ -1246,16 +1264,26 @@ mod tests {
                             }),
                             body: Box::new(Block {
                                 params: vec![],
-                                ops: vec![Op::Let {
-                                    local: Local(3),
-                                    value: Value::Binary {
-                                        op: BinOp::Add,
-                                        left: Local(0),
-                                        right: Local(1),
+                                ops: vec![
+                                    Op::Let {
+                                        local: Local(3),
+                                        value: Value::Binary {
+                                            op: BinOp::Add,
+                                            left: Local(0),
+                                            right: Local(0),
+                                        },
+                                        pure_region: true,
                                     },
-                                    pure_region: true,
-                                }],
-                                result: Some(Local(3)),
+                                    Op::Let {
+                                        local: Local(4),
+                                        value: Value::Unary {
+                                            op: UnOp::Not,
+                                            operand: Local(0),
+                                        },
+                                        pure_region: true,
+                                    },
+                                ],
+                                result: Some(Local(4)),
                             }),
                             latch: Box::new(Block {
                                 params: vec![],
@@ -1275,12 +1303,35 @@ mod tests {
             matches!(
                 &ops[0],
                 Op::Let {
-                    value: Value::Binary { .. },
+                    value: Value::Unary {
+                        op: UnOp::Not,
+                        ..
+                    },
                     ..
                 }
             ),
-            "invariant add should be hoisted before loop, got {:?}",
+            "invariant `not` should hoist before loop, got {:?}",
             ops[0]
+        );
+        let body_ops = match &ops[1] {
+            Op::Let {
+                value: Value::Loop { body, .. },
+                ..
+            } => &body.ops,
+            other => panic!("expected loop as second op, got {other:?}"),
+        };
+        assert!(
+            body_ops.iter().any(|op| matches!(
+                op,
+                Op::Let {
+                    value: Value::Binary {
+                        op: BinOp::Add,
+                        ..
+                    },
+                    ..
+                }
+            )),
+            "trapping Add must remain inside the loop"
         );
     }
 
