@@ -1771,7 +1771,8 @@ impl<'ctx> Codegen<'ctx> {
                         BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                             let pred = match op {
                                 BinOp::Eq => FloatPredicate::OEQ,
-                                BinOp::Ne => FloatPredicate::ONE,
+                                // UNE: NaN != x is true (IEEE unordered-or-ne).
+                                BinOp::Ne => FloatPredicate::UNE,
                                 BinOp::Lt => FloatPredicate::OLT,
                                 BinOp::Le => FloatPredicate::OLE,
                                 BinOp::Gt => FloatPredicate::OGT,
