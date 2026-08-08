@@ -1091,11 +1091,28 @@ impl<'ctx> Codegen<'ctx> {
                 .get(&operand.0)
                 .cloned()
                 .unwrap_or(Type::Int),
-            Value::Call { fun, .. } => self
-                .fun_ret_tys
-                .get(fun)
-                .cloned()
-                .unwrap_or(Type::Int),
+            Value::Call { fun, args } => {
+                let ret = self
+                    .fun_ret_tys
+                    .get(fun)
+                    .cloned()
+                    .unwrap_or(Type::Int);
+                // Let-poly identity lambdas keep a conservative heap `ret_ty`
+                // (`List[Int]`) and `Int` formals so String/ADT still root. Before
+                // monomorphization, a Float argument that is returned as bits must
+                // still type the Call result as Float (println / arithmetic).
+                if matches!(&ret, Type::List(e) if matches!(e.as_ref(), Type::Int)) {
+                    let ptys = self.fun_param_tys.get(fun).cloned().unwrap_or_default();
+                    if args.len() == 1
+                        && ptys.len() == 1
+                        && matches!(ptys[0], Type::Int)
+                        && matches!(self.local_tys.get(&args[0].0), Some(Type::Float))
+                    {
+                        return Type::Float;
+                    }
+                }
+                ret
+            }
             Value::Builtin { name, args } => match name {
                 Builtin::StrStartsWith
                 | Builtin::StrEndsWith
@@ -1305,14 +1322,29 @@ impl<'ctx> Codegen<'ctx> {
                 t.or(e).unwrap_or(Type::Int)
             }
             Value::Loop { .. } | Value::Lambda { .. } => Type::Int,
-            Value::IndirectCall { callee, .. } => match self.local_tys.get(&callee.0) {
-                Some(Type::Fun(_, ret, _)) => (**ret).clone(),
-                _ => self
-                    .funref_locals
-                    .get(&callee.0)
-                    .and_then(|name| self.fun_ret_tys.get(name).cloned())
-                    .unwrap_or(Type::Int),
-            },
+            Value::IndirectCall { callee, args } => {
+                let ret = match self.local_tys.get(&callee.0) {
+                    Some(Type::Fun(_, ret, _)) => (**ret).clone(),
+                    _ => self
+                        .funref_locals
+                        .get(&callee.0)
+                        .and_then(|name| self.fun_ret_tys.get(name).cloned())
+                        .unwrap_or(Type::Int),
+                };
+                if matches!(&ret, Type::List(e) if matches!(e.as_ref(), Type::Int)) {
+                    if let Some(name) = self.funref_locals.get(&callee.0) {
+                        let ptys = self.fun_param_tys.get(name).cloned().unwrap_or_default();
+                        if args.len() == 1
+                            && ptys.len() == 1
+                            && matches!(ptys[0], Type::Int)
+                            && matches!(self.local_tys.get(&args[0].0), Some(Type::Float))
+                        {
+                            return Type::Float;
+                        }
+                    }
+                }
+                ret
+            }
         }
     }
 

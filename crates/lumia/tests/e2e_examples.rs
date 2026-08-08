@@ -133,6 +133,11 @@ fn e2e_const_patterns() {
 }
 
 #[test]
+fn e2e_poly_id() {
+    run_example("examples/poly_id.lumia", &["2", "1.5", "hi", "3.5"]);
+}
+
+#[test]
 fn e2e_list_for() {
     run_example("examples/list_for.lumia", &["60"]);
 }
