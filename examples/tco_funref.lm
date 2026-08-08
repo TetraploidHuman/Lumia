@@ -1,0 +1,21 @@
+module TcoFunRef
+
+import std.io.{println}
+
+/// Mutual pure Int recursion via a FunRef local — musttail after FunRef directize
+/// (and codegen IndirectCall peer path as fallback).
+val even = { n ->
+    val next = odd
+    if n == 0 { true } else { next(n - 1) }
+}
+
+val odd = { n ->
+    val next = even
+    if n == 0 { false } else { next(n - 1) }
+}
+
+val main = {
+    println(even(2000000))
+    println(odd(2000000))
+    println(even(7))
+}

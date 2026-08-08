@@ -178,6 +178,28 @@ fn e2e_trait_eq_ord() {
 }
 
 #[test]
+fn e2e_trait_num() {
+    run_example("examples/trait_num.lm", &["6", "8", "8", "15"]);
+}
+
+#[test]
+fn e2e_map_adt_assoc() {
+    // No `instance Hash` → assoc list; still correct after growing past SmallMap.
+    run_example(
+        "examples/map_adt_assoc.lm",
+        &["20", "0", "38", "true", "false"],
+    );
+}
+
+#[test]
+fn e2e_map_adt_hash() {
+    run_example(
+        "examples/map_adt_hash.lm",
+        &["20", "0", "38", "true", "false"],
+    );
+}
+
+#[test]
 fn e2e_show_float_adt() {
     run_example("examples/show_float_adt.lm", &["#0(1.5, 2.25)"]);
 }
@@ -186,6 +208,15 @@ fn e2e_show_float_adt() {
 fn e2e_tco_even_odd() {
     run_example(
         "examples/tco_even_odd.lm",
+        &["true", "false", "false"],
+    );
+}
+
+#[test]
+fn e2e_tco_funref() {
+    // FunRef local → directized Call + musttail (2e6 depth).
+    run_example(
+        "examples/tco_funref.lm",
         &["true", "false", "false"],
     );
 }

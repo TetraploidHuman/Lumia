@@ -458,6 +458,7 @@ mod tests {
                 external: None,
             escaping: std::collections::HashSet::new(),
             }],
+            hash_adts: std::collections::HashSet::new(),
         };
         CopyElimPass.run(&mut module);
         let f = &module.functions[0];
@@ -506,6 +507,7 @@ mod tests {
                 external: None,
             escaping: std::collections::HashSet::new(),
             }],
+            hash_adts: std::collections::HashSet::new(),
         };
         EscapePass.run(&mut module);
         ReprSelect.run(&mut module);
@@ -546,6 +548,7 @@ mod tests {
                 external: None,
             escaping: std::collections::HashSet::new(),
             }],
+            hash_adts: std::collections::HashSet::new(),
         };
         EscapePass.run(&mut module);
         ReprSelect.run(&mut module);

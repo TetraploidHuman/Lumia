@@ -1060,6 +1060,7 @@ mod tests {
                     result: Some(Local(3)),
                 },
             )],
+            hash_adts: std::collections::HashSet::new(),
         };
         module.functions[0].is_main = true;
         module.functions[0].effect = Effect::io();
@@ -1125,6 +1126,7 @@ mod tests {
                     },
                 ),
             ],
+            hash_adts: std::collections::HashSet::new(),
         };
         module.functions[1].is_main = true;
         module.functions[1].effect = Effect::io();
@@ -1185,6 +1187,7 @@ mod tests {
                     result: Some(Local(2)),
                 },
             )],
+            hash_adts: std::collections::HashSet::new(),
         };
         MemoL0Pass.run(&mut module);
         assert!(matches!(
@@ -1229,6 +1232,7 @@ mod tests {
                     result: Some(Local(2)),
                 },
             )],
+            hash_adts: std::collections::HashSet::new(),
         };
         MemoL0Pass.run(&mut module);
         assert!(matches!(
@@ -1296,6 +1300,7 @@ mod tests {
                     result: Some(Local(10)),
                 },
             )],
+            hash_adts: std::collections::HashSet::new(),
         };
         MemoL1Pass.run(&mut module);
         let ops = &module.functions[0].body.ops;
@@ -1383,6 +1388,7 @@ mod tests {
         let module = CoreModule {
             name: "M".into(),
             functions: vec![fib],
+            hash_adts: std::collections::HashSet::new(),
         };
         let plan = plan_memo_tf(&module);
         assert!(
@@ -1475,6 +1481,7 @@ mod tests {
         let module = CoreModule {
             name: "M".into(),
             functions: vec![sq, main],
+            hash_adts: std::collections::HashSet::new(),
         };
         let plan = plan_memo_tf(&module);
         assert!(
@@ -1523,6 +1530,7 @@ mod tests {
         let module = CoreModule {
             name: "M".into(),
             functions: vec![f],
+            hash_adts: std::collections::HashSet::new(),
         };
         let plan = plan_memo_tf(&module);
         assert!(

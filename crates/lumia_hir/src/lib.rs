@@ -158,6 +158,7 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
         ("Eq".into(), vec![]),
         ("Hash".into(), vec![]),
         ("Show".into(), vec![]),
+        ("Num".into(), vec![]),
     ]);
     let mut instances: HashSet<(String, String)> = HashSet::new();
     // User-written `instance` pairs (defaults apply only here, not auto-derive).
@@ -261,14 +262,14 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
             _ => {}
         }
     }
-    // Auto-derive Eq / Hash / Show for products and sums (DESIGN §3.6).
-    // Ord stays opt-in (`instance Ord for T`) because `<` is a stronger claim.
+    // Auto-derive Eq / Show for products and sums (DESIGN §3.6).
+    // Hash / Ord / Num stay opt-in: Hash gates Map/Set hash tables; Ord/Num are stronger claims.
     for name in product_map
         .keys()
         .cloned()
         .chain(adts.iter().map(|a| a.name.clone()))
     {
-        for tr in ["Eq", "Hash", "Show"] {
+        for tr in ["Eq", "Show"] {
             instances.insert((tr.into(), name.clone()));
         }
     }

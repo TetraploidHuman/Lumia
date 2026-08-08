@@ -12,6 +12,8 @@ pub struct Local(pub u32);
 pub struct CoreModule {
     pub name: String,
     pub functions: Vec<CoreFun>,
+    /// ADT/product type names with `instance Hash` (may use HashOrdered Map/Set).
+    pub hash_adts: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -170,6 +172,8 @@ pub enum ListRepr {
 pub enum MapRepr {
     HashOrdered,
     SmallMap,
+    /// Eq-only / no Hash — stay linear forever (DESIGN §3.5.1 AssocList).
+    AssocList,
 }
 
 struct LowerCtx {
@@ -302,9 +306,16 @@ pub fn lower_hir(module: &HirModule, fun_types: &HashMap<String, Type>) -> CoreM
             }
         }
     }
+    let hash_adts: HashSet<String> = module
+        .instances
+        .iter()
+        .filter(|(tr, _)| tr == "Hash")
+        .map(|(_, ty)| ty.clone())
+        .collect();
     let mut core = CoreModule {
         name: module.name.clone(),
         functions,
+        hash_adts,
     };
     lift_lambdas(&mut core);
     directize_funref_calls(&mut core);
@@ -564,42 +575,51 @@ fn mono_value_ty_rewrite(
 /// When a local is bound to `FunRef(name)`, rewrite `IndirectCall` of that local
 /// into a direct `Call` so float/int ABI (`param_tys` / `ret_ty`) applies.
 fn directize_funref_calls(module: &mut CoreModule) {
+    let empty = HashMap::new();
     for fun in &mut module.functions {
-        directize_block(&mut fun.body);
+        directize_block(&mut fun.body, &empty);
     }
 }
 
-fn directize_block(block: &mut Block) {
-    let mut funref_of: HashMap<u32, String> = HashMap::new();
+fn directize_block(block: &mut Block, parent_funrefs: &HashMap<u32, String>) {
+    // Inherit FunRef bindings from the enclosing block so `val f = g; if … { f(x) }`
+    // inside nested If/Loop still becomes a direct `Call`.
+    let mut funref_of = parent_funrefs.clone();
     for op in &mut block.ops {
         match op {
             Op::Let { local, value, .. } => {
                 directize_value(value, &funref_of);
-                walk_nested_blocks_directize(value);
+                walk_nested_blocks_directize(value, &funref_of);
                 if let Value::FunRef(name) = value {
                     funref_of.insert(local.0, name.clone());
+                } else if let Value::Local(Local(src)) = value {
+                    if let Some(n) = funref_of.get(src).cloned() {
+                        funref_of.insert(local.0, n);
+                    } else {
+                        funref_of.remove(&local.0);
+                    }
                 } else {
                     funref_of.remove(&local.0);
                 }
             }
             Op::Effect { value } => {
                 directize_value(value, &funref_of);
-                walk_nested_blocks_directize(value);
+                walk_nested_blocks_directize(value, &funref_of);
             }
             Op::Assign { .. } | Op::Break | Op::Continue => {}
         }
     }
 }
 
-fn walk_nested_blocks_directize(value: &mut Value) {
+fn walk_nested_blocks_directize(value: &mut Value, funref_of: &HashMap<u32, String>) {
     match value {
         Value::If {
             then_block,
             else_block,
             ..
         } => {
-            directize_block(then_block);
-            directize_block(else_block);
+            directize_block(then_block, funref_of);
+            directize_block(else_block, funref_of);
         }
         Value::Loop {
             header,
@@ -607,11 +627,12 @@ fn walk_nested_blocks_directize(value: &mut Value) {
             latch,
             ..
         } => {
-            directize_block(header);
-            directize_block(body);
-            directize_block(latch);
+            directize_block(header, funref_of);
+            directize_block(body, funref_of);
+            directize_block(latch, funref_of);
         }
-        Value::Lambda { body, .. } => directize_block(body),
+        // Fresh scope: lifted lambda body should not see outer SSA FunRef locals.
+        Value::Lambda { body, .. } => directize_block(body, &HashMap::new()),
         _ => {}
     }
 }

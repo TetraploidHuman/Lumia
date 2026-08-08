@@ -4,8 +4,8 @@
 
 ## 类型与单态化
 
-- [ ] **单态化管线**：Float 特化 `__lam_*$Float`（`poly_inc` / `poly_add1`：`x + 1` 保持 open + scheme `num_vars`）；完整 Num trait / 多体 / 顶层泛型仍待。恒等另有 call-site 启发式（`poly_id`）。
-- [ ] **类型类 `trait` / `instance` / `requires`**：显式 instance 可填 trait 默认方法；Show/Eq.eq/Ord.less 覆盖已接线；积/和自动派生 Eq/Hash/Show（结构路径）；typed 结构 Show 处理 Float/Bool 字段；Hash 能力位已派生（Map 表示仍按大小）。完整字典/多方法分派仍待。
+- [ ] **单态化管线**：Float 特化 `__lam_*$Float`（`poly_inc` / `poly_add1`：`x + 1` 保持 open + scheme `num_vars`）；ADT `instance Num` 的 `+`/`*` 已接线（`trait_num`）；完整多体 / 顶层泛型仍待。恒等另有 call-site 启发式（`poly_id`）。
+- [ ] **类型类 `trait` / `instance` / `requires`**：显式 instance 可填 trait 默认方法；Show/Eq.eq/Ord.less/Num.add·mul 覆盖已接线；积/和自动派生 Eq/Show（结构路径）；typed 结构 Show 处理 Float/Bool 字段；**Hash 改为 opt-in**——无 `instance Hash` 的 ADT 键走 `TYPE_MAP_ASSOC`/`TYPE_SET_ASSOC`（不 promote）；有 Hash 才可 HashOrdered。完整字典/多方法分派仍待。
 - [x] **`import … as` / `{ name as alias }`**：DESIGN §9.3；`ImportedName` + 公开项改名、原名 `priv` 副本；e2e `import_as` / `bad_import_as_original`。
 
 ## 语义与运行时
@@ -18,7 +18,7 @@
 
 ## 优化与表示（DESIGN / BUILD 下一里程碑）
 
-- [ ] **纯互递归 TCO**（DESIGN §4.4）：纯 Int/Bool SCC `musttail`（`tco_sum` / `tco_even_odd`）；堆参 / IO / IndirectCall 未做。
+- [ ] **纯互递归 TCO**（DESIGN §4.4）：纯 Int/Bool SCC `musttail`（`tco_sum` / `tco_even_odd` / `tco_funref`：FunRef 局部经 directize + IndirectCall peer 路径）；堆参 / IO / 未知闭包 IndirectCall 未做。
 - [x] **自动并行**：默认对 FunRef-safe 纯标量 `List.map` 选 `ListParMap`；IO/非标量/捕获回退顺序；`--no-parallel` 关闭。捕获闭包与 `fold` 等仍待扩展。
 - [ ] **逃逸分析 → 栈分配 / 多表示 List·Map·Set**：大量仍为 HeapList；BUILD §7 下一里程碑。
 - [ ] **部分求值 / 完整 specialization**：opt 管道未齐。

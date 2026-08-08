@@ -174,6 +174,7 @@ mod tests {
                 external: None,
             escaping: std::collections::HashSet::new(),
             }],
+            hash_adts: std::collections::HashSet::new(),
         };
         FusionPass.run(&mut module);
         assert!(matches!(

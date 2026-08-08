@@ -258,6 +258,8 @@ struct Infer {
     current_file: u32,
     /// Type names with `instance Ord for T` (MVP type-class wiring).
     ord_instances: HashSet<String>,
+    /// Type names with `instance Num for T` (`+`/`*` method dispatch).
+    num_instances: HashSet<String>,
     /// Type vars used in arithmetic — may only resolve to Int/Float (Num MVP).
     num_vars: HashSet<u32>,
 }
@@ -317,6 +319,7 @@ impl Infer {
             vis,
             current_file: 0,
             ord_instances: HashSet::new(),
+            num_instances: HashSet::new(),
             num_vars: HashSet::new(),
         }
     }
@@ -1825,6 +1828,19 @@ impl Infer {
                     BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => {
                         let lt = self.prune(lt);
                         let rt = self.prune(rt);
+                        // `instance Num for T` + same ADT: `+`/`*` via `__Num_T_{add,mul}`.
+                        if matches!(op, BinOp::Add | BinOp::Mul) {
+                            if let (
+                                Type::Adt { name: a, .. },
+                                Type::Adt { name: b, .. },
+                            ) = (&lt, &rt)
+                            {
+                                if a == b && self.num_instances.contains(a) {
+                                    self.unify_at(*span, lt.clone(), rt)?;
+                                    return Ok((self.prune(lt), eff));
+                                }
+                            }
+                        }
                         match (&lt, &rt) {
                             (Type::Float, Type::Float) => Ok((Type::Float, eff)),
                             // Mixed Float/Int: codegen sitofp (polymorphic literals / Num MVP).
@@ -2072,6 +2088,12 @@ pub fn infer_module_with_options(
         .instances
         .iter()
         .filter(|(tr, _)| tr == "Ord")
+        .map(|(_, ty)| ty.clone())
+        .collect();
+    inf.num_instances = module
+        .instances
+        .iter()
+        .filter(|(tr, _)| tr == "Num")
         .map(|(_, ty)| ty.clone())
         .collect();
     let mut fun_types = HashMap::new();
@@ -2575,6 +2597,39 @@ val main = {
         let ast = parse_module(src).unwrap();
         let hir = lower_module(&ast).expect("lower");
         infer_module(&hir).expect("Ord instance");
+    }
+
+    #[test]
+    fn num_instance_allows_adt_add() {
+        let src = r#"
+module M
+type Vec2 { val x val y }
+instance Num for Vec2 {
+    val add = { self, other ->
+        Vec2 { x = self.x + other.x, y = self.y + other.y }
+    }
+}
+val main = {
+    Vec2 { x = 1, y = 2 } + Vec2 { x = 3, y = 4 }
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let hir = lower_module(&ast).expect("lower");
+        infer_module(&hir).expect("Num instance");
+    }
+
+    #[test]
+    fn adt_add_without_num_rejected() {
+        let src = r#"
+module M
+type Vec2 { val x val y }
+val main = {
+    Vec2 { x = 1, y = 2 } + Vec2 { x = 3, y = 4 }
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let hir = lower_module(&ast).expect("lower");
+        assert!(infer_module(&hir).is_err());
     }
 
     #[test]

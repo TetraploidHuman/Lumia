@@ -389,6 +389,7 @@ mod tests {
                 escaping: std::collections::HashSet::new(),
                 },
             ],
+            hash_adts: std::collections::HashSet::new(),
         };
         inline_module(&mut module);
         let main = module.functions.iter().find(|f| f.name == "main").unwrap();

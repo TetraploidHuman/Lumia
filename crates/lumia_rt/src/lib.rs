@@ -40,6 +40,9 @@ pub const TYPE_LIST_IOTA: u32 = 9;
 /// Map/Set whose keys/elements are unboxed Float bits; eq/hash use IEEE (DESIGN §2.1).
 pub const TYPE_MAP_F64: u32 = 10;
 pub const TYPE_SET_F64: u32 = 11;
+/// Map/Set without Hash — linear forever (DESIGN AssocList).
+pub const TYPE_MAP_ASSOC: u32 = 12;
+pub const TYPE_SET_ASSOC: u32 = 13;
 
 /// Fatal runtime error. Linked into user programs as abort (no FFI unwind).
 /// Under `cfg(test)` panics so `#[should_panic]` unit tests can observe the message.
@@ -190,10 +193,10 @@ fn mark(obj: *mut ObjectHeader) {
             TYPE_LIST_IOTA => {
                 // Scalar bounds only — no child pointers.
             }
-            TYPE_SET | TYPE_SET_F64 => {
+            TYPE_SET | TYPE_SET_F64 | TYPE_SET_ASSOC => {
                 set_mark_payload(payload, (*obj).size as usize);
             }
-            TYPE_MAP | TYPE_MAP_F64 => {
+            TYPE_MAP | TYPE_MAP_F64 | TYPE_MAP_ASSOC => {
                 map_mark_payload(payload, (*obj).size as usize);
             }
             TYPE_ADT | TYPE_CLOSURE => {
@@ -535,11 +538,25 @@ pub extern "C" fn lumia_println_float(n: f64) {
 }
 
 fn is_map_tid(tid: u32) -> bool {
-    tid == TYPE_MAP || tid == TYPE_MAP_F64
+    tid == TYPE_MAP || tid == TYPE_MAP_F64 || tid == TYPE_MAP_ASSOC
 }
 
 fn is_set_tid(tid: u32) -> bool {
-    tid == TYPE_SET || tid == TYPE_SET_F64
+    tid == TYPE_SET || tid == TYPE_SET_F64 || tid == TYPE_SET_ASSOC
+}
+
+fn map_is_assoc(map: *mut u8) -> bool {
+    if map.is_null() {
+        return false;
+    }
+    unsafe { (*header_from_payload(map)).type_id == TYPE_MAP_ASSOC }
+}
+
+fn set_is_assoc(set: *mut u8) -> bool {
+    if set.is_null() {
+        return false;
+    }
+    unsafe { (*header_from_payload(set)).type_id == TYPE_SET_ASSOC }
 }
 
 fn map_float_keys(map: *mut u8) -> bool {
@@ -722,8 +739,8 @@ pub extern "C" fn lumia_eq(a: i64, b: i64) -> i64 {
                     0
                 }
             }
-            TYPE_SET | TYPE_SET_F64 => set_eq(pa, pb),
-            TYPE_MAP | TYPE_MAP_F64 => map_eq(pa, pb),
+            TYPE_SET | TYPE_SET_F64 | TYPE_SET_ASSOC => set_eq(pa, pb),
+            TYPE_MAP | TYPE_MAP_F64 | TYPE_MAP_ASSOC => map_eq(pa, pb),
             TYPE_ADT => {
                 let words_a = ((*ha).size as usize) / 8;
                 let words_b = ((*hb).size as usize) / 8;
@@ -862,8 +879,8 @@ pub extern "C" fn lumia_len(obj: *mut u8) -> i64 {
         match (*h).type_id {
             TYPE_STRING => (*h).size as i64,
             TYPE_LIST | TYPE_LIST_IOTA => list_len_of(obj),
-            TYPE_SET | TYPE_SET_F64 => *(obj as *const i64),
-            TYPE_MAP | TYPE_MAP_F64 => map_count(obj),
+            TYPE_SET | TYPE_SET_F64 | TYPE_SET_ASSOC => *(obj as *const i64),
+            TYPE_MAP | TYPE_MAP_F64 | TYPE_MAP_ASSOC => map_count(obj),
             _ => trap_abort(&format!("lumia: len on unsupported type {}", (*h).type_id)),
         }
     }
@@ -1882,7 +1899,7 @@ unsafe fn map_clone_hash_upsert_or_linear(map: *mut u8, key: i64, val: i64) -> *
             return dest;
         }
         let n2 = n + 1;
-        if n2 > MAP_SMALL_MAX {
+        if n2 > MAP_SMALL_MAX && !map_is_assoc(map) {
             return map_from_linear_to_hash(map, Some((key, val)));
         }
         let nbytes = map_linear_nbytes(n2) as u64;
@@ -1969,7 +1986,7 @@ fn hash_value(key: i64, depth: u32) -> u64 {
                 }
                 acc
             }
-            TYPE_MAP | TYPE_MAP_F64 => {
+            TYPE_MAP | TYPE_MAP_F64 | TYPE_MAP_ASSOC => {
                 // Unordered mix so content-equal maps collide regardless of insert order.
                 let float_keys = (*h).type_id == TYPE_MAP_F64;
                 let n = map_count(p);
@@ -1986,7 +2003,7 @@ fn hash_value(key: i64, depth: u32) -> u64 {
                 }
                 acc
             }
-            TYPE_SET | TYPE_SET_F64 => {
+            TYPE_SET | TYPE_SET_F64 | TYPE_SET_ASSOC => {
                 let float_elems = (*h).type_id == TYPE_SET_F64;
                 let n = *(p as *const i64);
                 let mut acc = splitmix64(0x534554u64 ^ (n as u64));
@@ -2350,7 +2367,7 @@ pub extern "C" fn lumia_map_set(map: *mut u8, key: i64, val: i64) -> *mut u8 {
                 return dest;
             }
             let n2 = n + 1;
-            if n2 > MAP_SMALL_MAX {
+            if n2 > MAP_SMALL_MAX && !map_is_assoc(map) {
                 return map_from_linear_to_hash(map, Some((key, val)));
             }
             let nbytes = map_linear_nbytes(n2) as u64;
@@ -2378,7 +2395,7 @@ pub extern "C" fn lumia_set(obj: *mut u8, key_or_index: i64, val: i64) -> *mut u
     let tid = unsafe { (*header_from_payload(obj)).type_id };
     match tid {
         TYPE_LIST | TYPE_LIST_IOTA => lumia_list_set(obj, key_or_index, val),
-        TYPE_MAP | TYPE_MAP_F64 => lumia_map_set(obj, key_or_index, val),
+        TYPE_MAP | TYPE_MAP_F64 | TYPE_MAP_ASSOC => lumia_map_set(obj, key_or_index, val),
         _ => trap_abort(&format!("lumia: set on unsupported type_id={tid}")),
     }
 }
@@ -2479,7 +2496,7 @@ pub extern "C" fn lumia_map_finish(map: *mut u8) -> *mut u8 {
         return map;
     }
     unsafe {
-        if map_is_overlay(map) || map_is_hash(map) {
+        if map_is_overlay(map) || map_is_hash(map) || map_is_assoc(map) {
             return map;
         }
         let n = *(map as *const i64);
@@ -2536,7 +2553,7 @@ pub extern "C" fn lumia_elems(obj: *mut u8) -> *mut u8 {
     match tid {
         TYPE_LIST => obj,
         TYPE_LIST_IOTA => force_heap_list(obj),
-        TYPE_SET | TYPE_SET_F64 => unsafe {
+        TYPE_SET | TYPE_SET_F64 | TYPE_SET_ASSOC => unsafe {
             let n = *(obj as *const i64);
             let nbytes = list_payload_bytes(n);
             let dest = lumia_alloc(nbytes, TYPE_LIST);
@@ -2547,7 +2564,7 @@ pub extern "C" fn lumia_elems(obj: *mut u8) -> *mut u8 {
             }
             dest
         },
-        TYPE_MAP | TYPE_MAP_F64 => lumia_map_keys(obj),
+        TYPE_MAP | TYPE_MAP_F64 | TYPE_MAP_ASSOC => lumia_map_keys(obj),
         other => trap_abort(&format!("lumia: elems unsupported type_id={other}")),
     }
 }
@@ -2740,7 +2757,7 @@ pub extern "C" fn lumia_set_finish(set: *mut u8) -> *mut u8 {
         return set;
     }
     unsafe {
-        if set_is_hash(set) {
+        if set_is_hash(set) || set_is_assoc(set) {
             return set;
         }
         let n = *(set as *const i64);
@@ -2872,7 +2889,7 @@ pub extern "C" fn lumia_set_insert(set: *mut u8, elem: i64) -> *mut u8 {
                 *(set as *const i64)
             };
             let n2 = n + 1;
-            if n2 > SET_SMALL_MAX {
+            if n2 > SET_SMALL_MAX && !set_is_assoc(set) {
                 return set_from_linear_to_hash(set, Some(elem));
             }
             let nbytes = set_linear_nbytes(n2) as u64;
@@ -2995,8 +3012,8 @@ pub extern "C" fn lumia_remove(obj: *mut u8, key_or_elem: i64) -> *mut u8 {
     }
     let tid = unsafe { (*header_from_payload(obj)).type_id };
     match tid {
-        TYPE_MAP | TYPE_MAP_F64 => lumia_map_remove(obj, key_or_elem),
-        TYPE_SET | TYPE_SET_F64 => lumia_set_remove(obj, key_or_elem),
+        TYPE_MAP | TYPE_MAP_F64 | TYPE_MAP_ASSOC => lumia_map_remove(obj, key_or_elem),
+        TYPE_SET | TYPE_SET_F64 | TYPE_SET_ASSOC => lumia_set_remove(obj, key_or_elem),
         _ => trap_abort(&format!("lumia: remove on unsupported type_id={tid}")),
     }
 }
@@ -3016,14 +3033,14 @@ pub extern "C" fn lumia_get(
     unsafe {
         match (*h).type_id {
             TYPE_LIST | TYPE_LIST_IOTA => lumia_list_get(obj, key_or_index),
-            TYPE_SET | TYPE_SET_F64 => {
+            TYPE_SET | TYPE_SET_F64 | TYPE_SET_ASSOC => {
                 let n = *(obj as *const i64);
                 if key_or_index < 0 || key_or_index >= n {
                     trap_abort("lumia: set get OOB");
                 }
                 set_elem_at(obj, key_or_index as usize)
             }
-            TYPE_MAP | TYPE_MAP_F64 => {
+            TYPE_MAP | TYPE_MAP_F64 | TYPE_MAP_ASSOC => {
                 let opt = lumia_map_get(obj, key_or_index, some_tag, none_tag);
                 opt as i64
             }
@@ -3040,8 +3057,8 @@ pub extern "C" fn lumia_contains(obj: *mut u8, key: i64) -> i64 {
     let h = header_from_payload(obj);
     unsafe {
         match (*h).type_id {
-            TYPE_MAP | TYPE_MAP_F64 => lumia_map_contains(obj, key),
-            TYPE_SET | TYPE_SET_F64 => lumia_set_contains(obj, key),
+            TYPE_MAP | TYPE_MAP_F64 | TYPE_MAP_ASSOC => lumia_map_contains(obj, key),
+            TYPE_SET | TYPE_SET_F64 | TYPE_SET_ASSOC => lumia_set_contains(obj, key),
             TYPE_STRING => lumia_str_contains(obj, key as *mut u8),
             other => trap_abort(&format!("lumia: contains unsupported type_id {other}")),
         }

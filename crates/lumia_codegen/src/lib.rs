@@ -45,6 +45,7 @@ pub fn compile_module(core: &CoreModule, opts: &CodegenOptions) -> Result<()> {
     );
     declare_runtime(&context, &cg.module);
     cg.tco_sccs = compute_tco_sccs(core);
+    cg.hash_adts = core.hash_adts.clone();
 
     for f in &core.functions {
         let name = if f.is_main {
@@ -567,6 +568,8 @@ struct Codegen<'ctx> {
     tco_peers: HashSet<String>,
     /// Precomputed TCO SCCs: function → peers (including self).
     tco_sccs: HashMap<String, HashSet<String>>,
+    /// ADT names with `instance Hash` (may promote Map/Set to hash tables).
+    hash_adts: HashSet<String>,
 }
 
 impl<'ctx> Codegen<'ctx> {
@@ -597,6 +600,23 @@ impl<'ctx> Codegen<'ctx> {
             current_fun: String::new(),
             tco_peers: HashSet::new(),
             tco_sccs: HashMap::new(),
+            hash_adts: HashSet::new(),
+        }
+    }
+
+    fn key_type_has_hash(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Adt { name, .. } => self.hash_adts.contains(name),
+            // Scalars / collections: structural hash always available.
+            Type::Int
+            | Type::Float
+            | Type::Bool
+            | Type::String
+            | Type::Char
+            | Type::List(_)
+            | Type::Map(_, _)
+            | Type::Set(_) => true,
+            _ => false,
         }
     }
 
@@ -1719,12 +1739,24 @@ impl<'ctx> Codegen<'ctx> {
                             Some(Op::Let { local: last, .. }) if last == local
                         );
                     if !self.tco_peers.is_empty() && self.root_depth == 0 && is_block_tail {
-                        if let Value::Call { fun, args } = value {
-                            if self.tco_peers.contains(fun)
-                                && self.emit_musttail_call(fun, args)?
-                            {
-                                return Ok(None);
+                        match value {
+                            Value::Call { fun, args } => {
+                                if self.tco_peers.contains(fun)
+                                    && self.emit_musttail_call(fun, args)?
+                                {
+                                    return Ok(None);
+                                }
                             }
+                            Value::IndirectCall { callee, args } => {
+                                if let Some(fun) = self.funref_locals.get(&callee.0).cloned() {
+                                    if self.tco_peers.contains(&fun)
+                                        && self.emit_musttail_call(&fun, args)?
+                                    {
+                                        return Ok(None);
+                                    }
+                                }
+                            }
+                            _ => {}
                         }
                     }
                     let v = self.emit_value(value, fv)?;
@@ -2206,6 +2238,27 @@ impl<'ctx> Codegen<'ctx> {
                 }
                 let l = self.as_i64(lv)?;
                 let r = self.as_i64(rv)?;
+                // `instance Num for T`: `__Num_T_add` / `__Num_T_mul`.
+                if matches!(op, BinOp::Add | BinOp::Mul) {
+                    if let Some(name) = Self::adt_method_name(&lt, &rt) {
+                        let method = if matches!(op, BinOp::Add) {
+                            "add"
+                        } else {
+                            "mul"
+                        };
+                        let mangled = format!("__Num_{name}_{method}");
+                        if let Some(callee) = self.functions.get(&mangled).copied() {
+                            let call = self
+                                .builder
+                                .build_call(callee, &[l.into(), r.into()], "num_ov")
+                                .unwrap();
+                            return Ok(call
+                                .try_as_basic_value()
+                                .basic()
+                                .unwrap_or_else(|| self.i64_ty.const_int(0, false).into()));
+                        }
+                    }
+                }
                 let v = match op {
                     BinOp::Add => self.emit_checked_binop(l, r, fv, "sadd")?,
                     BinOp::Sub => self.emit_checked_binop(l, r, fv, "ssub")?,
@@ -3592,16 +3645,21 @@ impl<'ctx> Codegen<'ctx> {
                 self.emit_heap_array(elems, 3 /* TYPE_LIST */)
             }
             Value::AllocSet { elems } => {
-                let float_elems = elems
+                let elem_ty = elems
                     .first()
-                    .is_some_and(|e| matches!(self.local_tys.get(&e.0), Some(Type::Float)));
+                    .and_then(|e| self.local_tys.get(&e.0).cloned())
+                    .unwrap_or(Type::Int);
+                let float_elems = matches!(elem_ty, Type::Float);
+                let no_hash = !self.key_type_has_hash(&elem_ty);
                 let tid = if float_elems {
                     11 /* TYPE_SET_F64 */
+                } else if no_hash {
+                    13 /* TYPE_SET_ASSOC */
                 } else {
                     5 /* TYPE_SET */
                 };
                 let v = self.emit_heap_array(elems, tid)?;
-                if elems.len() > 8 {
+                if elems.len() > 8 && !no_hash {
                     let ptr_ty = self.context.ptr_type(AddressSpace::default());
                     let bits = self.coerce_i64(v)?;
                     let p = self
@@ -3633,12 +3691,18 @@ impl<'ctx> Codegen<'ctx> {
                 }
                 let n_pairs = (flat_pairs.len() / 2) as u64;
                 let nbytes = self.i64_ty.const_int((1 + flat_pairs.len() as u64) * 8, false);
-                let float_keys = flat_pairs
+                let key_ty = flat_pairs
                     .first()
-                    .is_some_and(|k| matches!(self.local_tys.get(&k.0), Some(Type::Float)));
+                    .and_then(|k| self.local_tys.get(&k.0).cloned())
+                    .unwrap_or(Type::Int);
+                let float_keys = matches!(key_ty, Type::Float);
+                let no_hash = matches!(repr, lumia_core::MapRepr::AssocList)
+                    || !self.key_type_has_hash(&key_ty);
                 let type_id = self.context.i32_type().const_int(
                     if float_keys {
                         10 // TYPE_MAP_F64
+                    } else if no_hash {
+                        12 // TYPE_MAP_ASSOC
                     } else {
                         4 // TYPE_MAP
                     },
@@ -3680,7 +3744,9 @@ impl<'ctx> Codegen<'ctx> {
                     };
                     self.builder.build_store(slot, v).unwrap();
                 }
-                let ptr = if n_pairs > 8 || matches!(repr, lumia_core::MapRepr::HashOrdered) {
+                let ptr = if !no_hash
+                    && (n_pairs > 8 || matches!(repr, lumia_core::MapRepr::HashOrdered))
+                {
                     let f = self.module.get_function("lumia_map_finish").unwrap();
                     self.builder
                         .build_call(f, &[ptr.into()], "map_fin")
@@ -3915,31 +3981,88 @@ fn compute_tco_sccs(core: &CoreModule) -> HashMap<String, HashSet<String>> {
 }
 
 fn collect_direct_calls(block: &Block, out: &mut HashSet<String>) {
+    collect_calls_with_funrefs(block, &HashMap::new(), out);
+}
+
+/// Collect direct callees, resolving `FunRef` → `IndirectCall` (for TCO SCCs).
+fn collect_calls_with_funrefs(
+    block: &Block,
+    parent_funrefs: &HashMap<u32, String>,
+    out: &mut HashSet<String>,
+) {
+    let mut funref_of = parent_funrefs.clone();
     for op in &block.ops {
         let value = match op {
-            Op::Let { value, .. } | Op::Effect { value } => value,
+            Op::Let { local, value, .. } => {
+                match value {
+                    Value::Call { fun, .. } => {
+                        out.insert(fun.clone());
+                    }
+                    Value::IndirectCall { callee, .. } => {
+                        if let Some(fun) = funref_of.get(&callee.0) {
+                            out.insert(fun.clone());
+                        }
+                    }
+                    Value::If {
+                        then_block,
+                        else_block,
+                        ..
+                    } => {
+                        collect_calls_with_funrefs(then_block, &funref_of, out);
+                        collect_calls_with_funrefs(else_block, &funref_of, out);
+                    }
+                    Value::Loop {
+                        header,
+                        body,
+                        latch,
+                    } => {
+                        collect_calls_with_funrefs(header, &funref_of, out);
+                        collect_calls_with_funrefs(body, &funref_of, out);
+                        collect_calls_with_funrefs(latch, &funref_of, out);
+                    }
+                    _ => {}
+                }
+                if let Value::FunRef(name) = value {
+                    funref_of.insert(local.0, name.clone());
+                } else if let Value::Local(Local(src)) = value {
+                    if let Some(n) = funref_of.get(src).cloned() {
+                        funref_of.insert(local.0, n);
+                    } else {
+                        funref_of.remove(&local.0);
+                    }
+                } else {
+                    funref_of.remove(&local.0);
+                }
+                continue;
+            }
+            Op::Effect { value } => value,
             _ => continue,
         };
         match value {
             Value::Call { fun, .. } => {
                 out.insert(fun.clone());
             }
+            Value::IndirectCall { callee, .. } => {
+                if let Some(fun) = funref_of.get(&callee.0) {
+                    out.insert(fun.clone());
+                }
+            }
             Value::If {
                 then_block,
                 else_block,
                 ..
             } => {
-                collect_direct_calls(then_block, out);
-                collect_direct_calls(else_block, out);
+                collect_calls_with_funrefs(then_block, &funref_of, out);
+                collect_calls_with_funrefs(else_block, &funref_of, out);
             }
             Value::Loop {
                 header,
                 body,
                 latch,
             } => {
-                collect_direct_calls(header, out);
-                collect_direct_calls(body, out);
-                collect_direct_calls(latch, out);
+                collect_calls_with_funrefs(header, &funref_of, out);
+                collect_calls_with_funrefs(body, &funref_of, out);
+                collect_calls_with_funrefs(latch, &funref_of, out);
             }
             _ => {}
         }
