@@ -17,7 +17,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        include:
+          # Dynamic libLLVM avoids multi-minute static link of the lumia binary.
+          - os: ubuntu-latest
+            cargo_features: --features lumia_codegen/llvm-dynamic
+          # vovkos Windows SDK is static-oriented; keep default prefer-static.
+          - os: windows-latest
+            cargo_features: ""
 
     steps:
       - uses: actions/checkout@v4
@@ -29,8 +35,9 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
         with:
-          # llvm-sys / inkwell builds are expensive; keep cache after failed runs too.
           cache-on-failure: true
+          # Keep static (Windows) and force-dynamic (Linux) caches distinct.
+          key: ${{ matrix.os }}-${{ matrix.cargo_features }}
 
       # Linux: official LLVM tarballs include llvm-config + libs (install-llvm-action).
       # Note: install-llvm-action docs advise against caching — restore is usually slower
@@ -47,7 +54,10 @@ jobs:
         run: |
           echo "LLVM_SYS_211_PREFIX=${{ github.workspace }}/llvm" >> "$GITHUB_ENV"
           echo "${{ github.workspace }}/llvm/bin" >> "$GITHUB_PATH"
+          # force-dynamic: lumia must find libLLVM.so at runtime (e2e spawns the CLI).
+          echo "LD_LIBRARY_PATH=${{ github.workspace }}/llvm/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
           "${{ github.workspace }}/llvm/bin/llvm-config" --version
+          ls "${{ github.workspace }}/llvm/lib"/libLLVM*.so* | head -n 5
           if ! command -v clang >/dev/null 2>&1; then
             sudo apt-get update
             sudo apt-get install -y clang
@@ -111,7 +121,7 @@ jobs:
           & "$root\bin\clang.exe" --version
 
       - name: Cargo test (library crates)
-        run: cargo test --workspace --exclude lumia
+        run: cargo test --workspace --exclude lumia ${{ matrix.cargo_features }}
 
       - name: Cargo test (lumia CLI + e2e examples)
-        run: cargo test -p lumia --tests
+        run: cargo test -p lumia --tests ${{ matrix.cargo_features }}

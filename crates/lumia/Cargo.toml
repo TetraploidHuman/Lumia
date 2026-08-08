@@ -7,6 +7,9 @@ edition.workspace = true
 name = "lumia"
 path = "src/main.rs"
 
+[features]
+llvm-dynamic = ["lumia_codegen/llvm-dynamic"]
+
 [dependencies]
 lumia_syntax.workspace = true
 lumia_hir.workspace = true

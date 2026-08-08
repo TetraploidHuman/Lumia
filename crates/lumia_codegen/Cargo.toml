@@ -3,6 +3,10 @@ name = "lumia_codegen"
 version.workspace = true
 edition.workspace = true
 
+[features]
+# Prefer shared libLLVM over static archives (much faster link). Used by CI.
+llvm-dynamic = ["inkwell/llvm21-1-force-dynamic"]
+
 [dependencies]
 lumia_syntax.workspace = true
 lumia_hir.workspace = true
