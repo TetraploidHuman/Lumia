@@ -440,7 +440,7 @@ pub extern "C" fn lumia_string_cstr(s: *mut u8) -> *mut u8 {
         let n = (*header_from_payload(s)).size as usize;
         let bytes = std::slice::from_raw_parts(s, n);
         if bytes.contains(&0) {
-            panic!("lumia: String with interior NUL cannot convert to C string");
+            trap_abort("lumia: String with interior NUL cannot convert to C string");
         }
         let nbytes = (n as u64)
             .checked_add(1)
@@ -591,9 +591,15 @@ pub extern "C" fn lumia_eq(a: i64, b: i64) -> i64 {
     }
 }
 
+/// Abort from LLVM-generated code without unwinding across the `extern "C"` boundary.
+fn trap_abort(msg: &str) -> ! {
+    eprintln!("{msg}");
+    std::process::abort();
+}
+
 #[no_mangle]
 pub extern "C" fn lumia_match_fail() {
-    panic!("lumia: non-exhaustive match");
+    trap_abort("lumia: non-exhaustive match");
 }
 
 /// Abort if `cond` is false (0). `msg` is a UTF-8 message (e.g. `path:line: assert failed`).
@@ -1469,12 +1475,12 @@ pub extern "C" fn lumia_range_inclusive(start: i64, end: i64) -> *mut u8 {
 
 #[no_mangle]
 pub extern "C" fn lumia_trap_div0() {
-    panic!("lumia: division by zero");
+    trap_abort("lumia: division by zero");
 }
 
 #[no_mangle]
 pub extern "C" fn lumia_trap_overflow() {
-    panic!("lumia: integer overflow");
+    trap_abort("lumia: integer overflow");
 }
 
 /// Map: small maps stay linear `[n][k0][v0]…`; larger use HashOrdered
