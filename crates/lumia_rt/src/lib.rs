@@ -38,6 +38,20 @@ pub const TYPE_CLOSURE: u32 = 8;
 /// Virtual Int range list: payload `[start:i64][end_exclusive:i64]` (DESIGN §3.5 Iota).
 pub const TYPE_LIST_IOTA: u32 = 9;
 
+/// Fatal runtime error. Linked into user programs as abort (no FFI unwind).
+/// Under `cfg(test)` panics so `#[should_panic]` unit tests can observe the message.
+fn trap_abort(msg: &str) -> ! {
+    #[cfg(test)]
+    {
+        panic!("{msg}");
+    }
+    #[cfg(not(test))]
+    {
+        eprintln!("{msg}");
+        std::process::abort();
+    }
+}
+
 thread_local! {
     static HEAP: RefCell<Vec<*mut ObjectHeader>> = const { RefCell::new(Vec::new()) };
     static ROOTS: RefCell<Vec<*mut *mut u8>> = const { RefCell::new(Vec::new()) };
@@ -202,10 +216,8 @@ fn mark_value(x: i64) {
 impl MmBackend for MarkSweep {
     fn alloc(&mut self, nbytes: usize, type_id: u32) -> *mut u8 {
         if PAR_WORKER.get() {
-            panic!(
-                "lumia: heap allocation inside parallel map worker \
-                 (use scalar Int/Bool/Float callbacks only)"
-            );
+            trap_abort("lumia: heap allocation inside parallel map worker \
+                 (use scalar Int/Bool/Float callbacks only)");
         }
         let inhibit = GC_INHIBIT.get();
         if inhibit == 0 {
@@ -221,7 +233,7 @@ impl MmBackend for MarkSweep {
         unsafe {
             let mem = alloc(layout);
             if mem.is_null() {
-                panic!("lumia: out of memory");
+                trap_abort("lumia: out of memory");
             }
             finish_alloc(mem, nbytes, type_id)
         }
@@ -236,13 +248,13 @@ impl MmBackend for MarkSweep {
 /// Payload bytes for a HeapList of `len` elements (`[len][e…]`), overflow-safe.
 fn list_payload_bytes(len: i64) -> u64 {
     if len < 0 {
-        panic!("lumia: negative list length");
+        trap_abort("lumia: negative list length");
     }
     (len as u64)
         .checked_add(1)
         .and_then(|words| words.checked_mul(8))
         .filter(|&b| b <= u32::MAX as u64)
-        .unwrap_or_else(|| panic!("lumia: list too large (len={len})"))
+        .unwrap_or_else(|| trap_abort(&format!("lumia: list too large (len={len})")))
 }
 
 struct GcInhibitGuard;
@@ -260,7 +272,7 @@ impl Drop for GcInhibitGuard {
 
 unsafe fn finish_alloc(mem: *mut u8, nbytes: usize, type_id: u32) -> *mut u8 {
     if nbytes > u32::MAX as usize {
-        panic!("lumia: allocation too large (exceeds u32 size field)");
+        trap_abort("lumia: allocation too large (exceeds u32 size field)");
     }
     let header = mem as *mut ObjectHeader;
     (*header).type_id = type_id;
@@ -445,7 +457,7 @@ pub extern "C" fn lumia_string_cstr(s: *mut u8) -> *mut u8 {
         let nbytes = (n as u64)
             .checked_add(1)
             .filter(|&b| b <= u32::MAX as u64)
-            .unwrap_or_else(|| panic!("lumia: cstr buffer too large"));
+            .unwrap_or_else(|| trap_abort("lumia: cstr buffer too large"));
         let dest = lumia_alloc(nbytes, TYPE_BYTES);
         ptr::copy_nonoverlapping(s, dest, n);
         *dest.add(n) = 0;
@@ -464,7 +476,7 @@ pub extern "C" fn lumia_cstr_to_string(cstr: *const u8) -> *mut u8 {
         while *cstr.add(n) != 0 {
             n += 1;
             if n > 1 << 28 {
-                panic!("lumia: cstr too long");
+                trap_abort("lumia: cstr too long");
             }
         }
         lumia_alloc_string(cstr, n as u64)
@@ -591,12 +603,6 @@ pub extern "C" fn lumia_eq(a: i64, b: i64) -> i64 {
     }
 }
 
-/// Abort from LLVM-generated code without unwinding across the `extern "C"` boundary.
-fn trap_abort(msg: &str) -> ! {
-    eprintln!("{msg}");
-    std::process::abort();
-}
-
 #[no_mangle]
 pub extern "C" fn lumia_match_fail() {
     trap_abort("lumia: non-exhaustive match");
@@ -624,7 +630,7 @@ pub extern "C" fn lumia_assert(cond: i64, msg: *const u8, msg_len: i64) {
 pub extern "C" fn lumia_alloc_char(codepoint: i64) -> *mut u8 {
     let dest = lumia_alloc(8, TYPE_CHAR);
     if dest.is_null() {
-        panic!("lumia: char OOM");
+        trap_abort("lumia: char OOM");
     }
     unsafe {
         *(dest as *mut i64) = codepoint;
@@ -689,7 +695,7 @@ pub extern "C" fn lumia_len(obj: *mut u8) -> i64 {
             TYPE_LIST | TYPE_LIST_IOTA => list_len_of(obj),
             TYPE_SET => *(obj as *const i64),
             TYPE_MAP => map_count(obj),
-            _ => panic!("lumia: len on unsupported type {}", (*h).type_id),
+            _ => trap_abort(&format!("lumia: len on unsupported type {}", (*h).type_id)),
         }
     }
 }
@@ -712,10 +718,10 @@ pub extern "C" fn lumia_str_concat(a: *mut u8, b: *mut u8) -> *mut u8 {
         let total = na
             .checked_add(nb)
             .filter(|&t| t <= u32::MAX as u64)
-            .unwrap_or_else(|| panic!("lumia: string too large to concat"));
+            .unwrap_or_else(|| trap_abort("lumia: string too large to concat"));
         let dest = lumia_alloc(total, TYPE_STRING);
         if dest.is_null() {
-            panic!("lumia: str concat OOM");
+            trap_abort("lumia: str concat OOM");
         }
         if na > 0 {
             ptr::copy_nonoverlapping(a, dest, na as usize);
@@ -742,7 +748,7 @@ pub extern "C" fn lumia_concat(a: *mut u8, b: *mut u8) -> *mut u8 {
     };
     if ta == TYPE_STRING || tb == TYPE_STRING {
         if ta != TYPE_STRING || tb != TYPE_STRING {
-            panic!("lumia: concat type mismatch");
+            trap_abort("lumia: concat type mismatch");
         }
         return lumia_str_concat(a, b);
     }
@@ -880,7 +886,7 @@ pub extern "C" fn lumia_list_take(list: *mut u8, n: i64) -> *mut u8 {
             let start = *base;
             let end = start
                 .checked_add(take)
-                .unwrap_or_else(|| panic!("lumia: iota take overflow"));
+                .unwrap_or_else(|| trap_abort("lumia: iota take overflow"));
             return lumia_range(start, end);
         }
     }
@@ -900,7 +906,7 @@ pub extern "C" fn lumia_list_take(list: *mut u8, n: i64) -> *mut u8 {
         };
         let dest = lumia_alloc(list_payload_bytes(take), TYPE_LIST);
         if dest.is_null() {
-            panic!("lumia: list take OOM");
+            trap_abort("lumia: list take OOM");
         }
         let dst = dest as *mut i64;
         *dst = take;
@@ -927,7 +933,7 @@ pub extern "C" fn lumia_list_reverse(list: *mut u8) -> *mut u8 {
         };
         let dest = lumia_alloc(list_payload_bytes(len), TYPE_LIST);
         if dest.is_null() {
-            panic!("lumia: list reverse OOM");
+            trap_abort("lumia: list reverse OOM");
         }
         let dst = dest as *mut i64;
         *dst = len;
@@ -956,7 +962,7 @@ pub extern "C" fn lumia_list_sort(list: *mut u8) -> *mut u8 {
         let n = len as usize;
         let dest = lumia_alloc(list_payload_bytes(len), TYPE_LIST);
         if dest.is_null() {
-            panic!("lumia: list sort OOM");
+            trap_abort("lumia: list sort OOM");
         }
         let dst = dest as *mut i64;
         *dst = len;
@@ -990,11 +996,11 @@ pub extern "C" fn lumia_list_sort_by_keys(values: *mut u8, keys: *mut u8) -> *mu
             *(keys as *const i64)
         };
         if n != nk {
-            panic!("lumia: sortBy keys/values length mismatch");
+            trap_abort("lumia: sortBy keys/values length mismatch");
         }
         let dest = lumia_alloc(list_payload_bytes(n), TYPE_LIST);
         if dest.is_null() {
-            panic!("lumia: list sortBy OOM");
+            trap_abort("lumia: list sortBy OOM");
         }
         let dst = dest as *mut i64;
         *dst = n;
@@ -1034,7 +1040,7 @@ fn lumia_ord_cmp(a: i64, b: i64) -> std::cmp::Ordering {
             let ta = (*header_from_payload(pa)).type_id;
             let tb = (*header_from_payload(pb)).type_id;
             if ta != tb {
-                panic!("lumia: Ord operands have mixed heap types");
+                trap_abort("lumia: Ord operands have mixed heap types");
             }
             match ta {
                 TYPE_STRING => {
@@ -1049,11 +1055,11 @@ fn lumia_ord_cmp(a: i64, b: i64) -> std::cmp::Ordering {
                     let cb = *(pb as *const i64);
                     ca.cmp(&cb)
                 }
-                _ => panic!("lumia: type_id={ta} is not Ord (use Int/Float/Bool/String/Char)"),
+                _ => trap_abort(&format!("lumia: type_id={ta} is not Ord (use Int/Float/Bool/String/Char)")),
             }
         }
     } else {
-        panic!("lumia: cannot compare scalar with heap value under Ord");
+        trap_abort("lumia: cannot compare scalar with heap value under Ord");
     }
 }
 
@@ -1126,7 +1132,7 @@ fn list_len_of(list: *mut u8) -> i64 {
                 let end = *base.add(1);
                 if end > start {
                     end.checked_sub(start)
-                        .unwrap_or_else(|| panic!("lumia: iota length overflow"))
+                        .unwrap_or_else(|| trap_abort("lumia: iota length overflow"))
                 } else {
                     0
                 }
@@ -1138,7 +1144,7 @@ fn list_len_of(list: *mut u8) -> i64 {
 
 fn list_get_of(list: *mut u8, index: i64) -> i64 {
     if list.is_null() || index < 0 {
-        panic!("lumia: list get out of bounds");
+        trap_abort("lumia: list get out of bounds");
     }
     unsafe {
         match (*header_from_payload(list)).type_id {
@@ -1148,16 +1154,16 @@ fn list_get_of(list: *mut u8, index: i64) -> i64 {
                 let end = *base.add(1);
                 let len = if end > start { end - start } else { 0 };
                 if index >= len {
-                    panic!("lumia: list get out of bounds");
+                    trap_abort("lumia: list get out of bounds");
                 }
                 start
                     .checked_add(index)
-                    .unwrap_or_else(|| panic!("lumia: iota index overflow"))
+                    .unwrap_or_else(|| trap_abort("lumia: iota index overflow"))
             }
             _ => {
                 let len = *(list as *const i64);
                 if index >= len {
-                    panic!("lumia: list get out of bounds");
+                    trap_abort("lumia: list get out of bounds");
                 }
                 let base = list as *const i64;
                 *base.add(1 + index as usize)
@@ -1177,7 +1183,7 @@ fn force_heap_list(list: *mut u8) -> *mut u8 {
     let _guard = GcInhibitGuard::enter();
     let n = list_len_of(list);
     if n < 0 {
-        panic!("lumia: iota length overflow");
+        trap_abort("lumia: iota length overflow");
     }
     let dest = lumia_alloc(list_payload_bytes(n), TYPE_LIST);
     unsafe {
@@ -1188,7 +1194,7 @@ fn force_heap_list(list: *mut u8) -> *mut u8 {
         for i in 0..n as usize {
             let v = start
                 .checked_add(i as i64)
-                .unwrap_or_else(|| panic!("lumia: iota element overflow"));
+                .unwrap_or_else(|| trap_abort("lumia: iota element overflow"));
             *dst.add(1 + i) = v;
         }
     }
@@ -1221,7 +1227,7 @@ pub extern "C" fn lumia_list_append(list: *mut u8, elem: i64) -> *mut u8 {
         let nbytes = list_payload_bytes(n.checked_add(1).expect("lumia: list append length overflow"));
         let dest = lumia_alloc(nbytes, TYPE_LIST);
         if dest.is_null() {
-            panic!("lumia: list append OOM");
+            trap_abort("lumia: list append OOM");
         }
         let dst = dest as *mut i64;
         *dst = n + 1;
@@ -1245,7 +1251,7 @@ pub extern "C" fn lumia_list_par_map(
     f: Option<extern "C" fn(i64) -> i64>,
 ) -> *mut u8 {
     let Some(f) = f else {
-        panic!("lumia: list_par_map null function");
+        trap_abort("lumia: list_par_map null function");
     };
     // Cover force + sequential alloc; parallel path takes its own inhibit.
     let _gc = GcInhibitGuard::enter();
@@ -1319,16 +1325,16 @@ pub extern "C" fn lumia_list_set(list: *mut u8, index: i64, elem: i64) -> *mut u
     let list = force_heap_list(list);
     unsafe {
         if list.is_null() || index < 0 {
-            panic!("lumia: list set out of bounds");
+            trap_abort("lumia: list set out of bounds");
         }
         let n = *(list as *const i64);
         if index >= n {
-            panic!("lumia: list set out of bounds");
+            trap_abort("lumia: list set out of bounds");
         }
         let nbytes = list_payload_bytes(n);
         let dest = lumia_alloc(nbytes, TYPE_LIST);
         if dest.is_null() {
-            panic!("lumia: list set OOM");
+            trap_abort("lumia: list set OOM");
         }
         let src = list as *const i64;
         let dst = dest as *mut i64;
@@ -1371,7 +1377,7 @@ pub extern "C" fn lumia_list_concat(a: *mut u8, b: *mut u8) -> *mut u8 {
         let nbytes = list_payload_bytes(n);
         let dest = lumia_alloc(nbytes, TYPE_LIST);
         if dest.is_null() {
-            panic!("lumia: list concat OOM");
+            trap_abort("lumia: list concat OOM");
         }
         let dst = dest as *mut i64;
         *dst = n;
@@ -1422,7 +1428,7 @@ pub extern "C" fn lumia_list_slice(list: *mut u8, start: i64) -> *mut u8 {
             let start = if start < 0 { 0 } else { start };
             let abs = s0
                 .checked_add(start)
-                .unwrap_or_else(|| panic!("lumia: iota slice overflow"));
+                .unwrap_or_else(|| trap_abort("lumia: iota slice overflow"));
             if abs >= end {
                 return lumia_range(s0, s0);
             }
@@ -1436,7 +1442,7 @@ pub extern "C" fn lumia_list_slice(list: *mut u8, start: i64) -> *mut u8 {
         let n = if start >= len { 0i64 } else { len - start };
         let dest = lumia_alloc(list_payload_bytes(n), TYPE_LIST);
         if dest.is_null() {
-            panic!("lumia: slice OOM");
+            trap_abort("lumia: slice OOM");
         }
         *(dest as *mut i64) = n;
         let src = list as *const i64;
@@ -1469,7 +1475,7 @@ pub extern "C" fn lumia_range_inclusive(start: i64, end: i64) -> *mut u8 {
     }
     match end.checked_add(1) {
         Some(excl) => lumia_range(start, excl),
-        None => panic!("lumia: rangeInclusive overflow"),
+        None => trap_abort("lumia: rangeInclusive overflow"),
     }
 }
 
@@ -1495,7 +1501,7 @@ const MAP_ST_TOMB: i64 = 2;
 
 fn map_linear_nbytes(n: i64) -> usize {
     if n < 0 {
-        panic!("lumia: negative map length");
+        trap_abort("lumia: negative map length");
     }
     (n as u64)
         .checked_mul(2)
@@ -1503,7 +1509,7 @@ fn map_linear_nbytes(n: i64) -> usize {
         .and_then(|words| words.checked_mul(8))
         .filter(|&b| b <= u32::MAX as u64)
         .map(|b| b as usize)
-        .unwrap_or_else(|| panic!("lumia: map too large (n={n})"))
+        .unwrap_or_else(|| trap_abort(&format!("lumia: map too large (n={n})")))
 }
 
 fn map_hash_nbytes(cap: usize) -> usize {
@@ -1512,12 +1518,12 @@ fn map_hash_nbytes(cap: usize) -> usize {
         .and_then(|w| w.checked_add(2))
         .and_then(|words| words.checked_mul(8))
         .filter(|&b| b <= u32::MAX as usize)
-        .unwrap_or_else(|| panic!("lumia: map hash table too large (cap={cap})"))
+        .unwrap_or_else(|| trap_abort(&format!("lumia: map hash table too large (cap={cap})")))
 }
 
 fn map_overlay_nbytes(dn: i64) -> usize {
     if dn < 0 {
-        panic!("lumia: negative overlay delta");
+        trap_abort("lumia: negative overlay delta");
     }
     (dn as u64)
         .checked_mul(2)
@@ -1525,7 +1531,7 @@ fn map_overlay_nbytes(dn: i64) -> usize {
         .and_then(|words| words.checked_mul(8))
         .filter(|&b| b <= u32::MAX as u64)
         .map(|b| b as usize)
-        .unwrap_or_else(|| panic!("lumia: map overlay too large (dn={dn})"))
+        .unwrap_or_else(|| trap_abort(&format!("lumia: map overlay too large (dn={dn})")))
 }
 
 fn map_is_overlay(map: *mut u8) -> bool {
@@ -1964,7 +1970,7 @@ fn alloc_adt(tag: i64, fields: &[i64]) -> *mut u8 {
     let nbytes = list_payload_bytes(fields.len() as i64);
     let dest = lumia_alloc(nbytes, TYPE_ADT);
     if dest.is_null() {
-        panic!("lumia: adt OOM");
+        trap_abort("lumia: adt OOM");
     }
     unsafe {
         let dst = dest as *mut i64;
@@ -1980,7 +1986,7 @@ unsafe fn map_alloc_hash(cap: usize, count: i64) -> *mut u8 {
     let nbytes = map_hash_nbytes(cap) as u64;
     let dest = lumia_alloc(nbytes, TYPE_MAP);
     if dest.is_null() {
-        panic!("lumia: map hash OOM");
+        trap_abort("lumia: map hash OOM");
     }
     let dst = dest as *mut i64;
     *dst = count;
@@ -2011,7 +2017,7 @@ unsafe fn map_hash_put_new(dest: *mut u8, key: i64, val: i64, order_i: usize) {
         }
         idx = (idx + 1) % cap;
     }
-    panic!("lumia: map hash full");
+    trap_abort("lumia: map hash full");
 }
 
 /// Insert or replace during hash-table build. Returns true if a new key was added.
@@ -2166,7 +2172,7 @@ pub extern "C" fn lumia_set(obj: *mut u8, key_or_index: i64, val: i64) -> *mut u
     match tid {
         TYPE_LIST | TYPE_LIST_IOTA => lumia_list_set(obj, key_or_index, val),
         TYPE_MAP => lumia_map_set(obj, key_or_index, val),
-        _ => panic!("lumia: set on unsupported type_id={tid}"),
+        _ => trap_abort(&format!("lumia: set on unsupported type_id={tid}")),
     }
 }
 
@@ -2334,7 +2340,7 @@ pub extern "C" fn lumia_elems(obj: *mut u8) -> *mut u8 {
             dest
         },
         TYPE_MAP => lumia_map_keys(obj),
-        other => panic!("lumia: elems unsupported type_id={other}"),
+        other => trap_abort(&format!("lumia: elems unsupported type_id={other}")),
     }
 }
 
@@ -2424,7 +2430,7 @@ fn set_hash_nbytes(cap: usize) -> usize {
         .and_then(|w| w.checked_add(2))
         .and_then(|words| words.checked_mul(8))
         .filter(|&b| b <= u32::MAX as usize)
-        .unwrap_or_else(|| panic!("lumia: set hash table too large (cap={cap})"))
+        .unwrap_or_else(|| trap_abort(&format!("lumia: set hash table too large (cap={cap})")))
 }
 
 fn set_is_hash(set: *mut u8) -> bool {
@@ -2589,7 +2595,7 @@ unsafe fn set_hash_put_new(dest: *mut u8, elem: i64, order_i: usize) {
         }
         idx = (idx + 1) % cap;
     }
-    panic!("lumia: set hash full");
+    trap_abort("lumia: set hash full");
 }
 
 /// Insert during hash build; skip if already present. Returns true if newly added.
@@ -2772,7 +2778,7 @@ pub extern "C" fn lumia_remove(obj: *mut u8, key_or_elem: i64) -> *mut u8 {
     match tid {
         TYPE_MAP => lumia_map_remove(obj, key_or_elem),
         TYPE_SET => lumia_set_remove(obj, key_or_elem),
-        _ => panic!("lumia: remove on unsupported type_id={tid}"),
+        _ => trap_abort(&format!("lumia: remove on unsupported type_id={tid}")),
     }
 }
 
@@ -2785,7 +2791,7 @@ pub extern "C" fn lumia_get(
     none_tag: i64,
 ) -> i64 {
     if obj.is_null() {
-        panic!("lumia: get on null");
+        trap_abort("lumia: get on null");
     }
     let h = header_from_payload(obj);
     unsafe {
@@ -2794,7 +2800,7 @@ pub extern "C" fn lumia_get(
             TYPE_SET => {
                 let n = *(obj as *const i64);
                 if key_or_index < 0 || key_or_index >= n {
-                    panic!("lumia: set get OOB");
+                    trap_abort("lumia: set get OOB");
                 }
                 set_elem_at(obj, key_or_index as usize)
             }
@@ -2802,7 +2808,7 @@ pub extern "C" fn lumia_get(
                 let opt = lumia_map_get(obj, key_or_index, some_tag, none_tag);
                 opt as i64
             }
-            other => panic!("lumia: get unsupported type_id {other}"),
+            other => trap_abort(&format!("lumia: get unsupported type_id {other}")),
         }
     }
 }
@@ -2818,7 +2824,7 @@ pub extern "C" fn lumia_contains(obj: *mut u8, key: i64) -> i64 {
             TYPE_MAP => lumia_map_contains(obj, key),
             TYPE_SET => lumia_set_contains(obj, key),
             TYPE_STRING => lumia_str_contains(obj, key as *mut u8),
-            other => panic!("lumia: contains unsupported type_id {other}"),
+            other => trap_abort(&format!("lumia: contains unsupported type_id {other}")),
         }
     }
 }
@@ -2826,7 +2832,7 @@ pub extern "C" fn lumia_contains(obj: *mut u8, key: i64) -> i64 {
 #[no_mangle]
 pub extern "C" fn lumia_adt_tag(obj: *mut u8) -> i64 {
     if obj.is_null() {
-        panic!("lumia: adt_tag on null");
+        trap_abort("lumia: adt_tag on null");
     }
     unsafe { *(obj as *const i64) }
 }
@@ -2834,14 +2840,14 @@ pub extern "C" fn lumia_adt_tag(obj: *mut u8) -> i64 {
 #[no_mangle]
 pub extern "C" fn lumia_adt_field(obj: *mut u8, index: i64) -> i64 {
     if obj.is_null() || index < 0 {
-        panic!("lumia: adt_field OOB");
+        trap_abort("lumia: adt_field OOB");
     }
     unsafe {
         let h = header_from_payload(obj);
         let words = ((*h).size as usize) / 8;
         // Layout: [tag][field0]… → field count = words - 1
         if words == 0 || (index as usize) + 1 >= words {
-            panic!("lumia: adt_field OOB");
+            trap_abort("lumia: adt_field OOB");
         }
         let base = obj as *const i64;
         *base.add(1 + index as usize)
