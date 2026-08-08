@@ -4,16 +4,20 @@
 
 ## 类型与单态化
 
-- [ ] **单态化管线**：let-polymorphism 已落地，但 codegen 仍共享一份闭包/函数体。`id` 同时用于 `Float` 与 `Int` 时，`println(id(1.5))` 可能按 Int 打印 bit pattern。最终形态需按 BUILD「单态化」特化。
+- [ ] **单态化管线**：let-polymorphism 已落地，但 codegen 仍共享一份闭包/函数体。`id` 同时用于 `Float` 与 `Int` 时，`println(id(1.5))` 可能按 Int 打印 bit pattern（已复现：`4609434218613702656`）。最终形态需按 BUILD「单态化」特化。
 - [ ] **类型类 `trait` / `instance` / `requires`**：语法保留并拒绝；Eq/Ord/Hash/Show 派生与 DESIGN §3.6 尚未实现。
 - [ ] **`import … as` / `{ name as alias }`**：DESIGN §9.3 已写，解析器仍报 not supported。
 
 ## 语义与运行时
 
-- [ ] **Float 作 Map/Set 键与 `lumia_eq`**：`lumia_eq` 以 bit 相等短路；相同 NaN 位在 `contains` 中可命中，与 DESIGN §2.1（`NaN ≠ NaN`）及直接 `==`（IEEE OEQ）不一致。需装箱 Float 或按类型分派 eq。
+- [ ] **Float 作 Map/Set 键与 `lumia_eq`**：`lumia_eq` 以 bit 相等短路；与直接 `==`（IEEE）不一致：
+  - 相同 NaN 位在 `contains` 中可命中，但 `NaN == NaN` 为 false（DESIGN §2.1）。
+  - `+0.0` 与 `-0.0`：`==` 为 true，但 `mapOf(0.0 to 1).contains(-0.0)` 为 false。
+  需装箱 Float 或按类型分派 eq/hash。
 - [ ] **`foreign "C" pure` 荣誉系统**：效应检查信任注解；撒谎的 `pure` 可把 C 副作用带进纯上下文。opts 已隔离 external，但效应边界仍信任标注。需 `unsafe`/显式信任开关或默认 IO。
 - [ ] **stdin 超大输入**：`lumia_rt` 在约 64MiB 后 `abort`，非可恢复错误。
 - [ ] **CLI `--link`**：绝对 `-L`/`.a` 故意放行（本机链接）；对不可信树等同原生 RCE 面，文档/沙箱策略待定。
+- [ ] **`extern "C"` 其余 `panic!`**：`trap_div0` / `trap_overflow` / `match_fail` / 含 NUL 的 cstr 已改 `abort`；运行时大量其他 `extern "C"` 路径仍 `panic!`，跨 FFI unwind 会二次 abort。宜统一为 `trap_abort`（或 `eprintln`+`abort`）。
 
 ## 优化与表示（DESIGN / BUILD 下一里程碑）
 
@@ -27,7 +31,6 @@
 
 - [ ] **`lumia doc`**：DESIGN §13，无 CLI 子命令。
 - [ ] **并发 GC / `--mm=arc`**：BUILD 远期；写屏障在 STW 下为空（正确，非缺口）。
-- [ ] **Bool 模式 `b match { true -> … }`**：解析失败；需接受 Bool 模式或给出明确诊断（引导用 `if` / 无主语 match）。
 
 ## 本轮已修（便于对照）
 
@@ -39,3 +42,6 @@
 - 词法：非法字节、未闭合字符字面量为 Error。
 - LSP Windows `file:///C:/…` URI。
 - release 链接落到 debug `lumia_rt` 时告警。
+- **`lumia_trap_*` / `match_fail` / NUL cstr**：`extern "C"` 边界用 abort，避免 panic unwind 二次崩溃。
+- **空 match / 仅有守卫臂**：穷尽性检查拒绝（不再误放行）。
+- **常量模式**：`true`/`false`、`Char`、`String`、`Float`、负数字面量（含 `-1` / `-1.5`）；Bool 双臂穷尽。
