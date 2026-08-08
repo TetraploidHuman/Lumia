@@ -220,12 +220,30 @@ impl std::fmt::Display for Type {
     }
 }
 
+/// Hindley–Milner type scheme `∀ vars eff_vars. ty` (DESIGN §3.1 let-polymorphism).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Scheme {
+    vars: Vec<u32>,
+    eff_vars: Vec<u32>,
+    ty: Type,
+}
+
+impl Scheme {
+    fn mono(ty: Type) -> Self {
+        Self {
+            vars: Vec::new(),
+            eff_vars: Vec::new(),
+            ty,
+        }
+    }
+}
+
 struct Infer {
     next_var: u32,
     next_eff: u32,
     subst: HashMap<u32, Type>,
     eff_subst: HashMap<u32, Effect>,
-    env: Vec<HashMap<String, Type>>,
+    env: Vec<HashMap<String, Scheme>>,
     /// Parallel to `env`: names bound with `var` (assignable) in that scope.
     mutables: Vec<HashSet<String>>,
     type_at: Vec<(lumia_syntax::Span, Type)>,
@@ -241,24 +259,36 @@ impl Infer {
         // println: Int or String → Unit / IO (overloads via Call special-case)
         builtins.insert(
             "println".into(),
-            Type::Fun(vec![Type::Int], Box::new(Type::Unit), Effect::io()),
+            Scheme::mono(Type::Fun(
+                vec![Type::Int],
+                Box::new(Type::Unit),
+                Effect::io(),
+            )),
         );
         // listOf / mapOf / setOf: 0-arg empty; Call site special-cases arity
         builtins.insert(
             "listOf".into(),
-            Type::Fun(vec![], Box::new(Type::List(Box::new(Type::Int))), Effect::pure()),
+            Scheme::mono(Type::Fun(
+                vec![],
+                Box::new(Type::List(Box::new(Type::Int))),
+                Effect::pure(),
+            )),
         );
         builtins.insert(
             "mapOf".into(),
-            Type::Fun(
+            Scheme::mono(Type::Fun(
                 vec![],
                 Box::new(Type::Map(Box::new(Type::Int), Box::new(Type::Int))),
                 Effect::pure(),
-            ),
+            )),
         );
         builtins.insert(
             "setOf".into(),
-            Type::Fun(vec![], Box::new(Type::Set(Box::new(Type::Int))), Effect::pure()),
+            Scheme::mono(Type::Fun(
+                vec![],
+                Box::new(Type::Set(Box::new(Type::Int))),
+                Effect::pure(),
+            )),
         );
         Self {
             next_var: 0,
@@ -308,11 +338,15 @@ impl Infer {
     }
 
     fn bind(&mut self, name: String, ty: Type) {
-        self.bind_mut(name, ty, false);
+        self.bind_scheme(name, Scheme::mono(ty), false);
     }
 
     fn bind_mut(&mut self, name: String, ty: Type, mutable: bool) {
-        self.env.last_mut().unwrap().insert(name.clone(), ty);
+        self.bind_scheme(name, Scheme::mono(ty), mutable);
+    }
+
+    fn bind_scheme(&mut self, name: String, scheme: Scheme, mutable: bool) {
+        self.env.last_mut().unwrap().insert(name.clone(), scheme);
         let m = self.mutables.last_mut().unwrap();
         if mutable {
             m.insert(name);
@@ -321,13 +355,9 @@ impl Infer {
         }
     }
 
-    fn lookup(&self, name: &str) -> Option<Type> {
-        for scope in self.env.iter().rev() {
-            if let Some(t) = scope.get(name) {
-                return Some(t.clone());
-            }
-        }
-        None
+    fn lookup(&mut self, name: &str) -> Option<Type> {
+        let scheme = self.env.iter().rev().find_map(|scope| scope.get(name).cloned())?;
+        Some(self.instantiate(&scheme))
     }
 
     /// True when the binding that `lookup` would see was introduced with `var`.
@@ -338,6 +368,206 @@ impl Infer {
             }
         }
         false
+    }
+
+    fn free_ty_vars(&mut self, ty: Type) -> HashSet<u32> {
+        let ty = self.prune(ty);
+        let mut acc = HashSet::new();
+        self.collect_ty_vars(&ty, &mut acc);
+        acc
+    }
+
+    fn collect_ty_vars(&mut self, ty: &Type, acc: &mut HashSet<u32>) {
+        match ty {
+            Type::Var(v) => {
+                if let Some(t) = self.subst.get(v).cloned() {
+                    let t = self.prune(t);
+                    self.collect_ty_vars(&t, acc);
+                } else {
+                    acc.insert(*v);
+                }
+            }
+            Type::Fun(ps, r, _) => {
+                for p in ps {
+                    self.collect_ty_vars(p, acc);
+                }
+                self.collect_ty_vars(r, acc);
+            }
+            Type::List(t) | Type::Set(t) => self.collect_ty_vars(t, acc),
+            Type::Map(k, v) => {
+                self.collect_ty_vars(k, acc);
+                self.collect_ty_vars(v, acc);
+            }
+            Type::Adt { params, .. } => {
+                for p in params {
+                    self.collect_ty_vars(p, acc);
+                }
+            }
+            Type::Tuple(ts) => {
+                for t in ts {
+                    self.collect_ty_vars(t, acc);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn free_eff_vars_in_ty(&mut self, ty: Type) -> HashSet<u32> {
+        let ty = self.prune(ty);
+        let mut acc = HashSet::new();
+        self.collect_eff_vars_in_ty(&ty, &mut acc);
+        acc
+    }
+
+    fn collect_eff_vars_in_ty(&mut self, ty: &Type, acc: &mut HashSet<u32>) {
+        match ty {
+            Type::Fun(ps, r, e) => {
+                for p in ps {
+                    self.collect_eff_vars_in_ty(p, acc);
+                }
+                self.collect_eff_vars_in_ty(r, acc);
+                match self.prune_eff(*e) {
+                    Effect::Var(v) => {
+                        acc.insert(v);
+                    }
+                    _ => {}
+                }
+            }
+            Type::List(t) | Type::Set(t) => self.collect_eff_vars_in_ty(t, acc),
+            Type::Map(k, v) => {
+                self.collect_eff_vars_in_ty(k, acc);
+                self.collect_eff_vars_in_ty(v, acc);
+            }
+            Type::Adt { params, .. } => {
+                for p in params {
+                    self.collect_eff_vars_in_ty(p, acc);
+                }
+            }
+            Type::Tuple(ts) => {
+                for t in ts {
+                    self.collect_eff_vars_in_ty(t, acc);
+                }
+            }
+            Type::Var(v) => {
+                if let Some(t) = self.subst.get(v).cloned() {
+                    let t = self.prune(t);
+                    self.collect_eff_vars_in_ty(&t, acc);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn env_free_ty_vars(&mut self) -> HashSet<u32> {
+        let schemes: Vec<Scheme> = self
+            .env
+            .iter()
+            .flat_map(|scope| scope.values().cloned())
+            .collect();
+        let mut acc = HashSet::new();
+        for sch in schemes {
+            let quantified: HashSet<u32> = sch.vars.iter().copied().collect();
+            for v in self.free_ty_vars(sch.ty) {
+                if !quantified.contains(&v) {
+                    acc.insert(v);
+                }
+            }
+        }
+        acc
+    }
+
+    fn env_free_eff_vars(&mut self) -> HashSet<u32> {
+        let schemes: Vec<Scheme> = self
+            .env
+            .iter()
+            .flat_map(|scope| scope.values().cloned())
+            .collect();
+        let mut acc = HashSet::new();
+        for sch in schemes {
+            let quantified: HashSet<u32> = sch.eff_vars.iter().copied().collect();
+            for v in self.free_eff_vars_in_ty(sch.ty) {
+                if !quantified.contains(&v) {
+                    acc.insert(v);
+                }
+            }
+        }
+        acc
+    }
+
+    fn generalize(&mut self, ty: Type) -> Scheme {
+        let ty = self.prune(ty);
+        let env_fvs = self.env_free_ty_vars();
+        let env_efvs = self.env_free_eff_vars();
+        let mut vars: Vec<u32> = self
+            .free_ty_vars(ty.clone())
+            .into_iter()
+            .filter(|v| !env_fvs.contains(v))
+            .collect();
+        vars.sort_unstable();
+        let mut eff_vars: Vec<u32> = self
+            .free_eff_vars_in_ty(ty.clone())
+            .into_iter()
+            .filter(|v| !env_efvs.contains(v))
+            .collect();
+        eff_vars.sort_unstable();
+        Scheme { vars, eff_vars, ty }
+    }
+
+    fn instantiate(&mut self, scheme: &Scheme) -> Type {
+        let ty_map: HashMap<u32, Type> = scheme
+            .vars
+            .iter()
+            .map(|&v| (v, self.fresh()))
+            .collect();
+        let eff_map: HashMap<u32, Effect> = scheme
+            .eff_vars
+            .iter()
+            .map(|&v| (v, self.fresh_eff()))
+            .collect();
+        self.apply_scheme_subst(&scheme.ty, &ty_map, &eff_map)
+    }
+
+    fn apply_scheme_subst(
+        &mut self,
+        ty: &Type,
+        ty_map: &HashMap<u32, Type>,
+        eff_map: &HashMap<u32, Effect>,
+    ) -> Type {
+        match self.prune(ty.clone()) {
+            Type::Var(v) => ty_map.get(&v).cloned().unwrap_or(Type::Var(v)),
+            Type::Fun(ps, r, e) => {
+                let e = match self.prune_eff(e) {
+                    Effect::Var(v) => eff_map.get(&v).copied().unwrap_or(Effect::Var(v)),
+                    other => other,
+                };
+                Type::Fun(
+                    ps.iter()
+                        .map(|p| self.apply_scheme_subst(p, ty_map, eff_map))
+                        .collect(),
+                    Box::new(self.apply_scheme_subst(&r, ty_map, eff_map)),
+                    e,
+                )
+            }
+            Type::List(t) => Type::List(Box::new(self.apply_scheme_subst(&t, ty_map, eff_map))),
+            Type::Set(t) => Type::Set(Box::new(self.apply_scheme_subst(&t, ty_map, eff_map))),
+            Type::Map(k, v) => Type::Map(
+                Box::new(self.apply_scheme_subst(&k, ty_map, eff_map)),
+                Box::new(self.apply_scheme_subst(&v, ty_map, eff_map)),
+            ),
+            Type::Adt { name, params } => Type::Adt {
+                name,
+                params: params
+                    .iter()
+                    .map(|p| self.apply_scheme_subst(p, ty_map, eff_map))
+                    .collect(),
+            },
+            Type::Tuple(ts) => Type::Tuple(
+                ts.iter()
+                    .map(|t| self.apply_scheme_subst(t, ty_map, eff_map))
+                    .collect(),
+            ),
+            other => other,
+        }
     }
 
     fn prune(&mut self, ty: Type) -> Type {
@@ -508,9 +738,13 @@ impl Infer {
     }
 
     fn rebind(&mut self, name: &str, ty: Type) -> Result<(), TypeError> {
+        self.rebind_scheme(name, Scheme::mono(ty))
+    }
+
+    fn rebind_scheme(&mut self, name: &str, scheme: Scheme) -> Result<(), TypeError> {
         for scope in self.env.iter_mut().rev() {
             if scope.contains_key(name) {
-                scope.insert(name.to_string(), ty);
+                scope.insert(name.to_string(), scheme);
                 return Ok(());
             }
         }
@@ -624,7 +858,13 @@ impl Infer {
             } => {
                 let (vt, ve) = self.infer_expr(value)?;
                 self.push();
-                self.bind_mut(name.clone(), vt, *mutable);
+                // Immutable lets generalize (HM let-poly); `var` stays monomorphic.
+                if *mutable {
+                    self.bind_mut(name.clone(), vt, true);
+                } else {
+                    let scheme = self.generalize(vt);
+                    self.bind_scheme(name.clone(), scheme, false);
+                }
                 let (bt, be) = self.infer_expr(body)?;
                 self.pop();
                 Ok((bt, self.union_eff(ve, be)))
@@ -1779,8 +2019,10 @@ pub fn infer_module_with_visibility(
                 if let Some(existing) = inf.lookup(&f.name) {
                     inf.unify(existing, ty.clone())?;
                 }
-                inf.bind(f.name.clone(), ty.clone());
-                fun_types.insert(f.name.clone(), inf.prune(ty));
+                let ty = inf.prune(ty);
+                let scheme = inf.generalize(ty.clone());
+                inf.rebind_scheme(&f.name, scheme)?;
+                fun_types.insert(f.name.clone(), ty);
                 // Decl span: use body span as stand-in for foreign/unit; funs lack item span in HIR.
                 inf.decls.insert(f.name.clone(), expr_span(&f.body));
                 if f.is_main {
@@ -1802,7 +2044,8 @@ pub fn infer_module_with_visibility(
                     ));
                 }
                 let ty = inf.prune(ty);
-                inf.bind(name.clone(), ty.clone());
+                let scheme = inf.generalize(ty.clone());
+                inf.bind_scheme(name.clone(), scheme, false);
                 inf.decls.insert(name.clone(), expr_span(body));
                 // Zero-arg getter used by Core lowering / codegen GC rooting.
                 fun_types.insert(
@@ -2086,6 +2329,23 @@ val main = {
             "unexpected: {}",
             err.message()
         );
+    }
+
+    #[test]
+    fn let_polymorphism_identity() {
+        let src = r#"
+module LetPoly
+import std.io.{println}
+val main = {
+    val id = { x -> x }
+    println(id(1))
+    println(id("hi"))
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let hir = lower_module(&ast).expect("lower");
+        let typed = infer_module(&hir).expect("let-poly id");
+        check_effect_boundaries(&typed).unwrap();
     }
 
     #[test]
