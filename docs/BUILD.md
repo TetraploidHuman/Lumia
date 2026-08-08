@@ -230,7 +230,7 @@ cargo run -p lumia -- build examples/string_interp.lumia -o /tmp/si && /tmp/si  
 cargo run -p lumia -- build examples/string_eq.lumia -o /tmp/se && /tmp/se  # 1\\n1\\n1\\n1.5
 cargo run -p lumia -- build examples/fib.lumia -o /tmp/fib && /tmp/fib  # 55
 cargo run -p lumia -- build examples/char.lumia -o /tmp/ch && /tmp/ch  # A\\n1\\n1\\nZ
-cargo run -p lumia -- build examples/float_ops.lumia -o /tmp/fo && /tmp/fo  # 3.75\\n6\\n1\\n-1.5
+cargo run -p lumia -- build examples/float_ops.lumia -o /tmp/fo && /tmp/fo  # 3.75\\n6\\n1\\n-1.5\\n4
 cargo run -p lumia -- build examples/closure.lumia -o /tmp/cl && /tmp/cl  # 42\\n11
 cargo run -p lumia -- build examples/closure_capture.lumia -o /tmp/cc && /tmp/cc  # 42\\n101\\n42
 cargo run -p lumia -- build examples/range_fold.lumia -o /tmp/rf && /tmp/rf  # 499999500000\\n5050
