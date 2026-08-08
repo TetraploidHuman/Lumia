@@ -1,0 +1,8 @@
+module BadGuardOnly
+
+/// Intentionally non-exhaustive: only a guarded binder arm.
+val main = {
+    1 match {
+        n if n > 0 -> n
+    }
+}

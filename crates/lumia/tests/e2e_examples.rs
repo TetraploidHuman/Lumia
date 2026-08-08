@@ -649,6 +649,48 @@ fn e2e_bad_int_match_rejected() {
 }
 
 #[test]
+fn e2e_bad_empty_match_rejected() {
+    let root = workspace_root();
+    let src = root.join("examples/bad_empty_match.lumia");
+    let out = Command::new(lumia_bin())
+        .current_dir(&root)
+        .args(["check", src.to_str().unwrap()])
+        .output()
+        .expect("spawn lumia check");
+    assert!(!out.status.success(), "empty match should fail check");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stderr),
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(
+        combined.contains("non-exhaustive"),
+        "unexpected diagnostics: {combined}"
+    );
+}
+
+#[test]
+fn e2e_bad_guard_only_match_rejected() {
+    let root = workspace_root();
+    let src = root.join("examples/bad_guard_only.lumia");
+    let out = Command::new(lumia_bin())
+        .current_dir(&root)
+        .args(["check", src.to_str().unwrap()])
+        .output()
+        .expect("spawn lumia check");
+    assert!(!out.status.success(), "guard-only match should fail check");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stderr),
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(
+        combined.contains("non-exhaustive"),
+        "unexpected diagnostics: {combined}"
+    );
+}
+
+#[test]
 fn e2e_bad_list_match_rejected() {
     let root = workspace_root();
     let src = root.join("examples/bad_list_match.lumia");
