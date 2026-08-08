@@ -371,6 +371,13 @@ fn load_module_file(
         // Canonicalize so the same file via different relative paths shares one identity
         // (cycle detection + single load).
         let file = file.canonicalize().unwrap_or(file);
+        // Reject symlink (or other) escapes outside the importer dir / dep roots.
+        if !path_under_search_roots(&file, &importer_dir, search_roots) {
+            bail!(
+                "import resolves to {} which escapes package search roots",
+                file.display()
+            );
+        }
         let dep = load_module_file(
             &file,
             search_roots,
@@ -416,4 +423,66 @@ fn path_label(path: &Path) -> String {
         .and_then(|s| s.to_str())
         .map(|s| s.to_string())
         .unwrap_or_else(|| path.display().to_string())
+}
+
+fn path_under_search_roots(path: &Path, importer_dir: &Path, search_roots: &[PathBuf]) -> bool {
+    let mut roots: Vec<PathBuf> = Vec::with_capacity(search_roots.len() + 1);
+    roots.push(importer_dir.to_path_buf());
+    for r in search_roots {
+        if !roots.iter().any(|x| x == r) {
+            roots.push(r.clone());
+        }
+    }
+    for r in &roots {
+        let root = r.canonicalize().unwrap_or_else(|_| r.clone());
+        if path.starts_with(&root) {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn import_symlink_escape_rejected() {
+        let dir = std::env::temp_dir().join(format!(
+            "lumia_load_symlink_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let outside = std::env::temp_dir().join(format!(
+            "lumia_load_outside_{}.lumia",
+            std::process::id()
+        ));
+        fs::write(
+            &outside,
+            "module Outside\nval leak = 1\n",
+        )
+        .unwrap();
+        let entry = dir.join("main.lumia");
+        fs::write(
+            &entry,
+            "module Main\nimport evil.{leak}\nval main = leak\n",
+        )
+        .unwrap();
+        let evil = dir.join("evil.lumia");
+        #[cfg(unix)]
+        {
+            let _ = fs::remove_file(&evil);
+            std::os::unix::fs::symlink(&outside, &evil).unwrap();
+            let err = load_program(&entry).unwrap_err();
+            let msg = err.to_string();
+            assert!(
+                msg.contains("escapes") || msg.contains("cannot find"),
+                "expected symlink escape rejection, got {msg}"
+            );
+        }
+        let _ = fs::remove_file(&outside);
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
