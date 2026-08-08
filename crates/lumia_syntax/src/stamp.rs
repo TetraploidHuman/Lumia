@@ -28,9 +28,15 @@ fn stamp_item(it: &mut Item, file: u32) {
         }
         Item::Trait(t) => {
             t.span = t.span.with_file(file);
+            for m in &mut t.methods {
+                stamp_val(m, file);
+            }
         }
         Item::Instance(i) => {
             i.span = i.span.with_file(file);
+            for m in &mut i.methods {
+                stamp_val(m, file);
+            }
         }
     }
 }

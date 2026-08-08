@@ -275,7 +275,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `trait Name [requires A, B] { }` — empty body MVP (DESIGN §3.6).
+    /// `trait Name [requires A, B] { val m = … }` (DESIGN §3.6).
     fn parse_trait_item(&mut self) -> Result<Item, ParseError> {
         let start = self.bump().span; // trait
         let (name, _) = self.expect_ident()?;
@@ -293,16 +293,17 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect(TokenKind::LBrace)?;
-        // MVP: no method bodies yet.
+        let methods = self.parse_trait_methods()?;
         let end = self.expect(TokenKind::RBrace)?;
         Ok(Item::Trait(crate::TraitItem {
             name,
             requires,
+            methods,
             span: start.merge(end.span),
         }))
     }
 
-    /// `instance Trait for Type { }` — empty body MVP.
+    /// `instance Trait for Type { val m = … }`
     fn parse_instance_item(&mut self) -> Result<Item, ParseError> {
         let start = self.bump().span; // instance
         let (trait_name, _) = self.expect_ident()?;
@@ -312,12 +313,25 @@ impl<'a> Parser<'a> {
         self.bump(); // for
         let (type_name, _) = self.expect_ident()?;
         self.expect(TokenKind::LBrace)?;
+        let methods = self.parse_trait_methods()?;
         let end = self.expect(TokenKind::RBrace)?;
         Ok(Item::Instance(crate::InstanceItem {
             trait_name,
             type_name,
+            methods,
             span: start.merge(end.span),
         }))
+    }
+
+    fn parse_trait_methods(&mut self) -> Result<Vec<ValItem>, ParseError> {
+        let mut methods = vec![];
+        while self.at(&TokenKind::Val) {
+            methods.push(self.parse_val_item()?);
+        }
+        if !self.at(&TokenKind::RBrace) {
+            return Err(self.error("expected `val` method or `}` in trait/instance body"));
+        }
+        Ok(methods)
     }
 
     /// `foreign "C" [pure] fn name(x: Int, y: Int) -> Int`

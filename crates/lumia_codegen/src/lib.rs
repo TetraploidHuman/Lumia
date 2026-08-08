@@ -44,6 +44,7 @@ pub fn compile_module(core: &CoreModule, opts: &CodegenOptions) -> Result<()> {
         opts.option_none_tag,
     );
     declare_runtime(&context, &cg.module);
+    cg.tco_sccs = compute_tco_sccs(core);
 
     for f in &core.functions {
         let name = if f.is_main {
@@ -560,10 +561,12 @@ struct Codegen<'ctx> {
     rooted_slots: HashSet<String>,
     /// Function entry block — all GC root allocas go here (avoid loop stack growth).
     entry_bb: Option<BasicBlock<'ctx>>,
-    /// Current Core function name (for self-TCO).
+    /// Current Core function name (for TCO).
     current_fun: String,
-    /// Pure Int self-recursion may use `musttail` when `root_depth == 0`.
-    tco_self: bool,
+    /// Pure Int mutual/self-recursion peers in the same SCC (musttail when `root_depth == 0`).
+    tco_peers: HashSet<String>,
+    /// Precomputed TCO SCCs: function → peers (including self).
+    tco_sccs: HashMap<String, HashSet<String>>,
 }
 
 impl<'ctx> Codegen<'ctx> {
@@ -592,8 +595,37 @@ impl<'ctx> Codegen<'ctx> {
             rooted_slots: HashSet::new(),
             entry_bb: None,
             current_fun: String::new(),
-            tco_self: false,
+            tco_peers: HashSet::new(),
+            tco_sccs: HashMap::new(),
         }
+    }
+
+    /// Call `__Show_{T}_show` when an instance provided a custom Show method.
+    fn emit_show_override(
+        &mut self,
+        adt_name: &str,
+        arg: BasicValueEnum<'ctx>,
+    ) -> Result<Option<PointerValue<'ctx>>> {
+        let mangled = format!("__Show_{adt_name}_show");
+        let Some(fv) = self.functions.get(&mangled).copied() else {
+            return Ok(None);
+        };
+        let i = self.coerce_i64(arg)?;
+        let call = self
+            .builder
+            .build_call(fv, &[i.into()], "show_ov")
+            .unwrap();
+        let bits = call
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_int_value();
+        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+        let ptr = self
+            .builder
+            .build_int_to_ptr(bits, ptr_ty, "show_ov_ptr")
+            .unwrap();
+        Ok(Some(ptr))
     }
 
     fn type_may_heap(ty: &Type) -> bool {
@@ -754,9 +786,9 @@ impl<'ctx> Codegen<'ctx> {
         self.builder.build_return(Some(&ret)).unwrap();
     }
 
-    /// Emit `musttail call` + `ret` for pure Int self-recursion (no GC roots live).
+    /// Emit `musttail call` + `ret` for pure Int TCO (self or mutual; no GC roots live).
     /// Returns true if the call was emitted as a terminator.
-    fn emit_musttail_self_call(&mut self, fun: &str, args: &[Local]) -> Result<bool> {
+    fn emit_musttail_call(&mut self, fun: &str, args: &[Local]) -> Result<bool> {
         let callee = match self.functions.get(fun).copied() {
             Some(f) => f,
             None => return Ok(false),
@@ -798,11 +830,11 @@ impl<'ctx> Codegen<'ctx> {
         self.local_tys.clear();
         self.slot_tys.clear();
         self.current_fun = fun.name.clone();
-        self.tco_self = fun.memo.is_none()
-            && fun.external.is_none()
-            && !fun.effect.has_io()
-            && matches!(fun.ret_ty, Type::Int)
-            && fun.param_tys.iter().all(|t| matches!(t, Type::Int));
+        self.tco_peers = self
+            .tco_sccs
+            .get(&fun.name)
+            .cloned()
+            .unwrap_or_default();
 
         for (i, p) in fun.params.iter().enumerate() {
             let av = fv.get_nth_param(i as u32).unwrap();
@@ -1371,13 +1403,17 @@ impl<'ctx> Codegen<'ctx> {
                 };
                 Type::Map(Box::new(k), Box::new(v))
             }
-            Value::AllocAdt { fields, .. } => {
+            Value::AllocAdt {
+                adt_name,
+                fields,
+                ..
+            } => {
                 let params: Vec<Type> = fields
                     .iter()
                     .map(|Local(id)| self.local_tys.get(id).cloned().unwrap_or(Type::Int))
                     .collect();
                 Type::Adt {
-                    name: "_".into(),
+                    name: adt_name.clone(),
                     params,
                 }
             }
@@ -1459,16 +1495,16 @@ impl<'ctx> Codegen<'ctx> {
             }
             match op {
                 Op::Let { local, value, .. } => {
-                    // Pure Int self-recursion in tail position → musttail (DESIGN §4.4).
+                    // Pure Int self/mutual recursion in tail position → musttail (DESIGN §4.4).
                     let is_block_tail = block.result == Some(*local)
                         && matches!(
                             block.ops.last(),
                             Some(Op::Let { local: last, .. }) if last == local
                         );
-                    if self.tco_self && self.root_depth == 0 && is_block_tail {
+                    if !self.tco_peers.is_empty() && self.root_depth == 0 && is_block_tail {
                         if let Value::Call { fun, args } = value {
-                            if fun == &self.current_fun
-                                && self.emit_musttail_self_call(fun, args)?
+                            if self.tco_peers.contains(fun)
+                                && self.emit_musttail_call(fun, args)?
                             {
                                 return Ok(None);
                             }
@@ -2293,6 +2329,29 @@ impl<'ctx> Codegen<'ctx> {
                                 .build_call(fun, &[b.into()], "println_bool")
                                 .unwrap();
                         }
+                        Type::Adt { name, .. } => {
+                            if let Some(ptr) = self.emit_show_override(&name, arg)? {
+                                let len_f = self.module.get_function("lumia_str_len").unwrap();
+                                let len = self
+                                    .builder
+                                    .build_call(len_f, &[ptr.into()], "show_len")
+                                    .unwrap()
+                                    .try_as_basic_value()
+                                    .basic()
+                                    .unwrap()
+                                    .into_int_value();
+                                let fun = self.module.get_function("lumia_println_str").unwrap();
+                                self.builder
+                                    .build_call(fun, &[ptr.into(), len.into()], "println_show")
+                                    .unwrap();
+                            } else {
+                                let i = self.coerce_i64(arg)?;
+                                let fun = self.module.get_function("lumia_println_auto").unwrap();
+                                self.builder
+                                    .build_call(fun, &[i.into()], "println")
+                                    .unwrap();
+                            }
+                        }
                         _ => {
                             let i = self.coerce_i64(arg)?;
                             let fun = self.module.get_function("lumia_println_auto").unwrap();
@@ -2609,6 +2668,21 @@ impl<'ctx> Codegen<'ctx> {
                                 .basic()
                                 .unwrap()
                                 .into_pointer_value()
+                        }
+                        Type::Adt { name, .. } => {
+                            if let Some(ptr) = self.emit_show_override(&name, arg)? {
+                                ptr
+                            } else {
+                                let i = self.coerce_i64(arg)?;
+                                let fun = self.module.get_function("lumia_show").unwrap();
+                                self.builder
+                                    .build_call(fun, &[i.into()], "show")
+                                    .unwrap()
+                                    .try_as_basic_value()
+                                    .basic()
+                                    .unwrap()
+                                    .into_pointer_value()
+                            }
                         }
                         _ => {
                             let i = self.coerce_i64(arg)?;
@@ -3337,7 +3411,7 @@ impl<'ctx> Codegen<'ctx> {
                     .unwrap()
                     .into())
             }
-            Value::AllocAdt { tag, fields } => {
+            Value::AllocAdt { tag, fields, .. } => {
                 let n = fields.len() as u64;
                 let nbytes = self.i64_ty.const_int((1 + n) * 8, false);
                 let type_id = self.context.i32_type().const_int(6, false); // TYPE_ADT
@@ -3435,6 +3509,153 @@ impl<'ctx> Codegen<'ctx> {
             .build_ptr_to_int(ptr, self.i64_ty, "arr_as_i64")
             .unwrap()
             .into())
+    }
+}
+
+/// Pure Int functions that form an SCC may musttail to any peer (DESIGN §4.4).
+fn compute_tco_sccs(core: &CoreModule) -> HashMap<String, HashSet<String>> {
+    let eligible: HashSet<String> = core
+        .functions
+        .iter()
+        .filter(|f| {
+            f.memo.is_none()
+                && f.external.is_none()
+                && !f.effect.has_io()
+                && matches!(f.ret_ty, Type::Int | Type::Bool)
+                && f.param_tys
+                    .iter()
+                    .all(|t| matches!(t, Type::Int | Type::Bool))
+        })
+        .map(|f| f.name.clone())
+        .collect();
+    if eligible.is_empty() {
+        return HashMap::new();
+    }
+    let mut graph: HashMap<String, HashSet<String>> = HashMap::new();
+    for name in &eligible {
+        graph.insert(name.clone(), HashSet::new());
+    }
+    for f in &core.functions {
+        if !eligible.contains(&f.name) {
+            continue;
+        }
+        let mut callees = HashSet::new();
+        collect_direct_calls(&f.body, &mut callees);
+        for c in callees {
+            if eligible.contains(&c) {
+                graph.get_mut(&f.name).unwrap().insert(c);
+            }
+        }
+    }
+    // Tarjan SCC
+    let mut index = 0u32;
+    let mut stack: Vec<String> = Vec::new();
+    let mut on_stack: HashSet<String> = HashSet::new();
+    let mut indices: HashMap<String, u32> = HashMap::new();
+    let mut lowlink: HashMap<String, u32> = HashMap::new();
+    let mut sccs: Vec<HashSet<String>> = Vec::new();
+
+    fn strongconnect(
+        v: &str,
+        graph: &HashMap<String, HashSet<String>>,
+        index: &mut u32,
+        stack: &mut Vec<String>,
+        on_stack: &mut HashSet<String>,
+        indices: &mut HashMap<String, u32>,
+        lowlink: &mut HashMap<String, u32>,
+        sccs: &mut Vec<HashSet<String>>,
+    ) {
+        indices.insert(v.to_string(), *index);
+        lowlink.insert(v.to_string(), *index);
+        *index += 1;
+        stack.push(v.to_string());
+        on_stack.insert(v.to_string());
+        if let Some(ns) = graph.get(v) {
+            for w in ns {
+                if !indices.contains_key(w) {
+                    strongconnect(w, graph, index, stack, on_stack, indices, lowlink, sccs);
+                    let lw = *lowlink.get(w).unwrap();
+                    let lv = *lowlink.get(v).unwrap();
+                    lowlink.insert(v.to_string(), lv.min(lw));
+                } else if on_stack.contains(w) {
+                    let iw = *indices.get(w).unwrap();
+                    let lv = *lowlink.get(v).unwrap();
+                    lowlink.insert(v.to_string(), lv.min(iw));
+                }
+            }
+        }
+        if lowlink.get(v) == indices.get(v) {
+            let mut comp = HashSet::new();
+            loop {
+                let w = stack.pop().unwrap();
+                on_stack.remove(&w);
+                comp.insert(w.clone());
+                if w == v {
+                    break;
+                }
+            }
+            // Keep SCCs that can recurse (size>1 or self-loop).
+            let self_loop = graph.get(v).map(|s| s.contains(v)).unwrap_or(false);
+            if comp.len() > 1 || self_loop {
+                sccs.push(comp);
+            }
+        }
+    }
+
+    let nodes: Vec<String> = eligible.iter().cloned().collect();
+    for n in nodes {
+        if !indices.contains_key(&n) {
+            strongconnect(
+                &n,
+                &graph,
+                &mut index,
+                &mut stack,
+                &mut on_stack,
+                &mut indices,
+                &mut lowlink,
+                &mut sccs,
+            );
+        }
+    }
+
+    let mut out = HashMap::new();
+    for scc in sccs {
+        for m in &scc {
+            out.insert(m.clone(), scc.clone());
+        }
+    }
+    out
+}
+
+fn collect_direct_calls(block: &Block, out: &mut HashSet<String>) {
+    for op in &block.ops {
+        let value = match op {
+            Op::Let { value, .. } | Op::Effect { value } => value,
+            _ => continue,
+        };
+        match value {
+            Value::Call { fun, .. } => {
+                out.insert(fun.clone());
+            }
+            Value::If {
+                then_block,
+                else_block,
+                ..
+            } => {
+                collect_direct_calls(then_block, out);
+                collect_direct_calls(else_block, out);
+            }
+            Value::Loop {
+                header,
+                body,
+                latch,
+            } => {
+                collect_direct_calls(header, out);
+                collect_direct_calls(body, out);
+                collect_direct_calls(latch, out);
+            }
+            _ => {}
+        }
     }
 }
 

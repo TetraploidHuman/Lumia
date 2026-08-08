@@ -159,6 +159,25 @@ fn e2e_trait_ord() {
 }
 
 #[test]
+fn e2e_trait_show() {
+    // Custom Show override; structural `#tag(fields)` for types without a method body.
+    run_example("examples/trait_show.lm", &["Point", "#0(9)"]);
+}
+
+#[test]
+fn e2e_tco_even_odd() {
+    run_example(
+        "examples/tco_even_odd.lm",
+        &["true", "false", "false"],
+    );
+}
+
+#[test]
+fn e2e_poly_add1() {
+    run_example("examples/poly_add1.lm", &["2", "2.5"]);
+}
+
+#[test]
 fn e2e_list_for() {
     run_example("examples/list_for.lm", &["60"]);
 }
@@ -1018,7 +1037,7 @@ fn e2e_bad_field_proj_rejected() {
 }
 
 #[test]
-fn e2e_ord_instance_requires_eq() {
+fn e2e_unknown_trait_rejected() {
     let root = workspace_root();
     let src = root.join("examples/bad_trait.lm");
     let out = Command::new(lumia_bin())
@@ -1033,8 +1052,8 @@ fn e2e_ord_instance_requires_eq() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        combined.contains("requires") || combined.contains("Eq"),
-        "expected Ord-requires-Eq error, got: {combined}"
+        combined.contains("unknown trait") || combined.contains("NotATrait"),
+        "expected unknown-trait error, got: {combined}"
     );
 }
 

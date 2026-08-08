@@ -81,9 +81,9 @@ pub enum Item {
     Type(TypeItem),
     /// `foreign "C" fn name(x: Int) -> Int`
     Foreign(ForeignItem),
-    /// `trait Eq { }` / `trait Ord requires Eq { }` (bodies empty in MVP).
+    /// `trait Eq { }` / `trait Ord requires Eq { val less = … }`.
     Trait(TraitItem),
-    /// `instance Eq for Point { }` (bodies empty in MVP).
+    /// `instance Eq for Point { }` / with optional `val` method bodies.
     Instance(InstanceItem),
 }
 
@@ -91,6 +91,8 @@ pub enum Item {
 pub struct TraitItem {
     pub name: String,
     pub requires: Vec<String>,
+    /// Optional default method bodies (`val name = …`).
+    pub methods: Vec<ValItem>,
     pub span: Span,
 }
 
@@ -98,6 +100,8 @@ pub struct TraitItem {
 pub struct InstanceItem {
     pub trait_name: String,
     pub type_name: String,
+    /// Method overrides (`val show = { self -> … }`).
+    pub methods: Vec<ValItem>,
     pub span: Span,
 }
 

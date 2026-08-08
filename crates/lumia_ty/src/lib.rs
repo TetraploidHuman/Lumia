@@ -994,7 +994,12 @@ impl Infer {
                     let (t, e) = self.infer_expr(&args[0])?;
                     let t = self.prune(t);
                     match t {
-                        Type::Int | Type::String | Type::Bool | Type::Float | Type::Char => {}
+                        Type::Int
+                        | Type::String
+                        | Type::Bool
+                        | Type::Float
+                        | Type::Char
+                        | Type::Adt { .. } => {}
                         Type::Var(_) => {
                             return Err(at(
                                 *span,
@@ -1002,9 +1007,10 @@ impl Infer {
                             ));
                         }
                         other => {
-                            return Err(at(*span, format!(
-                                "println: unsupported type {other:?}"
-                            )));
+                            return Err(at(
+                                *span,
+                                format!("println: unsupported type {other:?}"),
+                            ));
                         }
                     }
                     Ok((Type::Unit, self.union_eff(Effect::io(), e)))
@@ -1773,16 +1779,30 @@ impl Infer {
                         let lt = self.prune(lt);
                         let rt = self.prune(rt);
                         match (&lt, &rt) {
-                            (Type::Float, _) | (_, Type::Float) => {
-                                self.unify_at(*span, lt, Type::Float)?;
+                            (Type::Float, Type::Float) => Ok((Type::Float, eff)),
+                            // Mixed Float/Int: codegen sitofp (polymorphic literals / Num MVP).
+                            (Type::Float, Type::Int) | (Type::Int, Type::Float) => {
+                                Ok((Type::Float, eff))
+                            }
+                            (Type::Float, Type::Var(_)) => {
                                 self.unify_at(*span, rt, Type::Float)?;
                                 Ok((Type::Float, eff))
                             }
-                            // Leave open for let-poly (`{ x -> x + x }` at Int/Float sites).
-                            // `x + 1` still pins Int until Num / polymorphic literals.
+                            (Type::Var(_), Type::Float) => {
+                                self.unify_at(*span, lt, Type::Float)?;
+                                Ok((Type::Float, eff))
+                            }
+                            // Leave open for let-poly: `{ x -> x + x }` and `{ x -> x + 1 }`.
                             (Type::Var(_), Type::Var(_)) => {
                                 self.unify_at(*span, lt.clone(), rt)?;
                                 Ok((self.prune(lt), eff))
+                            }
+                            (Type::Var(_), Type::Int) | (Type::Int, Type::Var(_)) => {
+                                let v = match (&lt, &rt) {
+                                    (Type::Var(_), _) => lt,
+                                    _ => rt,
+                                };
+                                Ok((v, eff))
                             }
                             _ => {
                                 self.unify_at(*span, lt, Type::Int)?;
@@ -2501,16 +2521,31 @@ val main = {
     }
 
     #[test]
-    fn ord_instance_requires_eq() {
+    fn unknown_trait_instance_rejected() {
+        let src = r#"
+module M
+type Point { val x val y }
+instance NotATrait for Point { }
+val main = { 0 }
+"#;
+        let ast = parse_module(src).unwrap();
+        let err = lower_module(&ast).expect_err("unknown trait");
+        assert!(err.message.contains("unknown trait") || err.message.contains("NotATrait"), "{err}");
+    }
+
+    #[test]
+    fn auto_derive_eq_allows_ord_alone() {
         let src = r#"
 module M
 type Point { val x val y }
 instance Ord for Point { }
-val main = { 0 }
+val main = {
+    Point { x = 1, y = 2 } < Point { x = 1, y = 3 }
+}
 "#;
         let ast = parse_module(src).unwrap();
-        let err = lower_module(&ast).expect_err("Ord needs Eq");
-        assert!(err.message.contains("requires") || err.message.contains("Eq"), "{err}");
+        let hir = lower_module(&ast).expect("auto Eq + Ord");
+        infer_module(&hir).expect("Ord with auto Eq");
     }
 
     #[test]

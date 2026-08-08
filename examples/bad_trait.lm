@@ -5,8 +5,8 @@ type Point {
     val y
 }
 
-// Ord requires Eq — must fail without `instance Eq for Point`.
-instance Ord for Point {
+// Unknown trait name must fail.
+instance NotATrait for Point {
 }
 
 val main = {

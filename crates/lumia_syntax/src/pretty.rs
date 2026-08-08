@@ -130,14 +130,22 @@ pub fn format_module_src(m: &Module) -> String {
                     out.push_str(" requires ");
                     out.push_str(&t.requires.join(", "));
                 }
-                out.push_str(" {\n}\n");
+                out.push_str(" {\n");
+                for m in &t.methods {
+                    format_val(&mut out, m, 1);
+                }
+                out.push_str("}\n");
             }
             Item::Instance(i) => {
                 out.push_str("instance ");
                 out.push_str(&i.trait_name);
                 out.push_str(" for ");
                 out.push_str(&i.type_name);
-                out.push_str(" {\n}\n");
+                out.push_str(" {\n");
+                for m in &i.methods {
+                    format_val(&mut out, m, 1);
+                }
+                out.push_str("}\n");
             }
         }
     }

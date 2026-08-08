@@ -495,7 +495,7 @@ fn is_heap_payload(payload: *mut u8) -> bool {
     HEAP.with(|heap| heap.borrow().iter().any(|&p| p == h))
 }
 
-/// Print `x` as a heap String if it is one; otherwise as Int.
+/// Print `x` as a heap String if it is one; ADTs via structural Show; otherwise Int.
 #[no_mangle]
 pub extern "C" fn lumia_println_auto(x: i64) {
     let p = x as *mut u8;
@@ -515,6 +515,12 @@ pub extern "C" fn lumia_println_auto(x: i64) {
                 } else {
                     let _ = writeln!(out, "\u{FFFD}");
                 }
+                return;
+            }
+            if (*h).type_id == TYPE_ADT {
+                let s = lumia_show(x);
+                let len = (*header_from_payload(s)).size as u64;
+                lumia_println_str(s, len);
                 return;
             }
         }
@@ -774,7 +780,8 @@ pub extern "C" fn lumia_alloc_char(codepoint: i64) -> *mut u8 {
 }
 
 /// Format a value as a heap String (for interpolation).
-/// Strings are returned as-is; Chars become one-character strings; otherwise decimal Int.
+/// Strings are returned as-is; Chars become one-character strings;
+/// ADTs are `#tag(field, …)` via recursive Show; otherwise decimal Int.
 #[no_mangle]
 pub extern "C" fn lumia_show(x: i64) -> *mut u8 {
     let p = x as *mut u8;
@@ -791,9 +798,36 @@ pub extern "C" fn lumia_show(x: i64) -> *mut u8 {
                 let s = ch.encode_utf8(&mut buf);
                 return lumia_alloc_string(s.as_ptr(), s.len() as u64);
             }
+            if (*h).type_id == TYPE_ADT {
+                return show_adt(p);
+            }
         }
     }
     let s = x.to_string();
+    lumia_alloc_string(s.as_ptr(), s.len() as u64)
+}
+
+unsafe fn show_adt(payload: *mut u8) -> *mut u8 {
+    let words = ((*header_from_payload(payload)).size as usize) / 8;
+    let base = payload as *const i64;
+    let mut s = String::from("#");
+    if words == 0 {
+        s.push_str("()");
+        return lumia_alloc_string(s.as_ptr(), s.len() as u64);
+    }
+    let tag = *base;
+    s.push_str(&tag.to_string());
+    s.push('(');
+    for i in 1..words {
+        if i > 1 {
+            s.push_str(", ");
+        }
+        let field = lumia_show(*base.add(i));
+        with_str_bytes(field, |b| {
+            s.push_str(std::str::from_utf8(b).unwrap_or("?"));
+        });
+    }
+    s.push(')');
     lumia_alloc_string(s.as_ptr(), s.len() as u64)
 }
 

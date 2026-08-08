@@ -258,6 +258,18 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
             _ => {}
         }
     }
+    // Auto-derive Eq / Hash / Show for products and sums (DESIGN §3.6).
+    // Ord stays opt-in (`instance Ord for T`) because `<` is a stronger claim.
+    for name in product_map
+        .keys()
+        .cloned()
+        .chain(adts.iter().map(|a| a.name.clone()))
+    {
+        for tr in ["Eq", "Hash", "Show"] {
+            instances.insert((tr.into(), name.clone()));
+        }
+    }
+
     for (tr, ty) in &instances {
         if let Some(reqs) = trait_requires.get(tr) {
             for req in reqs {
@@ -315,58 +327,23 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
     let module = with_ctors(ctors, || {
         with_products(product_map, product_fields, ambiguous_product_fields, || {
             let mut items = Vec::new();
+            let mut show_methods = HashMap::new();
             for item in &m.items {
                 match item {
                     lumia_syntax::Item::Val(v) => {
-                        let body = lower_expr(&v.body);
-                        let body = if let Some(params) = &v.params {
-                            Expr::Lambda {
-                                params: params.clone(),
-                                body: Box::new(body),
-                                span: v.span,
-                            }
-                        } else {
-                            body
-                        };
-                        match body {
-                            Expr::Lambda {
-                                params,
-                                body,
-                                span: _,
-                            } => {
-                                items.push(Item::Fun(Fun {
-                                    name: v.name.clone(),
-                                    params,
-                                    body: *body,
-                                    is_main: v.name == "main",
-                                    external: None,
-                                    foreign_sig: None,
-                                    foreign_pure: false,
-                                }));
-                            }
-                            other => {
-                                if v.name == "main" {
-                                    items.push(Item::Fun(Fun {
-                                        name: "main".into(),
-                                        params: vec![],
-                                        body: other,
-                                        is_main: true,
-                                        external: None,
-                                        foreign_sig: None,
-                                    foreign_pure: false,
-                                    }));
-                                } else {
-                                    items.push(Item::Val {
-                                        name: v.name.clone(),
-                                        body: other,
-                                    });
-                                }
+                        push_lowered_val(&mut items, v, &v.name);
+                    }
+                    lumia_syntax::Item::Type(_) | lumia_syntax::Item::Trait(_) => {}
+                    lumia_syntax::Item::Instance(i) => {
+                        for method in &i.methods {
+                            let mangled =
+                                format!("__{}_{}_{}", i.trait_name, i.type_name, method.name);
+                            push_lowered_val(&mut items, method, &mangled);
+                            if i.trait_name == "Show" && method.name == "show" {
+                                show_methods.insert(i.type_name.clone(), mangled);
                             }
                         }
                     }
-                    lumia_syntax::Item::Type(_)
-                    | lumia_syntax::Item::Trait(_)
-                    | lumia_syntax::Item::Instance(_) => {}
                     lumia_syntax::Item::Foreign(f) => {
                         if f.abi != "C" {
                             set_lower_err(
@@ -395,6 +372,7 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
                 adts,
                 products,
                 instances,
+                show_methods,
             }
         })
     });
@@ -402,6 +380,54 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
         return Err(err);
     }
     Ok(module)
+}
+
+fn push_lowered_val(items: &mut Vec<Item>, v: &lumia_syntax::ValItem, name: &str) {
+    let body = lower_expr(&v.body);
+    let body = if let Some(params) = &v.params {
+        Expr::Lambda {
+            params: params.clone(),
+            body: Box::new(body),
+            span: v.span,
+        }
+    } else {
+        body
+    };
+    match body {
+        Expr::Lambda {
+            params,
+            body,
+            span: _,
+        } => {
+            items.push(Item::Fun(Fun {
+                name: name.to_string(),
+                params,
+                body: *body,
+                is_main: name == "main",
+                external: None,
+                foreign_sig: None,
+                foreign_pure: false,
+            }));
+        }
+        other => {
+            if name == "main" {
+                items.push(Item::Fun(Fun {
+                    name: "main".into(),
+                    params: vec![],
+                    body: other,
+                    is_main: true,
+                    external: None,
+                    foreign_sig: None,
+                    foreign_pure: false,
+                }));
+            } else {
+                items.push(Item::Val {
+                    name: name.to_string(),
+                    body: other,
+                });
+            }
+        }
+    }
 }
 
 fn check_module_matches(
@@ -901,8 +927,10 @@ pub struct Module {
     pub adts: Vec<AdtDef>,
     /// Product types declared in this module.
     pub products: Vec<ProductDef>,
-    /// `(trait, type)` pairs from `instance Trait for Type { }` (MVP: empty bodies).
+    /// `(trait, type)` pairs from `instance Trait for Type { }` (incl. auto-derived).
     pub instances: HashSet<(String, String)>,
+    /// Custom `Show.show` overrides: type name → mangled function name.
+    pub show_methods: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone)]

@@ -134,8 +134,9 @@ pub enum Value {
         flat_pairs: Vec<Local>,
         repr: MapRepr,
     },
-    /// Sum type: `[tag:i64][field0]…`
+    /// Sum/product: `[tag:i64][field0]…` (`adt_name` for Show overrides / typing).
     AllocAdt {
+        adt_name: String,
         tag: i64,
         fields: Vec<Local>,
     },
@@ -1850,7 +1851,12 @@ fn lower_expr(
             ops.push(Op::Continue);
             None
         }
-        HirExpr::AdtNew { tag, args, .. } => {
+        HirExpr::AdtNew {
+            adt_name,
+            tag,
+            args,
+            ..
+        } => {
             let mut fields = vec![];
             for a in args {
                 if let Some(l) = lower_expr(ctx, a, ops, pure_region) {
@@ -1861,6 +1867,7 @@ fn lower_expr(
             ops.push(Op::Let {
                 local: dest,
                 value: Value::AllocAdt {
+                    adt_name: adt_name.clone(),
                     tag: *tag,
                     fields,
                 },
@@ -2005,8 +2012,12 @@ fn format_value(v: &Value) -> String {
         Value::AllocMap { flat_pairs, repr } => {
             format!("alloc_map[{repr:?}](n={})", flat_pairs.len() / 2)
         }
-        Value::AllocAdt { tag, fields } => {
-            format!("alloc_adt(tag={tag}, n={})", fields.len())
+        Value::AllocAdt {
+            adt_name,
+            tag,
+            fields,
+        } => {
+            format!("alloc_adt({adt_name}, tag={tag}, n={})", fields.len())
         }
     }
 }
