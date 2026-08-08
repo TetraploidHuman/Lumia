@@ -12,8 +12,8 @@
 
 - [x] **Float 作 Map/Set 键与 `lumia_eq`**：`TYPE_MAP_F64` / `TYPE_SET_F64` + IEEE `float_key_eq`/`float_key_hash`（±0 碰撞、NaN 永不命中）；codegen 在 Float 键/`set` 时 `lumia_ensure_*_f64`；e2e `float_map_keys`。标量 `lumia_eq` 对未装箱 Float 仍为 bit 短路（与堆键路径分离）。
 - [x] **`foreign "C" pure` 荣誉系统**：默认 foreign 为 IO；`pure` 需 `--trust-foreign-pure` 或 `package.trust_foreign_pure`；opts 仍不 CSE/memo external。
-- [ ] **stdin 超大输入**：`lumia_rt` 在约 64MiB 后 `abort`，非可恢复错误。
-- [ ] **CLI `--link`**：绝对 `-L`/`.a` 故意放行（本机链接）；对不可信树等同原生 RCE 面，文档/沙箱策略待定。
+- [x] **stdin 超大输入**：约 64MiB 软上限经 `trap_abort`（BUILD §8）；流式/`Result` 另项。
+- [x] **CLI `--link`**：BUILD §8 写明信任模型（CLI 绝对路径 = 本机意图；不可信树需宿主沙箱）。
 - [x] **`extern "C"` 其余 `panic!`**：已统一经 `trap_abort`（非 test 构建 abort；`cfg(test)` 下仍 panic 以便单测）。
 
 ## 优化与表示（DESIGN / BUILD 下一里程碑）
