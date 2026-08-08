@@ -920,6 +920,8 @@ pub enum Builtin {
     MapKeys,
     MapValues,
     MapItems,
+    /// List/Set identity (heap list); Map → keys. Used by indexed `for` / `toList`.
+    Elems,
     Range,
     RangeInclusive,
     /// Format any scalar / String / Char as a heap String (interpolation).
@@ -1766,6 +1768,16 @@ fn pattern_cond(pat: &Pattern, scrut: &Expr, span: Span) -> (Expr, Vec<(String, 
             let Some(c) = lookup_ctor(name) else {
                 return (Expr::Bool(false, span), vec![]);
             };
+            if args.len() != c.arity {
+                set_lower_err(
+                    format!(
+                        "variant `{name}` expects {} field(s), pattern has {}",
+                        c.arity,
+                        args.len()
+                    ),
+                    span,
+                );
+            }
             let tag = Expr::BuiltinCall {
                 name: Builtin::AdtTag,
                 args: vec![scrut.clone()],
@@ -1778,10 +1790,18 @@ fn pattern_cond(pat: &Pattern, scrut: &Expr, span: Span) -> (Expr, Vec<(String, 
                 span,
             };
             let mut binds = vec![];
-            for (i, ep) in args.iter().enumerate() {
+            let nfields = args.len().min(c.arity);
+            for (i, ep) in args.iter().take(nfields).enumerate() {
+                // Result/Option: pass ctor so ty maps Ok→T / Err→E / Some→T.
+                // Other sum ctors keep 2-arg field (params[idx]); product names
+                // would incorrectly fail nominal checks if we passed the ctor.
+                let mut field_args = vec![scrut.clone(), Expr::Int(i as i64, span)];
+                if matches!(name.as_str(), "Ok" | "Err" | "Some") {
+                    field_args.push(Expr::String(name.clone(), span));
+                }
                 let field = Expr::BuiltinCall {
                     name: Builtin::AdtField,
-                    args: vec![scrut.clone(), Expr::Int(i as i64, span)],
+                    args: field_args,
                     span,
                 };
                 match ep {
@@ -1809,9 +1829,14 @@ fn pattern_cond(pat: &Pattern, scrut: &Expr, span: Span) -> (Expr, Vec<(String, 
                 let Some(idx) = order.iter().position(|f| f == fname) else {
                     continue;
                 };
+                // Nominal product name so ty rejects `Rect` matched as `Point`.
                 let field = Expr::BuiltinCall {
                     name: Builtin::AdtField,
-                    args: vec![scrut.clone(), Expr::Int(idx as i64, span)],
+                    args: vec![
+                        scrut.clone(),
+                        Expr::Int(idx as i64, span),
+                        Expr::String(name.clone(), span),
+                    ],
                     span,
                 };
                 match sub {
@@ -2769,7 +2794,9 @@ fn lower_for_in(
     match binding {
         lumia_syntax::ForBinding::Pair(k, v) => {
             let lowered = lower_expr(iter);
-            let items = if expr_yields_pair_list(&lowered) {
+            // Map → MapItems; already a List[(K,V)] (listOf / items / sortBy) → as-is.
+            // Runtime `lumia_map_items` is also identity on List as a safety net.
+            let items = if expr_already_pair_list(&lowered) {
                 lowered
             } else {
                 Expr::BuiltinCall {
@@ -2820,26 +2847,20 @@ fn lower_for_in(
     }
 }
 
-/// True when `e` is already a List of pairs (e.g. `m.items()`, `….sortBy(…)`).
-fn expr_yields_pair_list(e: &Expr) -> bool {
+/// True when `e` is already a List of pairs (not a Map needing `items()`).
+fn expr_already_pair_list(e: &Expr) -> bool {
     match e {
         Expr::BuiltinCall { name, .. } => matches!(
             name,
-            Builtin::MapItems
-                | Builtin::ListSortByKeys
-                | Builtin::ListSort
-                | Builtin::ListAppend
-                | Builtin::ListConcat
-                | Builtin::ListTake
-                | Builtin::ListReverse
-                | Builtin::ListSlice
-                | Builtin::ListGet
-                | Builtin::ListParMap
+            Builtin::MapItems | Builtin::ListSortByKeys
         ),
-        Expr::Let { body, .. } => expr_yields_pair_list(body),
+        Expr::Call { callee, .. } => {
+            matches!(callee.as_ref(), Expr::Var(n, _) if n == "listOf")
+        }
+        Expr::Let { body, .. } => expr_already_pair_list(body),
         Expr::Seq { stmts, .. } => stmts
             .last()
-            .map(expr_yields_pair_list)
+            .map(expr_already_pair_list)
             .unwrap_or(false),
         _ => false,
     }
@@ -2894,6 +2915,12 @@ fn list_for_in(binding: &str, list: Expr, body: Expr, span: Span) -> Expr {
     let xs = format!("__xs_{}", span.start.0);
     let i = format!("__i_{}", span.start.0);
     let n = format!("__n_{}", span.start.0);
+    // Map is key-addressed; normalize to an indexable List (keys) first.
+    let list = Expr::BuiltinCall {
+        name: Builtin::Elems,
+        args: vec![list],
+        span,
+    };
     let cond = Expr::Binary {
         op: BinOp::Lt,
         left: Box::new(Expr::Var(i.clone(), span)),

@@ -324,6 +324,11 @@ fn declare_runtime<'ctx>(context: &'ctx Context, module: &LlvmModule<'ctx>) {
         None,
     );
     module.add_function(
+        "lumia_elems",
+        ptr_ty.fn_type(&[ptr_ty.into()], false),
+        None,
+    );
+    module.add_function(
         "lumia_map_values",
         ptr_ty.fn_type(&[ptr_ty.into()], false),
         None,
@@ -626,6 +631,7 @@ impl<'ctx> Codegen<'ctx> {
                     | Builtin::MapKeys
                     | Builtin::MapValues
                     | Builtin::MapItems
+                    | Builtin::Elems
                     | Builtin::Range
                     | Builtin::RangeInclusive
                     | Builtin::Show
@@ -1028,6 +1034,16 @@ impl<'ctx> Codegen<'ctx> {
         Ok(())
     }
 
+    /// Preserve `List[T]` element type from the first list-typed argument.
+    fn list_elem_preserved(&self, args: &[Local]) -> Type {
+        if let Some(arg0) = args.first() {
+            if let Some(Type::List(elem)) = self.local_tys.get(&arg0.0) {
+                return Type::List(elem.clone());
+            }
+        }
+        Type::List(Box::new(Type::Int))
+    }
+
     fn infer_value_ty(&self, value: &Value) -> Type {
         match value {
             Value::Bool(_) => Type::Bool,
@@ -1075,7 +1091,7 @@ impl<'ctx> Codegen<'ctx> {
                 .get(fun)
                 .cloned()
                 .unwrap_or(Type::Int),
-            Value::Builtin { name, .. } => match name {
+            Value::Builtin { name, args } => match name {
                 Builtin::StrStartsWith
                 | Builtin::StrEndsWith
                 | Builtin::Contains => Type::Bool,
@@ -1093,32 +1109,180 @@ impl<'ctx> Codegen<'ctx> {
                 | Builtin::PrintlnStr
                 | Builtin::MatchFail
                 | Builtin::Assert => Type::Unit,
-                Builtin::ListGet
-                | Builtin::ListSlice
-                | Builtin::ListAppend
-                | Builtin::ListConcat
+                Builtin::ListGet => {
+                    // Element type when known; Map get → Option[V] (runtime ADT).
+                    if let Some(arg0) = args.first() {
+                        match self.local_tys.get(&arg0.0) {
+                            Some(Type::List(elem)) => (**elem).clone(),
+                            Some(Type::Set(elem)) => (**elem).clone(),
+                            Some(Type::Map(_, v)) => Type::Adt {
+                                name: "Option".into(),
+                                params: vec![(**v).clone()],
+                            },
+                            _ => Type::Int,
+                        }
+                    } else {
+                        Type::Int
+                    }
+                }
+                // Unary ADT/Option payload when known; else Int (println_auto / heap).
+                Builtin::AdtField => {
+                    if let Some(arg0) = args.first() {
+                        match self.local_tys.get(&arg0.0) {
+                            Some(Type::Adt { params, .. }) if params.len() == 1 => {
+                                params[0].clone()
+                            }
+                            Some(Type::Tuple(ts)) if !ts.is_empty() => {
+                                // Index is a separate local; default to first field.
+                                ts[0].clone()
+                            }
+                            _ => Type::Int,
+                        }
+                    } else {
+                        Type::Int
+                    }
+                }
+                Builtin::ListSlice
                 | Builtin::ListTake
                 | Builtin::ListReverse
                 | Builtin::ListSort
                 | Builtin::ListSortByKeys
-                | Builtin::ListParMap
-                | Builtin::MapKeys
-                | Builtin::MapValues
-                | Builtin::MapItems
-                | Builtin::MapSet
-                | Builtin::MapRemove
-                | Builtin::SetInsert
-                | Builtin::Range
-                | Builtin::RangeInclusive => Type::List(Box::new(Type::Int)),
-                Builtin::AdtField => Type::Int,
+                | Builtin::ListParMap => self.list_elem_preserved(args),
+                Builtin::ListAppend => {
+                    if let Some(arg0) = args.first() {
+                        match self.local_tys.get(&arg0.0) {
+                            Some(Type::List(elem)) => Type::List(elem.clone()),
+                            _ => Type::List(Box::new(Type::Int)),
+                        }
+                    } else {
+                        Type::List(Box::new(Type::Int))
+                    }
+                }
+                Builtin::ListConcat => {
+                    if let Some(arg0) = args.first() {
+                        match self.local_tys.get(&arg0.0) {
+                            Some(Type::List(elem)) => Type::List(elem.clone()),
+                            _ => Type::List(Box::new(Type::Int)),
+                        }
+                    } else {
+                        Type::List(Box::new(Type::Int))
+                    }
+                }
+                Builtin::Elems => {
+                    if let Some(arg0) = args.first() {
+                        match self.local_tys.get(&arg0.0) {
+                            Some(Type::List(e)) => Type::List(e.clone()),
+                            Some(Type::Set(e)) => Type::List(e.clone()),
+                            Some(Type::Map(k, _)) => Type::List(k.clone()),
+                            _ => Type::List(Box::new(Type::Int)),
+                        }
+                    } else {
+                        Type::List(Box::new(Type::Int))
+                    }
+                }
+                Builtin::MapKeys => {
+                    if let Some(arg0) = args.first() {
+                        match self.local_tys.get(&arg0.0) {
+                            Some(Type::Map(k, _)) => Type::List(k.clone()),
+                            _ => Type::List(Box::new(Type::Int)),
+                        }
+                    } else {
+                        Type::List(Box::new(Type::Int))
+                    }
+                }
+                Builtin::MapValues => {
+                    if let Some(arg0) = args.first() {
+                        match self.local_tys.get(&arg0.0) {
+                            Some(Type::Map(_, v)) => Type::List(v.clone()),
+                            _ => Type::List(Box::new(Type::Int)),
+                        }
+                    } else {
+                        Type::List(Box::new(Type::Int))
+                    }
+                }
+                Builtin::Range | Builtin::RangeInclusive => Type::List(Box::new(Type::Int)),
+                Builtin::MapItems => {
+                    if let Some(arg0) = args.first() {
+                        match self.local_tys.get(&arg0.0) {
+                            Some(Type::Map(k, v)) => Type::List(Box::new(Type::Adt {
+                                name: "__Tuple".into(),
+                                params: vec![(**k).clone(), (**v).clone()],
+                            })),
+                            Some(Type::List(elem)) => Type::List(elem.clone()),
+                            _ => Type::List(Box::new(Type::Adt {
+                                name: "__Tuple".into(),
+                                params: vec![Type::Int, Type::Int],
+                            })),
+                        }
+                    } else {
+                        Type::List(Box::new(Type::Adt {
+                            name: "__Tuple".into(),
+                            params: vec![Type::Int, Type::Int],
+                        }))
+                    }
+                }
+                Builtin::MapSet | Builtin::MapRemove => {
+                    if let Some(arg0) = args.first() {
+                        match self.local_tys.get(&arg0.0) {
+                            Some(Type::Map(k, v)) => Type::Map(k.clone(), v.clone()),
+                            _ => Type::Map(Box::new(Type::Int), Box::new(Type::Int)),
+                        }
+                    } else {
+                        Type::Map(Box::new(Type::Int), Box::new(Type::Int))
+                    }
+                }
+                Builtin::SetInsert => {
+                    if let Some(arg0) = args.first() {
+                        match self.local_tys.get(&arg0.0) {
+                            Some(Type::Set(e)) => Type::Set(e.clone()),
+                            _ => Type::Set(Box::new(Type::Int)),
+                        }
+                    } else {
+                        Type::Set(Box::new(Type::Int))
+                    }
+                }
             },
-            Value::AllocList { .. } => Type::List(Box::new(Type::Int)),
-            Value::AllocSet { .. } => Type::Set(Box::new(Type::Int)),
-            Value::AllocMap { .. } => Type::Map(Box::new(Type::Int), Box::new(Type::Int)),
-            Value::AllocAdt { .. } => Type::Adt {
-                name: "_".into(),
-                params: vec![],
-            },
+            Value::AllocList { elems, .. } => {
+                let elem = elems
+                    .first()
+                    .and_then(|Local(id)| self.local_tys.get(id).cloned())
+                    .unwrap_or(Type::Int);
+                Type::List(Box::new(elem))
+            }
+            Value::AllocSet { elems } => {
+                let elem = elems
+                    .first()
+                    .and_then(|Local(id)| self.local_tys.get(id).cloned())
+                    .unwrap_or(Type::Int);
+                Type::Set(Box::new(elem))
+            }
+            Value::AllocMap { flat_pairs, .. } => {
+                let (k, v) = if flat_pairs.len() >= 2 {
+                    (
+                        self.local_tys
+                            .get(&flat_pairs[0].0)
+                            .cloned()
+                            .unwrap_or(Type::Int),
+                        self.local_tys
+                            .get(&flat_pairs[1].0)
+                            .cloned()
+                            .unwrap_or(Type::Int),
+                    )
+                } else {
+                    (Type::Int, Type::Int)
+                };
+                Type::Map(Box::new(k), Box::new(v))
+            }
+            Value::AllocAdt { fields, .. } => {
+                let params: Vec<Type> = fields
+                    .iter()
+                    .map(|Local(id)| self.local_tys.get(id).cloned().unwrap_or(Type::Int))
+                    .collect();
+                Type::Adt {
+                    name: "_".into(),
+                    params,
+                }
+            }
             Value::AllocClosure { .. } | Value::FunRef(_) | Value::ClosureCap { .. } => {
                 Type::Fun(vec![], Box::new(Type::Int), lumia_ty::Effect::pure())
             }
@@ -1135,7 +1299,15 @@ impl<'ctx> Codegen<'ctx> {
                     .and_then(|Local(id)| self.local_tys.get(&id).cloned());
                 t.or(e).unwrap_or(Type::Int)
             }
-            Value::Loop { .. } | Value::Lambda { .. } | Value::IndirectCall { .. } => Type::Int,
+            Value::Loop { .. } | Value::Lambda { .. } => Type::Int,
+            Value::IndirectCall { callee, .. } => match self.local_tys.get(&callee.0) {
+                Some(Type::Fun(_, ret, _)) => (**ret).clone(),
+                _ => self
+                    .funref_locals
+                    .get(&callee.0)
+                    .and_then(|name| self.fun_ret_tys.get(name).cloned())
+                    .unwrap_or(Type::Int),
+            },
         }
     }
 
@@ -1793,19 +1965,17 @@ impl<'ctx> Codegen<'ctx> {
                 }
             }
             Value::IndirectCall { callee, args } => {
-                let mut any_float_arg = false;
-                for a in args {
-                    if matches!(self.local(*a)?, BasicValueEnum::FloatValue(_)) {
-                        any_float_arg = true;
-                        break;
-                    }
-                }
-                let float_ret = any_float_arg
-                    || self
+                let _ = args;
+                // Float return ABI must come from the callee's Fun type — never
+                // from "any arg is float" (that breaks Float→Int HOFs).
+                let float_ret = match self.local_tys.get(&callee.0) {
+                    Some(Type::Fun(_, ret, _)) => matches!(ret.as_ref(), Type::Float),
+                    _ => self
                         .funref_locals
                         .get(&callee.0)
                         .and_then(|name| self.fun_ret_tys.get(name))
-                        .is_some_and(|ty| matches!(ty, Type::Float));
+                        .is_some_and(|ty| matches!(ty, Type::Float)),
+                };
                 let cal_i = self.coerce_i64(self.local(*callee)?)?;
                 let one = self.i64_ty.const_int(1, false);
                 let tagged = self.builder.build_and(cal_i, one, "ic_tag").unwrap();
@@ -2095,7 +2265,7 @@ impl<'ctx> Codegen<'ctx> {
                         .unwrap()
                         .into())
                 }
-                Builtin::MapKeys | Builtin::MapValues | Builtin::MapItems => {
+                Builtin::MapKeys | Builtin::MapValues | Builtin::MapItems | Builtin::Elems => {
                     let map_i = self.coerce_i64(self.local(args[0])?)?;
                     let ptr_ty = self.context.ptr_type(AddressSpace::default());
                     let map = self
@@ -2105,6 +2275,7 @@ impl<'ctx> Codegen<'ctx> {
                     let fname = match name {
                         Builtin::MapKeys => "lumia_map_keys",
                         Builtin::MapValues => "lumia_map_values",
+                        Builtin::Elems => "lumia_elems",
                         _ => "lumia_map_items",
                     };
                     let f = self.module.get_function(fname).unwrap();
@@ -2817,7 +2988,11 @@ impl<'ctx> Codegen<'ctx> {
                     .unwrap()
                     .into())
             }
-            Value::ClosureCap { env, index } => {
+            Value::ClosureCap {
+                env,
+                index,
+                as_float,
+            } => {
                 let env_i = self.coerce_i64(self.local(*env)?)?;
                 let ptr_ty = self.context.ptr_type(AddressSpace::default());
                 let env_ptr = self
@@ -2834,10 +3009,23 @@ impl<'ctx> Codegen<'ctx> {
                         )
                         .unwrap()
                 };
-                Ok(self
+                let loaded = self
                     .builder
                     .build_load(self.i64_ty, slot, "cap")
-                    .unwrap())
+                    .unwrap();
+                if *as_float {
+                    Ok(self
+                        .builder
+                        .build_bit_cast(
+                            loaded.into_int_value(),
+                            self.context.f64_type(),
+                            "cap_f64",
+                        )
+                        .unwrap()
+                        .into())
+                } else {
+                    Ok(loaded)
+                }
             }
             Value::AllocList { elems, repr } => {
                 // Empty list → immortal singleton (`lumia_list_empty`). Non-empty

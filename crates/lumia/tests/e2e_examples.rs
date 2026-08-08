@@ -444,6 +444,49 @@ fn e2e_correctness_fixes() {
 }
 
 #[test]
+fn e2e_scope_shadow() {
+    run_example("examples/scope_shadow.lumia", &["99", "1", "1", "99", "1"]);
+}
+
+#[test]
+fn e2e_result_branch() {
+    run_example("examples/result_branch.lumia", &["7", "-1"]);
+}
+
+#[test]
+fn e2e_result_err_payload() {
+    run_example("examples/result_err_payload.lumia", &["42", "4"]);
+}
+
+#[test]
+fn e2e_for_map_keys() {
+    run_example("examples/for_map_keys.lumia", &["3", "2", "3"]);
+}
+
+#[test]
+fn e2e_contains_poly() {
+    run_example(
+        "examples/contains_poly.lumia",
+        &["true", "false", "true", "false"],
+    );
+}
+
+#[test]
+fn e2e_module_val_str() {
+    run_example("examples/module_val_str.lumia", &["hello", "4"]);
+}
+
+#[test]
+fn e2e_for_pair_list() {
+    run_example("examples/for_pair_list.lumia", &["66"]);
+}
+
+#[test]
+fn e2e_hof_float_to_int() {
+    run_example("examples/hof_float_to_int.lumia", &["1", "2"]);
+}
+
+#[test]
 fn e2e_gc_roots() {
     // Soft-threshold GC must not free `keep` while junk lists allocate.
     run_example("examples/gc_roots.lumia", &["1", "3"]);
@@ -850,5 +893,89 @@ fn e2e_trait_keyword_rejected() {
     assert!(
         combined.contains("not implemented") || combined.contains("reserved"),
         "expected reserved-keyword error, got: {combined}"
+    );
+}
+
+#[test]
+fn e2e_int_literal_overflow_rejected() {
+    let root = workspace_root();
+    let src = root.join("examples/bad_int_overflow.lumia");
+    let out = Command::new(lumia_bin())
+        .current_dir(&root)
+        .args(["check", src.to_str().unwrap()])
+        .output()
+        .expect("check bad_int_overflow");
+    assert!(!out.status.success(), "overflowing Int literal must fail");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        combined.contains("out of range") || combined.contains("integer literal"),
+        "expected overflow diagnostic, got: {combined}"
+    );
+}
+
+#[test]
+fn e2e_bad_val_assign_rejected() {
+    let root = workspace_root();
+    let src = root.join("examples/bad_val_assign.lumia");
+    let out = Command::new(lumia_bin())
+        .current_dir(&root)
+        .args(["check", src.to_str().unwrap()])
+        .output()
+        .expect("check bad_val_assign");
+    assert!(!out.status.success(), "assign to val must fail");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        combined.contains("immutable") || combined.contains("cannot assign"),
+        "expected immutability error, got: {combined}"
+    );
+}
+
+#[test]
+fn e2e_bad_struct_match_rejected() {
+    let root = workspace_root();
+    let src = root.join("examples/bad_struct_match.lumia");
+    let out = Command::new(lumia_bin())
+        .current_dir(&root)
+        .args(["check", src.to_str().unwrap()])
+        .output()
+        .expect("check bad_struct_match");
+    assert!(!out.status.success(), "Point pattern on Rect must fail");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        combined.contains("expects type") || combined.contains("Point") || combined.contains("Rect"),
+        "expected product mismatch error, got: {combined}"
+    );
+}
+
+#[test]
+fn e2e_bad_ok_arity_rejected() {
+    let root = workspace_root();
+    let src = root.join("examples/bad_ok_arity.lumia");
+    let out = Command::new(lumia_bin())
+        .current_dir(&root)
+        .args(["check", src.to_str().unwrap()])
+        .output()
+        .expect("check bad_ok_arity");
+    assert!(!out.status.success(), "Ok() vs Ok(x) arity must fail");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        combined.contains("expects") || combined.contains("field") || combined.contains("lower"),
+        "expected arity error, got: {combined}"
     );
 }

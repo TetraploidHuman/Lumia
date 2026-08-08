@@ -88,6 +88,9 @@ pub enum TokenKind {
     Underscore,
     Ellipsis, // .. in patterns as rest marker handled via DotDot
 
+    /// Lexical error (e.g. integer literal overflow); parser turns this into a diagnostic.
+    Error(String),
+
     Eof,
 }
 

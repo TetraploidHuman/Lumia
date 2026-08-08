@@ -1,0 +1,18 @@
+module BadStructMatch
+
+type Point {
+    val x
+    val y
+}
+
+type Rect {
+    val w
+    val h
+}
+
+val main = {
+    val r = Rect { w = 3, h = 4 }
+    r match {
+        Point { x, y } -> x + y
+    }
+}

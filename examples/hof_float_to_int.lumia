@@ -1,0 +1,20 @@
+module HofFloatToInt
+
+import std.io.{println}
+
+// Regression: IndirectCall must not treat float args as implying float return.
+val toInt(x) = {
+    // truncate via identity on bits used as Int display — use comparison
+    if x < 1.5 {
+        1
+    } else {
+        2
+    }
+}
+
+val apply(f, x) = f(x)
+
+val main = {
+    println(apply(toInt, 1.2))
+    println(apply(toInt, 2.0))
+}

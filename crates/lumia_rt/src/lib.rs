@@ -377,6 +377,7 @@ pub extern "C" fn lumia_alloc_string(ptr: *const u8, len: u64) -> *mut u8 {
 /// NUL-terminated C string copy of a Lumia String (for `foreign` String arguments).
 #[no_mangle]
 pub extern "C" fn lumia_string_cstr(s: *mut u8) -> *mut u8 {
+    let _gc = GcInhibitGuard::enter();
     if s.is_null() {
         let dest = lumia_alloc(1, TYPE_BYTES);
         unsafe {
@@ -634,6 +635,8 @@ pub extern "C" fn lumia_len(obj: *mut u8) -> i64 {
 
 #[no_mangle]
 pub extern "C" fn lumia_str_concat(a: *mut u8, b: *mut u8) -> *mut u8 {
+    // Keep `a`/`b` alive across the destination allocation.
+    let _gc = GcInhibitGuard::enter();
     unsafe {
         let na = if a.is_null() {
             0u64
@@ -710,6 +713,7 @@ fn char_codepoint(ch: i64) -> u32 {
 /// Trim ASCII whitespace from both ends.
 #[no_mangle]
 pub extern "C" fn lumia_str_trim(s: *mut u8) -> *mut u8 {
+    // Copy before alloc — slice aliases heap bytes that GC may free.
     with_str_bytes(s, |bytes| {
         let start = bytes
             .iter()
@@ -720,8 +724,8 @@ pub extern "C" fn lumia_str_trim(s: *mut u8) -> *mut u8 {
             .rposition(|b| !b.is_ascii_whitespace())
             .map(|i| i + 1)
             .unwrap_or(start);
-        let slice = &bytes[start..end];
-        lumia_alloc_string(slice.as_ptr(), slice.len() as u64)
+        let owned = bytes[start..end].to_vec();
+        lumia_alloc_string(owned.as_ptr(), owned.len() as u64)
     })
 }
 
@@ -733,8 +737,8 @@ pub extern "C" fn lumia_str_substring(s: *mut u8, start: i64, end: i64) -> *mut 
         let a = start.clamp(0, n) as usize;
         let b = end.clamp(0, n) as usize;
         let b = b.max(a);
-        let slice = &bytes[a..b];
-        lumia_alloc_string(slice.as_ptr(), slice.len() as u64)
+        let owned = bytes[a..b].to_vec();
+        lumia_alloc_string(owned.as_ptr(), owned.len() as u64)
     })
 }
 
@@ -813,9 +817,13 @@ pub extern "C" fn lumia_list_take(list: *mut u8, n: i64) -> *mut u8 {
         unsafe {
             let base = list as *const i64;
             let start = *base;
-            return lumia_range(start, start + take);
+            let end = start
+                .checked_add(take)
+                .unwrap_or_else(|| panic!("lumia: iota take overflow"));
+            return lumia_range(start, end);
         }
     }
+    let _gc = GcInhibitGuard::enter();
     unsafe {
         let len = if list.is_null() {
             0i64
@@ -848,6 +856,7 @@ pub extern "C" fn lumia_list_take(list: *mut u8, n: i64) -> *mut u8 {
 /// Reverse element order into a new list.
 #[no_mangle]
 pub extern "C" fn lumia_list_reverse(list: *mut u8) -> *mut u8 {
+    let _gc = GcInhibitGuard::enter();
     let list = force_heap_list(list);
     unsafe {
         let len = if list.is_null() {
@@ -875,6 +884,7 @@ pub extern "C" fn lumia_list_reverse(list: *mut u8) -> *mut u8 {
 /// Sort `List[Int]` ascending (stable via slice::sort).
 #[no_mangle]
 pub extern "C" fn lumia_list_sort(list: *mut u8) -> *mut u8 {
+    let _gc = GcInhibitGuard::enter();
     let list = force_heap_list(list);
     unsafe {
         let len = if list.is_null() {
@@ -904,6 +914,7 @@ pub extern "C" fn lumia_list_sort(list: *mut u8) -> *mut u8 {
 /// Stable permute of `values` by parallel Ord keys (Int / String / Char).
 #[no_mangle]
 pub extern "C" fn lumia_list_sort_by_keys(values: *mut u8, keys: *mut u8) -> *mut u8 {
+    let _gc = GcInhibitGuard::enter();
     let values = force_heap_list(values);
     let keys = force_heap_list(keys);
     unsafe {
@@ -987,6 +998,7 @@ fn lumia_ord_cmp(a: i64, b: i64) -> std::cmp::Ordering {
 /// Join `List[String]` with a separator string.
 #[no_mangle]
 pub extern "C" fn lumia_list_join(list: *mut u8, sep: *mut u8) -> *mut u8 {
+    let _gc = GcInhibitGuard::enter();
     let list = force_heap_list(list);
     let sep_bytes = with_str_bytes(sep, |b| b.to_vec());
     let parts: Vec<Vec<u8>> = unsafe {
@@ -1125,6 +1137,8 @@ pub extern "C" fn lumia_list_get(list: *mut u8, index: i64) -> i64 {
 /// Return a new HeapList with `elem` appended.
 #[no_mangle]
 pub extern "C" fn lumia_list_append(list: *mut u8, elem: i64) -> *mut u8 {
+    // Keep materialized Iota alive across the following alloc/copy.
+    let _gc = GcInhibitGuard::enter();
     let list = force_heap_list(list);
     unsafe {
         let n = if list.is_null() {
@@ -1161,6 +1175,8 @@ pub extern "C" fn lumia_list_par_map(
     let Some(f) = f else {
         panic!("lumia: list_par_map null function");
     };
+    // Cover force + sequential alloc; parallel path takes its own inhibit.
+    let _gc = GcInhibitGuard::enter();
     let list = force_heap_list(list);
     unsafe {
         let n = if list.is_null() {
@@ -1227,6 +1243,7 @@ pub extern "C" fn lumia_list_par_map(
 /// Immutable update: new List with index `i` set to `elem` (bounds trap).
 #[no_mangle]
 pub extern "C" fn lumia_list_set(list: *mut u8, index: i64, elem: i64) -> *mut u8 {
+    let _gc = GcInhibitGuard::enter();
     let list = force_heap_list(list);
     unsafe {
         if list.is_null() || index < 0 {
@@ -1255,6 +1272,7 @@ pub extern "C" fn lumia_list_set(list: *mut u8, index: i64, elem: i64) -> *mut u
 /// Return a new HeapList that is `a` followed by `b`.
 #[no_mangle]
 pub extern "C" fn lumia_list_concat(a: *mut u8, b: *mut u8) -> *mut u8 {
+    let _gc = GcInhibitGuard::enter();
     let a = force_heap_list(a);
     let b = force_heap_list(b);
     unsafe {
@@ -1330,13 +1348,16 @@ pub extern "C" fn lumia_list_slice(list: *mut u8, start: i64) -> *mut u8 {
             let s0 = *base;
             let end = *base.add(1);
             let start = if start < 0 { 0 } else { start };
-            let abs = s0 + start;
+            let abs = s0
+                .checked_add(start)
+                .unwrap_or_else(|| panic!("lumia: iota slice overflow"));
             if abs >= end {
                 return lumia_range(s0, s0);
             }
             return lumia_range(abs, end);
         }
     }
+    let _gc = GcInhibitGuard::enter();
     unsafe {
         let len = *(list as *const i64);
         let start = if start < 0 { 0 } else { start };
@@ -1530,6 +1551,8 @@ unsafe fn map_lookup_val(map: *mut u8, key: i64) -> Option<i64> {
 
 /// Flatten overlay (and nested overlays) into a HashOrdered or linear map.
 unsafe fn map_materialize(map: *mut u8) -> *mut u8 {
+    // Multi-alloc helper: keep intermediates alive across soft-threshold GC.
+    let _gc = GcInhibitGuard::enter();
     if map.is_null() || !map_is_overlay(map) {
         return map;
     }
@@ -1744,6 +1767,7 @@ fn map_mark_payload(payload: *mut u8, size: usize) {
 }
 
 fn map_eq(a: *mut u8, b: *mut u8) -> i64 {
+    let _gc = GcInhibitGuard::enter();
     unsafe {
         let a = if map_is_overlay(a) {
             map_materialize(a)
@@ -1780,6 +1804,7 @@ fn map_eq(a: *mut u8, b: *mut u8) -> i64 {
 
 /// i-th pair in insertion order.
 unsafe fn map_pair_at(map: *mut u8, i: usize) -> (i64, i64) {
+    let _gc = GcInhibitGuard::enter();
     let map = if map_is_overlay(map) {
         map_materialize(map)
     } else {
@@ -1988,6 +2013,7 @@ unsafe fn map_clone_hash_upsert(src: *mut u8, key: i64, val: i64) -> *mut u8 {
 /// Immutable upsert: new Map with `key → val` (overwrite keeps insertion slot).
 #[no_mangle]
 pub extern "C" fn lumia_map_set(map: *mut u8, key: i64, val: i64) -> *mut u8 {
+    let _gc = GcInhibitGuard::enter();
     unsafe {
         if map_is_overlay(map) {
             let parent = map_overlay_parent(map);
@@ -2075,6 +2101,7 @@ pub extern "C" fn lumia_set(obj: *mut u8, key_or_index: i64, val: i64) -> *mut u
 /// Drop key if present; returns new Map (insertion order of remaining keys).
 #[no_mangle]
 pub extern "C" fn lumia_map_remove(map: *mut u8, key: i64) -> *mut u8 {
+    let _gc = GcInhibitGuard::enter();
     unsafe {
         let map = if map_is_overlay(map) {
             map_materialize(map)
@@ -2159,6 +2186,9 @@ pub extern "C" fn lumia_map_remove(map: *mut u8, key: i64) -> *mut u8 {
 /// If `map` is a linear table larger than [`MAP_SMALL_MAX`], promote to HashOrdered.
 #[no_mangle]
 pub extern "C" fn lumia_map_finish(map: *mut u8) -> *mut u8 {
+    // Literal build may call finish before the linear table is rooted; inhibit
+    // while promoting so alloc inside `map_from_linear_to_hash` cannot collect it.
+    let _gc = GcInhibitGuard::enter();
     if map.is_null() {
         return map;
     }
@@ -2178,6 +2208,7 @@ pub extern "C" fn lumia_map_finish(map: *mut u8) -> *mut u8 {
 /// Keys in insertion order as HeapList.
 #[no_mangle]
 pub extern "C" fn lumia_map_keys(map: *mut u8) -> *mut u8 {
+    let _gc = GcInhibitGuard::enter();
     unsafe {
         let map = if map_is_overlay(map) {
             map_materialize(map)
@@ -2203,9 +2234,42 @@ pub extern "C" fn lumia_map_keys(map: *mut u8) -> *mut u8 {
     }
 }
 
+/// Normalize a collection for indexed `for` / `toList`: List/Iota as heap list,
+/// Set as element list, Map as key list (DESIGN: `for (k,v) in m` for pairs).
+#[no_mangle]
+pub extern "C" fn lumia_elems(obj: *mut u8) -> *mut u8 {
+    let _gc = GcInhibitGuard::enter();
+    if obj.is_null() {
+        let dest = lumia_alloc(8, TYPE_LIST);
+        unsafe {
+            *(dest as *mut i64) = 0;
+        }
+        return dest;
+    }
+    let tid = unsafe { (*header_from_payload(obj)).type_id };
+    match tid {
+        TYPE_LIST => obj,
+        TYPE_LIST_IOTA => force_heap_list(obj),
+        TYPE_SET => unsafe {
+            let n = *(obj as *const i64);
+            let nbytes = list_payload_bytes(n);
+            let dest = lumia_alloc(nbytes, TYPE_LIST);
+            let dst = dest as *mut i64;
+            *dst = n;
+            for i in 0..n as usize {
+                *dst.add(1 + i) = set_elem_at(obj, i);
+            }
+            dest
+        },
+        TYPE_MAP => lumia_map_keys(obj),
+        other => panic!("lumia: elems unsupported type_id={other}"),
+    }
+}
+
 /// Values in insertion order as HeapList.
 #[no_mangle]
 pub extern "C" fn lumia_map_values(map: *mut u8) -> *mut u8 {
+    let _gc = GcInhibitGuard::enter();
     unsafe {
         let map = if map_is_overlay(map) {
             map_materialize(map)
@@ -2232,9 +2296,19 @@ pub extern "C" fn lumia_map_values(map: *mut u8) -> *mut u8 {
 }
 
 /// Insertion-ordered list of `(k, v)` pairs (each pair is ADT tag0 + 2 fields).
+/// Also accepts an existing `List` of pairs (identity) so `for (k,v) in pairs` works.
 #[no_mangle]
 pub extern "C" fn lumia_map_items(map: *mut u8) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
+    if !map.is_null() {
+        let tid = unsafe { (*header_from_payload(map)).type_id };
+        if tid == TYPE_LIST {
+            return map;
+        }
+        if tid == TYPE_LIST_IOTA {
+            return force_heap_list(map);
+        }
+    }
     unsafe {
         let map = if map_is_overlay(map) {
             map_materialize(map)
@@ -2373,6 +2447,7 @@ unsafe fn set_hash_find_slot(set: *mut u8, elem: i64) -> Option<usize> {
 /// If `set` is a linear table larger than [`SET_SMALL_MAX`], promote to HashOrdered.
 #[no_mangle]
 pub extern "C" fn lumia_set_finish(set: *mut u8) -> *mut u8 {
+    let _gc = GcInhibitGuard::enter();
     if set.is_null() {
         return set;
     }
@@ -2482,6 +2557,7 @@ unsafe fn set_from_linear_to_hash(src: *mut u8, extra: Option<i64>) -> *mut u8 {
 /// Immutable insert: new Set with `elem` (no-op copy if already present).
 #[no_mangle]
 pub extern "C" fn lumia_set_insert(set: *mut u8, elem: i64) -> *mut u8 {
+    let _gc = GcInhibitGuard::enter();
     unsafe {
         if lumia_set_contains(set, elem) != 0 {
             if set.is_null() {
@@ -2536,6 +2612,7 @@ pub extern "C" fn lumia_set_insert(set: *mut u8, elem: i64) -> *mut u8 {
 /// Drop element if present; returns new Set (insertion order of remaining elems).
 #[no_mangle]
 pub extern "C" fn lumia_set_remove(set: *mut u8, elem: i64) -> *mut u8 {
+    let _gc = GcInhibitGuard::enter();
     unsafe {
         if set.is_null() {
             let dest = lumia_alloc(8, TYPE_SET);
@@ -3195,5 +3272,6 @@ mod tests {
         // Call Rust path (not `extern "C"`) so the panic can unwind for should_panic.
         let _ = MarkSweep.alloc(8, TYPE_LIST);
     }
+
 }
 

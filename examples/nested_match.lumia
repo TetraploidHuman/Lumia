@@ -17,15 +17,15 @@ type Box {
 }
 
 val main = {
-    // Nested variant binders
-    val r1 = Some(Ok(7))
+    // Nested variant binders — pin Result[Int, Int] so both arm payloads typecheck.
+    val r1 = if true { Some(Ok(7)) } else { Some(Err(0)) }
     r1 match {
         Some(Ok(n)) -> println(n)
         Some(Err(m)) -> println(m)
         None -> println(-1)
     }
 
-    val r2 = Some(Err(99))
+    val r2 = if false { Some(Ok(0)) } else { Some(Err(99)) }
     r2 match {
         Some(Ok(n)) -> println(n)
         Some(Err(m)) -> println(m)

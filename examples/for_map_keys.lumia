@@ -1,0 +1,16 @@
+module ForMapKeys
+
+import std.io.{println}
+
+// Regression: `for x in map` iterates keys (not map.get(index) → Option).
+val main = {
+    var ksum = 0
+    for k in mapOf(1 to 10, 2 to 20) {
+        ksum = ksum + k
+    }
+    println(ksum)
+
+    val keys = mapOf(1 to 10, 2 to 20).toList()
+    println(keys.len())
+    println(keys.get(0) + keys.get(1))
+}

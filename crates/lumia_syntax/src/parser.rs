@@ -957,6 +957,14 @@ impl<'a> Parser<'a> {
 
     fn parse_primary(&mut self) -> Result<Expr, ParseError> {
         match &self.cur.kind {
+            TokenKind::Error(msg) => {
+                let msg = msg.clone();
+                let s = self.bump().span;
+                Err(ParseError {
+                    message: msg,
+                    span: s,
+                })
+            }
             TokenKind::Int(n) => {
                 let n = *n;
                 let s = self.bump().span;

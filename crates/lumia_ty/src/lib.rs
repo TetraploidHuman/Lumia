@@ -222,6 +222,8 @@ struct Infer {
     subst: HashMap<u32, Type>,
     eff_subst: HashMap<u32, Effect>,
     env: Vec<HashMap<String, Type>>,
+    /// Parallel to `env`: names bound with `var` (assignable) in that scope.
+    mutables: Vec<HashSet<String>>,
     type_at: Vec<(lumia_syntax::Span, Type)>,
     decls: HashMap<String, lumia_syntax::Span>,
     vis: NameVisibility,
@@ -260,6 +262,7 @@ impl Infer {
             subst: HashMap::new(),
             eff_subst: HashMap::new(),
             env: vec![builtins],
+            mutables: vec![HashSet::new()],
             type_at: Vec::new(),
             decls: HashMap::new(),
             vis,
@@ -292,14 +295,26 @@ impl Infer {
 
     fn push(&mut self) {
         self.env.push(HashMap::new());
+        self.mutables.push(HashSet::new());
     }
 
     fn pop(&mut self) {
         self.env.pop();
+        self.mutables.pop();
     }
 
     fn bind(&mut self, name: String, ty: Type) {
-        self.env.last_mut().unwrap().insert(name, ty);
+        self.bind_mut(name, ty, false);
+    }
+
+    fn bind_mut(&mut self, name: String, ty: Type, mutable: bool) {
+        self.env.last_mut().unwrap().insert(name.clone(), ty);
+        let m = self.mutables.last_mut().unwrap();
+        if mutable {
+            m.insert(name);
+        } else {
+            m.remove(&name);
+        }
     }
 
     fn lookup(&self, name: &str) -> Option<Type> {
@@ -309,6 +324,16 @@ impl Infer {
             }
         }
         None
+    }
+
+    /// True when the binding that `lookup` would see was introduced with `var`.
+    fn is_mutable(&self, name: &str) -> bool {
+        for (scope, muts) in self.env.iter().zip(self.mutables.iter()).rev() {
+            if scope.contains_key(name) {
+                return muts.contains(name);
+            }
+        }
+        false
     }
 
     fn prune(&mut self, ty: Type) -> Type {
@@ -503,17 +528,24 @@ impl Infer {
                 name,
                 value,
                 body,
+                mutable,
                 ..
             } => {
                 let (vt, ve) = self.infer_expr(value)?;
                 self.push();
-                self.bind(name.clone(), vt);
+                self.bind_mut(name.clone(), vt, *mutable);
                 let (bt, be) = self.infer_expr(body)?;
                 self.pop();
                 Ok((bt, ve.union(be)))
             }
             Expr::Assign { name, value, span } => {
                 let expect = self.lookup(name).ok_or_else(|| at(*span, format!("unbound `{name}` in assign")))?;
+                if !self.is_mutable(name) {
+                    return Err(at(
+                        *span,
+                        format!("cannot assign to immutable binding `{name}` (use `var`)"),
+                    ));
+                }
                 let (vt, ve) = self.infer_expr(value)?;
                 self.unify_at(*span, expect, vt)?;
                 Ok((Type::Unit, ve))
@@ -689,10 +721,7 @@ impl Infer {
                         Type::Set(e) => self.unify_at(*span, kt, *e)?,
                         Type::String => self.unify_at(*span, kt, Type::String)?,
                         Type::Var(_) => {
-                            let k = self.fresh();
-                            let v = self.fresh();
-                            self.unify_at(*span, ct, Type::Map(Box::new(k.clone()), Box::new(v)))?;
-                            self.unify_at(*span, kt, k)?;
+                            // Leave open so later use can unify with Set/Map/String.
                         }
                         other => {
                             return Err(at(*span, format!(
@@ -754,10 +783,8 @@ impl Infer {
                             Ok((Type::Set(e), me.union(ke)))
                         }
                         Type::Var(_) => {
-                            // Prefer Map when unconstrained (historical default for `.remove`).
-                            let v = self.fresh();
-                            self.unify_at(*span, mt, Type::Map(Box::new(kt.clone()), Box::new(v.clone())))?;
-                            Ok((Type::Map(Box::new(kt), Box::new(v)), me.union(ke)))
+                            // Keep open; call site / later use constrains Map vs Set.
+                            Ok((mt, me.union(ke)))
                         }
                         other => Err(at(*span, format!(
                             "remove: expected Map or Set, got {other:?}"
@@ -783,6 +810,29 @@ impl Infer {
                             "insert: expected Set, got {other:?}"
                         ))),
                     }
+                }
+                Builtin::Elems => {
+                    if args.len() != 1 {
+                        return Err(at(*span, "elems takes 1 argument"));
+                    }
+                    let (ct, ce) = self.infer_expr(&args[0])?;
+                    let list_ty = match self.prune(ct.clone()) {
+                        Type::List(e) => Type::List(e),
+                        Type::Set(e) => Type::List(e),
+                        Type::Map(k, _) => Type::List(k),
+                        Type::Var(_) => {
+                            let e = self.fresh();
+                            self.unify_at(*span, ct, Type::List(Box::new(e.clone())))?;
+                            Type::List(Box::new(e))
+                        }
+                        other => {
+                            return Err(at(
+                                *span,
+                                format!("elems: expected List, Set, or Map, got {other:?}"),
+                            ));
+                        }
+                    };
+                    Ok((list_ty, ce))
                 }
                 Builtin::MapKeys => {
                     if args.len() != 1 {
@@ -831,24 +881,60 @@ impl Infer {
                         return Err(at(*span, "items takes 1 argument"));
                     }
                     let (mt, me) = self.infer_expr(&args[0])?;
-                    let (k, v) = match self.prune(mt.clone()) {
-                        Type::Map(k, v) => (*k, *v),
+                    // Map → List[(K,V)]; already a List of pairs → identity (for-in sugar).
+                    let pair_list = match self.prune(mt.clone()) {
+                        Type::Map(k, v) => Type::List(Box::new(Type::Tuple(vec![*k, *v]))),
+                        Type::List(elem) => {
+                            let elem = self.prune(*elem);
+                            match elem {
+                                Type::Tuple(ts) if ts.len() == 2 => {
+                                    Type::List(Box::new(Type::Tuple(ts)))
+                                }
+                                Type::Adt { name, params }
+                                    if (name == "__Tuple" || name.is_empty())
+                                        && params.len() == 2 =>
+                                {
+                                    Type::List(Box::new(Type::Tuple(params)))
+                                }
+                                Type::Var(_) => {
+                                    let k = self.fresh();
+                                    let v = self.fresh();
+                                    let pair = Type::Tuple(vec![k, v]);
+                                    self.unify_at(
+                                        *span,
+                                        Type::List(Box::new(elem)),
+                                        Type::List(Box::new(pair.clone())),
+                                    )?;
+                                    Type::List(Box::new(pair))
+                                }
+                                other => {
+                                    return Err(at(
+                                        *span,
+                                        format!(
+                                            "items: expected Map or List of pairs, got List({other:?})"
+                                        ),
+                                    ));
+                                }
+                            }
+                        }
                         Type::Var(_) => {
                             let k = self.fresh();
                             let v = self.fresh();
-                            self.unify_at(*span, 
+                            self.unify_at(
+                                *span,
                                 mt,
                                 Type::Map(Box::new(k.clone()), Box::new(v.clone())),
                             )?;
-                            (k, v)
+                            Type::List(Box::new(Type::Tuple(vec![k, v])))
                         }
                         other => {
-                            return Err(at(*span, format!(
-                                "items: expected Map, got {other:?}"
-                            )));
+                            return Err(at(
+                                *span,
+                                format!("items: expected Map or List of pairs, got {other:?}"),
+                            ));
                         }
                     };
-                    Ok((Type::List(Box::new(Type::Tuple(vec![k, v]))), me))
+                    Ok((pair_list, me))
                 }
                 Builtin::AdtTag => {
                     if args.len() != 1 {
@@ -886,6 +972,47 @@ impl Infer {
                     let elem = match self.prune(recv_ty.clone()) {
                         Type::Adt { name, params } => {
                             if let Some(want) = expect_adt {
+                                // Variant patterns pass ctor name (`Ok`/`Err`/`Some`);
+                                // product patterns / field proj pass the ADT name.
+                                if name == "Result" && (want == "Ok" || want == "Err") {
+                                    if idx != 0 {
+                                        return Err(at(
+                                            *span,
+                                            format!(
+                                                "Result::{want} has a single payload (index 0), got {idx}"
+                                            ),
+                                        ));
+                                    }
+                                    let pi = if want == "Ok" { 0 } else { 1 };
+                                    return Ok((
+                                        params.get(pi).cloned().ok_or_else(|| {
+                                            at(
+                                                *span,
+                                                format!(
+                                                    "Result::{want} payload missing (params {})",
+                                                    params.len()
+                                                ),
+                                            )
+                                        })?,
+                                        eff,
+                                    ));
+                                }
+                                if name == "Option" && want == "Some" {
+                                    if idx != 0 {
+                                        return Err(at(
+                                            *span,
+                                            format!(
+                                                "Option::Some has a single payload (index 0), got {idx}"
+                                            ),
+                                        ));
+                                    }
+                                    return Ok((
+                                        params.first().cloned().ok_or_else(|| {
+                                            at(*span, "Option::Some payload missing")
+                                        })?,
+                                        eff,
+                                    ));
+                                }
                                 if name != want {
                                     return Err(at(
                                         *span,
@@ -1383,23 +1510,36 @@ impl Infer {
             }
             Expr::Break(_) | Expr::Continue(_) => Ok((Type::Unit, Effect::pure())),
             Expr::AdtNew {
-                adt_name, args, ..
+                adt_name,
+                variant,
+                args,
+                ..
             } => {
                 let mut eff = Effect::pure();
-                let mut params = vec![];
+                let mut arg_tys = vec![];
                 for a in args {
                     let (t, e) = self.infer_expr(a)?;
-                    params.push(t);
+                    arg_tys.push(t);
                     eff = eff.union(e);
                 }
                 if adt_name == "__Tuple" {
-                    return Ok((Type::Tuple(params), eff));
+                    return Ok((Type::Tuple(arg_tys), eff));
                 }
-                // Unit ctors: Option[α] with fresh α; product: params = field types;
-                // unary sum: Option[T] from payload.
-                if params.is_empty() {
-                    params.push(self.fresh());
-                }
+                // Result[T, E]: Ok fills T (E fresh); Err fills E (T fresh).
+                let params = if adt_name == "Result" {
+                    match (variant.as_str(), arg_tys.as_slice()) {
+                        ("Ok", [t]) => vec![t.clone(), self.fresh()],
+                        ("Err", [e]) => vec![self.fresh(), e.clone()],
+                        _ if arg_tys.is_empty() => vec![self.fresh(), self.fresh()],
+                        _ => arg_tys,
+                    }
+                } else if arg_tys.is_empty() {
+                    // Unit ctors: Option[α] with fresh α.
+                    vec![self.fresh()]
+                } else {
+                    // Product / unary sum: field / payload types as params.
+                    arg_tys
+                };
                 Ok((
                     Type::Adt {
                         name: adt_name.clone(),
@@ -1530,8 +1670,14 @@ pub fn infer_module_with_visibility(
                         ),
                     ));
                 }
-                inf.bind(name.clone(), ty);
+                let ty = inf.prune(ty);
+                inf.bind(name.clone(), ty.clone());
                 inf.decls.insert(name.clone(), expr_span(body));
+                // Zero-arg getter used by Core lowering / codegen GC rooting.
+                fun_types.insert(
+                    format!("__val_{name}"),
+                    Type::Fun(vec![], Box::new(ty), Effect::pure()),
+                );
             }
         }
     }

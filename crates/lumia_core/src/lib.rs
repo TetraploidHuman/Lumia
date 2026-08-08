@@ -145,9 +145,11 @@ pub enum Value {
         captures: Vec<Local>,
     },
     /// Load capture word `index` from closure env (`env` is the heap ptr as i64).
+    /// `as_float` restores IEEE bits to f64 in codegen (captures are stored as i64).
     ClosureCap {
         env: Local,
         index: u32,
+        as_float: bool,
     },
 }
 
@@ -204,6 +206,16 @@ impl LowerCtx {
     fn bind_mutable(&mut self, name: String, local: Local) {
         self.mutables.insert(name.clone());
         self.bind_name(name, local);
+    }
+
+    /// Snapshot of name bindings (not `next` — locals stay unique across scopes).
+    fn save_bindings(&self) -> (HashMap<String, Local>, HashSet<String>) {
+        (self.name_to_local.clone(), self.mutables.clone())
+    }
+
+    fn restore_bindings(&mut self, saved: (HashMap<String, Local>, HashSet<String>)) {
+        self.name_to_local = saved.0;
+        self.mutables = saved.1;
     }
 }
 
@@ -264,15 +276,22 @@ pub fn lower_hir(module: &HirModule, fun_types: &HashMap<String, Type>) -> CoreM
             }
             Item::Val { name, body } => {
                 // Module-level `val` → zero-arg getter `__val_<name>` (pure).
+                // Ret type must match inference so codegen roots heap returns.
+                let getter = format!("__val_{name}");
+                let ret_ty = match fun_types.get(&getter).or_else(|| fun_types.get(name)) {
+                    Some(Type::Fun(_, r, _)) => (**r).clone(),
+                    Some(t) => t.clone(),
+                    None => Type::Int,
+                };
                 let mut ctx = LowerCtx::new(toplevel_funs.clone(), toplevel_vals.clone());
                 let (body, _) = lower_expr_block(&mut ctx, body);
                 functions.push(CoreFun {
-                    name: format!("__val_{name}"),
+                    name: getter,
                     params: vec![],
                     param_names: vec![],
                     param_tys: vec![],
                     body,
-                    ret_ty: Type::Int,
+                    ret_ty,
                     effect: Effect::pure(),
                     is_main: false,
                     memo: None,
@@ -461,6 +480,7 @@ fn value_is_float_producing(v: &Value, float_locals: &HashSet<u32>) -> bool {
     match v {
         Value::Float(_) => true,
         Value::Local(Local(id)) => float_locals.contains(id),
+        Value::ClosureCap { as_float: true, .. } => true,
         Value::Binary { left, right, .. } => {
             float_locals.contains(&left.0) || float_locals.contains(&right.0)
         }
@@ -496,6 +516,47 @@ fn block_result_is_float(block: &Block) -> bool {
         }
     }
     float_locals.contains(&r)
+}
+
+
+/// Locals that hold Float values in `block` (for closure-capture ABI).
+fn compute_float_locals_in_block(block: &Block) -> HashSet<u32> {
+    let mut float_locals: HashSet<u32> = HashSet::new();
+    for op in &block.ops {
+        if let Op::Let { local, value, .. } = op {
+            if value_is_float_producing(value, &float_locals) || matches!(value, Value::Float(_)) {
+                float_locals.insert(local.0);
+            }
+            if let Value::Binary { left, right, .. } = value {
+                if float_locals.contains(&left.0) || float_locals.contains(&right.0) {
+                    float_locals.insert(local.0);
+                }
+            }
+            if let Value::Local(Local(src)) = value {
+                if float_locals.contains(src) {
+                    float_locals.insert(local.0);
+                }
+            }
+            if let Value::ClosureCap { as_float: true, .. } = value {
+                float_locals.insert(local.0);
+            }
+            if let Value::Unary { operand, .. } = value {
+                if float_locals.contains(&operand.0) {
+                    float_locals.insert(local.0);
+                }
+            }
+            if let Value::If {
+                then_block,
+                else_block,
+                ..
+            } = value
+            {
+                float_locals.extend(compute_float_locals_in_block(then_block));
+                float_locals.extend(compute_float_locals_in_block(else_block));
+            }
+        }
+    }
+    float_locals
 }
 
 fn block_result_may_heap(block: &Block) -> bool {
@@ -549,7 +610,21 @@ fn lift_lambdas(module: &mut CoreModule) {
     let mut id = 0u32;
     let mut next_local = max_local_in_module(module).saturating_add(1);
     for fun in &mut module.functions {
-        lift_block(&mut fun.body, &mut extras, &mut id, &mut next_local);
+        let mut float_locals = compute_float_locals_in_block(&fun.body);
+        for (i, ty) in fun.param_tys.iter().enumerate() {
+            if matches!(ty, Type::Float) {
+                if let Some(p) = fun.params.get(i) {
+                    float_locals.insert(p.0);
+                }
+            }
+        }
+        lift_block(
+            &mut fun.body,
+            &mut extras,
+            &mut id,
+            &mut next_local,
+            &mut float_locals,
+        );
     }
     module.functions.append(&mut extras);
 }
@@ -655,18 +730,35 @@ fn lift_block(
     extras: &mut Vec<CoreFun>,
     id: &mut u32,
     next_local: &mut u32,
+    float_locals: &mut HashSet<u32>,
 ) {
     let mut new_ops = Vec::with_capacity(block.ops.len());
     for mut op in std::mem::take(&mut block.ops) {
         match &mut op {
             Op::Let { value, pure_region, .. } => {
                 let mut prelude = Vec::new();
-                lift_value(value, extras, id, next_local, &mut prelude, *pure_region);
+                lift_value(
+                    value,
+                    extras,
+                    id,
+                    next_local,
+                    &mut prelude,
+                    *pure_region,
+                    float_locals,
+                );
                 new_ops.append(&mut prelude);
             }
             Op::Effect { value, .. } => {
                 let mut prelude = Vec::new();
-                lift_value(value, extras, id, next_local, &mut prelude, true);
+                lift_value(
+                    value,
+                    extras,
+                    id,
+                    next_local,
+                    &mut prelude,
+                    true,
+                    float_locals,
+                );
                 new_ops.append(&mut prelude);
             }
             Op::Assign { .. } | Op::Break | Op::Continue => {}
@@ -683,10 +775,11 @@ fn lift_value(
     next_local: &mut u32,
     prelude: &mut Vec<Op>,
     pure_region: bool,
+    float_locals: &mut HashSet<u32>,
 ) {
     match value {
         Value::Lambda { params, body } => {
-            lift_block(body, extras, id, next_local);
+            lift_block(body, extras, id, next_local, float_locals);
             let (free_locals, free_names) = analyze_captures(body, params);
             let name = format!("__lam_{id}");
             *id += 1;
@@ -739,11 +832,16 @@ fn lift_value(
             for (i, cap_src) in captures.iter().enumerate() {
                 let loaded = Local(*next_local);
                 *next_local += 1;
+                let as_float = float_locals.contains(&cap_src.0);
+                if as_float {
+                    float_locals.insert(loaded.0);
+                }
                 load_ops.push(Op::Let {
                     local: loaded,
                     value: Value::ClosureCap {
                         env,
                         index: i as u32,
+                        as_float,
                     },
                     pure_region: true,
                 });
@@ -797,17 +895,17 @@ fn lift_value(
             else_block,
             ..
         } => {
-            lift_block(then_block, extras, id, next_local);
-            lift_block(else_block, extras, id, next_local);
+            lift_block(then_block, extras, id, next_local, float_locals);
+            lift_block(else_block, extras, id, next_local, float_locals);
         }
         Value::Loop {
             header,
             body,
             latch,
         } => {
-            lift_block(header, extras, id, next_local);
-            lift_block(body, extras, id, next_local);
-            lift_block(latch, extras, id, next_local);
+            lift_block(header, extras, id, next_local, float_locals);
+            lift_block(body, extras, id, next_local, float_locals);
+            lift_block(latch, extras, id, next_local, float_locals);
         }
         _ => {}
     }
@@ -1231,6 +1329,7 @@ fn lower_expr(
             ..
         } => {
             let v = lower_expr(ctx, value, ops, pure_region);
+            let saved = ctx.save_bindings();
             if let Some(l) = v {
                 if *mutable {
                     ctx.bind_mutable(name.clone(), l);
@@ -1239,10 +1338,14 @@ fn lower_expr(
                         value: l,
                     });
                 } else {
+                    // `val` may shadow an outer `var` for the duration of `body`.
+                    ctx.mutables.remove(name);
                     ctx.bind_name(name.clone(), l);
                 }
             }
-            lower_expr(ctx, body, ops, pure_region)
+            let result = lower_expr(ctx, body, ops, pure_region);
+            ctx.restore_bindings(saved);
+            result
         }
         HirExpr::Assign { name, value, .. } => {
             let v = match lower_expr(ctx, value, ops, pure_region) {
@@ -1258,11 +1361,16 @@ fn lower_expr(
                     l
                 }
             };
-            ops.push(Op::Assign {
-                name: name.clone(),
-                value: v,
-            });
-            ctx.bind_mutable(name.clone(), v);
+            if ctx.mutables.contains(name) {
+                ops.push(Op::Assign {
+                    name: name.clone(),
+                    value: v,
+                });
+            } else {
+                // Immutable binding: ty rejects user assigns; do not mutate an
+                // outer `var` shadowed by `val` (and do not mark name mutable).
+                ctx.bind_name(name.clone(), v);
+            }
             None
         }
         HirExpr::Binary {
@@ -1386,8 +1494,12 @@ fn lower_expr(
             ..
         } => {
             let c = lower_expr(ctx, cond, ops, pure_region).unwrap();
+            // Isolate arm bindings so `val`/`var` inside then/else cannot leak.
+            let saved = ctx.save_bindings();
             let (then_block, _) = lower_expr_block(ctx, then_branch);
+            ctx.restore_bindings(saved.clone());
             let (else_block, _) = lower_expr_block(ctx, else_branch);
+            ctx.restore_bindings(saved);
             let dest = ctx.fresh();
             ops.push(Op::Let {
                 local: dest,
@@ -1406,8 +1518,13 @@ fn lower_expr(
             step,
             ..
         } => {
+            // Loop header/body/latch share outer bindings but must not leak
+            // names introduced only inside those blocks.
+            let saved = ctx.save_bindings();
             let (header, _) = lower_expr_block(ctx, cond);
+            ctx.restore_bindings(saved.clone());
             let (body_block, _) = lower_expr_block(ctx, body);
+            ctx.restore_bindings(saved.clone());
             let latch = if let Some(s) = step {
                 let (b, _) = lower_expr_block(ctx, s);
                 b
@@ -1418,6 +1535,7 @@ fn lower_expr(
                     result: None,
                 }
             };
+            ctx.restore_bindings(saved);
             let dest = ctx.fresh();
             ops.push(Op::Let {
                 local: dest,
@@ -1575,8 +1693,16 @@ fn format_value(v: &Value) -> String {
         Value::AllocClosure { fun, captures } => {
             format!("alloc_closure({fun}, n={})", captures.len())
         }
-        Value::ClosureCap { env, index } => {
-            format!("closure_cap(%{}, {index})", env.0)
+        Value::ClosureCap {
+            env,
+            index,
+            as_float,
+        } => {
+            if *as_float {
+                format!("closure_cap_f(%{}, {index})", env.0)
+            } else {
+                format!("closure_cap(%{}, {index})", env.0)
+            }
         }
         Value::AllocList { elems, repr } => {
             format!("alloc_list[{repr:?}](n={})", elems.len())

@@ -1,0 +1,32 @@
+module ScopeShadow
+
+import std.io.{println}
+
+// Regression: Core lowering must restore bindings after nested vals / if arms,
+// and `val` must be able to shadow an outer `var`.
+
+val main = {
+    val x = 1
+    val y = {
+        val x = 99
+        x
+    }
+    println(y)
+    println(x)
+
+    val z = if false {
+        val x = 99
+        x
+    } else {
+        x
+    }
+    println(z)
+
+    var v = 1
+    val shadowed = {
+        val v = 99
+        v
+    }
+    println(shadowed)
+    println(v)
+}

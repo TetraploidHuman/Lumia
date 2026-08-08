@@ -274,10 +274,19 @@ impl<'a> Lexer<'a> {
                 self.pos += 1;
             }
             let raw: String = self.src[start..self.pos].chars().filter(|c| *c != '_').collect();
-            TokenKind::Float(raw.parse().unwrap_or(0.0))
+            match raw.parse::<f64>() {
+                Ok(n) if n.is_finite() => TokenKind::Float(n),
+                Ok(_) => TokenKind::Error(format!("float literal `{raw}` is not finite")),
+                Err(_) => TokenKind::Error(format!("invalid float literal `{raw}`")),
+            }
         } else {
             let raw: String = self.src[start..self.pos].chars().filter(|c| *c != '_').collect();
-            TokenKind::Int(raw.parse().unwrap_or(0))
+            match raw.parse::<i64>() {
+                Ok(n) => TokenKind::Int(n),
+                Err(_) => TokenKind::Error(format!(
+                    "integer literal `{raw}` is out of range for Int (i64)"
+                )),
+            }
         }
     }
 

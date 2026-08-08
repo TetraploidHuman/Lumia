@@ -368,6 +368,9 @@ fn load_module_file(
             continue;
         }
         let file = resolve_import_file(&importer_dir, search_roots, imp)?;
+        // Canonicalize so the same file via different relative paths shares one identity
+        // (cycle detection + single load).
+        let file = file.canonicalize().unwrap_or(file);
         let dep = load_module_file(
             &file,
             search_roots,
