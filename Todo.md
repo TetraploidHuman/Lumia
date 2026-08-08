@@ -4,7 +4,7 @@
 
 ## 类型与单态化
 
-- [ ] **单态化管线**：let-polymorphism 已落地，但 codegen 仍共享一份闭包/函数体。`id` 同时用于 `Float` 与 `Int` 时，`println(id(1.5))` 可能按 Int 打印 bit pattern（已复现：`4609434218613702656`）。最终形态需按 BUILD「单态化」特化。
+- [ ] **单态化管线**：let-polymorphism 已落地，但 codegen 仍共享一份闭包/函数体。恒等 `{ x -> x }` 在 Float 实参上的 `println`/`+` 已用 call-site `local_tys` 启发式恢复（见 `poly_id`）；完整特化（多体、非恒等 poly）仍按 BUILD「单态化」。
 - [ ] **类型类 `trait` / `instance` / `requires`**：语法保留并拒绝；Eq/Ord/Hash/Show 派生与 DESIGN §3.6 尚未实现。
 - [ ] **`import … as` / `{ name as alias }`**：DESIGN §9.3 已写，解析器仍报 not supported。
 
@@ -46,3 +46,4 @@
 - **空 match / 仅有守卫臂**：穷尽性检查拒绝（不再误放行）。
 - **运行时 `trap_abort`**：致命错误统一入口，避免跨 `extern "C"` unwind。
 - **常量模式**：`true`/`false`、`Char`、`String`、`Float`、负数字面量（含 `-1` / `-1.5`）；Bool 双臂穷尽。
+- **poly identity Float**：call-site 对堆哨兵 `ret_ty` + Float 实参恢复 Float，避免 `println(id(1.5))` 打印 bit pattern。
