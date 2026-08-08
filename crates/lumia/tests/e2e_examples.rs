@@ -128,6 +128,11 @@ fn e2e_match() {
 }
 
 #[test]
+fn e2e_const_patterns() {
+    run_example("examples/const_patterns.lumia", &["1", "2", "3", "4", "5"]);
+}
+
+#[test]
 fn e2e_list_for() {
     run_example("examples/list_for.lumia", &["60"]);
 }

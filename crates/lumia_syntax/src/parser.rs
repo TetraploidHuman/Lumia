@@ -557,6 +557,51 @@ impl<'a> Parser<'a> {
                 let s = self.bump().span;
                 Ok(Pattern::Int(n, s))
             }
+            TokenKind::Float(n) => {
+                let n = *n;
+                let s = self.bump().span;
+                Ok(Pattern::Float(n, s))
+            }
+            TokenKind::Minus => {
+                // Negative numeric constant pattern: `-42` / `-1.5`.
+                let minus = self.bump();
+                match &self.cur.kind {
+                    TokenKind::Int(n) => {
+                        let n = *n;
+                        let end = self.bump().span;
+                        let neg = n.checked_neg().ok_or_else(|| {
+                            self.error(
+                                "integer pattern `-9223372036854775808` is out of range for Int (i64)",
+                            )
+                        })?;
+                        Ok(Pattern::Int(neg, minus.span.merge(end)))
+                    }
+                    TokenKind::Float(n) => {
+                        let n = *n;
+                        let end = self.bump().span;
+                        Ok(Pattern::Float(-n, minus.span.merge(end)))
+                    }
+                    _ => Err(self.error("expected number after `-` in pattern")),
+                }
+            }
+            TokenKind::True => {
+                let s = self.bump().span;
+                Ok(Pattern::Bool(true, s))
+            }
+            TokenKind::False => {
+                let s = self.bump().span;
+                Ok(Pattern::Bool(false, s))
+            }
+            TokenKind::Char(c) => {
+                let c = *c;
+                let s = self.bump().span;
+                Ok(Pattern::Char(c, s))
+            }
+            TokenKind::String(t) => {
+                let t = t.clone();
+                let s = self.bump().span;
+                Ok(Pattern::String(t, s))
+            }
             TokenKind::LBracket => {
                 self.bump();
                 let mut elems = vec![];
@@ -1454,7 +1499,13 @@ struct Checkpoint {
 impl Pattern {
     fn span(&self) -> Span {
         match self {
-            Pattern::Wildcard(s) | Pattern::Int(_, s) | Pattern::Ident(_, s) => *s,
+            Pattern::Wildcard(s)
+            | Pattern::Int(_, s)
+            | Pattern::Float(_, s)
+            | Pattern::Bool(_, s)
+            | Pattern::Char(_, s)
+            | Pattern::String(_, s)
+            | Pattern::Ident(_, s) => *s,
             Pattern::Variant { span, .. }
             | Pattern::Struct { span, .. }
             | Pattern::Tuple { span, .. }
@@ -1677,6 +1728,58 @@ val main = {
         parse_module("module M\nval f = { xs -> xs match { [h] -> h _ -> 0 }\n}\n").unwrap();
         parse_module("module M\nval f = { xs -> xs match { [..rest] -> 0 _ -> 1 }\n}\n").unwrap();
         parse_module("module M\nval f = { xs -> xs match { [h, ..rest] -> h _ -> 0 }\n}\n").expect("h, ..rest");
+    }
+
+    #[test]
+    fn parse_constant_patterns() {
+        parse_module(
+            r#"
+module M
+val f = { b ->
+    b match {
+        true -> 1
+        false -> 0
+    }
+}
+"#,
+        )
+        .expect("bool patterns");
+        parse_module(
+            r#"
+module M
+val f = { c ->
+    c match {
+        'a' -> 1
+        _ -> 0
+    }
+}
+"#,
+        )
+        .expect("char pattern");
+        parse_module(
+            r#"
+module M
+val f = { s ->
+    s match {
+        "hi" -> 1
+        _ -> 0
+    }
+}
+"#,
+        )
+        .expect("string pattern");
+        parse_module(
+            r#"
+module M
+val f = { n ->
+    n match {
+        -1 -> 1
+        _ -> 0
+    }
+}
+"#,
+        )
+        .expect("negative int pattern");
     }
 
     #[test]

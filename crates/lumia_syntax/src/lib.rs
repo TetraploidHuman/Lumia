@@ -220,6 +220,11 @@ pub struct MatchCondArm {
 pub enum Pattern {
     Wildcard(Span),
     Int(i64, Span),
+    Float(f64, Span),
+    /// `true` / `false` constant patterns (DESIGN § match 常量模式).
+    Bool(bool, Span),
+    Char(char, Span),
+    String(String, Span),
     Ident(String, Span),
     Variant {
         name: String,

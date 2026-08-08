@@ -524,7 +524,13 @@ fn coverage_catch_all(pat: &Pattern, ctors: &HashMap<String, CtorInfo>) -> bool 
             .iter()
             .all(|(_, sub)| coverage_catch_all(sub, ctors)),
         Pattern::Tuple { elems, .. } => elems.iter().all(|e| coverage_catch_all(e, ctors)),
-        Pattern::Variant { .. } | Pattern::List { .. } | Pattern::Int(_, _) => false,
+        Pattern::Variant { .. }
+        | Pattern::List { .. }
+        | Pattern::Int(_, _)
+        | Pattern::Float(_, _)
+        | Pattern::Bool(_, _)
+        | Pattern::Char(_, _)
+        | Pattern::String(_, _) => false,
     }
 }
 
@@ -543,7 +549,18 @@ fn check_pats_cover(
     for p in pats {
         flatten_or(p, &mut flat);
     }
-    if flat.is_empty() || flat.iter().any(|p| coverage_catch_all(p, ctors)) {
+    // Empty after filtering (no arms, or only guarded arms) is never exhaustive.
+    if flat.is_empty() {
+        let where_ = if path.is_empty() {
+            "scrutinee".into()
+        } else {
+            path.to_string()
+        };
+        return Err(format!(
+            "non-exhaustive match on {where_}: no covering arm (empty match or only guarded arms)"
+        ));
+    }
+    if flat.iter().any(|p| coverage_catch_all(p, ctors)) {
         return Ok(());
     }
 
@@ -556,6 +573,11 @@ fn check_pats_cover(
     let mut saw_product = false;
     let mut saw_list = false;
     let mut saw_int = false;
+    let mut saw_float = false;
+    let mut saw_bool = false;
+    let mut bool_true = false;
+    let mut bool_false = false;
+    let mut saw_open_lit = false; // Char / String: open domains need `_`
 
     for p in &flat {
         match *p {
@@ -600,6 +622,20 @@ fn check_pats_cover(
             }
             Pattern::Int(_, _) => {
                 saw_int = true;
+            }
+            Pattern::Float(_, _) => {
+                saw_float = true;
+            }
+            Pattern::Bool(b, _) => {
+                saw_bool = true;
+                if *b {
+                    bool_true = true;
+                } else {
+                    bool_false = true;
+                }
+            }
+            Pattern::Char(_, _) | Pattern::String(_, _) => {
+                saw_open_lit = true;
             }
             Pattern::Wildcard(_) | Pattern::Or(_, _) => {}
         }
@@ -687,10 +723,38 @@ fn check_pats_cover(
         }
     }
 
-    // Int / List have infinite (or open) domains: without a catch-all binder/`_`,
-    // finite literal arms are never enough. List is exhaustive only when every
-    // length is covered (`[]` + `[…, ..rest]` style).
-    if !saw_sum && !saw_product && (saw_int || saw_list) {
+    // Bool is a closed 2-value domain: both `true` and `false` cover it.
+    if !saw_sum
+        && !saw_product
+        && saw_bool
+        && !saw_int
+        && !saw_float
+        && !saw_list
+        && !saw_open_lit
+    {
+        if bool_true && bool_false {
+            return Ok(());
+        }
+        let where_ = if path.is_empty() {
+            "Bool".into()
+        } else {
+            format!("Bool (in {path})")
+        };
+        let missing = match (bool_true, bool_false) {
+            (false, false) => "true, false",
+            (true, false) => "false",
+            (false, true) => "true",
+            (true, true) => unreachable!(),
+        };
+        return Err(format!(
+            "non-exhaustive match on {where_}: missing {missing} (or `_`)"
+        ));
+    }
+
+    // Int / Float / Char / String / List have infinite (or open) domains: without
+    // a catch-all binder/`_`, finite literal arms are never enough. List is
+    // exhaustive only when every length is covered (`[]` + `[…, ..rest]` style).
+    if !saw_sum && !saw_product && (saw_int || saw_float || saw_list || saw_open_lit) {
         let where_ = if path.is_empty() {
             "scrutinee".into()
         } else {
@@ -731,6 +795,14 @@ fn check_pats_cover(
         } else if saw_int {
             return Err(format!(
                 "non-exhaustive match on Int (in {where_}): integer literals need a `_` arm"
+            ));
+        } else if saw_float {
+            return Err(format!(
+                "non-exhaustive match on Float (in {where_}): float literals need a `_` arm"
+            ));
+        } else if saw_open_lit {
+            return Err(format!(
+                "non-exhaustive match on Char/String (in {where_}): literal arms need a `_` arm"
             ));
         }
     }
@@ -1643,7 +1715,11 @@ fn expand_or_arms(arms: &[lumia_syntax::MatchArm]) -> Vec<lumia_syntax::MatchArm
 
 fn fold_match_arms(arms: &[lumia_syntax::MatchArm], scrut: &str, span: Span) -> Expr {
     if arms.is_empty() {
-        return Expr::Unit(span);
+        return Expr::BuiltinCall {
+            name: Builtin::MatchFail,
+            args: vec![],
+            span,
+        };
     }
     let scrut_e = Expr::Var(scrut.into(), span);
     let (arm, rest) = arms.split_first().unwrap();
@@ -1720,6 +1796,42 @@ fn pattern_cond(pat: &Pattern, scrut: &Expr, span: Span) -> (Expr, Vec<(String, 
                 op: BinOp::Eq,
                 left: Box::new(scrut.clone()),
                 right: Box::new(Expr::Int(*n, *s)),
+                span,
+            },
+            vec![],
+        ),
+        Pattern::Float(n, s) => (
+            Expr::Binary {
+                op: BinOp::Eq,
+                left: Box::new(scrut.clone()),
+                right: Box::new(Expr::Float(*n, *s)),
+                span,
+            },
+            vec![],
+        ),
+        Pattern::Bool(b, s) => (
+            Expr::Binary {
+                op: BinOp::Eq,
+                left: Box::new(scrut.clone()),
+                right: Box::new(Expr::Bool(*b, *s)),
+                span,
+            },
+            vec![],
+        ),
+        Pattern::Char(c, s) => (
+            Expr::Binary {
+                op: BinOp::Eq,
+                left: Box::new(scrut.clone()),
+                right: Box::new(Expr::Char(*c, *s)),
+                span,
+            },
+            vec![],
+        ),
+        Pattern::String(t, s) => (
+            Expr::Binary {
+                op: BinOp::Eq,
+                left: Box::new(scrut.clone()),
+                right: Box::new(Expr::String(t.clone(), *s)),
                 span,
             },
             vec![],
@@ -3516,6 +3628,34 @@ val f = { n ->
     }
 
     #[test]
+    fn exhaustiveness_rejects_empty_match() {
+        let src = r#"
+module M
+val f = { n ->
+    n match { }
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let err = lower_module(&ast).unwrap_err().to_string();
+        assert!(err.contains("non-exhaustive"), "{err}");
+    }
+
+    #[test]
+    fn exhaustiveness_rejects_guard_only_arms() {
+        let src = r#"
+module M
+val f = { n ->
+    n match {
+        x if x > 0 -> { 1 }
+    }
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let err = lower_module(&ast).unwrap_err().to_string();
+        assert!(err.contains("non-exhaustive"), "{err}");
+    }
+
+    #[test]
     fn exhaustiveness_accepts_int_with_wildcard() {
         let src = r#"
 module M
@@ -3528,6 +3668,52 @@ val f = { n ->
 "#;
         let ast = parse_module(src).unwrap();
         assert!(lower_module(&ast).is_ok());
+    }
+
+    #[test]
+    fn exhaustiveness_accepts_bool_both_arms() {
+        let src = r#"
+module M
+val f = { b ->
+    b match {
+        true -> { 1 }
+        false -> { 0 }
+    }
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        assert!(lower_module(&ast).is_ok(), "{:?}", lower_module(&ast));
+    }
+
+    #[test]
+    fn exhaustiveness_rejects_bool_missing_false() {
+        let src = r#"
+module M
+val f = { b ->
+    b match {
+        true -> { 1 }
+    }
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let err = lower_module(&ast).unwrap_err().to_string();
+        assert!(err.contains("non-exhaustive"), "{err}");
+        assert!(err.contains("false") || err.contains("Bool"), "{err}");
+    }
+
+    #[test]
+    fn exhaustiveness_rejects_char_without_wildcard() {
+        let src = r#"
+module M
+val f = { c ->
+    c match {
+        'a' -> { 1 }
+    }
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let err = lower_module(&ast).unwrap_err().to_string();
+        assert!(err.contains("non-exhaustive"), "{err}");
     }
 
     #[test]

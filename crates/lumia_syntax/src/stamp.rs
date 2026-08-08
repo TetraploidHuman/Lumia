@@ -200,7 +200,13 @@ fn stamp_cond_arm(a: &mut MatchCondArm, file: u32) {
 
 fn stamp_pat(p: &mut Pattern, file: u32) {
     match p {
-        Pattern::Wildcard(s) | Pattern::Int(_, s) | Pattern::Ident(_, s) => {
+        Pattern::Wildcard(s)
+        | Pattern::Int(_, s)
+        | Pattern::Float(_, s)
+        | Pattern::Bool(_, s)
+        | Pattern::Char(_, s)
+        | Pattern::String(_, s)
+        | Pattern::Ident(_, s) => {
             *s = s.with_file(file);
         }
         Pattern::Variant { args, span, .. } => {

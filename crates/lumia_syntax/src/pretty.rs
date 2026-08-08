@@ -393,6 +393,24 @@ fn format_pat(out: &mut String, p: &Pattern) {
     match p {
         Pattern::Wildcard(_) => out.push('_'),
         Pattern::Int(n, _) => out.push_str(&n.to_string()),
+        Pattern::Float(n, _) => out.push_str(&n.to_string()),
+        Pattern::Bool(b, _) => out.push_str(if *b { "true" } else { "false" }),
+        Pattern::Char(c, _) => {
+            out.push('\'');
+            match *c {
+                '\\' => out.push_str("\\\\"),
+                '\'' => out.push_str("\\'"),
+                '\n' => out.push_str("\\n"),
+                '\t' => out.push_str("\\t"),
+                other => out.push(other),
+            }
+            out.push('\'');
+        }
+        Pattern::String(s, _) => {
+            out.push('"');
+            out.push_str(&escape_str(s));
+            out.push('"');
+        }
         Pattern::Ident(n, _) => out.push_str(n),
         Pattern::Variant { name, args, .. } => {
             out.push_str(name);
