@@ -1,0 +1,11 @@
+module PolyTopDbl
+
+import std.io.{println}
+
+/// Top-level named poly fun — Float call sites get `dbl$Float` (BUILD mono MVP).
+val dbl = { x -> x + x }
+
+val main = {
+    println(dbl(1))
+    println(dbl(1.5))
+}

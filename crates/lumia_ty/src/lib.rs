@@ -460,6 +460,7 @@ impl Infer {
         }
     }
 
+    #[allow(dead_code)] // kept for future effect-quantifying generalize
     fn free_eff_vars_in_ty(&mut self, ty: Type) -> HashSet<u32> {
         let ty = self.prune(ty);
         let mut acc = HashSet::new();
@@ -467,6 +468,7 @@ impl Infer {
         acc
     }
 
+    #[allow(dead_code)]
     fn collect_eff_vars_in_ty(&mut self, ty: &Type, acc: &mut HashSet<u32>) {
         match ty {
             Type::Fun(ps, r, e) => {
@@ -524,6 +526,7 @@ impl Infer {
         acc
     }
 
+    #[allow(dead_code)]
     fn env_free_eff_vars(&mut self) -> HashSet<u32> {
         let schemes: Vec<Scheme> = self
             .env
@@ -545,19 +548,15 @@ impl Infer {
     fn generalize(&mut self, ty: Type) -> Scheme {
         let ty = self.prune(ty);
         let env_fvs = self.env_free_ty_vars();
-        let env_efvs = self.env_free_eff_vars();
         let mut vars: Vec<u32> = self
             .free_ty_vars(ty.clone())
             .into_iter()
             .filter(|v| !env_fvs.contains(v))
             .collect();
         vars.sort_unstable();
-        let mut eff_vars: Vec<u32> = self
-            .free_eff_vars_in_ty(ty.clone())
-            .into_iter()
-            .filter(|v| !env_efvs.contains(v))
-            .collect();
-        eff_vars.sort_unstable();
+        // Leave effect vars free (not quantified): module-level HOF use can still
+        // refine `apply`/`both` to Io via shared `Effect::Var`, then zonk into
+        // `fun_types`. Quantifying them would freeze Pure before call sites run.
         let mut num_vars: Vec<u32> = vars
             .iter()
             .copied()
@@ -566,7 +565,7 @@ impl Infer {
         num_vars.sort_unstable();
         Scheme {
             vars,
-            eff_vars,
+            eff_vars: Vec::new(),
             ty,
             num_vars,
         }
@@ -2139,8 +2138,16 @@ pub fn infer_module_with_options(
                     inf.unify(existing, ty.clone())?;
                 }
                 let ty = inf.prune(ty);
+                // Remove the recursive placeholder before generalize; otherwise its
+                // free vars (via unify into the mono binding) look env-bound and
+                // top-level `val dbl = { x -> x + x }` never gets a polymorphic scheme.
+                for scope in inf.env.iter_mut().rev() {
+                    if scope.remove(&f.name).is_some() {
+                        break;
+                    }
+                }
                 let scheme = inf.generalize(ty.clone());
-                inf.rebind_scheme(&f.name, scheme)?;
+                inf.bind_scheme(f.name.clone(), scheme, false);
                 fun_types.insert(f.name.clone(), ty);
                 // Decl span: use body span as stand-in for foreign/unit; funs lack item span in HIR.
                 inf.decls.insert(f.name.clone(), expr_span(&f.body));
@@ -2678,6 +2685,22 @@ val main = {
             "unexpected: {}",
             err.message()
         );
+    }
+
+    #[test]
+    fn toplevel_num_poly_dbl() {
+        let src = r#"
+module M
+import std.io.{println}
+val dbl = { x -> x + x }
+val main = {
+    println(dbl(1))
+    println(dbl(1.5))
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let hir = lower_module(&ast).expect("lower");
+        infer_module(&hir).expect("top-level Num poly");
     }
 
     #[test]

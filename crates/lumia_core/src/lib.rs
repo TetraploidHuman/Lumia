@@ -323,7 +323,7 @@ pub fn lower_hir(module: &HirModule, fun_types: &HashMap<String, Type>) -> CoreM
     core
 }
 
-/// Clone lifted lambdas for Float call sites (BUILD monomorphization MVP).
+/// Clone named / lifted funs for Float call sites (BUILD monomorphization MVP).
 fn specialize_mono_calls(module: &mut CoreModule) {
     let mut needed: HashSet<String> = HashSet::new();
     for fun in &module.functions {
@@ -340,13 +340,14 @@ fn specialize_mono_calls(module: &mut CoreModule) {
     let mut renames: HashMap<String, String> = HashMap::new();
     let mut clones = Vec::new();
     for name in needed {
-        if name.contains("$Float") || !name.starts_with("__lam_") {
+        if name.contains("$Float") {
             continue;
         }
         let Some(orig) = module.functions.iter().find(|f| f.name == name) else {
             continue;
         };
-        if orig.params.is_empty() {
+        // Top-level named funs and lifted `__lam_*`; never clone main / FFI.
+        if orig.is_main || orig.external.is_some() || orig.params.is_empty() {
             continue;
         }
         if orig.param_tys.iter().all(|t| matches!(t, Type::Float)) {
@@ -448,7 +449,7 @@ fn note_mono_call(
     let Value::Call { fun, args } = value else {
         return;
     };
-    if args.is_empty() || !fun.starts_with("__lam_") || fun.contains("$Float") {
+    if args.is_empty() || fun.contains("$Float") {
         return;
     }
     let all_float = args.iter().all(|a| {

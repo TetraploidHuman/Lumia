@@ -222,8 +222,20 @@ fn e2e_tco_funref() {
 }
 
 #[test]
+fn e2e_tco_float_sum() {
+    // Pure Float musttail — same closed form as Int `tco_sum`.
+    run_example("examples/tco_float_sum.lm", &["2000001000000"]);
+}
+
+#[test]
 fn e2e_poly_add1() {
     run_example("examples/poly_add1.lm", &["2", "2.5"]);
+}
+
+#[test]
+fn e2e_poly_top_dbl() {
+    // Top-level `val dbl` Float site → `dbl$Float` clone.
+    run_example("examples/poly_top_dbl.lm", &["2", "3"]);
 }
 
 #[test]

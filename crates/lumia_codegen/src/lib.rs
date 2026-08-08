@@ -3866,6 +3866,11 @@ impl<'ctx> Codegen<'ctx> {
 }
 
 /// Pure Int functions that form an SCC may musttail to any peer (DESIGN §4.4).
+fn tco_scalar_ty(t: &Type) -> bool {
+    // Open `Var` stays after top-level Num poly generalize (body ABI is still i64).
+    matches!(t, Type::Int | Type::Bool | Type::Float | Type::Var(_))
+}
+
 fn compute_tco_sccs(core: &CoreModule) -> HashMap<String, HashSet<String>> {
     let eligible: HashSet<String> = core
         .functions
@@ -3874,10 +3879,8 @@ fn compute_tco_sccs(core: &CoreModule) -> HashMap<String, HashSet<String>> {
             f.memo.is_none()
                 && f.external.is_none()
                 && !f.effect.has_io()
-                && matches!(f.ret_ty, Type::Int | Type::Bool)
-                && f.param_tys
-                    .iter()
-                    .all(|t| matches!(t, Type::Int | Type::Bool))
+                && tco_scalar_ty(&f.ret_ty)
+                && f.param_tys.iter().all(tco_scalar_ty)
         })
         .map(|f| f.name.clone())
         .collect();

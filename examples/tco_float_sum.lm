@@ -1,0 +1,17 @@
+module TcoFloatSum
+
+import std.io.{println}
+
+/// Pure Float self-recursion in tail position — must get TCO (DESIGN §4.4).
+val sumTo(n, acc) = {
+    if n == 0.0 {
+        acc
+    } else {
+        sumTo(n - 1.0, acc + n)
+    }
+}
+
+val main = {
+    // Same closed form as Int `tco_sum`: n(n+1)/2 for n = 2_000_000.
+    println(sumTo(2000000.0, 0.0))
+}
