@@ -77,10 +77,14 @@ impl Effect {
     pub fn has_io(self) -> bool {
         matches!(self, Self::Io)
     }
+    /// Shallow lub without linking open vars. Inference uses `Infer::union_eff`
+    /// so distinct `Var`s stay constrained together.
     pub fn union(self, other: Self) -> Self {
         match (self, other) {
             (Self::Io, _) | (_, Self::Io) => Self::Io,
             (Self::Var(v), Self::Pure) | (Self::Pure, Self::Var(v)) => Self::Var(v),
+            // Distinct open vars cannot be linked here; keep the first and rely on
+            // `Infer::union_eff` at inference sites (see that method).
             (Self::Var(a), Self::Var(_)) => Self::Var(a),
             (Self::Pure, Self::Pure) => Self::Pure,
         }
@@ -401,14 +405,40 @@ impl Infer {
         }
     }
 
-    /// Unify effects. `Pure` ⊑ `Io`. Open `Var` stays flexible when matched with `Pure`
-    /// (so a later `Io` use can still instantiate it); matching `Io` binds the var.
+    /// Least upper bound of effects, linking distinct open vars so either becoming
+    /// `Io` zonks both (needed for `f(x); g(x)` HOF bodies).
+    fn union_eff(&mut self, a: Effect, b: Effect) -> Effect {
+        let a = self.prune_eff(a);
+        let b = self.prune_eff(b);
+        match (a, b) {
+            (Effect::Io, _) | (_, Effect::Io) => Effect::Io,
+            (Effect::Pure, Effect::Pure) => Effect::Pure,
+            (Effect::Var(v), Effect::Pure) | (Effect::Pure, Effect::Var(v)) => Effect::Var(v),
+            (Effect::Var(a), Effect::Var(b)) => {
+                if a != b {
+                    self.eff_subst.insert(a, Effect::Var(b));
+                }
+                Effect::Var(b)
+            }
+        }
+    }
+
+    fn union3_eff(&mut self, a: Effect, b: Effect, c: Effect) -> Effect {
+        let ab = self.union_eff(a, b);
+        self.union_eff(ab, c)
+    }
+
+    /// Unify effects for equality. `Pure` and `Io` are distinct (do **not** unify).
+    /// Open `Var` stays flexible when matched with `Pure` so a later `Io` use can
+    /// still instantiate it (HOF effect polymorphism); matching `Io` binds the var.
     fn unify_eff(&mut self, a: Effect, b: Effect) -> Result<(), TypeError> {
         let a = self.prune_eff(a);
         let b = self.prune_eff(b);
         match (a, b) {
             (Effect::Pure, Effect::Pure) | (Effect::Io, Effect::Io) => Ok(()),
-            (Effect::Pure, Effect::Io) | (Effect::Io, Effect::Pure) => Ok(()),
+            (Effect::Pure, Effect::Io) | (Effect::Io, Effect::Pure) => Err(TypeError::Message(
+                "effect mismatch: cannot unify Pure with Io".into(),
+            )),
             (Effect::Var(v), Effect::Pure) | (Effect::Pure, Effect::Var(v)) => {
                 let _ = v;
                 Ok(())
@@ -424,6 +454,67 @@ impl Infer {
                 Ok(())
             }
         }
+    }
+
+    /// Join types at merge points (`if` arms, `var` assign). Function effects use
+    /// lub (`Pure ⊔ Io = Io`) instead of equality so IO cannot be lost.
+    fn join_types(
+        &mut self,
+        a: Type,
+        b: Type,
+        span: lumia_syntax::Span,
+    ) -> Result<Type, TypeError> {
+        let a = self.prune(a);
+        let b = self.prune(b);
+        match (a, b) {
+            (Type::Fun(aps, ar, ae), Type::Fun(bps, br, be)) => {
+                if aps.len() != bps.len() {
+                    return Err(at(span, "function arity mismatch"));
+                }
+                let mut ps = Vec::with_capacity(aps.len());
+                for (x, y) in aps.into_iter().zip(bps) {
+                    self.unify_at(span, x.clone(), y)?;
+                    ps.push(self.prune(x));
+                }
+                let r = self.join_types(*ar, *br, span)?;
+                let e = self.union_eff(ae, be);
+                Ok(Type::Fun(ps, Box::new(r), e))
+            }
+            (Type::List(a), Type::List(b)) => {
+                Ok(Type::List(Box::new(self.join_types(*a, *b, span)?)))
+            }
+            (Type::Set(a), Type::Set(b)) => {
+                Ok(Type::Set(Box::new(self.join_types(*a, *b, span)?)))
+            }
+            (Type::Map(ak, av), Type::Map(bk, bv)) => Ok(Type::Map(
+                Box::new(self.join_types(*ak, *bk, span)?),
+                Box::new(self.join_types(*av, *bv, span)?),
+            )),
+            (Type::Tuple(a), Type::Tuple(b)) => {
+                if a.len() != b.len() {
+                    return Err(at(span, "tuple arity mismatch"));
+                }
+                let mut ts = Vec::with_capacity(a.len());
+                for (x, y) in a.into_iter().zip(b) {
+                    ts.push(self.join_types(x, y, span)?);
+                }
+                Ok(Type::Tuple(ts))
+            }
+            (a, b) => {
+                self.unify_at(span, a.clone(), b)?;
+                Ok(self.prune(a))
+            }
+        }
+    }
+
+    fn rebind(&mut self, name: &str, ty: Type) -> Result<(), TypeError> {
+        for scope in self.env.iter_mut().rev() {
+            if scope.contains_key(name) {
+                scope.insert(name.to_string(), ty);
+                return Ok(());
+            }
+        }
+        Err(TypeError::Message(format!("unbound `{name}` in rebind")))
     }
 
     fn unify(&mut self, a: Type, b: Type) -> Result<(), TypeError> {
@@ -536,7 +627,7 @@ impl Infer {
                 self.bind_mut(name.clone(), vt, *mutable);
                 let (bt, be) = self.infer_expr(body)?;
                 self.pop();
-                Ok((bt, ve.union(be)))
+                Ok((bt, self.union_eff(ve, be)))
             }
             Expr::Assign { name, value, span } => {
                 let expect = self.lookup(name).ok_or_else(|| at(*span, format!("unbound `{name}` in assign")))?;
@@ -547,7 +638,11 @@ impl Infer {
                     ));
                 }
                 let (vt, ve) = self.infer_expr(value)?;
-                self.unify_at(*span, expect, vt)?;
+                // Widen Fun effects (Pure ⊔ Io = Io) and update the binding so
+                // later calls see the lub — equality unify would reject or, with
+                // the old Pure↔Io hole, silently keep Pure.
+                let joined = self.join_types(expect, vt, *span)?;
+                self.rebind(name, joined)?;
                 Ok((Type::Unit, ve))
             }
             Expr::Lambda { params, body, .. } => {
@@ -570,7 +665,7 @@ impl Infer {
                         let elem = self.fresh();
                         for a in args {
                             let (t, e) = self.infer_expr(a)?;
-                            aes = aes.union(e);
+                            aes = self.union_eff(aes, e);
                             self.unify_at(*span, elem.clone(), t)?;
                         }
                         return Ok((Type::List(Box::new(self.prune(elem))), aes));
@@ -580,7 +675,7 @@ impl Infer {
                         let elem = self.fresh();
                         for a in args {
                             let (t, e) = self.infer_expr(a)?;
-                            aes = aes.union(e);
+                            aes = self.union_eff(aes, e);
                             self.unify_at(*span, elem.clone(), t)?;
                         }
                         return Ok((Type::Set(Box::new(self.prune(elem))), aes));
@@ -597,7 +692,7 @@ impl Infer {
                         for chunk in args.chunks(2) {
                             let (kt, ke) = self.infer_expr(&chunk[0])?;
                             let (vt, ve) = self.infer_expr(&chunk[1])?;
-                            aes = aes.union(ke).union(ve);
+                            aes = self.union3_eff(aes, ke, ve);
                             self.unify_at(*span, k.clone(), kt)?;
                             self.unify_at(*span, v.clone(), vt)?;
                         }
@@ -613,11 +708,11 @@ impl Infer {
                 for a in args {
                     let (t, e) = self.infer_expr(a)?;
                     ats.push(t);
-                    aes = aes.union(e);
+                    aes = self.union_eff(aes, e);
                 }
                 let ret = self.fresh();
                 // Open effect when callee is not yet a concrete Fun — allows HOFs to
-                // pick up IO from effectful callbacks (pure ⊑ io via unify_eff).
+                // pick up IO from effectful callbacks (Var stays open vs Pure; Io binds).
                 let call_eff = match self.prune(ct.clone()) {
                     Type::Fun(_, _, e) => e,
                     _ => self.fresh_eff(),
@@ -627,7 +722,7 @@ impl Infer {
                     Type::Fun(ats, Box::new(ret.clone()), call_eff),
                 )?;
                 let fun_eff = self.prune_eff(call_eff);
-                Ok((self.prune(ret), ce.union(aes).union(fun_eff)))
+                Ok((self.prune(ret), self.union3_eff(ce, aes, fun_eff)))
             }
             Expr::BuiltinCall { name, args, span } => match name {
                 Builtin::Println | Builtin::PrintlnInt | Builtin::PrintlnStr => {
@@ -650,7 +745,7 @@ impl Infer {
                             )));
                         }
                     }
-                    Ok((Type::Unit, Effect::io().union(e)))
+                    Ok((Type::Unit, self.union_eff(Effect::io(), e)))
                 }
                 Builtin::ListLen => {
                     if args.len() != 1 {
@@ -708,7 +803,7 @@ impl Infer {
                             )));
                         }
                     };
-                    Ok((elem, le.union(ie)))
+                    Ok((elem, self.union_eff(le, ie)))
                 }
                 Builtin::Contains => {
                     if args.len() != 2 {
@@ -729,7 +824,7 @@ impl Infer {
                             )));
                         }
                     }
-                    Ok((Type::Bool, ce.union(ke)))
+                    Ok((Type::Bool, self.union_eff(ce, ke)))
                 }
                 Builtin::MapSet => {
                     if args.len() != 3 {
@@ -744,12 +839,12 @@ impl Infer {
                         Type::Map(k, v) => {
                             self.unify_at(*span, kt, *k.clone())?;
                             self.unify_at(*span, vt, *v.clone())?;
-                            Ok((Type::Map(k, v), me.union(ke).union(ve)))
+                            Ok((Type::Map(k, v), self.union3_eff(me, ke, ve)))
                         }
                         Type::List(elem) => {
                             self.unify_at(*span, kt, Type::Int)?;
                             self.unify_at(*span, vt, *elem.clone())?;
-                            Ok((Type::List(elem), me.union(ke).union(ve)))
+                            Ok((Type::List(elem), self.union3_eff(me, ke, ve)))
                         }
                         Type::Var(_) => {
                             // Prefer Map when unconstrained (UFCS `.set` on maps).
@@ -759,7 +854,7 @@ impl Infer {
                             )?;
                             Ok((
                                 Type::Map(Box::new(kt), Box::new(vt)),
-                                me.union(ke).union(ve),
+                                self.union3_eff(me, ke, ve),
                             ))
                         }
                         other => Err(at(*span, format!(
@@ -776,15 +871,15 @@ impl Infer {
                     match self.prune(mt.clone()) {
                         Type::Map(k, v) => {
                             self.unify_at(*span, kt, *k.clone())?;
-                            Ok((Type::Map(k, v), me.union(ke)))
+                            Ok((Type::Map(k, v), self.union_eff(me, ke)))
                         }
                         Type::Set(e) => {
                             self.unify_at(*span, kt, *e.clone())?;
-                            Ok((Type::Set(e), me.union(ke)))
+                            Ok((Type::Set(e), self.union_eff(me, ke)))
                         }
                         Type::Var(_) => {
                             // Keep open; call site / later use constrains Map vs Set.
-                            Ok((mt, me.union(ke)))
+                            Ok((mt, self.union_eff(me, ke)))
                         }
                         other => Err(at(*span, format!(
                             "remove: expected Map or Set, got {other:?}"
@@ -800,11 +895,11 @@ impl Infer {
                     match self.prune(st.clone()) {
                         Type::Set(e) => {
                             self.unify_at(*span, et, *e.clone())?;
-                            Ok((Type::Set(e), se.union(ee)))
+                            Ok((Type::Set(e), self.union_eff(se, ee)))
                         }
                         Type::Var(_) => {
                             self.unify_at(*span, st, Type::Set(Box::new(et.clone())))?;
-                            Ok((Type::Set(Box::new(et)), se.union(ee)))
+                            Ok((Type::Set(Box::new(et)), self.union_eff(se, ee)))
                         }
                         other => Err(at(*span, format!(
                             "insert: expected Set, got {other:?}"
@@ -951,11 +1046,11 @@ impl Infer {
                     let (recv_ty, ae) = self.infer_expr(&args[0])?;
                     let (it, ie) = self.infer_expr(&args[1])?;
                     self.unify_at(*span, it, Type::Int)?;
-                    let mut eff = ae.union(ie);
+                    let mut eff = self.union_eff(ae, ie);
                     let expect_adt = if args.len() == 3 {
                         let (nt, ne) = self.infer_expr(&args[2])?;
                         self.unify_at(*span, nt, Type::String)?;
-                        eff = eff.union(ne);
+                        eff = self.union_eff(eff, ne);
                         match &args[2] {
                             Expr::String(s, _) => Some(s.as_str()),
                             _ => None,
@@ -1083,7 +1178,7 @@ impl Infer {
                             )));
                         }
                     };
-                    Ok((Type::List(elem), le.union(ie)))
+                    Ok((Type::List(elem), self.union_eff(le, ie)))
                 }
                 Builtin::ListTake => {
                     if args.len() != 2 {
@@ -1105,7 +1200,7 @@ impl Infer {
                             )));
                         }
                     };
-                    Ok((Type::List(elem), le.union(ie)))
+                    Ok((Type::List(elem), self.union_eff(le, ie)))
                 }
                 Builtin::ListReverse => {
                     if args.len() != 1 {
@@ -1190,7 +1285,7 @@ impl Infer {
                             )));
                         }
                     }
-                    Ok((Type::List(Box::new(elem)), ve.union(ke)))
+                    Ok((Type::List(Box::new(elem)), self.union_eff(ve, ke)))
                 }
                 Builtin::ListParMap => {
                     if args.len() != 2 {
@@ -1224,8 +1319,8 @@ impl Infer {
                         }
                     }
                     let out = self.fresh();
-                    // `unify_eff` treats Pure ⊑ Io, so requiring Fun(..., Pure) does
-                    // not reject IO callbacks — check the concrete effect bit.
+                    // Require a pure callback: concrete Io is rejected; open Vars
+                    // unify with Pure (stay flexible) then zonk unconstrained → Pure.
                     let cb_eff = match self.prune(ft.clone()) {
                         Type::Fun(_, _, e) => self.prune_eff(e),
                         _ => Effect::pure(),
@@ -1257,7 +1352,7 @@ impl Infer {
                             ));
                         }
                     }
-                    Ok((Type::List(Box::new(out)), le.union(fe)))
+                    Ok((Type::List(Box::new(out)), self.union_eff(le, fe)))
                 }
                 Builtin::ListJoin => {
                     if args.len() != 2 {
@@ -1279,7 +1374,7 @@ impl Infer {
                             )));
                         }
                     }
-                    Ok((Type::String, le.union(se)))
+                    Ok((Type::String, self.union_eff(le, se)))
                 }
                 Builtin::ListAppend => {
                     if args.len() != 2 {
@@ -1302,7 +1397,7 @@ impl Infer {
                             )));
                         }
                     };
-                    Ok((list_ty, le.union(ee)))
+                    Ok((list_ty, self.union_eff(le, ee)))
                 }
                 Builtin::ListConcat => {
                     if args.len() != 2 {
@@ -1318,7 +1413,7 @@ impl Infer {
                         | (Type::Var(_), Type::String) => {
                             self.unify_at(*span, lt, Type::String)?;
                             self.unify_at(*span, rt, Type::String)?;
-                            Ok((Type::String, le.union(re)))
+                            Ok((Type::String, self.union_eff(le, re)))
                         }
                         _ => {
                             let list_ty = match (lt.clone(), rt.clone()) {
@@ -1347,7 +1442,7 @@ impl Infer {
                                     )));
                                 }
                             };
-                            Ok((list_ty, le.union(re)))
+                            Ok((list_ty, self.union_eff(le, re)))
                         }
                     }
                 }
@@ -1359,7 +1454,7 @@ impl Infer {
                     for a in args {
                         let (t, e) = self.infer_expr(a)?;
                         self.unify_at(*span, t, Type::Int)?;
-                        eff = eff.union(e);
+                        eff = self.union_eff(eff, e);
                     }
                     Ok((Type::List(Box::new(Type::Int)), eff))
                 }
@@ -1388,7 +1483,7 @@ impl Infer {
                     let (ct, ce) = self.infer_expr(&args[1])?;
                     self.unify_at(*span, st, Type::String)?;
                     self.unify_at(*span, ct, Type::Char)?;
-                    Ok((Type::List(Box::new(Type::String)), se.union(ce)))
+                    Ok((Type::List(Box::new(Type::String)), self.union_eff(se, ce)))
                 }
                 Builtin::StrSubstring => {
                     if args.len() != 3 {
@@ -1402,7 +1497,7 @@ impl Infer {
                     self.unify_at(*span, st, Type::String)?;
                     self.unify_at(*span, a, Type::Int)?;
                     self.unify_at(*span, b, Type::Int)?;
-                    Ok((Type::String, se.union(ae).union(be)))
+                    Ok((Type::String, self.union3_eff(se, ae, be)))
                 }
                 Builtin::StrStartsWith | Builtin::StrEndsWith => {
                     if args.len() != 2 {
@@ -1414,7 +1509,7 @@ impl Infer {
                     let (pt, pe) = self.infer_expr(&args[1])?;
                     self.unify_at(*span, st, Type::String)?;
                     self.unify_at(*span, pt, Type::String)?;
-                    Ok((Type::Bool, se.union(pe)))
+                    Ok((Type::Bool, self.union_eff(se, pe)))
                 }
                 Builtin::ReadStdin => {
                     if !args.is_empty() {
@@ -1443,7 +1538,7 @@ impl Infer {
             } => {
                 let (lt, le) = self.infer_expr(left)?;
                 let (rt, re) = self.infer_expr(right)?;
-                let eff = le.union(re);
+                let eff = self.union_eff(le, re);
                 match op {
                     BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => {
                         let lt = self.prune(lt);
@@ -1501,8 +1596,8 @@ impl Infer {
                 self.unify_at(*span, ct, Type::Bool)?;
                 let (tt, te) = self.infer_expr(then_branch)?;
                 let (et, ee) = self.infer_expr(else_branch)?;
-                self.unify_at(*span, tt.clone(), et)?;
-                Ok((tt, ce.union(te).union(ee)))
+                let joined = self.join_types(tt, et, *span)?;
+                Ok((joined, self.union3_eff(ce, te, ee)))
             }
             Expr::Loop {
                 cond,
@@ -1518,7 +1613,7 @@ impl Infer {
                 } else {
                     Effect::pure()
                 };
-                Ok((Type::Unit, ce.union(be).union(se)))
+                Ok((Type::Unit, self.union3_eff(ce, be, se)))
             }
             Expr::Break(_) | Expr::Continue(_) => Ok((Type::Unit, Effect::pure())),
             Expr::AdtNew {
@@ -1532,7 +1627,7 @@ impl Infer {
                 for a in args {
                     let (t, e) = self.infer_expr(a)?;
                     arg_tys.push(t);
-                    eff = eff.union(e);
+                    eff = self.union_eff(eff, e);
                 }
                 if adt_name == "__Tuple" {
                     return Ok((Type::Tuple(arg_tys), eff));
@@ -1566,7 +1661,7 @@ impl Infer {
                 for s in stmts {
                     let (t, e) = self.infer_expr(s)?;
                     last = t;
-                    eff = eff.union(e);
+                    eff = self.union_eff(eff, e);
                 }
                 Ok((last, eff))
             }
@@ -1584,7 +1679,7 @@ impl Infer {
         let (rt, re) = self.infer_expr(&fun.body)?;
         // main is always an effect root
         let re = if fun.is_main {
-            re.union(Effect::io())
+            self.union_eff(re, Effect::io())
         } else {
             re
         };
@@ -2133,5 +2228,111 @@ val main = {
             "expected parallel purity error, got {msg}"
         );
     }
-}
 
+    /// `if` arms joining Pure/Io function values must lub to Io on the caller.
+    #[test]
+    fn if_branches_io_vs_pure_fun_marks_caller_or_rejects() {
+        let src = r#"
+module Hole
+import std.io.{println}
+val id(x) = x
+val boom(x) = {
+    println(x + 0)
+    x
+}
+val sneak(c, x) = {
+    val f = if c { id } else { boom }
+    f(x)
+}
+val main = {
+    sneak(false, 1)
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let hir = lower_module(&ast).expect("lower");
+        let typed = infer_module(&hir).expect("infer");
+        assert!(
+            matches!(
+                typed.fun_types.get("sneak"),
+                Some(Type::Fun(_, _, Effect::Io))
+            ),
+            "if-branch Fun lub must mark sneak Io; got {:?}",
+            typed.fun_types.get("sneak")
+        );
+        check_effect_boundaries(&typed).unwrap();
+    }
+
+    /// Assigning an Io lambda into a `var` previously holding a Pure lambda widens ε.
+    #[test]
+    fn assign_io_fun_into_pure_var_marks_caller_or_rejects() {
+        let src = r#"
+module Hole
+import std.io.{println}
+val sneak(x) = {
+    var f = { y -> y }
+    f = { y ->
+        println(y + 0)
+        y
+    }
+    f(x)
+}
+val main = {
+    sneak(1)
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let hir = lower_module(&ast).expect("lower");
+        let typed = infer_module(&hir).expect("infer");
+        assert!(
+            matches!(
+                typed.fun_types.get("sneak"),
+                Some(Type::Fun(_, _, Effect::Io))
+            ),
+            "assign Fun lub must mark sneak Io; got {:?}",
+            typed.fun_types.get("sneak")
+        );
+        check_effect_boundaries(&typed).unwrap();
+    }
+
+    /// Two open callback effects in one body must not drop the second Var.
+    #[test]
+    fn hof_two_callbacks_union_preserves_io() {
+        let src = r#"
+module Both
+import std.io.{println}
+val both(f, g, x) = {
+    f(x)
+    g(x)
+}
+val id(x) = x
+val boom(x) = {
+    println(x + 0)
+    x
+}
+val sneak(x) = both(id, boom, x)
+val main = {
+    sneak(1)
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let hir = lower_module(&ast).expect("lower");
+        let typed = infer_module(&hir).expect("infer");
+        assert!(
+            matches!(
+                typed.fun_types.get("both"),
+                Some(Type::Fun(_, _, Effect::Io))
+            ),
+            "both must be Io when either callback is Io; got {:?}",
+            typed.fun_types.get("both")
+        );
+        assert!(
+            matches!(
+                typed.fun_types.get("sneak"),
+                Some(Type::Fun(_, _, Effect::Io))
+            ),
+            "sneak must be Io; got {:?}",
+            typed.fun_types.get("sneak")
+        );
+        check_effect_boundaries(&typed).unwrap();
+    }
+}
