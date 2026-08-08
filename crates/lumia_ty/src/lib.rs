@@ -228,6 +228,8 @@ struct Scheme {
     vars: Vec<u32>,
     eff_vars: Vec<u32>,
     ty: Type,
+    /// Quantified vars that appeared in arithmetic (Num MVP: Int|Float only).
+    num_vars: Vec<u32>,
 }
 
 impl Scheme {
@@ -236,6 +238,7 @@ impl Scheme {
             vars: Vec::new(),
             eff_vars: Vec::new(),
             ty,
+            num_vars: Vec::new(),
         }
     }
 }
@@ -255,6 +258,8 @@ struct Infer {
     current_file: u32,
     /// Type names with `instance Ord for T` (MVP type-class wiring).
     ord_instances: HashSet<String>,
+    /// Type vars used in arithmetic — may only resolve to Int/Float (Num MVP).
+    num_vars: HashSet<u32>,
 }
 
 impl Infer {
@@ -312,6 +317,7 @@ impl Infer {
             vis,
             current_file: 0,
             ord_instances: HashSet::new(),
+            num_vars: HashSet::new(),
         }
     }
 
@@ -322,6 +328,24 @@ impl Infer {
             }
             Type::Adt { name, .. } => self.ord_instances.contains(name),
             _ => false,
+        }
+    }
+
+    fn mark_num(&mut self, t: &Type) {
+        if let Type::Var(v) = self.prune(t.clone()) {
+            self.num_vars.insert(v);
+        }
+    }
+
+    fn check_num_bind(&mut self, v: u32, t: &Type) -> Result<(), TypeError> {
+        if !self.num_vars.contains(&v) {
+            return Ok(());
+        }
+        match self.prune(t.clone()) {
+            Type::Int | Type::Float | Type::Var(_) => Ok(()),
+            other => Err(TypeError::Message(format!(
+                "numeric type required for arithmetic, got {other}"
+            ))),
         }
     }
 
@@ -531,7 +555,18 @@ impl Infer {
             .filter(|v| !env_efvs.contains(v))
             .collect();
         eff_vars.sort_unstable();
-        Scheme { vars, eff_vars, ty }
+        let mut num_vars: Vec<u32> = vars
+            .iter()
+            .copied()
+            .filter(|v| self.num_vars.contains(v))
+            .collect();
+        num_vars.sort_unstable();
+        Scheme {
+            vars,
+            eff_vars,
+            ty,
+            num_vars,
+        }
     }
 
     fn instantiate(&mut self, scheme: &Scheme) -> Type {
@@ -540,6 +575,11 @@ impl Infer {
             .iter()
             .map(|&v| (v, self.fresh()))
             .collect();
+        for &old in &scheme.num_vars {
+            if let Some(Type::Var(n)) = ty_map.get(&old) {
+                self.num_vars.insert(*n);
+            }
+        }
         let eff_map: HashMap<u32, Effect> = scheme
             .eff_vars
             .iter()
@@ -781,6 +821,15 @@ impl Infer {
                 if occurs(v, &t) {
                     return Err(TypeError::Message("infinite type".into()));
                 }
+                self.check_num_bind(v, &t)?;
+                if let Type::Var(u) = &t {
+                    if self.num_vars.contains(&v) {
+                        self.num_vars.insert(*u);
+                    }
+                    if self.num_vars.contains(u) {
+                        self.num_vars.insert(v);
+                    }
+                }
                 self.subst.insert(v, t);
                 Ok(())
             }
@@ -1001,10 +1050,8 @@ impl Infer {
                         | Type::Char
                         | Type::Adt { .. } => {}
                         Type::Var(_) => {
-                            return Err(at(
-                                *span,
-                                "println: cannot resolve argument type (annotate or use a concrete value)",
-                            ));
+                            // Default unresolved nums/ids to Int (restores `println(x + 0)`).
+                            self.unify_at(*span, t, Type::Int)?;
                         }
                         other => {
                             return Err(at(
@@ -1785,19 +1832,26 @@ impl Infer {
                                 Ok((Type::Float, eff))
                             }
                             (Type::Float, Type::Var(_)) => {
+                                self.mark_num(&rt);
                                 self.unify_at(*span, rt, Type::Float)?;
                                 Ok((Type::Float, eff))
                             }
                             (Type::Var(_), Type::Float) => {
+                                self.mark_num(&lt);
                                 self.unify_at(*span, lt, Type::Float)?;
                                 Ok((Type::Float, eff))
                             }
                             // Leave open for let-poly: `{ x -> x + x }` and `{ x -> x + 1 }`.
+                            // `num_vars` blocks later unify with String/Bool/ADT.
                             (Type::Var(_), Type::Var(_)) => {
+                                self.mark_num(&lt);
+                                self.mark_num(&rt);
                                 self.unify_at(*span, lt.clone(), rt)?;
                                 Ok((self.prune(lt), eff))
                             }
                             (Type::Var(_), Type::Int) | (Type::Int, Type::Var(_)) => {
+                                self.mark_num(&lt);
+                                self.mark_num(&rt);
                                 let v = match (&lt, &rt) {
                                     (Type::Var(_), _) => lt,
                                     _ => rt,
@@ -1844,7 +1898,10 @@ impl Infer {
                         let t = self.prune(t);
                         match t {
                             Type::Float => Ok((Type::Float, e)),
-                            Type::Var(_) => Ok((t, e)),
+                            Type::Var(_) => {
+                                self.mark_num(&t);
+                                Ok((t, e))
+                            }
                             _ => {
                                 self.unify_at(*span, t, Type::Int)?;
                                 Ok((Type::Int, e))
@@ -2546,6 +2603,26 @@ val main = {
         let ast = parse_module(src).unwrap();
         let hir = lower_module(&ast).expect("auto Eq + Ord");
         infer_module(&hir).expect("Ord with auto Eq");
+    }
+
+    #[test]
+    fn arith_poly_rejects_string() {
+        let src = r#"
+module M
+import std.io.{println}
+val main = {
+    val add1 = { x -> x + 1 }
+    println(add1("hi"))
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let hir = lower_module(&ast).expect("lower");
+        let err = infer_module(&hir).expect_err("String is not numeric");
+        assert!(
+            err.message().contains("numeric") || err.message().contains("String"),
+            "unexpected: {}",
+            err.message()
+        );
     }
 
     #[test]
