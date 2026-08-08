@@ -192,7 +192,7 @@ impl<'a> Lexer<'a> {
             b'a'..=b'z' | b'A'..=b'Z' => self.lex_ident(),
             _ => {
                 self.pos += 1;
-                TokenKind::Ident(format!("/*bad:{}*/", b as char))
+                TokenKind::Error(format!("invalid character U+{b:02X}"))
             }
         };
         let end = self.pos as u32;
@@ -410,12 +410,12 @@ impl<'a> Lexer<'a> {
     fn lex_char(&mut self) -> TokenKind {
         self.pos += 1; // opening '
         if self.pos >= self.bytes.len() {
-            return TokenKind::Char('\0');
+            return TokenKind::Error("unterminated character literal".into());
         }
         let ch = if self.bytes[self.pos] == b'\\' {
             self.pos += 1;
             if self.pos >= self.bytes.len() {
-                return TokenKind::Char('\0');
+                return TokenKind::Error("unterminated character escape".into());
             }
             let esc = self.bytes[self.pos];
             self.pos += 1;
@@ -431,14 +431,18 @@ impl<'a> Lexer<'a> {
         } else {
             // Decode one UTF-8 scalar from remaining bytes
             let rest = &self.src[self.pos..];
-            let ch = rest.chars().next().unwrap_or('\0');
+            let Some(ch) = rest.chars().next() else {
+                return TokenKind::Error("unterminated character literal".into());
+            };
             self.pos += ch.len_utf8();
             ch
         };
         if self.pos < self.bytes.len() && self.bytes[self.pos] == b'\'' {
             self.pos += 1;
+            TokenKind::Char(ch)
+        } else {
+            TokenKind::Error("unterminated character literal".into())
         }
-        TokenKind::Char(ch)
     }
 }
 
@@ -490,5 +494,27 @@ mod tests {
             }
             other => panic!("expected InterpString, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn unterminated_char_is_error() {
+        let mut lx = Lexer::new("'");
+        let t = lx.next_token();
+        assert!(
+            matches!(t.kind, TokenKind::Error(ref m) if m.contains("unterminated")),
+            "got {:?}",
+            t.kind
+        );
+    }
+
+    #[test]
+    fn invalid_byte_is_error_not_fake_ident() {
+        let mut lx = Lexer::new("$");
+        let t = lx.next_token();
+        assert!(
+            matches!(t.kind, TokenKind::Error(_)),
+            "got {:?}",
+            t.kind
+        );
     }
 }
