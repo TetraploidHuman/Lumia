@@ -348,8 +348,10 @@ fn select_value(v: &mut Value, bound: Local, escaping: &HashSet<Local>) {
             if elems.is_empty() {
                 // Empty → immortal singleton (`lumia_list_empty`).
                 *repr = ListRepr::LitList;
+            } else if local_ok && elems.len() <= 8 {
+                // Non-escaping small literal → stack layout in codegen (DESIGN §7).
+                *repr = ListRepr::LitList;
             } else {
-                // Non-empty always HeapList (codegen path).
                 *repr = ListRepr::HeapList;
             }
         }
@@ -467,7 +469,7 @@ mod tests {
     }
 
     #[test]
-    fn repr_select_marks_nonescaping_small_list_heap() {
+    fn repr_select_marks_nonescaping_small_list_lit() {
         let mut module = CoreModule {
             name: "M".into(),
             functions: vec![CoreFun {
@@ -515,9 +517,94 @@ mod tests {
             panic!("expected let");
         };
         match value {
+            Value::AllocList { repr, .. } => assert_eq!(*repr, ListRepr::LitList),
+            other => panic!("expected AllocList, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn repr_select_escaping_small_list_stays_heap() {
+        let mut module = CoreModule {
+            name: "M".into(),
+            functions: vec![CoreFun {
+                name: "f".into(),
+                params: vec![],
+                param_names: vec![],
+                param_tys: vec![],
+                body: Block {
+                    params: vec![],
+                    ops: vec![
+                        Op::Let {
+                            local: Local(0),
+                            value: Value::Int(1),
+                            pure_region: true,
+                        },
+                        Op::Let {
+                            local: Local(1),
+                            value: Value::AllocList {
+                                elems: vec![Local(0)],
+                                repr: ListRepr::HeapList,
+                            },
+                            pure_region: true,
+                        },
+                    ],
+                    result: Some(Local(1)),
+                },
+                ret_ty: Type::List(Box::new(Type::Int)),
+                effect: Effect::pure(),
+                is_main: false,
+                memo: None,
+                external: None,
+                escaping: std::collections::HashSet::new(),
+            }],
+            hash_adts: std::collections::HashSet::new(),
+        };
+        EscapePass.run(&mut module);
+        ReprSelect.run(&mut module);
+        let Op::Let { value, .. } = &module.functions[0].body.ops[1] else {
+            panic!("expected let");
+        };
+        match value {
             Value::AllocList { repr, .. } => assert_eq!(*repr, ListRepr::HeapList),
             other => panic!("expected AllocList, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn repr_select_end_to_end_small_listof() {
+        use lumia_hir::lower_module;
+        use lumia_syntax::parse_module;
+        use lumia_ty::infer_module;
+        let src = r#"
+module M
+val main = {
+    val xs = listOf(10, 20, 30)
+    xs.len()
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let hir = lower_module(&ast).expect("lower");
+        let typed = infer_module(&hir).expect("infer");
+        let mut core = lumia_core::lower_hir(&typed.module, &typed.fun_types);
+        optimize(&mut core, &OptOptions::default());
+        let main = core
+            .functions
+            .iter()
+            .find(|f| f.is_main)
+            .expect("main");
+        let alloc = main.body.ops.iter().find_map(|op| match op {
+            Op::Let {
+                value: Value::AllocList { elems, repr },
+                ..
+            } if !elems.is_empty() => Some(*repr),
+            _ => None,
+        });
+        assert_eq!(
+            alloc,
+            Some(ListRepr::LitList),
+            "expected LitList for non-escaping listOf; escaping={:?}",
+            main.escaping
+        );
     }
 
     #[test]

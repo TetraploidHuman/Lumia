@@ -882,8 +882,11 @@ impl<'ctx> Codegen<'ctx> {
     fn value_may_heap(&self, v: &Value) -> bool {
         match v {
             Value::String(_) | Value::Char(_) => true,
-            Value::AllocList { .. }
-            | Value::AllocSet { .. }
+            // Small non-escaping LitList lives on the stack — not a GC root.
+            Value::AllocList { elems, repr } => {
+                !(matches!(repr, lumia_core::ListRepr::LitList) && !elems.is_empty())
+            }
+            Value::AllocSet { .. }
             | Value::AllocMap { .. }
             | Value::AllocAdt { .. }
             | Value::AllocClosure { .. } => true,
@@ -3622,10 +3625,9 @@ impl<'ctx> Codegen<'ctx> {
                 }
             }
             Value::AllocList { elems, repr } => {
-                // Empty list → immortal singleton (`lumia_list_empty`). Non-empty
-                // LitList/HeapList share heap layout; Iota comes from `lumia_range`.
+                // Empty → immortal singleton. Non-escaping LitList → stack header+payload
+                // (same layout as heap so RT len/get work). Escaping → heap.
                 if elems.is_empty() {
-                    let _ = repr;
                     let f = self.module.get_function("lumia_list_empty").unwrap();
                     let ptr = self
                         .builder
@@ -3641,7 +3643,9 @@ impl<'ctx> Codegen<'ctx> {
                         .unwrap()
                         .into());
                 }
-                let _ = repr;
+                if matches!(repr, lumia_core::ListRepr::LitList) {
+                    return self.emit_stack_list(elems);
+                }
                 self.emit_heap_array(elems, 3 /* TYPE_LIST */)
             }
             Value::AllocSet { elems } => {
@@ -3811,6 +3815,92 @@ impl<'ctx> Codegen<'ctx> {
                     .into())
             }
         }
+    }
+
+    /// Stack list with ObjectHeader + `[len][elems…]` payload (TYPE_LIST).
+    /// Escape analysis must ensure the pointer never outlives the frame.
+    fn emit_stack_list(&mut self, elems: &[Local]) -> Result<BasicValueEnum<'ctx>> {
+        // Layout as i64 words: [hdr0][hdr1][len][e0]… — hdr packs ObjectHeader (16 B).
+        let n = elems.len() as u64;
+        let payload_bytes = (1 + n) * 8;
+        let words = (2 + 1 + n) as u32; // 2 header words + len + elems
+        let arr_ty = self.i64_ty.array_type(words);
+        let entry = self
+            .entry_bb
+            .context("emit_stack_list before emit_function")?;
+        let cur = self
+            .builder
+            .get_insert_block()
+            .context("no insert block")?;
+        match entry.get_first_instruction() {
+            Some(first) => self.builder.position_before(&first),
+            None => self.builder.position_at_end(entry),
+        }
+        let storage = self.builder.build_alloca(arr_ty, "stack_list").unwrap();
+        self.builder.position_at_end(cur);
+
+        // type_id=3 (TYPE_LIST) in low 32, size=payload_bytes in high 32.
+        let hdr0 = self
+            .i64_ty
+            .const_int(3u64 | ((payload_bytes as u64) << 32), false);
+        let hdr0_slot = unsafe {
+            self.builder
+                .build_gep(
+                    self.i64_ty,
+                    storage,
+                    &[self.i64_ty.const_int(0, false)],
+                    "sl_hdr0",
+                )
+                .unwrap()
+        };
+        self.builder.build_store(hdr0_slot, hdr0).unwrap();
+        // marked=1 in low 32.
+        let hdr1_slot = unsafe {
+            self.builder
+                .build_gep(
+                    self.i64_ty,
+                    storage,
+                    &[self.i64_ty.const_int(1, false)],
+                    "sl_hdr1",
+                )
+                .unwrap()
+        };
+        self.builder
+            .build_store(hdr1_slot, self.i64_ty.const_int(1, false))
+            .unwrap();
+
+        let payload = unsafe {
+            self.builder
+                .build_gep(
+                    self.i64_ty,
+                    storage,
+                    &[self.i64_ty.const_int(2, false)],
+                    "sl_payload",
+                )
+                .unwrap()
+        };
+        self.builder
+            .build_store(payload, self.i64_ty.const_int(n, false))
+            .unwrap();
+        for (i, e) in elems.iter().enumerate() {
+            let v = self.coerce_i64(self.local(*e)?)?;
+            let slot = unsafe {
+                self.builder
+                    .build_gep(
+                        self.i64_ty,
+                        storage,
+                        &[self.i64_ty.const_int((3 + i) as u64, false)],
+                        "sl_elem",
+                    )
+                    .unwrap()
+            };
+            self.builder.build_store(slot, v).unwrap();
+        }
+        Ok(self
+            .builder
+            .build_ptr_to_int(payload, self.i64_ty, "sl_i64")
+            .unwrap()
+            .into())
     }
 
     fn emit_heap_array(

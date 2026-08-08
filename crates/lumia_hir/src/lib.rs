@@ -1388,6 +1388,14 @@ fn lower_call(callee: &lumia_syntax::Expr, args: &[lumia_syntax::Expr], span: Sp
                 return fused;
             }
         }
+        // `x.show()` → Show builtin (codegen / instance override).
+        if field == "show" && args.is_empty() {
+            return Expr::BuiltinCall {
+                name: Builtin::Show,
+                args: vec![lower_expr(base)],
+                span,
+            };
+        }
         let mut call_args = vec![lower_expr(base)];
         call_args.extend(args.iter().map(lower_expr));
         return lower_call_from_parts(Expr::Var(field.clone(), span), call_args, span);
@@ -2340,11 +2348,15 @@ pub fn desugar_list_map_sequential(list: Expr, f: Expr, span: Span) -> Expr {
 }
 
 /// Parallel map: capture-free lambda, or a top-level function name (FunRef).
+/// Free refs to other top-level funs (e.g. `{ x -> double(x) }`) are FunRef-safe.
 fn map_callback_is_parallel_safe(f: &Expr) -> bool {
     match f {
         Expr::Lambda { params, body, .. } => {
             let mut bound: Vec<String> = params.clone();
-            free_vars_expr(body, &mut bound).is_empty()
+            let frees = free_vars_expr(body, &mut bound);
+            frees
+                .iter()
+                .all(|n| TOPLEVEL_FUNS.with(|t| t.borrow().contains(n)))
         }
         Expr::Var(n, _) => TOPLEVEL_FUNS.with(|t| t.borrow().contains(n)),
         _ => false,

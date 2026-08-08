@@ -2988,6 +2988,41 @@ val main = {
         );
     }
 
+    #[test]
+    fn parallel_map_toplevel_lambda_kept() {
+        let src = r#"
+module ParLam
+val double(x) = x * 2
+val main = {
+    listOf(1, 2, 3).map({ x -> double(x) })
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let hir = lower_module(&ast).expect("lower");
+        assert!(
+            contains_list_par_map(&hir.items.iter().find_map(|i| match i {
+                Item::Fun(f) if f.is_main => Some(&f.body),
+                _ => None,
+            }).unwrap()),
+            "lambda calling only top-level funs should lower to ListParMap"
+        );
+        let mut typed = infer_module(&hir).expect("infer");
+        finalize_auto_parallel(&mut typed, true);
+        let main_body = typed
+            .module
+            .items
+            .iter()
+            .find_map(|i| match i {
+                Item::Fun(f) if f.is_main => Some(&f.body),
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            contains_list_par_map(main_body),
+            "toplevel-only lambda map should stay ListParMap"
+        );
+    }
+
     /// `if` arms joining Pure/Io function values must lub to Io on the caller.
     #[test]
     fn if_branches_io_vs_pure_fun_marks_caller_or_rejects() {

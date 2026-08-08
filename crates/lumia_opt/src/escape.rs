@@ -176,8 +176,16 @@ fn mark_inputs_escaping(value: &Value, escaping: &mut HashSet<Local>) -> bool {
             mark(*right);
         }
         Value::Unary { operand, .. } => mark(*operand),
+        Value::Builtin { name, args } => {
+            // Pure projections do not retain the collection; returning `xs.len()`
+            // must not mark `xs` itself as escaping.
+            if builtin_may_capture(*name) {
+                for a in args {
+                    mark(*a);
+                }
+            }
+        }
         Value::Call { args, .. }
-        | Value::Builtin { args, .. }
         | Value::AllocList { elems: args, .. }
         | Value::AllocSet { elems: args }
         | Value::AllocMap {

@@ -1,0 +1,16 @@
+module ParMapToplevelLam
+
+import std.io.{println}
+
+val double = { x ->
+    x * 2
+}
+
+/// Lambda that only closes over a top-level fun — still FunRef-safe ListParMap.
+val main = {
+    val xs = range(0, 50)
+    val ys = xs.map({ x -> double(x) })
+    println(ys.len())
+    println(ys.get(0))
+    println(ys.get(49))
+}

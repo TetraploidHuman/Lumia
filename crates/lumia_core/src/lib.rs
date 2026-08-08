@@ -163,7 +163,7 @@ pub enum Value {
 pub enum ListRepr {
     /// Default heap `[len][elems…]`.
     HeapList,
-    /// Empty list only — codegen emits immortal `lumia_list_empty`.
+    /// Empty → immortal `lumia_list_empty`; small non-escaping → stack header+payload.
     LitList,
 }
 
@@ -323,9 +323,30 @@ pub fn lower_hir(module: &HirModule, fun_types: &HashMap<String, Type>) -> CoreM
     core
 }
 
-/// Clone named / lifted funs for Float call sites (BUILD monomorphization MVP).
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum MonoKind {
+    Float,
+    Bool,
+}
+
+impl MonoKind {
+    fn suffix(self) -> &'static str {
+        match self {
+            MonoKind::Float => "$Float",
+            MonoKind::Bool => "$Bool",
+        }
+    }
+    fn ground(self) -> Type {
+        match self {
+            MonoKind::Float => Type::Float,
+            MonoKind::Bool => Type::Bool,
+        }
+    }
+}
+
+/// Clone named / lifted funs for Float/Bool call sites (BUILD monomorphization MVP).
 fn specialize_mono_calls(module: &mut CoreModule) {
-    let mut needed: HashSet<String> = HashSet::new();
+    let mut needed: HashSet<(String, MonoKind)> = HashSet::new();
     for fun in &module.functions {
         let mut local_tys: HashMap<u32, Type> = HashMap::new();
         for (i, p) in fun.params.iter().enumerate() {
@@ -337,10 +358,10 @@ fn specialize_mono_calls(module: &mut CoreModule) {
         scan_mono_block(&fun.body, &mut local_tys, &module.functions, &mut needed);
     }
 
-    let mut renames: HashMap<String, String> = HashMap::new();
+    let mut renames: HashMap<(String, MonoKind), String> = HashMap::new();
     let mut clones = Vec::new();
-    for name in needed {
-        if name.contains("$Float") {
+    for (name, kind) in needed {
+        if name.contains('$') {
             continue;
         }
         let Some(orig) = module.functions.iter().find(|f| f.name == name) else {
@@ -350,26 +371,27 @@ fn specialize_mono_calls(module: &mut CoreModule) {
         if orig.is_main || orig.external.is_some() || orig.params.is_empty() {
             continue;
         }
-        if orig.param_tys.iter().all(|t| matches!(t, Type::Float)) {
+        let ground = kind.ground();
+        if orig.param_tys.iter().all(|t| *t == ground) {
             continue;
         }
-        // Skip clearly non-numeric returns (e.g. String identity).
+        // Skip clearly non-scalar returns (e.g. String identity).
         if matches!(orig.ret_ty, Type::String | Type::Char) {
             continue;
         }
-        let new_name = format!("{name}$Float");
+        let new_name = format!("{name}{}", kind.suffix());
         if module.functions.iter().any(|f| f.name == new_name)
             || clones.iter().any(|f: &CoreFun| f.name == new_name)
         {
-            renames.insert(name, new_name);
+            renames.insert((name, kind), new_name);
             continue;
         }
         let mut clone = orig.clone();
         clone.name = new_name.clone();
-        clone.param_tys = vec![Type::Float; clone.params.len()];
-        clone.ret_ty = Type::Float;
+        clone.param_tys = vec![ground.clone(); clone.params.len()];
+        clone.ret_ty = ground;
         clone.memo = None;
-        renames.insert(name, new_name);
+        renames.insert((name, kind), new_name);
         clones.push(clone);
     }
     module.functions.append(&mut clones);
@@ -393,7 +415,7 @@ fn scan_mono_block(
     block: &Block,
     local_tys: &mut HashMap<u32, Type>,
     functions: &[CoreFun],
-    needed: &mut HashSet<String>,
+    needed: &mut HashSet<(String, MonoKind)>,
 ) {
     for op in &block.ops {
         match op {
@@ -416,7 +438,7 @@ fn walk_mono_nested_scan(
     value: &Value,
     local_tys: &mut HashMap<u32, Type>,
     functions: &[CoreFun],
-    needed: &mut HashSet<String>,
+    needed: &mut HashSet<(String, MonoKind)>,
 ) {
     match value {
         Value::If {
@@ -444,27 +466,35 @@ fn note_mono_call(
     value: &Value,
     local_tys: &HashMap<u32, Type>,
     functions: &[CoreFun],
-    needed: &mut HashSet<String>,
+    needed: &mut HashSet<(String, MonoKind)>,
 ) {
     let Value::Call { fun, args } = value else {
         return;
     };
-    if args.is_empty() || fun.contains("$Float") {
+    if args.is_empty() || fun.contains('$') {
         return;
     }
-    let all_float = args.iter().all(|a| {
-        matches!(local_tys.get(&a.0), Some(Type::Float))
-    });
-    if !all_float {
+    let kind = if args
+        .iter()
+        .all(|a| matches!(local_tys.get(&a.0), Some(Type::Float)))
+    {
+        MonoKind::Float
+    } else if args
+        .iter()
+        .all(|a| matches!(local_tys.get(&a.0), Some(Type::Bool)))
+    {
+        MonoKind::Bool
+    } else {
         return;
-    }
+    };
     let Some(f) = functions.iter().find(|f| f.name == *fun) else {
         return;
     };
-    if f.param_tys.iter().all(|t| matches!(t, Type::Float)) {
+    let ground = kind.ground();
+    if f.param_tys.iter().all(|t| *t == ground) {
         return;
     }
-    needed.insert(fun.clone());
+    needed.insert((fun.clone(), kind));
 }
 
 fn mono_value_ty(
@@ -474,7 +504,8 @@ fn mono_value_ty(
 ) -> Type {
     match value {
         Value::Float(_) => Type::Float,
-        Value::Int(_) | Value::Bool(_) => Type::Int,
+        Value::Bool(_) => Type::Bool,
+        Value::Int(_) => Type::Int,
         Value::String(_) => Type::String,
         Value::Char(_) => Type::Char,
         Value::Local(l) | Value::Unary { operand: l, .. } => local_tys
@@ -503,7 +534,7 @@ fn mono_value_ty(
 fn rewrite_mono_block(
     block: &mut Block,
     local_tys: &mut HashMap<u32, Type>,
-    renames: &HashMap<String, String>,
+    renames: &HashMap<(String, MonoKind), String>,
 ) {
     for op in &mut block.ops {
         match op {
@@ -521,16 +552,28 @@ fn rewrite_mono_block(
 fn rewrite_mono_value(
     value: &mut Value,
     local_tys: &mut HashMap<u32, Type>,
-    renames: &HashMap<String, String>,
+    renames: &HashMap<(String, MonoKind), String>,
 ) {
     match value {
         Value::Call { fun, args } => {
-            if !args.is_empty()
-                && args
-                    .iter()
-                    .all(|a| matches!(local_tys.get(&a.0), Some(Type::Float)))
+            if args.is_empty() {
+                return;
+            }
+            let kind = if args
+                .iter()
+                .all(|a| matches!(local_tys.get(&a.0), Some(Type::Float)))
             {
-                if let Some(new) = renames.get(fun) {
+                Some(MonoKind::Float)
+            } else if args
+                .iter()
+                .all(|a| matches!(local_tys.get(&a.0), Some(Type::Bool)))
+            {
+                Some(MonoKind::Bool)
+            } else {
+                None
+            };
+            if let Some(kind) = kind {
+                if let Some(new) = renames.get(&(fun.clone(), kind)) {
                     *fun = new.clone();
                 }
             }
@@ -559,12 +602,20 @@ fn rewrite_mono_value(
 fn mono_value_ty_rewrite(
     value: &Value,
     local_tys: &HashMap<u32, Type>,
-    renames: &HashMap<String, String>,
+    renames: &HashMap<(String, MonoKind), String>,
 ) -> Type {
     match value {
         Value::Call { fun, .. } => {
-            if fun.ends_with("$Float") || renames.values().any(|n| n == fun) {
+            if fun.ends_with("$Float") {
                 Type::Float
+            } else if fun.ends_with("$Bool") {
+                Type::Bool
+            } else if renames.values().any(|n| n == fun) {
+                if fun.contains("$Float") {
+                    Type::Float
+                } else {
+                    Type::Bool
+                }
             } else {
                 Type::Int
             }

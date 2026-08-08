@@ -165,6 +165,12 @@ fn e2e_trait_show() {
 }
 
 #[test]
+fn e2e_trait_show_method() {
+    // UFCS `p.show()` → Show builtin / instance override.
+    run_example("examples/trait_show_method.lm", &["Point", "Point"]);
+}
+
+#[test]
 fn e2e_trait_default_show() {
     run_example("examples/trait_default_show.lm", &["default-show"]);
 }
@@ -236,6 +242,17 @@ fn e2e_poly_add1() {
 fn e2e_poly_top_dbl() {
     // Top-level `val dbl` Float site → `dbl$Float` clone.
     run_example("examples/poly_top_dbl.lm", &["2", "3"]);
+}
+
+#[test]
+fn e2e_poly_bool() {
+    run_example("examples/poly_bool.lm", &["1", "true", "false"]);
+}
+
+#[test]
+fn e2e_small_list_local() {
+    // Non-escaping small listOf → stack LitList; len/get still work.
+    run_example("examples/small_list_local.lm", &["3", "10", "30", "60"]);
 }
 
 #[test]
@@ -1045,6 +1062,12 @@ fn e2e_par_map() {
 #[test]
 fn e2e_par_map_fn() {
     run_example("examples/par_map_fn.lm", &["50", "0", "98"]);
+}
+
+#[test]
+fn e2e_par_map_toplevel_lam() {
+    // `{ x -> double(x) }` with top-level `double` stays ListParMap-safe.
+    run_example("examples/par_map_toplevel_lam.lm", &["50", "0", "98"]);
 }
 
 #[test]
