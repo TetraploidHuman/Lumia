@@ -613,9 +613,9 @@ mod tests {
             "module Main\nimport evil.{leak}\nval main = leak\n",
         )
         .unwrap();
-        let evil = dir.join("evil.lm");
         #[cfg(unix)]
         {
+            let evil = dir.join("evil.lm");
             let _ = fs::remove_file(&evil);
             std::os::unix::fs::symlink(&outside, &evil).unwrap();
             let err = load_program(&entry).unwrap_err();

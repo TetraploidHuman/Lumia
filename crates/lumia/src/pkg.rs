@@ -600,7 +600,10 @@ link = ["-Llib", "-lm"]
         let cwd = Path::new(".");
         let a = validate_cli_link_arg(cwd, "-lm").unwrap();
         assert_eq!(a, "-lm");
+        // Absolute `-L` is re-canonicalized (Windows may yield `\\?\…`).
         let a = validate_cli_link_arg(cwd, "-L/usr/lib").unwrap();
-        assert_eq!(a, "-L/usr/lib");
+        assert!(a.starts_with("-L"), "got {a}");
+        let path = Path::new(a.strip_prefix("-L").unwrap());
+        assert!(path.is_absolute(), "expected absolute -L, got {a}");
     }
 }
