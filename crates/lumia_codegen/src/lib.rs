@@ -431,6 +431,11 @@ fn declare_runtime<'ctx>(context: &'ctx Context, module: &LlvmModule<'ctx>) {
         None,
     );
     module.add_function(
+        "lumia_list_par_fold",
+        i64_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false),
+        None,
+    );
+    module.add_function(
         "lumia_list_join",
         ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
         None,
@@ -882,14 +887,17 @@ impl<'ctx> Codegen<'ctx> {
     fn value_may_heap(&self, v: &Value) -> bool {
         match v {
             Value::String(_) | Value::Char(_) => true,
-            // Small non-escaping LitList lives on the stack — not a GC root.
+            // Small non-escaping Lit* lives on the stack — not a GC root.
             Value::AllocList { elems, repr } => {
                 !(matches!(repr, lumia_core::ListRepr::LitList) && !elems.is_empty())
             }
-            Value::AllocSet { .. }
-            | Value::AllocMap { .. }
-            | Value::AllocAdt { .. }
-            | Value::AllocClosure { .. } => true,
+            Value::AllocSet { elems, repr } => {
+                !(matches!(repr, lumia_core::SetRepr::LitSet) && !elems.is_empty())
+            }
+            Value::AllocMap { flat_pairs, repr } => {
+                !(matches!(repr, lumia_core::MapRepr::LitMap) && !flat_pairs.is_empty())
+            }
+            Value::AllocAdt { .. } | Value::AllocClosure { .. } => true,
             Value::ClosureCap { .. } => true,
             Value::IndirectCall { .. } => true,
             // Only when an arm's result may be heap — parent `Let` re-roots after
@@ -1497,6 +1505,12 @@ impl<'ctx> Codegen<'ctx> {
                 | Builtin::ListSort
                 | Builtin::ListSortByKeys
                 | Builtin::ListParMap => self.list_elem_preserved(args),
+                Builtin::ListParFold => {
+                    // Acc / init type (scalar).
+                    args.get(1)
+                        .and_then(|a| self.local_tys.get(&a.0).cloned())
+                        .unwrap_or(Type::Int)
+                }
                 Builtin::ListAppend => {
                     if let Some(arg0) = args.first() {
                         match self.local_tys.get(&arg0.0) {
@@ -1619,7 +1633,7 @@ impl<'ctx> Codegen<'ctx> {
                     .unwrap_or(Type::Int);
                 Type::List(Box::new(elem))
             }
-            Value::AllocSet { elems } => {
+            Value::AllocSet { elems, .. } => {
                 let elem = elems
                     .first()
                     .and_then(|Local(id)| self.local_tys.get(id).cloned())
@@ -3244,6 +3258,60 @@ impl<'ctx> Codegen<'ctx> {
                         .unwrap()
                         .into())
                 }
+                Builtin::ListParFold => {
+                    let list_i = self.coerce_i64(self.local(args[0])?)?;
+                    let init_i = self.coerce_i64(self.local(args[1])?)?;
+                    let fun_i = self.coerce_i64(self.local(args[2])?)?;
+                    let ptr_ty = self.context.ptr_type(AddressSpace::default());
+                    let list = self
+                        .builder
+                        .build_int_to_ptr(list_i, ptr_ty, "pfold_list")
+                        .unwrap();
+                    let one = self.i64_ty.const_int(1, false);
+                    let tagged = self.builder.build_and(fun_i, one, "pfold_tag").unwrap();
+                    let is_funref = self
+                        .builder
+                        .build_int_compare(IntPredicate::EQ, tagged, one, "pfold_is_fr")
+                        .unwrap();
+                    let cur = self
+                        .builder
+                        .get_insert_block()
+                        .context("par_fold needs insert block")?;
+                    let parent = cur.get_parent().context("bb parent")?;
+                    let ok_bb = self.context.append_basic_block(parent, "pfold_ok");
+                    let bad_bb = self.context.append_basic_block(parent, "pfold_bad");
+                    self.builder
+                        .build_conditional_branch(is_funref, ok_bb, bad_bb)
+                        .unwrap();
+                    self.builder.position_at_end(bad_bb);
+                    let fail = self.module.get_function("lumia_match_fail").unwrap();
+                    self.builder.build_call(fail, &[], "pfold_bad_fn").unwrap();
+                    self.builder.build_unreachable().unwrap();
+                    self.builder.position_at_end(ok_bb);
+                    let cleared = self
+                        .builder
+                        .build_and(
+                            fun_i,
+                            self.builder.build_not(one, "pfold_not1").unwrap(),
+                            "pfold_clear",
+                        )
+                        .unwrap();
+                    let fptr = self
+                        .builder
+                        .build_int_to_ptr(cleared, ptr_ty, "pfold_fn")
+                        .unwrap();
+                    let f = self.module.get_function("lumia_list_par_fold").unwrap();
+                    let call = self
+                        .builder
+                        .build_call(f, &[list.into(), init_i.into(), fptr.into()], "par_fold")
+                        .unwrap();
+                    Ok(call
+                        .try_as_basic_value()
+                        .basic()
+                        .unwrap()
+                        .into_int_value()
+                        .into())
+                }
                 Builtin::ListJoin => {
                     let list_i = self.coerce_i64(self.local(args[0])?)?;
                     let sep_i = self.coerce_i64(self.local(args[1])?)?;
@@ -3648,7 +3716,7 @@ impl<'ctx> Codegen<'ctx> {
                 }
                 self.emit_heap_array(elems, 3 /* TYPE_LIST */)
             }
-            Value::AllocSet { elems } => {
+            Value::AllocSet { elems, repr } => {
                 let elem_ty = elems
                     .first()
                     .and_then(|e| self.local_tys.get(&e.0).cloned())
@@ -3662,6 +3730,9 @@ impl<'ctx> Codegen<'ctx> {
                 } else {
                     5 /* TYPE_SET */
                 };
+                if !elems.is_empty() && matches!(repr, lumia_core::SetRepr::LitSet) {
+                    return self.emit_stack_array(elems, tid);
+                }
                 let v = self.emit_heap_array(elems, tid)?;
                 if elems.len() > 8 && !no_hash {
                     let ptr_ty = self.context.ptr_type(AddressSpace::default());
@@ -3694,7 +3765,6 @@ impl<'ctx> Codegen<'ctx> {
                     bail!("mapOf expects even number of key/value args");
                 }
                 let n_pairs = (flat_pairs.len() / 2) as u64;
-                let nbytes = self.i64_ty.const_int((1 + flat_pairs.len() as u64) * 8, false);
                 let key_ty = flat_pairs
                     .first()
                     .and_then(|k| self.local_tys.get(&k.0).cloned())
@@ -3702,16 +3772,18 @@ impl<'ctx> Codegen<'ctx> {
                 let float_keys = matches!(key_ty, Type::Float);
                 let no_hash = matches!(repr, lumia_core::MapRepr::AssocList)
                     || !self.key_type_has_hash(&key_ty);
-                let type_id = self.context.i32_type().const_int(
-                    if float_keys {
-                        10 // TYPE_MAP_F64
-                    } else if no_hash {
-                        12 // TYPE_MAP_ASSOC
-                    } else {
-                        4 // TYPE_MAP
-                    },
-                    false,
-                );
+                let tid = if float_keys {
+                    10 // TYPE_MAP_F64
+                } else if no_hash {
+                    12 // TYPE_MAP_ASSOC
+                } else {
+                    4 // TYPE_MAP
+                };
+                if n_pairs > 0 && matches!(repr, lumia_core::MapRepr::LitMap) {
+                    return self.emit_stack_map(flat_pairs, tid);
+                }
+                let nbytes = self.i64_ty.const_int((1 + flat_pairs.len() as u64) * 8, false);
+                let type_id = self.context.i32_type().const_int(tid, false);
                 let alloc = self.module.get_function("lumia_alloc").unwrap();
                 let ptr = self
                     .builder
@@ -3820,14 +3892,22 @@ impl<'ctx> Codegen<'ctx> {
     /// Stack list with ObjectHeader + `[len][elems…]` payload (TYPE_LIST).
     /// Escape analysis must ensure the pointer never outlives the frame.
     fn emit_stack_list(&mut self, elems: &[Local]) -> Result<BasicValueEnum<'ctx>> {
-        // Layout as i64 words: [hdr0][hdr1][len][e0]… — hdr packs ObjectHeader (16 B).
+        self.emit_stack_array(elems, 3 /* TYPE_LIST */)
+    }
+
+    /// Stack Set/List-shaped array: ObjectHeader + `[len][elems…]`.
+    fn emit_stack_array(
+        &mut self,
+        elems: &[Local],
+        type_id: u64,
+    ) -> Result<BasicValueEnum<'ctx>> {
         let n = elems.len() as u64;
         let payload_bytes = (1 + n) * 8;
         let words = (2 + 1 + n) as u32; // 2 header words + len + elems
         let arr_ty = self.i64_ty.array_type(words);
         let entry = self
             .entry_bb
-            .context("emit_stack_list before emit_function")?;
+            .context("emit_stack_array before emit_function")?;
         let cur = self
             .builder
             .get_insert_block()
@@ -3836,32 +3916,30 @@ impl<'ctx> Codegen<'ctx> {
             Some(first) => self.builder.position_before(&first),
             None => self.builder.position_at_end(entry),
         }
-        let storage = self.builder.build_alloca(arr_ty, "stack_list").unwrap();
+        let storage = self.builder.build_alloca(arr_ty, "stack_arr").unwrap();
         self.builder.position_at_end(cur);
 
-        // type_id=3 (TYPE_LIST) in low 32, size=payload_bytes in high 32.
         let hdr0 = self
             .i64_ty
-            .const_int(3u64 | ((payload_bytes as u64) << 32), false);
+            .const_int(type_id | ((payload_bytes as u64) << 32), false);
         let hdr0_slot = unsafe {
             self.builder
                 .build_gep(
                     self.i64_ty,
                     storage,
                     &[self.i64_ty.const_int(0, false)],
-                    "sl_hdr0",
+                    "sa_hdr0",
                 )
                 .unwrap()
         };
         self.builder.build_store(hdr0_slot, hdr0).unwrap();
-        // marked=1 in low 32.
         let hdr1_slot = unsafe {
             self.builder
                 .build_gep(
                     self.i64_ty,
                     storage,
                     &[self.i64_ty.const_int(1, false)],
-                    "sl_hdr1",
+                    "sa_hdr1",
                 )
                 .unwrap()
         };
@@ -3875,7 +3953,7 @@ impl<'ctx> Codegen<'ctx> {
                     self.i64_ty,
                     storage,
                     &[self.i64_ty.const_int(2, false)],
-                    "sl_payload",
+                    "sa_payload",
                 )
                 .unwrap()
         };
@@ -3890,7 +3968,7 @@ impl<'ctx> Codegen<'ctx> {
                         self.i64_ty,
                         storage,
                         &[self.i64_ty.const_int((3 + i) as u64, false)],
-                        "sl_elem",
+                        "sa_elem",
                     )
                     .unwrap()
             };
@@ -3898,7 +3976,94 @@ impl<'ctx> Codegen<'ctx> {
         }
         Ok(self
             .builder
-            .build_ptr_to_int(payload, self.i64_ty, "sl_i64")
+            .build_ptr_to_int(payload, self.i64_ty, "sa_i64")
+            .unwrap()
+            .into())
+    }
+
+    /// Stack Map: ObjectHeader + `[n_pairs][k0][v0]…`.
+    fn emit_stack_map(
+        &mut self,
+        flat_pairs: &[Local],
+        type_id: u64,
+    ) -> Result<BasicValueEnum<'ctx>> {
+        let n_words = flat_pairs.len() as u64;
+        let n_pairs = n_words / 2;
+        let payload_bytes = (1 + n_words) * 8;
+        let words = (2 + 1 + n_words) as u32;
+        let arr_ty = self.i64_ty.array_type(words);
+        let entry = self
+            .entry_bb
+            .context("emit_stack_map before emit_function")?;
+        let cur = self
+            .builder
+            .get_insert_block()
+            .context("no insert block")?;
+        match entry.get_first_instruction() {
+            Some(first) => self.builder.position_before(&first),
+            None => self.builder.position_at_end(entry),
+        }
+        let storage = self.builder.build_alloca(arr_ty, "stack_map").unwrap();
+        self.builder.position_at_end(cur);
+
+        let hdr0 = self
+            .i64_ty
+            .const_int(type_id | ((payload_bytes as u64) << 32), false);
+        let hdr0_slot = unsafe {
+            self.builder
+                .build_gep(
+                    self.i64_ty,
+                    storage,
+                    &[self.i64_ty.const_int(0, false)],
+                    "sm_hdr0",
+                )
+                .unwrap()
+        };
+        self.builder.build_store(hdr0_slot, hdr0).unwrap();
+        let hdr1_slot = unsafe {
+            self.builder
+                .build_gep(
+                    self.i64_ty,
+                    storage,
+                    &[self.i64_ty.const_int(1, false)],
+                    "sm_hdr1",
+                )
+                .unwrap()
+        };
+        self.builder
+            .build_store(hdr1_slot, self.i64_ty.const_int(1, false))
+            .unwrap();
+
+        let payload = unsafe {
+            self.builder
+                .build_gep(
+                    self.i64_ty,
+                    storage,
+                    &[self.i64_ty.const_int(2, false)],
+                    "sm_payload",
+                )
+                .unwrap()
+        };
+        self.builder
+            .build_store(payload, self.i64_ty.const_int(n_pairs, false))
+            .unwrap();
+        for (i, e) in flat_pairs.iter().enumerate() {
+            let v = self.coerce_i64(self.local(*e)?)?;
+            let slot = unsafe {
+                self.builder
+                    .build_gep(
+                        self.i64_ty,
+                        storage,
+                        &[self.i64_ty.const_int((3 + i) as u64, false)],
+                        "sm_kv",
+                    )
+                    .unwrap()
+            };
+            self.builder.build_store(slot, v).unwrap();
+        }
+        Ok(self
+            .builder
+            .build_ptr_to_int(payload, self.i64_ty, "sm_i64")
             .unwrap()
             .into())
     }

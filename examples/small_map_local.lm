@@ -1,0 +1,24 @@
+module SmallMapLocal
+
+import std.io.{println}
+
+type Option {
+    Some(value)
+    None
+}
+
+val unwrap_or = { opt, d ->
+    opt match {
+        None -> d
+        Some(n) -> n
+    }
+}
+
+/// Non-escaping small `mapOf` → stack LitMap (Escape + ReprSelect).
+val main = {
+    val m = mapOf(1, 10, 2, 20, 3, 30)
+    println(m.len())
+    println(m.contains(2))
+    println(unwrap_or(m.get(1), -1))
+    println(unwrap_or(m.get(3), -1))
+}

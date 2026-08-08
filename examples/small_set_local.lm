@@ -1,0 +1,11 @@
+module SmallSetLocal
+
+import std.io.{println}
+
+/// Non-escaping small `setOf` → stack LitSet (Escape + ReprSelect).
+val main = {
+    val s = setOf(10, 20, 30)
+    println(s.len())
+    println(s.contains(20))
+    println(s.contains(99))
+}

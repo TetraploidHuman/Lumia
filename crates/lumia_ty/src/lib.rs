@@ -1,6 +1,8 @@
 //! Hindley-Milner style type inference + effect sets.
 
-use lumia_hir::{desugar_list_map_sequential, Builtin, Expr, Fun, Item, Module};
+use lumia_hir::{
+    desugar_list_fold_sequential, desugar_list_map_sequential, Builtin, Expr, Fun, Item, Module,
+};
 use lumia_syntax::{BinOp, UnOp};
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
@@ -1638,6 +1640,66 @@ impl Infer {
                     let eff = self.union_eff(le, eff);
                     Ok((Type::List(Box::new(out)), eff))
                 }
+                Builtin::ListParFold => {
+                    // FunRef-safe shape from lower; may be demoted after infer if
+                    // impure or non-scalar (see `finalize_auto_parallel`).
+                    // Infer init/list first so lambda params are not free Vars
+                    // (otherwise `acc.get` defaults to List and breaks Map folds).
+                    if args.len() != 3 {
+                        return Err(at(*span, "fold takes 3 arguments"));
+                    }
+                    let (lt, le) = self.infer_expr(&args[0])?;
+                    let (it, ie) = self.infer_expr(&args[1])?;
+                    let elem = match self.prune(lt.clone()) {
+                        Type::List(t) => *t,
+                        Type::Var(_) => {
+                            let e = self.fresh();
+                            self.unify_at(*span, lt, Type::List(Box::new(e.clone())))?;
+                            e
+                        }
+                        other => {
+                            return Err(at(*span, format!("fold: expected List, got {other:?}")));
+                        }
+                    };
+                    let acc = self.prune(it);
+                    let (ft, fe) = match &args[2] {
+                        Expr::Lambda { params, body, span: lsp } if params.len() == 2 => {
+                            self.push();
+                            self.bind(params[0].clone(), acc.clone());
+                            self.bind(params[1].clone(), elem.clone());
+                            let (rt, re) = self.infer_expr(body)?;
+                            self.pop();
+                            self.unify_at(*lsp, rt, acc.clone())?;
+                            let ft = Type::Fun(
+                                vec![acc.clone(), elem.clone()],
+                                Box::new(acc.clone()),
+                                re,
+                            );
+                            // Mirror `infer_expr` type_at for finalize_auto_parallel.
+                            self.type_at.push((expr_span(&args[2]), ft.clone()));
+                            (ft, Effect::pure())
+                        }
+                        _ => self.infer_expr(&args[2])?,
+                    };
+                    let cb_eff = match self.prune(ft.clone()) {
+                        Type::Fun(_, _, e) => self.prune_eff(e),
+                        _ => Effect::pure(),
+                    };
+                    self.unify_at(
+                        *span,
+                        ft,
+                        Type::Fun(
+                            vec![acc.clone(), elem],
+                            Box::new(acc.clone()),
+                            cb_eff,
+                        ),
+                    )?;
+                    let acc = self.prune(acc);
+                    let eff = self.union_eff(fe, cb_eff);
+                    let eff = self.union_eff(le, eff);
+                    let eff = self.union_eff(ie, eff);
+                    Ok((acc, eff))
+                }
                 Builtin::ListJoin => {
                     if args.len() != 2 {
                         return Err(at(*span, 
@@ -2234,6 +2296,28 @@ fn list_par_map_eligible(list_ty: &Type, fun_ty: &Type) -> bool {
     }
 }
 
+fn list_par_fold_eligible(list_ty: &Type, init_ty: &Type, fun_ty: &Type) -> bool {
+    let elem = match list_ty {
+        Type::List(e) => e.as_ref(),
+        _ => return false,
+    };
+    if !is_par_scalar(elem) || !is_par_scalar(init_ty) {
+        return false;
+    }
+    match fun_ty {
+        Type::Fun(params, out, eff) => {
+            if eff.has_io() || !is_par_scalar(out) {
+                return false;
+            }
+            if params.len() != 2 {
+                return false;
+            }
+            is_par_scalar(&params[0]) && is_par_scalar(&params[1])
+        }
+        _ => false,
+    }
+}
+
 /// Keep or demote `ListParMap` after inference (DESIGN: transparent auto-parallel).
 ///
 /// - `enabled`: demote when impure / non-scalar; keep when eligible.
@@ -2268,6 +2352,20 @@ fn finalize_par_maps_in_expr(
                     let f = args[1].clone();
                     let sp = *span;
                     *expr = desugar_list_map_sequential(list, f, sp);
+                    finalize_par_maps_in_expr(expr, type_at, enabled);
+                }
+            } else if matches!(name, Builtin::ListParFold) && args.len() == 3 {
+                let keep = enabled
+                    && type_at_span(type_at, expr_span(&args[0]))
+                        .zip(type_at_span(type_at, expr_span(&args[1])))
+                        .zip(type_at_span(type_at, expr_span(&args[2])))
+                        .is_some_and(|((lt, it), ft)| list_par_fold_eligible(&lt, &it, &ft));
+                if !keep {
+                    let list = args[0].clone();
+                    let init = args[1].clone();
+                    let f = args[2].clone();
+                    let sp = *span;
+                    *expr = desugar_list_fold_sequential(list, init, f, sp);
                     finalize_par_maps_in_expr(expr, type_at, enabled);
                 }
             }

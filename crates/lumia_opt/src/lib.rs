@@ -18,7 +18,9 @@ pub use memo::{
     MEMO_PROCESS_BYTE_CAP, MEMO_SLOTS_TABLE_BYTES,
 };
 
-use lumia_core::{Block, CoreFun, CoreModule, ListRepr, Local, MapRepr, Op, Value};
+use lumia_core::{
+    Block, CoreFun, CoreModule, ListRepr, Local, MapRepr, Op, SetRepr, Value,
+};
 use memo::cse_module;
 use std::collections::{HashMap, HashSet};
 
@@ -230,7 +232,7 @@ fn remap_value_locals(value: &mut Value, remap: &HashMap<u32, u32>) {
         Value::Call { args, .. }
         | Value::Builtin { args, .. }
         | Value::AllocList { elems: args, .. }
-        | Value::AllocSet { elems: args }
+        | Value::AllocSet { elems: args, .. }
         | Value::AllocMap {
             flat_pairs: args, ..
         }
@@ -357,17 +359,25 @@ fn select_value(v: &mut Value, bound: Local, escaping: &HashSet<Local>) {
         }
         Value::AllocMap { flat_pairs, repr } => {
             let n_pairs = flat_pairs.len() / 2;
-            // Codegen emits linear layout; runtime promotes above MAP_SMALL_MAX.
-            // Prefer SmallMap whenever n ≤ 8 (matches runtime). Large literals → HashOrdered hint.
-            if n_pairs <= 8 {
+            // Preserve Eq-only AssocList; else stack LitMap when non-escaping ≤8.
+            if matches!(*repr, MapRepr::AssocList) {
+                // keep
+            } else if local_ok && n_pairs > 0 && n_pairs <= 8 {
+                *repr = MapRepr::LitMap;
+            } else if n_pairs <= 8 {
                 *repr = MapRepr::SmallMap;
             } else {
                 *repr = default_map_repr();
             }
-            let _ = local_ok;
             let _ = flat_pairs;
         }
-        Value::AllocSet { .. } => {}
+        Value::AllocSet { elems, repr } => {
+            if local_ok && !elems.is_empty() && elems.len() <= 8 {
+                *repr = SetRepr::LitSet;
+            } else {
+                *repr = SetRepr::HeapSet;
+            }
+        }
         Value::AllocAdt { .. } => {}
         Value::AllocClosure { .. } | Value::ClosureCap { .. } => {}
         Value::If {

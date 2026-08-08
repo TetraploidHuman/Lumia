@@ -1523,6 +1523,71 @@ pub extern "C" fn lumia_list_par_map(
     }
 }
 
+/// Parallel left-fold over List[scalar] with C ABI `fn(acc, x) -> acc`.
+/// Assumes `f` is associative so chunk results can be combined: `f(z, combine(chunks))`.
+/// Falls back to sequential for small lists; inhibits GC while workers run.
+#[no_mangle]
+pub extern "C" fn lumia_list_par_fold(
+    list: *mut u8,
+    init: i64,
+    f: Option<extern "C" fn(i64, i64) -> i64>,
+) -> i64 {
+    let Some(f) = f else {
+        trap_abort("lumia: list_par_fold null function");
+    };
+    let _gc = GcInhibitGuard::enter();
+    let list = force_heap_list(list);
+    unsafe {
+        let n = if list.is_null() {
+            0i64
+        } else {
+            *(list as *const i64)
+        };
+        if n <= 0 {
+            return init;
+        }
+        let src = list as *const i64;
+        if n < 64 {
+            let mut acc = init;
+            for i in 0..n as usize {
+                acc = f(acc, *src.add(1 + i));
+            }
+            return acc;
+        }
+        let _gc = GcInhibitGuard::enter();
+        let workers = std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(4)
+            .min(n as usize)
+            .max(1);
+        let chunk = (n as usize + workers - 1) / workers;
+        let mut handles = Vec::new();
+        for w in 0..workers {
+            let start = w * chunk;
+            let end = ((w + 1) * chunk).min(n as usize);
+            if start >= end {
+                continue;
+            }
+            let base = src as usize;
+            handles.push(std::thread::spawn(move || {
+                PAR_WORKER.with(|c| c.set(true));
+                let src = base as *const i64;
+                let mut acc = *src.add(1 + start);
+                for i in (start + 1)..end {
+                    acc = f(acc, *src.add(1 + i));
+                }
+                acc
+            }));
+        }
+        let mut acc = init;
+        for h in handles {
+            let part = h.join().expect("par_fold worker");
+            acc = f(acc, part);
+        }
+        acc
+    }
+}
+
 /// Immutable update: new List with index `i` set to `elem` (bounds trap).
 #[no_mangle]
 pub extern "C" fn lumia_list_set(list: *mut u8, index: i64, elem: i64) -> *mut u8 {

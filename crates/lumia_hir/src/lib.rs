@@ -1147,6 +1147,8 @@ pub enum Builtin {
     ListSortByKeys,
     /// Auto-parallel candidate `xs.map(f)` (FunRef-safe); demoted if impure/non-scalar.
     ListParMap,
+    /// Auto-parallel candidate `xs.fold(z, f)` (FunRef-safe 2-arg; `f` assumed associative).
+    ListParFold,
     /// `assert(cond)` — abort if false (programming error).
     Assert,
     /// `xs.join(sep)` for List[String] → String.
@@ -1393,6 +1395,23 @@ fn lower_call(callee: &lumia_syntax::Expr, args: &[lumia_syntax::Expr], span: Sp
             return Expr::BuiltinCall {
                 name: Builtin::Show,
                 args: vec![lower_expr(base)],
+                span,
+            };
+        }
+        // `x.eq(y)` / `x.less(y)` → same Binary path as `==` / `<` (trait overrides).
+        if field == "eq" && args.len() == 1 {
+            return Expr::Binary {
+                op: lumia_syntax::BinOp::Eq,
+                left: Box::new(lower_expr(base)),
+                right: Box::new(lower_expr(&args[0])),
+                span,
+            };
+        }
+        if field == "less" && args.len() == 1 {
+            return Expr::Binary {
+                op: lumia_syntax::BinOp::Lt,
+                left: Box::new(lower_expr(base)),
+                right: Box::new(lower_expr(&args[0])),
                 span,
             };
         }
@@ -2900,6 +2919,19 @@ fn lower_list_fold(list: Expr, init: Expr, f: Expr, span: Span) -> Expr {
             };
         }
     }
+    // FunRef-safe list fold → parallel candidate (associativity assumed).
+    if fold_callback_is_parallel_safe(&f) {
+        return Expr::BuiltinCall {
+            name: Builtin::ListParFold,
+            args: vec![list, init, f],
+            span,
+        };
+    }
+    desugar_list_fold_sequential(list, init, f, span)
+}
+
+/// Sequential `fold` loop (also used when auto-parallel demotes `ListParFold`).
+pub fn desugar_list_fold_sequential(list: Expr, init: Expr, f: Expr, span: Span) -> Expr {
     match &f {
         Expr::Lambda { params, body, .. } if params.len() == 2 => {
             return lower_list_fold_inline(
@@ -2917,6 +2949,21 @@ fn lower_list_fold(list: Expr, init: Expr, f: Expr, span: Span) -> Expr {
     let x = format!("__fold_x_{}", span.start.0);
     let acc = format!("__fold_acc_{}", span.start.0);
     lower_list_fold_call(list, init, f, f_name, acc, x, span)
+}
+
+/// Parallel fold: capture-free 2-arg lambda, or a top-level function name (FunRef).
+fn fold_callback_is_parallel_safe(f: &Expr) -> bool {
+    match f {
+        Expr::Lambda { params, body, .. } if params.len() == 2 => {
+            let mut bound: Vec<String> = params.clone();
+            let frees = free_vars_expr(body, &mut bound);
+            frees
+                .iter()
+                .all(|n| TOPLEVEL_FUNS.with(|t| t.borrow().contains(n)))
+        }
+        Expr::Var(n, _) => TOPLEVEL_FUNS.with(|t| t.borrow().contains(n)),
+        _ => false,
+    }
 }
 
 fn range_fold_inline(

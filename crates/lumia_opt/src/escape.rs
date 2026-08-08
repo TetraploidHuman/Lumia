@@ -187,7 +187,7 @@ fn mark_inputs_escaping(value: &Value, escaping: &mut HashSet<Local>) -> bool {
         }
         Value::Call { args, .. }
         | Value::AllocList { elems: args, .. }
-        | Value::AllocSet { elems: args }
+        | Value::AllocSet { elems: args, .. }
         | Value::AllocMap {
             flat_pairs: args, ..
         }

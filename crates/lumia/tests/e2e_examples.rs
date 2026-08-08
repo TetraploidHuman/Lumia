@@ -184,6 +184,15 @@ fn e2e_trait_eq_ord() {
 }
 
 #[test]
+fn e2e_trait_eq_ord_method() {
+    // UFCS `p.eq(q)` / `p.less(r)` → Binary Eq/Lt + trait overrides.
+    run_example(
+        "examples/trait_eq_ord_method.lm",
+        &["true", "true", "false"],
+    );
+}
+
+#[test]
 fn e2e_trait_num() {
     run_example("examples/trait_num.lm", &["6", "8", "8", "15"]);
 }
@@ -253,6 +262,25 @@ fn e2e_poly_bool() {
 fn e2e_small_list_local() {
     // Non-escaping small listOf → stack LitList; len/get still work.
     run_example("examples/small_list_local.lm", &["3", "10", "30", "60"]);
+}
+
+#[test]
+fn e2e_small_map_local() {
+    run_example(
+        "examples/small_map_local.lm",
+        &["3", "true", "10", "30"],
+    );
+}
+
+#[test]
+fn e2e_small_set_local() {
+    run_example("examples/small_set_local.lm", &["3", "true", "false"]);
+}
+
+#[test]
+fn e2e_pe_list_len_get() {
+    // Same output as small_list_local; ListLen/ListGet folded at opt L0 when possible.
+    run_example("examples/pe_list_len_get.lm", &["3", "10", "30", "60"]);
 }
 
 #[test]
@@ -1057,6 +1085,12 @@ fn e2e_use_path_dep() {
 fn e2e_par_map() {
     // Auto-parallel is on by default (no --parallel flag).
     run_example("examples/par_map.lm", &["200", "0", "398"]);
+}
+
+#[test]
+fn e2e_par_fold() {
+    // sum 0..99 = 4950; FunRef + capture-free lambda both ListParFold-safe.
+    run_example("examples/par_fold.lm", &["4950", "4950"]);
 }
 
 #[test]

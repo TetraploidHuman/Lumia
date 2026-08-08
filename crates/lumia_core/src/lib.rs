@@ -130,6 +130,7 @@ pub enum Value {
     },
     AllocSet {
         elems: Vec<Local>,
+        repr: SetRepr,
     },
     /// Empty or flat key/value locals: [k0,v0,k1,v1,...]
     AllocMap {
@@ -174,6 +175,16 @@ pub enum MapRepr {
     SmallMap,
     /// Eq-only / no Hash — stay linear forever (DESIGN §3.5.1 AssocList).
     AssocList,
+    /// Small non-escaping literal → stack header+payload (like `ListRepr::LitList`).
+    LitMap,
+}
+
+/// Set representation hint on `AllocSet`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetRepr {
+    HeapSet,
+    /// Small non-escaping literal → stack header+payload.
+    LitSet,
 }
 
 struct LowerCtx {
@@ -1042,7 +1053,7 @@ fn max_local_in_value(value: &Value) -> u32 {
         Value::Call { args, .. }
         | Value::Builtin { args, .. }
         | Value::AllocList { elems: args, .. }
-        | Value::AllocSet { elems: args }
+        | Value::AllocSet { elems: args, .. }
         | Value::AllocMap {
             flat_pairs: args, ..
         }
@@ -1383,7 +1394,7 @@ fn collect_uses_in_value(
         Value::Call { args, .. }
         | Value::Builtin { args, .. }
         | Value::AllocList { elems: args, .. }
-        | Value::AllocSet { elems: args }
+        | Value::AllocSet { elems: args, .. }
         | Value::AllocMap {
             flat_pairs: args, ..
         }
@@ -1482,7 +1493,7 @@ fn rewrite_value_locals(value: &mut Value, remap: &HashMap<u32, u32>) {
         Value::Call { args, .. }
         | Value::Builtin { args, .. }
         | Value::AllocList { elems: args, .. }
-        | Value::AllocSet { elems: args }
+        | Value::AllocSet { elems: args, .. }
         | Value::AllocMap {
             flat_pairs: args, ..
         }
@@ -1789,6 +1800,7 @@ fn lower_expr(
                 },
                 Some("setOf") => Value::AllocSet {
                     elems: arg_locals,
+                    repr: SetRepr::HeapSet,
                 },
                 Some("mapOf") => Value::AllocMap {
                     flat_pairs: arg_locals,
@@ -2081,7 +2093,9 @@ fn format_value(v: &Value) -> String {
         Value::AllocList { elems, repr } => {
             format!("alloc_list[{repr:?}](n={})", elems.len())
         }
-        Value::AllocSet { elems } => format!("alloc_set(n={})", elems.len()),
+        Value::AllocSet { elems, repr } => {
+            format!("alloc_set[{repr:?}](n={})", elems.len())
+        }
         Value::AllocMap { flat_pairs, repr } => {
             format!("alloc_map[{repr:?}](n={})", flat_pairs.len() / 2)
         }

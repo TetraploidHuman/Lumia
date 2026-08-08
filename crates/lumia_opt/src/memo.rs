@@ -258,7 +258,7 @@ pub(crate) fn rewrite_value(v: &mut Value, rewrite: &HashMap<u32, u32>) {
         Value::Call { args, .. }
         | Value::Builtin { args, .. }
         | Value::AllocList { elems: args, .. }
-        | Value::AllocSet { elems: args }
+        | Value::AllocSet { elems: args, .. }
         | Value::AllocMap {
             flat_pairs: args, ..
         }
@@ -295,6 +295,8 @@ pub(crate) fn rewrite_value(v: &mut Value, rewrite: &HashMap<u32, u32>) {
 
 fn const_fold_block(block: &mut Block) {
     let mut known_int: HashMap<u32, i64> = HashMap::new();
+    // Local → element locals of a literal `AllocList` (for ListLen / ListGet fold).
+    let mut known_list: HashMap<u32, Vec<Local>> = HashMap::new();
     for op in &mut block.ops {
         match op {
             Op::Let {
@@ -314,6 +316,12 @@ fn const_fold_block(block: &mut Block) {
                         if let Some(&n) = known_int.get(src) {
                             known_int.insert(local.0, n);
                         }
+                        if let Some(elems) = known_list.get(src).cloned() {
+                            known_list.insert(local.0, elems);
+                        }
+                    }
+                    Value::AllocList { elems, .. } => {
+                        known_list.insert(local.0, elems.clone());
                     }
                     Value::Unary {
                         op: UnOp::Neg,
@@ -362,6 +370,32 @@ fn const_fold_block(block: &mut Block) {
                             }
                         }
                     }
+                    Value::Builtin { name, args } => match (*name, args.as_slice()) {
+                        (Builtin::ListLen, [xs]) => {
+                            if let Some(elems) = known_list.get(&xs.0) {
+                                let n = elems.len() as i64;
+                                *value = Value::Int(n);
+                                known_int.insert(local.0, n);
+                            }
+                        }
+                        (Builtin::ListGet, [xs, idx]) => {
+                            if let (Some(elems), Some(&i)) =
+                                (known_list.get(&xs.0), known_int.get(&idx.0))
+                            {
+                                if i >= 0 && (i as usize) < elems.len() {
+                                    let el = elems[i as usize];
+                                    *value = Value::Local(el);
+                                    if let Some(&n) = known_int.get(&el.0) {
+                                        known_int.insert(local.0, n);
+                                    }
+                                    if let Some(inner) = known_list.get(&el.0).cloned() {
+                                        known_list.insert(local.0, inner);
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    },
                     Value::If {
                         then_block,
                         else_block,
@@ -658,6 +692,7 @@ fn builtin_may_trap_or_effect(b: &Builtin) -> bool {
             | Builtin::MatchFail
             | Builtin::Assert
             | Builtin::ListParMap
+            | Builtin::ListParFold
             | Builtin::Range
             | Builtin::RangeInclusive
             | Builtin::AdtField
@@ -1152,6 +1187,79 @@ mod tests {
             ),
             "second foreign call must not be CSE'd into the first"
         );
+    }
+
+    #[test]
+    fn memo_l0_folds_list_len_get() {
+        use lumia_core::ListRepr;
+        let mut module = CoreModule {
+            name: "C".into(),
+            functions: vec![bare_fun(
+                "f",
+                vec![],
+                Block {
+                    params: vec![],
+                    ops: vec![
+                        Op::Let {
+                            local: Local(0),
+                            value: Value::Int(10),
+                            pure_region: true,
+                        },
+                        Op::Let {
+                            local: Local(1),
+                            value: Value::Int(20),
+                            pure_region: true,
+                        },
+                        Op::Let {
+                            local: Local(2),
+                            value: Value::AllocList {
+                                elems: vec![Local(0), Local(1)],
+                                repr: ListRepr::LitList,
+                            },
+                            pure_region: true,
+                        },
+                        Op::Let {
+                            local: Local(3),
+                            value: Value::Builtin {
+                                name: Builtin::ListLen,
+                                args: vec![Local(2)],
+                            },
+                            pure_region: true,
+                        },
+                        Op::Let {
+                            local: Local(4),
+                            value: Value::Int(1),
+                            pure_region: true,
+                        },
+                        Op::Let {
+                            local: Local(5),
+                            value: Value::Builtin {
+                                name: Builtin::ListGet,
+                                args: vec![Local(2), Local(4)],
+                            },
+                            pure_region: true,
+                        },
+                    ],
+                    result: Some(Local(5)),
+                },
+            )],
+            hash_adts: std::collections::HashSet::new(),
+        };
+        MemoL0Pass.run(&mut module);
+        assert!(matches!(
+            &module.functions[0].body.ops[3],
+            Op::Let {
+                value: Value::Int(2),
+                ..
+            }
+        ));
+        assert!(matches!(
+            &module.functions[0].body.ops[5],
+            Op::Let {
+                value: Value::Local(Local(1)),
+                ..
+            }
+        ));
     }
 
     #[test]
