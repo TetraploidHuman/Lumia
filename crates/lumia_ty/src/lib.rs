@@ -607,8 +607,10 @@ impl Infer {
                     match t {
                         Type::Int | Type::String | Type::Bool | Type::Float | Type::Char => {}
                         Type::Var(_) => {
-                            // Default unresolved prints to Int (most common).
-                            self.unify_at(*span, t, Type::Int)?;
+                            return Err(at(
+                                *span,
+                                "println: cannot resolve argument type (annotate or use a concrete value)",
+                            ));
                         }
                         other => {
                             return Err(at(*span, format!(

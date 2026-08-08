@@ -1,0 +1,16 @@
+module BoolPrint
+
+import std.io.{println}
+
+val main = {
+    println(true)
+    println(false)
+    val t = true
+    val f = false
+    println(t)
+    println(f)
+    println(1 == 1)
+    println(1 == 2)
+    println("flag=${true}")
+    println("flag=${false}")
+}

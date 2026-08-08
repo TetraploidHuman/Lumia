@@ -601,6 +601,12 @@ pub extern "C" fn lumia_show_float(n: f64) -> *mut u8 {
 }
 
 #[no_mangle]
+pub extern "C" fn lumia_show_bool(b: i8) -> *mut u8 {
+    let s = if b != 0 { "true" } else { "false" };
+    lumia_alloc_string(s.as_ptr(), s.len() as u64)
+}
+
+#[no_mangle]
 pub extern "C" fn lumia_str_len(s: *mut u8) -> i64 {
     if s.is_null() {
         return 0;

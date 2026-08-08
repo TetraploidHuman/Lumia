@@ -210,6 +210,11 @@ fn declare_runtime<'ctx>(context: &'ctx Context, module: &LlvmModule<'ctx>) {
         ptr_ty.fn_type(&[context.f64_type().into()], false),
         None,
     );
+    module.add_function(
+        "lumia_show_bool",
+        ptr_ty.fn_type(&[i8_ty.into()], false),
+        None,
+    );
     module.add_function("lumia_gc_collect", void_ty.fn_type(&[], false), None);
     module.add_function(
         "lumia_root_push",
@@ -525,6 +530,10 @@ struct Codegen<'ctx> {
     external_funs: HashSet<String>,
     /// Locals currently bound to `FunRef(name)` — for IndirectCall float ABI.
     funref_locals: HashMap<u32, String>,
+    /// Best-effort SSA local types (for typed println/show dispatch).
+    local_tys: HashMap<u32, Type>,
+    /// Mutable slot types.
+    slot_tys: HashMap<String, Type>,
     /// Shadow-stack pushes currently live in this function (LIFO).
     root_depth: u32,
     /// Mutable slots that have already been registered as GC roots.
@@ -553,6 +562,8 @@ impl<'ctx> Codegen<'ctx> {
             fun_param_tys: HashMap::new(),
             external_funs: HashSet::new(),
             funref_locals: HashMap::new(),
+            local_tys: HashMap::new(),
+            slot_tys: HashMap::new(),
             root_depth: 0,
             rooted_slots: HashSet::new(),
             entry_bb: None,
@@ -733,10 +744,13 @@ impl<'ctx> Codegen<'ctx> {
         self.root_depth = 0;
         self.rooted_slots.clear();
         self.funref_locals.clear();
+        self.local_tys.clear();
+        self.slot_tys.clear();
 
         for (i, p) in fun.params.iter().enumerate() {
             let av = fv.get_nth_param(i as u32).unwrap();
             let ty = fun.param_tys.get(i).cloned().unwrap_or(Type::Int);
+            self.local_tys.insert(p.0, ty.clone());
             if matches!(ty, Type::Float) {
                 let bits = av.into_int_value();
                 let f = self
@@ -1006,11 +1020,123 @@ impl<'ctx> Codegen<'ctx> {
                 self.slots.insert(name.to_string(), alloca);
             }
             self.float_slots.insert(name.to_string());
+            self.slot_tys.insert(name.to_string(), Type::Float);
         }
         let slot = self.ensure_slot(name);
         let i = self.coerce_i64(v)?;
         self.builder.build_store(slot, i).unwrap();
         Ok(())
+    }
+
+    fn infer_value_ty(&self, value: &Value) -> Type {
+        match value {
+            Value::Bool(_) => Type::Bool,
+            Value::Int(_) => Type::Int,
+            Value::Float(_) => Type::Float,
+            Value::String(_) => Type::String,
+            Value::Char(_) => Type::Char,
+            Value::Unit => Type::Unit,
+            Value::Local(Local(id)) => self
+                .local_tys
+                .get(id)
+                .cloned()
+                .unwrap_or(Type::Int),
+            Value::Name(n) => self.slot_tys.get(n).cloned().unwrap_or(Type::Int),
+            Value::Binary { op, left, right } => match op {
+                lumia_syntax::BinOp::Eq
+                | lumia_syntax::BinOp::Ne
+                | lumia_syntax::BinOp::Lt
+                | lumia_syntax::BinOp::Le
+                | lumia_syntax::BinOp::Gt
+                | lumia_syntax::BinOp::Ge
+                | lumia_syntax::BinOp::And
+                | lumia_syntax::BinOp::Or => Type::Bool,
+                _ => {
+                    let lt = self.local_tys.get(&left.0).cloned().unwrap_or(Type::Int);
+                    let rt = self.local_tys.get(&right.0).cloned().unwrap_or(Type::Int);
+                    if matches!(lt, Type::Float) || matches!(rt, Type::Float) {
+                        Type::Float
+                    } else {
+                        Type::Int
+                    }
+                }
+            },
+            Value::Unary {
+                op: lumia_syntax::UnOp::Not,
+                ..
+            } => Type::Bool,
+            Value::Unary { operand, .. } => self
+                .local_tys
+                .get(&operand.0)
+                .cloned()
+                .unwrap_or(Type::Int),
+            Value::Call { fun, .. } => self
+                .fun_ret_tys
+                .get(fun)
+                .cloned()
+                .unwrap_or(Type::Int),
+            Value::Builtin { name, .. } => match name {
+                Builtin::StrStartsWith
+                | Builtin::StrEndsWith
+                | Builtin::Contains => Type::Bool,
+                Builtin::ListLen | Builtin::AdtTag => Type::Int,
+                Builtin::Show
+                | Builtin::ReadStdin
+                | Builtin::StrTrim
+                | Builtin::StrSplit
+                | Builtin::StrSubstring
+                | Builtin::StrToLower
+                | Builtin::StrToUpper
+                | Builtin::ListJoin => Type::String,
+                Builtin::Println
+                | Builtin::PrintlnInt
+                | Builtin::PrintlnStr
+                | Builtin::MatchFail
+                | Builtin::Assert => Type::Unit,
+                Builtin::ListGet
+                | Builtin::ListSlice
+                | Builtin::ListAppend
+                | Builtin::ListConcat
+                | Builtin::ListTake
+                | Builtin::ListReverse
+                | Builtin::ListSort
+                | Builtin::ListSortByKeys
+                | Builtin::ListParMap
+                | Builtin::MapKeys
+                | Builtin::MapValues
+                | Builtin::MapItems
+                | Builtin::MapSet
+                | Builtin::MapRemove
+                | Builtin::SetInsert
+                | Builtin::Range
+                | Builtin::RangeInclusive => Type::List(Box::new(Type::Int)),
+                Builtin::AdtField => Type::Int,
+            },
+            Value::AllocList { .. } => Type::List(Box::new(Type::Int)),
+            Value::AllocSet { .. } => Type::Set(Box::new(Type::Int)),
+            Value::AllocMap { .. } => Type::Map(Box::new(Type::Int), Box::new(Type::Int)),
+            Value::AllocAdt { .. } => Type::Adt {
+                name: "_".into(),
+                params: vec![],
+            },
+            Value::AllocClosure { .. } | Value::FunRef(_) | Value::ClosureCap { .. } => {
+                Type::Fun(vec![], Box::new(Type::Int), lumia_ty::Effect::pure())
+            }
+            Value::If {
+                then_block,
+                else_block,
+                ..
+            } => {
+                let t = then_block
+                    .result
+                    .and_then(|Local(id)| self.local_tys.get(&id).cloned());
+                let e = else_block
+                    .result
+                    .and_then(|Local(id)| self.local_tys.get(&id).cloned());
+                t.or(e).unwrap_or(Type::Int)
+            }
+            Value::Loop { .. } | Value::Lambda { .. } | Value::IndirectCall { .. } => Type::Int,
+        }
     }
 
     fn load_slot(&self, name: &str) -> Result<BasicValueEnum<'ctx>> {
@@ -1055,6 +1181,8 @@ impl<'ctx> Codegen<'ctx> {
                         }
                     }
                     self.locals.insert(local.0, v);
+                    self.local_tys
+                        .insert(local.0, self.infer_value_ty(value));
                     if let Value::FunRef(name) = value {
                         self.funref_locals.insert(local.0, name.clone());
                     } else if let Value::Local(Local(src)) = value {
@@ -1072,6 +1200,11 @@ impl<'ctx> Codegen<'ctx> {
                 }
                 Op::Assign { name, value } => {
                     let v = self.local(*value)?;
+                    if let Some(ty) = self.local_tys.get(&value.0).cloned() {
+                        if !matches!(ty, Type::Float) {
+                            self.slot_tys.insert(name.clone(), ty);
+                        }
+                    }
                     self.store_slot(name, v)?;
                 }
                 Op::Break => {
@@ -1805,11 +1938,31 @@ impl<'ctx> Codegen<'ctx> {
             Value::Builtin { name, args } => match name {
                 Builtin::Println | Builtin::PrintlnInt | Builtin::PrintlnStr => {
                     let arg = self.local(args[0])?;
-                    match arg {
-                        BasicValueEnum::FloatValue(f) => {
+                    let arg_ty = self
+                        .local_tys
+                        .get(&args[0].0)
+                        .cloned()
+                        .unwrap_or(Type::Int);
+                    match arg_ty {
+                        Type::Float => {
+                            let f = match arg {
+                                BasicValueEnum::FloatValue(f) => f,
+                                other => self.promote_f64(other)?,
+                            };
                             let fun = self.module.get_function("lumia_println_float").unwrap();
                             self.builder
                                 .build_call(fun, &[f.into()], "println_float")
+                                .unwrap();
+                        }
+                        Type::Bool => {
+                            let i = self.coerce_i64(arg)?;
+                            let b = self
+                                .builder
+                                .build_int_truncate(i, self.context.i8_type(), "bool8")
+                                .unwrap();
+                            let fun = self.module.get_function("lumia_println_bool").unwrap();
+                            self.builder
+                                .build_call(fun, &[b.into()], "println_bool")
                                 .unwrap();
                         }
                         _ => {
@@ -2071,41 +2224,58 @@ impl<'ctx> Codegen<'ctx> {
                 }
                 Builtin::Show => {
                     let arg = self.local(args[0])?;
-                    match arg {
-                        BasicValueEnum::FloatValue(f) => {
+                    let arg_ty = self
+                        .local_tys
+                        .get(&args[0].0)
+                        .cloned()
+                        .unwrap_or(Type::Int);
+                    let ptr = match arg_ty {
+                        Type::Float => {
+                            let f = match arg {
+                                BasicValueEnum::FloatValue(f) => f,
+                                other => self.promote_f64(other)?,
+                            };
                             let fun = self.module.get_function("lumia_show_float").unwrap();
-                            let call = self
-                                .builder
+                            self.builder
                                 .build_call(fun, &[f.into()], "show_float")
-                                .unwrap();
-                            let ptr = call
+                                .unwrap()
                                 .try_as_basic_value()
                                 .basic()
                                 .unwrap()
-                                .into_pointer_value();
-                            Ok(self
+                                .into_pointer_value()
+                        }
+                        Type::Bool => {
+                            let i = self.coerce_i64(arg)?;
+                            let b = self
                                 .builder
-                                .build_ptr_to_int(ptr, self.i64_ty, "show_i64")
+                                .build_int_truncate(i, self.context.i8_type(), "bool8")
+                                .unwrap();
+                            let fun = self.module.get_function("lumia_show_bool").unwrap();
+                            self.builder
+                                .build_call(fun, &[b.into()], "show_bool")
                                 .unwrap()
-                                .into())
+                                .try_as_basic_value()
+                                .basic()
+                                .unwrap()
+                                .into_pointer_value()
                         }
                         _ => {
                             let i = self.coerce_i64(arg)?;
                             let fun = self.module.get_function("lumia_show").unwrap();
-                            let call =
-                                self.builder.build_call(fun, &[i.into()], "show").unwrap();
-                            let ptr = call
+                            self.builder
+                                .build_call(fun, &[i.into()], "show")
+                                .unwrap()
                                 .try_as_basic_value()
                                 .basic()
                                 .unwrap()
-                                .into_pointer_value();
-                            Ok(self
-                                .builder
-                                .build_ptr_to_int(ptr, self.i64_ty, "show_i64")
-                                .unwrap()
-                                .into())
+                                .into_pointer_value()
                         }
-                    }
+                    };
+                    Ok(self
+                        .builder
+                        .build_ptr_to_int(ptr, self.i64_ty, "show_i64")
+                        .unwrap()
+                        .into())
                 }
                 Builtin::StrTrim | Builtin::StrToLower | Builtin::StrToUpper => {
                     let s_i = self.coerce_i64(self.local(args[0])?)?;
