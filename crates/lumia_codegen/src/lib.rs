@@ -294,6 +294,16 @@ fn declare_runtime<'ctx>(context: &'ctx Context, module: &LlvmModule<'ctx>) {
         None,
     );
     module.add_function(
+        "lumia_ensure_map_f64",
+        ptr_ty.fn_type(&[ptr_ty.into()], false),
+        None,
+    );
+    module.add_function(
+        "lumia_ensure_set_f64",
+        ptr_ty.fn_type(&[ptr_ty.into()], false),
+        None,
+    );
+    module.add_function(
         "lumia_map_set",
         ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false),
         None,
@@ -1244,20 +1254,41 @@ impl<'ctx> Codegen<'ctx> {
                     }
                 }
                 Builtin::MapSet | Builtin::MapRemove => {
+                    let key_ty = args
+                        .get(1)
+                        .and_then(|a| self.local_tys.get(&a.0).cloned())
+                        .unwrap_or(Type::Int);
                     if let Some(arg0) = args.first() {
                         match self.local_tys.get(&arg0.0) {
-                            Some(Type::Map(k, v)) => Type::Map(k.clone(), v.clone()),
-                            _ => Type::Map(Box::new(Type::Int), Box::new(Type::Int)),
+                            Some(Type::Map(k, v)) => {
+                                let k = if matches!(key_ty, Type::Float) {
+                                    Box::new(Type::Float)
+                                } else {
+                                    k.clone()
+                                };
+                                Type::Map(k, v.clone())
+                            }
+                            _ => Type::Map(Box::new(key_ty), Box::new(Type::Int)),
                         }
                     } else {
                         Type::Map(Box::new(Type::Int), Box::new(Type::Int))
                     }
                 }
                 Builtin::SetInsert => {
+                    let elem_ty = args
+                        .get(1)
+                        .and_then(|a| self.local_tys.get(&a.0).cloned())
+                        .unwrap_or(Type::Int);
                     if let Some(arg0) = args.first() {
                         match self.local_tys.get(&arg0.0) {
-                            Some(Type::Set(e)) => Type::Set(e.clone()),
-                            _ => Type::Set(Box::new(Type::Int)),
+                            Some(Type::Set(e)) => {
+                                if matches!(elem_ty, Type::Float) {
+                                    Type::Set(Box::new(Type::Float))
+                                } else {
+                                    Type::Set(e.clone())
+                                }
+                            }
+                            _ => Type::Set(Box::new(elem_ty)),
                         }
                     } else {
                         Type::Set(Box::new(Type::Int))
@@ -2240,10 +2271,21 @@ impl<'ctx> Codegen<'ctx> {
                     let key = self.coerce_i64(self.local(args[1])?)?;
                     let val = self.coerce_i64(self.local(args[2])?)?;
                     let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                    let map = self
+                    let mut map = self
                         .builder
                         .build_int_to_ptr(map_i, ptr_ty, "col_ptr")
                         .unwrap();
+                    if matches!(self.local_tys.get(&args[1].0), Some(Type::Float)) {
+                        let ens = self.module.get_function("lumia_ensure_map_f64").unwrap();
+                        map = self
+                            .builder
+                            .build_call(ens, &[map.into()], "ens_mf64")
+                            .unwrap()
+                            .try_as_basic_value()
+                            .basic()
+                            .unwrap()
+                            .into_pointer_value();
+                    }
                     let f = self.module.get_function("lumia_set").unwrap();
                     let call = self
                         .builder
@@ -2288,10 +2330,21 @@ impl<'ctx> Codegen<'ctx> {
                     let set_i = self.coerce_i64(self.local(args[0])?)?;
                     let elem = self.coerce_i64(self.local(args[1])?)?;
                     let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                    let set = self
+                    let mut set = self
                         .builder
                         .build_int_to_ptr(set_i, ptr_ty, "set_ptr")
                         .unwrap();
+                    if matches!(self.local_tys.get(&args[1].0), Some(Type::Float)) {
+                        let ens = self.module.get_function("lumia_ensure_set_f64").unwrap();
+                        set = self
+                            .builder
+                            .build_call(ens, &[set.into()], "ens_sf64")
+                            .unwrap()
+                            .try_as_basic_value()
+                            .basic()
+                            .unwrap()
+                            .into_pointer_value();
+                    }
                     let f = self.module.get_function("lumia_set_insert").unwrap();
                     let call = self
                         .builder
@@ -3094,7 +3147,15 @@ impl<'ctx> Codegen<'ctx> {
                 self.emit_heap_array(elems, 3 /* TYPE_LIST */)
             }
             Value::AllocSet { elems } => {
-                let v = self.emit_heap_array(elems, 5 /* TYPE_SET */)?;
+                let float_elems = elems
+                    .first()
+                    .is_some_and(|e| matches!(self.local_tys.get(&e.0), Some(Type::Float)));
+                let tid = if float_elems {
+                    11 /* TYPE_SET_F64 */
+                } else {
+                    5 /* TYPE_SET */
+                };
+                let v = self.emit_heap_array(elems, tid)?;
                 if elems.len() > 8 {
                     let ptr_ty = self.context.ptr_type(AddressSpace::default());
                     let bits = self.coerce_i64(v)?;
@@ -3127,7 +3188,17 @@ impl<'ctx> Codegen<'ctx> {
                 }
                 let n_pairs = (flat_pairs.len() / 2) as u64;
                 let nbytes = self.i64_ty.const_int((1 + flat_pairs.len() as u64) * 8, false);
-                let type_id = self.context.i32_type().const_int(4, false); // TYPE_MAP
+                let float_keys = flat_pairs
+                    .first()
+                    .is_some_and(|k| matches!(self.local_tys.get(&k.0), Some(Type::Float)));
+                let type_id = self.context.i32_type().const_int(
+                    if float_keys {
+                        10 // TYPE_MAP_F64
+                    } else {
+                        4 // TYPE_MAP
+                    },
+                    false,
+                );
                 let alloc = self.module.get_function("lumia_alloc").unwrap();
                 let ptr = self
                     .builder

@@ -6,14 +6,11 @@
 
 - [ ] **单态化管线**：let-polymorphism 已落地，但 codegen 仍共享一份闭包/函数体。恒等 `{ x -> x }` 在 Float 实参上的 `println`/`+` 已用 call-site `local_tys` 启发式恢复（见 `poly_id`）；完整特化（多体、非恒等 poly）仍按 BUILD「单态化」。
 - [ ] **类型类 `trait` / `instance` / `requires`**：语法保留并拒绝；Eq/Ord/Hash/Show 派生与 DESIGN §3.6 尚未实现。
-- [ ] **`import … as` / `{ name as alias }`**：DESIGN §9.3 已写，解析器仍报 not supported。
+- [x] **`import … as` / `{ name as alias }`**：DESIGN §9.3；`ImportedName` + 公开项改名、原名 `priv` 副本；e2e `import_as` / `bad_import_as_original`。
 
 ## 语义与运行时
 
-- [ ] **Float 作 Map/Set 键与 `lumia_eq`**：`lumia_eq` 以 bit 相等短路；与直接 `==`（IEEE）不一致：
-  - 相同 NaN 位在 `contains` 中可命中，但 `NaN == NaN` 为 false（DESIGN §2.1）。
-  - `+0.0` 与 `-0.0`：`==` 为 true，但 `mapOf(0.0 to 1).contains(-0.0)` 为 false。
-  需装箱 Float 或按类型分派 eq/hash。
+- [x] **Float 作 Map/Set 键与 `lumia_eq`**：`TYPE_MAP_F64` / `TYPE_SET_F64` + IEEE `float_key_eq`/`float_key_hash`（±0 碰撞、NaN 永不命中）；codegen 在 Float 键/`set` 时 `lumia_ensure_*_f64`；e2e `float_map_keys`。标量 `lumia_eq` 对未装箱 Float 仍为 bit 短路（与堆键路径分离）。
 - [ ] **`foreign "C" pure` 荣誉系统**：效应检查信任注解；撒谎的 `pure` 可把 C 副作用带进纯上下文。opts 已隔离 external，但效应边界仍信任标注。需 `unsafe`/显式信任开关或默认 IO。
 - [ ] **stdin 超大输入**：`lumia_rt` 在约 64MiB 后 `abort`，非可恢复错误。
 - [ ] **CLI `--link`**：绝对 `-L`/`.a` 故意放行（本机链接）；对不可信树等同原生 RCE 面，文档/沙箱策略待定。
@@ -47,3 +44,5 @@
 - **运行时 `trap_abort`**：致命错误统一入口，避免跨 `extern "C"` unwind。
 - **常量模式**：`true`/`false`、`Char`、`String`、`Float`、负数字面量（含 `-1` / `-1.5`）；Bool 双臂穷尽。
 - **poly identity Float**：call-site 对堆哨兵 `ret_ty` + Float 实参恢复 Float，避免 `println(id(1.5))` 打印 bit pattern。
+- **`import … as`**：模块别名导入与原名不可见。
+- **Float Map/Set 键**：IEEE eq/hash 专用 type_id；与 `==` 对齐的 ±0 / NaN 行为。

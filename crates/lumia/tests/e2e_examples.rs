@@ -288,6 +288,15 @@ fn e2e_float_ops() {
 }
 
 #[test]
+fn e2e_float_map_keys() {
+    // ±0 collide; NaN never hits contains (matches IEEE ==).
+    run_example(
+        "examples/float_map_keys.lumia",
+        &["true", "1", "false", "0", "true", "true"],
+    );
+}
+
+#[test]
 fn e2e_closure() {
     run_example("examples/closure.lumia", &["42", "11"]);
 }
