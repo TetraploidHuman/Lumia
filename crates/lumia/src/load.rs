@@ -14,6 +14,58 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+fn item_file_id(it: &Item) -> u32 {
+    match it {
+        Item::Val(v) => v.span.file,
+        Item::Type(t) => t.span.file,
+        Item::Foreign(f) => f.span.file,
+    }
+}
+
+/// Reject silently-overwritten top-level names after import inlining.
+fn check_no_duplicate_toplevel(items: &[Item], files: &[SourceFile]) -> Result<()> {
+    let mut seen: HashMap<&str, u32> = HashMap::new();
+    for it in items {
+        let Some(name) = item_name(it) else {
+            continue;
+        };
+        let file = item_file_id(it);
+        if let Some(&prev) = seen.get(name) {
+            if prev == file {
+                bail!("duplicate top-level name `{name}`");
+            }
+            let a = files
+                .get(prev as usize)
+                .map(|f| path_label(&f.path))
+                .unwrap_or_else(|| format!("file#{prev}"));
+            let b = files
+                .get(file as usize)
+                .map(|f| path_label(&f.path))
+                .unwrap_or_else(|| format!("file#{file}"));
+            bail!("duplicate top-level name `{name}` in `{a}` and `{b}`");
+        }
+        seen.insert(name, file);
+    }
+    Ok(())
+}
+
+/// Append items, skipping `(file, name)` pairs already present (diamond imports).
+fn append_items_unique(dst: &mut Vec<Item>, src: Vec<Item>) {
+    let mut have: HashSet<(u32, String)> = dst
+        .iter()
+        .filter_map(|it| item_name(it).map(|n| (item_file_id(it), n.to_string())))
+        .collect();
+    for it in src {
+        if let Some(name) = item_name(&it) {
+            let key = (item_file_id(&it), name.to_string());
+            if !have.insert(key) {
+                continue;
+            }
+        }
+        dst.push(it);
+    }
+}
+
 /// One source file in the compilation unit.
 #[derive(Debug, Clone)]
 pub struct SourceFile {
@@ -93,14 +145,16 @@ pub fn load_program_with_overlays(
         }
     }
     let overlay_by_canon = normalize_overlays(overlays);
-    let mut visited = HashSet::new();
+    let mut stack = HashSet::new();
+    let mut done = HashMap::new();
     let mut files = Vec::new();
     let mut visibility = NameVisibility::default();
     let module = load_module_file(
         &entry,
         &search_roots,
         &overlay_by_canon,
-        &mut visited,
+        &mut stack,
+        &mut done,
         &mut files,
         &mut visibility,
         true,
@@ -321,14 +375,45 @@ fn load_module_file(
     path: &Path,
     search_roots: &[PathBuf],
     overlays: &HashMap<PathBuf, String>,
-    visited: &mut HashSet<PathBuf>,
+    stack: &mut HashSet<PathBuf>,
+    done: &mut HashMap<PathBuf, Module>,
     files: &mut Vec<SourceFile>,
     visibility: &mut NameVisibility,
     is_entry: bool,
 ) -> Result<Module> {
-    if !visited.insert(path.to_path_buf()) {
+    let path_key = path.to_path_buf();
+    if let Some(cached) = done.get(&path_key) {
+        return Ok(cached.clone());
+    }
+    if !stack.insert(path_key.clone()) {
         bail!("cyclic import involving {}", path.display());
     }
+    let result = load_module_file_uncached(
+        path,
+        &path_key,
+        search_roots,
+        overlays,
+        stack,
+        done,
+        files,
+        visibility,
+        is_entry,
+    );
+    stack.remove(&path_key);
+    result
+}
+
+fn load_module_file_uncached(
+    path: &Path,
+    path_key: &Path,
+    search_roots: &[PathBuf],
+    overlays: &HashMap<PathBuf, String>,
+    stack: &mut HashSet<PathBuf>,
+    done: &mut HashMap<PathBuf, Module>,
+    files: &mut Vec<SourceFile>,
+    visibility: &mut NameVisibility,
+    is_entry: bool,
+) -> Result<Module> {
     let src = if let Some(buf) = overlays.get(path) {
         buf.clone()
     } else {
@@ -355,11 +440,9 @@ fn load_module_file(
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
 
-    let entry_file = if is_entry { file_id } else { visibility.entry_file };
     if is_entry {
         visibility.entry_file = file_id;
     }
-    let _ = entry_file;
 
     let mut imported_items = Vec::new();
     for imp in &m.imports {
@@ -382,7 +465,8 @@ fn load_module_file(
             &file,
             search_roots,
             overlays,
-            visited,
+            stack,
+            done,
             files,
             visibility,
             false,
@@ -396,7 +480,7 @@ fn load_module_file(
             let empty = HashSet::new();
             extend_visibility(visibility, &dep.items, &empty);
         }
-        imported_items.extend(filter_items(dep.items, &imp.names)?);
+        append_items_unique(&mut imported_items, filter_items(dep.items, &imp.names)?);
     }
 
     m.imports.retain(|i| is_std(&i.path));
@@ -413,8 +497,10 @@ fn load_module_file(
     };
     extend_visibility(visibility, &m.items, &local_visible);
 
-    imported_items.append(&mut m.items);
+    append_items_unique(&mut imported_items, std::mem::take(&mut m.items));
+    check_no_duplicate_toplevel(&imported_items, files)?;
     m.items = imported_items;
+    done.insert(path_key.to_path_buf(), m.clone());
     Ok(m)
 }
 
@@ -483,6 +569,82 @@ mod tests {
             );
         }
         let _ = fs::remove_file(&outside);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn diamond_import_loads_shared_dep_once() {
+        let dir = std::env::temp_dir().join(format!("lumia_diamond_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(&dir.join("c.lumia"), "module C\nval c = 1\n").unwrap();
+        fs::write(
+            &dir.join("a.lumia"),
+            "module A\nimport c.{c}\nval a = c\n",
+        )
+        .unwrap();
+        fs::write(
+            &dir.join("b.lumia"),
+            "module B\nimport c.{c}\nval b = c\n",
+        )
+        .unwrap();
+        let entry = dir.join("main.lumia");
+        fs::write(
+            &entry,
+            "module Main\nimport a.{a}\nimport b.{b}\nval main = a + b\n",
+        )
+        .unwrap();
+        let prog = load_program(&entry).expect("diamond import should load");
+        let c_count = prog
+            .module
+            .items
+            .iter()
+            .filter(|it| item_name(it) == Some("c"))
+            .count();
+        assert_eq!(c_count, 1, "shared dep items must be deduped");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn duplicate_toplevel_name_across_modules_rejected() {
+        let dir = std::env::temp_dir().join(format!("lumia_dup_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(&dir.join("a.lumia"), "module A\nval conflict = 1\n").unwrap();
+        fs::write(&dir.join("b.lumia"), "module B\nval conflict = 2\n").unwrap();
+        let entry = dir.join("main.lumia");
+        fs::write(
+            &entry,
+            "module Main\nimport a.{conflict}\nimport b.{conflict}\nval main = conflict\n",
+        )
+        .unwrap();
+        let err = load_program(&entry).unwrap_err().to_string();
+        assert!(
+            err.contains("duplicate top-level name") && err.contains("conflict"),
+            "got {err}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn true_cycle_still_rejected() {
+        let dir = std::env::temp_dir().join(format!("lumia_cycle_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            &dir.join("a.lumia"),
+            "module A\nimport b.{b}\nval a = b\n",
+        )
+        .unwrap();
+        fs::write(
+            &dir.join("b.lumia"),
+            "module B\nimport a.{a}\nval b = a\n",
+        )
+        .unwrap();
+        let entry = dir.join("main.lumia");
+        fs::write(&entry, "module Main\nimport a.{a}\nval main = a\n").unwrap();
+        let err = load_program(&entry).unwrap_err().to_string();
+        assert!(err.contains("cyclic import"), "got {err}");
         let _ = fs::remove_dir_all(&dir);
     }
 }
