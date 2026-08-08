@@ -17,7 +17,9 @@ fn lumia_bin() -> PathBuf {
 }
 
 fn e2e_out_dir() -> PathBuf {
-    let out_dir = std::env::temp_dir().join("lumia_e2e");
+    // Per-process directory so parallel `cargo test` workers do not clobber
+    // each other's executables when stems collide.
+    let out_dir = std::env::temp_dir().join(format!("lumia_e2e_{}", std::process::id()));
     let _ = std::fs::create_dir_all(&out_dir);
     out_dir
 }

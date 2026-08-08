@@ -174,7 +174,7 @@ impl MmBackend for MarkSweep {
         }
         let inhibit = GC_INHIBIT.get();
         if inhibit == 0 {
-            let limit = *HEAP_LIMIT.lock().unwrap();
+            let limit = *HEAP_LIMIT.lock().unwrap_or_else(|e| e.into_inner());
             BYTES_ALLOCATED.with(|b| {
                 if *b.borrow() >= limit {
                     Self::mark_from_roots();
