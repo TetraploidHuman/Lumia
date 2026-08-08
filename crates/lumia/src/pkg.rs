@@ -317,18 +317,32 @@ fn resolve_link_path(
     let root_canon = base
         .canonicalize()
         .unwrap_or_else(|_| base.to_path_buf());
-    // Prefer real path when present; otherwise keep join relative to base
-    // (already `..`-free) so link flags do not depend on process cwd for packages.
-    let resolved = if joined.exists() {
-        let canon = joined.canonicalize().unwrap_or_else(|_| joined.clone());
-        if matches!(kind, LinkArgKind::Package) && !canon.starts_with(&root_canon) {
-            bail!(
-                "package.link path `{}` escapes package root {}",
-                original,
-                root_canon.display()
-            );
+    // Walk existing prefixes so a symlink planted on a not-yet-created leaf
+    // (or intermediate) cannot escape the package root when it later appears.
+    if matches!(kind, LinkArgKind::Package) {
+        let mut cur = root_canon.clone();
+        for c in Path::new(path).components() {
+            use std::path::Component;
+            match c {
+                Component::Normal(s) => cur.push(s),
+                Component::CurDir => {}
+                _ => bail!("package.link path `{original}` is not relative-normal"),
+            }
+            if cur.exists() {
+                let canon = cur.canonicalize().unwrap_or_else(|_| cur.clone());
+                if !canon.starts_with(&root_canon) {
+                    bail!(
+                        "package.link path `{}` escapes package root {}",
+                        original,
+                        root_canon.display()
+                    );
+                }
+                cur = canon;
+            }
         }
-        canon
+    }
+    let resolved = if joined.exists() {
+        joined.canonicalize().unwrap_or_else(|_| joined.clone())
     } else {
         root_canon.join(path)
     };
