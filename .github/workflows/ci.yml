@@ -17,13 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # Dynamic libLLVM avoids multi-minute static link of the lumia binary.
-          - os: ubuntu-latest
-            cargo_features: --features lumia_codegen/llvm-dynamic
-          # vovkos Windows SDK is static-oriented; keep default prefer-static.
-          - os: windows-latest
-            cargo_features: ""
+        os: [ubuntu-latest, windows-latest]
 
     steps:
       - uses: actions/checkout@v4
@@ -36,10 +30,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-          # Keep static (Windows) and force-dynamic (Linux) caches distinct.
-          key: ${{ matrix.os }}-${{ matrix.cargo_features }}
 
       # Linux: official LLVM tarballs include llvm-config + libs (install-llvm-action).
+      # Note: these tarballs ship static libs only (no libLLVM.so), so force-dynamic
+      # cannot be used here. Use lld to speed up the large static link instead.
       # Note: install-llvm-action docs advise against caching — restore is usually slower
       # than downloading the tarball (~2–3 min on ubuntu-latest).
       - name: Install LLVM 21 (Linux)
@@ -54,10 +48,9 @@ jobs:
         run: |
           echo "LLVM_SYS_211_PREFIX=${{ github.workspace }}/llvm" >> "$GITHUB_ENV"
           echo "${{ github.workspace }}/llvm/bin" >> "$GITHUB_PATH"
-          # force-dynamic: lumia must find libLLVM.so at runtime (e2e spawns the CLI).
-          echo "LD_LIBRARY_PATH=${{ github.workspace }}/llvm/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+          echo "RUSTFLAGS=-C link-arg=-fuse-ld=lld" >> "$GITHUB_ENV"
           "${{ github.workspace }}/llvm/bin/llvm-config" --version
-          ls "${{ github.workspace }}/llvm/lib"/libLLVM*.so* | head -n 5
+          command -v ld.lld || ls "${{ github.workspace }}/llvm/bin"/ld.lld*
           if ! command -v clang >/dev/null 2>&1; then
             sudo apt-get update
             sudo apt-get install -y clang
@@ -121,7 +114,7 @@ jobs:
           & "$root\bin\clang.exe" --version
 
       - name: Cargo test (library crates)
-        run: cargo test --workspace --exclude lumia ${{ matrix.cargo_features }}
+        run: cargo test --workspace --exclude lumia
 
       - name: Cargo test (lumia CLI + e2e examples)
-        run: cargo test -p lumia --tests ${{ matrix.cargo_features }}
+        run: cargo test -p lumia --tests

@@ -4,7 +4,9 @@ version.workspace = true
 edition.workspace = true
 
 [features]
-# Prefer shared libLLVM over static archives (much faster link). Used by CI.
+# Prefer shared libLLVM over static archives (much faster link).
+# Useful locally when the LLVM prefix ships libLLVM.so (e.g. Nix); official
+# GitHub LLVM tarballs are static-only, so CI keeps prefer-static + lld.
 llvm-dynamic = ["inkwell/llvm21-1-force-dynamic"]
 
 [dependencies]

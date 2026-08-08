@@ -372,6 +372,21 @@ fn workspace_target_dir() -> PathBuf {
 }
 
 fn ensure_runtime_built(release: bool) -> Result<()> {
+    // Skip when the profile artifact already exists so parallel e2e tests do not
+    // stampede `cargo build` (file-lock races / flaky failures on Windows).
+    let target_dir = workspace_target_dir();
+    let profile = if release { "release" } else { "debug" };
+    let already = [
+        target_dir.join(profile).join("liblumia_rt.a"),
+        target_dir.join(profile).join("lumia_rt.lib"),
+        target_dir.join(profile).join("lumia_rt.dll.lib"),
+    ]
+    .iter()
+    .any(|p| p.exists());
+    if already {
+        return Ok(());
+    }
+
     let mut cmd = Command::new("cargo");
     cmd.arg("build").arg("-p").arg("lumia_rt");
     if release {

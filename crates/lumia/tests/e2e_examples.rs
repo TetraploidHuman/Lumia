@@ -261,8 +261,8 @@ fn e2e_map_ops() {
     run_example(
         "examples/map_ops.lumia",
         &[
-            "1", "20", "10", "-1", "0", "3", "1", "30", "2", "2", "0", "1", "0", "2", "10", "1",
-            "10",
+            "true", "20", "10", "-1", "false", "3", "true", "30", "2", "2", "false", "true",
+            "false", "2", "10", "1", "10",
         ],
     );
 }
@@ -271,7 +271,7 @@ fn e2e_map_ops() {
 fn e2e_set_ops() {
     run_example(
         "examples/set_ops.lumia",
-        &["3", "1", "0", "3", "2", "0", "1", "3", "1"],
+        &["3", "true", "false", "3", "2", "false", "true", "3", "true"],
     );
 }
 
@@ -284,7 +284,7 @@ fn e2e_range_fold() {
 fn e2e_mapset() {
     run_example(
         "examples/mapset.lumia",
-        &["3", "0", "2", "3", "1", "0", "4"],
+        &["3", "0", "2", "3", "true", "false", "4"],
     );
 }
 
@@ -292,7 +292,7 @@ fn e2e_mapset() {
 fn e2e_coll_lit() {
     run_example(
         "examples/coll_lit.lumia",
-        &["0", "3", "1", "20", "0", "3", "1", "0", "3", "1"],
+        &["0", "3", "true", "20", "0", "3", "true", "false", "3", "1"],
     );
 }
 
@@ -300,7 +300,7 @@ fn e2e_coll_lit() {
 fn e2e_coll_conv() {
     run_example(
         "examples/coll_conv.lumia",
-        &["3", "1", "0", "3", "2", "1"],
+        &["3", "true", "false", "3", "2", "true"],
     );
 }
 
@@ -308,7 +308,7 @@ fn e2e_coll_conv() {
 fn e2e_set_algebra() {
     run_example(
         "examples/set_algebra.lumia",
-        &["4", "1", "1", "2", "1", "0", "1", "1", "0"],
+        &["4", "true", "true", "2", "true", "false", "1", "true", "false"],
     );
 }
 
@@ -347,7 +347,10 @@ fn e2e_result_match() {
 fn e2e_list_extras() {
     run_example(
         "examples/list_extras.lumia",
-        &["0", "1", "4", "4", "4", "1", "20", "1", "0", "1", "0", "2", "-1"],
+        &[
+            "false", "true", "4", "4", "4", "1", "20", "true", "false", "true", "false", "2",
+            "-1",
+        ],
     );
 }
 
@@ -386,7 +389,7 @@ fn e2e_string_more() {
 fn e2e_map_string_keys() {
     run_example(
         "examples/map_string_keys.lumia",
-        &["2", "1", "0", "2", "1", "1", "1", "0"],
+        &["2", "true", "false", "2", "1", "true", "true", "false"],
     );
 }
 
@@ -395,7 +398,7 @@ fn e2e_read_stdin() {
     run_example_with_stdin(
         "examples/read_stdin.lumia",
         Some("  hi hi there  "),
-        &["3", "hi", "2", "1", "1"],
+        &["3", "hi", "2", "true", "true"],
     );
 }
 
@@ -413,7 +416,7 @@ fn e2e_list_text() {
     run_example(
         "examples/list_text.lumia",
         &[
-            "2", "3", "1", "2", "3", "a-b-c", "3", "3", "x", "z", "1", "0", "2", "2",
+            "2", "3", "1", "2", "3", "a-b-c", "3", "3", "x", "z", "true", "false", "2", "2",
         ],
     );
 }
@@ -450,7 +453,9 @@ fn e2e_gc_roots() {
 fn e2e_map_hash() {
     run_example(
         "examples/map_hash.lumia",
-        &["40", "0", "117", "-1", "1", "0", "777", "39", "0", "3", "1"],
+        &[
+            "40", "0", "117", "-1", "true", "false", "777", "39", "false", "3", "1",
+        ],
     );
 }
 
@@ -458,7 +463,9 @@ fn e2e_map_hash() {
 fn e2e_set_hash() {
     run_example(
         "examples/set_hash.lumia",
-        &["40", "1", "1", "0", "40", "1", "39", "0", "1", "1"],
+        &[
+            "40", "true", "true", "false", "40", "true", "39", "false", "true", "1",
+        ],
     );
 }
 
@@ -701,7 +708,7 @@ fn e2e_ffi_strlen() {
 
 #[test]
 fn e2e_ffi_getenv() {
-    run_example("examples/ffi_getenv.lumia", &["1", "0"]);
+    run_example("examples/ffi_getenv.lumia", &["true", "0"]);
 }
 
 #[test]
