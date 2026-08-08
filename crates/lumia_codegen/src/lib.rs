@@ -1747,7 +1747,13 @@ impl<'ctx> Codegen<'ctx> {
             Value::Binary { op, left, right } => {
                 let lv = self.local(*left)?;
                 let rv = self.local(*right)?;
-                let either_float = matches!(lv, BasicValueEnum::FloatValue(_))
+                // Heap loads (`ListGet`, fields) keep Float as i64 bits; consult
+                // `local_tys`, not only LLVM FloatValue, or we do Int ops on IEEE bits.
+                let lt = self.local_tys.get(&left.0).cloned().unwrap_or(Type::Int);
+                let rt = self.local_tys.get(&right.0).cloned().unwrap_or(Type::Int);
+                let either_float = matches!(lt, Type::Float)
+                    || matches!(rt, Type::Float)
+                    || matches!(lv, BasicValueEnum::FloatValue(_))
                     || matches!(rv, BasicValueEnum::FloatValue(_));
                 if either_float
                     && matches!(
@@ -1873,7 +1879,13 @@ impl<'ctx> Codegen<'ctx> {
             }
             Value::Unary { op, operand } => {
                 let ov = self.local(*operand)?;
-                if let BasicValueEnum::FloatValue(o) = ov {
+                let ot = self
+                    .local_tys
+                    .get(&operand.0)
+                    .cloned()
+                    .unwrap_or(Type::Int);
+                if matches!(ot, Type::Float) || matches!(ov, BasicValueEnum::FloatValue(_)) {
+                    let o = self.promote_f64(ov)?;
                     let v = match op {
                         UnOp::Neg => self.builder.build_float_neg(o, "fneg").unwrap(),
                         UnOp::Not => bail!("not on Float"),
