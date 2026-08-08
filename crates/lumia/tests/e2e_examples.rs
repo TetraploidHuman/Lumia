@@ -114,92 +114,92 @@ fn run_example_build(rel: &str, stdin: Option<&str>, expected_lines: &[&str], re
 
 #[test]
 fn e2e_hello() {
-    run_example("examples/hello.lumia", &["42"]);
+    run_example("examples/hello.lm", &["42"]);
 }
 
 #[test]
 fn e2e_add() {
-    run_example("examples/add.lumia", &["42"]);
+    run_example("examples/add.lm", &["42"]);
 }
 
 #[test]
 fn e2e_match() {
-    run_example("examples/match.lumia", &["20"]);
+    run_example("examples/match.lm", &["20"]);
 }
 
 #[test]
 fn e2e_const_patterns() {
-    run_example("examples/const_patterns.lumia", &["1", "2", "3", "4", "5"]);
+    run_example("examples/const_patterns.lm", &["1", "2", "3", "4", "5"]);
 }
 
 #[test]
 fn e2e_poly_id() {
-    run_example("examples/poly_id.lumia", &["2", "1.5", "hi", "3.5"]);
+    run_example("examples/poly_id.lm", &["2", "1.5", "hi", "3.5"]);
 }
 
 #[test]
 fn e2e_poly_inc() {
     // Float monomorphization of `{ x -> x + x }` (not just identity).
-    run_example("examples/poly_inc.lumia", &["2", "3"]);
+    run_example("examples/poly_inc.lm", &["2", "3"]);
 }
 
 #[test]
 fn e2e_tco_sum() {
     // 2e6 tail calls — overflows without musttail; result = n(n+1)/2.
-    run_example("examples/tco_sum.lumia", &["2000001000000"]);
+    run_example("examples/tco_sum.lm", &["2000001000000"]);
 }
 
 #[test]
 fn e2e_trait_ord() {
     // `instance Ord for Point` enables lexicographic `<`/`>` on products.
     run_example(
-        "examples/trait_ord.lumia",
+        "examples/trait_ord.lm",
         &["true", "true", "true", "true", "true"],
     );
 }
 
 #[test]
 fn e2e_list_for() {
-    run_example("examples/list_for.lumia", &["60"]);
+    run_example("examples/list_for.lm", &["60"]);
 }
 
 #[test]
 fn e2e_break() {
-    run_example("examples/break.lumia", &["4"]);
+    run_example("examples/break.lm", &["4"]);
 }
 
 #[test]
 fn e2e_list_match() {
-    run_example("examples/list_match.lumia", &["0", "7"]);
+    run_example("examples/list_match.lm", &["0", "7"]);
 }
 
 #[test]
 fn e2e_to_map() {
-    run_example("examples/to_map.lumia", &["2"]);
+    run_example("examples/to_map.lm", &["2"]);
 }
 
 #[test]
 fn e2e_option_match() {
-    run_example("examples/option_match.lumia", &["0", "7"]);
+    run_example("examples/option_match.lm", &["0", "7"]);
 }
 
 #[test]
 fn e2e_point() {
     run_example(
-        "examples/point.lumia",
+        "examples/point.lm",
         &["3", "4", "10", "4", "3", "7", "5", "8", "3"],
     );
 }
 
 #[test]
 fn e2e_use_math() {
-    run_example("examples/use_math.lumia", &["42", "42"]);
+    run_example("examples/use_math.lm", &["42", "42"]);
 }
 
 #[test]
 fn e2e_doc_std_io() {
     let root = workspace_root();
-    let src = root.join("std/io.lumia");
+    let src = root.join("std/io.lm");
     let out = Command::new(lumia_bin())
         .current_dir(&root)
         .args(["doc", src.to_str().unwrap()])
@@ -217,13 +217,13 @@ fn e2e_doc_std_io() {
 
 #[test]
 fn e2e_import_as() {
-    run_example("examples/import_as.lumia", &["42", "42"]);
+    run_example("examples/import_as.lm", &["42", "42"]);
 }
 
 #[test]
 fn e2e_bad_import_as_original_rejected() {
     let root = workspace_root();
-    let src = root.join("examples/bad_import_as_original.lumia");
+    let src = root.join("examples/bad_import_as_original.lm");
     let out = Command::new(lumia_bin())
         .current_dir(&root)
         .args(["check", src.to_str().unwrap()])
@@ -243,86 +243,86 @@ fn e2e_bad_import_as_original_rejected() {
 
 #[test]
 fn e2e_use_priv() {
-    run_example("examples/use_priv.lumia", &["42", "42"]);
+    run_example("examples/use_priv.lm", &["42", "42"]);
 }
 
 #[test]
 fn e2e_use_pkg() {
-    run_example("examples/use_pkg.lumia", &["42", "42"]);
+    run_example("examples/use_pkg.lm", &["42", "42"]);
 }
 
 #[test]
 fn e2e_list_hof() {
-    run_example("examples/list_hof.lumia", &["5", "2", "3", "24"]);
+    run_example("examples/list_hof.lm", &["5", "2", "3", "24"]);
 }
 
 #[test]
 fn e2e_list_hof_fn() {
-    run_example("examples/list_hof_fn.lumia", &["10", "30", "1", "3", "6"]);
+    run_example("examples/list_hof_fn.lm", &["10", "30", "1", "3", "6"]);
 }
 
 #[test]
 fn e2e_list_concat() {
-    run_example("examples/list_concat.lumia", &["5", "1", "5", "30"]);
+    run_example("examples/list_concat.lm", &["5", "1", "5", "30"]);
 }
 
 #[test]
 fn e2e_list_pipe() {
-    run_example("examples/list_pipe.lumia", &["3", "6", "10"]);
+    run_example("examples/list_pipe.lm", &["3", "6", "10"]);
 }
 
 #[test]
 fn e2e_list_set() {
-    run_example("examples/list_set.lumia", &["1", "99", "3", "2", "3"]);
+    run_example("examples/list_set.lm", &["1", "99", "3", "2", "3"]);
 }
 
 #[test]
 fn e2e_match_guard() {
-    run_example("examples/match_guard.lumia", &["1", "2", "0"]);
+    run_example("examples/match_guard.lm", &["1", "2", "0"]);
 }
 
 #[test]
 fn e2e_match_cond() {
-    run_example("examples/match_cond.lumia", &["1", "0", "-1"]);
+    run_example("examples/match_cond.lm", &["1", "0", "-1"]);
 }
 
 #[test]
 fn e2e_logic() {
-    run_example("examples/logic.lumia", &["1", "10"]);
+    run_example("examples/logic.lm", &["1", "10"]);
 }
 
 #[test]
 fn e2e_string_ops() {
-    run_example("examples/string_ops.lumia", &["5", "hello", "2"]);
+    run_example("examples/string_ops.lm", &["5", "hello", "2"]);
 }
 
 #[test]
 fn e2e_string_eq() {
-    run_example("examples/string_eq.lumia", &["1", "1", "1", "1.5"]);
+    run_example("examples/string_eq.lm", &["1", "1", "1", "1.5"]);
 }
 
 #[test]
 fn e2e_string_interp() {
     run_example(
-        "examples/string_interp.lumia",
+        "examples/string_interp.lm",
         &["hello Lumia", "n=42", "43", "plain", "dollar=$n"],
     );
 }
 
 #[test]
 fn e2e_fib() {
-    run_example("examples/fib.lumia", &["55"]);
+    run_example("examples/fib.lm", &["55"]);
 }
 
 #[test]
 fn e2e_char() {
-    run_example("examples/char.lumia", &["A", "1", "1", "Z"]);
+    run_example("examples/char.lm", &["A", "1", "1", "Z"]);
 }
 
 #[test]
 fn e2e_float_ops() {
     run_example(
-        "examples/float_ops.lumia",
+        "examples/float_ops.lm",
         &["3.75", "6", "1", "-1.5", "4"],
     );
 }
@@ -331,25 +331,25 @@ fn e2e_float_ops() {
 fn e2e_float_map_keys() {
     // ±0 collide; NaN never hits contains (matches IEEE ==).
     run_example(
-        "examples/float_map_keys.lumia",
+        "examples/float_map_keys.lm",
         &["true", "1", "false", "0", "true", "true"],
     );
 }
 
 #[test]
 fn e2e_closure() {
-    run_example("examples/closure.lumia", &["42", "11"]);
+    run_example("examples/closure.lm", &["42", "11"]);
 }
 
 #[test]
 fn e2e_closure_capture() {
-    run_example("examples/closure_capture.lumia", &["42", "101", "42"]);
+    run_example("examples/closure_capture.lm", &["42", "101", "42"]);
 }
 
 #[test]
 fn e2e_map_ops() {
     run_example(
-        "examples/map_ops.lumia",
+        "examples/map_ops.lm",
         &[
             "true", "20", "10", "-1", "false", "3", "true", "30", "2", "2", "false", "true",
             "false", "2", "10", "1", "10",
@@ -360,20 +360,20 @@ fn e2e_map_ops() {
 #[test]
 fn e2e_set_ops() {
     run_example(
-        "examples/set_ops.lumia",
+        "examples/set_ops.lm",
         &["3", "true", "false", "3", "2", "false", "true", "3", "true"],
     );
 }
 
 #[test]
 fn e2e_range_fold() {
-    run_example("examples/range_fold.lumia", &["499999500000", "5050"]);
+    run_example("examples/range_fold.lm", &["499999500000", "5050"]);
 }
 
 #[test]
 fn e2e_mapset() {
     run_example(
-        "examples/mapset.lumia",
+        "examples/mapset.lm",
         &["3", "0", "2", "3", "true", "false", "4"],
     );
 }
@@ -381,7 +381,7 @@ fn e2e_mapset() {
 #[test]
 fn e2e_coll_lit() {
     run_example(
-        "examples/coll_lit.lumia",
+        "examples/coll_lit.lm",
         &["0", "3", "true", "20", "0", "3", "true", "false", "3", "1"],
     );
 }
@@ -389,7 +389,7 @@ fn e2e_coll_lit() {
 #[test]
 fn e2e_coll_conv() {
     run_example(
-        "examples/coll_conv.lumia",
+        "examples/coll_conv.lm",
         &["3", "true", "false", "3", "2", "true"],
     );
 }
@@ -397,20 +397,20 @@ fn e2e_coll_conv() {
 #[test]
 fn e2e_set_algebra() {
     run_example(
-        "examples/set_algebra.lumia",
+        "examples/set_algebra.lm",
         &["4", "true", "true", "2", "true", "false", "1", "true", "false"],
     );
 }
 
 #[test]
 fn e2e_for_map_set() {
-    run_example("examples/for_map_set.lumia", &["6", "3", "30"]);
+    run_example("examples/for_map_set.lm", &["6", "3", "30"]);
 }
 
 #[test]
 fn e2e_range_map() {
     run_example(
-        "examples/range_map.lumia",
+        "examples/range_map.lm",
         &["5", "2", "10", "5", "1", "9", "249999500000"],
     );
 }
@@ -418,25 +418,25 @@ fn e2e_range_map() {
 #[test]
 fn e2e_range_iota() {
     run_example(
-        "examples/range_iota.lumia",
+        "examples/range_iota.lm",
         &["1000000", "0", "999999", "2", "10", "3", "3"],
     );
 }
 
 #[test]
 fn e2e_fuse_hof() {
-    run_example("examples/fuse_hof.lumia", &["24", "250500"]);
+    run_example("examples/fuse_hof.lm", &["24", "250500"]);
 }
 
 #[test]
 fn e2e_result_match() {
-    run_example("examples/result_match.lumia", &["5", "-1", "3"]);
+    run_example("examples/result_match.lm", &["5", "-1", "3"]);
 }
 
 #[test]
 fn e2e_list_extras() {
     run_example(
-        "examples/list_extras.lumia",
+        "examples/list_extras.lm",
         &[
             "false", "true", "4", "4", "4", "1", "20", "true", "false", "true", "false", "2",
             "-1",
@@ -447,7 +447,7 @@ fn e2e_list_extras() {
 #[test]
 fn e2e_prelude_option() {
     run_example(
-        "examples/prelude_option.lumia",
+        "examples/prelude_option.lm",
         &["10", "-1", "42", "7"],
     );
 }
@@ -455,7 +455,7 @@ fn e2e_prelude_option() {
 #[test]
 fn e2e_string_more() {
     run_example(
-        "examples/string_more.lumia",
+        "examples/string_more.lm",
         &[
             "11",
             "Hello Lumia",
@@ -478,7 +478,7 @@ fn e2e_string_more() {
 #[test]
 fn e2e_map_string_keys() {
     run_example(
-        "examples/map_string_keys.lumia",
+        "examples/map_string_keys.lm",
         &["2", "true", "false", "2", "1", "true", "true", "false"],
     );
 }
@@ -486,7 +486,7 @@ fn e2e_map_string_keys() {
 #[test]
 fn e2e_read_stdin() {
     run_example_with_stdin(
-        "examples/read_stdin.lumia",
+        "examples/read_stdin.lm",
         Some("  hi hi there  "),
         &["3", "hi", "2", "true", "true"],
     );
@@ -495,7 +495,7 @@ fn e2e_read_stdin() {
 #[test]
 fn e2e_word_count() {
     run_example_with_stdin(
-        "examples/word_count.lumia",
+        "examples/word_count.lm",
         Some("Hello World\nhello there\nWORLD\n"),
         &["hello: 2", "there: 1", "world: 2"],
     );
@@ -504,7 +504,7 @@ fn e2e_word_count() {
 #[test]
 fn e2e_list_text() {
     run_example(
-        "examples/list_text.lumia",
+        "examples/list_text.lm",
         &[
             "2", "3", "1", "2", "3", "a-b-c", "3", "3", "x", "z", "true", "false", "2", "2",
         ],
@@ -515,77 +515,77 @@ fn e2e_list_text() {
 fn e2e_memo_l2_release() {
     // Transparent Memo L2 is enabled under `--release`; results must match.
     run_example_release(
-        "examples/memo_l2.lumia",
+        "examples/memo_l2.lm",
         &["2646700", "2646700", "285"],
     );
 }
 
 #[test]
 fn e2e_memo_l0l1() {
-    run_example("examples/memo_l0l1.lumia", &["42", "42", "65"]);
+    run_example("examples/memo_l0l1.lm", &["42", "42", "65"]);
 }
 
 #[test]
 fn e2e_correctness_fixes() {
     run_example(
-        "examples/correctness_fixes.lumia",
+        "examples/correctness_fixes.lm",
         &["0", "1", "1", "1", "0", "0", "2", "1.25", "2", "2"],
     );
 }
 
 #[test]
 fn e2e_scope_shadow() {
-    run_example("examples/scope_shadow.lumia", &["99", "1", "1", "99", "1"]);
+    run_example("examples/scope_shadow.lm", &["99", "1", "1", "99", "1"]);
 }
 
 #[test]
 fn e2e_result_branch() {
-    run_example("examples/result_branch.lumia", &["7", "-1"]);
+    run_example("examples/result_branch.lm", &["7", "-1"]);
 }
 
 #[test]
 fn e2e_result_err_payload() {
-    run_example("examples/result_err_payload.lumia", &["42", "4"]);
+    run_example("examples/result_err_payload.lm", &["42", "4"]);
 }
 
 #[test]
 fn e2e_for_map_keys() {
-    run_example("examples/for_map_keys.lumia", &["3", "2", "3"]);
+    run_example("examples/for_map_keys.lm", &["3", "2", "3"]);
 }
 
 #[test]
 fn e2e_contains_poly() {
     run_example(
-        "examples/contains_poly.lumia",
+        "examples/contains_poly.lm",
         &["true", "false", "true", "false"],
     );
 }
 
 #[test]
 fn e2e_module_val_str() {
-    run_example("examples/module_val_str.lumia", &["hello", "4"]);
+    run_example("examples/module_val_str.lm", &["hello", "4"]);
 }
 
 #[test]
 fn e2e_for_pair_list() {
-    run_example("examples/for_pair_list.lumia", &["66"]);
+    run_example("examples/for_pair_list.lm", &["66"]);
 }
 
 #[test]
 fn e2e_hof_float_to_int() {
-    run_example("examples/hof_float_to_int.lumia", &["1", "2"]);
+    run_example("examples/hof_float_to_int.lm", &["1", "2"]);
 }
 
 #[test]
 fn e2e_gc_roots() {
     // Soft-threshold GC must not free `keep` while junk lists allocate.
-    run_example("examples/gc_roots.lumia", &["1", "3"]);
+    run_example("examples/gc_roots.lm", &["1", "3"]);
 }
 
 #[test]
 fn e2e_map_hash() {
     run_example(
-        "examples/map_hash.lumia",
+        "examples/map_hash.lm",
         &[
             "40", "0", "117", "-1", "true", "false", "777", "39", "false", "3", "1",
         ],
@@ -595,7 +595,7 @@ fn e2e_map_hash() {
 #[test]
 fn e2e_set_hash() {
     run_example(
-        "examples/set_hash.lumia",
+        "examples/set_hash.lm",
         &[
             "40", "true", "true", "false", "40", "true", "39", "false", "true", "1",
         ],
@@ -605,7 +605,7 @@ fn e2e_set_hash() {
 #[test]
 fn e2e_sort_by() {
     run_example(
-        "examples/sort_by.lumia",
+        "examples/sort_by.lm",
         &[
             "1", "1", "3", "5", "5", "4", "3", "20", "10", "30", "apple", "banana",
             "cherry",
@@ -616,25 +616,25 @@ fn e2e_sort_by() {
 #[test]
 fn e2e_tuple_fields() {
     run_example(
-        "examples/tuple_fields.lumia",
+        "examples/tuple_fields.lm",
         &["10", "20", "30", "200", "100", "300"],
     );
 }
 
 #[test]
 fn e2e_effect_hof() {
-    run_example("examples/effect_hof.lumia", &["41", "42"]);
+    run_example("examples/effect_hof.lm", &["41", "42"]);
 }
 
 #[test]
 fn e2e_effect_block() {
-    run_example("examples/effect_block.lumia", &["42"]);
+    run_example("examples/effect_block.lm", &["42"]);
 }
 
 #[test]
 fn e2e_nested_match() {
     run_example(
-        "examples/nested_match.lumia",
+        "examples/nested_match.lm",
         &["7", "99", "1", "2", "1", "42", "1"],
     );
 }
@@ -642,7 +642,7 @@ fn e2e_nested_match() {
 #[test]
 fn e2e_bad_import_priv_rejected() {
     let root = workspace_root();
-    let src = root.join("examples/bad_import_priv.lumia");
+    let src = root.join("examples/bad_import_priv.lm");
     let status = Command::new(lumia_bin())
         .current_dir(&root)
         .args(["check", src.to_str().unwrap()])
@@ -657,7 +657,7 @@ fn e2e_bad_import_priv_rejected() {
 #[test]
 fn e2e_priv_leak_rejected() {
     let root = workspace_root();
-    let src = root.join("examples/priv_leak_test.lumia");
+    let src = root.join("examples/priv_leak_test.lm");
     let out = Command::new(lumia_bin())
         .current_dir(&root)
         .args(["check", src.to_str().unwrap()])
@@ -681,7 +681,7 @@ fn e2e_priv_leak_rejected() {
 #[test]
 fn e2e_bad_nested_match_rejected() {
     let root = workspace_root();
-    let src = root.join("examples/bad_nested_match.lumia");
+    let src = root.join("examples/bad_nested_match.lm");
     let out = Command::new(lumia_bin())
         .current_dir(&root)
         .args(["check", src.to_str().unwrap()])
@@ -698,7 +698,7 @@ fn e2e_bad_nested_match_rejected() {
         "expected non-exhaustive error, got: {combined}"
     );
     assert!(
-        combined.contains("bad_nested_match.lumia:") && combined.contains(": lower:"),
+        combined.contains("bad_nested_match.lm:") && combined.contains(": lower:"),
         "expected located diagnostic, got: {combined}"
     );
 }
@@ -706,7 +706,7 @@ fn e2e_bad_nested_match_rejected() {
 #[test]
 fn e2e_bad_int_match_rejected() {
     let root = workspace_root();
-    let src = root.join("examples/bad_int_match.lumia");
+    let src = root.join("examples/bad_int_match.lm");
     let out = Command::new(lumia_bin())
         .current_dir(&root)
         .args(["check", src.to_str().unwrap()])
@@ -723,7 +723,7 @@ fn e2e_bad_int_match_rejected() {
         "unexpected diagnostics: {combined}"
     );
     assert!(
-        combined.contains("bad_int_match.lumia:") && combined.contains("^"),
+        combined.contains("bad_int_match.lm:") && combined.contains("^"),
         "expected located diagnostic with caret, got: {combined}"
     );
 }
@@ -731,7 +731,7 @@ fn e2e_bad_int_match_rejected() {
 #[test]
 fn e2e_bad_empty_match_rejected() {
     let root = workspace_root();
-    let src = root.join("examples/bad_empty_match.lumia");
+    let src = root.join("examples/bad_empty_match.lm");
     let out = Command::new(lumia_bin())
         .current_dir(&root)
         .args(["check", src.to_str().unwrap()])
@@ -752,7 +752,7 @@ fn e2e_bad_empty_match_rejected() {
 #[test]
 fn e2e_bad_guard_only_match_rejected() {
     let root = workspace_root();
-    let src = root.join("examples/bad_guard_only.lumia");
+    let src = root.join("examples/bad_guard_only.lm");
     let out = Command::new(lumia_bin())
         .current_dir(&root)
         .args(["check", src.to_str().unwrap()])
@@ -773,7 +773,7 @@ fn e2e_bad_guard_only_match_rejected() {
 #[test]
 fn e2e_bad_list_match_rejected() {
     let root = workspace_root();
-    let src = root.join("examples/bad_list_match.lumia");
+    let src = root.join("examples/bad_list_match.lm");
     let out = Command::new(lumia_bin())
         .current_dir(&root)
         .args(["check", src.to_str().unwrap()])
@@ -790,20 +790,20 @@ fn e2e_bad_list_match_rejected() {
         "unexpected diagnostics: {combined}"
     );
     assert!(
-        combined.contains("bad_list_match.lumia:"),
+        combined.contains("bad_list_match.lm:"),
         "expected located diagnostic, got: {combined}"
     );
 }
 
 #[test]
 fn e2e_assert_ok() {
-    run_example("examples/assert_ok.lumia", &["1"]);
+    run_example("examples/assert_ok.lm", &["1"]);
 }
 
 #[test]
 fn e2e_bad_assert_aborts() {
     let root = workspace_root();
-    let src = root.join("examples/bad_assert.lumia");
+    let src = root.join("examples/bad_assert.lm");
     let bin = e2e_exe("bad_assert");
     let status = Command::new(lumia_bin())
         .current_dir(&root)
@@ -823,7 +823,7 @@ fn e2e_bad_assert_aborts() {
     );
     let err = String::from_utf8_lossy(&run.stderr);
     assert!(
-        err.contains("assert failed") && err.contains("bad_assert.lumia:"),
+        err.contains("assert failed") && err.contains("bad_assert.lm:"),
         "unexpected stderr: {err}"
     );
 }
@@ -831,7 +831,7 @@ fn e2e_bad_assert_aborts() {
 #[test]
 fn e2e_bad_import_type_points_at_dep() {
     let root = workspace_root();
-    let src = root.join("examples/bad_import_type.lumia");
+    let src = root.join("examples/bad_import_type.lm");
     let out = Command::new(lumia_bin())
         .current_dir(&root)
         .args(["check", src.to_str().unwrap()])
@@ -845,7 +845,7 @@ fn e2e_bad_import_type_points_at_dep() {
         err
     );
     assert!(
-        combined.contains("bad_dep.lumia:") && combined.contains("type mismatch"),
+        combined.contains("bad_dep.lm:") && combined.contains("type mismatch"),
         "expected dep-file diagnostic, got: {combined}"
     );
 }
@@ -853,7 +853,7 @@ fn e2e_bad_import_type_points_at_dep() {
 #[test]
 fn e2e_bad_dep_rejected() {
     let root = workspace_root();
-    let src = root.join("examples/bad_dep.lumia");
+    let src = root.join("examples/bad_dep.lm");
     let out = Command::new(lumia_bin())
         .current_dir(&root)
         .args(["check", src.to_str().unwrap()])
@@ -866,7 +866,7 @@ fn e2e_bad_dep_rejected() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        combined.contains("bad_dep.lumia:") && combined.contains("type mismatch"),
+        combined.contains("bad_dep.lm:") && combined.contains("type mismatch"),
         "expected located type mismatch, got: {combined}"
     );
 }
@@ -914,23 +914,23 @@ fn run_example_trust_foreign_pure(rel: &str, expected_lines: &[&str]) {
 
 #[test]
 fn e2e_ffi_abs() {
-    run_example_trust_foreign_pure("examples/ffi_abs.lumia", &["42", "7"]);
+    run_example_trust_foreign_pure("examples/ffi_abs.lm", &["42", "7"]);
 }
 
 #[test]
 fn e2e_ffi_strlen() {
-    run_example_trust_foreign_pure("examples/ffi_strlen.lumia", &["5", "0"]);
+    run_example_trust_foreign_pure("examples/ffi_strlen.lm", &["5", "0"]);
 }
 
 #[test]
 fn e2e_ffi_getenv() {
-    run_example("examples/ffi_getenv.lumia", &["true", "0"]);
+    run_example("examples/ffi_getenv.lm", &["true", "0"]);
 }
 
 #[test]
 fn e2e_bad_foreign_pure_rejected() {
     let root = workspace_root();
-    let src = root.join("examples/bad_foreign_pure.lumia");
+    let src = root.join("examples/bad_foreign_pure.lm");
     let out = Command::new(lumia_bin())
         .current_dir(&root)
         .args(["check", src.to_str().unwrap()])
@@ -953,30 +953,30 @@ fn e2e_bad_foreign_pure_rejected() {
 
 #[test]
 fn e2e_use_path_dep() {
-    run_example("examples/use_path_dep.lumia", &["42", "42"]);
+    run_example("examples/use_path_dep.lm", &["42", "42"]);
 }
 
 #[test]
 fn e2e_par_map() {
     // Auto-parallel is on by default (no --parallel flag).
-    run_example("examples/par_map.lumia", &["200", "0", "398"]);
+    run_example("examples/par_map.lm", &["200", "0", "398"]);
 }
 
 #[test]
 fn e2e_par_map_fn() {
-    run_example("examples/par_map_fn.lumia", &["50", "0", "98"]);
+    run_example("examples/par_map_fn.lm", &["50", "0", "98"]);
 }
 
 #[test]
 fn e2e_par_map_capture() {
     // Capturing closure stays sequential; still correct under auto-parallel.
-    run_example("examples/par_map_capture.lumia", &["5", "10", "14"]);
+    run_example("examples/par_map_capture.lm", &["5", "10", "14"]);
 }
 
 #[test]
 fn e2e_unknown_std_module_rejected() {
     let root = workspace_root();
-    let src = root.join("examples/bad_std_import.lumia");
+    let src = root.join("examples/bad_std_import.lm");
     let out = Command::new(lumia_bin())
         .current_dir(&root)
         .args(["check", src.to_str().unwrap()])
@@ -997,7 +997,7 @@ fn e2e_unknown_std_module_rejected() {
 #[test]
 fn e2e_bad_field_proj_rejected() {
     let root = workspace_root();
-    let src = root.join("examples/bad_field_proj.lumia");
+    let src = root.join("examples/bad_field_proj.lm");
     let out = Command::new(lumia_bin())
         .current_dir(&root)
         .args(["check", src.to_str().unwrap()])
@@ -1018,9 +1018,9 @@ fn e2e_bad_field_proj_rejected() {
 }
 
 #[test]
-fn e2e_trait_keyword_rejected() {
+fn e2e_ord_instance_requires_eq() {
     let root = workspace_root();
-    let src = root.join("examples/bad_trait.lumia");
+    let src = root.join("examples/bad_trait.lm");
     let out = Command::new(lumia_bin())
         .current_dir(&root)
         .args(["check", src.to_str().unwrap()])
@@ -1033,15 +1033,15 @@ fn e2e_trait_keyword_rejected() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        combined.contains("not implemented") || combined.contains("reserved"),
-        "expected reserved-keyword error, got: {combined}"
+        combined.contains("requires") || combined.contains("Eq"),
+        "expected Ord-requires-Eq error, got: {combined}"
     );
 }
 
 #[test]
 fn e2e_int_literal_overflow_rejected() {
     let root = workspace_root();
-    let src = root.join("examples/bad_int_overflow.lumia");
+    let src = root.join("examples/bad_int_overflow.lm");
     let out = Command::new(lumia_bin())
         .current_dir(&root)
         .args(["check", src.to_str().unwrap()])
@@ -1062,7 +1062,7 @@ fn e2e_int_literal_overflow_rejected() {
 #[test]
 fn e2e_bad_val_assign_rejected() {
     let root = workspace_root();
-    let src = root.join("examples/bad_val_assign.lumia");
+    let src = root.join("examples/bad_val_assign.lm");
     let out = Command::new(lumia_bin())
         .current_dir(&root)
         .args(["check", src.to_str().unwrap()])
@@ -1083,7 +1083,7 @@ fn e2e_bad_val_assign_rejected() {
 #[test]
 fn e2e_bad_struct_match_rejected() {
     let root = workspace_root();
-    let src = root.join("examples/bad_struct_match.lumia");
+    let src = root.join("examples/bad_struct_match.lm");
     let out = Command::new(lumia_bin())
         .current_dir(&root)
         .args(["check", src.to_str().unwrap()])
@@ -1104,7 +1104,7 @@ fn e2e_bad_struct_match_rejected() {
 #[test]
 fn e2e_bad_ok_arity_rejected() {
     let root = workspace_root();
-    let src = root.join("examples/bad_ok_arity.lumia");
+    let src = root.join("examples/bad_ok_arity.lm");
     let out = Command::new(lumia_bin())
         .current_dir(&root)
         .args(["check", src.to_str().unwrap()])
@@ -1125,7 +1125,7 @@ fn e2e_bad_ok_arity_rejected() {
 #[test]
 fn e2e_bad_struct_field_match_rejected() {
     let root = workspace_root();
-    let src = root.join("examples/bad_struct_field_match.lumia");
+    let src = root.join("examples/bad_struct_field_match.lm");
     let out = Command::new(lumia_bin())
         .current_dir(&root)
         .args(["check", src.to_str().unwrap()])
@@ -1147,7 +1147,7 @@ fn e2e_bad_struct_field_match_rejected() {
 fn e2e_bad_par_map_io_demoted() {
     // Effectful FunRef map is demoted to sequential — still type-checks.
     let root = workspace_root();
-    let src = root.join("examples/bad_par_map_io.lumia");
+    let src = root.join("examples/bad_par_map_io.lm");
     let out = Command::new(lumia_bin())
         .current_dir(&root)
         .args(["check", src.to_str().unwrap()])

@@ -89,8 +89,8 @@ mod tests {
         let src = "val x = 1\nval y = z\n";
         // point at `z`
         let span = Span::new(16, 17);
-        let s = format_diagnostic("t.lumia", src, span, "type", "unbound variable `z`");
-        assert!(s.contains("t.lumia:2:7:"), "{s}");
+        let s = format_diagnostic("t.lm", src, span, "type", "unbound variable `z`");
+        assert!(s.contains("t.lm:2:7:"), "{s}");
         assert!(s.contains("unbound variable `z`"), "{s}");
         assert!(s.contains('^'), "{s}");
     }

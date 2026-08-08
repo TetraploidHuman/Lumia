@@ -7,8 +7,8 @@ Rust compiler + Core SSA + LLVM 21 codegen + pluggable GC ABI (STW mark-sweep fi
 ```bash
 source scripts/env.sh          # sets LLVM_SYS_211_PREFIX + shared lib paths
 cargo build -p lumia
-cargo run -p lumia -- check examples/hello.lumia
-cargo run -p lumia -- build examples/hello.lumia -o /tmp/hello
+cargo run -p lumia -- check examples/hello.lm
+cargo run -p lumia -- build examples/hello.lm -o /tmp/hello
 /tmp/hello                     # prints 42
 ```
 

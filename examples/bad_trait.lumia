@@ -1,8 +1,0 @@
-module BadTrait
-
-trait Eq {
-}
-
-val main = {
-    0
-}

@@ -5,7 +5,7 @@ use lumia_syntax::{parse_module, Item, Module, TypeKind, VariantFields};
 use std::fs;
 use std::path::Path;
 
-/// Render documentation for a `.lumia` source file to Markdown.
+/// Render documentation for a `.lm` source file to Markdown.
 pub fn render_file(path: &Path) -> Result<String> {
     let src = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     let module = parse_module(&src).map_err(|e| {
@@ -232,7 +232,7 @@ val main = {
 }
 "#;
         let m = parse_module(src).unwrap();
-        let md = render_module(src, &m, Path::new("demo.lumia"));
+        let md = render_module(src, &m, Path::new("demo.lm"));
         assert!(md.contains("# Module `Demo`"));
         assert!(md.contains("Module blurb."));
         assert!(md.contains("**Exports:** `foo`"));
@@ -257,7 +257,7 @@ type Opt {
 foreign "C" pure fn llabs(x: Int) -> Int
 "#;
         let m = parse_module(src).unwrap();
-        let md = render_module(src, &m, Path::new("f.lumia"));
+        let md = render_module(src, &m, Path::new("f.lm"));
         assert!(md.contains("### `Opt`"));
         assert!(md.contains("Option-like."));
         assert!(md.contains("`Some`"));

@@ -194,12 +194,12 @@ fn is_std(path: &[String]) -> bool {
 }
 
 /// Compiler-provided `std.*` modules (implemented as builtins / prelude).
-/// Export sets are read from `std/<mod>.lumia` `@exports` lines — no hardcoded dual list.
+/// Export sets are read from `std/<mod>.lm` `@exports` lines — no hardcoded dual list.
 fn std_exports(path: &[String]) -> Result<Vec<String>> {
     let key: Vec<&str> = path.iter().map(|s| s.as_str()).collect();
     let rel = match key.as_slice() {
-        ["std", "io"] => "io.lumia",
-        ["std", "string"] => "string.lumia",
+        ["std", "io"] => "io.lm",
+        ["std", "string"] => "string.lm",
         _ => {
             bail!(
                 "unknown standard module `{}` (known: std.io, std.string)",
@@ -316,11 +316,11 @@ fn path_candidates(base: &Path, rel: &[&str]) -> Vec<PathBuf> {
     if rel.is_empty() {
         return out;
     }
-    out.push(base.join(rel.join("/")).with_extension("lumia"));
+    out.push(base.join(rel.join("/")).with_extension("lm"));
     let mut mod_dir = base.join(rel.join("/"));
-    mod_dir.push("mod.lumia");
+    mod_dir.push("mod.lm");
     out.push(mod_dir);
-    out.push(base.join(format!("{}.lumia", rel.join("."))));
+    out.push(base.join(format!("{}.lm", rel.join("."))));
     out
 }
 
@@ -599,7 +599,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let outside = std::env::temp_dir().join(format!(
-            "lumia_load_outside_{}.lumia",
+            "lumia_load_outside_{}.lm",
             std::process::id()
         ));
         fs::write(
@@ -607,13 +607,13 @@ mod tests {
             "module Outside\nval leak = 1\n",
         )
         .unwrap();
-        let entry = dir.join("main.lumia");
+        let entry = dir.join("main.lm");
         fs::write(
             &entry,
             "module Main\nimport evil.{leak}\nval main = leak\n",
         )
         .unwrap();
-        let evil = dir.join("evil.lumia");
+        let evil = dir.join("evil.lm");
         #[cfg(unix)]
         {
             let _ = fs::remove_file(&evil);
@@ -634,18 +634,18 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lumia_diamond_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        fs::write(&dir.join("c.lumia"), "module C\nval c = 1\n").unwrap();
+        fs::write(&dir.join("c.lm"), "module C\nval c = 1\n").unwrap();
         fs::write(
-            &dir.join("a.lumia"),
+            &dir.join("a.lm"),
             "module A\nimport c.{c}\nval a = c\n",
         )
         .unwrap();
         fs::write(
-            &dir.join("b.lumia"),
+            &dir.join("b.lm"),
             "module B\nimport c.{c}\nval b = c\n",
         )
         .unwrap();
-        let entry = dir.join("main.lumia");
+        let entry = dir.join("main.lm");
         fs::write(
             &entry,
             "module Main\nimport a.{a}\nimport b.{b}\nval main = a + b\n",
@@ -667,9 +667,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lumia_dup_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        fs::write(&dir.join("a.lumia"), "module A\nval conflict = 1\n").unwrap();
-        fs::write(&dir.join("b.lumia"), "module B\nval conflict = 2\n").unwrap();
-        let entry = dir.join("main.lumia");
+        fs::write(&dir.join("a.lm"), "module A\nval conflict = 1\n").unwrap();
+        fs::write(&dir.join("b.lm"), "module B\nval conflict = 2\n").unwrap();
+        let entry = dir.join("main.lm");
         fs::write(
             &entry,
             "module Main\nimport a.{conflict}\nimport b.{conflict}\nval main = conflict\n",
@@ -689,16 +689,16 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         fs::write(
-            &dir.join("a.lumia"),
+            &dir.join("a.lm"),
             "module A\nimport b.{b}\nval a = b\n",
         )
         .unwrap();
         fs::write(
-            &dir.join("b.lumia"),
+            &dir.join("b.lm"),
             "module B\nimport a.{a}\nval b = a\n",
         )
         .unwrap();
-        let entry = dir.join("main.lumia");
+        let entry = dir.join("main.lm");
         fs::write(&entry, "module Main\nimport a.{a}\nval main = a\n").unwrap();
         let err = load_program(&entry).unwrap_err().to_string();
         assert!(err.contains("cyclic import"), "got {err}");

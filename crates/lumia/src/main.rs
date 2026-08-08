@@ -77,7 +77,7 @@ enum Commands {
     },
     /// Generate Markdown docs from `///` comments (DESIGN §13)
     Doc {
-        /// Source file (`.lumia`)
+        /// Source file (`.lm`)
         file: PathBuf,
         /// Write Markdown to this path instead of stdout
         #[arg(short, long)]

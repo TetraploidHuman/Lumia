@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # CPU compute-intensive microbench (Release).
-# Kernels: primes, matmul, Mandelbrot, Collatz, naive fib — see examples/bench_cpu.lumia.
+# Kernels: primes, matmul, Mandelbrot, Collatz, naive fib — see examples/bench_cpu.lm.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck disable=SC1091
@@ -9,7 +9,7 @@ source "$ROOT/scripts/env.sh"
 cd "$ROOT"
 cargo build -q -p lumia
 LUMIA="$ROOT/target/debug/lumia"
-SRC=examples/bench_cpu.lumia
+SRC=examples/bench_cpu.lm
 OUT_DIR="${TMPDIR:-/tmp}/lumia_bench_cpu"
 mkdir -p "$OUT_DIR"
 BIN="$OUT_DIR/bench_cpu"
@@ -32,7 +32,7 @@ printf '  collatz:    %s\n' "${LINES[3]}"
 printf '  fib(37):    %s\n' "${LINES[4]}"
 
 # Known fingerprints (must stay stable across compiler changes).
-# Recompute with: lumia build --release examples/bench_cpu.lumia && run once.
+# Recompute with: lumia build --release examples/bench_cpu.lm && run once.
 expect=(7837 12803971115 856770 29265567 24157817)
 for i in 0 1 2 3 4; do
   if [[ "${LINES[$i]}" != "${expect[$i]}" ]]; then

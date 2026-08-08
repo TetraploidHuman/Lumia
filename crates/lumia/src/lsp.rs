@@ -639,15 +639,15 @@ mod tests {
 
     #[test]
     fn uri_to_path_decodes_and_strips_file_prefix() {
-        let p = uri_to_path("file:///tmp/hello%20world.lumia");
-        assert_eq!(p, PathBuf::from("/tmp/hello world.lumia"));
-        let p = uri_to_path("file://localhost/tmp/x.lumia");
-        assert_eq!(p, PathBuf::from("/tmp/x.lumia"));
-        let p = uri_to_path("file:///C:/Users/me/x.lumia");
-        assert_eq!(p, PathBuf::from("C:/Users/me/x.lumia"));
+        let p = uri_to_path("file:///tmp/hello%20world.lm");
+        assert_eq!(p, PathBuf::from("/tmp/hello world.lm"));
+        let p = uri_to_path("file://localhost/tmp/x.lm");
+        assert_eq!(p, PathBuf::from("/tmp/x.lm"));
+        let p = uri_to_path("file:///C:/Users/me/x.lm");
+        assert_eq!(p, PathBuf::from("C:/Users/me/x.lm"));
         assert_eq!(
-            path_to_uri(Path::new("C:/Users/me/x.lumia")),
-            "file:///C:/Users/me/x.lumia"
+            path_to_uri(Path::new("C:/Users/me/x.lm")),
+            "file:///C:/Users/me/x.lm"
         );
     }
 
