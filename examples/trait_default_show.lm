@@ -1,0 +1,20 @@
+module TraitDefaultShow
+
+import std.io.{println}
+
+type Point {
+    val x
+    val y
+}
+
+trait Show {
+    val show = { self -> "default-show" }
+}
+
+// Empty instance picks up the trait default method.
+instance Show for Point {
+}
+
+val main = {
+    println(Point { x = 1, y = 2 })
+}

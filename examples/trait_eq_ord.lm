@@ -1,0 +1,41 @@
+module TraitEqOrd
+
+import std.io.{println}
+
+type Pair {
+    val a
+    val b
+}
+
+trait Eq {
+    val eq = { self, other -> false }
+}
+
+trait Ord requires Eq {
+    val less = { self, other -> false }
+}
+
+instance Eq for Pair {
+    // Equality ignores `b` (custom method).
+    val eq = { self, other ->
+        self.a == other.a
+    }
+}
+
+instance Ord for Pair {
+    // Order by `a` only.
+    val less = { self, other ->
+        self.a < other.a
+    }
+}
+
+val main = {
+    val p = Pair { a = 1, b = 9 }
+    val q = Pair { a = 1, b = 0 }
+    val r = Pair { a = 2, b = 0 }
+    println(p == q)
+    println(p != q)
+    println(p < r)
+    println(r > p)
+    println(p <= q)
+}

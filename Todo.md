@@ -5,7 +5,7 @@
 ## 类型与单态化
 
 - [ ] **单态化管线**：Float 特化 `__lam_*$Float`（`poly_inc` / `poly_add1`：`x + 1` 保持 open + scheme `num_vars`）；完整 Num trait / 多体 / 顶层泛型仍待。恒等另有 call-site 启发式（`poly_id`）。
-- [ ] **类型类 `trait` / `instance` / `requires`**：空体 + instance `val` 方法（Show 覆盖已接线）；**trait 默认方法体仍忽略**；积/和自动派生 Eq/Hash/Show；Ord 显式；结构 Show 对 Float 字段按 Int 位打印；Hash 能力位已派生（Map 表示仍按大小）。完整字典/多方法分派仍待。
+- [ ] **类型类 `trait` / `instance` / `requires`**：显式 instance 可填 trait 默认方法；Show/Eq.eq/Ord.less 覆盖已接线；积/和自动派生 Eq/Hash/Show（结构路径）；typed 结构 Show 处理 Float/Bool 字段；Hash 能力位已派生（Map 表示仍按大小）。完整字典/多方法分派仍待。
 - [x] **`import … as` / `{ name as alias }`**：DESIGN §9.3；`ImportedName` + 公开项改名、原名 `priv` 副本；e2e `import_as` / `bad_import_as_original`。
 
 ## 语义与运行时

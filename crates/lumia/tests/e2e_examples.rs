@@ -165,6 +165,24 @@ fn e2e_trait_show() {
 }
 
 #[test]
+fn e2e_trait_default_show() {
+    run_example("examples/trait_default_show.lm", &["default-show"]);
+}
+
+#[test]
+fn e2e_trait_eq_ord() {
+    run_example(
+        "examples/trait_eq_ord.lm",
+        &["true", "false", "true", "true", "true"],
+    );
+}
+
+#[test]
+fn e2e_show_float_adt() {
+    run_example("examples/show_float_adt.lm", &["#0(1.5, 2.25)"]);
+}
+
+#[test]
 fn e2e_tco_even_odd() {
     run_example(
         "examples/tco_even_odd.lm",

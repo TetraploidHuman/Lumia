@@ -628,6 +628,223 @@ impl<'ctx> Codegen<'ctx> {
         Ok(Some(ptr))
     }
 
+    /// Call `__Eq_{T}_eq(a,b) -> Bool` when present.
+    fn emit_eq_override(
+        &mut self,
+        adt_name: &str,
+        left: IntValue<'ctx>,
+        right: IntValue<'ctx>,
+    ) -> Result<Option<IntValue<'ctx>>> {
+        let mangled = format!("__Eq_{adt_name}_eq");
+        let Some(fv) = self.functions.get(&mangled).copied() else {
+            return Ok(None);
+        };
+        let call = self
+            .builder
+            .build_call(fv, &[left.into(), right.into()], "eq_ov")
+            .unwrap();
+        Ok(Some(
+            call.try_as_basic_value()
+                .basic()
+                .unwrap()
+                .into_int_value(),
+        ))
+    }
+
+    /// Call `__Ord_{T}_less(a,b) -> Bool` when present.
+    fn emit_less_override(
+        &mut self,
+        adt_name: &str,
+        left: IntValue<'ctx>,
+        right: IntValue<'ctx>,
+    ) -> Result<Option<IntValue<'ctx>>> {
+        let mangled = format!("__Ord_{adt_name}_less");
+        let Some(fv) = self.functions.get(&mangled).copied() else {
+            return Ok(None);
+        };
+        let call = self
+            .builder
+            .build_call(fv, &[left.into(), right.into()], "less_ov")
+            .unwrap();
+        Ok(Some(
+            call.try_as_basic_value()
+                .basic()
+                .unwrap()
+                .into_int_value(),
+        ))
+    }
+
+    fn adt_method_name(left: &Type, right: &Type) -> Option<String> {
+        match (left, right) {
+            (Type::Adt { name: a, .. }, Type::Adt { name: b, .. }) if a == b => Some(a.clone()),
+            _ => None,
+        }
+    }
+
+    /// Structural ADT show using `Type::Adt` field params (Float/Bool typed).
+    fn emit_typed_adt_show(
+        &mut self,
+        arg: BasicValueEnum<'ctx>,
+        params: &[Type],
+    ) -> Result<PointerValue<'ctx>> {
+        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+        let i = self.coerce_i64(arg)?;
+        let base = self
+            .builder
+            .build_int_to_ptr(i, ptr_ty, "adt_show_base")
+            .unwrap();
+        let tag_slot = unsafe {
+            self.builder
+                .build_gep(
+                    self.i64_ty,
+                    base,
+                    &[self.i64_ty.const_int(0, false)],
+                    "tag",
+                )
+                .unwrap()
+        };
+        let tag = self
+            .builder
+            .build_load(self.i64_ty, tag_slot, "tagv")
+            .unwrap()
+            .into_int_value();
+        let show_i = self.module.get_function("lumia_show").unwrap();
+        let show_f = self.module.get_function("lumia_show_float").unwrap();
+        let show_b = self.module.get_function("lumia_show_bool").unwrap();
+        let concat = self.module.get_function("lumia_concat").unwrap();
+        let alloc = self.module.get_function("lumia_alloc_string").unwrap();
+
+        let mk_lit = |cg: &Self, s: &str, name: &str| {
+            let gv = cg.builder.build_global_string_ptr(s, name).unwrap();
+            cg.builder
+                .build_call(
+                    alloc,
+                    &[
+                        gv.as_pointer_value().into(),
+                        cg.i64_ty.const_int(s.len() as u64, false).into(),
+                    ],
+                    &format!("lit_{name}"),
+                )
+                .unwrap()
+                .try_as_basic_value()
+                .basic()
+                .unwrap()
+                .into_pointer_value()
+        };
+
+        let mut acc = mk_lit(self, "#", "hash");
+        let tag_s = self
+            .builder
+            .build_call(show_i, &[tag.into()], "show_tag")
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_pointer_value();
+        acc = self
+            .builder
+            .build_call(concat, &[acc.into(), tag_s.into()], "cat_tag")
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_pointer_value();
+        let lpar_s = mk_lit(self, "(", "lpar");
+        acc = self
+            .builder
+            .build_call(concat, &[acc.into(), lpar_s.into()], "cat_lpar")
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_pointer_value();
+        let comma_s = mk_lit(self, ", ", "comma");
+
+        for (fi, pty) in params.iter().enumerate() {
+            if fi > 0 {
+                acc = self
+                    .builder
+                    .build_call(concat, &[acc.into(), comma_s.into()], "cat_comma")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .basic()
+                    .unwrap()
+                    .into_pointer_value();
+            }
+            let slot = unsafe {
+                self.builder
+                    .build_gep(
+                        self.i64_ty,
+                        base,
+                        &[self.i64_ty.const_int((fi + 1) as u64, false)],
+                        "fld",
+                    )
+                    .unwrap()
+            };
+            let bits = self
+                .builder
+                .build_load(self.i64_ty, slot, "fldv")
+                .unwrap()
+                .into_int_value();
+            let field_s = match pty {
+                Type::Float => {
+                    let f = self
+                        .builder
+                        .build_bit_cast(bits, self.context.f64_type(), "fld_f")
+                        .unwrap()
+                        .into_float_value();
+                    self.builder
+                        .build_call(show_f, &[f.into()], "show_fld_f")
+                        .unwrap()
+                        .try_as_basic_value()
+                        .basic()
+                        .unwrap()
+                        .into_pointer_value()
+                }
+                Type::Bool => {
+                    let b = self
+                        .builder
+                        .build_int_truncate(bits, self.context.i8_type(), "fld_b")
+                        .unwrap();
+                    self.builder
+                        .build_call(show_b, &[b.into()], "show_fld_b")
+                        .unwrap()
+                        .try_as_basic_value()
+                        .basic()
+                        .unwrap()
+                        .into_pointer_value()
+                }
+                _ => self
+                    .builder
+                    .build_call(show_i, &[bits.into()], "show_fld")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .basic()
+                    .unwrap()
+                    .into_pointer_value(),
+            };
+            acc = self
+                .builder
+                .build_call(concat, &[acc.into(), field_s.into()], "cat_fld")
+                .unwrap()
+                .try_as_basic_value()
+                .basic()
+                .unwrap()
+                .into_pointer_value();
+        }
+
+        let rpar_s = mk_lit(self, ")", "rpar");
+        acc = self
+            .builder
+            .build_call(concat, &[acc.into(), rpar_s.into()], "cat_rpar")
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_pointer_value();
+        Ok(acc)
+    }
+
     fn type_may_heap(ty: &Type) -> bool {
         match ty {
             Type::String
@@ -1996,27 +2213,54 @@ impl<'ctx> Codegen<'ctx> {
                     BinOp::Div => self.emit_checked_div_rem(l, r, fv, false)?,
                     BinOp::Rem => self.emit_checked_div_rem(l, r, fv, true)?,
                     BinOp::Eq => {
-                        let f = self.module.get_function("lumia_eq").unwrap();
-                        let call = self
-                            .builder
-                            .build_call(f, &[l.into(), r.into()], "eq")
-                            .unwrap();
-                        call.try_as_basic_value()
-                            .basic()
-                            .unwrap()
-                            .into_int_value()
+                        if let Some(name) = Self::adt_method_name(&lt, &rt) {
+                            if let Some(eq) = self.emit_eq_override(&name, l, r)? {
+                                eq
+                            } else {
+                                let f = self.module.get_function("lumia_eq").unwrap();
+                                self.builder
+                                    .build_call(f, &[l.into(), r.into()], "eq")
+                                    .unwrap()
+                                    .try_as_basic_value()
+                                    .basic()
+                                    .unwrap()
+                                    .into_int_value()
+                            }
+                        } else {
+                            let f = self.module.get_function("lumia_eq").unwrap();
+                            self.builder
+                                .build_call(f, &[l.into(), r.into()], "eq")
+                                .unwrap()
+                                .try_as_basic_value()
+                                .basic()
+                                .unwrap()
+                                .into_int_value()
+                        }
                     }
                     BinOp::Ne => {
-                        let f = self.module.get_function("lumia_eq").unwrap();
-                        let call = self
-                            .builder
-                            .build_call(f, &[l.into(), r.into()], "eq")
-                            .unwrap();
-                        let eq = call
-                            .try_as_basic_value()
-                            .basic()
-                            .unwrap()
-                            .into_int_value();
+                        let eq = if let Some(name) = Self::adt_method_name(&lt, &rt) {
+                            if let Some(eq) = self.emit_eq_override(&name, l, r)? {
+                                eq
+                            } else {
+                                let f = self.module.get_function("lumia_eq").unwrap();
+                                self.builder
+                                    .build_call(f, &[l.into(), r.into()], "eq")
+                                    .unwrap()
+                                    .try_as_basic_value()
+                                    .basic()
+                                    .unwrap()
+                                    .into_int_value()
+                            }
+                        } else {
+                            let f = self.module.get_function("lumia_eq").unwrap();
+                            self.builder
+                                .build_call(f, &[l.into(), r.into()], "eq")
+                                .unwrap()
+                                .try_as_basic_value()
+                                .basic()
+                                .unwrap()
+                                .into_int_value()
+                        };
                         let z = self.i64_ty.const_int(0, false);
                         let c = self
                             .builder
@@ -2027,8 +2271,36 @@ impl<'ctx> Codegen<'ctx> {
                             .unwrap()
                     }
                     BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-                        // Structural Ord via runtime (String/Char); Int/Bool use signed bits.
-                        // Never SLT heap pointers — that is not language Ord.
+                        if let Some(name) = Self::adt_method_name(&lt, &rt) {
+                            if let Some(_) = self.functions.get(&format!("__Ord_{name}_less")) {
+                                // DESIGN less(self, other): a < b
+                                let (left, right) = match op {
+                                    BinOp::Lt | BinOp::Ge => (l, r),
+                                    BinOp::Gt | BinOp::Le => (r, l),
+                                    _ => unreachable!(),
+                                };
+                                let less = self
+                                    .emit_less_override(&name, left, right)?
+                                    .expect("Ord.less");
+                                let z = self.i64_ty.const_int(0, false);
+                                return Ok(match op {
+                                    BinOp::Lt | BinOp::Gt => less.into(),
+                                    BinOp::Le | BinOp::Ge => {
+                                        // a <= b  iff  !(b < a); a >= b iff !(a < b)
+                                        let c = self
+                                            .builder
+                                            .build_int_compare(IntPredicate::EQ, less, z, "nless")
+                                            .unwrap();
+                                        self.builder
+                                            .build_int_z_extend(c, self.i64_ty, "nlessz")
+                                            .unwrap()
+                                            .into()
+                                    }
+                                    _ => unreachable!(),
+                                });
+                            }
+                        }
+                        // Structural Ord via runtime (String/Char/ADT); never SLT pointers.
                         let f = self.module.get_function("lumia_cmp").unwrap();
                         let call = self
                             .builder
@@ -2329,8 +2601,18 @@ impl<'ctx> Codegen<'ctx> {
                                 .build_call(fun, &[b.into()], "println_bool")
                                 .unwrap();
                         }
-                        Type::Adt { name, .. } => {
-                            if let Some(ptr) = self.emit_show_override(&name, arg)? {
+                        Type::Adt { name, params } => {
+                            let ptr = if let Some(ptr) = self.emit_show_override(&name, arg)? {
+                                Some(ptr)
+                            } else if params
+                                .iter()
+                                .any(|p| matches!(p, Type::Float | Type::Bool))
+                            {
+                                Some(self.emit_typed_adt_show(arg, &params)?)
+                            } else {
+                                None
+                            };
+                            if let Some(ptr) = ptr {
                                 let len_f = self.module.get_function("lumia_str_len").unwrap();
                                 let len = self
                                     .builder
@@ -2669,9 +2951,14 @@ impl<'ctx> Codegen<'ctx> {
                                 .unwrap()
                                 .into_pointer_value()
                         }
-                        Type::Adt { name, .. } => {
+                        Type::Adt { name, params } => {
                             if let Some(ptr) = self.emit_show_override(&name, arg)? {
                                 ptr
+                            } else if params
+                                .iter()
+                                .any(|p| matches!(p, Type::Float | Type::Bool))
+                            {
+                                self.emit_typed_adt_show(arg, &params)?
                             } else {
                                 let i = self.coerce_i64(arg)?;
                                 let fun = self.module.get_function("lumia_show").unwrap();

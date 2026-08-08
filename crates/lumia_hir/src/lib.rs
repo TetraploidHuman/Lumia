@@ -160,6 +160,8 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
         ("Show".into(), vec![]),
     ]);
     let mut instances: HashSet<(String, String)> = HashSet::new();
+    // User-written `instance` pairs (defaults apply only here, not auto-derive).
+    let mut explicit_instances: HashSet<(String, String)> = HashSet::new();
     for item in &m.items {
         if let lumia_syntax::Item::Type(t) = item {
             match &t.kind {
@@ -254,6 +256,7 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
                     });
                 }
                 instances.insert((i.trait_name.clone(), i.type_name.clone()));
+                explicit_instances.insert((i.trait_name.clone(), i.type_name.clone()));
             }
             _ => {}
         }
@@ -324,10 +327,26 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
     for f in &ambiguous_product_fields {
         product_fields.remove(f);
     }
+    // trait name → (method name → default body)
+    let mut trait_defaults: HashMap<String, HashMap<String, lumia_syntax::ValItem>> =
+        HashMap::new();
+    for item in &m.items {
+        if let lumia_syntax::Item::Trait(t) = item {
+            let mut ms = HashMap::new();
+            for method in &t.methods {
+                ms.insert(method.name.clone(), method.clone());
+            }
+            if !ms.is_empty() {
+                trait_defaults.insert(t.name.clone(), ms);
+            }
+        }
+    }
+
     let module = with_ctors(ctors, || {
         with_products(product_map, product_fields, ambiguous_product_fields, || {
             let mut items = Vec::new();
             let mut show_methods = HashMap::new();
+            let mut lowered_methods: HashSet<String> = HashSet::new();
             for item in &m.items {
                 match item {
                     lumia_syntax::Item::Val(v) => {
@@ -339,6 +358,7 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
                             let mangled =
                                 format!("__{}_{}_{}", i.trait_name, i.type_name, method.name);
                             push_lowered_val(&mut items, method, &mangled);
+                            lowered_methods.insert(mangled.clone());
                             if i.trait_name == "Show" && method.name == "show" {
                                 show_methods.insert(i.type_name.clone(), mangled);
                             }
@@ -363,6 +383,24 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
                             foreign_sig: Some((param_tys, f.ret.clone())),
                             foreign_pure: f.is_pure,
                         }));
+                    }
+                }
+            }
+            // Fill missing methods on *explicit* instances from trait defaults.
+            // Auto-derived Eq/Hash/Show keep structural RT (no default override).
+            for (tr, ty) in &explicit_instances {
+                let Some(defaults) = trait_defaults.get(tr) else {
+                    continue;
+                };
+                for (method_name, default) in defaults {
+                    let mangled = format!("__{tr}_{ty}_{method_name}");
+                    if lowered_methods.contains(&mangled) {
+                        continue;
+                    }
+                    push_lowered_val(&mut items, default, &mangled);
+                    lowered_methods.insert(mangled.clone());
+                    if tr == "Show" && method_name == "show" {
+                        show_methods.insert(ty.clone(), mangled);
                     }
                 }
             }
