@@ -1,6 +1,6 @@
 //! Hindley-Milner style type inference + effect sets.
 
-use lumia_hir::{Builtin, Expr, Fun, Item, Module};
+use lumia_hir::{desugar_list_map_sequential, Builtin, Expr, Fun, Item, Module};
 use lumia_syntax::{BinOp, UnOp};
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
@@ -1536,8 +1536,10 @@ impl Infer {
                     Ok((Type::List(Box::new(elem)), self.union_eff(ve, ke)))
                 }
                 Builtin::ListParMap => {
+                    // FunRef-safe shape from lower; may be demoted after infer if
+                    // impure or non-scalar (see `finalize_auto_parallel`).
                     if args.len() != 2 {
-                        return Err(at(*span, "par map takes 2 arguments"));
+                        return Err(at(*span, "map takes 2 arguments"));
                     }
                     let (lt, le) = self.infer_expr(&args[0])?;
                     let (ft, fe) = self.infer_expr(&args[1])?;
@@ -1552,55 +1554,20 @@ impl Infer {
                             return Err(at(*span, format!("map: expected List, got {other:?}")));
                         }
                     };
-                    // Parallel workers use TLS heaps — require *concrete* scalar
-                    // Int/Bool/Float (reject open Vars that could later be heap types).
-                    let elem = self.prune(elem);
-                    match &elem {
-                        Type::Int | Type::Bool | Type::Float => {}
-                        other => {
-                            return Err(at(
-                                *span,
-                                format!(
-                                    "parallel map: element type must be Int/Bool/Float (got {other:?}); omit --parallel for heap maps"
-                                ),
-                            ));
-                        }
-                    }
                     let out = self.fresh();
-                    // Require a pure callback: concrete Io is rejected; open Vars
-                    // unify with Pure (stay flexible) then zonk unconstrained → Pure.
                     let cb_eff = match self.prune(ft.clone()) {
                         Type::Fun(_, _, e) => self.prune_eff(e),
                         _ => Effect::pure(),
                     };
-                    if cb_eff.has_io() {
-                        return Err(at(
-                            *span,
-                            "parallel map: callback must be pure (no I/O); omit --parallel for effectful maps",
-                        ));
-                    }
                     self.unify_at(
                         *span,
                         ft,
-                        Type::Fun(
-                            vec![elem],
-                            Box::new(out.clone()),
-                            Effect::pure(),
-                        ),
+                        Type::Fun(vec![elem], Box::new(out.clone()), cb_eff),
                     )?;
                     let out = self.prune(out);
-                    match &out {
-                        Type::Int | Type::Bool | Type::Float => {}
-                        other => {
-                            return Err(at(
-                                *span,
-                                format!(
-                                    "parallel map: result type must be Int/Bool/Float (got {other:?}); omit --parallel for heap maps"
-                                ),
-                            ));
-                        }
-                    }
-                    Ok((Type::List(Box::new(out)), self.union_eff(le, fe)))
+                    let eff = self.union_eff(fe, cb_eff);
+                    let eff = self.union_eff(le, eff);
+                    Ok((Type::List(Box::new(out)), eff))
                 }
                 Builtin::ListJoin => {
                     if args.len() != 2 {
@@ -2108,6 +2075,137 @@ pub fn infer_module_with_options(
     })
 }
 
+fn is_par_scalar(t: &Type) -> bool {
+    matches!(t, Type::Int | Type::Bool | Type::Float)
+}
+
+fn type_at_span(type_at: &[(lumia_syntax::Span, Type)], span: lumia_syntax::Span) -> Option<Type> {
+    type_at
+        .iter()
+        .rev()
+        .find(|(s, _)| *s == span)
+        .map(|(_, t)| t.clone())
+}
+
+fn list_par_map_eligible(list_ty: &Type, fun_ty: &Type) -> bool {
+    let elem = match list_ty {
+        Type::List(e) => e.as_ref(),
+        _ => return false,
+    };
+    if !is_par_scalar(elem) {
+        return false;
+    }
+    match fun_ty {
+        Type::Fun(params, out, eff) => {
+            if eff.has_io() || !is_par_scalar(out) {
+                return false;
+            }
+            params.first().is_none_or(is_par_scalar)
+        }
+        _ => false,
+    }
+}
+
+/// Keep or demote `ListParMap` after inference (DESIGN: transparent auto-parallel).
+///
+/// - `enabled`: demote when impure / non-scalar; keep when eligible.
+/// - `!enabled` (`--no-parallel`): demote every `ListParMap`.
+pub fn finalize_auto_parallel(typed: &mut TypedModule, enabled: bool) {
+    for item in &mut typed.module.items {
+        if let Item::Fun(f) = item {
+            finalize_par_maps_in_expr(&mut f.body, &typed.type_at, enabled);
+        } else if let Item::Val { body, .. } = item {
+            finalize_par_maps_in_expr(body, &typed.type_at, enabled);
+        }
+    }
+}
+
+fn finalize_par_maps_in_expr(
+    expr: &mut Expr,
+    type_at: &[(lumia_syntax::Span, Type)],
+    enabled: bool,
+) {
+    match expr {
+        Expr::BuiltinCall { name, args, span } => {
+            for a in args.iter_mut() {
+                finalize_par_maps_in_expr(a, type_at, enabled);
+            }
+            if matches!(name, Builtin::ListParMap) && args.len() == 2 {
+                let keep = enabled
+                    && type_at_span(type_at, expr_span(&args[0]))
+                        .zip(type_at_span(type_at, expr_span(&args[1])))
+                        .is_some_and(|(lt, ft)| list_par_map_eligible(&lt, &ft));
+                if !keep {
+                    let list = args[0].clone();
+                    let f = args[1].clone();
+                    let sp = *span;
+                    *expr = desugar_list_map_sequential(list, f, sp);
+                    finalize_par_maps_in_expr(expr, type_at, enabled);
+                }
+            }
+        }
+        Expr::AdtNew { args, .. } => {
+            for a in args {
+                finalize_par_maps_in_expr(a, type_at, enabled);
+            }
+        }
+        Expr::Let { value, body, .. } => {
+            finalize_par_maps_in_expr(value, type_at, enabled);
+            finalize_par_maps_in_expr(body, type_at, enabled);
+        }
+        Expr::Assign { value, .. } | Expr::Unary { expr: value, .. } => {
+            finalize_par_maps_in_expr(value, type_at, enabled);
+        }
+        Expr::Lambda { body, .. } => finalize_par_maps_in_expr(body, type_at, enabled),
+        Expr::Call { callee, args, .. } => {
+            finalize_par_maps_in_expr(callee, type_at, enabled);
+            for a in args {
+                finalize_par_maps_in_expr(a, type_at, enabled);
+            }
+        }
+        Expr::Binary { left, right, .. } => {
+            finalize_par_maps_in_expr(left, type_at, enabled);
+            finalize_par_maps_in_expr(right, type_at, enabled);
+        }
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            finalize_par_maps_in_expr(cond, type_at, enabled);
+            finalize_par_maps_in_expr(then_branch, type_at, enabled);
+            finalize_par_maps_in_expr(else_branch, type_at, enabled);
+        }
+        Expr::Loop {
+            cond,
+            body,
+            step,
+            ..
+        } => {
+            finalize_par_maps_in_expr(cond, type_at, enabled);
+            finalize_par_maps_in_expr(body, type_at, enabled);
+            if let Some(s) = step {
+                finalize_par_maps_in_expr(s, type_at, enabled);
+            }
+        }
+        Expr::Seq { stmts, .. } => {
+            for s in stmts {
+                finalize_par_maps_in_expr(s, type_at, enabled);
+            }
+        }
+        Expr::Int(..)
+        | Expr::Float(..)
+        | Expr::Bool(..)
+        | Expr::String(..)
+        | Expr::Char(..)
+        | Expr::Unit(..)
+        | Expr::Var(..)
+        | Expr::Break(_)
+        | Expr::Continue(_) => {}
+    }
+}
+
 /// Reject calling effectful functions from pure contexts (simplified whole-program check).
 pub fn check_effect_boundaries(typed: &TypedModule) -> Result<(), TypeError> {
     for item in &typed.module.items {
@@ -2532,9 +2630,55 @@ val main = {
         check_effect_boundaries(&typed).unwrap();
     }
 
+    fn contains_list_par_map(e: &Expr) -> bool {
+        match e {
+            Expr::BuiltinCall {
+                name: Builtin::ListParMap,
+                ..
+            } => true,
+            Expr::BuiltinCall { args, .. } | Expr::AdtNew { args, .. } => {
+                args.iter().any(contains_list_par_map)
+            }
+            Expr::Let { value, body, .. } => {
+                contains_list_par_map(value) || contains_list_par_map(body)
+            }
+            Expr::Assign { value, .. } | Expr::Unary { expr: value, .. } => {
+                contains_list_par_map(value)
+            }
+            Expr::Lambda { body, .. } => contains_list_par_map(body),
+            Expr::Call { callee, args, .. } => {
+                contains_list_par_map(callee) || args.iter().any(contains_list_par_map)
+            }
+            Expr::Binary { left, right, .. } => {
+                contains_list_par_map(left) || contains_list_par_map(right)
+            }
+            Expr::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                contains_list_par_map(cond)
+                    || contains_list_par_map(then_branch)
+                    || contains_list_par_map(else_branch)
+            }
+            Expr::Loop {
+                cond,
+                body,
+                step,
+                ..
+            } => {
+                contains_list_par_map(cond)
+                    || contains_list_par_map(body)
+                    || step.as_ref().is_some_and(|s| contains_list_par_map(s))
+            }
+            Expr::Seq { stmts, .. } => stmts.iter().any(contains_list_par_map),
+            _ => false,
+        }
+    }
+
     #[test]
-    fn parallel_map_rejects_io_callback() {
-        use lumia_hir::set_parallel_map;
+    fn parallel_map_io_demoted_to_sequential() {
         let src = r#"
 module ParIo
 import std.io.{println}
@@ -2547,14 +2691,57 @@ val main = {
 }
 "#;
         let ast = parse_module(src).unwrap();
-        set_parallel_map(true);
         let hir = lower_module(&ast).expect("lower");
-        set_parallel_map(false);
-        let err = infer_module(&hir).expect_err("IO callback must fail under --parallel");
-        let msg = err.to_string();
         assert!(
-            msg.contains("parallel map") && msg.contains("pure"),
-            "expected parallel purity error, got {msg}"
+            contains_list_par_map(&hir.items.iter().find_map(|i| match i {
+                Item::Fun(f) if f.is_main => Some(&f.body),
+                _ => None,
+            }).unwrap()),
+            "FunRef-safe map should lower to ListParMap candidate"
+        );
+        let mut typed = infer_module(&hir).expect("IO map must type-check");
+        finalize_auto_parallel(&mut typed, true);
+        let main_body = typed
+            .module
+            .items
+            .iter()
+            .find_map(|i| match i {
+                Item::Fun(f) if f.is_main => Some(&f.body),
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            !contains_list_par_map(main_body),
+            "impure map must be demoted after finalize_auto_parallel"
+        );
+        check_effect_boundaries(&typed).unwrap();
+    }
+
+    #[test]
+    fn parallel_map_pure_scalar_kept() {
+        let src = r#"
+module ParOk
+val double(x) = x * 2
+val main = {
+    listOf(1, 2, 3).map(double)
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let hir = lower_module(&ast).expect("lower");
+        let mut typed = infer_module(&hir).expect("infer");
+        finalize_auto_parallel(&mut typed, true);
+        let main_body = typed
+            .module
+            .items
+            .iter()
+            .find_map(|i| match i {
+                Item::Fun(f) if f.is_main => Some(&f.body),
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            contains_list_par_map(main_body),
+            "pure scalar map should stay ListParMap"
         );
     }
 

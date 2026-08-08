@@ -19,7 +19,7 @@
 ## 优化与表示（DESIGN / BUILD 下一里程碑）
 
 - [ ] **纯互递归 TCO**（DESIGN §4.4）：无 `musttail` / tailcc。
-- [ ] **自动并行**：设计为对用户透明；实现为 opt-in `--parallel`，且有捕获/标量限制。
+- [x] **自动并行**：默认对 FunRef-safe 纯标量 `List.map` 选 `ListParMap`；IO/非标量/捕获回退顺序；`--no-parallel` 关闭。捕获闭包与 `fold` 等仍待扩展。
 - [ ] **逃逸分析 → 栈分配 / 多表示 List·Map·Set**：大量仍为 HeapList；BUILD §7 下一里程碑。
 - [ ] **部分求值 / 完整 specialization**：opt 管道未齐。
 - [ ] **`std/` 可执行正文**：现为 `@exports` stub，体在编译器 builtins。
@@ -48,3 +48,4 @@
 - **Float Map/Set 键**：IEEE eq/hash 专用 type_id；与 `==` 对齐的 ±0 / NaN 行为。
 - **`foreign "C" pure`**：默认 IO；`pure` 需显式信任开关。
 - **`lumia doc`**：Markdown API 文档生成。
+- **自动并行默认开**：推断后保留/回退 `ListParMap`；`--no-parallel` 关闭。

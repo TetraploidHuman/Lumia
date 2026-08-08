@@ -937,74 +937,19 @@ fn e2e_use_path_dep() {
 
 #[test]
 fn e2e_par_map() {
-    let root = workspace_root();
-    let src = root.join("examples/par_map.lumia");
-    let exe = e2e_exe("par_map");
-    let status = Command::new(lumia_bin())
-        .current_dir(&root)
-        .args([
-            "build",
-            "--parallel",
-            src.to_str().unwrap(),
-            "-o",
-            exe.to_str().unwrap(),
-        ])
-        .status()
-        .expect("build par_map");
-    assert!(status.success(), "par_map build failed");
-    let output = Command::new(&exe).output().expect("run par_map");
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let got: Vec<&str> = stdout.lines().collect();
-    assert_eq!(got, ["200", "0", "398"]);
+    // Auto-parallel is on by default (no --parallel flag).
+    run_example("examples/par_map.lumia", &["200", "0", "398"]);
 }
 
 #[test]
 fn e2e_par_map_fn() {
-    let root = workspace_root();
-    let src = root.join("examples/par_map_fn.lumia");
-    let exe = e2e_exe("par_map_fn");
-    let status = Command::new(lumia_bin())
-        .current_dir(&root)
-        .args([
-            "build",
-            "--parallel",
-            src.to_str().unwrap(),
-            "-o",
-            exe.to_str().unwrap(),
-        ])
-        .status()
-        .expect("build par_map_fn");
-    assert!(status.success(), "par_map_fn build failed");
-    let output = Command::new(&exe).output().expect("run par_map_fn");
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let got: Vec<&str> = stdout.lines().collect();
-    assert_eq!(got, ["50", "0", "98"]);
+    run_example("examples/par_map_fn.lumia", &["50", "0", "98"]);
 }
 
 #[test]
 fn e2e_par_map_capture() {
-    let root = workspace_root();
-    let src = root.join("examples/par_map_capture.lumia");
-    let exe = e2e_exe("par_map_capture");
-    let status = Command::new(lumia_bin())
-        .current_dir(&root)
-        .args([
-            "build",
-            "--parallel",
-            src.to_str().unwrap(),
-            "-o",
-            exe.to_str().unwrap(),
-        ])
-        .status()
-        .expect("build par_map_capture");
-    assert!(status.success(), "par_map_capture build failed");
-    let output = Command::new(&exe).output().expect("run par_map_capture");
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let got: Vec<&str> = stdout.lines().collect();
-    assert_eq!(got, ["5", "10", "14"]);
+    // Capturing closure stays sequential; still correct under auto-parallel.
+    run_example("examples/par_map_capture.lumia", &["5", "10", "14"]);
 }
 
 #[test]
@@ -1178,35 +1123,18 @@ fn e2e_bad_struct_field_match_rejected() {
 }
 
 #[test]
-fn e2e_bad_par_map_io_rejected() {
+fn e2e_bad_par_map_io_demoted() {
+    // Effectful FunRef map is demoted to sequential — still type-checks.
     let root = workspace_root();
     let src = root.join("examples/bad_par_map_io.lumia");
     let out = Command::new(lumia_bin())
         .current_dir(&root)
-        .args(["check", "--parallel", src.to_str().unwrap()])
-        .output()
-        .expect("check bad_par_map_io");
-    // Without --parallel, effectful map is fine; with it, must reject.
-    assert!(
-        !out.status.success(),
-        "effectful callback under --parallel must fail"
-    );
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(
-        combined.contains("parallel map") || combined.contains("pure"),
-        "expected parallel purity error, got: {combined}"
-    );
-    let ok = Command::new(lumia_bin())
-        .current_dir(&root)
         .args(["check", src.to_str().unwrap()])
         .output()
-        .expect("check without --parallel");
+        .expect("check bad_par_map_io");
     assert!(
-        ok.status.success(),
-        "effectful map without --parallel must succeed"
+        out.status.success(),
+        "effectful map should demote, not fail: {:?}",
+        String::from_utf8_lossy(&out.stderr)
     );
 }

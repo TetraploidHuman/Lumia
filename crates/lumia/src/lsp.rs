@@ -12,7 +12,10 @@ use lumia_hir::lower_module;
 use lumia_syntax::{
     byte_to_line_col, format_module_src, line_starts, parse_module, stamp_module, BytePos, Span,
 };
-use lumia_ty::{check_effect_boundaries, infer_module_with_visibility, Type, TypedModule};
+use lumia_ty::{
+    check_effect_boundaries, finalize_auto_parallel, infer_module_with_visibility, Type,
+    TypedModule,
+};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
@@ -340,8 +343,9 @@ fn analyze_buffer(
         ov.insert(path.clone(), text.to_string());
         match load_program_with_overlays(&path, &ov).and_then(|loaded| {
             let hir = lower_module(&loaded.module).map_err(|e| anyhow::anyhow!(e.message))?;
-            let typed = infer_module_with_visibility(&hir, loaded.visibility.clone())
+            let mut typed = infer_module_with_visibility(&hir, loaded.visibility.clone())
                 .map_err(|e| anyhow::anyhow!("{}", e.message()))?;
+            finalize_auto_parallel(&mut typed, true);
             check_effect_boundaries(&typed).map_err(|e| anyhow::anyhow!("{}", e.message()))?;
             Ok((loaded, typed))
         }) {
@@ -389,12 +393,13 @@ fn check_source(text: &str) -> Result<TypedModule, (Span, String)> {
     let mut m = parse_module(text).map_err(|e| (e.span, e.message))?;
     stamp_module(&mut m, 0);
     let hir = lower_module(&m).map_err(|e| (e.span, e.message))?;
-    let typed = infer_module_with_visibility(&hir, Default::default()).map_err(|e| {
+    let mut typed = infer_module_with_visibility(&hir, Default::default()).map_err(|e| {
         (
             e.span().unwrap_or_default(),
             e.message().to_string(),
         )
     })?;
+    finalize_auto_parallel(&mut typed, true);
     check_effect_boundaries(&typed).map_err(|e| {
         (
             e.span().unwrap_or_default(),

@@ -12,19 +12,8 @@ thread_local! {
     static AMBIGUOUS_PRODUCT_FIELDS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static PRODUCTS: RefCell<HashMap<String, Vec<String>>> = RefCell::new(HashMap::new());
     static LOWER_ERR: RefCell<Option<LowerError>> = const { RefCell::new(None) };
-    /// When true, pure `List.map` lowers to `ListParMap` (auto-parallelism).
-    static PARALLEL_MAP: RefCell<bool> = const { RefCell::new(false) };
     /// Capture-free top-level function names (safe FunRef for parallel map).
     static TOPLEVEL_FUNS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
-}
-
-/// Enable/disable auto-parallel `map` lowering for the next `lower_module`.
-pub fn set_parallel_map(on: bool) {
-    PARALLEL_MAP.with(|p| *p.borrow_mut() = on);
-}
-
-fn parallel_map_enabled() -> bool {
-    PARALLEL_MAP.with(|p| *p.borrow())
 }
 
 /// Lowering / exhaustiveness failure with optional source span.
@@ -1018,7 +1007,7 @@ pub enum Builtin {
     ListSort,
     /// `xs.sortBy(f)` → permute by Ord keys (stable); runtime takes (values, keys).
     ListSortByKeys,
-    /// Auto-parallel `xs.map(f)` under `--parallel`.
+    /// Auto-parallel candidate `xs.map(f)` (FunRef-safe); demoted if impure/non-scalar.
     ListParMap,
     /// `assert(cond)` — abort if false (programming error).
     Assert,
@@ -2185,16 +2174,21 @@ fn lower_interp(parts: &[lumia_syntax::InterpPart], span: Span) -> Expr {
     acc
 }
 
-/// `xs.map(f)` → accumulate via append.
-/// With `--parallel`, emit `ListParMap` only when `f` has no captures (FunRef-safe).
+/// `xs.map(f)` → `ListParMap` when FunRef-safe; else sequential accumulate.
+/// Type checking may demote `ListParMap` back to sequential (IO / non-scalar).
 fn lower_list_map(list: Expr, f: Expr, span: Span) -> Expr {
-    if parallel_map_enabled() && map_callback_is_parallel_safe(&f) {
+    if map_callback_is_parallel_safe(&f) {
         return Expr::BuiltinCall {
             name: Builtin::ListParMap,
             args: vec![list, f],
             span,
         };
     }
+    desugar_list_map_sequential(list, f, span)
+}
+
+/// Sequential `map` loop (also used when auto-parallel demotes `ListParMap`).
+pub fn desugar_list_map_sequential(list: Expr, f: Expr, span: Span) -> Expr {
     match &f {
         Expr::Lambda { params, body, .. } if params.len() == 1 => {
             lower_list_map_inline(list, params[0].clone(), *body.clone(), span)

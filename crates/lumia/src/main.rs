@@ -9,11 +9,12 @@ use clap::{Parser, Subcommand};
 use crate::load::{load_program, LoadedProgram};
 use lumia_codegen::{compile_module, find_runtime_lib_prefer, CodegenOptions};
 use lumia_core::{format_module, lower_hir};
-use lumia_hir::{lower_module, set_parallel_map};
+use lumia_hir::lower_module;
 use lumia_opt::{optimize, OptOptions};
 use lumia_syntax::{format_diagnostic, parse_module, stamp_module, Span};
 use lumia_ty::{
-    check_effect_boundaries, infer_module_with_options, InferOptions, TypeError,
+    check_effect_boundaries, finalize_auto_parallel, infer_module_with_options, InferOptions,
+    TypeError,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -31,8 +32,11 @@ enum Commands {
     /// Type- and effect-check only
     Check {
         file: PathBuf,
-        /// Type-check as if `build --parallel` (reject effectful `List.map` callbacks).
-        #[arg(long)]
+        /// Disable auto-parallel `List.map` (default: on when safe).
+        #[arg(long = "no-parallel")]
+        no_parallel: bool,
+        /// Deprecated no-op (auto-parallel is on by default).
+        #[arg(long, hide = true)]
         parallel: bool,
         /// Trust `foreign "C" pure` (FFI purity is not verified).
         #[arg(long = "trust-foreign-pure")]
@@ -48,8 +52,11 @@ enum Commands {
         /// Disable transparent Memo `T_f` even in `--release` (for benchmarks).
         #[arg(long = "no-memo", alias = "no-memo-l2")]
         no_memo: bool,
-        /// Auto-parallel pure `List.map` (DESIGN §11.1).
-        #[arg(long)]
+        /// Disable auto-parallel `List.map` (default: on when safe; DESIGN §11.1).
+        #[arg(long = "no-parallel")]
+        no_parallel: bool,
+        /// Deprecated no-op (auto-parallel is on by default).
+        #[arg(long, hide = true)]
         parallel: bool,
         /// Trust `foreign "C" pure` (FFI purity is not verified).
         #[arg(long = "trust-foreign-pure")]
@@ -112,10 +119,11 @@ fn main() -> Result<()> {
     match cli.cmd {
         Commands::Check {
             file,
-            parallel,
+            no_parallel,
+            parallel: _,
             trust_foreign_pure,
         } => {
-            let _ = check_file(&file, parallel, trust_foreign_pure)?;
+            let _ = check_file(&file, !no_parallel, trust_foreign_pure)?;
             println!("ok");
             Ok(())
         }
@@ -124,7 +132,8 @@ fn main() -> Result<()> {
             output,
             release,
             no_memo,
-            parallel,
+            no_parallel,
+            parallel: _,
             trust_foreign_pure,
             link,
             show_ir,
@@ -145,7 +154,7 @@ fn main() -> Result<()> {
                 &out,
                 release,
                 !no_memo,
-                parallel,
+                !no_parallel,
                 trust_foreign_pure,
                 validated_link,
                 show_ir,
@@ -235,20 +244,19 @@ fn type_err(loaded: &LoadedProgram, e: TypeError) -> anyhow::Error {
 
 fn check_file(
     file: &Path,
-    parallel: bool,
+    auto_parallel: bool,
     trust_foreign_pure: bool,
 ) -> Result<(lumia_ty::TypedModule, LoadedProgram)> {
     let loaded = load_program(file)?;
-    set_parallel_map(parallel);
     let hir = lower_module(&loaded.module).map_err(|e| {
         diag_err(&loaded, e.span, "lower", &e.message)
     })?;
-    set_parallel_map(false);
     let opts = InferOptions {
         trust_foreign_pure: trust_foreign_pure || loaded.trust_foreign_pure,
     };
-    let typed = infer_module_with_options(&hir, loaded.visibility.clone(), opts)
+    let mut typed = infer_module_with_options(&hir, loaded.visibility.clone(), opts)
         .map_err(|e| type_err(&loaded, e))?;
+    finalize_auto_parallel(&mut typed, auto_parallel);
     check_effect_boundaries(&typed).map_err(|e| type_err(&loaded, e))?;
     Ok((typed, loaded))
 }
@@ -258,13 +266,13 @@ fn build_file(
     output: &Path,
     release: bool,
     memo_tf: bool,
-    parallel: bool,
+    auto_parallel: bool,
     trust_foreign_pure: bool,
     link_args: Vec<String>,
     show_ir: bool,
     emit_llvm: bool,
 ) -> Result<()> {
-    let (mut typed, loaded) = check_file(file, parallel, trust_foreign_pure)?;
+    let (mut typed, loaded) = check_file(file, auto_parallel, trust_foreign_pure)?;
     annotate_assert_messages(&mut typed.module, &loaded);
     let option_tags = option_ctor_tags(&typed.module.adts);
     let mut core = lower_hir(&typed.module, &typed.fun_types);
@@ -299,7 +307,8 @@ fn build_file(
             emit_ir: emit_llvm,
             option_some_tag: option_tags.0,
             option_none_tag: option_tags.1,
-            parallel,
+            // Parallel selection happens in `finalize_auto_parallel` before Core.
+            parallel: auto_parallel,
             link_args: link,
         },
     )?;
