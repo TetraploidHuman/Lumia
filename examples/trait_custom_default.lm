@@ -1,0 +1,20 @@
+module TraitCustomDefault
+
+import std.io.{println}
+
+type Box {
+    val n
+}
+
+trait Label {
+    val label = { self -> "default" }
+}
+
+/// Empty instance body → trait default method via UFCS.
+instance Label for Box {
+}
+
+val main = {
+    val b = Box { n = 1 }
+    println(b.label())
+}

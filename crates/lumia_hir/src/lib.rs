@@ -161,8 +161,6 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
         ("Num".into(), vec![]),
     ]);
     let mut instances: HashSet<(String, String)> = HashSet::new();
-    // User-written `instance` pairs (defaults apply only here, not auto-derive).
-    let mut explicit_instances: HashSet<(String, String)> = HashSet::new();
     for item in &m.items {
         if let lumia_syntax::Item::Type(t) = item {
             match &t.kind {
@@ -257,7 +255,6 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
                     });
                 }
                 instances.insert((i.trait_name.clone(), i.type_name.clone()));
-                explicit_instances.insert((i.trait_name.clone(), i.type_name.clone()));
             }
             _ => {}
         }
@@ -347,7 +344,23 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
         with_products(product_map, product_fields, ambiguous_product_fields, || {
             let mut items = Vec::new();
             let mut show_methods = HashMap::new();
+            // (type, method) → mangled `__Trait_Type_method` (may be multi-trait).
+            let mut trait_methods: HashMap<(String, String), Vec<String>> = HashMap::new();
             let mut lowered_methods: HashSet<String> = HashSet::new();
+            let note_method = |tr: &str,
+                                   ty: &str,
+                                   method: &str,
+                                   mangled: String,
+                                   show_methods: &mut HashMap<String, String>,
+                                   trait_methods: &mut HashMap<(String, String), Vec<String>>| {
+                trait_methods
+                    .entry((ty.to_string(), method.to_string()))
+                    .or_default()
+                    .push(mangled.clone());
+                if tr == "Show" && method == "show" {
+                    show_methods.insert(ty.to_string(), mangled);
+                }
+            };
             for item in &m.items {
                 match item {
                     lumia_syntax::Item::Val(v) => {
@@ -360,8 +373,34 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
                                 format!("__{}_{}_{}", i.trait_name, i.type_name, method.name);
                             push_lowered_val(&mut items, method, &mangled);
                             lowered_methods.insert(mangled.clone());
-                            if i.trait_name == "Show" && method.name == "show" {
-                                show_methods.insert(i.type_name.clone(), mangled);
+                            note_method(
+                                &i.trait_name,
+                                &i.type_name,
+                                &method.name,
+                                mangled,
+                                &mut show_methods,
+                                &mut trait_methods,
+                            );
+                        }
+                        // Fill defaults immediately so mangled funs precede later `main`
+                        // (println defaults open return vars to Int otherwise).
+                        if let Some(defaults) = trait_defaults.get(&i.trait_name) {
+                            for (method_name, default) in defaults {
+                                let mangled =
+                                    format!("__{}_{}_{}", i.trait_name, i.type_name, method_name);
+                                if lowered_methods.contains(&mangled) {
+                                    continue;
+                                }
+                                push_lowered_val(&mut items, default, &mangled);
+                                lowered_methods.insert(mangled.clone());
+                                note_method(
+                                    &i.trait_name,
+                                    &i.type_name,
+                                    method_name,
+                                    mangled,
+                                    &mut show_methods,
+                                    &mut trait_methods,
+                                );
                             }
                         }
                     }
@@ -387,24 +426,8 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
                     }
                 }
             }
-            // Fill missing methods on *explicit* instances from trait defaults.
-            // Auto-derived Eq/Hash/Show keep structural RT (no default override).
-            for (tr, ty) in &explicit_instances {
-                let Some(defaults) = trait_defaults.get(tr) else {
-                    continue;
-                };
-                for (method_name, default) in defaults {
-                    let mangled = format!("__{tr}_{ty}_{method_name}");
-                    if lowered_methods.contains(&mangled) {
-                        continue;
-                    }
-                    push_lowered_val(&mut items, default, &mangled);
-                    lowered_methods.insert(mangled.clone());
-                    if tr == "Show" && method_name == "show" {
-                        show_methods.insert(ty.clone(), mangled);
-                    }
-                }
-            }
+            // Defaults for explicit instances are filled when the Instance item is
+            // lowered (above). Auto-derived Eq/Hash/Show keep structural RT.
             Module {
                 name: m.name.clone(),
                 items,
@@ -412,6 +435,7 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
                 products,
                 instances,
                 show_methods,
+                trait_methods,
             }
         })
     });
@@ -970,6 +994,9 @@ pub struct Module {
     pub instances: HashSet<(String, String)>,
     /// Custom `Show.show` overrides: type name → mangled function name.
     pub show_methods: HashMap<String, String>,
+    /// Instance / default methods: `(type, method)` → mangled `__Trait_Type_method`.
+    /// Used for UFCS `x.method(...)` resolution (compile-time; DESIGN §6.2).
+    pub trait_methods: HashMap<(String, String), Vec<String>>,
 }
 
 #[derive(Debug, Clone)]

@@ -1,0 +1,19 @@
+module TcoListSum
+
+import std.io.{println}
+
+/// Pure List+Int self-recursion in tail position — must get TCO (heap param).
+/// Without musttail + root_pop, ~2e6 frames would overflow.
+val sumAt(xs, i, acc) = {
+    if i >= xs.len() {
+        acc
+    } else {
+        sumAt(xs, i + 1, acc + xs.get(i))
+    }
+}
+
+val main = {
+    val xs = range(0, 2000000)
+    // sum 0..1_999_999 = 1_999_999 * 2_000_000 / 2
+    println(sumAt(xs, 0, 0))
+}

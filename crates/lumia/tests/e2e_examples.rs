@@ -150,6 +150,12 @@ fn e2e_tco_sum() {
 }
 
 #[test]
+fn e2e_tco_list_sum() {
+    // Heap List param + musttail after root_pop; sum of range(0, 2e6) = 0..1999999.
+    run_example("examples/tco_list_sum.lm", &["1999999000000"]);
+}
+
+#[test]
 fn e2e_trait_ord() {
     // `instance Ord for Point` enables lexicographic `<`/`>` on products.
     run_example(
@@ -168,6 +174,17 @@ fn e2e_trait_show() {
 fn e2e_trait_show_method() {
     // UFCS `p.show()` → Show builtin / instance override.
     run_example("examples/trait_show_method.lm", &["Point", "Point"]);
+}
+
+#[test]
+fn e2e_trait_custom_method() {
+    // User trait UFCS → mangled `__ToInt_Point_toInt`.
+    run_example("examples/trait_custom_method.lm", &["7", "3"]);
+}
+
+#[test]
+fn e2e_trait_custom_default() {
+    run_example("examples/trait_custom_default.lm", &["default"]);
 }
 
 #[test]
@@ -256,6 +273,12 @@ fn e2e_poly_top_dbl() {
 #[test]
 fn e2e_poly_bool() {
     run_example("examples/poly_bool.lm", &["1", "true", "false"]);
+}
+
+#[test]
+fn e2e_poly_str() {
+    // String sites → `$String` clone; Bool site → `$Bool`; Int shared body.
+    run_example("examples/poly_str.lm", &["[hi]", "ok", "42", "true"]);
 }
 
 #[test]

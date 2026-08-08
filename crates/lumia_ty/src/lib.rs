@@ -264,6 +264,10 @@ struct Infer {
     num_instances: HashSet<String>,
     /// Type vars used in arithmetic — may only resolve to Int/Float (Num MVP).
     num_vars: HashSet<u32>,
+    /// `(type, method)` → mangled instance methods (from HIR).
+    trait_methods: HashMap<(String, String), Vec<String>>,
+    /// UFCS calls rewritten to mangled `__Trait_Type_method` (span of Call expr).
+    ufcs_rewrites: HashMap<lumia_syntax::Span, String>,
 }
 
 impl Infer {
@@ -323,6 +327,8 @@ impl Infer {
             ord_instances: HashSet::new(),
             num_instances: HashSet::new(),
             num_vars: HashSet::new(),
+            trait_methods: HashMap::new(),
+            ufcs_rewrites: HashMap::new(),
         }
     }
 
@@ -339,6 +345,70 @@ impl Infer {
     fn mark_num(&mut self, t: &Type) {
         if let Type::Var(v) = self.prune(t.clone()) {
             self.num_vars.insert(v);
+        }
+    }
+
+    /// Resolve unbound UFCS `method(recv, …)` via `trait_methods` when recv is a concrete ADT.
+    fn try_infer_trait_ufcs(
+        &mut self,
+        method: &str,
+        args: &[Expr],
+        span: lumia_syntax::Span,
+    ) -> Result<Option<(Type, Effect)>, TypeError> {
+        let mut aes = Effect::pure();
+        let (recv_ty, re) = self.infer_expr(&args[0])?;
+        aes = self.union_eff(aes, re);
+        let mut ats = vec![recv_ty.clone()];
+        for a in &args[1..] {
+            let (t, e) = self.infer_expr(a)?;
+            ats.push(t);
+            aes = self.union_eff(aes, e);
+        }
+        let Type::Adt { name: ty_name, .. } = self.prune(recv_ty) else {
+            return Ok(None);
+        };
+        let cands = self
+            .trait_methods
+            .get(&(ty_name.clone(), method.to_string()))
+            .cloned()
+            .unwrap_or_default();
+        match cands.as_slice() {
+            [] => Ok(None),
+            [mangled] => {
+                let ct = self.lookup(mangled).ok_or_else(|| {
+                    at(
+                        span,
+                        format!("trait method `{method}` for `{ty_name}` is not in scope"),
+                    )
+                })?;
+                let ret = self.fresh();
+                let call_eff = match self.prune(ct.clone()) {
+                    Type::Fun(_, _, e) => e,
+                    _ => self.fresh_eff(),
+                };
+                self.unify_at(
+                    span,
+                    ct,
+                    Type::Fun(ats, Box::new(ret.clone()), call_eff),
+                )?;
+                self.ufcs_rewrites.insert(span, mangled.clone());
+                let fun_eff = self.prune_eff(call_eff);
+                Ok(Some((self.prune(ret), self.union_eff(aes, fun_eff))))
+            }
+            many => {
+                let names: Vec<_> = many
+                    .iter()
+                    .filter_map(|m| m.strip_prefix("__").and_then(|s| s.split('_').next()))
+                    .collect();
+                Err(at(
+                    span,
+                    format!(
+                        "ambiguous trait method `{method}` for `{ty_name}` \
+                         (candidates: {}); qualify or rename",
+                        names.join(", ")
+                    ),
+                ))
+            }
         }
     }
 
@@ -1015,6 +1085,13 @@ impl Infer {
                             Type::Map(Box::new(self.prune(k)), Box::new(self.prune(v))),
                             aes,
                         ));
+                    }
+                    // UFCS trait method: unbound `method(recv, …)` → mangled instance fun.
+                    // Free top-level `method` wins when bound (checked below via lookup).
+                    if self.lookup(name).is_none() && !args.is_empty() {
+                        if let Some(result) = self.try_infer_trait_ufcs(name, args, *span)? {
+                            return Ok(result);
+                        }
                     }
                 }
                 let (ct, ce) = self.infer_expr(callee)?;
@@ -2157,6 +2234,7 @@ pub fn infer_module_with_options(
         .filter(|(tr, _)| tr == "Num")
         .map(|(_, ty)| ty.clone())
         .collect();
+    inf.trait_methods = module.trait_methods.clone();
     let mut fun_types = HashMap::new();
     let mut main_effect = Effect::pure();
 
@@ -2256,13 +2334,96 @@ pub fn infer_module_with_options(
         .map(|(sp, t)| (sp, inf.zonk_type(t)))
         .collect();
     let decls = std::mem::take(&mut inf.decls);
+    let ufcs_rewrites = std::mem::take(&mut inf.ufcs_rewrites);
+    let mut module = module.clone();
+    if !ufcs_rewrites.is_empty() {
+        apply_ufcs_rewrites(&mut module, &ufcs_rewrites);
+    }
     Ok(TypedModule {
-        module: module.clone(),
+        module,
         fun_types,
         main_effect,
         type_at,
         decls,
     })
+}
+
+/// Rewrite UFCS `method(recv,…)` callees to mangled `__Trait_Type_method`.
+fn apply_ufcs_rewrites(module: &mut Module, rewrites: &HashMap<lumia_syntax::Span, String>) {
+    for item in &mut module.items {
+        match item {
+            Item::Fun(f) => rewrite_ufcs_in_expr(&mut f.body, rewrites),
+            Item::Val { body, .. } => rewrite_ufcs_in_expr(body, rewrites),
+        }
+    }
+}
+
+fn rewrite_ufcs_in_expr(expr: &mut Expr, rewrites: &HashMap<lumia_syntax::Span, String>) {
+    match expr {
+        Expr::Call { callee, args, span } => {
+            for a in args.iter_mut() {
+                rewrite_ufcs_in_expr(a, rewrites);
+            }
+            if let Some(mangled) = rewrites.get(span) {
+                *callee = Box::new(Expr::Var(mangled.clone(), *span));
+            } else {
+                rewrite_ufcs_in_expr(callee, rewrites);
+            }
+        }
+        Expr::BuiltinCall { args, .. } | Expr::AdtNew { args, .. } => {
+            for a in args {
+                rewrite_ufcs_in_expr(a, rewrites);
+            }
+        }
+        Expr::Let { value, body, .. } => {
+            rewrite_ufcs_in_expr(value, rewrites);
+            rewrite_ufcs_in_expr(body, rewrites);
+        }
+        Expr::Assign { value, .. } | Expr::Unary { expr: value, .. } => {
+            rewrite_ufcs_in_expr(value, rewrites);
+        }
+        Expr::Lambda { body, .. } => rewrite_ufcs_in_expr(body, rewrites),
+        Expr::Binary { left, right, .. } => {
+            rewrite_ufcs_in_expr(left, rewrites);
+            rewrite_ufcs_in_expr(right, rewrites);
+        }
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            rewrite_ufcs_in_expr(cond, rewrites);
+            rewrite_ufcs_in_expr(then_branch, rewrites);
+            rewrite_ufcs_in_expr(else_branch, rewrites);
+        }
+        Expr::Loop {
+            cond,
+            body,
+            step,
+            ..
+        } => {
+            rewrite_ufcs_in_expr(cond, rewrites);
+            rewrite_ufcs_in_expr(body, rewrites);
+            if let Some(s) = step {
+                rewrite_ufcs_in_expr(s, rewrites);
+            }
+        }
+        Expr::Seq { stmts, .. } => {
+            for s in stmts {
+                rewrite_ufcs_in_expr(s, rewrites);
+            }
+        }
+        Expr::Var(_, _)
+        | Expr::Int(_, _)
+        | Expr::Float(_, _)
+        | Expr::Bool(_, _)
+        | Expr::String(_, _)
+        | Expr::Char(_, _)
+        | Expr::Unit(_)
+        | Expr::Break(_)
+        | Expr::Continue(_) => {}
+    }
 }
 
 fn is_par_scalar(t: &Type) -> bool {

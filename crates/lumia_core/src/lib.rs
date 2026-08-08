@@ -338,6 +338,8 @@ pub fn lower_hir(module: &HirModule, fun_types: &HashMap<String, Type>) -> CoreM
 enum MonoKind {
     Float,
     Bool,
+    /// Non-scalar heap String (same i64 ABI as Int; dedicated body for correct ret_ty).
+    String,
 }
 
 impl MonoKind {
@@ -345,17 +347,20 @@ impl MonoKind {
         match self {
             MonoKind::Float => "$Float",
             MonoKind::Bool => "$Bool",
+            MonoKind::String => "$String",
         }
     }
     fn ground(self) -> Type {
         match self {
             MonoKind::Float => Type::Float,
             MonoKind::Bool => Type::Bool,
+            MonoKind::String => Type::String,
         }
     }
 }
 
-/// Clone named / lifted funs for Float/Bool call sites (BUILD monomorphization MVP).
+/// Clone named / lifted funs for Float/Bool/String call sites (BUILD monomorphization).
+/// Multi-body: one clone per `(name, MonoKind)` so Int/Float/Bool/String sites coexist.
 fn specialize_mono_calls(module: &mut CoreModule) {
     let mut needed: HashSet<(String, MonoKind)> = HashSet::new();
     for fun in &module.functions {
@@ -383,11 +388,13 @@ fn specialize_mono_calls(module: &mut CoreModule) {
             continue;
         }
         let ground = kind.ground();
-        if orig.param_tys.iter().all(|t| *t == ground) {
+        if orig.param_tys.iter().all(|t| *t == ground)
+            && orig.ret_ty == ground
+        {
             continue;
         }
-        // Skip clearly non-scalar returns (e.g. String identity).
-        if matches!(orig.ret_ty, Type::String | Type::Char) {
+        // Char remains on the shared heap-sentinel body for now.
+        if matches!(orig.ret_ty, Type::Char) && !matches!(kind, MonoKind::String) {
             continue;
         }
         let new_name = format!("{name}{}", kind.suffix());
@@ -495,6 +502,11 @@ fn note_mono_call(
         .all(|a| matches!(local_tys.get(&a.0), Some(Type::Bool)))
     {
         MonoKind::Bool
+    } else if args
+        .iter()
+        .all(|a| matches!(local_tys.get(&a.0), Some(Type::String)))
+    {
+        MonoKind::String
     } else {
         return;
     };
@@ -580,6 +592,11 @@ fn rewrite_mono_value(
                 .all(|a| matches!(local_tys.get(&a.0), Some(Type::Bool)))
             {
                 Some(MonoKind::Bool)
+            } else if args
+                .iter()
+                .all(|a| matches!(local_tys.get(&a.0), Some(Type::String)))
+            {
+                Some(MonoKind::String)
             } else {
                 None
             };
@@ -621,9 +638,13 @@ fn mono_value_ty_rewrite(
                 Type::Float
             } else if fun.ends_with("$Bool") {
                 Type::Bool
+            } else if fun.ends_with("$String") {
+                Type::String
             } else if renames.values().any(|n| n == fun) {
                 if fun.contains("$Float") {
                     Type::Float
+                } else if fun.contains("$String") {
+                    Type::String
                 } else {
                     Type::Bool
                 }

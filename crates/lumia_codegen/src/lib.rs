@@ -1749,27 +1749,30 @@ impl<'ctx> Codegen<'ctx> {
             }
             match op {
                 Op::Let { local, value, .. } => {
-                    // Pure Int self/mutual recursion in tail position → musttail (DESIGN §4.4).
+                    // Pure self/mutual recursion in tail position → musttail (DESIGN §4.4).
+                    // Pop shadow-stack roots first so heap-param frames can musttail.
                     let is_block_tail = block.result == Some(*local)
                         && matches!(
                             block.ops.last(),
                             Some(Op::Let { local: last, .. }) if last == local
                         );
-                    if !self.tco_peers.is_empty() && self.root_depth == 0 && is_block_tail {
+                    if !self.tco_peers.is_empty() && is_block_tail {
                         match value {
                             Value::Call { fun, args } => {
-                                if self.tco_peers.contains(fun)
-                                    && self.emit_musttail_call(fun, args)?
-                                {
-                                    return Ok(None);
+                                if self.tco_peers.contains(fun) {
+                                    self.root_pop_to(0);
+                                    if self.emit_musttail_call(fun, args)? {
+                                        return Ok(None);
+                                    }
                                 }
                             }
                             Value::IndirectCall { callee, args } => {
                                 if let Some(fun) = self.funref_locals.get(&callee.0).cloned() {
-                                    if self.tco_peers.contains(&fun)
-                                        && self.emit_musttail_call(&fun, args)?
-                                    {
-                                        return Ok(None);
+                                    if self.tco_peers.contains(&fun) {
+                                        self.root_pop_to(0);
+                                        if self.emit_musttail_call(&fun, args)? {
+                                            return Ok(None);
+                                        }
                                     }
                                 }
                             }
@@ -4120,10 +4123,17 @@ impl<'ctx> Codegen<'ctx> {
     }
 }
 
-/// Pure Int functions that form an SCC may musttail to any peer (DESIGN §4.4).
-fn tco_scalar_ty(t: &Type) -> bool {
-    // Open `Var` stays after top-level Num poly generalize (body ABI is still i64).
-    matches!(t, Type::Int | Type::Bool | Type::Float | Type::Var(_))
+/// Types allowed on pure TCO SCCs (DESIGN §4.4). Heap params OK: entry re-roots;
+/// callers `root_pop_to(0)` immediately before musttail. Closures stay out.
+fn tco_eligible_ty(t: &Type) -> bool {
+    match t {
+        Type::Int | Type::Bool | Type::Float | Type::Var(_) => true,
+        Type::String | Type::Char | Type::Unit => true,
+        Type::List(_) | Type::Set(_) | Type::Map(_, _) | Type::Adt { .. } | Type::Tuple(_) => {
+            true
+        }
+        Type::Fun(_, _, _) => false,
+    }
 }
 
 fn compute_tco_sccs(core: &CoreModule) -> HashMap<String, HashSet<String>> {
@@ -4134,8 +4144,8 @@ fn compute_tco_sccs(core: &CoreModule) -> HashMap<String, HashSet<String>> {
             f.memo.is_none()
                 && f.external.is_none()
                 && !f.effect.has_io()
-                && tco_scalar_ty(&f.ret_ty)
-                && f.param_tys.iter().all(tco_scalar_ty)
+                && tco_eligible_ty(&f.ret_ty)
+                && f.param_tys.iter().all(tco_eligible_ty)
         })
         .map(|f| f.name.clone())
         .collect();
