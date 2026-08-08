@@ -981,3 +981,58 @@ fn e2e_bad_ok_arity_rejected() {
         "expected arity error, got: {combined}"
     );
 }
+
+#[test]
+fn e2e_bad_struct_field_match_rejected() {
+    let root = workspace_root();
+    let src = root.join("examples/bad_struct_field_match.lumia");
+    let out = Command::new(lumia_bin())
+        .current_dir(&root)
+        .args(["check", src.to_str().unwrap()])
+        .output()
+        .expect("check bad_struct_field_match");
+    assert!(!out.status.success(), "unknown struct field in pattern must fail");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        combined.contains("unknown field") || combined.contains('z'),
+        "expected unknown-field diagnostic, got: {combined}"
+    );
+}
+
+#[test]
+fn e2e_bad_par_map_io_rejected() {
+    let root = workspace_root();
+    let src = root.join("examples/bad_par_map_io.lumia");
+    let out = Command::new(lumia_bin())
+        .current_dir(&root)
+        .args(["check", "--parallel", src.to_str().unwrap()])
+        .output()
+        .expect("check bad_par_map_io");
+    // Without --parallel, effectful map is fine; with it, must reject.
+    assert!(
+        !out.status.success(),
+        "effectful callback under --parallel must fail"
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        combined.contains("parallel map") || combined.contains("pure"),
+        "expected parallel purity error, got: {combined}"
+    );
+    let ok = Command::new(lumia_bin())
+        .current_dir(&root)
+        .args(["check", src.to_str().unwrap()])
+        .output()
+        .expect("check without --parallel");
+    assert!(
+        ok.status.success(),
+        "effectful map without --parallel must succeed"
+    );
+}

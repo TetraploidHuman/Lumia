@@ -1,0 +1,12 @@
+module BadParMapIo
+
+import std.io.{println}
+
+val boom(x) = {
+    println(x + 0)
+    x + 1
+}
+
+val main = {
+    listOf(1, 2, 3).map(boom)
+}

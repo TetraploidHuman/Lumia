@@ -26,7 +26,12 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Type- and effect-check only
-    Check { file: PathBuf },
+    Check {
+        file: PathBuf,
+        /// Type-check as if `build --parallel` (reject effectful `List.map` callbacks).
+        #[arg(long)]
+        parallel: bool,
+    },
     /// Compile to a native executable
     Build {
         file: PathBuf,
@@ -88,8 +93,8 @@ enum PkgCmd {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
-        Commands::Check { file } => {
-            let _ = check_file(&file, false)?;
+        Commands::Check { file, parallel } => {
+            let _ = check_file(&file, parallel)?;
             println!("ok");
             Ok(())
         }
