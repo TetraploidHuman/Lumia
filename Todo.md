@@ -17,7 +17,7 @@
 - [ ] **`foreign "C" pure` 荣誉系统**：效应检查信任注解；撒谎的 `pure` 可把 C 副作用带进纯上下文。opts 已隔离 external，但效应边界仍信任标注。需 `unsafe`/显式信任开关或默认 IO。
 - [ ] **stdin 超大输入**：`lumia_rt` 在约 64MiB 后 `abort`，非可恢复错误。
 - [ ] **CLI `--link`**：绝对 `-L`/`.a` 故意放行（本机链接）；对不可信树等同原生 RCE 面，文档/沙箱策略待定。
-- [ ] **`extern "C"` 其余 `panic!`**：`trap_div0` / `trap_overflow` / `match_fail` / 含 NUL 的 cstr 已改 `abort`；运行时大量其他 `extern "C"` 路径仍 `panic!`，跨 FFI unwind 会二次 abort。宜统一为 `trap_abort`（或 `eprintln`+`abort`）。
+- [x] **`extern "C"` 其余 `panic!`**：已统一经 `trap_abort`（非 test 构建 abort；`cfg(test)` 下仍 panic 以便单测）。
 
 ## 优化与表示（DESIGN / BUILD 下一里程碑）
 
@@ -44,4 +44,5 @@
 - release 链接落到 debug `lumia_rt` 时告警。
 - **`lumia_trap_*` / `match_fail` / NUL cstr**：`extern "C"` 边界用 abort，避免 panic unwind 二次崩溃。
 - **空 match / 仅有守卫臂**：穷尽性检查拒绝（不再误放行）。
+- **运行时 `trap_abort`**：致命错误统一入口，避免跨 `extern "C"` unwind。
 - **常量模式**：`true`/`false`、`Char`、`String`、`Float`、负数字面量（含 `-1` / `-1.5`）；Bool 双臂穷尽。
