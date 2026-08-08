@@ -343,8 +343,9 @@ pub extern "C" fn lumia_read_stdin() -> *mut u8 {
             Err(_) => break,
         };
         if buf.len().saturating_add(n) > MAX_STDIN_BYTES {
-            eprintln!("lumia: stdin exceeds {MAX_STDIN_BYTES} bytes");
-            std::process::abort();
+            trap_abort(&format!(
+                "lumia: stdin exceeds {MAX_STDIN_BYTES} bytes (soft cap; use smaller input)"
+            ));
         }
         buf.extend_from_slice(&chunk[..n]);
     }
