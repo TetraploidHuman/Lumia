@@ -150,6 +150,15 @@ fn e2e_tco_sum() {
 }
 
 #[test]
+fn e2e_trait_ord() {
+    // `instance Ord for Point` enables lexicographic `<`/`>` on products.
+    run_example(
+        "examples/trait_ord.lumia",
+        &["true", "true", "true", "true", "true"],
+    );
+}
+
+#[test]
 fn e2e_list_for() {
     run_example("examples/list_for.lumia", &["60"]);
 }

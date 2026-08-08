@@ -21,6 +21,8 @@ fn item_file_id(it: &Item) -> u32 {
         Item::Val(v) => v.span.file,
         Item::Type(t) => t.span.file,
         Item::Foreign(f) => f.span.file,
+        Item::Trait(t) => t.span.file,
+        Item::Instance(i) => i.span.file,
     }
 }
 
@@ -718,7 +720,7 @@ fn rewrite_builtin_alias_idents(m: &mut Module, aliases: &HashMap<String, String
         }
         match it {
             Item::Val(v) => rewrite_expr_aliases(&mut v.body, aliases),
-            Item::Type(_) | Item::Foreign(_) => {}
+            Item::Type(_) | Item::Foreign(_) | Item::Trait(_) | Item::Instance(_) => {}
         }
     }
 }

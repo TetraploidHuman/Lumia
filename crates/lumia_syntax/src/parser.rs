@@ -258,16 +258,66 @@ impl<'a> Parser<'a> {
             let mut t = self.parse_type_item()?;
             t.is_priv = is_priv;
             Ok(Item::Type(t))
-        } else if matches!(
-            self.cur.kind,
-            TokenKind::Trait | TokenKind::Instance | TokenKind::Requires
-        ) {
-            Err(self.error(
-                "`trait` / `instance` / `requires` are reserved but not implemented yet (DESIGN §3.6 / §8.2)",
-            ))
+        } else if self.at(&TokenKind::Trait) {
+            if is_priv {
+                return Err(self.error("`priv trait` is not supported"));
+            }
+            self.parse_trait_item()
+        } else if self.at(&TokenKind::Instance) {
+            if is_priv {
+                return Err(self.error("`priv instance` is not supported"));
+            }
+            self.parse_instance_item()
+        } else if self.at(&TokenKind::Requires) {
+            Err(self.error("`requires` is only valid after a trait name"))
         } else {
-            Err(self.error("expected `val`, `type`, or `foreign` item"))
+            Err(self.error("expected `val`, `type`, `foreign`, `trait`, or `instance` item"))
         }
+    }
+
+    /// `trait Name [requires A, B] { }` — empty body MVP (DESIGN §3.6).
+    fn parse_trait_item(&mut self) -> Result<Item, ParseError> {
+        let start = self.bump().span; // trait
+        let (name, _) = self.expect_ident()?;
+        let mut requires = vec![];
+        if self.at(&TokenKind::Requires) {
+            self.bump();
+            loop {
+                let (r, _) = self.expect_ident()?;
+                requires.push(r);
+                if self.at(&TokenKind::Comma) {
+                    self.bump();
+                    continue;
+                }
+                break;
+            }
+        }
+        self.expect(TokenKind::LBrace)?;
+        // MVP: no method bodies yet.
+        let end = self.expect(TokenKind::RBrace)?;
+        Ok(Item::Trait(crate::TraitItem {
+            name,
+            requires,
+            span: start.merge(end.span),
+        }))
+    }
+
+    /// `instance Trait for Type { }` — empty body MVP.
+    fn parse_instance_item(&mut self) -> Result<Item, ParseError> {
+        let start = self.bump().span; // instance
+        let (trait_name, _) = self.expect_ident()?;
+        if !self.at(&TokenKind::For) {
+            return Err(self.error("expected `for` after trait name in instance"));
+        }
+        self.bump(); // for
+        let (type_name, _) = self.expect_ident()?;
+        self.expect(TokenKind::LBrace)?;
+        let end = self.expect(TokenKind::RBrace)?;
+        Ok(Item::Instance(crate::InstanceItem {
+            trait_name,
+            type_name,
+            span: start.merge(end.span),
+        }))
     }
 
     /// `foreign "C" [pure] fn name(x: Int, y: Int) -> Int`

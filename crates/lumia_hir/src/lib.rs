@@ -152,6 +152,14 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
     let mut product_map = HashMap::new();
     let mut product_fields = HashMap::new();
     let mut ambiguous_product_fields: HashSet<String> = HashSet::new();
+    // Builtin trait prerequisites (DESIGN §3.6); user `trait` decls may extend.
+    let mut trait_requires: HashMap<String, Vec<String>> = HashMap::from([
+        ("Ord".into(), vec!["Eq".into()]),
+        ("Eq".into(), vec![]),
+        ("Hash".into(), vec![]),
+        ("Show".into(), vec![]),
+    ]);
+    let mut instances: HashSet<(String, String)> = HashSet::new();
     for item in &m.items {
         if let lumia_syntax::Item::Type(t) = item {
             match &t.kind {
@@ -218,6 +226,64 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
         "Result",
         &[("Ok", 1), ("Err", 1)],
     );
+
+    for item in &m.items {
+        match item {
+            lumia_syntax::Item::Trait(t) => {
+                trait_requires.insert(t.name.clone(), t.requires.clone());
+            }
+            lumia_syntax::Item::Instance(i) => {
+                let known_type = product_map.contains_key(&i.type_name)
+                    || adts.iter().any(|a| a.name == i.type_name);
+                if !known_type {
+                    return Err(LowerError {
+                        message: format!(
+                            "instance {} for {}: unknown type `{}`",
+                            i.trait_name, i.type_name, i.type_name
+                        ),
+                        span: i.span,
+                    });
+                }
+                if !trait_requires.contains_key(&i.trait_name) {
+                    return Err(LowerError {
+                        message: format!(
+                            "instance for unknown trait `{}` (declare `trait {} {{ }}` first)",
+                            i.trait_name, i.trait_name
+                        ),
+                        span: i.span,
+                    });
+                }
+                instances.insert((i.trait_name.clone(), i.type_name.clone()));
+            }
+            _ => {}
+        }
+    }
+    for (tr, ty) in &instances {
+        if let Some(reqs) = trait_requires.get(tr) {
+            for req in reqs {
+                if !instances.contains(&(req.clone(), ty.clone())) {
+                    let span = m
+                        .items
+                        .iter()
+                        .find_map(|it| match it {
+                            lumia_syntax::Item::Instance(i)
+                                if i.trait_name == *tr && i.type_name == *ty =>
+                            {
+                                Some(i.span)
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or_else(lumia_syntax::Span::dummy);
+                    return Err(LowerError {
+                        message: format!(
+                            "`instance {tr} for {ty}` requires `instance {req} for {ty}`"
+                        ),
+                        span,
+                    });
+                }
+            }
+        }
+    }
 
     check_module_matches(m, &ctors, &adts, &product_map)?;
 
@@ -298,7 +364,9 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
                             }
                         }
                     }
-                    lumia_syntax::Item::Type(_) => {}
+                    lumia_syntax::Item::Type(_)
+                    | lumia_syntax::Item::Trait(_)
+                    | lumia_syntax::Item::Instance(_) => {}
                     lumia_syntax::Item::Foreign(f) => {
                         if f.abi != "C" {
                             set_lower_err(
@@ -326,6 +394,7 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
                 items,
                 adts,
                 products,
+                instances,
             }
         })
     });
@@ -832,6 +901,8 @@ pub struct Module {
     pub adts: Vec<AdtDef>,
     /// Product types declared in this module.
     pub products: Vec<ProductDef>,
+    /// `(trait, type)` pairs from `instance Trait for Type { }` (MVP: empty bodies).
+    pub instances: HashSet<(String, String)>,
 }
 
 #[derive(Debug, Clone)]

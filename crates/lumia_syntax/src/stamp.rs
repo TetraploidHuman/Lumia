@@ -26,6 +26,12 @@ fn stamp_item(it: &mut Item, file: u32) {
         Item::Foreign(f) => {
             f.span = f.span.with_file(file);
         }
+        Item::Trait(t) => {
+            t.span = t.span.with_file(file);
+        }
+        Item::Instance(i) => {
+            i.span = i.span.with_file(file);
+        }
     }
 }
 

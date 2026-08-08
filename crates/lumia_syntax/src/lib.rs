@@ -81,6 +81,24 @@ pub enum Item {
     Type(TypeItem),
     /// `foreign "C" fn name(x: Int) -> Int`
     Foreign(ForeignItem),
+    /// `trait Eq { }` / `trait Ord requires Eq { }` (bodies empty in MVP).
+    Trait(TraitItem),
+    /// `instance Eq for Point { }` (bodies empty in MVP).
+    Instance(InstanceItem),
+}
+
+#[derive(Debug, Clone)]
+pub struct TraitItem {
+    pub name: String,
+    pub requires: Vec<String>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct InstanceItem {
+    pub trait_name: String,
+    pub type_name: String,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]

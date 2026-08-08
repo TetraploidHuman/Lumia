@@ -123,6 +123,22 @@ pub fn format_module_src(m: &Module) -> String {
                 out.push_str(&f.ret);
                 out.push('\n');
             }
+            Item::Trait(t) => {
+                out.push_str("trait ");
+                out.push_str(&t.name);
+                if !t.requires.is_empty() {
+                    out.push_str(" requires ");
+                    out.push_str(&t.requires.join(", "));
+                }
+                out.push_str(" {\n}\n");
+            }
+            Item::Instance(i) => {
+                out.push_str("instance ");
+                out.push_str(&i.trait_name);
+                out.push_str(" for ");
+                out.push_str(&i.type_name);
+                out.push_str(" {\n}\n");
+            }
         }
     }
     if !out.ends_with('\n') {

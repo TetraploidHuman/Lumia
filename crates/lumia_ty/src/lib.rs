@@ -253,6 +253,8 @@ struct Infer {
     vis: NameVisibility,
     /// File id of the function/val body currently being inferred.
     current_file: u32,
+    /// Type names with `instance Ord for T` (MVP type-class wiring).
+    ord_instances: HashSet<String>,
 }
 
 impl Infer {
@@ -309,6 +311,17 @@ impl Infer {
             decls: HashMap::new(),
             vis,
             current_file: 0,
+            ord_instances: HashSet::new(),
+        }
+    }
+
+    fn is_ord(&self, t: &Type) -> bool {
+        match t {
+            Type::Int | Type::Float | Type::Bool | Type::String | Type::Char | Type::Var(_) => {
+                true
+            }
+            Type::Adt { name, .. } => self.ord_instances.contains(name),
+            _ => false,
         }
     }
 
@@ -1783,23 +1796,18 @@ impl Infer {
                         Ok((Type::Bool, eff))
                     }
                     BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-                        // DESIGN Ord: Int/Float/Bool/String/Char until type classes land.
-                        // Rejecting List/Map/ADT/… avoids pointer-bit compares at runtime.
+                        // DESIGN Ord: scalars always; ADT/product when `instance Ord for T`.
                         self.unify_at(*span, lt.clone(), rt.clone())?;
                         let t = self.prune(lt);
-                        match &t {
-                            Type::Int
-                            | Type::Float
-                            | Type::Bool
-                            | Type::String
-                            | Type::Char
-                            | Type::Var(_) => Ok((Type::Bool, eff)),
-                            other => Err(at(
+                        if self.is_ord(&t) {
+                            Ok((Type::Bool, eff))
+                        } else {
+                            Err(at(
                                 *span,
                                 format!(
-                                    "`<`/`<=`/`>`/`>=` need Ord (Int, Float, Bool, String, or Char), got {other}"
+                                    "`<`/`<=`/`>`/`>=` need Ord (scalars or `instance Ord for T`), got {t}"
                                 ),
-                            )),
+                            ))
                         }
                     }
                     BinOp::And | BinOp::Or => {
@@ -1983,6 +1991,12 @@ pub fn infer_module_with_options(
     opts: InferOptions,
 ) -> Result<TypedModule, TypeError> {
     let mut inf = Infer::new(vis);
+    inf.ord_instances = module
+        .instances
+        .iter()
+        .filter(|(tr, _)| tr == "Ord")
+        .map(|(_, ty)| ty.clone())
+        .collect();
     let mut fun_types = HashMap::new();
     let mut main_effect = Effect::pure();
 
@@ -2466,6 +2480,37 @@ val main = {
             "unexpected: {}",
             err.message()
         );
+    }
+
+    #[test]
+    fn ord_instance_allows_product_compare() {
+        let src = r#"
+module M
+type Point { val x val y }
+trait Eq { }
+trait Ord requires Eq { }
+instance Eq for Point { }
+instance Ord for Point { }
+val main = {
+    Point { x = 1, y = 2 } < Point { x = 1, y = 3 }
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let hir = lower_module(&ast).expect("lower");
+        infer_module(&hir).expect("Ord instance");
+    }
+
+    #[test]
+    fn ord_instance_requires_eq() {
+        let src = r#"
+module M
+type Point { val x val y }
+instance Ord for Point { }
+val main = { 0 }
+"#;
+        let ast = parse_module(src).unwrap();
+        let err = lower_module(&ast).expect_err("Ord needs Eq");
+        assert!(err.message.contains("requires") || err.message.contains("Eq"), "{err}");
     }
 
     #[test]

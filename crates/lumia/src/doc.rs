@@ -65,6 +65,7 @@ fn render_module(src: &str, module: &Module, path: &Path) -> String {
             Item::Type(t) if !t.is_priv => types.push(t),
             Item::Val(v) if !v.is_priv => vals.push(v),
             Item::Foreign(f) => foreigns.push(f),
+            Item::Trait(_) | Item::Instance(_) => {}
             _ => {}
         }
     }

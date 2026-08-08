@@ -1190,7 +1190,26 @@ fn lumia_ord_cmp(a: i64, b: i64) -> std::cmp::Ordering {
                     let cb = *(pb as *const i64);
                     ca.cmp(&cb)
                 }
-                _ => trap_abort(&format!("lumia: type_id={ta} is not Ord (use Int/Float/Bool/String/Char)")),
+                TYPE_ADT => {
+                    // Lexicographic: tag then fields (products use tag 0).
+                    let words_a = ((*header_from_payload(pa)).size as usize) / 8;
+                    let words_b = ((*header_from_payload(pb)).size as usize) / 8;
+                    if words_a != words_b {
+                        return words_a.cmp(&words_b);
+                    }
+                    let ba = pa as *const i64;
+                    let bb = pb as *const i64;
+                    for i in 0..words_a {
+                        match lumia_ord_cmp(*ba.add(i), *bb.add(i)) {
+                            Ordering::Equal => continue,
+                            other => return other,
+                        }
+                    }
+                    Ordering::Equal
+                }
+                _ => trap_abort(&format!(
+                    "lumia: type_id={ta} is not Ord (use Int/Float/Bool/String/Char or Ord ADT)"
+                )),
             }
         }
     } else {

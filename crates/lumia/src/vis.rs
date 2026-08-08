@@ -13,6 +13,8 @@ pub fn item_name(it: &Item) -> Option<&str> {
         Item::Val(v) => Some(v.name.as_str()),
         Item::Type(t) => Some(t.name.as_str()),
         Item::Foreign(f) => Some(f.name.as_str()),
+        Item::Trait(t) => Some(t.name.as_str()),
+        Item::Instance(_) => None,
     }
 }
 
@@ -20,7 +22,7 @@ pub fn item_is_priv(it: &Item) -> bool {
     match it {
         Item::Val(v) => v.is_priv,
         Item::Type(t) => t.is_priv,
-        Item::Foreign(_) => false,
+        Item::Foreign(_) | Item::Trait(_) | Item::Instance(_) => false,
     }
 }
 
@@ -29,6 +31,8 @@ fn item_file(it: &Item) -> u32 {
         Item::Val(v) => v.span.file,
         Item::Type(t) => t.span.file,
         Item::Foreign(f) => f.span.file,
+        Item::Trait(t) => t.span.file,
+        Item::Instance(i) => i.span.file,
     }
 }
 
@@ -63,6 +67,8 @@ fn set_item_name(it: &mut Item, name: &str) {
         Item::Val(v) => v.name = name.to_string(),
         Item::Type(t) => t.name = name.to_string(),
         Item::Foreign(f) => f.name = name.to_string(),
+        Item::Trait(t) => t.name = name.to_string(),
+        Item::Instance(_) => {}
     }
 }
 
@@ -70,7 +76,7 @@ fn set_item_priv(it: &mut Item, is_priv: bool) {
     match it {
         Item::Val(v) => v.is_priv = is_priv,
         Item::Type(t) => t.is_priv = is_priv,
-        Item::Foreign(_) => {}
+        Item::Foreign(_) | Item::Trait(_) | Item::Instance(_) => {}
     }
 }
 

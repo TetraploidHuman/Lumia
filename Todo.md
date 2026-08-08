@@ -4,8 +4,8 @@
 
 ## 类型与单态化
 
-- [ ] **单态化管线**：let-polymorphism 已落地，但 codegen 仍共享一份闭包/函数体。恒等 `{ x -> x }` 在 Float 实参上的 `println`/`+` 已用 call-site `local_tys` 启发式恢复（见 `poly_id`）；完整特化（多体、非恒等 poly）仍按 BUILD「单态化」。
-- [ ] **类型类 `trait` / `instance` / `requires`**：语法保留并拒绝；Eq/Ord/Hash/Show 派生与 DESIGN §3.6 尚未实现。
+- [ ] **单态化管线**：MVP 已对 Float 实参特化 `__lam_*$Float`（`poly_inc`）；`x + 1` / Num / 完整多体特化仍待。恒等 `{ x -> x }` 另有 call-site `local_tys` 启发式（`poly_id`）。
+- [ ] **类型类 `trait` / `instance` / `requires`**：MVP 已解析空体 `trait`/`instance`/`requires`，`instance Ord for T`（需 Eq）放行积/和上的 `<`/`<=`/`>`/`>=`，RT `TYPE_ADT` 字典序；方法体、Hash/Show 派生、自动派生未做。
 - [x] **`import … as` / `{ name as alias }`**：DESIGN §9.3；`ImportedName` + 公开项改名、原名 `priv` 副本；e2e `import_as` / `bad_import_as_original`。
 
 ## 语义与运行时
@@ -18,7 +18,7 @@
 
 ## 优化与表示（DESIGN / BUILD 下一里程碑）
 
-- [ ] **纯互递归 TCO**（DESIGN §4.4）：无 `musttail` / tailcc。
+- [ ] **纯互递归 TCO**（DESIGN §4.4）：MVP 已对纯 Int 自递归 `musttail`（`tco_sum`）；互递归 / 堆参 / IO / IndirectCall 未做。
 - [x] **自动并行**：默认对 FunRef-safe 纯标量 `List.map` 选 `ListParMap`；IO/非标量/捕获回退顺序；`--no-parallel` 关闭。捕获闭包与 `fold` 等仍待扩展。
 - [ ] **逃逸分析 → 栈分配 / 多表示 List·Map·Set**：大量仍为 HeapList；BUILD §7 下一里程碑。
 - [ ] **部分求值 / 完整 specialization**：opt 管道未齐。
