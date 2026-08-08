@@ -44,7 +44,10 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           set -euxo pipefail
+          # Pin installer script; bump hash when intentionally upgrading llvm.sh.
+          expected_sha=9474ecd78b52aba6e923976b1e9773f5613027cc7e237b9956986cb536e02a36
           wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          echo "${expected_sha}  /tmp/llvm.sh" | sha256sum -c -
           chmod +x /tmp/llvm.sh
           sudo /tmp/llvm.sh 21
           sudo apt-get install -y llvm-21-dev libllvm21 clang-21 lld-21
@@ -74,7 +77,8 @@ jobs:
           "$prefix/bin/llvm-config" --version
           "$prefix/bin/llvm-config" --link-shared --libnames
           "$prefix/bin/clang" --version
-          ls -la "$prefix/lib"/libLLVM* | head -n 10
+          # Avoid `ls | head` under pipefail (SIGPIPE → exit 141/2).
+          ls -la "$prefix/lib/libLLVM.so" "$prefix/lib/libLLVM-21.so" "$prefix/lib/libLLVM.so.21.1"
 
       # Windows official installers ship clang/tools only — no llvm-config / C++ libs.
       # llvm-sys needs a full development prefix (no spaces in path).
@@ -103,13 +107,26 @@ jobs:
           if (Test-Path $root) { Remove-Item -Recurse -Force $root }
           New-Item -ItemType Directory -Path $root | Out-Null
 
+          function Assert-Sha256([string]$Path, [string]$Expected) {
+            $actual = (Get-FileHash -Algorithm SHA256 -Path $Path).Hash.ToLowerInvariant()
+            if ($actual -ne $Expected.ToLowerInvariant()) {
+              throw "SHA256 mismatch for $Path`n expected: $Expected`n actual:   $actual"
+            }
+          }
+
+          # Digests from GitHub release asset metadata (vovkos/llvm-package-windows).
+          $llvmSha = "282caea5f8c13e4ba536b3a8d4587e10f4bcc89044b7e8d72bd0163020c6abdd"
+          $clangSha = "4d1deacc30341fe1c359f0e547da65cdfa819f8dd8f2e78f12e89b9bef1b5d8a"
+
           Write-Host "Downloading $llvmUrl"
           Invoke-WebRequest -Uri $llvmUrl -OutFile "$tmp\$llvmName.7z"
+          Assert-Sha256 "$tmp\$llvmName.7z" $llvmSha
           & 7z x "$tmp\$llvmName.7z" "-o$tmp\llvm" -y | Out-Host
           Copy-Item -Recurse -Force "$tmp\llvm\$llvmName\*" $root
 
           Write-Host "Downloading $clangUrl"
           Invoke-WebRequest -Uri $clangUrl -OutFile "$tmp\$clangName.7z"
+          Assert-Sha256 "$tmp\$clangName.7z" $clangSha
           & 7z x "$tmp\$clangName.7z" "-o$tmp\clang" -y | Out-Host
           Copy-Item -Recurse -Force "$tmp\clang\$clangName\*" $root
 
