@@ -228,10 +228,9 @@ fn expr_key(value: &Value, pure_funs: &HashSet<String>) -> Option<ExprKey> {
 }
 
 fn builtin_is_pure(b: &Builtin) -> bool {
-    !matches!(
-        b,
-        Builtin::Println | Builtin::PrintlnInt | Builtin::PrintlnStr | Builtin::ReadStdin
-    )
+    // Align with LICM: do not CSE traps / effects / parallel map (same key in
+    // divergent control flow must not erase a failing path).
+    !builtin_may_trap_or_effect(b)
 }
 
 pub(crate) fn rewrite_value(v: &mut Value, rewrite: &HashMap<u32, u32>) {
