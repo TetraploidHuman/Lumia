@@ -25,7 +25,16 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      # Cache cargo registry + dependency `target` artifacts (not workspace crates).
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          # llvm-sys / inkwell builds are expensive; keep cache after failed runs too.
+          cache-on-failure: true
+
       # Linux: official LLVM tarballs include llvm-config + libs (install-llvm-action).
+      # Note: install-llvm-action docs advise against caching — restore is usually slower
+      # than downloading the tarball (~2–3 min on ubuntu-latest).
       - name: Install LLVM 21 (Linux)
         if: runner.os == 'Linux'
         uses: KyleMayes/install-llvm-action@v2
