@@ -1698,9 +1698,13 @@ fn fold_match_arms(arms: &[lumia_syntax::MatchArm], scrut: &str, span: Span) -> 
     }
 }
 
+/// Last-arm elision: only `_` / binders (and all-irrefutable `or`) may skip the
+/// tag test + `MatchFail`. Nullary ctor names like `None` are refutable — same
+/// rule as [`coverage_catch_all`].
 fn pattern_irrefutable(pat: &Pattern) -> bool {
     match pat {
-        Pattern::Wildcard(_) | Pattern::Ident(_, _) => true,
+        Pattern::Wildcard(_) => true,
+        Pattern::Ident(name, _) => !lookup_ctor(name).is_some_and(|c| c.arity == 0),
         Pattern::Or(ps, _) => !ps.is_empty() && ps.iter().all(pattern_irrefutable),
         _ => false,
     }
@@ -3368,7 +3372,7 @@ fn try_fuse_hof_fold(
 
 #[cfg(test)]
 mod tests {
-    use super::lower_module;
+    use super::{lower_module, Builtin, Expr, Item};
     use lumia_syntax::parse_module;
 
     #[test]
@@ -3647,5 +3651,73 @@ val f = { p ->
         let err = lower_module(&ast).unwrap_err().to_string();
         assert!(err.contains("unknown product"), "{err}");
         assert!(err.contains("Piont"), "{err}");
+    }
+
+    /// Last-arm nullary ctor must still test the tag (and `MatchFail` on miss).
+    #[test]
+    fn last_arm_nullary_ctor_keeps_match_fail() {
+        let src = r#"
+module M
+val f = { o ->
+    o match {
+        Some(x) -> x
+        None -> 0
+    }
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let hir = lower_module(&ast).expect("lower");
+        let fun = hir
+            .items
+            .iter()
+            .find_map(|it| match it {
+                Item::Fun(f) if f.name == "f" => Some(f),
+                _ => None,
+            })
+            .expect("fun f");
+        fn has_match_fail(e: &Expr) -> bool {
+            match e {
+                Expr::BuiltinCall {
+                    name: Builtin::MatchFail,
+                    ..
+                } => true,
+                Expr::If {
+                    then_branch,
+                    else_branch,
+                    cond,
+                    ..
+                } => {
+                    has_match_fail(cond)
+                        || has_match_fail(then_branch)
+                        || has_match_fail(else_branch)
+                }
+                Expr::Let { value, body, .. } => has_match_fail(value) || has_match_fail(body),
+                Expr::Call { callee, args, .. } => {
+                    has_match_fail(callee) || args.iter().any(has_match_fail)
+                }
+                Expr::Seq { stmts, .. } => stmts.iter().any(has_match_fail),
+                Expr::Lambda { body, .. } => has_match_fail(body),
+                Expr::Binary { left, right, .. } => has_match_fail(left) || has_match_fail(right),
+                Expr::Unary { expr, .. } => has_match_fail(expr),
+                Expr::BuiltinCall { args, .. } => args.iter().any(has_match_fail),
+                Expr::Assign { value, .. } => has_match_fail(value),
+                Expr::Loop {
+                    cond,
+                    body,
+                    step,
+                    ..
+                } => {
+                    has_match_fail(cond)
+                        || has_match_fail(body)
+                        || step.as_ref().is_some_and(|s| has_match_fail(s))
+                }
+                Expr::AdtNew { args, .. } => args.iter().any(has_match_fail),
+                _ => false,
+            }
+        }
+        assert!(
+            has_match_fail(&fun.body),
+            "last-arm `None` must remain refutable with MatchFail"
+        );
     }
 }
