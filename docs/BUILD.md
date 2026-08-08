@@ -274,6 +274,10 @@ cargo run -p lumia -- build examples/mapset.lumia -o /tmp/ms && /tmp/ms
 
 包管理：`Lumia.toml` + lockfile 由 `lumia pkg` 管理；**不**把 Cargo 暴露给用户程序。
 
+**`--link` 信任模型**：CLI `--link` 允许绝对 `-L` / `.a`（本机显式意图）。`package.link` 路径限制在包根下。对不可信源码树，任意链接参数等同原生 RCE 面——不要对不可信输入开启宽 `--link`；沙箱需在宿主层做。
+
+**`readStdin` 软上限**：`lumia_rt` 在约 64MiB 后 `trap_abort`（防恶意/巨型 stdin 拖垮主机）。流式读取或可恢复错误需语言层 `Result`/分块 API，当前为故意硬失败。
+
 ---
 
 ## 8.1 平台与 CI
