@@ -1636,6 +1636,10 @@ pub fn infer_module_with_visibility(
                     let ps: Result<Vec<_>, _> = ptys.iter().map(|t| parse_foreign_type(t)).collect();
                     let ps = ps?;
                     let r = parse_foreign_type(ret)?;
+                    // `foreign "C" pure` is an honor-system annotation: the
+                    // callee may still have side effects. Opts must not delete
+                    // external calls (see inline skipping `external`); users
+                    // who lie about purity can still observe wrong reorderings.
                     let eff = if f.foreign_pure {
                         Effect::pure()
                     } else {

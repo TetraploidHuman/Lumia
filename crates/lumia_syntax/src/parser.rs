@@ -192,16 +192,19 @@ impl<'a> Parser<'a> {
             self.bump();
             let mut ns = vec![];
             loop {
-                let (n, _) = self.expect_ident()?;
-                // optional `as`
+                let (n, n_span) = self.expect_ident()?;
+                // `as` is in the grammar (DESIGN) but not yet wired through
+                // visibility + HIR name resolution; reject instead of silently
+                // treating the alias as the export name (which broke imports).
                 if self.at(&TokenKind::As) {
-                    self.bump();
-                    let (alias, _) = self.expect_ident()?;
-                    ns.push(alias); // simplify: use alias as imported name
-                    let _ = n;
-                } else {
-                    ns.push(n);
+                    let as_tok = self.bump();
+                    let _ = self.expect_ident()?;
+                    return Err(ParseError {
+                        message: "`import { name as alias }` is not supported yet; import `name` and use it directly".into(),
+                        span: n_span.merge(as_tok.span),
+                    });
                 }
+                ns.push(n);
                 if self.at(&TokenKind::Comma) {
                     self.bump();
                     continue;
@@ -1558,6 +1561,21 @@ val main = {
         let m = parse_module(src).expect("parse");
         assert_eq!(m.name, "Hello");
         assert_eq!(m.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_import_as_rejected() {
+        let src = r#"
+module T
+import foo.{bar as baz}
+val main = 0
+"#;
+        let err = parse_module(src).expect_err("import as must fail");
+        assert!(
+            err.message.contains("not supported"),
+            "expected unsupported-alias diagnostic, got {}",
+            err.message
+        );
     }
 
     #[test]
