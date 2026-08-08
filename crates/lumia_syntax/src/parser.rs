@@ -218,6 +218,15 @@ impl<'a> Parser<'a> {
             self.bump();
             ImportNames::All
         } else {
+            // `import a.b as alias` — DESIGN §9.3; not wired yet.
+            if self.at(&TokenKind::As) {
+                let as_tok = self.bump();
+                let _ = self.expect_ident()?;
+                return Err(ParseError {
+                    message: "`import path as alias` is not supported yet; import the name and use it directly".into(),
+                    span: start.merge(as_tok.span),
+                });
+            }
             let last = path.pop().unwrap();
             ImportNames::Single(last)
         };
@@ -1574,6 +1583,21 @@ val main = 0
         assert!(
             err.message.contains("not supported"),
             "expected unsupported-alias diagnostic, got {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn parse_import_path_as_rejected() {
+        let src = r#"
+module T
+import std.io as sio
+val main = 0
+"#;
+        let err = parse_module(src).expect_err("import path as must fail");
+        assert!(
+            err.message.contains("not supported"),
+            "expected unsupported path-alias diagnostic, got {}",
             err.message
         );
     }
