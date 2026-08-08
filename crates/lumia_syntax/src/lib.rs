@@ -35,12 +35,42 @@ pub struct Import {
     pub span: Span,
 }
 
+/// One imported name, optionally renamed (`name as alias`).
+#[derive(Debug, Clone)]
+pub struct ImportedName {
+    /// Name as exported by the source module.
+    pub name: String,
+    /// Local name in the importer; `None` means same as `name`.
+    pub alias: Option<String>,
+}
+
+impl ImportedName {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            alias: None,
+        }
+    }
+
+    pub fn with_alias(name: impl Into<String>, alias: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            alias: Some(alias.into()),
+        }
+    }
+
+    /// Name used in the importing module.
+    pub fn local(&self) -> &str {
+        self.alias.as_deref().unwrap_or(self.name.as_str())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum ImportNames {
-    /// `import a.b`
-    Single(String),
-    /// `import a.{b, c}`
-    Selective(Vec<String>),
+    /// `import a.b` / `import a.b as bee`
+    Single(ImportedName),
+    /// `import a.{b, c as d}`
+    Selective(Vec<ImportedName>),
     /// `import a.*`
     All,
 }

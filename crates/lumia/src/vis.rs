@@ -32,7 +32,8 @@ fn item_file(it: &Item) -> u32 {
     }
 }
 
-/// Names from `items` that an import clause makes visible to the importer.
+/// Local names from `items` that an import clause makes visible to the importer.
+/// When the clause uses `as`, the **alias** is visible (not the export name).
 pub fn import_visible_names(items: &[Item], names: &ImportNames) -> HashSet<String> {
     let pubs: HashSet<String> = items
         .iter()
@@ -42,19 +43,75 @@ pub fn import_visible_names(items: &[Item], names: &ImportNames) -> HashSet<Stri
         .collect();
     match names {
         ImportNames::All => pubs,
-        ImportNames::Single(name) => {
-            if pubs.contains(name) {
-                HashSet::from([name.clone()])
+        ImportNames::Single(n) => {
+            if pubs.contains(&n.name) {
+                HashSet::from([n.local().to_string()])
             } else {
                 HashSet::new()
             }
         }
         ImportNames::Selective(ns) => ns
             .iter()
-            .filter(|n| pubs.contains(n.as_str()))
-            .cloned()
+            .filter(|n| pubs.contains(&n.name))
+            .map(|n| n.local().to_string())
             .collect(),
     }
+}
+
+fn set_item_name(it: &mut Item, name: &str) {
+    match it {
+        Item::Val(v) => v.name = name.to_string(),
+        Item::Type(t) => t.name = name.to_string(),
+        Item::Foreign(f) => f.name = name.to_string(),
+    }
+}
+
+fn set_item_priv(it: &mut Item, is_priv: bool) {
+    match it {
+        Item::Val(v) => v.is_priv = is_priv,
+        Item::Type(t) => t.is_priv = is_priv,
+        Item::Foreign(_) => {}
+    }
+}
+
+/// Rename public exports to their import aliases; keep a `priv` copy under the
+/// original name so sibling/private callees inside the inlined module still resolve.
+pub fn apply_import_aliases(mut items: Vec<Item>, names: &ImportNames) -> Vec<Item> {
+    let renames: Vec<(String, String)> = match names {
+        ImportNames::All => return items,
+        ImportNames::Single(n) => match &n.alias {
+            Some(a) if a != &n.name => vec![(n.name.clone(), a.clone())],
+            _ => return items,
+        },
+        ImportNames::Selective(ns) => ns
+            .iter()
+            .filter_map(|n| {
+                n.alias
+                    .as_ref()
+                    .filter(|a| *a != &n.name)
+                    .map(|a| (n.name.clone(), a.clone()))
+            })
+            .collect(),
+    };
+    for (orig, alias) in renames {
+        let Some(i) = items
+            .iter()
+            .position(|it| !item_is_priv(it) && item_name(it) == Some(orig.as_str()))
+        else {
+            continue;
+        };
+        let mut priv_copy = items[i].clone();
+        set_item_priv(&mut priv_copy, true);
+        set_item_name(&mut items[i], &alias);
+        // Prefer the renamed public; keep `orig` only if nothing else owns it.
+        if !items
+            .iter()
+            .any(|it| item_name(it) == Some(orig.as_str()))
+        {
+            items.push(priv_copy);
+        }
+    }
+    items
 }
 
 /// Record declaring file for each name; optionally expand entry-visible set.

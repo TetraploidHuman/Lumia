@@ -176,6 +176,32 @@ fn e2e_use_math() {
 }
 
 #[test]
+fn e2e_import_as() {
+    run_example("examples/import_as.lumia", &["42", "42"]);
+}
+
+#[test]
+fn e2e_bad_import_as_original_rejected() {
+    let root = workspace_root();
+    let src = root.join("examples/bad_import_as_original.lumia");
+    let out = Command::new(lumia_bin())
+        .current_dir(&root)
+        .args(["check", src.to_str().unwrap()])
+        .output()
+        .expect("spawn lumia check");
+    assert!(!out.status.success(), "original name after `as` should fail");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stderr),
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(
+        combined.contains("private or not imported") || combined.contains("`add`"),
+        "unexpected diagnostics: {combined}"
+    );
+}
+
+#[test]
 fn e2e_use_priv() {
     run_example("examples/use_priv.lumia", &["42", "42"]);
 }

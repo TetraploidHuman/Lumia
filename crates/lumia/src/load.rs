@@ -4,7 +4,9 @@
 //! linkable, but [`lumia_ty::NameVisibility`] ensures `priv` names cannot be
 //! referenced from the entry module's own code.
 
-use crate::vis::{extend_visibility, import_visible_names, item_is_priv, item_name};
+use crate::vis::{
+    apply_import_aliases, extend_visibility, import_visible_names, item_is_priv, item_name,
+};
 use anyhow::{bail, Context, Result};
 use lumia_syntax::{
     format_diagnostic, parse_module, stamp_module, Import, ImportNames, Item, Module,
@@ -161,6 +163,8 @@ pub fn load_program_with_overlays(
     )?;
     let entry_file = 0; // entry is always stamped as the first file pushed
     visibility.entry_file = entry_file;
+    let mut module = module;
+    rewrite_builtin_alias_idents(&mut module, &visibility.builtin_aliases, entry_file);
     Ok(LoadedProgram {
         files,
         module,
@@ -243,12 +247,13 @@ fn validate_std_import(imp: &Import) -> Result<()> {
     let export_set: HashSet<&str> = exports.iter().map(|s| s.as_str()).collect();
     match &imp.names {
         ImportNames::All => Ok(()),
-        ImportNames::Single(name) => {
-            if export_set.contains(name.as_str()) {
+        ImportNames::Single(n) => {
+            if export_set.contains(n.name.as_str()) {
                 Ok(())
             } else {
                 bail!(
-                    "`{name}` is not exported by `{}` (exports: {})",
+                    "`{}` is not exported by `{}` (exports: {})",
+                    n.name,
                     imp.path.join("."),
                     exports.join(", ")
                 )
@@ -256,9 +261,10 @@ fn validate_std_import(imp: &Import) -> Result<()> {
         }
         ImportNames::Selective(names) => {
             for n in names {
-                if !export_set.contains(n.as_str()) {
+                if !export_set.contains(n.name.as_str()) {
                     bail!(
-                        "`{n}` is not exported by `{}` (exports: {})",
+                        "`{}` is not exported by `{}` (exports: {})",
+                        n.name,
                         imp.path.join("."),
                         exports.join(", ")
                     );
@@ -267,6 +273,35 @@ fn validate_std_import(imp: &Import) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// Register `as` aliases for std builtins (e.g. `println as log`).
+fn collect_std_aliases(imp: &Import, out: &mut HashMap<String, String>) -> Result<()> {
+    let pairs: Vec<(&str, &str)> = match &imp.names {
+        ImportNames::All => return Ok(()),
+        ImportNames::Single(n) => {
+            if let Some(a) = &n.alias {
+                vec![(a.as_str(), n.name.as_str())]
+            } else {
+                return Ok(());
+            }
+        }
+        ImportNames::Selective(ns) => ns
+            .iter()
+            .filter_map(|n| n.alias.as_ref().map(|a| (a.as_str(), n.name.as_str())))
+            .collect(),
+    };
+    for (alias, canon) in pairs {
+        if alias == canon {
+            continue;
+        }
+        if let Some(prev) = out.insert(alias.to_string(), canon.to_string()) {
+            if prev != canon {
+                bail!("import alias `{alias}` conflict (`{prev}` vs `{canon}`)");
+            }
+        }
+    }
+    Ok(())
 }
 
 fn path_candidates(base: &Path, rel: &[&str]) -> Vec<PathBuf> {
@@ -292,11 +327,8 @@ fn resolve_import_file(
         bases.push(r.as_path());
     }
     let rel: Vec<&str> = match &imp.names {
-        ImportNames::Single(_) if imp.path.is_empty() => {
-            let ImportNames::Single(name) = &imp.names else {
-                unreachable!();
-            };
-            let rel = [name.as_str()];
+        ImportNames::Single(n) if imp.path.is_empty() => {
+            let rel = [n.name.as_str()];
             for base in &bases {
                 for cand in path_candidates(base, &rel) {
                     if cand.is_file() {
@@ -305,7 +337,8 @@ fn resolve_import_file(
                 }
             }
             bail!(
-                "cannot find module `{name}` (tried under {})",
+                "cannot find module `{}` (tried under {})",
+                n.name,
                 bases
                     .iter()
                     .map(|b| b.display().to_string())
@@ -342,31 +375,43 @@ fn filter_items(items: Vec<Item>, names: &ImportNames) -> Result<Vec<Item>> {
             out.extend(privs);
             Ok(out)
         }
-        ImportNames::Single(name) => {
-            if privs.iter().any(|it| item_name(it) == Some(name.as_str())) {
-                bail!("cannot import private `{name}`");
+        ImportNames::Single(n) => {
+            if privs
+                .iter()
+                .any(|it| item_name(it) == Some(n.name.as_str()))
+            {
+                bail!("cannot import private `{}`", n.name);
             }
-            if !pubs.iter().any(|it| item_name(it) == Some(name.as_str())) {
-                bail!("module has no public `{name}`");
+            if !pubs
+                .iter()
+                .any(|it| item_name(it) == Some(n.name.as_str()))
+            {
+                bail!("module has no public `{}`", n.name);
             }
             // Keep whole module for private callees of public APIs; visibility
             // is enforced separately via NameVisibility.
             let mut out = pubs;
             out.extend(privs);
-            Ok(out)
+            Ok(apply_import_aliases(out, names))
         }
         ImportNames::Selective(ns) => {
             for n in ns {
-                if privs.iter().any(|it| item_name(it) == Some(n.as_str())) {
-                    bail!("cannot import private `{n}`");
+                if privs
+                    .iter()
+                    .any(|it| item_name(it) == Some(n.name.as_str()))
+                {
+                    bail!("cannot import private `{}`", n.name);
                 }
-                if !pubs.iter().any(|it| item_name(it) == Some(n.as_str())) {
-                    bail!("module has no public `{n}`");
+                if !pubs
+                    .iter()
+                    .any(|it| item_name(it) == Some(n.name.as_str()))
+                {
+                    bail!("module has no public `{}`", n.name);
                 }
             }
             let mut out = pubs;
             out.extend(privs);
-            Ok(out)
+            Ok(apply_import_aliases(out, names))
         }
     }
 }
@@ -448,6 +493,9 @@ fn load_module_file_uncached(
     for imp in &m.imports {
         if is_std(&imp.path) {
             validate_std_import(imp)?;
+            if is_entry {
+                collect_std_aliases(imp, &mut visibility.builtin_aliases)?;
+            }
             continue;
         }
         let file = resolve_import_file(&importer_dir, search_roots, imp)?;
@@ -472,15 +520,17 @@ fn load_module_file_uncached(
             false,
         )?;
         let visible = import_visible_names(&dep.items, &imp.names);
+        // Apply `as` renames before recording origins so aliases get `name_origin`.
+        let filtered = filter_items(dep.items, &imp.names)?;
         // Only the entry module's imports expand the user-facing scope.
         if is_entry {
-            extend_visibility(visibility, &dep.items, &visible);
+            extend_visibility(visibility, &filtered, &visible);
         } else {
             // Nested deps: record origins only (no new entry-visible names).
             let empty = HashSet::new();
-            extend_visibility(visibility, &dep.items, &empty);
+            extend_visibility(visibility, &filtered, &empty);
         }
-        append_items_unique(&mut imported_items, filter_items(dep.items, &imp.names)?);
+        append_items_unique(&mut imported_items, filtered);
     }
 
     m.imports.retain(|i| is_std(&i.path));
@@ -646,5 +696,130 @@ mod tests {
         let err = load_program(&entry).unwrap_err().to_string();
         assert!(err.contains("cyclic import"), "got {err}");
         let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+/// Rewrite entry-module idents that are std `as` aliases (e.g. `log` → `println`)
+/// so HIR builtin lowering still matches canonical names.
+fn rewrite_builtin_alias_idents(m: &mut Module, aliases: &HashMap<String, String>, entry_file: u32) {
+    if aliases.is_empty() {
+        return;
+    }
+    for it in &mut m.items {
+        // Only rewrite code that originated in the entry file.
+        let file = item_file_id(it);
+        if file != entry_file {
+            continue;
+        }
+        match it {
+            Item::Val(v) => rewrite_expr_aliases(&mut v.body, aliases),
+            Item::Type(_) | Item::Foreign(_) => {}
+        }
+    }
+}
+
+fn rewrite_expr_aliases(e: &mut lumia_syntax::Expr, aliases: &HashMap<String, String>) {
+    use lumia_syntax::Expr::*;
+    match e {
+        Ident(name, _) => {
+            if let Some(canon) = aliases.get(name) {
+                *name = canon.clone();
+            }
+        }
+        Interp { parts, .. } => {
+            for p in parts {
+                if let lumia_syntax::InterpPart::Expr(ex) = p {
+                    rewrite_expr_aliases(ex, aliases);
+                }
+            }
+        }
+        Block { stmts, tail, .. } => {
+            for s in stmts {
+                rewrite_stmt_aliases(s, aliases);
+            }
+            if let Some(t) = tail {
+                rewrite_expr_aliases(t, aliases);
+            }
+        }
+        Lambda { body, .. } => rewrite_expr_aliases(body, aliases),
+        Call { callee, args, .. } => {
+            rewrite_expr_aliases(callee, aliases);
+            for a in args {
+                rewrite_expr_aliases(a, aliases);
+            }
+        }
+        Binary { left, right, .. } | Pipeline { left, right, .. } => {
+            rewrite_expr_aliases(left, aliases);
+            rewrite_expr_aliases(right, aliases);
+        }
+        Unary { expr, .. } => rewrite_expr_aliases(expr, aliases),
+        If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            rewrite_expr_aliases(cond, aliases);
+            rewrite_expr_aliases(then_branch, aliases);
+            if let Some(e) = else_branch {
+                rewrite_expr_aliases(e, aliases);
+            }
+        }
+        Match {
+            scrutinee, arms, ..
+        } => {
+            rewrite_expr_aliases(scrutinee, aliases);
+            for a in arms {
+                if let Some(g) = &mut a.guard {
+                    rewrite_expr_aliases(g, aliases);
+                }
+                rewrite_expr_aliases(&mut a.body, aliases);
+            }
+        }
+        MatchCond { arms, .. } => {
+            for a in arms {
+                if let Some(c) = &mut a.cond {
+                    rewrite_expr_aliases(c, aliases);
+                }
+                rewrite_expr_aliases(&mut a.body, aliases);
+            }
+        }
+        Field { base, .. } => rewrite_expr_aliases(base, aliases),
+        ListLit { elems, .. } | TupleLit { elems, .. } => {
+            for el in elems {
+                rewrite_expr_aliases(el, aliases);
+            }
+        }
+        StructLit { fields, .. } => {
+            for (_, ex) in fields {
+                rewrite_expr_aliases(ex, aliases);
+            }
+        }
+        With { base, fields, .. } => {
+            rewrite_expr_aliases(base, aliases);
+            for (_, ex) in fields {
+                rewrite_expr_aliases(ex, aliases);
+            }
+        }
+        Int(..) | Float(..) | Bool(..) | String(..) | Char(..) => {}
+    }
+}
+
+fn rewrite_stmt_aliases(s: &mut lumia_syntax::Stmt, aliases: &HashMap<String, String>) {
+    use lumia_syntax::Stmt::*;
+    match s {
+        Val { expr, .. } | Var { expr, .. } | Assign { expr, .. } => {
+            rewrite_expr_aliases(expr, aliases)
+        }
+        Expr(expr) => rewrite_expr_aliases(expr, aliases),
+        ForIn { iter, body, .. } => {
+            rewrite_expr_aliases(iter, aliases);
+            rewrite_expr_aliases(body, aliases);
+        }
+        ForCond { cond, body, .. } => {
+            rewrite_expr_aliases(cond, aliases);
+            rewrite_expr_aliases(body, aliases);
+        }
+        Break(_) | Continue(_) => {}
     }
 }

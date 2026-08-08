@@ -4,7 +4,8 @@ use crate::lexer::Lexer;
 use crate::span::Span;
 use crate::token::{StringPart, Token, TokenKind};
 use crate::{
-    BinOp, Expr, ForBinding, Import, ImportNames, InterpPart, Item, MatchArm, MatchCondArm, Module,
+    BinOp, Expr, ForBinding, Import, ImportNames, ImportedName, InterpPart, Item, MatchArm,
+    MatchCondArm, Module,
     Pattern, Stmt, TypeItem, TypeKind, UnOp, ValItem, Variant, VariantFields,
 };
 
@@ -192,19 +193,15 @@ impl<'a> Parser<'a> {
             self.bump();
             let mut ns = vec![];
             loop {
-                let (n, n_span) = self.expect_ident()?;
-                // `as` is in the grammar (DESIGN) but not yet wired through
-                // visibility + HIR name resolution; reject instead of silently
-                // treating the alias as the export name (which broke imports).
-                if self.at(&TokenKind::As) {
-                    let as_tok = self.bump();
-                    let _ = self.expect_ident()?;
-                    return Err(ParseError {
-                        message: "`import { name as alias }` is not supported yet; import `name` and use it directly".into(),
-                        span: n_span.merge(as_tok.span),
-                    });
-                }
-                ns.push(n);
+                let (n, _) = self.expect_ident()?;
+                let alias = if self.at(&TokenKind::As) {
+                    self.bump();
+                    let (a, _) = self.expect_ident()?;
+                    Some(a)
+                } else {
+                    None
+                };
+                ns.push(ImportedName { name: n, alias });
                 if self.at(&TokenKind::Comma) {
                     self.bump();
                     continue;
@@ -218,17 +215,19 @@ impl<'a> Parser<'a> {
             self.bump();
             ImportNames::All
         } else {
-            // `import a.b as alias` — DESIGN §9.3; not wired yet.
-            if self.at(&TokenKind::As) {
-                let as_tok = self.bump();
-                let _ = self.expect_ident()?;
-                return Err(ParseError {
-                    message: "`import path as alias` is not supported yet; import the name and use it directly".into(),
-                    span: start.merge(as_tok.span),
-                });
-            }
+            // `import a.b as alias` — DESIGN §9.3.
+            let alias = if self.at(&TokenKind::As) {
+                self.bump();
+                let (a, _) = self.expect_ident()?;
+                Some(a)
+            } else {
+                None
+            };
             let last = path.pop().unwrap();
-            ImportNames::Single(last)
+            ImportNames::Single(ImportedName {
+                name: last,
+                alias,
+            })
         };
 
         Ok(Import {
@@ -1624,33 +1623,34 @@ val main = {
     }
 
     #[test]
-    fn parse_import_as_rejected() {
-        let src = r#"
+    fn parse_import_as_alias() {
+        let m = parse_module(
+            r#"
 module T
-import foo.{bar as baz}
+import foo.{bar as baz, qux}
+import math.add as plus
 val main = 0
-"#;
-        let err = parse_module(src).expect_err("import as must fail");
-        assert!(
-            err.message.contains("not supported"),
-            "expected unsupported-alias diagnostic, got {}",
-            err.message
-        );
-    }
-
-    #[test]
-    fn parse_import_path_as_rejected() {
-        let src = r#"
-module T
-import std.io as sio
-val main = 0
-"#;
-        let err = parse_module(src).expect_err("import path as must fail");
-        assert!(
-            err.message.contains("not supported"),
-            "expected unsupported path-alias diagnostic, got {}",
-            err.message
-        );
+"#,
+        )
+        .expect("import as");
+        assert_eq!(m.imports.len(), 2);
+        match &m.imports[0].names {
+            ImportNames::Selective(ns) => {
+                assert_eq!(ns[0].name, "bar");
+                assert_eq!(ns[0].alias.as_deref(), Some("baz"));
+                assert_eq!(ns[1].name, "qux");
+                assert!(ns[1].alias.is_none());
+            }
+            other => panic!("expected selective, got {other:?}"),
+        }
+        match &m.imports[1].names {
+            ImportNames::Single(n) => {
+                assert_eq!(n.name, "add");
+                assert_eq!(n.alias.as_deref(), Some("plus"));
+                assert_eq!(m.imports[1].path, vec!["math".to_string()]);
+            }
+            other => panic!("expected single, got {other:?}"),
+        }
     }
 
     #[test]

@@ -2,6 +2,7 @@
 
 use crate::{
     Expr, ImportNames, InterpPart, Item, MatchArm, MatchCondArm, Module, Pattern, Stmt,
+    // ImportedName used via ImportNames arms
     TypeKind, UnOp, ValItem, VariantFields,
 };
 
@@ -21,17 +22,34 @@ pub fn format_module_src(m: &Module) -> String {
                 out.push_str(".*");
             }
             ImportNames::Single(n) if imp.path.is_empty() => {
-                out.push_str(n);
+                out.push_str(&n.name);
+                if let Some(a) = &n.alias {
+                    out.push_str(" as ");
+                    out.push_str(a);
+                }
             }
             ImportNames::Single(n) => {
                 out.push_str(&imp.path.join("."));
                 out.push('.');
-                out.push_str(n);
+                out.push_str(&n.name);
+                if let Some(a) = &n.alias {
+                    out.push_str(" as ");
+                    out.push_str(a);
+                }
             }
             ImportNames::Selective(ns) => {
                 out.push_str(&imp.path.join("."));
                 out.push_str(".{");
-                out.push_str(&ns.join(", "));
+                for (i, n) in ns.iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(", ");
+                    }
+                    out.push_str(&n.name);
+                    if let Some(a) = &n.alias {
+                        out.push_str(" as ");
+                        out.push_str(a);
+                    }
+                }
                 out.push('}');
             }
         }

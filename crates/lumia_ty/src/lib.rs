@@ -11,6 +11,8 @@ pub struct NameVisibility {
     pub name_origin: HashMap<String, u32>,
     pub cross_file_visible: HashSet<String>,
     pub entry_file: u32,
+    /// `import std.io.{println as log}` → local alias → builtin name.
+    pub builtin_aliases: HashMap<String, String>,
 }
 
 impl NameVisibility {
@@ -290,6 +292,12 @@ impl Infer {
                 Effect::pure(),
             )),
         );
+        // Bind std import aliases (`println as log`) to the same schemes.
+        for (alias, canon) in &vis.builtin_aliases {
+            if let Some(scheme) = builtins.get(canon).cloned() {
+                builtins.insert(alias.clone(), scheme);
+            }
+        }
         Self {
             next_var: 0,
             next_eff: 0,
