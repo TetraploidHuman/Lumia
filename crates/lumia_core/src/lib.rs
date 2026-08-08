@@ -392,7 +392,7 @@ fn lambda_param_ret_tys(params: &[Local], body: &Block) -> (Vec<Type>, Type) {
         .collect();
     let ret_ty = if block_result_is_float(body) {
         Type::Float
-    } else if block_result_may_heap(body) {
+    } else if block_result_may_heap_with_params(body, params) {
         // Conservative heap marker so codegen roots the Call result (§GC).
         Type::List(Box::new(Type::Int))
     } else {
@@ -559,22 +559,49 @@ fn compute_float_locals_in_block(block: &Block) -> HashSet<u32> {
     float_locals
 }
 
-fn block_result_may_heap(block: &Block) -> bool {
+/// Whether the block result may be a heap pointer. `extra_params` covers lambda
+/// formals that live on `Value::Lambda.params` rather than `body.params`.
+fn block_result_may_heap_with_params(block: &Block, extra_params: &[Local]) -> bool {
     let Some(Local(r)) = block.result else {
         return false;
     };
+    let mut params: HashSet<u32> = block.params.iter().map(|p| p.0).collect();
+    params.extend(extra_params.iter().map(|p| p.0));
+    local_may_heap(block, r, &params, &mut HashSet::new())
+}
+
+/// Follow `let x = y` aliases. Params are treated as maybe-heap so identity
+/// lambdas like `{ s -> s }` keep a heap `ret_ty` for GC rooting at call sites.
+fn local_may_heap(
+    block: &Block,
+    id: u32,
+    params: &HashSet<u32>,
+    seen: &mut HashSet<u32>,
+) -> bool {
+    if !seen.insert(id) {
+        return true;
+    }
+    if params.contains(&id) {
+        return true;
+    }
     for op in &block.ops {
         if let Op::Let { local, value, .. } = op {
-            if local.0 == r {
-                return value_produces_heap(value);
+            if local.0 == id {
+                return value_may_heap(block, value, params, seen);
             }
         }
     }
     false
 }
 
-fn value_produces_heap(v: &Value) -> bool {
+fn value_may_heap(
+    block: &Block,
+    v: &Value,
+    params: &HashSet<u32>,
+    seen: &mut HashSet<u32>,
+) -> bool {
     match v {
+        Value::Local(Local(id)) => local_may_heap(block, *id, params, seen),
         Value::String(_)
         | Value::Char(_)
         | Value::AllocList { .. }
@@ -582,6 +609,7 @@ fn value_produces_heap(v: &Value) -> bool {
         | Value::AllocMap { .. }
         | Value::AllocAdt { .. }
         | Value::AllocClosure { .. }
+        | Value::ClosureCap { .. }
         | Value::FunRef(_) => true,
         Value::Builtin { name, .. } => !matches!(
             name,
@@ -597,10 +625,22 @@ fn value_produces_heap(v: &Value) -> bool {
             then_block,
             else_block,
             ..
-        } => block_result_may_heap(then_block) || block_result_may_heap(else_block),
-        Value::Local(_) => false, // unknown alias; Call path uses ret_ty
+        } => {
+            // Nested blocks inherit lambda/outer params for alias tracking.
+            result_may_heap_inherited(then_block, params)
+                || result_may_heap_inherited(else_block, params)
+        }
         _ => false,
     }
+}
+
+fn result_may_heap_inherited(block: &Block, inherited: &HashSet<u32>) -> bool {
+    let Some(Local(r)) = block.result else {
+        return false;
+    };
+    let mut params = inherited.clone();
+    params.extend(block.params.iter().map(|p| p.0));
+    local_may_heap(block, r, &params, &mut HashSet::new())
 }
 
 /// Lift nested `Value::Lambda` to top-level `__lam_N` functions.
@@ -1714,5 +1754,40 @@ fn format_value(v: &Value) -> String {
         Value::AllocAdt { tag, fields } => {
             format!("alloc_adt(tag={tag}, n={})", fields.len())
         }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lumia_hir::lower_module;
+    use lumia_syntax::parse_module;
+    use lumia_ty::infer_module;
+
+    #[test]
+    fn nested_identity_lambda_ret_ty_is_heap() {
+        let src = r#"
+module M
+val main = {
+    val id = { s -> s }
+    id("hi")
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let hir = lower_module(&ast).expect("hir");
+        let typed = infer_module(&hir).expect("ty");
+        let core = lower_hir(&hir, &typed.fun_types);
+        let lam = core
+            .functions
+            .iter()
+            .find(|f| f.name.starts_with("__lam_"))
+            .unwrap_or_else(|| panic!("expected lifted lambda, funs={:?}",
+                core.functions.iter().map(|f| (&f.name, &f.ret_ty)).collect::<Vec<_>>()));
+        assert!(
+            !matches!(lam.ret_ty, Type::Int | Type::Bool | Type::Float | Type::Unit),
+            "nested identity lambda must not claim scalar ret_ty (got {:?})",
+            lam.ret_ty
+        );
     }
 }
