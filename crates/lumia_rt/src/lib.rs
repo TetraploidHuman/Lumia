@@ -96,6 +96,41 @@ impl MarkSweep {
                 }
             }
         });
+        // Transparent memo tables may hold heap arg/result bits if a Fun's ABI
+        // types were misclassified as scalar; keep them alive across GC.
+        Self::mark_memo_tables();
+    }
+
+    fn mark_i64_if_heap(bits: i64) {
+        let p = bits as *mut u8;
+        if is_heap_payload(p) {
+            mark(header_from_payload(p));
+        }
+    }
+
+    fn mark_memo_tables() {
+        MEMO_L2.with(|t| {
+            for table in t.borrow().iter() {
+                for slot in &table.slots {
+                    if !slot.valid {
+                        continue;
+                    }
+                    for a in slot.args.iter().take(slot.nargs as usize) {
+                        Self::mark_i64_if_heap(*a);
+                    }
+                    Self::mark_i64_if_heap(slot.result);
+                }
+            }
+        });
+        MEMO_IDX.with(|t| {
+            for table in t.borrow().iter().flatten() {
+                for (i, &v) in table.valid.iter().enumerate() {
+                    if v != 0 {
+                        Self::mark_i64_if_heap(table.values[i]);
+                    }
+                }
+            }
+        });
     }
 
     fn sweep() {
@@ -403,6 +438,10 @@ pub extern "C" fn lumia_string_cstr(s: *mut u8) -> *mut u8 {
     }
     unsafe {
         let n = (*header_from_payload(s)).size as usize;
+        let bytes = std::slice::from_raw_parts(s, n);
+        if bytes.contains(&0) {
+            panic!("lumia: String with interior NUL cannot convert to C string");
+        }
         let nbytes = (n as u64)
             .checked_add(1)
             .filter(|&b| b <= u32::MAX as u64)
