@@ -5,8 +5,8 @@ edition.workspace = true
 
 [features]
 # Prefer shared libLLVM over static archives (much faster link).
-# Useful locally when the LLVM prefix ships libLLVM.so (e.g. Nix); official
-# GitHub LLVM tarballs are static-only, so CI keeps prefer-static + lld.
+# Linux CI (apt.llvm.org) and local Nix prefixes ship libLLVM.so; enable via
+# `--features lumia_codegen/llvm-dynamic`. Windows CI stays prefer-static.
 llvm-dynamic = ["inkwell/llvm21-1-force-dynamic"]
 
 [dependencies]

@@ -17,7 +17,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        include:
+          # apt.llvm.org ships libLLVM.so — force-dynamic avoids ~7min static link.
+          - os: ubuntu-latest
+            cargo_features: --features lumia_codegen/llvm-dynamic
+          # vovkos Windows SDK is static-oriented; keep prefer-static.
+          - os: windows-latest
+            cargo_features: ""
 
     steps:
       - uses: actions/checkout@v4
@@ -30,33 +36,45 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+          # Keep static (Windows) and force-dynamic (Linux) caches distinct.
+          key: ${{ matrix.os }}-${{ matrix.cargo_features }}
 
-      # Linux: official LLVM tarballs include llvm-config + libs (install-llvm-action).
-      # Note: these tarballs ship static libs only (no libLLVM.so), so force-dynamic
-      # cannot be used here. Use lld to speed up the large static link instead.
-      # Note: install-llvm-action docs advise against caching — restore is usually slower
-      # than downloading the tarball (~2–3 min on ubuntu-latest).
+      # Linux: apt.llvm.org packages include shared libLLVM (GitHub tarballs do not).
       - name: Install LLVM 21 (Linux)
         if: runner.os == 'Linux'
-        uses: KyleMayes/install-llvm-action@v2
-        with:
-          version: "21.1"
-          directory: ${{ github.workspace }}/llvm
+        run: |
+          set -euxo pipefail
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 21
+          sudo apt-get install -y llvm-21-dev libllvm21 clang-21 lld-21
 
       - name: Configure LLVM env (Linux)
         if: runner.os == 'Linux'
         run: |
-          echo "LLVM_SYS_211_PREFIX=${{ github.workspace }}/llvm" >> "$GITHUB_ENV"
-          echo "${{ github.workspace }}/llvm/bin" >> "$GITHUB_PATH"
-          echo "RUSTFLAGS=-C link-arg=-fuse-ld=lld" >> "$GITHUB_ENV"
-          "${{ github.workspace }}/llvm/bin/llvm-config" --version
-          command -v ld.lld || ls "${{ github.workspace }}/llvm/bin"/ld.lld*
-          if ! command -v clang >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y clang
+          set -euxo pipefail
+          prefix=/usr/lib/llvm-21
+          test -x "$prefix/bin/llvm-config"
+          test -x "$prefix/bin/clang"
+          # llvm-sys force-dynamic looks for libLLVM.so via llvm-config --link-shared.
+          if [[ ! -e "$prefix/lib/libLLVM.so" ]]; then
+            so=$(find "$prefix/lib" /usr/lib/x86_64-linux-gnu -maxdepth 1 \
+              \( -name 'libLLVM-21.so*' -o -name 'libLLVM.so.*' \) 2>/dev/null | head -n 1 || true)
+            if [[ -z "$so" ]]; then
+              echo "libLLVM shared library not found under $prefix or /usr/lib/x86_64-linux-gnu"
+              ls -la "$prefix/lib" || true
+              exit 1
+            fi
+            sudo ln -sfn "$so" "$prefix/lib/libLLVM.so"
           fi
-          command -v clang
-          clang --version
+          echo "LLVM_SYS_211_PREFIX=$prefix" >> "$GITHUB_ENV"
+          echo "LLVM_PATH=$prefix" >> "$GITHUB_ENV"
+          echo "$prefix/bin" >> "$GITHUB_PATH"
+          echo "LD_LIBRARY_PATH=$prefix/lib:/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+          "$prefix/bin/llvm-config" --version
+          "$prefix/bin/llvm-config" --link-shared --libnames
+          "$prefix/bin/clang" --version
+          ls -la "$prefix/lib"/libLLVM* | head -n 10
 
       # Windows official installers ship clang/tools only — no llvm-config / C++ libs.
       # llvm-sys needs a full development prefix (no spaces in path).
@@ -114,7 +132,7 @@ jobs:
           & "$root\bin\clang.exe" --version
 
       - name: Cargo test (library crates)
-        run: cargo test --workspace --exclude lumia
+        run: cargo test --workspace --exclude lumia ${{ matrix.cargo_features }}
 
       - name: Cargo test (lumia CLI + e2e examples)
-        run: cargo test -p lumia --tests
+        run: cargo test -p lumia --tests ${{ matrix.cargo_features }}
