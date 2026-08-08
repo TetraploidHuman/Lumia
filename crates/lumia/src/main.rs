@@ -1,3 +1,4 @@
+mod doc;
 mod load;
 mod lsp;
 mod pkg;
@@ -66,6 +67,14 @@ enum Commands {
         files: Vec<PathBuf>,
         #[arg(long)]
         check: bool,
+    },
+    /// Generate Markdown docs from `///` comments (DESIGN §13)
+    Doc {
+        /// Source file (`.lumia`)
+        file: PathBuf,
+        /// Write Markdown to this path instead of stdout
+        #[arg(short, long)]
+        output: Option<PathBuf>,
     },
     /// Language server (stdio JSON-RPC)
     Lsp,
@@ -148,6 +157,16 @@ fn main() -> Result<()> {
         Commands::Fmt { files, check } => {
             for f in files {
                 fmt_file(&f, check)?;
+            }
+            Ok(())
+        }
+        Commands::Doc { file, output } => {
+            let md = doc::render_file(&file)?;
+            if let Some(out) = output {
+                fs::write(&out, &md).with_context(|| format!("write {}", out.display()))?;
+                println!("wrote {}", out.display());
+            } else {
+                print!("{md}");
             }
             Ok(())
         }

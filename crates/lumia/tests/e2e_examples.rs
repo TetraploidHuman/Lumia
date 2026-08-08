@@ -176,6 +176,25 @@ fn e2e_use_math() {
 }
 
 #[test]
+fn e2e_doc_std_io() {
+    let root = workspace_root();
+    let src = root.join("std/io.lumia");
+    let out = Command::new(lumia_bin())
+        .current_dir(&root)
+        .args(["doc", src.to_str().unwrap()])
+        .output()
+        .expect("spawn lumia doc");
+    assert!(out.status.success(), "lumia doc failed: {:?}", out);
+    let md = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        md.contains("# Module `io`")
+            && md.contains("Standard I/O")
+            && md.contains("**Exports:** `println`, `readStdin`, `assert`"),
+        "unexpected doc output: {md}"
+    );
+}
+
+#[test]
 fn e2e_import_as() {
     run_example("examples/import_as.lumia", &["42", "42"]);
 }

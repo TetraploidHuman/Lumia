@@ -268,6 +268,7 @@ cargo run -p lumia -- build examples/mapset.lumia -o /tmp/ms && /tmp/ms
 | `lumia check <file>`                                                                                       | 解析 + 类型 / 效应                                                      |
 | `lumia build <file> [-o out] [--release] [--no-memo] [--parallel] [--trust-foreign-pure] [--link ARG]… [--show-ir] [--emit-llvm]` | 原生二进制；`--parallel` 无捕获 `map`；`--trust-foreign-pure` 信任 FFI `pure`；`--link` 追加链接参数（见下）；`--no-memo` 关 `T_f`  |
 | `lumia fmt [files…] [--check]`                                                                             | 基础 pretty-print（4 空格）；`--check` 不写回                               |
+| `lumia doc <file> [-o out.md]`                                                                             | 从 `///` 与公开 API 生成 Markdown（DESIGN §13）                            |
 | `lumia lsp`                                                                                                | LSP（overlay 诊断 + hover + 跨文件定义 + 补全 + format）                     |
 | `lumia pkg init` / `lumia pkg lock` / `lumia pkg add`                                                      | `Lumia.toml` / `Lumia.lock`；有 deps 时构建要求 lock；`package.link` 并入链接 |
 

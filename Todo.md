@@ -26,7 +26,7 @@
 
 ## 工具链
 
-- [ ] **`lumia doc`**：DESIGN §13，无 CLI 子命令。
+- [x] **`lumia doc`**：CLI 生成 Markdown（`///`、公开 `val`/`type`/`foreign`、`@exports`）；`priv` 默认隐藏。
 - [ ] **并发 GC / `--mm=arc`**：BUILD 远期；写屏障在 STW 下为空（正确，非缺口）。
 
 ## 本轮已修（便于对照）
@@ -47,3 +47,4 @@
 - **`import … as`**：模块别名导入与原名不可见。
 - **Float Map/Set 键**：IEEE eq/hash 专用 type_id；与 `==` 对齐的 ±0 / NaN 行为。
 - **`foreign "C" pure`**：默认 IO；`pure` 需显式信任开关。
+- **`lumia doc`**：Markdown API 文档生成。
