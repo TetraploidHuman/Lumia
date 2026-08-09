@@ -1,4 +1,4 @@
-module MemoL2
+module MemoTf
 
 fun main() effect.io=true memo=None {
   %0 = i64 200  // pure
@@ -14,7 +14,7 @@ fun main() effect.io=true memo=None {
 fun sqsum(n) effect.io=false memo=Some(Slots { id: 0 }) {
   %1 = i64 0  // pure
   a := %1
-  __i_218 := %1
+  __i_221 := %1
   %12 = loop ...  // effect
   %13 = load a  // pure
   return %13

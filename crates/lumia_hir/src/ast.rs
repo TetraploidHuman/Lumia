@@ -1,7 +1,7 @@
 //! HIR AST — modules, expressions, builtins, ADTs.
 
 use lumia_syntax::{BinOp, Span, UnOp};
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 #[derive(Debug, Clone)]
 pub struct Module {

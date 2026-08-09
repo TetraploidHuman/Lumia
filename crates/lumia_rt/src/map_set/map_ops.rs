@@ -2,9 +2,7 @@
 
 use std::ptr;
 
-use crate::common::{
-    header_from_payload, GcInhibitGuard, TYPE_LIST, TYPE_LIST_F64, TYPE_LIST_IOTA, TYPE_MAP,
-};
+use crate::common::{header_from_payload, GcInhibitGuard, TYPE_LIST, TYPE_LIST_IOTA, TYPE_MAP};
 use crate::gc::{list_payload_bytes, lumia_alloc};
 use crate::list::force_heap_list;
 
@@ -230,7 +228,8 @@ pub extern "C" fn lumia_map_keys(map: *mut u8) -> *mut u8 {
             *(map as *const i64)
         };
         let nbytes = list_payload_bytes(n);
-        let dest = lumia_alloc(nbytes, TYPE_LIST);
+        let dest_tid = lumia_abi::list_type_id(map_float_keys(map));
+        let dest = lumia_alloc(nbytes, dest_tid);
         let dst = dest as *mut i64;
         *dst = n;
         if !map.is_null() {
@@ -257,7 +256,8 @@ pub extern "C" fn lumia_map_values(map: *mut u8) -> *mut u8 {
             *(map as *const i64)
         };
         let nbytes = list_payload_bytes(n);
-        let dest = lumia_alloc(nbytes, TYPE_LIST);
+        let dest_tid = lumia_abi::list_type_id(super::tid::map_float_vals(map));
+        let dest = lumia_alloc(nbytes, dest_tid);
         let dst = dest as *mut i64;
         *dst = n;
         if !map.is_null() {
@@ -277,7 +277,7 @@ pub extern "C" fn lumia_map_items(map: *mut u8) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
     if !map.is_null() {
         let tid = unsafe { (*header_from_payload(map)).type_id };
-        if tid == TYPE_LIST || tid == TYPE_LIST_F64 {
+        if lumia_abi::tid_base(tid) == TYPE_LIST {
             return map;
         }
         if tid == TYPE_LIST_IOTA {

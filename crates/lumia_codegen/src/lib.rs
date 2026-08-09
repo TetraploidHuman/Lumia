@@ -27,7 +27,7 @@ use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
 use inkwell::{AddressSpace, OptimizationLevel};
 use lumia_core::{CoreFun, CoreModule, Local, MemoTf, Op, Value};
 use lumia_ty::Type;
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::path::PathBuf;
 
 fn core_fun_is_param0_identity(f: &CoreFun) -> bool {
@@ -37,7 +37,7 @@ fn core_fun_is_param0_identity(f: &CoreFun) -> bool {
     let Some(Local(result)) = f.body.result else {
         return false;
     };
-    let mut root: HashMap<u32, u32> = HashMap::new();
+    let mut root: HashMap<u32, u32> = HashMap::default();
     root.insert(p0, p0);
     for op in &f.body.ops {
         match op {
@@ -319,30 +319,30 @@ impl<'ctx> Codegen<'ctx> {
             module: context.create_module(name),
             builder: context.create_builder(),
             i64_ty: context.i64_type(),
-            functions: HashMap::new(),
-            locals: HashMap::new(),
-            slots: HashMap::new(),
-            float_slots: HashSet::new(),
+            functions: HashMap::default(),
+            locals: HashMap::default(),
+            slots: HashMap::default(),
+            float_slots: HashSet::default(),
             loop_stack: Vec::new(),
             option_some_tag,
             option_none_tag,
             memo_arg_slots: Vec::new(),
             memo_idx_key: None,
-            fun_ret_tys: HashMap::new(),
-            fun_param_tys: HashMap::new(),
-            fun_param0_identity: HashSet::new(),
-            external_funs: HashSet::new(),
-            funref_locals: HashMap::new(),
-            local_tys: HashMap::new(),
-            slot_tys: HashMap::new(),
+            fun_ret_tys: HashMap::default(),
+            fun_param_tys: HashMap::default(),
+            fun_param0_identity: HashSet::default(),
+            external_funs: HashSet::default(),
+            funref_locals: HashMap::default(),
+            local_tys: HashMap::default(),
+            slot_tys: HashMap::default(),
             root_depth: 0,
-            rooted_slots: HashSet::new(),
+            rooted_slots: HashSet::default(),
             entry_bb: None,
             current_fun: String::new(),
             current_memo: None,
-            tco_peers: HashSet::new(),
-            tco_sccs: HashMap::new(),
-            hash_adts: HashSet::new(),
+            tco_peers: HashSet::default(),
+            tco_sccs: HashMap::default(),
+            hash_adts: HashSet::default(),
         }
     }
 }
@@ -422,11 +422,12 @@ mod tests {
     }
 
     #[test]
-    fn emit_memo_l2_has_lookup() {
-        let ir = emit_example("examples/memo_l2.lm", true);
+    fn emit_memo_tf_has_lookup() {
+        let ir = emit_example("examples/memo_tf.lm", true);
+        // C ABI symbols stay `lumia_memo_l2_*` (frozen); planner name is `T_f`.
         assert!(
-            ir.contains("lumia_memo") || ir.contains("memo"),
-            "expected memo runtime calls in memo_l2 IR"
+            ir.contains("lumia_memo_l2_lookup") || ir.contains("lumia_memo_l2_store"),
+            "expected memo_l2 ABI calls in memo_tf IR"
         );
     }
 

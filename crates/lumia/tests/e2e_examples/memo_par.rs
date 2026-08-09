@@ -1,6 +1,6 @@
 e2e_ok_release!(
-    e2e_memo_l2_release,
-    "examples/memo_l2.lm",
+    e2e_memo_tf_release,
+    "examples/memo_tf.lm",
     "2646700",
     "2646700",
     "285"

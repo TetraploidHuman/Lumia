@@ -2,7 +2,7 @@ use crate::ir::{Block, CoreFun, Local, Op, Value};
 use lumia_hir::Builtin;
 use lumia_syntax::BinOp;
 use lumia_ty::Type;
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 pub(crate) fn param_ty_map(fun: &CoreFun) -> HashMap<u32, Type> {
     fun.params
@@ -95,7 +95,7 @@ pub(crate) fn block_result_fixed_ty(
     param_tys: &HashMap<u32, Type>,
 ) -> Option<Type> {
     let Local(r) = block.result?;
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::default();
     local_fixed_ty(block, r, functions, trait_methods, param_tys, &mut seen)
 }
 

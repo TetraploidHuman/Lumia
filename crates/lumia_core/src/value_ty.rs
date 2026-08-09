@@ -4,7 +4,7 @@ use crate::{AdtRepr, ListRepr, Local, MapRepr, SetRepr, Value};
 use lumia_hir::Builtin;
 use lumia_syntax::{BinOp, UnOp};
 use lumia_ty::{Effect, Type};
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// Whether Lit* stack allocations count as heap for GC rooting / escape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -411,7 +411,7 @@ mod tests {
 
     #[test]
     fn float_binary_promotes() {
-        let mut tys = HashMap::new();
+        let mut tys = HashMap::default();
         tys.insert(0, Type::Float);
         tys.insert(1, Type::Int);
         let t = infer_value_ty(

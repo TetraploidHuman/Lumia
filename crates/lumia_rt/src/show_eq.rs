@@ -1,10 +1,9 @@
 //! Equality, Show, Ord, and content hashing.
 
 use crate::common::{
-    float_key_eq, float_key_hash, header_from_payload, is_heap_payload, splitmix64, trap_abort,
-    GcInhibitGuard, TYPE_ADT, TYPE_BYTES, TYPE_CHAR, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_F64,
-    TYPE_LIST_IOTA, TYPE_MAP_ASSOC_F64, TYPE_MAP_ASSOC_F64V, TYPE_MAP_ASSOC_VF64, TYPE_MAP_F64,
-    TYPE_MAP_F64V, TYPE_MAP_VF64, TYPE_SET, TYPE_SET_ASSOC, TYPE_SET_F64, TYPE_STRING,
+    float_key_eq, float_key_hash, header_from_payload, is_heap_payload, list_elem_is_float,
+    splitmix64, tid_base, tid_f_key, tid_f_val, trap_abort, GcInhibitGuard, TYPE_ADT, TYPE_BYTES,
+    TYPE_CHAR, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_IOTA, TYPE_MAP, TYPE_SET, TYPE_STRING,
 };
 use crate::gc::lumia_alloc;
 use crate::list::{is_list_tid, list_float_elems, list_get_of, list_len_of};
@@ -23,17 +22,8 @@ pub extern "C" fn lumia_eq(a: i64, b: i64) -> i64 {
         let p = a as *mut u8;
         if is_heap_payload(p) {
             let tid = unsafe { (*header_from_payload(p)).type_id };
-            if !matches!(
-                tid,
-                TYPE_LIST_F64
-                    | TYPE_SET_F64
-                    | TYPE_MAP_F64
-                    | TYPE_MAP_VF64
-                    | TYPE_MAP_F64V
-                    | TYPE_MAP_ASSOC_VF64
-                    | TYPE_MAP_ASSOC_F64
-                    | TYPE_MAP_ASSOC_F64V
-            ) {
+            // Float-tagged containers: NaN ≠ NaN — must content-compare.
+            if !(tid_f_key(tid) || tid_f_val(tid)) {
                 return 1;
             }
             // Fall through to content compare (same object still ok for ±0).
@@ -59,7 +49,7 @@ pub extern "C" fn lumia_eq(a: i64, b: i64) -> i64 {
                 return 0;
             }
             // Either side tagged Float elems ⇒ IEEE (covers ±0 / NaN).
-            let float_elems = ta == TYPE_LIST_F64 || tb == TYPE_LIST_F64;
+            let float_elems = list_elem_is_float(ta) || list_elem_is_float(tb);
             for i in 0..na {
                 let ea = list_get_of(pa, i);
                 let eb = list_get_of(pb, i);
@@ -74,10 +64,11 @@ pub extern "C" fn lumia_eq(a: i64, b: i64) -> i64 {
             }
             return 1;
         }
-        if ta != tb {
+        // Map/Set: compare by base + content (flags may differ on empty).
+        if tid_base(ta) != tid_base(tb) {
             return 0;
         }
-        match ta {
+        match tid_base(ta) {
             TYPE_STRING => {
                 let na = (*ha).size as usize;
                 let nb = (*hb).size as usize;
@@ -101,8 +92,8 @@ pub extern "C" fn lumia_eq(a: i64, b: i64) -> i64 {
                     0
                 }
             }
-            TYPE_SET | TYPE_SET_F64 | TYPE_SET_ASSOC => set_eq(pa, pb),
-            tid if is_map_tid(tid) => map_eq(pa, pb),
+            TYPE_SET => set_eq(pa, pb),
+            TYPE_MAP => map_eq(pa, pb),
             TYPE_ADT => {
                 let mask = ((*ha)._pad as u64) | ((*hb)._pad as u64);
                 adt_eq_payload(pa, pb, mask)
@@ -431,7 +422,8 @@ pub(crate) fn hash_value(key: i64, depth: u32) -> u64 {
     }
     unsafe {
         let h = header_from_payload(p);
-        match (*h).type_id {
+        let tid = (*h).type_id;
+        match tid_base(tid) {
             TYPE_STRING => {
                 let n = (*h).size as usize;
                 let bytes = std::slice::from_raw_parts(p, n);
@@ -443,9 +435,9 @@ pub(crate) fn hash_value(key: i64, depth: u32) -> u64 {
                 acc
             }
             TYPE_CHAR => splitmix64(*(p as *const i64) as u64),
-            TYPE_LIST | TYPE_LIST_F64 | TYPE_LIST_IOTA => {
+            TYPE_LIST | TYPE_LIST_IOTA => {
                 let n = list_len_of(p);
-                let float_elems = (*h).type_id == TYPE_LIST_F64;
+                let float_elems = list_elem_is_float(tid);
                 let mut acc = splitmix64(0x4c495354u64 ^ (n as u64));
                 for i in 0..n {
                     let e = list_get_of(p, i);
@@ -478,7 +470,7 @@ pub(crate) fn hash_value(key: i64, depth: u32) -> u64 {
                 }
                 acc
             }
-            tid if is_map_tid(tid) => {
+            TYPE_MAP => {
                 // Unordered mix so content-equal maps collide regardless of insert order.
                 let float_keys = map_float_keys(p);
                 let float_vals = map_float_vals(p);
@@ -500,8 +492,8 @@ pub(crate) fn hash_value(key: i64, depth: u32) -> u64 {
                 }
                 acc
             }
-            TYPE_SET | TYPE_SET_F64 | TYPE_SET_ASSOC => {
-                let float_elems = (*h).type_id == TYPE_SET_F64;
+            TYPE_SET => {
+                let float_elems = set_float_elems(p);
                 let n = *(p as *const i64);
                 let mut acc = splitmix64(0x534554u64 ^ (n as u64));
                 for i in 0..n as usize {

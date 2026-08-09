@@ -10,12 +10,12 @@ mod inline;
 mod memo;
 
 pub use escape::{escaping_locals, EscapePass};
-pub use fusion::FusionPass;
+pub use fusion::ConcatIdentPass;
 pub use inline::InlinePass;
 pub use memo::{
-    apply_memo_plan, plan_memo_tf, MemoL0Pass, MemoL1Pass, MemoTfPass, MEMO_IDX_CAP,
-    MEMO_IDX_MAX_FUNS, MEMO_IDX_TABLE_BYTES, MEMO_L2_MAX_ARGS, MEMO_L2_MAX_FUNS, MEMO_L2_SLOTS,
-    MEMO_PROCESS_BYTE_CAP, MEMO_SLOTS_TABLE_BYTES,
+    apply_memo_plan, plan_memo_tf, ConstFoldPass, LicmPass, MEMO_IDX_CAP, MEMO_IDX_MAX_FUNS,
+    MEMO_IDX_TABLE_BYTES, MEMO_L2_MAX_ARGS, MEMO_L2_MAX_FUNS, MEMO_L2_SLOTS, MEMO_PROCESS_BYTE_CAP,
+    MEMO_SLOTS_TABLE_BYTES, MEMO_TF_MAX_ARGS, MEMO_TF_MAX_FUNS, MEMO_TF_SLOTS,
 };
 
 use lumia_core::{
@@ -47,7 +47,16 @@ pub trait Pass {
 
 /// Frontend → Core → optimize (for tests and tooling).
 pub fn compile_source_to_optimized(src: &str, opts: &OptOptions) -> Result<CoreModule, String> {
-    let mut core = lumia_core::compile_source_to_core(src)?;
+    compile_source_to_optimized_with_frontend(src, opts, &lumia_core::FrontendOptions::default())
+}
+
+/// Same as [`compile_source_to_optimized`] with explicit frontend options.
+pub fn compile_source_to_optimized_with_frontend(
+    src: &str,
+    opts: &OptOptions,
+    frontend: &lumia_core::FrontendOptions,
+) -> Result<CoreModule, String> {
+    let mut core = lumia_core::compile_source_to_core_with_options(src, frontend)?;
     optimize(&mut core, opts);
     Ok(core)
 }
@@ -70,17 +79,17 @@ pub fn optimize(module: &mut CoreModule, opts: &OptOptions) {
         None
     };
 
-    // L0/L1 always: CSE + const-fold/copy-prop + LICM (semantic-preserving).
+    // Local reuse always: CSE + const-fold/copy-prop + LICM (semantic-preserving).
     let mut passes: Vec<Box<dyn Pass>> = vec![
         Box::new(CsePass),
-        Box::new(MemoL0Pass),
-        Box::new(MemoL1Pass),
+        Box::new(ConstFoldPass),
+        Box::new(LicmPass),
         // Escape always — ReprSelect and future codegen consume `CoreFun::escaping`.
         Box::new(EscapePass),
     ];
     if opts.release {
         passes.push(Box::new(InlinePass));
-        passes.push(Box::new(FusionPass));
+        passes.push(Box::new(ConcatIdentPass));
         passes.push(Box::new(ReprSelect));
         passes.push(Box::new(CopyElimPass));
     } else {
@@ -96,22 +105,26 @@ pub fn optimize(module: &mut CoreModule, opts: &OptOptions) {
     }
 }
 
-/// Named passes for tooling / diagnostics (`memo_tf` is planned outside the pass loop).
+/// Named passes for tooling / diagnostics.
+///
+/// `"memo_tf"` is listed for Release even though planning runs via [`plan_memo_tf`]
+/// *before* CSE (not as a `Pass::run`); applying a fresh plan after CSE would
+/// drop const-reuse evidence (§7.5.2).
 pub fn pass_names(release: bool) -> Vec<&'static str> {
     if release {
         vec![
             "cse",
-            "memo_l0",
-            "memo_l1",
+            "const_fold",
+            "licm",
             "escape",
             "inline",
-            "fusion",
+            "concat_ident",
             "repr_select",
             "copy_elim",
             "memo_tf",
         ]
     } else {
-        vec!["cse", "memo_l0", "memo_l1", "escape", "repr_select"]
+        vec!["cse", "const_fold", "licm", "escape", "repr_select"]
     }
 }
 
@@ -292,7 +305,7 @@ impl Pass for ReprSelect {
     }
 }
 
-fn select_in_fun(f: &mut CoreFun, escaping: &std::collections::HashSet<Local>) {
+fn select_in_fun(f: &mut CoreFun, escaping: &HashSet<Local>) {
     for op in &mut f.body.ops {
         if let Op::Let { local, value, .. } = op {
             select_value(value, *local, escaping);
@@ -300,7 +313,7 @@ fn select_in_fun(f: &mut CoreFun, escaping: &std::collections::HashSet<Local>) {
     }
 }
 
-fn select_value(v: &mut Value, bound: Local, escaping: &std::collections::HashSet<Local>) {
+fn select_value(v: &mut Value, bound: Local, escaping: &HashSet<Local>) {
     let local_ok = !escaping.contains(&bound);
     match v {
         Value::AllocList { elems, repr } => {
@@ -398,7 +411,12 @@ mod tests {
         assert!(pass_names(true).contains(&"inline"));
         assert!(pass_names(true).contains(&"escape"));
         assert!(pass_names(true).contains(&"copy_elim"));
+        assert!(pass_names(true).contains(&"const_fold"));
+        assert!(pass_names(true).contains(&"licm"));
+        assert!(pass_names(true).contains(&"concat_ident"));
+        assert!(pass_names(true).contains(&"memo_tf"));
         assert!(!pass_names(false).contains(&"inline"));
+        assert!(!pass_names(false).contains(&"memo_tf"));
     }
 
     #[test]
@@ -431,11 +449,11 @@ mod tests {
                 is_main: false,
                 memo: None,
                 external: None,
-                escaping: std::collections::HashSet::default(),
+                escaping: HashSet::default(),
                 scheme_poly: false,
             }],
-            hash_adts: std::collections::HashSet::default(),
-            trait_methods: std::collections::HashMap::default(),
+            hash_adts: HashSet::default(),
+            trait_methods: HashMap::default(),
         };
         CopyElimPass.run(&mut module);
         let f = &module.functions[0];
@@ -482,11 +500,11 @@ mod tests {
                 is_main: false,
                 memo: None,
                 external: None,
-                escaping: std::collections::HashSet::default(),
+                escaping: HashSet::default(),
                 scheme_poly: false,
             }],
-            hash_adts: std::collections::HashSet::default(),
-            trait_methods: std::collections::HashMap::default(),
+            hash_adts: HashSet::default(),
+            trait_methods: HashMap::default(),
         };
         EscapePass.run(&mut module);
         ReprSelect.run(&mut module);
@@ -532,11 +550,11 @@ mod tests {
                 is_main: false,
                 memo: None,
                 external: None,
-                escaping: std::collections::HashSet::default(),
+                escaping: HashSet::default(),
                 scheme_poly: false,
             }],
-            hash_adts: std::collections::HashSet::default(),
-            trait_methods: std::collections::HashMap::default(),
+            hash_adts: HashSet::default(),
+            trait_methods: HashMap::default(),
         };
         EscapePass.run(&mut module);
         ReprSelect.run(&mut module);
@@ -609,11 +627,11 @@ val main = {
                 is_main: false,
                 memo: None,
                 external: None,
-                escaping: std::collections::HashSet::default(),
+                escaping: HashSet::default(),
                 scheme_poly: false,
             }],
-            hash_adts: std::collections::HashSet::default(),
-            trait_methods: std::collections::HashMap::default(),
+            hash_adts: HashSet::default(),
+            trait_methods: HashMap::default(),
         };
         EscapePass.run(&mut module);
         ReprSelect.run(&mut module);

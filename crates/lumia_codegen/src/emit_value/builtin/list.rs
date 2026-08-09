@@ -1,6 +1,6 @@
-//! Value emission — builtin intrinsics
+//! Value emission — list builtins.
 
-use super::super::Codegen;
+use super::super::super::Codegen;
 use anyhow::{Context as AnyhowContext, Result};
 use inkwell::values::BasicValueEnum;
 use inkwell::{AddressSpace, IntPredicate};
@@ -9,60 +9,12 @@ use lumia_hir::Builtin;
 use lumia_ty::Type;
 
 impl<'ctx> Codegen<'ctx> {
-    pub(crate) fn emit_value_builtin(
+    pub(crate) fn emit_list_builtin(
         &mut self,
         name: &Builtin,
         args: &[Local],
     ) -> Result<BasicValueEnum<'ctx>> {
         match name {
-            Builtin::Println | Builtin::PrintlnInt | Builtin::PrintlnStr => {
-                let arg = self.local(args[0])?;
-                let arg_ty = self.local_tys.get(&args[0].0).cloned().unwrap_or(Type::Int);
-                match arg_ty {
-                    Type::Float => {
-                        let f = match arg {
-                            BasicValueEnum::FloatValue(f) => f,
-                            other => self.promote_f64(other)?,
-                        };
-                        self.call_rt_void("lumia_println_float", &[f.into()], "println_float")?;
-                    }
-                    Type::Bool => {
-                        let i = self.coerce_i64(arg)?;
-                        let b = self
-                            .builder
-                            .build_int_truncate(i, self.context.i8_type(), "bool8")
-                            .map_err(|e| anyhow::anyhow!("truncate bool8: {e}"))?;
-                        self.call_rt_void("lumia_println_bool", &[b.into()], "println_bool")?;
-                    }
-                    Type::Adt { name, params } => {
-                        let ptr = if let Some(ptr) = self.emit_show_override(&name, arg)? {
-                            Some(ptr)
-                        } else if params.iter().any(|p| matches!(p, Type::Float | Type::Bool)) {
-                            Some(self.emit_typed_adt_show(arg, &params)?)
-                        } else {
-                            None
-                        };
-                        if let Some(ptr) = ptr {
-                            let len = self
-                                .call_rt_basic("lumia_str_len", &[ptr.into()], "show_len")?
-                                .into_int_value();
-                            self.call_rt_void(
-                                "lumia_println_str",
-                                &[ptr.into(), len.into()],
-                                "println_show",
-                            )?;
-                        } else {
-                            let i = self.coerce_i64(arg)?;
-                            self.call_rt_void("lumia_println_auto", &[i.into()], "println")?;
-                        }
-                    }
-                    _ => {
-                        let i = self.coerce_i64(arg)?;
-                        self.call_rt_void("lumia_println_auto", &[i.into()], "println")?;
-                    }
-                }
-                Ok(self.i64_ty.const_int(0, false).into())
-            }
             Builtin::ListLen => {
                 let list_i = self.coerce_i64(self.local(args[0])?)?;
                 let ptr_ty = self.context.ptr_type(AddressSpace::default());
@@ -95,127 +47,6 @@ impl<'ctx> Codegen<'ctx> {
                     .unwrap();
                 Ok(call.try_as_basic_value().basic().unwrap())
             }
-            Builtin::Contains => {
-                let obj_i = self.coerce_i64(self.local(args[0])?)?;
-                let key = self.coerce_i64(self.local(args[1])?)?;
-                let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                let obj = self
-                    .builder
-                    .build_int_to_ptr(obj_i, ptr_ty, "col_ptr")
-                    .unwrap();
-                let f = self.module.get_function("lumia_contains").unwrap();
-                let call = self
-                    .builder
-                    .build_call(f, &[obj.into(), key.into()], "contains")
-                    .unwrap();
-                Ok(call.try_as_basic_value().basic().unwrap())
-            }
-            Builtin::MapSet => {
-                let map_i = self.coerce_i64(self.local(args[0])?)?;
-                let key = self.coerce_i64(self.local(args[1])?)?;
-                let val = self.coerce_i64(self.local(args[2])?)?;
-                let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                let mut map = self
-                    .builder
-                    .build_int_to_ptr(map_i, ptr_ty, "col_ptr")
-                    .unwrap();
-                if matches!(self.local_tys.get(&args[1].0), Some(Type::Float)) {
-                    let ens = self.module.get_function("lumia_ensure_map_f64").unwrap();
-                    map = self
-                        .builder
-                        .build_call(ens, &[map.into()], "ens_mf64")
-                        .unwrap()
-                        .try_as_basic_value()
-                        .basic()
-                        .unwrap()
-                        .into_pointer_value();
-                }
-                if matches!(self.local_tys.get(&args[2].0), Some(Type::Float)) {
-                    let ens = self.module.get_function("lumia_ensure_map_vf64").unwrap();
-                    map = self
-                        .builder
-                        .build_call(ens, &[map.into()], "ens_mvf64")
-                        .unwrap()
-                        .try_as_basic_value()
-                        .basic()
-                        .unwrap()
-                        .into_pointer_value();
-                }
-                let f = self.module.get_function("lumia_set").unwrap();
-                let call = self
-                    .builder
-                    .build_call(f, &[map.into(), key.into(), val.into()], "col_set")
-                    .unwrap();
-                let ptr = call
-                    .try_as_basic_value()
-                    .basic()
-                    .unwrap()
-                    .into_pointer_value();
-                Ok(self
-                    .builder
-                    .build_ptr_to_int(ptr, self.i64_ty, "set_i64")
-                    .unwrap()
-                    .into())
-            }
-            Builtin::MapRemove => {
-                let map_i = self.coerce_i64(self.local(args[0])?)?;
-                let key = self.coerce_i64(self.local(args[1])?)?;
-                let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                let map = self
-                    .builder
-                    .build_int_to_ptr(map_i, ptr_ty, "col_ptr")
-                    .unwrap();
-                let f = self.module.get_function("lumia_remove").unwrap();
-                let call = self
-                    .builder
-                    .build_call(f, &[map.into(), key.into()], "col_rm")
-                    .unwrap();
-                let ptr = call
-                    .try_as_basic_value()
-                    .basic()
-                    .unwrap()
-                    .into_pointer_value();
-                Ok(self
-                    .builder
-                    .build_ptr_to_int(ptr, self.i64_ty, "rm_i64")
-                    .unwrap()
-                    .into())
-            }
-            Builtin::SetInsert => {
-                let set_i = self.coerce_i64(self.local(args[0])?)?;
-                let elem = self.coerce_i64(self.local(args[1])?)?;
-                let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                let mut set = self
-                    .builder
-                    .build_int_to_ptr(set_i, ptr_ty, "set_ptr")
-                    .unwrap();
-                if matches!(self.local_tys.get(&args[1].0), Some(Type::Float)) {
-                    let ens = self.module.get_function("lumia_ensure_set_f64").unwrap();
-                    set = self
-                        .builder
-                        .build_call(ens, &[set.into()], "ens_sf64")
-                        .unwrap()
-                        .try_as_basic_value()
-                        .basic()
-                        .unwrap()
-                        .into_pointer_value();
-                }
-                let f = self.module.get_function("lumia_set_insert").unwrap();
-                let call = self
-                    .builder
-                    .build_call(f, &[set.into(), elem.into()], "set_ins")
-                    .unwrap();
-                let ptr = call
-                    .try_as_basic_value()
-                    .basic()
-                    .unwrap()
-                    .into_pointer_value();
-                Ok(self
-                    .builder
-                    .build_ptr_to_int(ptr, self.i64_ty, "set_ins_i64")
-                    .unwrap()
-                    .into())
-            }
             Builtin::MapKeys | Builtin::MapValues | Builtin::MapItems | Builtin::Elems => {
                 let map_i = self.coerce_i64(self.local(args[0])?)?;
                 let ptr_ty = self.context.ptr_type(AddressSpace::default());
@@ -241,35 +72,6 @@ impl<'ctx> Codegen<'ctx> {
                     .build_ptr_to_int(ptr, self.i64_ty, "map_kv_i64")
                     .unwrap()
                     .into())
-            }
-            Builtin::AdtTag => {
-                let obj_i = self.coerce_i64(self.local(args[0])?)?;
-                let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                let obj = self
-                    .builder
-                    .build_int_to_ptr(obj_i, ptr_ty, "adt_ptr")
-                    .unwrap();
-                let f = self.module.get_function("lumia_adt_tag").unwrap();
-                let call = self
-                    .builder
-                    .build_call(f, &[obj.into()], "adt_tag")
-                    .unwrap();
-                Ok(call.try_as_basic_value().basic().unwrap())
-            }
-            Builtin::AdtField => {
-                let obj_i = self.coerce_i64(self.local(args[0])?)?;
-                let idx = self.coerce_i64(self.local(args[1])?)?;
-                let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                let obj = self
-                    .builder
-                    .build_int_to_ptr(obj_i, ptr_ty, "adt_ptr")
-                    .unwrap();
-                let f = self.module.get_function("lumia_adt_field").unwrap();
-                let call = self
-                    .builder
-                    .build_call(f, &[obj.into(), idx.into()], "adt_field")
-                    .unwrap();
-                Ok(call.try_as_basic_value().basic().unwrap())
             }
             Builtin::ListSlice => {
                 let list_i = self.coerce_i64(self.local(args[0])?)?;
@@ -355,139 +157,6 @@ impl<'ctx> Codegen<'ctx> {
                 Ok(self
                     .builder
                     .build_ptr_to_int(ptr, self.i64_ty, "concat_i64")
-                    .unwrap()
-                    .into())
-            }
-            Builtin::Show => {
-                let arg = self.local(args[0])?;
-                let arg_ty = self.local_tys.get(&args[0].0).cloned().unwrap_or(Type::Int);
-                let ptr = match arg_ty {
-                    Type::Float => {
-                        let f = match arg {
-                            BasicValueEnum::FloatValue(f) => f,
-                            other => self.promote_f64(other)?,
-                        };
-                        let fun = self.module.get_function("lumia_show_float").unwrap();
-                        self.builder
-                            .build_call(fun, &[f.into()], "show_float")
-                            .unwrap()
-                            .try_as_basic_value()
-                            .basic()
-                            .unwrap()
-                            .into_pointer_value()
-                    }
-                    Type::Bool => {
-                        let i = self.coerce_i64(arg)?;
-                        let b = self
-                            .builder
-                            .build_int_truncate(i, self.context.i8_type(), "bool8")
-                            .unwrap();
-                        let fun = self.module.get_function("lumia_show_bool").unwrap();
-                        self.builder
-                            .build_call(fun, &[b.into()], "show_bool")
-                            .unwrap()
-                            .try_as_basic_value()
-                            .basic()
-                            .unwrap()
-                            .into_pointer_value()
-                    }
-                    Type::Adt { name, params } => {
-                        if let Some(ptr) = self.emit_show_override(&name, arg)? {
-                            ptr
-                        } else if params.iter().any(|p| matches!(p, Type::Float | Type::Bool)) {
-                            self.emit_typed_adt_show(arg, &params)?
-                        } else {
-                            let i = self.coerce_i64(arg)?;
-                            let fun = self.module.get_function("lumia_show").unwrap();
-                            self.builder
-                                .build_call(fun, &[i.into()], "show")
-                                .unwrap()
-                                .try_as_basic_value()
-                                .basic()
-                                .unwrap()
-                                .into_pointer_value()
-                        }
-                    }
-                    _ => {
-                        let i = self.coerce_i64(arg)?;
-                        let fun = self.module.get_function("lumia_show").unwrap();
-                        self.builder
-                            .build_call(fun, &[i.into()], "show")
-                            .unwrap()
-                            .try_as_basic_value()
-                            .basic()
-                            .unwrap()
-                            .into_pointer_value()
-                    }
-                };
-                Ok(self
-                    .builder
-                    .build_ptr_to_int(ptr, self.i64_ty, "show_i64")
-                    .unwrap()
-                    .into())
-            }
-            Builtin::StrTrim | Builtin::StrToLower | Builtin::StrToUpper => {
-                let s_i = self.coerce_i64(self.local(args[0])?)?;
-                let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                let s = self.builder.build_int_to_ptr(s_i, ptr_ty, "str").unwrap();
-                let fname = match name {
-                    Builtin::StrTrim => "lumia_str_trim",
-                    Builtin::StrToLower => "lumia_str_to_lower",
-                    _ => "lumia_str_to_upper",
-                };
-                let f = self.module.get_function(fname).unwrap();
-                let call = self.builder.build_call(f, &[s.into()], "str_op").unwrap();
-                let ptr = call
-                    .try_as_basic_value()
-                    .basic()
-                    .unwrap()
-                    .into_pointer_value();
-                Ok(self
-                    .builder
-                    .build_ptr_to_int(ptr, self.i64_ty, "str_i64")
-                    .unwrap()
-                    .into())
-            }
-            Builtin::StrSplit => {
-                let s_i = self.coerce_i64(self.local(args[0])?)?;
-                let sep = self.coerce_i64(self.local(args[1])?)?;
-                let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                let s = self.builder.build_int_to_ptr(s_i, ptr_ty, "str").unwrap();
-                let f = self.module.get_function("lumia_str_split").unwrap();
-                let call = self
-                    .builder
-                    .build_call(f, &[s.into(), sep.into()], "split")
-                    .unwrap();
-                let ptr = call
-                    .try_as_basic_value()
-                    .basic()
-                    .unwrap()
-                    .into_pointer_value();
-                Ok(self
-                    .builder
-                    .build_ptr_to_int(ptr, self.i64_ty, "split_i64")
-                    .unwrap()
-                    .into())
-            }
-            Builtin::StrSubstring => {
-                let s_i = self.coerce_i64(self.local(args[0])?)?;
-                let a = self.coerce_i64(self.local(args[1])?)?;
-                let b = self.coerce_i64(self.local(args[2])?)?;
-                let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                let s = self.builder.build_int_to_ptr(s_i, ptr_ty, "str").unwrap();
-                let f = self.module.get_function("lumia_str_substring").unwrap();
-                let call = self
-                    .builder
-                    .build_call(f, &[s.into(), a.into(), b.into()], "substr")
-                    .unwrap();
-                let ptr = call
-                    .try_as_basic_value()
-                    .basic()
-                    .unwrap()
-                    .into_pointer_value();
-                Ok(self
-                    .builder
-                    .build_ptr_to_int(ptr, self.i64_ty, "substr_i64")
                     .unwrap()
                     .into())
             }
@@ -727,70 +396,6 @@ impl<'ctx> Codegen<'ctx> {
                     .unwrap()
                     .into())
             }
-            Builtin::ReadStdin => {
-                let f = self.module.get_function("lumia_read_stdin").unwrap();
-                let call = self.builder.build_call(f, &[], "stdin").unwrap();
-                let ptr = call
-                    .try_as_basic_value()
-                    .basic()
-                    .unwrap()
-                    .into_pointer_value();
-                Ok(self
-                    .builder
-                    .build_ptr_to_int(ptr, self.i64_ty, "stdin_i64")
-                    .unwrap()
-                    .into())
-            }
-            Builtin::MatchFail => {
-                let f = self.module.get_function("lumia_match_fail").unwrap();
-                self.builder.build_call(f, &[], "match_fail").unwrap();
-                // Unreachable in practice; keep SSA well-typed.
-                Ok(self.i64_ty.const_int(0, false).into())
-            }
-            Builtin::Assert => {
-                let cond = self.coerce_i64(self.local(args[0])?)?;
-                let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                let (msg_ptr, msg_len) = if args.len() >= 2 {
-                    let msg_i = self.coerce_i64(self.local(args[1])?)?;
-                    let msg_ptr = self
-                        .builder
-                        .build_int_to_ptr(msg_i, ptr_ty, "assert_msg")
-                        .unwrap();
-                    let len_f = self.module.get_function("lumia_str_len").unwrap();
-                    let len = self
-                        .builder
-                        .build_call(len_f, &[msg_ptr.into()], "assert_len")
-                        .unwrap()
-                        .try_as_basic_value()
-                        .basic()
-                        .unwrap();
-                    (msg_ptr, len)
-                } else {
-                    (ptr_ty.const_null(), self.i64_ty.const_int(0, false).into())
-                };
-                let f = self.module.get_function("lumia_assert").unwrap();
-                self.builder
-                    .build_call(f, &[cond.into(), msg_ptr.into(), msg_len.into()], "assert")
-                    .unwrap();
-                Ok(self.i64_ty.const_int(0, false).into())
-            }
-            Builtin::StrStartsWith | Builtin::StrEndsWith => {
-                let a_i = self.coerce_i64(self.local(args[0])?)?;
-                let b_i = self.coerce_i64(self.local(args[1])?)?;
-                let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                let a = self.builder.build_int_to_ptr(a_i, ptr_ty, "a").unwrap();
-                let b = self.builder.build_int_to_ptr(b_i, ptr_ty, "b").unwrap();
-                let fname = match name {
-                    Builtin::StrStartsWith => "lumia_str_starts_with",
-                    _ => "lumia_str_ends_with",
-                };
-                let f = self.module.get_function(fname).unwrap();
-                let call = self
-                    .builder
-                    .build_call(f, &[a.into(), b.into()], "str_affix")
-                    .unwrap();
-                Ok(call.try_as_basic_value().basic().unwrap())
-            }
             Builtin::Range => {
                 let a = self.coerce_i64(self.local(args[0])?)?;
                 let b = self.coerce_i64(self.local(args[1])?)?;
@@ -829,6 +434,7 @@ impl<'ctx> Codegen<'ctx> {
                     .unwrap()
                     .into())
             }
+            _ => unreachable!("non-list builtin in emit_list_builtin"),
         }
     }
 }

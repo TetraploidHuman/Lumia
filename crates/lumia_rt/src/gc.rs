@@ -6,12 +6,13 @@ use std::cell::RefCell;
 use crate::common::{
     header_from_payload, header_layout, is_heap_payload, payload_ptr, trap_abort, MarkSweep,
     MmBackend, ObjectHeader, BYTES_ALLOCATED, GC_INHIBIT, HEAP, HEAP_LIMIT, PAR_WORKER,
-    PERM_OBJECTS, ROOTS, TYPE_ADT, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_F64, TYPE_LIST_IOTA,
-    TYPE_MAP_ASSOC_F64, TYPE_MAP_ASSOC_F64V, TYPE_MAP_ASSOC_VF64, TYPE_MAP_F64, TYPE_MAP_F64V,
-    TYPE_MAP_VF64, TYPE_SET, TYPE_SET_ASSOC, TYPE_SET_F64,
+    PERM_OBJECTS, ROOTS, TYPE_ADT, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_IOTA, TYPE_MAP, TYPE_SET,
 };
-use crate::map_set::{is_map_tid, map_mark_payload, set_mark_payload};
+use crate::map_set::{map_mark_payload, set_mark_payload};
 use crate::memo;
+use lumia_abi::{
+    list_elem_is_float, map_key_is_float, map_val_is_float, set_elem_is_float, tid_base,
+};
 
 impl MarkSweep {
     fn mark_from_roots() {
@@ -83,39 +84,31 @@ pub(crate) fn mark(obj: *mut ObjectHeader) {
         }
         (*obj).marked = 1;
         let payload = payload_ptr(obj);
-        match (*obj).type_id {
+        let tid = (*obj).type_id;
+        match tid_base(tid) {
             TYPE_LIST => {
-                let n = *(payload as *const i64);
-                let base = payload as *const i64;
-                for i in 0..n as usize {
-                    mark_value(*base.add(1 + i));
+                if list_elem_is_float(tid) {
+                    // Unboxed Float elems — never heap pointers.
+                } else {
+                    let n = *(payload as *const i64);
+                    let base = payload as *const i64;
+                    for i in 0..n as usize {
+                        mark_value(*base.add(1 + i));
+                    }
                 }
-            }
-            TYPE_LIST_F64 => {
-                // Unboxed Float elems — never heap pointers.
             }
             TYPE_LIST_IOTA => {
                 // Scalar bounds only — no child pointers.
             }
-            TYPE_SET | TYPE_SET_F64 | TYPE_SET_ASSOC => {
-                set_mark_payload(
-                    payload,
-                    (*obj).size as usize,
-                    (*obj).type_id == TYPE_SET_F64,
-                );
+            TYPE_SET => {
+                set_mark_payload(payload, (*obj).size as usize, set_elem_is_float(tid));
             }
-            tid if is_map_tid(tid) => {
+            TYPE_MAP => {
                 map_mark_payload(
                     payload,
                     (*obj).size as usize,
-                    matches!(
-                        tid,
-                        TYPE_MAP_F64 | TYPE_MAP_F64V | TYPE_MAP_ASSOC_F64 | TYPE_MAP_ASSOC_F64V
-                    ),
-                    matches!(
-                        tid,
-                        TYPE_MAP_VF64 | TYPE_MAP_F64V | TYPE_MAP_ASSOC_VF64 | TYPE_MAP_ASSOC_F64V
-                    ),
+                    map_key_is_float(tid),
+                    map_val_is_float(tid),
                 );
             }
             TYPE_ADT => {
@@ -202,11 +195,7 @@ pub(crate) unsafe fn finish_alloc(mem: *mut u8, nbytes: usize, type_id: u32) -> 
     (*header).size = nbytes as u32;
     (*header).marked = 0;
     // List COW uniqueness: `_pad` is a refcount (ADT uses `_pad` as float mask).
-    (*header)._pad = if type_id == TYPE_LIST || type_id == TYPE_LIST_F64 {
-        1
-    } else {
-        0
-    };
+    (*header)._pad = if tid_base(type_id) == TYPE_LIST { 1 } else { 0 };
     HEAP.with(|h| h.borrow_mut().push(header));
     BYTES_ALLOCATED.with(|b| *b.borrow_mut() += nbytes);
     payload_ptr(header)

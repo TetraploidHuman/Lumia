@@ -1,12 +1,13 @@
 //! Type-id classifiers and Float-key/value ensure helpers.
 
 use crate::common::{
-    float_key_eq, float_key_hash, header_from_payload, trap_abort, TYPE_MAP, TYPE_MAP_ASSOC,
-    TYPE_MAP_ASSOC_F64, TYPE_MAP_ASSOC_F64V, TYPE_MAP_ASSOC_VF64, TYPE_MAP_F64, TYPE_MAP_F64V,
-    TYPE_MAP_VF64, TYPE_SET, TYPE_SET_F64,
+    float_key_eq, float_key_hash, header_from_payload, trap_abort, TYPE_MAP, TYPE_SET,
 };
 use crate::gc::lumia_alloc;
 use crate::show_eq::{lumia_eq, lumia_hash};
+use lumia_abi::{
+    tid_f_key, tid_f_val, TID_F_KEY, TID_F_VAL, TYPE_MAP_F64, TYPE_MAP_VF64, TYPE_SET_F64,
+};
 
 use super::map_core::map_count;
 
@@ -41,14 +42,6 @@ pub(crate) fn map_float_vals(map: *mut u8) -> bool {
         return false;
     }
     lumia_abi::map_val_is_float(unsafe { (*header_from_payload(map)).type_id })
-}
-
-pub(crate) fn map_tid_with_flags(float_keys: bool, float_vals: bool) -> u32 {
-    lumia_abi::map_type_id(float_keys, float_vals, false)
-}
-
-pub(crate) fn map_assoc_tid_with_flags(float_keys: bool, float_vals: bool) -> u32 {
-    lumia_abi::map_type_id(float_keys, float_vals, true)
 }
 
 pub(crate) fn set_float_elems(set: *mut u8) -> bool {
@@ -86,28 +79,19 @@ pub(crate) fn ensure_map_f64(map: *mut u8) -> *mut u8 {
     }
     unsafe {
         let h = header_from_payload(map);
-        match (*h).type_id {
-            TYPE_MAP_F64 | TYPE_MAP_F64V | TYPE_MAP_ASSOC_F64 | TYPE_MAP_ASSOC_F64V => map,
-            TYPE_MAP | TYPE_MAP_VF64 => {
-                if map_count(map) != 0 {
-                    trap_abort("lumia: ensure_map_f64 on non-empty Int-key map");
-                }
-                let tid = map_tid_with_flags(true, (*h).type_id == TYPE_MAP_VF64);
-                let dest = lumia_alloc(8, tid);
-                *(dest as *mut i64) = 0;
-                dest
-            }
-            TYPE_MAP_ASSOC | TYPE_MAP_ASSOC_VF64 => {
-                if map_count(map) != 0 {
-                    trap_abort("lumia: ensure_map_f64 on non-empty Int-key assoc map");
-                }
-                let tid = map_assoc_tid_with_flags(true, (*h).type_id == TYPE_MAP_ASSOC_VF64);
-                let dest = lumia_alloc(8, tid);
-                *(dest as *mut i64) = 0;
-                dest
-            }
-            other => trap_abort(&format!("lumia: ensure_map_f64 on type_id={other}")),
+        let tid = (*h).type_id;
+        if !lumia_abi::is_map_tid(tid) {
+            trap_abort(&format!("lumia: ensure_map_f64 on type_id={tid}"));
         }
+        if tid_f_key(tid) {
+            return map;
+        }
+        if map_count(map) != 0 {
+            trap_abort("lumia: ensure_map_f64 on non-empty Int-key map");
+        }
+        let dest = lumia_alloc(8, tid | TID_F_KEY);
+        *(dest as *mut i64) = 0;
+        dest
     }
 }
 
@@ -122,28 +106,19 @@ pub(crate) fn ensure_map_vf64(map: *mut u8) -> *mut u8 {
     }
     unsafe {
         let h = header_from_payload(map);
-        match (*h).type_id {
-            TYPE_MAP_VF64 | TYPE_MAP_F64V | TYPE_MAP_ASSOC_VF64 | TYPE_MAP_ASSOC_F64V => map,
-            TYPE_MAP | TYPE_MAP_F64 => {
-                if map_count(map) != 0 {
-                    trap_abort("lumia: ensure_map_vf64 on non-empty non-Float-value map");
-                }
-                let tid = map_tid_with_flags((*h).type_id == TYPE_MAP_F64, true);
-                let dest = lumia_alloc(8, tid);
-                *(dest as *mut i64) = 0;
-                dest
-            }
-            TYPE_MAP_ASSOC | TYPE_MAP_ASSOC_F64 => {
-                if map_count(map) != 0 {
-                    trap_abort("lumia: ensure_map_vf64 on non-empty non-Float-value assoc map");
-                }
-                let tid = map_assoc_tid_with_flags((*h).type_id == TYPE_MAP_ASSOC_F64, true);
-                let dest = lumia_alloc(8, tid);
-                *(dest as *mut i64) = 0;
-                dest
-            }
-            other => trap_abort(&format!("lumia: ensure_map_vf64 on type_id={other}")),
+        let tid = (*h).type_id;
+        if !lumia_abi::is_map_tid(tid) {
+            trap_abort(&format!("lumia: ensure_map_vf64 on type_id={tid}"));
         }
+        if tid_f_val(tid) {
+            return map;
+        }
+        if map_count(map) != 0 {
+            trap_abort("lumia: ensure_map_vf64 on non-empty non-Float-value map");
+        }
+        let dest = lumia_alloc(8, tid | TID_F_VAL);
+        *(dest as *mut i64) = 0;
+        dest
     }
 }
 
@@ -157,18 +132,19 @@ pub(crate) fn ensure_set_f64(set: *mut u8) -> *mut u8 {
     }
     unsafe {
         let h = header_from_payload(set);
-        match (*h).type_id {
-            TYPE_SET_F64 => set,
-            TYPE_SET => {
-                if *(set as *const i64) != 0 {
-                    trap_abort("lumia: ensure_set_f64 on non-empty Int-elem set");
-                }
-                let dest = lumia_alloc(8, TYPE_SET_F64);
-                *(dest as *mut i64) = 0;
-                dest
-            }
-            other => trap_abort(&format!("lumia: ensure_set_f64 on type_id={other}")),
+        let tid = (*h).type_id;
+        if !lumia_abi::is_set_tid(tid) {
+            trap_abort(&format!("lumia: ensure_set_f64 on type_id={tid}"));
         }
+        if tid_f_key(tid) {
+            return set;
+        }
+        if *(set as *const i64) != 0 {
+            trap_abort("lumia: ensure_set_f64 on non-empty Int-elem set");
+        }
+        let dest = lumia_alloc(8, tid | TID_F_KEY);
+        *(dest as *mut i64) = 0;
+        dest
     }
 }
 
@@ -202,6 +178,7 @@ pub extern "C" fn lumia_ensure_map_vf64(map: *mut u8) -> *mut u8 {
 pub extern "C" fn lumia_ensure_set_f64(set: *mut u8) -> *mut u8 {
     ensure_set_f64(set)
 }
+
 pub(crate) fn is_set_tid(tid: u32) -> bool {
     lumia_abi::is_set_tid(tid)
 }

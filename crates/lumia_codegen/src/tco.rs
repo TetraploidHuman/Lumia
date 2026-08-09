@@ -5,7 +5,7 @@ use anyhow::Result;
 use inkwell::values::BasicMetadataValueEnum;
 use lumia_core::{Block, CoreModule, Local, Op, Value};
 use lumia_ty::Type;
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 impl<'ctx> Codegen<'ctx> {
     /// Emit `musttail call` + `ret` for pure Int TCO (self or mutual; no GC roots live).
@@ -65,17 +65,17 @@ pub(crate) fn compute_tco_sccs(core: &CoreModule) -> HashMap<String, HashSet<Str
         .map(|f| f.name.clone())
         .collect();
     if eligible.is_empty() {
-        return HashMap::new();
+        return HashMap::default();
     }
-    let mut graph: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut graph: HashMap<String, HashSet<String>> = HashMap::default();
     for name in &eligible {
-        graph.insert(name.clone(), HashSet::new());
+        graph.insert(name.clone(), HashSet::default());
     }
     for f in &core.functions {
         if !eligible.contains(&f.name) {
             continue;
         }
-        let mut callees = HashSet::new();
+        let mut callees = HashSet::default();
         collect_direct_calls(&f.body, &mut callees);
         for c in callees {
             if eligible.contains(&c) {
@@ -86,9 +86,9 @@ pub(crate) fn compute_tco_sccs(core: &CoreModule) -> HashMap<String, HashSet<Str
     // Tarjan SCC
     let mut index = 0u32;
     let mut stack: Vec<String> = Vec::new();
-    let mut on_stack: HashSet<String> = HashSet::new();
-    let mut indices: HashMap<String, u32> = HashMap::new();
-    let mut lowlink: HashMap<String, u32> = HashMap::new();
+    let mut on_stack: HashSet<String> = HashSet::default();
+    let mut indices: HashMap<String, u32> = HashMap::default();
+    let mut lowlink: HashMap<String, u32> = HashMap::default();
     let mut sccs: Vec<HashSet<String>> = Vec::new();
 
     fn strongconnect(
@@ -121,7 +121,7 @@ pub(crate) fn compute_tco_sccs(core: &CoreModule) -> HashMap<String, HashSet<Str
             }
         }
         if lowlink.get(v) == indices.get(v) {
-            let mut comp = HashSet::new();
+            let mut comp = HashSet::default();
             loop {
                 let w = stack.pop().unwrap();
                 on_stack.remove(&w);
@@ -154,7 +154,7 @@ pub(crate) fn compute_tco_sccs(core: &CoreModule) -> HashMap<String, HashSet<Str
         }
     }
 
-    let mut out = HashMap::new();
+    let mut out = HashMap::default();
     for scc in sccs {
         for m in &scc {
             out.insert(m.clone(), scc.clone());
@@ -164,7 +164,7 @@ pub(crate) fn compute_tco_sccs(core: &CoreModule) -> HashMap<String, HashSet<Str
 }
 
 fn collect_direct_calls(block: &Block, out: &mut HashSet<String>) {
-    collect_calls_with_funrefs(block, &HashMap::new(), out);
+    collect_calls_with_funrefs(block, &HashMap::default(), out);
 }
 
 /// Collect direct callees, resolving `FunRef` → `IndirectCall` (for TCO SCCs).
@@ -285,7 +285,7 @@ mod tests {
             is_main: false,
             memo: None,
             external: None,
-            escaping: HashSet::new(),
+            escaping: HashSet::default(),
             scheme_poly: false,
         }
     }
@@ -303,8 +303,8 @@ mod tests {
                 },
                 Some("sum"),
             )],
-            hash_adts: HashSet::new(),
-            trait_methods: HashMap::new(),
+            hash_adts: HashSet::default(),
+            trait_methods: HashMap::default(),
         };
         let sccs = compute_tco_sccs(&core);
         assert!(
@@ -337,8 +337,8 @@ mod tests {
         let core = CoreModule {
             name: "M".into(),
             functions: vec![even, odd],
-            hash_adts: HashSet::new(),
-            trait_methods: HashMap::new(),
+            hash_adts: HashSet::default(),
+            trait_methods: HashMap::default(),
         };
         let sccs = compute_tco_sccs(&core);
         assert!(sccs.contains_key("even"));
@@ -361,8 +361,8 @@ mod tests {
         let core = CoreModule {
             name: "M".into(),
             functions: vec![f],
-            hash_adts: HashSet::new(),
-            trait_methods: HashMap::new(),
+            hash_adts: HashSet::default(),
+            trait_methods: HashMap::default(),
         };
         let sccs = compute_tco_sccs(&core);
         assert!(

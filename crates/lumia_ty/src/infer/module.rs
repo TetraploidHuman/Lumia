@@ -202,12 +202,9 @@ pub fn infer_module_with_options(
         .into_iter()
         .map(|(sp, t)| (sp, inf.zonk_type(t)))
         .collect();
-    let decls: std::collections::HashMap<_, _> =
-        std::mem::take(&mut inf.decls).into_iter().collect();
-    let ufcs_rewrites: std::collections::HashMap<_, _> =
-        std::mem::take(&mut inf.ufcs_rewrites).into_iter().collect();
-    let alt_kinds: std::collections::HashMap<_, _> =
-        std::mem::take(&mut inf.alt_kinds).into_iter().collect();
+    let decls: HashMap<_, _> = std::mem::take(&mut inf.decls).into_iter().collect();
+    let ufcs_rewrites: HashMap<_, _> = std::mem::take(&mut inf.ufcs_rewrites).into_iter().collect();
+    let alt_kinds: HashMap<_, _> = std::mem::take(&mut inf.alt_kinds).into_iter().collect();
     let mut module = module.clone();
     if !ufcs_rewrites.is_empty() {
         apply_ufcs_rewrites(&mut module, &ufcs_rewrites);

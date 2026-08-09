@@ -5,7 +5,7 @@ use super::expr::push_lowered_val;
 use crate::ast::{AdtDef, AdtVariant, CtorInfo, Expr, Fun, Item, Module, ProductDef};
 use crate::match_check::check_module_matches;
 use lumia_syntax::VariantFields;
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 fn ensure_prelude_adt(
     adts: &mut Vec<AdtDef>,
@@ -45,19 +45,21 @@ fn ensure_prelude_adt(
 pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
     let mut adts = Vec::new();
     let mut products = Vec::new();
-    let mut ctors = HashMap::new();
-    let mut product_map = HashMap::new();
-    let mut product_fields = HashMap::new();
-    let mut ambiguous_product_fields: HashSet<String> = HashSet::new();
+    let mut ctors = HashMap::default();
+    let mut product_map = HashMap::default();
+    let mut product_fields = HashMap::default();
+    let mut ambiguous_product_fields: HashSet<String> = HashSet::default();
     // Builtin trait prerequisites (DESIGN §3.6); user `trait` decls may extend.
-    let mut trait_requires: HashMap<String, Vec<String>> = HashMap::from([
+    let mut trait_requires: HashMap<String, Vec<String>> = [
         ("Ord".into(), vec!["Eq".into()]),
         ("Eq".into(), vec![]),
         ("Hash".into(), vec![]),
         ("Show".into(), vec![]),
         ("Num".into(), vec![]),
-    ]);
-    let mut instances: HashSet<(String, String)> = HashSet::new();
+    ]
+    .into_iter()
+    .collect();
+    let mut instances: HashSet<(String, String)> = HashSet::default();
     for item in &m.items {
         if let lumia_syntax::Item::Type(t) = item {
             match &t.kind {
@@ -189,7 +191,7 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
     check_module_matches(m, &ctors, &adts, &product_map)?;
 
     // Pre-register top-level function names for `--parallel` FunRef maps.
-    let mut toplevel_funs = HashSet::new();
+    let mut toplevel_funs = HashSet::default();
     for item in &m.items {
         match item {
             lumia_syntax::Item::Val(v) => {
@@ -210,7 +212,7 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
             _ => {}
         }
     }
-    let mut toplevel_fold_assoc = HashSet::new();
+    let mut toplevel_fold_assoc = HashSet::default();
     for item in &m.items {
         if let lumia_syntax::Item::Val(v) = item {
             if let Some(params) = &v.params {
@@ -238,12 +240,12 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
     }
     // trait name → (method name → default body)
     let mut trait_defaults: HashMap<String, HashMap<String, lumia_syntax::ValItem>> =
-        HashMap::new();
+        HashMap::default();
     // method → trait (reject duplicate short names across traits at lower time).
-    let mut method_traits: HashMap<String, String> = HashMap::new();
+    let mut method_traits: HashMap<String, String> = HashMap::default();
     for item in &m.items {
         if let lumia_syntax::Item::Trait(t) = item {
-            let mut ms = HashMap::new();
+            let mut ms = HashMap::default();
             for method in &t.methods {
                 ms.insert(method.name.clone(), method.clone());
                 match method_traits.get(&method.name) {
@@ -279,10 +281,10 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
     );
 
     let mut items = Vec::new();
-    let mut show_methods = HashMap::new();
+    let mut show_methods = HashMap::default();
     // (type, method) → mangled `__Trait_Type_method` (may be multi-trait).
-    let mut trait_methods: HashMap<(String, String), Vec<String>> = HashMap::new();
-    let mut lowered_methods: HashSet<String> = HashSet::new();
+    let mut trait_methods: HashMap<(String, String), Vec<String>> = HashMap::default();
+    let mut lowered_methods: HashSet<String> = HashSet::default();
     let note_method =
         |tr: &str,
          ty: &str,

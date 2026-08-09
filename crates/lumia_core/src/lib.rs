@@ -14,7 +14,8 @@ pub use ir::{
 };
 pub use lower::{lower_hir, lower_hir_with_schemes};
 pub use pipeline::{
-    compile_file_to_core, compile_source_to_core, compile_source_to_core_with_parallel,
+    compile_file_to_core, compile_source_to_core, compile_source_to_core_with_options,
+    compile_source_to_core_with_parallel, FrontendOptions,
 };
 pub use value_ty::{
     infer_value_ty, infer_value_ty_ctx, value_alloc_may_heap, HeapPolicy, InferValueCtx,

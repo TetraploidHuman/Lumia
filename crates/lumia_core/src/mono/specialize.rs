@@ -5,11 +5,10 @@ use super::traits::directize_block;
 use crate::ir::{Block, CoreFun, CoreModule, Local, Op, Value};
 use crate::value_ty::infer_value_ty;
 use lumia_ty::Type;
-use rustc_hash::{FxHashMap, FxHashSet};
-use std::collections::HashMap;
+use rustc_hash::{FxHashMap as HashMap, FxHashSet};
 
 pub(crate) fn specialize_mono_calls(module: &mut CoreModule) {
-    let mut renames: FxHashMap<(String, MonoKey), String> = FxHashMap::default();
+    let mut renames: HashMap<(String, MonoKey), String> = HashMap::default();
     for _round in 0..8 {
         let added = specialize_mono_round(module, &mut renames);
         if !added {
@@ -32,9 +31,9 @@ pub(crate) fn specialize_mono_calls(module: &mut CoreModule) {
         .collect();
     {
         let index = FunIndex::new(&functions);
-        let no_funrefs = HashMap::new();
+        let no_funrefs = HashMap::default();
         for i in 0..functions.len() {
-            let mut local_tys: HashMap<u32, Type> = HashMap::new();
+            let mut local_tys: HashMap<u32, Type> = HashMap::default();
             for (j, p) in functions[i].params.iter().enumerate() {
                 local_tys.insert(
                     p.0,
@@ -95,12 +94,12 @@ fn refresh_body_fixed_ret_tys(module: &mut CoreModule) {
 /// One scan→clone pass. Returns true if any new clone was appended.
 fn specialize_mono_round(
     module: &mut CoreModule,
-    renames: &mut FxHashMap<(String, MonoKey), String>,
+    renames: &mut HashMap<(String, MonoKey), String>,
 ) -> bool {
     let index = FunIndex::new(&module.functions);
     let mut needed: FxHashSet<(String, MonoKey)> = FxHashSet::default();
     for fun in &module.functions {
-        let mut local_tys: HashMap<u32, Type> = HashMap::new();
+        let mut local_tys: HashMap<u32, Type> = HashMap::default();
         for (i, p) in fun.params.iter().enumerate() {
             local_tys.insert(p.0, fun.param_tys.get(i).cloned().unwrap_or(Type::Int));
         }
@@ -109,7 +108,7 @@ fn specialize_mono_round(
             &mut local_tys,
             &index,
             &mut needed,
-            &HashMap::new(),
+            &HashMap::default(),
         );
     }
 
@@ -318,7 +317,7 @@ pub(crate) fn mono_value_ty(
             return Some(f.ret_ty.clone());
         }
         if fun.contains('$') {
-            if let Some(key) = args_mono_key(args, local_tys, &HashMap::new()) {
+            if let Some(key) = args_mono_key(args, local_tys, &HashMap::default()) {
                 return Some(key.ret_ty(funs));
             }
         }
@@ -329,7 +328,7 @@ pub(crate) fn mono_value_ty(
 fn rewrite_mono_block(
     block: &mut Block,
     local_tys: &mut HashMap<u32, Type>,
-    renames: &FxHashMap<(String, MonoKey), String>,
+    renames: &HashMap<(String, MonoKey), String>,
     parent_funrefs: &HashMap<u32, String>,
     index: &FunIndex<'_>,
 ) {
@@ -367,7 +366,7 @@ fn rewrite_mono_block(
 fn rewrite_mono_value(
     value: &mut Value,
     local_tys: &mut HashMap<u32, Type>,
-    renames: &FxHashMap<(String, MonoKey), String>,
+    renames: &HashMap<(String, MonoKey), String>,
     funref_of: &HashMap<u32, String>,
     index: &FunIndex<'_>,
 ) {
@@ -406,7 +405,7 @@ fn rewrite_mono_value(
 fn mono_value_ty_rewrite(
     value: &Value,
     local_tys: &HashMap<u32, Type>,
-    renames: &FxHashMap<(String, MonoKey), String>,
+    renames: &HashMap<(String, MonoKey), String>,
     funref_of: &HashMap<u32, String>,
     index: &FunIndex<'_>,
 ) -> Type {

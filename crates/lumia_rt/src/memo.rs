@@ -4,7 +4,8 @@ use crate::{MEMO_IDX_CAP, MEMO_IDX_MAX_FUNS, MEMO_L2_MAX_ARGS, MEMO_L2_MAX_FUNS,
 use std::cell::RefCell;
 
 /// Transparent Memo `T_f` — fixed small associative tables (DESIGN §7.5.1-B).
-/// Caps live in `lumia_abi`; internal symbol prefix `memo_l2_*` kept for ABI stability.
+/// Caps live in `lumia_abi` (`MEMO_TF_*` / `MEMO_L2_*`). C entry points stay
+/// `lumia_memo_l2_*` for ABI stability (DESIGN vocabulary is `T_f`, not L2).
 
 #[derive(Clone, Copy)]
 struct MemoL2Slot {

@@ -1,18 +1,19 @@
-//! Deforestation / pipeline fusion (DESIGN §7.2).
+//! Residual `List.concat` identity elimination after HIR fusion (DESIGN §7.2).
 //!
 //! Primary fusion of `map`/`filter`/`fold` runs in HIR (`try_fuse_hof_fold` /
-//! `try_fuse_hof_build_method`). This Core pass peels residual identity
-//! concatenations (`xs.concat([])` / `[].concat(xs)` → `xs`) after HIR.
+//! `try_fuse_hof_build_method`). This Core pass only peels
+//! `xs.concat([])` / `[].concat(xs)` → `xs`.
 
 use lumia_core::{Block, CoreFun, CoreModule, Local, Op, Value};
 use lumia_hir::Builtin;
 use rustc_hash::FxHashSet as HashSet;
 
-pub struct FusionPass;
+/// Peel empty-list concat identities left after HIR deforestation.
+pub struct ConcatIdentPass;
 
-impl crate::Pass for FusionPass {
+impl crate::Pass for ConcatIdentPass {
     fn name(&self) -> &str {
-        "fusion"
+        "concat_ident"
     }
     fn run(&self, module: &mut CoreModule) {
         for f in &mut module.functions {
@@ -122,6 +123,7 @@ mod tests {
     use crate::Pass;
     use lumia_core::{Block, CoreFun, CoreModule, ListRepr, Op, Value};
     use lumia_ty::{Effect, Type};
+    use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
     #[test]
     fn peels_concat_with_empty() {
@@ -172,13 +174,13 @@ mod tests {
                 is_main: false,
                 memo: None,
                 external: None,
-                escaping: std::collections::HashSet::default(),
+                escaping: HashSet::default(),
                 scheme_poly: false,
             }],
-            hash_adts: std::collections::HashSet::default(),
-            trait_methods: std::collections::HashMap::default(),
+            hash_adts: HashSet::default(),
+            trait_methods: HashMap::default(),
         };
-        FusionPass.run(&mut module);
+        ConcatIdentPass.run(&mut module);
         assert!(matches!(
             &module.functions[0].body.ops[3],
             Op::Let {

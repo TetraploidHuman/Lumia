@@ -1,6 +1,6 @@
 use crate::ir::{CoreFun, Local};
 use lumia_ty::{Effect, Type};
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 /// Ground type key for monomorphization (Hash-friendly; no open Vars).
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -274,7 +274,7 @@ impl MonoKey {
     }
 
     pub(crate) fn funref_param_binds(&self, params: &[Local]) -> HashMap<u32, String> {
-        let mut binds = HashMap::new();
+        let mut binds = HashMap::default();
         for (i, k) in self.0.iter().enumerate() {
             if let MonoKind::FunRef(n) = k {
                 if let Some(p) = params.get(i) {

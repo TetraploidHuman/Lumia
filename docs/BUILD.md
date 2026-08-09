@@ -140,7 +140,7 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumia_rt` 内�
 | `lumia_println_int` / `_cstr` / `_str` / `_bool`     | 效应 I/O                            |
 
 
-对象头：`type_id`、`size`、`marked`（见 `crates/lumia_rt`）。
+对象头：`type_id`、`size`、`marked`（见 `crates/lumia_rt`）。容器 `type_id` 为 **base（低 8 位）+ 标志位**：`TID_F_KEY` / `TID_F_VAL` / `TID_ASSOC`（见 `lumia_abi`）；不再为 Float/Assoc 组合单独分配稠密 ID。
 
 **更换难度**：
 
@@ -158,11 +158,12 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumia_rt` 内�
 
 ## 6. 优化与表示选择
 
-- Pass 接口在 `lumia_opt`：`cse` / `memo_l0` / `memo_l1`（Debug+Release，局部消重）+ Release 的 `memo_tf`（有界 `T_f`：Slots / DenseInt；**CSE 前**做建表规划）；`--no-memo`（别名 `--no-memo-l2`）可关 runtime Memo 做对比。
+- Pass 接口在 `lumia_opt`：`cse` / `const_fold` / `licm`（Debug+Release，局部消重）+ Release 的 `memo_tf`（有界 `T_f`：Slots / DenseInt；**CSE 前**做建表规划，非 pass 循环内空跑）；`--no-memo`（别名 `--no-memo-l2`）可关 runtime Memo 做对比。运行时 C 符号仍为 `lumia_memo_l2_*`（ABI 冻结）。
+- 测试/工具前端：`lumia_core::FrontendOptions`（`auto_parallel` / `trust_foreign_pure`）经 `compile_source_to_core_with_options`；多文件加载、visibility、assert 消息注解仍仅 CLI。
   - **Inline**：小纯函数直调内联（跳过 `main` / `foreign` / memo / 递归 / 效应）。
   - **Escape**：保守逃逸分析；`ReprSelect` 对**未逃逸**小 `List`/`Map` 标 `LitList` / `SmallMap`（codegen 仍可走堆布局，hint 已接上）。
   - **CopyElim**：折叠 `let x = y` SSA 别名。
-  - **Fusion**：HIR 主融合 + Core 消 `concat([])` 恒等；空 `listOf()` → `lumia_list_empty` 永生单例。
+  - **concat_ident**：Core 消 `concat([])` 恒等（`map`/`filter`/`fold` 主融合在 HIR）；空 `listOf()` → `lumia_list_empty` 永生单例。
   - **稳健性**：foreign `String` 临时 cstr 在调用期间入根（防 GC UAF）；Iota 物化 / 取下标用 checked 算术并对过大物化 trap；跨 product 同名字段的 `with` 报歧义。
   - **List Iota**：`range` / `rangeInclusive` → `TYPE_LIST_IOTA`（`[start,end)`，O(1)）；`len`/`get`/eq/hash/`take`/`slice` 虚拟；修改类 API `force` 成 HeapList（见 `examples/range_iota.lm`）。
 - GC：mark-sweep + **shadow-stack 根**（`lumia_root_push`/`pop`；**嵌套块 / 循环体作用域弹出**，`break`/`continue` 对齐循环入口深度）+ 软阈值自动收集（默认 256KiB）；见 `examples/gc_roots.lm`。
@@ -249,9 +250,9 @@ cargo run -p lumia -- build examples/map_string_keys.lm -o /tmp/msk && /tmp/msk
 printf '  hi hi there  ' | $(cargo run -q -p lumia -- build examples/read_stdin.lm -o /tmp/rs >/dev/null && echo /tmp/rs)
 printf 'Hello World\nhello there\nWORLD\n' | $(cargo run -q -p lumia -- build examples/word_count.lm -o /tmp/wc >/dev/null && echo /tmp/wc)
 cargo run -p lumia -- build examples/list_text.lm -o /tmp/lt && /tmp/lt
-cargo run -p lumia -- build --release examples/memo_l2.lm -o /tmp/memo && /tmp/memo
+cargo run -p lumia -- build --release examples/memo_tf.lm -o /tmp/memo && /tmp/memo
 cargo run -p lumia -- build examples/memo_l0l1.lm -o /tmp/m01 && /tmp/m01
-# Memo L2 microbench (with vs without cache):
+# Memo `T_f` microbench (with vs without cache):
 #   ./scripts/bench_memo.sh
 # CPU compute suite (primes / matmul / Mandelbrot / Collatz / fib):
 #   ./scripts/bench_cpu.sh

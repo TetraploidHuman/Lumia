@@ -125,4 +125,59 @@ val main = {
             apply_clone.ret_ty
         );
     }
+
+    #[test]
+    fn specialize_clones_map_get_key_mangling() {
+        let core = compile_source_to_core(
+            r#"
+module M
+val id = { m -> m }
+val main = {
+    id(mapOf(1 to 2))
+    id(mapOf("a" to 3))
+}
+"#,
+        )
+        .expect("core");
+        let names: Vec<_> = core.functions.iter().map(|f| f.name.as_str()).collect();
+        assert!(
+            names.iter().any(|n| n.contains("id") && n.contains("$Map")),
+            "expected id$Map_* clone, funs={names:?}"
+        );
+    }
+
+    #[test]
+    fn specialize_option_map_funref_rounds() {
+        let core = compile_source_to_core(
+            r#"
+module M
+type Option { Some(value) None }
+val optMap = { opt, f ->
+    opt match {
+        None -> None
+        Some(x) -> Some(f(x))
+    }
+}
+val dbl = { x -> x + x }
+val main = {
+    optMap(Some(1), dbl)
+    optMap(Some(1.5), dbl)
+}
+"#,
+        )
+        .expect("core");
+        let names: Vec<_> = core.functions.iter().map(|f| f.name.as_str()).collect();
+        assert!(
+            names
+                .iter()
+                .any(|n| n.contains("optMap") && n.contains('$')),
+            "expected optMap$* mono clones, funs={names:?}"
+        );
+        assert!(
+            names
+                .iter()
+                .any(|n| n.contains("dbl") && n.contains("$Float")),
+            "expected dbl$Float for Float Option path, funs={names:?}"
+        );
+    }
 }

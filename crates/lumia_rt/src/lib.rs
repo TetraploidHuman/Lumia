@@ -25,11 +25,12 @@ mod string_io;
 
 use common::{header_from_payload, trap_abort, GcInhibitGuard};
 pub use common::{
-    MarkSweep, MmBackend, ObjectHeader, MEMO_IDX_CAP, MEMO_IDX_MAX_FUNS, MEMO_IDX_TABLE_BYTES,
-    MEMO_L2_MAX_ARGS, MEMO_L2_MAX_FUNS, MEMO_L2_SLOTS, MEMO_PROCESS_BYTE_CAP, TYPE_ADT, TYPE_BYTES,
-    TYPE_CHAR, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_F64, TYPE_LIST_IOTA, TYPE_MAP, TYPE_MAP_ASSOC,
-    TYPE_MAP_ASSOC_F64, TYPE_MAP_ASSOC_F64V, TYPE_MAP_ASSOC_VF64, TYPE_MAP_F64, TYPE_MAP_F64V,
-    TYPE_MAP_VF64, TYPE_SET, TYPE_SET_ASSOC, TYPE_SET_F64, TYPE_STRING,
+    tid_base, MarkSweep, MmBackend, ObjectHeader, MEMO_IDX_CAP, MEMO_IDX_MAX_FUNS,
+    MEMO_IDX_TABLE_BYTES, MEMO_L2_MAX_ARGS, MEMO_L2_MAX_FUNS, MEMO_L2_SLOTS, MEMO_PROCESS_BYTE_CAP,
+    TYPE_ADT, TYPE_BYTES, TYPE_CHAR, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_F64, TYPE_LIST_IOTA,
+    TYPE_MAP, TYPE_MAP_ASSOC, TYPE_MAP_ASSOC_F64, TYPE_MAP_ASSOC_F64V, TYPE_MAP_ASSOC_VF64,
+    TYPE_MAP_F64, TYPE_MAP_F64V, TYPE_MAP_VF64, TYPE_SET, TYPE_SET_ASSOC, TYPE_SET_F64,
+    TYPE_STRING,
 };
 
 use gc::list_payload_bytes;
@@ -66,8 +67,8 @@ pub extern "C" fn lumia_len(obj: *mut u8) -> i64 {
         let h = header_from_payload(obj);
         match (*h).type_id {
             TYPE_STRING => (*h).size as i64,
-            TYPE_LIST | TYPE_LIST_F64 | TYPE_LIST_IOTA => list_len_of(obj),
-            TYPE_SET | TYPE_SET_F64 | TYPE_SET_ASSOC => *(obj as *const i64),
+            tid if is_list_tid(tid) => list_len_of(obj),
+            tid if is_set_tid(tid) => *(obj as *const i64),
             tid if is_map_tid(tid) => map_count(obj),
             _ => trap_abort(&format!("lumia: len on unsupported type {}", (*h).type_id)),
         }
@@ -100,7 +101,7 @@ pub extern "C" fn lumia_set(obj: *mut u8, key_or_index: i64, val: i64) -> *mut u
     }
     let tid = unsafe { (*header_from_payload(obj)).type_id };
     match tid {
-        TYPE_LIST | TYPE_LIST_F64 | TYPE_LIST_IOTA => lumia_list_set(obj, key_or_index, val),
+        tid if is_list_tid(tid) => lumia_list_set(obj, key_or_index, val),
         tid if is_map_tid(tid) => lumia_map_set(obj, key_or_index, val),
         _ => trap_abort(&format!("lumia: set on unsupported type_id={tid}")),
     }
@@ -117,12 +118,13 @@ pub extern "C" fn lumia_elems(obj: *mut u8) -> *mut u8 {
     }
     let tid = unsafe { (*header_from_payload(obj)).type_id };
     match tid {
-        TYPE_LIST | TYPE_LIST_F64 => obj,
+        tid if tid_base(tid) == TYPE_LIST => obj,
         TYPE_LIST_IOTA => force_heap_list(obj),
-        TYPE_SET | TYPE_SET_F64 | TYPE_SET_ASSOC => unsafe {
+        tid if is_set_tid(tid) => unsafe {
             let n = *(obj as *const i64);
             let nbytes = list_payload_bytes(n);
-            let dest = lumia_alloc(nbytes, TYPE_LIST);
+            let dest_tid = lumia_abi::list_type_id(lumia_abi::set_elem_is_float(tid));
+            let dest = lumia_alloc(nbytes, dest_tid);
             let dst = dest as *mut i64;
             *dst = n;
             for i in 0..n as usize {
@@ -143,7 +145,7 @@ pub extern "C" fn lumia_remove(obj: *mut u8, key_or_elem: i64) -> *mut u8 {
     let tid = unsafe { (*header_from_payload(obj)).type_id };
     match tid {
         tid if is_map_tid(tid) => lumia_map_remove(obj, key_or_elem),
-        TYPE_SET | TYPE_SET_F64 | TYPE_SET_ASSOC => lumia_set_remove(obj, key_or_elem),
+        tid if is_set_tid(tid) => lumia_set_remove(obj, key_or_elem),
         _ => trap_abort(&format!("lumia: remove on unsupported type_id={tid}")),
     }
 }
@@ -157,8 +159,8 @@ pub extern "C" fn lumia_get(obj: *mut u8, key_or_index: i64, some_tag: i64, none
     let h = header_from_payload(obj);
     unsafe {
         match (*h).type_id {
-            TYPE_LIST | TYPE_LIST_F64 | TYPE_LIST_IOTA => lumia_list_get(obj, key_or_index),
-            TYPE_SET | TYPE_SET_F64 | TYPE_SET_ASSOC => {
+            tid if is_list_tid(tid) => lumia_list_get(obj, key_or_index),
+            tid if is_set_tid(tid) => {
                 let n = *(obj as *const i64);
                 if key_or_index < 0 || key_or_index >= n {
                     trap_abort("lumia: set get OOB");
@@ -183,7 +185,7 @@ pub extern "C" fn lumia_contains(obj: *mut u8, key: i64) -> i64 {
     unsafe {
         match (*h).type_id {
             tid if is_map_tid(tid) => lumia_map_contains(obj, key),
-            TYPE_SET | TYPE_SET_F64 | TYPE_SET_ASSOC => lumia_set_contains(obj, key),
+            tid if is_set_tid(tid) => lumia_set_contains(obj, key),
             TYPE_STRING => lumia_str_contains(obj, key as *mut u8),
             other => trap_abort(&format!("lumia: contains unsupported type_id {other}")),
         }

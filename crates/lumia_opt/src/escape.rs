@@ -15,7 +15,7 @@ use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 type ParamEscape = Vec<bool>;
 
 /// Locals that may outlive their defining region / be observed from outside.
-pub fn escaping_locals(fun: &CoreFun) -> std::collections::HashSet<Local> {
+pub fn escaping_locals(fun: &CoreFun) -> HashSet<Local> {
     escaping_locals_with(fun, &HashMap::default())
         .into_iter()
         .collect()
@@ -325,7 +325,7 @@ mod tests {
             is_main: false,
             memo: None,
             external: None,
-            escaping: std::collections::HashSet::default(),
+            escaping: HashSet::default(),
             scheme_poly: false,
         }
     }
@@ -440,7 +440,7 @@ mod tests {
             is_main: false,
             memo: None,
             external: None,
-            escaping: std::collections::HashSet::new(),
+            escaping: HashSet::default(),
             scheme_poly: false,
         };
         let main_fun = CoreFun {
@@ -480,14 +480,14 @@ mod tests {
             is_main: true,
             memo: None,
             external: None,
-            escaping: std::collections::HashSet::new(),
+            escaping: HashSet::default(),
             scheme_poly: false,
         };
         let mut module = CoreModule {
             name: "M".into(),
             functions: vec![len_fun, main_fun],
-            hash_adts: std::collections::HashSet::new(),
-            trait_methods: std::collections::HashMap::new(),
+            hash_adts: HashSet::default(),
+            trait_methods: HashMap::default(),
         };
         EscapePass.run(&mut module);
         let main = module.functions.iter().find(|f| f.name == "main").unwrap();

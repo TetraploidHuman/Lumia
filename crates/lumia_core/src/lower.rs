@@ -10,28 +10,28 @@ use crate::mono::{
 };
 use lumia_hir::{Builtin, Expr as HirExpr, Item, Module as HirModule};
 use lumia_ty::{Effect, Type};
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 struct LowerCtx {
     next: u32,
     name_to_local: HashMap<String, Local>,
-    mutables: std::collections::HashSet<String>,
-    toplevel_funs: std::collections::HashSet<String>,
-    toplevel_vals: std::collections::HashSet<String>,
+    mutables: HashSet<String>,
+    toplevel_funs: HashSet<String>,
+    toplevel_vals: HashSet<String>,
     /// Short trait-method names left unresolved until post-mono resolve.
-    trait_method_names: std::collections::HashSet<String>,
+    trait_method_names: HashSet<String>,
 }
 
 impl LowerCtx {
     fn new(
-        toplevel_funs: std::collections::HashSet<String>,
-        toplevel_vals: std::collections::HashSet<String>,
-        trait_method_names: std::collections::HashSet<String>,
+        toplevel_funs: HashSet<String>,
+        toplevel_vals: HashSet<String>,
+        trait_method_names: HashSet<String>,
     ) -> Self {
         Self {
             next: 0,
-            name_to_local: HashMap::new(),
-            mutables: std::collections::HashSet::new(),
+            name_to_local: HashMap::default(),
+            mutables: HashSet::default(),
             toplevel_funs,
             toplevel_vals,
             trait_method_names,
@@ -65,7 +65,7 @@ impl LowerCtx {
 }
 
 pub fn lower_hir(module: &HirModule, fun_types: &HashMap<String, Type>) -> CoreModule {
-    lower_hir_with_schemes(module, fun_types, &HashMap::new())
+    lower_hir_with_schemes(module, fun_types, &HashMap::default())
 }
 
 /// Lower HIR using inferred types and HM schemes (scheme-driven monomorphization).
@@ -74,7 +74,7 @@ pub fn lower_hir_with_schemes(
     fun_types: &HashMap<String, Type>,
     fun_schemes: &HashMap<String, lumia_ty::Scheme>,
 ) -> CoreModule {
-    let toplevel_funs: std::collections::HashSet<String> = module
+    let toplevel_funs: HashSet<String> = module
         .items
         .iter()
         .filter_map(|item| match item {
@@ -82,7 +82,7 @@ pub fn lower_hir_with_schemes(
             _ => None,
         })
         .collect();
-    let toplevel_vals: std::collections::HashSet<String> = module
+    let toplevel_vals: HashSet<String> = module
         .items
         .iter()
         .filter_map(|item| match item {
@@ -90,7 +90,7 @@ pub fn lower_hir_with_schemes(
             _ => None,
         })
         .collect();
-    let trait_method_names: std::collections::HashSet<String> = module
+    let trait_method_names: HashSet<String> = module
         .trait_methods
         .keys()
         .map(|(_, m)| m.clone())
@@ -144,7 +144,7 @@ pub fn lower_hir_with_schemes(
                     is_main: f.is_main,
                     memo: None,
                     external: f.external.clone(),
-                    escaping: HashSet::new(),
+                    escaping: HashSet::default(),
                     scheme_poly,
                 });
             }
@@ -179,7 +179,7 @@ pub fn lower_hir_with_schemes(
                     is_main: false,
                     memo: None,
                     external: None,
-                    escaping: HashSet::new(),
+                    escaping: HashSet::default(),
                     scheme_poly,
                 });
             }

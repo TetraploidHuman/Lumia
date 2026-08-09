@@ -3,7 +3,7 @@
 use crate::infer::Infer;
 use crate::types::{at, Effect, Type, TypeError};
 use lumia_hir::{Expr, Item, Module};
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 impl Infer {
     pub(crate) fn is_ord(&self, t: &Type) -> bool {

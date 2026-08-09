@@ -6,7 +6,7 @@
 
 use lumia_syntax::{ImportNames, Item};
 use lumia_ty::NameVisibility;
-use std::collections::HashSet;
+use rustc_hash::FxHashSet as HashSet;
 
 pub fn item_name(it: &Item) -> Option<&str> {
     match it {
@@ -49,9 +49,9 @@ pub fn import_visible_names(items: &[Item], names: &ImportNames) -> HashSet<Stri
         ImportNames::All => pubs,
         ImportNames::Single(n) => {
             if pubs.contains(&n.name) {
-                HashSet::from([n.local().to_string()])
+                [n.local().to_string()].into_iter().collect()
             } else {
-                HashSet::new()
+                HashSet::default()
             }
         }
         ImportNames::Selective(ns) => ns

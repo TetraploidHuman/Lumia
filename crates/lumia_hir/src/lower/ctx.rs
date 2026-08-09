@@ -2,8 +2,8 @@
 
 use crate::ast::CtorInfo;
 use lumia_syntax::Span;
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
 /// Lowering / exhaustiveness failure (mirrors `lumia_ty::TypeError` shape).
@@ -46,13 +46,13 @@ impl LowerCtx {
     /// Loop skeletons do not consult ctor/product tables.
     pub fn empty() -> Self {
         Self {
-            ctors: HashMap::new(),
-            products: HashMap::new(),
-            product_fields: HashMap::new(),
-            ambiguous_product_fields: HashSet::new(),
+            ctors: HashMap::default(),
+            products: HashMap::default(),
+            product_fields: HashMap::default(),
+            ambiguous_product_fields: HashSet::default(),
             err: RefCell::new(None),
-            toplevel_funs: HashSet::new(),
-            toplevel_fold_assoc: HashSet::new(),
+            toplevel_funs: HashSet::default(),
+            toplevel_fold_assoc: HashSet::default(),
         }
     }
 

@@ -228,6 +228,7 @@ dependencies = [
  "lumia_opt",
  "lumia_syntax",
  "lumia_ty",
+ "rustc-hash",
  "serde",
  "serde_json",
  "thiserror",
@@ -250,6 +251,7 @@ dependencies = [
  "lumia_opt",
  "lumia_syntax",
  "lumia_ty",
+ "rustc-hash",
  "thiserror",
 ]
 
@@ -268,6 +270,7 @@ name = "lumia_hir"
 version = "0.1.0"
 dependencies = [
  "lumia_syntax",
+ "rustc-hash",
  "thiserror",
 ]
 

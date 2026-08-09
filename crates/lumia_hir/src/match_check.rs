@@ -3,7 +3,7 @@
 use crate::ast::{AdtDef, Builtin, CtorInfo, Expr};
 use crate::lower::{LowerCtx, LowerError};
 use lumia_syntax::{BinOp, Pattern, Span};
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 /// Short-circuit `and` as `if left { right } else { false }` (avoids OOB field/get).
 pub(crate) fn short_and(left: Expr, right: Expr, span: Span) -> Expr {
@@ -244,9 +244,9 @@ pub(crate) fn check_pats_cover(
         return Ok(());
     }
 
-    let mut covered: HashMap<String, HashSet<i64>> = HashMap::new();
-    let mut ctor_args: HashMap<String, Vec<Vec<&Pattern>>> = HashMap::new();
-    let mut product_fields: HashMap<String, HashMap<String, Vec<&Pattern>>> = HashMap::new();
+    let mut covered: HashMap<String, HashSet<i64>> = HashMap::default();
+    let mut ctor_args: HashMap<String, Vec<Vec<&Pattern>>> = HashMap::default();
+    let mut product_fields: HashMap<String, HashMap<String, Vec<&Pattern>>> = HashMap::default();
     let mut tuple_rows: Vec<Vec<&Pattern>> = Vec::new();
     let mut list_pats: Vec<&Pattern> = Vec::new();
     let mut saw_sum = false;

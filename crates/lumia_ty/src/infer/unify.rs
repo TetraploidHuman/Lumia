@@ -47,52 +47,6 @@ impl Infer {
         }
     }
 
-    /// Effect free-vars in a type (for future effect-quantifying generalize; DESIGN §6).
-    #[allow(dead_code)]
-    pub(crate) fn free_eff_vars_in_ty(&mut self, ty: Type) -> HashSet<u32> {
-        let ty = self.prune(ty);
-        let mut acc = HashSet::default();
-        self.collect_eff_vars_in_ty(&ty, &mut acc);
-        acc
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn collect_eff_vars_in_ty(&mut self, ty: &Type, acc: &mut HashSet<u32>) {
-        match ty {
-            Type::Fun(ps, r, e) => {
-                for p in ps {
-                    self.collect_eff_vars_in_ty(p, acc);
-                }
-                self.collect_eff_vars_in_ty(r, acc);
-                if let Effect::Var(v) = self.prune_eff(*e) {
-                    acc.insert(v);
-                }
-            }
-            Type::List(t) | Type::Set(t) => self.collect_eff_vars_in_ty(t, acc),
-            Type::Map(k, v) => {
-                self.collect_eff_vars_in_ty(k, acc);
-                self.collect_eff_vars_in_ty(v, acc);
-            }
-            Type::Adt { params, .. } => {
-                for p in params {
-                    self.collect_eff_vars_in_ty(p, acc);
-                }
-            }
-            Type::Tuple(ts) | Type::TuplePrefix(ts) => {
-                for t in ts {
-                    self.collect_eff_vars_in_ty(t, acc);
-                }
-            }
-            Type::Var(v) => {
-                if let Some(t) = self.subst.get(v).cloned() {
-                    let t = self.prune(t);
-                    self.collect_eff_vars_in_ty(&t, acc);
-                }
-            }
-            _ => {}
-        }
-    }
-
     pub(crate) fn env_free_ty_vars(&mut self) -> HashSet<u32> {
         let schemes: Vec<Scheme> = self
             .env
@@ -103,25 +57,6 @@ impl Infer {
         for sch in schemes {
             let quantified: HashSet<u32> = sch.vars.iter().copied().collect();
             for v in self.free_ty_vars(sch.ty) {
-                if !quantified.contains(&v) {
-                    acc.insert(v);
-                }
-            }
-        }
-        acc
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn env_free_eff_vars(&mut self) -> HashSet<u32> {
-        let schemes: Vec<Scheme> = self
-            .env
-            .iter()
-            .flat_map(|scope| scope.values().cloned())
-            .collect();
-        let mut acc = HashSet::default();
-        for sch in schemes {
-            let quantified: HashSet<u32> = sch.eff_vars.iter().copied().collect();
-            for v in self.free_eff_vars_in_ty(sch.ty) {
                 if !quantified.contains(&v) {
                     acc.insert(v);
                 }

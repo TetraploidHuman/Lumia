@@ -5,7 +5,7 @@ use crate::visit::rewrite_value_locals;
 use lumia_hir::Builtin;
 use lumia_syntax::{BinOp, UnOp};
 use lumia_ty::{Effect, Type};
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Local(pub u32);

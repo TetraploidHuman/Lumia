@@ -13,7 +13,7 @@
 
 use crate::types::{at, Type, TypeError, TypedModule};
 use lumia_hir::{Builtin, Expr, Item};
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 /// Reject calling effectful functions from pure contexts (simplified whole-program check).
 pub fn check_effect_boundaries(typed: &TypedModule) -> Result<(), TypeError> {
@@ -26,13 +26,13 @@ pub fn check_effect_boundaries(typed: &TypedModule) -> Result<(), TypeError> {
             };
             // If inference claims pure, body must not contain any eager effect.
             if !fun_is_effectful {
-                assert_no_effects_in_pure(&f.body, &typed.fun_types, &mut HashMap::new())?;
+                assert_no_effects_in_pure(&f.body, &typed.fun_types, &mut HashMap::default())?;
             }
             check_expr_effects(
                 &f.body,
                 fun_is_effectful,
                 &typed.fun_types,
-                &mut HashMap::new(),
+                &mut HashMap::default(),
             )?;
         }
     }
@@ -135,7 +135,7 @@ fn fun_body_has_io(body: &Expr, fun_types: &HashMap<String, Type>) -> bool {
             _ => false,
         }
     }
-    walk(body, fun_types, &mut HashMap::new())
+    walk(body, fun_types, &mut HashMap::default())
 }
 
 pub(crate) fn assert_no_effects_in_pure(
@@ -209,7 +209,7 @@ pub(crate) fn assert_no_effects_in_pure(
         Expr::Lambda { body, .. } => {
             // Construction is pure for the outer function. Enter the body as an
             // effect context so deferred IO is allowed; Fun type carries ε.
-            check_expr_effects(body, true, fun_types, &mut HashMap::new())
+            check_expr_effects(body, true, fun_types, &mut HashMap::default())
         }
         Expr::Binary { left, right, .. } => {
             assert_no_effects_in_pure(left, fun_types, locals)?;
@@ -343,7 +343,7 @@ pub(crate) fn check_expr_effects(
         Expr::Lambda { body, .. } => {
             // Lambda bodies are their own effect context: effectful bodies are OK
             // (the Fun type carries ε); check under an effectful context.
-            check_expr_effects(body, true, fun_types, &mut HashMap::new())
+            check_expr_effects(body, true, fun_types, &mut HashMap::default())
         }
         Expr::Binary { left, right, .. } => {
             check_expr_effects(left, in_effect_ctx, fun_types, locals)?;

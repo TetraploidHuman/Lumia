@@ -1,7 +1,7 @@
 //! Core type, effect, and scheme definitions.
 
 use lumia_hir::{Expr, Module};
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use thiserror::Error;
 
 /// Cross-file name visibility after import inlining (entry must not see `priv`).

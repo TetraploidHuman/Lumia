@@ -3,7 +3,7 @@
 use lumia_hir::{AdtDef, Builtin, Expr, Item, Module};
 use lumia_syntax::BinOp;
 use lumia_syntax::Span;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum AltKind {

@@ -3,8 +3,7 @@ use super::specialize::mono_value_ty;
 use crate::ir::{Block, CoreFun, CoreModule, Local, Op, Value};
 use lumia_hir::Builtin;
 use lumia_ty::{Effect, Type};
-use rustc_hash::FxHashSet;
-use std::collections::HashMap;
+use rustc_hash::{FxHashMap as HashMap, FxHashSet};
 
 pub(crate) fn resolve_trait_method_calls(module: &mut CoreModule) {
     if module.trait_methods.is_empty() {
@@ -26,7 +25,7 @@ pub(crate) fn resolve_trait_method_calls(module: &mut CoreModule) {
     {
         let index = FunIndex::new(&functions);
         for i in 0..functions.len() {
-            let mut local_tys: HashMap<u32, Type> = HashMap::new();
+            let mut local_tys: HashMap<u32, Type> = HashMap::default();
             for (j, p) in functions[i].params.iter().enumerate() {
                 local_tys.insert(
                     p.0,
@@ -222,7 +221,7 @@ fn collect_trait_method_refs_value(
     }
 }
 pub(crate) fn directize_funref_calls(module: &mut CoreModule) {
-    let empty = HashMap::new();
+    let empty = HashMap::default();
     for fun in &mut module.functions {
         directize_block(&mut fun.body, &empty);
     }
@@ -279,7 +278,7 @@ fn walk_nested_blocks_directize(value: &mut Value, funref_of: &HashMap<u32, Stri
             directize_block(latch, funref_of);
         }
         // Fresh scope: lifted lambda body should not see outer SSA FunRef locals.
-        Value::Lambda { body, .. } => directize_block(body, &HashMap::new()),
+        Value::Lambda { body, .. } => directize_block(body, &HashMap::default()),
         _ => {}
     }
 }

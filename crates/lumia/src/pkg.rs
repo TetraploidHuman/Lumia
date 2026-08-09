@@ -142,7 +142,7 @@ pub fn dependency_roots(manifest_path: &Path, m: &Manifest) -> Result<Vec<PathBu
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
     let mut roots = vec![root.clone()];
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::default();
     seen.insert(root.canonicalize().unwrap_or(root.clone()));
     collect_dep_roots(&root, m, &mut roots, &mut seen, 0)?;
     Ok(roots)
@@ -183,7 +183,7 @@ fn collect_dep_roots(
 /// Collect `package.link` flags from the root manifest (+ transitive, unique).
 pub fn collect_link_args(manifest_path: &Path, m: &Manifest) -> Result<Vec<String>> {
     let mut out = Vec::new();
-    let mut seen_pkg = HashSet::new();
+    let mut seen_pkg = HashSet::default();
     let root = manifest_path.parent().unwrap_or(Path::new("."));
     collect_link_args_rec(root, m, &mut out, &mut seen_pkg, 0)?;
     Ok(out)
@@ -352,7 +352,7 @@ pub fn lock_from_manifest(manifest_path: &Path, m: &Manifest) -> Result<Lockfile
         version: m.package.version.clone(),
         path: ".".into(),
     });
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::default();
     seen.insert(m.package.name.clone());
     lock_deps_recursive(root, m, &mut packages, &mut seen, root, 0)?;
     packages.sort_by(|a, b| a.name.cmp(&b.name));

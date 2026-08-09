@@ -22,14 +22,17 @@ pub use lumia_abi::MEMO_L2_SLOTS;
 pub use lumia_abi::{
     MEMO_IDX_TABLE_BYTES, MEMO_L2_MAX_ARGS, MEMO_PROCESS_BYTE_CAP, MEMO_SLOTS_TABLE_BYTES,
 };
+/// DESIGN-facing aliases for the slots/`T_f` caps (same values as `MEMO_L2_*`).
+pub use lumia_abi::{MEMO_TF_MAX_ARGS, MEMO_TF_MAX_FUNS, MEMO_TF_SLOTS};
 
 pub(crate) use fold::{const_fold_block, copy_prop_block};
 pub(crate) use licm::licm_block;
 
-pub struct MemoL0Pass;
-impl crate::Pass for MemoL0Pass {
+/// Local const-fold + copy-prop (DESIGN §7.5.1-A).
+pub struct ConstFoldPass;
+impl crate::Pass for ConstFoldPass {
     fn name(&self) -> &str {
-        "memo_l0"
+        "const_fold"
     }
     fn run(&self, module: &mut CoreModule) {
         for f in &mut module.functions {
@@ -39,29 +42,16 @@ impl crate::Pass for MemoL0Pass {
     }
 }
 
-pub struct MemoL1Pass;
-impl crate::Pass for MemoL1Pass {
+/// Loop-invariant code motion (DESIGN §7.5.1-A).
+pub struct LicmPass;
+impl crate::Pass for LicmPass {
     fn name(&self) -> &str {
-        "memo_l1"
+        "licm"
     }
     fn run(&self, module: &mut CoreModule) {
         for f in &mut module.functions {
             licm_block(&mut f.body);
         }
-    }
-}
-
-/// Named pass for tooling / `pass_names`; planning runs outside the pass loop
-/// via [`plan_memo_tf`] / [`apply_memo_plan`] so CSE cannot erase reuse evidence.
-pub struct MemoTfPass;
-impl crate::Pass for MemoTfPass {
-    fn name(&self) -> &str {
-        "memo_tf"
-    }
-    fn run(&self, _module: &mut CoreModule) {
-        // Intentionally a no-op. `T_f` must be planned on the *pre-CSE* module
-        // (`plan_memo_tf` in `optimize`); applying a fresh plan here would drop
-        // const-reuse evidence that CSE folds away (§7.5.2).
     }
 }
 

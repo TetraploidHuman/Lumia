@@ -192,9 +192,9 @@ out="$(printf 'Hello World\nhello there\nWORLD\n' | "$WORKDIR/wc" | tr '\n' ' ' 
 out="$("$WORKDIR/lt" | tr '\n' ' ' | sed 's/ $//')"
 [[ "$out" == "2 3 1 2 3 a-b-c 3 3 x z true false 2 2" ]] || { echo "list_text failed: [$out]"; exit 1; }
 
-"$LUMIA" build --release examples/memo_l2.lm -o "$WORKDIR/memo"
+"$LUMIA" build --release examples/memo_tf.lm -o "$WORKDIR/memo"
 out="$("$WORKDIR/memo" | tr '\n' ' ' | sed 's/ $//')"
-[[ "$out" == "2646700 2646700 285" ]] || { echo "memo_l2 failed: [$out]"; exit 1; }
+[[ "$out" == "2646700 2646700 285" ]] || { echo "memo_tf failed: [$out]"; exit 1; }
 
 "$LUMIA" build examples/memo_l0l1.lm -o "$WORKDIR/m01"
 out="$("$WORKDIR/m01" | tr '\n' ' ' | sed 's/ $//')"

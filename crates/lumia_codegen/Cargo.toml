@@ -17,6 +17,7 @@ lumia_core.workspace = true
 lumia_ty.workspace = true
 inkwell.workspace = true
 anyhow.workspace = true
+rustc-hash = { workspace = true }
 thiserror.workspace = true
 
 [dev-dependencies]

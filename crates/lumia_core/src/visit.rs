@@ -4,7 +4,7 @@
 //! remap / collect / max-local stay exhaustive in one place.
 
 use crate::{Block, Local, Op, Value};
-use std::collections::HashMap;
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// Visit every `Local` operand stored directly on this `Value` node.
 /// Does **not** enter nested [`Block`]s (`If`/`Loop`/`Lambda` bodies).
@@ -183,8 +183,8 @@ pub fn max_local_in_value(value: &Value) -> u32 {
 /// Collect SSA uses (and `Name` loads) from a value, including nested blocks.
 pub fn collect_uses_in_value(
     value: &Value,
-    locals: &mut std::collections::HashSet<u32>,
-    names: &mut std::collections::HashSet<String>,
+    locals: &mut HashSet<u32>,
+    names: &mut HashSet<String>,
 ) {
     for_each_local(value, &mut |l| {
         locals.insert(l.0);
@@ -218,11 +218,7 @@ pub fn collect_uses_in_value(
 }
 
 /// Collect SSA uses (and `Name` loads) across a whole block, including nested regions.
-pub(crate) fn collect_uses(
-    block: &Block,
-    locals: &mut std::collections::HashSet<u32>,
-    names: &mut std::collections::HashSet<String>,
-) {
+pub(crate) fn collect_uses(block: &Block, locals: &mut HashSet<u32>, names: &mut HashSet<String>) {
     for op in &block.ops {
         match op {
             Op::Let { value, .. } | Op::Effect { value, .. } => {
@@ -315,7 +311,7 @@ mod tests {
                 result: Some(Local(4)),
             }),
         };
-        let mut remap = HashMap::new();
+        let mut remap = HashMap::default();
         remap.insert(1, 10);
         remap.insert(3, 30);
         remap.insert(4, 40);
@@ -357,12 +353,12 @@ mod tests {
             ops: vec![Op::Return { value: Local(3) }],
             result: None,
         };
-        let mut locals = std::collections::HashSet::new();
-        let mut names = std::collections::HashSet::new();
+        let mut locals = HashSet::default();
+        let mut names = HashSet::default();
         collect_uses(&block, &mut locals, &mut names);
         assert!(locals.contains(&3));
 
-        let mut remap = HashMap::new();
+        let mut remap = HashMap::default();
         remap.insert(3, 9);
         crate::rewrite_block_locals(&mut block, &remap);
         match &block.ops[0] {

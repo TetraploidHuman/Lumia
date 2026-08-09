@@ -6,11 +6,12 @@ use std::ffi::CStr;
 use std::sync::Mutex;
 
 pub use lumia_abi::{
-    MEMO_IDX_CAP, MEMO_IDX_MAX_FUNS, MEMO_IDX_TABLE_BYTES, MEMO_L2_MAX_ARGS, MEMO_L2_MAX_FUNS,
-    MEMO_L2_SLOTS, MEMO_PROCESS_BYTE_CAP, TYPE_ADT, TYPE_BYTES, TYPE_CHAR, TYPE_CLOSURE, TYPE_LIST,
-    TYPE_LIST_F64, TYPE_LIST_IOTA, TYPE_MAP, TYPE_MAP_ASSOC, TYPE_MAP_ASSOC_F64,
-    TYPE_MAP_ASSOC_F64V, TYPE_MAP_ASSOC_VF64, TYPE_MAP_F64, TYPE_MAP_F64V, TYPE_MAP_VF64, TYPE_SET,
-    TYPE_SET_ASSOC, TYPE_SET_F64, TYPE_STRING,
+    list_elem_is_float, tid_base, tid_f_key, tid_f_val, MEMO_IDX_CAP, MEMO_IDX_MAX_FUNS,
+    MEMO_IDX_TABLE_BYTES, MEMO_L2_MAX_ARGS, MEMO_L2_MAX_FUNS, MEMO_L2_SLOTS, MEMO_PROCESS_BYTE_CAP,
+    TYPE_ADT, TYPE_BYTES, TYPE_CHAR, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_F64, TYPE_LIST_IOTA,
+    TYPE_MAP, TYPE_MAP_ASSOC, TYPE_MAP_ASSOC_F64, TYPE_MAP_ASSOC_F64V, TYPE_MAP_ASSOC_VF64,
+    TYPE_MAP_F64, TYPE_MAP_F64V, TYPE_MAP_VF64, TYPE_SET, TYPE_SET_ASSOC, TYPE_SET_F64,
+    TYPE_STRING,
 };
 
 /// Object header placed before payload.
@@ -115,7 +116,7 @@ pub(crate) fn list_rc_retain(payload: *mut u8) {
     unsafe {
         let h = header_from_payload(payload);
         let tid = (*h).type_id;
-        if tid != TYPE_LIST && tid != TYPE_LIST_F64 {
+        if tid_base(tid) != TYPE_LIST {
             return;
         }
         let rc = (*h)._pad;
@@ -134,7 +135,7 @@ pub(crate) fn list_rc_release(payload: *mut u8) {
     unsafe {
         let h = header_from_payload(payload);
         let tid = (*h).type_id;
-        if tid != TYPE_LIST && tid != TYPE_LIST_F64 {
+        if tid_base(tid) != TYPE_LIST {
             return;
         }
         let rc = (*h)._pad;
@@ -152,7 +153,7 @@ pub(crate) fn list_rc_is_unique(payload: *mut u8) -> bool {
     unsafe {
         let h = header_from_payload(payload);
         let tid = (*h).type_id;
-        (tid == TYPE_LIST || tid == TYPE_LIST_F64) && (*h)._pad == 1
+        tid_base(tid) == TYPE_LIST && (*h)._pad == 1
     }
 }
 

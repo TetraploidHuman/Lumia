@@ -1,8 +1,8 @@
 //! Value emission and closely related helpers.
 
+mod builtin;
 mod emit_alloc;
 mod emit_arith;
-mod emit_builtin;
 mod emit_calls;
 mod emit_control;
 

@@ -6,7 +6,7 @@ use crate::ir::{
 use crate::visit::{collect_uses, for_each_nested_block};
 use lumia_hir::Builtin;
 use lumia_ty::{Effect, Type};
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// Infer per-parameter / return ABI for lifted lambdas.
 /// Avoids the old bug: “body mentions any float ⇒ every param is Float”.
@@ -35,8 +35,8 @@ fn lambda_param_ret_tys(params: &[Local], body: &Block) -> (Vec<Type>, Type) {
 
 fn params_used_as_float(block: &Block, params: &[Local]) -> HashSet<u32> {
     let param_set: HashSet<u32> = params.iter().map(|p| p.0).collect();
-    let mut float_locals: HashSet<u32> = HashSet::new();
-    let mut used: HashSet<u32> = HashSet::new();
+    let mut float_locals: HashSet<u32> = HashSet::default();
+    let mut used: HashSet<u32> = HashSet::default();
     mark_float_uses(block, &param_set, &mut float_locals, &mut used);
     used
 }
@@ -125,7 +125,7 @@ fn block_result_is_float(block: &Block) -> bool {
     let Some(Local(r)) = block.result else {
         return false;
     };
-    let mut float_locals: HashSet<u32> = HashSet::new();
+    let mut float_locals: HashSet<u32> = HashSet::default();
     for op in &block.ops {
         if let Op::Let { local, value, .. } = op {
             if value_is_float_producing(value, &float_locals) || matches!(value, Value::Float(_)) {
@@ -152,7 +152,7 @@ fn block_result_is_float(block: &Block) -> bool {
 
 /// Locals that hold Float values in `block` (for closure-capture ABI).
 fn compute_float_locals_in_block(block: &Block) -> HashSet<u32> {
-    let mut float_locals: HashSet<u32> = HashSet::new();
+    let mut float_locals: HashSet<u32> = HashSet::default();
     for op in &block.ops {
         if let Op::Let { local, value, .. } = op {
             if value_is_float_producing(value, &float_locals) || matches!(value, Value::Float(_)) {
@@ -198,7 +198,7 @@ fn block_result_may_heap_with_params(block: &Block, extra_params: &[Local]) -> b
     };
     let mut params: HashSet<u32> = block.params.iter().map(|p| p.0).collect();
     params.extend(extra_params.iter().map(|p| p.0));
-    local_may_heap(block, r, &params, &mut HashSet::new())
+    local_may_heap(block, r, &params, &mut HashSet::default())
 }
 
 /// Follow `let x = y` aliases. Params are treated as maybe-heap so identity
@@ -266,7 +266,7 @@ fn result_may_heap_inherited(block: &Block, inherited: &HashSet<u32>) -> bool {
     };
     let mut params = inherited.clone();
     params.extend(block.params.iter().map(|p| p.0));
-    local_may_heap(block, r, &params, &mut HashSet::new())
+    local_may_heap(block, r, &params, &mut HashSet::default())
 }
 
 /// Lift nested `Value::Lambda` to top-level `__lam_N` functions.
@@ -357,8 +357,8 @@ fn lift_value(
             *id += 1;
 
             let mut captures = Vec::new();
-            let mut remap: HashMap<u32, u32> = HashMap::new();
-            let mut name_remap: HashMap<String, Local> = HashMap::new();
+            let mut remap: HashMap<u32, u32> = HashMap::default();
+            let mut name_remap: HashMap<String, Local> = HashMap::default();
 
             for fl in &free_locals {
                 captures.push(*fl);
@@ -389,7 +389,7 @@ fn lift_value(
                     is_main: false,
                     memo: None,
                     external: None,
-                    escaping: std::collections::HashSet::new(),
+                    escaping: HashSet::default(),
                     // Local let-poly / nested lambdas: specialize at ground call sites.
                     scheme_poly: true,
                 });
@@ -456,7 +456,7 @@ fn lift_value(
                 is_main: false,
                 memo: None,
                 external: None,
-                escaping: std::collections::HashSet::new(),
+                escaping: HashSet::default(),
                 scheme_poly: true,
             });
             *value = Value::AllocClosure {
@@ -486,13 +486,13 @@ fn lift_value(
 }
 
 fn analyze_captures(body: &Block, params: &[Local]) -> (Vec<Local>, Vec<String>) {
-    let mut defined = std::collections::HashSet::new();
+    let mut defined = HashSet::default();
     for p in params {
         defined.insert(p.0);
     }
     collect_defined_locals(body, &mut defined);
-    let mut used_locals = std::collections::HashSet::new();
-    let mut used_names = std::collections::HashSet::new();
+    let mut used_locals = HashSet::default();
+    let mut used_names = HashSet::default();
     collect_uses(body, &mut used_locals, &mut used_names);
     let mut free_locals: Vec<Local> = used_locals
         .into_iter()
@@ -505,7 +505,7 @@ fn analyze_captures(body: &Block, params: &[Local]) -> (Vec<Local>, Vec<String>)
     (free_locals, free_names)
 }
 
-fn collect_defined_locals(block: &Block, defined: &mut std::collections::HashSet<u32>) {
+fn collect_defined_locals(block: &Block, defined: &mut HashSet<u32>) {
     for p in &block.params {
         defined.insert(p.0);
     }
@@ -521,7 +521,7 @@ fn collect_defined_locals(block: &Block, defined: &mut std::collections::HashSet
     }
 }
 
-fn collect_defined_in_value(value: &Value, defined: &mut std::collections::HashSet<u32>) {
+fn collect_defined_in_value(value: &Value, defined: &mut HashSet<u32>) {
     if let Value::Lambda { params, .. } = value {
         for p in params {
             defined.insert(p.0);

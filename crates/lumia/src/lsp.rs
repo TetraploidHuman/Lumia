@@ -16,8 +16,8 @@ use lumia_ty::{
     check_effect_boundaries, finalize_auto_parallel, infer_module_with_visibility, Type,
     TypedModule,
 };
+use rustc_hash::FxHashMap as HashMap;
 use serde_json::{json, Value};
-use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -43,8 +43,8 @@ fn state_lock() -> std::sync::MutexGuard<'static, Option<State>> {
 
 pub fn run_lsp() -> Result<()> {
     *state_lock() = Some(State {
-        docs: HashMap::new(),
-        analysis: HashMap::new(),
+        docs: HashMap::default(),
+        analysis: HashMap::default(),
     });
     let stdin = io::stdin();
     let mut stdin = stdin.lock();
@@ -239,10 +239,10 @@ fn path_to_uri(path: &Path) -> String {
     let s = path.to_string_lossy();
     // RFC 8089: absolute paths use `file:///…`. Windows drive paths need a
     // leading slash (`file:///C:/…`); bare `file://C:/…` treats `C:` as host.
+    // Absolute POSIX paths keep leading `/`; Windows `C:/…` and other relatives
+    // get a leading slash so the URI is `file:///…` (RFC 8089).
     let path_str: std::borrow::Cow<'_, str> = if s.starts_with('/') {
         s
-    } else if s.len() >= 2 && s.as_bytes().get(1) == Some(&b':') {
-        std::borrow::Cow::Owned(format!("/{s}"))
     } else {
         std::borrow::Cow::Owned(format!("/{s}"))
     };
@@ -318,7 +318,7 @@ fn publish_diagnostics(uri: &str, text: &str) -> Result<()> {
 fn current_overlays() -> HashMap<PathBuf, String> {
     let st = state_lock();
     let Some(state) = st.as_ref() else {
-        return HashMap::new();
+        return HashMap::default();
     };
     state
         .docs
