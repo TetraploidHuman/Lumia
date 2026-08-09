@@ -1,0 +1,23 @@
+module PolyUnwrap
+
+import std.io.{println}
+
+type Option {
+    Some(value)
+    None
+}
+
+/// Multi-arg mono: `(Option[T], T)` → `$Option_Int_Int` / `$Option_String_String`.
+val unwrap_or = { opt, d ->
+    opt match {
+        None -> d
+        Some(n) -> n
+    }
+}
+
+val main = {
+    println(unwrap_or(Some(7), 0))
+    println(unwrap_or(None, -1))
+    println(unwrap_or(Some("hi"), "x"))
+    println(unwrap_or(None, "no"))
+}

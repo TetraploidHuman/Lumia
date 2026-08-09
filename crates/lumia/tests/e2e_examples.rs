@@ -282,6 +282,24 @@ fn e2e_poly_str() {
 }
 
 #[test]
+fn e2e_poly_option() {
+    run_example("examples/poly_option.lm", &["7", "1.5"]);
+}
+
+#[test]
+fn e2e_poly_list() {
+    run_example("examples/poly_list.lm", &["20", "2.5"]);
+}
+
+#[test]
+fn e2e_poly_unwrap() {
+    run_example(
+        "examples/poly_unwrap.lm",
+        &["7", "-1", "hi", "no"],
+    );
+}
+
+#[test]
 fn e2e_small_list_local() {
     // Non-escaping small listOf → stack LitList; len/get still work.
     run_example("examples/small_list_local.lm", &["3", "10", "30", "60"]);
@@ -304,6 +322,11 @@ fn e2e_small_set_local() {
 fn e2e_pe_list_len_get() {
     // Same output as small_list_local; ListLen/ListGet folded at opt L0 when possible.
     run_example("examples/pe_list_len_get.lm", &["3", "10", "30", "60"]);
+}
+
+#[test]
+fn e2e_pe_adt_field() {
+    run_example("examples/pe_adt_field.lm", &["10", "20", "30"]);
 }
 
 #[test]

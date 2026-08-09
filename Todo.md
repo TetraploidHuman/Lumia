@@ -4,7 +4,7 @@
 
 ## 类型与单态化
 
-- [ ] **单态化管线**：Float/Bool/String 特化 `{name}$Float`/`$Bool`/`$String`（`poly_*` / `poly_str`）；同名多体按 call-site kind 共存；ADT `instance Num` 的 `+`/`*` 已接线（`trait_num`）；ADT/`List[T]` 后缀键与 scheme 驱动仍待。恒等另有 call-site 启发式（`poly_id`）。
+- [ ] **单态化管线**：按 call-site 实参 ground 键克隆：`$Float`/`$Bool`/`$String`/`$List_Int`/`$Option_Float`/`$Option_Int_Int`（`poly_*` / `poly_list` / `poly_option` / `poly_unwrap`）；同名多体共存；`instance Num` 已接线。Map/Set 键、scheme 驱动与 Fun 参仍待。
 - [ ] **类型类 `trait` / `instance` / `requires`**：显式 instance 可填 trait 默认方法；Show/Eq/Ord/Num 覆盖已接线；UFCS `x.show()` / `x.eq` / `x.less` 及**任意用户方法**经 `trait_methods` 表解析为 `__Trait_Type_method`（`trait_custom_method` / `trait_custom_default`）；积/和自动派生 Eq/Show；**Hash opt-in**。运行时字典 / 约束求解 / 多态方法仍待。
 - [x] **`import … as` / `{ name as alias }`**：DESIGN §9.3；`ImportedName` + 公开项改名、原名 `priv` 副本；e2e `import_as` / `bad_import_as_original`。
 
@@ -21,8 +21,8 @@
 - [ ] **纯互递归 TCO**（DESIGN §4.4）：纯 SCC `musttail`（标量 + 堆参 List/String/ADT；`tco_sum` / `tco_list_sum` / …）；musttail 前 `root_pop_to(0)`，callee 入口再 root。IO / 未知闭包 IndirectCall 未做。
 - [x] **自动并行**：默认对 FunRef-safe 纯标量 `List.map` / `List.fold` 选 `ListParMap` / `ListParFold`（`par_map*` / `par_fold`）；顶层-only 自由变量的 lambda 亦安全；IO/非标量/真捕获回退；`--no-parallel` 关闭。`fold` 假定结合律。
 - [ ] **逃逸分析 → 栈分配 / 多表示 List·Map·Set**：未逃逸且 ≤8 的 `listOf`/`mapOf`/`setOf` → `LitList`/`LitMap`/`LitSet` 栈布局（`small_list_local` / `small_map_local` / `small_set_local`）；逃逸/更大仍堆。更多表示 / 晋升仍待。
-- [ ] **部分求值 / 完整 specialization**：L0 已折叠字面 `listOf` 的 `ListLen` / 界内 `ListGet`（`pe_list_len_get`）；完整 specialization 仍待。
-- [ ] **`std/` 可执行正文**：现为 `@exports` stub，体在编译器 builtins。
+- [ ] **部分求值 / 完整 specialization**：L0 折叠字面 `ListLen`/`ListGet`/`AdtField`（`pe_list_len_get` / `pe_adt_field`）；Map 键折叠与完整 specialization 仍待。
+- [ ] **`std/` 可执行正文**：等错误处理 / Result 组合子单态更稳后再做；现为 `@exports` stub。
 
 ## 工具链
 

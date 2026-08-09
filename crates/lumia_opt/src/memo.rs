@@ -297,6 +297,8 @@ fn const_fold_block(block: &mut Block) {
     let mut known_int: HashMap<u32, i64> = HashMap::new();
     // Local → element locals of a literal `AllocList` (for ListLen / ListGet fold).
     let mut known_list: HashMap<u32, Vec<Local>> = HashMap::new();
+    // Local → field locals of a literal `AllocAdt` (for AdtField fold).
+    let mut known_adt: HashMap<u32, Vec<Local>> = HashMap::new();
     for op in &mut block.ops {
         match op {
             Op::Let {
@@ -319,9 +321,15 @@ fn const_fold_block(block: &mut Block) {
                         if let Some(elems) = known_list.get(src).cloned() {
                             known_list.insert(local.0, elems);
                         }
+                        if let Some(fields) = known_adt.get(src).cloned() {
+                            known_adt.insert(local.0, fields);
+                        }
                     }
                     Value::AllocList { elems, .. } => {
                         known_list.insert(local.0, elems.clone());
+                    }
+                    Value::AllocAdt { fields, .. } => {
+                        known_adt.insert(local.0, fields.clone());
                     }
                     Value::Unary {
                         op: UnOp::Neg,
@@ -390,6 +398,25 @@ fn const_fold_block(block: &mut Block) {
                                     }
                                     if let Some(inner) = known_list.get(&el.0).cloned() {
                                         known_list.insert(local.0, inner);
+                                    }
+                                }
+                            }
+                        }
+                        (Builtin::AdtField, [adt, idx, ..]) => {
+                            if let (Some(fields), Some(&i)) =
+                                (known_adt.get(&adt.0), known_int.get(&idx.0))
+                            {
+                                if i >= 0 && (i as usize) < fields.len() {
+                                    let el = fields[i as usize];
+                                    *value = Value::Local(el);
+                                    if let Some(&n) = known_int.get(&el.0) {
+                                        known_int.insert(local.0, n);
+                                    }
+                                    if let Some(inner) = known_list.get(&el.0).cloned() {
+                                        known_list.insert(local.0, inner);
+                                    }
+                                    if let Some(inner) = known_adt.get(&el.0).cloned() {
+                                        known_adt.insert(local.0, inner);
                                     }
                                 }
                             }
