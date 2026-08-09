@@ -20,10 +20,14 @@ jobs:
         include:
           # apt.llvm.org ships libLLVM.so — force-dynamic avoids ~7min static link.
           - os: ubuntu-latest
+            # Workspace / -p package feature paths differ: package/feature needs --workspace;
+            # -p lumia uses the crate-local alias.
             cargo_features: --features lumia_codegen/llvm-dynamic
+            lumia_features: --features llvm-dynamic
           # vovkos Windows SDK is static-oriented; keep prefer-static.
           - os: windows-latest
             cargo_features: ""
+            lumia_features: ""
 
     steps:
       - uses: actions/checkout@v4
@@ -159,8 +163,9 @@ jobs:
       - name: Cargo test (library crates)
         run: cargo test --workspace --exclude lumia --lib ${{ matrix.cargo_features }}
 
+      # lumia_opt has no codegen dep; do not pass llvm-dynamic (Cargo rejects unknown package features).
       - name: Cargo test (opt goldens + other integration)
-        run: cargo test -p lumia_opt --tests ${{ matrix.cargo_features }}
+        run: cargo test -p lumia_opt --tests
 
       - name: Cargo test (lumia CLI + e2e examples)
-        run: cargo test -p lumia --tests ${{ matrix.cargo_features }}
+        run: cargo test -p lumia --tests ${{ matrix.lumia_features }}
