@@ -1,0 +1,3 @@
+# Golden Core IR snapshots must stay LF so Windows CI matches `format_module`.
+tests/golden/**/*.ir text eol=lf
+*.lm text eol=lf

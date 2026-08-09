@@ -48,6 +48,8 @@ fn assert_core_golden(rel_example: &str, release: bool) {
             path.display()
         )
     });
+    // Normalize in case checkout used CRLF (Windows autocrlf) despite .gitattributes.
+    let expect = expect.replace("\r\n", "\n");
     assert_eq!(
         got, expect,
         "Core IR golden mismatch for {rel_example}\n--- got ---\n{got}\n--- expect ---\n{expect}"
