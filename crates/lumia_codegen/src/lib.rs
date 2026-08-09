@@ -3838,10 +3838,14 @@ impl<'ctx> Codegen<'ctx> {
                     || !self.key_type_has_hash(&key_ty);
                 // Float-value tags win over Assoc for IEEE value ==; Assoc is for
                 // key Hash absence (linear forever) when values are not Float.
+                // AssocList (+ Float tags) stays linear forever; Hash maps use 4/10/15/16.
                 let tid = match (float_keys, float_vals, no_hash) {
-                    (true, true, _) => 16,  // TYPE_MAP_F64V
-                    (true, false, _) => 10, // TYPE_MAP_F64
-                    (false, true, _) => 15, // TYPE_MAP_VF64
+                    (true, true, true) => 19,   // TYPE_MAP_ASSOC_F64V
+                    (true, false, true) => 18,  // TYPE_MAP_ASSOC_F64
+                    (false, true, true) => 17,  // TYPE_MAP_ASSOC_VF64
+                    (true, true, false) => 16,  // TYPE_MAP_F64V
+                    (true, false, false) => 10, // TYPE_MAP_F64
+                    (false, true, false) => 15, // TYPE_MAP_VF64
                     (false, false, true) => 12, // TYPE_MAP_ASSOC
                     (false, false, false) => 4, // TYPE_MAP
                 };

@@ -49,6 +49,12 @@ pub const TYPE_LIST_F64: u32 = 14;
 pub const TYPE_MAP_VF64: u32 = 15;
 /// Map with Float keys and Float values.
 pub const TYPE_MAP_F64V: u32 = 16;
+/// AssocList + IEEE Float values (no Hash promotion).
+pub const TYPE_MAP_ASSOC_VF64: u32 = 17;
+/// AssocList + IEEE Float keys.
+pub const TYPE_MAP_ASSOC_F64: u32 = 18;
+/// AssocList + Float keys and Float values.
+pub const TYPE_MAP_ASSOC_F64V: u32 = 19;
 
 /// Fatal runtime error. Linked into user programs as abort (no FFI unwind).
 /// Under `cfg(test)` panics so `#[should_panic]` unit tests can observe the message.
@@ -218,8 +224,14 @@ fn mark(obj: *mut ObjectHeader) {
                 map_mark_payload(
                     payload,
                     (*obj).size as usize,
-                    matches!(tid, TYPE_MAP_F64 | TYPE_MAP_F64V),
-                    matches!(tid, TYPE_MAP_VF64 | TYPE_MAP_F64V),
+                    matches!(
+                        tid,
+                        TYPE_MAP_F64 | TYPE_MAP_F64V | TYPE_MAP_ASSOC_F64 | TYPE_MAP_ASSOC_F64V
+                    ),
+                    matches!(
+                        tid,
+                        TYPE_MAP_VF64 | TYPE_MAP_F64V | TYPE_MAP_ASSOC_VF64 | TYPE_MAP_ASSOC_F64V
+                    ),
                 );
             }
             TYPE_ADT | TYPE_CLOSURE => {
@@ -543,7 +555,8 @@ pub extern "C" fn lumia_println_auto(x: i64) {
                 }
                 return;
             }
-            if (*h).type_id == TYPE_ADT {
+            let tid = (*h).type_id;
+            if tid == TYPE_ADT || is_list_tid(tid) || is_map_tid(tid) || is_set_tid(tid) {
                 let s = lumia_show(x);
                 let len = (*header_from_payload(s)).size as u64;
                 lumia_println_str(s, len);
@@ -564,7 +577,10 @@ fn map_is_assoc(map: *mut u8) -> bool {
     if map.is_null() {
         return false;
     }
-    unsafe { (*header_from_payload(map)).type_id == TYPE_MAP_ASSOC }
+    matches!(
+        unsafe { (*header_from_payload(map)).type_id },
+        TYPE_MAP_ASSOC | TYPE_MAP_ASSOC_VF64 | TYPE_MAP_ASSOC_F64 | TYPE_MAP_ASSOC_F64V
+    )
 }
 
 fn set_is_assoc(set: *mut u8) -> bool {
@@ -578,7 +594,14 @@ fn set_is_assoc(set: *mut u8) -> bool {
 fn is_map_tid(tid: u32) -> bool {
     matches!(
         tid,
-        TYPE_MAP | TYPE_MAP_F64 | TYPE_MAP_ASSOC | TYPE_MAP_VF64 | TYPE_MAP_F64V
+        TYPE_MAP
+            | TYPE_MAP_F64
+            | TYPE_MAP_ASSOC
+            | TYPE_MAP_VF64
+            | TYPE_MAP_F64V
+            | TYPE_MAP_ASSOC_VF64
+            | TYPE_MAP_ASSOC_F64
+            | TYPE_MAP_ASSOC_F64V
     )
 }
 
@@ -588,7 +611,7 @@ fn map_float_keys(map: *mut u8) -> bool {
     }
     matches!(
         unsafe { (*header_from_payload(map)).type_id },
-        TYPE_MAP_F64 | TYPE_MAP_F64V
+        TYPE_MAP_F64 | TYPE_MAP_F64V | TYPE_MAP_ASSOC_F64 | TYPE_MAP_ASSOC_F64V
     )
 }
 
@@ -598,7 +621,7 @@ fn map_float_vals(map: *mut u8) -> bool {
     }
     matches!(
         unsafe { (*header_from_payload(map)).type_id },
-        TYPE_MAP_VF64 | TYPE_MAP_F64V
+        TYPE_MAP_VF64 | TYPE_MAP_F64V | TYPE_MAP_ASSOC_VF64 | TYPE_MAP_ASSOC_F64V
     )
 }
 
@@ -608,6 +631,15 @@ fn map_tid_with_flags(float_keys: bool, float_vals: bool) -> u32 {
         (true, false) => TYPE_MAP_F64,
         (false, true) => TYPE_MAP_VF64,
         (false, false) => TYPE_MAP,
+    }
+}
+
+fn map_assoc_tid_with_flags(float_keys: bool, float_vals: bool) -> u32 {
+    match (float_keys, float_vals) {
+        (true, true) => TYPE_MAP_ASSOC_F64V,
+        (true, false) => TYPE_MAP_ASSOC_F64,
+        (false, true) => TYPE_MAP_ASSOC_VF64,
+        (false, false) => TYPE_MAP_ASSOC,
     }
 }
 
@@ -662,12 +694,21 @@ fn ensure_map_f64(map: *mut u8) -> *mut u8 {
     unsafe {
         let h = header_from_payload(map);
         match (*h).type_id {
-            TYPE_MAP_F64 | TYPE_MAP_F64V => map,
+            TYPE_MAP_F64 | TYPE_MAP_F64V | TYPE_MAP_ASSOC_F64 | TYPE_MAP_ASSOC_F64V => map,
             TYPE_MAP | TYPE_MAP_VF64 => {
                 if map_count(map) != 0 {
                     trap_abort("lumia: ensure_map_f64 on non-empty Int-key map");
                 }
                 let tid = map_tid_with_flags(true, (*h).type_id == TYPE_MAP_VF64);
+                let dest = lumia_alloc(8, tid);
+                *(dest as *mut i64) = 0;
+                dest
+            }
+            TYPE_MAP_ASSOC | TYPE_MAP_ASSOC_VF64 => {
+                if map_count(map) != 0 {
+                    trap_abort("lumia: ensure_map_f64 on non-empty Int-key assoc map");
+                }
+                let tid = map_assoc_tid_with_flags(true, (*h).type_id == TYPE_MAP_ASSOC_VF64);
                 let dest = lumia_alloc(8, tid);
                 *(dest as *mut i64) = 0;
                 dest
@@ -689,12 +730,21 @@ fn ensure_map_vf64(map: *mut u8) -> *mut u8 {
     unsafe {
         let h = header_from_payload(map);
         match (*h).type_id {
-            TYPE_MAP_VF64 | TYPE_MAP_F64V => map,
+            TYPE_MAP_VF64 | TYPE_MAP_F64V | TYPE_MAP_ASSOC_VF64 | TYPE_MAP_ASSOC_F64V => map,
             TYPE_MAP | TYPE_MAP_F64 => {
                 if map_count(map) != 0 {
                     trap_abort("lumia: ensure_map_vf64 on non-empty non-Float-value map");
                 }
                 let tid = map_tid_with_flags((*h).type_id == TYPE_MAP_F64, true);
+                let dest = lumia_alloc(8, tid);
+                *(dest as *mut i64) = 0;
+                dest
+            }
+            TYPE_MAP_ASSOC | TYPE_MAP_ASSOC_F64 => {
+                if map_count(map) != 0 {
+                    trap_abort("lumia: ensure_map_vf64 on non-empty non-Float-value assoc map");
+                }
+                let tid = map_assoc_tid_with_flags((*h).type_id == TYPE_MAP_ASSOC_F64, true);
                 let dest = lumia_alloc(8, tid);
                 *(dest as *mut i64) = 0;
                 dest
@@ -771,7 +821,14 @@ pub extern "C" fn lumia_eq(a: i64, b: i64) -> i64 {
             let tid = unsafe { (*header_from_payload(p)).type_id };
             if !matches!(
                 tid,
-                TYPE_LIST_F64 | TYPE_SET_F64 | TYPE_MAP_F64 | TYPE_MAP_VF64 | TYPE_MAP_F64V
+                TYPE_LIST_F64
+                    | TYPE_SET_F64
+                    | TYPE_MAP_F64
+                    | TYPE_MAP_VF64
+                    | TYPE_MAP_F64V
+                    | TYPE_MAP_ASSOC_VF64
+                    | TYPE_MAP_ASSOC_F64
+                    | TYPE_MAP_ASSOC_F64V
             ) {
                 return 1;
             }
@@ -885,25 +942,37 @@ pub extern "C" fn lumia_alloc_char(codepoint: i64) -> *mut u8 {
 
 /// Format a value as a heap String (for interpolation).
 /// Strings are returned as-is; Chars become one-character strings;
-/// ADTs are `#tag(field, …)` via recursive Show; otherwise decimal Int.
+/// List/Map/Set show element contents; ADTs are `#tag(field, …)`;
+/// otherwise decimal Int.
 #[no_mangle]
 pub extern "C" fn lumia_show(x: i64) -> *mut u8 {
+    let _gc = GcInhibitGuard::enter();
     let p = x as *mut u8;
     if is_heap_payload(p) {
         unsafe {
             let h = header_from_payload(p);
-            if (*h).type_id == TYPE_STRING {
+            let tid = (*h).type_id;
+            if tid == TYPE_STRING {
                 return p;
             }
-            if (*h).type_id == TYPE_CHAR {
+            if tid == TYPE_CHAR {
                 let cp = *(p as *const i64) as u32;
                 let ch = char::from_u32(cp).unwrap_or('\u{FFFD}');
                 let mut buf = [0u8; 4];
                 let s = ch.encode_utf8(&mut buf);
                 return lumia_alloc_string(s.as_ptr(), s.len() as u64);
             }
-            if (*h).type_id == TYPE_ADT {
+            if tid == TYPE_ADT {
                 return show_adt(p);
+            }
+            if is_list_tid(tid) {
+                return show_list(p);
+            }
+            if is_map_tid(tid) {
+                return show_map(p);
+            }
+            if is_set_tid(tid) {
+                return show_set(p);
             }
         }
     }
@@ -913,6 +982,69 @@ pub extern "C" fn lumia_show(x: i64) -> *mut u8 {
 
 unsafe fn show_adt(payload: *mut u8) -> *mut u8 {
     show_adt_masked(payload, 0)
+}
+
+fn show_value_bits(bits: i64, as_float: bool) -> String {
+    if as_float {
+        let s = lumia_show_float(f64::from_bits(bits as u64));
+        return with_str_bytes(s, |b| String::from_utf8_lossy(b).into_owned());
+    }
+    let s = lumia_show(bits);
+    with_str_bytes(s, |b| String::from_utf8_lossy(b).into_owned())
+}
+
+unsafe fn show_list(list: *mut u8) -> *mut u8 {
+    let n = list_len_of(list);
+    let float_elems = list_float_elems(list);
+    let mut s = String::from("[");
+    for i in 0..n {
+        if i > 0 {
+            s.push_str(", ");
+        }
+        s.push_str(&show_value_bits(list_get_of(list, i), float_elems));
+    }
+    s.push(']');
+    lumia_alloc_string(s.as_ptr(), s.len() as u64)
+}
+
+unsafe fn show_map(map: *mut u8) -> *mut u8 {
+    let n = map_count(map);
+    let float_keys = map_float_keys(map);
+    let float_vals = map_float_vals(map);
+    let mut s = String::from("{");
+    for i in 0..n as usize {
+        if i > 0 {
+            s.push_str(", ");
+        }
+        let (k, v) = map_pair_at(map, i);
+        s.push_str(&show_value_bits(k, float_keys));
+        s.push_str(": ");
+        s.push_str(&show_value_bits(v, float_vals));
+    }
+    s.push('}');
+    lumia_alloc_string(s.as_ptr(), s.len() as u64)
+}
+
+fn is_set_tid(tid: u32) -> bool {
+    matches!(tid, TYPE_SET | TYPE_SET_F64 | TYPE_SET_ASSOC)
+}
+
+unsafe fn show_set(set: *mut u8) -> *mut u8 {
+    let n = if set.is_null() {
+        0i64
+    } else {
+        *(set as *const i64)
+    };
+    let float_elems = set_float_elems(set);
+    let mut s = String::from("#{");
+    for i in 0..n as usize {
+        if i > 0 {
+            s.push_str(", ");
+        }
+        s.push_str(&show_value_bits(set_elem_at(set, i), float_elems));
+    }
+    s.push('}');
+    lumia_alloc_string(s.as_ptr(), s.len() as u64)
 }
 
 unsafe fn show_adt_masked(payload: *mut u8, float_mask: u64) -> *mut u8 {
@@ -3950,6 +4082,37 @@ mod tests {
             p
         };
         assert_eq!(lumia_eq(c as i64, c2 as i64), 0);
+    }
+
+    #[test]
+    fn show_list_formats_elems() {
+        let p = lumia_alloc(list_payload_bytes(2), TYPE_LIST);
+        unsafe {
+            *(p as *mut i64) = 2;
+            *((p as *mut i64).add(1)) = 1;
+            *((p as *mut i64).add(2)) = 2;
+        }
+        let s = lumia_show(p as i64);
+        let text = with_str_bytes(s, |b| String::from_utf8_lossy(b).into_owned());
+        assert_eq!(text, "[1, 2]");
+    }
+
+    #[test]
+    fn ensure_map_vf64_accepts_empty_assoc() {
+        let m = lumia_alloc(8, TYPE_MAP_ASSOC);
+        unsafe {
+            *(m as *mut i64) = 0;
+        }
+        let m2 = lumia_ensure_map_vf64(m);
+        assert!(!m2.is_null());
+        unsafe {
+            assert_eq!(
+                (*header_from_payload(m2)).type_id,
+                TYPE_MAP_ASSOC_VF64
+            );
+        }
+        // Still assoc (no hash promotion).
+        assert!(map_is_assoc(m2));
     }
 
 }
