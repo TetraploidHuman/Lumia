@@ -42,7 +42,7 @@ out="$("$WORKDIR/to_map")"
 
 "$LUMIA" build examples/map_ops.lm -o "$WORKDIR/map_ops"
 out="$("$WORKDIR/map_ops" | tr '\n' ' ' | sed 's/ $//')"
-[[ "$out" == "1 20 10 -1 0 3 1 30 2 2 0 1 0 2 10 1 10" ]] || { echo "map_ops failed: $out"; exit 1; }
+[[ "$out" == "true 20 10 -1 false 3 true 30 2 2 false true false 2 10 1 10" ]] || { echo "map_ops failed: $out"; exit 1; }
 
 "$LUMIA" build examples/option_match.lm -o "$WORKDIR/option"
 out="$("$WORKDIR/option" | tr '\n' ' ' | sed 's/ $//')"
@@ -110,7 +110,7 @@ out="$("$WORKDIR/char" | tr '\n' ' ' | sed 's/ $//')"
 
 "$LUMIA" build examples/float_ops.lm -o "$WORKDIR/float"
 out="$("$WORKDIR/float" | tr '\n' ' ' | sed 's/ $//')"
-[[ "$out" == "3.75 6 1 -1.5" ]] || { echo "float_ops failed: [$out]"; exit 1; }
+[[ "$out" == "3.75 6 1 -1.5 4" ]] || { echo "float_ops failed: [$out]"; exit 1; }
 
 "$LUMIA" build examples/closure.lm -o "$WORKDIR/closure"
 out="$("$WORKDIR/closure" | tr '\n' ' ' | sed 's/ $//')"
@@ -134,19 +134,19 @@ out="$("$WORKDIR/rf" | tr '\n' ' ' | sed 's/ $//')"
 
 "$LUMIA" build examples/set_ops.lm -o "$WORKDIR/set"
 out="$("$WORKDIR/set" | tr '\n' ' ' | sed 's/ $//')"
-[[ "$out" == "3 1 0 3 2 0 1 3 1" ]] || { echo "set_ops failed: [$out]"; exit 1; }
+[[ "$out" == "3 true false 3 2 false true 3 true" ]] || { echo "set_ops failed: [$out]"; exit 1; }
 
 "$LUMIA" build examples/mapset.lm -o "$WORKDIR/mapset"
 out="$("$WORKDIR/mapset" | tr '\n' ' ' | sed 's/ $//')"
-[[ "$out" == "3 0 2 3 1 0 4" ]] || { echo "mapset failed: [$out]"; exit 1; }
+[[ "$out" == "3 0 2 3 true false 4" ]] || { echo "mapset failed: [$out]"; exit 1; }
 
 "$LUMIA" build examples/coll_conv.lm -o "$WORKDIR/cc"
 out="$("$WORKDIR/cc" | tr '\n' ' ' | sed 's/ $//')"
-[[ "$out" == "3 1 0 3 2 1" ]] || { echo "coll_conv failed: [$out]"; exit 1; }
+[[ "$out" == "3 true false 3 2 true" ]] || { echo "coll_conv failed: [$out]"; exit 1; }
 
 "$LUMIA" build examples/set_algebra.lm -o "$WORKDIR/sa"
 out="$("$WORKDIR/sa" | tr '\n' ' ' | sed 's/ $//')"
-[[ "$out" == "4 1 1 2 1 0 1 1 0" ]] || { echo "set_algebra failed: [$out]"; exit 1; }
+[[ "$out" == "4 true true 2 true false 1 true false" ]] || { echo "set_algebra failed: [$out]"; exit 1; }
 
 "$LUMIA" build examples/for_map_set.lm -o "$WORKDIR/fms"
 out="$("$WORKDIR/fms" | tr '\n' ' ' | sed 's/ $//')"
@@ -166,7 +166,7 @@ out="$("$WORKDIR/res" | tr '\n' ' ' | sed 's/ $//')"
 
 "$LUMIA" build examples/list_extras.lm -o "$WORKDIR/lex"
 out="$("$WORKDIR/lex" | tr '\n' ' ' | sed 's/ $//')"
-[[ "$out" == "0 1 4 4 4 1 20 1 0 1 0 2 -1" ]] || { echo "list_extras failed: [$out]"; exit 1; }
+[[ "$out" == "false true 4 4 4 1 20 true false true false 2 -1" ]] || { echo "list_extras failed: [$out]"; exit 1; }
 
 "$LUMIA" build examples/prelude_option.lm -o "$WORKDIR/po"
 out="$("$WORKDIR/po" | tr '\n' ' ' | sed 's/ $//')"
@@ -178,11 +178,11 @@ out="$("$WORKDIR/sm" | tr '\n' ' ' | sed 's/ $//')"
 
 "$LUMIA" build examples/map_string_keys.lm -o "$WORKDIR/msk"
 out="$("$WORKDIR/msk" | tr '\n' ' ' | sed 's/ $//')"
-[[ "$out" == "2 1 0 2 1 1 1 0" ]] || { echo "map_string_keys failed: [$out]"; exit 1; }
+[[ "$out" == "2 true false 2 1 true true false" ]] || { echo "map_string_keys failed: [$out]"; exit 1; }
 
 "$LUMIA" build examples/read_stdin.lm -o "$WORKDIR/rs"
 out="$(printf '  hi hi there  ' | "$WORKDIR/rs" | tr '\n' ' ' | sed 's/ $//')"
-[[ "$out" == "3 hi 2 1 1" ]] || { echo "read_stdin failed: [$out]"; exit 1; }
+[[ "$out" == "3 hi 2 true true" ]] || { echo "read_stdin failed: [$out]"; exit 1; }
 
 "$LUMIA" build examples/word_count.lm -o "$WORKDIR/wc"
 out="$(printf 'Hello World\nhello there\nWORLD\n' | "$WORKDIR/wc" | tr '\n' ' ' | sed 's/ $//')"
@@ -190,7 +190,7 @@ out="$(printf 'Hello World\nhello there\nWORLD\n' | "$WORKDIR/wc" | tr '\n' ' ' 
 
 "$LUMIA" build examples/list_text.lm -o "$WORKDIR/lt"
 out="$("$WORKDIR/lt" | tr '\n' ' ' | sed 's/ $//')"
-[[ "$out" == "2 3 1 2 3 a-b-c 3 3 x z 1 0 2 2" ]] || { echo "list_text failed: [$out]"; exit 1; }
+[[ "$out" == "2 3 1 2 3 a-b-c 3 3 x z true false 2 2" ]] || { echo "list_text failed: [$out]"; exit 1; }
 
 "$LUMIA" build --release examples/memo_l2.lm -o "$WORKDIR/memo"
 out="$("$WORKDIR/memo" | tr '\n' ' ' | sed 's/ $//')"
@@ -223,5 +223,21 @@ out="$("$WORKDIR/fpl" | tr '\n' ' ' | sed 's/ $//')"
 "$LUMIA" build examples/hof_float_to_int.lm -o "$WORKDIR/hfi"
 out="$("$WORKDIR/hfi" | tr '\n' ' ' | sed 's/ $//')"
 [[ "$out" == "1 2" ]] || { echo "hof_float_to_int failed: [$out]"; exit 1; }
+
+"$LUMIA" build examples/hof_float_apply.lm -o "$WORKDIR/hfa"
+out="$("$WORKDIR/hfa" | tr '\n' ' ' | sed 's/ $//')"
+[[ "$out" == "3 3 4" ]] || { echo "hof_float_apply failed: [$out]"; exit 1; }
+
+"$LUMIA" build examples/float_struct_eq.lm -o "$WORKDIR/fse"
+out="$("$WORKDIR/fse" | tr '\n' ' ' | sed 's/ $//')"
+[[ "$out" == "1 0 1 0 1 0 0" ]] || { echo "float_struct_eq failed: [$out]"; exit 1; }
+
+"$LUMIA" build examples/adt_float_eq.lm -o "$WORKDIR/afe"
+out="$("$WORKDIR/afe" | tr '\n' ' ' | sed 's/ $//')"
+[[ "$out" == "1 0 1 0 1 0 1 0" ]] || { echo "adt_float_eq failed: [$out]"; exit 1; }
+
+"$LUMIA" build examples/float_map_keys.lm -o "$WORKDIR/fmk"
+out="$("$WORKDIR/fmk" | tr '\n' ' ' | sed 's/ $//')"
+[[ "$out" == "true 1 false 0 true true" ]] || { echo "float_map_keys failed: [$out]"; exit 1; }
 
 echo "e2e ok"

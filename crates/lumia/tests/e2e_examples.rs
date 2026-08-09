@@ -635,6 +635,15 @@ fn e2e_float_struct_eq() {
 }
 
 #[test]
+fn e2e_adt_float_eq() {
+    // Sum arity-safe IEEE eq; mono wrappers keep Result/Option ret (not Float bits).
+    run_example(
+        "examples/adt_float_eq.lm",
+        &["1", "0", "1", "0", "1", "0", "1", "0"],
+    );
+}
+
+#[test]
 fn e2e_closure() {
     run_example("examples/closure.lm", &["42", "11"]);
 }
@@ -872,6 +881,12 @@ fn e2e_for_pair_list() {
 #[test]
 fn e2e_hof_float_to_int() {
     run_example("examples/hof_float_to_int.lm", &["1", "2"]);
+}
+
+#[test]
+fn e2e_hof_float_apply() {
+    // HOF mono clone must keep Float return ABI after directizing to dbl$Float.
+    run_example("examples/hof_float_apply.lm", &["3", "3", "4"]);
 }
 
 #[test]

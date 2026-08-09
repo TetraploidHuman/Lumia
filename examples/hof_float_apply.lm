@@ -1,0 +1,13 @@
+module HofFloatApply
+
+import std.io.{println}
+
+val dbl(x) = x + x
+val apply(f, x) = f(x)
+
+/// HOF mono clone must keep Float return ABI after directizing to `dbl$Float`.
+val main = {
+    println(dbl(1.5))
+    println(apply(dbl, 1.5))
+    println(apply(dbl, 2.0))
+}
