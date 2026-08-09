@@ -1,0 +1,17 @@
+module BadTraitPoly
+
+import std.io.{println}
+
+type Point {
+    val x
+}
+
+trait ToInt {
+    val toInt = { self -> 0 }
+}
+
+/// No `instance ToInt for Point` — poly UFCS must reject at the call site.
+val main = {
+    val f = { x -> x.toInt() }
+    println(f(Point { x = 1 }))
+}

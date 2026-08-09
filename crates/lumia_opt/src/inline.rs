@@ -390,6 +390,7 @@ mod tests {
                 },
             ],
             hash_adts: std::collections::HashSet::new(),
+        trait_methods: std::collections::HashMap::new(),
         };
         inline_module(&mut module);
         let main = module.functions.iter().find(|f| f.name == "main").unwrap();

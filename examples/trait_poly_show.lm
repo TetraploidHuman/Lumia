@@ -1,0 +1,27 @@
+module TraitPolyShow
+
+import std.io.{println}
+
+type Point {
+    val x
+    val y
+}
+
+type Box {
+    val n
+}
+
+instance Show for Point {
+    val show = { self -> "P" }
+}
+
+instance Show for Box {
+    val show = { self -> "B" }
+}
+
+/// Polymorphic `show` via monomorphization (`Builtin::Show` + ADT clones).
+val main = {
+    val label = { x -> x.show() }
+    println(label(Point { x = 1, y = 2 }))
+    println(label(Box { n = 3 }))
+}

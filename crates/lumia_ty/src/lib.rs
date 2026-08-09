@@ -232,6 +232,9 @@ struct Scheme {
     ty: Type,
     /// Quantified vars that appeared in arithmetic (Num MVP: Int|Float only).
     num_vars: Vec<u32>,
+    /// Quantified vars that require `instance Trait` (deferred UFCS on poly params).
+    /// Entries: (var, trait_name, method_name).
+    trait_preds: Vec<(u32, String, String)>,
 }
 
 impl Scheme {
@@ -241,6 +244,7 @@ impl Scheme {
             eff_vars: Vec::new(),
             ty,
             num_vars: Vec::new(),
+            trait_preds: Vec::new(),
         }
     }
 }
@@ -264,8 +268,14 @@ struct Infer {
     num_instances: HashSet<String>,
     /// Type vars used in arithmetic — may only resolve to Int/Float (Num MVP).
     num_vars: HashSet<u32>,
+    /// Type var → required `(trait, method)` from deferred poly UFCS.
+    trait_vars: HashMap<u32, Vec<(String, String)>>,
+    /// All `(trait, type)` instances (incl. auto-derived) for constraint checks.
+    instances: HashSet<(String, String)>,
     /// `(type, method)` → mangled instance methods (from HIR).
     trait_methods: HashMap<(String, String), Vec<String>>,
+    /// method → unique trait name (error if the same method appears on multiple traits).
+    method_trait: HashMap<String, String>,
     /// UFCS calls rewritten to mangled `__Trait_Type_method` (span of Call expr).
     ufcs_rewrites: HashMap<lumia_syntax::Span, String>,
 }
@@ -327,7 +337,10 @@ impl Infer {
             ord_instances: HashSet::new(),
             num_instances: HashSet::new(),
             num_vars: HashSet::new(),
+            trait_vars: HashMap::new(),
+            instances: HashSet::new(),
             trait_methods: HashMap::new(),
+            method_trait: HashMap::new(),
             ufcs_rewrites: HashMap::new(),
         }
     }
@@ -348,7 +361,8 @@ impl Infer {
         }
     }
 
-    /// Resolve unbound UFCS `method(recv, …)` via `trait_methods` when recv is a concrete ADT.
+    /// Resolve unbound UFCS `method(recv, …)` via `trait_methods`.
+    /// Concrete ADT → rewrite to mangled; open Var → record trait predicate (mono later).
     fn try_infer_trait_ufcs(
         &mut self,
         method: &str,
@@ -364,51 +378,94 @@ impl Infer {
             ats.push(t);
             aes = self.union_eff(aes, e);
         }
-        let Type::Adt { name: ty_name, .. } = self.prune(recv_ty) else {
-            return Ok(None);
-        };
-        let cands = self
-            .trait_methods
-            .get(&(ty_name.clone(), method.to_string()))
-            .cloned()
-            .unwrap_or_default();
-        match cands.as_slice() {
-            [] => Ok(None),
-            [mangled] => {
-                let ct = self.lookup(mangled).ok_or_else(|| {
-                    at(
-                        span,
-                        format!("trait method `{method}` for `{ty_name}` is not in scope"),
-                    )
-                })?;
-                let ret = self.fresh();
-                let call_eff = match self.prune(ct.clone()) {
-                    Type::Fun(_, _, e) => e,
-                    _ => self.fresh_eff(),
+        match self.prune(recv_ty.clone()) {
+            Type::Adt { name: ty_name, .. } => {
+                let cands = self
+                    .trait_methods
+                    .get(&(ty_name.clone(), method.to_string()))
+                    .cloned()
+                    .unwrap_or_default();
+                match cands.as_slice() {
+                    [] => Ok(None),
+                    [mangled] => {
+                        let ct = self.lookup(mangled).ok_or_else(|| {
+                            at(
+                                span,
+                                format!(
+                                    "trait method `{method}` for `{ty_name}` is not in scope"
+                                ),
+                            )
+                        })?;
+                        let ret = self.fresh();
+                        let call_eff = match self.prune(ct.clone()) {
+                            Type::Fun(_, _, e) => e,
+                            _ => self.fresh_eff(),
+                        };
+                        self.unify_at(
+                            span,
+                            ct,
+                            Type::Fun(ats, Box::new(ret.clone()), call_eff),
+                        )?;
+                        self.ufcs_rewrites.insert(span, mangled.clone());
+                        let fun_eff = self.prune_eff(call_eff);
+                        Ok(Some((self.prune(ret), self.union_eff(aes, fun_eff))))
+                    }
+                    many => {
+                        let names: Vec<_> = many
+                            .iter()
+                            .filter_map(|m| {
+                                m.strip_prefix("__").and_then(|s| s.split('_').next())
+                            })
+                            .collect();
+                        Err(at(
+                            span,
+                            format!(
+                                "ambiguous trait method `{method}` for `{ty_name}` \
+                                 (candidates: {}); qualify or rename",
+                                names.join(", ")
+                            ),
+                        ))
+                    }
+                }
+            }
+            Type::Var(v) => {
+                let Some(trait_name) = self.method_trait.get(method).cloned() else {
+                    return Ok(None);
                 };
-                self.unify_at(
-                    span,
-                    ct,
-                    Type::Fun(ats, Box::new(ret.clone()), call_eff),
-                )?;
-                self.ufcs_rewrites.insert(span, mangled.clone());
-                let fun_eff = self.prune_eff(call_eff);
+                // Sample any mangled implementation for effect/arity/ret shape.
+                let sample = self
+                    .trait_methods
+                    .values()
+                    .flatten()
+                    .find(|m| m.ends_with(&format!("_{method}")))
+                    .cloned();
+                let ret = self.fresh();
+                let fun_eff = if let Some(sample) = sample {
+                    let ct = self.lookup(&sample).ok_or_else(|| {
+                        at(span, format!("trait method `{method}` is not in scope"))
+                    })?;
+                    let call_eff = match self.prune(ct.clone()) {
+                        Type::Fun(_, _, e) => e,
+                        _ => self.fresh_eff(),
+                    };
+                    self.unify_at(
+                        span,
+                        ct,
+                        Type::Fun(ats, Box::new(ret.clone()), call_eff),
+                    )?;
+                    self.prune_eff(call_eff)
+                } else {
+                    // Trait declared but no instance yet — open ret; call site checks.
+                    Effect::pure()
+                };
+                self.trait_vars
+                    .entry(v)
+                    .or_default()
+                    .push((trait_name, method.to_string()));
+                // Leave HIR as `method(recv,…)` — Core mono resolves after specialize.
                 Ok(Some((self.prune(ret), self.union_eff(aes, fun_eff))))
             }
-            many => {
-                let names: Vec<_> = many
-                    .iter()
-                    .filter_map(|m| m.strip_prefix("__").and_then(|s| s.split('_').next()))
-                    .collect();
-                Err(at(
-                    span,
-                    format!(
-                        "ambiguous trait method `{method}` for `{ty_name}` \
-                         (candidates: {}); qualify or rename",
-                        names.join(", ")
-                    ),
-                ))
-            }
+            _ => Ok(None),
         }
     }
 
@@ -420,6 +477,36 @@ impl Infer {
             Type::Int | Type::Float | Type::Var(_) => Ok(()),
             other => Err(TypeError::Message(format!(
                 "numeric type required for arithmetic, got {other}"
+            ))),
+        }
+    }
+
+    fn check_trait_bind(&mut self, v: u32, t: &Type) -> Result<(), TypeError> {
+        let Some(preds) = self.trait_vars.get(&v).cloned() else {
+            return Ok(());
+        };
+        match self.prune(t.clone()) {
+            Type::Var(u) => {
+                let entry = self.trait_vars.entry(u).or_default();
+                for p in preds {
+                    if !entry.contains(&p) {
+                        entry.push(p);
+                    }
+                }
+                Ok(())
+            }
+            Type::Adt { name, .. } => {
+                for (tr, method) in preds {
+                    if !self.instances.contains(&(tr.clone(), name.clone())) {
+                        return Err(TypeError::Message(format!(
+                            "no `instance {tr} for {name}` (required by `.{method}()`)"
+                        )));
+                    }
+                }
+                Ok(())
+            }
+            other => Err(TypeError::Message(format!(
+                "trait method requires an ADT with an instance, got {other}"
             ))),
         }
     }
@@ -635,11 +722,21 @@ impl Infer {
             .filter(|v| self.num_vars.contains(v))
             .collect();
         num_vars.sort_unstable();
+        let mut trait_preds: Vec<(u32, String, String)> = Vec::new();
+        for &v in &vars {
+            if let Some(preds) = self.trait_vars.get(&v) {
+                for (tr, method) in preds {
+                    trait_preds.push((v, tr.clone(), method.clone()));
+                }
+            }
+        }
+        trait_preds.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
         Scheme {
             vars,
             eff_vars: Vec::new(),
             ty,
             num_vars,
+            trait_preds,
         }
     }
 
@@ -652,6 +749,14 @@ impl Infer {
         for &old in &scheme.num_vars {
             if let Some(Type::Var(n)) = ty_map.get(&old) {
                 self.num_vars.insert(*n);
+            }
+        }
+        for (old, tr, method) in &scheme.trait_preds {
+            if let Some(Type::Var(n)) = ty_map.get(old) {
+                self.trait_vars
+                    .entry(*n)
+                    .or_default()
+                    .push((tr.clone(), method.clone()));
             }
         }
         let eff_map: HashMap<u32, Effect> = scheme
@@ -896,6 +1001,7 @@ impl Infer {
                     return Err(TypeError::Message("infinite type".into()));
                 }
                 self.check_num_bind(v, &t)?;
+                self.check_trait_bind(v, &t)?;
                 if let Type::Var(u) = &t {
                     if self.num_vars.contains(&v) {
                         self.num_vars.insert(*u);
@@ -2235,6 +2341,8 @@ pub fn infer_module_with_options(
         .map(|(_, ty)| ty.clone())
         .collect();
     inf.trait_methods = module.trait_methods.clone();
+    inf.instances = module.instances.clone();
+    inf.method_trait = module.method_traits.clone();
     let mut fun_types = HashMap::new();
     let mut main_effect = Effect::pure();
 
@@ -2960,6 +3068,49 @@ val main = {
         let ast = parse_module(src).unwrap();
         let hir = lower_module(&ast).expect("lower");
         infer_module(&hir).expect("top-level Num poly");
+    }
+
+    #[test]
+    fn trait_poly_method_infers() {
+        let src = r#"
+module M
+import std.io.{println}
+type Point { val x val y }
+type Box { val n }
+trait ToInt { val toInt = { self -> 0 } }
+instance ToInt for Point { val toInt = { self -> self.x } }
+instance ToInt for Box { val toInt = { self -> self.n } }
+val main = {
+    val f = { x -> x.toInt() }
+    println(f(Point { x = 7, y = 0 }))
+    println(f(Box { n = 4 }))
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let hir = lower_module(&ast).expect("lower");
+        infer_module(&hir).expect("poly trait method");
+    }
+
+    #[test]
+    fn trait_poly_method_rejects_missing_instance() {
+        let src = r#"
+module M
+import std.io.{println}
+type Point { val x }
+trait ToInt { val toInt = { self -> 0 } }
+val main = {
+    val f = { x -> x.toInt() }
+    println(f(Point { x = 1 }))
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let hir = lower_module(&ast).expect("lower");
+        let err = infer_module(&hir).expect_err("missing ToInt instance");
+        assert!(
+            err.message().contains("ToInt") || err.message().contains("instance"),
+            "unexpected: {}",
+            err.message()
+        );
     }
 
     #[test]

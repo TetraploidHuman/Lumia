@@ -5,7 +5,7 @@
 ## 类型与单态化
 
 - [ ] **单态化管线**：按 call-site 实参 ground 键克隆：`$Float`/`$Bool`/`$String`/`$List_Int`/`$Option_Float`/`$Option_Int_Int`（`poly_*` / `poly_list` / `poly_option` / `poly_unwrap`）；同名多体共存；`instance Num` 已接线。Map/Set 键、scheme 驱动与 Fun 参仍待。
-- [ ] **类型类 `trait` / `instance` / `requires`**：显式 instance 可填 trait 默认方法；Show/Eq/Ord/Num 覆盖已接线；UFCS `x.show()` / `x.eq` / `x.less` 及**任意用户方法**经 `trait_methods` 表解析为 `__Trait_Type_method`（`trait_custom_method` / `trait_custom_default`）；积/和自动派生 Eq/Show；**Hash opt-in**。运行时字典 / 约束求解 / 多态方法仍待。
+- [ ] **类型类 `trait` / `instance` / `requires`**：显式 instance 可填 trait 默认方法；Show/Eq/Ord/Num 覆盖已接线；UFCS `x.show()` / `x.eq` / `x.less` 及**任意用户方法**经 `trait_methods` 表解析为 `__Trait_Type_method`（`trait_custom_method` / `trait_custom_default`）；积/和自动派生 Eq/Show；**Hash opt-in**；**多态方法**经约束 + 单态后解析（`trait_poly_show` / `trait_poly_method`）。运行时字典仍待。
 - [x] **`import … as` / `{ name as alias }`**：DESIGN §9.3；`ImportedName` + 公开项改名、原名 `priv` 副本；e2e `import_as` / `bad_import_as_original`。
 
 ## 语义与运行时
@@ -49,3 +49,4 @@
 - **`foreign "C" pure`**：默认 IO；`pure` 需显式信任开关。
 - **`lumia doc`**：Markdown API 文档生成。
 - **自动并行默认开**：推断后保留/回退 `ListParMap`；`--no-parallel` 关闭。
+- **多态 trait 方法**：`{ x -> x.show() }` / `{ x -> x.toInt() }` 多实例单态；缺 instance 拒绝。

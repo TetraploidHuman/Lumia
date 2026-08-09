@@ -1123,6 +1123,7 @@ mod tests {
                 },
             )],
             hash_adts: std::collections::HashSet::new(),
+        trait_methods: std::collections::HashMap::new(),
         };
         module.functions[0].is_main = true;
         module.functions[0].effect = Effect::io();
@@ -1189,6 +1190,7 @@ mod tests {
                 ),
             ],
             hash_adts: std::collections::HashSet::new(),
+        trait_methods: std::collections::HashMap::new(),
         };
         module.functions[1].is_main = true;
         module.functions[1].effect = Effect::io();
@@ -1271,6 +1273,7 @@ mod tests {
                 },
             )],
             hash_adts: std::collections::HashSet::new(),
+        trait_methods: std::collections::HashMap::new(),
         };
         MemoL0Pass.run(&mut module);
         assert!(matches!(
@@ -1323,6 +1326,7 @@ mod tests {
                 },
             )],
             hash_adts: std::collections::HashSet::new(),
+        trait_methods: std::collections::HashMap::new(),
         };
         MemoL0Pass.run(&mut module);
         assert!(matches!(
@@ -1368,6 +1372,7 @@ mod tests {
                 },
             )],
             hash_adts: std::collections::HashSet::new(),
+        trait_methods: std::collections::HashMap::new(),
         };
         MemoL0Pass.run(&mut module);
         assert!(matches!(
@@ -1436,6 +1441,7 @@ mod tests {
                 },
             )],
             hash_adts: std::collections::HashSet::new(),
+        trait_methods: std::collections::HashMap::new(),
         };
         MemoL1Pass.run(&mut module);
         let ops = &module.functions[0].body.ops;
@@ -1524,6 +1530,7 @@ mod tests {
             name: "M".into(),
             functions: vec![fib],
             hash_adts: std::collections::HashSet::new(),
+        trait_methods: std::collections::HashMap::new(),
         };
         let plan = plan_memo_tf(&module);
         assert!(
@@ -1617,6 +1624,7 @@ mod tests {
             name: "M".into(),
             functions: vec![sq, main],
             hash_adts: std::collections::HashSet::new(),
+        trait_methods: std::collections::HashMap::new(),
         };
         let plan = plan_memo_tf(&module);
         assert!(
@@ -1666,6 +1674,7 @@ mod tests {
             name: "M".into(),
             functions: vec![f],
             hash_adts: std::collections::HashSet::new(),
+        trait_methods: std::collections::HashMap::new(),
         };
         let plan = plan_memo_tf(&module);
         assert!(

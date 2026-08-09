@@ -328,11 +328,29 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
     // trait name → (method name → default body)
     let mut trait_defaults: HashMap<String, HashMap<String, lumia_syntax::ValItem>> =
         HashMap::new();
+    // method → trait (reject duplicate short names across traits at lower time).
+    let mut method_traits: HashMap<String, String> = HashMap::new();
     for item in &m.items {
         if let lumia_syntax::Item::Trait(t) = item {
             let mut ms = HashMap::new();
             for method in &t.methods {
                 ms.insert(method.name.clone(), method.clone());
+                match method_traits.get(&method.name) {
+                    None => {
+                        method_traits.insert(method.name.clone(), t.name.clone());
+                    }
+                    Some(existing) if existing == &t.name => {}
+                    Some(existing) => {
+                        return Err(LowerError {
+                            message: format!(
+                                "ambiguous trait method `{}` \
+                                 (defined on both `{existing}` and `{}`)",
+                                method.name, t.name
+                            ),
+                            span: t.span,
+                        });
+                    }
+                }
             }
             if !ms.is_empty() {
                 trait_defaults.insert(t.name.clone(), ms);
@@ -436,6 +454,7 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
                 instances,
                 show_methods,
                 trait_methods,
+                method_traits,
             }
         })
     });
@@ -997,6 +1016,8 @@ pub struct Module {
     /// Instance / default methods: `(type, method)` → mangled `__Trait_Type_method`.
     /// Used for UFCS `x.method(...)` resolution (compile-time; DESIGN §6.2).
     pub trait_methods: HashMap<(String, String), Vec<String>>,
+    /// Short method name → declaring trait (from `trait` items; poly UFCS constraints).
+    pub method_traits: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone)]

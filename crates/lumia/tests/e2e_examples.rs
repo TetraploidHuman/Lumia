@@ -183,6 +183,39 @@ fn e2e_trait_custom_method() {
 }
 
 #[test]
+fn e2e_trait_poly_show() {
+    // `{ x -> x.show() }` monomorphized at two Show instances.
+    run_example("examples/trait_poly_show.lm", &["P", "B"]);
+}
+
+#[test]
+fn e2e_trait_poly_method() {
+    // `{ x -> x.toInt() }` deferred UFCS + post-mono mangled resolve.
+    run_example("examples/trait_poly_method.lm", &["7", "4"]);
+}
+
+#[test]
+fn e2e_bad_trait_poly_rejected() {
+    let root = workspace_root();
+    let src = root.join("examples/bad_trait_poly.lm");
+    let out = Command::new(lumia_bin())
+        .current_dir(&root)
+        .args(["check", src.to_str().unwrap()])
+        .output()
+        .expect("spawn lumia check");
+    assert!(!out.status.success(), "missing trait instance should fail");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stderr),
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(
+        combined.contains("ToInt") || combined.contains("instance"),
+        "unexpected diagnostics: {combined}"
+    );
+}
+
+#[test]
 fn e2e_trait_custom_default() {
     run_example("examples/trait_custom_default.lm", &["default"]);
 }

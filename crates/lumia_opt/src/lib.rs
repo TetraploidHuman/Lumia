@@ -471,6 +471,7 @@ mod tests {
             escaping: std::collections::HashSet::new(),
             }],
             hash_adts: std::collections::HashSet::new(),
+        trait_methods: std::collections::HashMap::new(),
         };
         CopyElimPass.run(&mut module);
         let f = &module.functions[0];
@@ -520,6 +521,7 @@ mod tests {
             escaping: std::collections::HashSet::new(),
             }],
             hash_adts: std::collections::HashSet::new(),
+        trait_methods: std::collections::HashMap::new(),
         };
         EscapePass.run(&mut module);
         ReprSelect.run(&mut module);
@@ -568,6 +570,7 @@ mod tests {
                 escaping: std::collections::HashSet::new(),
             }],
             hash_adts: std::collections::HashSet::new(),
+        trait_methods: std::collections::HashMap::new(),
         };
         EscapePass.run(&mut module);
         ReprSelect.run(&mut module);
@@ -646,6 +649,7 @@ val main = {
             escaping: std::collections::HashSet::new(),
             }],
             hash_adts: std::collections::HashSet::new(),
+        trait_methods: std::collections::HashMap::new(),
         };
         EscapePass.run(&mut module);
         ReprSelect.run(&mut module);
