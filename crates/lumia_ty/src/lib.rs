@@ -1705,14 +1705,10 @@ impl Infer {
                                     field_ty
                                 }
                             } else {
-                                // Positional `.0`: sum-pattern desugar also uses 2-arg form on
-                                // already-typed scrutinees. For lambdas, require a tuple of
-                                // exact arity idx+1 (no row polymorphism yet).
-                                let params: Vec<Type> =
-                                    (0..=idx).map(|_| self.fresh()).collect();
-                                let field_ty = params[idx].clone();
-                                self.unify_at(*span, recv_ty, Type::Tuple(params))?;
-                                field_ty
+                                // Positional `.0` / sum-pattern field: no row types yet, so
+                                // freezing to `Tuple` of arity `idx+1` breaks `{ t -> t.0 }`
+                                // on pairs. Leave open; named products use the 3-arg path.
+                                self.fresh()
                             }
                         }
                         other => {
