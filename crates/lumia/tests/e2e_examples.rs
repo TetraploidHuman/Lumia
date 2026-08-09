@@ -380,6 +380,23 @@ fn e2e_poly_result_map() {
 }
 
 #[test]
+fn e2e_std_option() {
+    // Source-backed `std.option` combinators (inlined from std/option.lm).
+    run_example(
+        "examples/std_option.lm",
+        &["21", "-1", "3", "5", "-1", "true", "true"],
+    );
+}
+
+#[test]
+fn e2e_std_result() {
+    run_example(
+        "examples/std_result.lm",
+        &["42", "-1", "3", "5", "odd", "boom!", "true", "true"],
+    );
+}
+
+#[test]
 fn e2e_small_list_local() {
     // Non-escaping small listOf → stack LitList; len/get still work.
     run_example("examples/small_list_local.lm", &["3", "10", "30", "60"]);

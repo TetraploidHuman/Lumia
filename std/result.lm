@@ -1,0 +1,48 @@
+/// Result combinators over the prelude ADT `Result` (`Ok` / `Err`).
+///
+/// Bare `map` remains List sugar — use `resultMap` here.
+///
+/// @exports unwrapOr, resultMap, andThen, mapErr, isOk, isErr
+module result
+
+val unwrapOr = { r, default ->
+    r match {
+        Ok(x) -> x
+        Err(_) -> default
+    }
+}
+
+val resultMap = { r, f ->
+    r match {
+        Ok(x) -> Ok(f(x))
+        Err(e) -> Err(e)
+    }
+}
+
+val andThen = { r, f ->
+    r match {
+        Ok(x) -> f(x)
+        Err(e) -> Err(e)
+    }
+}
+
+val mapErr = { r, f ->
+    r match {
+        Ok(x) -> Ok(x)
+        Err(e) -> Err(f(e))
+    }
+}
+
+val isOk = { r ->
+    r match {
+        Ok(_) -> true
+        Err(_) -> false
+    }
+}
+
+val isErr = { r ->
+    r match {
+        Ok(_) -> false
+        Err(_) -> true
+    }
+}

@@ -193,20 +193,37 @@ fn is_std(path: &[String]) -> bool {
     path.first().map(|s| s.as_str() == "std").unwrap_or(false)
 }
 
-/// Compiler-provided `std.*` modules (implemented as builtins / prelude).
+/// How a `std.*` module is provided.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StdKind {
+    /// Bodies are compiler builtins; `std/<mod>.lm` only lists `@exports`.
+    Builtin,
+    /// Real Lumia source under `std/<mod>.lm`, inlined like a user module.
+    Source,
+}
+
+/// Resolve `std.<name>` → (`rel` under workspace `std/`, kind).
+fn std_module(path: &[String]) -> Result<(&'static str, StdKind)> {
+    let key: Vec<&str> = path.iter().map(|s| s.as_str()).collect();
+    match key.as_slice() {
+        ["std", "io"] => Ok(("io.lm", StdKind::Builtin)),
+        ["std", "string"] => Ok(("string.lm", StdKind::Builtin)),
+        ["std", "option"] => Ok(("option.lm", StdKind::Source)),
+        ["std", "result"] => Ok(("result.lm", StdKind::Source)),
+        _ => bail!(
+            "unknown standard module `{}` (known: std.io, std.string, std.option, std.result)",
+            path.join(".")
+        ),
+    }
+}
+
+fn is_std_builtin(path: &[String]) -> bool {
+    matches!(std_module(path), Ok((_, StdKind::Builtin)))
+}
+
 /// Export sets are read from `std/<mod>.lm` `@exports` lines — no hardcoded dual list.
 fn std_exports(path: &[String]) -> Result<Vec<String>> {
-    let key: Vec<&str> = path.iter().map(|s| s.as_str()).collect();
-    let rel = match key.as_slice() {
-        ["std", "io"] => "io.lm",
-        ["std", "string"] => "string.lm",
-        _ => {
-            bail!(
-                "unknown standard module `{}` (known: std.io, std.string)",
-                path.join(".")
-            );
-        }
-    };
+    let (rel, _) = std_module(path)?;
     let file = workspace_std_dir().join(rel);
     let src = fs::read_to_string(&file).with_context(|| {
         format!(
@@ -500,10 +517,39 @@ fn load_module_file_uncached(
     for imp in &m.imports {
         if is_std(&imp.path) {
             validate_std_import(imp)?;
-            if is_entry {
-                collect_std_aliases(imp, &mut visibility.builtin_aliases)?;
+            let (rel, kind) = std_module(&imp.path)?;
+            match kind {
+                StdKind::Builtin => {
+                    if is_entry {
+                        collect_std_aliases(imp, &mut visibility.builtin_aliases)?;
+                    }
+                    continue;
+                }
+                StdKind::Source => {
+                    let file = workspace_std_dir().join(rel);
+                    let file = file.canonicalize().unwrap_or(file);
+                    let dep = load_module_file(
+                        &file,
+                        search_roots,
+                        overlays,
+                        stack,
+                        done,
+                        files,
+                        visibility,
+                        false,
+                    )?;
+                    let visible = import_visible_names(&dep.items, &imp.names);
+                    let filtered = filter_items(dep.items, &imp.names)?;
+                    if is_entry {
+                        extend_visibility(visibility, &filtered, &visible);
+                    } else {
+                        let empty = HashSet::new();
+                        extend_visibility(visibility, &filtered, &empty);
+                    }
+                    append_items_unique(&mut imported_items, filtered);
+                    continue;
+                }
             }
-            continue;
         }
         let file = resolve_import_file(&importer_dir, search_roots, imp)?;
         // Canonicalize so the same file via different relative paths shares one identity
@@ -540,7 +586,8 @@ fn load_module_file_uncached(
         append_items_unique(&mut imported_items, filtered);
     }
 
-    m.imports.retain(|i| is_std(&i.path));
+    // Keep only builtin-std imports (ty env / aliases); source std is inlined away.
+    m.imports.retain(|i| is_std_builtin(&i.path));
     // Record this file's declarations (entry or dep). Entry names are visible
     // via same-file origin; deps rely on import_visible_names above.
     let local_visible: HashSet<String> = if is_entry {

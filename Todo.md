@@ -22,7 +22,7 @@
 - [x] **自动并行**：默认对 FunRef-safe 纯标量 `List.map` / `List.fold` 选 `ListParMap` / `ListParFold`（`par_map*` / `par_fold`）；顶层-only 自由变量的 lambda 亦安全；IO/非标量/真捕获回退；`--no-parallel` 关闭。`fold` 假定结合律。
 - [ ] **逃逸分析 → 栈分配 / 多表示 List·Map·Set**：未逃逸且 ≤8 的 `listOf`/`mapOf`/`setOf` → `LitList`/`LitMap`/`LitSet`（`small_*`）；**已知纯 callee 形参摘要**不误伤（`escape_pure_len`）；**非逃逸 product → LitAdt**（`small_adt_local`）。更多表示 / 晋升仍待。
 - [ ] **部分求值 / 完整 specialization**：L0 折叠字面 `ListLen`/`ListGet`/`AdtField`（`pe_list_len_get` / `pe_adt_field`）；**Map/Set `len`/`contains`**（`pe_map_contains`）。完整 specialization 仍待。
-- [ ] **`std/` 可执行正文**：Option/Result 组合子单态已有 e2e；可开始填 `std/` 正文（现为 `@exports` stub）。
+- [ ] **`std/` 可执行正文**：`std.option` / `std.result` 已为源文件正文并经 loader 内联（`std_option` / `std_result`）；`std.io` / `std.string` 仍为 `@exports` + builtins。
 
 ## 工具链
 
@@ -52,3 +52,4 @@
 - **多态 trait 方法**：`{ x -> x.show() }` / `{ x -> x.toInt() }` 多实例单态；缺 instance 拒绝。
 - **Opt**：Map/Set PE；逃逸 callee 摘要；LitAdt；IO SCC musttail。
 - **Mono Map/Set + HOF**：`$Map_*`/`$Set_*`；Option/Result `optMap`/`andThen`/`resultMap` FunRef 多轮单态。
+- **`std.option` / `std.result`**：源文件组合子 + loader `StdKind::Source` 内联。
