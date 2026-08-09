@@ -897,7 +897,10 @@ impl<'ctx> Codegen<'ctx> {
             Value::AllocMap { flat_pairs, repr } => {
                 !(matches!(repr, lumia_core::MapRepr::LitMap) && !flat_pairs.is_empty())
             }
-            Value::AllocAdt { .. } | Value::AllocClosure { .. } => true,
+            Value::AllocAdt { repr, .. } => {
+                !matches!(repr, lumia_core::AdtRepr::LitAdt)
+            }
+            Value::AllocClosure { .. } => true,
             Value::ClosureCap { .. } => true,
             Value::IndirectCall { .. } => true,
             // Only when an arm's result may be heap — parent `Let` re-roots after
@@ -3843,7 +3846,15 @@ impl<'ctx> Codegen<'ctx> {
                     .unwrap()
                     .into())
             }
-            Value::AllocAdt { tag, fields, .. } => {
+            Value::AllocAdt {
+                tag,
+                fields,
+                repr,
+                ..
+            } => {
+                if matches!(repr, lumia_core::AdtRepr::LitAdt) {
+                    return self.emit_stack_adt(*tag, fields);
+                }
                 let n = fields.len() as u64;
                 let nbytes = self.i64_ty.const_int((1 + n) * 8, false);
                 let type_id = self.context.i32_type().const_int(6, false); // TYPE_ADT
@@ -3890,6 +3901,94 @@ impl<'ctx> Codegen<'ctx> {
                     .into())
             }
         }
+    }
+
+    /// Stack ADT: ObjectHeader + `[tag][field0]…` payload (TYPE_ADT).
+    /// Escape analysis must ensure the pointer never outlives the frame.
+    fn emit_stack_adt(
+        &mut self,
+        tag: i64,
+        fields: &[Local],
+    ) -> Result<BasicValueEnum<'ctx>> {
+        let n = fields.len() as u64;
+        let payload_bytes = (1 + n) * 8;
+        let words = (2 + 1 + n) as u32; // 2 header + tag + fields
+        let arr_ty = self.i64_ty.array_type(words);
+        let entry = self
+            .entry_bb
+            .context("emit_stack_adt before emit_function")?;
+        let cur = self
+            .builder
+            .get_insert_block()
+            .context("no insert block")?;
+        match entry.get_first_instruction() {
+            Some(first) => self.builder.position_before(&first),
+            None => self.builder.position_at_end(entry),
+        }
+        let storage = self.builder.build_alloca(arr_ty, "stack_adt").unwrap();
+        self.builder.position_at_end(cur);
+
+        let type_id = 6u64; // TYPE_ADT
+        let hdr0 = self
+            .i64_ty
+            .const_int(type_id | ((payload_bytes as u64) << 32), false);
+        let hdr0_slot = unsafe {
+            self.builder
+                .build_gep(
+                    self.i64_ty,
+                    storage,
+                    &[self.i64_ty.const_int(0, false)],
+                    "adt_hdr0",
+                )
+                .unwrap()
+        };
+        self.builder.build_store(hdr0_slot, hdr0).unwrap();
+        let hdr1_slot = unsafe {
+            self.builder
+                .build_gep(
+                    self.i64_ty,
+                    storage,
+                    &[self.i64_ty.const_int(1, false)],
+                    "adt_hdr1",
+                )
+                .unwrap()
+        };
+        self.builder
+            .build_store(hdr1_slot, self.i64_ty.const_int(1, false))
+            .unwrap();
+
+        let payload = unsafe {
+            self.builder
+                .build_gep(
+                    self.i64_ty,
+                    storage,
+                    &[self.i64_ty.const_int(2, false)],
+                    "adt_payload",
+                )
+                .unwrap()
+        };
+        self.builder
+            .build_store(payload, self.i64_ty.const_int(tag as u64, false))
+            .unwrap();
+        for (i, e) in fields.iter().enumerate() {
+            let v = self.coerce_i64(self.local(*e)?)?;
+            let slot = unsafe {
+                self.builder
+                    .build_gep(
+                        self.i64_ty,
+                        storage,
+                        &[self.i64_ty.const_int((3 + i) as u64, false)],
+                        "adt_f",
+                    )
+                    .unwrap()
+            };
+            self.builder.build_store(slot, v).unwrap();
+        }
+        Ok(self
+            .builder
+            .build_ptr_to_int(payload, self.i64_ty, "adt_stack_i64")
+            .unwrap()
+            .into())
     }
 
     /// Stack list with ObjectHeader + `[len][elems…]` payload (TYPE_LIST).
@@ -4141,9 +4240,11 @@ fn compute_tco_sccs(core: &CoreModule) -> HashMap<String, HashSet<String>> {
         .functions
         .iter()
         .filter(|f| {
+            // DESIGN §4.4: pure mutual recursion is guaranteed; IO is not required
+            // to TCO, but eligible Int/heap-param SCCs still get musttail when the
+            // recursive edge is a direct/FunRef call (IO on other arms is fine).
             f.memo.is_none()
                 && f.external.is_none()
-                && !f.effect.has_io()
                 && tco_eligible_ty(&f.ret_ty)
                 && f.param_tys.iter().all(tco_eligible_ty)
         })

@@ -144,6 +144,7 @@ pub enum Value {
         adt_name: String,
         tag: i64,
         fields: Vec<Local>,
+        repr: AdtRepr,
     },
     /// Heap closure: `[fn_ptr:i64][cap0]…` — `fun` takes `(env, …params)`.
     AllocClosure {
@@ -187,6 +188,15 @@ pub enum SetRepr {
     HeapSet,
     /// Small non-escaping literal → stack header+payload.
     LitSet,
+}
+
+/// ADT/product representation hint on `AllocAdt`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdtRepr {
+    /// Default heap `[tag][fields…]`.
+    HeapAdt,
+    /// Small non-escaping literal → stack header+payload (like `ListRepr::LitList`).
+    LitAdt,
 }
 
 struct LowerCtx {
@@ -2512,6 +2522,7 @@ fn lower_expr(
                     adt_name: adt_name.clone(),
                     tag: *tag,
                     fields,
+                    repr: AdtRepr::HeapAdt,
                 },
                 pure_region,
             });
@@ -2661,6 +2672,7 @@ fn format_value(v: &Value) -> String {
             adt_name,
             tag,
             fields,
+            ..
         } => {
             format!("alloc_adt({adt_name}, tag={tag}, n={})", fields.len())
         }

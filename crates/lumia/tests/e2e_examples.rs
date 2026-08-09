@@ -156,6 +156,12 @@ fn e2e_tco_list_sum() {
 }
 
 #[test]
+fn e2e_tco_io_countdown() {
+    // IO on base case; recursive arm still musttail (~2e6 frames).
+    run_example("examples/tco_io_countdown.lm", &["done", "0"]);
+}
+
+#[test]
 fn e2e_trait_ord() {
     // `instance Ord for Point` enables lexicographic `<`/`>` on products.
     run_example(
@@ -360,6 +366,27 @@ fn e2e_pe_list_len_get() {
 #[test]
 fn e2e_pe_adt_field() {
     run_example("examples/pe_adt_field.lm", &["10", "20", "30"]);
+}
+
+#[test]
+fn e2e_pe_map_contains() {
+    // Const-fold mapOf/setOf → len / contains (memo L0).
+    run_example(
+        "examples/pe_map_contains.lm",
+        &["3", "true", "false", "3", "true", "false"],
+    );
+}
+
+#[test]
+fn e2e_escape_pure_len() {
+    // Pure len callee must not force list escape → LitList still works.
+    run_example("examples/escape_pure_len.lm", &["3", "20"]);
+}
+
+#[test]
+fn e2e_small_adt_local() {
+    // Non-escaping product via non-capturing field getters → LitAdt.
+    run_example("examples/small_adt_local.lm", &["10", "20", "30"]);
 }
 
 #[test]

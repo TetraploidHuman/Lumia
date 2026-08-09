@@ -1,0 +1,18 @@
+module TcoIoCountdown
+
+import std.io.{println}
+
+/// IO on the base case; recursive arm is still musttail (DESIGN §4.4 allows,
+/// does not require, TCO for IO). Without TCO, ~2e6 frames overflow.
+val countdown(n) = {
+    if n == 0 {
+        println("done")
+        0
+    } else {
+        countdown(n - 1)
+    }
+}
+
+val main = {
+    println(countdown(2000000))
+}

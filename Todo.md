@@ -18,10 +18,10 @@
 
 ## 优化与表示（DESIGN / BUILD 下一里程碑）
 
-- [ ] **纯互递归 TCO**（DESIGN §4.4）：纯 SCC `musttail`（标量 + 堆参 List/String/ADT；`tco_sum` / `tco_list_sum` / …）；musttail 前 `root_pop_to(0)`，callee 入口再 root。IO / 未知闭包 IndirectCall 未做。
+- [ ] **纯互递归 TCO**（DESIGN §4.4）：纯 SCC `musttail`（标量 + 堆参 List/String/ADT；`tco_sum` / `tco_list_sum` / …）；musttail 前 `root_pop_to(0)`，callee 入口再 root；**含 IO 的 SCC 亦可 musttail**（`tco_io_countdown`；DESIGN 不保证）。未知闭包 IndirectCall 未做。
 - [x] **自动并行**：默认对 FunRef-safe 纯标量 `List.map` / `List.fold` 选 `ListParMap` / `ListParFold`（`par_map*` / `par_fold`）；顶层-only 自由变量的 lambda 亦安全；IO/非标量/真捕获回退；`--no-parallel` 关闭。`fold` 假定结合律。
-- [ ] **逃逸分析 → 栈分配 / 多表示 List·Map·Set**：未逃逸且 ≤8 的 `listOf`/`mapOf`/`setOf` → `LitList`/`LitMap`/`LitSet` 栈布局（`small_list_local` / `small_map_local` / `small_set_local`）；逃逸/更大仍堆。更多表示 / 晋升仍待。
-- [ ] **部分求值 / 完整 specialization**：L0 折叠字面 `ListLen`/`ListGet`/`AdtField`（`pe_list_len_get` / `pe_adt_field`）；Map 键折叠与完整 specialization 仍待。
+- [ ] **逃逸分析 → 栈分配 / 多表示 List·Map·Set**：未逃逸且 ≤8 的 `listOf`/`mapOf`/`setOf` → `LitList`/`LitMap`/`LitSet`（`small_*`）；**已知纯 callee 形参摘要**不误伤（`escape_pure_len`）；**非逃逸 product → LitAdt**（`small_adt_local`）。更多表示 / 晋升仍待。
+- [ ] **部分求值 / 完整 specialization**：L0 折叠字面 `ListLen`/`ListGet`/`AdtField`（`pe_list_len_get` / `pe_adt_field`）；**Map/Set `len`/`contains`**（`pe_map_contains`）。完整 specialization 仍待。
 - [ ] **`std/` 可执行正文**：等错误处理 / Result 组合子单态更稳后再做；现为 `@exports` stub。
 
 ## 工具链
@@ -50,3 +50,4 @@
 - **`lumia doc`**：Markdown API 文档生成。
 - **自动并行默认开**：推断后保留/回退 `ListParMap`；`--no-parallel` 关闭。
 - **多态 trait 方法**：`{ x -> x.show() }` / `{ x -> x.toInt() }` 多实例单态；缺 instance 拒绝。
+- **Opt**：Map/Set PE；逃逸 callee 摘要；LitAdt；IO SCC musttail。

@@ -1,0 +1,15 @@
+module PeMapContains
+
+import std.io.{println}
+
+/// Const-fold `mapOf`/`setOf` → ListLen / Contains (memo L0).
+val main = {
+    val m = mapOf(1, 10, 2, 20, 3, 30)
+    println(m.len())
+    println(m.contains(2))
+    println(m.contains(9))
+    val s = setOf(1, 2, 3)
+    println(s.len())
+    println(s.contains(2))
+    println(s.contains(8))
+}

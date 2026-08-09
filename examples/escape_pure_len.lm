@@ -1,0 +1,12 @@
+module EscapePureLen
+
+import std.io.{println}
+
+/// Pure projection callee must not force the list to escape → LitList.
+val len = { xs -> xs.len() }
+
+val main = {
+    val xs = listOf(10, 20, 30)
+    println(len(xs))
+    println(xs.get(1))
+}

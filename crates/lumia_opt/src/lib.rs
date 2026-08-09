@@ -19,7 +19,7 @@ pub use memo::{
 };
 
 use lumia_core::{
-    Block, CoreFun, CoreModule, ListRepr, Local, MapRepr, Op, SetRepr, Value,
+    AdtRepr, Block, CoreFun, CoreModule, ListRepr, Local, MapRepr, Op, SetRepr, Value,
 };
 use memo::cse_module;
 use std::collections::{HashMap, HashSet};
@@ -378,7 +378,13 @@ fn select_value(v: &mut Value, bound: Local, escaping: &HashSet<Local>) {
                 *repr = SetRepr::HeapSet;
             }
         }
-        Value::AllocAdt { .. } => {}
+        Value::AllocAdt { fields, repr, .. } => {
+            if local_ok && fields.len() <= 8 {
+                *repr = AdtRepr::LitAdt;
+            } else {
+                *repr = AdtRepr::HeapAdt;
+            }
+        }
         Value::AllocClosure { .. } | Value::ClosureCap { .. } => {}
         Value::If {
             then_block,

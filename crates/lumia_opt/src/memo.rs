@@ -299,6 +299,10 @@ fn const_fold_block(block: &mut Block) {
     let mut known_list: HashMap<u32, Vec<Local>> = HashMap::new();
     // Local → field locals of a literal `AllocAdt` (for AdtField fold).
     let mut known_adt: HashMap<u32, Vec<Local>> = HashMap::new();
+    // Local → flat key/value locals of a literal `AllocMap`.
+    let mut known_map: HashMap<u32, Vec<Local>> = HashMap::new();
+    // Local → element locals of a literal `AllocSet`.
+    let mut known_set: HashMap<u32, Vec<Local>> = HashMap::new();
     for op in &mut block.ops {
         match op {
             Op::Let {
@@ -324,9 +328,21 @@ fn const_fold_block(block: &mut Block) {
                         if let Some(fields) = known_adt.get(src).cloned() {
                             known_adt.insert(local.0, fields);
                         }
+                        if let Some(pairs) = known_map.get(src).cloned() {
+                            known_map.insert(local.0, pairs);
+                        }
+                        if let Some(elems) = known_set.get(src).cloned() {
+                            known_set.insert(local.0, elems);
+                        }
                     }
                     Value::AllocList { elems, .. } => {
                         known_list.insert(local.0, elems.clone());
+                    }
+                    Value::AllocMap { flat_pairs, .. } => {
+                        known_map.insert(local.0, flat_pairs.clone());
+                    }
+                    Value::AllocSet { elems, .. } => {
+                        known_set.insert(local.0, elems.clone());
                     }
                     Value::AllocAdt { fields, .. } => {
                         known_adt.insert(local.0, fields.clone());
@@ -384,6 +400,14 @@ fn const_fold_block(block: &mut Block) {
                                 let n = elems.len() as i64;
                                 *value = Value::Int(n);
                                 known_int.insert(local.0, n);
+                            } else if let Some(pairs) = known_map.get(&xs.0) {
+                                let n = (pairs.len() / 2) as i64;
+                                *value = Value::Int(n);
+                                known_int.insert(local.0, n);
+                            } else if let Some(elems) = known_set.get(&xs.0) {
+                                let n = elems.len() as i64;
+                                *value = Value::Int(n);
+                                known_int.insert(local.0, n);
                             }
                         }
                         (Builtin::ListGet, [xs, idx]) => {
@@ -399,6 +423,23 @@ fn const_fold_block(block: &mut Block) {
                                     if let Some(inner) = known_list.get(&el.0).cloned() {
                                         known_list.insert(local.0, inner);
                                     }
+                                }
+                            }
+                        }
+                        (Builtin::Contains, [col, key]) => {
+                            if let Some(&k) = known_int.get(&key.0) {
+                                if let Some(pairs) = known_map.get(&col.0) {
+                                    let found = pairs.chunks_exact(2).any(|kv| {
+                                        known_int.get(&kv[0].0).copied() == Some(k)
+                                    });
+                                    *value = Value::Bool(found);
+                                    known_int.insert(local.0, if found { 1 } else { 0 });
+                                } else if let Some(elems) = known_set.get(&col.0) {
+                                    let found = elems
+                                        .iter()
+                                        .any(|e| known_int.get(&e.0).copied() == Some(k));
+                                    *value = Value::Bool(found);
+                                    known_int.insert(local.0, if found { 1 } else { 0 });
                                 }
                             }
                         }
