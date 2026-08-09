@@ -381,7 +381,13 @@ fn annotate_assert_expr(e: &mut lumia_hir::Expr, loaded: &LoadedProgram) {
                 annotate_assert_expr(s, loaded);
             }
         }
-        Expr::Assign { value, .. } => annotate_assert_expr(value, loaded),
+        Expr::Assign { value, .. } | Expr::Return { value, .. } => {
+            annotate_assert_expr(value, loaded)
+        }
+        Expr::Alt { scrutinee, alt, .. } => {
+            annotate_assert_expr(scrutinee, loaded);
+            annotate_assert_expr(alt, loaded);
+        }
         Expr::Var(_, _)
         | Expr::Int(_, _)
         | Expr::Float(_, _)

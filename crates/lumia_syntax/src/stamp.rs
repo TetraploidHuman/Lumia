@@ -127,6 +127,19 @@ fn stamp_expr(e: &mut Expr, file: u32) {
                 stamp_cond_arm(a, file);
             }
         }
+        Expr::Return { value, span } => {
+            *span = span.with_file(file);
+            stamp_expr(value, file);
+        }
+        Expr::Alt {
+            scrutinee,
+            alt,
+            span,
+        } => {
+            *span = span.with_file(file);
+            stamp_expr(scrutinee, file);
+            stamp_expr(alt, file);
+        }
         Expr::Field { base, span, .. } => {
             *span = span.with_file(file);
             stamp_expr(base, file);

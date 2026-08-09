@@ -76,6 +76,10 @@ pub enum Op {
     },
     Break,
     Continue,
+    /// Early return from the current Core function.
+    Return {
+        value: Local,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -235,7 +239,7 @@ pub fn max_local_in_block(block: &Block) -> u32 {
                 max = max.max(max_local_in_value(value));
             }
             Op::Assign { value, .. } => max = max.max(value.0),
-            Op::Break | Op::Continue => {}
+            Op::Break | Op::Continue | Op::Return { .. } => {}
         }
     }
     if let Some(r) = &block.result {
@@ -267,7 +271,7 @@ pub fn rewrite_block_locals(block: &mut Block, remap: &HashMap<u32, u32>) {
             }
             Op::Effect { value, .. } => rewrite_value_locals(value, remap),
             Op::Assign { value, .. } => map_l(value),
-            Op::Break | Op::Continue => {}
+            Op::Break | Op::Continue | Op::Return { .. } => {}
         }
     }
 }
@@ -318,6 +322,7 @@ fn format_block(b: &Block, out: &mut String, indent: usize) {
             }
             Op::Break => out.push_str(&format!("{pad}break\n")),
             Op::Continue => out.push_str(&format!("{pad}continue\n")),
+            Op::Return { value } => out.push_str(&format!("{pad}early_return %{}\n", value.0)),
         }
     }
     if let Some(r) = b.result {

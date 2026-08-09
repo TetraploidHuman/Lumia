@@ -213,6 +213,17 @@ pub enum Expr {
         arms: Vec<MatchCondArm>,
         span: Span,
     },
+    /// Limited early return from the nearest function/closure (`return expr`).
+    Return {
+        value: Box<Expr>,
+        span: Span,
+    },
+    /// `scrutinee alt rhs` — Option/Result recovery (rhs is expr or block).
+    Alt {
+        scrutinee: Box<Expr>,
+        alt: Box<Expr>,
+        span: Span,
+    },
     Field {
         base: Box<Expr>,
         field: String,
@@ -384,6 +395,8 @@ impl Expr {
             | Expr::If { span, .. }
             | Expr::Match { span, .. }
             | Expr::MatchCond { span, .. }
+            | Expr::Return { span, .. }
+            | Expr::Alt { span, .. }
             | Expr::Field { span, .. }
             | Expr::ListLit { span, .. }
             | Expr::Pipeline { span, .. }

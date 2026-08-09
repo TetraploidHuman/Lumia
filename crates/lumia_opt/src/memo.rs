@@ -193,7 +193,7 @@ fn cse_block(block: &mut Block, pure_funs: &HashSet<String>) {
                     *value = Local(r);
                 }
             }
-            Op::Break | Op::Continue => {}
+            Op::Break | Op::Continue | Op::Return { .. } => {}
         }
     }
     if let Some(r) = block.result {
@@ -579,7 +579,7 @@ fn copy_prop_block(block: &mut Block) {
                     *value = Local(r);
                 }
             }
-            Op::Break | Op::Continue => {}
+            Op::Break | Op::Continue | Op::Return { .. } => {}
         }
     }
     if let Some(r) = block.result {
@@ -685,7 +685,11 @@ fn collect_defs(block: &Block, defs: &mut HashSet<u32>) {
                     _ => {}
                 }
             }
-            Op::Assign { .. } | Op::Effect { .. } | Op::Break | Op::Continue => {}
+            Op::Assign { .. }
+            | Op::Effect { .. }
+            | Op::Break
+            | Op::Continue
+            | Op::Return { .. } => {}
         }
     }
 }

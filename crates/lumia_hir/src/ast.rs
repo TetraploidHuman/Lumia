@@ -140,6 +140,17 @@ pub enum Expr {
     },
     Break(Span),
     Continue(Span),
+    /// Limited early return from the nearest function/closure.
+    Return {
+        value: Box<Expr>,
+        span: Span,
+    },
+    /// Option/Result recovery; desugared after typecheck.
+    Alt {
+        scrutinee: Box<Expr>,
+        alt: Box<Expr>,
+        span: Span,
+    },
     Seq {
         stmts: Vec<Expr>,
         span: Span,

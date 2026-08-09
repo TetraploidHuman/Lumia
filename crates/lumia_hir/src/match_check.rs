@@ -115,8 +115,12 @@ pub(crate) fn check_expr_matches(
             check_expr_matches(left, ctors, adts, products)?;
             check_expr_matches(right, ctors, adts, products)?;
         }
-        S::Unary { expr, .. } | S::Field { base: expr, .. } => {
+        S::Unary { expr, .. } | S::Field { base: expr, .. } | S::Return { value: expr, .. } => {
             check_expr_matches(expr, ctors, adts, products)?
+        }
+        S::Alt { scrutinee, alt, .. } => {
+            check_expr_matches(scrutinee, ctors, adts, products)?;
+            check_expr_matches(alt, ctors, adts, products)?;
         }
         S::If {
             cond,

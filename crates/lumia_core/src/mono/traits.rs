@@ -237,7 +237,7 @@ pub(crate) fn directize_block(block: &mut Block, parent_funrefs: &HashMap<u32, S
                 directize_value(value, &funref_of);
                 walk_nested_blocks_directize(value, &funref_of);
             }
-            Op::Assign { .. } | Op::Break | Op::Continue => {}
+            Op::Assign { .. } | Op::Break | Op::Continue | Op::Return { .. } => {}
         }
     }
 }

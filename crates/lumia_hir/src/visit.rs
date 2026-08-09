@@ -46,6 +46,11 @@ pub fn for_each_expr(expr: &Expr, f: &mut impl FnMut(&Expr)) {
         Expr::BuiltinCall { args, .. } | Expr::AdtNew { args, .. } => {
             for_each_exprs(args, f);
         }
+        Expr::Return { value, .. } => for_each_expr(value, f),
+        Expr::Alt { scrutinee, alt, .. } => {
+            for_each_expr(scrutinee, f);
+            for_each_expr(alt, f);
+        }
         Expr::Int(..)
         | Expr::Float(..)
         | Expr::Bool(..)
@@ -108,6 +113,11 @@ fn fold_impl<T>(expr: &Expr, init: T, f: &mut impl FnMut(T, &Expr) -> T) -> T {
         Expr::Seq { stmts, .. } => stmts.iter().fold(init, |acc, e| fold_impl(e, acc, f)),
         Expr::BuiltinCall { args, .. } | Expr::AdtNew { args, .. } => {
             args.iter().fold(init, |acc, e| fold_impl(e, acc, f))
+        }
+        Expr::Return { value, .. } => fold_impl(value, init, f),
+        Expr::Alt { scrutinee, alt, .. } => {
+            let acc = fold_impl(scrutinee, init, f);
+            fold_impl(alt, acc, f)
         }
         Expr::Int(..)
         | Expr::Float(..)
@@ -194,6 +204,11 @@ fn collect_free_vars(expr: &Expr, bound: &mut Vec<String>, out: &mut Vec<String>
             for a in args {
                 collect_free_vars(a, bound, out);
             }
+        }
+        Expr::Return { value, .. } => collect_free_vars(value, bound, out),
+        Expr::Alt { scrutinee, alt, .. } => {
+            collect_free_vars(scrutinee, bound, out);
+            collect_free_vars(alt, bound, out);
         }
         Expr::Int(..)
         | Expr::Float(..)

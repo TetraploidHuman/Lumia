@@ -231,7 +231,7 @@ pub(crate) fn collect_uses(
             Op::Assign { value, .. } => {
                 locals.insert(value.0);
             }
-            Op::Break | Op::Continue => {}
+            Op::Break | Op::Continue | Op::Return { .. } => {}
         }
     }
     if let Some(r) = &block.result {

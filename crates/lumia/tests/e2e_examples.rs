@@ -191,6 +191,17 @@ macro_rules! e2e_reject {
 
 e2e_ok!(e2e_hello, "examples/hello.lm", "42");
 
+e2e_ok!(e2e_alt_option, "examples/alt_option.lm", "10", "42");
+
+e2e_ok!(
+    e2e_alt_result_return,
+    "examples/alt_result_return.lm",
+    "6",
+    "-1"
+);
+
+e2e_reject!(e2e_bad_alt_int_rejected, "examples/bad_alt_int.lm", "alt");
+
 e2e_ok!(e2e_add, "examples/add.lm", "42");
 
 e2e_ok!(e2e_match, "examples/match.lm", "20");

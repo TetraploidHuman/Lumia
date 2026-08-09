@@ -1145,6 +1145,22 @@ impl<'ctx> Codegen<'ctx> {
                     self.root_pop_to(loop_depth);
                     self.builder.build_unconditional_branch(cont_bb).unwrap();
                 }
+                Op::Return { value } => {
+                    let v = self.local(*value)?;
+                    let ret_i = if matches!(self.local_tys.get(&value.0), Some(Type::Float)) {
+                        match v {
+                            BasicValueEnum::FloatValue(f) => self
+                                .builder
+                                .build_bit_cast(f, self.i64_ty, "ret_f64_bits")
+                                .unwrap()
+                                .into_int_value(),
+                            other => self.coerce_i64(other)?,
+                        }
+                    } else {
+                        self.coerce_i64(v)?
+                    };
+                    self.emit_return_i64(ret_i);
+                }
             }
         }
         if self

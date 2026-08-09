@@ -560,6 +560,16 @@ fn lower_expr(
             ops.push(Op::Continue);
             None
         }
+        HirExpr::Return { value, .. } => {
+            if let Some(v) = lower_expr(ctx, value, ops, pure_region) {
+                ops.push(Op::Return { value: v });
+            }
+            None
+        }
+        HirExpr::Alt { .. } => {
+            // Typed modules desugar `alt` before Core lower.
+            None
+        }
         HirExpr::AdtNew {
             adt_name,
             tag,

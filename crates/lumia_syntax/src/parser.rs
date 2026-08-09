@@ -501,12 +501,36 @@ impl<'a> Parser<'a> {
                 span,
             };
         }
-        // infix match: expr match { ... } — same line only (newline `match {` is subjectless).
-        if self.at(&TokenKind::Match) && !self.newline_between(left.span().end, self.cur.span.start)
-        {
-            left = self.parse_match_suffix(left)?;
+        // infix match / alt — same line only (newline `match {` is subjectless).
+        loop {
+            if self.at(&TokenKind::Match)
+                && !self.newline_between(left.span().end, self.cur.span.start)
+            {
+                left = self.parse_match_suffix(left)?;
+            } else if self.at(&TokenKind::Alt)
+                && !self.newline_between(left.span().end, self.cur.span.start)
+            {
+                left = self.parse_alt_suffix(left)?;
+            } else {
+                break;
+            }
         }
         Ok(left)
+    }
+
+    fn parse_alt_suffix(&mut self, scrutinee: Expr) -> Result<Expr, ParseError> {
+        self.bump(); // alt
+        let alt = if self.at(&TokenKind::LBrace) {
+            self.parse_block_expr()?
+        } else {
+            self.parse_expr()?
+        };
+        let span = scrutinee.span().merge(alt.span());
+        Ok(Expr::Alt {
+            scrutinee: Box::new(scrutinee),
+            alt: Box::new(alt),
+            span,
+        })
     }
 
     fn parse_match_suffix(&mut self, scrutinee: Expr) -> Result<Expr, ParseError> {
@@ -1113,6 +1137,15 @@ impl<'a> Parser<'a> {
             }
             TokenKind::If => self.parse_if(),
             TokenKind::Match => self.parse_match_cond(),
+            TokenKind::Return => {
+                let start = self.bump().span;
+                let value = self.parse_expr()?;
+                let span = start.merge(value.span());
+                Ok(Expr::Return {
+                    value: Box::new(value),
+                    span,
+                })
+            }
             // `effect { … }` — visual effect region; same as a block (DESIGN §2.2.1).
             TokenKind::Effect => {
                 self.bump();
@@ -1602,6 +1635,10 @@ fn expr_uses_ident(expr: &Expr, name: &str) -> bool {
             a.cond.as_ref().is_some_and(|c| expr_uses_ident(c, name))
                 || expr_uses_ident(&a.body, name)
         }),
+        Expr::Return { value, .. } => expr_uses_ident(value, name),
+        Expr::Alt { scrutinee, alt, .. } => {
+            expr_uses_ident(scrutinee, name) || expr_uses_ident(alt, name)
+        }
         Expr::ListLit { elems, .. } => elems.iter().any(|e| expr_uses_ident(e, name)),
         Expr::StructLit { fields, .. } => fields.iter().any(|(_, e)| expr_uses_ident(e, name)),
         Expr::With { base, fields, .. } => {

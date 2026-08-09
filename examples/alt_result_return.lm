@@ -1,0 +1,25 @@
+module alt_result_return
+
+val parse_pos = { n ->
+    if n > 0 {
+        Ok(n)
+    } else {
+        Err("non-positive")
+    }
+}
+
+val twice_pos = { n ->
+    val x = parse_pos(n) alt return Err(err)
+    Ok(x * 2)
+}
+
+val main = {
+    println(twice_pos(3) match {
+        Ok(v) -> v
+        Err(_) -> -1
+    })
+    println(twice_pos(0) match {
+        Ok(v) -> v
+        Err(_) -> -1
+    })
+}

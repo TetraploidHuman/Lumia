@@ -807,6 +807,11 @@ fn rewrite_expr_aliases(e: &mut lumia_syntax::Expr, aliases: &HashMap<String, St
                 rewrite_expr_aliases(&mut a.body, aliases);
             }
         }
+        Return { value, .. } => rewrite_expr_aliases(value, aliases),
+        Alt { scrutinee, alt, .. } => {
+            rewrite_expr_aliases(scrutinee, aliases);
+            rewrite_expr_aliases(alt, aliases);
+        }
         Field { base, .. } => rewrite_expr_aliases(base, aliases),
         ListLit { elems, .. } | TupleLit { elems, .. } => {
             for el in elems {

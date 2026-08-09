@@ -10,6 +10,7 @@ pub use module::{
     infer_module, infer_module_with_options, infer_module_with_visibility, InferOptions,
 };
 
+use crate::alt::AltKind;
 use crate::types::{at, Effect, NameVisibility, Scheme, Type, TypeError};
 use std::collections::{HashMap, HashSet};
 
@@ -44,6 +45,10 @@ pub(crate) struct Infer {
     pub(crate) ufcs_rewrites: HashMap<lumia_syntax::Span, String>,
     /// Product type name → field names (from HIR module tables).
     pub(crate) products: HashMap<String, Vec<String>>,
+    /// Expected return types for nested functions/closures (nearest wins).
+    pub(crate) return_stack: Vec<Type>,
+    /// `Alt` expr span → Option vs Result (for post-infer desugar).
+    pub(crate) alt_kinds: HashMap<lumia_syntax::Span, AltKind>,
 }
 
 impl Infer {
@@ -109,6 +114,8 @@ impl Infer {
             method_trait: HashMap::new(),
             ufcs_rewrites: HashMap::new(),
             products: HashMap::new(),
+            return_stack: Vec::new(),
+            alt_kinds: HashMap::new(),
         }
     }
 

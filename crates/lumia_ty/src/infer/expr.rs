@@ -65,7 +65,7 @@ impl Infer {
                 self.rebind(name, joined)?;
                 Ok((Type::Unit, ve))
             }
-            Expr::Lambda { params, body, .. } => {
+            Expr::Lambda { params, body, span } => {
                 self.push();
                 let mut pts = vec![];
                 for p in params {
@@ -73,9 +73,13 @@ impl Infer {
                     pts.push(tv.clone());
                     self.bind(p.clone(), tv);
                 }
+                let ret_tv = self.fresh();
+                self.return_stack.push(ret_tv.clone());
                 let (rt, re) = self.infer_expr(body)?;
+                self.unify_at(*span, rt, ret_tv.clone())?;
+                self.return_stack.pop();
                 self.pop();
-                Ok((Type::Fun(pts, Box::new(rt), re), Effect::pure()))
+                Ok((Type::Fun(pts, Box::new(ret_tv), re), Effect::pure()))
             }
             Expr::Call { callee, args, span } => self.infer_call(callee, args, *span),
             Expr::BuiltinCall { name, args, span } => self.infer_builtin_call(name, args, *span),
@@ -222,6 +226,54 @@ impl Infer {
                 Ok((Type::Unit, self.union3_eff(ce, be, se)))
             }
             Expr::Break(_) | Expr::Continue(_) => Ok((Type::Unit, Effect::pure())),
+            Expr::Return { value, span } => {
+                let Some(expect) = self.return_stack.last().cloned() else {
+                    return Err(at(
+                        *span,
+                        "`return` is only allowed inside a function or closure",
+                    ));
+                };
+                let (vt, ve) = self.infer_expr(value)?;
+                self.unify_at(*span, vt, expect)?;
+                // Diverges: fresh type unifies with any use-site expectation.
+                Ok((self.fresh(), ve))
+            }
+            Expr::Alt {
+                scrutinee,
+                alt,
+                span,
+            } => {
+                use crate::alt::AltKind;
+                let (st, se) = self.infer_expr(scrutinee)?;
+                let st = self.prune(st);
+                match st {
+                    Type::Adt { name, params } if name == "Option" && params.len() == 1 => {
+                        self.alt_kinds.insert(*span, AltKind::Option);
+                        let payload = params[0].clone();
+                        let (at, ae) = self.infer_expr(alt)?;
+                        self.unify_at(*span, at, payload.clone())?;
+                        Ok((payload, self.union_eff(se, ae)))
+                    }
+                    Type::Adt { name, params } if name == "Result" && params.len() == 2 => {
+                        self.alt_kinds.insert(*span, AltKind::Result);
+                        let ok_ty = params[0].clone();
+                        let err_ty = params[1].clone();
+                        self.push();
+                        self.bind("err".into(), err_ty);
+                        let (at, ae) = self.infer_expr(alt)?;
+                        self.pop();
+                        self.unify_at(*span, at, ok_ty.clone())?;
+                        Ok((ok_ty, self.union_eff(se, ae)))
+                    }
+                    other => Err(at(
+                        *span,
+                        format!(
+                            "`alt` needs Option or Result, got {}",
+                            self.zonk_type(other)
+                        ),
+                    )),
+                }
+            }
             Expr::AdtNew {
                 adt_name,
                 variant,

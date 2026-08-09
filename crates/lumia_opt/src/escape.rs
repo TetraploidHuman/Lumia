@@ -99,6 +99,10 @@ fn seed_escaping(
                 // Named bindings are visible across the function; treat as escaping.
                 escaping.insert(*value);
             }
+            Op::Return { value } => {
+                // Early return leaves the function — same as `block.result`.
+                escaping.insert(*value);
+            }
             Op::Break | Op::Continue => {}
         }
     }
@@ -198,7 +202,7 @@ fn propagate_block(block: &Block, escaping: &mut HashSet<Local>) -> bool {
             Op::Effect { value } => {
                 changed |= propagate_value_only(value, escaping);
             }
-            Op::Assign { .. } | Op::Break | Op::Continue => {}
+            Op::Assign { .. } | Op::Break | Op::Continue | Op::Return { .. } => {}
         }
     }
     changed
@@ -337,6 +341,27 @@ mod tests {
         };
         let esc = escaping_locals(&fun_with_body(body));
         assert!(esc.contains(&Local(0)));
+    }
+
+    #[test]
+    fn early_return_escapes() {
+        let body = Block {
+            params: vec![],
+            ops: vec![
+                Op::Let {
+                    local: Local(0),
+                    value: Value::Int(1),
+                    pure_region: true,
+                },
+                Op::Return { value: Local(0) },
+            ],
+            result: None,
+        };
+        let esc = escaping_locals(&fun_with_body(body));
+        assert!(
+            esc.contains(&Local(0)),
+            "early-return payload must escape (no stack LitAdt)"
+        );
     }
 
     #[test]

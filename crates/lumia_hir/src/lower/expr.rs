@@ -240,6 +240,19 @@ pub(crate) fn lower_expr(ctx: &LowerCtx, e: &lumia_syntax::Expr) -> Expr {
             span,
         } => lower_match(ctx, scrutinee, arms, *span),
         lumia_syntax::Expr::MatchCond { arms, span } => lower_match_cond(ctx, arms, *span),
+        lumia_syntax::Expr::Return { value, span } => Expr::Return {
+            value: Box::new(lower_expr(ctx, value)),
+            span: *span,
+        },
+        lumia_syntax::Expr::Alt {
+            scrutinee,
+            alt,
+            span,
+        } => Expr::Alt {
+            scrutinee: Box::new(lower_expr(ctx, scrutinee)),
+            alt: Box::new(lower_expr(ctx, alt)),
+            span: *span,
+        },
     }
 }
 

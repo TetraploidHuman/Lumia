@@ -153,7 +153,9 @@ pub(crate) fn expr_span(e: &Expr) -> lumia_syntax::Span {
         | Expr::Loop { span, .. }
         | Expr::Seq { span, .. }
         | Expr::BuiltinCall { span, .. }
-        | Expr::AdtNew { span, .. } => *span,
+        | Expr::AdtNew { span, .. }
+        | Expr::Return { span, .. }
+        | Expr::Alt { span, .. } => *span,
         Expr::Let { value, .. } => expr_span(value),
     }
 }

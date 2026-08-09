@@ -240,6 +240,11 @@ pub(crate) fn assert_no_effects_in_pure(
             Ok(())
         }
         Expr::Break(_) | Expr::Continue(_) => Ok(()),
+        Expr::Return { value, .. } => assert_no_effects_in_pure(value, fun_types, locals),
+        Expr::Alt { scrutinee, alt, .. } => {
+            assert_no_effects_in_pure(scrutinee, fun_types, locals)?;
+            assert_no_effects_in_pure(alt, fun_types, locals)
+        }
         Expr::AdtNew { args, .. } => {
             for a in args {
                 assert_no_effects_in_pure(a, fun_types, locals)?;
@@ -369,6 +374,11 @@ pub(crate) fn check_expr_effects(
             Ok(())
         }
         Expr::Break(_) | Expr::Continue(_) => Ok(()),
+        Expr::Return { value, .. } => check_expr_effects(value, in_effect_ctx, fun_types, locals),
+        Expr::Alt { scrutinee, alt, .. } => {
+            check_expr_effects(scrutinee, in_effect_ctx, fun_types, locals)?;
+            check_expr_effects(alt, in_effect_ctx, fun_types, locals)
+        }
         Expr::AdtNew { args, .. } => {
             for a in args {
                 check_expr_effects(a, in_effect_ctx, fun_types, locals)?;

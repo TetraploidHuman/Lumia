@@ -333,7 +333,7 @@ fn lift_block(
                 );
                 new_ops.append(&mut prelude);
             }
-            Op::Assign { .. } | Op::Break | Op::Continue => {}
+            Op::Assign { .. } | Op::Break | Op::Continue | Op::Return { .. } => {}
         }
         new_ops.push(op);
     }
@@ -516,7 +516,7 @@ fn collect_defined_locals(block: &Block, defined: &mut std::collections::HashSet
                 collect_defined_in_value(value, defined);
             }
             Op::Effect { value, .. } => collect_defined_in_value(value, defined),
-            Op::Assign { .. } | Op::Break | Op::Continue => {}
+            Op::Assign { .. } | Op::Break | Op::Continue | Op::Return { .. } => {}
         }
     }
 }
@@ -539,7 +539,7 @@ fn rewrite_block_names(block: &mut Block, name_remap: &HashMap<String, Local>) {
             Op::Let { value, .. } | Op::Effect { value, .. } => {
                 rewrite_value_names(value, name_remap);
             }
-            Op::Assign { .. } | Op::Break | Op::Continue => {}
+            Op::Assign { .. } | Op::Break | Op::Continue | Op::Return { .. } => {}
         }
     }
 }

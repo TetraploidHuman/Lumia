@@ -1,5 +1,6 @@
 //! Hindley-Milner style type inference + effect sets.
 
+mod alt;
 mod effects;
 mod infer;
 mod parallel;

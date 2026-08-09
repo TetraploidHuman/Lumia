@@ -577,7 +577,7 @@ val main = {
 | 效应块 | `effect { ... }`（**可选**）              | 显式隔离；语义等同普通块（§2.2.1） |
 
 
-**无 `return`**：块的值只来自最后一行；需要提前结束时用 `if`/`match` 组织控制流，或 `break`（仅循环内）。
+**有限 `return`**：`return expr` 从**最近一层函数/闭包**早退（无 Kotlin 非局部返回）；块的值仍可由最后一行给出。循环内提前结束用 `break`/`continue`。
 
 ### 4.4 函数定义 —— 统一为 `val` + 块
 
@@ -593,7 +593,7 @@ val add = { a, b ->
 
 - 有参数时必须写 `**{ 参数列表 ->**`，`->` 不可省略（单参短闭包用 `it` 时可省略参数列表，见下）。
 - 函数体相对 `{` **缩进 4 个空格**（`lumia fmt` 强制；禁止 Tab）。
-- **最后一行表达式** 为返回值；**不提供** `return` / 早期返回。
+- **最后一行表达式** 为返回值；亦可用有限 `return expr`（见 §4.3、§8）。
 - 参数、返回类型 **完全推断**。
 
 单行形式：
@@ -1949,23 +1949,23 @@ H · C_body  >  C_key + C_lookup + amortized(C_mem)
 
 ## 8. 错误处理
 
-### 8.1 `Result` + `match`（`?` 搁置）
+### 8.1 `Result` / `Option` + `alt` + 有限 `return`
 
-- 可预期失败用 `**Result`**（`Ok` / `Err`），不用异常做控制流。
-- **当前**：用手写 `match` 处理成功/失败。
-- `**?` 错误传播：搁置** —— 不进入本阶段语法；以后若觉得 `match` 太啰嗦再单独定案。
+- 可预期失败用 **`Result`**（`Ok` / `Err`），缺值用 **`Option`**；不用异常做控制流。
+- **`alt`**：`expr alt rhs` / `expr alt { … }` — 成功取载荷，失败跑右侧（类型为载荷 `T`）。
+  - `Result` 的块/右式中绑定 **`err`**；`Option` 无 `err`。
+  - 与布尔 `or` 无关。
+- **传播**：显式 `alt return Err(err)` / `alt return None`（不自动包装、无裸 `alt return`）。
+- **`?` 后缀传播：搁置**。
 
 ```lumia
-val parse_int = { s ->
-    // ... 返回 Result
+val load = { path ->
+    val s = readFile(path) alt return Err(err)
+    val n = parseInt(s) alt return Err(err)
+    Ok({ port = n })
 }
 
-val load_config = {
-    read_file("port.txt") >> parse_int match {
-        Ok(n) -> Ok({ port = n })
-        Err(e) -> Err(e)
-    }
-}
+val port = m["port"] alt 8080
 ```
 
 ### 8.2 可恢复 vs 不可恢复
@@ -1973,7 +1973,8 @@ val load_config = {
 
 | 类型    | 机制                                    |
 | ----- | ------------------------------------- |
-| 可预期失败 | `Result`                              |
+| 缺值 / 局部恢复 | `Option` / `Result` + `alt`        |
+| 可预期失败传播 | `alt return Err(err)` / `return None` |
 | 编程错误  | `assert` / 模式匹配失败 → 栈追踪 + 终止          |
 | 契约    | 可选 `requires`/`ensures`（后期），编译期或运行时检查 |
 
@@ -2120,7 +2121,7 @@ val main = {
 - 用户代码可零类型注解完整编译（完全推断）
 - 无强制 `fn` 签名风格；函数即 `val` + `{ 参数 -> 体 }`（有参必写 `->`）；支持尾随闭包
 - 管道符为 `>>`（`x >> f` ≡ `f(x)`）；`>>` 优先于 `match`；不用 `>>` 做移位
-- 逻辑用 `and`/`or`/`not`；无 `return`；有 `break`/`continue`；单参闭包可用 `it`
+- 逻辑用 `and`/`or`/`not`；有限 `return`；`alt`；有 `break`/`continue`；单参闭包可用 `it`
 - UFCS：`p.move(1,2)` ≡ `move(p,1,2)`
 - 显式 `module`；默认公开；`import a.b` / `a.{b,c}` / `a.*` / `as`
 - 列表 rest 模式为 `[x, ..rest]`；match 或模式用逗号
@@ -2166,8 +2167,9 @@ val main = {
 | `break` / `continue` | **要**（仅 `for`）                                                    |
 | `>>` 与 `match`       | **先 `>>`**                                                        |
 | 模块                   | **显式 `module`**                                                   |
-| 早期 `return`          | **不提供**                                                           |
-| `?` 传播               | **搁置**（先用 `match`）                                                |
+| 早期 `return`          | **有限**：最近函数/闭包；无非局部返回                                      |
+| `alt`                  | **要**：Option/Result 恢复；传播写 `alt return Err(err)`                 |
+| `?` 传播               | **搁置**                                                              |
 | 透明结果复用               | **要**：局部消重 + 唯一跨调用机制有界 `T_f`（代价模型 / 硬顶择优表示）；默认低占用；无用户语法 |
 | 变体载荷                 | **内联积与具名积都允许**                                                    |
 | 逻辑运算                 | `**and` / `or` / `not`**；按位不用 `&` `                               |

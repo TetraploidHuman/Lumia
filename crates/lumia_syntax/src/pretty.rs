@@ -310,6 +310,15 @@ fn format_expr(out: &mut String, e: &Expr, indent: usize, blockish: bool) {
             pad(out, indent);
             out.push('}');
         }
+        Expr::Return { value, .. } => {
+            out.push_str("return ");
+            format_expr(out, value, indent, false);
+        }
+        Expr::Alt { scrutinee, alt, .. } => {
+            format_expr(out, scrutinee, indent, false);
+            out.push_str(" alt ");
+            format_expr(out, alt, indent, matches!(alt.as_ref(), Expr::Block { .. }));
+        }
         Expr::Field { base, field, .. } => {
             format_expr(out, base, indent, false);
             out.push('.');

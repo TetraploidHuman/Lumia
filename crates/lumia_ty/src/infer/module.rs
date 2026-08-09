@@ -1,6 +1,7 @@
 //! Function and module-level inference driver.
 
 use super::Infer;
+use crate::alt::apply_alt_desugars;
 use crate::traits::apply_ufcs_rewrites;
 use crate::types::{at, expr_span, Effect, NameVisibility, Type, TypeError, TypedModule};
 use lumia_hir::{Fun, Item, Module};
@@ -15,7 +16,11 @@ impl Infer {
             pts.push(tv.clone());
             self.bind(p.clone(), tv);
         }
+        let ret_tv = self.fresh();
+        self.return_stack.push(ret_tv.clone());
         let (rt, re) = self.infer_expr(&fun.body)?;
+        self.unify_at(expr_span(&fun.body), rt, ret_tv.clone())?;
+        self.return_stack.pop();
         // main is always an effect root
         let re = if fun.is_main {
             self.union_eff(re, Effect::io())
@@ -23,7 +28,7 @@ impl Infer {
             re
         };
         self.pop();
-        let ty = Type::Fun(pts, Box::new(rt), re);
+        let ty = Type::Fun(pts, Box::new(ret_tv), re);
         Ok((ty, re))
     }
 }
@@ -191,10 +196,12 @@ pub fn infer_module_with_options(
         .collect();
     let decls = std::mem::take(&mut inf.decls);
     let ufcs_rewrites = std::mem::take(&mut inf.ufcs_rewrites);
+    let alt_kinds = std::mem::take(&mut inf.alt_kinds);
     let mut module = module.clone();
     if !ufcs_rewrites.is_empty() {
         apply_ufcs_rewrites(&mut module, &ufcs_rewrites);
     }
+    apply_alt_desugars(&mut module, &alt_kinds);
     Ok(TypedModule {
         module,
         fun_types,

@@ -239,6 +239,11 @@ pub(crate) fn rewrite_ufcs_in_expr(
                 rewrite_ufcs_in_expr(s, rewrites);
             }
         }
+        Expr::Return { value, .. } => rewrite_ufcs_in_expr(value, rewrites),
+        Expr::Alt { scrutinee, alt, .. } => {
+            rewrite_ufcs_in_expr(scrutinee, rewrites);
+            rewrite_ufcs_in_expr(alt, rewrites);
+        }
         Expr::Var(_, _)
         | Expr::Int(_, _)
         | Expr::Float(_, _)
