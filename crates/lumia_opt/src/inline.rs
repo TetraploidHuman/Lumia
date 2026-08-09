@@ -56,7 +56,41 @@ fn is_inlineable(f: &CoreFun) -> bool {
     if has_assign_or_name(&f.body) {
         return false;
     }
+    // Early return must stay in the callee; inlining would return from the caller.
+    if has_early_return(&f.body) {
+        return false;
+    }
     true
+}
+
+fn has_early_return(block: &Block) -> bool {
+    for op in &block.ops {
+        match op {
+            Op::Return { .. } => return true,
+            Op::Let { value, .. } | Op::Effect { value, .. } if value_has_early_return(value) => {
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+fn value_has_early_return(value: &Value) -> bool {
+    match value {
+        Value::If {
+            then_block,
+            else_block,
+            ..
+        } => has_early_return(then_block) || has_early_return(else_block),
+        Value::Loop {
+            header,
+            body,
+            latch,
+        } => has_early_return(header) || has_early_return(body) || has_early_return(latch),
+        Value::Lambda { body, .. } => has_early_return(body),
+        _ => false,
+    }
 }
 
 fn count_ops(block: &Block) -> usize {
@@ -409,6 +443,29 @@ mod tests {
     fn skips_effectful() {
         let mut f = pure_add();
         f.effect = Effect::io();
+        assert!(!is_inlineable(&f));
+    }
+
+    #[test]
+    fn skips_early_return() {
+        let f = CoreFun {
+            name: "early".into(),
+            params: vec![Local(0)],
+            param_names: vec!["x".into()],
+            param_tys: vec![Type::Int],
+            body: Block {
+                params: vec![],
+                ops: vec![Op::Return { value: Local(0) }],
+                result: None,
+            },
+            ret_ty: Type::Int,
+            effect: Effect::pure(),
+            is_main: false,
+            memo: None,
+            external: None,
+            escaping: std::collections::HashSet::new(),
+            scheme_poly: false,
+        };
         assert!(!is_inlineable(&f));
     }
 }

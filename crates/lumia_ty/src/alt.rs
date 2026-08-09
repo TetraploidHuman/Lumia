@@ -1,6 +1,6 @@
 //! Desugar typed `Alt` into tag tests (Option / Result).
 
-use lumia_hir::{Builtin, Expr, Item, Module};
+use lumia_hir::{AdtDef, Builtin, Expr, Item, Module};
 use lumia_syntax::BinOp;
 use lumia_syntax::Span;
 use std::collections::HashMap;
@@ -15,55 +15,82 @@ pub(crate) fn apply_alt_desugars(module: &mut Module, kinds: &HashMap<Span, AltK
     if kinds.is_empty() {
         return;
     }
+    let tags = SuccessTags::from_adts(&module.adts);
     for item in &mut module.items {
         match item {
-            Item::Fun(f) => desugar_in_expr(&mut f.body, kinds),
-            Item::Val { body, .. } => desugar_in_expr(body, kinds),
+            Item::Fun(f) => desugar_in_expr(&mut f.body, kinds, &tags),
+            Item::Val { body, .. } => desugar_in_expr(body, kinds, &tags),
         }
     }
 }
 
-fn desugar_in_expr(expr: &mut Expr, kinds: &HashMap<Span, AltKind>) {
+struct SuccessTags {
+    some: i64,
+    ok: i64,
+}
+
+impl SuccessTags {
+    fn from_adts(adts: &[AdtDef]) -> Self {
+        Self {
+            some: variant_tag(adts, "Option", "Some"),
+            ok: variant_tag(adts, "Result", "Ok"),
+        }
+    }
+}
+
+fn variant_tag(adts: &[AdtDef], adt: &str, variant: &str) -> i64 {
+    adts.iter()
+        .find(|a| a.name == adt)
+        .and_then(|a| a.variants.iter().find(|v| v.name == variant))
+        .map(|v| v.tag)
+        .unwrap_or_else(|| panic!("lumia: missing prelude variant {adt}::{variant} for alt"))
+}
+
+fn desugar_in_expr(expr: &mut Expr, kinds: &HashMap<Span, AltKind>, tags: &SuccessTags) {
     match expr {
         Expr::Alt {
             scrutinee,
             alt,
             span,
         } => {
-            desugar_in_expr(scrutinee, kinds);
-            desugar_in_expr(alt, kinds);
+            desugar_in_expr(scrutinee, kinds, tags);
+            desugar_in_expr(alt, kinds, tags);
             let kind = kinds
                 .get(span)
                 .copied()
                 .expect("alt kind recorded during inference");
             let scrutinee = std::mem::replace(scrutinee, Box::new(Expr::Unit(*span)));
             let alt = std::mem::replace(alt, Box::new(Expr::Unit(*span)));
-            *expr = desugar_alt(*scrutinee, *alt, *span, kind);
+            let success_tag = match kind {
+                AltKind::Option => tags.some,
+                AltKind::Result => tags.ok,
+            };
+            *expr = desugar_alt(*scrutinee, *alt, *span, kind, success_tag);
         }
         Expr::Let { value, body, .. } => {
-            desugar_in_expr(value, kinds);
-            desugar_in_expr(body, kinds);
+            desugar_in_expr(value, kinds, tags);
+            desugar_in_expr(body, kinds, tags);
         }
         Expr::Assign { value, .. }
         | Expr::Unary { expr: value, .. }
         | Expr::Return { value, .. } => {
-            desugar_in_expr(value, kinds);
+            desugar_in_expr(value, kinds, tags);
         }
-        Expr::Lambda { body, .. } => desugar_in_expr(body, kinds),
+        Expr::Lambda { body, .. } => desugar_in_expr(body, kinds, tags),
         Expr::Call { callee, args, .. } => {
-            desugar_in_expr(callee, kinds);
+            desugar_in_expr(callee, kinds, tags);
             for a in args {
-                desugar_in_expr(a, kinds);
+                desugar_in_expr(a, kinds, tags);
             }
         }
         Expr::BuiltinCall { args, .. } | Expr::AdtNew { args, .. } => {
             for a in args {
-                desugar_in_expr(a, kinds);
+                desugar_in_expr(a, kinds, tags);
             }
         }
         Expr::Binary { left, right, .. } => {
-            desugar_in_expr(left, kinds);
-            desugar_in_expr(right, kinds);
+            desugar_in_expr(left, kinds, tags);
+            desugar_in_expr(right, kinds, tags);
         }
         Expr::If {
             cond,
@@ -71,22 +98,22 @@ fn desugar_in_expr(expr: &mut Expr, kinds: &HashMap<Span, AltKind>) {
             else_branch,
             ..
         } => {
-            desugar_in_expr(cond, kinds);
-            desugar_in_expr(then_branch, kinds);
-            desugar_in_expr(else_branch, kinds);
+            desugar_in_expr(cond, kinds, tags);
+            desugar_in_expr(then_branch, kinds, tags);
+            desugar_in_expr(else_branch, kinds, tags);
         }
         Expr::Loop {
             cond, body, step, ..
         } => {
-            desugar_in_expr(cond, kinds);
-            desugar_in_expr(body, kinds);
+            desugar_in_expr(cond, kinds, tags);
+            desugar_in_expr(body, kinds, tags);
             if let Some(s) = step {
-                desugar_in_expr(s, kinds);
+                desugar_in_expr(s, kinds, tags);
             }
         }
         Expr::Seq { stmts, .. } => {
             for s in stmts {
-                desugar_in_expr(s, kinds);
+                desugar_in_expr(s, kinds, tags);
             }
         }
         Expr::Var(_, _)
@@ -101,7 +128,7 @@ fn desugar_in_expr(expr: &mut Expr, kinds: &HashMap<Span, AltKind>) {
     }
 }
 
-fn desugar_alt(scrutinee: Expr, alt: Expr, span: Span, kind: AltKind) -> Expr {
+fn desugar_alt(scrutinee: Expr, alt: Expr, span: Span, kind: AltKind, success_tag: i64) -> Expr {
     let s = "__alt_s".to_string();
     let scrut_var = Expr::Var(s.clone(), span);
     let tag = Expr::BuiltinCall {
@@ -109,11 +136,10 @@ fn desugar_alt(scrutinee: Expr, alt: Expr, span: Span, kind: AltKind) -> Expr {
         args: vec![scrut_var.clone()],
         span,
     };
-    // Prelude: Option { Some(value)=0, None=1 }, Result { Ok(value)=0, Err(error)=1 }.
     let is_success = Expr::Binary {
         op: BinOp::Eq,
         left: Box::new(tag),
-        right: Box::new(Expr::Int(0, span)),
+        right: Box::new(Expr::Int(success_tag, span)),
         span,
     };
     let payload = Expr::BuiltinCall {

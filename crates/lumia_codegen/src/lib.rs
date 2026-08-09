@@ -301,6 +301,8 @@ pub(crate) struct Codegen<'ctx> {
     entry_bb: Option<BasicBlock<'ctx>>,
     /// Current Core function name (for TCO).
     current_fun: String,
+    /// Memo transform for the function being emitted (early `return` must store too).
+    current_memo: Option<MemoTf>,
     /// Pure Int mutual/self-recursion peers in the same SCC (musttail when `root_depth == 0`).
     tco_peers: HashSet<String>,
     /// Precomputed TCO SCCs: function → peers (including self).
@@ -336,6 +338,7 @@ impl<'ctx> Codegen<'ctx> {
             rooted_slots: HashSet::new(),
             entry_bb: None,
             current_fun: String::new(),
+            current_memo: None,
             tco_peers: HashSet::new(),
             tco_sccs: HashMap::new(),
             hash_adts: HashSet::new(),
@@ -716,6 +719,7 @@ impl<'ctx> Codegen<'ctx> {
         self.local_tys.clear();
         self.slot_tys.clear();
         self.current_fun = fun.name.clone();
+        self.current_memo = fun.memo;
         self.tco_peers = self.tco_sccs.get(&fun.name).cloned().unwrap_or_default();
         let frame_name = if fun.is_main {
             "main"
@@ -1159,6 +1163,11 @@ impl<'ctx> Codegen<'ctx> {
                     } else {
                         self.coerce_i64(v)?
                     };
+                    match self.current_memo {
+                        Some(MemoTf::DenseInt { id }) => self.emit_memo_idx_store(id, ret_i)?,
+                        Some(MemoTf::Slots { id }) => self.emit_memo_l2_store(id, ret_i)?,
+                        None => {}
+                    }
                     self.emit_return_i64(ret_i);
                 }
             }

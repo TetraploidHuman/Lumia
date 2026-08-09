@@ -567,8 +567,7 @@ fn lower_expr(
             None
         }
         HirExpr::Alt { .. } => {
-            // Typed modules desugar `alt` before Core lower.
-            None
+            panic!("lumia: Alt reached Core lower; expected typecheck desugar");
         }
         HirExpr::AdtNew {
             adt_name,

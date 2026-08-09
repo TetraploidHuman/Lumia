@@ -194,6 +194,13 @@ e2e_ok!(e2e_hello, "examples/hello.lm", "42");
 e2e_ok!(e2e_alt_option, "examples/alt_option.lm", "10", "42");
 
 e2e_ok!(
+    e2e_alt_option_swap_tags,
+    "examples/alt_option_swap_tags.lm",
+    "7",
+    "9"
+);
+
+e2e_ok!(
     e2e_alt_result_return,
     "examples/alt_result_return.lm",
     "6",

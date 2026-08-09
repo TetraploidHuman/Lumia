@@ -125,8 +125,11 @@ fn fun_body_has_io(body: &Expr, fun_types: &HashMap<String, Type>) -> bool {
             Expr::Binary { left, right, .. } => {
                 walk(left, fun_types, locals) || walk(right, fun_types, locals)
             }
-            Expr::Unary { expr, .. } | Expr::Assign { value: expr, .. } => {
-                walk(expr, fun_types, locals)
+            Expr::Unary { expr, .. }
+            | Expr::Assign { value: expr, .. }
+            | Expr::Return { value: expr, .. } => walk(expr, fun_types, locals),
+            Expr::Alt { scrutinee, alt, .. } => {
+                walk(scrutinee, fun_types, locals) || walk(alt, fun_types, locals)
             }
             Expr::AdtNew { args, .. } => args.iter().any(|a| walk(a, fun_types, locals)),
             _ => false,
