@@ -238,8 +238,8 @@ pub fn max_local_in_block(block: &Block) -> u32 {
             Op::Effect { value, .. } => {
                 max = max.max(max_local_in_value(value));
             }
-            Op::Assign { value, .. } => max = max.max(value.0),
-            Op::Break | Op::Continue | Op::Return { .. } => {}
+            Op::Assign { value, .. } | Op::Return { value } => max = max.max(value.0),
+            Op::Break | Op::Continue => {}
         }
     }
     if let Some(r) = &block.result {
@@ -270,8 +270,8 @@ pub fn rewrite_block_locals(block: &mut Block, remap: &HashMap<u32, u32>) {
                 rewrite_value_locals(value, remap);
             }
             Op::Effect { value, .. } => rewrite_value_locals(value, remap),
-            Op::Assign { value, .. } => map_l(value),
-            Op::Break | Op::Continue | Op::Return { .. } => {}
+            Op::Assign { value, .. } | Op::Return { value } => map_l(value),
+            Op::Break | Op::Continue => {}
         }
     }
 }

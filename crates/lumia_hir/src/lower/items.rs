@@ -192,8 +192,13 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
     for item in &m.items {
         match item {
             lumia_syntax::Item::Val(v) => {
-                let is_fun =
-                    v.params.is_some() || matches!(v.body, lumia_syntax::Expr::Lambda { .. });
+                // Keep in sync with `push_lowered_val`: bare `{ ... }` (no `->`)
+                // is a zero-arg Fun (DESIGN §4.4), not only `main`.
+                let is_fun = v.params.is_some()
+                    || matches!(
+                        v.body,
+                        lumia_syntax::Expr::Lambda { .. } | lumia_syntax::Expr::Block { .. }
+                    );
                 if is_fun {
                     toplevel_funs.insert(v.name.clone());
                 }

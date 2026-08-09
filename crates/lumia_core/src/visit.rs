@@ -228,10 +228,10 @@ pub(crate) fn collect_uses(
             Op::Let { value, .. } | Op::Effect { value, .. } => {
                 collect_uses_in_value(value, locals, names);
             }
-            Op::Assign { value, .. } => {
+            Op::Assign { value, .. } | Op::Return { value } => {
                 locals.insert(value.0);
             }
-            Op::Break | Op::Continue | Op::Return { .. } => {}
+            Op::Break | Op::Continue => {}
         }
     }
     if let Some(r) = &block.result {
@@ -348,5 +348,27 @@ mod tests {
             repr: ListRepr::HeapList,
         };
         assert_eq!(max_local_in_value(&v), 7);
+    }
+
+    #[test]
+    fn return_operand_is_use_and_remapped() {
+        let mut block = Block {
+            params: vec![],
+            ops: vec![Op::Return { value: Local(3) }],
+            result: None,
+        };
+        let mut locals = std::collections::HashSet::new();
+        let mut names = std::collections::HashSet::new();
+        collect_uses(&block, &mut locals, &mut names);
+        assert!(locals.contains(&3));
+
+        let mut remap = HashMap::new();
+        remap.insert(3, 9);
+        crate::rewrite_block_locals(&mut block, &remap);
+        match &block.ops[0] {
+            Op::Return { value } => assert_eq!(value.0, 9),
+            _ => panic!("expected return"),
+        }
+        assert_eq!(crate::max_local_in_block(&block), 9);
     }
 }

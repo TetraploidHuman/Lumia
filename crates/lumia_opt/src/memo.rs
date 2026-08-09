@@ -188,12 +188,12 @@ fn cse_block(block: &mut Block, pure_funs: &HashSet<String>) {
                 }
             }
             Op::Effect { value } => rewrite_value(value, &rewrite),
-            Op::Assign { value, .. } => {
+            Op::Assign { value, .. } | Op::Return { value } => {
                 if let Some(&r) = rewrite.get(&value.0) {
                     *value = Local(r);
                 }
             }
-            Op::Break | Op::Continue | Op::Return { .. } => {}
+            Op::Break | Op::Continue => {}
         }
     }
     if let Some(r) = block.result {
@@ -574,12 +574,12 @@ fn copy_prop_block(block: &mut Block) {
                 }
             }
             Op::Effect { value } => rewrite_value(value, &rewrite),
-            Op::Assign { value, .. } => {
+            Op::Assign { value, .. } | Op::Return { value } => {
                 if let Some(&r) = rewrite.get(&value.0) {
                     *value = Local(r);
                 }
             }
-            Op::Break | Op::Continue | Op::Return { .. } => {}
+            Op::Break | Op::Continue => {}
         }
     }
     if let Some(r) = block.result {

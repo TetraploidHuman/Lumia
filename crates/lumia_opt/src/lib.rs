@@ -218,8 +218,8 @@ fn apply_local_remap(block: &mut Block, remap: &HashMap<u32, u32>) {
             Op::Let { value, .. } | Op::Effect { value, .. } => {
                 remap_value_locals(value, remap);
             }
-            Op::Assign { value, .. } => map_l(value),
-            Op::Break | Op::Continue | Op::Return { .. } => {}
+            Op::Assign { value, .. } | Op::Return { value } => map_l(value),
+            Op::Break | Op::Continue => {}
         }
     }
 }

@@ -1,0 +1,24 @@
+module ReturnDead
+
+import std.io.{println}
+
+/// Code after `return` is unreachable; must not run or change the result.
+val f = { n ->
+    if n > 0 {
+        return n
+        n + 1
+    } else {
+        0
+    }
+}
+
+val g = { n ->
+    return n * 2
+    n + 999
+}
+
+val main = {
+    println(f(3))
+    println(f(-1))
+    println(g(21))
+}

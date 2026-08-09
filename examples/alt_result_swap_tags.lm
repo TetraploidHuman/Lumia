@@ -1,0 +1,14 @@
+module alt_result_swap_tags
+
+/// User `Result` with `Err` before `Ok` (tags swapped vs prelude order).
+type Result {
+    Err(error)
+    Ok(value)
+}
+
+val main = {
+    val bad = Err("x")
+    val good = Ok(9)
+    println(bad alt 7)
+    println(good alt 0)
+}

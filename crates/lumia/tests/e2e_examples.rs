@@ -201,13 +201,39 @@ e2e_ok!(
 );
 
 e2e_ok!(
+    e2e_alt_result_swap_tags,
+    "examples/alt_result_swap_tags.lm",
+    "7",
+    "9"
+);
+
+e2e_ok!(
     e2e_alt_result_return,
     "examples/alt_result_return.lm",
     "6",
     "-1"
 );
 
+e2e_ok!(
+    e2e_alt_option_return,
+    "examples/alt_option_return.lm",
+    "10",
+    "-1"
+);
+
 e2e_reject!(e2e_bad_alt_int_rejected, "examples/bad_alt_int.lm", "alt");
+
+e2e_reject!(
+    e2e_bad_return_toplevel_rejected,
+    "examples/bad_return_toplevel.lm",
+    "`return` is only allowed"
+);
+
+e2e_ok!(e2e_zero_arg_return, "examples/zero_arg_return.lm", "42");
+
+e2e_ok!(e2e_return_capture, "examples/return_capture.lm", "42", "7");
+
+e2e_ok!(e2e_return_dead, "examples/return_dead.lm", "3", "0", "42");
 
 e2e_ok!(e2e_add, "examples/add.lm", "42");
 

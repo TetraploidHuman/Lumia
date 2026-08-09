@@ -611,7 +611,17 @@ val add(a, b) = {
 ```
 
 - 与形式 A **语义完全等价**；参数已在左侧，块内 **不再** 写 `{ a, b ->`。
-- 无参：`val main() = { ... }` 或 `val main = { ... }`（无参块无 `->`）。
+- **顶层无参**：凡模块级 `val name = { ... }` 且块内**无** `->`（也不是 `{ -> ... }` 显式零参写法），一律是**零参函数**，不是块值。等价于 `val name() = { ... }`。例如：
+
+```lumia
+val answer = { return 42 }
+val report = {
+    println("hi")
+}
+// 调用：answer() / report()
+```
+
+- 显式零参箭头 `{ -> body }` 与上式在**顶层**等价；在**局部**绑定里则不同：`val y = { … }` 是立刻求值的作用域块，局部零参闭包须写 `{ -> … }`（或 `val y() = { … }`）。
 
 #### 形式 C：名字后参数 + 单表达式
 
@@ -1963,6 +1973,10 @@ val load = { path ->
     val s = readFile(path) alt return Err(err)
     val n = parseInt(s) alt return Err(err)
     Ok({ port = n })
+}
+
+val head = { xs ->
+    xs.first() alt return None
 }
 
 val port = m["port"] alt 8080

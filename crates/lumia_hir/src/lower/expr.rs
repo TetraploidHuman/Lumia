@@ -32,6 +32,9 @@ pub(crate) fn push_lowered_val(
     } else {
         body
     };
+    // DESIGN §4.4: `val f = { ... }` (no `->`) is a zero-arg function, not a
+    // block value. Same for `main`. `{ x -> ... }` / `{ -> ... }` already lower
+    // as Lambda above. Plain `val x = 1` stays Item::Val.
     match body {
         Expr::Lambda {
             params,
@@ -49,12 +52,14 @@ pub(crate) fn push_lowered_val(
             }));
         }
         other => {
-            if name == "main" {
+            let zero_arg_fun = name == "main"
+                || matches!(v.body, lumia_syntax::Expr::Block { .. });
+            if zero_arg_fun {
                 items.push(Item::Fun(Fun {
-                    name: "main".into(),
+                    name: name.to_string(),
                     params: vec![],
                     body: other,
-                    is_main: true,
+                    is_main: name == "main",
                     external: None,
                     foreign_sig: None,
                     foreign_pure: false,
