@@ -14,4 +14,6 @@ val main = {
     println(if listOf(nan) == listOf(nan) { 1 } else { 0 })
     println(if Some(0.0) == Some(-0.0) { 1 } else { 0 })
     println(if Some(nan) == Some(nan) { 1 } else { 0 })
+    println(if mapOf(1 to 0.0) == mapOf(1 to -0.0) { 1 } else { 0 })
+    println(if mapOf(1 to nan) == mapOf(1 to nan) { 1 } else { 0 })
 }

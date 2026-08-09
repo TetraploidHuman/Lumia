@@ -301,6 +301,11 @@ fn declare_runtime<'ctx>(context: &'ctx Context, module: &LlvmModule<'ctx>) {
         None,
     );
     module.add_function(
+        "lumia_ensure_map_vf64",
+        ptr_ty.fn_type(&[ptr_ty.into()], false),
+        None,
+    );
+    module.add_function(
         "lumia_ensure_set_f64",
         ptr_ty.fn_type(&[ptr_ty.into()], false),
         None,
@@ -2883,6 +2888,17 @@ impl<'ctx> Codegen<'ctx> {
                             .unwrap()
                             .into_pointer_value();
                     }
+                    if matches!(self.local_tys.get(&args[2].0), Some(Type::Float)) {
+                        let ens = self.module.get_function("lumia_ensure_map_vf64").unwrap();
+                        map = self
+                            .builder
+                            .build_call(ens, &[map.into()], "ens_mvf64")
+                            .unwrap()
+                            .try_as_basic_value()
+                            .basic()
+                            .unwrap()
+                            .into_pointer_value();
+                    }
                     let f = self.module.get_function("lumia_set").unwrap();
                     let call = self
                         .builder
@@ -3916,15 +3932,22 @@ impl<'ctx> Codegen<'ctx> {
                     .first()
                     .and_then(|k| self.local_tys.get(&k.0).cloned())
                     .unwrap_or(Type::Int);
+                let val_ty = flat_pairs
+                    .get(1)
+                    .and_then(|v| self.local_tys.get(&v.0).cloned())
+                    .unwrap_or(Type::Int);
                 let float_keys = matches!(key_ty, Type::Float);
+                let float_vals = matches!(val_ty, Type::Float);
                 let no_hash = matches!(repr, lumia_core::MapRepr::AssocList)
                     || !self.key_type_has_hash(&key_ty);
-                let tid = if float_keys {
-                    10 // TYPE_MAP_F64
-                } else if no_hash {
-                    12 // TYPE_MAP_ASSOC
-                } else {
-                    4 // TYPE_MAP
+                // Float-value tags win over Assoc for IEEE value ==; Assoc is for
+                // key Hash absence (linear forever) when values are not Float.
+                let tid = match (float_keys, float_vals, no_hash) {
+                    (true, true, _) => 16,  // TYPE_MAP_F64V
+                    (true, false, _) => 10, // TYPE_MAP_F64
+                    (false, true, _) => 15, // TYPE_MAP_VF64
+                    (false, false, true) => 12, // TYPE_MAP_ASSOC
+                    (false, false, false) => 4, // TYPE_MAP
                 };
                 if n_pairs > 0 && matches!(repr, lumia_core::MapRepr::LitMap) {
                     return self.emit_stack_map(flat_pairs, tid);
