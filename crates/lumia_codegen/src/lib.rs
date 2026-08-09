@@ -196,6 +196,16 @@ fn declare_runtime<'ctx>(context: &'ctx Context, module: &LlvmModule<'ctx>) {
         None,
     );
     module.add_function(
+        "lumia_adt_eq",
+        i64_ty.fn_type(&[i64_ty.into(), i64_ty.into(), i64_ty.into()], false),
+        None,
+    );
+    module.add_function(
+        "lumia_show_adt",
+        ptr_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false),
+        None,
+    );
+    module.add_function(
         "lumia_cmp",
         i64_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false),
         None,
@@ -775,8 +785,7 @@ impl<'ctx> Codegen<'ctx> {
                 if lp.iter().any(|p| matches!(p, Type::Float))
                     || rp.iter().any(|p| matches!(p, Type::Float))
                 {
-                    let params = if lp.len() >= rp.len() { lp } else { rp };
-                    return self.emit_typed_adt_eq(l, r, params);
+                    return self.emit_typed_adt_eq(l, r, lp, rp);
                 }
             }
         }
@@ -791,272 +800,69 @@ impl<'ctx> Codegen<'ctx> {
             .into_int_value())
     }
 
-    /// Structural ADT `==` using `Type::Adt` field params (Float → IEEE OEQ).
+    /// Bit `i` set ⇒ field `i` uses IEEE eq/show (union of both sides' params).
+    fn adt_float_field_mask(lp: &[Type], rp: &[Type]) -> u64 {
+        let n = lp.len().max(rp.len()).min(64);
+        let mut mask = 0u64;
+        for i in 0..n {
+            let lf = matches!(lp.get(i), Some(Type::Float));
+            let rf = matches!(rp.get(i), Some(Type::Float));
+            if lf || rf {
+                mask |= 1u64 << i;
+            }
+        }
+        mask
+    }
+
+    /// Structural ADT `==` via runtime size (safe for sum None/Ok arity ≠ type params).
     fn emit_typed_adt_eq(
         &mut self,
         left: IntValue<'ctx>,
         right: IntValue<'ctx>,
-        params: &[Type],
+        lp: &[Type],
+        rp: &[Type],
     ) -> Result<IntValue<'ctx>> {
-        let ptr_ty = self.context.ptr_type(AddressSpace::default());
-        let la = self
+        let mask = Self::adt_float_field_mask(lp, rp);
+        let f = self.module.get_function("lumia_adt_eq").unwrap();
+        Ok(self
             .builder
-            .build_int_to_ptr(left, ptr_ty, "adt_eq_l")
-            .unwrap();
-        let ra = self
-            .builder
-            .build_int_to_ptr(right, ptr_ty, "adt_eq_r")
-            .unwrap();
-        let load_i64 = |cg: &Self, base: PointerValue<'ctx>, idx: u64, name: &str| {
-            let slot = unsafe {
-                cg.builder
-                    .build_gep(
-                        cg.i64_ty,
-                        base,
-                        &[cg.i64_ty.const_int(idx, false)],
-                        name,
-                    )
-                    .unwrap()
-            };
-            cg.builder
-                .build_load(cg.i64_ty, slot, &format!("{name}v"))
-                .unwrap()
-                .into_int_value()
-        };
-        let ltag = load_i64(self, la, 0, "ltag");
-        let rtag = load_i64(self, ra, 0, "rtag");
-        let tag_eq = self
-            .builder
-            .build_int_compare(IntPredicate::EQ, ltag, rtag, "tag_eq")
-            .unwrap();
-        let mut acc = self
-            .builder
-            .build_int_z_extend(tag_eq, self.i64_ty, "tag_eqz")
-            .unwrap();
-        let zero = self.i64_ty.const_int(0, false);
-        for (fi, pty) in params.iter().enumerate() {
-            let lb = load_i64(self, la, (fi + 1) as u64, &format!("lf{fi}"));
-            let rb = load_i64(self, ra, (fi + 1) as u64, &format!("rf{fi}"));
-            let field_eq = match pty {
-                Type::Float => {
-                    let lf = self
-                        .builder
-                        .build_bit_cast(lb, self.context.f64_type(), "lf_f")
-                        .unwrap()
-                        .into_float_value();
-                    let rf = self
-                        .builder
-                        .build_bit_cast(rb, self.context.f64_type(), "rf_f")
-                        .unwrap()
-                        .into_float_value();
-                    let c = self
-                        .builder
-                        .build_float_compare(FloatPredicate::OEQ, lf, rf, "fld_fcmp")
-                        .unwrap();
-                    self.builder
-                        .build_int_z_extend(c, self.i64_ty, "fld_feqz")
-                        .unwrap()
-                }
-                Type::Bool | Type::Int | Type::Char | Type::Unit => {
-                    let c = self
-                        .builder
-                        .build_int_compare(IntPredicate::EQ, lb, rb, "fld_icmp")
-                        .unwrap();
-                    self.builder
-                        .build_int_z_extend(c, self.i64_ty, "fld_iqz")
-                        .unwrap()
-                }
-                _ => {
-                    let f = self.module.get_function("lumia_eq").unwrap();
-                    self.builder
-                        .build_call(f, &[lb.into(), rb.into()], "fld_eq")
-                        .unwrap()
-                        .try_as_basic_value()
-                        .basic()
-                        .unwrap()
-                        .into_int_value()
-                }
-            };
-            // acc = acc != 0 && field_eq != 0
-            let a_ok = self
-                .builder
-                .build_int_compare(IntPredicate::NE, acc, zero, "a_ok")
-                .unwrap();
-            let f_ok = self
-                .builder
-                .build_int_compare(IntPredicate::NE, field_eq, zero, "f_ok")
-                .unwrap();
-            let both = self.builder.build_and(a_ok, f_ok, "both").unwrap();
-            acc = self
-                .builder
-                .build_int_z_extend(both, self.i64_ty, "acc_eq")
-                .unwrap();
-        }
-        Ok(acc)
+            .build_call(
+                f,
+                &[
+                    left.into(),
+                    right.into(),
+                    self.i64_ty.const_int(mask, false).into(),
+                ],
+                "adt_eq",
+            )
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_int_value())
     }
 
-    /// Structural ADT show using `Type::Adt` field params (Float/Bool typed).
+    /// Structural ADT show; float_mask selects IEEE formatting per field index.
     fn emit_typed_adt_show(
         &mut self,
         arg: BasicValueEnum<'ctx>,
         params: &[Type],
     ) -> Result<PointerValue<'ctx>> {
-        let ptr_ty = self.context.ptr_type(AddressSpace::default());
         let i = self.coerce_i64(arg)?;
-        let base = self
+        let mask = Self::adt_float_field_mask(params, &[]);
+        let f = self.module.get_function("lumia_show_adt").unwrap();
+        Ok(self
             .builder
-            .build_int_to_ptr(i, ptr_ty, "adt_show_base")
-            .unwrap();
-        let tag_slot = unsafe {
-            self.builder
-                .build_gep(
-                    self.i64_ty,
-                    base,
-                    &[self.i64_ty.const_int(0, false)],
-                    "tag",
-                )
-                .unwrap()
-        };
-        let tag = self
-            .builder
-            .build_load(self.i64_ty, tag_slot, "tagv")
-            .unwrap()
-            .into_int_value();
-        let show_i = self.module.get_function("lumia_show").unwrap();
-        let show_f = self.module.get_function("lumia_show_float").unwrap();
-        let show_b = self.module.get_function("lumia_show_bool").unwrap();
-        let concat = self.module.get_function("lumia_concat").unwrap();
-        let alloc = self.module.get_function("lumia_alloc_string").unwrap();
-
-        let mk_lit = |cg: &Self, s: &str, name: &str| {
-            let gv = cg.builder.build_global_string_ptr(s, name).unwrap();
-            cg.builder
-                .build_call(
-                    alloc,
-                    &[
-                        gv.as_pointer_value().into(),
-                        cg.i64_ty.const_int(s.len() as u64, false).into(),
-                    ],
-                    &format!("lit_{name}"),
-                )
-                .unwrap()
-                .try_as_basic_value()
-                .basic()
-                .unwrap()
-                .into_pointer_value()
-        };
-
-        let mut acc = mk_lit(self, "#", "hash");
-        let tag_s = self
-            .builder
-            .build_call(show_i, &[tag.into()], "show_tag")
+            .build_call(
+                f,
+                &[i.into(), self.i64_ty.const_int(mask, false).into()],
+                "show_adt",
+            )
             .unwrap()
             .try_as_basic_value()
             .basic()
             .unwrap()
-            .into_pointer_value();
-        acc = self
-            .builder
-            .build_call(concat, &[acc.into(), tag_s.into()], "cat_tag")
-            .unwrap()
-            .try_as_basic_value()
-            .basic()
-            .unwrap()
-            .into_pointer_value();
-        let lpar_s = mk_lit(self, "(", "lpar");
-        acc = self
-            .builder
-            .build_call(concat, &[acc.into(), lpar_s.into()], "cat_lpar")
-            .unwrap()
-            .try_as_basic_value()
-            .basic()
-            .unwrap()
-            .into_pointer_value();
-        let comma_s = mk_lit(self, ", ", "comma");
-
-        for (fi, pty) in params.iter().enumerate() {
-            if fi > 0 {
-                acc = self
-                    .builder
-                    .build_call(concat, &[acc.into(), comma_s.into()], "cat_comma")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .basic()
-                    .unwrap()
-                    .into_pointer_value();
-            }
-            let slot = unsafe {
-                self.builder
-                    .build_gep(
-                        self.i64_ty,
-                        base,
-                        &[self.i64_ty.const_int((fi + 1) as u64, false)],
-                        "fld",
-                    )
-                    .unwrap()
-            };
-            let bits = self
-                .builder
-                .build_load(self.i64_ty, slot, "fldv")
-                .unwrap()
-                .into_int_value();
-            let field_s = match pty {
-                Type::Float => {
-                    let f = self
-                        .builder
-                        .build_bit_cast(bits, self.context.f64_type(), "fld_f")
-                        .unwrap()
-                        .into_float_value();
-                    self.builder
-                        .build_call(show_f, &[f.into()], "show_fld_f")
-                        .unwrap()
-                        .try_as_basic_value()
-                        .basic()
-                        .unwrap()
-                        .into_pointer_value()
-                }
-                Type::Bool => {
-                    let b = self
-                        .builder
-                        .build_int_truncate(bits, self.context.i8_type(), "fld_b")
-                        .unwrap();
-                    self.builder
-                        .build_call(show_b, &[b.into()], "show_fld_b")
-                        .unwrap()
-                        .try_as_basic_value()
-                        .basic()
-                        .unwrap()
-                        .into_pointer_value()
-                }
-                _ => self
-                    .builder
-                    .build_call(show_i, &[bits.into()], "show_fld")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .basic()
-                    .unwrap()
-                    .into_pointer_value(),
-            };
-            acc = self
-                .builder
-                .build_call(concat, &[acc.into(), field_s.into()], "cat_fld")
-                .unwrap()
-                .try_as_basic_value()
-                .basic()
-                .unwrap()
-                .into_pointer_value();
-        }
-
-        let rpar_s = mk_lit(self, ")", "rpar");
-        acc = self
-            .builder
-            .build_call(concat, &[acc.into(), rpar_s.into()], "cat_rpar")
-            .unwrap()
-            .try_as_basic_value()
-            .basic()
-            .unwrap()
-            .into_pointer_value();
-        Ok(acc)
+            .into_pointer_value())
     }
 
     fn type_may_heap(ty: &Type) -> bool {

@@ -203,10 +203,19 @@ fn mark(obj: *mut ObjectHeader) {
                 // Scalar bounds only — no child pointers.
             }
             TYPE_SET | TYPE_SET_F64 | TYPE_SET_ASSOC => {
-                set_mark_payload(payload, (*obj).size as usize);
+                set_mark_payload(
+                    payload,
+                    (*obj).size as usize,
+                    (*obj).type_id == TYPE_SET_F64,
+                );
             }
             tid if is_map_tid(tid) => {
-                map_mark_payload(payload, (*obj).size as usize);
+                map_mark_payload(
+                    payload,
+                    (*obj).size as usize,
+                    matches!(tid, TYPE_MAP_F64 | TYPE_MAP_F64V),
+                    matches!(tid, TYPE_MAP_VF64 | TYPE_MAP_F64V),
+                );
             }
             TYPE_ADT | TYPE_CLOSURE => {
                 let words = ((*obj).size as usize) / 8;
@@ -828,21 +837,7 @@ pub extern "C" fn lumia_eq(a: i64, b: i64) -> i64 {
             }
             TYPE_SET | TYPE_SET_F64 | TYPE_SET_ASSOC => set_eq(pa, pb),
             tid if is_map_tid(tid) => map_eq(pa, pb),
-            TYPE_ADT => {
-                let words_a = ((*ha).size as usize) / 8;
-                let words_b = ((*hb).size as usize) / 8;
-                if words_a != words_b || words_a == 0 {
-                    return 0;
-                }
-                let ba = pa as *const i64;
-                let bb = pb as *const i64;
-                for i in 0..words_a {
-                    if lumia_eq(*ba.add(i), *bb.add(i)) == 0 {
-                        return 0;
-                    }
-                }
-                1
-            }
+            TYPE_ADT => adt_eq_payload(pa, pb, 0),
             _ => 0,
         }
     }
@@ -912,6 +907,10 @@ pub extern "C" fn lumia_show(x: i64) -> *mut u8 {
 }
 
 unsafe fn show_adt(payload: *mut u8) -> *mut u8 {
+    show_adt_masked(payload, 0)
+}
+
+unsafe fn show_adt_masked(payload: *mut u8, float_mask: u64) -> *mut u8 {
     let words = ((*header_from_payload(payload)).size as usize) / 8;
     let base = payload as *const i64;
     let mut s = String::from("#");
@@ -926,13 +925,83 @@ unsafe fn show_adt(payload: *mut u8) -> *mut u8 {
         if i > 1 {
             s.push_str(", ");
         }
-        let field = lumia_show(*base.add(i));
+        let bits = *base.add(i);
+        let field = if float_mask & (1u64 << (i - 1)) != 0 {
+            lumia_show_float(f64::from_bits(bits as u64))
+        } else {
+            lumia_show(bits)
+        };
         with_str_bytes(field, |b| {
             s.push_str(std::str::from_utf8(b).unwrap_or("?"));
         });
     }
     s.push(')');
     lumia_alloc_string(s.as_ptr(), s.len() as u64)
+}
+
+/// Structural ADT `==` using the object's real payload size (not type-param arity).
+/// `float_mask` bit `i` ⇒ field `i` compared with IEEE (`±0` equal; NaN ≠ NaN).
+#[no_mangle]
+pub extern "C" fn lumia_adt_eq(a: i64, b: i64, float_mask: i64) -> i64 {
+    let pa = a as *mut u8;
+    let pb = b as *mut u8;
+    if !is_heap_payload(pa) || !is_heap_payload(pb) {
+        return if a == b { 1 } else { 0 };
+    }
+    unsafe {
+        let ha = header_from_payload(pa);
+        let hb = header_from_payload(pb);
+        if (*ha).type_id != TYPE_ADT || (*hb).type_id != TYPE_ADT {
+            return lumia_eq(a, b);
+        }
+        adt_eq_payload(pa, pb, float_mask as u64)
+    }
+}
+
+fn adt_eq_payload(pa: *mut u8, pb: *mut u8, float_mask: u64) -> i64 {
+    unsafe {
+        let ha = header_from_payload(pa);
+        let hb = header_from_payload(pb);
+        let words_a = ((*ha).size as usize) / 8;
+        let words_b = ((*hb).size as usize) / 8;
+        if words_a != words_b || words_a == 0 {
+            return 0;
+        }
+        let ba = pa as *const i64;
+        let bb = pb as *const i64;
+        // Word 0 is the tag (never a Float payload).
+        if *ba != *bb {
+            return 0;
+        }
+        for i in 1..words_a {
+            let fa = *ba.add(i);
+            let fb = *bb.add(i);
+            let ok = if float_mask & (1u64 << (i - 1)) != 0 {
+                float_key_eq(fa, fb)
+            } else {
+                lumia_eq(fa, fb) != 0
+            };
+            if !ok {
+                return 0;
+            }
+        }
+        1
+    }
+}
+
+/// Show ADT with IEEE formatting for mask-selected fields.
+#[no_mangle]
+pub extern "C" fn lumia_show_adt(x: i64, float_mask: i64) -> *mut u8 {
+    let p = x as *mut u8;
+    if !is_heap_payload(p) {
+        return lumia_show(x);
+    }
+    unsafe {
+        if (*header_from_payload(p)).type_id != TYPE_ADT {
+            return lumia_show(x);
+        }
+        show_adt_masked(p, float_mask as u64)
+    }
 }
 
 #[no_mangle]
@@ -2257,7 +2326,7 @@ fn hash_value(key: i64, depth: u32) -> u64 {
     }
 }
 
-fn map_mark_payload(payload: *mut u8, size: usize) {
+fn map_mark_payload(payload: *mut u8, size: usize, float_keys: bool, float_vals: bool) {
     unsafe {
         let base = payload as *const i64;
         let n0 = *base;
@@ -2268,16 +2337,24 @@ fn map_mark_payload(payload: *mut u8, size: usize) {
             }
             let dn = map_overlay_dn(payload) as usize;
             for i in 0..dn {
-                mark_value(*base.add(3 + i * 2));
-                mark_value(*base.add(4 + i * 2));
+                if !float_keys {
+                    mark_value(*base.add(3 + i * 2));
+                }
+                if !float_vals {
+                    mark_value(*base.add(4 + i * 2));
+                }
             }
             return;
         }
         let n = n0;
         if size == map_linear_nbytes(n) {
             for i in 0..n as usize {
-                mark_value(*base.add(1 + i * 2));
-                mark_value(*base.add(2 + i * 2));
+                if !float_keys {
+                    mark_value(*base.add(1 + i * 2));
+                }
+                if !float_vals {
+                    mark_value(*base.add(2 + i * 2));
+                }
             }
             return;
         }
@@ -2287,8 +2364,12 @@ fn map_mark_payload(payload: *mut u8, size: usize) {
         for i in 0..n as usize {
             let slot = *order.add(i) as usize;
             let cell = base.add(2 + cap + slot * 3);
-            mark_value(*cell);
-            mark_value(*cell.add(1));
+            if !float_keys {
+                mark_value(*cell);
+            }
+            if !float_vals {
+                mark_value(*cell.add(1));
+            }
         }
     }
 }
@@ -2907,7 +2988,11 @@ fn set_is_hash(set: *mut u8) -> bool {
     }
 }
 
-fn set_mark_payload(payload: *mut u8, size: usize) {
+fn set_mark_payload(payload: *mut u8, size: usize, float_elems: bool) {
+    // Unboxed Float elems are never heap pointers (same as TYPE_LIST_F64).
+    if float_elems {
+        return;
+    }
     unsafe {
         let base = payload as *const i64;
         let n = *base;
