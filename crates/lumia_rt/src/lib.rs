@@ -43,6 +43,8 @@ pub const TYPE_SET_F64: u32 = 11;
 /// Map/Set without Hash — linear forever (DESIGN AssocList).
 pub const TYPE_MAP_ASSOC: u32 = 12;
 pub const TYPE_SET_ASSOC: u32 = 13;
+/// List of unboxed Float bits; structural `==` / hash use IEEE (DESIGN §2.1).
+pub const TYPE_LIST_F64: u32 = 14;
 
 /// Fatal runtime error. Linked into user programs as abort (no FFI unwind).
 /// Under `cfg(test)` panics so `#[should_panic]` unit tests can observe the message.
@@ -189,6 +191,9 @@ fn mark(obj: *mut ObjectHeader) {
                 for i in 0..n as usize {
                     mark_value(*base.add(1 + i));
                 }
+            }
+            TYPE_LIST_F64 => {
+                // Unboxed Float elems — never heap pointers.
             }
             TYPE_LIST_IOTA => {
                 // Scalar bounds only — no child pointers.
@@ -537,14 +542,6 @@ pub extern "C" fn lumia_println_float(n: f64) {
     let _ = writeln!(out, "{n}");
 }
 
-fn is_map_tid(tid: u32) -> bool {
-    tid == TYPE_MAP || tid == TYPE_MAP_F64 || tid == TYPE_MAP_ASSOC
-}
-
-fn is_set_tid(tid: u32) -> bool {
-    tid == TYPE_SET || tid == TYPE_SET_F64 || tid == TYPE_SET_ASSOC
-}
-
 fn map_is_assoc(map: *mut u8) -> bool {
     if map.is_null() {
         return false;
@@ -685,8 +682,19 @@ pub extern "C" fn lumia_ensure_set_f64(set: *mut u8) -> *mut u8 {
 /// Structural equality for scalars and heap objects (DESIGN: recursive `==`).
 #[no_mangle]
 pub extern "C" fn lumia_eq(a: i64, b: i64) -> i64 {
+    // Same pointer/bits is usually equal, but Float-tagged containers hold
+    // IEEE elems/keys: NaN ≠ NaN, so reflexivity fails and we must compare.
     if a == b {
-        return 1;
+        let p = a as *mut u8;
+        if is_heap_payload(p) {
+            let tid = unsafe { (*header_from_payload(p)).type_id };
+            if !matches!(tid, TYPE_LIST_F64 | TYPE_SET_F64 | TYPE_MAP_F64) {
+                return 1;
+            }
+            // Fall through to content compare (same object still ok for ±0).
+        } else {
+            return 1;
+        }
     }
     let pa = a as *mut u8;
     let pb = b as *mut u8;
@@ -698,15 +706,24 @@ pub extern "C" fn lumia_eq(a: i64, b: i64) -> i64 {
         let hb = header_from_payload(pb);
         let ta = (*ha).type_id;
         let tb = (*hb).type_id;
-        // HeapList ↔ Iota: same user type `List`, compare by content.
+        // HeapList ↔ Iota ↔ ListF64: same user type `List`, compare by content.
         if is_list_tid(ta) && is_list_tid(tb) {
             let na = list_len_of(pa);
             let nb = list_len_of(pb);
             if na != nb {
                 return 0;
             }
+            // Either side tagged Float elems ⇒ IEEE (covers ±0 / NaN).
+            let float_elems = ta == TYPE_LIST_F64 || tb == TYPE_LIST_F64;
             for i in 0..na {
-                if lumia_eq(list_get_of(pa, i), list_get_of(pb, i)) == 0 {
+                let ea = list_get_of(pa, i);
+                let eb = list_get_of(pb, i);
+                let ok = if float_elems {
+                    float_key_eq(ea, eb)
+                } else {
+                    lumia_eq(ea, eb) != 0
+                };
+                if !ok {
                     return 0;
                 }
             }
@@ -878,7 +895,7 @@ pub extern "C" fn lumia_len(obj: *mut u8) -> i64 {
         let h = header_from_payload(obj);
         match (*h).type_id {
             TYPE_STRING => (*h).size as i64,
-            TYPE_LIST | TYPE_LIST_IOTA => list_len_of(obj),
+            TYPE_LIST | TYPE_LIST_F64 | TYPE_LIST_IOTA => list_len_of(obj),
             TYPE_SET | TYPE_SET_F64 | TYPE_SET_ASSOC => *(obj as *const i64),
             TYPE_MAP | TYPE_MAP_F64 | TYPE_MAP_ASSOC => map_count(obj),
             _ => trap_abort(&format!("lumia: len on unsupported type {}", (*h).type_id)),
@@ -1090,7 +1107,7 @@ pub extern "C" fn lumia_list_take(list: *mut u8, n: i64) -> *mut u8 {
         } else {
             n
         };
-        let dest = lumia_alloc(list_payload_bytes(take), TYPE_LIST);
+        let dest = lumia_alloc(list_payload_bytes(take), heap_list_tid(list));
         if dest.is_null() {
             trap_abort("lumia: list take OOM");
         }
@@ -1117,7 +1134,7 @@ pub extern "C" fn lumia_list_reverse(list: *mut u8) -> *mut u8 {
         } else {
             *(list as *const i64)
         };
-        let dest = lumia_alloc(list_payload_bytes(len), TYPE_LIST);
+        let dest = lumia_alloc(list_payload_bytes(len), heap_list_tid(list));
         if dest.is_null() {
             trap_abort("lumia: list reverse OOM");
         }
@@ -1184,7 +1201,7 @@ pub extern "C" fn lumia_list_sort_by_keys(values: *mut u8, keys: *mut u8) -> *mu
         if n != nk {
             trap_abort("lumia: sortBy keys/values length mismatch");
         }
-        let dest = lumia_alloc(list_payload_bytes(n), TYPE_LIST);
+        let dest = lumia_alloc(list_payload_bytes(n), heap_list_tid(values));
         if dest.is_null() {
             trap_abort("lumia: list sortBy OOM");
         }
@@ -1312,7 +1329,7 @@ pub extern "C" fn lumia_list_join(list: *mut u8, sep: *mut u8) -> *mut u8 {
 
 #[inline]
 fn is_list_tid(tid: u32) -> bool {
-    tid == TYPE_LIST || tid == TYPE_LIST_IOTA
+    tid == TYPE_LIST || tid == TYPE_LIST_F64 || tid == TYPE_LIST_IOTA
 }
 
 #[inline]
@@ -1322,6 +1339,53 @@ fn list_tid(list: *mut u8) -> u32 {
     } else {
         unsafe { (*header_from_payload(list)).type_id }
     }
+}
+
+/// Preserve Float-elem tagging when allocating a derived HeapList.
+#[inline]
+fn heap_list_tid(list: *mut u8) -> u32 {
+    if list_tid(list) == TYPE_LIST_F64 {
+        TYPE_LIST_F64
+    } else {
+        TYPE_LIST
+    }
+}
+
+fn list_float_elems(list: *mut u8) -> bool {
+    list_tid(list) == TYPE_LIST_F64
+}
+
+/// Ensure a list uses IEEE elem eq/hash (`TYPE_LIST_F64`).
+/// Empty ordinary lists become a fresh empty F64 list (no in-place retag).
+fn ensure_list_f64(list: *mut u8) -> *mut u8 {
+    if list.is_null() {
+        let dest = lumia_alloc(8, TYPE_LIST_F64);
+        unsafe {
+            *(dest as *mut i64) = 0;
+        }
+        return dest;
+    }
+    unsafe {
+        let h = header_from_payload(list);
+        match (*h).type_id {
+            TYPE_LIST_F64 => list,
+            TYPE_LIST => {
+                if *(list as *const i64) != 0 {
+                    trap_abort("lumia: ensure_list_f64 on non-empty Int-elem list");
+                }
+                let dest = lumia_alloc(8, TYPE_LIST_F64);
+                *(dest as *mut i64) = 0;
+                dest
+            }
+            TYPE_LIST_IOTA => trap_abort("lumia: ensure_list_f64 on Iota"),
+            other => trap_abort(&format!("lumia: ensure_list_f64 on type_id={other}")),
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn lumia_ensure_list_f64(list: *mut u8) -> *mut u8 {
+    ensure_list_f64(list)
 }
 
 /// HeapList: `[len][elem…]`; Iota: `[start][end_exclusive]`.
@@ -1429,8 +1493,11 @@ pub extern "C" fn lumia_list_append(list: *mut u8, elem: i64) -> *mut u8 {
         } else {
             *(list as *const i64)
         };
-        let nbytes = list_payload_bytes(n.checked_add(1).expect("lumia: list append length overflow"));
-        let dest = lumia_alloc(nbytes, TYPE_LIST);
+        let n1 = n
+            .checked_add(1)
+            .unwrap_or_else(|| trap_abort("lumia: list append length overflow"));
+        let nbytes = list_payload_bytes(n1);
+        let dest = lumia_alloc(nbytes, heap_list_tid(list));
         if dest.is_null() {
             trap_abort("lumia: list append OOM");
         }
@@ -1602,7 +1669,7 @@ pub extern "C" fn lumia_list_set(list: *mut u8, index: i64, elem: i64) -> *mut u
             trap_abort("lumia: list set out of bounds");
         }
         let nbytes = list_payload_bytes(n);
-        let dest = lumia_alloc(nbytes, TYPE_LIST);
+        let dest = lumia_alloc(nbytes, heap_list_tid(list));
         if dest.is_null() {
             trap_abort("lumia: list set OOM");
         }
@@ -1643,9 +1710,14 @@ pub extern "C" fn lumia_list_concat(a: *mut u8, b: *mut u8) -> *mut u8 {
         }
         let n = na
             .checked_add(nb)
-            .expect("lumia: list concat length overflow");
+            .unwrap_or_else(|| trap_abort("lumia: list concat length overflow"));
         let nbytes = list_payload_bytes(n);
-        let dest = lumia_alloc(nbytes, TYPE_LIST);
+        let tid = if list_float_elems(a) || list_float_elems(b) {
+            TYPE_LIST_F64
+        } else {
+            TYPE_LIST
+        };
+        let dest = lumia_alloc(nbytes, tid);
         if dest.is_null() {
             trap_abort("lumia: list concat OOM");
         }
@@ -1710,7 +1782,7 @@ pub extern "C" fn lumia_list_slice(list: *mut u8, start: i64) -> *mut u8 {
         let len = *(list as *const i64);
         let start = if start < 0 { 0 } else { start };
         let n = if start >= len { 0i64 } else { len - start };
-        let dest = lumia_alloc(list_payload_bytes(n), TYPE_LIST);
+        let dest = lumia_alloc(list_payload_bytes(n), heap_list_tid(list));
         if dest.is_null() {
             trap_abort("lumia: slice OOM");
         }
@@ -2030,13 +2102,18 @@ fn hash_value(key: i64, depth: u32) -> u64 {
                 acc
             }
             TYPE_CHAR => splitmix64(*(p as *const i64) as u64),
-            TYPE_LIST | TYPE_LIST_IOTA => {
+            TYPE_LIST | TYPE_LIST_F64 | TYPE_LIST_IOTA => {
                 let n = list_len_of(p);
+                let float_elems = (*h).type_id == TYPE_LIST_F64;
                 let mut acc = splitmix64(0x4c495354u64 ^ (n as u64));
                 for i in 0..n {
-                    acc = acc
-                        .rotate_left(7)
-                        .wrapping_add(hash_value(list_get_of(p, i), depth + 1));
+                    let e = list_get_of(p, i);
+                    let he = if float_elems {
+                        float_key_hash(e)
+                    } else {
+                        hash_value(e, depth + 1)
+                    };
+                    acc = acc.rotate_left(7).wrapping_add(he);
                 }
                 acc
             }
@@ -2265,10 +2342,6 @@ fn alloc_adt(tag: i64, fields: &[i64]) -> *mut u8 {
     dest
 }
 
-unsafe fn map_alloc_hash(cap: usize, count: i64) -> *mut u8 {
-    map_alloc_hash_tid(cap, count, TYPE_MAP)
-}
-
 unsafe fn map_alloc_hash_tid(cap: usize, count: i64, tid: u32) -> *mut u8 {
     let nbytes = map_hash_nbytes(cap) as u64;
     let dest = lumia_alloc(nbytes, tid);
@@ -2459,7 +2532,7 @@ pub extern "C" fn lumia_set(obj: *mut u8, key_or_index: i64, val: i64) -> *mut u
     }
     let tid = unsafe { (*header_from_payload(obj)).type_id };
     match tid {
-        TYPE_LIST | TYPE_LIST_IOTA => lumia_list_set(obj, key_or_index, val),
+        TYPE_LIST | TYPE_LIST_F64 | TYPE_LIST_IOTA => lumia_list_set(obj, key_or_index, val),
         TYPE_MAP | TYPE_MAP_F64 | TYPE_MAP_ASSOC => lumia_map_set(obj, key_or_index, val),
         _ => trap_abort(&format!("lumia: set on unsupported type_id={tid}")),
     }
@@ -2616,7 +2689,7 @@ pub extern "C" fn lumia_elems(obj: *mut u8) -> *mut u8 {
     }
     let tid = unsafe { (*header_from_payload(obj)).type_id };
     match tid {
-        TYPE_LIST => obj,
+        TYPE_LIST | TYPE_LIST_F64 => obj,
         TYPE_LIST_IOTA => force_heap_list(obj),
         TYPE_SET | TYPE_SET_F64 | TYPE_SET_ASSOC => unsafe {
             let n = *(obj as *const i64);
@@ -2670,7 +2743,7 @@ pub extern "C" fn lumia_map_items(map: *mut u8) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
     if !map.is_null() {
         let tid = unsafe { (*header_from_payload(map)).type_id };
-        if tid == TYPE_LIST {
+        if tid == TYPE_LIST || tid == TYPE_LIST_F64 {
             return map;
         }
         if tid == TYPE_LIST_IOTA {
@@ -2857,10 +2930,6 @@ pub extern "C" fn lumia_set_contains(set: *mut u8, elem: i64) -> i64 {
         }
         0
     }
-}
-
-unsafe fn set_alloc_hash(cap: usize, count: i64) -> *mut u8 {
-    set_alloc_hash_tid(cap, count, TYPE_SET)
 }
 
 unsafe fn set_alloc_hash_tid(cap: usize, count: i64, tid: u32) -> *mut u8 {
@@ -3097,7 +3166,7 @@ pub extern "C" fn lumia_get(
     let h = header_from_payload(obj);
     unsafe {
         match (*h).type_id {
-            TYPE_LIST | TYPE_LIST_IOTA => lumia_list_get(obj, key_or_index),
+            TYPE_LIST | TYPE_LIST_F64 | TYPE_LIST_IOTA => lumia_list_get(obj, key_or_index),
             TYPE_SET | TYPE_SET_F64 | TYPE_SET_ASSOC => {
                 let n = *(obj as *const i64);
                 if key_or_index < 0 || key_or_index >= n {
@@ -3650,6 +3719,49 @@ mod tests {
         PAR_WORKER.with(|c| c.set(true));
         // Call Rust path (not `extern "C"`) so the panic can unwind for should_panic.
         let _ = MarkSweep.alloc(8, TYPE_LIST);
+    }
+
+    #[test]
+    fn list_f64_eq_follows_ieee() {
+        let pos0 = 0.0f64.to_bits() as i64;
+        let neg0 = (-0.0f64).to_bits() as i64;
+        let nan = f64::NAN.to_bits() as i64;
+        let a = {
+            let p = lumia_alloc(list_payload_bytes(1), TYPE_LIST_F64);
+            unsafe {
+                *(p as *mut i64) = 1;
+                *((p as *mut i64).add(1)) = pos0;
+            }
+            p
+        };
+        let b = {
+            let p = lumia_alloc(list_payload_bytes(1), TYPE_LIST_F64);
+            unsafe {
+                *(p as *mut i64) = 1;
+                *((p as *mut i64).add(1)) = neg0;
+            }
+            p
+        };
+        let c = {
+            let p = lumia_alloc(list_payload_bytes(1), TYPE_LIST_F64);
+            unsafe {
+                *(p as *mut i64) = 1;
+                *((p as *mut i64).add(1)) = nan;
+            }
+            p
+        };
+        assert_eq!(lumia_eq(a as i64, b as i64), 1);
+        // Same object still NaN≠NaN under IEEE content compare.
+        assert_eq!(lumia_eq(c as i64, c as i64), 0);
+        let c2 = {
+            let p = lumia_alloc(list_payload_bytes(1), TYPE_LIST_F64);
+            unsafe {
+                *(p as *mut i64) = 1;
+                *((p as *mut i64).add(1)) = nan;
+            }
+            p
+        };
+        assert_eq!(lumia_eq(c as i64, c2 as i64), 0);
     }
 
 }

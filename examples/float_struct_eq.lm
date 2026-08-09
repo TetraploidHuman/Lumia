@@ -1,0 +1,17 @@
+module FloatStructEq
+
+import std.io.{println}
+
+type Option {
+    Some(Float)
+    None
+}
+
+/// Structural `==` on Float containers must follow IEEE (±0 equal; NaN ≠ NaN).
+val main = {
+    println(if listOf(0.0) == listOf(-0.0) { 1 } else { 0 })
+    val nan = 0.0 / 0.0
+    println(if listOf(nan) == listOf(nan) { 1 } else { 0 })
+    println(if Some(0.0) == Some(-0.0) { 1 } else { 0 })
+    println(if Some(nan) == Some(nan) { 1 } else { 0 })
+}

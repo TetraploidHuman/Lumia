@@ -306,6 +306,11 @@ fn declare_runtime<'ctx>(context: &'ctx Context, module: &LlvmModule<'ctx>) {
         None,
     );
     module.add_function(
+        "lumia_ensure_list_f64",
+        ptr_ty.fn_type(&[ptr_ty.into()], false),
+        None,
+    );
+    module.add_function(
         "lumia_map_set",
         ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false),
         None,
@@ -704,6 +709,142 @@ impl<'ctx> Codegen<'ctx> {
             (Type::Adt { name: a, .. }, Type::Adt { name: b, .. }) if a == b => Some(a.clone()),
             _ => None,
         }
+    }
+
+    /// Typed `==` for ADTs with Float fields and fallback to `lumia_eq`.
+    fn emit_value_eq(
+        &mut self,
+        lt: &Type,
+        rt: &Type,
+        l: IntValue<'ctx>,
+        r: IntValue<'ctx>,
+    ) -> Result<IntValue<'ctx>> {
+        if let Some(name) = Self::adt_method_name(lt, rt) {
+            if let Some(eq) = self.emit_eq_override(&name, l, r)? {
+                return Ok(eq);
+            }
+            if let (Type::Adt { params: lp, .. }, Type::Adt { params: rp, .. }) = (lt, rt) {
+                if lp.iter().any(|p| matches!(p, Type::Float))
+                    || rp.iter().any(|p| matches!(p, Type::Float))
+                {
+                    let params = if lp.len() >= rp.len() { lp } else { rp };
+                    return self.emit_typed_adt_eq(l, r, params);
+                }
+            }
+        }
+        let f = self.module.get_function("lumia_eq").unwrap();
+        Ok(self
+            .builder
+            .build_call(f, &[l.into(), r.into()], "eq")
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_int_value())
+    }
+
+    /// Structural ADT `==` using `Type::Adt` field params (Float → IEEE OEQ).
+    fn emit_typed_adt_eq(
+        &mut self,
+        left: IntValue<'ctx>,
+        right: IntValue<'ctx>,
+        params: &[Type],
+    ) -> Result<IntValue<'ctx>> {
+        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+        let la = self
+            .builder
+            .build_int_to_ptr(left, ptr_ty, "adt_eq_l")
+            .unwrap();
+        let ra = self
+            .builder
+            .build_int_to_ptr(right, ptr_ty, "adt_eq_r")
+            .unwrap();
+        let load_i64 = |cg: &Self, base: PointerValue<'ctx>, idx: u64, name: &str| {
+            let slot = unsafe {
+                cg.builder
+                    .build_gep(
+                        cg.i64_ty,
+                        base,
+                        &[cg.i64_ty.const_int(idx, false)],
+                        name,
+                    )
+                    .unwrap()
+            };
+            cg.builder
+                .build_load(cg.i64_ty, slot, &format!("{name}v"))
+                .unwrap()
+                .into_int_value()
+        };
+        let ltag = load_i64(self, la, 0, "ltag");
+        let rtag = load_i64(self, ra, 0, "rtag");
+        let tag_eq = self
+            .builder
+            .build_int_compare(IntPredicate::EQ, ltag, rtag, "tag_eq")
+            .unwrap();
+        let mut acc = self
+            .builder
+            .build_int_z_extend(tag_eq, self.i64_ty, "tag_eqz")
+            .unwrap();
+        let zero = self.i64_ty.const_int(0, false);
+        for (fi, pty) in params.iter().enumerate() {
+            let lb = load_i64(self, la, (fi + 1) as u64, &format!("lf{fi}"));
+            let rb = load_i64(self, ra, (fi + 1) as u64, &format!("rf{fi}"));
+            let field_eq = match pty {
+                Type::Float => {
+                    let lf = self
+                        .builder
+                        .build_bit_cast(lb, self.context.f64_type(), "lf_f")
+                        .unwrap()
+                        .into_float_value();
+                    let rf = self
+                        .builder
+                        .build_bit_cast(rb, self.context.f64_type(), "rf_f")
+                        .unwrap()
+                        .into_float_value();
+                    let c = self
+                        .builder
+                        .build_float_compare(FloatPredicate::OEQ, lf, rf, "fld_fcmp")
+                        .unwrap();
+                    self.builder
+                        .build_int_z_extend(c, self.i64_ty, "fld_feqz")
+                        .unwrap()
+                }
+                Type::Bool | Type::Int | Type::Char | Type::Unit => {
+                    let c = self
+                        .builder
+                        .build_int_compare(IntPredicate::EQ, lb, rb, "fld_icmp")
+                        .unwrap();
+                    self.builder
+                        .build_int_z_extend(c, self.i64_ty, "fld_iqz")
+                        .unwrap()
+                }
+                _ => {
+                    let f = self.module.get_function("lumia_eq").unwrap();
+                    self.builder
+                        .build_call(f, &[lb.into(), rb.into()], "fld_eq")
+                        .unwrap()
+                        .try_as_basic_value()
+                        .basic()
+                        .unwrap()
+                        .into_int_value()
+                }
+            };
+            // acc = acc != 0 && field_eq != 0
+            let a_ok = self
+                .builder
+                .build_int_compare(IntPredicate::NE, acc, zero, "a_ok")
+                .unwrap();
+            let f_ok = self
+                .builder
+                .build_int_compare(IntPredicate::NE, field_eq, zero, "f_ok")
+                .unwrap();
+            let both = self.builder.build_and(a_ok, f_ok, "both").unwrap();
+            acc = self
+                .builder
+                .build_int_z_extend(both, self.i64_ty, "acc_eq")
+                .unwrap();
+        }
+        Ok(acc)
     }
 
     /// Structural ADT show using `Type::Adt` field params (Float/Bool typed).
@@ -2289,55 +2430,9 @@ impl<'ctx> Codegen<'ctx> {
                     BinOp::Mul => self.emit_checked_binop(l, r, fv, "smul")?,
                     BinOp::Div => self.emit_checked_div_rem(l, r, fv, false)?,
                     BinOp::Rem => self.emit_checked_div_rem(l, r, fv, true)?,
-                    BinOp::Eq => {
-                        if let Some(name) = Self::adt_method_name(&lt, &rt) {
-                            if let Some(eq) = self.emit_eq_override(&name, l, r)? {
-                                eq
-                            } else {
-                                let f = self.module.get_function("lumia_eq").unwrap();
-                                self.builder
-                                    .build_call(f, &[l.into(), r.into()], "eq")
-                                    .unwrap()
-                                    .try_as_basic_value()
-                                    .basic()
-                                    .unwrap()
-                                    .into_int_value()
-                            }
-                        } else {
-                            let f = self.module.get_function("lumia_eq").unwrap();
-                            self.builder
-                                .build_call(f, &[l.into(), r.into()], "eq")
-                                .unwrap()
-                                .try_as_basic_value()
-                                .basic()
-                                .unwrap()
-                                .into_int_value()
-                        }
-                    }
+                    BinOp::Eq => self.emit_value_eq(&lt, &rt, l, r)?,
                     BinOp::Ne => {
-                        let eq = if let Some(name) = Self::adt_method_name(&lt, &rt) {
-                            if let Some(eq) = self.emit_eq_override(&name, l, r)? {
-                                eq
-                            } else {
-                                let f = self.module.get_function("lumia_eq").unwrap();
-                                self.builder
-                                    .build_call(f, &[l.into(), r.into()], "eq")
-                                    .unwrap()
-                                    .try_as_basic_value()
-                                    .basic()
-                                    .unwrap()
-                                    .into_int_value()
-                            }
-                        } else {
-                            let f = self.module.get_function("lumia_eq").unwrap();
-                            self.builder
-                                .build_call(f, &[l.into(), r.into()], "eq")
-                                .unwrap()
-                                .try_as_basic_value()
-                                .basic()
-                                .unwrap()
-                                .into_int_value()
-                        };
+                        let eq = self.emit_value_eq(&lt, &rt, l, r)?;
                         let z = self.i64_ty.const_int(0, false);
                         let c = self
                             .builder
@@ -2943,10 +3038,21 @@ impl<'ctx> Codegen<'ctx> {
                     let list_i = self.coerce_i64(self.local(args[0])?)?;
                     let elem = self.coerce_i64(self.local(args[1])?)?;
                     let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                    let list = self
+                    let mut list = self
                         .builder
                         .build_int_to_ptr(list_i, ptr_ty, "list_ptr")
                         .unwrap();
+                    if matches!(self.local_tys.get(&args[1].0), Some(Type::Float)) {
+                        let ens = self.module.get_function("lumia_ensure_list_f64").unwrap();
+                        list = self
+                            .builder
+                            .build_call(ens, &[list.into()], "ens_lf64")
+                            .unwrap()
+                            .try_as_basic_value()
+                            .basic()
+                            .unwrap()
+                            .into_pointer_value();
+                    }
                     let f = self.module.get_function("lumia_list_append").unwrap();
                     let call = self
                         .builder
@@ -3702,7 +3808,41 @@ impl<'ctx> Codegen<'ctx> {
             Value::AllocList { elems, repr } => {
                 // Empty → immortal singleton. Non-escaping LitList → stack header+payload
                 // (same layout as heap so RT len/get work). Escaping → heap.
+                let float_elems = elems
+                    .first()
+                    .and_then(|e| self.local_tys.get(&e.0).cloned())
+                    .is_some_and(|t| matches!(t, Type::Float));
+                let list_tid = if float_elems {
+                    14 /* TYPE_LIST_F64 */
+                } else {
+                    3 /* TYPE_LIST */
+                };
                 if elems.is_empty() {
+                    if float_elems {
+                        let ens = self.module.get_function("lumia_ensure_list_f64").unwrap();
+                        let f = self.module.get_function("lumia_list_empty").unwrap();
+                        let empty = self
+                            .builder
+                            .build_call(f, &[], "list_empty")
+                            .unwrap()
+                            .try_as_basic_value()
+                            .basic()
+                            .unwrap()
+                            .into_pointer_value();
+                        let ptr = self
+                            .builder
+                            .build_call(ens, &[empty.into()], "ens_lf64")
+                            .unwrap()
+                            .try_as_basic_value()
+                            .basic()
+                            .unwrap()
+                            .into_pointer_value();
+                        return Ok(self
+                            .builder
+                            .build_ptr_to_int(ptr, self.i64_ty, "empty_f64_i64")
+                            .unwrap()
+                            .into());
+                    }
                     let f = self.module.get_function("lumia_list_empty").unwrap();
                     let ptr = self
                         .builder
@@ -3719,9 +3859,9 @@ impl<'ctx> Codegen<'ctx> {
                         .into());
                 }
                 if matches!(repr, lumia_core::ListRepr::LitList) {
-                    return self.emit_stack_list(elems);
+                    return self.emit_stack_array(elems, list_tid);
                 }
-                self.emit_heap_array(elems, 3 /* TYPE_LIST */)
+                self.emit_heap_array(elems, list_tid)
             }
             Value::AllocSet { elems, repr } => {
                 let elem_ty = elems
@@ -3990,12 +4130,6 @@ impl<'ctx> Codegen<'ctx> {
             .build_ptr_to_int(payload, self.i64_ty, "adt_stack_i64")
             .unwrap()
             .into())
-    }
-
-    /// Stack list with ObjectHeader + `[len][elems…]` payload (TYPE_LIST).
-    /// Escape analysis must ensure the pointer never outlives the frame.
-    fn emit_stack_list(&mut self, elems: &[Local]) -> Result<BasicValueEnum<'ctx>> {
-        self.emit_stack_array(elems, 3 /* TYPE_LIST */)
     }
 
     /// Stack Set/List-shaped array: ObjectHeader + `[len][elems…]`.
