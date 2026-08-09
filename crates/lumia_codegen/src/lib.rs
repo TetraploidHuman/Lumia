@@ -21,6 +21,36 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// True when `f` is `return params[0]` (possibly through Local aliases only).
+fn core_fun_is_param0_identity(f: &CoreFun) -> bool {
+    let Some(p0) = f.params.first().map(|p| p.0) else {
+        return false;
+    };
+    let Some(Local(result)) = f.body.result else {
+        return false;
+    };
+    let mut root: HashMap<u32, u32> = HashMap::new();
+    root.insert(p0, p0);
+    for op in &f.body.ops {
+        match op {
+            Op::Let {
+                local,
+                value: Value::Local(Local(src)),
+                ..
+            } => {
+                if let Some(&r) = root.get(src) {
+                    root.insert(local.0, r);
+                } else {
+                    return false;
+                }
+            }
+            Op::Let { .. } | Op::Effect { .. } | Op::Assign { .. } => return false,
+            _ => {}
+        }
+    }
+    root.get(&result) == Some(&p0)
+}
+
 pub struct CodegenOptions {
     pub release: bool,
     pub output: PathBuf,
@@ -71,6 +101,9 @@ pub fn compile_module(core: &CoreModule, opts: &CodegenOptions) -> Result<()> {
         cg.functions.insert(f.name.clone(), fv);
         cg.fun_ret_tys.insert(f.name.clone(), f.ret_ty.clone());
         cg.fun_param_tys.insert(f.name.clone(), f.param_tys.clone());
+        if core_fun_is_param0_identity(f) {
+            cg.fun_param0_identity.insert(f.name.clone());
+        }
     }
 
     for f in &core.functions {
@@ -437,7 +470,14 @@ fn declare_runtime<'ctx>(context: &'ctx Context, module: &LlvmModule<'ctx>) {
     );
     module.add_function(
         "lumia_list_par_map",
-        ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        ptr_ty.fn_type(
+            &[
+                ptr_ty.into(),
+                ptr_ty.into(),
+                context.i32_type().into(),
+            ],
+            false,
+        ),
         None,
     );
     module.add_function(
@@ -563,6 +603,8 @@ struct Codegen<'ctx> {
     fun_ret_tys: HashMap<String, Type>,
     /// Callee parameter types (C ABI for `foreign`).
     fun_param_tys: HashMap<String, Vec<Type>>,
+    /// Funs whose body is `return params[0]` (identity); ListParMap may keep Float tags.
+    fun_param0_identity: HashSet<String>,
     /// Lumia names of `foreign` imports.
     external_funs: HashSet<String>,
     /// Locals currently bound to `FunRef(name)` — for IndirectCall float ABI.
@@ -605,6 +647,7 @@ impl<'ctx> Codegen<'ctx> {
             memo_idx_key: None,
             fun_ret_tys: HashMap::new(),
             fun_param_tys: HashMap::new(),
+            fun_param0_identity: HashSet::new(),
             external_funs: HashSet::new(),
             funref_locals: HashMap::new(),
             local_tys: HashMap::new(),
@@ -1533,6 +1576,42 @@ impl<'ctx> Codegen<'ctx> {
         Type::List(Box::new(Type::Int))
     }
 
+    /// Result element type of `ListParMap` from FunRef/`Fun` return, else list elem.
+    /// Identity callbacks are often typed `Int→Int` under the bitcast ABI; when the
+    /// source list is `List[Float]`, keep Float so `TYPE_LIST_F64` IEEE `==` applies.
+    fn list_par_map_result_elem(&self, args: &[Local]) -> Type {
+        let list_elem = match self.list_elem_preserved(args) {
+            Type::List(elem) => *elem,
+            other => other,
+        };
+        if let Some(fun_local) = args.get(1) {
+            let name = self.funref_locals.get(&fun_local.0).cloned();
+            let fun_ret = name
+                .as_ref()
+                .and_then(|n| self.fun_ret_tys.get(n).cloned())
+                .or_else(|| match self.local_tys.get(&fun_local.0) {
+                    Some(Type::Fun(_, ret, _)) => Some((**ret).clone()),
+                    _ => None,
+                });
+            if let Some(ret) = fun_ret {
+                let identity = name
+                    .as_ref()
+                    .is_some_and(|n| self.fun_param0_identity.contains(n));
+                // Identity lambdas often get Int or heap-sentinel `List[Int]` ret_ty
+                // (param may hold any scalar/heap). For List[Float] keep IEEE tagging.
+                if identity && matches!(list_elem, Type::Float) {
+                    return Type::Float;
+                }
+                match &ret {
+                    Type::Float => return Type::Float,
+                    Type::Int => return Type::Int,
+                    _ => return ret,
+                }
+            }
+        }
+        list_elem
+    }
+
     fn infer_value_ty(&self, value: &Value) -> Type {
         match value {
             Value::Bool(_) => Type::Bool,
@@ -1649,12 +1728,14 @@ impl<'ctx> Codegen<'ctx> {
                         Type::Int
                     }
                 }
+                Builtin::ListParMap => {
+                    Type::List(Box::new(self.list_par_map_result_elem(args)))
+                }
                 Builtin::ListSlice
                 | Builtin::ListTake
                 | Builtin::ListReverse
                 | Builtin::ListSort
-                | Builtin::ListSortByKeys
-                | Builtin::ListParMap => self.list_elem_preserved(args),
+                | Builtin::ListSortByKeys => self.list_elem_preserved(args),
                 Builtin::ListParFold => {
                     // Acc / init type (scalar).
                     args.get(1)
@@ -3371,10 +3452,19 @@ impl<'ctx> Codegen<'ctx> {
                         .builder
                         .build_int_to_ptr(cleared, ptr_ty, "pmap_fn")
                         .unwrap();
+                    let result_tid = if matches!(
+                        self.list_par_map_result_elem(args),
+                        Type::Float
+                    ) {
+                        14u64 // TYPE_LIST_F64
+                    } else {
+                        3u64 // TYPE_LIST
+                    };
                     let f = self.module.get_function("lumia_list_par_map").unwrap();
+                    let tid_v = self.context.i32_type().const_int(result_tid, false);
                     let call = self
                         .builder
-                        .build_call(f, &[list.into(), fptr.into()], "par_map")
+                        .build_call(f, &[list.into(), fptr.into(), tid_v.into()], "par_map")
                         .unwrap();
                     let ptr = call
                         .try_as_basic_value()
@@ -4704,3 +4794,4 @@ pub fn find_runtime_lib_prefer(target_dir: &Path, release: bool) -> Result<PathB
         target_dir.display()
     )
 }
+

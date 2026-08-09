@@ -627,10 +627,10 @@ fn e2e_float_map_keys() {
 
 #[test]
 fn e2e_float_struct_eq() {
-    // List/Option/Map Float payloads: ±0 equal; NaN ≠ NaN (DESIGN §2.1).
+    // List/Option/Map Float payloads + ListParMap: ±0 equal; NaN ≠ NaN.
     run_example(
         "examples/float_struct_eq.lm",
-        &["1", "0", "1", "0", "1", "0"],
+        &["1", "0", "1", "0", "1", "0", "0"],
     );
 }
 

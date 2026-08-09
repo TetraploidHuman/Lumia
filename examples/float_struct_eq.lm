@@ -16,4 +16,7 @@ val main = {
     println(if Some(nan) == Some(nan) { 1 } else { 0 })
     println(if mapOf(1 to 0.0) == mapOf(1 to -0.0) { 1 } else { 0 })
     println(if mapOf(1 to nan) == mapOf(1 to nan) { 1 } else { 0 })
+    // ListParMap must keep Float IEEE tagging (NaN ≠ NaN even for same list).
+    val mapped = listOf(nan).map({ x -> x })
+    println(if mapped == mapped { 1 } else { 0 })
 }

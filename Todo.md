@@ -10,7 +10,11 @@
 
 ## 语义与运行时
 
-- [x] **Float 作 Map/Set 键与 `lumia_eq`**：`TYPE_MAP_F64` / `TYPE_SET_F64` + IEEE `float_key_eq`/`float_key_hash`（±0 碰撞、NaN 永不命中）；codegen 在 Float 键/`set` 时 `lumia_ensure_*_f64`；e2e `float_map_keys`。标量 `lumia_eq` 对未装箱 Float 仍为 bit 短路（与堆键路径分离）。
+- [x] **Float 作 Map/Set 键与 `lumia_eq`**：`TYPE_MAP_F64` / `TYPE_SET_F64` + IEEE `float_key_eq`/`float_key_hash`（±0 碰撞、NaN 永不命中）；codegen 在 Float 键/`set` 时 `lumia_ensure_*_f64`；e2e `float_map_keys`。
+- [x] **Float 结构相等（List / ADT / Map 值）**：`TYPE_LIST_F64`、`TYPE_MAP_VF64` / `TYPE_MAP_F64V`；ADT Float 字段走 typed `fcmp OEQ`；e2e `float_struct_eq`。`ListParMap` 传 `result_tid`（恒等 FunRef + `List[Float]` 保 IEEE 标签）。
+- [ ] **标量路径 `lumia_eq` 未装箱 Float**：非堆 i64 仍 bit 短路；标量 `==` 走 codegen `fcmp`，通常不经过此路径。嵌套「无类型标签的 Float 位」仍可能漏网（依赖容器 type_id / typed eq）。
+- [ ] **`AssocList` Map + Float 值**：无 Hash 键仍为 `TYPE_MAP_ASSOC`，值侧 IEEE 标签未接线（与 VF64 组合待做）。
+- [ ] **陷阱栈追踪**（DESIGN §2 / 错误表）：`trap_abort` 仅打印消息后 abort，尚无用户可见 backtrace。
 - [x] **`foreign "C" pure` 荣誉系统**：默认 foreign 为 IO；`pure` 需 `--trust-foreign-pure` 或 `package.trust_foreign_pure`；opts 仍不 CSE/memo external。
 - [x] **stdin 超大输入**：约 64MiB 软上限经 `trap_abort`（BUILD §8）；流式/`Result` 另项。
 - [x] **CLI `--link`**：BUILD §8 写明信任模型（CLI 绝对路径 = 本机意图；不可信树需宿主沙箱）。

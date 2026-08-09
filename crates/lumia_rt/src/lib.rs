@@ -1585,15 +1585,22 @@ pub extern "C" fn lumia_list_append(list: *mut u8, elem: i64) -> *mut u8 {
 }
 
 /// Parallel map over List[scalar] with a C ABI `fn(i64) -> i64`.
+/// `result_tid` is `TYPE_LIST` or `TYPE_LIST_F64` (codegen: result element sort).
 /// Type checker requires concrete Int/Bool/Float elems; workers must not heap-allocate.
 /// Falls back to sequential for small lists; inhibits GC while workers run.
 #[no_mangle]
 pub extern "C" fn lumia_list_par_map(
     list: *mut u8,
     f: Option<extern "C" fn(i64) -> i64>,
+    result_tid: u32,
 ) -> *mut u8 {
     let Some(f) = f else {
         trap_abort("lumia: list_par_map null function");
+    };
+    let result_tid = if result_tid == TYPE_LIST_F64 {
+        TYPE_LIST_F64
+    } else {
+        TYPE_LIST
     };
     // Cover force + sequential alloc; parallel path takes its own inhibit.
     let _gc = GcInhibitGuard::enter();
@@ -1605,12 +1612,16 @@ pub extern "C" fn lumia_list_par_map(
             *(list as *const i64)
         };
         if n <= 0 {
-            return lumia_list_empty();
+            return if result_tid == TYPE_LIST_F64 {
+                ensure_list_f64(lumia_list_empty())
+            } else {
+                lumia_list_empty()
+            };
         }
         let src = list as *const i64;
         // Sequential for tiny lists.
         if n < 64 {
-            let dest = lumia_alloc(list_payload_bytes(n), TYPE_LIST);
+            let dest = lumia_alloc(list_payload_bytes(n), result_tid);
             let dst = dest as *mut i64;
             *dst = n;
             for i in 0..n as usize {
@@ -1644,9 +1655,12 @@ pub extern "C" fn lumia_list_par_map(
         }
         let parts: Vec<Vec<i64>> = handles
             .into_iter()
-            .map(|h| h.join().expect("par_map worker"))
+            .map(|h| match h.join() {
+                Ok(v) => v,
+                Err(_) => trap_abort("lumia: par_map worker panicked"),
+            })
             .collect();
-        let dest = lumia_alloc(list_payload_bytes(n), TYPE_LIST);
+        let dest = lumia_alloc(list_payload_bytes(n), result_tid);
         let dst = dest as *mut i64;
         *dst = n;
         let mut i = 0usize;
@@ -1718,7 +1732,10 @@ pub extern "C" fn lumia_list_par_fold(
         }
         let mut acc = init;
         for h in handles {
-            let part = h.join().expect("par_fold worker");
+            let part = match h.join() {
+                Ok(v) => v,
+                Err(_) => trap_abort("lumia: par_fold worker panicked"),
+            };
             acc = f(acc, part);
         }
         acc
