@@ -432,7 +432,8 @@ impl Infer {
                 let Some(trait_name) = self.method_trait.get(method).cloned() else {
                     return Ok(None);
                 };
-                // Sample any mangled implementation for effect/arity/ret shape.
+                // Peek a sample impl for arity/effect only — do NOT unify it with the
+                // open call (that froze `{ x -> x.toInt() }` to the first instance type).
                 let sample = self
                     .trait_methods
                     .values()
@@ -444,16 +445,22 @@ impl Infer {
                     let ct = self.lookup(&sample).ok_or_else(|| {
                         at(span, format!("trait method `{method}` is not in scope"))
                     })?;
-                    let call_eff = match self.prune(ct.clone()) {
-                        Type::Fun(_, _, e) => e,
-                        _ => self.fresh_eff(),
-                    };
-                    self.unify_at(
-                        span,
-                        ct,
-                        Type::Fun(ats, Box::new(ret.clone()), call_eff),
-                    )?;
-                    self.prune_eff(call_eff)
+                    match self.prune(ct) {
+                        Type::Fun(params, _, e) => {
+                            if params.len() != ats.len() {
+                                return Err(at(
+                                    span,
+                                    format!(
+                                        "trait method `{method}` expects {} args, got {}",
+                                        params.len(),
+                                        ats.len()
+                                    ),
+                                ));
+                            }
+                            self.prune_eff(e)
+                        }
+                        _ => Effect::pure(),
+                    }
                 } else {
                     // Trait declared but no instance yet — open ret; call site checks.
                     Effect::pure()
@@ -463,7 +470,7 @@ impl Infer {
                     .or_default()
                     .push((trait_name, method.to_string()));
                 // Leave HIR as `method(recv,…)` — Core mono resolves after specialize.
-                Ok(Some((self.prune(ret), self.union_eff(aes, fun_eff))))
+                Ok(Some((ret, self.union_eff(aes, fun_eff))))
             }
             _ => Ok(None),
         }
@@ -1235,10 +1242,15 @@ impl Infer {
                         | Type::Bool
                         | Type::Float
                         | Type::Char
-                        | Type::Adt { .. } => {}
+                        | Type::Adt { .. }
+                        | Type::List(_)
+                        | Type::Map(_, _)
+                        | Type::Set(_)
+                        | Type::Tuple(_) => {}
                         Type::Var(_) => {
-                            // Default unresolved nums/ids to Int (restores `println(x + 0)`).
-                            self.unify_at(*span, t, Type::Int)?;
+                            // Leave open: freezing to Int rejected `f(1.5)` for
+                            // `{ x -> println(x); x }` and poisoned later Float uses.
+                            // Unresolved vars still print via `println_auto` (Int default).
                         }
                         other => {
                             return Err(at(
@@ -1647,9 +1659,61 @@ impl Infer {
                             })?
                         }
                         Type::Var(_) => {
-                            // Receiver still open (match desugar / inference order).
-                            // Concrete Adt/Tuple checks apply once the type is known.
-                            self.fresh()
+                            // Constrain open receivers when the expected product/ctor is known
+                            // (named `.field` / Some/Ok/Err patterns). Leaving them open let
+                            // `{ p -> p.x }(1)` typecheck and crash at runtime.
+                            if let Some(want) = expect_adt {
+                                if want == "Ok" || want == "Err" {
+                                    let t = self.fresh();
+                                    let e = self.fresh();
+                                    self.unify_at(
+                                        *span,
+                                        recv_ty,
+                                        Type::Adt {
+                                            name: "Result".into(),
+                                            params: vec![t.clone(), e.clone()],
+                                        },
+                                    )?;
+                                    if want == "Ok" { t } else { e }
+                                } else if want == "Some" {
+                                    let t = self.fresh();
+                                    self.unify_at(
+                                        *span,
+                                        recv_ty,
+                                        Type::Adt {
+                                            name: "Option".into(),
+                                            params: vec![t.clone()],
+                                        },
+                                    )?;
+                                    t
+                                } else {
+                                    let arity = lumia_hir::product_fields(want)
+                                        .map(|fs| fs.len())
+                                        .unwrap_or(idx + 1)
+                                        .max(idx + 1);
+                                    let params: Vec<Type> =
+                                        (0..arity).map(|_| self.fresh()).collect();
+                                    let field_ty = params[idx].clone();
+                                    self.unify_at(
+                                        *span,
+                                        recv_ty,
+                                        Type::Adt {
+                                            name: want.into(),
+                                            params,
+                                        },
+                                    )?;
+                                    field_ty
+                                }
+                            } else {
+                                // Positional `.0`: sum-pattern desugar also uses 2-arg form on
+                                // already-typed scrutinees. For lambdas, require a tuple of
+                                // exact arity idx+1 (no row polymorphism yet).
+                                let params: Vec<Type> =
+                                    (0..=idx).map(|_| self.fresh()).collect();
+                                let field_ty = params[idx].clone();
+                                self.unify_at(*span, recv_ty, Type::Tuple(params))?;
+                                field_ty
+                            }
                         }
                         other => {
                             return Err(at(
@@ -3594,5 +3658,39 @@ val main = { getenv("PATH") }
             typed.fun_types.get("getenv"),
             Some(Type::Fun(_, _, Effect::Io))
         ));
+    }
+
+    #[test]
+    fn open_product_field_rejects_wrong_receiver() {
+        let src = r#"
+module M
+type Point { val x val y }
+val getx = { p -> p.x }
+val main = { getx(1) }
+"#;
+        let ast = parse_module(src).unwrap();
+        let hir = lower_module(&ast).expect("lower");
+        assert!(
+            infer_module(&hir).is_err(),
+            "open field proj must not accept Int"
+        );
+    }
+
+    #[test]
+    fn println_does_not_freeze_var_to_int() {
+        let src = r#"
+module M
+import std.io.{println}
+val f = { x ->
+    println(x)
+    x
+}
+val main = {
+    println(f(1.5))
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let hir = lower_module(&ast).expect("lower");
+        infer_module(&hir).expect("println must leave open Var unconstrained");
     }
 }

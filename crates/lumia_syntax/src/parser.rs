@@ -1131,7 +1131,7 @@ impl<'a> Parser<'a> {
                 self.parse_lambda_or_block()
             }
             TokenKind::Trait | TokenKind::Instance | TokenKind::Requires => Err(self.error(
-                "`trait` / `instance` / `requires` are reserved but not implemented yet",
+                "expected expression (`trait` / `instance` / `requires` are item-level only)",
             )),
             TokenKind::LBrace => self.parse_lambda_or_block(),
             TokenKind::LParen => {

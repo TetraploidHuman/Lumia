@@ -14,6 +14,8 @@ thread_local! {
     static LOWER_ERR: RefCell<Option<LowerError>> = const { RefCell::new(None) };
     /// Capture-free top-level function names (safe FunRef for parallel map).
     static TOPLEVEL_FUNS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    /// Top-level 2-arg funs whose body is `a + b` / `a * b` (parallel fold-safe).
+    static TOPLEVEL_FOLD_ASSOC: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
 }
 
 /// Lowering / exhaustiveness failure with optional source span.
@@ -76,17 +78,15 @@ fn with_products<R>(
     ambiguous: HashSet<String>,
     f: impl FnOnce() -> R,
 ) -> R {
+    // Keep product tables after lower so ty can constrain open field receivers
+    // (`{ p -> p.x }`). Cleared at the start of the next `lower_module`.
     PRODUCTS.with(|p| {
         PRODUCT_FIELDS.with(|pf| {
             AMBIGUOUS_PRODUCT_FIELDS.with(|af| {
                 *p.borrow_mut() = products;
                 *pf.borrow_mut() = fields;
                 *af.borrow_mut() = ambiguous;
-                let r = f();
-                p.borrow_mut().clear();
-                pf.borrow_mut().clear();
-                af.borrow_mut().clear();
-                r
+                f()
             })
         })
     })
@@ -106,6 +106,11 @@ fn is_ambiguous_product_field(name: &str) -> bool {
 
 fn lookup_product(name: &str) -> Option<Vec<String>> {
     PRODUCTS.with(|c| c.borrow().get(name).cloned())
+}
+
+/// Field names of a registered product type (for ty to constrain open receivers).
+pub fn product_fields(name: &str) -> Option<Vec<String>> {
+    lookup_product(name)
 }
 
 /// If `name` is absent, register a sum type with the given `(variant, arity)` list (tags = index).
@@ -317,6 +322,27 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
                     set.insert(f.name.clone());
                 }
                 _ => {}
+            }
+        }
+    });
+    TOPLEVEL_FOLD_ASSOC.with(|t| {
+        let mut set = t.borrow_mut();
+        set.clear();
+        for item in &m.items {
+            if let lumia_syntax::Item::Val(v) = item {
+                if let Some(params) = &v.params {
+                    if params.len() == 2
+                        && syntax_fold_body_is_associative(&v.body, &params[0], &params[1])
+                    {
+                        set.insert(v.name.clone());
+                    }
+                } else if let lumia_syntax::Expr::Lambda { params, body, .. } = &v.body {
+                    if params.len() == 2
+                        && syntax_fold_body_is_associative(body, &params[0], &params[1])
+                    {
+                        set.insert(v.name.clone());
+                    }
+                }
             }
         }
     });
@@ -2999,17 +3025,73 @@ pub fn desugar_list_fold_sequential(list: Expr, init: Expr, f: Expr, span: Span)
     lower_list_fold_call(list, init, f, f_name, acc, x, span)
 }
 
-/// Parallel fold: capture-free 2-arg lambda, or a top-level function name (FunRef).
+/// Parallel fold: FunRef-safe **and** syntactically associative (`+` / `*`).
+/// DESIGN: auto-parallel must not change values; non-associative ops (e.g. `-`)
+/// yield wrong results under chunked combine.
 fn fold_callback_is_parallel_safe(f: &Expr) -> bool {
     match f {
         Expr::Lambda { params, body, .. } if params.len() == 2 => {
             let mut bound: Vec<String> = params.clone();
             let frees = free_vars_expr(body, &mut bound);
-            frees
+            if !frees
                 .iter()
                 .all(|n| TOPLEVEL_FUNS.with(|t| t.borrow().contains(n)))
+            {
+                return false;
+            }
+            fold_body_is_associative(body, &params[0], &params[1])
         }
-        Expr::Var(n, _) => TOPLEVEL_FUNS.with(|t| t.borrow().contains(n)),
+        Expr::Var(n, _) => {
+            if !TOPLEVEL_FUNS.with(|t| t.borrow().contains(n)) {
+                return false;
+            }
+            // Resolve top-level lambda body when registered as a val/fun binding.
+            TOPLEVEL_FOLD_ASSOC.with(|t| t.borrow().contains(n))
+        }
+        _ => false,
+    }
+}
+
+/// `a + b` / `a * b` (either operand order) — associative over Int/Float.
+fn fold_body_is_associative(body: &Expr, a: &str, b: &str) -> bool {
+    match body {
+        Expr::Binary {
+            op: BinOp::Add | BinOp::Mul,
+            left,
+            right,
+            ..
+        } => match (left.as_ref(), right.as_ref()) {
+            (Expr::Var(l, _), Expr::Var(r, _)) => {
+                (l == a && r == b) || (l == b && r == a)
+            }
+            _ => false,
+        },
+        // Block / seq ending in associative expr.
+        Expr::Seq { stmts, .. } => stmts.last().is_some_and(|e| fold_body_is_associative(e, a, b)),
+        Expr::Let { body, .. } => fold_body_is_associative(body, a, b),
+        _ => false,
+    }
+}
+
+/// Syntax-level twin of [`fold_body_is_associative`] (used while scanning items).
+fn syntax_fold_body_is_associative(body: &lumia_syntax::Expr, a: &str, b: &str) -> bool {
+    match body {
+        lumia_syntax::Expr::Binary {
+            op: BinOp::Add | BinOp::Mul,
+            left,
+            right,
+            ..
+        } => match (left.as_ref(), right.as_ref()) {
+            (lumia_syntax::Expr::Ident(l, _), lumia_syntax::Expr::Ident(r, _)) => {
+                (l == a && r == b) || (l == b && r == a)
+            }
+            _ => false,
+        },
+        lumia_syntax::Expr::Block { tail, .. } => {
+            tail.as_ref()
+                .is_some_and(|t| syntax_fold_body_is_associative(t, a, b))
+        }
+        lumia_syntax::Expr::Lambda { body, .. } => syntax_fold_body_is_associative(body, a, b),
         _ => false,
     }
 }
