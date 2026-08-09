@@ -100,7 +100,61 @@ thread_local! {
     static CALL_STACK: RefCell<Vec<*const u8>> = const { RefCell::new(Vec::new()) };
 }
 
+/// Soft GC threshold on approximate **live** payload bytes (see `BYTES_ALLOCATED`).
 pub(crate) static HEAP_LIMIT: Mutex<usize> = Mutex::new(256 * 1024);
+
+/// Refcount sentinel: immortal / permanently shared (empty-list singleton).
+pub(crate) const RC_SHARED: u32 = u32::MAX;
+
+/// Retain a heap List for COW uniqueness (`TYPE_LIST` / `TYPE_LIST_F64` only).
+#[inline]
+pub(crate) fn list_rc_retain(payload: *mut u8) {
+    if payload.is_null() || !is_heap_payload(payload) {
+        return;
+    }
+    unsafe {
+        let h = header_from_payload(payload);
+        let tid = (*h).type_id;
+        if tid != TYPE_LIST && tid != TYPE_LIST_F64 {
+            return;
+        }
+        let rc = (*h)._pad;
+        if rc != RC_SHARED {
+            (*h)._pad = rc.saturating_add(1);
+        }
+    }
+}
+
+/// Release a heap List refcount (does not free; GC reclaims).
+#[inline]
+pub(crate) fn list_rc_release(payload: *mut u8) {
+    if payload.is_null() || !is_heap_payload(payload) {
+        return;
+    }
+    unsafe {
+        let h = header_from_payload(payload);
+        let tid = (*h).type_id;
+        if tid != TYPE_LIST && tid != TYPE_LIST_F64 {
+            return;
+        }
+        let rc = (*h)._pad;
+        if rc != RC_SHARED && rc > 0 {
+            (*h)._pad = rc - 1;
+        }
+    }
+}
+
+#[inline]
+pub(crate) fn list_rc_is_unique(payload: *mut u8) -> bool {
+    if payload.is_null() || !is_heap_payload(payload) {
+        return false;
+    }
+    unsafe {
+        let h = header_from_payload(payload);
+        let tid = (*h).type_id;
+        (tid == TYPE_LIST || tid == TYPE_LIST_F64) && (*h)._pad == 1
+    }
+}
 
 pub(crate) fn header_layout(payload: usize) -> Layout {
     let header = std::mem::size_of::<ObjectHeader>();

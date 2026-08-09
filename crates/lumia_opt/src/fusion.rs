@@ -6,7 +6,7 @@
 
 use lumia_core::{Block, CoreFun, CoreModule, Local, Op, Value};
 use lumia_hir::Builtin;
-use std::collections::HashSet;
+use rustc_hash::FxHashSet as HashSet;
 
 pub struct FusionPass;
 
@@ -22,7 +22,7 @@ impl crate::Pass for FusionPass {
 }
 
 fn fuse_fun(f: &mut CoreFun) {
-    let mut empty_lists: HashSet<u32> = HashSet::new();
+    let mut empty_lists: HashSet<u32> = HashSet::default();
     collect_empty_lists(&f.body, &mut empty_lists);
     if empty_lists.is_empty() {
         return;
@@ -172,11 +172,11 @@ mod tests {
                 is_main: false,
                 memo: None,
                 external: None,
-                escaping: std::collections::HashSet::new(),
+                escaping: std::collections::HashSet::default(),
                 scheme_poly: false,
             }],
-            hash_adts: std::collections::HashSet::new(),
-            trait_methods: std::collections::HashMap::new(),
+            hash_adts: std::collections::HashSet::default(),
+            trait_methods: std::collections::HashMap::default(),
         };
         FusionPass.run(&mut module);
         assert!(matches!(

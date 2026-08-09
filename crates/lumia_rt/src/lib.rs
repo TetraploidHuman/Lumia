@@ -252,6 +252,28 @@ mod tests {
     }
 
     #[test]
+    fn list_append_cow_unique_grows_and_alias_copies() {
+        use crate::list::{
+            lumia_list_append, lumia_list_empty, lumia_list_get, lumia_list_len, lumia_list_retain,
+        };
+        let mut xs = lumia_list_empty();
+        xs = lumia_list_append(xs, 1);
+        for i in 2..=64 {
+            xs = lumia_list_append(xs, i);
+        }
+        assert_eq!(lumia_list_len(xs), 64);
+        assert_eq!(lumia_list_get(xs, 0), 1);
+        assert_eq!(lumia_list_get(xs, 63), 64);
+        // Alias then append — old snapshot must stay length 64.
+        lumia_list_retain(xs);
+        let ys = xs;
+        xs = lumia_list_append(xs, 65);
+        assert_eq!(lumia_list_len(ys), 64);
+        assert_eq!(lumia_list_len(xs), 65);
+        assert_eq!(lumia_list_get(xs, 64), 65);
+    }
+
+    #[test]
     fn rooted_survives_soft_threshold() {
         // Lower limit temporarily via many small allocs with a rooted object.
         let mut slot: *mut u8 = lumia_alloc(64, TYPE_STRING);

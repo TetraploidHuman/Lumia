@@ -1,13 +1,15 @@
+use super::fun_index::FunIndex;
 use super::key::{args_mono_key, MonoKey, MonoKind};
 use super::ret_ty::{block_result_fixed_ty, param_ty_map, refine_mono_container_ret};
 use super::traits::directize_block;
 use crate::ir::{Block, CoreFun, CoreModule, Local, Op, Value};
 use crate::value_ty::infer_value_ty;
 use lumia_ty::Type;
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap, FxHashSet};
+use std::collections::HashMap;
 
 pub(crate) fn specialize_mono_calls(module: &mut CoreModule) {
-    let mut renames: HashMap<(String, MonoKey), String> = HashMap::new();
+    let mut renames: FxHashMap<(String, MonoKey), String> = FxHashMap::default();
     for _round in 0..8 {
         let added = specialize_mono_round(module, &mut renames);
         if !added {
@@ -17,32 +19,39 @@ pub(crate) fn specialize_mono_calls(module: &mut CoreModule) {
     if renames.is_empty() {
         return;
     }
-    // Take ownership so rewrite can look up signatures without cloning the table.
+    // Take bodies out first so one FunIndex can borrow the signature table immutably.
     let mut functions = std::mem::take(&mut module.functions);
-    for i in 0..functions.len() {
-        let mut local_tys: HashMap<u32, Type> = HashMap::new();
-        for (j, p) in functions[i].params.iter().enumerate() {
-            local_tys.insert(
-                p.0,
-                functions[i].param_tys.get(j).cloned().unwrap_or(Type::Int),
+    let empty = Block {
+        params: vec![],
+        ops: vec![],
+        result: None,
+    };
+    let mut bodies: Vec<Block> = functions
+        .iter_mut()
+        .map(|f| std::mem::replace(&mut f.body, empty.clone()))
+        .collect();
+    {
+        let index = FunIndex::new(&functions);
+        let no_funrefs = HashMap::new();
+        for i in 0..functions.len() {
+            let mut local_tys: HashMap<u32, Type> = HashMap::new();
+            for (j, p) in functions[i].params.iter().enumerate() {
+                local_tys.insert(
+                    p.0,
+                    functions[i].param_tys.get(j).cloned().unwrap_or(Type::Int),
+                );
+            }
+            rewrite_mono_block(
+                &mut bodies[i],
+                &mut local_tys,
+                &renames,
+                &no_funrefs,
+                &index,
             );
         }
-        let mut body = std::mem::replace(
-            &mut functions[i].body,
-            Block {
-                params: vec![],
-                ops: vec![],
-                result: None,
-            },
-        );
-        rewrite_mono_block(
-            &mut body,
-            &mut local_tys,
-            &renames,
-            &HashMap::new(),
-            &functions,
-        );
-        functions[i].body = body;
+    }
+    for (fun, body) in functions.iter_mut().zip(bodies) {
+        fun.body = body;
     }
     module.functions = functions;
     // After all clones exist, upgrade erased Int rets on HOF wrappers whose
@@ -86,9 +95,10 @@ fn refresh_body_fixed_ret_tys(module: &mut CoreModule) {
 /// One scan→clone pass. Returns true if any new clone was appended.
 fn specialize_mono_round(
     module: &mut CoreModule,
-    renames: &mut HashMap<(String, MonoKey), String>,
+    renames: &mut FxHashMap<(String, MonoKey), String>,
 ) -> bool {
-    let mut needed: HashSet<(String, MonoKey)> = HashSet::new();
+    let index = FunIndex::new(&module.functions);
+    let mut needed: FxHashSet<(String, MonoKey)> = FxHashSet::default();
     for fun in &module.functions {
         let mut local_tys: HashMap<u32, Type> = HashMap::new();
         for (i, p) in fun.params.iter().enumerate() {
@@ -97,18 +107,19 @@ fn specialize_mono_round(
         scan_mono_block(
             &fun.body,
             &mut local_tys,
-            &module.functions,
+            &index,
             &mut needed,
             &HashMap::new(),
         );
     }
 
     let mut clones = Vec::new();
+    let mut clone_names: FxHashSet<String> = FxHashSet::default();
     for (name, key) in needed {
         if name.contains('$') || !key.worth_cloning() {
             continue;
         }
-        let Some(orig) = module.functions.iter().find(|f| f.name == name) else {
+        let Some(orig) = index.get(&name) else {
             continue;
         };
         if orig.is_main || orig.external.is_some() || orig.params.is_empty() {
@@ -124,14 +135,14 @@ fn specialize_mono_round(
         }
         let new_name = format!("{name}{}", key.suffix());
         if renames.contains_key(&(name.clone(), key.clone()))
-            || module.functions.iter().any(|f| f.name == new_name)
-            || clones.iter().any(|f: &CoreFun| f.name == new_name)
+            || index.contains(&new_name)
+            || clone_names.contains(&new_name)
         {
             renames.insert((name, key), new_name);
             continue;
         }
-        let param_tys = key.param_tys(&module.functions);
-        let inferred = key.ret_ty(&module.functions);
+        let param_tys = key.param_tys(index.funs());
+        let inferred = key.ret_ty(index.funs());
         let binds = key.funref_param_binds(&orig.params);
         let mut clone = orig.clone();
         clone.name = new_name.clone();
@@ -143,11 +154,12 @@ fn specialize_mono_round(
             // `Call(dbl$Float, …)` whose ret is Float, not the erased Int FunRef.
             directize_block(&mut clone.body, &binds);
         }
-        let ret_ty = mono_clone_ret_ty(&clone, &inferred, &module.functions, &module.trait_methods);
+        let ret_ty = mono_clone_ret_ty(&clone, &inferred, index.funs(), &module.trait_methods);
         if orig.param_tys == param_tys && orig.ret_ty == ret_ty && binds.is_empty() {
             continue;
         }
         clone.ret_ty = ret_ty;
+        clone_names.insert(new_name.clone());
         renames.insert((name, key), new_name);
         clones.push(clone);
     }
@@ -195,16 +207,16 @@ fn mono_clone_ret_ty(
 fn scan_mono_block(
     block: &Block,
     local_tys: &mut HashMap<u32, Type>,
-    functions: &[CoreFun],
-    needed: &mut HashSet<(String, MonoKey)>,
+    index: &FunIndex<'_>,
+    needed: &mut FxHashSet<(String, MonoKey)>,
     parent_funrefs: &HashMap<u32, String>,
 ) {
     let mut funref_of = parent_funrefs.clone();
     for op in &block.ops {
         match op {
             Op::Let { local, value, .. } => {
-                note_mono_call(value, local_tys, functions, needed, &funref_of);
-                let ty = mono_value_ty(value, local_tys, functions);
+                note_mono_call(value, local_tys, index, needed, &funref_of);
+                let ty = mono_value_ty(value, local_tys, index);
                 local_tys.insert(local.0, ty);
                 match value {
                     Value::FunRef(name) => {
@@ -221,11 +233,11 @@ fn scan_mono_block(
                         funref_of.remove(&local.0);
                     }
                 }
-                walk_mono_nested_scan(value, local_tys, functions, needed, &funref_of);
+                walk_mono_nested_scan(value, local_tys, index, needed, &funref_of);
             }
             Op::Effect { value } => {
-                note_mono_call(value, local_tys, functions, needed, &funref_of);
-                walk_mono_nested_scan(value, local_tys, functions, needed, &funref_of);
+                note_mono_call(value, local_tys, index, needed, &funref_of);
+                walk_mono_nested_scan(value, local_tys, index, needed, &funref_of);
             }
             _ => {}
         }
@@ -235,8 +247,8 @@ fn scan_mono_block(
 fn walk_mono_nested_scan(
     value: &Value,
     local_tys: &mut HashMap<u32, Type>,
-    functions: &[CoreFun],
-    needed: &mut HashSet<(String, MonoKey)>,
+    index: &FunIndex<'_>,
+    needed: &mut FxHashSet<(String, MonoKey)>,
     funref_of: &HashMap<u32, String>,
 ) {
     match value {
@@ -245,17 +257,17 @@ fn walk_mono_nested_scan(
             else_block,
             ..
         } => {
-            scan_mono_block(then_block, local_tys, functions, needed, funref_of);
-            scan_mono_block(else_block, local_tys, functions, needed, funref_of);
+            scan_mono_block(then_block, local_tys, index, needed, funref_of);
+            scan_mono_block(else_block, local_tys, index, needed, funref_of);
         }
         Value::Loop {
             header,
             body,
             latch,
         } => {
-            scan_mono_block(header, local_tys, functions, needed, funref_of);
-            scan_mono_block(body, local_tys, functions, needed, funref_of);
-            scan_mono_block(latch, local_tys, functions, needed, funref_of);
+            scan_mono_block(header, local_tys, index, needed, funref_of);
+            scan_mono_block(body, local_tys, index, needed, funref_of);
+            scan_mono_block(latch, local_tys, index, needed, funref_of);
         }
         _ => {}
     }
@@ -264,8 +276,8 @@ fn walk_mono_nested_scan(
 fn note_mono_call(
     value: &Value,
     local_tys: &HashMap<u32, Type>,
-    functions: &[CoreFun],
-    needed: &mut HashSet<(String, MonoKey)>,
+    index: &FunIndex<'_>,
+    needed: &mut FxHashSet<(String, MonoKey)>,
     funref_of: &HashMap<u32, String>,
 ) {
     let Value::Call { fun, args } = value else {
@@ -280,14 +292,15 @@ fn note_mono_call(
     if !key.worth_cloning() {
         return;
     }
-    let Some(f) = functions.iter().find(|f| f.name == *fun) else {
+    let Some(f) = index.get(fun) else {
         return;
     };
     if f.params.len() != key.0.len() {
         return;
     }
-    let param_tys = key.param_tys(functions);
-    let ret = key.ret_ty(functions);
+    let funs = index.funs();
+    let param_tys = key.param_tys(funs);
+    let ret = key.ret_ty(funs);
     if f.param_tys == param_tys && f.ret_ty == ret && key.funref_param_binds(&f.params).is_empty() {
         return;
     }
@@ -297,15 +310,16 @@ fn note_mono_call(
 pub(crate) fn mono_value_ty(
     value: &Value,
     local_tys: &HashMap<u32, Type>,
-    functions: &[CoreFun],
+    index: &FunIndex<'_>,
 ) -> Type {
+    let funs = index.funs();
     infer_value_ty(value, local_tys, |fun, args| {
-        if let Some(f) = functions.iter().find(|f| f.name == *fun) {
+        if let Some(f) = index.get(fun) {
             return Some(f.ret_ty.clone());
         }
         if fun.contains('$') {
             if let Some(key) = args_mono_key(args, local_tys, &HashMap::new()) {
-                return Some(key.ret_ty(functions));
+                return Some(key.ret_ty(funs));
             }
         }
         None
@@ -315,16 +329,16 @@ pub(crate) fn mono_value_ty(
 fn rewrite_mono_block(
     block: &mut Block,
     local_tys: &mut HashMap<u32, Type>,
-    renames: &HashMap<(String, MonoKey), String>,
+    renames: &FxHashMap<(String, MonoKey), String>,
     parent_funrefs: &HashMap<u32, String>,
-    functions: &[CoreFun],
+    index: &FunIndex<'_>,
 ) {
     let mut funref_of = parent_funrefs.clone();
     for op in &mut block.ops {
         match op {
             Op::Let { local, value, .. } => {
-                rewrite_mono_value(value, local_tys, renames, &funref_of, functions);
-                let ty = mono_value_ty_rewrite(value, local_tys, renames, &funref_of, functions);
+                rewrite_mono_value(value, local_tys, renames, &funref_of, index);
+                let ty = mono_value_ty_rewrite(value, local_tys, renames, &funref_of, index);
                 local_tys.insert(local.0, ty);
                 match value {
                     Value::FunRef(name) => {
@@ -343,7 +357,7 @@ fn rewrite_mono_block(
                 }
             }
             Op::Effect { value } => {
-                rewrite_mono_value(value, local_tys, renames, &funref_of, functions)
+                rewrite_mono_value(value, local_tys, renames, &funref_of, index)
             }
             _ => {}
         }
@@ -353,9 +367,9 @@ fn rewrite_mono_block(
 fn rewrite_mono_value(
     value: &mut Value,
     local_tys: &mut HashMap<u32, Type>,
-    renames: &HashMap<(String, MonoKey), String>,
+    renames: &FxHashMap<(String, MonoKey), String>,
     funref_of: &HashMap<u32, String>,
-    functions: &[CoreFun],
+    index: &FunIndex<'_>,
 ) {
     match value {
         Value::Call { fun, args } => {
@@ -373,17 +387,17 @@ fn rewrite_mono_value(
             else_block,
             ..
         } => {
-            rewrite_mono_block(then_block, local_tys, renames, funref_of, functions);
-            rewrite_mono_block(else_block, local_tys, renames, funref_of, functions);
+            rewrite_mono_block(then_block, local_tys, renames, funref_of, index);
+            rewrite_mono_block(else_block, local_tys, renames, funref_of, index);
         }
         Value::Loop {
             header,
             body,
             latch,
         } => {
-            rewrite_mono_block(header, local_tys, renames, funref_of, functions);
-            rewrite_mono_block(body, local_tys, renames, funref_of, functions);
-            rewrite_mono_block(latch, local_tys, renames, funref_of, functions);
+            rewrite_mono_block(header, local_tys, renames, funref_of, index);
+            rewrite_mono_block(body, local_tys, renames, funref_of, index);
+            rewrite_mono_block(latch, local_tys, renames, funref_of, index);
         }
         _ => {}
     }
@@ -392,23 +406,24 @@ fn rewrite_mono_value(
 fn mono_value_ty_rewrite(
     value: &Value,
     local_tys: &HashMap<u32, Type>,
-    renames: &HashMap<(String, MonoKey), String>,
+    renames: &FxHashMap<(String, MonoKey), String>,
     funref_of: &HashMap<u32, String>,
-    functions: &[CoreFun],
+    index: &FunIndex<'_>,
 ) -> Type {
+    let funs = index.funs();
     match value {
         Value::Call { fun, args } => {
             if let Some(((_, mk), _)) = renames.iter().find(|(_, n)| *n == fun) {
-                return mk.ret_ty(functions);
+                return mk.ret_ty(funs);
             }
             if let Some(key) = args_mono_key(args, local_tys, funref_of) {
                 if let Some(new) = renames.get(&(fun.clone(), key.clone())) {
                     if let Some(((_, mk), _)) = renames.iter().find(|(_, n)| *n == new) {
-                        return mk.ret_ty(functions);
+                        return mk.ret_ty(funs);
                     }
                 }
                 if fun.contains('$') || key.worth_cloning() {
-                    return key.ret_ty(functions);
+                    return key.ret_ty(funs);
                 }
             }
             if fun.ends_with("$Float") {
@@ -420,12 +435,11 @@ fn mono_value_ty_rewrite(
             if fun.ends_with("$String") {
                 return Type::String;
             }
-            functions
-                .iter()
-                .find(|f| f.name == *fun)
+            index
+                .get(fun)
                 .map(|f| f.ret_ty.clone())
                 .unwrap_or(Type::Int)
         }
-        other => mono_value_ty(other, local_tys, functions),
+        other => mono_value_ty(other, local_tys, index),
     }
 }

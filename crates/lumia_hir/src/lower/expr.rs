@@ -52,8 +52,7 @@ pub(crate) fn push_lowered_val(
             }));
         }
         other => {
-            let zero_arg_fun = name == "main"
-                || matches!(v.body, lumia_syntax::Expr::Block { .. });
+            let zero_arg_fun = name == "main" || matches!(v.body, lumia_syntax::Expr::Block { .. });
             if zero_arg_fun {
                 items.push(Item::Fun(Fun {
                     name: name.to_string(),
@@ -361,31 +360,38 @@ fn lower_call_from_parts(ctx: &LowerCtx, callee: Expr, args: Vec<Expr>, span: Sp
                 };
             }
             "map" if args.len() == 2 => {
-                return lower_list_map(ctx, args[0].clone(), args[1].clone(), span);
+                let mut it = args.into_iter();
+                return lower_list_map(ctx, it.next().unwrap(), it.next().unwrap(), span);
             }
             "filter" if args.len() == 2 => {
-                return lower_list_filter(ctx, args[0].clone(), args[1].clone(), span);
+                let mut it = args.into_iter();
+                return lower_list_filter(ctx, it.next().unwrap(), it.next().unwrap(), span);
             }
             "flatMap" if args.len() == 2 => {
-                return lower_list_flat_map(ctx, args[0].clone(), args[1].clone(), span);
+                let mut it = args.into_iter();
+                return lower_list_flat_map(ctx, it.next().unwrap(), it.next().unwrap(), span);
             }
             "fold" if args.len() == 3 => {
+                let mut it = args.into_iter();
                 return lower_list_fold(
                     ctx,
-                    args[0].clone(),
-                    args[1].clone(),
-                    args[2].clone(),
+                    it.next().unwrap(),
+                    it.next().unwrap(),
+                    it.next().unwrap(),
                     span,
                 );
             }
             "any" if args.len() == 2 => {
-                return lower_list_any(ctx, args[0].clone(), args[1].clone(), span);
+                let mut it = args.into_iter();
+                return lower_list_any(ctx, it.next().unwrap(), it.next().unwrap(), span);
             }
             "all" if args.len() == 2 => {
-                return lower_list_all(ctx, args[0].clone(), args[1].clone(), span);
+                let mut it = args.into_iter();
+                return lower_list_all(ctx, it.next().unwrap(), it.next().unwrap(), span);
             }
             "find" if args.len() == 2 => {
-                return lower_list_find(ctx, args[0].clone(), args[1].clone(), span);
+                let mut it = args.into_iter();
+                return lower_list_find(ctx, it.next().unwrap(), it.next().unwrap(), span);
             }
             "append" if args.len() == 2 => {
                 return Expr::BuiltinCall {
@@ -399,7 +405,7 @@ fn lower_call_from_parts(ctx: &LowerCtx, callee: Expr, args: Vec<Expr>, span: Sp
                     op: BinOp::Eq,
                     left: Box::new(Expr::BuiltinCall {
                         name: Builtin::ListLen,
-                        args: vec![args[0].clone()],
+                        args,
                         span,
                     }),
                     right: Box::new(Expr::Int(0, span)),
@@ -407,22 +413,25 @@ fn lower_call_from_parts(ctx: &LowerCtx, callee: Expr, args: Vec<Expr>, span: Sp
                 };
             }
             "toSet" if args.len() == 1 => {
-                return lower_to_set(ctx, args[0].clone(), span);
+                return lower_to_set(ctx, args.into_iter().next().unwrap(), span);
             }
             "toList" if args.len() == 1 => {
-                return lower_to_list(ctx, args[0].clone(), span);
+                return lower_to_list(ctx, args.into_iter().next().unwrap(), span);
             }
             "toMap" if args.len() == 1 => {
-                return lower_to_map(ctx, args[0].clone(), span);
+                return lower_to_map(ctx, args.into_iter().next().unwrap(), span);
             }
             "union" if args.len() == 2 => {
-                return lower_set_union(ctx, args[0].clone(), args[1].clone(), span);
+                let mut it = args.into_iter();
+                return lower_set_union(ctx, it.next().unwrap(), it.next().unwrap(), span);
             }
             "intersect" if args.len() == 2 => {
-                return lower_set_intersect(ctx, args[0].clone(), args[1].clone(), span);
+                let mut it = args.into_iter();
+                return lower_set_intersect(ctx, it.next().unwrap(), it.next().unwrap(), span);
             }
             "diff" if args.len() == 2 => {
-                return lower_set_diff(ctx, args[0].clone(), args[1].clone(), span);
+                let mut it = args.into_iter();
+                return lower_set_diff(ctx, it.next().unwrap(), it.next().unwrap(), span);
             }
             "contains" if args.len() == 2 => {
                 return Expr::BuiltinCall {

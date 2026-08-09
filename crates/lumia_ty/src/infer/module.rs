@@ -5,7 +5,7 @@ use crate::alt::apply_alt_desugars;
 use crate::traits::apply_ufcs_rewrites;
 use crate::types::{at, expr_span, Effect, NameVisibility, Type, TypeError, TypedModule};
 use lumia_hir::{Fun, Item, Module};
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 impl Infer {
     pub(crate) fn infer_fun(&mut self, fun: &Fun) -> Result<(Type, Effect), TypeError> {
@@ -83,16 +83,24 @@ pub fn infer_module_with_options(
         .filter(|(tr, _)| tr == "Num")
         .map(|(_, ty)| ty.clone())
         .collect();
-    inf.trait_methods = module.trait_methods.clone();
-    inf.instances = module.instances.clone();
-    inf.method_trait = module.method_traits.clone();
+    inf.trait_methods = module
+        .trait_methods
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    inf.instances = module.instances.iter().cloned().collect();
+    inf.method_trait = module
+        .method_traits
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
     inf.products = module
         .products
         .iter()
         .map(|p| (p.name.clone(), p.fields.clone()))
         .collect();
-    let mut fun_types = HashMap::new();
-    let mut fun_schemes = HashMap::new();
+    let mut fun_types = HashMap::default();
+    let mut fun_schemes = HashMap::default();
     let mut main_effect = Effect::pure();
 
     // First pass: bind function names with fresh types for recursion
@@ -194,9 +202,12 @@ pub fn infer_module_with_options(
         .into_iter()
         .map(|(sp, t)| (sp, inf.zonk_type(t)))
         .collect();
-    let decls = std::mem::take(&mut inf.decls);
-    let ufcs_rewrites = std::mem::take(&mut inf.ufcs_rewrites);
-    let alt_kinds = std::mem::take(&mut inf.alt_kinds);
+    let decls: std::collections::HashMap<_, _> =
+        std::mem::take(&mut inf.decls).into_iter().collect();
+    let ufcs_rewrites: std::collections::HashMap<_, _> =
+        std::mem::take(&mut inf.ufcs_rewrites).into_iter().collect();
+    let alt_kinds: std::collections::HashMap<_, _> =
+        std::mem::take(&mut inf.alt_kinds).into_iter().collect();
     let mut module = module.clone();
     if !ufcs_rewrites.is_empty() {
         apply_ufcs_rewrites(&mut module, &ufcs_rewrites);
@@ -204,8 +215,8 @@ pub fn infer_module_with_options(
     apply_alt_desugars(&mut module, &alt_kinds);
     Ok(TypedModule {
         module,
-        fun_types,
-        fun_schemes,
+        fun_types: fun_types.into_iter().collect(),
+        fun_schemes: fun_schemes.into_iter().collect(),
         main_effect,
         type_at,
         decls,

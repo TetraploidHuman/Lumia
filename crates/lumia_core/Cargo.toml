@@ -7,6 +7,7 @@ edition.workspace = true
 lumia_syntax.workspace = true
 lumia_hir.workspace = true
 lumia_ty.workspace = true
+rustc-hash = { workspace = true }
 
 [lints]
 workspace = true

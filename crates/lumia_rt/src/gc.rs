@@ -50,6 +50,7 @@ impl MarkSweep {
     }
 
     fn sweep() {
+        let mut freed = 0usize;
         HEAP.with(|h| {
             let mut heap = h.borrow_mut();
             let mut i = 0;
@@ -57,6 +58,7 @@ impl MarkSweep {
                 let obj = heap[i];
                 unsafe {
                     if (*obj).marked == 0 {
+                        freed = freed.saturating_add((*obj).size as usize);
                         let layout = header_layout((*obj).size as usize);
                         dealloc(obj as *mut u8, layout);
                         heap.swap_remove(i);
@@ -67,7 +69,11 @@ impl MarkSweep {
                 i += 1;
             }
         });
-        BYTES_ALLOCATED.with(|b| *b.borrow_mut() = 0);
+        // Track approximate live payload bytes (not "bytes since last GC").
+        BYTES_ALLOCATED.with(|b| {
+            let mut live = b.borrow_mut();
+            *live = live.saturating_sub(freed);
+        });
     }
 }
 pub(crate) fn mark(obj: *mut ObjectHeader) {
@@ -195,7 +201,12 @@ pub(crate) unsafe fn finish_alloc(mem: *mut u8, nbytes: usize, type_id: u32) -> 
     (*header).type_id = type_id;
     (*header).size = nbytes as u32;
     (*header).marked = 0;
-    (*header)._pad = 0;
+    // List COW uniqueness: `_pad` is a refcount (ADT uses `_pad` as float mask).
+    (*header)._pad = if type_id == TYPE_LIST || type_id == TYPE_LIST_F64 {
+        1
+    } else {
+        0
+    };
     HEAP.with(|h| h.borrow_mut().push(header));
     BYTES_ALLOCATED.with(|b| *b.borrow_mut() += nbytes);
     payload_ptr(header)

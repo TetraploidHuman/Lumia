@@ -9,18 +9,20 @@
 
 use lumia_core::{Block, CoreFun, CoreModule, Local, Op, Value};
 use lumia_hir::Builtin;
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// Per-function: which parameter indices escape from the callee.
 type ParamEscape = Vec<bool>;
 
 /// Locals that may outlive their defining region / be observed from outside.
-pub fn escaping_locals(fun: &CoreFun) -> HashSet<Local> {
-    escaping_locals_with(fun, &HashMap::new())
+pub fn escaping_locals(fun: &CoreFun) -> std::collections::HashSet<Local> {
+    escaping_locals_with(fun, &HashMap::default())
+        .into_iter()
+        .collect()
 }
 
 fn escaping_locals_with(fun: &CoreFun, summaries: &HashMap<String, ParamEscape>) -> HashSet<Local> {
-    let mut escaping: HashSet<Local> = HashSet::new();
+    let mut escaping: HashSet<Local> = HashSet::default();
     seed_escaping(&fun.body, &mut escaping, summaries);
     let mut changed = true;
     while changed {
@@ -40,7 +42,7 @@ impl crate::Pass for EscapePass {
     fn run(&self, module: &mut CoreModule) {
         let summaries = compute_param_escape_summaries(module);
         for f in &mut module.functions {
-            f.escaping = escaping_locals_with(f, &summaries);
+            f.escaping = escaping_locals_with(f, &summaries).into_iter().collect();
         }
     }
 }
@@ -323,7 +325,7 @@ mod tests {
             is_main: false,
             memo: None,
             external: None,
-            escaping: std::collections::HashSet::new(),
+            escaping: std::collections::HashSet::default(),
             scheme_poly: false,
         }
     }
@@ -438,7 +440,7 @@ mod tests {
             is_main: false,
             memo: None,
             external: None,
-            escaping: HashSet::new(),
+            escaping: std::collections::HashSet::new(),
             scheme_poly: false,
         };
         let main_fun = CoreFun {
@@ -478,14 +480,14 @@ mod tests {
             is_main: true,
             memo: None,
             external: None,
-            escaping: HashSet::new(),
+            escaping: std::collections::HashSet::new(),
             scheme_poly: false,
         };
         let mut module = CoreModule {
             name: "M".into(),
             functions: vec![len_fun, main_fun],
-            hash_adts: HashSet::new(),
-            trait_methods: HashMap::new(),
+            hash_adts: std::collections::HashSet::new(),
+            trait_methods: std::collections::HashMap::new(),
         };
         EscapePass.run(&mut module);
         let main = module.functions.iter().find(|f| f.name == "main").unwrap();

@@ -2,12 +2,12 @@
 
 use super::Infer;
 use crate::types::{at, locate, Effect, Scheme, Type, TypeError};
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 impl Infer {
     pub(crate) fn free_ty_vars(&mut self, ty: Type) -> HashSet<u32> {
         let ty = self.prune(ty);
-        let mut acc = HashSet::new();
+        let mut acc = HashSet::default();
         self.collect_ty_vars(&ty, &mut acc);
         acc
     }
@@ -47,10 +47,11 @@ impl Infer {
         }
     }
 
-    #[allow(dead_code)] // kept for future effect-quantifying generalize
+    /// Effect free-vars in a type (for future effect-quantifying generalize; DESIGN §6).
+    #[allow(dead_code)]
     pub(crate) fn free_eff_vars_in_ty(&mut self, ty: Type) -> HashSet<u32> {
         let ty = self.prune(ty);
-        let mut acc = HashSet::new();
+        let mut acc = HashSet::default();
         self.collect_eff_vars_in_ty(&ty, &mut acc);
         acc
     }
@@ -98,7 +99,7 @@ impl Infer {
             .iter()
             .flat_map(|scope| scope.values().cloned())
             .collect();
-        let mut acc = HashSet::new();
+        let mut acc = HashSet::default();
         for sch in schemes {
             let quantified: HashSet<u32> = sch.vars.iter().copied().collect();
             for v in self.free_ty_vars(sch.ty) {
@@ -117,7 +118,7 @@ impl Infer {
             .iter()
             .flat_map(|scope| scope.values().cloned())
             .collect();
-        let mut acc = HashSet::new();
+        let mut acc = HashSet::default();
         for sch in schemes {
             let quantified: HashSet<u32> = sch.eff_vars.iter().copied().collect();
             for v in self.free_eff_vars_in_ty(sch.ty) {

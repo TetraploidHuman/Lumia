@@ -4,8 +4,9 @@ use std::cell::Cell;
 use std::ptr;
 
 use crate::common::{
-    header_from_payload, is_heap_payload, trap_abort, GcInhibitGuard, PAR_WORKER, PERM_OBJECTS,
-    TYPE_LIST, TYPE_LIST_F64, TYPE_LIST_IOTA,
+    header_from_payload, is_heap_payload, list_rc_is_unique, list_rc_release, list_rc_retain,
+    trap_abort, GcInhibitGuard, PAR_WORKER, PERM_OBJECTS, RC_SHARED, TYPE_LIST, TYPE_LIST_F64,
+    TYPE_LIST_IOTA,
 };
 use crate::gc::{list_payload_bytes, lumia_alloc};
 use crate::show_eq::lumia_ord_cmp;
@@ -194,7 +195,7 @@ pub extern "C" fn lumia_list_join(list: *mut u8, sep: *mut u8) -> *mut u8 {
 }
 #[inline]
 pub(crate) fn is_list_tid(tid: u32) -> bool {
-    tid == TYPE_LIST || tid == TYPE_LIST_F64 || tid == TYPE_LIST_IOTA
+    lumia_abi::is_list_tid(tid)
 }
 
 #[inline]
@@ -382,7 +383,30 @@ pub extern "C" fn lumia_list_get(list: *mut u8, index: i64) -> i64 {
     list_get_of(list, index)
 }
 
-/// Return a new HeapList with `elem` appended.
+/// Capacity (element slots) from the allocated payload size (`[len][elem…]`).
+#[inline]
+fn list_capacity_elems(list: *mut u8) -> i64 {
+    if list.is_null() {
+        return 0;
+    }
+    unsafe {
+        let nbytes = (*header_from_payload(list)).size as i64;
+        (nbytes / 8) - 1
+    }
+}
+
+fn list_grow_cap(needed: i64) -> i64 {
+    // Geometric growth: amortize repeated unique appends.
+    let mut cap = 4i64;
+    while cap < needed {
+        cap = cap
+            .checked_mul(2)
+            .unwrap_or_else(|| trap_abort("lumia: list capacity overflow"));
+    }
+    cap
+}
+
+/// Return a HeapList with `elem` appended (COW: unique + spare capacity → in-place).
 #[no_mangle]
 pub extern "C" fn lumia_list_append(list: *mut u8, elem: i64) -> *mut u8 {
     // Keep materialized Iota alive across the following alloc/copy.
@@ -397,22 +421,47 @@ pub extern "C" fn lumia_list_append(list: *mut u8, elem: i64) -> *mut u8 {
         let n1 = n
             .checked_add(1)
             .unwrap_or_else(|| trap_abort("lumia: list append length overflow"));
-        let nbytes = list_payload_bytes(n1);
-        let dest = lumia_alloc(nbytes, heap_list_tid(list));
+        let tid = heap_list_tid(list);
+
+        // Unique owner with spare capacity → write in place (DESIGN §5.3 / §7.1.1 COWList).
+        if !list.is_null() && list_rc_is_unique(list) && list_capacity_elems(list) >= n1 {
+            let dst = list as *mut i64;
+            *dst = n1;
+            *dst.add(n1 as usize) = elem;
+            return list;
+        }
+
+        let cap = if !list.is_null() && list_rc_is_unique(list) {
+            list_grow_cap(n1.max(list_capacity_elems(list).saturating_mul(2)))
+        } else {
+            list_grow_cap(n1)
+        };
+        let nbytes = list_payload_bytes(cap);
+        let dest = lumia_alloc(nbytes, tid);
         if dest.is_null() {
             trap_abort("lumia: list append OOM");
         }
         let dst = dest as *mut i64;
-        *dst = n + 1;
+        *dst = n1;
         if !list.is_null() {
             let src = list as *const i64;
-            for i in 0..n as usize {
-                *dst.add(1 + i) = *src.add(1 + i);
-            }
+            ptr::copy_nonoverlapping(src.add(1), dst.add(1), n as usize);
         }
-        *dst.add(1 + n as usize) = elem;
+        *dst.add(n1 as usize) = elem;
         dest
     }
+}
+
+/// Retain a List value when aliasing (`val a = xs`). No-op for non-lists.
+#[no_mangle]
+pub extern "C" fn lumia_list_retain(list: *mut u8) {
+    list_rc_retain(list);
+}
+
+/// Release a List alias (does not free; GC reclaims unreachable objects).
+#[no_mangle]
+pub extern "C" fn lumia_list_release(list: *mut u8) {
+    list_rc_release(list);
 }
 
 /// Parallel map over List[scalar] with a C ABI `fn(i64) -> i64`.
@@ -672,6 +721,8 @@ pub extern "C" fn lumia_list_empty() -> *mut u8 {
         let dest = lumia_alloc(8, TYPE_LIST);
         unsafe {
             *(dest as *mut i64) = 0;
+            // Immortal shared empty list — never COW in-place.
+            (*header_from_payload(dest))._pad = RC_SHARED;
         }
         PERM_OBJECTS.with(|p| p.borrow_mut().push(dest));
         c.set(dest);

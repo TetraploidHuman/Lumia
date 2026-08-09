@@ -22,41 +22,30 @@ impl<'ctx> Codegen<'ctx> {
             Value::Float(n) => Ok(self.context.f64_type().const_float(*n).into()),
             Value::Bool(b) => Ok(self.i64_ty.const_int(if *b { 1 } else { 0 }, false).into()),
             Value::String(s) => {
-                let gv = self.builder.build_global_string_ptr(s, "str").unwrap();
+                let gv = self
+                    .builder
+                    .build_global_string_ptr(s, "str")
+                    .map_err(|e| anyhow::anyhow!("global string: {e}"))?;
                 let ptr = gv.as_pointer_value();
                 let len = self.i64_ty.const_int(s.len() as u64, false);
-                let f = self.module.get_function("lumia_alloc_string").unwrap();
-                let call = self
-                    .builder
-                    .build_call(f, &[ptr.into(), len.into()], "alloc_str")
-                    .unwrap();
-                let heap = call
-                    .try_as_basic_value()
-                    .basic()
-                    .unwrap()
+                let heap = self
+                    .call_rt_basic("lumia_alloc_string", &[ptr.into(), len.into()], "alloc_str")?
                     .into_pointer_value();
                 Ok(self
                     .builder
                     .build_ptr_to_int(heap, self.i64_ty, "str_i64")
-                    .unwrap()
+                    .map_err(|e| anyhow::anyhow!("ptr_to_int str: {e}"))?
                     .into())
             }
             Value::Char(c) => {
                 let cp = self.i64_ty.const_int(*c as u32 as u64, false);
-                let f = self.module.get_function("lumia_alloc_char").unwrap();
-                let call = self
-                    .builder
-                    .build_call(f, &[cp.into()], "alloc_char")
-                    .unwrap();
-                let heap = call
-                    .try_as_basic_value()
-                    .basic()
-                    .unwrap()
+                let heap = self
+                    .call_rt_basic("lumia_alloc_char", &[cp.into()], "alloc_char")?
                     .into_pointer_value();
                 Ok(self
                     .builder
                     .build_ptr_to_int(heap, self.i64_ty, "char_i64")
-                    .unwrap()
+                    .map_err(|e| anyhow::anyhow!("ptr_to_int char: {e}"))?
                     .into())
             }
             Value::Unit => Ok(self.i64_ty.const_int(0, false).into()),

@@ -1,48 +1,69 @@
+use super::fun_index::FunIndex;
 use super::specialize::mono_value_ty;
 use crate::ir::{Block, CoreFun, CoreModule, Local, Op, Value};
 use lumia_hir::Builtin;
 use lumia_ty::{Effect, Type};
-use std::collections::{HashMap, HashSet};
+use rustc_hash::FxHashSet;
+use std::collections::HashMap;
 
 pub(crate) fn resolve_trait_method_calls(module: &mut CoreModule) {
     if module.trait_methods.is_empty() {
         return;
     }
     let trait_methods = module.trait_methods.clone();
-    let method_names: HashSet<String> = trait_methods.keys().map(|(_, m)| m.clone()).collect();
-    // Snapshot signatures for `mono_value_ty` (names/ret only; bodies unused).
-    let fun_sigs: Vec<CoreFun> = module.functions.clone();
-    for fun in &mut module.functions {
-        let mut local_tys: HashMap<u32, Type> = HashMap::new();
-        for (i, p) in fun.params.iter().enumerate() {
-            local_tys.insert(p.0, fun.param_tys.get(i).cloned().unwrap_or(Type::Int));
+    let method_names: FxHashSet<String> = trait_methods.keys().map(|(_, m)| m.clone()).collect();
+    // Take bodies out so FunIndex can borrow the signature table immutably.
+    let mut functions = std::mem::take(&mut module.functions);
+    let empty = Block {
+        params: Vec::new(),
+        ops: Vec::new(),
+        result: None,
+    };
+    let mut bodies: Vec<Block> = functions
+        .iter_mut()
+        .map(|f| std::mem::replace(&mut f.body, empty.clone()))
+        .collect();
+    {
+        let index = FunIndex::new(&functions);
+        for i in 0..functions.len() {
+            let mut local_tys: HashMap<u32, Type> = HashMap::new();
+            for (j, p) in functions[i].params.iter().enumerate() {
+                local_tys.insert(
+                    p.0,
+                    functions[i].param_tys.get(j).cloned().unwrap_or(Type::Int),
+                );
+            }
+            resolve_trait_block(
+                &mut bodies[i],
+                &mut local_tys,
+                &trait_methods,
+                &method_names,
+                &index,
+            );
         }
-        resolve_trait_block(
-            &mut fun.body,
-            &mut local_tys,
-            &trait_methods,
-            &method_names,
-            &fun_sigs,
-        );
     }
+    for (fun, body) in functions.iter_mut().zip(bodies) {
+        fun.body = body;
+    }
+    module.functions = functions;
 }
 
 fn resolve_trait_block(
     block: &mut Block,
     local_tys: &mut HashMap<u32, Type>,
     trait_methods: &HashMap<(String, String), Vec<String>>,
-    method_names: &HashSet<String>,
-    functions: &[CoreFun],
+    method_names: &FxHashSet<String>,
+    index: &FunIndex<'_>,
 ) {
     for op in &mut block.ops {
         match op {
             Op::Let { local, value, .. } => {
-                resolve_trait_value(value, local_tys, trait_methods, method_names, functions);
-                let ty = mono_value_ty(value, local_tys, functions);
+                resolve_trait_value(value, local_tys, trait_methods, method_names, index);
+                let ty = mono_value_ty(value, local_tys, index);
                 local_tys.insert(local.0, ty);
             }
             Op::Effect { value } => {
-                resolve_trait_value(value, local_tys, trait_methods, method_names, functions);
+                resolve_trait_value(value, local_tys, trait_methods, method_names, index);
             }
             _ => {}
         }
@@ -53,15 +74,15 @@ fn resolve_trait_value(
     value: &mut Value,
     local_tys: &mut HashMap<u32, Type>,
     trait_methods: &HashMap<(String, String), Vec<String>>,
-    method_names: &HashSet<String>,
-    functions: &[CoreFun],
+    method_names: &FxHashSet<String>,
+    index: &FunIndex<'_>,
 ) {
     match value {
         Value::Call { fun, args } => {
             if method_names.contains(fun.as_str()) {
                 if let Some(recv) = args.first() {
-                    if let Some(Type::Adt { name, .. }) = local_tys.get(&recv.0).cloned() {
-                        if let Some(cands) = trait_methods.get(&(name, fun.clone())) {
+                    if let Some(Type::Adt { name, .. }) = local_tys.get(&recv.0) {
+                        if let Some(cands) = trait_methods.get(&(name.clone(), fun.clone())) {
                             if let [mangled] = cands.as_slice() {
                                 *fun = mangled.clone();
                             }
@@ -75,29 +96,17 @@ fn resolve_trait_value(
             else_block,
             ..
         } => {
-            resolve_trait_block(
-                then_block,
-                local_tys,
-                trait_methods,
-                method_names,
-                functions,
-            );
-            resolve_trait_block(
-                else_block,
-                local_tys,
-                trait_methods,
-                method_names,
-                functions,
-            );
+            resolve_trait_block(then_block, local_tys, trait_methods, method_names, index);
+            resolve_trait_block(else_block, local_tys, trait_methods, method_names, index);
         }
         Value::Loop {
             header,
             body,
             latch,
         } => {
-            resolve_trait_block(header, local_tys, trait_methods, method_names, functions);
-            resolve_trait_block(body, local_tys, trait_methods, method_names, functions);
-            resolve_trait_block(latch, local_tys, trait_methods, method_names, functions);
+            resolve_trait_block(header, local_tys, trait_methods, method_names, index);
+            resolve_trait_block(body, local_tys, trait_methods, method_names, index);
+            resolve_trait_block(latch, local_tys, trait_methods, method_names, index);
         }
         _ => {}
     }
@@ -106,7 +115,7 @@ fn resolve_trait_value(
 /// Generic poly bodies may still mention short method names; emit trap stubs so
 /// codegen can link (specialized clones call mangled impls).
 pub(crate) fn ensure_trait_method_stubs(module: &mut CoreModule) {
-    let method_names: HashSet<String> = module
+    let method_names: FxHashSet<String> = module
         .trait_methods
         .keys()
         .map(|(_, m)| m.clone())
@@ -114,12 +123,14 @@ pub(crate) fn ensure_trait_method_stubs(module: &mut CoreModule) {
     if method_names.is_empty() {
         return;
     }
-    let mut referenced: HashSet<String> = HashSet::new();
+    let mut referenced: FxHashSet<String> = FxHashSet::default();
     for fun in &module.functions {
         collect_trait_method_refs(&fun.body, &method_names, &mut referenced);
     }
+    let index = FunIndex::new(&module.functions);
+    let mut stubs = Vec::new();
     for name in referenced {
-        if module.functions.iter().any(|f| f.name == name) {
+        if index.contains(&name) {
             continue;
         }
         // Sample arity / ret from any mangled impl.
@@ -128,7 +139,7 @@ pub(crate) fn ensure_trait_method_stubs(module: &mut CoreModule) {
             .iter()
             .find(|((_, m), _)| *m == name)
             .and_then(|(_, mangled)| mangled.first())
-            .and_then(|m| module.functions.iter().find(|f| f.name == *m));
+            .and_then(|m| index.get(m));
         let (nparams, ret_ty) = match sample {
             Some(f) => (f.params.len().max(1), f.ret_ty.clone()),
             None => (1, Type::Int),
@@ -137,7 +148,7 @@ pub(crate) fn ensure_trait_method_stubs(module: &mut CoreModule) {
         let param_names: Vec<String> = (0..nparams).map(|i| format!("p{i}")).collect();
         let param_tys = vec![Type::Int; nparams];
         let fail_local = Local(nparams as u32);
-        module.functions.push(CoreFun {
+        stubs.push(CoreFun {
             name,
             params,
             param_names,
@@ -159,13 +170,18 @@ pub(crate) fn ensure_trait_method_stubs(module: &mut CoreModule) {
             is_main: false,
             memo: None,
             external: None,
-            escaping: HashSet::new(),
+            escaping: Default::default(),
             scheme_poly: false,
         });
     }
+    module.functions.append(&mut stubs);
 }
 
-fn collect_trait_method_refs(block: &Block, methods: &HashSet<String>, out: &mut HashSet<String>) {
+fn collect_trait_method_refs(
+    block: &Block,
+    methods: &FxHashSet<String>,
+    out: &mut FxHashSet<String>,
+) {
     for op in &block.ops {
         match op {
             Op::Let { value, .. } | Op::Effect { value } => {
@@ -178,8 +194,8 @@ fn collect_trait_method_refs(block: &Block, methods: &HashSet<String>, out: &mut
 
 fn collect_trait_method_refs_value(
     value: &Value,
-    methods: &HashSet<String>,
-    out: &mut HashSet<String>,
+    methods: &FxHashSet<String>,
+    out: &mut FxHashSet<String>,
 ) {
     match value {
         Value::Call { fun, .. } if methods.contains(fun.as_str()) => {
@@ -269,12 +285,15 @@ fn walk_nested_blocks_directize(value: &mut Value, funref_of: &HashMap<u32, Stri
 }
 
 fn directize_value(value: &mut Value, funref_of: &HashMap<u32, String>) {
-    if let Value::IndirectCall { callee, args } = value {
-        if let Some(name) = funref_of.get(&callee.0) {
-            *value = Value::Call {
-                fun: name.clone(),
-                args: args.clone(),
-            };
-        }
-    }
+    let Value::IndirectCall { callee, args } = value else {
+        return;
+    };
+    let Some(name) = funref_of.get(&callee.0) else {
+        return;
+    };
+    let args = std::mem::take(args);
+    *value = Value::Call {
+        fun: name.clone(),
+        args,
+    };
 }

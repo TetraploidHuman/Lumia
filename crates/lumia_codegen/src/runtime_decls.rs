@@ -104,6 +104,16 @@ pub(crate) fn declare_runtime<'ctx>(context: &'ctx Context, module: &LlvmModule<
     );
     module.add_function("lumia_gc_collect", void_ty.fn_type(&[], false), None);
     module.add_function(
+        "lumia_list_retain",
+        void_ty.fn_type(&[ptr_ty.into()], false),
+        None,
+    );
+    module.add_function(
+        "lumia_list_release",
+        void_ty.fn_type(&[ptr_ty.into()], false),
+        None,
+    );
+    module.add_function(
         "lumia_root_push",
         void_ty.fn_type(&[ptr_ty.into()], false),
         None,

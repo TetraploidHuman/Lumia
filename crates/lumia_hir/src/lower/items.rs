@@ -101,10 +101,11 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
                             Some(_) => {} // same type re-decl shouldn't happen
                         }
                     }
+                    let fields = fields.clone();
                     product_map.insert(t.name.clone(), fields.clone());
                     products.push(ProductDef {
                         name: t.name.clone(),
-                        fields: fields.clone(),
+                        fields,
                     });
                 }
             }

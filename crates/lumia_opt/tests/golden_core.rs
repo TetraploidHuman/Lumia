@@ -86,3 +86,7 @@ golden!(golden_par_map_capture, "examples/par_map_capture.lm");
 golden!(golden_memo_l2, "examples/memo_l2.lm", release);
 golden!(golden_memo_l0l1, "examples/memo_l0l1.lm", release);
 golden!(golden_escape_pure_len, "examples/escape_pure_len.lm");
+golden!(golden_fuse_hof, "examples/fuse_hof.lm", release);
+golden!(golden_small_map_local, "examples/small_map_local.lm");
+golden!(golden_small_set_local, "examples/small_set_local.lm");
+golden!(golden_for, "examples/for.lm");

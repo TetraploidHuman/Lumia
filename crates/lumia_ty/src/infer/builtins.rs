@@ -68,7 +68,8 @@ impl Infer {
                 }
                 let (lt, le) = self.infer_expr(&args[0])?;
                 let (it, ie) = self.infer_expr(&args[1])?;
-                let elem = match self.prune(lt.clone()) {
+                let lt_p = self.prune(lt);
+                let elem = match lt_p {
                     Type::List(t) => {
                         self.unify_at(span, it, Type::Int)?;
                         *t
@@ -84,11 +85,11 @@ impl Infer {
                             params: vec![*v],
                         }
                     }
-                    Type::Var(_) => {
+                    Type::Var(v) => {
                         // Default to List (match desugar); Map is typed from mapOf.
                         self.unify_at(span, it, Type::Int)?;
                         let elem = self.fresh();
-                        self.unify_at(span, lt, Type::List(Box::new(elem.clone())))?;
+                        self.unify_at(span, Type::Var(v), Type::List(Box::new(elem.clone())))?;
                         elem
                     }
                     other => {
@@ -106,7 +107,7 @@ impl Infer {
                 }
                 let (ct, ce) = self.infer_expr(&args[0])?;
                 let (kt, ke) = self.infer_expr(&args[1])?;
-                match self.prune(ct.clone()) {
+                match self.prune(ct) {
                     Type::Map(k, _) => self.unify_at(span, kt, *k)?,
                     Type::Set(e) => self.unify_at(span, kt, *e)?,
                     Type::String => self.unify_at(span, kt, Type::String)?,

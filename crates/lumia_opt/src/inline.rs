@@ -6,7 +6,7 @@
 use lumia_core::{
     max_local_in_fun, rewrite_block_locals, Block, CoreFun, CoreModule, Local, Op, Value,
 };
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// Max SSA ops in callee body (including nested) before we refuse to inline.
 const INLINE_MAX_OPS: usize = 24;
@@ -261,7 +261,8 @@ fn inline_value(
 
 fn materialize_inline(callee: &CoreFun, args: &[Local], next: &mut u32) -> (Vec<Op>, Local) {
     let mut body = callee.body.clone();
-    let mut remap: HashMap<u32, u32> = HashMap::new();
+    // `rewrite_block_locals` takes std HashMap (core IR API).
+    let mut remap: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
 
     // Map params → actuals (no new locals).
     for (p, a) in callee.params.iter().zip(args.iter()) {
@@ -269,7 +270,7 @@ fn materialize_inline(callee: &CoreFun, args: &[Local], next: &mut u32) -> (Vec<
     }
 
     // Fresh ids for every other local defined in the callee.
-    let mut defined: HashSet<u32> = HashSet::new();
+    let mut defined: HashSet<u32> = HashSet::default();
     collect_defined(&body, &mut defined);
     for id in defined {
         if callee.params.iter().any(|p| p.0 == id) {
@@ -363,7 +364,7 @@ mod tests {
             is_main: false,
             memo: None,
             external: None,
-            escaping: std::collections::HashSet::new(),
+            escaping: std::collections::HashSet::default(),
             scheme_poly: false,
         }
     }
@@ -408,12 +409,12 @@ mod tests {
                     is_main: true,
                     memo: None,
                     external: None,
-                    escaping: std::collections::HashSet::new(),
+                    escaping: std::collections::HashSet::default(),
                     scheme_poly: false,
                 },
             ],
-            hash_adts: std::collections::HashSet::new(),
-            trait_methods: std::collections::HashMap::new(),
+            hash_adts: std::collections::HashSet::default(),
+            trait_methods: std::collections::HashMap::default(),
         };
         inline_module(&mut module);
         let main = module.functions.iter().find(|f| f.name == "main").unwrap();
@@ -463,7 +464,7 @@ mod tests {
             is_main: false,
             memo: None,
             external: None,
-            escaping: std::collections::HashSet::new(),
+            escaping: std::collections::HashSet::default(),
             scheme_poly: false,
         };
         assert!(!is_inlineable(&f));

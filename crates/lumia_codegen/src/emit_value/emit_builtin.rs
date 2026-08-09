@@ -24,21 +24,15 @@ impl<'ctx> Codegen<'ctx> {
                             BasicValueEnum::FloatValue(f) => f,
                             other => self.promote_f64(other)?,
                         };
-                        let fun = self.module.get_function("lumia_println_float").unwrap();
-                        self.builder
-                            .build_call(fun, &[f.into()], "println_float")
-                            .unwrap();
+                        self.call_rt_void("lumia_println_float", &[f.into()], "println_float")?;
                     }
                     Type::Bool => {
                         let i = self.coerce_i64(arg)?;
                         let b = self
                             .builder
                             .build_int_truncate(i, self.context.i8_type(), "bool8")
-                            .unwrap();
-                        let fun = self.module.get_function("lumia_println_bool").unwrap();
-                        self.builder
-                            .build_call(fun, &[b.into()], "println_bool")
-                            .unwrap();
+                            .map_err(|e| anyhow::anyhow!("truncate bool8: {e}"))?;
+                        self.call_rt_void("lumia_println_bool", &[b.into()], "println_bool")?;
                     }
                     Type::Adt { name, params } => {
                         let ptr = if let Some(ptr) = self.emit_show_override(&name, arg)? {
@@ -49,33 +43,22 @@ impl<'ctx> Codegen<'ctx> {
                             None
                         };
                         if let Some(ptr) = ptr {
-                            let len_f = self.module.get_function("lumia_str_len").unwrap();
                             let len = self
-                                .builder
-                                .build_call(len_f, &[ptr.into()], "show_len")
-                                .unwrap()
-                                .try_as_basic_value()
-                                .basic()
-                                .unwrap()
+                                .call_rt_basic("lumia_str_len", &[ptr.into()], "show_len")?
                                 .into_int_value();
-                            let fun = self.module.get_function("lumia_println_str").unwrap();
-                            self.builder
-                                .build_call(fun, &[ptr.into(), len.into()], "println_show")
-                                .unwrap();
+                            self.call_rt_void(
+                                "lumia_println_str",
+                                &[ptr.into(), len.into()],
+                                "println_show",
+                            )?;
                         } else {
                             let i = self.coerce_i64(arg)?;
-                            let fun = self.module.get_function("lumia_println_auto").unwrap();
-                            self.builder
-                                .build_call(fun, &[i.into()], "println")
-                                .unwrap();
+                            self.call_rt_void("lumia_println_auto", &[i.into()], "println")?;
                         }
                     }
                     _ => {
                         let i = self.coerce_i64(arg)?;
-                        let fun = self.module.get_function("lumia_println_auto").unwrap();
-                        self.builder
-                            .build_call(fun, &[i.into()], "println")
-                            .unwrap();
+                        self.call_rt_void("lumia_println_auto", &[i.into()], "println")?;
                     }
                 }
                 Ok(self.i64_ty.const_int(0, false).into())

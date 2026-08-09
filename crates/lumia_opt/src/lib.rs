@@ -22,7 +22,7 @@ use lumia_core::{
     AdtRepr, Block, CoreFun, CoreModule, ListRepr, Local, MapRepr, Op, SetRepr, Value,
 };
 use memo::cse_module;
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 #[derive(Default)]
 pub struct OptOptions {
@@ -96,7 +96,7 @@ pub fn optimize(module: &mut CoreModule, opts: &OptOptions) {
     }
 }
 
-/// Named passes exposed for tooling / `--show-passes` later.
+/// Named passes for tooling / diagnostics (`memo_tf` is planned outside the pass loop).
 pub fn pass_names(release: bool) -> Vec<&'static str> {
     if release {
         vec![
@@ -140,7 +140,7 @@ impl Pass for CopyElimPass {
 }
 
 fn elim_copies_in_fun(f: &mut CoreFun) {
-    let mut remap: HashMap<u32, u32> = HashMap::new();
+    let mut remap: HashMap<u32, u32> = HashMap::default();
     collect_copy_aliases(&f.body, &mut remap);
     if remap.is_empty() {
         return;
@@ -149,7 +149,7 @@ fn elim_copies_in_fun(f: &mut CoreFun) {
     let keys: Vec<u32> = remap.keys().copied().collect();
     for k in keys {
         let mut cur = k;
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         while let Some(&n) = remap.get(&cur) {
             if !seen.insert(cur) {
                 break;
@@ -292,7 +292,7 @@ impl Pass for ReprSelect {
     }
 }
 
-fn select_in_fun(f: &mut CoreFun, escaping: &HashSet<Local>) {
+fn select_in_fun(f: &mut CoreFun, escaping: &std::collections::HashSet<Local>) {
     for op in &mut f.body.ops {
         if let Op::Let { local, value, .. } = op {
             select_value(value, *local, escaping);
@@ -300,7 +300,7 @@ fn select_in_fun(f: &mut CoreFun, escaping: &HashSet<Local>) {
     }
 }
 
-fn select_value(v: &mut Value, bound: Local, escaping: &HashSet<Local>) {
+fn select_value(v: &mut Value, bound: Local, escaping: &std::collections::HashSet<Local>) {
     let local_ok = !escaping.contains(&bound);
     match v {
         Value::AllocList { elems, repr } => {
@@ -431,11 +431,11 @@ mod tests {
                 is_main: false,
                 memo: None,
                 external: None,
-                escaping: std::collections::HashSet::new(),
+                escaping: std::collections::HashSet::default(),
                 scheme_poly: false,
             }],
-            hash_adts: std::collections::HashSet::new(),
-            trait_methods: std::collections::HashMap::new(),
+            hash_adts: std::collections::HashSet::default(),
+            trait_methods: std::collections::HashMap::default(),
         };
         CopyElimPass.run(&mut module);
         let f = &module.functions[0];
@@ -482,11 +482,11 @@ mod tests {
                 is_main: false,
                 memo: None,
                 external: None,
-                escaping: std::collections::HashSet::new(),
+                escaping: std::collections::HashSet::default(),
                 scheme_poly: false,
             }],
-            hash_adts: std::collections::HashSet::new(),
-            trait_methods: std::collections::HashMap::new(),
+            hash_adts: std::collections::HashSet::default(),
+            trait_methods: std::collections::HashMap::default(),
         };
         EscapePass.run(&mut module);
         ReprSelect.run(&mut module);
@@ -532,11 +532,11 @@ mod tests {
                 is_main: false,
                 memo: None,
                 external: None,
-                escaping: std::collections::HashSet::new(),
+                escaping: std::collections::HashSet::default(),
                 scheme_poly: false,
             }],
-            hash_adts: std::collections::HashSet::new(),
-            trait_methods: std::collections::HashMap::new(),
+            hash_adts: std::collections::HashSet::default(),
+            trait_methods: std::collections::HashMap::default(),
         };
         EscapePass.run(&mut module);
         ReprSelect.run(&mut module);
@@ -609,11 +609,11 @@ val main = {
                 is_main: false,
                 memo: None,
                 external: None,
-                escaping: std::collections::HashSet::new(),
+                escaping: std::collections::HashSet::default(),
                 scheme_poly: false,
             }],
-            hash_adts: std::collections::HashSet::new(),
-            trait_methods: std::collections::HashMap::new(),
+            hash_adts: std::collections::HashSet::default(),
+            trait_methods: std::collections::HashMap::default(),
         };
         EscapePass.run(&mut module);
         ReprSelect.run(&mut module);

@@ -12,7 +12,7 @@ pub use module::{
 
 use crate::alt::AltKind;
 use crate::types::{at, Effect, NameVisibility, Scheme, Type, TypeError};
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 pub(crate) struct Infer {
     pub(crate) next_var: u32,
@@ -53,7 +53,7 @@ pub(crate) struct Infer {
 
 impl Infer {
     pub(crate) fn new(vis: NameVisibility) -> Self {
-        let mut builtins = HashMap::new();
+        let mut builtins = HashMap::default();
         // println: Int or String → Unit / IO (overloads via Call special-case)
         builtins.insert(
             "println".into(),
@@ -97,25 +97,25 @@ impl Infer {
         Self {
             next_var: 0,
             next_eff: 0,
-            subst: HashMap::new(),
-            eff_subst: HashMap::new(),
+            subst: HashMap::default(),
+            eff_subst: HashMap::default(),
             env: vec![builtins],
-            mutables: vec![HashSet::new()],
+            mutables: vec![HashSet::default()],
             type_at: Vec::new(),
-            decls: HashMap::new(),
+            decls: HashMap::default(),
             vis,
             current_file: 0,
-            ord_instances: HashSet::new(),
-            num_instances: HashSet::new(),
-            num_vars: HashSet::new(),
-            trait_vars: HashMap::new(),
-            instances: HashSet::new(),
-            trait_methods: HashMap::new(),
-            method_trait: HashMap::new(),
-            ufcs_rewrites: HashMap::new(),
-            products: HashMap::new(),
+            ord_instances: HashSet::default(),
+            num_instances: HashSet::default(),
+            num_vars: HashSet::default(),
+            trait_vars: HashMap::default(),
+            instances: HashSet::default(),
+            trait_methods: HashMap::default(),
+            method_trait: HashMap::default(),
+            ufcs_rewrites: HashMap::default(),
+            products: HashMap::default(),
             return_stack: Vec::new(),
-            alt_kinds: HashMap::new(),
+            alt_kinds: HashMap::default(),
         }
     }
 
@@ -147,8 +147,8 @@ impl Infer {
     }
 
     pub(crate) fn push(&mut self) {
-        self.env.push(HashMap::new());
-        self.mutables.push(HashSet::new());
+        self.env.push(HashMap::default());
+        self.mutables.push(HashSet::default());
     }
 
     pub(crate) fn pop(&mut self) {

@@ -31,7 +31,8 @@
 - [x] **CLI `--link`**：BUILD §8 写明信任模型（CLI 绝对路径 = 本机意图；不可信树需宿主沙箱）。
 - [x] **`extern "C"` 其余 `panic!`**：已统一经 `trap_abort`（非 test 构建 abort；`cfg(test)` 下仍 panic 以便单测）；`header_layout` 溢出/非法 layout 亦走 `trap_abort`。
 - [x] **自定义 `Eq.eq` 与 Map/Set 键相等分裂**：有 `instance Hash` 的 ADT 上 `==` 强制走 `lumia_eq`（与 Map/Set 一致），忽略发散的 `__Eq_*_eq`；e2e `eq_hash_consistent`。
-- [ ] **堆软上限 / live-bytes**：`BYTES_ALLOCATED` 在 GC 后归零，阈值跟踪「自上次 GC 的分配」而非 live set；无硬 RSS 上限（DoS/资源策略待设计）。
+- [x] **堆软上限 / live-bytes**：`BYTES_ALLOCATED` 在 sweep 时按释放 payload 递减，阈值近似 live set（非 RSS 硬上限；DoS/资源策略另项）。
+- [x] **List COW append**：唯一引用 + 余量原地写；别名则几何扩容拷贝；codegen `retain`/`release` 维持唯一性。
 
 ## 优化与表示（DESIGN / BUILD 下一里程碑）
 
@@ -81,6 +82,6 @@
 - **stdin 读错误**：`trap_abort`，不再静默当 EOF。
 - **PE Contains**：非常量键不再假阴性折成 `false`。
 - **开放 `.field` / println Var / 并行 fold 结合律 / Show 集合 / AssocList×Float**：见上对应 `[x]`。
-- **架构整理**：`lumia_abi`（TYPE_*/MEMO_*）；Core `visit`/`value_ty`；codegen/ty/core/hir 多模块；rt 拆 `common`/`gc`/`list`/`map_set`/`show_eq`/`string_io`/`memo`；ty 模块 facade；mono/escape 减 clone。
+- [x] **架构整理**：`lumia_abi`（TYPE_*/MEMO_* + 容器 classifiers）；Core `visit`/`value_ty`；codegen/ty/core/hir 多模块；rt 拆 `common`/`gc`/`list`/`map_set`/`show_eq`/`string_io`/`memo`；ty 模块 facade；mono/escape 减 clone；syntax `parser/`、opt `memo/`、rt `map_set/`、e2e 分文件；`lumia fmt` 往返（`not`/type braces）。
 - **scheme 驱动单态** / **纯函数×IO 闭包边界**：见上对应 `[x]`。
 - **嵌套 Float ADT layout mask + Hash/`==` 一致**：见上对应 `[x]`。

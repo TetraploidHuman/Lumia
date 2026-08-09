@@ -89,6 +89,68 @@ pub fn map_type_id(key_is_float: bool, val_is_float: bool, assoc: bool) -> u32 {
     }
 }
 
+/// True if `tid` is any heap Map representation.
+#[inline]
+pub fn is_map_tid(tid: u32) -> bool {
+    matches!(
+        tid,
+        TYPE_MAP
+            | TYPE_MAP_F64
+            | TYPE_MAP_ASSOC
+            | TYPE_MAP_VF64
+            | TYPE_MAP_F64V
+            | TYPE_MAP_ASSOC_VF64
+            | TYPE_MAP_ASSOC_F64
+            | TYPE_MAP_ASSOC_F64V
+    )
+}
+
+/// True if `tid` is any heap Set representation.
+#[inline]
+pub fn is_set_tid(tid: u32) -> bool {
+    matches!(tid, TYPE_SET | TYPE_SET_F64 | TYPE_SET_ASSOC)
+}
+
+/// True if `tid` is a list (dense or Float-tagged or iota).
+#[inline]
+pub fn is_list_tid(tid: u32) -> bool {
+    matches!(tid, TYPE_LIST | TYPE_LIST_F64 | TYPE_LIST_IOTA)
+}
+
+#[inline]
+pub fn map_key_is_float(tid: u32) -> bool {
+    matches!(
+        tid,
+        TYPE_MAP_F64 | TYPE_MAP_F64V | TYPE_MAP_ASSOC_F64 | TYPE_MAP_ASSOC_F64V
+    )
+}
+
+#[inline]
+pub fn map_val_is_float(tid: u32) -> bool {
+    matches!(
+        tid,
+        TYPE_MAP_VF64 | TYPE_MAP_F64V | TYPE_MAP_ASSOC_VF64 | TYPE_MAP_ASSOC_F64V
+    )
+}
+
+#[inline]
+pub fn map_tid_is_assoc(tid: u32) -> bool {
+    matches!(
+        tid,
+        TYPE_MAP_ASSOC | TYPE_MAP_ASSOC_VF64 | TYPE_MAP_ASSOC_F64 | TYPE_MAP_ASSOC_F64V
+    )
+}
+
+#[inline]
+pub fn set_elem_is_float(tid: u32) -> bool {
+    tid == TYPE_SET_F64
+}
+
+#[inline]
+pub fn set_tid_is_assoc(tid: u32) -> bool {
+    tid == TYPE_SET_ASSOC
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,6 +207,26 @@ mod tests {
         assert_eq!(set_type_id(false, true), TYPE_SET_ASSOC);
         assert_eq!(set_type_id(true, false), TYPE_SET_F64);
         assert_eq!(set_type_id(true, true), TYPE_SET_F64);
+    }
+
+    #[test]
+    fn classifiers_agree_with_constructors() {
+        for key in [false, true] {
+            for val in [false, true] {
+                for assoc in [false, true] {
+                    let tid = map_type_id(key, val, assoc);
+                    assert!(is_map_tid(tid));
+                    assert_eq!(map_key_is_float(tid), key);
+                    assert_eq!(map_val_is_float(tid), val);
+                    assert_eq!(map_tid_is_assoc(tid), assoc);
+                }
+            }
+        }
+        assert!(is_set_tid(TYPE_SET) && is_set_tid(TYPE_SET_F64) && is_set_tid(TYPE_SET_ASSOC));
+        assert!(
+            is_list_tid(TYPE_LIST) && is_list_tid(TYPE_LIST_F64) && is_list_tid(TYPE_LIST_IOTA)
+        );
+        assert!(!is_map_tid(TYPE_LIST) && !is_set_tid(TYPE_MAP));
     }
 
     #[test]
