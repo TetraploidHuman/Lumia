@@ -1,0 +1,15 @@
+module FloatOps
+
+import std.io.{println}
+
+val main = {
+    val a = 1.5
+    val b = 2.25
+    println(a + b)
+    println(3.0 * 2.0)
+    println(if 1.5 < 2.0 { 1 } else { 0 })
+    println(-1.5)
+    // List[Float] loads keep bit patterns; arithmetic must restore IEEE.
+    val xs = listOf(1.5, 2.5)
+    println(xs.get(0) + xs.get(1))
+}

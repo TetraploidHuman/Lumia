@@ -1,0 +1,8 @@
+module bad_return_toplevel
+
+/// `return` is only allowed inside a function or closure.
+val x = return 1
+
+val main = {
+    0
+}

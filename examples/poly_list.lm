@@ -1,0 +1,11 @@
+module PolyList
+
+import std.io.{println}
+
+/// Identity at List[Int] / List[Float] → `$List_Int` / `$List_Float`.
+val id = { x -> x }
+
+val main = {
+    println(id(listOf(10, 20, 30)).get(1))
+    println(id(listOf(1.5, 2.5)).get(1))
+}

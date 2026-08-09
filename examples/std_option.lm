@@ -1,0 +1,32 @@
+module StdOption
+
+import std.io.{println}
+import std.option.{unwrapOr, optionMap, andThen, isSome, isNone}
+
+val dbl = { x -> x + x }
+val half = { n ->
+    if n % 2 == 0 {
+        Some(n / 2)
+    } else {
+        None
+    }
+}
+
+val main = {
+    println(unwrapOr(Some(21), 0))
+    println(unwrapOr(None, -1))
+    optionMap(Some(1.5), dbl) match {
+        Some(n) -> println(n)
+        None -> println(0.0)
+    }
+    andThen(Some(10), half) match {
+        Some(n) -> println(n)
+        None -> println(-1)
+    }
+    andThen(Some(7), half) match {
+        Some(n) -> println(n)
+        None -> println(-1)
+    }
+    println(isSome(Some(1)))
+    println(isNone(None))
+}

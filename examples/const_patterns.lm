@@ -1,0 +1,31 @@
+module ConstPatterns
+
+import std.io.{println}
+
+val main = {
+    val b = true
+    println(b match {
+        true -> 1
+        false -> 0
+    })
+    val n = -1
+    println(n match {
+        -1 -> 2
+        _ -> 0
+    })
+    val c = 'a'
+    println(c match {
+        'a' -> 3
+        _ -> 0
+    })
+    val s = "hi"
+    println(s match {
+        "hi" -> 4
+        _ -> 0
+    })
+    val f = -1.5
+    println(f match {
+        -1.5 -> 5
+        _ -> 0
+    })
+}

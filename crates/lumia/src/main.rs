@@ -1,16 +1,21 @@
+mod doc;
 mod load;
 mod lsp;
 mod pkg;
+mod vis;
 
+use crate::load::{load_program, LoadedProgram};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use load::{load_program, LoadedProgram};
 use lumia_codegen::{compile_module, find_runtime_lib_prefer, CodegenOptions};
-use lumia_core::{format_module, lower_hir};
-use lumia_hir::{lower_module, set_parallel_map};
+use lumia_core::{format_module, lower_hir_with_schemes};
+use lumia_hir::lower_module;
 use lumia_opt::{optimize, OptOptions};
 use lumia_syntax::{format_diagnostic, parse_module, stamp_module, Span};
-use lumia_ty::{check_effect_boundaries, infer_module, TypeError};
+use lumia_ty::{
+    check_effect_boundaries, finalize_auto_parallel, infer_module_with_options, InferOptions,
+    TypeError,
+};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -25,7 +30,18 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Type- and effect-check only
-    Check { file: PathBuf },
+    Check {
+        file: PathBuf,
+        /// Disable auto-parallel `List.map` (default: on when safe).
+        #[arg(long = "no-parallel")]
+        no_parallel: bool,
+        /// Deprecated no-op (auto-parallel is on by default).
+        #[arg(long, hide = true)]
+        parallel: bool,
+        /// Trust `foreign "C" pure` (FFI purity is not verified).
+        #[arg(long = "trust-foreign-pure")]
+        trust_foreign_pure: bool,
+    },
     /// Compile to a native executable
     Build {
         file: PathBuf,
@@ -36,9 +52,15 @@ enum Commands {
         /// Disable transparent Memo `T_f` even in `--release` (for benchmarks).
         #[arg(long = "no-memo", alias = "no-memo-l2")]
         no_memo: bool,
-        /// Auto-parallel pure `List.map` (DESIGN §11.1).
-        #[arg(long)]
+        /// Disable auto-parallel `List.map` (default: on when safe; DESIGN §11.1).
+        #[arg(long = "no-parallel")]
+        no_parallel: bool,
+        /// Deprecated no-op (auto-parallel is on by default).
+        #[arg(long, hide = true)]
         parallel: bool,
+        /// Trust `foreign "C" pure` (FFI purity is not verified).
+        #[arg(long = "trust-foreign-pure")]
+        trust_foreign_pure: bool,
         /// Extra linker args (repeatable), e.g. `--link -lm --link -L/opt/lib`.
         #[arg(long = "link", value_name = "ARG")]
         link: Vec<String>,
@@ -52,6 +74,14 @@ enum Commands {
         files: Vec<PathBuf>,
         #[arg(long)]
         check: bool,
+    },
+    /// Generate Markdown docs from `///` comments (DESIGN §13)
+    Doc {
+        /// Source file (`.lm`)
+        file: PathBuf,
+        /// Write Markdown to this path instead of stdout
+        #[arg(short, long)]
+        output: Option<PathBuf>,
     },
     /// Language server (stdio JSON-RPC)
     Lsp,
@@ -87,8 +117,13 @@ enum PkgCmd {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
-        Commands::Check { file } => {
-            let _ = check_file(&file, false)?;
+        Commands::Check {
+            file,
+            no_parallel,
+            parallel: _,
+            trust_foreign_pure,
+        } => {
+            let _ = check_file(&file, !no_parallel, trust_foreign_pure)?;
             println!("ok");
             Ok(())
         }
@@ -97,7 +132,9 @@ fn main() -> Result<()> {
             output,
             release,
             no_memo,
-            parallel,
+            no_parallel,
+            parallel: _,
+            trust_foreign_pure,
             link,
             show_ir,
             emit_llvm,
@@ -107,13 +144,19 @@ fn main() -> Result<()> {
                     .map(PathBuf::from)
                     .unwrap_or_else(|| PathBuf::from("a.out"))
             });
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let mut validated_link = Vec::with_capacity(link.len());
+            for a in &link {
+                validated_link.push(pkg::validate_cli_link_arg(&cwd, a)?);
+            }
             build_file(
                 &file,
                 &out,
                 release,
                 !no_memo,
-                parallel,
-                link,
+                !no_parallel,
+                trust_foreign_pure,
+                validated_link,
                 show_ir,
                 emit_llvm,
             )?;
@@ -123,6 +166,16 @@ fn main() -> Result<()> {
         Commands::Fmt { files, check } => {
             for f in files {
                 fmt_file(&f, check)?;
+            }
+            Ok(())
+        }
+        Commands::Doc { file, output } => {
+            let md = doc::render_file(&file)?;
+            if let Some(out) = output {
+                fs::write(&out, &md).with_context(|| format!("write {}", out.display()))?;
+                println!("wrote {}", out.display());
+            } else {
+                print!("{md}");
             }
             Ok(())
         }
@@ -189,14 +242,20 @@ fn type_err(loaded: &LoadedProgram, e: TypeError) -> anyhow::Error {
     }
 }
 
-fn check_file(file: &Path, parallel: bool) -> Result<(lumia_ty::TypedModule, LoadedProgram)> {
+fn check_file(
+    file: &Path,
+    auto_parallel: bool,
+    trust_foreign_pure: bool,
+) -> Result<(lumia_ty::TypedModule, LoadedProgram)> {
     let loaded = load_program(file)?;
-    set_parallel_map(parallel);
-    let hir = lower_module(&loaded.module).map_err(|e| {
-        diag_err(&loaded, e.span, "lower", &e.message)
-    })?;
-    set_parallel_map(false);
-    let typed = infer_module(&hir).map_err(|e| type_err(&loaded, e))?;
+    let hir =
+        lower_module(&loaded.module).map_err(|e| diag_err(&loaded, e.span, "lower", &e.message))?;
+    let opts = InferOptions {
+        trust_foreign_pure: trust_foreign_pure || loaded.trust_foreign_pure,
+    };
+    let mut typed = infer_module_with_options(&hir, loaded.visibility.clone(), opts)
+        .map_err(|e| type_err(&loaded, e))?;
+    finalize_auto_parallel(&mut typed, auto_parallel);
     check_effect_boundaries(&typed).map_err(|e| type_err(&loaded, e))?;
     Ok((typed, loaded))
 }
@@ -206,15 +265,16 @@ fn build_file(
     output: &Path,
     release: bool,
     memo_tf: bool,
-    parallel: bool,
+    auto_parallel: bool,
+    trust_foreign_pure: bool,
     link_args: Vec<String>,
     show_ir: bool,
     emit_llvm: bool,
 ) -> Result<()> {
-    let (mut typed, loaded) = check_file(file, parallel)?;
+    let (mut typed, loaded) = check_file(file, auto_parallel, trust_foreign_pure)?;
     annotate_assert_messages(&mut typed.module, &loaded);
     let option_tags = option_ctor_tags(&typed.module.adts);
-    let mut core = lower_hir(&typed.module, &typed.fun_types);
+    let mut core = lower_hir_with_schemes(&typed.module, &typed.fun_types, &typed.fun_schemes);
     optimize(
         &mut core,
         &OptOptions {
@@ -246,7 +306,8 @@ fn build_file(
             emit_ir: emit_llvm,
             option_some_tag: option_tags.0,
             option_none_tag: option_tags.1,
-            parallel,
+            // Parallel selection happens in `finalize_auto_parallel` before Core.
+            parallel: auto_parallel,
             link_args: link,
         },
     )?;
@@ -320,7 +381,13 @@ fn annotate_assert_expr(e: &mut lumia_hir::Expr, loaded: &LoadedProgram) {
                 annotate_assert_expr(s, loaded);
             }
         }
-        Expr::Assign { value, .. } => annotate_assert_expr(value, loaded),
+        Expr::Assign { value, .. } | Expr::Return { value, .. } => {
+            annotate_assert_expr(value, loaded)
+        }
+        Expr::Alt { scrutinee, alt, .. } => {
+            annotate_assert_expr(scrutinee, loaded);
+            annotate_assert_expr(alt, loaded);
+        }
         Expr::Var(_, _)
         | Expr::Int(_, _)
         | Expr::Float(_, _)
@@ -370,14 +437,15 @@ fn workspace_target_dir() -> PathBuf {
 }
 
 fn ensure_runtime_built(release: bool) -> Result<()> {
+    // Always invoke cargo: it is a no-op when up to date, and its file lock
+    // serializes parallel e2e builds. Skipping on "artifact exists" left a stale
+    // `liblumia_rt.a` after new C ABI symbols were added.
     let mut cmd = Command::new("cargo");
     cmd.arg("build").arg("-p").arg("lumia_rt");
     if release {
         cmd.arg("--release");
     }
-    let status = cmd
-        .status()
-        .context("spawn cargo build -p lumia_rt")?;
+    let status = cmd.status().context("spawn cargo build -p lumia_rt")?;
     if !status.success() {
         anyhow::bail!("failed to build lumia_rt");
     }

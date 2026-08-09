@@ -1,0 +1,9 @@
+module alt_option
+
+val main = {
+    val m = mapOf(1 to 10, 2 to 20)
+    val a = m[1] alt 0
+    val b = m[9] alt 42
+    println(a)
+    println(b)
+}

@@ -1,0 +1,9 @@
+module ImportAs
+
+import std.io.{println as log}
+import math.{add as plus, double}
+
+val main = {
+    log(plus(20, 22))
+    log(double(21))
+}

@@ -26,6 +26,18 @@ fn stamp_item(it: &mut Item, file: u32) {
         Item::Foreign(f) => {
             f.span = f.span.with_file(file);
         }
+        Item::Trait(t) => {
+            t.span = t.span.with_file(file);
+            for m in &mut t.methods {
+                stamp_val(m, file);
+            }
+        }
+        Item::Instance(i) => {
+            i.span = i.span.with_file(file);
+            for m in &mut i.methods {
+                stamp_val(m, file);
+            }
+        }
     }
 }
 
@@ -115,6 +127,19 @@ fn stamp_expr(e: &mut Expr, file: u32) {
                 stamp_cond_arm(a, file);
             }
         }
+        Expr::Return { value, span } => {
+            *span = span.with_file(file);
+            stamp_expr(value, file);
+        }
+        Expr::Alt {
+            scrutinee,
+            alt,
+            span,
+        } => {
+            *span = span.with_file(file);
+            stamp_expr(scrutinee, file);
+            stamp_expr(alt, file);
+        }
         Expr::Field { base, span, .. } => {
             *span = span.with_file(file);
             stamp_expr(base, file);
@@ -200,7 +225,13 @@ fn stamp_cond_arm(a: &mut MatchCondArm, file: u32) {
 
 fn stamp_pat(p: &mut Pattern, file: u32) {
     match p {
-        Pattern::Wildcard(s) | Pattern::Int(_, s) | Pattern::Ident(_, s) => {
+        Pattern::Wildcard(s)
+        | Pattern::Int(_, s)
+        | Pattern::Float(_, s)
+        | Pattern::Bool(_, s)
+        | Pattern::Char(_, s)
+        | Pattern::String(_, s)
+        | Pattern::Ident(_, s) => {
             *s = s.with_file(file);
         }
         Pattern::Variant { args, span, .. } => {

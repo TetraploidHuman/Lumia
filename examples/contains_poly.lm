@@ -1,0 +1,15 @@
+module ContainsPoly
+
+import std.io.{println}
+
+// Regression: unconstrained `.contains` must not force Map (rejecting Set).
+val has_set(xs, x) = {
+    xs.contains(x)
+}
+
+val main = {
+    println(has_set(setOf(1, 2, 3), 2))
+    println(has_set(setOf(1, 2, 3), 9))
+    println(mapOf(1 to 10).contains(1))
+    println(mapOf(1 to 10).contains(2))
+}

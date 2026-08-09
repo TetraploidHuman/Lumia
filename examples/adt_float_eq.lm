@@ -1,0 +1,33 @@
+module AdtFloatEq
+
+import std.io.{println}
+
+type Option {
+    Some(Float)
+    None
+}
+
+type Result {
+    Ok(Float)
+    Err(Int)
+}
+
+/// Wrappers must keep ADT return types after `$Float` monomorphization.
+val mkOk = { x -> Ok(x) }
+val mkSome = { x -> Some(x) }
+
+val main = {
+    // Direct constructors: IEEE ±0 / NaN
+    println(if Some(0.0) == Some(-0.0) { 1 } else { 0 })
+    val nan = 0.0 / 0.0
+    println(if Some(nan) == Some(nan) { 1 } else { 0 })
+    // Unit variant vs payload — no OOB; None == None through if-join
+    val n = if false { Some(1.0) } else { None }
+    println(if n == None { 1 } else { 0 })
+    println(if None == Some(1.0) { 1 } else { 0 })
+    // Mono wrapper returns ADT, not Float bits
+    println(if mkOk(0.0) == mkOk(-0.0) { 1 } else { 0 })
+    println(if mkOk(1.0) == mkOk(2.0) { 1 } else { 0 })
+    println(if mkSome(0.0) == mkSome(-0.0) { 1 } else { 0 })
+    println(if Ok(1.5) == Err(1) { 1 } else { 0 })
+}

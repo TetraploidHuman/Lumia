@@ -21,6 +21,9 @@ pub struct PackageMeta {
     /// Extra linker flags, e.g. `["-lm", "-L/opt/lib"]`.
     #[serde(default)]
     pub link: Vec<String>,
+    /// Trust `foreign "C" pure` annotations (FFI purity is not verified).
+    #[serde(default)]
+    pub trust_foreign_pure: bool,
 }
 
 fn default_version() -> String {
@@ -94,9 +97,17 @@ pub fn load_lockfile(path: &Path) -> Result<Lockfile> {
 
 fn resolve_dep_path(root: &Path, name: &str, spec: &DepSpec) -> Result<PathBuf> {
     let path = match spec {
-        DepSpec::Table {
-            path: Some(p), ..
-        } => root.join(p),
+        DepSpec::Table { path: Some(p), .. } => {
+            if Path::new(p).is_absolute() {
+                bail!(
+                    "dependency `{name}` path must be relative to the package root (got absolute `{p}`)"
+                );
+            }
+            if p.split(['/', '\\']).any(|seg| seg == "..") {
+                bail!("dependency `{name}` path must not contain `..` segments (got `{p}`)");
+            }
+            root.join(p)
+        }
         DepSpec::Version(_) | DepSpec::Table { path: None, .. } => {
             let vendor = root.join("deps").join(name);
             if vendor.is_dir() {
@@ -112,7 +123,16 @@ fn resolve_dep_path(root: &Path, name: &str, spec: &DepSpec) -> Result<PathBuf> 
             path.display()
         );
     }
-    Ok(path.canonicalize().unwrap_or(path))
+    let canon = path.canonicalize().unwrap_or(path);
+    let root_canon = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    if !canon.starts_with(&root_canon) {
+        bail!(
+            "dependency `{name}` path {} escapes package root {}",
+            canon.display(),
+            root_canon.display()
+        );
+    }
+    Ok(canon)
 }
 
 /// Resolve dependency search roots (direct + transitive path deps).
@@ -122,7 +142,7 @@ pub fn dependency_roots(manifest_path: &Path, m: &Manifest) -> Result<Vec<PathBu
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
     let mut roots = vec![root.clone()];
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::default();
     seen.insert(root.canonicalize().unwrap_or(root.clone()));
     collect_dep_roots(&root, m, &mut roots, &mut seen, 0)?;
     Ok(roots)
@@ -162,25 +182,165 @@ fn collect_dep_roots(
 
 /// Collect `package.link` flags from the root manifest (+ transitive, unique).
 pub fn collect_link_args(manifest_path: &Path, m: &Manifest) -> Result<Vec<String>> {
-    let mut out = m.package.link.clone();
+    let mut out = Vec::new();
+    let mut seen_pkg = HashSet::default();
     let root = manifest_path.parent().unwrap_or(Path::new("."));
-    let mut seen_pkg = HashSet::new();
-    seen_pkg.insert(m.package.name.clone());
+    collect_link_args_rec(root, m, &mut out, &mut seen_pkg, 0)?;
+    Ok(out)
+}
+
+fn collect_link_args_rec(
+    root: &Path,
+    m: &Manifest,
+    out: &mut Vec<String>,
+    seen_pkg: &mut HashSet<String>,
+    depth: usize,
+) -> Result<()> {
+    if depth > 32 {
+        bail!("dependency nesting too deep while collecting link flags");
+    }
+    if !seen_pkg.insert(m.package.name.clone()) {
+        return Ok(());
+    }
+    for a in &m.package.link {
+        let resolved = resolve_link_arg(root, a)?;
+        if !out.iter().any(|x| x == &resolved) {
+            out.push(resolved);
+        }
+    }
     for (name, spec) in &m.dependencies {
         let path = resolve_dep_path(root, name, spec)?;
         let dep_manifest = path.join("Lumia.toml");
         if dep_manifest.is_file() {
             let dep_m = load_manifest(&dep_manifest)?;
-            if seen_pkg.insert(dep_m.package.name.clone()) {
-                for a in &dep_m.package.link {
-                    if !out.iter().any(|x| x == a) {
-                        out.push(a.clone());
-                    }
+            let dep_root = dep_manifest.parent().unwrap_or(Path::new("."));
+            collect_link_args_rec(dep_root, &dep_m, out, seen_pkg, depth + 1)?;
+        }
+    }
+    Ok(())
+}
+
+/// Where a link flag comes from — package manifests are confined to the
+/// package root; CLI `--link` may use absolute paths (explicit user intent).
+#[derive(Debug, Clone, Copy)]
+enum LinkArgKind {
+    Package,
+    Cli,
+}
+
+/// Validate a `package.link` entry and resolve relative `-L` / archive paths
+/// against `package_root` (manifest parent), then canonicalize under that root.
+fn resolve_link_arg(package_root: &Path, arg: &str) -> Result<String> {
+    resolve_link_arg_inner(package_root, arg, LinkArgKind::Package)
+}
+
+/// Validate a CLI `--link` flag. Same allowlist as `package.link`, but paths
+/// may be absolute and are resolved against `cwd` (not confined to a package).
+pub fn validate_cli_link_arg(cwd: &Path, arg: &str) -> Result<String> {
+    resolve_link_arg_inner(cwd, arg, LinkArgKind::Cli)
+}
+
+fn resolve_link_arg_inner(base: &Path, arg: &str, kind: LinkArgKind) -> Result<String> {
+    let label = match kind {
+        LinkArgKind::Package => "package.link",
+        LinkArgKind::Cli => "--link",
+    };
+    if arg.is_empty() {
+        bail!("empty {label} entry");
+    }
+    if arg.starts_with('@') {
+        bail!("{label} response files (@…) are not allowed: `{arg}`");
+    }
+    if arg == "-Wl" || arg.starts_with("-Wl,") || arg == "-Xlinker" || arg.starts_with("-Xlinker=")
+    {
+        bail!("{label} linker-passthrough flags are not allowed: `{arg}`");
+    }
+    if let Some(path) = arg.strip_prefix("-L") {
+        if path.is_empty() {
+            bail!("{label} `-L` requires a path");
+        }
+        let abs = resolve_link_path(base, path, arg, kind)?;
+        return Ok(format!("-L{}", abs.display()));
+    }
+    if arg.starts_with("-l") || arg.starts_with("-framework") {
+        // Library names only — no path separators.
+        let rest = arg
+            .trim_start_matches("-framework")
+            .trim_start_matches("-l");
+        if rest.contains('/') || rest.contains('\\') || rest.contains("..") {
+            bail!("{label} library name must not contain path segments: `{arg}`");
+        }
+        return Ok(arg.to_string());
+    }
+    // Allow plain archive/object paths.
+    if arg.ends_with(".a") || arg.ends_with(".lib") || arg.ends_with(".o") || arg.ends_with(".obj")
+    {
+        let abs = resolve_link_path(base, arg, arg, kind)?;
+        return Ok(abs.display().to_string());
+    }
+    bail!("{label} entry `{arg}` not allowed (use -lNAME, -Lpath, -framework, or a .a/.o path)");
+}
+
+fn validate_link_path(path: &str, original: &str, kind: LinkArgKind) -> Result<()> {
+    let label = match kind {
+        LinkArgKind::Package => "package.link",
+        LinkArgKind::Cli => "--link",
+    };
+    if Path::new(path).is_absolute() {
+        if matches!(kind, LinkArgKind::Package) {
+            bail!("{label} path must be relative (got absolute in `{original}`)");
+        }
+        return Ok(());
+    }
+    if path.split(['/', '\\']).any(|seg| seg == "..") {
+        bail!("{label} path must not contain `..`: `{original}`");
+    }
+    Ok(())
+}
+
+fn resolve_link_path(
+    base: &Path,
+    path: &str,
+    original: &str,
+    kind: LinkArgKind,
+) -> Result<PathBuf> {
+    validate_link_path(path, original, kind)?;
+    if Path::new(path).is_absolute() {
+        // CLI only (validated above).
+        return Ok(PathBuf::from(path));
+    }
+    let joined = base.join(path);
+    let root_canon = base.canonicalize().unwrap_or_else(|_| base.to_path_buf());
+    // Walk existing prefixes so a symlink planted on a not-yet-created leaf
+    // (or intermediate) cannot escape the package root when it later appears.
+    if matches!(kind, LinkArgKind::Package) {
+        let mut cur = root_canon.clone();
+        for c in Path::new(path).components() {
+            use std::path::Component;
+            match c {
+                Component::Normal(s) => cur.push(s),
+                Component::CurDir => {}
+                _ => bail!("package.link path `{original}` is not relative-normal"),
+            }
+            if cur.exists() {
+                let canon = cur.canonicalize().unwrap_or_else(|_| cur.clone());
+                if !canon.starts_with(&root_canon) {
+                    bail!(
+                        "package.link path `{}` escapes package root {}",
+                        original,
+                        root_canon.display()
+                    );
                 }
+                cur = canon;
             }
         }
     }
-    Ok(out)
+    let resolved = if joined.exists() {
+        joined.canonicalize().unwrap_or_else(|_| joined.clone())
+    } else {
+        root_canon.join(path)
+    };
+    Ok(resolved)
 }
 
 /// Build a lockfile from the manifest (path pins; versions from dep `Lumia.toml` when present).
@@ -192,7 +352,7 @@ pub fn lock_from_manifest(manifest_path: &Path, m: &Manifest) -> Result<Lockfile
         version: m.package.version.clone(),
         path: ".".into(),
     });
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::default();
     seen.insert(m.package.name.clone());
     lock_deps_recursive(root, m, &mut packages, &mut seen, root, 0)?;
     packages.sort_by(|a, b| a.name.cmp(&b.name));
@@ -259,9 +419,7 @@ fn read_package_version(dep_root: &Path) -> Option<String> {
     } else {
         dep_root.join("Lumia.toml")
     };
-    load_manifest(&cand)
-        .ok()
-        .map(|m| m.package.version)
+    load_manifest(&cand).ok().map(|m| m.package.version)
 }
 
 /// Verify `Lumia.lock` against the manifest: every dep is present with matching path/version.
@@ -313,16 +471,23 @@ pub fn init_manifest(dir: &Path, name: &str) -> Result<PathBuf> {
     if path.exists() {
         bail!("{} already exists", path.display());
     }
-    let body = format!(
-        r#"[package]
-name = "{name}"
-version = "0.1.0"
-link = []
-
-[dependencies]
-"#
-    );
-    fs::write(&path, body)?;
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        || name.is_empty()
+    {
+        bail!("package name must be non-empty [A-Za-z0-9_-]+ (got `{name}`)");
+    }
+    let m = Manifest {
+        package: PackageMeta {
+            name: name.to_string(),
+            version: default_version(),
+            link: vec![],
+            trust_foreign_pure: false,
+        },
+        dependencies: BTreeMap::new(),
+    };
+    write_manifest(&path, &m)?;
     Ok(path)
 }
 
@@ -332,13 +497,102 @@ pub fn add_path_dep(manifest_path: &Path, name: &str, dep_path: &str) -> Result<
     if m.dependencies.contains_key(name) {
         bail!("dependency `{name}` already exists");
     }
-    m.dependencies.insert(
-        name.to_string(),
-        DepSpec::Table {
-            path: Some(dep_path.to_string()),
-            version: None,
-        },
-    );
+    let root = manifest_path.parent().unwrap_or(Path::new("."));
+    // Validate before writing so a rejected path cannot corrupt Lumia.toml.
+    let spec = DepSpec::Table {
+        path: Some(dep_path.to_string()),
+        version: None,
+    };
+    let _ = resolve_dep_path(root, name, &spec)?;
+    m.dependencies.insert(name.to_string(), spec);
     write_manifest(manifest_path, &m)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn add_path_dep_rejects_dotdot_without_writing() {
+        let dir = std::env::temp_dir().join(format!("lumia_pkg_add_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let manifest = dir.join("Lumia.toml");
+        fs::write(
+            &manifest,
+            r#"[package]
+name = "t"
+version = "0.1.0"
+"#,
+        )
+        .unwrap();
+        let before = fs::read_to_string(&manifest).unwrap();
+        let err = add_path_dep(&manifest, "evil", "../outside").unwrap_err();
+        assert!(
+            err.to_string().contains(".."),
+            "expected .. rejection, got {err}"
+        );
+        let after = fs::read_to_string(&manifest).unwrap();
+        assert_eq!(before, after, "failed add must not rewrite manifest");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn link_args_resolve_relative_to_package_root() {
+        let dir = std::env::temp_dir().join(format!("lumia_pkg_link_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("lib")).unwrap();
+        let manifest = dir.join("Lumia.toml");
+        fs::write(
+            &manifest,
+            r#"[package]
+name = "t"
+version = "0.1.0"
+link = ["-Llib", "-lm"]
+"#,
+        )
+        .unwrap();
+        let m = load_manifest(&manifest).unwrap();
+        let args = collect_link_args(&manifest, &m).unwrap();
+        assert!(args.iter().any(|a| a == "-lm"));
+        let lflag = args.iter().find(|a| a.starts_with("-L")).unwrap();
+        let path = Path::new(lflag.strip_prefix("-L").unwrap());
+        assert!(path.is_absolute(), "expected absolute -L, got {lflag}");
+        assert!(
+            path.ends_with("lib") || path.file_name().is_some_and(|n| n == "lib"),
+            "expected …/lib, got {lflag}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cli_link_rejects_response_file_and_wl() {
+        let cwd = Path::new(".");
+        let err = validate_cli_link_arg(cwd, "@evil.rsp").unwrap_err();
+        assert!(err.to_string().contains("@"), "{err}");
+        let err = validate_cli_link_arg(cwd, "-Wl,-foo").unwrap_err();
+        assert!(
+            err.to_string().contains("-Wl") || err.to_string().contains("passthrough"),
+            "{err}"
+        );
+        let err = validate_cli_link_arg(cwd, "-Xlinker").unwrap_err();
+        assert!(
+            err.to_string().contains("passthrough") || err.to_string().contains("-Xlinker"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn cli_link_allows_absolute_l_and_libname() {
+        let cwd = Path::new(".");
+        let a = validate_cli_link_arg(cwd, "-lm").unwrap();
+        assert_eq!(a, "-lm");
+        // Absolute `-L` is re-canonicalized (Windows may yield `\\?\…`).
+        let a = validate_cli_link_arg(cwd, "-L/usr/lib").unwrap();
+        assert!(a.starts_with("-L"), "got {a}");
+        let path = Path::new(a.strip_prefix("-L").unwrap());
+        assert!(path.is_absolute(), "expected absolute -L, got {a}");
+    }
 }

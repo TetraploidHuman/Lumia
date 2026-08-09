@@ -1,0 +1,14 @@
+module BadStructFieldMatch
+
+type Point {
+    val x
+    val y
+}
+
+val main = {
+    val p = Point { x = 1, y = 2 }
+    p match {
+        Point { z } -> z
+        _ -> 0
+    }
+}

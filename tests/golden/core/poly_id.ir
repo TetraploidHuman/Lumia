@@ -1,0 +1,32 @@
+module PolyId
+
+fun __lam_0(p0) effect.io=false memo=None {
+  return %0
+}
+
+fun __lam_0$Float(p0) effect.io=false memo=None {
+  return %0
+}
+
+fun __lam_0$String(p0) effect.io=false memo=None {
+  return %0
+}
+
+fun main() effect.io=true memo=None {
+  %1 = funref __lam_0  // pure
+  %2 = i64 2  // pure
+  %3 = call __lam_0(%2)  // pure
+  %4 = builtin Println(%3)  // effect
+  %5 = f64 1.5  // pure
+  %6 = call __lam_0$Float(%5)  // pure
+  %7 = builtin Println(%6)  // effect
+  %8 = str "hi"  // pure
+  %9 = call __lam_0$String(%8)  // pure
+  %10 = builtin Println(%9)  // effect
+  %11 = %5  // pure
+  %12 = %6  // pure
+  %13 = f64 2  // pure
+  %14 = %6 + %13  // pure
+  %15 = builtin Println(%14)  // effect
+  return %15
+}

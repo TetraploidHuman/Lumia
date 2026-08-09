@@ -1,0 +1,7 @@
+module bad_alt_int
+
+val main = {
+    // `alt` requires Option or Result
+    val x = 1 alt 2
+    println(x)
+}

@@ -1,0 +1,40 @@
+module SmallAdtLocal
+
+fun getx(p) effect.io=false memo=None {
+  %1 = i64 0  // pure
+  %2 = builtin AdtField(%0, %1)  // pure
+  return %2
+}
+
+fun getx$Point_Int_Int(p) effect.io=false memo=None {
+  %1 = i64 0  // pure
+  %2 = builtin AdtField(%0, %1)  // pure
+  return %2
+}
+
+fun gety(p) effect.io=false memo=None {
+  %1 = i64 1  // pure
+  %2 = builtin AdtField(%0, %1)  // pure
+  return %2
+}
+
+fun gety$Point_Int_Int(p) effect.io=false memo=None {
+  %1 = i64 1  // pure
+  %2 = builtin AdtField(%0, %1)  // pure
+  return %2
+}
+
+fun main() effect.io=true memo=None {
+  %0 = i64 10  // pure
+  %1 = i64 20  // pure
+  %2 = alloc_adt(Point, tag=0, n=2)  // pure
+  %3 = call getx$Point_Int_Int(%2)  // pure
+  %4 = builtin Println(%3)  // effect
+  %5 = call gety$Point_Int_Int(%2)  // pure
+  %6 = builtin Println(%5)  // effect
+  %7 = %3  // pure
+  %8 = %5  // pure
+  %9 = %3 + %5  // pure
+  %10 = builtin Println(%9)  // effect
+  return %10
+}

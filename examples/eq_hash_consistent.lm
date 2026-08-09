@@ -1,0 +1,30 @@
+module EqHashConsistent
+
+import std.io.{println}
+
+type Key {
+    Mk(Int)
+}
+
+instance Hash for Key {}
+
+/// Custom Eq that would disagree with structural / Map lookup if `==` used it.
+trait Eq {
+    val eq = { self, other -> false }
+}
+
+instance Eq for Key {
+    val eq = { self, other -> false }
+}
+
+val main = {
+    val k = Mk(1)
+    // `==` must match Map/Set (`lumia_eq`), not the diverging `__Eq_Key_eq`.
+    println(if k == Mk(1) { 1 } else { 0 })
+    val m = mapOf(k, 10)
+    println(if m.contains(Mk(1)) { 1 } else { 0 })
+    println(m.get(Mk(1)) match {
+        Some(v) -> v
+        None -> -1
+    })
+}

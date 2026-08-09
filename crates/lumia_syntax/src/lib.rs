@@ -2,17 +2,17 @@
 //! Spans are preserved for diagnostics and LSP.
 
 mod diag;
-mod pretty;
 mod lexer;
 mod parser;
+mod pretty;
 mod span;
 mod stamp;
 mod token;
 
 pub use diag::{byte_to_line_col, format_diagnostic, line_starts};
-pub use pretty::format_module_src;
 pub use lexer::Lexer;
 pub use parser::{parse_expr_str, parse_module, ParseError};
+pub use pretty::format_module_src;
 pub use span::{BytePos, Span};
 pub use stamp::stamp_module;
 pub use token::{StringPart, Token};
@@ -35,12 +35,42 @@ pub struct Import {
     pub span: Span,
 }
 
+/// One imported name, optionally renamed (`name as alias`).
+#[derive(Debug, Clone)]
+pub struct ImportedName {
+    /// Name as exported by the source module.
+    pub name: String,
+    /// Local name in the importer; `None` means same as `name`.
+    pub alias: Option<String>,
+}
+
+impl ImportedName {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            alias: None,
+        }
+    }
+
+    pub fn with_alias(name: impl Into<String>, alias: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            alias: Some(alias.into()),
+        }
+    }
+
+    /// Name used in the importing module.
+    pub fn local(&self) -> &str {
+        self.alias.as_deref().unwrap_or(self.name.as_str())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum ImportNames {
-    /// `import a.b`
-    Single(String),
-    /// `import a.{b, c}`
-    Selective(Vec<String>),
+    /// `import a.b` / `import a.b as bee`
+    Single(ImportedName),
+    /// `import a.{b, c as d}`
+    Selective(Vec<ImportedName>),
     /// `import a.*`
     All,
 }
@@ -51,6 +81,28 @@ pub enum Item {
     Type(TypeItem),
     /// `foreign "C" fn name(x: Int) -> Int`
     Foreign(ForeignItem),
+    /// `trait Eq { }` / `trait Ord requires Eq { val less = … }`.
+    Trait(TraitItem),
+    /// `instance Eq for Point { }` / with optional `val` method bodies.
+    Instance(InstanceItem),
+}
+
+#[derive(Debug, Clone)]
+pub struct TraitItem {
+    pub name: String,
+    pub requires: Vec<String>,
+    /// Optional default method bodies (`val name = …`).
+    pub methods: Vec<ValItem>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct InstanceItem {
+    pub trait_name: String,
+    pub type_name: String,
+    /// Method overrides (`val show = { self -> … }`).
+    pub methods: Vec<ValItem>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -59,7 +111,7 @@ pub struct ForeignItem {
     pub name: String,
     pub params: Vec<(String, String)>,
     pub ret: String,
-    /// `foreign "C" pure fn` — typed as Pure (math-like libc).
+    /// `foreign "C" pure fn` — Pure only with `--trust-foreign-pure`.
     pub is_pure: bool,
     pub span: Span,
 }
@@ -161,6 +213,17 @@ pub enum Expr {
         arms: Vec<MatchCondArm>,
         span: Span,
     },
+    /// Limited early return from the nearest function/closure (`return expr`).
+    Return {
+        value: Box<Expr>,
+        span: Span,
+    },
+    /// `scrutinee alt rhs` — Option/Result recovery (rhs is expr or block).
+    Alt {
+        scrutinee: Box<Expr>,
+        alt: Box<Expr>,
+        span: Span,
+    },
     Field {
         base: Box<Expr>,
         field: String,
@@ -220,6 +283,11 @@ pub struct MatchCondArm {
 pub enum Pattern {
     Wildcard(Span),
     Int(i64, Span),
+    Float(f64, Span),
+    /// `true` / `false` constant patterns (DESIGN § match 常量模式).
+    Bool(bool, Span),
+    Char(char, Span),
+    String(String, Span),
     Ident(String, Span),
     Variant {
         name: String,
@@ -246,11 +314,13 @@ pub enum Pattern {
 
 #[derive(Debug, Clone)]
 pub enum Stmt {
+    /// `val x = e` or irrefutable destructure `val (a, b) = e` / `val Point { x, y } = e`.
     Val {
-        name: String,
+        pat: Pattern,
         expr: Expr,
         span: Span,
     },
+    /// `var x = e` (name binding only; destructure not allowed on `var`).
     Var {
         name: String,
         expr: Expr,
@@ -277,7 +347,7 @@ pub enum Stmt {
     Continue(Span),
 }
 
-/// `for x in …` or `for (k, v) in …` (Map pairs).
+/// `for x in …` or `for (k, v) in …` (Map pairs / List of pairs).
 #[derive(Debug, Clone, PartialEq)]
 pub enum ForBinding {
     Name(String),
@@ -315,7 +385,8 @@ impl Expr {
             | Expr::Bool(_, s)
             | Expr::String(_, s)
             | Expr::Char(_, s)
-            | Expr::Ident(_, s) => *s, Expr::Interp { span, .. }
+            | Expr::Ident(_, s) => *s,
+            Expr::Interp { span, .. }
             | Expr::Block { span, .. }
             | Expr::Lambda { span, .. }
             | Expr::Call { span, .. }
@@ -324,6 +395,8 @@ impl Expr {
             | Expr::If { span, .. }
             | Expr::Match { span, .. }
             | Expr::MatchCond { span, .. }
+            | Expr::Return { span, .. }
+            | Expr::Alt { span, .. }
             | Expr::Field { span, .. }
             | Expr::ListLit { span, .. }
             | Expr::Pipeline { span, .. }

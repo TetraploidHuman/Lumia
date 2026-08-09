@@ -13,51 +13,159 @@ jobs:
   test:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        include:
+          # apt.llvm.org ships libLLVM.so — force-dynamic avoids ~7min static link.
+          - os: ubuntu-latest
+            # Workspace / -p package feature paths differ: package/feature needs --workspace;
+            # -p lumia uses the crate-local alias.
+            cargo_features: --features lumia_codegen/llvm-dynamic
+            lumia_features: --features llvm-dynamic
+          # vovkos Windows SDK is static-oriented; keep prefer-static.
+          - os: windows-latest
+            cargo_features: ""
+            lumia_features: ""
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Install LLVM 21
-        uses: KyleMayes/install-llvm-action@v2
         with:
-          version: "21.1"
-          env: true
+          components: rustfmt, clippy
 
-      - name: Ensure clang on PATH (Windows)
+      # Cache cargo registry + dependency `target` artifacts (not workspace crates).
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          # Keep static (Windows) and force-dynamic (Linux) caches distinct.
+          key: ${{ matrix.os }}-${{ matrix.cargo_features }}
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+      # Linux: apt.llvm.org packages include shared libLLVM (GitHub tarballs do not).
+      - name: Install LLVM 21 (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euxo pipefail
+          # Pin installer script; bump hash when intentionally upgrading llvm.sh.
+          expected_sha=03878e08f47b66cc95bc4b544b0db3c6d9ce8d60e6cf2492ae357984330a9eae
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          echo "${expected_sha}  /tmp/llvm.sh" | sha256sum -c -
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 21
+          sudo apt-get install -y llvm-21-dev libllvm21 clang-21 lld-21
+
+      - name: Configure LLVM env (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euxo pipefail
+          prefix=/usr/lib/llvm-21
+          test -x "$prefix/bin/llvm-config"
+          test -x "$prefix/bin/clang"
+          # llvm-sys force-dynamic looks for libLLVM.so via llvm-config --link-shared.
+          if [[ ! -e "$prefix/lib/libLLVM.so" ]]; then
+            so=$(find "$prefix/lib" /usr/lib/x86_64-linux-gnu -maxdepth 1 \
+              \( -name 'libLLVM-21.so*' -o -name 'libLLVM.so.*' \) 2>/dev/null | head -n 1 || true)
+            if [[ -z "$so" ]]; then
+              echo "libLLVM shared library not found under $prefix or /usr/lib/x86_64-linux-gnu"
+              ls -la "$prefix/lib" || true
+              exit 1
+            fi
+            sudo ln -sfn "$so" "$prefix/lib/libLLVM.so"
+          fi
+          echo "LLVM_SYS_211_PREFIX=$prefix" >> "$GITHUB_ENV"
+          echo "LLVM_PATH=$prefix" >> "$GITHUB_ENV"
+          echo "$prefix/bin" >> "$GITHUB_PATH"
+          echo "LD_LIBRARY_PATH=$prefix/lib:/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+          "$prefix/bin/llvm-config" --version
+          "$prefix/bin/llvm-config" --link-shared --libnames
+          "$prefix/bin/clang" --version
+          # Avoid `ls | head` under pipefail (SIGPIPE → exit 141/2).
+          ls -la "$prefix/lib/libLLVM.so" "$prefix/lib/libLLVM-21.so" "$prefix/lib/libLLVM.so.21.1"
+
+      # Windows official installers ship clang/tools only — no llvm-config / C++ libs.
+      # llvm-sys needs a full development prefix (no spaces in path).
+      - name: Cache LLVM SDK (Windows)
+        if: runner.os == 'Windows'
+        id: cache-llvm-win
+        uses: actions/cache@v4
+        with:
+          path: C:\LLVM
+          key: llvm-sdk-21.1.1-windows-amd64-msvc17-msvcrt-v1
+
+      - name: Install LLVM 21 SDK (Windows)
+        if: runner.os == 'Windows' && steps.cache-llvm-win.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $ver = "21.1.1"
+          $root = "C:\LLVM"
+          $llvmName = "llvm-$ver-windows-amd64-msvc17-msvcrt"
+          $clangName = "clang-$ver-windows-amd64-msvc17-msvcrt"
+          $llvmUrl = "https://github.com/vovkos/llvm-package-windows/releases/download/llvm-$ver/$llvmName.7z"
+          $clangUrl = "https://github.com/vovkos/llvm-package-windows/releases/download/clang-$ver/$clangName.7z"
+          $tmp = "$env:RUNNER_TEMP\llvm-sdk"
+          if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
+          New-Item -ItemType Directory -Path $tmp | Out-Null
+          if (Test-Path $root) { Remove-Item -Recurse -Force $root }
+          New-Item -ItemType Directory -Path $root | Out-Null
+
+          function Assert-Sha256([string]$Path, [string]$Expected) {
+            $actual = (Get-FileHash -Algorithm SHA256 -Path $Path).Hash.ToLowerInvariant()
+            if ($actual -ne $Expected.ToLowerInvariant()) {
+              throw "SHA256 mismatch for $Path`n expected: $Expected`n actual:   $actual"
+            }
+          }
+
+          # Digests from GitHub release asset metadata (vovkos/llvm-package-windows).
+          $llvmSha = "282caea5f8c13e4ba536b3a8d4587e10f4bcc89044b7e8d72bd0163020c6abdd"
+          $clangSha = "4d1deacc30341fe1c359f0e547da65cdfa819f8dd8f2e78f12e89b9bef1b5d8a"
+
+          Write-Host "Downloading $llvmUrl"
+          Invoke-WebRequest -Uri $llvmUrl -OutFile "$tmp\$llvmName.7z"
+          Assert-Sha256 "$tmp\$llvmName.7z" $llvmSha
+          & 7z x "$tmp\$llvmName.7z" "-o$tmp\llvm" -y | Out-Host
+          Copy-Item -Recurse -Force "$tmp\llvm\$llvmName\*" $root
+
+          Write-Host "Downloading $clangUrl"
+          Invoke-WebRequest -Uri $clangUrl -OutFile "$tmp\$clangName.7z"
+          Assert-Sha256 "$tmp\$clangName.7z" $clangSha
+          & 7z x "$tmp\$clangName.7z" "-o$tmp\clang" -y | Out-Host
+          Copy-Item -Recurse -Force "$tmp\clang\$clangName\*" $root
+
+      - name: Configure LLVM env (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          # install-llvm-action places llvm-config; clang should sit beside it
-          $llvm = $env:LLVM_SYS_211_PREFIX
-          if (-not $llvm) { $llvm = $env:LLVM_PATH }
-          Write-Host "LLVM prefix: $llvm"
-          if ($llvm) {
-            echo "$llvm/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $ErrorActionPreference = "Stop"
+          $root = "C:\LLVM"
+          if (-not (Test-Path "$root\bin\llvm-config.exe")) {
+            throw "llvm-config.exe missing under $root\bin"
           }
+          if (-not (Test-Path "$root\bin\clang.exe")) {
+            throw "clang.exe missing under $root\bin"
+          }
+          "LLVM_SYS_211_PREFIX=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "LLVM_PATH=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "$root\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & "$root\bin\llvm-config.exe" --version
+          & "$root\bin\clang.exe" --version
 
-      - name: Ensure clang on PATH (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          echo "LLVM_SYS_211_PREFIX=${LLVM_SYS_211_PREFIX:-}"
-          if [ -n "${LLVM_SYS_211_PREFIX:-}" ]; then
-            echo "${LLVM_SYS_211_PREFIX}/bin" >> "$GITHUB_PATH"
-          fi
-          which llvm-config || true
-          if ! command -v clang >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y clang
-          fi
-          which clang
+      - name: Cargo clippy (library crates)
+        run: cargo clippy --workspace --exclude lumia --lib ${{ matrix.cargo_features }} -- -D warnings
 
       - name: Cargo test (library crates)
-        run: cargo test --workspace --exclude lumia
+        run: cargo test --workspace --exclude lumia --lib ${{ matrix.cargo_features }}
+
+      # lumia_opt has no codegen dep; do not pass llvm-dynamic (Cargo rejects unknown package features).
+      - name: Cargo test (opt goldens + other integration)
+        run: cargo test -p lumia_opt --tests
 
       - name: Cargo test (lumia CLI + e2e examples)
-        run: cargo test -p lumia --tests
+        run: cargo test -p lumia --tests ${{ matrix.lumia_features }}

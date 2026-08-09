@@ -1,0 +1,12 @@
+module SmallListLocal
+
+import std.io.{println}
+
+/// Non-escaping small `listOf` → stack LitList (Escape + ReprSelect).
+val main = {
+    val xs = listOf(10, 20, 30)
+    println(xs.len())
+    println(xs.get(0))
+    println(xs.get(2))
+    println(xs.get(0) + xs.get(1) + xs.get(2))
+}

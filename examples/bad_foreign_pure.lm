@@ -1,0 +1,10 @@
+module BadForeignPure
+
+import std.io.{println}
+
+/// `pure` without `--trust-foreign-pure` must be rejected.
+foreign "C" pure fn llabs(x: Int) -> Int
+
+val main = {
+    println(llabs(1))
+}

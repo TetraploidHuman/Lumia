@@ -1,0 +1,25 @@
+module ResultBranch
+
+import std.io.{println}
+
+// Regression: Result[T, E] must unify Ok(T) with Err(E).
+val pick(b) = {
+    if b {
+        Ok(7)
+    } else {
+        Err("no")
+    }
+}
+
+val main = {
+    val a = pick(true) match {
+        Ok(n) -> n
+        Err(_) -> -1
+    }
+    println(a)
+    val b = pick(false) match {
+        Ok(n) -> n
+        Err(_) -> -1
+    }
+    println(b)
+}

@@ -1,0 +1,18 @@
+module TraitShowMethod
+
+import std.io.{println}
+
+type Point {
+    val x
+    val y
+}
+
+instance Show for Point {
+    val show = { self -> "Point" }
+}
+
+val main = {
+    val p = Point { x = 1, y = 2 }
+    println(p.show())
+    println(p)
+}

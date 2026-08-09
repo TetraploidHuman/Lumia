@@ -1,0 +1,12 @@
+module ZeroArgReturn
+
+import std.io.{println}
+
+/// Top-level `val f = { ... }` (no `->`) is a zero-arg function (DESIGN §4.4).
+val answer = {
+    return 42
+}
+
+val main = {
+    println(answer())
+}

@@ -1,0 +1,24 @@
+module ParMap
+
+fun __lam_0(p0) effect.io=false memo=None {
+  %4 = i64 2  // pure
+  %5 = %3 * %4  // pure
+  return %5
+}
+
+fun main() effect.io=true memo=None {
+  %0 = i64 0  // pure
+  %1 = i64 200  // pure
+  %2 = builtin Range(%0, %1)  // pure
+  %6 = funref __lam_0  // pure
+  %7 = builtin ListParMap(%2, %6)  // pure
+  %8 = builtin ListLen(%7)  // pure
+  %9 = builtin Println(%8)  // effect
+  %10 = %0  // pure
+  %11 = builtin ListGet(%7, %0)  // pure
+  %12 = builtin Println(%11)  // effect
+  %13 = i64 199  // pure
+  %14 = builtin ListGet(%7, %13)  // pure
+  %15 = builtin Println(%14)  // effect
+  return %15
+}

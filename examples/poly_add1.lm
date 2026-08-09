@@ -1,0 +1,10 @@
+module PolyAdd1
+
+import std.io.{println}
+
+/// `{ x -> x + 1 }` monomorphized at Int and Float sites.
+val main = {
+    val add1 = { x -> x + 1 }
+    println(add1(1))
+    println(add1(1.5))
+}

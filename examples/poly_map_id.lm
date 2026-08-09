@@ -1,0 +1,15 @@
+module PolyMapId
+
+import std.io.{println}
+
+/// Identity at Map[Int,Int] / Map[String,Int] → `$Map_*` clones.
+val id = { m -> m }
+
+val main = {
+    val a = id(mapOf(1, 10, 2, 20))
+    println(a.len())
+    println(a.contains(2))
+    val b = id(mapOf("x", 1, "y", 2))
+    println(b.len())
+    println(b.contains("y"))
+}

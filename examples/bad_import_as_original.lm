@@ -1,0 +1,8 @@
+module BadImportAsOriginal
+
+/// `add` was imported only as `plus` — original name must stay invisible.
+import math.{add as plus}
+
+val main = {
+    add(1, 2)
+}

@@ -6,7 +6,7 @@
 use lumia_core::{
     max_local_in_fun, rewrite_block_locals, Block, CoreFun, CoreModule, Local, Op, Value,
 };
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// Max SSA ops in callee body (including nested) before we refuse to inline.
 const INLINE_MAX_OPS: usize = 24;
@@ -56,7 +56,41 @@ fn is_inlineable(f: &CoreFun) -> bool {
     if has_assign_or_name(&f.body) {
         return false;
     }
+    // Early return must stay in the callee; inlining would return from the caller.
+    if has_early_return(&f.body) {
+        return false;
+    }
     true
+}
+
+fn has_early_return(block: &Block) -> bool {
+    for op in &block.ops {
+        match op {
+            Op::Return { .. } => return true,
+            Op::Let { value, .. } | Op::Effect { value, .. } if value_has_early_return(value) => {
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+fn value_has_early_return(value: &Value) -> bool {
+    match value {
+        Value::If {
+            then_block,
+            else_block,
+            ..
+        } => has_early_return(then_block) || has_early_return(else_block),
+        Value::Loop {
+            header,
+            body,
+            latch,
+        } => has_early_return(header) || has_early_return(body) || has_early_return(latch),
+        Value::Lambda { body, .. } => has_early_return(body),
+        _ => false,
+    }
 }
 
 fn count_ops(block: &Block) -> usize {
@@ -90,10 +124,8 @@ fn count_ops_value(value: &Value) -> usize {
 fn calls_name(block: &Block, name: &str) -> bool {
     for op in &block.ops {
         match op {
-            Op::Let { value, .. } | Op::Effect { value, .. } => {
-                if value_calls_name(value, name) {
-                    return true;
-                }
+            Op::Let { value, .. } | Op::Effect { value, .. } if value_calls_name(value, name) => {
+                return true;
             }
             _ => {}
         }
@@ -123,10 +155,8 @@ fn has_assign_or_name(block: &Block) -> bool {
     for op in &block.ops {
         match op {
             Op::Assign { .. } => return true,
-            Op::Let { value, .. } | Op::Effect { value, .. } => {
-                if value_has_assign_or_name(value) {
-                    return true;
-                }
+            Op::Let { value, .. } | Op::Effect { value, .. } if value_has_assign_or_name(value) => {
+                return true;
             }
             _ => {}
         }
@@ -146,11 +176,7 @@ fn value_has_assign_or_name(value: &Value) -> bool {
             header,
             body,
             latch,
-        } => {
-            has_assign_or_name(header)
-                || has_assign_or_name(body)
-                || has_assign_or_name(latch)
-        }
+        } => has_assign_or_name(header) || has_assign_or_name(body) || has_assign_or_name(latch),
         Value::Lambda { body, .. } => has_assign_or_name(body),
         _ => false,
     }
@@ -176,8 +202,7 @@ fn inline_block(
                     if fun != caller {
                         if let Some(callee) = inlineable.get(fun) {
                             if args.len() == callee.params.len() {
-                                let (prelude, result) =
-                                    materialize_inline(callee, args, next);
+                                let (prelude, result) = materialize_inline(callee, args, next);
                                 out.extend(prelude);
                                 out.push(Op::Let {
                                     local,
@@ -234,13 +259,10 @@ fn inline_value(
     }
 }
 
-fn materialize_inline(
-    callee: &CoreFun,
-    args: &[Local],
-    next: &mut u32,
-) -> (Vec<Op>, Local) {
+fn materialize_inline(callee: &CoreFun, args: &[Local], next: &mut u32) -> (Vec<Op>, Local) {
     let mut body = callee.body.clone();
-    let mut remap: HashMap<u32, u32> = HashMap::new();
+    // `rewrite_block_locals` takes std HashMap (core IR API).
+    let mut remap: HashMap<u32, u32> = HashMap::default();
 
     // Map params → actuals (no new locals).
     for (p, a) in callee.params.iter().zip(args.iter()) {
@@ -248,7 +270,7 @@ fn materialize_inline(
     }
 
     // Fresh ids for every other local defined in the callee.
-    let mut defined: HashSet<u32> = HashSet::new();
+    let mut defined: HashSet<u32> = HashSet::default();
     collect_defined(&body, &mut defined);
     for id in defined {
         if callee.params.iter().any(|p| p.0 == id) {
@@ -342,6 +364,8 @@ mod tests {
             is_main: false,
             memo: None,
             external: None,
+            escaping: HashSet::default(),
+            scheme_poly: false,
         }
     }
 
@@ -385,8 +409,12 @@ mod tests {
                     is_main: true,
                     memo: None,
                     external: None,
+                    escaping: HashSet::default(),
+                    scheme_poly: false,
                 },
             ],
+            hash_adts: HashSet::default(),
+            trait_methods: HashMap::default(),
         };
         inline_module(&mut module);
         let main = module.functions.iter().find(|f| f.name == "main").unwrap();
@@ -404,10 +432,7 @@ mod tests {
             matches!(
                 op,
                 Op::Let {
-                    value: Value::Binary {
-                        op: BinOp::Add,
-                        ..
-                    },
+                    value: Value::Binary { op: BinOp::Add, .. },
                     ..
                 }
             )
@@ -419,6 +444,29 @@ mod tests {
     fn skips_effectful() {
         let mut f = pure_add();
         f.effect = Effect::io();
+        assert!(!is_inlineable(&f));
+    }
+
+    #[test]
+    fn skips_early_return() {
+        let f = CoreFun {
+            name: "early".into(),
+            params: vec![Local(0)],
+            param_names: vec!["x".into()],
+            param_tys: vec![Type::Int],
+            body: Block {
+                params: vec![],
+                ops: vec![Op::Return { value: Local(0) }],
+                result: None,
+            },
+            ret_ty: Type::Int,
+            effect: Effect::pure(),
+            is_main: false,
+            memo: None,
+            external: None,
+            escaping: HashSet::default(),
+            scheme_poly: false,
+        };
         assert!(!is_inlineable(&f));
     }
 }

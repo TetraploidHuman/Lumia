@@ -1,0 +1,19 @@
+module SmallAdtLocal
+
+import std.io.{println}
+
+type Point {
+    val x
+    val y
+}
+
+/// Field projection through a non-capturing callee keeps `Point` non-escaping → LitAdt.
+val getx = { p -> p.x }
+val gety = { p -> p.y }
+
+val main = {
+    val p = Point { x = 10, y = 20 }
+    println(getx(p))
+    println(gety(p))
+    println(getx(p) + gety(p))
+}

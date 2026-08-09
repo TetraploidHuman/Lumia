@@ -228,6 +228,7 @@ dependencies = [
  "lumia_opt",
  "lumia_syntax",
  "lumia_ty",
+ "rustc-hash",
  "serde",
  "serde_json",
  "thiserror",
@@ -235,15 +236,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "lumia_abi"
+version = "0.1.0"
+
+[[package]]
 name = "lumia_codegen"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "inkwell",
+ "lumia_abi",
  "lumia_core",
  "lumia_hir",
+ "lumia_opt",
  "lumia_syntax",
  "lumia_ty",
+ "rustc-hash",
  "thiserror",
 ]
 
@@ -254,6 +262,7 @@ dependencies = [
  "lumia_hir",
  "lumia_syntax",
  "lumia_ty",
+ "rustc-hash",
 ]
 
 [[package]]
@@ -261,21 +270,28 @@ name = "lumia_hir"
 version = "0.1.0"
 dependencies = [
  "lumia_syntax",
+ "rustc-hash",
+ "thiserror",
 ]
 
 [[package]]
 name = "lumia_opt"
 version = "0.1.0"
 dependencies = [
+ "lumia_abi",
  "lumia_core",
  "lumia_hir",
  "lumia_syntax",
  "lumia_ty",
+ "rustc-hash",
 ]
 
 [[package]]
 name = "lumia_rt"
 version = "0.1.0"
+dependencies = [
+ "lumia_abi",
+]
 
 [[package]]
 name = "lumia_syntax"
@@ -290,6 +306,7 @@ version = "0.1.0"
 dependencies = [
  "lumia_hir",
  "lumia_syntax",
+ "rustc-hash",
  "thiserror",
 ]
 
@@ -328,6 +345,12 @@ name = "regex-lite"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cab834c73d247e67f4fae452806d17d3c7501756d98c8808d7c9c7aa7d18f973"
+
+[[package]]
+name = "rustc-hash"
+version = "2.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d"
 
 [[package]]
 name = "semver"

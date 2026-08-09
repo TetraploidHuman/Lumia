@@ -1,0 +1,14 @@
+module alt_option_swap_tags
+
+/// User `Option` with `None` before `Some` (tags swapped vs prelude order).
+type Option {
+    None
+    Some(value)
+}
+
+val main = {
+    val missing = None
+    val present = Some(9)
+    println(missing alt 7)
+    println(present alt 0)
+}

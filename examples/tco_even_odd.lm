@@ -1,0 +1,19 @@
+module TcoEvenOdd
+
+import std.io.{println}
+
+/// Mutual pure Int recursion — musttail across the SCC (DESIGN §4.4).
+val even = { n ->
+    if n == 0 { true } else { odd(n - 1) }
+}
+
+val odd = { n ->
+    if n == 0 { false } else { even(n - 1) }
+}
+
+val main = {
+    // Large enough to overflow the stack without TCO.
+    println(even(2000000))
+    println(odd(2000000))
+    println(even(7))
+}

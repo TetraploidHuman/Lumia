@@ -1,0 +1,7 @@
+/// Standard I/O surface (`import std.io.{println, …}`).
+///
+/// Implementations are compiler builtins. The loader reads `@exports` from this
+/// file as the single source of truth for allowed import names.
+///
+/// @exports println, readStdin, assert
+module io

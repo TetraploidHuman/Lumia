@@ -5,34 +5,30 @@
 //! Escape analysis + small pure inlining live in [`escape`] / [`inline`].
 
 mod escape;
+mod fusion;
 mod inline;
 mod memo;
 
-pub use escape::{escaping_locals, is_non_escaping, EscapePass};
+pub use escape::{escaping_locals, EscapePass};
+pub use fusion::ConcatIdentPass;
 pub use inline::InlinePass;
 pub use memo::{
-    apply_memo_plan, plan_memo_tf, MemoL0Pass, MemoL1Pass, MemoTfPass, MEMO_IDX_CAP,
-    MEMO_IDX_MAX_FUNS, MEMO_IDX_TABLE_BYTES, MEMO_L2_MAX_ARGS, MEMO_L2_MAX_FUNS,
-    MEMO_PROCESS_BYTE_CAP, MEMO_SLOTS_TABLE_BYTES,
+    apply_memo_plan, plan_memo_tf, ConstFoldPass, LicmPass, MEMO_IDX_CAP, MEMO_IDX_MAX_FUNS,
+    MEMO_IDX_TABLE_BYTES, MEMO_L2_MAX_ARGS, MEMO_L2_MAX_FUNS, MEMO_L2_SLOTS, MEMO_PROCESS_BYTE_CAP,
+    MEMO_SLOTS_TABLE_BYTES, MEMO_TF_MAX_ARGS, MEMO_TF_MAX_FUNS, MEMO_TF_SLOTS,
 };
 
-use lumia_core::{Block, CoreFun, CoreModule, ListRepr, Local, MapRepr, Op, Value};
+use lumia_core::{
+    AdtRepr, Block, CoreFun, CoreModule, ListRepr, Local, MapRepr, Op, SetRepr, Value,
+};
 use memo::cse_module;
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
+#[derive(Default)]
 pub struct OptOptions {
     pub release: bool,
     /// Transparent Memo `T_f` (DESIGN §7.5). Defaults to `release`.
     pub memo_tf: bool,
-}
-
-impl Default for OptOptions {
-    fn default() -> Self {
-        Self {
-            release: false,
-            memo_tf: false,
-        }
-    }
 }
 
 impl OptOptions {
@@ -49,6 +45,31 @@ pub trait Pass {
     fn run(&self, module: &mut CoreModule);
 }
 
+/// Frontend → Core → optimize (for tests and tooling).
+pub fn compile_source_to_optimized(src: &str, opts: &OptOptions) -> Result<CoreModule, String> {
+    compile_source_to_optimized_with_frontend(src, opts, &lumia_core::FrontendOptions::default())
+}
+
+/// Same as [`compile_source_to_optimized`] with explicit frontend options.
+pub fn compile_source_to_optimized_with_frontend(
+    src: &str,
+    opts: &OptOptions,
+    frontend: &lumia_core::FrontendOptions,
+) -> Result<CoreModule, String> {
+    let mut core = lumia_core::compile_source_to_core_with_options(src, frontend)?;
+    optimize(&mut core, opts);
+    Ok(core)
+}
+
+/// Read a `.lm` file and compile through optimize.
+pub fn compile_file_to_optimized(
+    path: &std::path::Path,
+    opts: &OptOptions,
+) -> Result<CoreModule, String> {
+    let src = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    compile_source_to_optimized(&src, opts)
+}
+
 /// Run the standard pipeline. Uncertain → default stable paths (§7.1.1).
 pub fn optimize(module: &mut CoreModule, opts: &OptOptions) {
     // Plan transparent Memo on the pre-CSE module (reuse evidence needs duplicate calls).
@@ -58,16 +79,17 @@ pub fn optimize(module: &mut CoreModule, opts: &OptOptions) {
         None
     };
 
-    // L0/L1 always: CSE + const-fold/copy-prop + LICM (semantic-preserving).
+    // Local reuse always: CSE + const-fold/copy-prop + LICM (semantic-preserving).
     let mut passes: Vec<Box<dyn Pass>> = vec![
         Box::new(CsePass),
-        Box::new(MemoL0Pass),
-        Box::new(MemoL1Pass),
+        Box::new(ConstFoldPass),
+        Box::new(LicmPass),
+        // Escape always — ReprSelect and future codegen consume `CoreFun::escaping`.
+        Box::new(EscapePass),
     ];
     if opts.release {
         passes.push(Box::new(InlinePass));
-        passes.push(Box::new(EscapePass));
-        passes.push(Box::new(FusionStub));
+        passes.push(Box::new(ConcatIdentPass));
         passes.push(Box::new(ReprSelect));
         passes.push(Box::new(CopyElimPass));
     } else {
@@ -83,22 +105,26 @@ pub fn optimize(module: &mut CoreModule, opts: &OptOptions) {
     }
 }
 
-/// Named passes exposed for tooling / `--show-passes` later.
+/// Named passes for tooling / diagnostics.
+///
+/// `"memo_tf"` is listed for Release even though planning runs via [`plan_memo_tf`]
+/// *before* CSE (not as a `Pass::run`); applying a fresh plan after CSE would
+/// drop const-reuse evidence (§7.5.2).
 pub fn pass_names(release: bool) -> Vec<&'static str> {
     if release {
         vec![
             "cse",
-            "memo_l0",
-            "memo_l1",
-            "inline",
+            "const_fold",
+            "licm",
             "escape",
-            "fusion",
+            "inline",
+            "concat_ident",
             "repr_select",
             "copy_elim",
             "memo_tf",
         ]
     } else {
-        vec!["cse", "memo_l0", "memo_l1", "repr_select"]
+        vec!["cse", "const_fold", "licm", "escape", "repr_select"]
     }
 }
 
@@ -110,16 +136,6 @@ impl Pass for CsePass {
     }
     fn run(&self, module: &mut CoreModule) {
         cse_module(module);
-    }
-}
-
-struct FusionStub;
-impl Pass for FusionStub {
-    fn name(&self) -> &str {
-        "fusion"
-    }
-    fn run(&self, _module: &mut CoreModule) {
-        // List `map`/`filter`/`fold` fusion runs in HIR (`try_fuse_hof_fold`).
     }
 }
 
@@ -137,7 +153,7 @@ impl Pass for CopyElimPass {
 }
 
 fn elim_copies_in_fun(f: &mut CoreFun) {
-    let mut remap: HashMap<u32, u32> = HashMap::new();
+    let mut remap: HashMap<u32, u32> = HashMap::default();
     collect_copy_aliases(&f.body, &mut remap);
     if remap.is_empty() {
         return;
@@ -146,7 +162,7 @@ fn elim_copies_in_fun(f: &mut CoreFun) {
     let keys: Vec<u32> = remap.keys().copied().collect();
     for k in keys {
         let mut cur = k;
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         while let Some(&n) = remap.get(&cur) {
             if !seen.insert(cur) {
                 break;
@@ -215,73 +231,22 @@ fn apply_local_remap(block: &mut Block, remap: &HashMap<u32, u32>) {
             Op::Let { value, .. } | Op::Effect { value, .. } => {
                 remap_value_locals(value, remap);
             }
-            Op::Assign { value, .. } => map_l(value),
+            Op::Assign { value, .. } | Op::Return { value } => map_l(value),
             Op::Break | Op::Continue => {}
         }
     }
 }
 
 fn remap_value_locals(value: &mut Value, remap: &HashMap<u32, u32>) {
-    let map_l = |l: &mut Local| {
-        if let Some(&r) = remap.get(&l.0) {
-            *l = Local(r);
-        }
-    };
-    match value {
-        Value::Local(l) => map_l(l),
-        Value::Binary { left, right, .. } => {
-            map_l(left);
-            map_l(right);
-        }
-        Value::Unary { operand, .. } => map_l(operand),
-        Value::Call { args, .. }
-        | Value::Builtin { args, .. }
-        | Value::AllocList { elems: args, .. }
-        | Value::AllocSet { elems: args }
-        | Value::AllocMap {
-            flat_pairs: args, ..
-        }
-        | Value::AllocAdt { fields: args, .. }
-        | Value::AllocClosure {
-            captures: args, ..
-        } => {
-            for a in args {
-                map_l(a);
+    lumia_core::map_value_locals(
+        value,
+        &mut |l| {
+            if let Some(&r) = remap.get(&l.0) {
+                *l = Local(r);
             }
-        }
-        Value::IndirectCall { callee, args } => {
-            map_l(callee);
-            for a in args {
-                map_l(a);
-            }
-        }
-        Value::If {
-            cond,
-            then_block,
-            else_block,
-        } => {
-            map_l(cond);
-            apply_local_remap(then_block, remap);
-            apply_local_remap(else_block, remap);
-        }
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => {
-            apply_local_remap(header, remap);
-            apply_local_remap(body, remap);
-            apply_local_remap(latch, remap);
-        }
-        Value::Lambda { params, body } => {
-            for p in params {
-                map_l(p);
-            }
-            apply_local_remap(body, remap);
-        }
-        Value::ClosureCap { env, .. } => map_l(env),
-        _ => {}
-    }
+        },
+        &mut |b| apply_local_remap(b, remap),
+    );
 }
 
 fn strip_identity_lets(block: &mut Block, aliases: &HashMap<u32, u32>) {
@@ -333,7 +298,8 @@ impl Pass for ReprSelect {
     }
     fn run(&self, module: &mut CoreModule) {
         for f in &mut module.functions {
-            let escaping = escaping_locals(f);
+            // EscapePass always runs first and fills `f.escaping`.
+            let escaping = f.escaping.clone();
             select_in_fun(f, &escaping);
         }
     }
@@ -352,26 +318,43 @@ fn select_value(v: &mut Value, bound: Local, escaping: &HashSet<Local>) {
     match v {
         Value::AllocList { elems, repr } => {
             if elems.is_empty() {
+                // Empty → immortal singleton (`lumia_list_empty`).
                 *repr = ListRepr::LitList;
             } else if local_ok && elems.len() <= 8 {
-                // Non-escaping small list → lit specialization hint.
+                // Non-escaping small literal → stack layout in codegen (DESIGN §7).
                 *repr = ListRepr::LitList;
-            } else if elems.len() <= 8 {
-                *repr = ListRepr::HeapList;
             } else {
-                *repr = default_list_repr();
+                *repr = ListRepr::HeapList;
             }
         }
         Value::AllocMap { flat_pairs, repr } => {
             let n_pairs = flat_pairs.len() / 2;
-            if flat_pairs.is_empty() || (local_ok && n_pairs <= 8) {
+            // Preserve Eq-only AssocList; else stack LitMap when non-escaping ≤8.
+            if matches!(*repr, MapRepr::AssocList) {
+                // keep
+            } else if local_ok && n_pairs > 0 && n_pairs <= 8 {
+                *repr = MapRepr::LitMap;
+            } else if n_pairs <= 8 {
                 *repr = MapRepr::SmallMap;
             } else {
                 *repr = default_map_repr();
             }
+            let _ = flat_pairs;
         }
-        Value::AllocSet { .. } => {}
-        Value::AllocAdt { .. } => {}
+        Value::AllocSet { elems, repr } => {
+            if local_ok && !elems.is_empty() && elems.len() <= 8 {
+                *repr = SetRepr::LitSet;
+            } else {
+                *repr = SetRepr::HeapSet;
+            }
+        }
+        Value::AllocAdt { fields, repr, .. } => {
+            if local_ok && fields.len() <= 8 {
+                *repr = AdtRepr::LitAdt;
+            } else {
+                *repr = AdtRepr::HeapAdt;
+            }
+        }
         Value::AllocClosure { .. } | Value::ClosureCap { .. } => {}
         Value::If {
             then_block,
@@ -428,7 +411,12 @@ mod tests {
         assert!(pass_names(true).contains(&"inline"));
         assert!(pass_names(true).contains(&"escape"));
         assert!(pass_names(true).contains(&"copy_elim"));
+        assert!(pass_names(true).contains(&"const_fold"));
+        assert!(pass_names(true).contains(&"licm"));
+        assert!(pass_names(true).contains(&"concat_ident"));
+        assert!(pass_names(true).contains(&"memo_tf"));
         assert!(!pass_names(false).contains(&"inline"));
+        assert!(!pass_names(false).contains(&"memo_tf"));
     }
 
     #[test]
@@ -461,7 +449,11 @@ mod tests {
                 is_main: false,
                 memo: None,
                 external: None,
+                escaping: HashSet::default(),
+                scheme_poly: false,
             }],
+            hash_adts: HashSet::default(),
+            trait_methods: HashMap::default(),
         };
         CopyElimPass.run(&mut module);
         let f = &module.functions[0];
@@ -508,10 +500,142 @@ mod tests {
                 is_main: false,
                 memo: None,
                 external: None,
+                escaping: HashSet::default(),
+                scheme_poly: false,
             }],
+            hash_adts: HashSet::default(),
+            trait_methods: HashMap::default(),
         };
+        EscapePass.run(&mut module);
         ReprSelect.run(&mut module);
         let Op::Let { value, .. } = &module.functions[0].body.ops[1] else {
+            panic!("expected let");
+        };
+        match value {
+            Value::AllocList { repr, .. } => assert_eq!(*repr, ListRepr::LitList),
+            other => panic!("expected AllocList, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn repr_select_escaping_small_list_stays_heap() {
+        let mut module = CoreModule {
+            name: "M".into(),
+            functions: vec![CoreFun {
+                name: "f".into(),
+                params: vec![],
+                param_names: vec![],
+                param_tys: vec![],
+                body: Block {
+                    params: vec![],
+                    ops: vec![
+                        Op::Let {
+                            local: Local(0),
+                            value: Value::Int(1),
+                            pure_region: true,
+                        },
+                        Op::Let {
+                            local: Local(1),
+                            value: Value::AllocList {
+                                elems: vec![Local(0)],
+                                repr: ListRepr::HeapList,
+                            },
+                            pure_region: true,
+                        },
+                    ],
+                    result: Some(Local(1)),
+                },
+                ret_ty: Type::List(Box::new(Type::Int)),
+                effect: Effect::pure(),
+                is_main: false,
+                memo: None,
+                external: None,
+                escaping: HashSet::default(),
+                scheme_poly: false,
+            }],
+            hash_adts: HashSet::default(),
+            trait_methods: HashMap::default(),
+        };
+        EscapePass.run(&mut module);
+        ReprSelect.run(&mut module);
+        let Op::Let { value, .. } = &module.functions[0].body.ops[1] else {
+            panic!("expected let");
+        };
+        match value {
+            Value::AllocList { repr, .. } => assert_eq!(*repr, ListRepr::HeapList),
+            other => panic!("expected AllocList, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn repr_select_end_to_end_small_listof() {
+        use lumia_hir::lower_module;
+        use lumia_syntax::parse_module;
+        use lumia_ty::infer_module;
+        let src = r#"
+module M
+val main = {
+    val xs = listOf(10, 20, 30)
+    xs.len()
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let hir = lower_module(&ast).expect("lower");
+        let typed = infer_module(&hir).expect("infer");
+        let mut core =
+            lumia_core::lower_hir_with_schemes(&typed.module, &typed.fun_types, &typed.fun_schemes);
+        optimize(&mut core, &OptOptions::default());
+        let main = core.functions.iter().find(|f| f.is_main).expect("main");
+        let alloc = main.body.ops.iter().find_map(|op| match op {
+            Op::Let {
+                value: Value::AllocList { elems, repr },
+                ..
+            } if !elems.is_empty() => Some(*repr),
+            _ => None,
+        });
+        assert_eq!(
+            alloc,
+            Some(ListRepr::LitList),
+            "expected LitList for non-escaping listOf; escaping={:?}",
+            main.escaping
+        );
+    }
+
+    #[test]
+    fn repr_select_empty_list_is_lit() {
+        let mut module = CoreModule {
+            name: "M".into(),
+            functions: vec![CoreFun {
+                name: "f".into(),
+                params: vec![],
+                param_names: vec![],
+                param_tys: vec![],
+                body: Block {
+                    params: vec![],
+                    ops: vec![Op::Let {
+                        local: Local(0),
+                        value: Value::AllocList {
+                            elems: vec![],
+                            repr: ListRepr::HeapList,
+                        },
+                        pure_region: true,
+                    }],
+                    result: Some(Local(0)),
+                },
+                ret_ty: Type::List(Box::new(Type::Int)),
+                effect: Effect::pure(),
+                is_main: false,
+                memo: None,
+                external: None,
+                escaping: HashSet::default(),
+                scheme_poly: false,
+            }],
+            hash_adts: HashSet::default(),
+            trait_methods: HashMap::default(),
+        };
+        EscapePass.run(&mut module);
+        ReprSelect.run(&mut module);
+        let Op::Let { value, .. } = &module.functions[0].body.ops[0] else {
             panic!("expected let");
         };
         match value {

@@ -1,0 +1,23 @@
+module TraitCustomMethod
+
+import std.io.{println}
+
+type Point {
+    val x
+    val y
+}
+
+trait ToInt {
+    val toInt = { self -> 0 }
+}
+
+instance ToInt for Point {
+    val toInt = { self -> self.x }
+}
+
+/// UFCS resolves to mangled `__ToInt_Point_toInt` via trait_methods table.
+val main = {
+    val p = Point { x = 7, y = 9 }
+    println(p.toInt())
+    println(Point { x = 3, y = 0 }.toInt())
+}

@@ -1,0 +1,13 @@
+module ParFold
+
+import std.io.{println}
+
+val add = { a, b -> a + b }
+
+/// FunRef-safe pure scalar fold → ListParFold (associative combine).
+val main = {
+    val xs = range(0, 100)
+    val s = xs.fold(0, add)
+    println(s)
+    println(xs.fold(0, { a, x -> a + x }))
+}

@@ -1,0 +1,6 @@
+module BadEmptyMatch
+
+/// Intentionally non-exhaustive: empty match arms.
+val main = {
+    1 match { }
+}

@@ -1,0 +1,18 @@
+module ForDestructure
+
+import std.io.{println}
+
+/// `for (k, v) in` on Map and on List of pairs.
+val main = {
+    var map_sum = 0
+    for (k, v) in mapOf(1 to 10, 2 to 20) {
+        map_sum = map_sum + k + v
+    }
+    println(map_sum)
+
+    var list_sum = 0
+    for (k, v) in listOf((3, 4), (5, 6)) {
+        list_sum = list_sum + k + v
+    }
+    println(list_sum)
+}

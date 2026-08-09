@@ -1,0 +1,6 @@
+module BadIntOverflow
+
+val main = {
+    // Larger than i64::MAX — must be a parse error, not silently become 0.
+    println(999999999999999999999999)
+}

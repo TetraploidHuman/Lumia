@@ -1,0 +1,15 @@
+module PolySetId
+
+import std.io.{println}
+
+/// Identity at Set[Int] / Set[String] → `$Set_*` clones.
+val id = { s -> s }
+
+val main = {
+    val a = id(setOf(1, 2, 3))
+    println(a.len())
+    println(a.contains(2))
+    val b = id(setOf("a", "b"))
+    println(b.len())
+    println(b.contains("b"))
+}

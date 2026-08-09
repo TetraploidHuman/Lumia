@@ -5,3 +5,8 @@ edition.workspace = true
 
 [dependencies]
 lumia_syntax.workspace = true
+thiserror.workspace = true
+rustc-hash = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,8 @@
+module BadTupleProj
+
+val fst = { t -> t.0 }
+
+val main = {
+    // Open positional projection must not accept a non-tuple.
+    fst(1)
+}

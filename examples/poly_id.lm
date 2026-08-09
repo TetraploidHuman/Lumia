@@ -1,0 +1,12 @@
+module PolyId
+
+import std.io.{println}
+
+/// Let-polymorphic identity used at Int / Float / String call sites.
+val main = {
+    val id = { x -> x }
+    println(id(2))
+    println(id(1.5))
+    println(id("hi"))
+    println(id(1.5) + 2.0)
+}

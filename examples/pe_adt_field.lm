@@ -1,0 +1,16 @@
+module PeAdtField
+
+import std.io.{println}
+
+type Point {
+    val x
+    val y
+}
+
+/// Const-fold product field projection from a literal AllocAdt (memo L0).
+val main = {
+    val p = Point { x = 10, y = 20 }
+    println(p.x)
+    println(p.y)
+    println(p.x + p.y)
+}

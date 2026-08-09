@@ -182,7 +182,7 @@ impl<'a> Lexer<'a> {
             b'0'..=b'9' => self.lex_number(),
             b'_' => {
                 self.pos += 1;
-                if self.peek().is_some_and(|c| is_ident_continue(c)) {
+                if self.peek().is_some_and(is_ident_continue) {
                     self.pos -= 1;
                     self.lex_ident()
                 } else {
@@ -192,7 +192,7 @@ impl<'a> Lexer<'a> {
             b'a'..=b'z' | b'A'..=b'Z' => self.lex_ident(),
             _ => {
                 self.pos += 1;
-                TokenKind::Ident(format!("/*bad:{}*/", b as char))
+                TokenKind::Error(format!("invalid character U+{b:02X}"))
             }
         };
         let end = self.pos as u32;
@@ -273,11 +273,26 @@ impl<'a> Lexer<'a> {
             {
                 self.pos += 1;
             }
-            let raw: String = self.src[start..self.pos].chars().filter(|c| *c != '_').collect();
-            TokenKind::Float(raw.parse().unwrap_or(0.0))
+            let raw: String = self.src[start..self.pos]
+                .chars()
+                .filter(|c| *c != '_')
+                .collect();
+            match raw.parse::<f64>() {
+                Ok(n) if n.is_finite() => TokenKind::Float(n),
+                Ok(_) => TokenKind::Error(format!("float literal `{raw}` is not finite")),
+                Err(_) => TokenKind::Error(format!("invalid float literal `{raw}`")),
+            }
         } else {
-            let raw: String = self.src[start..self.pos].chars().filter(|c| *c != '_').collect();
-            TokenKind::Int(raw.parse().unwrap_or(0))
+            let raw: String = self.src[start..self.pos]
+                .chars()
+                .filter(|c| *c != '_')
+                .collect();
+            match raw.parse::<i64>() {
+                Ok(n) => TokenKind::Int(n),
+                Err(_) => TokenKind::Error(format!(
+                    "integer literal `{raw}` is out of range for Int (i64)"
+                )),
+            }
         }
     }
 
@@ -330,16 +345,31 @@ impl<'a> Lexer<'a> {
                                 break;
                             }
                         } else if ch == b'"' {
-                            // skip string literal inside ${} (best-effort)
+                            // Skip nested string literal inside `${…}`.
                             self.pos += 1;
                             while self.pos < self.bytes.len() {
                                 let sc = self.bytes[self.pos];
                                 if sc == b'\\' {
-                                    self.pos += 2;
+                                    self.pos = self.pos.saturating_add(2);
                                     continue;
                                 }
                                 self.pos += 1;
                                 if sc == b'"' {
+                                    break;
+                                }
+                            }
+                            continue;
+                        } else if ch == b'\'' {
+                            // Skip char literal so `'}'` does not close `${…}`.
+                            self.pos += 1;
+                            while self.pos < self.bytes.len() {
+                                let sc = self.bytes[self.pos];
+                                if sc == b'\\' {
+                                    self.pos = self.pos.saturating_add(2);
+                                    continue;
+                                }
+                                self.pos += 1;
+                                if sc == b'\'' {
                                     break;
                                 }
                             }
@@ -386,12 +416,12 @@ impl<'a> Lexer<'a> {
     fn lex_char(&mut self) -> TokenKind {
         self.pos += 1; // opening '
         if self.pos >= self.bytes.len() {
-            return TokenKind::Char('\0');
+            return TokenKind::Error("unterminated character literal".into());
         }
         let ch = if self.bytes[self.pos] == b'\\' {
             self.pos += 1;
             if self.pos >= self.bytes.len() {
-                return TokenKind::Char('\0');
+                return TokenKind::Error("unterminated character escape".into());
             }
             let esc = self.bytes[self.pos];
             self.pos += 1;
@@ -407,14 +437,18 @@ impl<'a> Lexer<'a> {
         } else {
             // Decode one UTF-8 scalar from remaining bytes
             let rest = &self.src[self.pos..];
-            let ch = rest.chars().next().unwrap_or('\0');
+            let Some(ch) = rest.chars().next() else {
+                return TokenKind::Error("unterminated character literal".into());
+            };
             self.pos += ch.len_utf8();
             ch
         };
         if self.pos < self.bytes.len() && self.bytes[self.pos] == b'\'' {
             self.pos += 1;
+            TokenKind::Char(ch)
+        } else {
+            TokenKind::Error("unterminated character literal".into())
         }
-        TokenKind::Char(ch)
     }
 }
 
@@ -441,5 +475,48 @@ mod tests {
         assert!(matches!(kinds[0], TokenKind::Val));
         assert!(matches!(kinds[3], TokenKind::Int(1)));
         assert!(kinds.iter().any(|k| matches!(k, TokenKind::PipePipe)));
+    }
+
+    #[test]
+    fn interp_skips_char_literal_braces() {
+        let mut lx = Lexer::new(r#""x${'}'}y""#);
+        let t = lx.next_token();
+        match t.kind {
+            TokenKind::InterpString(parts) => {
+                assert!(
+                    parts.iter().any(|p| matches!(
+                        p,
+                        crate::token::StringPart::ExprSrc(s) if s.contains('\'')
+                    )),
+                    "char literal must stay inside ExprSrc, got {parts:?}"
+                );
+                assert!(
+                    !parts.iter().any(|p| matches!(
+                        p,
+                        crate::token::StringPart::Lit(s) if s.contains('}')
+                    )),
+                    "closing brace of char must not end interpolation early: {parts:?}"
+                );
+            }
+            other => panic!("expected InterpString, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unterminated_char_is_error() {
+        let mut lx = Lexer::new("'");
+        let t = lx.next_token();
+        assert!(
+            matches!(t.kind, TokenKind::Error(ref m) if m.contains("unterminated")),
+            "got {:?}",
+            t.kind
+        );
+    }
+
+    #[test]
+    fn invalid_byte_is_error_not_fake_ident() {
+        let mut lx = Lexer::new("$");
+        let t = lx.next_token();
+        assert!(matches!(t.kind, TokenKind::Error(_)), "got {:?}", t.kind);
     }
 }

@@ -1,0 +1,20 @@
+module ForDemo
+
+fun main() effect.io=true memo=None {
+  %0 = i64 0  // pure
+  acc := %0
+  %1 = i64 1  // pure
+  __i_74 := %1
+  %11 = loop ...  // effect
+  %12 = load acc  // pure
+  %13 = builtin Println(%12)  // effect
+  %14 = %0  // pure
+  j := %0
+  %15 = %0  // pure
+  sum := %0
+  %23 = i64 1  // pure
+  %25 = loop ...  // effect
+  %26 = load sum  // pure
+  %27 = builtin Println(%26)  // effect
+  return %27
+}

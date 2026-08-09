@@ -1,0 +1,27 @@
+module LetDestructure
+
+import std.io.{println}
+
+type Point {
+    val x
+    val y
+}
+
+val main = {
+    val p = (10, 20)
+    val (a, b) = p
+    println(a)
+    println(b)
+
+    val nested = ((1, 2), 3)
+    val ((x, y), z) = nested
+    println(x + y + z)
+
+    val pt = Point { x = 7, y = 8 }
+    val Point { x, y } = pt
+    println(x)
+    println(y)
+
+    // Keep positional projection alongside destructure.
+    println(p.0 + p.1)
+}

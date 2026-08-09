@@ -1,0 +1,12 @@
+module ForPairList
+
+import std.io.{println}
+
+// Regression: `for (k,v) in` must work on a List of pairs, not only Map.
+val main = {
+    var sum = 0
+    for (k, v) in listOf((1, 10), (2, 20), (3, 30)) {
+        sum = sum + k + v
+    }
+    println(sum)
+}

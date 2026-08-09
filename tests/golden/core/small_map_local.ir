@@ -1,0 +1,45 @@
+module SmallMapLocal
+
+fun main() effect.io=true memo=None {
+  %0 = i64 1  // pure
+  %1 = i64 10  // pure
+  %2 = i64 2  // pure
+  %3 = i64 20  // pure
+  %4 = i64 3  // pure
+  %5 = i64 30  // pure
+  %6 = alloc_map[LitMap](n=3)  // pure
+  %7 = i64 3  // pure
+  %8 = builtin Println(%7)  // effect
+  %9 = %2  // pure
+  %10 = bool true  // pure
+  %11 = builtin Println(%10)  // effect
+  %12 = %0  // pure
+  %13 = builtin ListGet(%6, %0)  // pure
+  %14 = %0  // pure
+  %15 = i64 -1  // pure
+  %16 = call unwrap_or$Option_Int_Int(%13, %15)  // pure
+  %17 = builtin Println(%16)  // effect
+  %18 = %4  // pure
+  %19 = builtin ListGet(%6, %4)  // pure
+  %20 = %0  // pure
+  %21 = i64 -1  // pure
+  %22 = call unwrap_or$Option_Int_Int(%19, %21)  // pure
+  %23 = builtin Println(%22)  // effect
+  return %23
+}
+
+fun unwrap_or(opt, d) effect.io=false memo=None {
+  %2 = builtin AdtTag(%0)  // pure
+  %3 = i64 1  // pure
+  %4 = %2 == %3  // pure
+  %12 = if ...  // pure
+  return %12
+}
+
+fun unwrap_or$Option_Int_Int(opt, d) effect.io=false memo=None {
+  %2 = builtin AdtTag(%0)  // pure
+  %3 = i64 1  // pure
+  %4 = %2 == %3  // pure
+  %12 = if ...  // pure
+  return %12
+}

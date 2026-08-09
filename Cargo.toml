@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/lumia",
+    "crates/lumia_abi",
     "crates/lumia_syntax",
     "crates/lumia_hir",
     "crates/lumia_ty",
@@ -19,6 +20,7 @@ license = "MIT"
 repository = "https://github.com/TetraploidHuman/Lumia"
 
 [workspace.dependencies]
+lumia_abi = { path = "crates/lumia_abi" }
 lumia_syntax = { path = "crates/lumia_syntax" }
 lumia_hir = { path = "crates/lumia_hir" }
 lumia_ty = { path = "crates/lumia_ty" }
@@ -33,3 +35,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
 inkwell = { version = "0.10", default-features = false, features = ["llvm21-1", "target-x86"] }
+rustc-hash = "2"
+
+[workspace.lints.clippy]
+# Helpers shared across HOF / TCO analysis naturally take many parameters.
+too_many_arguments = "allow"
+# Dyn FnMut callbacks in infer_value_ty_ctx are intentional.
+type_complexity = "allow"
+# Nested Op/Value matches are clearer than deeply nested patterns in opt/memo.
+collapsible_match = "allow"

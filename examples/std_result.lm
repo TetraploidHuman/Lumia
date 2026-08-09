@@ -1,0 +1,37 @@
+module StdResult
+
+import std.io.{println}
+import std.result.{unwrapOr, resultMap, andThen, mapErr, isOk, isErr}
+
+val dbl = { x -> x + x }
+val parseEven = { n ->
+    if n % 2 == 0 {
+        Ok(n / 2)
+    } else {
+        Err("odd")
+    }
+}
+val bang = { s -> s.concat("!") }
+
+val main = {
+    println(unwrapOr(Ok(42), 0))
+    println(unwrapOr(Err("x"), -1))
+    resultMap(Ok(1.5), dbl) match {
+        Ok(n) -> println(n)
+        Err(_) -> println(0.0)
+    }
+    andThen(Ok(10), parseEven) match {
+        Ok(n) -> println(n)
+        Err(e) -> println(e)
+    }
+    andThen(Ok(7), parseEven) match {
+        Ok(n) -> println(n)
+        Err(e) -> println(e)
+    }
+    mapErr(Err("boom"), bang) match {
+        Ok(n) -> println(n)
+        Err(e) -> println(e)
+    }
+    println(isOk(Ok(1)))
+    println(isErr(Err(0)))
+}

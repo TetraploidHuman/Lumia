@@ -1,0 +1,6 @@
+module BadValAssign
+
+val main = {
+    val x = 1
+    x = 2
+}

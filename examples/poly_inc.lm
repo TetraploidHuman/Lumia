@@ -1,0 +1,10 @@
+module PolyInc
+
+import std.io.{println}
+
+/// Non-identity let-poly: `{ x -> x + x }` monomorphized at Int and Float sites.
+val main = {
+    val dbl = { x -> x + x }
+    println(dbl(1))
+    println(dbl(1.5))
+}

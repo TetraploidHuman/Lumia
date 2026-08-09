@@ -1,0 +1,16 @@
+module EffectHof
+
+import std.io.{println}
+
+/// Higher-order `apply` picks up IO from an effectful callback.
+val apply(f, x) = f(x)
+
+val boom(x) = {
+    val y = x + 1
+    println(y - 1)
+    y
+}
+
+val main = {
+    println(apply(boom, 41))
+}

@@ -41,6 +41,8 @@ pub enum TokenKind {
     In,
     Break,
     Continue,
+    Return,
+    Alt,
     And,
     Or,
     Not,
@@ -69,9 +71,9 @@ pub enum TokenKind {
     Colon,
     ColonColon,
     Semi,
-    Arrow,     // ->
-    FatArrow,  // => (rejected by parser; reserved)
-    PipePipe,  // >>
+    Arrow,    // ->
+    FatArrow, // => (rejected by parser; reserved)
+    PipePipe, // >>
     Eq,
     EqEq,
     Ne,
@@ -87,6 +89,9 @@ pub enum TokenKind {
     Hash,
     Underscore,
     Ellipsis, // .. in patterns as rest marker handled via DotDot
+
+    /// Lexical error (e.g. integer literal overflow); parser turns this into a diagnostic.
+    Error(String),
 
     Eof,
 }
@@ -106,6 +111,8 @@ impl TokenKind {
             "in" => TokenKind::In,
             "break" => TokenKind::Break,
             "continue" => TokenKind::Continue,
+            "return" => TokenKind::Return,
+            "alt" => TokenKind::Alt,
             "and" => TokenKind::And,
             "or" => TokenKind::Or,
             "not" => TokenKind::Not,

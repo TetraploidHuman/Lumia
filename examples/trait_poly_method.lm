@@ -1,0 +1,31 @@
+module TraitPolyMethod
+
+import std.io.{println}
+
+type Point {
+    val x
+    val y
+}
+
+type Box {
+    val n
+}
+
+trait ToInt {
+    val toInt = { self -> 0 }
+}
+
+instance ToInt for Point {
+    val toInt = { self -> self.x }
+}
+
+instance ToInt for Box {
+    val toInt = { self -> self.n }
+}
+
+/// Polymorphic UFCS method: deferred constraint + post-mono mangled resolve.
+val main = {
+    val f = { x -> x.toInt() }
+    println(f(Point { x = 7, y = 0 }))
+    println(f(Box { n = 4 }))
+}

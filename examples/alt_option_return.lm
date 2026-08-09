@@ -1,0 +1,25 @@
+module alt_option_return
+
+val half = { n ->
+    if n % 2 == 0 {
+        Some(n / 2)
+    } else {
+        None
+    }
+}
+
+val twice_even = { n ->
+    val x = half(n) alt return None
+    Some(x * 2)
+}
+
+val main = {
+    println(twice_even(10) match {
+        Some(v) -> v
+        None -> -1
+    })
+    println(twice_even(7) match {
+        Some(v) -> v
+        None -> -1
+    })
+}

@@ -1,0 +1,40 @@
+module TraitPolyShow
+
+fun __Show_Box_show(self) effect.io=false memo=None {
+  %1 = str "B"  // pure
+  return %1
+}
+
+fun __Show_Point_show(self) effect.io=false memo=None {
+  %1 = str "P"  // pure
+  return %1
+}
+
+fun __lam_0(p0) effect.io=false memo=None {
+  %1 = builtin Show(%0)  // pure
+  return %1
+}
+
+fun __lam_0$Box_Int(p0) effect.io=false memo=None {
+  %1 = builtin Show(%0)  // pure
+  return %1
+}
+
+fun __lam_0$Point_Int_Int(p0) effect.io=false memo=None {
+  %1 = builtin Show(%0)  // pure
+  return %1
+}
+
+fun main() effect.io=true memo=None {
+  %2 = funref __lam_0  // pure
+  %3 = i64 1  // pure
+  %4 = i64 2  // pure
+  %5 = alloc_adt(Point, tag=0, n=2)  // pure
+  %6 = call __lam_0$Point_Int_Int(%5)  // pure
+  %7 = builtin Println(%6)  // effect
+  %8 = i64 3  // pure
+  %9 = alloc_adt(Box, tag=0, n=1)  // pure
+  %10 = call __lam_0$Box_Int(%9)  // pure
+  %11 = builtin Println(%10)  // effect
+  return %11
+}

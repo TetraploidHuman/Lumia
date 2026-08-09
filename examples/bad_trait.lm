@@ -1,0 +1,14 @@
+module BadTrait
+
+type Point {
+    val x
+    val y
+}
+
+// Unknown trait name must fail.
+instance NotATrait for Point {
+}
+
+val main = {
+    0
+}

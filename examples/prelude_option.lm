@@ -1,0 +1,28 @@
+module PreludeOption
+
+import std.io.{println}
+
+// No local `type Option` — uses injected prelude.
+val main = {
+    val m = mapOf(1 to 10)
+    m.get(1) match {
+        Some(v) -> println(v)
+        None -> println(-1)
+    }
+    m.get(9) match {
+        Some(v) -> println(v)
+        None -> println(-1)
+    }
+
+    // Pin both Result type params so Ok/Err arms share Result[Int, Int].
+    val r1 = if true { Ok(42) } else { Err(0) }
+    r1 match {
+        Ok(v) -> println(v)
+        Err(e) -> println(e)
+    }
+    val r2 = if false { Ok(0) } else { Err(7) }
+    r2 match {
+        Ok(v) -> println(v)
+        Err(e) -> println(e)
+    }
+}

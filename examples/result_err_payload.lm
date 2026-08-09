@@ -1,0 +1,25 @@
+module ResultErrPayload
+
+import std.io.{println}
+
+// Regression: Err(e) payload must be typed as E, not T.
+val pick(b) = {
+    if b {
+        Ok(42)
+    } else {
+        Err("boom")
+    }
+}
+
+val main = {
+    val n = pick(true) match {
+        Ok(x) -> x
+        Err(e) -> e.len()
+    }
+    println(n)
+    val m = pick(false) match {
+        Ok(x) -> x
+        Err(e) -> e.len()
+    }
+    println(m)
+}

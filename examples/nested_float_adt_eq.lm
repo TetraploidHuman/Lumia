@@ -1,0 +1,22 @@
+module NestedFloatAdtEq
+
+import std.io.{println}
+
+type Option {
+    Some(Float)
+    None
+}
+
+/// Nested Float ADTs must use IEEE via layout mask stored on the object
+/// (list/set membership goes through `lumia_eq`, not typed `lumia_adt_eq`).
+val main = {
+    println(if listOf(Some(0.0)) == listOf(Some(-0.0)) { 1 } else { 0 })
+    val nan = 0.0 / 0.0
+    println(if listOf(Some(nan)) == listOf(Some(nan)) { 1 } else { 0 })
+    val a = Some(0.0)
+    val b = Some(-0.0)
+    val s = setOf(a)
+    println(if s.contains(b) { 1 } else { 0 })
+    println(if s.contains(a) { 1 } else { 0 })
+    println(if listOf(None) == listOf(None) { 1 } else { 0 })
+}
