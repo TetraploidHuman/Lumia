@@ -704,6 +704,37 @@ fn specialize_mono_calls(module: &mut CoreModule) {
             &fun_sigs,
         );
     }
+    // After all clones exist, upgrade erased Int rets on HOF wrappers whose
+    // bodies now `Call(dbl$Float, …)` (directize order within a round varies).
+    refresh_body_fixed_ret_tys(module);
+}
+
+fn refresh_body_fixed_ret_tys(module: &mut CoreModule) {
+    let snap = module.functions.clone();
+    let traits = module.trait_methods.clone();
+    for fun in &mut module.functions {
+        let params = param_ty_map(fun);
+        let Some(t) = block_result_fixed_ty(&fun.body, &snap, &traits, &params) else {
+            continue;
+        };
+        let upgrade = match (&fun.ret_ty, &t) {
+            (
+                Type::Int | Type::Var(_),
+                Type::Float
+                | Type::Bool
+                | Type::String
+                | Type::Char
+                | Type::Adt { .. }
+                | Type::List(_)
+                | Type::Map(_, _)
+                | Type::Set(_),
+            ) => true,
+            _ => false,
+        };
+        if upgrade {
+            fun.ret_ty = t;
+        }
+    }
 }
 
 /// One scan→clone pass. Returns true if any new clone was appended.
@@ -753,22 +784,26 @@ fn specialize_mono_round(
         }
         let param_tys = key.param_tys(&module.functions);
         let inferred = key.ret_ty(&module.functions);
-        let ret_ty = mono_clone_ret_ty(orig, &inferred, &module.functions, &module.trait_methods);
-        if orig.param_tys == param_tys
-            && orig.ret_ty == ret_ty
-            && key.funref_param_binds(&orig.params).is_empty()
-        {
-            continue;
-        }
+        let binds = key.funref_param_binds(&orig.params);
         let mut clone = orig.clone();
         clone.name = new_name.clone();
-        clone.param_tys = param_tys;
-        clone.ret_ty = ret_ty;
+        clone.param_tys = param_tys.clone();
         clone.memo = None;
-        let binds = key.funref_param_binds(&clone.params);
         if !binds.is_empty() {
+            // Directize before ret_ty: `apply(dbl, 1.5)` body becomes
+            // `Call(dbl$Float, …)` whose ret is Float, not the erased Int FunRef.
             directize_block(&mut clone.body, &binds);
         }
+        let ret_ty = mono_clone_ret_ty(
+            &clone,
+            &inferred,
+            &module.functions,
+            &module.trait_methods,
+        );
+        if orig.param_tys == param_tys && orig.ret_ty == ret_ty && binds.is_empty() {
+            continue;
+        }
+        clone.ret_ty = ret_ty;
         renames.insert((name, key), new_name);
         clones.push(clone);
     }
@@ -777,19 +812,23 @@ fn specialize_mono_round(
     added
 }
 
-/// Ret type for a mono clone: keep Show/toInt-shaped returns; let Num poly
-/// follow MonoKey (`Int` body → `$Float` clone must become Float).
+/// Ret type for a mono clone: prefer body structure + formals; Num poly
+/// (`{ x -> x + x }`) falls back to MonoKey when the body has no fixed ret.
+///
+/// Never replace an ADT/container return with a scalar MonoKey *argument*
+/// (`pick(true)` stays `Result`, not `Bool`).
 fn mono_clone_ret_ty(
-    orig: &CoreFun,
+    fun: &CoreFun,
     inferred: &Type,
     functions: &[CoreFun],
     trait_methods: &HashMap<(String, String), Vec<String>>,
 ) -> Type {
-    // Body-fixed wins: `Builtin::Show` → String, trait method Call → sample ret.
-    if let Some(t) = block_result_fixed_ty(&orig.body, functions, trait_methods) {
+    let param_map = param_ty_map(fun);
+    // Body-fixed wins: `toInt` If→Int, `Ok(x)`→Result[param], `Show`→String.
+    if let Some(t) = block_result_fixed_ty(&fun.body, functions, trait_methods, &param_map) {
         return t;
     }
-    match &orig.ret_ty {
+    match &fun.ret_ty {
         Type::String => Type::String,
         Type::Bool => Type::Bool,
         Type::List(e) if matches!(e.as_ref(), Type::Int) => inferred.clone(),
@@ -802,10 +841,88 @@ fn mono_clone_ret_ty(
             | Type::Map(_, _)
             | Type::Set(_)
             | Type::String
-            | Type::Bool => orig.ret_ty.clone(),
+            | Type::Bool => fun.ret_ty.clone(),
             _ => inferred.clone(),
         },
+        // Keep ADT/container shape; refine only type-vars from a matching Adt key.
+        Type::Adt { .. } | Type::List(_) | Type::Map(_, _) | Type::Set(_) | Type::Tuple(_) => {
+            refine_mono_container_ret(&fun.ret_ty, inferred)
+        }
         _ => inferred.clone(),
+    }
+}
+
+fn param_ty_map(fun: &CoreFun) -> HashMap<u32, Type> {
+    fun.params
+        .iter()
+        .zip(fun.param_tys.iter())
+        .map(|(p, t)| (p.0, t.clone()))
+        .collect()
+}
+
+/// Keep ADT/List/Map/Set shape; refine only `Var` slots (never blast Int
+/// placeholders — those are often literal field types like `Ok(7)`).
+fn refine_mono_container_ret(orig: &Type, inferred: &Type) -> Type {
+    match orig {
+        Type::Adt { name, params } => {
+            let mut ps = params.clone();
+            match inferred {
+                Type::Adt {
+                    name: iname,
+                    params: ips,
+                } if iname == name => {
+                    for (p, ip) in ps.iter_mut().zip(ips.iter()) {
+                        if matches!(p, Type::Var(_)) && !matches!(ip, Type::Var(_)) {
+                            *p = ip.clone();
+                        }
+                    }
+                }
+                Type::List(_) | Type::Map(_, _) | Type::Set(_) => {
+                    if let Some(p) = ps.first_mut() {
+                        if matches!(p, Type::Var(_)) {
+                            *p = inferred.clone();
+                        }
+                    }
+                }
+                _ => {}
+            }
+            Type::Adt {
+                name: name.clone(),
+                params: ps,
+            }
+        }
+        Type::List(e) => match inferred {
+            Type::List(_) => inferred.clone(),
+            Type::Float | Type::Bool | Type::Int | Type::String | Type::Char
+                if matches!(e.as_ref(), Type::Var(_)) =>
+            {
+                Type::List(Box::new(inferred.clone()))
+            }
+            _ => orig.clone(),
+        },
+        Type::Set(e) => match inferred {
+            Type::Set(_) => inferred.clone(),
+            Type::Float | Type::Bool | Type::Int | Type::String | Type::Char
+                if matches!(e.as_ref(), Type::Var(_)) =>
+            {
+                Type::Set(Box::new(inferred.clone()))
+            }
+            _ => orig.clone(),
+        },
+        Type::Map(k, v) => match inferred {
+            Type::Map(_, _) => inferred.clone(),
+            Type::Float | Type::Bool | Type::Int | Type::String | Type::Char
+                if matches!(k.as_ref(), Type::Var(_)) =>
+            {
+                Type::Map(Box::new(inferred.clone()), v.clone())
+            }
+            _ => orig.clone(),
+        },
+        Type::Tuple(ts) => match inferred {
+            Type::Tuple(its) if its.len() == ts.len() => inferred.clone(),
+            _ => orig.clone(),
+        },
+        other => other.clone(),
     }
 }
 
@@ -813,10 +930,11 @@ fn block_result_fixed_ty(
     block: &Block,
     functions: &[CoreFun],
     trait_methods: &HashMap<(String, String), Vec<String>>,
+    param_tys: &HashMap<u32, Type>,
 ) -> Option<Type> {
     let Local(r) = block.result?;
     let mut seen = HashSet::new();
-    local_fixed_ty(block, r, functions, trait_methods, &mut seen)
+    local_fixed_ty(block, r, functions, trait_methods, param_tys, &mut seen)
 }
 
 fn local_fixed_ty(
@@ -824,15 +942,19 @@ fn local_fixed_ty(
     id: u32,
     functions: &[CoreFun],
     trait_methods: &HashMap<(String, String), Vec<String>>,
+    param_tys: &HashMap<u32, Type>,
     seen: &mut HashSet<u32>,
 ) -> Option<Type> {
     if !seen.insert(id) {
         return None;
     }
+    if let Some(t) = param_tys.get(&id) {
+        return Some(t.clone());
+    }
     for op in &block.ops {
         if let Op::Let { local, value, .. } = op {
             if local.0 == id {
-                return value_fixed_ty(block, value, functions, trait_methods, seen);
+                return value_fixed_ty(block, value, functions, trait_methods, param_tys, seen);
             }
         }
     }
@@ -844,10 +966,13 @@ fn value_fixed_ty(
     value: &Value,
     functions: &[CoreFun],
     trait_methods: &HashMap<(String, String), Vec<String>>,
+    param_tys: &HashMap<u32, Type>,
     seen: &mut HashSet<u32>,
 ) -> Option<Type> {
     match value {
-        Value::Local(Local(id)) => local_fixed_ty(block, *id, functions, trait_methods, seen),
+        Value::Local(Local(id)) => {
+            local_fixed_ty(block, *id, functions, trait_methods, param_tys, seen)
+        }
         Value::Builtin {
             name: Builtin::Show,
             ..
@@ -868,6 +993,119 @@ fn value_fixed_ty(
                 .and_then(|(_, mangled)| mangled.first())
                 .and_then(|m| functions.iter().find(|f| f.name == *m));
             sample.map(|f| f.ret_ty.clone())
+        }
+        Value::AllocAdt {
+            adt_name,
+            tag,
+            fields,
+            ..
+        } => {
+            let field_tys: Vec<Type> = fields
+                .iter()
+                .map(|Local(id)| {
+                    local_fixed_ty(block, *id, functions, trait_methods, param_tys, seen)
+                        .unwrap_or(Type::Int)
+                })
+                .collect();
+            // Result[T,E]: Ok → params[0]=T; Err → params[1]=E (other slot Int placeholder).
+            // Option: None → [Int] placeholder so join with Some(T) yields Option[T].
+            let params = if adt_name == "Result" {
+                let payload = field_tys.first().cloned().unwrap_or(Type::Int);
+                if *tag == 0 {
+                    vec![payload, Type::Int]
+                } else {
+                    vec![Type::Int, payload]
+                }
+            } else if adt_name == "Option" && field_tys.is_empty() {
+                vec![Type::Int]
+            } else {
+                field_tys
+            };
+            Some(Type::Adt {
+                name: adt_name.clone(),
+                params,
+            })
+        }
+        Value::If {
+            then_block,
+            else_block,
+            ..
+        } => {
+            let t = block_result_fixed_ty(then_block, functions, trait_methods, param_tys)?;
+            let e = block_result_fixed_ty(else_block, functions, trait_methods, param_tys)?;
+            join_fixed_ty(&t, &e)
+        }
+        Value::Binary {
+            op: BinOp::Eq
+                | BinOp::Ne
+                | BinOp::Lt
+                | BinOp::Le
+                | BinOp::Gt
+                | BinOp::Ge
+                | BinOp::And
+                | BinOp::Or,
+            ..
+        } => Some(Type::Bool),
+        _ => None,
+    }
+}
+
+fn join_fixed_ty(a: &Type, b: &Type) -> Option<Type> {
+    if a == b {
+        return Some(a.clone());
+    }
+    match (a, b) {
+        (
+            Type::Adt {
+                name: n1,
+                params: p1,
+            },
+            Type::Adt {
+                name: n2,
+                params: p2,
+            },
+        ) if n1 == n2 => {
+            if n1 == "Result" {
+                let merge = |x: &Type, y: &Type| -> Type {
+                    match (x, y) {
+                        (Type::Int, other) | (Type::Var(_), other) => other.clone(),
+                        (other, Type::Int) | (other, Type::Var(_)) => other.clone(),
+                        (l, r) if l == r => l.clone(),
+                        (l, _) => l.clone(),
+                    }
+                };
+                let t = merge(
+                    p1.first().unwrap_or(&Type::Int),
+                    p2.first().unwrap_or(&Type::Int),
+                );
+                let e = merge(
+                    p1.get(1).unwrap_or(&Type::Int),
+                    p2.get(1).unwrap_or(&Type::Int),
+                );
+                Some(Type::Adt {
+                    name: "Result".into(),
+                    params: vec![t, e],
+                })
+            } else if n1 == "Option" {
+                let merge = |x: &Type, y: &Type| -> Type {
+                    match (x, y) {
+                        (Type::Int, other) | (Type::Var(_), other) => other.clone(),
+                        (other, Type::Int) | (other, Type::Var(_)) => other.clone(),
+                        (l, r) if l == r => l.clone(),
+                        (l, _) => l.clone(),
+                    }
+                };
+                let p = merge(
+                    p1.first().unwrap_or(&Type::Int),
+                    p2.first().unwrap_or(&Type::Int),
+                );
+                Some(Type::Adt {
+                    name: "Option".into(),
+                    params: vec![p],
+                })
+            } else {
+                None
+            }
         }
         _ => None,
     }
