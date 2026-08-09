@@ -422,12 +422,32 @@ mod tests {
     }
 
     #[test]
-    fn emit_memo_tf_has_lookup() {
+    fn emit_memo_tf_has_lookup_and_store() {
         let ir = emit_example("examples/memo_tf.lm", true);
         // C ABI symbols stay `lumia_memo_l2_*` (frozen); planner name is `T_f`.
         assert!(
-            ir.contains("lumia_memo_l2_lookup") || ir.contains("lumia_memo_l2_store"),
-            "expected memo_l2 ABI calls in memo_tf IR"
+            ir.contains("lumia_memo_l2_lookup"),
+            "expected lumia_memo_l2_lookup in memo_tf IR"
+        );
+        assert!(
+            ir.contains("lumia_memo_l2_store"),
+            "expected lumia_memo_l2_store in memo_tf IR"
+        );
+    }
+
+    #[test]
+    fn emit_hof_float_apply_keeps_f64_ret() {
+        let ir = emit_example("examples/hof_float_apply.lm", false);
+        assert!(
+            ir.contains("dbl$Float") || ir.contains("apply$"),
+            "expected mono Float/HOF clone names in IR; snip:\n{}",
+            &ir[..ir.len().min(2500)]
+        );
+        // Float C ABI uses LLVM `double` for specialized / HOF-refined returns.
+        assert!(
+            ir.contains("double"),
+            "expected f64/`double` ABI in hof_float_apply IR; snip:\n{}",
+            &ir[..ir.len().min(2500)]
         );
     }
 

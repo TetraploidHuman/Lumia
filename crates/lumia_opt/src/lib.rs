@@ -4,10 +4,12 @@
 //! local CSE/fold/LICM + runtime `T_f` (`memo_tf`).
 //! Escape analysis + small pure inlining live in [`escape`] / [`inline`].
 
+mod copy_elim;
 mod escape;
 mod fusion;
 mod inline;
 mod memo;
+mod repr_select;
 
 pub use escape::{escaping_locals, EscapePass};
 pub use fusion::ConcatIdentPass;
@@ -18,11 +20,10 @@ pub use memo::{
     MEMO_SLOTS_TABLE_BYTES, MEMO_TF_MAX_ARGS, MEMO_TF_MAX_FUNS, MEMO_TF_SLOTS,
 };
 
-use lumia_core::{
-    AdtRepr, Block, CoreFun, CoreModule, ListRepr, Local, MapRepr, Op, SetRepr, Value,
-};
+use copy_elim::CopyElimPass;
+use lumia_core::{CoreModule, ListRepr, MapRepr};
 use memo::cse_module;
-use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use repr_select::ReprSelect;
 
 #[derive(Default)]
 pub struct OptOptions {
@@ -139,251 +140,6 @@ impl Pass for CsePass {
     }
 }
 
-/// Copy elimination: collapse `let x = y` aliases (SSA copy-prop).
-struct CopyElimPass;
-impl Pass for CopyElimPass {
-    fn name(&self) -> &str {
-        "copy_elim"
-    }
-    fn run(&self, module: &mut CoreModule) {
-        for f in &mut module.functions {
-            elim_copies_in_fun(f);
-        }
-    }
-}
-
-fn elim_copies_in_fun(f: &mut CoreFun) {
-    let mut remap: HashMap<u32, u32> = HashMap::default();
-    collect_copy_aliases(&f.body, &mut remap);
-    if remap.is_empty() {
-        return;
-    }
-    // Flatten chains a→b→c to a→c.
-    let keys: Vec<u32> = remap.keys().copied().collect();
-    for k in keys {
-        let mut cur = k;
-        let mut seen = HashSet::default();
-        while let Some(&n) = remap.get(&cur) {
-            if !seen.insert(cur) {
-                break;
-            }
-            cur = n;
-        }
-        remap.insert(k, cur);
-    }
-    apply_local_remap(&mut f.body, &remap);
-    strip_identity_lets(&mut f.body, &remap);
-}
-
-fn collect_copy_aliases(block: &Block, remap: &mut HashMap<u32, u32>) {
-    for op in &block.ops {
-        match op {
-            Op::Let {
-                local,
-                value: Value::Local(src),
-                ..
-            } => {
-                remap.insert(local.0, src.0);
-            }
-            Op::Let { value, .. } | Op::Effect { value, .. } => {
-                collect_copy_aliases_value(value, remap);
-            }
-            _ => {}
-        }
-    }
-}
-
-fn collect_copy_aliases_value(value: &Value, remap: &mut HashMap<u32, u32>) {
-    match value {
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            collect_copy_aliases(then_block, remap);
-            collect_copy_aliases(else_block, remap);
-        }
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => {
-            collect_copy_aliases(header, remap);
-            collect_copy_aliases(body, remap);
-            collect_copy_aliases(latch, remap);
-        }
-        Value::Lambda { body, .. } => collect_copy_aliases(body, remap),
-        _ => {}
-    }
-}
-
-fn apply_local_remap(block: &mut Block, remap: &HashMap<u32, u32>) {
-    let map_l = |l: &mut Local| {
-        if let Some(&r) = remap.get(&l.0) {
-            *l = Local(r);
-        }
-    };
-    if let Some(r) = &mut block.result {
-        map_l(r);
-    }
-    for op in &mut block.ops {
-        match op {
-            Op::Let { value, .. } | Op::Effect { value, .. } => {
-                remap_value_locals(value, remap);
-            }
-            Op::Assign { value, .. } | Op::Return { value } => map_l(value),
-            Op::Break | Op::Continue => {}
-        }
-    }
-}
-
-fn remap_value_locals(value: &mut Value, remap: &HashMap<u32, u32>) {
-    lumia_core::map_value_locals(
-        value,
-        &mut |l| {
-            if let Some(&r) = remap.get(&l.0) {
-                *l = Local(r);
-            }
-        },
-        &mut |b| apply_local_remap(b, remap),
-    );
-}
-
-fn strip_identity_lets(block: &mut Block, aliases: &HashMap<u32, u32>) {
-    block.ops.retain(|op| {
-        !matches!(
-            op,
-            Op::Let { local, .. } if aliases.contains_key(&local.0)
-        )
-    });
-    for op in &mut block.ops {
-        match op {
-            Op::Let { value, .. } | Op::Effect { value, .. } => {
-                strip_identity_lets_value(value, aliases);
-            }
-            _ => {}
-        }
-    }
-}
-
-fn strip_identity_lets_value(value: &mut Value, aliases: &HashMap<u32, u32>) {
-    match value {
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            strip_identity_lets(then_block, aliases);
-            strip_identity_lets(else_block, aliases);
-        }
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => {
-            strip_identity_lets(header, aliases);
-            strip_identity_lets(body, aliases);
-            strip_identity_lets(latch, aliases);
-        }
-        Value::Lambda { body, .. } => strip_identity_lets(body, aliases),
-        _ => {}
-    }
-}
-
-/// Representation selection: prove → specialize; else default (§7.1.1).
-struct ReprSelect;
-impl Pass for ReprSelect {
-    fn name(&self) -> &str {
-        "repr_select"
-    }
-    fn run(&self, module: &mut CoreModule) {
-        for f in &mut module.functions {
-            // EscapePass always runs first and fills `f.escaping`.
-            let escaping = f.escaping.clone();
-            select_in_fun(f, &escaping);
-        }
-    }
-}
-
-fn select_in_fun(f: &mut CoreFun, escaping: &HashSet<Local>) {
-    for op in &mut f.body.ops {
-        if let Op::Let { local, value, .. } = op {
-            select_value(value, *local, escaping);
-        }
-    }
-}
-
-fn select_value(v: &mut Value, bound: Local, escaping: &HashSet<Local>) {
-    let local_ok = !escaping.contains(&bound);
-    match v {
-        Value::AllocList { elems, repr } => {
-            if elems.is_empty() {
-                // Empty → immortal singleton (`lumia_list_empty`).
-                *repr = ListRepr::LitList;
-            } else if local_ok && elems.len() <= 8 {
-                // Non-escaping small literal → stack layout in codegen (DESIGN §7).
-                *repr = ListRepr::LitList;
-            } else {
-                *repr = ListRepr::HeapList;
-            }
-        }
-        Value::AllocMap { flat_pairs, repr } => {
-            let n_pairs = flat_pairs.len() / 2;
-            // Preserve Eq-only AssocList; else stack LitMap when non-escaping ≤8.
-            if matches!(*repr, MapRepr::AssocList) {
-                // keep
-            } else if local_ok && n_pairs > 0 && n_pairs <= 8 {
-                *repr = MapRepr::LitMap;
-            } else if n_pairs <= 8 {
-                *repr = MapRepr::SmallMap;
-            } else {
-                *repr = default_map_repr();
-            }
-            let _ = flat_pairs;
-        }
-        Value::AllocSet { elems, repr } => {
-            if local_ok && !elems.is_empty() && elems.len() <= 8 {
-                *repr = SetRepr::LitSet;
-            } else {
-                *repr = SetRepr::HeapSet;
-            }
-        }
-        Value::AllocAdt { fields, repr, .. } => {
-            if local_ok && fields.len() <= 8 {
-                *repr = AdtRepr::LitAdt;
-            } else {
-                *repr = AdtRepr::HeapAdt;
-            }
-        }
-        Value::AllocClosure { .. } | Value::ClosureCap { .. } => {}
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            for op in then_block.ops.iter_mut().chain(else_block.ops.iter_mut()) {
-                if let Op::Let { local, value, .. } = op {
-                    select_value(value, *local, escaping);
-                }
-            }
-        }
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => {
-            for b in [&mut **header, &mut **body, &mut **latch] {
-                for op in &mut b.ops {
-                    if let Op::Let { local, value, .. } = op {
-                        select_value(value, *local, escaping);
-                    }
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
 /// Default Map representation when analysis cannot prove a better choice.
 pub fn default_map_repr() -> MapRepr {
     MapRepr::HashOrdered
@@ -397,8 +153,11 @@ pub fn default_list_repr() -> ListRepr {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use copy_elim::CopyElimPass;
     use lumia_core::{Block, CoreFun, CoreModule, Local, Op, Value};
     use lumia_ty::{Effect, Type};
+    use repr_select::ReprSelect;
+    use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
     #[test]
     fn defaults() {
