@@ -3,12 +3,21 @@
 //! - **§7.5.1-A local**: CSE + const-fold / copy-prop + LICM (no `T_f`)
 //! - **§7.5.1-B `T_f`**: bounded cross-call table; representation = Slots | DenseInt
 
-
-use lumia_core::{Block, CoreFun, CoreModule, Local, MemoTf, Op, Value};
+use lumia_core::{Block, CoreFun, CoreModule, ListRepr, Local, MemoTf, Op, Value};
 use lumia_hir::Builtin;
 use lumia_syntax::{BinOp, UnOp};
 use lumia_ty::Type;
 use std::collections::{HashMap, HashSet};
+
+/// Planner-facing widths (IDs stored as `u32` on [`MemoTf`]).
+pub const MEMO_L2_MAX_FUNS: u32 = lumia_abi::MEMO_L2_MAX_FUNS as u32;
+pub const MEMO_IDX_MAX_FUNS: u32 = lumia_abi::MEMO_IDX_MAX_FUNS as u32;
+/// Keys outside `0..MEMO_IDX_CAP` are never cached (DESIGN §7.5 hard bound).
+pub const MEMO_IDX_CAP: u32 = lumia_abi::MEMO_IDX_CAP as u32;
+pub use lumia_abi::MEMO_L2_SLOTS;
+pub use lumia_abi::{
+    MEMO_IDX_TABLE_BYTES, MEMO_L2_MAX_ARGS, MEMO_PROCESS_BYTE_CAP, MEMO_SLOTS_TABLE_BYTES,
+};
 
 pub struct MemoL0Pass;
 impl crate::Pass for MemoL0Pass {
@@ -85,19 +94,6 @@ pub fn apply_memo_plan(module: &mut CoreModule, plan: &HashMap<String, MemoTf>) 
         }
     }
 }
-
-/// Must stay in sync with `lumia_rt` caps (§7.5.0 dual hard tops).
-pub const MEMO_L2_MAX_FUNS: u32 = 64;
-pub const MEMO_L2_MAX_ARGS: usize = 4;
-pub const MEMO_L2_SLOTS: usize = 4;
-pub const MEMO_IDX_MAX_FUNS: u32 = 16;
-/// Keys outside `0..MEMO_IDX_CAP` are never cached (DESIGN §7.5 hard bound).
-pub const MEMO_IDX_CAP: u32 = 4096;
-pub const MEMO_IDX_TABLE_BYTES: usize = (MEMO_IDX_CAP as usize) * (1 + 8);
-pub const MEMO_SLOTS_TABLE_BYTES: usize =
-    MEMO_L2_SLOTS * (1 + MEMO_L2_MAX_ARGS * 8 + 8);
-/// Process-level transparent Memo byte budget (versioned; sync with `lumia_rt`).
-pub const MEMO_PROCESS_BYTE_CAP: usize = 2 * 1024 * 1024;
 
 // ─── L0: CSE ───────────────────────────────────────────────────────────────
 
@@ -215,10 +211,7 @@ fn expr_key(value: &Value, pure_funs: &HashSet<String>) -> Option<ExprKey> {
         Value::Char(c) => Some(ExprKey::Char(*c)),
         Value::String(s) => Some(ExprKey::String(s.clone())),
         // Trapping arithmetic must not CSE across divergent paths (§2.4).
-        Value::Unary {
-            op: UnOp::Neg,
-            ..
-        } => None,
+        Value::Unary { op: UnOp::Neg, .. } => None,
         Value::Unary { op, operand } => Some(ExprKey::Unary(*op, operand.0)),
         Value::Binary {
             op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem,
@@ -229,9 +222,10 @@ fn expr_key(value: &Value, pure_funs: &HashSet<String>) -> Option<ExprKey> {
             format!("{name:?}"),
             args.iter().map(|a| a.0).collect(),
         )),
-        Value::Call { fun, args } if pure_funs.contains(fun) => {
-            Some(ExprKey::Call(fun.clone(), args.iter().map(|a| a.0).collect()))
-        }
+        Value::Call { fun, args } if pure_funs.contains(fun) => Some(ExprKey::Call(
+            fun.clone(),
+            args.iter().map(|a| a.0).collect(),
+        )),
         _ => None,
     }
 }
@@ -243,52 +237,12 @@ fn builtin_is_pure(b: &Builtin) -> bool {
 }
 
 pub(crate) fn rewrite_value(v: &mut Value, rewrite: &HashMap<u32, u32>) {
-    let map_l = |l: &mut Local| {
+    // Shallow: const-fold / CSE rewrite operands on this node only (not nested blocks).
+    lumia_core::for_each_local_mut(v, &mut |l| {
         if let Some(&r) = rewrite.get(&l.0) {
             *l = Local(r);
         }
-    };
-    match v {
-        Value::Local(l) => map_l(l),
-        Value::Binary { left, right, .. } => {
-            map_l(left);
-            map_l(right);
-        }
-        Value::Unary { operand, .. } => map_l(operand),
-        Value::Call { args, .. }
-        | Value::Builtin { args, .. }
-        | Value::AllocList { elems: args, .. }
-        | Value::AllocSet { elems: args, .. }
-        | Value::AllocMap {
-            flat_pairs: args, ..
-        }
-        | Value::AllocAdt { fields: args, .. }
-        | Value::AllocClosure {
-            captures: args, ..
-        } => {
-            for a in args {
-                map_l(a);
-            }
-        }
-        Value::ClosureCap { env, .. } => map_l(env),
-        Value::IndirectCall { callee, args } => {
-            map_l(callee);
-            for a in args {
-                map_l(a);
-            }
-        }
-        Value::If { cond, .. } => map_l(cond),
-        Value::Loop { .. }
-        | Value::Lambda { .. }
-        | Value::FunRef(_)
-        | Value::Int(_)
-        | Value::Float(_)
-        | Value::Bool(_)
-        | Value::String(_)
-        | Value::Char(_)
-        | Value::Unit
-        | Value::Name(_) => {}
-    }
+    });
 }
 
 // ─── L0: const-fold + copy-prop ────────────────────────────────────────────
@@ -432,11 +386,12 @@ fn const_fold_block(block: &mut Block) {
                             // must not be folded to `false` (false negative).
                             if let Some(&k) = known_int.get(&key.0) {
                                 if let Some(pairs) = known_map.get(&col.0) {
-                                    let keys: Vec<_> = pairs.chunks_exact(2).map(|kv| kv[0]).collect();
+                                    let keys: Vec<_> =
+                                        pairs.chunks_exact(2).map(|kv| kv[0]).collect();
                                     if keys.iter().all(|kk| known_int.contains_key(&kk.0)) {
-                                        let found = keys.iter().any(|kk| {
-                                            known_int.get(&kk.0).copied() == Some(k)
-                                        });
+                                        let found = keys
+                                            .iter()
+                                            .any(|kk| known_int.get(&kk.0).copied() == Some(k));
                                         *value = Value::Bool(found);
                                         known_int.insert(local.0, if found { 1 } else { 0 });
                                     }
@@ -468,6 +423,30 @@ fn const_fold_block(block: &mut Block) {
                                         known_adt.insert(local.0, inner);
                                     }
                                 }
+                            }
+                        }
+                        (Builtin::ListConcat, [a, b]) => {
+                            if let (Some(la), Some(lb)) =
+                                (known_list.get(&a.0), known_list.get(&b.0))
+                            {
+                                let mut merged = la.clone();
+                                merged.extend_from_slice(lb);
+                                *value = Value::AllocList {
+                                    elems: merged.clone(),
+                                    repr: ListRepr::LitList,
+                                };
+                                known_list.insert(local.0, merged);
+                            }
+                        }
+                        (Builtin::ListAppend, [xs, x]) => {
+                            if let Some(elems) = known_list.get(&xs.0) {
+                                let mut merged = elems.clone();
+                                merged.push(*x);
+                                *value = Value::AllocList {
+                                    elems: merged.clone(),
+                                    repr: ListRepr::LitList,
+                                };
+                                known_list.insert(local.0, merged);
                             }
                         }
                         _ => {}
@@ -729,9 +708,7 @@ fn is_hoistable(value: &Value, loop_defs: &HashSet<u32>) -> bool {
             op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem,
             ..
         } => false,
-        Value::Unary {
-            op: UnOp::Neg, ..
-        } => false,
+        Value::Unary { op: UnOp::Neg, .. } => false,
         Value::Int(_)
         | Value::Float(_)
         | Value::Bool(_)
@@ -850,8 +827,7 @@ fn walk_struct_rec(block: &Block, st: &mut StructRec<'_>) {
                     left,
                     right,
                 } => {
-                    let left_ok =
-                        st.is_param.contains(&left.0) || st.smaller.contains(&left.0);
+                    let left_ok = st.is_param.contains(&left.0) || st.smaller.contains(&left.0);
                     let k = st.known_int.get(&right.0).copied();
                     if left_ok && matches!(k, Some(n) if n > 0) {
                         st.smaller.insert(local.0);
@@ -973,60 +949,51 @@ fn collect_const_calls(
 ) {
     for op in &block.ops {
         match op {
-            Op::Let { local, value, .. } => {
-                match value {
-                    Value::Int(n) => {
-                        known.insert(local.0, *n);
-                    }
-                    Value::Call {
-                        fun: callee,
-                        args,
-                    } if callee == fun => {
-                        let mut key = Vec::with_capacity(args.len());
-                        let mut ok = true;
-                        for a in args {
-                            if let Some(&n) = known.get(&a.0) {
-                                key.push(n);
-                            } else {
-                                ok = false;
-                                break;
-                            }
-                        }
-                        if ok {
-                            *freq.entry(key).or_default() += 1;
-                        }
-                        known.remove(&local.0);
-                    }
-                    Value::If {
-                        then_block,
-                        else_block,
-                        ..
-                    } => {
-                        collect_const_calls(then_block, fun, &mut known.clone(), freq);
-                        collect_const_calls(else_block, fun, &mut known.clone(), freq);
-                        known.remove(&local.0);
-                    }
-                    Value::Loop {
-                        header,
-                        body,
-                        latch,
-                    } => {
-                        collect_const_calls(header, fun, &mut known.clone(), freq);
-                        collect_const_calls(body, fun, &mut known.clone(), freq);
-                        collect_const_calls(latch, fun, &mut known.clone(), freq);
-                        known.remove(&local.0);
-                    }
-                    _ => {
-                        known.remove(&local.0);
-                    }
+            Op::Let { local, value, .. } => match value {
+                Value::Int(n) => {
+                    known.insert(local.0, *n);
                 }
-            }
+                Value::Call { fun: callee, args } if callee == fun => {
+                    let mut key = Vec::with_capacity(args.len());
+                    let mut ok = true;
+                    for a in args {
+                        if let Some(&n) = known.get(&a.0) {
+                            key.push(n);
+                        } else {
+                            ok = false;
+                            break;
+                        }
+                    }
+                    if ok {
+                        *freq.entry(key).or_default() += 1;
+                    }
+                    known.remove(&local.0);
+                }
+                Value::If {
+                    then_block,
+                    else_block,
+                    ..
+                } => {
+                    collect_const_calls(then_block, fun, &mut known.clone(), freq);
+                    collect_const_calls(else_block, fun, &mut known.clone(), freq);
+                    known.remove(&local.0);
+                }
+                Value::Loop {
+                    header,
+                    body,
+                    latch,
+                } => {
+                    collect_const_calls(header, fun, &mut known.clone(), freq);
+                    collect_const_calls(body, fun, &mut known.clone(), freq);
+                    collect_const_calls(latch, fun, &mut known.clone(), freq);
+                    known.remove(&local.0);
+                }
+                _ => {
+                    known.remove(&local.0);
+                }
+            },
             Op::Effect { value } => {
-                if let Value::Call {
-                    fun: callee,
-                    args,
-                } = value
-                {
+                if let Value::Call { fun: callee, args } = value {
                     if callee == fun {
                         let mut key = Vec::with_capacity(args.len());
                         let mut ok = true;
@@ -1124,7 +1091,8 @@ mod tests {
             is_main: false,
             memo: None,
             external: None,
-        escaping: std::collections::HashSet::new(),
+            escaping: std::collections::HashSet::new(),
+            scheme_poly: false,
         }
     }
 
@@ -1172,7 +1140,7 @@ mod tests {
                 },
             )],
             hash_adts: std::collections::HashSet::new(),
-        trait_methods: std::collections::HashMap::new(),
+            trait_methods: std::collections::HashMap::new(),
         };
         module.functions[0].is_main = true;
         module.functions[0].effect = Effect::io();
@@ -1239,7 +1207,7 @@ mod tests {
                 ),
             ],
             hash_adts: std::collections::HashSet::new(),
-        trait_methods: std::collections::HashMap::new(),
+            trait_methods: std::collections::HashMap::new(),
         };
         module.functions[1].is_main = true;
         module.functions[1].effect = Effect::io();
@@ -1322,7 +1290,7 @@ mod tests {
                 },
             )],
             hash_adts: std::collections::HashSet::new(),
-        trait_methods: std::collections::HashMap::new(),
+            trait_methods: std::collections::HashMap::new(),
         };
         MemoL0Pass.run(&mut module);
         assert!(matches!(
@@ -1336,6 +1304,90 @@ mod tests {
             &module.functions[0].body.ops[5],
             Op::Let {
                 value: Value::Local(Local(1)),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn memo_l0_folds_list_concat() {
+        use lumia_core::ListRepr;
+        let mut module = CoreModule {
+            name: "C".into(),
+            functions: vec![bare_fun(
+                "f",
+                vec![],
+                Block {
+                    params: vec![],
+                    ops: vec![
+                        Op::Let {
+                            local: Local(0),
+                            value: Value::Int(1),
+                            pure_region: true,
+                        },
+                        Op::Let {
+                            local: Local(1),
+                            value: Value::Int(2),
+                            pure_region: true,
+                        },
+                        Op::Let {
+                            local: Local(2),
+                            value: Value::AllocList {
+                                elems: vec![Local(0)],
+                                repr: ListRepr::LitList,
+                            },
+                            pure_region: true,
+                        },
+                        Op::Let {
+                            local: Local(3),
+                            value: Value::AllocList {
+                                elems: vec![Local(1)],
+                                repr: ListRepr::LitList,
+                            },
+                            pure_region: true,
+                        },
+                        Op::Let {
+                            local: Local(4),
+                            value: Value::Builtin {
+                                name: Builtin::ListConcat,
+                                args: vec![Local(2), Local(3)],
+                            },
+                            pure_region: true,
+                        },
+                        Op::Let {
+                            local: Local(5),
+                            value: Value::Builtin {
+                                name: Builtin::ListLen,
+                                args: vec![Local(4)],
+                            },
+                            pure_region: true,
+                        },
+                    ],
+                    result: Some(Local(5)),
+                },
+            )],
+            hash_adts: std::collections::HashSet::new(),
+            trait_methods: std::collections::HashMap::new(),
+        };
+        MemoL0Pass.run(&mut module);
+        assert!(
+            matches!(
+                &module.functions[0].body.ops[4],
+                Op::Let {
+                    value: Value::AllocList {
+                        elems,
+                        repr: ListRepr::LitList
+                    },
+                    ..
+                } if elems == &[Local(0), Local(1)]
+            ),
+            "ListConcat of lit lists should PE-fold, got {:?}",
+            module.functions[0].body.ops[4]
+        );
+        assert!(matches!(
+            &module.functions[0].body.ops[5],
+            Op::Let {
+                value: Value::Int(2),
                 ..
             }
         ));
@@ -1437,7 +1489,7 @@ mod tests {
                 },
             )],
             hash_adts: std::collections::HashSet::new(),
-        trait_methods: std::collections::HashMap::new(),
+            trait_methods: std::collections::HashMap::new(),
         };
         MemoL0Pass.run(&mut module);
         assert!(matches!(
@@ -1483,7 +1535,7 @@ mod tests {
                 },
             )],
             hash_adts: std::collections::HashSet::new(),
-        trait_methods: std::collections::HashMap::new(),
+            trait_methods: std::collections::HashMap::new(),
         };
         MemoL0Pass.run(&mut module);
         assert!(matches!(
@@ -1552,7 +1604,7 @@ mod tests {
                 },
             )],
             hash_adts: std::collections::HashSet::new(),
-        trait_methods: std::collections::HashMap::new(),
+            trait_methods: std::collections::HashMap::new(),
         };
         MemoL1Pass.run(&mut module);
         let ops = &module.functions[0].body.ops;
@@ -1560,10 +1612,7 @@ mod tests {
             matches!(
                 &ops[0],
                 Op::Let {
-                    value: Value::Unary {
-                        op: UnOp::Not,
-                        ..
-                    },
+                    value: Value::Unary { op: UnOp::Not, .. },
                     ..
                 }
             ),
@@ -1581,10 +1630,7 @@ mod tests {
             body_ops.iter().any(|op| matches!(
                 op,
                 Op::Let {
-                    value: Value::Binary {
-                        op: BinOp::Add,
-                        ..
-                    },
+                    value: Value::Binary { op: BinOp::Add, .. },
                     ..
                 }
             )),
@@ -1641,7 +1687,7 @@ mod tests {
             name: "M".into(),
             functions: vec![fib],
             hash_adts: std::collections::HashSet::new(),
-        trait_methods: std::collections::HashMap::new(),
+            trait_methods: std::collections::HashMap::new(),
         };
         let plan = plan_memo_tf(&module);
         assert!(
@@ -1729,13 +1775,14 @@ mod tests {
             is_main: true,
             memo: None,
             external: None,
-        escaping: std::collections::HashSet::new(),
+            escaping: std::collections::HashSet::new(),
+            scheme_poly: false,
         };
         let module = CoreModule {
             name: "M".into(),
             functions: vec![sq, main],
             hash_adts: std::collections::HashSet::new(),
-        trait_methods: std::collections::HashMap::new(),
+            trait_methods: std::collections::HashMap::new(),
         };
         let plan = plan_memo_tf(&module);
         assert!(
@@ -1785,7 +1832,7 @@ mod tests {
             name: "M".into(),
             functions: vec![f],
             hash_adts: std::collections::HashSet::new(),
-        trait_methods: std::collections::HashMap::new(),
+            trait_methods: std::collections::HashMap::new(),
         };
         let plan = plan_memo_tf(&module);
         assert!(

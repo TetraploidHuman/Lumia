@@ -25,10 +25,7 @@ impl Span {
     }
 
     pub fn merge(self, other: Span) -> Span {
-        debug_assert_eq!(
-            self.file, other.file,
-            "merge spans from different files"
-        );
+        debug_assert_eq!(self.file, other.file, "merge spans from different files");
         Span {
             file: self.file,
             start: BytePos(self.start.0.min(other.start.0)),

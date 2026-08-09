@@ -1,0 +1,16 @@
+module TcoSum
+
+fun main() effect.io=true memo=None {
+  %0 = i64 2000000  // pure
+  %1 = i64 0  // pure
+  %2 = call sumTo(%0, %1)  // pure
+  %3 = builtin Println(%2)  // effect
+  return %3
+}
+
+fun sumTo(n, acc) effect.io=false memo=None {
+  %2 = i64 0  // pure
+  %3 = %0 == %2  // pure
+  %8 = if ...  // pure
+  return %8
+}

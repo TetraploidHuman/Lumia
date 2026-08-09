@@ -69,9 +69,9 @@ pub enum TokenKind {
     Colon,
     ColonColon,
     Semi,
-    Arrow,     // ->
-    FatArrow,  // => (rejected by parser; reserved)
-    PipePipe,  // >>
+    Arrow,    // ->
+    FatArrow, // => (rejected by parser; reserved)
+    PipePipe, // >>
     Eq,
     EqEq,
     Ne,

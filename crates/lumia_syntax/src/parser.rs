@@ -5,8 +5,7 @@ use crate::span::Span;
 use crate::token::{StringPart, Token, TokenKind};
 use crate::{
     BinOp, Expr, ForBinding, Import, ImportNames, ImportedName, InterpPart, Item, MatchArm,
-    MatchCondArm, Module,
-    Pattern, Stmt, TypeItem, TypeKind, UnOp, ValItem, Variant, VariantFields,
+    MatchCondArm, Module, Pattern, Stmt, TypeItem, TypeKind, UnOp, ValItem, Variant, VariantFields,
 };
 
 #[derive(Debug, Clone)]
@@ -224,10 +223,7 @@ impl<'a> Parser<'a> {
                 None
             };
             let last = path.pop().unwrap();
-            ImportNames::Single(ImportedName {
-                name: last,
-                alias,
-            })
+            ImportNames::Single(ImportedName { name: last, alias })
         };
 
         Ok(Import {
@@ -506,8 +502,7 @@ impl<'a> Parser<'a> {
             };
         }
         // infix match: expr match { ... } — same line only (newline `match {` is subjectless).
-        if self.at(&TokenKind::Match)
-            && !self.newline_between(left.span().end, self.cur.span.start)
+        if self.at(&TokenKind::Match) && !self.newline_between(left.span().end, self.cur.span.start)
         {
             left = self.parse_match_suffix(left)?;
         }
@@ -850,11 +845,7 @@ impl<'a> Parser<'a> {
         self.bump();
         let right = self.parse_add()?;
         let span = left.span().merge(right.span());
-        let name = if inclusive {
-            "rangeInclusive"
-        } else {
-            "range"
-        };
+        let name = if inclusive { "rangeInclusive" } else { "range" };
         Ok(Expr::Call {
             callee: Box::new(Expr::Ident(name.into(), span)),
             args: vec![left, right],
@@ -966,12 +957,9 @@ impl<'a> Parser<'a> {
                     let clo = self.parse_lambda_or_block()?;
                     args.push(clo);
                 }
-                let span = expr.span().merge(
-                    args
-                        .last()
-                        .map(|a| a.span())
-                        .unwrap_or(end.span),
-                );
+                let span = expr
+                    .span()
+                    .merge(args.last().map(|a| a.span()).unwrap_or(end.span));
                 expr = Expr::Call {
                     callee: Box::new(expr),
                     args,
@@ -1238,7 +1226,10 @@ impl<'a> Parser<'a> {
                 })
             }
             TokenKind::For => self.parse_for_as_expr(),
-            _ => Err(self.error(format!("unexpected token in expression: {:?}", self.cur.kind))),
+            _ => Err(self.error(format!(
+                "unexpected token in expression: {:?}",
+                self.cur.kind
+            ))),
         }
     }
 
@@ -1356,11 +1347,7 @@ impl<'a> Parser<'a> {
             let span = start.merge(end.span);
             return Ok(Expr::Lambda {
                 params,
-                body: Box::new(Expr::Block {
-                    stmts,
-                    tail,
-                    span,
-                }),
+                body: Box::new(Expr::Block { stmts, tail, span }),
                 span,
             });
         }
@@ -1380,11 +1367,7 @@ impl<'a> Parser<'a> {
                 span,
             })
         } else {
-            Ok(Expr::Block {
-                stmts,
-                tail,
-                span,
-            })
+            Ok(Expr::Block { stmts, tail, span })
         }
     }
 
@@ -1426,16 +1409,17 @@ impl<'a> Parser<'a> {
         while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
             if self.at(&TokenKind::Val) {
                 let start = self.bump().span;
-                let (name, _) = self.expect_ident()?;
+                let pat = self.parse_pattern()?;
                 self.expect(TokenKind::Eq)?;
                 let expr = self.parse_expr()?;
                 stmts.push(Stmt::Val {
-                    name,
+                    pat,
                     span: start.merge(expr.span()),
                     expr,
                 });
             } else if self.at(&TokenKind::Var) {
                 let start = self.bump().span;
+                // `var` stays a single name (mutable slots are not patterns).
                 let (name, _) = self.expect_ident()?;
                 self.expect(TokenKind::Eq)?;
                 let expr = self.parse_expr()?;
@@ -1490,7 +1474,7 @@ impl<'a> Parser<'a> {
 
     fn parse_for_stmt(&mut self) -> Result<Stmt, ParseError> {
         let start = self.bump().span; // for
-        // for x in xs { }  |  for (k, v) in m { }  |  for cond { }
+                                      // for x in xs { }  |  for (k, v) in m { }  |  for cond { }
         let saved = self.allow_trailing_closure;
         self.allow_trailing_closure = false;
         let result = (|| {
@@ -1615,9 +1599,7 @@ fn expr_uses_ident(expr: &Expr, name: &str) -> bool {
                 })
         }
         Expr::MatchCond { arms, .. } => arms.iter().any(|a| {
-            a.cond
-                .as_ref()
-                .is_some_and(|c| expr_uses_ident(c, name))
+            a.cond.as_ref().is_some_and(|c| expr_uses_ident(c, name))
                 || expr_uses_ident(&a.body, name)
         }),
         Expr::ListLit { elems, .. } => elems.iter().any(|e| expr_uses_ident(e, name)),
@@ -1630,7 +1612,9 @@ fn expr_uses_ident(expr: &Expr, name: &str) -> bool {
             crate::InterpPart::Lit(_) => false,
             crate::InterpPart::Expr(e) => expr_uses_ident(e, name),
         }),
-        Expr::Int(..) | Expr::Float(..) | Expr::Bool(..) | Expr::String(..) | Expr::Char(..) => false,
+        Expr::Int(..) | Expr::Float(..) | Expr::Bool(..) | Expr::String(..) | Expr::Char(..) => {
+            false
+        }
     }
 }
 
@@ -1751,7 +1735,6 @@ val f = { n ->
         assert!(matches!(arms[3].body, Expr::Block { .. }));
     }
 
-
     #[test]
     fn parse_map_set_literal_sugars() {
         let m = parse_module(
@@ -1791,7 +1774,24 @@ val main = {
         parse_module("module M\nval f = { xs -> xs match { [] -> 0 _ -> 1 }\n}\n").unwrap();
         parse_module("module M\nval f = { xs -> xs match { [h] -> h _ -> 0 }\n}\n").unwrap();
         parse_module("module M\nval f = { xs -> xs match { [..rest] -> 0 _ -> 1 }\n}\n").unwrap();
-        parse_module("module M\nval f = { xs -> xs match { [h, ..rest] -> h _ -> 0 }\n}\n").expect("h, ..rest");
+        parse_module("module M\nval f = { xs -> xs match { [h, ..rest] -> h _ -> 0 }\n}\n")
+            .expect("h, ..rest");
+    }
+
+    #[test]
+    fn parse_val_tuple_destructure() {
+        let m = parse_module("module M\nval main = {\n    val (a, b) = (1, 2)\n    a\n}\n")
+            .expect("parse val (a,b)");
+        let Item::Val(v) = &m.items[0] else {
+            panic!("expected val");
+        };
+        let Expr::Block { stmts, .. } = &v.body else {
+            panic!("expected block");
+        };
+        let Stmt::Val { pat, .. } = &stmts[0] else {
+            panic!("expected val stmt");
+        };
+        assert!(matches!(pat, Pattern::Tuple { elems, .. } if elems.len() == 2));
     }
 
     #[test]

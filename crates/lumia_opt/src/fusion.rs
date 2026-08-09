@@ -172,10 +172,11 @@ mod tests {
                 is_main: false,
                 memo: None,
                 external: None,
-            escaping: std::collections::HashSet::new(),
+                escaping: std::collections::HashSet::new(),
+                scheme_poly: false,
             }],
             hash_adts: std::collections::HashSet::new(),
-        trait_methods: std::collections::HashMap::new(),
+            trait_methods: std::collections::HashMap::new(),
         };
         FusionPass.run(&mut module);
         assert!(matches!(

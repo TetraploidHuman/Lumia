@@ -110,10 +110,7 @@ pub fn apply_import_aliases(mut items: Vec<Item>, names: &ImportNames) -> Vec<It
         set_item_priv(&mut priv_copy, true);
         set_item_name(&mut items[i], &alias);
         // Prefer the renamed public; keep `orig` only if nothing else owns it.
-        if !items
-            .iter()
-            .any(|it| item_name(it) == Some(orig.as_str()))
-        {
+        if !items.iter().any(|it| item_name(it) == Some(orig.as_str())) {
             items.push(priv_copy);
         }
     }

@@ -6,7 +6,7 @@
 //! - textDocument/completion → in-scope names + common methods
 //! - textDocument/formatting → `lumia fmt` pretty-print
 
-use crate::load::{load_program_with_overlays, SourceFile};
+use crate::load::{load_program_with_overlays, LoadedProgram, SourceFile};
 use anyhow::Result;
 use lumia_hir::lower_module;
 use lumia_syntax::{
@@ -85,9 +85,7 @@ fn read_message(r: &mut impl BufRead) -> Result<Option<Value>> {
         None => return Ok(None),
     };
     if len > MAX_LSP_CONTENT_LENGTH {
-        anyhow::bail!(
-            "LSP Content-Length {len} exceeds limit {MAX_LSP_CONTENT_LENGTH}"
-        );
+        anyhow::bail!("LSP Content-Length {len} exceeds limit {MAX_LSP_CONTENT_LENGTH}");
     }
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf)?;
@@ -142,19 +140,27 @@ fn handle_message(msg: Value) -> Result<Option<Value>> {
         }
         Some("textDocument/hover") => {
             let result = on_hover(msg.get("params"))?;
-            Ok(Some(json!({ "jsonrpc": "2.0", "id": id, "result": result })))
+            Ok(Some(
+                json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+            ))
         }
         Some("textDocument/definition") => {
             let result = on_definition(msg.get("params"))?;
-            Ok(Some(json!({ "jsonrpc": "2.0", "id": id, "result": result })))
+            Ok(Some(
+                json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+            ))
         }
         Some("textDocument/completion") => {
             let result = on_completion(msg.get("params"))?;
-            Ok(Some(json!({ "jsonrpc": "2.0", "id": id, "result": result })))
+            Ok(Some(
+                json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+            ))
         }
         Some("textDocument/formatting") => {
             let result = on_formatting(msg.get("params"))?;
-            Ok(Some(json!({ "jsonrpc": "2.0", "id": id, "result": result })))
+            Ok(Some(
+                json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+            ))
         }
         Some(_) => {
             if id.is_some() {
@@ -196,11 +202,7 @@ fn uri_to_path(uri: &str) -> PathBuf {
     // `file:///C:/Users/...` yields `/C:/Users/...`; strip the extra slash so
     // Windows APIs see a drive-letter path.
     let bytes = decoded.as_bytes();
-    if bytes.len() >= 3
-        && bytes[0] == b'/'
-        && bytes[1].is_ascii_alphabetic()
-        && bytes[2] == b':'
-    {
+    if bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b':' {
         return PathBuf::from(&decoded[1..]);
     }
     PathBuf::from(decoded)
@@ -247,15 +249,9 @@ fn path_to_uri(path: &Path) -> String {
     let mut enc = String::from("file://");
     for &b in path_str.as_bytes() {
         match b {
-            b'A'..=b'Z'
-            | b'a'..=b'z'
-            | b'0'..=b'9'
-            | b'/'
-            | b'_'
-            | b'-'
-            | b'.'
-            | b'~'
-            | b':' => enc.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'_' | b'-' | b'.' | b'~' | b':' => {
+                enc.push(b as char)
+            }
             _ => enc.push_str(&format!("%{b:02X}")),
         }
     }
@@ -341,14 +337,7 @@ fn analyze_buffer(
     if path.is_file() || overlays.contains_key(&path) {
         let mut ov = overlays.clone();
         ov.insert(path.clone(), text.to_string());
-        match load_program_with_overlays(&path, &ov).and_then(|loaded| {
-            let hir = lower_module(&loaded.module).map_err(|e| anyhow::anyhow!(e.message))?;
-            let mut typed = infer_module_with_visibility(&hir, loaded.visibility.clone())
-                .map_err(|e| anyhow::anyhow!("{}", e.message()))?;
-            finalize_auto_parallel(&mut typed, true);
-            check_effect_boundaries(&typed).map_err(|e| anyhow::anyhow!("{}", e.message()))?;
-            Ok((loaded, typed))
-        }) {
+        match load_and_typecheck(&path, &ov) {
             Ok((loaded, typed)) => {
                 let entry_src = loaded
                     .files
@@ -364,12 +353,15 @@ fn analyze_buffer(
                     }),
                 );
             }
-            Err(e) => {
+            Err(diags) => {
+                if !diags.is_empty() {
+                    return (diags, None);
+                }
                 // Fall through to single-buffer parse for a located span when possible.
                 if let Err((span, msg)) = check_source(text) {
                     return (vec![diag_from_span(text, span, &msg)], None);
                 }
-                return (vec![diag_json(1, 1, 1, 2, &format!("{e}"))], None);
+                return (vec![diag_json(1, 1, 1, 2, "analysis failed")], None);
             }
         }
     }
@@ -389,23 +381,37 @@ fn analyze_buffer(
     }
 }
 
+/// Load + lower + infer, preserving spans in diagnostics (no `anyhow!(message)`).
+fn load_and_typecheck(
+    path: &Path,
+    overlays: &HashMap<PathBuf, String>,
+) -> Result<(LoadedProgram, TypedModule), Vec<Value>> {
+    let loaded = load_program_with_overlays(path, overlays)
+        .map_err(|e| vec![diag_json(1, 1, 1, 2, &format!("{e}"))])?;
+    let entry_src = loaded.files.first().map(|f| f.src.as_str()).unwrap_or("");
+    let hir = lower_module(&loaded.module)
+        .map_err(|e| vec![diag_from_span(entry_src, e.span, &e.message)])?;
+    let mut typed = infer_module_with_visibility(&hir, loaded.visibility.clone()).map_err(|e| {
+        let span = e.span().unwrap_or_default();
+        vec![diag_from_span(entry_src, span, e.message())]
+    })?;
+    finalize_auto_parallel(&mut typed, true);
+    check_effect_boundaries(&typed).map_err(|e| {
+        let span = e.span().unwrap_or_default();
+        vec![diag_from_span(entry_src, span, e.message())]
+    })?;
+    Ok((loaded, typed))
+}
+
 fn check_source(text: &str) -> Result<TypedModule, (Span, String)> {
     let mut m = parse_module(text).map_err(|e| (e.span, e.message))?;
     stamp_module(&mut m, 0);
     let hir = lower_module(&m).map_err(|e| (e.span, e.message))?;
-    let mut typed = infer_module_with_visibility(&hir, Default::default()).map_err(|e| {
-        (
-            e.span().unwrap_or_default(),
-            e.message().to_string(),
-        )
-    })?;
+    let mut typed = infer_module_with_visibility(&hir, Default::default())
+        .map_err(|e| (e.span().unwrap_or_default(), e.message().to_string()))?;
     finalize_auto_parallel(&mut typed, true);
-    check_effect_boundaries(&typed).map_err(|e| {
-        (
-            e.span().unwrap_or_default(),
-            e.message().to_string(),
-        )
-    })?;
+    check_effect_boundaries(&typed)
+        .map_err(|e| (e.span().unwrap_or_default(), e.message().to_string()))?;
     Ok(typed)
 }
 
@@ -589,11 +595,7 @@ fn on_formatting(params: Option<&Value>) -> Result<Value> {
     }
     let starts = line_starts(text);
     let last_line = starts.len().saturating_sub(1) as u32;
-    let last_col = text
-        .lines()
-        .last()
-        .map(|l| l.len() as u32)
-        .unwrap_or(0);
+    let last_col = text.lines().last().map(|l| l.len() as u32).unwrap_or(0);
     Ok(json!([{
         "range": {
             "start": { "line": 0, "character": 0 },
@@ -657,9 +659,6 @@ mod tests {
         let raw = format!("Content-Length: {huge}\r\n\r\n");
         let mut cur = Cursor::new(raw.into_bytes());
         let err = read_message(&mut cur).expect_err("must reject oversized body");
-        assert!(
-            err.to_string().contains("exceeds limit"),
-            "got {err}"
-        );
+        assert!(err.to_string().contains("exceeds limit"), "got {err}");
     }
 }

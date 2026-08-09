@@ -1,0 +1,15 @@
+module BadLetDestructure
+
+import std.io.{println}
+
+type Option {
+    Some(Int)
+    None
+}
+
+/// Refutable patterns belong in `match`, not `val`.
+val main = {
+    val o = Some(1)
+    val Some(n) = o
+    println(n)
+}

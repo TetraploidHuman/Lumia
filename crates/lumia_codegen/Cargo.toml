@@ -10,6 +10,7 @@ edition.workspace = true
 llvm-dynamic = ["inkwell/llvm21-1-force-dynamic"]
 
 [dependencies]
+lumia_abi.workspace = true
 lumia_syntax.workspace = true
 lumia_hir.workspace = true
 lumia_core.workspace = true
@@ -17,3 +18,9 @@ lumia_ty.workspace = true
 inkwell.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+lumia_opt.workspace = true
+
+[lints]
+workspace = true

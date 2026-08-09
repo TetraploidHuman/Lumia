@@ -35,18 +35,28 @@ fn e2e_exe(stem: &str) -> PathBuf {
 }
 
 fn run_example(rel: &str, expected_lines: &[&str]) {
-    run_example_build(rel, None, expected_lines, false);
+    run_example_build(rel, None, expected_lines, false, &[]);
 }
 
 fn run_example_release(rel: &str, expected_lines: &[&str]) {
-    run_example_build(rel, None, expected_lines, true);
+    run_example_build(rel, None, expected_lines, true, &[]);
 }
 
 fn run_example_with_stdin(rel: &str, stdin: Option<&str>, expected_lines: &[&str]) {
-    run_example_build(rel, stdin, expected_lines, false);
+    run_example_build(rel, stdin, expected_lines, false, &[]);
 }
 
-fn run_example_build(rel: &str, stdin: Option<&str>, expected_lines: &[&str], release: bool) {
+fn run_example_trust_foreign_pure(rel: &str, expected_lines: &[&str]) {
+    run_example_build(rel, None, expected_lines, false, &["--trust-foreign-pure"]);
+}
+
+fn run_example_build(
+    rel: &str,
+    stdin: Option<&str>,
+    expected_lines: &[&str],
+    release: bool,
+    extra_args: &[&str],
+) {
     let root = workspace_root();
     let src = root.join(rel);
     assert!(src.is_file(), "missing example {}", src.display());
@@ -67,15 +77,15 @@ fn run_example_build(rel: &str, stdin: Option<&str>, expected_lines: &[&str], re
     if release {
         args.push("--release".into());
     }
+    for a in extra_args {
+        args.push((*a).to_string());
+    }
     let status = Command::new(lumia_bin())
         .current_dir(&root)
         .args(&args)
         .status()
         .expect("spawn lumia build");
-    assert!(
-        status.success(),
-        "lumia build failed for {rel}: {status}"
-    );
+    assert!(status.success(), "lumia build failed for {rel}: {status}");
 
     let mut cmd = Command::new(&exe);
     let output = if let Some(input) = stdin {
@@ -112,30 +122,92 @@ fn run_example_build(rel: &str, stdin: Option<&str>, expected_lines: &[&str], re
     );
 }
 
-#[test]
-fn e2e_hello() {
-    run_example("examples/hello.lm", &["42"]);
+/// Run `lumia check` and assert failure + required diagnostic substrings.
+fn run_check(rel: &str, must_fail: bool, contains: &[&str], contains_any: &[&str]) {
+    let root = workspace_root();
+    let src = root.join(rel);
+    assert!(src.is_file(), "missing example {}", src.display());
+    let out = Command::new(lumia_bin())
+        .current_dir(&root)
+        .args(["check", src.to_str().unwrap()])
+        .output()
+        .expect("spawn lumia check");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stderr),
+        String::from_utf8_lossy(&out.stdout)
+    );
+    if must_fail {
+        assert!(
+            !out.status.success(),
+            "{rel} should fail check; output: {combined}"
+        );
+    } else {
+        assert!(
+            out.status.success(),
+            "{rel} should pass check; output: {combined}"
+        );
+    }
+    for needle in contains {
+        assert!(
+            combined.contains(needle),
+            "{rel}: expected diagnostic containing {needle:?}, got: {combined}"
+        );
+    }
+    if !contains_any.is_empty() {
+        assert!(
+            contains_any.iter().any(|n| combined.contains(n)),
+            "{rel}: expected one of {contains_any:?}, got: {combined}"
+        );
+    }
 }
 
-#[test]
-fn e2e_add() {
-    run_example("examples/add.lm", &["42"]);
+macro_rules! e2e_ok {
+    ($name:ident, $path:expr, $($line:expr),+ $(,)?) => {
+        #[test]
+        fn $name() {
+            run_example($path, &[$($line),+]);
+        }
+    };
 }
 
-#[test]
-fn e2e_match() {
-    run_example("examples/match.lm", &["20"]);
+macro_rules! e2e_ok_release {
+    ($name:ident, $path:expr, $($line:expr),+ $(,)?) => {
+        #[test]
+        fn $name() {
+            run_example_release($path, &[$($line),+]);
+        }
+    };
 }
 
-#[test]
-fn e2e_const_patterns() {
-    run_example("examples/const_patterns.lm", &["1", "2", "3", "4", "5"]);
+macro_rules! e2e_reject {
+    ($name:ident, $path:expr, $($needle:expr),+ $(,)?) => {
+        #[test]
+        fn $name() {
+            run_check($path, true, &[$($needle),+], &[]);
+        }
+    };
 }
 
-#[test]
-fn e2e_poly_id() {
-    run_example("examples/poly_id.lm", &["2", "1.5", "hi", "3.5"]);
-}
+e2e_ok!(e2e_hello, "examples/hello.lm", "42");
+
+e2e_ok!(e2e_add, "examples/add.lm", "42");
+
+e2e_ok!(e2e_match, "examples/match.lm", "20");
+
+e2e_ok!(
+    e2e_const_patterns,
+    "examples/const_patterns.lm",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5"
+);
+
+e2e_ok!(e2e_poly_id, "examples/poly_id.lm", "2", "1.5", "hi", "3.5");
+
+e2e_ok!(e2e_pure_io_thunk, "examples/pure_io_thunk.lm", "7");
 
 #[test]
 fn e2e_poly_inc() {
@@ -202,34 +274,25 @@ fn e2e_trait_poly_method() {
 
 #[test]
 fn e2e_bad_trait_poly_rejected() {
-    let root = workspace_root();
-    let src = root.join("examples/bad_trait_poly.lm");
-    let out = Command::new(lumia_bin())
-        .current_dir(&root)
-        .args(["check", src.to_str().unwrap()])
-        .output()
-        .expect("spawn lumia check");
-    assert!(!out.status.success(), "missing trait instance should fail");
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stderr),
-        String::from_utf8_lossy(&out.stdout)
-    );
-    assert!(
-        combined.contains("ToInt") || combined.contains("instance"),
-        "unexpected diagnostics: {combined}"
+    run_check(
+        "examples/bad_trait_poly.lm",
+        true,
+        &[],
+        &["ToInt", "instance"],
     );
 }
 
-#[test]
-fn e2e_trait_custom_default() {
-    run_example("examples/trait_custom_default.lm", &["default"]);
-}
+e2e_ok!(
+    e2e_trait_custom_default,
+    "examples/trait_custom_default.lm",
+    "default"
+);
 
-#[test]
-fn e2e_trait_default_show() {
-    run_example("examples/trait_default_show.lm", &["default-show"]);
-}
+e2e_ok!(
+    e2e_trait_default_show,
+    "examples/trait_default_show.lm",
+    "default-show"
+);
 
 #[test]
 fn e2e_trait_eq_ord() {
@@ -248,10 +311,7 @@ fn e2e_trait_eq_ord_method() {
     );
 }
 
-#[test]
-fn e2e_trait_num() {
-    run_example("examples/trait_num.lm", &["6", "8", "8", "15"]);
-}
+e2e_ok!(e2e_trait_num, "examples/trait_num.lm", "6", "8", "8", "15");
 
 #[test]
 fn e2e_map_adt_assoc() {
@@ -270,26 +330,21 @@ fn e2e_map_adt_hash() {
     );
 }
 
-#[test]
-fn e2e_show_float_adt() {
-    run_example("examples/show_float_adt.lm", &["#0(1.5, 2.25)"]);
-}
+e2e_ok!(
+    e2e_show_float_adt,
+    "examples/show_float_adt.lm",
+    "#0(1.5, 2.25)"
+);
 
 #[test]
 fn e2e_tco_even_odd() {
-    run_example(
-        "examples/tco_even_odd.lm",
-        &["true", "false", "false"],
-    );
+    run_example("examples/tco_even_odd.lm", &["true", "false", "false"]);
 }
 
 #[test]
 fn e2e_tco_funref() {
     // FunRef local → directized Call + musttail (2e6 depth).
-    run_example(
-        "examples/tco_funref.lm",
-        &["true", "false", "false"],
-    );
+    run_example("examples/tco_funref.lm", &["true", "false", "false"]);
 }
 
 #[test]
@@ -298,10 +353,7 @@ fn e2e_tco_float_sum() {
     run_example("examples/tco_float_sum.lm", &["2000001000000"]);
 }
 
-#[test]
-fn e2e_poly_add1() {
-    run_example("examples/poly_add1.lm", &["2", "2.5"]);
-}
+e2e_ok!(e2e_poly_add1, "examples/poly_add1.lm", "2", "2.5");
 
 #[test]
 fn e2e_poly_top_dbl() {
@@ -309,10 +361,7 @@ fn e2e_poly_top_dbl() {
     run_example("examples/poly_top_dbl.lm", &["2", "3"]);
 }
 
-#[test]
-fn e2e_poly_bool() {
-    run_example("examples/poly_bool.lm", &["1", "true", "false"]);
-}
+e2e_ok!(e2e_poly_bool, "examples/poly_bool.lm", "1", "true", "false");
 
 #[test]
 fn e2e_poly_str() {
@@ -320,63 +369,39 @@ fn e2e_poly_str() {
     run_example("examples/poly_str.lm", &["[hi]", "ok", "42", "true"]);
 }
 
-#[test]
-fn e2e_poly_option() {
-    run_example("examples/poly_option.lm", &["7", "1.5"]);
-}
+e2e_ok!(e2e_poly_option, "examples/poly_option.lm", "7", "1.5");
 
-#[test]
-fn e2e_poly_list() {
-    run_example("examples/poly_list.lm", &["20", "2.5"]);
-}
+e2e_ok!(e2e_poly_list, "examples/poly_list.lm", "20", "2.5");
 
 #[test]
 fn e2e_poly_unwrap() {
-    run_example(
-        "examples/poly_unwrap.lm",
-        &["7", "-1", "hi", "no"],
-    );
+    run_example("examples/poly_unwrap.lm", &["7", "-1", "hi", "no"]);
 }
 
 #[test]
 fn e2e_poly_map_id() {
-    run_example(
-        "examples/poly_map_id.lm",
-        &["2", "true", "2", "true"],
-    );
+    run_example("examples/poly_map_id.lm", &["2", "true", "2", "true"]);
 }
 
 #[test]
 fn e2e_poly_set_id() {
-    run_example(
-        "examples/poly_set_id.lm",
-        &["3", "true", "2", "true"],
-    );
+    run_example("examples/poly_set_id.lm", &["3", "true", "2", "true"]);
 }
 
 #[test]
 fn e2e_poly_option_map() {
     // FunRef HOF mono: Option map at Int / Float / String.
-    run_example(
-        "examples/poly_option_map.lm",
-        &["42", "3", "-1", "hi!"],
-    );
+    run_example("examples/poly_option_map.lm", &["42", "3", "-1", "hi!"]);
 }
 
 #[test]
 fn e2e_poly_option_and_then() {
-    run_example(
-        "examples/poly_option_and_then.lm",
-        &["5", "-1", "-2"],
-    );
+    run_example("examples/poly_option_and_then.lm", &["5", "-1", "-2"]);
 }
 
 #[test]
 fn e2e_poly_result_map() {
-    run_example(
-        "examples/poly_result_map.lm",
-        &["42", "3", "boom"],
-    );
+    run_example("examples/poly_result_map.lm", &["42", "3", "boom"]);
 }
 
 #[test]
@@ -404,16 +429,16 @@ fn e2e_small_list_local() {
 
 #[test]
 fn e2e_small_map_local() {
-    run_example(
-        "examples/small_map_local.lm",
-        &["3", "true", "10", "30"],
-    );
+    run_example("examples/small_map_local.lm", &["3", "true", "10", "30"]);
 }
 
-#[test]
-fn e2e_small_set_local() {
-    run_example("examples/small_set_local.lm", &["3", "true", "false"]);
-}
+e2e_ok!(
+    e2e_small_set_local,
+    "examples/small_set_local.lm",
+    "3",
+    "true",
+    "false"
+);
 
 #[test]
 fn e2e_pe_list_len_get() {
@@ -421,10 +446,13 @@ fn e2e_pe_list_len_get() {
     run_example("examples/pe_list_len_get.lm", &["3", "10", "30", "60"]);
 }
 
-#[test]
-fn e2e_pe_adt_field() {
-    run_example("examples/pe_adt_field.lm", &["10", "20", "30"]);
-}
+e2e_ok!(
+    e2e_pe_adt_field,
+    "examples/pe_adt_field.lm",
+    "10",
+    "20",
+    "30"
+);
 
 #[test]
 fn e2e_pe_map_contains() {
@@ -447,30 +475,15 @@ fn e2e_small_adt_local() {
     run_example("examples/small_adt_local.lm", &["10", "20", "30"]);
 }
 
-#[test]
-fn e2e_list_for() {
-    run_example("examples/list_for.lm", &["60"]);
-}
+e2e_ok!(e2e_list_for, "examples/list_for.lm", "60");
 
-#[test]
-fn e2e_break() {
-    run_example("examples/break.lm", &["4"]);
-}
+e2e_ok!(e2e_break, "examples/break.lm", "4");
 
-#[test]
-fn e2e_list_match() {
-    run_example("examples/list_match.lm", &["0", "7"]);
-}
+e2e_ok!(e2e_list_match, "examples/list_match.lm", "0", "7");
 
-#[test]
-fn e2e_to_map() {
-    run_example("examples/to_map.lm", &["2"]);
-}
+e2e_ok!(e2e_to_map, "examples/to_map.lm", "2");
 
-#[test]
-fn e2e_option_match() {
-    run_example("examples/option_match.lm", &["0", "7"]);
-}
+e2e_ok!(e2e_option_match, "examples/option_match.lm", "0", "7");
 
 #[test]
 fn e2e_point() {
@@ -480,10 +493,7 @@ fn e2e_point() {
     );
 }
 
-#[test]
-fn e2e_use_math() {
-    run_example("examples/use_math.lm", &["42", "42"]);
-}
+e2e_ok!(e2e_use_math, "examples/use_math.lm", "42", "42");
 
 #[test]
 fn e2e_doc_std_io() {
@@ -504,91 +514,64 @@ fn e2e_doc_std_io() {
     );
 }
 
-#[test]
-fn e2e_import_as() {
-    run_example("examples/import_as.lm", &["42", "42"]);
-}
+e2e_ok!(e2e_import_as, "examples/import_as.lm", "42", "42");
 
 #[test]
 fn e2e_bad_import_as_original_rejected() {
-    let root = workspace_root();
-    let src = root.join("examples/bad_import_as_original.lm");
-    let out = Command::new(lumia_bin())
-        .current_dir(&root)
-        .args(["check", src.to_str().unwrap()])
-        .output()
-        .expect("spawn lumia check");
-    assert!(!out.status.success(), "original name after `as` should fail");
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stderr),
-        String::from_utf8_lossy(&out.stdout)
-    );
-    assert!(
-        combined.contains("private or not imported") || combined.contains("`add`"),
-        "unexpected diagnostics: {combined}"
+    run_check(
+        "examples/bad_import_as_original.lm",
+        true,
+        &[],
+        &["private or not imported", "`add`"],
     );
 }
 
-#[test]
-fn e2e_use_priv() {
-    run_example("examples/use_priv.lm", &["42", "42"]);
-}
+e2e_ok!(e2e_use_priv, "examples/use_priv.lm", "42", "42");
 
-#[test]
-fn e2e_use_pkg() {
-    run_example("examples/use_pkg.lm", &["42", "42"]);
-}
+e2e_ok!(e2e_use_pkg, "examples/use_pkg.lm", "42", "42");
 
-#[test]
-fn e2e_list_hof() {
-    run_example("examples/list_hof.lm", &["5", "2", "3", "24"]);
-}
+e2e_ok!(e2e_list_hof, "examples/list_hof.lm", "5", "2", "3", "24");
 
-#[test]
-fn e2e_list_hof_fn() {
-    run_example("examples/list_hof_fn.lm", &["10", "30", "1", "3", "6"]);
-}
+e2e_ok!(
+    e2e_list_hof_fn,
+    "examples/list_hof_fn.lm",
+    "10",
+    "30",
+    "1",
+    "3",
+    "6"
+);
 
-#[test]
-fn e2e_list_concat() {
-    run_example("examples/list_concat.lm", &["5", "1", "5", "30"]);
-}
+e2e_ok!(
+    e2e_list_concat,
+    "examples/list_concat.lm",
+    "5",
+    "1",
+    "5",
+    "30"
+);
 
-#[test]
-fn e2e_list_pipe() {
-    run_example("examples/list_pipe.lm", &["3", "6", "10"]);
-}
+e2e_ok!(e2e_list_pipe, "examples/list_pipe.lm", "3", "6", "10");
 
-#[test]
-fn e2e_list_set() {
-    run_example("examples/list_set.lm", &["1", "99", "3", "2", "3"]);
-}
+e2e_ok!(
+    e2e_list_set,
+    "examples/list_set.lm",
+    "1",
+    "99",
+    "3",
+    "2",
+    "3"
+);
 
-#[test]
-fn e2e_match_guard() {
-    run_example("examples/match_guard.lm", &["1", "2", "0"]);
-}
+e2e_ok!(e2e_match_guard, "examples/match_guard.lm", "1", "2", "0");
 
-#[test]
-fn e2e_match_cond() {
-    run_example("examples/match_cond.lm", &["1", "0", "-1"]);
-}
+e2e_ok!(e2e_match_cond, "examples/match_cond.lm", "1", "0", "-1");
 
-#[test]
-fn e2e_logic() {
-    run_example("examples/logic.lm", &["1", "10"]);
-}
+e2e_ok!(e2e_logic, "examples/logic.lm", "1", "10");
 
-#[test]
-fn e2e_string_ops() {
-    run_example("examples/string_ops.lm", &["5", "hello", "2"]);
-}
+e2e_ok!(e2e_string_ops, "examples/string_ops.lm", "5", "hello", "2");
 
-#[test]
-fn e2e_string_eq() {
-    run_example("examples/string_eq.lm", &["1", "1", "1", "1.5"]);
-}
+e2e_ok!(e2e_string_eq, "examples/string_eq.lm", "1", "1", "1", "1.5");
 
 #[test]
 fn e2e_string_interp() {
@@ -598,22 +581,13 @@ fn e2e_string_interp() {
     );
 }
 
-#[test]
-fn e2e_fib() {
-    run_example("examples/fib.lm", &["55"]);
-}
+e2e_ok!(e2e_fib, "examples/fib.lm", "55");
 
-#[test]
-fn e2e_char() {
-    run_example("examples/char.lm", &["A", "1", "1", "Z"]);
-}
+e2e_ok!(e2e_char, "examples/char.lm", "A", "1", "1", "Z");
 
 #[test]
 fn e2e_float_ops() {
-    run_example(
-        "examples/float_ops.lm",
-        &["3.75", "6", "1", "-1.5", "4"],
-    );
+    run_example("examples/float_ops.lm", &["3.75", "6", "1", "-1.5", "4"]);
 }
 
 #[test]
@@ -644,14 +618,29 @@ fn e2e_adt_float_eq() {
 }
 
 #[test]
-fn e2e_closure() {
-    run_example("examples/closure.lm", &["42", "11"]);
+fn e2e_nested_float_adt_eq() {
+    // Nested Option[Float] in List/Set: layout mask on ADT header → IEEE via lumia_eq.
+    run_example(
+        "examples/nested_float_adt_eq.lm",
+        &["1", "0", "1", "1", "1"],
+    );
 }
 
 #[test]
-fn e2e_closure_capture() {
-    run_example("examples/closure_capture.lm", &["42", "101", "42"]);
+fn e2e_eq_hash_consistent() {
+    // Hash ADT: `==` follows lumia_eq (Map path), not a diverging `__Eq_*_eq`.
+    run_example("examples/eq_hash_consistent.lm", &["1", "1", "10"]);
 }
+
+e2e_ok!(e2e_closure, "examples/closure.lm", "42", "11");
+
+e2e_ok!(
+    e2e_closure_capture,
+    "examples/closure_capture.lm",
+    "42",
+    "101",
+    "42"
+);
 
 #[test]
 fn e2e_map_ops() {
@@ -672,10 +661,12 @@ fn e2e_set_ops() {
     );
 }
 
-#[test]
-fn e2e_range_fold() {
-    run_example("examples/range_fold.lm", &["499999500000", "5050"]);
-}
+e2e_ok!(
+    e2e_range_fold,
+    "examples/range_fold.lm",
+    "499999500000",
+    "5050"
+);
 
 #[test]
 fn e2e_mapset() {
@@ -705,14 +696,13 @@ fn e2e_coll_conv() {
 fn e2e_set_algebra() {
     run_example(
         "examples/set_algebra.lm",
-        &["4", "true", "true", "2", "true", "false", "1", "true", "false"],
+        &[
+            "4", "true", "true", "2", "true", "false", "1", "true", "false",
+        ],
     );
 }
 
-#[test]
-fn e2e_for_map_set() {
-    run_example("examples/for_map_set.lm", &["6", "3", "30"]);
-}
+e2e_ok!(e2e_for_map_set, "examples/for_map_set.lm", "6", "3", "30");
 
 #[test]
 fn e2e_range_map() {
@@ -730,33 +720,23 @@ fn e2e_range_iota() {
     );
 }
 
-#[test]
-fn e2e_fuse_hof() {
-    run_example("examples/fuse_hof.lm", &["24", "250500"]);
-}
+e2e_ok!(e2e_fuse_hof, "examples/fuse_hof.lm", "24", "250500");
 
-#[test]
-fn e2e_result_match() {
-    run_example("examples/result_match.lm", &["5", "-1", "3"]);
-}
+e2e_ok!(e2e_result_match, "examples/result_match.lm", "5", "-1", "3");
 
 #[test]
 fn e2e_list_extras() {
     run_example(
         "examples/list_extras.lm",
         &[
-            "false", "true", "4", "4", "4", "1", "20", "true", "false", "true", "false", "2",
-            "-1",
+            "false", "true", "4", "4", "4", "1", "20", "true", "false", "true", "false", "2", "-1",
         ],
     );
 }
 
 #[test]
 fn e2e_prelude_option() {
-    run_example(
-        "examples/prelude_option.lm",
-        &["10", "-1", "42", "7"],
-    );
+    run_example("examples/prelude_option.lm", &["10", "-1", "42", "7"]);
 }
 
 #[test]
@@ -818,19 +798,16 @@ fn e2e_list_text() {
     );
 }
 
-#[test]
-fn e2e_memo_l2_release() {
-    // Transparent Memo L2 is enabled under `--release`; results must match.
-    run_example_release(
-        "examples/memo_l2.lm",
-        &["2646700", "2646700", "285"],
-    );
-}
+// Transparent Memo L2 is enabled under `--release`; results must match.
+e2e_ok_release!(
+    e2e_memo_l2_release,
+    "examples/memo_l2.lm",
+    "2646700",
+    "2646700",
+    "285"
+);
 
-#[test]
-fn e2e_memo_l0l1() {
-    run_example("examples/memo_l0l1.lm", &["42", "42", "65"]);
-}
+e2e_ok!(e2e_memo_l0l1, "examples/memo_l0l1.lm", "42", "42", "65");
 
 #[test]
 fn e2e_correctness_fixes() {
@@ -840,25 +817,26 @@ fn e2e_correctness_fixes() {
     );
 }
 
-#[test]
-fn e2e_scope_shadow() {
-    run_example("examples/scope_shadow.lm", &["99", "1", "1", "99", "1"]);
-}
+e2e_ok!(
+    e2e_scope_shadow,
+    "examples/scope_shadow.lm",
+    "99",
+    "1",
+    "1",
+    "99",
+    "1"
+);
 
-#[test]
-fn e2e_result_branch() {
-    run_example("examples/result_branch.lm", &["7", "-1"]);
-}
+e2e_ok!(e2e_result_branch, "examples/result_branch.lm", "7", "-1");
 
-#[test]
-fn e2e_result_err_payload() {
-    run_example("examples/result_err_payload.lm", &["42", "4"]);
-}
+e2e_ok!(
+    e2e_result_err_payload,
+    "examples/result_err_payload.lm",
+    "42",
+    "4"
+);
 
-#[test]
-fn e2e_for_map_keys() {
-    run_example("examples/for_map_keys.lm", &["3", "2", "3"]);
-}
+e2e_ok!(e2e_for_map_keys, "examples/for_map_keys.lm", "3", "2", "3");
 
 #[test]
 fn e2e_contains_poly() {
@@ -868,20 +846,27 @@ fn e2e_contains_poly() {
     );
 }
 
-#[test]
-fn e2e_module_val_str() {
-    run_example("examples/module_val_str.lm", &["hello", "4"]);
-}
+e2e_ok!(
+    e2e_module_val_str,
+    "examples/module_val_str.lm",
+    "hello",
+    "4"
+);
+
+e2e_ok!(e2e_for_pair_list, "examples/for_pair_list.lm", "66");
 
 #[test]
-fn e2e_for_pair_list() {
-    run_example("examples/for_pair_list.lm", &["66"]);
+fn e2e_for_destructure() {
+    // Map + List[(K,V)] both support `for (k, v) in …`.
+    run_example("examples/for_destructure.lm", &["33", "18"]);
 }
 
-#[test]
-fn e2e_hof_float_to_int() {
-    run_example("examples/hof_float_to_int.lm", &["1", "2"]);
-}
+e2e_ok!(
+    e2e_hof_float_to_int,
+    "examples/hof_float_to_int.lm",
+    "1",
+    "2"
+);
 
 #[test]
 fn e2e_hof_float_apply() {
@@ -920,8 +905,7 @@ fn e2e_sort_by() {
     run_example(
         "examples/sort_by.lm",
         &[
-            "1", "1", "3", "5", "5", "4", "3", "20", "10", "30", "apple", "banana",
-            "cherry",
+            "1", "1", "3", "5", "5", "4", "3", "20", "10", "30", "apple", "banana", "cherry",
         ],
     );
 }
@@ -935,14 +919,27 @@ fn e2e_tuple_fields() {
 }
 
 #[test]
-fn e2e_effect_hof() {
-    run_example("examples/effect_hof.lm", &["41", "42"]);
+fn e2e_let_destructure() {
+    // `val (a, b) = p` / nested tuple / product struct pattern.
+    run_example(
+        "examples/let_destructure.lm",
+        &["10", "20", "6", "7", "8", "30"],
+    );
 }
 
 #[test]
-fn e2e_effect_block() {
-    run_example("examples/effect_block.lm", &["42"]);
+fn e2e_bad_let_destructure_rejected() {
+    run_check(
+        "examples/bad_let_destructure.lm",
+        true,
+        &[],
+        &["irrefutable", "match"],
+    );
 }
+
+e2e_ok!(e2e_effect_hof, "examples/effect_hof.lm", "41", "42");
+
+e2e_ok!(e2e_effect_block, "examples/effect_block.lm", "42");
 
 #[test]
 fn e2e_nested_match() {
@@ -954,17 +951,7 @@ fn e2e_nested_match() {
 
 #[test]
 fn e2e_bad_import_priv_rejected() {
-    let root = workspace_root();
-    let src = root.join("examples/bad_import_priv.lm");
-    let status = Command::new(lumia_bin())
-        .current_dir(&root)
-        .args(["check", src.to_str().unwrap()])
-        .status()
-        .expect("spawn lumia check");
-    assert!(
-        !status.success(),
-        "priv import should fail type/check"
-    );
+    run_check("examples/bad_import_priv.lm", true, &["private"], &[]);
 }
 
 #[test]
@@ -991,127 +978,50 @@ fn e2e_priv_leak_rejected() {
     );
 }
 
-#[test]
-fn e2e_bad_nested_match_rejected() {
-    let root = workspace_root();
-    let src = root.join("examples/bad_nested_match.lm");
-    let out = Command::new(lumia_bin())
-        .current_dir(&root)
-        .args(["check", src.to_str().unwrap()])
-        .output()
-        .expect("spawn lumia check");
-    assert!(
-        !out.status.success(),
-        "nested non-exhaustive match should fail check"
-    );
-    let err = String::from_utf8_lossy(&out.stderr);
-    let combined = format!("{err}{}", String::from_utf8_lossy(&out.stdout));
-    assert!(
-        combined.contains("non-exhaustive"),
-        "expected non-exhaustive error, got: {combined}"
-    );
-    assert!(
-        combined.contains("bad_nested_match.lm:") && combined.contains(": lower:"),
-        "expected located diagnostic, got: {combined}"
-    );
-}
+e2e_reject!(
+    e2e_bad_nested_match_rejected,
+    "examples/bad_nested_match.lm",
+    "non-exhaustive",
+    "bad_nested_match.lm:",
+    ": lower:"
+);
 
 #[test]
 fn e2e_bad_int_match_rejected() {
-    let root = workspace_root();
-    let src = root.join("examples/bad_int_match.lm");
-    let out = Command::new(lumia_bin())
-        .current_dir(&root)
-        .args(["check", src.to_str().unwrap()])
-        .output()
-        .expect("spawn lumia check");
-    assert!(!out.status.success(), "int literal match should fail check");
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stderr),
-        String::from_utf8_lossy(&out.stdout)
-    );
-    assert!(
-        combined.contains("non-exhaustive") && combined.contains("Int"),
-        "unexpected diagnostics: {combined}"
-    );
-    assert!(
-        combined.contains("bad_int_match.lm:") && combined.contains("^"),
-        "expected located diagnostic with caret, got: {combined}"
+    run_check(
+        "examples/bad_int_match.lm",
+        true,
+        &["non-exhaustive", "Int", "bad_int_match.lm:", "^"],
+        &[],
     );
 }
 
 #[test]
 fn e2e_bad_empty_match_rejected() {
-    let root = workspace_root();
-    let src = root.join("examples/bad_empty_match.lm");
-    let out = Command::new(lumia_bin())
-        .current_dir(&root)
-        .args(["check", src.to_str().unwrap()])
-        .output()
-        .expect("spawn lumia check");
-    assert!(!out.status.success(), "empty match should fail check");
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stderr),
-        String::from_utf8_lossy(&out.stdout)
-    );
-    assert!(
-        combined.contains("non-exhaustive"),
-        "unexpected diagnostics: {combined}"
+    run_check(
+        "examples/bad_empty_match.lm",
+        true,
+        &["non-exhaustive"],
+        &[],
     );
 }
 
 #[test]
 fn e2e_bad_guard_only_match_rejected() {
-    let root = workspace_root();
-    let src = root.join("examples/bad_guard_only.lm");
-    let out = Command::new(lumia_bin())
-        .current_dir(&root)
-        .args(["check", src.to_str().unwrap()])
-        .output()
-        .expect("spawn lumia check");
-    assert!(!out.status.success(), "guard-only match should fail check");
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stderr),
-        String::from_utf8_lossy(&out.stdout)
-    );
-    assert!(
-        combined.contains("non-exhaustive"),
-        "unexpected diagnostics: {combined}"
-    );
+    run_check("examples/bad_guard_only.lm", true, &["non-exhaustive"], &[]);
 }
 
 #[test]
 fn e2e_bad_list_match_rejected() {
-    let root = workspace_root();
-    let src = root.join("examples/bad_list_match.lm");
-    let out = Command::new(lumia_bin())
-        .current_dir(&root)
-        .args(["check", src.to_str().unwrap()])
-        .output()
-        .expect("spawn lumia check");
-    assert!(!out.status.success(), "partial list match should fail check");
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stderr),
-        String::from_utf8_lossy(&out.stdout)
-    );
-    assert!(
-        combined.contains("non-exhaustive") && combined.contains("List"),
-        "unexpected diagnostics: {combined}"
-    );
-    assert!(
-        combined.contains("bad_list_match.lm:"),
-        "expected located diagnostic, got: {combined}"
+    run_check(
+        "examples/bad_list_match.lm",
+        true,
+        &["non-exhaustive", "List", "bad_list_match.lm:"],
+        &[],
     );
 }
 
-#[test]
-fn e2e_assert_ok() {
-    run_example("examples/assert_ok.lm", &["1"]);
-}
+e2e_ok!(e2e_assert_ok, "examples/assert_ok.lm", "1");
 
 #[test]
 fn e2e_bad_assert_aborts() {
@@ -1120,12 +1030,7 @@ fn e2e_bad_assert_aborts() {
     let bin = e2e_exe("bad_assert");
     let status = Command::new(lumia_bin())
         .current_dir(&root)
-        .args([
-            "build",
-            src.to_str().unwrap(),
-            "-o",
-            bin.to_str().unwrap(),
-        ])
+        .args(["build", src.to_str().unwrap(), "-o", bin.to_str().unwrap()])
         .status()
         .expect("build bad_assert");
     assert!(status.success(), "bad_assert should compile");
@@ -1143,85 +1048,21 @@ fn e2e_bad_assert_aborts() {
 
 #[test]
 fn e2e_bad_import_type_points_at_dep() {
-    let root = workspace_root();
-    let src = root.join("examples/bad_import_type.lm");
-    let out = Command::new(lumia_bin())
-        .current_dir(&root)
-        .args(["check", src.to_str().unwrap()])
-        .output()
-        .expect("check bad_import_type");
-    assert!(!out.status.success());
-    let err = String::from_utf8_lossy(&out.stderr);
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        err
-    );
-    assert!(
-        combined.contains("bad_dep.lm:") && combined.contains("type mismatch"),
-        "expected dep-file diagnostic, got: {combined}"
+    run_check(
+        "examples/bad_import_type.lm",
+        true,
+        &["bad_dep.lm:", "type mismatch"],
+        &[],
     );
 }
 
 #[test]
 fn e2e_bad_dep_rejected() {
-    let root = workspace_root();
-    let src = root.join("examples/bad_dep.lm");
-    let out = Command::new(lumia_bin())
-        .current_dir(&root)
-        .args(["check", src.to_str().unwrap()])
-        .output()
-        .expect("check bad_dep");
-    assert!(!out.status.success(), "bad_dep should fail type check");
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(
-        combined.contains("bad_dep.lm:") && combined.contains("type mismatch"),
-        "expected located type mismatch, got: {combined}"
-    );
-}
-
-fn run_example_trust_foreign_pure(rel: &str, expected_lines: &[&str]) {
-    let root = workspace_root();
-    let src = root.join(rel);
-    let stem = Path::new(rel)
-        .file_stem()
-        .unwrap()
-        .to_string_lossy()
-        .to_string();
-    let exe = e2e_exe(&stem);
-    let status = Command::new(lumia_bin())
-        .current_dir(&root)
-        .args([
-            "build",
-            "--trust-foreign-pure",
-            src.to_str().unwrap(),
-            "-o",
-            exe.to_str().unwrap(),
-        ])
-        .status()
-        .expect("spawn lumia build");
-    assert!(
-        status.success(),
-        "lumia build failed for {rel}: {status}"
-    );
-    let output = Command::new(&exe)
-        .output()
-        .unwrap_or_else(|e| panic!("run {}: {e}", exe.display()));
-    assert!(
-        output.status.success(),
-        "{rel} exited {}: stderr={}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let got: Vec<&str> = stdout.lines().collect();
-    assert_eq!(
-        got, expected_lines,
-        "{rel}: stdout mismatch\n got: {got:?}\n want: {expected_lines:?}"
+    run_check(
+        "examples/bad_dep.lm",
+        true,
+        &["bad_dep.lm:", "type mismatch"],
+        &[],
     );
 }
 
@@ -1235,39 +1076,16 @@ fn e2e_ffi_strlen() {
     run_example_trust_foreign_pure("examples/ffi_strlen.lm", &["5", "0"]);
 }
 
-#[test]
-fn e2e_ffi_getenv() {
-    run_example("examples/ffi_getenv.lm", &["true", "0"]);
-}
+e2e_ok!(e2e_ffi_getenv, "examples/ffi_getenv.lm", "true", "0");
 
-#[test]
-fn e2e_bad_foreign_pure_rejected() {
-    let root = workspace_root();
-    let src = root.join("examples/bad_foreign_pure.lm");
-    let out = Command::new(lumia_bin())
-        .current_dir(&root)
-        .args(["check", src.to_str().unwrap()])
-        .output()
-        .expect("check bad_foreign_pure");
-    assert!(
-        !out.status.success(),
-        "bad_foreign_pure should fail without --trust-foreign-pure"
-    );
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(
-        combined.contains("trust-foreign-pure") && combined.contains("pure"),
-        "expected trust-foreign-pure diagnostic, got: {combined}"
-    );
-}
+e2e_reject!(
+    e2e_bad_foreign_pure_rejected,
+    "examples/bad_foreign_pure.lm",
+    "trust-foreign-pure",
+    "pure"
+);
 
-#[test]
-fn e2e_use_path_dep() {
-    run_example("examples/use_path_dep.lm", &["42", "42"]);
-}
+e2e_ok!(e2e_use_path_dep, "examples/use_path_dep.lm", "42", "42");
 
 #[test]
 fn e2e_par_map() {
@@ -1281,10 +1099,7 @@ fn e2e_par_fold() {
     run_example("examples/par_fold.lm", &["4950", "4950"]);
 }
 
-#[test]
-fn e2e_par_map_fn() {
-    run_example("examples/par_map_fn.lm", &["50", "0", "98"]);
-}
+e2e_ok!(e2e_par_map_fn, "examples/par_map_fn.lm", "50", "0", "98");
 
 #[test]
 fn e2e_par_map_toplevel_lam() {
@@ -1321,24 +1136,21 @@ fn e2e_unknown_std_module_rejected() {
 
 #[test]
 fn e2e_bad_field_proj_rejected() {
-    let root = workspace_root();
-    let src = root.join("examples/bad_field_proj.lm");
-    let out = Command::new(lumia_bin())
-        .current_dir(&root)
-        .args(["check", src.to_str().unwrap()])
-        .output()
-        .expect("check bad_field_proj");
-    assert!(!out.status.success(), "wrong product field must fail");
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
+    run_check(
+        "examples/bad_field_proj.lm",
+        true,
+        &[],
+        &["expects type", "field projection", "cannot resolve"],
     );
-    assert!(
-        combined.contains("expects type")
-            || combined.contains("field projection")
-            || combined.contains("cannot resolve"),
-        "expected field-type error, got: {combined}"
+}
+
+#[test]
+fn e2e_bad_tuple_proj_rejected() {
+    run_check(
+        "examples/bad_tuple_proj.lm",
+        true,
+        &[],
+        &["tuple", "mismatch", "type mismatch"],
     );
 }
 
@@ -1386,101 +1198,46 @@ fn e2e_int_literal_overflow_rejected() {
 
 #[test]
 fn e2e_bad_val_assign_rejected() {
-    let root = workspace_root();
-    let src = root.join("examples/bad_val_assign.lm");
-    let out = Command::new(lumia_bin())
-        .current_dir(&root)
-        .args(["check", src.to_str().unwrap()])
-        .output()
-        .expect("check bad_val_assign");
-    assert!(!out.status.success(), "assign to val must fail");
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(
-        combined.contains("immutable") || combined.contains("cannot assign"),
-        "expected immutability error, got: {combined}"
+    run_check(
+        "examples/bad_val_assign.lm",
+        true,
+        &[],
+        &["immutable", "cannot assign"],
     );
 }
 
 #[test]
 fn e2e_bad_struct_match_rejected() {
-    let root = workspace_root();
-    let src = root.join("examples/bad_struct_match.lm");
-    let out = Command::new(lumia_bin())
-        .current_dir(&root)
-        .args(["check", src.to_str().unwrap()])
-        .output()
-        .expect("check bad_struct_match");
-    assert!(!out.status.success(), "Point pattern on Rect must fail");
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(
-        combined.contains("expects type") || combined.contains("Point") || combined.contains("Rect"),
-        "expected product mismatch error, got: {combined}"
+    run_check(
+        "examples/bad_struct_match.lm",
+        true,
+        &[],
+        &["expects type", "Point", "Rect"],
     );
 }
 
 #[test]
 fn e2e_bad_ok_arity_rejected() {
-    let root = workspace_root();
-    let src = root.join("examples/bad_ok_arity.lm");
-    let out = Command::new(lumia_bin())
-        .current_dir(&root)
-        .args(["check", src.to_str().unwrap()])
-        .output()
-        .expect("check bad_ok_arity");
-    assert!(!out.status.success(), "Ok() vs Ok(x) arity must fail");
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(
-        combined.contains("expects") || combined.contains("field") || combined.contains("lower"),
-        "expected arity error, got: {combined}"
+    run_check(
+        "examples/bad_ok_arity.lm",
+        true,
+        &[],
+        &["expects", "field", "lower"],
     );
 }
 
 #[test]
 fn e2e_bad_struct_field_match_rejected() {
-    let root = workspace_root();
-    let src = root.join("examples/bad_struct_field_match.lm");
-    let out = Command::new(lumia_bin())
-        .current_dir(&root)
-        .args(["check", src.to_str().unwrap()])
-        .output()
-        .expect("check bad_struct_field_match");
-    assert!(!out.status.success(), "unknown struct field in pattern must fail");
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(
-        combined.contains("unknown field") || combined.contains('z'),
-        "expected unknown-field diagnostic, got: {combined}"
+    run_check(
+        "examples/bad_struct_field_match.lm",
+        true,
+        &[],
+        &["unknown field"],
     );
 }
 
 #[test]
 fn e2e_bad_par_map_io_demoted() {
-    // Effectful FunRef map is demoted to sequential — still type-checks.
-    let root = workspace_root();
-    let src = root.join("examples/bad_par_map_io.lm");
-    let out = Command::new(lumia_bin())
-        .current_dir(&root)
-        .args(["check", src.to_str().unwrap()])
-        .output()
-        .expect("check bad_par_map_io");
-    assert!(
-        out.status.success(),
-        "effectful map should demote, not fail: {:?}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    // IO List.map must type-check after auto-parallel demotion to sequential.
+    run_check("examples/bad_par_map_io.lm", false, &[], &[]);
 }

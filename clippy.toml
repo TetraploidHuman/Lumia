@@ -1,0 +1,2 @@
+# Clippy configuration for the Lumia workspace.
+# Lint allows that apply across crates live in the root Cargo.toml `[workspace.lints.clippy]`.

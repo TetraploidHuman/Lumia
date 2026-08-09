@@ -1,5 +1,15 @@
 //! LLVM codegen via inkwell (LLVM 21). Links against `lumia_rt`.
 
+mod emit_value;
+mod link;
+mod runtime_decls;
+mod tco;
+
+pub use link::find_runtime_lib_prefer;
+use link::link_executable;
+use runtime_decls::declare_runtime;
+use tco::compute_tco_sccs;
+
 use anyhow::{bail, Context as AnyhowContext, Result};
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
@@ -12,16 +22,13 @@ use inkwell::types::{BasicMetadataTypeEnum, IntType};
 use inkwell::values::{
     BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue, PointerValue,
 };
-use inkwell::{AddressSpace, FloatPredicate, IntPredicate, OptimizationLevel};
-use lumia_core::{Block, CoreFun, CoreModule, Local, Op, Value, MemoTf};
+use inkwell::{AddressSpace, IntPredicate, OptimizationLevel};
+use lumia_core::{Block, CoreFun, CoreModule, Local, MemoTf, Op, Value};
 use lumia_hir::Builtin;
-use lumia_syntax::{BinOp, UnOp};
 use lumia_ty::Type;
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 
-/// True when `f` is `return params[0]` (possibly through Local aliases only).
 fn core_fun_is_param0_identity(f: &CoreFun) -> bool {
     let Some(p0) = f.params.first().map(|p| p.0) else {
         return false;
@@ -65,15 +72,27 @@ pub struct CodegenOptions {
     pub link_args: Vec<String>,
 }
 
-pub fn compile_module(core: &CoreModule, opts: &CodegenOptions) -> Result<()> {
+/// Emit LLVM IR for `core`, run `module.verify()`, and return the IR text.
+/// Does not write object files or invoke the linker.
+pub fn emit_verified_llvm_ir(core: &CoreModule, opts: &CodegenOptions) -> Result<String> {
     let context = Context::create();
+    let cg = emit_llvm_module(&context, core, opts)?;
+    let ir = cg.module.print_to_string().to_string();
+    Ok(ir)
+}
+
+fn emit_llvm_module<'ctx>(
+    context: &'ctx Context,
+    core: &CoreModule,
+    opts: &CodegenOptions,
+) -> Result<Codegen<'ctx>> {
     let mut cg = Codegen::new(
-        &context,
+        context,
         &core.name,
         opts.option_some_tag,
         opts.option_none_tag,
     );
-    declare_runtime(&context, &cg.module);
+    declare_runtime(context, &cg.module);
     cg.tco_sccs = compute_tco_sccs(core);
     cg.hash_adts = core.hash_adts.clone();
 
@@ -86,7 +105,7 @@ pub fn compile_module(core: &CoreModule, opts: &CodegenOptions) -> Result<()> {
             f.name.clone()
         };
         let fv = if f.external.is_some() {
-            let fn_ty = c_abi_fn_type(&context, &f.param_tys, &f.ret_ty);
+            let fn_ty = c_abi_fn_type(context, &f.param_tys, &f.ret_ty);
             let fv = cg.module.add_function(&name, fn_ty, None);
             fv.set_linkage(inkwell::module::Linkage::External);
             cg.external_funs.insert(f.name.clone());
@@ -113,7 +132,7 @@ pub fn compile_module(core: &CoreModule, opts: &CodegenOptions) -> Result<()> {
         cg.emit_function(f)?;
     }
 
-    emit_c_main(&context, &cg.module, &cg.builder);
+    emit_c_main(context, &cg.module, &cg.builder, core);
 
     if opts.emit_ir {
         let ir_path = opts.output.with_extension("ll");
@@ -125,6 +144,12 @@ pub fn compile_module(core: &CoreModule, opts: &CodegenOptions) -> Result<()> {
     cg.module
         .verify()
         .map_err(|e| anyhow::anyhow!("LLVM verify: {e}"))?;
+    Ok(cg)
+}
+
+pub fn compile_module(core: &CoreModule, opts: &CodegenOptions) -> Result<()> {
+    let context = Context::create();
+    let cg = emit_llvm_module(&context, core, opts)?;
 
     Target::initialize_all(&InitializationConfig::default());
     let triple = TargetMachine::get_default_triple();
@@ -143,14 +168,7 @@ pub fn compile_module(core: &CoreModule, opts: &CodegenOptions) -> Result<()> {
         RelocMode::PIC
     };
     let tm = target
-        .create_target_machine(
-            &triple,
-            &cpu,
-            &features,
-            opt,
-            reloc,
-            CodeModel::Default,
-        )
+        .create_target_machine(&triple, &cpu, &features, opt, reloc, CodeModel::Default)
         .context("create target machine")?;
 
     let obj_path = if cfg!(target_os = "windows") {
@@ -168,420 +186,18 @@ pub fn compile_module(core: &CoreModule, opts: &CodegenOptions) -> Result<()> {
     Ok(())
 }
 
-fn declare_runtime<'ctx>(context: &'ctx Context, module: &LlvmModule<'ctx>) {
-    let i64_ty = context.i64_type();
-    let i32_ty = context.i32_type();
-    let i8_ty = context.i8_type();
-    let ptr_ty = context.ptr_type(AddressSpace::default());
-    let void_ty = context.void_type();
-
-    module.add_function(
-        "lumia_println_int",
-        void_ty.fn_type(&[i64_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_println_auto",
-        void_ty.fn_type(&[i64_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_println_float",
-        void_ty.fn_type(&[context.f64_type().into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_eq",
-        i64_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_adt_eq",
-        i64_ty.fn_type(&[i64_ty.into(), i64_ty.into(), i64_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_show_adt",
-        ptr_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_cmp",
-        i64_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_println_str",
-        void_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_println_cstr",
-        void_ty.fn_type(&[ptr_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_println_bool",
-        void_ty.fn_type(&[i8_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_alloc",
-        ptr_ty.fn_type(&[i64_ty.into(), i32_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_alloc_string",
-        ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_string_cstr",
-        ptr_ty.fn_type(&[ptr_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_cstr_to_string",
-        ptr_ty.fn_type(&[ptr_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_alloc_char",
-        ptr_ty.fn_type(&[i64_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_show",
-        ptr_ty.fn_type(&[i64_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_show_float",
-        ptr_ty.fn_type(&[context.f64_type().into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_show_bool",
-        ptr_ty.fn_type(&[i8_ty.into()], false),
-        None,
-    );
-    module.add_function("lumia_gc_collect", void_ty.fn_type(&[], false), None);
-    module.add_function(
-        "lumia_root_push",
-        void_ty.fn_type(&[ptr_ty.into()], false),
-        None,
-    );
-    module.add_function("lumia_root_pop", void_ty.fn_type(&[], false), None);
-    // `lumia_write_barrier` stays in `lumia_rt` ABI for future concurrent GC;
-    // STW mark-sweep does not emit calls.
-    module.add_function(
-        "lumia_list_len",
-        i64_ty.fn_type(&[ptr_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_list_get",
-        i64_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_list_slice",
-        ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_list_append",
-        ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_list_concat",
-        ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
-        None,
-    );
-    module.add_function("lumia_list_empty", ptr_ty.fn_type(&[], false), None);
-    module.add_function(
-        "lumia_map_finish",
-        ptr_ty.fn_type(&[ptr_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_set_finish",
-        ptr_ty.fn_type(&[ptr_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_len",
-        i64_ty.fn_type(&[ptr_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_concat",
-        ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_get",
-        i64_ty.fn_type(
-            &[
-                ptr_ty.into(),
-                i64_ty.into(),
-                i64_ty.into(),
-                i64_ty.into(),
-            ],
-            false,
-        ),
-        None,
-    );
-    module.add_function(
-        "lumia_contains",
-        i64_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_ensure_map_f64",
-        ptr_ty.fn_type(&[ptr_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_ensure_map_vf64",
-        ptr_ty.fn_type(&[ptr_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_ensure_set_f64",
-        ptr_ty.fn_type(&[ptr_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_ensure_list_f64",
-        ptr_ty.fn_type(&[ptr_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_map_set",
-        ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_list_set",
-        ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_set",
-        ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_map_remove",
-        ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_set_insert",
-        ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_remove",
-        ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_map_keys",
-        ptr_ty.fn_type(&[ptr_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_elems",
-        ptr_ty.fn_type(&[ptr_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_map_values",
-        ptr_ty.fn_type(&[ptr_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_map_items",
-        ptr_ty.fn_type(&[ptr_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_adt_tag",
-        i64_ty.fn_type(&[ptr_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_adt_field",
-        i64_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_range",
-        ptr_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_range_inclusive",
-        ptr_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_str_trim",
-        ptr_ty.fn_type(&[ptr_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_str_len",
-        i64_ty.fn_type(&[ptr_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_str_to_lower",
-        ptr_ty.fn_type(&[ptr_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_str_to_upper",
-        ptr_ty.fn_type(&[ptr_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_str_split",
-        ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_str_substring",
-        ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_list_take",
-        ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_list_reverse",
-        ptr_ty.fn_type(&[ptr_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_list_sort",
-        ptr_ty.fn_type(&[ptr_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_list_sort_by_keys",
-        ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_list_par_map",
-        ptr_ty.fn_type(
-            &[
-                ptr_ty.into(),
-                ptr_ty.into(),
-                context.i32_type().into(),
-            ],
-            false,
-        ),
-        None,
-    );
-    module.add_function(
-        "lumia_list_par_fold",
-        i64_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_list_join",
-        ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_read_stdin",
-        ptr_ty.fn_type(&[], false),
-        None,
-    );
-    module.add_function("lumia_match_fail", void_ty.fn_type(&[], false), None);
-    module.add_function(
-        "lumia_assert",
-        void_ty.fn_type(
-            &[
-                i64_ty.into(),
-                ptr_ty.into(),
-                i64_ty.into(),
-            ],
-            false,
-        ),
-        None,
-    );
-    module.add_function("lumia_trap_div0", void_ty.fn_type(&[], false), None);
-    module.add_function("lumia_trap_overflow", void_ty.fn_type(&[], false), None);
-    module.add_function(
-        "lumia_str_starts_with",
-        i64_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_str_ends_with",
-        i64_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_memo_l2_lookup",
-        i64_ty.fn_type(
-            &[
-                i64_ty.into(),
-                i64_ty.into(),
-                i64_ty.into(),
-                i64_ty.into(),
-                i64_ty.into(),
-                i64_ty.into(),
-                ptr_ty.into(),
-            ],
-            false,
-        ),
-        None,
-    );
-    module.add_function(
-        "lumia_memo_l2_store",
-        context.void_type().fn_type(
-            &[
-                i64_ty.into(),
-                i64_ty.into(),
-                i64_ty.into(),
-                i64_ty.into(),
-                i64_ty.into(),
-                i64_ty.into(),
-                i64_ty.into(),
-            ],
-            false,
-        ),
-        None,
-    );
-    module.add_function(
-        "lumia_memo_idx_lookup",
-        i64_ty.fn_type(&[i64_ty.into(), i64_ty.into(), ptr_ty.into()], false),
-        None,
-    );
-    module.add_function(
-        "lumia_memo_idx_store",
-        context
-            .void_type()
-            .fn_type(&[i64_ty.into(), i64_ty.into(), i64_ty.into()], false),
-        None,
-    );
-}
-
-fn emit_c_main<'ctx>(context: &'ctx Context, module: &LlvmModule<'ctx>, builder: &Builder<'ctx>) {
+fn emit_c_main<'ctx>(
+    context: &'ctx Context,
+    module: &LlvmModule<'ctx>,
+    builder: &Builder<'ctx>,
+    core: &CoreModule,
+) {
     let i32_ty = context.i32_type();
     let main_ty = i32_ty.fn_type(&[], false);
     let main_fn = module.add_function("main", main_ty, None);
     let entry = context.append_basic_block(main_fn, "entry");
     builder.position_at_end(entry);
+    emit_trait_dict_registration(context, module, builder, core);
     if let Some(user) = module.get_function("lumia_user_main") {
         builder.build_call(user, &[], "call_main").unwrap();
     }
@@ -590,7 +206,61 @@ fn emit_c_main<'ctx>(context: &'ctx Context, module: &LlvmModule<'ctx>, builder:
         .unwrap();
 }
 
-struct Codegen<'ctx> {
+/// Register mangled instance methods in the runtime trait dictionary.
+fn emit_trait_dict_registration<'ctx>(
+    context: &'ctx Context,
+    module: &LlvmModule<'ctx>,
+    builder: &Builder<'ctx>,
+    core: &CoreModule,
+) {
+    let Some(reg) = module.get_function("lumia_dict_register") else {
+        return;
+    };
+    // (prefix, trait_id) — ids match lumia_rt::TRAIT_*.
+    let specs: &[(&str, i64)] = &[
+        ("__Show_", 1),
+        ("__Eq_", 2),
+        ("__Ord_", 3),
+        ("__Hash_", 4),
+        ("__Num_", 5),
+    ];
+    for f in &core.functions {
+        let name = &f.name;
+        for &(prefix, trait_id) in specs {
+            let Some(rest) = name.strip_prefix(prefix) else {
+                continue;
+            };
+            // `__Show_Point_show` → type `Point`; `__Num_Vec2_add` → `Vec2`.
+            let Some((ty_name, _)) = rest.rsplit_once('_') else {
+                continue;
+            };
+            if ty_name.is_empty() {
+                continue;
+            }
+            let Some(fv) = module.get_function(name) else {
+                continue;
+            };
+            let ty_str = builder
+                .build_global_string_ptr(ty_name, &format!(".dict.ty.{ty_name}"))
+                .expect("dict type name");
+            let tid = context.i32_type().const_int(trait_id as u64, false);
+            builder
+                .build_call(
+                    reg,
+                    &[
+                        tid.into(),
+                        ty_str.as_pointer_value().into(),
+                        fv.as_global_value().as_pointer_value().into(),
+                    ],
+                    "",
+                )
+                .unwrap();
+            break;
+        }
+    }
+}
+
+pub(crate) struct Codegen<'ctx> {
     context: &'ctx Context,
     module: LlvmModule<'ctx>,
     builder: Builder<'ctx>,
@@ -672,7 +342,7 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
-    fn key_type_has_hash(&self, ty: &Type) -> bool {
+    pub(crate) fn key_type_has_hash(&self, ty: &Type) -> bool {
         match ty {
             Type::Adt { name, .. } => self.hash_adts.contains(name),
             // Scalars / collections: structural hash always available.
@@ -689,7 +359,7 @@ impl<'ctx> Codegen<'ctx> {
     }
 
     /// Call `__Show_{T}_show` when an instance provided a custom Show method.
-    fn emit_show_override(
+    pub(crate) fn emit_show_override(
         &mut self,
         adt_name: &str,
         arg: BasicValueEnum<'ctx>,
@@ -699,15 +369,8 @@ impl<'ctx> Codegen<'ctx> {
             return Ok(None);
         };
         let i = self.coerce_i64(arg)?;
-        let call = self
-            .builder
-            .build_call(fv, &[i.into()], "show_ov")
-            .unwrap();
-        let bits = call
-            .try_as_basic_value()
-            .basic()
-            .unwrap()
-            .into_int_value();
+        let call = self.builder.build_call(fv, &[i.into()], "show_ov").unwrap();
+        let bits = call.try_as_basic_value().basic().unwrap().into_int_value();
         let ptr_ty = self.context.ptr_type(AddressSpace::default());
         let ptr = self
             .builder
@@ -717,7 +380,7 @@ impl<'ctx> Codegen<'ctx> {
     }
 
     /// Call `__Eq_{T}_eq(a,b) -> Bool` when present.
-    fn emit_eq_override(
+    pub(crate) fn emit_eq_override(
         &mut self,
         adt_name: &str,
         left: IntValue<'ctx>,
@@ -732,15 +395,12 @@ impl<'ctx> Codegen<'ctx> {
             .build_call(fv, &[left.into(), right.into()], "eq_ov")
             .unwrap();
         Ok(Some(
-            call.try_as_basic_value()
-                .basic()
-                .unwrap()
-                .into_int_value(),
+            call.try_as_basic_value().basic().unwrap().into_int_value(),
         ))
     }
 
     /// Call `__Ord_{T}_less(a,b) -> Bool` when present.
-    fn emit_less_override(
+    pub(crate) fn emit_less_override(
         &mut self,
         adt_name: &str,
         left: IntValue<'ctx>,
@@ -755,10 +415,7 @@ impl<'ctx> Codegen<'ctx> {
             .build_call(fv, &[left.into(), right.into()], "less_ov")
             .unwrap();
         Ok(Some(
-            call.try_as_basic_value()
-                .basic()
-                .unwrap()
-                .into_int_value(),
+            call.try_as_basic_value().basic().unwrap().into_int_value(),
         ))
     }
 
@@ -770,7 +427,7 @@ impl<'ctx> Codegen<'ctx> {
     }
 
     /// Typed `==` for ADTs with Float fields and fallback to `lumia_eq`.
-    fn emit_value_eq(
+    pub(crate) fn emit_value_eq(
         &mut self,
         lt: &Type,
         rt: &Type,
@@ -778,8 +435,12 @@ impl<'ctx> Codegen<'ctx> {
         r: IntValue<'ctx>,
     ) -> Result<IntValue<'ctx>> {
         if let Some(name) = Self::adt_method_name(lt, rt) {
-            if let Some(eq) = self.emit_eq_override(&name, l, r)? {
-                return Ok(eq);
+            // Hash ADTs use `lumia_eq` for Map/Set keys — keep `==` on the same path
+            // so a custom `__Eq_*_eq` cannot diverge from containment.
+            if !self.hash_adts.contains(&name) {
+                if let Some(eq) = self.emit_eq_override(&name, l, r)? {
+                    return Ok(eq);
+                }
             }
             if let (Type::Adt { params: lp, .. }, Type::Adt { params: rp, .. }) = (lt, rt) {
                 if lp.iter().any(|p| matches!(p, Type::Float))
@@ -801,7 +462,7 @@ impl<'ctx> Codegen<'ctx> {
     }
 
     /// Bit `i` set ⇒ field `i` uses IEEE eq/show (union of both sides' params).
-    fn adt_float_field_mask(lp: &[Type], rp: &[Type]) -> u64 {
+    pub(crate) fn adt_float_field_mask(lp: &[Type], rp: &[Type]) -> u64 {
         let n = lp.len().max(rp.len()).min(64);
         let mut mask = 0u64;
         for i in 0..n {
@@ -814,8 +475,19 @@ impl<'ctx> Codegen<'ctx> {
         mask
     }
 
+    /// Layout mask from concrete field SSA types at an `AllocAdt` site.
+    pub(crate) fn adt_float_mask_from_fields(&self, fields: &[Local]) -> u32 {
+        let mut mask = 0u32;
+        for (i, f) in fields.iter().enumerate().take(32) {
+            if matches!(self.local_tys.get(&f.0), Some(Type::Float)) {
+                mask |= 1u32 << i;
+            }
+        }
+        mask
+    }
+
     /// Structural ADT `==` via runtime size (safe for sum None/Ok arity ≠ type params).
-    fn emit_typed_adt_eq(
+    pub(crate) fn emit_typed_adt_eq(
         &mut self,
         left: IntValue<'ctx>,
         right: IntValue<'ctx>,
@@ -843,7 +515,7 @@ impl<'ctx> Codegen<'ctx> {
     }
 
     /// Structural ADT show; float_mask selects IEEE formatting per field index.
-    fn emit_typed_adt_show(
+    pub(crate) fn emit_typed_adt_show(
         &mut self,
         arg: BasicValueEnum<'ctx>,
         params: &[Type],
@@ -874,29 +546,17 @@ impl<'ctx> Codegen<'ctx> {
             | Type::Set(_)
             | Type::Adt { .. }
             | Type::Fun(_, _, _) => true,
-            Type::Tuple(ts) => ts.iter().any(Self::type_may_heap),
+            Type::Tuple(ts) | Type::TuplePrefix(ts) => ts.iter().any(Self::type_may_heap),
             _ => false,
         }
     }
 
-    fn value_may_heap(&self, v: &Value) -> bool {
+    pub(crate) fn value_may_heap(&self, v: &Value) -> bool {
+        use lumia_core::{value_alloc_may_heap, HeapPolicy};
+        if value_alloc_may_heap(v, HeapPolicy::StackLitOk) {
+            return true;
+        }
         match v {
-            Value::String(_) | Value::Char(_) => true,
-            // Small non-escaping Lit* lives on the stack — not a GC root.
-            Value::AllocList { elems, repr } => {
-                !(matches!(repr, lumia_core::ListRepr::LitList) && !elems.is_empty())
-            }
-            Value::AllocSet { elems, repr } => {
-                !(matches!(repr, lumia_core::SetRepr::LitSet) && !elems.is_empty())
-            }
-            Value::AllocMap { flat_pairs, repr } => {
-                !(matches!(repr, lumia_core::MapRepr::LitMap) && !flat_pairs.is_empty())
-            }
-            Value::AllocAdt { repr, .. } => {
-                !matches!(repr, lumia_core::AdtRepr::LitAdt)
-            }
-            Value::AllocClosure { .. } => true,
-            Value::ClosureCap { .. } => true,
             Value::IndirectCall { .. } => true,
             // Only when an arm's result may be heap — parent `Let` re-roots after
             // scoped pop. Pure Int/Unit ifs must not allocate root slots.
@@ -904,9 +564,7 @@ impl<'ctx> Codegen<'ctx> {
                 then_block,
                 else_block,
                 ..
-            } => {
-                self.block_result_may_heap(then_block) || self.block_result_may_heap(else_block)
-            }
+            } => self.block_result_may_heap(then_block) || self.block_result_may_heap(else_block),
             Value::Call { fun, .. } => self
                 .fun_ret_tys
                 .get(fun)
@@ -962,30 +620,21 @@ impl<'ctx> Codegen<'ctx> {
         false
     }
 
-    fn root_push_i64(&mut self, bits: IntValue<'ctx>) -> Result<()> {
+    pub(crate) fn root_push_i64(&mut self, bits: IntValue<'ctx>) -> Result<()> {
         let slot = self.alloca_in_entry(self.i64_ty, "gc_root")?;
         self.builder.build_store(slot, bits).unwrap();
         let push = self.module.get_function("lumia_root_push").unwrap();
-        self.builder
-            .build_call(push, &[slot.into()], "")
-            .unwrap();
+        self.builder.build_call(push, &[slot.into()], "").unwrap();
         self.root_depth += 1;
         Ok(())
     }
 
     /// `alloca` at function entry so loops do not grow the native stack.
-    fn alloca_in_entry(
-        &mut self,
-        ty: IntType<'ctx>,
-        name: &str,
-    ) -> Result<PointerValue<'ctx>> {
+    fn alloca_in_entry(&mut self, ty: IntType<'ctx>, name: &str) -> Result<PointerValue<'ctx>> {
         let entry = self
             .entry_bb
             .context("alloca_in_entry before emit_function")?;
-        let cur = self
-            .builder
-            .get_insert_block()
-            .context("no insert block")?;
+        let cur = self.builder.get_insert_block().context("no insert block")?;
         // Insert before the first non-alloca, or at end if entry is empty/only allocas.
         match entry.get_first_instruction() {
             Some(first) => self.builder.position_before(&first),
@@ -1001,15 +650,13 @@ impl<'ctx> Codegen<'ctx> {
             return;
         }
         let push = self.module.get_function("lumia_root_push").unwrap();
-        self.builder
-            .build_call(push, &[slot.into()], "")
-            .unwrap();
+        self.builder.build_call(push, &[slot.into()], "").unwrap();
         self.root_depth += 1;
         self.rooted_slots.insert(name.to_string());
     }
 
     /// Pop shadow-stack entries until `root_depth == depth` (scope exit).
-    fn root_pop_to(&mut self, depth: u32) {
+    pub(crate) fn root_pop_to(&mut self, depth: u32) {
         debug_assert!(self.root_depth >= depth);
         let pop = self.module.get_function("lumia_root_pop").unwrap();
         while self.root_depth > depth {
@@ -1027,36 +674,29 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
+    fn emit_frame_push(&mut self, name: &str) {
+        let push = self.module.get_function("lumia_frame_push").unwrap();
+        let s = self
+            .builder
+            .build_global_string_ptr(name, &format!(".fname.{name}"))
+            .expect("global string");
+        self.builder
+            .build_call(push, &[s.as_pointer_value().into()], "")
+            .unwrap();
+    }
+
+    fn emit_frame_pop(&mut self) {
+        let pop = self.module.get_function("lumia_frame_pop").unwrap();
+        self.builder.build_call(pop, &[], "").unwrap();
+    }
+
     fn emit_return_i64(&mut self, ret: IntValue<'ctx>) {
         self.emit_root_epilogue();
+        self.emit_frame_pop();
         self.builder.build_return(Some(&ret)).unwrap();
     }
 
-    /// Emit `musttail call` + `ret` for pure Int TCO (self or mutual; no GC roots live).
-    /// Returns true if the call was emitted as a terminator.
-    fn emit_musttail_call(&mut self, fun: &str, args: &[Local]) -> Result<bool> {
-        let callee = match self.functions.get(fun).copied() {
-            Some(f) => f,
-            None => return Ok(false),
-        };
-        let mut av: Vec<BasicMetadataValueEnum> = Vec::with_capacity(args.len());
-        for a in args {
-            av.push(self.coerce_i64(self.local(*a)?)?.into());
-        }
-        let call = self.builder.build_call(callee, &av, "tco").unwrap();
-        call.set_tail_call_kind(inkwell::values::LLVMTailCallKind::LLVMTailCallKindMustTail);
-        let ret = call
-            .try_as_basic_value()
-            .basic()
-            .unwrap_or_else(|| self.i64_ty.const_int(0, false).into())
-            .into_int_value();
-        // No root epilogue: musttail requires call immediately followed by ret.
-        debug_assert_eq!(self.root_depth, 0);
-        self.builder.build_return(Some(&ret)).unwrap();
-        Ok(true)
-    }
-
-    fn emit_function(&mut self, fun: &CoreFun) -> Result<()> {
+    pub(crate) fn emit_function(&mut self, fun: &CoreFun) -> Result<()> {
         let fv = *self
             .functions
             .get(&fun.name)
@@ -1076,11 +716,13 @@ impl<'ctx> Codegen<'ctx> {
         self.local_tys.clear();
         self.slot_tys.clear();
         self.current_fun = fun.name.clone();
-        self.tco_peers = self
-            .tco_sccs
-            .get(&fun.name)
-            .cloned()
-            .unwrap_or_default();
+        self.tco_peers = self.tco_sccs.get(&fun.name).cloned().unwrap_or_default();
+        let frame_name = if fun.is_main {
+            "main"
+        } else {
+            fun.name.as_str()
+        };
+        self.emit_frame_push(frame_name);
 
         for (i, p) in fun.params.iter().enumerate() {
             let av = fv.get_nth_param(i as u32).unwrap();
@@ -1092,7 +734,7 @@ impl<'ctx> Codegen<'ctx> {
                     .builder
                     .build_bit_cast(bits, self.context.f64_type(), "arg_f64")
                     .unwrap();
-                self.locals.insert(p.0, f.into());
+                self.locals.insert(p.0, f);
             } else {
                 self.locals.insert(p.0, av);
                 if Self::type_may_heap(&ty) {
@@ -1165,10 +807,7 @@ impl<'ctx> Codegen<'ctx> {
         fv: FunctionValue<'ctx>,
         mid: u32,
     ) -> Result<BasicBlock<'ctx>> {
-        let out_alloca = self
-            .builder
-            .build_alloca(self.i64_ty, "memo_out")
-            .unwrap();
+        let out_alloca = self.builder.build_alloca(self.i64_ty, "memo_out").unwrap();
         self.memo_arg_slots.clear();
         for (i, p) in fun.params.iter().enumerate().take(4) {
             let slot = self
@@ -1372,386 +1011,22 @@ impl<'ctx> Codegen<'ctx> {
         Ok(())
     }
 
-    /// Preserve `List[T]` element type from the first list-typed argument.
-    fn list_elem_preserved(&self, args: &[Local]) -> Type {
-        if let Some(arg0) = args.first() {
-            if let Some(Type::List(elem)) = self.local_tys.get(&arg0.0) {
-                return Type::List(elem.clone());
-            }
-        }
-        Type::List(Box::new(Type::Int))
-    }
-
-    /// Result element type of `ListParMap` from FunRef/`Fun` return, else list elem.
-    /// Identity callbacks are often typed `Int→Int` under the bitcast ABI; when the
-    /// source list is `List[Float]`, keep Float so `TYPE_LIST_F64` IEEE `==` applies.
-    fn list_par_map_result_elem(&self, args: &[Local]) -> Type {
-        let list_elem = match self.list_elem_preserved(args) {
-            Type::List(elem) => *elem,
-            other => other,
-        };
-        if let Some(fun_local) = args.get(1) {
-            let name = self.funref_locals.get(&fun_local.0).cloned();
-            let fun_ret = name
-                .as_ref()
-                .and_then(|n| self.fun_ret_tys.get(n).cloned())
-                .or_else(|| match self.local_tys.get(&fun_local.0) {
-                    Some(Type::Fun(_, ret, _)) => Some((**ret).clone()),
-                    _ => None,
-                });
-            if let Some(ret) = fun_ret {
-                let identity = name
-                    .as_ref()
-                    .is_some_and(|n| self.fun_param0_identity.contains(n));
-                // Identity lambdas often get Int or heap-sentinel `List[Int]` ret_ty
-                // (param may hold any scalar/heap). For List[Float] keep IEEE tagging.
-                if identity && matches!(list_elem, Type::Float) {
-                    return Type::Float;
-                }
-                match &ret {
-                    Type::Float => return Type::Float,
-                    Type::Int => return Type::Int,
-                    _ => return ret,
-                }
-            }
-        }
-        list_elem
-    }
-
     fn infer_value_ty(&self, value: &Value) -> Type {
-        match value {
-            Value::Bool(_) => Type::Bool,
-            Value::Int(_) => Type::Int,
-            Value::Float(_) => Type::Float,
-            Value::String(_) => Type::String,
-            Value::Char(_) => Type::Char,
-            Value::Unit => Type::Unit,
-            Value::Local(Local(id)) => self
-                .local_tys
-                .get(id)
-                .cloned()
-                .unwrap_or(Type::Int),
-            Value::Name(n) => self.slot_tys.get(n).cloned().unwrap_or(Type::Int),
-            Value::Binary { op, left, right } => match op {
-                lumia_syntax::BinOp::Eq
-                | lumia_syntax::BinOp::Ne
-                | lumia_syntax::BinOp::Lt
-                | lumia_syntax::BinOp::Le
-                | lumia_syntax::BinOp::Gt
-                | lumia_syntax::BinOp::Ge
-                | lumia_syntax::BinOp::And
-                | lumia_syntax::BinOp::Or => Type::Bool,
-                _ => {
-                    let lt = self.local_tys.get(&left.0).cloned().unwrap_or(Type::Int);
-                    let rt = self.local_tys.get(&right.0).cloned().unwrap_or(Type::Int);
-                    if matches!(lt, Type::Float) || matches!(rt, Type::Float) {
-                        Type::Float
-                    } else {
-                        Type::Int
-                    }
-                }
+        lumia_core::infer_value_ty_ctx(
+            value,
+            lumia_core::InferValueCtx {
+                local_tys: &self.local_tys,
+                slot_tys: Some(&self.slot_tys),
+                fun_ret_tys: Some(&self.fun_ret_tys),
+                fun_param_tys: Some(&self.fun_param_tys),
+                fun_param0_identity: Some(&self.fun_param0_identity),
+                funref_locals: Some(&self.funref_locals),
             },
-            Value::Unary {
-                op: lumia_syntax::UnOp::Not,
-                ..
-            } => Type::Bool,
-            Value::Unary { operand, .. } => self
-                .local_tys
-                .get(&operand.0)
-                .cloned()
-                .unwrap_or(Type::Int),
-            Value::Call { fun, args } => {
-                let ret = self
-                    .fun_ret_tys
-                    .get(fun)
-                    .cloned()
-                    .unwrap_or(Type::Int);
-                // Let-poly identity lambdas keep a conservative heap `ret_ty`
-                // (`List[Int]`) and `Int` formals so String/ADT still root. Before
-                // monomorphization, a Float argument that is returned as bits must
-                // still type the Call result as Float (println / arithmetic).
-                if matches!(&ret, Type::List(e) if matches!(e.as_ref(), Type::Int)) {
-                    let ptys = self.fun_param_tys.get(fun).cloned().unwrap_or_default();
-                    if args.len() == 1
-                        && ptys.len() == 1
-                        && matches!(ptys[0], Type::Int)
-                        && matches!(self.local_tys.get(&args[0].0), Some(Type::Float))
-                    {
-                        return Type::Float;
-                    }
-                }
-                ret
-            }
-            Value::Builtin { name, args } => match name {
-                Builtin::StrStartsWith
-                | Builtin::StrEndsWith
-                | Builtin::Contains => Type::Bool,
-                Builtin::ListLen | Builtin::AdtTag => Type::Int,
-                Builtin::Show
-                | Builtin::ReadStdin
-                | Builtin::StrTrim
-                | Builtin::StrSplit
-                | Builtin::StrSubstring
-                | Builtin::StrToLower
-                | Builtin::StrToUpper
-                | Builtin::ListJoin => Type::String,
-                Builtin::Println
-                | Builtin::PrintlnInt
-                | Builtin::PrintlnStr
-                | Builtin::MatchFail
-                | Builtin::Assert => Type::Unit,
-                Builtin::ListGet => {
-                    // Element type when known; Map get → Option[V] (runtime ADT).
-                    if let Some(arg0) = args.first() {
-                        match self.local_tys.get(&arg0.0) {
-                            Some(Type::List(elem)) => (**elem).clone(),
-                            Some(Type::Set(elem)) => (**elem).clone(),
-                            Some(Type::Map(_, v)) => Type::Adt {
-                                name: "Option".into(),
-                                params: vec![(**v).clone()],
-                            },
-                            _ => Type::Int,
-                        }
-                    } else {
-                        Type::Int
-                    }
-                }
-                // ADT/Option/Result field 0 when known (Ok/Some payload = params[0]);
-                // Result[T,E] has two type params so must not require `len == 1`.
-                Builtin::AdtField => {
-                    if let Some(arg0) = args.first() {
-                        match self.local_tys.get(&arg0.0) {
-                            Some(Type::Adt { params, .. }) if !params.is_empty() => {
-                                params[0].clone()
-                            }
-                            Some(Type::Tuple(ts)) if !ts.is_empty() => {
-                                // Index is a separate local; default to first field.
-                                ts[0].clone()
-                            }
-                            _ => Type::Int,
-                        }
-                    } else {
-                        Type::Int
-                    }
-                }
-                Builtin::ListParMap => {
-                    Type::List(Box::new(self.list_par_map_result_elem(args)))
-                }
-                Builtin::ListSlice
-                | Builtin::ListTake
-                | Builtin::ListReverse
-                | Builtin::ListSort
-                | Builtin::ListSortByKeys => self.list_elem_preserved(args),
-                Builtin::ListParFold => {
-                    // Acc / init type (scalar).
-                    args.get(1)
-                        .and_then(|a| self.local_tys.get(&a.0).cloned())
-                        .unwrap_or(Type::Int)
-                }
-                Builtin::ListAppend => {
-                    if let Some(arg0) = args.first() {
-                        match self.local_tys.get(&arg0.0) {
-                            Some(Type::List(elem)) => Type::List(elem.clone()),
-                            _ => Type::List(Box::new(Type::Int)),
-                        }
-                    } else {
-                        Type::List(Box::new(Type::Int))
-                    }
-                }
-                Builtin::ListConcat => {
-                    if let Some(arg0) = args.first() {
-                        match self.local_tys.get(&arg0.0) {
-                            Some(Type::List(elem)) => Type::List(elem.clone()),
-                            _ => Type::List(Box::new(Type::Int)),
-                        }
-                    } else {
-                        Type::List(Box::new(Type::Int))
-                    }
-                }
-                Builtin::Elems => {
-                    if let Some(arg0) = args.first() {
-                        match self.local_tys.get(&arg0.0) {
-                            Some(Type::List(e)) => Type::List(e.clone()),
-                            Some(Type::Set(e)) => Type::List(e.clone()),
-                            Some(Type::Map(k, _)) => Type::List(k.clone()),
-                            _ => Type::List(Box::new(Type::Int)),
-                        }
-                    } else {
-                        Type::List(Box::new(Type::Int))
-                    }
-                }
-                Builtin::MapKeys => {
-                    if let Some(arg0) = args.first() {
-                        match self.local_tys.get(&arg0.0) {
-                            Some(Type::Map(k, _)) => Type::List(k.clone()),
-                            _ => Type::List(Box::new(Type::Int)),
-                        }
-                    } else {
-                        Type::List(Box::new(Type::Int))
-                    }
-                }
-                Builtin::MapValues => {
-                    if let Some(arg0) = args.first() {
-                        match self.local_tys.get(&arg0.0) {
-                            Some(Type::Map(_, v)) => Type::List(v.clone()),
-                            _ => Type::List(Box::new(Type::Int)),
-                        }
-                    } else {
-                        Type::List(Box::new(Type::Int))
-                    }
-                }
-                Builtin::Range | Builtin::RangeInclusive => Type::List(Box::new(Type::Int)),
-                Builtin::MapItems => {
-                    if let Some(arg0) = args.first() {
-                        match self.local_tys.get(&arg0.0) {
-                            Some(Type::Map(k, v)) => Type::List(Box::new(Type::Adt {
-                                name: "__Tuple".into(),
-                                params: vec![(**k).clone(), (**v).clone()],
-                            })),
-                            Some(Type::List(elem)) => Type::List(elem.clone()),
-                            _ => Type::List(Box::new(Type::Adt {
-                                name: "__Tuple".into(),
-                                params: vec![Type::Int, Type::Int],
-                            })),
-                        }
-                    } else {
-                        Type::List(Box::new(Type::Adt {
-                            name: "__Tuple".into(),
-                            params: vec![Type::Int, Type::Int],
-                        }))
-                    }
-                }
-                Builtin::MapSet | Builtin::MapRemove => {
-                    let key_ty = args
-                        .get(1)
-                        .and_then(|a| self.local_tys.get(&a.0).cloned())
-                        .unwrap_or(Type::Int);
-                    if let Some(arg0) = args.first() {
-                        match self.local_tys.get(&arg0.0) {
-                            Some(Type::Map(k, v)) => {
-                                let k = if matches!(key_ty, Type::Float) {
-                                    Box::new(Type::Float)
-                                } else {
-                                    k.clone()
-                                };
-                                Type::Map(k, v.clone())
-                            }
-                            _ => Type::Map(Box::new(key_ty), Box::new(Type::Int)),
-                        }
-                    } else {
-                        Type::Map(Box::new(Type::Int), Box::new(Type::Int))
-                    }
-                }
-                Builtin::SetInsert => {
-                    let elem_ty = args
-                        .get(1)
-                        .and_then(|a| self.local_tys.get(&a.0).cloned())
-                        .unwrap_or(Type::Int);
-                    if let Some(arg0) = args.first() {
-                        match self.local_tys.get(&arg0.0) {
-                            Some(Type::Set(e)) => {
-                                if matches!(elem_ty, Type::Float) {
-                                    Type::Set(Box::new(Type::Float))
-                                } else {
-                                    Type::Set(e.clone())
-                                }
-                            }
-                            _ => Type::Set(Box::new(elem_ty)),
-                        }
-                    } else {
-                        Type::Set(Box::new(Type::Int))
-                    }
-                }
-            },
-            Value::AllocList { elems, .. } => {
-                let elem = elems
-                    .first()
-                    .and_then(|Local(id)| self.local_tys.get(id).cloned())
-                    .unwrap_or(Type::Int);
-                Type::List(Box::new(elem))
-            }
-            Value::AllocSet { elems, .. } => {
-                let elem = elems
-                    .first()
-                    .and_then(|Local(id)| self.local_tys.get(id).cloned())
-                    .unwrap_or(Type::Int);
-                Type::Set(Box::new(elem))
-            }
-            Value::AllocMap { flat_pairs, .. } => {
-                let (k, v) = if flat_pairs.len() >= 2 {
-                    (
-                        self.local_tys
-                            .get(&flat_pairs[0].0)
-                            .cloned()
-                            .unwrap_or(Type::Int),
-                        self.local_tys
-                            .get(&flat_pairs[1].0)
-                            .cloned()
-                            .unwrap_or(Type::Int),
-                    )
-                } else {
-                    (Type::Int, Type::Int)
-                };
-                Type::Map(Box::new(k), Box::new(v))
-            }
-            Value::AllocAdt {
-                adt_name,
-                fields,
-                ..
-            } => {
-                let params: Vec<Type> = fields
-                    .iter()
-                    .map(|Local(id)| self.local_tys.get(id).cloned().unwrap_or(Type::Int))
-                    .collect();
-                Type::Adt {
-                    name: adt_name.clone(),
-                    params,
-                }
-            }
-            Value::AllocClosure { .. } | Value::FunRef(_) | Value::ClosureCap { .. } => {
-                Type::Fun(vec![], Box::new(Type::Int), lumia_ty::Effect::pure())
-            }
-            Value::If {
-                then_block,
-                else_block,
-                ..
-            } => {
-                let t = then_block
-                    .result
-                    .and_then(|Local(id)| self.local_tys.get(&id).cloned());
-                let e = else_block
-                    .result
-                    .and_then(|Local(id)| self.local_tys.get(&id).cloned());
-                t.or(e).unwrap_or(Type::Int)
-            }
-            Value::Loop { .. } | Value::Lambda { .. } => Type::Int,
-            Value::IndirectCall { callee, args } => {
-                let ret = match self.local_tys.get(&callee.0) {
-                    Some(Type::Fun(_, ret, _)) => (**ret).clone(),
-                    _ => self
-                        .funref_locals
-                        .get(&callee.0)
-                        .and_then(|name| self.fun_ret_tys.get(name).cloned())
-                        .unwrap_or(Type::Int),
-                };
-                if matches!(&ret, Type::List(e) if matches!(e.as_ref(), Type::Int)) {
-                    if let Some(name) = self.funref_locals.get(&callee.0) {
-                        let ptys = self.fun_param_tys.get(name).cloned().unwrap_or_default();
-                        if args.len() == 1
-                            && ptys.len() == 1
-                            && matches!(ptys[0], Type::Int)
-                            && matches!(self.local_tys.get(&args[0].0), Some(Type::Float))
-                        {
-                            return Type::Float;
-                        }
-                    }
-                }
-                ret
-            }
-        }
+            None,
+        )
     }
 
-    fn load_slot(&self, name: &str) -> Result<BasicValueEnum<'ctx>> {
+    pub(crate) fn load_slot(&self, name: &str) -> Result<BasicValueEnum<'ctx>> {
         let slot = self
             .slots
             .get(name)
@@ -1762,8 +1037,7 @@ impl<'ctx> Codegen<'ctx> {
             Ok(self
                 .builder
                 .build_bit_cast(bits.into_int_value(), self.context.f64_type(), "mut_f64")
-                .unwrap()
-                .into())
+                .unwrap())
         } else {
             Ok(bits)
         }
@@ -1798,18 +1072,23 @@ impl<'ctx> Codegen<'ctx> {
                             Value::Call { fun, args } => {
                                 if self.tco_peers.contains(fun) {
                                     self.root_pop_to(0);
+                                    self.emit_frame_pop();
                                     if self.emit_musttail_call(fun, args)? {
                                         return Ok(None);
                                     }
+                                    // musttail failed — restore frame for normal call path.
+                                    self.emit_frame_push(&self.current_fun.clone());
                                 }
                             }
                             Value::IndirectCall { callee, args } => {
                                 if let Some(fun) = self.funref_locals.get(&callee.0).cloned() {
                                     if self.tco_peers.contains(&fun) {
                                         self.root_pop_to(0);
+                                        self.emit_frame_pop();
                                         if self.emit_musttail_call(&fun, args)? {
                                             return Ok(None);
                                         }
+                                        self.emit_frame_push(&self.current_fun.clone());
                                     }
                                 }
                             }
@@ -1823,8 +1102,7 @@ impl<'ctx> Codegen<'ctx> {
                         }
                     }
                     self.locals.insert(local.0, v);
-                    self.local_tys
-                        .insert(local.0, self.infer_value_ty(value));
+                    self.local_tys.insert(local.0, self.infer_value_ty(value));
                     if let Value::FunRef(name) = value {
                         self.funref_locals.insert(local.0, name.clone());
                     } else if let Value::Local(Local(src)) = value {
@@ -1904,14 +1182,14 @@ impl<'ctx> Codegen<'ctx> {
         Ok(result)
     }
 
-    fn local(&self, l: Local) -> Result<BasicValueEnum<'ctx>> {
+    pub(crate) fn local(&self, l: Local) -> Result<BasicValueEnum<'ctx>> {
         self.locals
             .get(&l.0)
             .copied()
             .with_context(|| format!("undefined local %{}", l.0))
     }
 
-    fn as_i64(&self, v: BasicValueEnum<'ctx>) -> Result<IntValue<'ctx>> {
+    pub(crate) fn as_i64(&self, v: BasicValueEnum<'ctx>) -> Result<IntValue<'ctx>> {
         match v {
             BasicValueEnum::IntValue(i) => Ok(i),
             BasicValueEnum::FloatValue(f) => Ok(self
@@ -1927,12 +1205,12 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
-    fn coerce_i64(&self, v: BasicValueEnum<'ctx>) -> Result<IntValue<'ctx>> {
+    pub(crate) fn coerce_i64(&self, v: BasicValueEnum<'ctx>) -> Result<IntValue<'ctx>> {
         self.as_i64(v)
     }
 
     /// Coerce a Lumia local to a C ABI argument for `foreign` calls.
-    fn emit_c_abi_arg(
+    pub(crate) fn emit_c_abi_arg(
         &mut self,
         local: Local,
         ty: &Type,
@@ -1967,7 +1245,7 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
-    fn restore_c_abi_ret(
+    pub(crate) fn restore_c_abi_ret(
         &self,
         fun: &str,
         call: inkwell::values::CallSiteValue<'ctx>,
@@ -2024,7 +1302,7 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
-    fn promote_f64(
+    pub(crate) fn promote_f64(
         &self,
         v: BasicValueEnum<'ctx>,
     ) -> Result<inkwell::values::FloatValue<'ctx>> {
@@ -2042,7 +1320,7 @@ impl<'ctx> Codegen<'ctx> {
     }
 
     /// Convert an operand for float arithmetic: numeric Int → sitofp; Float bits → bitcast.
-    fn arith_as_f64(
+    pub(crate) fn arith_as_f64(
         &self,
         v: BasicValueEnum<'ctx>,
         ty: &Type,
@@ -2060,2438 +1338,6 @@ impl<'ctx> Codegen<'ctx> {
                 .build_signed_int_to_float(i, fty, "sitofp")
                 .unwrap()),
             _ => bail!("expected numeric for float arith"),
-        }
-    }
-
-    fn emit_checked_neg(
-        &mut self,
-        o: IntValue<'ctx>,
-        fv: FunctionValue<'ctx>,
-    ) -> Result<IntValue<'ctx>> {
-        let min = self.i64_ty.const_int(i64::MIN as u64, true);
-        let is_min = self
-            .builder
-            .build_int_compare(IntPredicate::EQ, o, min, "neg_min")
-            .unwrap();
-        let trap_bb = self.context.append_basic_block(fv, "neg_overflow_trap");
-        let ok_bb = self.context.append_basic_block(fv, "neg_ok");
-        self.builder
-            .build_conditional_branch(is_min, trap_bb, ok_bb)
-            .unwrap();
-        self.builder.position_at_end(trap_bb);
-        let trap = self.module.get_function("lumia_trap_overflow").unwrap();
-        self.builder.build_call(trap, &[], "trap_neg").unwrap();
-        self.builder.build_unreachable().unwrap();
-        self.builder.position_at_end(ok_bb);
-        Ok(self.builder.build_int_neg(o, "neg").unwrap())
-    }
-
-    fn emit_checked_binop(
-        &mut self,
-        l: IntValue<'ctx>,
-        r: IntValue<'ctx>,
-        fv: FunctionValue<'ctx>,
-        kind: &str,
-    ) -> Result<IntValue<'ctx>> {
-        let name = format!("llvm.{kind}.with.overflow.i64");
-        let intrinsic = inkwell::intrinsics::Intrinsic::find(&name)
-            .with_context(|| format!("missing intrinsic {name}"))?;
-        let id_tys = [self.i64_ty.into()];
-        let fnty = intrinsic.get_declaration(&self.module, &id_tys).unwrap();
-        let call = self
-            .builder
-            .build_call(fnty, &[l.into(), r.into()], "checked")
-            .unwrap();
-        let agg = call
-            .try_as_basic_value()
-            .basic()
-            .unwrap()
-            .into_struct_value();
-        let result = self
-            .builder
-            .build_extract_value(agg, 0, "ov_res")
-            .unwrap()
-            .into_int_value();
-        let overflow = self
-            .builder
-            .build_extract_value(agg, 1, "ov_flag")
-            .unwrap()
-            .into_int_value();
-        let trap_bb = self.context.append_basic_block(fv, "overflow_trap");
-        let ok_bb = self.context.append_basic_block(fv, "overflow_ok");
-        self.builder
-            .build_conditional_branch(overflow, trap_bb, ok_bb)
-            .unwrap();
-        self.builder.position_at_end(trap_bb);
-        let trap = self.module.get_function("lumia_trap_overflow").unwrap();
-        self.builder.build_call(trap, &[], "trap_ov").unwrap();
-        self.builder.build_unreachable().unwrap();
-        self.builder.position_at_end(ok_bb);
-        Ok(result)
-    }
-
-    fn emit_checked_div_rem(
-        &mut self,
-        l: IntValue<'ctx>,
-        r: IntValue<'ctx>,
-        fv: FunctionValue<'ctx>,
-        is_rem: bool,
-    ) -> Result<IntValue<'ctx>> {
-        let zero = self.i64_ty.const_int(0, false);
-        let minus_one = self.i64_ty.const_int((-1i64) as u64, true);
-        let i64_min = self.i64_ty.const_int(i64::MIN as u64, true);
-        let is_zero = self
-            .builder
-            .build_int_compare(IntPredicate::EQ, r, zero, "div0")
-            .unwrap();
-        let is_m1 = self
-            .builder
-            .build_int_compare(IntPredicate::EQ, r, minus_one, "div_m1")
-            .unwrap();
-        let is_min = self
-            .builder
-            .build_int_compare(IntPredicate::EQ, l, i64_min, "div_min")
-            .unwrap();
-        let ov = self.builder.build_and(is_m1, is_min, "div_ov").unwrap();
-        let bad = self.builder.build_or(is_zero, ov, "div_bad").unwrap();
-        let trap_bb = self.context.append_basic_block(fv, "div_trap");
-        let ok_bb = self.context.append_basic_block(fv, "div_ok");
-        self.builder
-            .build_conditional_branch(bad, trap_bb, ok_bb)
-            .unwrap();
-        self.builder.position_at_end(trap_bb);
-        let div0_bb = self.context.append_basic_block(fv, "div0_trap");
-        let ov_bb = self.context.append_basic_block(fv, "div_ov_trap");
-        self.builder
-            .build_conditional_branch(is_zero, div0_bb, ov_bb)
-            .unwrap();
-        self.builder.position_at_end(div0_bb);
-        let t0 = self.module.get_function("lumia_trap_div0").unwrap();
-        self.builder.build_call(t0, &[], "trap0").unwrap();
-        self.builder.build_unreachable().unwrap();
-        self.builder.position_at_end(ov_bb);
-        let t1 = self.module.get_function("lumia_trap_overflow").unwrap();
-        self.builder.build_call(t1, &[], "trap_ov").unwrap();
-        self.builder.build_unreachable().unwrap();
-        self.builder.position_at_end(ok_bb);
-        Ok(if is_rem {
-            self.builder.build_int_signed_rem(l, r, "rem").unwrap()
-        } else {
-            self.builder.build_int_signed_div(l, r, "div").unwrap()
-        })
-    }
-
-    fn emit_value(
-        &mut self,
-        value: &Value,
-        fv: FunctionValue<'ctx>,
-    ) -> Result<BasicValueEnum<'ctx>> {
-        match value {
-            Value::Int(n) => Ok(self.i64_ty.const_int(*n as u64, true).into()),
-            Value::Float(n) => Ok(self.context.f64_type().const_float(*n).into()),
-            Value::Bool(b) => Ok(self.i64_ty.const_int(if *b { 1 } else { 0 }, false).into()),
-            Value::String(s) => {
-                let gv = self.builder.build_global_string_ptr(s, "str").unwrap();
-                let ptr = gv.as_pointer_value();
-                let len = self.i64_ty.const_int(s.len() as u64, false);
-                let f = self.module.get_function("lumia_alloc_string").unwrap();
-                let call = self
-                    .builder
-                    .build_call(f, &[ptr.into(), len.into()], "alloc_str")
-                    .unwrap();
-                let heap = call
-                    .try_as_basic_value()
-                    .basic()
-                    .unwrap()
-                    .into_pointer_value();
-                Ok(self
-                    .builder
-                    .build_ptr_to_int(heap, self.i64_ty, "str_i64")
-                    .unwrap()
-                    .into())
-            }
-            Value::Char(c) => {
-                let cp = self.i64_ty.const_int(*c as u32 as u64, false);
-                let f = self.module.get_function("lumia_alloc_char").unwrap();
-                let call = self
-                    .builder
-                    .build_call(f, &[cp.into()], "alloc_char")
-                    .unwrap();
-                let heap = call
-                    .try_as_basic_value()
-                    .basic()
-                    .unwrap()
-                    .into_pointer_value();
-                Ok(self
-                    .builder
-                    .build_ptr_to_int(heap, self.i64_ty, "char_i64")
-                    .unwrap()
-                    .into())
-            }
-            Value::Unit => Ok(self.i64_ty.const_int(0, false).into()),
-            Value::Local(l) => self.local(*l),
-            Value::Name(name) => self.load_slot(name),
-            Value::Binary { op, left, right } => {
-                let lv = self.local(*left)?;
-                let rv = self.local(*right)?;
-                // Heap loads (`ListGet`, fields) keep Float as i64 bits; consult
-                // `local_tys`, not only LLVM FloatValue, or we do Int ops on IEEE bits.
-                let lt = self.local_tys.get(&left.0).cloned().unwrap_or(Type::Int);
-                let rt = self.local_tys.get(&right.0).cloned().unwrap_or(Type::Int);
-                let either_float = matches!(lt, Type::Float)
-                    || matches!(rt, Type::Float)
-                    || matches!(lv, BasicValueEnum::FloatValue(_))
-                    || matches!(rv, BasicValueEnum::FloatValue(_));
-                if either_float
-                    && matches!(
-                        op,
-                        BinOp::Add
-                            | BinOp::Sub
-                            | BinOp::Mul
-                            | BinOp::Div
-                            | BinOp::Rem
-                            | BinOp::Eq
-                            | BinOp::Ne
-                            | BinOp::Lt
-                            | BinOp::Le
-                            | BinOp::Gt
-                            | BinOp::Ge
-                    )
-                {
-                    // Float-typed locals are IEEE bits in i64; Int locals are numeric
-                    // (sitofp) so `{ x -> x + 1 }` works after Float monomorphization.
-                    let l = self.arith_as_f64(lv, &lt)?;
-                    let r = self.arith_as_f64(rv, &rt)?;
-                    let v = match op {
-                        BinOp::Add => self.builder.build_float_add(l, r, "fadd").unwrap(),
-                        BinOp::Sub => self.builder.build_float_sub(l, r, "fsub").unwrap(),
-                        BinOp::Mul => self.builder.build_float_mul(l, r, "fmul").unwrap(),
-                        BinOp::Div => self.builder.build_float_div(l, r, "fdiv").unwrap(),
-                        BinOp::Rem => self.builder.build_float_rem(l, r, "frem").unwrap(),
-                        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-                            let pred = match op {
-                                BinOp::Eq => FloatPredicate::OEQ,
-                                // UNE: NaN != x is true (IEEE unordered-or-ne).
-                                BinOp::Ne => FloatPredicate::UNE,
-                                BinOp::Lt => FloatPredicate::OLT,
-                                BinOp::Le => FloatPredicate::OLE,
-                                BinOp::Gt => FloatPredicate::OGT,
-                                BinOp::Ge => FloatPredicate::OGE,
-                                _ => unreachable!(),
-                            };
-                            let c = self
-                                .builder
-                                .build_float_compare(pred, l, r, "fcmp")
-                                .unwrap();
-                            return Ok(self
-                                .builder
-                                .build_int_z_extend(c, self.i64_ty, "fcmpz")
-                                .unwrap()
-                                .into());
-                        }
-                        _ => unreachable!(),
-                    };
-                    return Ok(v.into());
-                }
-                let l = self.as_i64(lv)?;
-                let r = self.as_i64(rv)?;
-                // `instance Num for T`: `__Num_T_add` / `__Num_T_mul`.
-                if matches!(op, BinOp::Add | BinOp::Mul) {
-                    if let Some(name) = Self::adt_method_name(&lt, &rt) {
-                        let method = if matches!(op, BinOp::Add) {
-                            "add"
-                        } else {
-                            "mul"
-                        };
-                        let mangled = format!("__Num_{name}_{method}");
-                        if let Some(callee) = self.functions.get(&mangled).copied() {
-                            let call = self
-                                .builder
-                                .build_call(callee, &[l.into(), r.into()], "num_ov")
-                                .unwrap();
-                            return Ok(call
-                                .try_as_basic_value()
-                                .basic()
-                                .unwrap_or_else(|| self.i64_ty.const_int(0, false).into()));
-                        }
-                    }
-                }
-                let v = match op {
-                    BinOp::Add => self.emit_checked_binop(l, r, fv, "sadd")?,
-                    BinOp::Sub => self.emit_checked_binop(l, r, fv, "ssub")?,
-                    BinOp::Mul => self.emit_checked_binop(l, r, fv, "smul")?,
-                    BinOp::Div => self.emit_checked_div_rem(l, r, fv, false)?,
-                    BinOp::Rem => self.emit_checked_div_rem(l, r, fv, true)?,
-                    BinOp::Eq => self.emit_value_eq(&lt, &rt, l, r)?,
-                    BinOp::Ne => {
-                        let eq = self.emit_value_eq(&lt, &rt, l, r)?;
-                        let z = self.i64_ty.const_int(0, false);
-                        let c = self
-                            .builder
-                            .build_int_compare(IntPredicate::EQ, eq, z, "ne")
-                            .unwrap();
-                        self.builder
-                            .build_int_z_extend(c, self.i64_ty, "nez")
-                            .unwrap()
-                    }
-                    BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-                        if let Some(name) = Self::adt_method_name(&lt, &rt) {
-                            if let Some(_) = self.functions.get(&format!("__Ord_{name}_less")) {
-                                // DESIGN less(self, other): a < b
-                                let (left, right) = match op {
-                                    BinOp::Lt | BinOp::Ge => (l, r),
-                                    BinOp::Gt | BinOp::Le => (r, l),
-                                    _ => unreachable!(),
-                                };
-                                let less = self
-                                    .emit_less_override(&name, left, right)?
-                                    .expect("Ord.less");
-                                let z = self.i64_ty.const_int(0, false);
-                                return Ok(match op {
-                                    BinOp::Lt | BinOp::Gt => less.into(),
-                                    BinOp::Le | BinOp::Ge => {
-                                        // a <= b  iff  !(b < a); a >= b iff !(a < b)
-                                        let c = self
-                                            .builder
-                                            .build_int_compare(IntPredicate::EQ, less, z, "nless")
-                                            .unwrap();
-                                        self.builder
-                                            .build_int_z_extend(c, self.i64_ty, "nlessz")
-                                            .unwrap()
-                                            .into()
-                                    }
-                                    _ => unreachable!(),
-                                });
-                            }
-                        }
-                        // Structural Ord via runtime (String/Char/ADT); never SLT pointers.
-                        let f = self.module.get_function("lumia_cmp").unwrap();
-                        let call = self
-                            .builder
-                            .build_call(f, &[l.into(), r.into()], "cmp")
-                            .unwrap();
-                        let cmp = call
-                            .try_as_basic_value()
-                            .basic()
-                            .unwrap()
-                            .into_int_value();
-                        let z = self.i64_ty.const_int(0, false);
-                        let pred = match op {
-                            BinOp::Lt => IntPredicate::SLT,
-                            BinOp::Le => IntPredicate::SLE,
-                            BinOp::Gt => IntPredicate::SGT,
-                            BinOp::Ge => IntPredicate::SGE,
-                            _ => unreachable!(),
-                        };
-                        let c = self
-                            .builder
-                            .build_int_compare(pred, cmp, z, "ord")
-                            .unwrap();
-                        self.builder
-                            .build_int_z_extend(c, self.i64_ty, "ordz")
-                            .unwrap()
-                    }
-                    BinOp::And => self.builder.build_and(l, r, "and").unwrap(),
-                    BinOp::Or => self.builder.build_or(l, r, "or").unwrap(),
-                };
-                Ok(v.into())
-            }
-            Value::Unary { op, operand } => {
-                let ov = self.local(*operand)?;
-                let ot = self
-                    .local_tys
-                    .get(&operand.0)
-                    .cloned()
-                    .unwrap_or(Type::Int);
-                if matches!(ot, Type::Float) || matches!(ov, BasicValueEnum::FloatValue(_)) {
-                    let o = self.promote_f64(ov)?;
-                    let v = match op {
-                        UnOp::Neg => self.builder.build_float_neg(o, "fneg").unwrap(),
-                        UnOp::Not => bail!("not on Float"),
-                    };
-                    return Ok(v.into());
-                }
-                let o = self.as_i64(ov)?;
-                let v = match op {
-                    UnOp::Neg => self.emit_checked_neg(o, fv)?,
-                    UnOp::Not => {
-                        let z = self.i64_ty.const_int(0, false);
-                        let c = self
-                            .builder
-                            .build_int_compare(IntPredicate::EQ, o, z, "not")
-                            .unwrap();
-                        self.builder
-                            .build_int_z_extend(c, self.i64_ty, "notz")
-                            .unwrap()
-                    }
-                };
-                Ok(v.into())
-            }
-            Value::Call { fun, args } => {
-                let callee = self
-                    .functions
-                    .get(fun)
-                    .copied()
-                    .with_context(|| format!("unknown function {fun}"))?;
-                let is_ext = self.external_funs.contains(fun);
-                let param_tys = self.fun_param_tys.get(fun).cloned().unwrap_or_default();
-                // Temporary `lumia_string_cstr` buffers are unmarked heap objects;
-                // root them until after the foreign call so a later arg alloc / GC
-                // cannot collect an earlier cstr (UAF).
-                let cstr_root_depth = self.root_depth;
-                let mut av: Vec<BasicMetadataValueEnum> = vec![];
-                for (i, a) in args.iter().enumerate() {
-                    let pty = param_tys.get(i).unwrap_or(&Type::Int);
-                    if is_ext {
-                        if matches!(pty, Type::String) {
-                            let s_i = self.coerce_i64(self.local(*a)?)?;
-                            let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                            let s = self
-                                .builder
-                                .build_int_to_ptr(s_i, ptr_ty, "cstr_in")
-                                .unwrap();
-                            let f = self.module.get_function("lumia_string_cstr").unwrap();
-                            let call = self
-                                .builder
-                                .build_call(f, &[s.into()], "cstr")
-                                .unwrap();
-                            let cstr = call
-                                .try_as_basic_value()
-                                .basic()
-                                .unwrap()
-                                .into_pointer_value();
-                            let bits = self
-                                .builder
-                                .build_ptr_to_int(cstr, self.i64_ty, "cstr_bits")
-                                .unwrap();
-                            self.root_push_i64(bits)?;
-                            av.push(cstr.into());
-                        } else {
-                            av.push(self.emit_c_abi_arg(*a, pty)?);
-                        }
-                    } else {
-                        let v = self.coerce_i64(self.local(*a)?)?;
-                        av.push(v.into());
-                    }
-                }
-                let call = self.builder.build_call(callee, &av, "call").unwrap();
-                if is_ext {
-                    self.root_pop_to(cstr_root_depth);
-                    return self.restore_c_abi_ret(fun, call);
-                }
-                let raw = call
-                    .try_as_basic_value()
-                    .basic()
-                    .unwrap_or_else(|| self.i64_ty.const_int(0, false).into());
-                if matches!(self.fun_ret_tys.get(fun), Some(Type::Float)) {
-                    let bits = raw.into_int_value();
-                    Ok(self
-                        .builder
-                        .build_bit_cast(bits, self.context.f64_type(), "call_f64")
-                        .unwrap()
-                        .into())
-                } else {
-                    Ok(raw)
-                }
-            }
-            Value::IndirectCall { callee, args } => {
-                let _ = args;
-                // Float return ABI must come from the callee's Fun type — never
-                // from "any arg is float" (that breaks Float→Int HOFs).
-                let float_ret = match self.local_tys.get(&callee.0) {
-                    Some(Type::Fun(_, ret, _)) => matches!(ret.as_ref(), Type::Float),
-                    _ => self
-                        .funref_locals
-                        .get(&callee.0)
-                        .and_then(|name| self.fun_ret_tys.get(name))
-                        .is_some_and(|ty| matches!(ty, Type::Float)),
-                };
-                let cal_i = self.coerce_i64(self.local(*callee)?)?;
-                let one = self.i64_ty.const_int(1, false);
-                let tagged = self.builder.build_and(cal_i, one, "ic_tag").unwrap();
-                let is_funref = self
-                    .builder
-                    .build_int_compare(IntPredicate::EQ, tagged, one, "is_funref")
-                    .unwrap();
-
-                let cur = self
-                    .builder
-                    .get_insert_block()
-                    .context("indirect call needs insert block")?;
-                let parent = cur.get_parent().context("bb parent")?;
-                let funref_bb = self.context.append_basic_block(parent, "icall_funref");
-                let clos_bb = self.context.append_basic_block(parent, "icall_clos");
-                let merge_bb = self.context.append_basic_block(parent, "icall_merge");
-                self.builder
-                    .build_conditional_branch(is_funref, funref_bb, clos_bb)
-                    .unwrap();
-
-                // Bare FunRef (low bit set): call without env.
-                self.builder.position_at_end(funref_bb);
-                let not_one = self.builder.build_not(one, "not1").unwrap();
-                let fn_i = self.builder.build_and(cal_i, not_one, "fn_clear").unwrap();
-                let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                let fn_ptr = self
-                    .builder
-                    .build_int_to_ptr(fn_i, ptr_ty, "fn_ptr")
-                    .unwrap();
-                let param_tys: Vec<BasicMetadataTypeEnum> =
-                    args.iter().map(|_| self.i64_ty.into()).collect();
-                let fn_ty = self.i64_ty.fn_type(&param_tys, false);
-                let mut av: Vec<BasicMetadataValueEnum> = vec![];
-                for a in args {
-                    let v = self.coerce_i64(self.local(*a)?)?;
-                    av.push(v.into());
-                }
-                let call_fr = self
-                    .builder
-                    .build_indirect_call(fn_ty, fn_ptr, &av, "icall_fr")
-                    .unwrap();
-                let fr_v = call_fr
-                    .try_as_basic_value()
-                    .basic()
-                    .unwrap_or_else(|| self.i64_ty.const_int(0, false).into());
-                let fr_i = self.coerce_i64(fr_v)?;
-                self.builder.build_unconditional_branch(merge_bb).unwrap();
-                let funref_bb_end = self.builder.get_insert_block().unwrap();
-
-                // Heap closure: load code ptr, pass env as first arg.
-                self.builder.position_at_end(clos_bb);
-                let env_ptr = self
-                    .builder
-                    .build_int_to_ptr(cal_i, ptr_ty, "clos_env")
-                    .unwrap();
-                let fn_slot = unsafe {
-                    self.builder
-                        .build_gep(
-                            self.i64_ty,
-                            env_ptr,
-                            &[self.i64_ty.const_int(0, false)],
-                            "clos_fn_slot",
-                        )
-                        .unwrap()
-                };
-                let fn_i2 = self
-                    .builder
-                    .build_load(self.i64_ty, fn_slot, "clos_fn")
-                    .unwrap()
-                    .into_int_value();
-                let fn_ptr2 = self
-                    .builder
-                    .build_int_to_ptr(fn_i2, ptr_ty, "clos_fn_ptr")
-                    .unwrap();
-                let mut clos_param_tys: Vec<BasicMetadataTypeEnum> =
-                    vec![self.i64_ty.into()];
-                for _ in args.iter() {
-                    clos_param_tys.push(self.i64_ty.into());
-                }
-                let clos_fn_ty = self.i64_ty.fn_type(&clos_param_tys, false);
-                let mut cav: Vec<BasicMetadataValueEnum> = vec![cal_i.into()];
-                for a in args {
-                    let v = self.coerce_i64(self.local(*a)?)?;
-                    cav.push(v.into());
-                }
-                let call_cl = self
-                    .builder
-                    .build_indirect_call(clos_fn_ty, fn_ptr2, &cav, "icall_cl")
-                    .unwrap();
-                let cl_v = call_cl
-                    .try_as_basic_value()
-                    .basic()
-                    .unwrap_or_else(|| self.i64_ty.const_int(0, false).into());
-                let cl_i = self.coerce_i64(cl_v)?;
-                self.builder.build_unconditional_branch(merge_bb).unwrap();
-                let clos_bb_end = self.builder.get_insert_block().unwrap();
-
-                self.builder.position_at_end(merge_bb);
-                let phi = self.builder.build_phi(self.i64_ty, "icall_res").unwrap();
-                phi.add_incoming(&[(&fr_i, funref_bb_end), (&cl_i, clos_bb_end)]);
-                let bits = phi.as_basic_value().into_int_value();
-                if float_ret {
-                    Ok(self
-                        .builder
-                        .build_bit_cast(bits, self.context.f64_type(), "icall_f64")
-                        .unwrap()
-                        .into())
-                } else {
-                    Ok(bits.into())
-                }
-            }
-            Value::FunRef(name) => {
-                let fv = self
-                    .functions
-                    .get(name)
-                    .copied()
-                    .with_context(|| format!("unknown funref {name}"))?;
-                let ptr = fv.as_global_value().as_pointer_value();
-                let as_i = self
-                    .builder
-                    .build_ptr_to_int(ptr, self.i64_ty, "funref_i64")
-                    .unwrap();
-                // Tag low bit so IndirectCall can tell FunRef from heap closure.
-                let tagged = self
-                    .builder
-                    .build_or(as_i, self.i64_ty.const_int(1, false), "funref_tag")
-                    .unwrap();
-                Ok(tagged.into())
-            }
-            Value::Builtin { name, args } => match name {
-                Builtin::Println | Builtin::PrintlnInt | Builtin::PrintlnStr => {
-                    let arg = self.local(args[0])?;
-                    let arg_ty = self
-                        .local_tys
-                        .get(&args[0].0)
-                        .cloned()
-                        .unwrap_or(Type::Int);
-                    match arg_ty {
-                        Type::Float => {
-                            let f = match arg {
-                                BasicValueEnum::FloatValue(f) => f,
-                                other => self.promote_f64(other)?,
-                            };
-                            let fun = self.module.get_function("lumia_println_float").unwrap();
-                            self.builder
-                                .build_call(fun, &[f.into()], "println_float")
-                                .unwrap();
-                        }
-                        Type::Bool => {
-                            let i = self.coerce_i64(arg)?;
-                            let b = self
-                                .builder
-                                .build_int_truncate(i, self.context.i8_type(), "bool8")
-                                .unwrap();
-                            let fun = self.module.get_function("lumia_println_bool").unwrap();
-                            self.builder
-                                .build_call(fun, &[b.into()], "println_bool")
-                                .unwrap();
-                        }
-                        Type::Adt { name, params } => {
-                            let ptr = if let Some(ptr) = self.emit_show_override(&name, arg)? {
-                                Some(ptr)
-                            } else if params
-                                .iter()
-                                .any(|p| matches!(p, Type::Float | Type::Bool))
-                            {
-                                Some(self.emit_typed_adt_show(arg, &params)?)
-                            } else {
-                                None
-                            };
-                            if let Some(ptr) = ptr {
-                                let len_f = self.module.get_function("lumia_str_len").unwrap();
-                                let len = self
-                                    .builder
-                                    .build_call(len_f, &[ptr.into()], "show_len")
-                                    .unwrap()
-                                    .try_as_basic_value()
-                                    .basic()
-                                    .unwrap()
-                                    .into_int_value();
-                                let fun = self.module.get_function("lumia_println_str").unwrap();
-                                self.builder
-                                    .build_call(fun, &[ptr.into(), len.into()], "println_show")
-                                    .unwrap();
-                            } else {
-                                let i = self.coerce_i64(arg)?;
-                                let fun = self.module.get_function("lumia_println_auto").unwrap();
-                                self.builder
-                                    .build_call(fun, &[i.into()], "println")
-                                    .unwrap();
-                            }
-                        }
-                        _ => {
-                            let i = self.coerce_i64(arg)?;
-                            let fun = self.module.get_function("lumia_println_auto").unwrap();
-                            self.builder
-                                .build_call(fun, &[i.into()], "println")
-                                .unwrap();
-                        }
-                    }
-                    Ok(self.i64_ty.const_int(0, false).into())
-                }
-                Builtin::ListLen => {
-                    let list_i = self.coerce_i64(self.local(args[0])?)?;
-                    let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                    let list = self
-                        .builder
-                        .build_int_to_ptr(list_i, ptr_ty, "obj_ptr")
-                        .unwrap();
-                    let f = self.module.get_function("lumia_len").unwrap();
-                    let call = self.builder.build_call(f, &[list.into()], "len").unwrap();
-                    Ok(call.try_as_basic_value().basic().unwrap())
-                }
-                Builtin::ListGet => {
-                    let list_i = self.coerce_i64(self.local(args[0])?)?;
-                    let idx = self.coerce_i64(self.local(args[1])?)?;
-                    let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                    let list = self
-                        .builder
-                        .build_int_to_ptr(list_i, ptr_ty, "col_ptr")
-                        .unwrap();
-                    let some = self.i64_ty.const_int(self.option_some_tag as u64, true);
-                    let none = self.i64_ty.const_int(self.option_none_tag as u64, true);
-                    let f = self.module.get_function("lumia_get").unwrap();
-                    let call = self
-                        .builder
-                        .build_call(
-                            f,
-                            &[list.into(), idx.into(), some.into(), none.into()],
-                            "get",
-                        )
-                        .unwrap();
-                    Ok(call.try_as_basic_value().basic().unwrap())
-                }
-                Builtin::Contains => {
-                    let obj_i = self.coerce_i64(self.local(args[0])?)?;
-                    let key = self.coerce_i64(self.local(args[1])?)?;
-                    let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                    let obj = self
-                        .builder
-                        .build_int_to_ptr(obj_i, ptr_ty, "col_ptr")
-                        .unwrap();
-                    let f = self.module.get_function("lumia_contains").unwrap();
-                    let call = self
-                        .builder
-                        .build_call(f, &[obj.into(), key.into()], "contains")
-                        .unwrap();
-                    Ok(call.try_as_basic_value().basic().unwrap())
-                }
-                Builtin::MapSet => {
-                    let map_i = self.coerce_i64(self.local(args[0])?)?;
-                    let key = self.coerce_i64(self.local(args[1])?)?;
-                    let val = self.coerce_i64(self.local(args[2])?)?;
-                    let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                    let mut map = self
-                        .builder
-                        .build_int_to_ptr(map_i, ptr_ty, "col_ptr")
-                        .unwrap();
-                    if matches!(self.local_tys.get(&args[1].0), Some(Type::Float)) {
-                        let ens = self.module.get_function("lumia_ensure_map_f64").unwrap();
-                        map = self
-                            .builder
-                            .build_call(ens, &[map.into()], "ens_mf64")
-                            .unwrap()
-                            .try_as_basic_value()
-                            .basic()
-                            .unwrap()
-                            .into_pointer_value();
-                    }
-                    if matches!(self.local_tys.get(&args[2].0), Some(Type::Float)) {
-                        let ens = self.module.get_function("lumia_ensure_map_vf64").unwrap();
-                        map = self
-                            .builder
-                            .build_call(ens, &[map.into()], "ens_mvf64")
-                            .unwrap()
-                            .try_as_basic_value()
-                            .basic()
-                            .unwrap()
-                            .into_pointer_value();
-                    }
-                    let f = self.module.get_function("lumia_set").unwrap();
-                    let call = self
-                        .builder
-                        .build_call(f, &[map.into(), key.into(), val.into()], "col_set")
-                        .unwrap();
-                    let ptr = call
-                        .try_as_basic_value()
-                        .basic()
-                        .unwrap()
-                        .into_pointer_value();
-                    Ok(self
-                        .builder
-                        .build_ptr_to_int(ptr, self.i64_ty, "set_i64")
-                        .unwrap()
-                        .into())
-                }
-                Builtin::MapRemove => {
-                    let map_i = self.coerce_i64(self.local(args[0])?)?;
-                    let key = self.coerce_i64(self.local(args[1])?)?;
-                    let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                    let map = self
-                        .builder
-                        .build_int_to_ptr(map_i, ptr_ty, "col_ptr")
-                        .unwrap();
-                    let f = self.module.get_function("lumia_remove").unwrap();
-                    let call = self
-                        .builder
-                        .build_call(f, &[map.into(), key.into()], "col_rm")
-                        .unwrap();
-                    let ptr = call
-                        .try_as_basic_value()
-                        .basic()
-                        .unwrap()
-                        .into_pointer_value();
-                    Ok(self
-                        .builder
-                        .build_ptr_to_int(ptr, self.i64_ty, "rm_i64")
-                        .unwrap()
-                        .into())
-                }
-                Builtin::SetInsert => {
-                    let set_i = self.coerce_i64(self.local(args[0])?)?;
-                    let elem = self.coerce_i64(self.local(args[1])?)?;
-                    let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                    let mut set = self
-                        .builder
-                        .build_int_to_ptr(set_i, ptr_ty, "set_ptr")
-                        .unwrap();
-                    if matches!(self.local_tys.get(&args[1].0), Some(Type::Float)) {
-                        let ens = self.module.get_function("lumia_ensure_set_f64").unwrap();
-                        set = self
-                            .builder
-                            .build_call(ens, &[set.into()], "ens_sf64")
-                            .unwrap()
-                            .try_as_basic_value()
-                            .basic()
-                            .unwrap()
-                            .into_pointer_value();
-                    }
-                    let f = self.module.get_function("lumia_set_insert").unwrap();
-                    let call = self
-                        .builder
-                        .build_call(f, &[set.into(), elem.into()], "set_ins")
-                        .unwrap();
-                    let ptr = call
-                        .try_as_basic_value()
-                        .basic()
-                        .unwrap()
-                        .into_pointer_value();
-                    Ok(self
-                        .builder
-                        .build_ptr_to_int(ptr, self.i64_ty, "set_ins_i64")
-                        .unwrap()
-                        .into())
-                }
-                Builtin::MapKeys | Builtin::MapValues | Builtin::MapItems | Builtin::Elems => {
-                    let map_i = self.coerce_i64(self.local(args[0])?)?;
-                    let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                    let map = self
-                        .builder
-                        .build_int_to_ptr(map_i, ptr_ty, "map_ptr")
-                        .unwrap();
-                    let fname = match name {
-                        Builtin::MapKeys => "lumia_map_keys",
-                        Builtin::MapValues => "lumia_map_values",
-                        Builtin::Elems => "lumia_elems",
-                        _ => "lumia_map_items",
-                    };
-                    let f = self.module.get_function(fname).unwrap();
-                    let call = self.builder.build_call(f, &[map.into()], "map_kv").unwrap();
-                    let ptr = call
-                        .try_as_basic_value()
-                        .basic()
-                        .unwrap()
-                        .into_pointer_value();
-                    Ok(self
-                        .builder
-                        .build_ptr_to_int(ptr, self.i64_ty, "map_kv_i64")
-                        .unwrap()
-                        .into())
-                }
-                Builtin::AdtTag => {
-                    let obj_i = self.coerce_i64(self.local(args[0])?)?;
-                    let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                    let obj = self
-                        .builder
-                        .build_int_to_ptr(obj_i, ptr_ty, "adt_ptr")
-                        .unwrap();
-                    let f = self.module.get_function("lumia_adt_tag").unwrap();
-                    let call = self.builder.build_call(f, &[obj.into()], "adt_tag").unwrap();
-                    Ok(call.try_as_basic_value().basic().unwrap())
-                }
-                Builtin::AdtField => {
-                    let obj_i = self.coerce_i64(self.local(args[0])?)?;
-                    let idx = self.coerce_i64(self.local(args[1])?)?;
-                    let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                    let obj = self
-                        .builder
-                        .build_int_to_ptr(obj_i, ptr_ty, "adt_ptr")
-                        .unwrap();
-                    let f = self.module.get_function("lumia_adt_field").unwrap();
-                    let call = self
-                        .builder
-                        .build_call(f, &[obj.into(), idx.into()], "adt_field")
-                        .unwrap();
-                    Ok(call.try_as_basic_value().basic().unwrap())
-                }
-                Builtin::ListSlice => {
-                    let list_i = self.coerce_i64(self.local(args[0])?)?;
-                    let start = self.coerce_i64(self.local(args[1])?)?;
-                    let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                    let list = self
-                        .builder
-                        .build_int_to_ptr(list_i, ptr_ty, "list_ptr")
-                        .unwrap();
-                    let f = self.module.get_function("lumia_list_slice").unwrap();
-                    let call = self
-                        .builder
-                        .build_call(f, &[list.into(), start.into()], "slice")
-                        .unwrap();
-                    let ptr = call
-                        .try_as_basic_value()
-                        .basic()
-                        .unwrap()
-                        .into_pointer_value();
-                    Ok(self
-                        .builder
-                        .build_ptr_to_int(ptr, self.i64_ty, "slice_i64")
-                        .unwrap()
-                        .into())
-                }
-                Builtin::ListAppend => {
-                    let list_i = self.coerce_i64(self.local(args[0])?)?;
-                    let elem = self.coerce_i64(self.local(args[1])?)?;
-                    let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                    let mut list = self
-                        .builder
-                        .build_int_to_ptr(list_i, ptr_ty, "list_ptr")
-                        .unwrap();
-                    if matches!(self.local_tys.get(&args[1].0), Some(Type::Float)) {
-                        let ens = self.module.get_function("lumia_ensure_list_f64").unwrap();
-                        list = self
-                            .builder
-                            .build_call(ens, &[list.into()], "ens_lf64")
-                            .unwrap()
-                            .try_as_basic_value()
-                            .basic()
-                            .unwrap()
-                            .into_pointer_value();
-                    }
-                    let f = self.module.get_function("lumia_list_append").unwrap();
-                    let call = self
-                        .builder
-                        .build_call(f, &[list.into(), elem.into()], "append")
-                        .unwrap();
-                    let ptr = call
-                        .try_as_basic_value()
-                        .basic()
-                        .unwrap()
-                        .into_pointer_value();
-                    Ok(self
-                        .builder
-                        .build_ptr_to_int(ptr, self.i64_ty, "append_i64")
-                        .unwrap()
-                        .into())
-                }
-                Builtin::ListConcat => {
-                    let a_i = self.coerce_i64(self.local(args[0])?)?;
-                    let b_i = self.coerce_i64(self.local(args[1])?)?;
-                    let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                    let a = self
-                        .builder
-                        .build_int_to_ptr(a_i, ptr_ty, "concat_a")
-                        .unwrap();
-                    let b = self
-                        .builder
-                        .build_int_to_ptr(b_i, ptr_ty, "concat_b")
-                        .unwrap();
-                    let f = self.module.get_function("lumia_concat").unwrap();
-                    let call = self
-                        .builder
-                        .build_call(f, &[a.into(), b.into()], "concat")
-                        .unwrap();
-                    let ptr = call
-                        .try_as_basic_value()
-                        .basic()
-                        .unwrap()
-                        .into_pointer_value();
-                    Ok(self
-                        .builder
-                        .build_ptr_to_int(ptr, self.i64_ty, "concat_i64")
-                        .unwrap()
-                        .into())
-                }
-                Builtin::Show => {
-                    let arg = self.local(args[0])?;
-                    let arg_ty = self
-                        .local_tys
-                        .get(&args[0].0)
-                        .cloned()
-                        .unwrap_or(Type::Int);
-                    let ptr = match arg_ty {
-                        Type::Float => {
-                            let f = match arg {
-                                BasicValueEnum::FloatValue(f) => f,
-                                other => self.promote_f64(other)?,
-                            };
-                            let fun = self.module.get_function("lumia_show_float").unwrap();
-                            self.builder
-                                .build_call(fun, &[f.into()], "show_float")
-                                .unwrap()
-                                .try_as_basic_value()
-                                .basic()
-                                .unwrap()
-                                .into_pointer_value()
-                        }
-                        Type::Bool => {
-                            let i = self.coerce_i64(arg)?;
-                            let b = self
-                                .builder
-                                .build_int_truncate(i, self.context.i8_type(), "bool8")
-                                .unwrap();
-                            let fun = self.module.get_function("lumia_show_bool").unwrap();
-                            self.builder
-                                .build_call(fun, &[b.into()], "show_bool")
-                                .unwrap()
-                                .try_as_basic_value()
-                                .basic()
-                                .unwrap()
-                                .into_pointer_value()
-                        }
-                        Type::Adt { name, params } => {
-                            if let Some(ptr) = self.emit_show_override(&name, arg)? {
-                                ptr
-                            } else if params
-                                .iter()
-                                .any(|p| matches!(p, Type::Float | Type::Bool))
-                            {
-                                self.emit_typed_adt_show(arg, &params)?
-                            } else {
-                                let i = self.coerce_i64(arg)?;
-                                let fun = self.module.get_function("lumia_show").unwrap();
-                                self.builder
-                                    .build_call(fun, &[i.into()], "show")
-                                    .unwrap()
-                                    .try_as_basic_value()
-                                    .basic()
-                                    .unwrap()
-                                    .into_pointer_value()
-                            }
-                        }
-                        _ => {
-                            let i = self.coerce_i64(arg)?;
-                            let fun = self.module.get_function("lumia_show").unwrap();
-                            self.builder
-                                .build_call(fun, &[i.into()], "show")
-                                .unwrap()
-                                .try_as_basic_value()
-                                .basic()
-                                .unwrap()
-                                .into_pointer_value()
-                        }
-                    };
-                    Ok(self
-                        .builder
-                        .build_ptr_to_int(ptr, self.i64_ty, "show_i64")
-                        .unwrap()
-                        .into())
-                }
-                Builtin::StrTrim | Builtin::StrToLower | Builtin::StrToUpper => {
-                    let s_i = self.coerce_i64(self.local(args[0])?)?;
-                    let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                    let s = self.builder.build_int_to_ptr(s_i, ptr_ty, "str").unwrap();
-                    let fname = match name {
-                        Builtin::StrTrim => "lumia_str_trim",
-                        Builtin::StrToLower => "lumia_str_to_lower",
-                        _ => "lumia_str_to_upper",
-                    };
-                    let f = self.module.get_function(fname).unwrap();
-                    let call = self.builder.build_call(f, &[s.into()], "str_op").unwrap();
-                    let ptr = call
-                        .try_as_basic_value()
-                        .basic()
-                        .unwrap()
-                        .into_pointer_value();
-                    Ok(self
-                        .builder
-                        .build_ptr_to_int(ptr, self.i64_ty, "str_i64")
-                        .unwrap()
-                        .into())
-                }
-                Builtin::StrSplit => {
-                    let s_i = self.coerce_i64(self.local(args[0])?)?;
-                    let sep = self.coerce_i64(self.local(args[1])?)?;
-                    let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                    let s = self.builder.build_int_to_ptr(s_i, ptr_ty, "str").unwrap();
-                    let f = self.module.get_function("lumia_str_split").unwrap();
-                    let call = self
-                        .builder
-                        .build_call(f, &[s.into(), sep.into()], "split")
-                        .unwrap();
-                    let ptr = call
-                        .try_as_basic_value()
-                        .basic()
-                        .unwrap()
-                        .into_pointer_value();
-                    Ok(self
-                        .builder
-                        .build_ptr_to_int(ptr, self.i64_ty, "split_i64")
-                        .unwrap()
-                        .into())
-                }
-                Builtin::StrSubstring => {
-                    let s_i = self.coerce_i64(self.local(args[0])?)?;
-                    let a = self.coerce_i64(self.local(args[1])?)?;
-                    let b = self.coerce_i64(self.local(args[2])?)?;
-                    let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                    let s = self.builder.build_int_to_ptr(s_i, ptr_ty, "str").unwrap();
-                    let f = self.module.get_function("lumia_str_substring").unwrap();
-                    let call = self
-                        .builder
-                        .build_call(f, &[s.into(), a.into(), b.into()], "substr")
-                        .unwrap();
-                    let ptr = call
-                        .try_as_basic_value()
-                        .basic()
-                        .unwrap()
-                        .into_pointer_value();
-                    Ok(self
-                        .builder
-                        .build_ptr_to_int(ptr, self.i64_ty, "substr_i64")
-                        .unwrap()
-                        .into())
-                }
-                Builtin::ListTake => {
-                    let list_i = self.coerce_i64(self.local(args[0])?)?;
-                    let n = self.coerce_i64(self.local(args[1])?)?;
-                    let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                    let list = self
-                        .builder
-                        .build_int_to_ptr(list_i, ptr_ty, "list")
-                        .unwrap();
-                    let f = self.module.get_function("lumia_list_take").unwrap();
-                    let call = self
-                        .builder
-                        .build_call(f, &[list.into(), n.into()], "take")
-                        .unwrap();
-                    let ptr = call
-                        .try_as_basic_value()
-                        .basic()
-                        .unwrap()
-                        .into_pointer_value();
-                    Ok(self
-                        .builder
-                        .build_ptr_to_int(ptr, self.i64_ty, "take_i64")
-                        .unwrap()
-                        .into())
-                }
-                Builtin::ListReverse | Builtin::ListSort => {
-                    let list_i = self.coerce_i64(self.local(args[0])?)?;
-                    let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                    let list = self
-                        .builder
-                        .build_int_to_ptr(list_i, ptr_ty, "list")
-                        .unwrap();
-                    let fname = match name {
-                        Builtin::ListReverse => "lumia_list_reverse",
-                        _ => "lumia_list_sort",
-                    };
-                    let f = self.module.get_function(fname).unwrap();
-                    let call = self.builder.build_call(f, &[list.into()], "list_op").unwrap();
-                    let ptr = call
-                        .try_as_basic_value()
-                        .basic()
-                        .unwrap()
-                        .into_pointer_value();
-                    Ok(self
-                        .builder
-                        .build_ptr_to_int(ptr, self.i64_ty, "list_op_i64")
-                        .unwrap()
-                        .into())
-                }
-                Builtin::ListSortByKeys => {
-                    let vals_i = self.coerce_i64(self.local(args[0])?)?;
-                    let keys_i = self.coerce_i64(self.local(args[1])?)?;
-                    let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                    let vals = self
-                        .builder
-                        .build_int_to_ptr(vals_i, ptr_ty, "sby_vals")
-                        .unwrap();
-                    let keys = self
-                        .builder
-                        .build_int_to_ptr(keys_i, ptr_ty, "sby_keys")
-                        .unwrap();
-                    let f = self.module.get_function("lumia_list_sort_by_keys").unwrap();
-                    let call = self
-                        .builder
-                        .build_call(f, &[vals.into(), keys.into()], "sort_by")
-                        .unwrap();
-                    let ptr = call
-                        .try_as_basic_value()
-                        .basic()
-                        .unwrap()
-                        .into_pointer_value();
-                    Ok(self
-                        .builder
-                        .build_ptr_to_int(ptr, self.i64_ty, "sort_by_i64")
-                        .unwrap()
-                        .into())
-                }
-                Builtin::ListParMap => {
-                    let list_i = self.coerce_i64(self.local(args[0])?)?;
-                    let fun_i = self.coerce_i64(self.local(args[1])?)?;
-                    let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                    let list = self
-                        .builder
-                        .build_int_to_ptr(list_i, ptr_ty, "pmap_list")
-                        .unwrap();
-                    // FunRef is tagged with low bit; refuse heap closures.
-                    let one = self.i64_ty.const_int(1, false);
-                    let tagged = self.builder.build_and(fun_i, one, "pmap_tag").unwrap();
-                    let is_funref = self
-                        .builder
-                        .build_int_compare(IntPredicate::EQ, tagged, one, "pmap_is_fr")
-                        .unwrap();
-                    let cur = self
-                        .builder
-                        .get_insert_block()
-                        .context("par_map needs insert block")?;
-                    let parent = cur.get_parent().context("bb parent")?;
-                    let ok_bb = self.context.append_basic_block(parent, "pmap_ok");
-                    let bad_bb = self.context.append_basic_block(parent, "pmap_bad");
-                    self.builder
-                        .build_conditional_branch(is_funref, ok_bb, bad_bb)
-                        .unwrap();
-                    self.builder.position_at_end(bad_bb);
-                    let fail = self.module.get_function("lumia_match_fail").unwrap();
-                    self.builder.build_call(fail, &[], "pmap_bad_fn").unwrap();
-                    self.builder.build_unreachable().unwrap();
-                    self.builder.position_at_end(ok_bb);
-                    let cleared = self
-                        .builder
-                        .build_and(
-                            fun_i,
-                            self.builder.build_not(one, "not1").unwrap(),
-                            "fun_clear",
-                        )
-                        .unwrap();
-                    let fptr = self
-                        .builder
-                        .build_int_to_ptr(cleared, ptr_ty, "pmap_fn")
-                        .unwrap();
-                    let result_tid = if matches!(
-                        self.list_par_map_result_elem(args),
-                        Type::Float
-                    ) {
-                        14u64 // TYPE_LIST_F64
-                    } else {
-                        3u64 // TYPE_LIST
-                    };
-                    let f = self.module.get_function("lumia_list_par_map").unwrap();
-                    let tid_v = self.context.i32_type().const_int(result_tid, false);
-                    let call = self
-                        .builder
-                        .build_call(f, &[list.into(), fptr.into(), tid_v.into()], "par_map")
-                        .unwrap();
-                    let ptr = call
-                        .try_as_basic_value()
-                        .basic()
-                        .unwrap()
-                        .into_pointer_value();
-                    Ok(self
-                        .builder
-                        .build_ptr_to_int(ptr, self.i64_ty, "par_map_i64")
-                        .unwrap()
-                        .into())
-                }
-                Builtin::ListParFold => {
-                    let list_i = self.coerce_i64(self.local(args[0])?)?;
-                    let init_i = self.coerce_i64(self.local(args[1])?)?;
-                    let fun_i = self.coerce_i64(self.local(args[2])?)?;
-                    let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                    let list = self
-                        .builder
-                        .build_int_to_ptr(list_i, ptr_ty, "pfold_list")
-                        .unwrap();
-                    let one = self.i64_ty.const_int(1, false);
-                    let tagged = self.builder.build_and(fun_i, one, "pfold_tag").unwrap();
-                    let is_funref = self
-                        .builder
-                        .build_int_compare(IntPredicate::EQ, tagged, one, "pfold_is_fr")
-                        .unwrap();
-                    let cur = self
-                        .builder
-                        .get_insert_block()
-                        .context("par_fold needs insert block")?;
-                    let parent = cur.get_parent().context("bb parent")?;
-                    let ok_bb = self.context.append_basic_block(parent, "pfold_ok");
-                    let bad_bb = self.context.append_basic_block(parent, "pfold_bad");
-                    self.builder
-                        .build_conditional_branch(is_funref, ok_bb, bad_bb)
-                        .unwrap();
-                    self.builder.position_at_end(bad_bb);
-                    let fail = self.module.get_function("lumia_match_fail").unwrap();
-                    self.builder.build_call(fail, &[], "pfold_bad_fn").unwrap();
-                    self.builder.build_unreachable().unwrap();
-                    self.builder.position_at_end(ok_bb);
-                    let cleared = self
-                        .builder
-                        .build_and(
-                            fun_i,
-                            self.builder.build_not(one, "pfold_not1").unwrap(),
-                            "pfold_clear",
-                        )
-                        .unwrap();
-                    let fptr = self
-                        .builder
-                        .build_int_to_ptr(cleared, ptr_ty, "pfold_fn")
-                        .unwrap();
-                    let f = self.module.get_function("lumia_list_par_fold").unwrap();
-                    let call = self
-                        .builder
-                        .build_call(f, &[list.into(), init_i.into(), fptr.into()], "par_fold")
-                        .unwrap();
-                    Ok(call
-                        .try_as_basic_value()
-                        .basic()
-                        .unwrap()
-                        .into_int_value()
-                        .into())
-                }
-                Builtin::ListJoin => {
-                    let list_i = self.coerce_i64(self.local(args[0])?)?;
-                    let sep_i = self.coerce_i64(self.local(args[1])?)?;
-                    let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                    let list = self
-                        .builder
-                        .build_int_to_ptr(list_i, ptr_ty, "list")
-                        .unwrap();
-                    let sep = self
-                        .builder
-                        .build_int_to_ptr(sep_i, ptr_ty, "sep")
-                        .unwrap();
-                    let f = self.module.get_function("lumia_list_join").unwrap();
-                    let call = self
-                        .builder
-                        .build_call(f, &[list.into(), sep.into()], "join")
-                        .unwrap();
-                    let ptr = call
-                        .try_as_basic_value()
-                        .basic()
-                        .unwrap()
-                        .into_pointer_value();
-                    Ok(self
-                        .builder
-                        .build_ptr_to_int(ptr, self.i64_ty, "join_i64")
-                        .unwrap()
-                        .into())
-                }
-                Builtin::ReadStdin => {
-                    let f = self.module.get_function("lumia_read_stdin").unwrap();
-                    let call = self.builder.build_call(f, &[], "stdin").unwrap();
-                    let ptr = call
-                        .try_as_basic_value()
-                        .basic()
-                        .unwrap()
-                        .into_pointer_value();
-                    Ok(self
-                        .builder
-                        .build_ptr_to_int(ptr, self.i64_ty, "stdin_i64")
-                        .unwrap()
-                        .into())
-                }
-                Builtin::MatchFail => {
-                    let f = self.module.get_function("lumia_match_fail").unwrap();
-                    self.builder.build_call(f, &[], "match_fail").unwrap();
-                    // Unreachable in practice; keep SSA well-typed.
-                    Ok(self.i64_ty.const_int(0, false).into())
-                }
-                Builtin::Assert => {
-                    let cond = self.coerce_i64(self.local(args[0])?)?;
-                    let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                    let (msg_ptr, msg_len) = if args.len() >= 2 {
-                        let msg_i = self.coerce_i64(self.local(args[1])?)?;
-                        let msg_ptr = self
-                            .builder
-                            .build_int_to_ptr(msg_i, ptr_ty, "assert_msg")
-                            .unwrap();
-                        let len_f = self.module.get_function("lumia_str_len").unwrap();
-                        let len = self
-                            .builder
-                            .build_call(len_f, &[msg_ptr.into()], "assert_len")
-                            .unwrap()
-                            .try_as_basic_value()
-                            .basic()
-                            .unwrap();
-                        (msg_ptr, len)
-                    } else {
-                        (
-                            ptr_ty.const_null(),
-                            self.i64_ty.const_int(0, false).into(),
-                        )
-                    };
-                    let f = self.module.get_function("lumia_assert").unwrap();
-                    self.builder
-                        .build_call(
-                            f,
-                            &[cond.into(), msg_ptr.into(), msg_len.into()],
-                            "assert",
-                        )
-                        .unwrap();
-                    Ok(self.i64_ty.const_int(0, false).into())
-                }
-                Builtin::StrStartsWith | Builtin::StrEndsWith => {
-                    let a_i = self.coerce_i64(self.local(args[0])?)?;
-                    let b_i = self.coerce_i64(self.local(args[1])?)?;
-                    let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                    let a = self.builder.build_int_to_ptr(a_i, ptr_ty, "a").unwrap();
-                    let b = self.builder.build_int_to_ptr(b_i, ptr_ty, "b").unwrap();
-                    let fname = match name {
-                        Builtin::StrStartsWith => "lumia_str_starts_with",
-                        _ => "lumia_str_ends_with",
-                    };
-                    let f = self.module.get_function(fname).unwrap();
-                    let call = self
-                        .builder
-                        .build_call(f, &[a.into(), b.into()], "str_affix")
-                        .unwrap();
-                    Ok(call.try_as_basic_value().basic().unwrap())
-                }
-                Builtin::Range => {
-                    let a = self.coerce_i64(self.local(args[0])?)?;
-                    let b = self.coerce_i64(self.local(args[1])?)?;
-                    let f = self.module.get_function("lumia_range").unwrap();
-                    let call = self
-                        .builder
-                        .build_call(f, &[a.into(), b.into()], "range")
-                        .unwrap();
-                    let ptr = call
-                        .try_as_basic_value()
-                        .basic()
-                        .unwrap()
-                        .into_pointer_value();
-                    Ok(self
-                        .builder
-                        .build_ptr_to_int(ptr, self.i64_ty, "range_i64")
-                        .unwrap()
-                        .into())
-                }
-                Builtin::RangeInclusive => {
-                    let a = self.coerce_i64(self.local(args[0])?)?;
-                    let b = self.coerce_i64(self.local(args[1])?)?;
-                    let f = self.module.get_function("lumia_range_inclusive").unwrap();
-                    let call = self
-                        .builder
-                        .build_call(f, &[a.into(), b.into()], "range_inc")
-                        .unwrap();
-                    let ptr = call
-                        .try_as_basic_value()
-                        .basic()
-                        .unwrap()
-                        .into_pointer_value();
-                    Ok(self
-                        .builder
-                        .build_ptr_to_int(ptr, self.i64_ty, "range_i64")
-                        .unwrap()
-                        .into())
-                }
-            },
-            Value::If {
-                cond,
-                then_block,
-                else_block,
-            } => {
-                let c = self.as_i64(self.local(*cond)?)?;
-                let zero = self.i64_ty.const_int(0, false);
-                let cond_i1 = self
-                    .builder
-                    .build_int_compare(IntPredicate::NE, c, zero, "ifcond")
-                    .unwrap();
-                let then_bb = self.context.append_basic_block(fv, "then");
-                let else_bb = self.context.append_basic_block(fv, "else");
-                let merge_bb = self.context.append_basic_block(fv, "merge");
-                self.builder
-                    .build_conditional_branch(cond_i1, then_bb, else_bb)
-                    .unwrap();
-
-                self.builder.position_at_end(then_bb);
-                let then_raw = self
-                    .emit_scoped_block(then_block, fv)?
-                    .unwrap_or_else(|| self.i64_ty.const_int(0, false).into());
-                let then_terminated = self
-                    .builder
-                    .get_insert_block()
-                    .and_then(|bb| bb.get_terminator())
-                    .is_some();
-                let mut then_incoming_i = None;
-                let mut then_incoming_f = None;
-                if !then_terminated {
-                    let then_bb_end = self.builder.get_insert_block().unwrap();
-                    then_incoming_i = Some((self.coerce_i64(then_raw)?, then_bb_end));
-                    then_incoming_f = Some((self.promote_f64(then_raw)?, then_bb_end));
-                    self.builder.build_unconditional_branch(merge_bb).unwrap();
-                }
-                let then_is_float = matches!(then_raw, BasicValueEnum::FloatValue(_));
-
-                self.builder.position_at_end(else_bb);
-                let else_raw = self
-                    .emit_scoped_block(else_block, fv)?
-                    .unwrap_or_else(|| self.i64_ty.const_int(0, false).into());
-                let else_terminated = self
-                    .builder
-                    .get_insert_block()
-                    .and_then(|bb| bb.get_terminator())
-                    .is_some();
-                let mut else_incoming_i = None;
-                let mut else_incoming_f = None;
-                if !else_terminated {
-                    let else_bb_end = self.builder.get_insert_block().unwrap();
-                    else_incoming_i = Some((self.coerce_i64(else_raw)?, else_bb_end));
-                    else_incoming_f = Some((self.promote_f64(else_raw)?, else_bb_end));
-                    self.builder.build_unconditional_branch(merge_bb).unwrap();
-                }
-                let float_merge =
-                    then_is_float || matches!(else_raw, BasicValueEnum::FloatValue(_));
-
-                self.builder.position_at_end(merge_bb);
-                if float_merge {
-                    match (then_incoming_f, else_incoming_f) {
-                        (Some((tv, tb)), Some((ev, eb))) => {
-                            let phi = self
-                                .builder
-                                .build_phi(self.context.f64_type(), "iftmpf")
-                                .unwrap();
-                            phi.add_incoming(&[(&tv, tb), (&ev, eb)]);
-                            Ok(phi.as_basic_value())
-                        }
-                        (Some((tv, _)), None) | (None, Some((tv, _))) => Ok(tv.into()),
-                        (None, None) => Ok(self.context.f64_type().const_float(0.0).into()),
-                    }
-                } else {
-                    match (then_incoming_i, else_incoming_i) {
-                        (Some((tv, tb)), Some((ev, eb))) => {
-                            let phi = self.builder.build_phi(self.i64_ty, "iftmp").unwrap();
-                            phi.add_incoming(&[(&tv, tb), (&ev, eb)]);
-                            Ok(phi.as_basic_value())
-                        }
-                        (Some((tv, _)), None) | (None, Some((tv, _))) => Ok(tv.into()),
-                        (None, None) => Ok(self.i64_ty.const_int(0, false).into()),
-                    }
-                }
-            }
-            Value::Loop {
-                header,
-                body,
-                latch,
-            } => {
-                let header_bb = self.context.append_basic_block(fv, "loop_header");
-                let body_bb = self.context.append_basic_block(fv, "loop_body");
-                let latch_bb = self.context.append_basic_block(fv, "loop_latch");
-                let exit_bb = self.context.append_basic_block(fv, "loop_exit");
-                self.builder.build_unconditional_branch(header_bb).unwrap();
-
-                // continue → latch (runs step); break → exit; both restore loop roots
-                let loop_depth = self.root_depth;
-                self.loop_stack.push((latch_bb, exit_bb, loop_depth));
-
-                self.builder.position_at_end(header_bb);
-                let cond_raw = self
-                    .emit_scoped_block(header, fv)?
-                    .unwrap_or_else(|| self.i64_ty.const_int(0, false).into());
-                if self
-                    .builder
-                    .get_insert_block()
-                    .and_then(|bb| bb.get_terminator())
-                    .is_none()
-                {
-                    let c = self.coerce_i64(cond_raw)?;
-                    let zero = self.i64_ty.const_int(0, false);
-                    let cond_i1 = self
-                        .builder
-                        .build_int_compare(IntPredicate::NE, c, zero, "loopcond")
-                        .unwrap();
-                    self.builder
-                        .build_conditional_branch(cond_i1, body_bb, exit_bb)
-                        .unwrap();
-                }
-
-                self.builder.position_at_end(body_bb);
-                let _ = self.emit_scoped_block(body, fv)?;
-                if self
-                    .builder
-                    .get_insert_block()
-                    .and_then(|bb| bb.get_terminator())
-                    .is_none()
-                {
-                    self.builder.build_unconditional_branch(latch_bb).unwrap();
-                }
-
-                self.builder.position_at_end(latch_bb);
-                let _ = self.emit_scoped_block(latch, fv)?;
-                if self
-                    .builder
-                    .get_insert_block()
-                    .and_then(|bb| bb.get_terminator())
-                    .is_none()
-                {
-                    self.builder.build_unconditional_branch(header_bb).unwrap();
-                }
-
-                self.loop_stack.pop();
-                self.builder.position_at_end(exit_bb);
-                Ok(self.i64_ty.const_int(0, false).into())
-            }
-            Value::Lambda { .. } => bail!("lambda should have been lifted to FunRef/AllocClosure"),
-            Value::AllocClosure { fun, captures } => {
-                let n = captures.len() as u64;
-                let nbytes = self.i64_ty.const_int((1 + n) * 8, false);
-                let type_id = self.context.i32_type().const_int(8, false); // TYPE_CLOSURE
-                let alloc = self.module.get_function("lumia_alloc").unwrap();
-                let ptr = self
-                    .builder
-                    .build_call(alloc, &[nbytes.into(), type_id.into()], "clos_alloc")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .basic()
-                    .unwrap()
-                    .into_pointer_value();
-                let fv = self
-                    .functions
-                    .get(fun)
-                    .copied()
-                    .with_context(|| format!("unknown closure fun {fun}"))?;
-                let fn_as_i = self
-                    .builder
-                    .build_ptr_to_int(
-                        fv.as_global_value().as_pointer_value(),
-                        self.i64_ty,
-                        "clos_fn_i",
-                    )
-                    .unwrap();
-                let fn_slot = unsafe {
-                    self.builder
-                        .build_gep(
-                            self.i64_ty,
-                            ptr,
-                            &[self.i64_ty.const_int(0, false)],
-                            "clos_fn_slot",
-                        )
-                        .unwrap()
-                };
-                self.builder.build_store(fn_slot, fn_as_i).unwrap();
-                for (i, e) in captures.iter().enumerate() {
-                    let v = self.coerce_i64(self.local(*e)?)?;
-                    let slot = unsafe {
-                        self.builder
-                            .build_gep(
-                                self.i64_ty,
-                                ptr,
-                                &[self.i64_ty.const_int((i + 1) as u64, false)],
-                                "clos_cap",
-                            )
-                            .unwrap()
-                    };
-                    self.builder.build_store(slot, v).unwrap();
-                }
-                Ok(self
-                    .builder
-                    .build_ptr_to_int(ptr, self.i64_ty, "clos_as_i64")
-                    .unwrap()
-                    .into())
-            }
-            Value::ClosureCap {
-                env,
-                index,
-                as_float,
-            } => {
-                let env_i = self.coerce_i64(self.local(*env)?)?;
-                let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                let env_ptr = self
-                    .builder
-                    .build_int_to_ptr(env_i, ptr_ty, "cap_env")
-                    .unwrap();
-                let slot = unsafe {
-                    self.builder
-                        .build_gep(
-                            self.i64_ty,
-                            env_ptr,
-                            &[self.i64_ty.const_int((*index as u64) + 1, false)],
-                            "cap_slot",
-                        )
-                        .unwrap()
-                };
-                let loaded = self
-                    .builder
-                    .build_load(self.i64_ty, slot, "cap")
-                    .unwrap();
-                if *as_float {
-                    Ok(self
-                        .builder
-                        .build_bit_cast(
-                            loaded.into_int_value(),
-                            self.context.f64_type(),
-                            "cap_f64",
-                        )
-                        .unwrap()
-                        .into())
-                } else {
-                    Ok(loaded)
-                }
-            }
-            Value::AllocList { elems, repr } => {
-                // Empty → immortal singleton. Non-escaping LitList → stack header+payload
-                // (same layout as heap so RT len/get work). Escaping → heap.
-                let float_elems = elems
-                    .first()
-                    .and_then(|e| self.local_tys.get(&e.0).cloned())
-                    .is_some_and(|t| matches!(t, Type::Float));
-                let list_tid = if float_elems {
-                    14 /* TYPE_LIST_F64 */
-                } else {
-                    3 /* TYPE_LIST */
-                };
-                if elems.is_empty() {
-                    if float_elems {
-                        let ens = self.module.get_function("lumia_ensure_list_f64").unwrap();
-                        let f = self.module.get_function("lumia_list_empty").unwrap();
-                        let empty = self
-                            .builder
-                            .build_call(f, &[], "list_empty")
-                            .unwrap()
-                            .try_as_basic_value()
-                            .basic()
-                            .unwrap()
-                            .into_pointer_value();
-                        let ptr = self
-                            .builder
-                            .build_call(ens, &[empty.into()], "ens_lf64")
-                            .unwrap()
-                            .try_as_basic_value()
-                            .basic()
-                            .unwrap()
-                            .into_pointer_value();
-                        return Ok(self
-                            .builder
-                            .build_ptr_to_int(ptr, self.i64_ty, "empty_f64_i64")
-                            .unwrap()
-                            .into());
-                    }
-                    let f = self.module.get_function("lumia_list_empty").unwrap();
-                    let ptr = self
-                        .builder
-                        .build_call(f, &[], "list_empty")
-                        .unwrap()
-                        .try_as_basic_value()
-                        .basic()
-                        .unwrap()
-                        .into_pointer_value();
-                    return Ok(self
-                        .builder
-                        .build_ptr_to_int(ptr, self.i64_ty, "empty_i64")
-                        .unwrap()
-                        .into());
-                }
-                if matches!(repr, lumia_core::ListRepr::LitList) {
-                    return self.emit_stack_array(elems, list_tid);
-                }
-                self.emit_heap_array(elems, list_tid)
-            }
-            Value::AllocSet { elems, repr } => {
-                let elem_ty = elems
-                    .first()
-                    .and_then(|e| self.local_tys.get(&e.0).cloned())
-                    .unwrap_or(Type::Int);
-                let float_elems = matches!(elem_ty, Type::Float);
-                let no_hash = !self.key_type_has_hash(&elem_ty);
-                let tid = if float_elems {
-                    11 /* TYPE_SET_F64 */
-                } else if no_hash {
-                    13 /* TYPE_SET_ASSOC */
-                } else {
-                    5 /* TYPE_SET */
-                };
-                if !elems.is_empty() && matches!(repr, lumia_core::SetRepr::LitSet) {
-                    return self.emit_stack_array(elems, tid);
-                }
-                let v = self.emit_heap_array(elems, tid)?;
-                if elems.len() > 8 && !no_hash {
-                    let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                    let bits = self.coerce_i64(v)?;
-                    let p = self
-                        .builder
-                        .build_int_to_ptr(bits, ptr_ty, "set_lin")
-                        .unwrap();
-                    let f = self.module.get_function("lumia_set_finish").unwrap();
-                    let out = self
-                        .builder
-                        .build_call(f, &[p.into()], "set_fin")
-                        .unwrap()
-                        .try_as_basic_value()
-                        .basic()
-                        .unwrap()
-                        .into_pointer_value();
-                    Ok(self
-                        .builder
-                        .build_ptr_to_int(out, self.i64_ty, "set_i64")
-                        .unwrap()
-                        .into())
-                } else {
-                    Ok(v)
-                }
-            }
-            Value::AllocMap { flat_pairs, repr } => {
-                // Layout: [len][k0][v0]... — len = pair count
-                if flat_pairs.len() % 2 != 0 {
-                    bail!("mapOf expects even number of key/value args");
-                }
-                let n_pairs = (flat_pairs.len() / 2) as u64;
-                let key_ty = flat_pairs
-                    .first()
-                    .and_then(|k| self.local_tys.get(&k.0).cloned())
-                    .unwrap_or(Type::Int);
-                let val_ty = flat_pairs
-                    .get(1)
-                    .and_then(|v| self.local_tys.get(&v.0).cloned())
-                    .unwrap_or(Type::Int);
-                let float_keys = matches!(key_ty, Type::Float);
-                let float_vals = matches!(val_ty, Type::Float);
-                let no_hash = matches!(repr, lumia_core::MapRepr::AssocList)
-                    || !self.key_type_has_hash(&key_ty);
-                // Float-value tags win over Assoc for IEEE value ==; Assoc is for
-                // key Hash absence (linear forever) when values are not Float.
-                // AssocList (+ Float tags) stays linear forever; Hash maps use 4/10/15/16.
-                let tid = match (float_keys, float_vals, no_hash) {
-                    (true, true, true) => 19,   // TYPE_MAP_ASSOC_F64V
-                    (true, false, true) => 18,  // TYPE_MAP_ASSOC_F64
-                    (false, true, true) => 17,  // TYPE_MAP_ASSOC_VF64
-                    (true, true, false) => 16,  // TYPE_MAP_F64V
-                    (true, false, false) => 10, // TYPE_MAP_F64
-                    (false, true, false) => 15, // TYPE_MAP_VF64
-                    (false, false, true) => 12, // TYPE_MAP_ASSOC
-                    (false, false, false) => 4, // TYPE_MAP
-                };
-                if n_pairs > 0 && matches!(repr, lumia_core::MapRepr::LitMap) {
-                    return self.emit_stack_map(flat_pairs, tid);
-                }
-                let nbytes = self.i64_ty.const_int((1 + flat_pairs.len() as u64) * 8, false);
-                let type_id = self.context.i32_type().const_int(tid, false);
-                let alloc = self.module.get_function("lumia_alloc").unwrap();
-                let ptr = self
-                    .builder
-                    .build_call(alloc, &[nbytes.into(), type_id.into()], "map_alloc")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .basic()
-                    .unwrap()
-                    .into_pointer_value();
-                let len_slot = unsafe {
-                    self.builder
-                        .build_gep(
-                            self.i64_ty,
-                            ptr,
-                            &[self.i64_ty.const_int(0, false)],
-                            "len_slot",
-                        )
-                        .unwrap()
-                };
-                self.builder
-                    .build_store(len_slot, self.i64_ty.const_int(n_pairs, false))
-                    .unwrap();
-                for (i, e) in flat_pairs.iter().enumerate() {
-                    let v = self.coerce_i64(self.local(*e)?)?;
-                    let slot = unsafe {
-                        self.builder
-                            .build_gep(
-                                self.i64_ty,
-                                ptr,
-                                &[self.i64_ty.const_int((i + 1) as u64, false)],
-                                "kv",
-                            )
-                            .unwrap()
-                    };
-                    self.builder.build_store(slot, v).unwrap();
-                }
-                let ptr = if !no_hash
-                    && (n_pairs > 8 || matches!(repr, lumia_core::MapRepr::HashOrdered))
-                {
-                    let f = self.module.get_function("lumia_map_finish").unwrap();
-                    self.builder
-                        .build_call(f, &[ptr.into()], "map_fin")
-                        .unwrap()
-                        .try_as_basic_value()
-                        .basic()
-                        .unwrap()
-                        .into_pointer_value()
-                } else {
-                    ptr
-                };
-                Ok(self
-                    .builder
-                    .build_ptr_to_int(ptr, self.i64_ty, "map_as_i64")
-                    .unwrap()
-                    .into())
-            }
-            Value::AllocAdt {
-                tag,
-                fields,
-                repr,
-                ..
-            } => {
-                if matches!(repr, lumia_core::AdtRepr::LitAdt) {
-                    return self.emit_stack_adt(*tag, fields);
-                }
-                let n = fields.len() as u64;
-                let nbytes = self.i64_ty.const_int((1 + n) * 8, false);
-                let type_id = self.context.i32_type().const_int(6, false); // TYPE_ADT
-                let alloc = self.module.get_function("lumia_alloc").unwrap();
-                let ptr = self
-                    .builder
-                    .build_call(alloc, &[nbytes.into(), type_id.into()], "adt_alloc")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .basic()
-                    .unwrap()
-                    .into_pointer_value();
-                let tag_slot = unsafe {
-                    self.builder
-                        .build_gep(
-                            self.i64_ty,
-                            ptr,
-                            &[self.i64_ty.const_int(0, false)],
-                            "tag_slot",
-                        )
-                        .unwrap()
-                };
-                self.builder
-                    .build_store(tag_slot, self.i64_ty.const_int(*tag as u64, false))
-                    .unwrap();
-                for (i, e) in fields.iter().enumerate() {
-                    let v = self.coerce_i64(self.local(*e)?)?;
-                    let slot = unsafe {
-                        self.builder
-                            .build_gep(
-                                self.i64_ty,
-                                ptr,
-                                &[self.i64_ty.const_int((i + 1) as u64, false)],
-                                "adt_f",
-                            )
-                            .unwrap()
-                    };
-                    self.builder.build_store(slot, v).unwrap();
-                }
-                Ok(self
-                    .builder
-                    .build_ptr_to_int(ptr, self.i64_ty, "adt_as_i64")
-                    .unwrap()
-                    .into())
-            }
-        }
-    }
-
-    /// Stack ADT: ObjectHeader + `[tag][field0]…` payload (TYPE_ADT).
-    /// Escape analysis must ensure the pointer never outlives the frame.
-    fn emit_stack_adt(
-        &mut self,
-        tag: i64,
-        fields: &[Local],
-    ) -> Result<BasicValueEnum<'ctx>> {
-        let n = fields.len() as u64;
-        let payload_bytes = (1 + n) * 8;
-        let words = (2 + 1 + n) as u32; // 2 header + tag + fields
-        let arr_ty = self.i64_ty.array_type(words);
-        let entry = self
-            .entry_bb
-            .context("emit_stack_adt before emit_function")?;
-        let cur = self
-            .builder
-            .get_insert_block()
-            .context("no insert block")?;
-        match entry.get_first_instruction() {
-            Some(first) => self.builder.position_before(&first),
-            None => self.builder.position_at_end(entry),
-        }
-        let storage = self.builder.build_alloca(arr_ty, "stack_adt").unwrap();
-        self.builder.position_at_end(cur);
-
-        let type_id = 6u64; // TYPE_ADT
-        let hdr0 = self
-            .i64_ty
-            .const_int(type_id | ((payload_bytes as u64) << 32), false);
-        let hdr0_slot = unsafe {
-            self.builder
-                .build_gep(
-                    self.i64_ty,
-                    storage,
-                    &[self.i64_ty.const_int(0, false)],
-                    "adt_hdr0",
-                )
-                .unwrap()
-        };
-        self.builder.build_store(hdr0_slot, hdr0).unwrap();
-        let hdr1_slot = unsafe {
-            self.builder
-                .build_gep(
-                    self.i64_ty,
-                    storage,
-                    &[self.i64_ty.const_int(1, false)],
-                    "adt_hdr1",
-                )
-                .unwrap()
-        };
-        self.builder
-            .build_store(hdr1_slot, self.i64_ty.const_int(1, false))
-            .unwrap();
-
-        let payload = unsafe {
-            self.builder
-                .build_gep(
-                    self.i64_ty,
-                    storage,
-                    &[self.i64_ty.const_int(2, false)],
-                    "adt_payload",
-                )
-                .unwrap()
-        };
-        self.builder
-            .build_store(payload, self.i64_ty.const_int(tag as u64, false))
-            .unwrap();
-        for (i, e) in fields.iter().enumerate() {
-            let v = self.coerce_i64(self.local(*e)?)?;
-            let slot = unsafe {
-                self.builder
-                    .build_gep(
-                        self.i64_ty,
-                        storage,
-                        &[self.i64_ty.const_int((3 + i) as u64, false)],
-                        "adt_f",
-                    )
-                    .unwrap()
-            };
-            self.builder.build_store(slot, v).unwrap();
-        }
-        Ok(self
-            .builder
-            .build_ptr_to_int(payload, self.i64_ty, "adt_stack_i64")
-            .unwrap()
-            .into())
-    }
-
-    /// Stack Set/List-shaped array: ObjectHeader + `[len][elems…]`.
-    fn emit_stack_array(
-        &mut self,
-        elems: &[Local],
-        type_id: u64,
-    ) -> Result<BasicValueEnum<'ctx>> {
-        let n = elems.len() as u64;
-        let payload_bytes = (1 + n) * 8;
-        let words = (2 + 1 + n) as u32; // 2 header words + len + elems
-        let arr_ty = self.i64_ty.array_type(words);
-        let entry = self
-            .entry_bb
-            .context("emit_stack_array before emit_function")?;
-        let cur = self
-            .builder
-            .get_insert_block()
-            .context("no insert block")?;
-        match entry.get_first_instruction() {
-            Some(first) => self.builder.position_before(&first),
-            None => self.builder.position_at_end(entry),
-        }
-        let storage = self.builder.build_alloca(arr_ty, "stack_arr").unwrap();
-        self.builder.position_at_end(cur);
-
-        let hdr0 = self
-            .i64_ty
-            .const_int(type_id | ((payload_bytes as u64) << 32), false);
-        let hdr0_slot = unsafe {
-            self.builder
-                .build_gep(
-                    self.i64_ty,
-                    storage,
-                    &[self.i64_ty.const_int(0, false)],
-                    "sa_hdr0",
-                )
-                .unwrap()
-        };
-        self.builder.build_store(hdr0_slot, hdr0).unwrap();
-        let hdr1_slot = unsafe {
-            self.builder
-                .build_gep(
-                    self.i64_ty,
-                    storage,
-                    &[self.i64_ty.const_int(1, false)],
-                    "sa_hdr1",
-                )
-                .unwrap()
-        };
-        self.builder
-            .build_store(hdr1_slot, self.i64_ty.const_int(1, false))
-            .unwrap();
-
-        let payload = unsafe {
-            self.builder
-                .build_gep(
-                    self.i64_ty,
-                    storage,
-                    &[self.i64_ty.const_int(2, false)],
-                    "sa_payload",
-                )
-                .unwrap()
-        };
-        self.builder
-            .build_store(payload, self.i64_ty.const_int(n, false))
-            .unwrap();
-        for (i, e) in elems.iter().enumerate() {
-            let v = self.coerce_i64(self.local(*e)?)?;
-            let slot = unsafe {
-                self.builder
-                    .build_gep(
-                        self.i64_ty,
-                        storage,
-                        &[self.i64_ty.const_int((3 + i) as u64, false)],
-                        "sa_elem",
-                    )
-                    .unwrap()
-            };
-            self.builder.build_store(slot, v).unwrap();
-        }
-        Ok(self
-            .builder
-            .build_ptr_to_int(payload, self.i64_ty, "sa_i64")
-            .unwrap()
-            .into())
-    }
-
-    /// Stack Map: ObjectHeader + `[n_pairs][k0][v0]…`.
-    fn emit_stack_map(
-        &mut self,
-        flat_pairs: &[Local],
-        type_id: u64,
-    ) -> Result<BasicValueEnum<'ctx>> {
-        let n_words = flat_pairs.len() as u64;
-        let n_pairs = n_words / 2;
-        let payload_bytes = (1 + n_words) * 8;
-        let words = (2 + 1 + n_words) as u32;
-        let arr_ty = self.i64_ty.array_type(words);
-        let entry = self
-            .entry_bb
-            .context("emit_stack_map before emit_function")?;
-        let cur = self
-            .builder
-            .get_insert_block()
-            .context("no insert block")?;
-        match entry.get_first_instruction() {
-            Some(first) => self.builder.position_before(&first),
-            None => self.builder.position_at_end(entry),
-        }
-        let storage = self.builder.build_alloca(arr_ty, "stack_map").unwrap();
-        self.builder.position_at_end(cur);
-
-        let hdr0 = self
-            .i64_ty
-            .const_int(type_id | ((payload_bytes as u64) << 32), false);
-        let hdr0_slot = unsafe {
-            self.builder
-                .build_gep(
-                    self.i64_ty,
-                    storage,
-                    &[self.i64_ty.const_int(0, false)],
-                    "sm_hdr0",
-                )
-                .unwrap()
-        };
-        self.builder.build_store(hdr0_slot, hdr0).unwrap();
-        let hdr1_slot = unsafe {
-            self.builder
-                .build_gep(
-                    self.i64_ty,
-                    storage,
-                    &[self.i64_ty.const_int(1, false)],
-                    "sm_hdr1",
-                )
-                .unwrap()
-        };
-        self.builder
-            .build_store(hdr1_slot, self.i64_ty.const_int(1, false))
-            .unwrap();
-
-        let payload = unsafe {
-            self.builder
-                .build_gep(
-                    self.i64_ty,
-                    storage,
-                    &[self.i64_ty.const_int(2, false)],
-                    "sm_payload",
-                )
-                .unwrap()
-        };
-        self.builder
-            .build_store(payload, self.i64_ty.const_int(n_pairs, false))
-            .unwrap();
-        for (i, e) in flat_pairs.iter().enumerate() {
-            let v = self.coerce_i64(self.local(*e)?)?;
-            let slot = unsafe {
-                self.builder
-                    .build_gep(
-                        self.i64_ty,
-                        storage,
-                        &[self.i64_ty.const_int((3 + i) as u64, false)],
-                        "sm_kv",
-                    )
-                    .unwrap()
-            };
-            self.builder.build_store(slot, v).unwrap();
-        }
-        Ok(self
-            .builder
-            .build_ptr_to_int(payload, self.i64_ty, "sm_i64")
-            .unwrap()
-            .into())
-    }
-
-    fn emit_heap_array(
-        &mut self,
-        elems: &[Local],
-        type_id: u64,
-    ) -> Result<BasicValueEnum<'ctx>> {
-        let n = elems.len() as u64;
-        let nbytes = self.i64_ty.const_int((1 + n) * 8, false);
-        let type_id = self.context.i32_type().const_int(type_id, false);
-        let alloc = self.module.get_function("lumia_alloc").unwrap();
-        let ptr = self
-            .builder
-            .build_call(alloc, &[nbytes.into(), type_id.into()], "arr_alloc")
-            .unwrap()
-            .try_as_basic_value()
-            .basic()
-            .unwrap()
-            .into_pointer_value();
-        let len_slot = unsafe {
-            self.builder
-                .build_gep(
-                    self.i64_ty,
-                    ptr,
-                    &[self.i64_ty.const_int(0, false)],
-                    "len_slot",
-                )
-                .unwrap()
-        };
-        self.builder
-            .build_store(len_slot, self.i64_ty.const_int(n, false))
-            .unwrap();
-        for (i, e) in elems.iter().enumerate() {
-            let v = self.coerce_i64(self.local(*e)?)?;
-            let slot = unsafe {
-                self.builder
-                    .build_gep(
-                        self.i64_ty,
-                        ptr,
-                        &[self.i64_ty.const_int((i + 1) as u64, false)],
-                        "elem",
-                    )
-                    .unwrap()
-            };
-            self.builder.build_store(slot, v).unwrap();
-        }
-        Ok(self
-            .builder
-            .build_ptr_to_int(ptr, self.i64_ty, "arr_as_i64")
-            .unwrap()
-            .into())
-    }
-}
-
-/// Types allowed on pure TCO SCCs (DESIGN §4.4). Heap params OK: entry re-roots;
-/// callers `root_pop_to(0)` immediately before musttail. Closures stay out.
-fn tco_eligible_ty(t: &Type) -> bool {
-    match t {
-        Type::Int | Type::Bool | Type::Float | Type::Var(_) => true,
-        Type::String | Type::Char | Type::Unit => true,
-        Type::List(_) | Type::Set(_) | Type::Map(_, _) | Type::Adt { .. } | Type::Tuple(_) => {
-            true
-        }
-        Type::Fun(_, _, _) => false,
-    }
-}
-
-fn compute_tco_sccs(core: &CoreModule) -> HashMap<String, HashSet<String>> {
-    let eligible: HashSet<String> = core
-        .functions
-        .iter()
-        .filter(|f| {
-            // DESIGN §4.4: pure mutual recursion is guaranteed; IO is not required
-            // to TCO, but eligible Int/heap-param SCCs still get musttail when the
-            // recursive edge is a direct/FunRef call (IO on other arms is fine).
-            f.memo.is_none()
-                && f.external.is_none()
-                && tco_eligible_ty(&f.ret_ty)
-                && f.param_tys.iter().all(tco_eligible_ty)
-        })
-        .map(|f| f.name.clone())
-        .collect();
-    if eligible.is_empty() {
-        return HashMap::new();
-    }
-    let mut graph: HashMap<String, HashSet<String>> = HashMap::new();
-    for name in &eligible {
-        graph.insert(name.clone(), HashSet::new());
-    }
-    for f in &core.functions {
-        if !eligible.contains(&f.name) {
-            continue;
-        }
-        let mut callees = HashSet::new();
-        collect_direct_calls(&f.body, &mut callees);
-        for c in callees {
-            if eligible.contains(&c) {
-                graph.get_mut(&f.name).unwrap().insert(c);
-            }
-        }
-    }
-    // Tarjan SCC
-    let mut index = 0u32;
-    let mut stack: Vec<String> = Vec::new();
-    let mut on_stack: HashSet<String> = HashSet::new();
-    let mut indices: HashMap<String, u32> = HashMap::new();
-    let mut lowlink: HashMap<String, u32> = HashMap::new();
-    let mut sccs: Vec<HashSet<String>> = Vec::new();
-
-    fn strongconnect(
-        v: &str,
-        graph: &HashMap<String, HashSet<String>>,
-        index: &mut u32,
-        stack: &mut Vec<String>,
-        on_stack: &mut HashSet<String>,
-        indices: &mut HashMap<String, u32>,
-        lowlink: &mut HashMap<String, u32>,
-        sccs: &mut Vec<HashSet<String>>,
-    ) {
-        indices.insert(v.to_string(), *index);
-        lowlink.insert(v.to_string(), *index);
-        *index += 1;
-        stack.push(v.to_string());
-        on_stack.insert(v.to_string());
-        if let Some(ns) = graph.get(v) {
-            for w in ns {
-                if !indices.contains_key(w) {
-                    strongconnect(w, graph, index, stack, on_stack, indices, lowlink, sccs);
-                    let lw = *lowlink.get(w).unwrap();
-                    let lv = *lowlink.get(v).unwrap();
-                    lowlink.insert(v.to_string(), lv.min(lw));
-                } else if on_stack.contains(w) {
-                    let iw = *indices.get(w).unwrap();
-                    let lv = *lowlink.get(v).unwrap();
-                    lowlink.insert(v.to_string(), lv.min(iw));
-                }
-            }
-        }
-        if lowlink.get(v) == indices.get(v) {
-            let mut comp = HashSet::new();
-            loop {
-                let w = stack.pop().unwrap();
-                on_stack.remove(&w);
-                comp.insert(w.clone());
-                if w == v {
-                    break;
-                }
-            }
-            // Keep SCCs that can recurse (size>1 or self-loop).
-            let self_loop = graph.get(v).map(|s| s.contains(v)).unwrap_or(false);
-            if comp.len() > 1 || self_loop {
-                sccs.push(comp);
-            }
-        }
-    }
-
-    let nodes: Vec<String> = eligible.iter().cloned().collect();
-    for n in nodes {
-        if !indices.contains_key(&n) {
-            strongconnect(
-                &n,
-                &graph,
-                &mut index,
-                &mut stack,
-                &mut on_stack,
-                &mut indices,
-                &mut lowlink,
-                &mut sccs,
-            );
-        }
-    }
-
-    let mut out = HashMap::new();
-    for scc in sccs {
-        for m in &scc {
-            out.insert(m.clone(), scc.clone());
-        }
-    }
-    out
-}
-
-fn collect_direct_calls(block: &Block, out: &mut HashSet<String>) {
-    collect_calls_with_funrefs(block, &HashMap::new(), out);
-}
-
-/// Collect direct callees, resolving `FunRef` → `IndirectCall` (for TCO SCCs).
-fn collect_calls_with_funrefs(
-    block: &Block,
-    parent_funrefs: &HashMap<u32, String>,
-    out: &mut HashSet<String>,
-) {
-    let mut funref_of = parent_funrefs.clone();
-    for op in &block.ops {
-        let value = match op {
-            Op::Let { local, value, .. } => {
-                match value {
-                    Value::Call { fun, .. } => {
-                        out.insert(fun.clone());
-                    }
-                    Value::IndirectCall { callee, .. } => {
-                        if let Some(fun) = funref_of.get(&callee.0) {
-                            out.insert(fun.clone());
-                        }
-                    }
-                    Value::If {
-                        then_block,
-                        else_block,
-                        ..
-                    } => {
-                        collect_calls_with_funrefs(then_block, &funref_of, out);
-                        collect_calls_with_funrefs(else_block, &funref_of, out);
-                    }
-                    Value::Loop {
-                        header,
-                        body,
-                        latch,
-                    } => {
-                        collect_calls_with_funrefs(header, &funref_of, out);
-                        collect_calls_with_funrefs(body, &funref_of, out);
-                        collect_calls_with_funrefs(latch, &funref_of, out);
-                    }
-                    _ => {}
-                }
-                if let Value::FunRef(name) = value {
-                    funref_of.insert(local.0, name.clone());
-                } else if let Value::Local(Local(src)) = value {
-                    if let Some(n) = funref_of.get(src).cloned() {
-                        funref_of.insert(local.0, n);
-                    } else {
-                        funref_of.remove(&local.0);
-                    }
-                } else {
-                    funref_of.remove(&local.0);
-                }
-                continue;
-            }
-            Op::Effect { value } => value,
-            _ => continue,
-        };
-        match value {
-            Value::Call { fun, .. } => {
-                out.insert(fun.clone());
-            }
-            Value::IndirectCall { callee, .. } => {
-                if let Some(fun) = funref_of.get(&callee.0) {
-                    out.insert(fun.clone());
-                }
-            }
-            Value::If {
-                then_block,
-                else_block,
-                ..
-            } => {
-                collect_calls_with_funrefs(then_block, &funref_of, out);
-                collect_calls_with_funrefs(else_block, &funref_of, out);
-            }
-            Value::Loop {
-                header,
-                body,
-                latch,
-            } => {
-                collect_calls_with_funrefs(header, &funref_of, out);
-                collect_calls_with_funrefs(body, &funref_of, out);
-                collect_calls_with_funrefs(latch, &funref_of, out);
-            }
-            _ => {}
         }
     }
 }
@@ -4523,85 +1369,73 @@ fn c_abi_fn_type<'ctx>(
     }
 }
 
-fn link_executable(
-    obj: &Path,
-    runtime: &Path,
-    output: &Path,
-    extra: &[String],
-) -> Result<()> {
-    let mut cmd = Command::new("clang");
-    cmd.arg(obj).arg(runtime).arg("-o").arg(output);
-    // `lumia_rt` is a Rust staticlib: pull in the host libs Rust std needs.
-    // (Matches `cargo rustc -p lumia_rt -- --print=native-static-libs`.)
-    if cfg!(target_os = "windows") {
-        cmd.args([
-            "-ladvapi32",
-            "-lws2_32",
-            "-luserenv",
-            "-lbcrypt",
-            "-lntdll",
-            // Match the compiler binary stack (see .cargo/config.toml).
-            "-Wl,/STACK:16777216",
-        ]);
-    } else {
-        cmd.arg("-lpthread").arg("-ldl").arg("-lm").arg("-lrt").arg("-lutil");
-    }
-    for a in extra {
-        cmd.arg(a);
-    }
-    let status = cmd.status().context("invoke clang linker")?;
-    if !status.success() {
-        bail!("link failed with {status}");
-    }
-    Ok(())
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lumia_opt::{compile_file_to_optimized, OptOptions};
+    use std::path::PathBuf;
 
-/// Locate `liblumia_rt.a` / `lumia_rt.lib` in target dir.
-pub fn find_runtime_lib(target_dir: &Path) -> Result<PathBuf> {
-    find_runtime_lib_prefer(target_dir, false)
-}
+    fn workspace_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("workspace root")
+    }
 
-pub fn find_runtime_lib_prefer(target_dir: &Path, release: bool) -> Result<PathBuf> {
-    let preferred = if release { "release" } else { "debug" };
-    let fallback = if release { "debug" } else { "release" };
-    let profiles = [preferred, fallback];
-    let mut found_preferred: Option<PathBuf> = None;
-    let mut found_fallback: Option<PathBuf> = None;
-    for p in profiles {
-        for name in ["liblumia_rt.a", "lumia_rt.lib", "lumia_rt.dll.lib"] {
-            let c = target_dir.join(p).join(name);
-            if c.exists() {
-                if p == preferred {
-                    found_preferred = Some(c);
-                } else if found_fallback.is_none() {
-                    found_fallback = Some(c);
-                }
-                break;
-            }
+    fn test_opts() -> CodegenOptions {
+        CodegenOptions {
+            release: false,
+            output: PathBuf::from("/tmp/lumia_codegen_test"),
+            emit_ir: false,
+            runtime_lib: PathBuf::from("/tmp/unused_rt"),
+            option_some_tag: 0,
+            option_none_tag: 1,
+            parallel: true,
+            link_args: vec![],
         }
     }
-    if let Some(c) = found_preferred {
-        return Ok(c);
+
+    fn emit_example(rel: &str, release: bool) -> String {
+        let path = workspace_root().join(rel);
+        let opts = if release {
+            OptOptions::for_build(true)
+        } else {
+            OptOptions::default()
+        };
+        let core = compile_file_to_optimized(&path, &opts).expect("optimize");
+        emit_verified_llvm_ir(&core, &test_opts()).expect("emit+verify")
     }
-    for name in ["liblumia_rt.a", "lumia_rt.lib"] {
-        let c = target_dir.join(name);
-        if c.exists() {
-            return Ok(c);
-        }
-    }
-    if let Some(c) = found_fallback {
-        eprintln!(
-            "warning: linking {} lumia_rt into a {} build ({}); run `cargo build -p lumia_rt{}` for a matching runtime",
-            fallback,
-            preferred,
-            c.display(),
-            if release { " --release" } else { "" },
+
+    #[test]
+    fn emit_tco_sum_has_musttail() {
+        let ir = emit_example("examples/tco_sum.lm", false);
+        assert!(
+            ir.contains("musttail") || ir.contains("tailcc") || ir.contains("tail "),
+            "expected musttail-related IR in tco_sum; ir snip:\n{}",
+            &ir[..ir.len().min(2000)]
         );
-        return Ok(c);
     }
-    bail!(
-        "liblumia_rt.a / lumia_rt.lib not found under {} — run `cargo build -p lumia_rt` first",
-        target_dir.display()
-    )
-}
 
+    #[test]
+    fn emit_memo_l2_has_lookup() {
+        let ir = emit_example("examples/memo_l2.lm", true);
+        assert!(
+            ir.contains("lumia_memo") || ir.contains("memo"),
+            "expected memo runtime calls in memo_l2 IR"
+        );
+    }
+
+    #[test]
+    fn emit_trait_poly_show_has_show_symbol() {
+        let ir = emit_example("examples/trait_poly_show.lm", false);
+        assert!(
+            ir.contains("show") || ir.contains("Show") || ir.contains("__Show"),
+            "expected Show-related symbol in trait_poly_show IR"
+        );
+    }
+
+    #[test]
+    fn emit_hello_verifies() {
+        let _ir = emit_example("examples/hello.lm", false);
+    }
+}

@@ -1,0 +1,26 @@
+module PeListLenGet
+
+fun main() effect.io=true memo=None {
+  %0 = i64 10  // pure
+  %1 = i64 20  // pure
+  %2 = i64 30  // pure
+  %3 = alloc_list[LitList](n=3)  // pure
+  %4 = i64 3  // pure
+  %5 = builtin Println(%4)  // effect
+  %6 = i64 0  // pure
+  %7 = %0  // pure
+  %8 = builtin Println(%0)  // effect
+  %9 = i64 2  // pure
+  %10 = %2  // pure
+  %11 = builtin Println(%2)  // effect
+  %12 = %6  // pure
+  %13 = %0  // pure
+  %14 = i64 1  // pure
+  %15 = %1  // pure
+  %16 = i64 30  // pure
+  %17 = %9  // pure
+  %18 = %2  // pure
+  %19 = i64 60  // pure
+  %20 = builtin Println(%19)  // effect
+  return %20
+}

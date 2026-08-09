@@ -406,10 +406,7 @@ fn filter_items(items: Vec<Item>, names: &ImportNames) -> Result<Vec<Item>> {
             {
                 bail!("cannot import private `{}`", n.name);
             }
-            if !pubs
-                .iter()
-                .any(|it| item_name(it) == Some(n.name.as_str()))
-            {
+            if !pubs.iter().any(|it| item_name(it) == Some(n.name.as_str())) {
                 bail!("module has no public `{}`", n.name);
             }
             // Keep whole module for private callees of public APIs; visibility
@@ -426,10 +423,7 @@ fn filter_items(items: Vec<Item>, names: &ImportNames) -> Result<Vec<Item>> {
                 {
                     bail!("cannot import private `{}`", n.name);
                 }
-                if !pubs
-                    .iter()
-                    .any(|it| item_name(it) == Some(n.name.as_str()))
-                {
+                if !pubs.iter().any(|it| item_name(it) == Some(n.name.as_str())) {
                     bail!("module has no public `{}`", n.name);
                 }
             }
@@ -639,27 +633,14 @@ mod tests {
 
     #[test]
     fn import_symlink_escape_rejected() {
-        let dir = std::env::temp_dir().join(format!(
-            "lumia_load_symlink_{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("lumia_load_symlink_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        let outside = std::env::temp_dir().join(format!(
-            "lumia_load_outside_{}.lm",
-            std::process::id()
-        ));
-        fs::write(
-            &outside,
-            "module Outside\nval leak = 1\n",
-        )
-        .unwrap();
+        let outside =
+            std::env::temp_dir().join(format!("lumia_load_outside_{}.lm", std::process::id()));
+        fs::write(&outside, "module Outside\nval leak = 1\n").unwrap();
         let entry = dir.join("main.lm");
-        fs::write(
-            &entry,
-            "module Main\nimport evil.{leak}\nval main = leak\n",
-        )
-        .unwrap();
+        fs::write(&entry, "module Main\nimport evil.{leak}\nval main = leak\n").unwrap();
         #[cfg(unix)]
         {
             let evil = dir.join("evil.lm");
@@ -682,16 +663,8 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         fs::write(&dir.join("c.lm"), "module C\nval c = 1\n").unwrap();
-        fs::write(
-            &dir.join("a.lm"),
-            "module A\nimport c.{c}\nval a = c\n",
-        )
-        .unwrap();
-        fs::write(
-            &dir.join("b.lm"),
-            "module B\nimport c.{c}\nval b = c\n",
-        )
-        .unwrap();
+        fs::write(&dir.join("a.lm"), "module A\nimport c.{c}\nval a = c\n").unwrap();
+        fs::write(&dir.join("b.lm"), "module B\nimport c.{c}\nval b = c\n").unwrap();
         let entry = dir.join("main.lm");
         fs::write(
             &entry,
@@ -735,16 +708,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lumia_cycle_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        fs::write(
-            &dir.join("a.lm"),
-            "module A\nimport b.{b}\nval a = b\n",
-        )
-        .unwrap();
-        fs::write(
-            &dir.join("b.lm"),
-            "module B\nimport a.{a}\nval b = a\n",
-        )
-        .unwrap();
+        fs::write(&dir.join("a.lm"), "module A\nimport b.{b}\nval a = b\n").unwrap();
+        fs::write(&dir.join("b.lm"), "module B\nimport a.{a}\nval b = a\n").unwrap();
         let entry = dir.join("main.lm");
         fs::write(&entry, "module Main\nimport a.{a}\nval main = a\n").unwrap();
         let err = load_program(&entry).unwrap_err().to_string();
@@ -755,7 +720,11 @@ mod tests {
 
 /// Rewrite entry-module idents that are std `as` aliases (e.g. `log` → `println`)
 /// so HIR builtin lowering still matches canonical names.
-fn rewrite_builtin_alias_idents(m: &mut Module, aliases: &HashMap<String, String>, entry_file: u32) {
+fn rewrite_builtin_alias_idents(
+    m: &mut Module,
+    aliases: &HashMap<String, String>,
+    entry_file: u32,
+) {
     if aliases.is_empty() {
         return;
     }

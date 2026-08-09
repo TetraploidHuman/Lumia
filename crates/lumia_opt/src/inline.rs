@@ -90,10 +90,8 @@ fn count_ops_value(value: &Value) -> usize {
 fn calls_name(block: &Block, name: &str) -> bool {
     for op in &block.ops {
         match op {
-            Op::Let { value, .. } | Op::Effect { value, .. } => {
-                if value_calls_name(value, name) {
-                    return true;
-                }
+            Op::Let { value, .. } | Op::Effect { value, .. } if value_calls_name(value, name) => {
+                return true;
             }
             _ => {}
         }
@@ -123,10 +121,8 @@ fn has_assign_or_name(block: &Block) -> bool {
     for op in &block.ops {
         match op {
             Op::Assign { .. } => return true,
-            Op::Let { value, .. } | Op::Effect { value, .. } => {
-                if value_has_assign_or_name(value) {
-                    return true;
-                }
+            Op::Let { value, .. } | Op::Effect { value, .. } if value_has_assign_or_name(value) => {
+                return true;
             }
             _ => {}
         }
@@ -146,11 +142,7 @@ fn value_has_assign_or_name(value: &Value) -> bool {
             header,
             body,
             latch,
-        } => {
-            has_assign_or_name(header)
-                || has_assign_or_name(body)
-                || has_assign_or_name(latch)
-        }
+        } => has_assign_or_name(header) || has_assign_or_name(body) || has_assign_or_name(latch),
         Value::Lambda { body, .. } => has_assign_or_name(body),
         _ => false,
     }
@@ -176,8 +168,7 @@ fn inline_block(
                     if fun != caller {
                         if let Some(callee) = inlineable.get(fun) {
                             if args.len() == callee.params.len() {
-                                let (prelude, result) =
-                                    materialize_inline(callee, args, next);
+                                let (prelude, result) = materialize_inline(callee, args, next);
                                 out.extend(prelude);
                                 out.push(Op::Let {
                                     local,
@@ -234,11 +225,7 @@ fn inline_value(
     }
 }
 
-fn materialize_inline(
-    callee: &CoreFun,
-    args: &[Local],
-    next: &mut u32,
-) -> (Vec<Op>, Local) {
+fn materialize_inline(callee: &CoreFun, args: &[Local], next: &mut u32) -> (Vec<Op>, Local) {
     let mut body = callee.body.clone();
     let mut remap: HashMap<u32, u32> = HashMap::new();
 
@@ -342,7 +329,8 @@ mod tests {
             is_main: false,
             memo: None,
             external: None,
-        escaping: std::collections::HashSet::new(),
+            escaping: std::collections::HashSet::new(),
+            scheme_poly: false,
         }
     }
 
@@ -386,11 +374,12 @@ mod tests {
                     is_main: true,
                     memo: None,
                     external: None,
-                escaping: std::collections::HashSet::new(),
+                    escaping: std::collections::HashSet::new(),
+                    scheme_poly: false,
                 },
             ],
             hash_adts: std::collections::HashSet::new(),
-        trait_methods: std::collections::HashMap::new(),
+            trait_methods: std::collections::HashMap::new(),
         };
         inline_module(&mut module);
         let main = module.functions.iter().find(|f| f.name == "main").unwrap();
@@ -408,10 +397,7 @@ mod tests {
             matches!(
                 op,
                 Op::Let {
-                    value: Value::Binary {
-                        op: BinOp::Add,
-                        ..
-                    },
+                    value: Value::Binary { op: BinOp::Add, .. },
                     ..
                 }
             )

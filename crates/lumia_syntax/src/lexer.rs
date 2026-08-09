@@ -182,7 +182,7 @@ impl<'a> Lexer<'a> {
             b'0'..=b'9' => self.lex_number(),
             b'_' => {
                 self.pos += 1;
-                if self.peek().is_some_and(|c| is_ident_continue(c)) {
+                if self.peek().is_some_and(is_ident_continue) {
                     self.pos -= 1;
                     self.lex_ident()
                 } else {
@@ -273,14 +273,20 @@ impl<'a> Lexer<'a> {
             {
                 self.pos += 1;
             }
-            let raw: String = self.src[start..self.pos].chars().filter(|c| *c != '_').collect();
+            let raw: String = self.src[start..self.pos]
+                .chars()
+                .filter(|c| *c != '_')
+                .collect();
             match raw.parse::<f64>() {
                 Ok(n) if n.is_finite() => TokenKind::Float(n),
                 Ok(_) => TokenKind::Error(format!("float literal `{raw}` is not finite")),
                 Err(_) => TokenKind::Error(format!("invalid float literal `{raw}`")),
             }
         } else {
-            let raw: String = self.src[start..self.pos].chars().filter(|c| *c != '_').collect();
+            let raw: String = self.src[start..self.pos]
+                .chars()
+                .filter(|c| *c != '_')
+                .collect();
             match raw.parse::<i64>() {
                 Ok(n) => TokenKind::Int(n),
                 Err(_) => TokenKind::Error(format!(
@@ -511,10 +517,6 @@ mod tests {
     fn invalid_byte_is_error_not_fake_ident() {
         let mut lx = Lexer::new("$");
         let t = lx.next_token();
-        assert!(
-            matches!(t.kind, TokenKind::Error(_)),
-            "got {:?}",
-            t.kind
-        );
+        assert!(matches!(t.kind, TokenKind::Error(_)), "got {:?}", t.kind);
     }
 }

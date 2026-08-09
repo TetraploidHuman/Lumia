@@ -30,6 +30,8 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       # Cache cargo registry + dependency `target` artifacts (not workspace crates).
       - name: Cache Cargo
@@ -38,6 +40,9 @@ jobs:
           cache-on-failure: true
           # Keep static (Windows) and force-dynamic (Linux) caches distinct.
           key: ${{ matrix.os }}-${{ matrix.cargo_features }}
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
 
       # Linux: apt.llvm.org packages include shared libLLVM (GitHub tarballs do not).
       - name: Install LLVM 21 (Linux)
@@ -148,8 +153,14 @@ jobs:
           & "$root\bin\llvm-config.exe" --version
           & "$root\bin\clang.exe" --version
 
+      - name: Cargo clippy (library crates)
+        run: cargo clippy --workspace --exclude lumia --lib ${{ matrix.cargo_features }} -- -D warnings
+
       - name: Cargo test (library crates)
-        run: cargo test --workspace --exclude lumia ${{ matrix.cargo_features }}
+        run: cargo test --workspace --exclude lumia --lib ${{ matrix.cargo_features }}
+
+      - name: Cargo test (opt goldens + other integration)
+        run: cargo test -p lumia_opt --tests ${{ matrix.cargo_features }}
 
       - name: Cargo test (lumia CLI + e2e examples)
         run: cargo test -p lumia --tests ${{ matrix.cargo_features }}

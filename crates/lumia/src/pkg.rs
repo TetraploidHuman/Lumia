@@ -97,18 +97,14 @@ pub fn load_lockfile(path: &Path) -> Result<Lockfile> {
 
 fn resolve_dep_path(root: &Path, name: &str, spec: &DepSpec) -> Result<PathBuf> {
     let path = match spec {
-        DepSpec::Table {
-            path: Some(p), ..
-        } => {
+        DepSpec::Table { path: Some(p), .. } => {
             if Path::new(p).is_absolute() {
                 bail!(
                     "dependency `{name}` path must be relative to the package root (got absolute `{p}`)"
                 );
             }
             if p.split(['/', '\\']).any(|seg| seg == "..") {
-                bail!(
-                    "dependency `{name}` path must not contain `..` segments (got `{p}`)"
-                );
+                bail!("dependency `{name}` path must not contain `..` segments (got `{p}`)");
             }
             root.join(p)
         }
@@ -255,10 +251,7 @@ fn resolve_link_arg_inner(base: &Path, arg: &str, kind: LinkArgKind) -> Result<S
     if arg.starts_with('@') {
         bail!("{label} response files (@…) are not allowed: `{arg}`");
     }
-    if arg == "-Wl"
-        || arg.starts_with("-Wl,")
-        || arg == "-Xlinker"
-        || arg.starts_with("-Xlinker=")
+    if arg == "-Wl" || arg.starts_with("-Wl,") || arg == "-Xlinker" || arg.starts_with("-Xlinker=")
     {
         bail!("{label} linker-passthrough flags are not allowed: `{arg}`");
     }
@@ -271,7 +264,9 @@ fn resolve_link_arg_inner(base: &Path, arg: &str, kind: LinkArgKind) -> Result<S
     }
     if arg.starts_with("-l") || arg.starts_with("-framework") {
         // Library names only — no path separators.
-        let rest = arg.trim_start_matches("-framework").trim_start_matches("-l");
+        let rest = arg
+            .trim_start_matches("-framework")
+            .trim_start_matches("-l");
         if rest.contains('/') || rest.contains('\\') || rest.contains("..") {
             bail!("{label} library name must not contain path segments: `{arg}`");
         }
@@ -283,9 +278,7 @@ fn resolve_link_arg_inner(base: &Path, arg: &str, kind: LinkArgKind) -> Result<S
         let abs = resolve_link_path(base, arg, arg, kind)?;
         return Ok(abs.display().to_string());
     }
-    bail!(
-        "{label} entry `{arg}` not allowed (use -lNAME, -Lpath, -framework, or a .a/.o path)"
-    );
+    bail!("{label} entry `{arg}` not allowed (use -lNAME, -Lpath, -framework, or a .a/.o path)");
 }
 
 fn validate_link_path(path: &str, original: &str, kind: LinkArgKind) -> Result<()> {
@@ -317,9 +310,7 @@ fn resolve_link_path(
         return Ok(PathBuf::from(path));
     }
     let joined = base.join(path);
-    let root_canon = base
-        .canonicalize()
-        .unwrap_or_else(|_| base.to_path_buf());
+    let root_canon = base.canonicalize().unwrap_or_else(|_| base.to_path_buf());
     // Walk existing prefixes so a symlink planted on a not-yet-created leaf
     // (or intermediate) cannot escape the package root when it later appears.
     if matches!(kind, LinkArgKind::Package) {
@@ -428,9 +419,7 @@ fn read_package_version(dep_root: &Path) -> Option<String> {
     } else {
         dep_root.join("Lumia.toml")
     };
-    load_manifest(&cand)
-        .ok()
-        .map(|m| m.package.version)
+    load_manifest(&cand).ok().map(|m| m.package.version)
 }
 
 /// Verify `Lumia.lock` against the manifest: every dep is present with matching path/version.
@@ -527,10 +516,7 @@ mod tests {
 
     #[test]
     fn add_path_dep_rejects_dotdot_without_writing() {
-        let dir = std::env::temp_dir().join(format!(
-            "lumia_pkg_add_{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("lumia_pkg_add_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let manifest = dir.join("Lumia.toml");
@@ -555,10 +541,7 @@ version = "0.1.0"
 
     #[test]
     fn link_args_resolve_relative_to_package_root() {
-        let dir = std::env::temp_dir().join(format!(
-            "lumia_pkg_link_{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("lumia_pkg_link_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("lib")).unwrap();
         let manifest = dir.join("Lumia.toml");
@@ -590,9 +573,15 @@ link = ["-Llib", "-lm"]
         let err = validate_cli_link_arg(cwd, "@evil.rsp").unwrap_err();
         assert!(err.to_string().contains("@"), "{err}");
         let err = validate_cli_link_arg(cwd, "-Wl,-foo").unwrap_err();
-        assert!(err.to_string().contains("-Wl") || err.to_string().contains("passthrough"), "{err}");
+        assert!(
+            err.to_string().contains("-Wl") || err.to_string().contains("passthrough"),
+            "{err}"
+        );
         let err = validate_cli_link_arg(cwd, "-Xlinker").unwrap_err();
-        assert!(err.to_string().contains("passthrough") || err.to_string().contains("-Xlinker"), "{err}");
+        assert!(
+            err.to_string().contains("passthrough") || err.to_string().contains("-Xlinker"),
+            "{err}"
+        );
     }
 
     #[test]

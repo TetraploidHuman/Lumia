@@ -1,9 +1,20 @@
 //! Basic pretty-printer for `lumia fmt` (DESIGN: 4-space indent).
 
 use crate::{
-    Expr, ImportNames, InterpPart, Item, MatchArm, MatchCondArm, Module, Pattern, Stmt,
+    Expr,
+    ImportNames,
+    InterpPart,
+    Item,
+    MatchArm,
+    MatchCondArm,
+    Module,
+    Pattern,
+    Stmt,
     // ImportedName used via ImportNames arms
-    TypeKind, UnOp, ValItem, VariantFields,
+    TypeKind,
+    UnOp,
+    ValItem,
+    VariantFields,
 };
 
 pub fn format_module_src(m: &Module) -> String {
@@ -361,9 +372,9 @@ fn format_expr(out: &mut String, e: &Expr, indent: usize, blockish: bool) {
 
 fn format_stmt(out: &mut String, s: &Stmt, indent: usize) {
     match s {
-        Stmt::Val { name, expr, .. } => {
+        Stmt::Val { pat, expr, .. } => {
             out.push_str("val ");
-            out.push_str(name);
+            format_pat(out, pat);
             out.push_str(" = ");
             format_expr(out, expr, indent, false);
         }

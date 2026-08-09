@@ -1,0 +1,276 @@
+//! Expression inference.
+
+use super::Infer;
+use crate::types::{at, expr_span, Effect, Type, TypeError};
+use lumia_hir::Expr;
+use lumia_syntax::{BinOp, UnOp};
+
+impl Infer {
+    pub(crate) fn infer_expr(&mut self, expr: &Expr) -> Result<(Type, Effect), TypeError> {
+        let (t, e) = self.infer_expr_inner(expr)?;
+        self.type_at.push((expr_span(expr), t.clone()));
+        Ok((t, e))
+    }
+
+    pub(crate) fn infer_expr_inner(&mut self, expr: &Expr) -> Result<(Type, Effect), TypeError> {
+        match expr {
+            Expr::Int(_, _) => Ok((Type::Int, Effect::pure())),
+            Expr::Float(_, _) => Ok((Type::Float, Effect::pure())),
+            Expr::Bool(_, _) => Ok((Type::Bool, Effect::pure())),
+            Expr::String(_, _) => Ok((Type::String, Effect::pure())),
+            Expr::Char(_, _) => Ok((Type::Char, Effect::pure())),
+            Expr::Unit(_) => Ok((Type::Unit, Effect::pure())),
+            Expr::Var(name, span) => {
+                let t = self
+                    .lookup(name)
+                    .ok_or_else(|| at(*span, format!("unbound variable `{name}`")))?;
+                self.check_name_visible(name, *span)?;
+                Ok((t, Effect::pure()))
+            }
+            Expr::Let {
+                name,
+                value,
+                body,
+                mutable,
+                ..
+            } => {
+                let (vt, ve) = self.infer_expr(value)?;
+                self.push();
+                // Immutable lets generalize (HM let-poly); `var` stays monomorphic.
+                if *mutable {
+                    self.bind_mut(name.clone(), vt, true);
+                } else {
+                    let scheme = self.generalize(vt);
+                    self.bind_scheme(name.clone(), scheme, false);
+                }
+                let (bt, be) = self.infer_expr(body)?;
+                self.pop();
+                Ok((bt, self.union_eff(ve, be)))
+            }
+            Expr::Assign { name, value, span } => {
+                let expect = self
+                    .lookup(name)
+                    .ok_or_else(|| at(*span, format!("unbound `{name}` in assign")))?;
+                if !self.is_mutable(name) {
+                    return Err(at(
+                        *span,
+                        format!("cannot assign to immutable binding `{name}` (use `var`)"),
+                    ));
+                }
+                let (vt, ve) = self.infer_expr(value)?;
+                // Widen Fun effects (Pure ⊔ Io = Io) and update the binding so
+                // later calls see the lub — equality unify would reject or, with
+                // the old Pure↔Io hole, silently keep Pure.
+                let joined = self.join_types(expect, vt, *span)?;
+                self.rebind(name, joined)?;
+                Ok((Type::Unit, ve))
+            }
+            Expr::Lambda { params, body, .. } => {
+                self.push();
+                let mut pts = vec![];
+                for p in params {
+                    let tv = self.fresh();
+                    pts.push(tv.clone());
+                    self.bind(p.clone(), tv);
+                }
+                let (rt, re) = self.infer_expr(body)?;
+                self.pop();
+                Ok((Type::Fun(pts, Box::new(rt), re), Effect::pure()))
+            }
+            Expr::Call { callee, args, span } => self.infer_call(callee, args, *span),
+            Expr::BuiltinCall { name, args, span } => self.infer_builtin_call(name, args, *span),
+            Expr::Binary {
+                op,
+                left,
+                right,
+                span,
+            } => {
+                let (lt, le) = self.infer_expr(left)?;
+                let (rt, re) = self.infer_expr(right)?;
+                let eff = self.union_eff(le, re);
+                match op {
+                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => {
+                        let lt = self.prune(lt);
+                        let rt = self.prune(rt);
+                        // `instance Num for T` + same ADT: `+`/`*` via `__Num_T_{add,mul}`.
+                        if matches!(op, BinOp::Add | BinOp::Mul) {
+                            if let (Type::Adt { name: a, .. }, Type::Adt { name: b, .. }) =
+                                (&lt, &rt)
+                            {
+                                if a == b && self.num_instances.contains(a) {
+                                    self.unify_at(*span, lt.clone(), rt)?;
+                                    return Ok((self.prune(lt), eff));
+                                }
+                            }
+                        }
+                        match (&lt, &rt) {
+                            (Type::Float, Type::Float) => Ok((Type::Float, eff)),
+                            // Mixed Float/Int: codegen sitofp (polymorphic literals / Num MVP).
+                            (Type::Float, Type::Int) | (Type::Int, Type::Float) => {
+                                Ok((Type::Float, eff))
+                            }
+                            (Type::Float, Type::Var(_)) => {
+                                self.mark_num(&rt);
+                                self.unify_at(*span, rt, Type::Float)?;
+                                Ok((Type::Float, eff))
+                            }
+                            (Type::Var(_), Type::Float) => {
+                                self.mark_num(&lt);
+                                self.unify_at(*span, lt, Type::Float)?;
+                                Ok((Type::Float, eff))
+                            }
+                            // Leave open for let-poly: `{ x -> x + x }` and `{ x -> x + 1 }`.
+                            // `num_vars` blocks later unify with String/Bool/ADT.
+                            (Type::Var(_), Type::Var(_)) => {
+                                self.mark_num(&lt);
+                                self.mark_num(&rt);
+                                self.unify_at(*span, lt.clone(), rt)?;
+                                Ok((self.prune(lt), eff))
+                            }
+                            (Type::Var(_), Type::Int) | (Type::Int, Type::Var(_)) => {
+                                self.mark_num(&lt);
+                                self.mark_num(&rt);
+                                let v = match (&lt, &rt) {
+                                    (Type::Var(_), _) => lt,
+                                    _ => rt,
+                                };
+                                Ok((v, eff))
+                            }
+                            _ => {
+                                self.unify_at(*span, lt, Type::Int)?;
+                                self.unify_at(*span, rt, Type::Int)?;
+                                Ok((Type::Int, eff))
+                            }
+                        }
+                    }
+                    BinOp::Eq | BinOp::Ne => {
+                        self.unify_at(*span, lt.clone(), rt)?;
+                        Ok((Type::Bool, eff))
+                    }
+                    BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                        // DESIGN Ord: scalars always; ADT/product when `instance Ord for T`.
+                        self.unify_at(*span, lt.clone(), rt.clone())?;
+                        let t = self.prune(lt);
+                        if self.is_ord(&t) {
+                            Ok((Type::Bool, eff))
+                        } else {
+                            Err(at(
+                                *span,
+                                format!(
+                                    "`<`/`<=`/`>`/`>=` need Ord (scalars or `instance Ord for T`), got {t}"
+                                ),
+                            ))
+                        }
+                    }
+                    BinOp::And | BinOp::Or => {
+                        self.unify_at(*span, lt, Type::Bool)?;
+                        self.unify_at(*span, rt, Type::Bool)?;
+                        Ok((Type::Bool, eff))
+                    }
+                }
+            }
+            Expr::Unary { op, expr, span } => {
+                let (t, e) = self.infer_expr(expr)?;
+                match op {
+                    UnOp::Neg => {
+                        let t = self.prune(t);
+                        match t {
+                            Type::Float => Ok((Type::Float, e)),
+                            Type::Var(_) => {
+                                self.mark_num(&t);
+                                Ok((t, e))
+                            }
+                            _ => {
+                                self.unify_at(*span, t, Type::Int)?;
+                                Ok((Type::Int, e))
+                            }
+                        }
+                    }
+                    UnOp::Not => {
+                        self.unify_at(*span, t, Type::Bool)?;
+                        Ok((Type::Bool, e))
+                    }
+                }
+            }
+            Expr::If {
+                cond,
+                then_branch,
+                else_branch,
+                span,
+            } => {
+                let (ct, ce) = self.infer_expr(cond)?;
+                self.unify_at(*span, ct, Type::Bool)?;
+                let (tt, te) = self.infer_expr(then_branch)?;
+                let (et, ee) = self.infer_expr(else_branch)?;
+                let joined = self.join_types(tt, et, *span)?;
+                Ok((joined, self.union3_eff(ce, te, ee)))
+            }
+            Expr::Loop {
+                cond,
+                body,
+                step,
+                span,
+            } => {
+                let (ct, ce) = self.infer_expr(cond)?;
+                self.unify_at(*span, ct, Type::Bool)?;
+                let (_, be) = self.infer_expr(body)?;
+                let se = if let Some(s) = step {
+                    self.infer_expr(s)?.1
+                } else {
+                    Effect::pure()
+                };
+                Ok((Type::Unit, self.union3_eff(ce, be, se)))
+            }
+            Expr::Break(_) | Expr::Continue(_) => Ok((Type::Unit, Effect::pure())),
+            Expr::AdtNew {
+                adt_name,
+                variant,
+                args,
+                ..
+            } => {
+                let mut eff = Effect::pure();
+                let mut arg_tys = vec![];
+                for a in args {
+                    let (t, e) = self.infer_expr(a)?;
+                    arg_tys.push(t);
+                    eff = self.union_eff(eff, e);
+                }
+                if adt_name == "__Tuple" {
+                    return Ok((Type::Tuple(arg_tys), eff));
+                }
+                // Result[T, E]: Ok fills T (E fresh); Err fills E (T fresh).
+                let params = if adt_name == "Result" {
+                    match (variant.as_str(), arg_tys.as_slice()) {
+                        ("Ok", [t]) => vec![t.clone(), self.fresh()],
+                        ("Err", [e]) => vec![self.fresh(), e.clone()],
+                        _ if arg_tys.is_empty() => vec![self.fresh(), self.fresh()],
+                        _ => arg_tys,
+                    }
+                } else if arg_tys.is_empty() {
+                    // Unit ctors: Option[α] with fresh α.
+                    vec![self.fresh()]
+                } else {
+                    // Product / unary sum: field / payload types as params.
+                    arg_tys
+                };
+                Ok((
+                    Type::Adt {
+                        name: adt_name.clone(),
+                        params,
+                    },
+                    eff,
+                ))
+            }
+            Expr::Seq { stmts, .. } => {
+                let mut eff = Effect::pure();
+                let mut last = Type::Unit;
+                for s in stmts {
+                    let (t, e) = self.infer_expr(s)?;
+                    last = t;
+                    eff = self.union_eff(eff, e);
+                }
+                Ok((last, eff))
+            }
+        }
+    }
+}

@@ -2,17 +2,17 @@
 //! Spans are preserved for diagnostics and LSP.
 
 mod diag;
-mod pretty;
 mod lexer;
 mod parser;
+mod pretty;
 mod span;
 mod stamp;
 mod token;
 
 pub use diag::{byte_to_line_col, format_diagnostic, line_starts};
-pub use pretty::format_module_src;
 pub use lexer::Lexer;
 pub use parser::{parse_expr_str, parse_module, ParseError};
+pub use pretty::format_module_src;
 pub use span::{BytePos, Span};
 pub use stamp::stamp_module;
 pub use token::{StringPart, Token};
@@ -303,11 +303,13 @@ pub enum Pattern {
 
 #[derive(Debug, Clone)]
 pub enum Stmt {
+    /// `val x = e` or irrefutable destructure `val (a, b) = e` / `val Point { x, y } = e`.
     Val {
-        name: String,
+        pat: Pattern,
         expr: Expr,
         span: Span,
     },
+    /// `var x = e` (name binding only; destructure not allowed on `var`).
     Var {
         name: String,
         expr: Expr,
@@ -334,7 +336,7 @@ pub enum Stmt {
     Continue(Span),
 }
 
-/// `for x in …` or `for (k, v) in …` (Map pairs).
+/// `for x in …` or `for (k, v) in …` (Map pairs / List of pairs).
 #[derive(Debug, Clone, PartialEq)]
 pub enum ForBinding {
     Name(String),
@@ -372,7 +374,8 @@ impl Expr {
             | Expr::Bool(_, s)
             | Expr::String(_, s)
             | Expr::Char(_, s)
-            | Expr::Ident(_, s) => *s, Expr::Interp { span, .. }
+            | Expr::Ident(_, s) => *s,
+            Expr::Interp { span, .. }
             | Expr::Block { span, .. }
             | Expr::Lambda { span, .. }
             | Expr::Call { span, .. }

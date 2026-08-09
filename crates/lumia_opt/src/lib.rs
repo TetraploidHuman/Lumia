@@ -9,12 +9,12 @@ mod fusion;
 mod inline;
 mod memo;
 
-pub use escape::{escaping_locals, is_non_escaping, EscapePass};
+pub use escape::{escaping_locals, EscapePass};
 pub use fusion::FusionPass;
 pub use inline::InlinePass;
 pub use memo::{
     apply_memo_plan, plan_memo_tf, MemoL0Pass, MemoL1Pass, MemoTfPass, MEMO_IDX_CAP,
-    MEMO_IDX_MAX_FUNS, MEMO_IDX_TABLE_BYTES, MEMO_L2_MAX_ARGS, MEMO_L2_MAX_FUNS,
+    MEMO_IDX_MAX_FUNS, MEMO_IDX_TABLE_BYTES, MEMO_L2_MAX_ARGS, MEMO_L2_MAX_FUNS, MEMO_L2_SLOTS,
     MEMO_PROCESS_BYTE_CAP, MEMO_SLOTS_TABLE_BYTES,
 };
 
@@ -24,19 +24,11 @@ use lumia_core::{
 use memo::cse_module;
 use std::collections::{HashMap, HashSet};
 
+#[derive(Default)]
 pub struct OptOptions {
     pub release: bool,
     /// Transparent Memo `T_f` (DESIGN §7.5). Defaults to `release`.
     pub memo_tf: bool,
-}
-
-impl Default for OptOptions {
-    fn default() -> Self {
-        Self {
-            release: false,
-            memo_tf: false,
-        }
-    }
 }
 
 impl OptOptions {
@@ -51,6 +43,22 @@ impl OptOptions {
 pub trait Pass {
     fn name(&self) -> &str;
     fn run(&self, module: &mut CoreModule);
+}
+
+/// Frontend → Core → optimize (for tests and tooling).
+pub fn compile_source_to_optimized(src: &str, opts: &OptOptions) -> Result<CoreModule, String> {
+    let mut core = lumia_core::compile_source_to_core(src)?;
+    optimize(&mut core, opts);
+    Ok(core)
+}
+
+/// Read a `.lm` file and compile through optimize.
+pub fn compile_file_to_optimized(
+    path: &std::path::Path,
+    opts: &OptOptions,
+) -> Result<CoreModule, String> {
+    let src = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    compile_source_to_optimized(&src, opts)
 }
 
 /// Run the standard pipeline. Uncertain → default stable paths (§7.1.1).
@@ -217,66 +225,15 @@ fn apply_local_remap(block: &mut Block, remap: &HashMap<u32, u32>) {
 }
 
 fn remap_value_locals(value: &mut Value, remap: &HashMap<u32, u32>) {
-    let map_l = |l: &mut Local| {
-        if let Some(&r) = remap.get(&l.0) {
-            *l = Local(r);
-        }
-    };
-    match value {
-        Value::Local(l) => map_l(l),
-        Value::Binary { left, right, .. } => {
-            map_l(left);
-            map_l(right);
-        }
-        Value::Unary { operand, .. } => map_l(operand),
-        Value::Call { args, .. }
-        | Value::Builtin { args, .. }
-        | Value::AllocList { elems: args, .. }
-        | Value::AllocSet { elems: args, .. }
-        | Value::AllocMap {
-            flat_pairs: args, ..
-        }
-        | Value::AllocAdt { fields: args, .. }
-        | Value::AllocClosure {
-            captures: args, ..
-        } => {
-            for a in args {
-                map_l(a);
+    lumia_core::map_value_locals(
+        value,
+        &mut |l| {
+            if let Some(&r) = remap.get(&l.0) {
+                *l = Local(r);
             }
-        }
-        Value::IndirectCall { callee, args } => {
-            map_l(callee);
-            for a in args {
-                map_l(a);
-            }
-        }
-        Value::If {
-            cond,
-            then_block,
-            else_block,
-        } => {
-            map_l(cond);
-            apply_local_remap(then_block, remap);
-            apply_local_remap(else_block, remap);
-        }
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => {
-            apply_local_remap(header, remap);
-            apply_local_remap(body, remap);
-            apply_local_remap(latch, remap);
-        }
-        Value::Lambda { params, body } => {
-            for p in params {
-                map_l(p);
-            }
-            apply_local_remap(body, remap);
-        }
-        Value::ClosureCap { env, .. } => map_l(env),
-        _ => {}
-    }
+        },
+        &mut |b| apply_local_remap(b, remap),
+    );
 }
 
 fn strip_identity_lets(block: &mut Block, aliases: &HashMap<u32, u32>) {
@@ -474,10 +431,11 @@ mod tests {
                 is_main: false,
                 memo: None,
                 external: None,
-            escaping: std::collections::HashSet::new(),
+                escaping: std::collections::HashSet::new(),
+                scheme_poly: false,
             }],
             hash_adts: std::collections::HashSet::new(),
-        trait_methods: std::collections::HashMap::new(),
+            trait_methods: std::collections::HashMap::new(),
         };
         CopyElimPass.run(&mut module);
         let f = &module.functions[0];
@@ -524,10 +482,11 @@ mod tests {
                 is_main: false,
                 memo: None,
                 external: None,
-            escaping: std::collections::HashSet::new(),
+                escaping: std::collections::HashSet::new(),
+                scheme_poly: false,
             }],
             hash_adts: std::collections::HashSet::new(),
-        trait_methods: std::collections::HashMap::new(),
+            trait_methods: std::collections::HashMap::new(),
         };
         EscapePass.run(&mut module);
         ReprSelect.run(&mut module);
@@ -574,9 +533,10 @@ mod tests {
                 memo: None,
                 external: None,
                 escaping: std::collections::HashSet::new(),
+                scheme_poly: false,
             }],
             hash_adts: std::collections::HashSet::new(),
-        trait_methods: std::collections::HashMap::new(),
+            trait_methods: std::collections::HashMap::new(),
         };
         EscapePass.run(&mut module);
         ReprSelect.run(&mut module);
@@ -604,13 +564,10 @@ val main = {
         let ast = parse_module(src).unwrap();
         let hir = lower_module(&ast).expect("lower");
         let typed = infer_module(&hir).expect("infer");
-        let mut core = lumia_core::lower_hir(&typed.module, &typed.fun_types);
+        let mut core =
+            lumia_core::lower_hir_with_schemes(&typed.module, &typed.fun_types, &typed.fun_schemes);
         optimize(&mut core, &OptOptions::default());
-        let main = core
-            .functions
-            .iter()
-            .find(|f| f.is_main)
-            .expect("main");
+        let main = core.functions.iter().find(|f| f.is_main).expect("main");
         let alloc = main.body.ops.iter().find_map(|op| match op {
             Op::Let {
                 value: Value::AllocList { elems, repr },
@@ -652,10 +609,11 @@ val main = {
                 is_main: false,
                 memo: None,
                 external: None,
-            escaping: std::collections::HashSet::new(),
+                escaping: std::collections::HashSet::new(),
+                scheme_poly: false,
             }],
             hash_adts: std::collections::HashSet::new(),
-        trait_methods: std::collections::HashMap::new(),
+            trait_methods: std::collections::HashMap::new(),
         };
         EscapePass.run(&mut module);
         ReprSelect.run(&mut module);

@@ -1,0 +1,21 @@
+module PolyTopDbl
+
+fun dbl(x) effect.io=false memo=None {
+  %1 = %0 + %0  // pure
+  return %1
+}
+
+fun dbl$Float(x) effect.io=false memo=None {
+  %1 = %0 + %0  // pure
+  return %1
+}
+
+fun main() effect.io=true memo=None {
+  %0 = i64 1  // pure
+  %1 = call dbl(%0)  // pure
+  %2 = builtin Println(%1)  // effect
+  %3 = f64 1.5  // pure
+  %4 = call dbl$Float(%3)  // pure
+  %5 = builtin Println(%4)  // effect
+  return %5
+}

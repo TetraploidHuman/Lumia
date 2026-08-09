@@ -19,10 +19,7 @@ pub fn escaping_locals(fun: &CoreFun) -> HashSet<Local> {
     escaping_locals_with(fun, &HashMap::new())
 }
 
-fn escaping_locals_with(
-    fun: &CoreFun,
-    summaries: &HashMap<String, ParamEscape>,
-) -> HashSet<Local> {
+fn escaping_locals_with(fun: &CoreFun, summaries: &HashMap<String, ParamEscape>) -> HashSet<Local> {
     let mut escaping: HashSet<Local> = HashSet::new();
     seed_escaping(&fun.body, &mut escaping, summaries);
     let mut changed = true;
@@ -61,8 +58,8 @@ fn compute_param_escape_summaries(module: &CoreModule) -> HashMap<String, ParamE
             summaries.insert(f.name.clone(), vec![true; f.params.len().max(1)]);
         }
     }
+    // Gauss–Seidel fixed-point: update in place (no full-table clone each round).
     for _ in 0..32 {
-        let mut next = summaries.clone();
         let mut changed = false;
         for f in &module.functions {
             if f.external.is_some() {
@@ -75,10 +72,9 @@ fn compute_param_escape_summaries(module: &CoreModule) -> HashMap<String, ParamE
             }
             if summaries.get(&f.name).map(|old| old != &pe).unwrap_or(true) {
                 changed = true;
+                summaries.insert(f.name.clone(), pe);
             }
-            next.insert(f.name.clone(), pe);
         }
-        summaries = next;
         if !changed {
             break;
         }
@@ -276,9 +272,7 @@ fn mark_inputs_escaping(value: &Value, escaping: &mut HashSet<Local>) -> bool {
             flat_pairs: args, ..
         }
         | Value::AllocAdt { fields: args, .. }
-        | Value::AllocClosure {
-            captures: args, ..
-        } => {
+        | Value::AllocClosure { captures: args, .. } => {
             for a in args {
                 mark(*a);
             }
@@ -306,11 +300,6 @@ fn mark_inputs_escaping(value: &Value, escaping: &mut HashSet<Local>) -> bool {
     changed
 }
 
-/// True when `local` is not in the escaping set (definitely local).
-pub fn is_non_escaping(escaping: &HashSet<Local>, local: Local) -> bool {
-    !escaping.contains(&local)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,6 +320,7 @@ mod tests {
             memo: None,
             external: None,
             escaping: std::collections::HashSet::new(),
+            scheme_poly: false,
         }
     }
 
@@ -424,6 +414,7 @@ mod tests {
             memo: None,
             external: None,
             escaping: HashSet::new(),
+            scheme_poly: false,
         };
         let main_fun = CoreFun {
             name: "main".into(),
@@ -463,6 +454,7 @@ mod tests {
             memo: None,
             external: None,
             escaping: HashSet::new(),
+            scheme_poly: false,
         };
         let mut module = CoreModule {
             name: "M".into(),

@@ -102,11 +102,7 @@ fn render_module(src: &str, module: &Module, path: &Path) -> String {
                                 out.push_str(&format!("- `{}`({holes})\n", v.name));
                             }
                             VariantFields::Named(fields) => {
-                                out.push_str(&format!(
-                                    "- `{}`({})\n",
-                                    v.name,
-                                    fields.join(", ")
-                                ));
+                                out.push_str(&format!("- `{}`({})\n", v.name, fields.join(", ")));
                             }
                         }
                     }

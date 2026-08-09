@@ -4,11 +4,11 @@ mod lsp;
 mod pkg;
 mod vis;
 
+use crate::load::{load_program, LoadedProgram};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use crate::load::{load_program, LoadedProgram};
 use lumia_codegen::{compile_module, find_runtime_lib_prefer, CodegenOptions};
-use lumia_core::{format_module, lower_hir};
+use lumia_core::{format_module, lower_hir_with_schemes};
 use lumia_hir::lower_module;
 use lumia_opt::{optimize, OptOptions};
 use lumia_syntax::{format_diagnostic, parse_module, stamp_module, Span};
@@ -248,9 +248,8 @@ fn check_file(
     trust_foreign_pure: bool,
 ) -> Result<(lumia_ty::TypedModule, LoadedProgram)> {
     let loaded = load_program(file)?;
-    let hir = lower_module(&loaded.module).map_err(|e| {
-        diag_err(&loaded, e.span, "lower", &e.message)
-    })?;
+    let hir =
+        lower_module(&loaded.module).map_err(|e| diag_err(&loaded, e.span, "lower", &e.message))?;
     let opts = InferOptions {
         trust_foreign_pure: trust_foreign_pure || loaded.trust_foreign_pure,
     };
@@ -275,7 +274,7 @@ fn build_file(
     let (mut typed, loaded) = check_file(file, auto_parallel, trust_foreign_pure)?;
     annotate_assert_messages(&mut typed.module, &loaded);
     let option_tags = option_ctor_tags(&typed.module.adts);
-    let mut core = lower_hir(&typed.module, &typed.fun_types);
+    let mut core = lower_hir_with_schemes(&typed.module, &typed.fun_types, &typed.fun_schemes);
     optimize(
         &mut core,
         &OptOptions {
@@ -432,29 +431,15 @@ fn workspace_target_dir() -> PathBuf {
 }
 
 fn ensure_runtime_built(release: bool) -> Result<()> {
-    // Skip when the profile artifact already exists so parallel e2e tests do not
-    // stampede `cargo build` (file-lock races / flaky failures on Windows).
-    let target_dir = workspace_target_dir();
-    let profile = if release { "release" } else { "debug" };
-    let already = [
-        target_dir.join(profile).join("liblumia_rt.a"),
-        target_dir.join(profile).join("lumia_rt.lib"),
-        target_dir.join(profile).join("lumia_rt.dll.lib"),
-    ]
-    .iter()
-    .any(|p| p.exists());
-    if already {
-        return Ok(());
-    }
-
+    // Always invoke cargo: it is a no-op when up to date, and its file lock
+    // serializes parallel e2e builds. Skipping on "artifact exists" left a stale
+    // `liblumia_rt.a` after new C ABI symbols were added.
     let mut cmd = Command::new("cargo");
     cmd.arg("build").arg("-p").arg("lumia_rt");
     if release {
         cmd.arg("--release");
     }
-    let status = cmd
-        .status()
-        .context("spawn cargo build -p lumia_rt")?;
+    let status = cmd.status().context("spawn cargo build -p lumia_rt")?;
     if !status.success() {
         anyhow::bail!("failed to build lumia_rt");
     }

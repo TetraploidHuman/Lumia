@@ -235,13 +235,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "lumia_abi"
+version = "0.1.0"
+
+[[package]]
 name = "lumia_codegen"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "inkwell",
+ "lumia_abi",
  "lumia_core",
  "lumia_hir",
+ "lumia_opt",
  "lumia_syntax",
  "lumia_ty",
  "thiserror",
@@ -261,12 +267,14 @@ name = "lumia_hir"
 version = "0.1.0"
 dependencies = [
  "lumia_syntax",
+ "thiserror",
 ]
 
 [[package]]
 name = "lumia_opt"
 version = "0.1.0"
 dependencies = [
+ "lumia_abi",
  "lumia_core",
  "lumia_hir",
  "lumia_syntax",
@@ -276,6 +284,9 @@ dependencies = [
 [[package]]
 name = "lumia_rt"
 version = "0.1.0"
+dependencies = [
+ "lumia_abi",
+]
 
 [[package]]
 name = "lumia_syntax"
