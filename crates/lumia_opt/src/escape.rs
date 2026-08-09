@@ -139,6 +139,11 @@ fn seed_value(
                 for a in args {
                     escaping.insert(*a);
                 }
+            } else if matches!(*name, Builtin::Show) {
+                // `lumia_show` requires a heap payload; Lit* stack objects print as ints.
+                for a in args {
+                    escaping.insert(*a);
+                }
             } else if matches!(*name, Builtin::ListGet | Builtin::Contains) {
                 // Collection is not retained, but Map/Set *keys* must be heap
                 // objects: `lumia_eq` rejects non-heap payloads (`is_heap_payload`).
@@ -173,6 +178,8 @@ fn seed_value(
 fn builtin_may_capture(b: Builtin) -> bool {
     // Conservative: anything that builds / mutates heap collections or does I/O
     // with a value may retain it. Pure projections (len/get/tag) do not.
+    // `Show` is handled in `seed_escaping`: it does not retain after return, but
+    // the operand must be a heap object for `lumia_show`.
     !matches!(
         b,
         Builtin::ListLen
