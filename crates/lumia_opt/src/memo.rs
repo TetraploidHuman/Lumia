@@ -427,19 +427,27 @@ fn const_fold_block(block: &mut Block) {
                             }
                         }
                         (Builtin::Contains, [col, key]) => {
+                            // Only fold when every key/elem is a known Int constant.
+                            // A non-constant key that happens to equal `k` at runtime
+                            // must not be folded to `false` (false negative).
                             if let Some(&k) = known_int.get(&key.0) {
                                 if let Some(pairs) = known_map.get(&col.0) {
-                                    let found = pairs.chunks_exact(2).any(|kv| {
-                                        known_int.get(&kv[0].0).copied() == Some(k)
-                                    });
-                                    *value = Value::Bool(found);
-                                    known_int.insert(local.0, if found { 1 } else { 0 });
+                                    let keys: Vec<_> = pairs.chunks_exact(2).map(|kv| kv[0]).collect();
+                                    if keys.iter().all(|kk| known_int.contains_key(&kk.0)) {
+                                        let found = keys.iter().any(|kk| {
+                                            known_int.get(&kk.0).copied() == Some(k)
+                                        });
+                                        *value = Value::Bool(found);
+                                        known_int.insert(local.0, if found { 1 } else { 0 });
+                                    }
                                 } else if let Some(elems) = known_set.get(&col.0) {
-                                    let found = elems
-                                        .iter()
-                                        .any(|e| known_int.get(&e.0).copied() == Some(k));
-                                    *value = Value::Bool(found);
-                                    known_int.insert(local.0, if found { 1 } else { 0 });
+                                    if elems.iter().all(|e| known_int.contains_key(&e.0)) {
+                                        let found = elems
+                                            .iter()
+                                            .any(|e| known_int.get(&e.0).copied() == Some(k));
+                                        *value = Value::Bool(found);
+                                        known_int.insert(local.0, if found { 1 } else { 0 });
+                                    }
                                 }
                             }
                         }
@@ -1331,6 +1339,68 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn memo_l0_contains_skips_nonconst_keys() {
+        // mapOf(nonconst_key to 2).contains(1) must not fold to false.
+        use lumia_core::MapRepr;
+        let mut module = CoreModule {
+            name: "C".into(),
+            functions: vec![bare_fun(
+                "f",
+                vec![Local(0)],
+                Block {
+                    params: vec![],
+                    ops: vec![
+                        Op::Let {
+                            local: Local(1),
+                            value: Value::Int(2),
+                            pure_region: true,
+                        },
+                        Op::Let {
+                            local: Local(2),
+                            value: Value::AllocMap {
+                                flat_pairs: vec![Local(0), Local(1)],
+                                repr: MapRepr::HashOrdered,
+                            },
+                            pure_region: true,
+                        },
+                        Op::Let {
+                            local: Local(3),
+                            value: Value::Int(1),
+                            pure_region: true,
+                        },
+                        Op::Let {
+                            local: Local(4),
+                            value: Value::Builtin {
+                                name: Builtin::Contains,
+                                args: vec![Local(2), Local(3)],
+                            },
+                            pure_region: true,
+                        },
+                    ],
+                    result: Some(Local(4)),
+                },
+            )],
+            hash_adts: std::collections::HashSet::new(),
+            trait_methods: std::collections::HashMap::new(),
+        };
+        MemoL0Pass.run(&mut module);
+        assert!(
+            matches!(
+                &module.functions[0].body.ops[3],
+                Op::Let {
+                    value: Value::Builtin {
+                        name: Builtin::Contains,
+                        ..
+                    },
+                    ..
+                }
+            ),
+            "non-constant map key must not PE-fold contains, got {:?}",
+            module.functions[0].body.ops[3]
+        );
     }
 
     #[test]

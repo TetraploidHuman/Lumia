@@ -81,8 +81,13 @@ thread_local! {
 static HEAP_LIMIT: Mutex<usize> = Mutex::new(256 * 1024);
 
 fn header_layout(payload: usize) -> Layout {
-    let size = std::mem::size_of::<ObjectHeader>() + payload;
-    Layout::from_size_align(size, 8).unwrap()
+    let header = std::mem::size_of::<ObjectHeader>();
+    let Some(size) = header.checked_add(payload) else {
+        trap_abort("lumia: allocation size overflow");
+    };
+    Layout::from_size_align(size, 8).unwrap_or_else(|_| {
+        trap_abort("lumia: invalid allocation layout");
+    })
 }
 
 fn payload_ptr(header: *mut ObjectHeader) -> *mut u8 {
@@ -361,7 +366,7 @@ pub extern "C" fn lumia_read_stdin() -> *mut u8 {
         let n = match stdin.read(&mut chunk) {
             Ok(0) => break,
             Ok(n) => n,
-            Err(_) => break,
+            Err(e) => trap_abort(&format!("lumia: stdin read error: {e}")),
         };
         if buf.len().saturating_add(n) > MAX_STDIN_BYTES {
             trap_abort(&format!(
