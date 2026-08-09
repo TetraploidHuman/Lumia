@@ -1,0 +1,38 @@
+module PolyOptionAndThen
+
+import std.io.{println}
+
+type Option {
+    Some(value)
+    None
+}
+
+val optAndThen = { opt, f ->
+    opt match {
+        None -> None
+        Some(x) -> f(x)
+    }
+}
+
+val half = { n ->
+    if n % 2 == 0 {
+        Some(n / 2)
+    } else {
+        None
+    }
+}
+
+val main = {
+    optAndThen(Some(10), half) match {
+        Some(n) -> println(n)
+        None -> println(-1)
+    }
+    optAndThen(Some(7), half) match {
+        Some(n) -> println(n)
+        None -> println(-1)
+    }
+    optAndThen(None, half) match {
+        Some(n) -> println(n)
+        None -> println(-2)
+    }
+}

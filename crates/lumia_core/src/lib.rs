@@ -375,10 +375,14 @@ enum MonoKind {
     String,
     Char,
     List(Box<MonoKind>),
+    Map(Box<MonoKind>, Box<MonoKind>),
+    Set(Box<MonoKind>),
     Adt {
         name: String,
         params: Vec<MonoKind>,
     },
+    /// Named FunRef HOF argument (specialized + directized inside the clone).
+    FunRef(String),
 }
 
 impl MonoKind {
@@ -390,6 +394,8 @@ impl MonoKind {
             MonoKind::String => "String".into(),
             MonoKind::Char => "Char".into(),
             MonoKind::List(e) => format!("List_{}", e.encode()),
+            MonoKind::Map(k, v) => format!("Map_{}_{}", k.encode(), v.encode()),
+            MonoKind::Set(e) => format!("Set_{}", e.encode()),
             MonoKind::Adt { name, params } => {
                 if params.is_empty() {
                     name.clone()
@@ -405,6 +411,14 @@ impl MonoKind {
                     )
                 }
             }
+            MonoKind::FunRef(n) => {
+                // Sanitize so `$` / path separators do not break the clone name.
+                let safe: String = n
+                    .chars()
+                    .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+                    .collect();
+                format!("Fn_{safe}")
+            }
         }
     }
 
@@ -416,10 +430,14 @@ impl MonoKind {
             MonoKind::String => Type::String,
             MonoKind::Char => Type::Char,
             MonoKind::List(e) => Type::List(Box::new(e.to_type())),
+            MonoKind::Map(k, v) => Type::Map(Box::new(k.to_type()), Box::new(v.to_type())),
+            MonoKind::Set(e) => Type::Set(Box::new(e.to_type())),
             MonoKind::Adt { name, params } => Type::Adt {
                 name: name.clone(),
                 params: params.iter().map(MonoKind::to_type).collect(),
             },
+            // Opaque Fun slot — clone body directizes to a named Call.
+            MonoKind::FunRef(_) => Type::Fun(vec![], Box::new(Type::Int), Effect::pure()),
         }
     }
 }
@@ -432,6 +450,11 @@ fn type_to_mono(t: &Type) -> Option<MonoKind> {
         Type::String => Some(MonoKind::String),
         Type::Char => Some(MonoKind::Char),
         Type::List(e) => type_to_mono(e).map(|k| MonoKind::List(Box::new(k))),
+        Type::Map(k, v) => Some(MonoKind::Map(
+            Box::new(type_to_mono(k)?),
+            Box::new(type_to_mono(v)?),
+        )),
+        Type::Set(e) => type_to_mono(e).map(|k| MonoKind::Set(Box::new(k))),
         Type::Adt { name, params } => {
             let mut ps = Vec::with_capacity(params.len());
             for p in params {
@@ -442,7 +465,7 @@ fn type_to_mono(t: &Type) -> Option<MonoKind> {
                 params: ps,
             })
         }
-        // Unit / Map / Set / Fun / Var: not specialized yet.
+        // Unit / Fun / Var: FunRef args use `MonoKind::FunRef` via funref map.
         _ => None,
     }
 }
@@ -452,16 +475,25 @@ fn type_to_mono(t: &Type) -> Option<MonoKind> {
 struct MonoKey(Vec<MonoKind>);
 
 impl MonoKey {
-    /// Stable suffix: `$Float` / `$Bool` / `$String` when homogeneous; else `$List_Int` / `$Option_Float_Int`.
+    /// Stable suffix: `$Float` / `$Bool` / `$String` when homogeneous; else `$List_Int` / `$Option_Float_Fn_dbl`.
     fn suffix(&self) -> String {
         let kinds = &self.0;
-        if !kinds.is_empty() && kinds.iter().all(|k| matches!(k, MonoKind::Float)) {
+        if !kinds.is_empty()
+            && kinds.iter().all(|k| matches!(k, MonoKind::Float))
+            && !kinds.iter().any(|k| matches!(k, MonoKind::FunRef(_)))
+        {
             return "$Float".into();
         }
-        if !kinds.is_empty() && kinds.iter().all(|k| matches!(k, MonoKind::Bool)) {
+        if !kinds.is_empty()
+            && kinds.iter().all(|k| matches!(k, MonoKind::Bool))
+            && !kinds.iter().any(|k| matches!(k, MonoKind::FunRef(_)))
+        {
             return "$Bool".into();
         }
-        if !kinds.is_empty() && kinds.iter().all(|k| matches!(k, MonoKind::String)) {
+        if !kinds.is_empty()
+            && kinds.iter().all(|k| matches!(k, MonoKind::String))
+            && !kinds.iter().any(|k| matches!(k, MonoKind::FunRef(_)))
+        {
             return "$String".into();
         }
         format!(
@@ -474,12 +506,31 @@ impl MonoKey {
         )
     }
 
-    fn param_tys(&self) -> Vec<Type> {
-        self.0.iter().map(MonoKind::to_type).collect()
+    fn param_tys(&self, functions: &[CoreFun]) -> Vec<Type> {
+        self.0
+            .iter()
+            .map(|k| match k {
+                MonoKind::FunRef(n) => functions
+                    .iter()
+                    .find(|f| f.name == *n)
+                    .map(|f| {
+                        Type::Fun(
+                            f.param_tys.clone(),
+                            Box::new(f.ret_ty.clone()),
+                            f.effect,
+                        )
+                    })
+                    .unwrap_or_else(|| k.to_type()),
+                other => other.to_type(),
+            })
+            .collect()
     }
 
-    /// Return type: all-same → that type; else last arg (unwrap_or / default patterns).
-    fn ret_ty(&self) -> Type {
+    /// Return type: HOF Option/Result map·andThen; else all-same / last-arg.
+    fn ret_ty(&self, functions: &[CoreFun]) -> Type {
+        if let Some(t) = self.hof_ret_ty(functions) {
+            return t;
+        }
         let kinds = &self.0;
         if kinds.is_empty() {
             return Type::Int;
@@ -487,18 +538,134 @@ impl MonoKey {
         if kinds.iter().all(|k| k == &kinds[0]) {
             return kinds[0].to_type();
         }
-        kinds.last().unwrap().to_type()
+        // Skip FunRef when taking "last data arg" (unwrap_or / defaults).
+        kinds
+            .iter()
+            .rev()
+            .find(|k| !matches!(k, MonoKind::FunRef(_)))
+            .map(MonoKind::to_type)
+            .unwrap_or(Type::Int)
     }
 
-    /// Int-only sites stay on the shared erased body.
+    /// `map` / `andThen` / `apply` shaped keys with a FunRef callback.
+    fn hof_ret_ty(&self, functions: &[CoreFun]) -> Option<Type> {
+        let (fun_name, fun_ret) = self.0.iter().find_map(|k| match k {
+            MonoKind::FunRef(n) => {
+                let f = functions.iter().find(|f| f.name == *n)?;
+                Some((n.clone(), f.ret_ty.clone()))
+            }
+            _ => None,
+        })?;
+        let _ = fun_name;
+        let first = self.0.first()?;
+        // Shared Fun bodies often keep erased `Int` / heap-marker ret; for
+        // Option/Result map, the payload kind is the best U when ret is erased.
+        let refine_u = |u: Type, payload: &Type| -> Type {
+            match (&u, payload) {
+                (Type::Int | Type::Var(_), p)
+                    if !matches!(p, Type::Int | Type::Var(_)) =>
+                {
+                    p.clone()
+                }
+                (Type::List(e), p) if matches!(e.as_ref(), Type::Int) => {
+                    if !matches!(p, Type::Int | Type::Var(_)) {
+                        p.clone()
+                    } else {
+                        u
+                    }
+                }
+                _ => u,
+            }
+        };
+        match first {
+            MonoKind::Adt { name, params } if name == "Option" => {
+                let payload = params.first().map(MonoKind::to_type).unwrap_or(Type::Int);
+                match fun_ret {
+                    // andThen: T → Option[U]
+                    Type::Adt {
+                        name,
+                        params: mut ps,
+                    } if name == "Option" => {
+                        if let Some(u) = ps.first_mut() {
+                            *u = refine_u(u.clone(), &payload);
+                        }
+                        Some(Type::Adt {
+                            name: "Option".into(),
+                            params: ps,
+                        })
+                    }
+                    // map: T → U
+                    other => Some(Type::Adt {
+                        name: "Option".into(),
+                        params: vec![refine_u(other, &payload)],
+                    }),
+                }
+            }
+            MonoKind::Adt { name, params } if name == "Result" => {
+                let payload = params.first().map(MonoKind::to_type).unwrap_or(Type::Int);
+                let e = params
+                    .get(1)
+                    .map(MonoKind::to_type)
+                    .unwrap_or(Type::Int);
+                match fun_ret {
+                    Type::Adt {
+                        name,
+                        params: mut ps,
+                    } if name == "Result" => {
+                        if let Some(u) = ps.first_mut() {
+                            *u = refine_u(u.clone(), &payload);
+                        }
+                        Some(Type::Adt {
+                            name: "Result".into(),
+                            params: ps,
+                        })
+                    }
+                    other => Some(Type::Adt {
+                        name: "Result".into(),
+                        params: vec![refine_u(other, &payload), e],
+                    }),
+                }
+            }
+            // apply(f, x) / similar: first slot is the FunRef.
+            MonoKind::FunRef(_) => Some(fun_ret),
+            _ => None,
+        }
+    }
+
+    /// Int-only data sites stay shared; FunRef or non-Int ground → clone.
     fn worth_cloning(&self) -> bool {
-        !self.0.is_empty() && !self.0.iter().all(|k| matches!(k, MonoKind::Int))
+        if self.0.is_empty() {
+            return false;
+        }
+        self.0.iter().any(|k| {
+            matches!(k, MonoKind::FunRef(_)) || !matches!(k, MonoKind::Int)
+        })
+    }
+
+    fn funref_param_binds(&self, params: &[Local]) -> HashMap<u32, String> {
+        let mut binds = HashMap::new();
+        for (i, k) in self.0.iter().enumerate() {
+            if let MonoKind::FunRef(n) = k {
+                if let Some(p) = params.get(i) {
+                    binds.insert(p.0, n.clone());
+                }
+            }
+        }
+        binds
     }
 }
 
-fn args_mono_key(args: &[Local], local_tys: &HashMap<u32, Type>) -> Option<MonoKey> {
+fn args_mono_key(
+    args: &[Local],
+    local_tys: &HashMap<u32, Type>,
+    funref_of: &HashMap<u32, String>,
+) -> Option<MonoKey> {
     let mut kinds = Vec::with_capacity(args.len());
     for a in args {
+        if let Some(name) = funref_of.get(&a.0) {
+            kinds.push(MonoKind::FunRef(name.clone()));
+            continue;
+        }
         let ty = local_tys.get(&a.0)?;
         kinds.push(type_to_mono(ty)?);
     }
@@ -506,9 +673,44 @@ fn args_mono_key(args: &[Local], local_tys: &HashMap<u32, Type>) -> Option<MonoK
 }
 
 /// Clone named / lifted funs for ground call sites (BUILD monomorphization).
-/// Multi-body: one clone per `(name, MonoKey)` — Float/Bool/String/List/ADT coexist.
-/// FunRef / HOF args are never keys (avoids `apply(toInt, 1.2)` → bogus `$Int_Float`).
+/// Multi-body: Float/Bool/String/List/Map/Set/ADT + FunRef HOF coexist.
+/// Multiple rounds so HOF clones that directize to `Call(dbl, float)` also
+/// pull in `dbl$Float` (and rewrite call sites).
 fn specialize_mono_calls(module: &mut CoreModule) {
+    let mut renames: HashMap<(String, MonoKey), String> = HashMap::new();
+    for _round in 0..8 {
+        let added = specialize_mono_round(module, &mut renames);
+        if !added {
+            break;
+        }
+    }
+    if renames.is_empty() {
+        return;
+    }
+    let fun_sigs: Vec<CoreFun> = module.functions.clone();
+    for fun in &mut module.functions {
+        let mut local_tys: HashMap<u32, Type> = HashMap::new();
+        for (i, p) in fun.params.iter().enumerate() {
+            local_tys.insert(
+                p.0,
+                fun.param_tys.get(i).cloned().unwrap_or(Type::Int),
+            );
+        }
+        rewrite_mono_block(
+            &mut fun.body,
+            &mut local_tys,
+            &renames,
+            &HashMap::new(),
+            &fun_sigs,
+        );
+    }
+}
+
+/// One scan→clone pass. Returns true if any new clone was appended.
+fn specialize_mono_round(
+    module: &mut CoreModule,
+    renames: &mut HashMap<(String, MonoKey), String>,
+) -> bool {
     let mut needed: HashSet<(String, MonoKey)> = HashSet::new();
     for fun in &module.functions {
         let mut local_tys: HashMap<u32, Type> = HashMap::new();
@@ -523,11 +725,10 @@ fn specialize_mono_calls(module: &mut CoreModule) {
             &mut local_tys,
             &module.functions,
             &mut needed,
-            &HashSet::new(),
+            &HashMap::new(),
         );
     }
 
-    let mut renames: HashMap<(String, MonoKey), String> = HashMap::new();
     let mut clones = Vec::new();
     for (name, key) in needed {
         if name.contains('$') || !key.worth_cloning() {
@@ -542,19 +743,21 @@ fn specialize_mono_calls(module: &mut CoreModule) {
         if orig.params.len() != key.0.len() {
             continue;
         }
-        let param_tys = key.param_tys();
-        // MonoKey ret is identity-shaped (all-same → recv type). Keep concrete
-        // returns (Show→String, toInt→Int, …) and refine lifted-lambda heap markers.
-        let inferred = key.ret_ty();
-        let ret_ty = mono_clone_ret_ty(orig, &inferred, &module.functions, &module.trait_methods);
-        if orig.param_tys == param_tys && orig.ret_ty == ret_ty {
-            continue;
-        }
         let new_name = format!("{name}{}", key.suffix());
-        if module.functions.iter().any(|f| f.name == new_name)
+        if renames.contains_key(&(name.clone(), key.clone()))
+            || module.functions.iter().any(|f| f.name == new_name)
             || clones.iter().any(|f: &CoreFun| f.name == new_name)
         {
             renames.insert((name, key), new_name);
+            continue;
+        }
+        let param_tys = key.param_tys(&module.functions);
+        let inferred = key.ret_ty(&module.functions);
+        let ret_ty = mono_clone_ret_ty(orig, &inferred, &module.functions, &module.trait_methods);
+        if orig.param_tys == param_tys
+            && orig.ret_ty == ret_ty
+            && key.funref_param_binds(&orig.params).is_empty()
+        {
             continue;
         }
         let mut clone = orig.clone();
@@ -562,24 +765,16 @@ fn specialize_mono_calls(module: &mut CoreModule) {
         clone.param_tys = param_tys;
         clone.ret_ty = ret_ty;
         clone.memo = None;
+        let binds = key.funref_param_binds(&clone.params);
+        if !binds.is_empty() {
+            directize_block(&mut clone.body, &binds);
+        }
         renames.insert((name, key), new_name);
         clones.push(clone);
     }
+    let added = !clones.is_empty();
     module.functions.append(&mut clones);
-
-    if renames.is_empty() {
-        return;
-    }
-    for fun in &mut module.functions {
-        let mut local_tys: HashMap<u32, Type> = HashMap::new();
-        for (i, p) in fun.params.iter().enumerate() {
-            local_tys.insert(
-                p.0,
-                fun.param_tys.get(i).cloned().unwrap_or(Type::Int),
-            );
-        }
-        rewrite_mono_block(&mut fun.body, &mut local_tys, &renames);
-    }
+    added
 }
 
 /// Ret type for a mono clone: keep Show/toInt-shaped returns; let Num poly
@@ -889,31 +1084,35 @@ fn scan_mono_block(
     local_tys: &mut HashMap<u32, Type>,
     functions: &[CoreFun],
     needed: &mut HashSet<(String, MonoKey)>,
-    parent_funrefs: &HashSet<u32>,
+    parent_funrefs: &HashMap<u32, String>,
 ) {
-    let mut funrefs = parent_funrefs.clone();
+    let mut funref_of = parent_funrefs.clone();
     for op in &block.ops {
         match op {
             Op::Let { local, value, .. } => {
-                note_mono_call(value, local_tys, functions, needed, &funrefs);
+                note_mono_call(value, local_tys, functions, needed, &funref_of);
                 let ty = mono_value_ty(value, local_tys, functions);
                 local_tys.insert(local.0, ty);
                 match value {
-                    Value::FunRef(_) => {
-                        funrefs.insert(local.0);
+                    Value::FunRef(name) => {
+                        funref_of.insert(local.0, name.clone());
                     }
-                    Value::Local(Local(src)) if funrefs.contains(src) => {
-                        funrefs.insert(local.0);
+                    Value::Local(Local(src)) => {
+                        if let Some(n) = funref_of.get(src).cloned() {
+                            funref_of.insert(local.0, n);
+                        } else {
+                            funref_of.remove(&local.0);
+                        }
                     }
                     _ => {
-                        funrefs.remove(&local.0);
+                        funref_of.remove(&local.0);
                     }
                 }
-                walk_mono_nested_scan(value, local_tys, functions, needed, &funrefs);
+                walk_mono_nested_scan(value, local_tys, functions, needed, &funref_of);
             }
             Op::Effect { value } => {
-                note_mono_call(value, local_tys, functions, needed, &funrefs);
-                walk_mono_nested_scan(value, local_tys, functions, needed, &funrefs);
+                note_mono_call(value, local_tys, functions, needed, &funref_of);
+                walk_mono_nested_scan(value, local_tys, functions, needed, &funref_of);
             }
             _ => {}
         }
@@ -925,7 +1124,7 @@ fn walk_mono_nested_scan(
     local_tys: &mut HashMap<u32, Type>,
     functions: &[CoreFun],
     needed: &mut HashSet<(String, MonoKey)>,
-    funrefs: &HashSet<u32>,
+    funref_of: &HashMap<u32, String>,
 ) {
     match value {
         Value::If {
@@ -933,17 +1132,17 @@ fn walk_mono_nested_scan(
             else_block,
             ..
         } => {
-            scan_mono_block(then_block, local_tys, functions, needed, funrefs);
-            scan_mono_block(else_block, local_tys, functions, needed, funrefs);
+            scan_mono_block(then_block, local_tys, functions, needed, funref_of);
+            scan_mono_block(else_block, local_tys, functions, needed, funref_of);
         }
         Value::Loop {
             header,
             body,
             latch,
         } => {
-            scan_mono_block(header, local_tys, functions, needed, funrefs);
-            scan_mono_block(body, local_tys, functions, needed, funrefs);
-            scan_mono_block(latch, local_tys, functions, needed, funrefs);
+            scan_mono_block(header, local_tys, functions, needed, funref_of);
+            scan_mono_block(body, local_tys, functions, needed, funref_of);
+            scan_mono_block(latch, local_tys, functions, needed, funref_of);
         }
         _ => {}
     }
@@ -954,7 +1153,7 @@ fn note_mono_call(
     local_tys: &HashMap<u32, Type>,
     functions: &[CoreFun],
     needed: &mut HashSet<(String, MonoKey)>,
-    funrefs: &HashSet<u32>,
+    funref_of: &HashMap<u32, String>,
 ) {
     let Value::Call { fun, args } = value else {
         return;
@@ -962,11 +1161,7 @@ fn note_mono_call(
     if args.is_empty() || fun.contains('$') {
         return;
     }
-    // HOF: FunRef (or alias) args are not ground data — leave on shared body.
-    if args.iter().any(|a| funrefs.contains(&a.0)) {
-        return;
-    }
-    let Some(key) = args_mono_key(args, local_tys) else {
+    let Some(key) = args_mono_key(args, local_tys, funref_of) else {
         return;
     };
     if !key.worth_cloning() {
@@ -978,8 +1173,10 @@ fn note_mono_call(
     if f.params.len() != key.0.len() {
         return;
     }
-    let param_tys = key.param_tys();
-    if f.param_tys == param_tys && f.ret_ty == key.ret_ty() {
+    let param_tys = key.param_tys(functions);
+    let ret = key.ret_ty(functions);
+    if f.param_tys == param_tys && f.ret_ty == ret && key.funref_param_binds(&f.params).is_empty()
+    {
         return;
     }
     needed.insert((fun.clone(), key));
@@ -1055,18 +1252,16 @@ fn mono_value_ty(
             Type::Map(Box::new(k), Box::new(v))
         }
         Value::Call { fun, args } => {
-            // Only trust MonoKey→ret for already-specialized callees. HOF sites
-            // (`apply(funref, float)`) must keep the generic body's ret_ty.
+            // Prefer the specialized body's ret_ty; fall back to MonoKey for `$` names.
+            if let Some(f) = functions.iter().find(|f| f.name == *fun) {
+                return f.ret_ty.clone();
+            }
             if fun.contains('$') {
-                if let Some(key) = args_mono_key(args, local_tys) {
-                    return key.ret_ty();
+                if let Some(key) = args_mono_key(args, local_tys, &HashMap::new()) {
+                    return key.ret_ty(functions);
                 }
             }
-            functions
-                .iter()
-                .find(|f| f.name == *fun)
-                .map(|f| f.ret_ty.clone())
-                .unwrap_or(Type::Int)
+            Type::Int
         }
         Value::Builtin { name, args } => match name {
             Builtin::ListGet => args
@@ -1099,7 +1294,7 @@ fn mono_value_ty(
                 .first()
                 .and_then(|a| local_tys.get(&a.0))
                 .and_then(|t| match t {
-                    Type::Adt { params, .. } if params.len() == 1 => Some(params[0].clone()),
+                    Type::Adt { params, .. } if !params.is_empty() => Some(params[0].clone()),
                     Type::Tuple(ts) if !ts.is_empty() => Some(ts[0].clone()),
                     _ => None,
                 })
@@ -1116,15 +1311,35 @@ fn rewrite_mono_block(
     block: &mut Block,
     local_tys: &mut HashMap<u32, Type>,
     renames: &HashMap<(String, MonoKey), String>,
+    parent_funrefs: &HashMap<u32, String>,
+    functions: &[CoreFun],
 ) {
+    let mut funref_of = parent_funrefs.clone();
     for op in &mut block.ops {
         match op {
             Op::Let { local, value, .. } => {
-                rewrite_mono_value(value, local_tys, renames);
-                let ty = mono_value_ty_rewrite(value, local_tys, renames);
+                rewrite_mono_value(value, local_tys, renames, &funref_of, functions);
+                let ty = mono_value_ty_rewrite(value, local_tys, renames, &funref_of, functions);
                 local_tys.insert(local.0, ty);
+                match value {
+                    Value::FunRef(name) => {
+                        funref_of.insert(local.0, name.clone());
+                    }
+                    Value::Local(Local(src)) => {
+                        if let Some(n) = funref_of.get(src).cloned() {
+                            funref_of.insert(local.0, n);
+                        } else {
+                            funref_of.remove(&local.0);
+                        }
+                    }
+                    _ => {
+                        funref_of.remove(&local.0);
+                    }
+                }
             }
-            Op::Effect { value } => rewrite_mono_value(value, local_tys, renames),
+            Op::Effect { value } => {
+                rewrite_mono_value(value, local_tys, renames, &funref_of, functions)
+            }
             _ => {}
         }
     }
@@ -1134,14 +1349,15 @@ fn rewrite_mono_value(
     value: &mut Value,
     local_tys: &mut HashMap<u32, Type>,
     renames: &HashMap<(String, MonoKey), String>,
+    funref_of: &HashMap<u32, String>,
+    functions: &[CoreFun],
 ) {
     match value {
         Value::Call { fun, args } => {
             if args.is_empty() || fun.contains('$') {
                 return;
             }
-            // Only rewrite when this exact key was requested (HOF sites omitted in scan).
-            if let Some(key) = args_mono_key(args, local_tys) {
+            if let Some(key) = args_mono_key(args, local_tys, funref_of) {
                 if let Some(new) = renames.get(&(fun.clone(), key)) {
                     *fun = new.clone();
                 }
@@ -1152,17 +1368,17 @@ fn rewrite_mono_value(
             else_block,
             ..
         } => {
-            rewrite_mono_block(then_block, local_tys, renames);
-            rewrite_mono_block(else_block, local_tys, renames);
+            rewrite_mono_block(then_block, local_tys, renames, funref_of, functions);
+            rewrite_mono_block(else_block, local_tys, renames, funref_of, functions);
         }
         Value::Loop {
             header,
             body,
             latch,
         } => {
-            rewrite_mono_block(header, local_tys, renames);
-            rewrite_mono_block(body, local_tys, renames);
-            rewrite_mono_block(latch, local_tys, renames);
+            rewrite_mono_block(header, local_tys, renames, funref_of, functions);
+            rewrite_mono_block(body, local_tys, renames, funref_of, functions);
+            rewrite_mono_block(latch, local_tys, renames, funref_of, functions);
         }
         _ => {}
     }
@@ -1172,16 +1388,23 @@ fn mono_value_ty_rewrite(
     value: &Value,
     local_tys: &HashMap<u32, Type>,
     renames: &HashMap<(String, MonoKey), String>,
+    funref_of: &HashMap<u32, String>,
+    functions: &[CoreFun],
 ) -> Type {
     match value {
         Value::Call { fun, args } => {
-            if let Some(key) = args_mono_key(args, local_tys) {
-                if fun.contains('$') || key.worth_cloning() {
-                    return key.ret_ty();
-                }
-            }
             if let Some(((_, mk), _)) = renames.iter().find(|(_, n)| *n == fun) {
-                return mk.ret_ty();
+                return mk.ret_ty(functions);
+            }
+            if let Some(key) = args_mono_key(args, local_tys, funref_of) {
+                if let Some(new) = renames.get(&(fun.clone(), key.clone())) {
+                    if let Some(((_, mk), _)) = renames.iter().find(|(_, n)| *n == new) {
+                        return mk.ret_ty(functions);
+                    }
+                }
+                if fun.contains('$') || key.worth_cloning() {
+                    return key.ret_ty(functions);
+                }
             }
             if fun.ends_with("$Float") {
                 return Type::Float;
@@ -1192,9 +1415,13 @@ fn mono_value_ty_rewrite(
             if fun.ends_with("$String") {
                 return Type::String;
             }
-            Type::Int
+            functions
+                .iter()
+                .find(|f| f.name == *fun)
+                .map(|f| f.ret_ty.clone())
+                .unwrap_or(Type::Int)
         }
-        other => mono_value_ty(other, local_tys, &[]),
+        other => mono_value_ty(other, local_tys, functions),
     }
 }
 

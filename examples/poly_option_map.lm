@@ -1,0 +1,39 @@
+module PolyOptionMap
+
+import std.io.{println}
+
+type Option {
+    Some(value)
+    None
+}
+
+/// HOF mono: FunRef callback directized inside `$Option_*_Fn_*` clones.
+/// (Bare `map` is List.map sugar — use a distinct name.)
+val optMap = { opt, f ->
+    opt match {
+        None -> None
+        Some(x) -> Some(f(x))
+    }
+}
+
+val dbl = { x -> x + x }
+val bang = { s -> s.concat("!") }
+
+val main = {
+    optMap(Some(21), dbl) match {
+        Some(n) -> println(n)
+        None -> println(0)
+    }
+    optMap(Some(1.5), dbl) match {
+        Some(n) -> println(n)
+        None -> println(0.0)
+    }
+    optMap(None, dbl) match {
+        Some(n) -> println(n)
+        None -> println(-1)
+    }
+    optMap(Some("hi"), bang) match {
+        Some(s) -> println(s)
+        None -> println("no")
+    }
+}

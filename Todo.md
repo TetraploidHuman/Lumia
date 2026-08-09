@@ -4,7 +4,7 @@
 
 ## 类型与单态化
 
-- [ ] **单态化管线**：按 call-site 实参 ground 键克隆：`$Float`/`$Bool`/`$String`/`$List_Int`/`$Option_Float`/`$Option_Int_Int`（`poly_*` / `poly_list` / `poly_option` / `poly_unwrap`）；同名多体共存；`instance Num` 已接线。Map/Set 键、scheme 驱动与 Fun 参仍待。
+- [ ] **单态化管线**：按 call-site 实参 ground 键克隆：`$Float`/`$Bool`/`$String`/`$List_*`/`$Map_*`/`$Set_*`/`$Option_*`（`poly_*` / `poly_map_id` / `poly_set_id` / `poly_unwrap`）；**FunRef HOF** 多轮克隆 + 体内直连（`poly_option_map` / `poly_option_and_then` / `poly_result_map`）；同名多体共存；`instance Num` 已接线。scheme 驱动仍待。
 - [ ] **类型类 `trait` / `instance` / `requires`**：显式 instance 可填 trait 默认方法；Show/Eq/Ord/Num 覆盖已接线；UFCS `x.show()` / `x.eq` / `x.less` 及**任意用户方法**经 `trait_methods` 表解析为 `__Trait_Type_method`（`trait_custom_method` / `trait_custom_default`）；积/和自动派生 Eq/Show；**Hash opt-in**；**多态方法**经约束 + 单态后解析（`trait_poly_show` / `trait_poly_method`）。运行时字典仍待。
 - [x] **`import … as` / `{ name as alias }`**：DESIGN §9.3；`ImportedName` + 公开项改名、原名 `priv` 副本；e2e `import_as` / `bad_import_as_original`。
 
@@ -22,7 +22,7 @@
 - [x] **自动并行**：默认对 FunRef-safe 纯标量 `List.map` / `List.fold` 选 `ListParMap` / `ListParFold`（`par_map*` / `par_fold`）；顶层-only 自由变量的 lambda 亦安全；IO/非标量/真捕获回退；`--no-parallel` 关闭。`fold` 假定结合律。
 - [ ] **逃逸分析 → 栈分配 / 多表示 List·Map·Set**：未逃逸且 ≤8 的 `listOf`/`mapOf`/`setOf` → `LitList`/`LitMap`/`LitSet`（`small_*`）；**已知纯 callee 形参摘要**不误伤（`escape_pure_len`）；**非逃逸 product → LitAdt**（`small_adt_local`）。更多表示 / 晋升仍待。
 - [ ] **部分求值 / 完整 specialization**：L0 折叠字面 `ListLen`/`ListGet`/`AdtField`（`pe_list_len_get` / `pe_adt_field`）；**Map/Set `len`/`contains`**（`pe_map_contains`）。完整 specialization 仍待。
-- [ ] **`std/` 可执行正文**：等错误处理 / Result 组合子单态更稳后再做；现为 `@exports` stub。
+- [ ] **`std/` 可执行正文**：Option/Result 组合子单态已有 e2e；可开始填 `std/` 正文（现为 `@exports` stub）。
 
 ## 工具链
 
@@ -51,3 +51,4 @@
 - **自动并行默认开**：推断后保留/回退 `ListParMap`；`--no-parallel` 关闭。
 - **多态 trait 方法**：`{ x -> x.show() }` / `{ x -> x.toInt() }` 多实例单态；缺 instance 拒绝。
 - **Opt**：Map/Set PE；逃逸 callee 摘要；LitAdt；IO SCC musttail。
+- **Mono Map/Set + HOF**：`$Map_*`/`$Set_*`；Option/Result `optMap`/`andThen`/`resultMap` FunRef 多轮单态。

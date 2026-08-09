@@ -339,6 +339,47 @@ fn e2e_poly_unwrap() {
 }
 
 #[test]
+fn e2e_poly_map_id() {
+    run_example(
+        "examples/poly_map_id.lm",
+        &["2", "true", "2", "true"],
+    );
+}
+
+#[test]
+fn e2e_poly_set_id() {
+    run_example(
+        "examples/poly_set_id.lm",
+        &["3", "true", "2", "true"],
+    );
+}
+
+#[test]
+fn e2e_poly_option_map() {
+    // FunRef HOF mono: Option map at Int / Float / String.
+    run_example(
+        "examples/poly_option_map.lm",
+        &["42", "3", "-1", "hi!"],
+    );
+}
+
+#[test]
+fn e2e_poly_option_and_then() {
+    run_example(
+        "examples/poly_option_and_then.lm",
+        &["5", "-1", "-2"],
+    );
+}
+
+#[test]
+fn e2e_poly_result_map() {
+    run_example(
+        "examples/poly_result_map.lm",
+        &["42", "3", "boom"],
+    );
+}
+
+#[test]
 fn e2e_small_list_local() {
     // Non-escaping small listOf → stack LitList; len/get still work.
     run_example("examples/small_list_local.lm", &["3", "10", "30", "60"]);

@@ -1,0 +1,32 @@
+module PolyResultMap
+
+import std.io.{println}
+
+type Result {
+    Ok(value)
+    Err(error)
+}
+
+val resultMap = { r, f ->
+    r match {
+        Ok(x) -> Ok(f(x))
+        Err(e) -> Err(e)
+    }
+}
+
+val dbl = { x -> x + x }
+
+val main = {
+    resultMap(Ok(21), dbl) match {
+        Ok(n) -> println(n)
+        Err(_) -> println(0)
+    }
+    resultMap(Ok(1.5), dbl) match {
+        Ok(n) -> println(n)
+        Err(_) -> println(0.0)
+    }
+    resultMap(Err("boom"), dbl) match {
+        Ok(n) -> println(n)
+        Err(e) -> println(e)
+    }
+}

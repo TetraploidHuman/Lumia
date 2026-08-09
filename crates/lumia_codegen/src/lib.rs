@@ -1485,11 +1485,12 @@ impl<'ctx> Codegen<'ctx> {
                         Type::Int
                     }
                 }
-                // Unary ADT/Option payload when known; else Int (println_auto / heap).
+                // ADT/Option/Result field 0 when known (Ok/Some payload = params[0]);
+                // Result[T,E] has two type params so must not require `len == 1`.
                 Builtin::AdtField => {
                     if let Some(arg0) = args.first() {
                         match self.local_tys.get(&arg0.0) {
-                            Some(Type::Adt { params, .. }) if params.len() == 1 => {
+                            Some(Type::Adt { params, .. }) if !params.is_empty() => {
                                 params[0].clone()
                             }
                             Some(Type::Tuple(ts)) if !ts.is_empty() => {
