@@ -19,7 +19,7 @@ pub(super) fn lower_call(
     args: &[lumia_syntax::Expr],
     span: Span,
 ) -> Expr {
-    if let lumia_syntax::Expr::Ident(name, _) = callee {
+    if let lumia_syntax::Expr::Ident(name, name_span) = callee {
         if name == "println" {
             return Expr::BuiltinCall {
                 name: Builtin::Println,
@@ -34,10 +34,30 @@ pub(super) fn lower_call(
                 span,
             };
         }
+        if name == "readStdin" {
+            return Expr::BuiltinCall {
+                name: Builtin::ReadStdin,
+                args: args.iter().map(|e| lower_expr(ctx, e)).collect(),
+                span,
+            };
+        }
         if name == "fold" && args.len() == 3 {
             if let Some(fused) = try_fuse_hof_fold(ctx, &args[0], &args[1], &args[2], span) {
                 return fused;
             }
+        }
+        // Free call to a top-level `val`/`foreign` (e.g. `trim(s)`, `>> trim`):
+        // prefer that binding over `Builtin::from_method`. Method calls like
+        // `s.trim()` still desugar through `lower_call_from_parts` → builtin,
+        // so `val len = { xs -> xs.len() }` stays non-recursive.
+        if ctx.is_toplevel_fun(name) {
+            // Callee Var must use the ident span — sharing the Call span makes
+            // type_at record Fun then Unit on the same range (inlay/hover noise).
+            return Expr::Call {
+                callee: Box::new(Expr::Var(name.clone(), *name_span)),
+                args: args.iter().map(|e| lower_expr(ctx, e)).collect(),
+                span,
+            };
         }
     }
     // Method call: fuse `….map(…).filter(…).fold(z, g)` on the syntax tree.
@@ -82,39 +102,6 @@ pub(super) fn lower_call(
         args.iter().map(|e| lower_expr(ctx, e)).collect(),
         span,
     )
-}
-
-/// Direct `name`/`arity` → builtin (no HIR desugar). Keep in sync with method surface.
-fn simple_method_builtin(name: &str, arity: usize) -> Option<Builtin> {
-    Some(match (name, arity) {
-        ("len", 1) => Builtin::ListLen,
-        ("get", 2) => Builtin::ListGet,
-        ("append", 2) => Builtin::ListAppend,
-        ("contains", 2) => Builtin::Contains,
-        ("set", 3) => Builtin::MapSet,
-        ("remove", 2) => Builtin::MapRemove,
-        ("insert", 2) => Builtin::SetInsert,
-        ("keys", 1) => Builtin::MapKeys,
-        ("values", 1) => Builtin::MapValues,
-        ("items", 1) => Builtin::MapItems,
-        ("slice", 2) | ("drop", 2) => Builtin::ListSlice,
-        ("take", 2) => Builtin::ListTake,
-        ("reverse", 1) => Builtin::ListReverse,
-        ("sort", 1) => Builtin::ListSort,
-        ("join", 2) => Builtin::ListJoin,
-        ("trim", 1) => Builtin::StrTrim,
-        ("split", 2) => Builtin::StrSplit,
-        ("substring", 3) => Builtin::StrSubstring,
-        ("toLower", 1) => Builtin::StrToLower,
-        ("toUpper", 1) => Builtin::StrToUpper,
-        ("startsWith", 2) => Builtin::StrStartsWith,
-        ("endsWith", 2) => Builtin::StrEndsWith,
-        ("readStdin", 0) => Builtin::ReadStdin,
-        ("concat", 2) => Builtin::ListConcat,
-        ("range", 2) => Builtin::Range,
-        ("rangeInclusive", 2) => Builtin::RangeInclusive,
-        _ => return None,
-    })
 }
 
 fn take2(args: Vec<Expr>) -> (Expr, Expr) {
@@ -243,7 +230,7 @@ pub(super) fn lower_call_from_parts(
                 };
             }
         }
-        if let Some(b) = simple_method_builtin(name, args.len()) {
+        if let Some(b) = Builtin::from_method(name, args.len()) {
             return Expr::BuiltinCall {
                 name: b,
                 args,

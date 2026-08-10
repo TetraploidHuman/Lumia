@@ -1,0 +1,152 @@
+{
+  "module": {
+    "prefix": "module",
+    "body": [
+      "module ${1:Name}",
+      "",
+      "$0"
+    ],
+    "description": "Module declaration"
+  },
+  "import": {
+    "prefix": "import",
+    "body": [
+      "import ${1:std.io}.{${2:println}}"
+    ],
+    "description": "Import selective names"
+  },
+  "import-all": {
+    "prefix": "import*",
+    "body": [
+      "import ${1:path}.*"
+    ],
+    "description": "Import all names"
+  },
+  "import-as": {
+    "prefix": "importas",
+    "body": [
+      "import ${1:path} as ${2:alias}"
+    ],
+    "description": "Import with alias"
+  },
+  "val": {
+    "prefix": "val",
+    "body": [
+      "val ${1:name} = {",
+      "    ${2:params} -> $0",
+      "}"
+    ],
+    "description": "Function / value binding"
+  },
+  "val-simple": {
+    "prefix": "vall",
+    "body": [
+      "val ${1:name} = ${2:expr}"
+    ],
+    "description": "Simple val binding"
+  },
+  "var": {
+    "prefix": "var",
+    "body": [
+      "var ${1:name} = ${2:expr}"
+    ],
+    "description": "Mutable binding"
+  },
+  "match": {
+    "prefix": "match",
+    "body": [
+      "${1:scrutinee} match {",
+      "    ${2:pat} -> ${3:expr}",
+      "    _ -> ${4:expr}",
+      "}"
+    ],
+    "description": "Match expression"
+  },
+  "for": {
+    "prefix": "for",
+    "body": [
+      "for ${1:x} in ${2:xs} {",
+      "    $0",
+      "}"
+    ],
+    "description": "For loop"
+  },
+  "if": {
+    "prefix": "if",
+    "body": [
+      "if ${1:cond} {",
+      "    $0",
+      "} else {",
+      "    ",
+      "}"
+    ],
+    "description": "If / else"
+  },
+  "type-product": {
+    "prefix": "type",
+    "body": [
+      "type ${1:Name} {",
+      "    val ${2:field}",
+      "}"
+    ],
+    "description": "Product type"
+  },
+  "type-sum": {
+    "prefix": "typesum",
+    "body": [
+      "type ${1:Name} {",
+      "    ${2:Variant}",
+      "    ${3:Other}",
+      "}"
+    ],
+    "description": "Sum type"
+  },
+  "trait": {
+    "prefix": "trait",
+    "body": [
+      "trait ${1:Name} {",
+      "    val ${2:method} = { self -> $0 }",
+      "}"
+    ],
+    "description": "Trait definition"
+  },
+  "instance": {
+    "prefix": "instance",
+    "body": [
+      "instance ${1:Trait} for ${2:Type} {",
+      "    val ${3:method} = { self -> $0 }",
+      "}"
+    ],
+    "description": "Trait instance"
+  },
+  "foreign": {
+    "prefix": "foreign",
+    "body": [
+      "foreign \"C\" ${1|pure ,|}fn ${2:name}(${3:x}: ${4:Int}) -> ${5:Int}"
+    ],
+    "description": "Foreign C function"
+  },
+  "alt": {
+    "prefix": "alt",
+    "body": [
+      "alt ${1:expr} {",
+      "    ${2:pat} -> ${3:expr}",
+      "    _ -> ${4:expr}",
+      "}"
+    ],
+    "description": "Alt expression"
+  },
+  "main": {
+    "prefix": "main",
+    "body": [
+      "module ${1:Main}",
+      "",
+      "import std.io.{println}",
+      "",
+      "val main = {",
+      "    $0",
+      "}"
+    ],
+    "description": "Hello-style main module"
+  }
+}

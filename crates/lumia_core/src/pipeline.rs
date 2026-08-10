@@ -10,35 +10,8 @@ use lumia_hir::lower_module;
 use lumia_syntax::parse_module;
 use lumia_ty::{typecheck_hir, NameVisibility, TypecheckOptions};
 
-/// Options for the test/tooling frontend (subset of CLI `check_program`).
-#[derive(Debug, Clone)]
-pub struct FrontendOptions {
-    /// Select FunRef-safe `ListParMap` / assoc `ListParFold` (default on).
-    pub auto_parallel: bool,
-    /// Honor `foreign "C" pure` as pure (default off; FFI purity unverified).
-    pub trust_foreign_pure: bool,
-}
-
-impl Default for FrontendOptions {
-    fn default() -> Self {
-        Self {
-            auto_parallel: true,
-            trust_foreign_pure: false,
-        }
-    }
-}
-
-impl FrontendOptions {
-    pub fn with_parallel(mut self, auto_parallel: bool) -> Self {
-        self.auto_parallel = auto_parallel;
-        self
-    }
-
-    pub fn with_trust_foreign_pure(mut self, trust: bool) -> Self {
-        self.trust_foreign_pure = trust;
-        self
-    }
-}
+/// Options for the test/tooling frontend — same as the shared typecheck path.
+pub type FrontendOptions = TypecheckOptions;
 
 /// Format a staged pipeline failure (`parse: …`, `lower: …`, …).
 fn stage<T, E: std::fmt::Display>(name: &str, r: Result<T, E>) -> Result<T, String> {
@@ -60,10 +33,7 @@ pub fn compile_source_to_core_with_parallel(
 ) -> Result<CoreModule, String> {
     compile_source_to_core_with_options(
         src,
-        &FrontendOptions {
-            auto_parallel,
-            ..FrontendOptions::default()
-        },
+        &FrontendOptions::default().with_parallel(auto_parallel),
     )
 }
 
@@ -76,14 +46,7 @@ pub fn compile_source_to_core_with_options(
     let hir = stage("lower", lower_module(&ast))?;
     let typed = stage(
         "typecheck",
-        typecheck_hir(
-            &hir,
-            NameVisibility::default(),
-            &TypecheckOptions {
-                auto_parallel: opts.auto_parallel,
-                trust_foreign_pure: opts.trust_foreign_pure,
-            },
-        ),
+        typecheck_hir(&hir, NameVisibility::default(), opts),
     )?;
     Ok(lower_hir_with_schemes(
         &typed.module,

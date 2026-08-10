@@ -46,16 +46,16 @@ impl<'ctx> Codegen<'ctx> {
         self.emit_frame_push(frame_name)?;
 
         for (i, p) in fun.params.iter().enumerate() {
-            let av = fv.get_nth_param(i as u32).unwrap();
+            let av = fv.get_nth_param(i as u32).context("function param")?;
             let ty = fun.param_tys.get(i).cloned().unwrap_or(Type::Int);
             self.frame.local_tys.insert(p.0, ty.clone());
             if matches!(ty, Type::Float) {
                 let bits = av.into_int_value();
-                let f = self
-                    .llvm
-                    .builder
-                    .build_bit_cast(bits, self.llvm.context.f64_type(), "arg_f64")
-                    .unwrap();
+                let f = crate::error::llvm(self.llvm.builder.build_bit_cast(
+                    bits,
+                    self.llvm.context.f64_type(),
+                    "arg_f64",
+                ))?;
                 self.frame.locals.insert(p.0, f);
             } else {
                 self.frame.locals.insert(p.0, av);
@@ -89,12 +89,12 @@ impl<'ctx> Codegen<'ctx> {
         let ret = result.unwrap_or_else(|| self.llvm.i64_ty.const_int(0, false).into());
         let ret_i = if matches!(fun.ret_ty, Type::Float) {
             match ret {
-                BasicValueEnum::FloatValue(f) => self
-                    .llvm
-                    .builder
-                    .build_bit_cast(f, self.llvm.i64_ty, "ret_f64_bits")
-                    .unwrap()
-                    .into_int_value(),
+                BasicValueEnum::FloatValue(f) => crate::error::llvm(
+                    self.llvm
+                        .builder
+                        .build_bit_cast(f, self.llvm.i64_ty, "ret_f64_bits"),
+                )?
+                .into_int_value(),
                 other => self.coerce_i64(other)?,
             }
         } else {
@@ -203,15 +203,11 @@ impl<'ctx> Codegen<'ctx> {
             .with_context(|| format!("unbound mutable `{name}`"))?;
         let bits = crate::error::llvm(self.llvm.builder.build_load(self.llvm.i64_ty, slot, name))?;
         if self.frame.float_slots.contains(name) {
-            Ok(self
-                .llvm
-                .builder
-                .build_bit_cast(
-                    bits.into_int_value(),
-                    self.llvm.context.f64_type(),
-                    "mut_f64",
-                )
-                .unwrap())
+            Ok(crate::error::llvm(self.llvm.builder.build_bit_cast(
+                bits.into_int_value(),
+                self.llvm.context.f64_type(),
+                "mut_f64",
+            ))?)
         } else {
             Ok(bits)
         }
@@ -332,12 +328,14 @@ impl<'ctx> Codegen<'ctx> {
                     let v = self.local(*value)?;
                     let ret_i = if matches!(self.frame.local_tys.get(&value.0), Some(Type::Float)) {
                         match v {
-                            BasicValueEnum::FloatValue(f) => self
-                                .llvm
-                                .builder
-                                .build_bit_cast(f, self.llvm.i64_ty, "ret_f64_bits")
-                                .unwrap()
-                                .into_int_value(),
+                            BasicValueEnum::FloatValue(f) => {
+                                crate::error::llvm(self.llvm.builder.build_bit_cast(
+                                    f,
+                                    self.llvm.i64_ty,
+                                    "ret_f64_bits",
+                                ))?
+                                .into_int_value()
+                            }
                             other => self.coerce_i64(other)?,
                         }
                     } else {
@@ -429,28 +427,25 @@ impl<'ctx> Codegen<'ctx> {
             Type::Float => Ok(self.promote_f64(self.local(local)?)?.into()),
             Type::Bool => {
                 let i = self.coerce_i64(self.local(local)?)?;
-                Ok(self
-                    .llvm
-                    .builder
-                    .build_int_truncate(i, self.llvm.context.i8_type(), "c_bool")
-                    .unwrap()
-                    .into())
+                Ok(crate::error::llvm(self.llvm.builder.build_int_truncate(
+                    i,
+                    self.llvm.context.i8_type(),
+                    "c_bool",
+                ))?
+                .into())
             }
             Type::String => {
                 let s_i = self.coerce_i64(self.local(local)?)?;
                 let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
-                let s = self
-                    .llvm
-                    .builder
-                    .build_int_to_ptr(s_i, ptr_ty, "cstr_in")
-                    .unwrap();
+                let s =
+                    crate::error::llvm(self.llvm.builder.build_int_to_ptr(s_i, ptr_ty, "cstr_in"))?;
                 let f = self.runtime_fn("lumia_string_cstr")?;
                 let call =
                     crate::error::llvm(self.llvm.builder.build_call(f, &[s.into()], "cstr"))?;
                 Ok(call
                     .try_as_basic_value()
                     .basic()
-                    .unwrap()
+                    .context("call return value")?
                     .into_pointer_value()
                     .into())
             }
@@ -480,12 +475,12 @@ impl<'ctx> Codegen<'ctx> {
                     .basic()
                     .context("foreign bool return")?
                     .into_int_value();
-                Ok(self
-                    .llvm
-                    .builder
-                    .build_int_z_extend(b, self.llvm.i64_ty, "bool_i64")
-                    .unwrap()
-                    .into())
+                Ok(crate::error::llvm(self.llvm.builder.build_int_z_extend(
+                    b,
+                    self.llvm.i64_ty,
+                    "bool_i64",
+                ))?
+                .into())
             }
             Type::String => {
                 let p = call
@@ -494,22 +489,78 @@ impl<'ctx> Codegen<'ctx> {
                     .context("foreign string return")?
                     .into_pointer_value();
                 let f = self.runtime_fn("lumia_cstr_to_string")?;
-                let call = self
-                    .llvm
-                    .builder
-                    .build_call(f, &[p.into()], "cstr_to_str")
-                    .unwrap();
+                let call = crate::error::llvm(self.llvm.builder.build_call(
+                    f,
+                    &[p.into()],
+                    "cstr_to_str",
+                ))?;
                 let ptr = call
                     .try_as_basic_value()
                     .basic()
-                    .unwrap()
+                    .context("call return value")?
                     .into_pointer_value();
-                Ok(self
-                    .llvm
-                    .builder
-                    .build_ptr_to_int(ptr, self.llvm.i64_ty, "str_ret")
-                    .unwrap()
-                    .into())
+                Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
+                    ptr,
+                    self.llvm.i64_ty,
+                    "str_ret",
+                ))?
+                .into())
+            }
+            _ => Ok(call
+                .try_as_basic_value()
+                .basic()
+                .unwrap_or_else(|| self.llvm.i64_ty.const_int(0, false).into())),
+        }
+    }
+
+    /// `lumia_rt` object ABI: String/List as heap pointers (no cstr conversion).
+    pub(crate) fn emit_runtime_abi_arg(
+        &mut self,
+        local: Local,
+        ty: &Type,
+    ) -> Result<BasicMetadataValueEnum<'ctx>> {
+        match ty {
+            Type::Float => Ok(self.promote_f64(self.local(local)?)?.into()),
+            Type::String | Type::List(_) => {
+                let s_i = self.coerce_i64(self.local(local)?)?;
+                let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
+                Ok(crate::error::llvm(
+                    self.llvm.builder.build_int_to_ptr(s_i, ptr_ty, "rt_obj"),
+                )?
+                .into())
+            }
+            _ => Ok(self.coerce_i64(self.local(local)?)?.into()),
+        }
+    }
+
+    pub(crate) fn restore_runtime_abi_ret(
+        &self,
+        fun: &str,
+        call: inkwell::values::CallSiteValue<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>> {
+        let ret = self.funs.fun_ret_tys.get(fun).cloned().unwrap_or(Type::Int);
+        match ret {
+            Type::Unit => Ok(self.llvm.i64_ty.const_int(0, false).into()),
+            Type::Float => {
+                let f = call
+                    .try_as_basic_value()
+                    .basic()
+                    .context("runtime float return")?
+                    .into_float_value();
+                Ok(f.into())
+            }
+            Type::String | Type::List(_) => {
+                let p = call
+                    .try_as_basic_value()
+                    .basic()
+                    .context("runtime object return")?
+                    .into_pointer_value();
+                Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
+                    p,
+                    self.llvm.i64_ty,
+                    "rt_obj_ret",
+                ))?
+                .into())
             }
             _ => Ok(call
                 .try_as_basic_value()

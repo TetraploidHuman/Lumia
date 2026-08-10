@@ -3,8 +3,11 @@
 use crate::load::{load_program, load_program_with_overlays, LoadedProgram, SourceFile};
 use anyhow::Result;
 use lumia_hir::lower_module;
-use lumia_syntax::{parse_module, stamp_module, Span};
-use lumia_ty::{typecheck_hir, NameVisibility, TypeError, TypecheckOptions, TypedModule};
+use lumia_syntax::{parse_module_recovering, stamp_module, Span};
+use lumia_ty::{
+    typecheck_hir, typecheck_hir_recovering, NameVisibility, TypeError, TypecheckOptions,
+    TypedModule,
+};
 use rustc_hash::FxHashMap as HashMap;
 use std::path::{Path, PathBuf};
 
@@ -47,10 +50,7 @@ pub fn check_program_with_overlays(
         .map_err(|e| OverlayCheckError::Load(format!("{e}")))?;
     let hir = lower_module(&loaded.module).map_err(|e| OverlayCheckError::Analyze {
         loaded: loaded.clone(),
-        err: TypeError::Located {
-            span: e.span,
-            message: e.message,
-        },
+        err: e.into(),
     })?;
     let opts = TypecheckOptions {
         auto_parallel,
@@ -64,19 +64,68 @@ pub fn check_program_with_overlays(
 
 /// Single-buffer typecheck (unsaved / no on-disk entry).
 pub fn check_source(text: &str, auto_parallel: bool) -> Result<TypedModule, (Span, String)> {
-    let mut m = parse_module(text).map_err(|e| (e.span, e.message))?;
+    let partial = check_source_recovering(text, auto_parallel);
+    if let Some(typed) = partial.typed {
+        if partial.diagnostics.is_empty() {
+            return Ok(typed);
+        }
+        // Recovered parse errors: treat as failure for strict callers, but keep
+        // the first diagnostic (CLI-style).
+    }
+    match partial.diagnostics.into_iter().next() {
+        Some(d) => Err(d),
+        None => Err((Span::dummy(), "analysis failed".into())),
+    }
+}
+
+/// Partial check for IDE: keep later items after a local parse error.
+#[derive(Debug, Default)]
+pub struct PartialCheck {
+    pub typed: Option<TypedModule>,
+    pub diagnostics: Vec<(Span, String)>,
+}
+
+/// Parse with recovery, then lower/typecheck whatever items survived.
+pub fn check_source_recovering(text: &str, auto_parallel: bool) -> PartialCheck {
+    let outcome = parse_module_recovering(text);
+    let mut diagnostics: Vec<(Span, String)> = outcome
+        .errors
+        .into_iter()
+        .map(|e| (e.span, format!("parse: {}", e.message)))
+        .collect();
+
+    if outcome.module.name.is_empty() && outcome.module.items.is_empty() {
+        return PartialCheck {
+            typed: None,
+            diagnostics,
+        };
+    }
+
+    let mut m = outcome.module;
     stamp_module(&mut m, 0);
-    let hir = lower_module(&m).map_err(|e| (e.span, e.message))?;
-    let typed = typecheck_hir(
-        &hir,
-        NameVisibility::default(),
-        &TypecheckOptions {
-            auto_parallel,
-            trust_foreign_pure: false,
-        },
-    )
-    .map_err(|e| (e.span().unwrap_or_default(), e.message().to_string()))?;
-    Ok(typed)
+    let hir = match lower_module(&m) {
+        Ok(h) => h,
+        Err(e) => {
+            diagnostics.push((e.span, format!("lower: {}", e.message)));
+            return PartialCheck {
+                typed: None,
+                diagnostics,
+            };
+        }
+    };
+    let opts = TypecheckOptions {
+        auto_parallel,
+        trust_foreign_pure: false,
+    };
+    let (typed, ty_errs) =
+        typecheck_hir_recovering(&hir, NameVisibility::default(), &opts);
+    for e in ty_errs {
+        diagnostics.push((
+            e.span().unwrap_or_default(),
+            e.message().to_string(),
+        ));
+    }
+    PartialCheck { typed, diagnostics }
 }
 
 /// Inject `assert` failure messages (`file:line: assert failed`) before Core lower.
@@ -217,6 +266,29 @@ mod tests {
     use lumia_hir::{Builtin, Expr, Item, Module as HirModule};
     use lumia_syntax::Span;
     use rustc_hash::{FxHashMap, FxHashSet};
+
+    #[test]
+    fn recovering_keeps_later_item_types() {
+        let src = r#"
+module Main
+import std.io.{println}
+val add = { a, b -> a + b
+val main = {
+    println(1)
+}
+"#;
+        let partial = check_source_recovering(src, true);
+        assert!(
+            !partial.diagnostics.is_empty(),
+            "expected parse diagnostic"
+        );
+        let typed = partial.typed.expect("typecheck recovered items");
+        assert!(
+            typed.fun_types.contains_key("main") || typed.fun_schemes.contains_key("main"),
+            "main should still be typed, keys={:?}",
+            typed.fun_types.keys().collect::<Vec<_>>()
+        );
+    }
 
     #[test]
     fn annotate_assert_adds_file_line_message() {

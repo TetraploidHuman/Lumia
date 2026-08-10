@@ -40,8 +40,11 @@ pub(crate) fn parse_foreign_type(name: &str) -> Result<Type, TypeError> {
         "Float" => Ok(Type::Float),
         "Unit" => Ok(Type::Unit),
         "String" => Ok(Type::String),
+        "Char" => Ok(Type::Char),
+        // Flat alias for `List[String]` (foreign param syntax is a single ident).
+        "ListString" => Ok(Type::List(Box::new(Type::String))),
         other => Err(TypeError::Message(format!(
-            "unsupported foreign type `{other}` (supported: Int, Bool, Float, Unit, String)"
+            "unsupported foreign type `{other}` (supported: Int, Bool, Float, Unit, String, Char, ListString)"
         ))),
     }
 }
@@ -52,6 +55,8 @@ pub struct InferOptions {
     /// Honor `foreign "C" pure` as [`Effect::Pure`]. Without this, `pure` is rejected
     /// (FFI purity is not verified; default foreign effect is IO).
     pub trust_foreign_pure: bool,
+    /// When set, collect per-item type errors and keep typing the rest (IDE).
+    pub recovering: bool,
 }
 
 pub fn infer_module(module: &Module) -> Result<TypedModule, TypeError> {
@@ -70,6 +75,31 @@ pub fn infer_module_with_options(
     vis: NameVisibility,
     opts: InferOptions,
 ) -> Result<TypedModule, TypeError> {
+    let (typed, errors) = infer_module_inner(module, vis, opts);
+    match errors.into_iter().next() {
+        Some(e) => Err(e),
+        None => Ok(typed.expect("typed module without errors")),
+    }
+}
+
+/// Infer with per-item recovery: returns whatever typed successfully plus all errors.
+pub fn infer_module_recovering(
+    module: &Module,
+    vis: NameVisibility,
+    opts: InferOptions,
+) -> (Option<TypedModule>, Vec<TypeError>) {
+    let mut opts = opts;
+    opts.recovering = true;
+    let (typed, errors) = infer_module_inner(module, vis, opts);
+    (typed, errors)
+}
+
+fn infer_module_inner(
+    module: &Module,
+    vis: NameVisibility,
+    opts: InferOptions,
+) -> (Option<TypedModule>, Vec<TypeError>) {
+    let mut errors = Vec::new();
     let mut inf = Infer::new(vis);
     inf.traits.ord_instances = module
         .instances
@@ -115,33 +145,54 @@ pub fn infer_module_with_options(
         match item {
             Item::Fun(f) => {
                 inf.current_file = expr_span(&f.body).file;
-                let (ty, eff) = if let Some((ptys, ret)) = &f.foreign_sig {
-                    let ps: Result<Vec<_>, _> =
-                        ptys.iter().map(|t| parse_foreign_type(t)).collect();
-                    let ps = ps?;
-                    let r = parse_foreign_type(ret)?;
-                    // Default: foreign is IO. `pure` is an honor-system claim and
-                    // requires `--trust-foreign-pure` / `package.trust_foreign_pure`.
-                    // Opts still never CSE/memo/inline externals (`lumia_opt`).
-                    let eff = if f.foreign_pure {
-                        if !opts.trust_foreign_pure {
-                            return Err(at(
-                                expr_span(&f.body),
-                                "`foreign \"C\" pure` requires `--trust-foreign-pure` \
-                                 (or `package.trust_foreign_pure = true`); FFI purity is \
-                                 not verified — omit `pure` to type the import as IO",
-                            ));
-                        }
-                        Effect::pure()
+                let inferred = (|| -> Result<(Type, Effect), TypeError> {
+                    if let Some((ptys, ret)) = &f.foreign_sig {
+                        let ps: Result<Vec<_>, _> =
+                            ptys.iter().map(|t| parse_foreign_type(t)).collect();
+                        let ps = ps?;
+                        let r = parse_foreign_type(ret)?;
+                        let eff = if f.foreign_pure {
+                            // `lumia_*` runtime symbols are part of the distribution;
+                            // other `pure` FFI still needs an explicit trust flag.
+                            let runtime_sym = f
+                                .external
+                                .as_deref()
+                                .is_some_and(|s| s.starts_with("lumia_"));
+                            if !opts.trust_foreign_pure && !runtime_sym {
+                                return Err(at(
+                                    expr_span(&f.body),
+                                    "`foreign \"C\" pure` requires `--trust-foreign-pure` \
+                                     (or `package.trust_foreign_pure = true`); FFI purity is \
+                                     not verified — omit `pure` to type the import as IO",
+                                ));
+                            }
+                            Effect::pure()
+                        } else {
+                            Effect::io()
+                        };
+                        Ok((Type::Fun(ps, Box::new(r), eff), eff))
                     } else {
-                        Effect::io()
-                    };
-                    (Type::Fun(ps, Box::new(r), eff), eff)
-                } else {
-                    inf.infer_fun(f)?
+                        inf.infer_fun(f)
+                    }
+                })();
+                let (ty, eff) = match inferred {
+                    Ok(v) => v,
+                    Err(e) => {
+                        errors.push(e);
+                        if !opts.recovering {
+                            return (None, errors);
+                        }
+                        continue;
+                    }
                 };
                 if let Some(existing) = inf.lookup(&f.name) {
-                    inf.unify(existing, ty.clone())?;
+                    if let Err(e) = inf.unify(existing, ty.clone()) {
+                        errors.push(e);
+                        if !opts.recovering {
+                            return (None, errors);
+                        }
+                        continue;
+                    }
                 }
                 let ty = inf.prune(ty);
                 // Remove the recursive placeholder before generalize; otherwise its
@@ -167,12 +218,26 @@ pub fn infer_module_with_options(
             }
             Item::Val { name, body } => {
                 inf.current_file = expr_span(body).file;
-                let (ty, eff) = inf.infer_expr(body)?;
+                let (ty, eff) = match inf.infer_expr(body) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        errors.push(e);
+                        if !opts.recovering {
+                            return (None, errors);
+                        }
+                        continue;
+                    }
+                };
                 if inf.prune_eff(eff).has_io() {
-                    return Err(at(
+                    let e = at(
                         expr_span(body),
                         format!("module-level `{name}` initializer must be pure (got IO effect)"),
-                    ));
+                    );
+                    errors.push(e);
+                    if !opts.recovering {
+                        return (None, errors);
+                    }
+                    continue;
                 }
                 let ty = inf.prune(ty);
                 let scheme = inf.generalize(ty.clone());
@@ -214,12 +279,15 @@ pub fn infer_module_with_options(
         apply_ufcs_rewrites(&mut module, &ufcs_rewrites);
     }
     apply_alt_desugars(&mut module, &alt_kinds);
-    Ok(TypedModule {
-        module,
-        fun_types: fun_types.into_iter().collect(),
-        fun_schemes: fun_schemes.into_iter().collect(),
-        main_effect,
-        type_at,
-        decls,
-    })
+    (
+        Some(TypedModule {
+            module,
+            fun_types: fun_types.into_iter().collect(),
+            fun_schemes: fun_schemes.into_iter().collect(),
+            main_effect,
+            type_at,
+            decls,
+        }),
+        errors,
+    )
 }

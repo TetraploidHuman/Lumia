@@ -1,0 +1,26 @@
+module PeListConcat
+
+fun main() effect.io=true memo=None {
+  %0 = i64 1  // pure
+  %1 = i64 2  // pure
+  %2 = alloc_list[LitList](n=2)  // pure
+  %3 = i64 3  // pure
+  %4 = alloc_list[LitList](n=1)  // pure
+  %5 = alloc_list[LitList](n=3)  // pure
+  %6 = i64 3  // pure
+  %7 = builtin Println(%6)  // effect
+  %8 = i64 0  // pure
+  %9 = %0  // pure
+  %10 = builtin Println(%0)  // effect
+  %11 = %1  // pure
+  %12 = %3  // pure
+  %13 = builtin Println(%3)  // effect
+  %14 = i64 4  // pure
+  %15 = alloc_list[LitList](n=4)  // pure
+  %16 = i64 4  // pure
+  %17 = builtin Println(%16)  // effect
+  %18 = %3  // pure
+  %19 = %14  // pure
+  %20 = builtin Println(%14)  // effect
+  return %20
+}

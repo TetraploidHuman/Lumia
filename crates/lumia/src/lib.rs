@@ -11,6 +11,6 @@ pub mod vis;
 
 pub use check::{
     annotate_assert_messages, check_program, check_program_with_overlays, check_source,
-    OverlayCheckError,
+    check_source_recovering, OverlayCheckError, PartialCheck,
 };
 pub use load::{load_program, load_program_with_overlays, LoadedProgram, SourceFile};

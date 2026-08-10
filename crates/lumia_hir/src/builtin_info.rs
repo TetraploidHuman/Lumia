@@ -262,6 +262,41 @@ impl Builtin {
         self.info().family
     }
 
+    /// Resolve a surface method / free-function name + arity to a direct
+    /// [`Builtin`] (no HOF desugar). Single table for HIR call lowering.
+    pub fn from_method(name: &str, arity: usize) -> Option<Builtin> {
+        use Builtin::*;
+        Some(match (name, arity) {
+            ("len", 1) => ListLen,
+            ("get", 2) => ListGet,
+            ("append", 2) => ListAppend,
+            ("contains", 2) => Contains,
+            ("set", 3) => MapSet,
+            ("remove", 2) => MapRemove,
+            ("insert", 2) => SetInsert,
+            ("keys", 1) => MapKeys,
+            ("values", 1) => MapValues,
+            ("items", 1) => MapItems,
+            ("slice", 2) | ("drop", 2) => ListSlice,
+            ("take", 2) => ListTake,
+            ("reverse", 1) => ListReverse,
+            ("sort", 1) => ListSort,
+            ("join", 2) => ListJoin,
+            ("trim", 1) => StrTrim,
+            ("split", 2) => StrSplit,
+            ("substring", 3) => StrSubstring,
+            ("toLower", 1) => StrToLower,
+            ("toUpper", 1) => StrToUpper,
+            ("startsWith", 2) => StrStartsWith,
+            ("endsWith", 2) => StrEndsWith,
+            ("readStdin", 0) => ReadStdin,
+            ("concat", 2) => ListConcat,
+            ("range", 2) => Range,
+            ("rangeInclusive", 2) => RangeInclusive,
+            _ => return None,
+        })
+    }
+
     /// Human-readable name for diagnostics.
     pub fn display_name(self) -> &'static str {
         use Builtin::*;
@@ -320,5 +355,13 @@ mod tests {
     #[test]
     fn list_len_runtime_symbol() {
         assert_eq!(Builtin::ListLen.info().runtime_symbol, Some("lumia_len"));
+    }
+
+    #[test]
+    fn from_method_covers_surface_aliases() {
+        assert_eq!(Builtin::from_method("len", 1), Some(Builtin::ListLen));
+        assert_eq!(Builtin::from_method("drop", 2), Some(Builtin::ListSlice));
+        assert_eq!(Builtin::from_method("slice", 2), Some(Builtin::ListSlice));
+        assert_eq!(Builtin::from_method("map", 2), None); // HOF desugar, not direct
     }
 }

@@ -1,7 +1,7 @@
 //! Value emission — control flow (if/loop)
 
 use super::super::Codegen;
-use anyhow::Result;
+use anyhow::{Context as AnyhowContext, Result};
 use inkwell::values::{BasicValueEnum, FunctionValue};
 use inkwell::IntPredicate;
 use lumia_core::Local;
@@ -16,18 +16,20 @@ impl<'ctx> Codegen<'ctx> {
     ) -> Result<BasicValueEnum<'ctx>> {
         let c = self.as_i64(self.local(*cond)?)?;
         let zero = self.llvm.i64_ty.const_int(0, false);
-        let cond_i1 = self
-            .llvm
-            .builder
-            .build_int_compare(IntPredicate::NE, c, zero, "ifcond")
-            .unwrap();
+        let cond_i1 = crate::error::llvm(self.llvm.builder.build_int_compare(
+            IntPredicate::NE,
+            c,
+            zero,
+            "ifcond",
+        ))?;
         let then_bb = self.llvm.context.append_basic_block(fv, "then");
         let else_bb = self.llvm.context.append_basic_block(fv, "else");
         let merge_bb = self.llvm.context.append_basic_block(fv, "merge");
-        self.llvm
-            .builder
-            .build_conditional_branch(cond_i1, then_bb, else_bb)
-            .unwrap();
+        crate::error::llvm(
+            self.llvm
+                .builder
+                .build_conditional_branch(cond_i1, then_bb, else_bb),
+        )?;
 
         self.llvm.builder.position_at_end(then_bb);
         let then_raw = self
@@ -42,7 +44,11 @@ impl<'ctx> Codegen<'ctx> {
         let mut then_incoming_i = None;
         let mut then_incoming_f = None;
         if !then_terminated {
-            let then_bb_end = self.llvm.builder.get_insert_block().unwrap();
+            let then_bb_end = self
+                .llvm
+                .builder
+                .get_insert_block()
+                .context("insert block")?;
             then_incoming_i = Some((self.coerce_i64(then_raw)?, then_bb_end));
             then_incoming_f = Some((self.promote_f64(then_raw)?, then_bb_end));
             crate::error::llvm(self.llvm.builder.build_unconditional_branch(merge_bb))?;
@@ -62,7 +68,11 @@ impl<'ctx> Codegen<'ctx> {
         let mut else_incoming_i = None;
         let mut else_incoming_f = None;
         if !else_terminated {
-            let else_bb_end = self.llvm.builder.get_insert_block().unwrap();
+            let else_bb_end = self
+                .llvm
+                .builder
+                .get_insert_block()
+                .context("insert block")?;
             else_incoming_i = Some((self.coerce_i64(else_raw)?, else_bb_end));
             else_incoming_f = Some((self.promote_f64(else_raw)?, else_bb_end));
             crate::error::llvm(self.llvm.builder.build_unconditional_branch(merge_bb))?;
@@ -73,11 +83,11 @@ impl<'ctx> Codegen<'ctx> {
         if float_merge {
             match (then_incoming_f, else_incoming_f) {
                 (Some((tv, tb)), Some((ev, eb))) => {
-                    let phi = self
-                        .llvm
-                        .builder
-                        .build_phi(self.llvm.context.f64_type(), "iftmpf")
-                        .unwrap();
+                    let phi = crate::error::llvm(
+                        self.llvm
+                            .builder
+                            .build_phi(self.llvm.context.f64_type(), "iftmpf"),
+                    )?;
                     phi.add_incoming(&[(&tv, tb), (&ev, eb)]);
                     Ok(phi.as_basic_value())
                 }
@@ -128,15 +138,17 @@ impl<'ctx> Codegen<'ctx> {
         {
             let c = self.coerce_i64(cond_raw)?;
             let zero = self.llvm.i64_ty.const_int(0, false);
-            let cond_i1 = self
-                .llvm
-                .builder
-                .build_int_compare(IntPredicate::NE, c, zero, "loopcond")
-                .unwrap();
-            self.llvm
-                .builder
-                .build_conditional_branch(cond_i1, body_bb, exit_bb)
-                .unwrap();
+            let cond_i1 = crate::error::llvm(self.llvm.builder.build_int_compare(
+                IntPredicate::NE,
+                c,
+                zero,
+                "loopcond",
+            ))?;
+            crate::error::llvm(
+                self.llvm
+                    .builder
+                    .build_conditional_branch(cond_i1, body_bb, exit_bb),
+            )?;
         }
 
         self.llvm.builder.position_at_end(body_bb);

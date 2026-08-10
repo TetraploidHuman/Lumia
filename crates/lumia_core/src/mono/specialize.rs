@@ -7,17 +7,47 @@ use crate::value_ty::infer_value_ty;
 use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet};
 
+/// Max clone-discovery iterations.
+///
+/// Transitive FunRef HOF chains (`optMap` → `apply` → `dbl`) typically need 2–3
+/// rounds. This cap is a safety fuse against non-termination bugs; the loop
+/// converges early when a round adds no clones.
+const MAX_MONO_CLONE_ROUNDS: usize = 8;
+
+/// Scheme-driven monomorphization:
+/// 1. **Collect clones** until fixed point (scan → clone worklist).
+/// 2. **Rewrite** call sites to mangled clones (single pass).
+/// 3. **Refresh** erased HOF return types from final bodies (single pass).
 pub(crate) fn specialize_mono_calls(module: &mut CoreModule) {
-    let mut renames: HashMap<(String, MonoKey), String> = HashMap::default();
-    for _round in 0..8 {
-        let added = specialize_mono_round(module, &mut renames);
-        if !added {
-            break;
-        }
-    }
+    let renames = collect_mono_clones_until_fixed_point(module);
     if renames.is_empty() {
         return;
     }
+    rewrite_all_mono_call_sites(module, &renames);
+    // After all clones exist, upgrade erased Int rets on HOF wrappers whose
+    // bodies now `Call(dbl$Float, …)` (directize order within a round varies).
+    refresh_erased_mono_return_types(module);
+}
+
+/// Fixed-point: scan all bodies for needed `(generic, MonoKey)` clones, append
+/// them, repeat until the worklist is empty or [`MAX_MONO_CLONE_ROUNDS`] hits.
+fn collect_mono_clones_until_fixed_point(
+    module: &mut CoreModule,
+) -> HashMap<(String, MonoKey), String> {
+    let mut renames: HashMap<(String, MonoKey), String> = HashMap::default();
+    for _round in 0..MAX_MONO_CLONE_ROUNDS {
+        if !specialize_mono_round(module, &mut renames) {
+            break;
+        }
+    }
+    renames
+}
+
+/// Rewrite every direct `Call(generic, …)` whose `(generic, key)` is in `renames`.
+fn rewrite_all_mono_call_sites(
+    module: &mut CoreModule,
+    renames: &HashMap<(String, MonoKey), String>,
+) {
     // Take bodies out first so one FunIndex can borrow the signature table immutably.
     let mut functions = std::mem::take(&mut module.functions);
     let empty = Block {
@@ -40,25 +70,16 @@ pub(crate) fn specialize_mono_calls(module: &mut CoreModule) {
                     functions[i].param_tys.get(j).cloned().unwrap_or(Type::Int),
                 );
             }
-            rewrite_mono_block(
-                &mut bodies[i],
-                &mut local_tys,
-                &renames,
-                &no_funrefs,
-                &index,
-            );
+            rewrite_mono_block(&mut bodies[i], &mut local_tys, renames, &no_funrefs, &index);
         }
     }
     for (fun, body) in functions.iter_mut().zip(bodies) {
         fun.body = body;
     }
     module.functions = functions;
-    // After all clones exist, upgrade erased Int rets on HOF wrappers whose
-    // bodies now `Call(dbl$Float, …)` (directize order within a round varies).
-    refresh_body_fixed_ret_tys(module);
 }
 
-fn refresh_body_fixed_ret_tys(module: &mut CoreModule) {
+fn refresh_erased_mono_return_types(module: &mut CoreModule) {
     // Analyze immutably first so we need not clone the whole function table.
     let upgrades: Vec<(usize, Type)> = {
         let snap = &module.functions;

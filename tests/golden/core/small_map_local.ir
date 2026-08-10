@@ -14,13 +14,13 @@ fun main() effect.io=true memo=None {
   %10 = bool true  // pure
   %11 = builtin Println(%10)  // effect
   %12 = %0  // pure
-  %13 = builtin ListGet(%6, %0)  // pure
+  %13 = alloc_adt(Option, tag=0, n=1)  // pure
   %14 = %0  // pure
   %15 = i64 -1  // pure
   %16 = call unwrap_or$Option_Int_Int(%13, %15)  // pure
   %17 = builtin Println(%16)  // effect
   %18 = %4  // pure
-  %19 = builtin ListGet(%6, %4)  // pure
+  %19 = alloc_adt(Option, tag=0, n=1)  // pure
   %20 = %0  // pure
   %21 = i64 -1  // pure
   %22 = call unwrap_or$Option_Int_Int(%19, %21)  // pure

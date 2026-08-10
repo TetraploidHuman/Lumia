@@ -83,6 +83,8 @@ golden!(golden_small_list_local, "examples/small_list_local.lm");
 golden!(golden_small_adt_local, "examples/small_adt_local.lm");
 golden!(golden_pe_list_len_get, "examples/pe_list_len_get.lm");
 golden!(golden_pe_map_contains, "examples/pe_map_contains.lm");
+golden!(golden_pe_list_concat, "examples/pe_list_concat.lm");
+golden!(golden_pe_map_get, "examples/pe_map_get.lm");
 golden!(golden_par_map, "examples/par_map.lm");
 golden!(golden_par_map_capture, "examples/par_map_capture.lm");
 golden!(golden_memo_tf, "examples/memo_tf.lm", release);

@@ -110,6 +110,15 @@ pub enum TypeError {
     },
 }
 
+impl From<lumia_syntax::LocatedError> for TypeError {
+    fn from(e: lumia_syntax::LocatedError) -> Self {
+        TypeError::Located {
+            span: e.span,
+            message: e.message,
+        }
+    }
+}
+
 impl TypeError {
     pub fn span(&self) -> Option<lumia_syntax::Span> {
         match self {

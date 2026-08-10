@@ -1,7 +1,7 @@
 //! Value emission — io builtins.
 
 use super::super::super::Codegen;
-use anyhow::Result;
+use anyhow::{Context as AnyhowContext, Result};
 use inkwell::values::BasicValueEnum;
 use inkwell::AddressSpace;
 use lumia_core::Local;
@@ -84,31 +84,33 @@ impl<'ctx> Codegen<'ctx> {
                             other => self.promote_f64(other)?,
                         };
                         let fun = self.runtime_fn("lumia_show_float")?;
-                        self.llvm
-                            .builder
-                            .build_call(fun, &[f.into()], "show_float")
-                            .unwrap()
-                            .try_as_basic_value()
-                            .basic()
-                            .unwrap()
-                            .into_pointer_value()
+                        crate::error::llvm(self.llvm.builder.build_call(
+                            fun,
+                            &[f.into()],
+                            "show_float",
+                        ))?
+                        .try_as_basic_value()
+                        .basic()
+                        .context("call return value")?
+                        .into_pointer_value()
                     }
                     Type::Bool => {
                         let i = self.coerce_i64(arg)?;
-                        let b = self
-                            .llvm
-                            .builder
-                            .build_int_truncate(i, self.llvm.context.i8_type(), "bool8")
-                            .unwrap();
+                        let b = crate::error::llvm(self.llvm.builder.build_int_truncate(
+                            i,
+                            self.llvm.context.i8_type(),
+                            "bool8",
+                        ))?;
                         let fun = self.runtime_fn("lumia_show_bool")?;
-                        self.llvm
-                            .builder
-                            .build_call(fun, &[b.into()], "show_bool")
-                            .unwrap()
-                            .try_as_basic_value()
-                            .basic()
-                            .unwrap()
-                            .into_pointer_value()
+                        crate::error::llvm(self.llvm.builder.build_call(
+                            fun,
+                            &[b.into()],
+                            "show_bool",
+                        ))?
+                        .try_as_basic_value()
+                        .basic()
+                        .context("call return value")?
+                        .into_pointer_value()
                     }
                     Type::Adt { name, params } => {
                         if let Some(ptr) = self.emit_show_override(&name, arg)? {
@@ -118,35 +120,33 @@ impl<'ctx> Codegen<'ctx> {
                         } else {
                             let i = self.coerce_i64(arg)?;
                             let fun = self.runtime_fn("lumia_show")?;
-                            self.llvm
-                                .builder
-                                .build_call(fun, &[i.into()], "show")
-                                .unwrap()
-                                .try_as_basic_value()
-                                .basic()
-                                .unwrap()
-                                .into_pointer_value()
+                            crate::error::llvm(self.llvm.builder.build_call(
+                                fun,
+                                &[i.into()],
+                                "show",
+                            ))?
+                            .try_as_basic_value()
+                            .basic()
+                            .context("call return value")?
+                            .into_pointer_value()
                         }
                     }
                     _ => {
                         let i = self.coerce_i64(arg)?;
                         let fun = self.runtime_fn("lumia_show")?;
-                        self.llvm
-                            .builder
-                            .build_call(fun, &[i.into()], "show")
-                            .unwrap()
+                        crate::error::llvm(self.llvm.builder.build_call(fun, &[i.into()], "show"))?
                             .try_as_basic_value()
                             .basic()
-                            .unwrap()
+                            .context("call return value")?
                             .into_pointer_value()
                     }
                 };
-                Ok(self
-                    .llvm
-                    .builder
-                    .build_ptr_to_int(ptr, self.llvm.i64_ty, "show_i64")
-                    .unwrap()
-                    .into())
+                Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
+                    ptr,
+                    self.llvm.i64_ty,
+                    "show_i64",
+                ))?
+                .into())
             }
             Builtin::ReadStdin => {
                 let f = self.runtime_fn("lumia_read_stdin")?;
@@ -154,14 +154,14 @@ impl<'ctx> Codegen<'ctx> {
                 let ptr = call
                     .try_as_basic_value()
                     .basic()
-                    .unwrap()
+                    .context("call return value")?
                     .into_pointer_value();
-                Ok(self
-                    .llvm
-                    .builder
-                    .build_ptr_to_int(ptr, self.llvm.i64_ty, "stdin_i64")
-                    .unwrap()
-                    .into())
+                Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
+                    ptr,
+                    self.llvm.i64_ty,
+                    "stdin_i64",
+                ))?
+                .into())
             }
             Builtin::MatchFail => {
                 let f = self.runtime_fn("lumia_match_fail")?;
@@ -174,20 +174,22 @@ impl<'ctx> Codegen<'ctx> {
                 let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
                 let (msg_ptr, msg_len) = if args.len() >= 2 {
                     let msg_i = self.coerce_i64(self.local(args[1])?)?;
-                    let msg_ptr = self
-                        .llvm
-                        .builder
-                        .build_int_to_ptr(msg_i, ptr_ty, "assert_msg")
-                        .unwrap();
+                    let msg_ptr = crate::error::llvm(self.llvm.builder.build_int_to_ptr(
+                        msg_i,
+                        ptr_ty,
+                        "assert_msg",
+                    ))?;
                     let len_f = self.runtime_fn("lumia_str_len")?;
-                    let len = self
-                        .llvm
-                        .builder
-                        .build_call(len_f, &[msg_ptr.into()], "assert_len")
-                        .unwrap()
+                    let __call1 = crate::error::llvm(self.llvm.builder.build_call(
+                        len_f,
+                        &[msg_ptr.into()],
+                        "assert_len",
+                    ))?;
+
+                    let len = __call1
                         .try_as_basic_value()
                         .basic()
-                        .unwrap();
+                        .context("call return value")?;
                     (msg_ptr, len)
                 } else {
                     (
@@ -196,10 +198,11 @@ impl<'ctx> Codegen<'ctx> {
                     )
                 };
                 let f = self.runtime_fn("lumia_assert")?;
-                self.llvm
-                    .builder
-                    .build_call(f, &[cond.into(), msg_ptr.into(), msg_len.into()], "assert")
-                    .unwrap();
+                crate::error::llvm(self.llvm.builder.build_call(
+                    f,
+                    &[cond.into(), msg_ptr.into(), msg_len.into()],
+                    "assert",
+                ))?;
                 Ok(self.llvm.i64_ty.const_int(0, false).into())
             }
             _ => unreachable!("non-io builtin in emit_io_builtin"),

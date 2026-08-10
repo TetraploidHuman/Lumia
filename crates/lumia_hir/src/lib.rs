@@ -29,6 +29,37 @@ mod tests {
     }
 
     #[test]
+    fn method_surface_lowers_to_builtin_calls() {
+        let src = r#"
+module M
+val main = {
+    listOf(1, 2).len()
+    listOf(1, 2).drop(1)
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let hir = lower_module(&ast).expect("lower");
+        let body = hir
+            .items
+            .iter()
+            .find_map(|it| match it {
+                Item::Fun(f) if f.name == "main" => Some(&f.body),
+                _ => None,
+            })
+            .expect("main");
+        let mut saw_len = false;
+        let mut saw_slice = false;
+        crate::visit::for_each_expr(body, &mut |e| {
+            if let Expr::BuiltinCall { name, .. } = e {
+                saw_len |= *name == Builtin::ListLen;
+                saw_slice |= *name == Builtin::ListSlice;
+            }
+        });
+        assert!(saw_len, "expected ListLen from .len()");
+        assert!(saw_slice, "expected ListSlice from .drop()");
+    }
+
+    #[test]
     fn exhaustiveness_rejects_missing_variant() {
         let src = r#"
 module M

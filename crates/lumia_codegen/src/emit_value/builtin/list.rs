@@ -18,25 +18,33 @@ impl<'ctx> Codegen<'ctx> {
             Builtin::ListLen => {
                 let list_i = self.coerce_i64(self.local(args[0])?)?;
                 let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
-                let list = self
-                    .llvm
-                    .builder
-                    .build_int_to_ptr(list_i, ptr_ty, "obj_ptr")
-                    .unwrap();
-                let f = self.runtime_fn(Builtin::ListLen.info().runtime_symbol.unwrap())?;
+                let list = crate::error::llvm(
+                    self.llvm
+                        .builder
+                        .build_int_to_ptr(list_i, ptr_ty, "obj_ptr"),
+                )?;
+                let f = self.runtime_fn(
+                    Builtin::ListLen
+                        .info()
+                        .runtime_symbol
+                        .context("runtime symbol")?,
+                )?;
                 let call =
                     crate::error::llvm(self.llvm.builder.build_call(f, &[list.into()], "len"))?;
-                Ok(call.try_as_basic_value().basic().unwrap())
+                Ok(call
+                    .try_as_basic_value()
+                    .basic()
+                    .context("call return value")?)
             }
             Builtin::ListGet => {
                 let list_i = self.coerce_i64(self.local(args[0])?)?;
                 let idx = self.coerce_i64(self.local(args[1])?)?;
                 let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
-                let list = self
-                    .llvm
-                    .builder
-                    .build_int_to_ptr(list_i, ptr_ty, "col_ptr")
-                    .unwrap();
+                let list = crate::error::llvm(
+                    self.llvm
+                        .builder
+                        .build_int_to_ptr(list_i, ptr_ty, "col_ptr"),
+                )?;
                 let some = self
                     .llvm
                     .i64_ty
@@ -45,246 +53,236 @@ impl<'ctx> Codegen<'ctx> {
                     .llvm
                     .i64_ty
                     .const_int(self.option_none_tag as u64, true);
-                let f = self.runtime_fn(Builtin::ListGet.info().runtime_symbol.unwrap())?;
-                let call = self
-                    .llvm
-                    .builder
-                    .build_call(
-                        f,
-                        &[list.into(), idx.into(), some.into(), none.into()],
-                        "get",
-                    )
-                    .unwrap();
-                Ok(call.try_as_basic_value().basic().unwrap())
+                let f = self.runtime_fn(
+                    Builtin::ListGet
+                        .info()
+                        .runtime_symbol
+                        .context("runtime symbol")?,
+                )?;
+                let call = crate::error::llvm(self.llvm.builder.build_call(
+                    f,
+                    &[list.into(), idx.into(), some.into(), none.into()],
+                    "get",
+                ))?;
+                Ok(call
+                    .try_as_basic_value()
+                    .basic()
+                    .context("call return value")?)
             }
             Builtin::Elems => {
                 let col_i = self.coerce_i64(self.local(args[0])?)?;
                 let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
-                let col = self
-                    .llvm
-                    .builder
-                    .build_int_to_ptr(col_i, ptr_ty, "col_ptr")
-                    .unwrap();
+                let col = crate::error::llvm(
+                    self.llvm.builder.build_int_to_ptr(col_i, ptr_ty, "col_ptr"),
+                )?;
                 let f = self.runtime_fn("lumia_elems")?;
                 let call =
                     crate::error::llvm(self.llvm.builder.build_call(f, &[col.into()], "elems"))?;
                 let ptr = call
                     .try_as_basic_value()
                     .basic()
-                    .unwrap()
+                    .context("call return value")?
                     .into_pointer_value();
-                Ok(self
-                    .llvm
-                    .builder
-                    .build_ptr_to_int(ptr, self.llvm.i64_ty, "elems_i64")
-                    .unwrap()
-                    .into())
+                Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
+                    ptr,
+                    self.llvm.i64_ty,
+                    "elems_i64",
+                ))?
+                .into())
             }
             Builtin::ListSlice => {
                 let list_i = self.coerce_i64(self.local(args[0])?)?;
                 let start = self.coerce_i64(self.local(args[1])?)?;
                 let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
-                let list = self
-                    .llvm
-                    .builder
-                    .build_int_to_ptr(list_i, ptr_ty, "list_ptr")
-                    .unwrap();
+                let list = crate::error::llvm(
+                    self.llvm
+                        .builder
+                        .build_int_to_ptr(list_i, ptr_ty, "list_ptr"),
+                )?;
                 let f = self.runtime_fn("lumia_list_slice")?;
-                let call = self
-                    .llvm
-                    .builder
-                    .build_call(f, &[list.into(), start.into()], "slice")
-                    .unwrap();
+                let call = crate::error::llvm(self.llvm.builder.build_call(
+                    f,
+                    &[list.into(), start.into()],
+                    "slice",
+                ))?;
                 let ptr = call
                     .try_as_basic_value()
                     .basic()
-                    .unwrap()
+                    .context("call return value")?
                     .into_pointer_value();
-                Ok(self
-                    .llvm
-                    .builder
-                    .build_ptr_to_int(ptr, self.llvm.i64_ty, "slice_i64")
-                    .unwrap()
-                    .into())
+                Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
+                    ptr,
+                    self.llvm.i64_ty,
+                    "slice_i64",
+                ))?
+                .into())
             }
             Builtin::ListAppend => {
                 let list_i = self.coerce_i64(self.local(args[0])?)?;
                 let elem = self.coerce_i64(self.local(args[1])?)?;
                 let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
-                let mut list = self
-                    .llvm
-                    .builder
-                    .build_int_to_ptr(list_i, ptr_ty, "list_ptr")
-                    .unwrap();
+                let mut list = crate::error::llvm(
+                    self.llvm
+                        .builder
+                        .build_int_to_ptr(list_i, ptr_ty, "list_ptr"),
+                )?;
                 if matches!(self.frame.local_tys.get(&args[1].0), Some(Type::Float)) {
                     let ens = self.runtime_fn(lumia_abi::ENSURE_LIST_F64)?;
-                    list = self
-                        .llvm
-                        .builder
-                        .build_call(ens, &[list.into()], "ens_lf64")
-                        .unwrap()
-                        .try_as_basic_value()
-                        .basic()
-                        .unwrap()
-                        .into_pointer_value();
+                    list = crate::error::llvm(self.llvm.builder.build_call(
+                        ens,
+                        &[list.into()],
+                        "ens_lf64",
+                    ))?
+                    .try_as_basic_value()
+                    .basic()
+                    .context("call return value")?
+                    .into_pointer_value();
                 }
                 let f = self.runtime_fn("lumia_list_append")?;
-                let call = self
-                    .llvm
-                    .builder
-                    .build_call(f, &[list.into(), elem.into()], "append")
-                    .unwrap();
+                let call = crate::error::llvm(self.llvm.builder.build_call(
+                    f,
+                    &[list.into(), elem.into()],
+                    "append",
+                ))?;
                 let ptr = call
                     .try_as_basic_value()
                     .basic()
-                    .unwrap()
+                    .context("call return value")?
                     .into_pointer_value();
-                Ok(self
-                    .llvm
-                    .builder
-                    .build_ptr_to_int(ptr, self.llvm.i64_ty, "append_i64")
-                    .unwrap()
-                    .into())
+                Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
+                    ptr,
+                    self.llvm.i64_ty,
+                    "append_i64",
+                ))?
+                .into())
             }
             Builtin::ListConcat => {
                 let a_i = self.coerce_i64(self.local(args[0])?)?;
                 let b_i = self.coerce_i64(self.local(args[1])?)?;
                 let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
-                let a = self
-                    .llvm
-                    .builder
-                    .build_int_to_ptr(a_i, ptr_ty, "concat_a")
-                    .unwrap();
-                let b = self
-                    .llvm
-                    .builder
-                    .build_int_to_ptr(b_i, ptr_ty, "concat_b")
-                    .unwrap();
+                let a = crate::error::llvm(
+                    self.llvm.builder.build_int_to_ptr(a_i, ptr_ty, "concat_a"),
+                )?;
+                let b = crate::error::llvm(
+                    self.llvm.builder.build_int_to_ptr(b_i, ptr_ty, "concat_b"),
+                )?;
                 let f = self.runtime_fn("lumia_concat")?;
-                let call = self
-                    .llvm
-                    .builder
-                    .build_call(f, &[a.into(), b.into()], "concat")
-                    .unwrap();
+                let call = crate::error::llvm(self.llvm.builder.build_call(
+                    f,
+                    &[a.into(), b.into()],
+                    "concat",
+                ))?;
                 let ptr = call
                     .try_as_basic_value()
                     .basic()
-                    .unwrap()
+                    .context("call return value")?
                     .into_pointer_value();
-                Ok(self
-                    .llvm
-                    .builder
-                    .build_ptr_to_int(ptr, self.llvm.i64_ty, "concat_i64")
-                    .unwrap()
-                    .into())
+                Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
+                    ptr,
+                    self.llvm.i64_ty,
+                    "concat_i64",
+                ))?
+                .into())
             }
             Builtin::ListTake => {
                 let list_i = self.coerce_i64(self.local(args[0])?)?;
                 let n = self.coerce_i64(self.local(args[1])?)?;
                 let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
-                let list = self
-                    .llvm
-                    .builder
-                    .build_int_to_ptr(list_i, ptr_ty, "list")
-                    .unwrap();
+                let list =
+                    crate::error::llvm(self.llvm.builder.build_int_to_ptr(list_i, ptr_ty, "list"))?;
                 let f = self.runtime_fn("lumia_list_take")?;
-                let call = self
-                    .llvm
-                    .builder
-                    .build_call(f, &[list.into(), n.into()], "take")
-                    .unwrap();
+                let call = crate::error::llvm(self.llvm.builder.build_call(
+                    f,
+                    &[list.into(), n.into()],
+                    "take",
+                ))?;
                 let ptr = call
                     .try_as_basic_value()
                     .basic()
-                    .unwrap()
+                    .context("call return value")?
                     .into_pointer_value();
-                Ok(self
-                    .llvm
-                    .builder
-                    .build_ptr_to_int(ptr, self.llvm.i64_ty, "take_i64")
-                    .unwrap()
-                    .into())
+                Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
+                    ptr,
+                    self.llvm.i64_ty,
+                    "take_i64",
+                ))?
+                .into())
             }
             Builtin::ListReverse | Builtin::ListSort => {
                 let list_i = self.coerce_i64(self.local(args[0])?)?;
                 let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
-                let list = self
-                    .llvm
-                    .builder
-                    .build_int_to_ptr(list_i, ptr_ty, "list")
-                    .unwrap();
+                let list =
+                    crate::error::llvm(self.llvm.builder.build_int_to_ptr(list_i, ptr_ty, "list"))?;
                 let fname = match name {
                     Builtin::ListReverse => "lumia_list_reverse",
                     _ => "lumia_list_sort",
                 };
                 let f = self.runtime_fn(fname)?;
-                let call = self
-                    .llvm
-                    .builder
-                    .build_call(f, &[list.into()], "list_op")
-                    .unwrap();
+                let call =
+                    crate::error::llvm(self.llvm.builder.build_call(f, &[list.into()], "list_op"))?;
                 let ptr = call
                     .try_as_basic_value()
                     .basic()
-                    .unwrap()
+                    .context("call return value")?
                     .into_pointer_value();
-                Ok(self
-                    .llvm
-                    .builder
-                    .build_ptr_to_int(ptr, self.llvm.i64_ty, "list_op_i64")
-                    .unwrap()
-                    .into())
+                Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
+                    ptr,
+                    self.llvm.i64_ty,
+                    "list_op_i64",
+                ))?
+                .into())
             }
             Builtin::ListSortByKeys => {
                 let vals_i = self.coerce_i64(self.local(args[0])?)?;
                 let keys_i = self.coerce_i64(self.local(args[1])?)?;
                 let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
-                let vals = self
-                    .llvm
-                    .builder
-                    .build_int_to_ptr(vals_i, ptr_ty, "sby_vals")
-                    .unwrap();
-                let keys = self
-                    .llvm
-                    .builder
-                    .build_int_to_ptr(keys_i, ptr_ty, "sby_keys")
-                    .unwrap();
+                let vals = crate::error::llvm(
+                    self.llvm
+                        .builder
+                        .build_int_to_ptr(vals_i, ptr_ty, "sby_vals"),
+                )?;
+                let keys = crate::error::llvm(
+                    self.llvm
+                        .builder
+                        .build_int_to_ptr(keys_i, ptr_ty, "sby_keys"),
+                )?;
                 let f = self.runtime_fn("lumia_list_sort_by_keys")?;
-                let call = self
-                    .llvm
-                    .builder
-                    .build_call(f, &[vals.into(), keys.into()], "sort_by")
-                    .unwrap();
+                let call = crate::error::llvm(self.llvm.builder.build_call(
+                    f,
+                    &[vals.into(), keys.into()],
+                    "sort_by",
+                ))?;
                 let ptr = call
                     .try_as_basic_value()
                     .basic()
-                    .unwrap()
+                    .context("call return value")?
                     .into_pointer_value();
-                Ok(self
-                    .llvm
-                    .builder
-                    .build_ptr_to_int(ptr, self.llvm.i64_ty, "sort_by_i64")
-                    .unwrap()
-                    .into())
+                Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
+                    ptr,
+                    self.llvm.i64_ty,
+                    "sort_by_i64",
+                ))?
+                .into())
             }
             Builtin::ListParMap => {
                 let list_i = self.coerce_i64(self.local(args[0])?)?;
                 let fun_i = self.coerce_i64(self.local(args[1])?)?;
                 let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
-                let list = self
-                    .llvm
-                    .builder
-                    .build_int_to_ptr(list_i, ptr_ty, "pmap_list")
-                    .unwrap();
+                let list = crate::error::llvm(self.llvm.builder.build_int_to_ptr(
+                    list_i,
+                    ptr_ty,
+                    "pmap_list",
+                ))?;
                 // FunRef is tagged with low bit; refuse heap closures.
                 let one = self.llvm.i64_ty.const_int(1, false);
                 let tagged =
                     crate::error::llvm(self.llvm.builder.build_and(fun_i, one, "pmap_tag"))?;
-                let is_funref = self
-                    .llvm
-                    .builder
-                    .build_int_compare(IntPredicate::EQ, tagged, one, "pmap_is_fr")
-                    .unwrap();
+                let is_funref = crate::error::llvm(self.llvm.builder.build_int_compare(
+                    IntPredicate::EQ,
+                    tagged,
+                    one,
+                    "pmap_is_fr",
+                ))?;
                 let cur = self
                     .llvm
                     .builder
@@ -293,29 +291,24 @@ impl<'ctx> Codegen<'ctx> {
                 let parent = cur.get_parent().context("bb parent")?;
                 let ok_bb = self.llvm.context.append_basic_block(parent, "pmap_ok");
                 let bad_bb = self.llvm.context.append_basic_block(parent, "pmap_bad");
-                self.llvm
-                    .builder
-                    .build_conditional_branch(is_funref, ok_bb, bad_bb)
-                    .unwrap();
+                crate::error::llvm(
+                    self.llvm
+                        .builder
+                        .build_conditional_branch(is_funref, ok_bb, bad_bb),
+                )?;
                 self.llvm.builder.position_at_end(bad_bb);
                 let fail = self.runtime_fn("lumia_match_fail")?;
                 crate::error::llvm(self.llvm.builder.build_call(fail, &[], "pmap_bad_fn"))?;
                 crate::error::llvm(self.llvm.builder.build_unreachable())?;
                 self.llvm.builder.position_at_end(ok_bb);
-                let cleared = self
-                    .llvm
-                    .builder
-                    .build_and(
-                        fun_i,
-                        self.llvm.builder.build_not(one, "not1").unwrap(),
-                        "fun_clear",
-                    )
-                    .unwrap();
-                let fptr = self
-                    .llvm
-                    .builder
-                    .build_int_to_ptr(cleared, ptr_ty, "pmap_fn")
-                    .unwrap();
+                let not1 = crate::error::llvm(self.llvm.builder.build_not(one, "not1"))?;
+                let cleared =
+                    crate::error::llvm(self.llvm.builder.build_and(fun_i, not1, "fun_clear"))?;
+                let fptr = crate::error::llvm(
+                    self.llvm
+                        .builder
+                        .build_int_to_ptr(cleared, ptr_ty, "pmap_fn"),
+                )?;
                 let elem_is_float = matches!(
                     lumia_core::infer_value_ty_ctx(
                         &Value::Builtin {
@@ -337,41 +330,42 @@ impl<'ctx> Codegen<'ctx> {
                 let result_tid = lumia_abi::list_type_id(elem_is_float) as u64;
                 let f = self.runtime_fn("lumia_list_par_map")?;
                 let tid_v = self.llvm.context.i32_type().const_int(result_tid, false);
-                let call = self
-                    .llvm
-                    .builder
-                    .build_call(f, &[list.into(), fptr.into(), tid_v.into()], "par_map")
-                    .unwrap();
+                let call = crate::error::llvm(self.llvm.builder.build_call(
+                    f,
+                    &[list.into(), fptr.into(), tid_v.into()],
+                    "par_map",
+                ))?;
                 let ptr = call
                     .try_as_basic_value()
                     .basic()
-                    .unwrap()
+                    .context("call return value")?
                     .into_pointer_value();
-                Ok(self
-                    .llvm
-                    .builder
-                    .build_ptr_to_int(ptr, self.llvm.i64_ty, "par_map_i64")
-                    .unwrap()
-                    .into())
+                Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
+                    ptr,
+                    self.llvm.i64_ty,
+                    "par_map_i64",
+                ))?
+                .into())
             }
             Builtin::ListParFold => {
                 let list_i = self.coerce_i64(self.local(args[0])?)?;
                 let init_i = self.coerce_i64(self.local(args[1])?)?;
                 let fun_i = self.coerce_i64(self.local(args[2])?)?;
                 let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
-                let list = self
-                    .llvm
-                    .builder
-                    .build_int_to_ptr(list_i, ptr_ty, "pfold_list")
-                    .unwrap();
+                let list = crate::error::llvm(self.llvm.builder.build_int_to_ptr(
+                    list_i,
+                    ptr_ty,
+                    "pfold_list",
+                ))?;
                 let one = self.llvm.i64_ty.const_int(1, false);
                 let tagged =
                     crate::error::llvm(self.llvm.builder.build_and(fun_i, one, "pfold_tag"))?;
-                let is_funref = self
-                    .llvm
-                    .builder
-                    .build_int_compare(IntPredicate::EQ, tagged, one, "pfold_is_fr")
-                    .unwrap();
+                let is_funref = crate::error::llvm(self.llvm.builder.build_int_compare(
+                    IntPredicate::EQ,
+                    tagged,
+                    one,
+                    "pfold_is_fr",
+                ))?;
                 let cur = self
                     .llvm
                     .builder
@@ -380,39 +374,34 @@ impl<'ctx> Codegen<'ctx> {
                 let parent = cur.get_parent().context("bb parent")?;
                 let ok_bb = self.llvm.context.append_basic_block(parent, "pfold_ok");
                 let bad_bb = self.llvm.context.append_basic_block(parent, "pfold_bad");
-                self.llvm
-                    .builder
-                    .build_conditional_branch(is_funref, ok_bb, bad_bb)
-                    .unwrap();
+                crate::error::llvm(
+                    self.llvm
+                        .builder
+                        .build_conditional_branch(is_funref, ok_bb, bad_bb),
+                )?;
                 self.llvm.builder.position_at_end(bad_bb);
                 let fail = self.runtime_fn("lumia_match_fail")?;
                 crate::error::llvm(self.llvm.builder.build_call(fail, &[], "pfold_bad_fn"))?;
                 crate::error::llvm(self.llvm.builder.build_unreachable())?;
                 self.llvm.builder.position_at_end(ok_bb);
-                let cleared = self
-                    .llvm
-                    .builder
-                    .build_and(
-                        fun_i,
-                        self.llvm.builder.build_not(one, "pfold_not1").unwrap(),
-                        "pfold_clear",
-                    )
-                    .unwrap();
-                let fptr = self
-                    .llvm
-                    .builder
-                    .build_int_to_ptr(cleared, ptr_ty, "pfold_fn")
-                    .unwrap();
+                let not1 = crate::error::llvm(self.llvm.builder.build_not(one, "pfold_not1"))?;
+                let cleared =
+                    crate::error::llvm(self.llvm.builder.build_and(fun_i, not1, "pfold_clear"))?;
+                let fptr = crate::error::llvm(
+                    self.llvm
+                        .builder
+                        .build_int_to_ptr(cleared, ptr_ty, "pfold_fn"),
+                )?;
                 let f = self.runtime_fn("lumia_list_par_fold")?;
-                let call = self
-                    .llvm
-                    .builder
-                    .build_call(f, &[list.into(), init_i.into(), fptr.into()], "par_fold")
-                    .unwrap();
+                let call = crate::error::llvm(self.llvm.builder.build_call(
+                    f,
+                    &[list.into(), init_i.into(), fptr.into()],
+                    "par_fold",
+                ))?;
                 Ok(call
                     .try_as_basic_value()
                     .basic()
-                    .unwrap()
+                    .context("call return value")?
                     .into_int_value()
                     .into())
             }
@@ -420,72 +409,69 @@ impl<'ctx> Codegen<'ctx> {
                 let list_i = self.coerce_i64(self.local(args[0])?)?;
                 let sep_i = self.coerce_i64(self.local(args[1])?)?;
                 let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
-                let list = self
-                    .llvm
-                    .builder
-                    .build_int_to_ptr(list_i, ptr_ty, "list")
-                    .unwrap();
+                let list =
+                    crate::error::llvm(self.llvm.builder.build_int_to_ptr(list_i, ptr_ty, "list"))?;
                 let sep =
                     crate::error::llvm(self.llvm.builder.build_int_to_ptr(sep_i, ptr_ty, "sep"))?;
                 let f = self.runtime_fn("lumia_list_join")?;
-                let call = self
-                    .llvm
-                    .builder
-                    .build_call(f, &[list.into(), sep.into()], "join")
-                    .unwrap();
+                let call = crate::error::llvm(self.llvm.builder.build_call(
+                    f,
+                    &[list.into(), sep.into()],
+                    "join",
+                ))?;
                 let ptr = call
                     .try_as_basic_value()
                     .basic()
-                    .unwrap()
+                    .context("call return value")?
                     .into_pointer_value();
-                Ok(self
-                    .llvm
-                    .builder
-                    .build_ptr_to_int(ptr, self.llvm.i64_ty, "join_i64")
-                    .unwrap()
-                    .into())
+                Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
+                    ptr,
+                    self.llvm.i64_ty,
+                    "join_i64",
+                ))?
+                .into())
             }
             Builtin::Range => {
                 let a = self.coerce_i64(self.local(args[0])?)?;
                 let b = self.coerce_i64(self.local(args[1])?)?;
                 let f = self.runtime_fn("lumia_range")?;
-                let call = self
-                    .llvm
-                    .builder
-                    .build_call(f, &[a.into(), b.into()], "range")
-                    .unwrap();
+                let call = crate::error::llvm(self.llvm.builder.build_call(
+                    f,
+                    &[a.into(), b.into()],
+                    "range",
+                ))?;
                 let ptr = call
                     .try_as_basic_value()
                     .basic()
-                    .unwrap()
+                    .context("call return value")?
                     .into_pointer_value();
-                Ok(self
-                    .llvm
-                    .builder
-                    .build_ptr_to_int(ptr, self.llvm.i64_ty, "range_i64")
-                    .unwrap()
-                    .into())
+                Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
+                    ptr,
+                    self.llvm.i64_ty,
+                    "range_i64",
+                ))?
+                .into())
             }
             Builtin::RangeInclusive => {
                 let a = self.coerce_i64(self.local(args[0])?)?;
                 let b = self.coerce_i64(self.local(args[1])?)?;
                 let f = self.runtime_fn("lumia_range_inclusive")?;
-                let call = self
-                    .llvm
-                    .builder
-                    .build_call(f, &[a.into(), b.into()], "range_inc")
-                    .unwrap();
+                let call = crate::error::llvm(self.llvm.builder.build_call(
+                    f,
+                    &[a.into(), b.into()],
+                    "range_inc",
+                ))?;
                 let ptr = call
                     .try_as_basic_value()
                     .basic()
-                    .unwrap()
+                    .context("call return value")?
                     .into_pointer_value();
-                Ok(self
-                    .llvm
-                    .builder
-                    .build_ptr_to_int(ptr, self.llvm.i64_ty, "range_i64")
-                    .unwrap()
-                    .into())
+                Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
+                    ptr,
+                    self.llvm.i64_ty,
+                    "range_i64",
+                ))?
+                .into())
             }
             _ => unreachable!("non-list builtin in emit_list_builtin"),
         }

@@ -15,26 +15,30 @@ impl<'ctx> Codegen<'ctx> {
         fv: FunctionValue<'ctx>,
     ) -> Result<IntValue<'ctx>> {
         let min = self.llvm.i64_ty.const_int(i64::MIN as u64, true);
-        let is_min = self
-            .llvm
-            .builder
-            .build_int_compare(IntPredicate::EQ, o, min, "neg_min")
-            .unwrap();
+        let is_min = crate::error::llvm(self.llvm.builder.build_int_compare(
+            IntPredicate::EQ,
+            o,
+            min,
+            "neg_min",
+        ))?;
         let trap_bb = self
             .llvm
             .context
             .append_basic_block(fv, "neg_overflow_trap");
         let ok_bb = self.llvm.context.append_basic_block(fv, "neg_ok");
-        self.llvm
-            .builder
-            .build_conditional_branch(is_min, trap_bb, ok_bb)
-            .unwrap();
+        crate::error::llvm(
+            self.llvm
+                .builder
+                .build_conditional_branch(is_min, trap_bb, ok_bb),
+        )?;
         self.llvm.builder.position_at_end(trap_bb);
         let trap = self.runtime_fn("lumia_trap_overflow")?;
         crate::error::llvm(self.llvm.builder.build_call(trap, &[], "trap_neg"))?;
         crate::error::llvm(self.llvm.builder.build_unreachable())?;
         self.llvm.builder.position_at_end(ok_bb);
-        Ok(self.llvm.builder.build_int_neg(o, "neg").unwrap())
+        Ok(crate::error::llvm(
+            self.llvm.builder.build_int_neg(o, "neg"),
+        )?)
     }
 
     pub(crate) fn emit_checked_binop(
@@ -50,35 +54,29 @@ impl<'ctx> Codegen<'ctx> {
         let id_tys = [self.llvm.i64_ty.into()];
         let fnty = intrinsic
             .get_declaration(&self.llvm.module, &id_tys)
-            .unwrap();
-        let call = self
-            .llvm
-            .builder
-            .build_call(fnty, &[l.into(), r.into()], "checked")
-            .unwrap();
+            .context("intrinsic declaration")?;
+        let call = crate::error::llvm(self.llvm.builder.build_call(
+            fnty,
+            &[l.into(), r.into()],
+            "checked",
+        ))?;
         let agg = call
             .try_as_basic_value()
             .basic()
-            .unwrap()
+            .context("call return value")?
             .into_struct_value();
-        let result = self
-            .llvm
-            .builder
-            .build_extract_value(agg, 0, "ov_res")
-            .unwrap()
+        let result = crate::error::llvm(self.llvm.builder.build_extract_value(agg, 0, "ov_res"))?
             .into_int_value();
-        let overflow = self
-            .llvm
-            .builder
-            .build_extract_value(agg, 1, "ov_flag")
-            .unwrap()
-            .into_int_value();
+        let overflow =
+            crate::error::llvm(self.llvm.builder.build_extract_value(agg, 1, "ov_flag"))?
+                .into_int_value();
         let trap_bb = self.llvm.context.append_basic_block(fv, "overflow_trap");
         let ok_bb = self.llvm.context.append_basic_block(fv, "overflow_ok");
-        self.llvm
-            .builder
-            .build_conditional_branch(overflow, trap_bb, ok_bb)
-            .unwrap();
+        crate::error::llvm(
+            self.llvm
+                .builder
+                .build_conditional_branch(overflow, trap_bb, ok_bb),
+        )?;
         self.llvm.builder.position_at_end(trap_bb);
         let trap = self.runtime_fn("lumia_trap_overflow")?;
         crate::error::llvm(self.llvm.builder.build_call(trap, &[], "trap_ov"))?;
@@ -97,36 +95,41 @@ impl<'ctx> Codegen<'ctx> {
         let zero = self.llvm.i64_ty.const_int(0, false);
         let minus_one = self.llvm.i64_ty.const_int((-1i64) as u64, true);
         let i64_min = self.llvm.i64_ty.const_int(i64::MIN as u64, true);
-        let is_zero = self
-            .llvm
-            .builder
-            .build_int_compare(IntPredicate::EQ, r, zero, "div0")
-            .unwrap();
-        let is_m1 = self
-            .llvm
-            .builder
-            .build_int_compare(IntPredicate::EQ, r, minus_one, "div_m1")
-            .unwrap();
-        let is_min = self
-            .llvm
-            .builder
-            .build_int_compare(IntPredicate::EQ, l, i64_min, "div_min")
-            .unwrap();
+        let is_zero = crate::error::llvm(self.llvm.builder.build_int_compare(
+            IntPredicate::EQ,
+            r,
+            zero,
+            "div0",
+        ))?;
+        let is_m1 = crate::error::llvm(self.llvm.builder.build_int_compare(
+            IntPredicate::EQ,
+            r,
+            minus_one,
+            "div_m1",
+        ))?;
+        let is_min = crate::error::llvm(self.llvm.builder.build_int_compare(
+            IntPredicate::EQ,
+            l,
+            i64_min,
+            "div_min",
+        ))?;
         let ov = crate::error::llvm(self.llvm.builder.build_and(is_m1, is_min, "div_ov"))?;
         let bad = crate::error::llvm(self.llvm.builder.build_or(is_zero, ov, "div_bad"))?;
         let trap_bb = self.llvm.context.append_basic_block(fv, "div_trap");
         let ok_bb = self.llvm.context.append_basic_block(fv, "div_ok");
-        self.llvm
-            .builder
-            .build_conditional_branch(bad, trap_bb, ok_bb)
-            .unwrap();
+        crate::error::llvm(
+            self.llvm
+                .builder
+                .build_conditional_branch(bad, trap_bb, ok_bb),
+        )?;
         self.llvm.builder.position_at_end(trap_bb);
         let div0_bb = self.llvm.context.append_basic_block(fv, "div0_trap");
         let ov_bb = self.llvm.context.append_basic_block(fv, "div_ov_trap");
-        self.llvm
-            .builder
-            .build_conditional_branch(is_zero, div0_bb, ov_bb)
-            .unwrap();
+        crate::error::llvm(
+            self.llvm
+                .builder
+                .build_conditional_branch(is_zero, div0_bb, ov_bb),
+        )?;
         self.llvm.builder.position_at_end(div0_bb);
         let t0 = self.runtime_fn("lumia_trap_div0")?;
         crate::error::llvm(self.llvm.builder.build_call(t0, &[], "trap0"))?;
@@ -191,11 +194,27 @@ impl<'ctx> Codegen<'ctx> {
             let l = self.arith_as_f64(lv, &lt)?;
             let r = self.arith_as_f64(rv, &rt)?;
             let v = match op {
-                BinOp::Add => self.llvm.builder.build_float_add(l, r, "fadd").unwrap(),
-                BinOp::Sub => self.llvm.builder.build_float_sub(l, r, "fsub").unwrap(),
-                BinOp::Mul => self.llvm.builder.build_float_mul(l, r, "fmul").unwrap(),
-                BinOp::Div => self.llvm.builder.build_float_div(l, r, "fdiv").unwrap(),
-                BinOp::Rem => self.llvm.builder.build_float_rem(l, r, "frem").unwrap(),
+                BinOp::Add => crate::error::llvm(self.llvm.builder.build_float_add(l, r, "fadd"))?,
+                BinOp::Sub => self
+                    .llvm
+                    .builder
+                    .build_float_sub(l, r, "fsub")
+                    .context("call return value")?,
+                BinOp::Mul => self
+                    .llvm
+                    .builder
+                    .build_float_mul(l, r, "fmul")
+                    .context("call return value")?,
+                BinOp::Div => self
+                    .llvm
+                    .builder
+                    .build_float_div(l, r, "fdiv")
+                    .context("call return value")?,
+                BinOp::Rem => self
+                    .llvm
+                    .builder
+                    .build_float_rem(l, r, "frem")
+                    .context("call return value")?,
                 BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                     let pred = match op {
                         BinOp::Eq => FloatPredicate::OEQ,
@@ -207,17 +226,15 @@ impl<'ctx> Codegen<'ctx> {
                         BinOp::Ge => FloatPredicate::OGE,
                         _ => unreachable!(),
                     };
-                    let c = self
-                        .llvm
-                        .builder
-                        .build_float_compare(pred, l, r, "fcmp")
-                        .unwrap();
-                    return Ok(self
-                        .llvm
-                        .builder
-                        .build_int_z_extend(c, self.llvm.i64_ty, "fcmpz")
-                        .unwrap()
-                        .into());
+                    let c = crate::error::llvm(
+                        self.llvm.builder.build_float_compare(pred, l, r, "fcmp"),
+                    )?;
+                    return Ok(crate::error::llvm(self.llvm.builder.build_int_z_extend(
+                        c,
+                        self.llvm.i64_ty,
+                        "fcmpz",
+                    ))?
+                    .into());
                 }
                 _ => unreachable!(),
             };
@@ -235,11 +252,11 @@ impl<'ctx> Codegen<'ctx> {
                 };
                 let mangled = format!("__Num_{name}_{method}");
                 if let Some(callee) = self.funs.functions.get(&mangled).copied() {
-                    let call = self
-                        .llvm
-                        .builder
-                        .build_call(callee, &[l.into(), r.into()], "num_ov")
-                        .unwrap();
+                    let call = crate::error::llvm(self.llvm.builder.build_call(
+                        callee,
+                        &[l.into(), r.into()],
+                        "num_ov",
+                    ))?;
                     return Ok(call
                         .try_as_basic_value()
                         .basic()
@@ -257,15 +274,17 @@ impl<'ctx> Codegen<'ctx> {
             BinOp::Ne => {
                 let eq = self.emit_value_eq(&lt, &rt, l, r)?;
                 let z = self.llvm.i64_ty.const_int(0, false);
-                let c = self
-                    .llvm
-                    .builder
-                    .build_int_compare(IntPredicate::EQ, eq, z, "ne")
-                    .unwrap();
-                self.llvm
-                    .builder
-                    .build_int_z_extend(c, self.llvm.i64_ty, "nez")
-                    .unwrap()
+                let c = crate::error::llvm(self.llvm.builder.build_int_compare(
+                    IntPredicate::EQ,
+                    eq,
+                    z,
+                    "ne",
+                ))?;
+                crate::error::llvm(self.llvm.builder.build_int_z_extend(
+                    c,
+                    self.llvm.i64_ty,
+                    "nez",
+                ))?
             }
             BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                 if let Some(name) = Self::adt_method_name(&lt, &rt) {
@@ -282,22 +301,24 @@ impl<'ctx> Codegen<'ctx> {
                         };
                         let less = self
                             .emit_less_override(&name, left, right)?
-                            .expect("Ord.less");
+                            .context("Ord.less")?;
                         let z = self.llvm.i64_ty.const_int(0, false);
                         return Ok(match op {
                             BinOp::Lt | BinOp::Gt => less.into(),
                             BinOp::Le | BinOp::Ge => {
                                 // a <= b  iff  !(b < a); a >= b iff !(a < b)
-                                let c = self
-                                    .llvm
-                                    .builder
-                                    .build_int_compare(IntPredicate::EQ, less, z, "nless")
-                                    .unwrap();
-                                self.llvm
-                                    .builder
-                                    .build_int_z_extend(c, self.llvm.i64_ty, "nlessz")
-                                    .unwrap()
-                                    .into()
+                                let c = crate::error::llvm(self.llvm.builder.build_int_compare(
+                                    IntPredicate::EQ,
+                                    less,
+                                    z,
+                                    "nless",
+                                ))?;
+                                crate::error::llvm(self.llvm.builder.build_int_z_extend(
+                                    c,
+                                    self.llvm.i64_ty,
+                                    "nlessz",
+                                ))?
+                                .into()
                             }
                             _ => unreachable!(),
                         });
@@ -305,12 +326,16 @@ impl<'ctx> Codegen<'ctx> {
                 }
                 // Structural Ord via runtime (String/Char/ADT); never SLT pointers.
                 let f = self.runtime_fn("lumia_cmp")?;
-                let call = self
-                    .llvm
-                    .builder
-                    .build_call(f, &[l.into(), r.into()], "cmp")
-                    .unwrap();
-                let cmp = call.try_as_basic_value().basic().unwrap().into_int_value();
+                let call = crate::error::llvm(self.llvm.builder.build_call(
+                    f,
+                    &[l.into(), r.into()],
+                    "cmp",
+                ))?;
+                let cmp = call
+                    .try_as_basic_value()
+                    .basic()
+                    .context("call return value")?
+                    .into_int_value();
                 let z = self.llvm.i64_ty.const_int(0, false);
                 let pred = match op {
                     BinOp::Lt => IntPredicate::SLT,
@@ -321,13 +346,22 @@ impl<'ctx> Codegen<'ctx> {
                 };
                 let c =
                     crate::error::llvm(self.llvm.builder.build_int_compare(pred, cmp, z, "ord"))?;
-                self.llvm
-                    .builder
-                    .build_int_z_extend(c, self.llvm.i64_ty, "ordz")
-                    .unwrap()
+                crate::error::llvm(self.llvm.builder.build_int_z_extend(
+                    c,
+                    self.llvm.i64_ty,
+                    "ordz",
+                ))?
             }
-            BinOp::And => self.llvm.builder.build_and(l, r, "and").unwrap(),
-            BinOp::Or => self.llvm.builder.build_or(l, r, "or").unwrap(),
+            BinOp::And => self
+                .llvm
+                .builder
+                .build_and(l, r, "and")
+                .context("call return value")?,
+            BinOp::Or => self
+                .llvm
+                .builder
+                .build_or(l, r, "or")
+                .context("call return value")?,
         };
         Ok(v.into())
     }
@@ -348,7 +382,7 @@ impl<'ctx> Codegen<'ctx> {
         if matches!(ot, Type::Float) || matches!(ov, BasicValueEnum::FloatValue(_)) {
             let o = self.promote_f64(ov)?;
             let v = match op {
-                UnOp::Neg => self.llvm.builder.build_float_neg(o, "fneg").unwrap(),
+                UnOp::Neg => crate::error::llvm(self.llvm.builder.build_float_neg(o, "fneg"))?,
                 UnOp::Not => bail!("not on Float"),
             };
             return Ok(v.into());
@@ -358,15 +392,17 @@ impl<'ctx> Codegen<'ctx> {
             UnOp::Neg => self.emit_checked_neg(o, fv)?,
             UnOp::Not => {
                 let z = self.llvm.i64_ty.const_int(0, false);
-                let c = self
-                    .llvm
-                    .builder
-                    .build_int_compare(IntPredicate::EQ, o, z, "not")
-                    .unwrap();
-                self.llvm
-                    .builder
-                    .build_int_z_extend(c, self.llvm.i64_ty, "notz")
-                    .unwrap()
+                let c = crate::error::llvm(self.llvm.builder.build_int_compare(
+                    IntPredicate::EQ,
+                    o,
+                    z,
+                    "not",
+                ))?;
+                crate::error::llvm(self.llvm.builder.build_int_z_extend(
+                    c,
+                    self.llvm.i64_ty,
+                    "notz",
+                ))?
             }
         };
         Ok(v.into())

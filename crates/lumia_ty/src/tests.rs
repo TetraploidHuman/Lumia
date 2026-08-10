@@ -714,6 +714,7 @@ val main = { llabs(1) }
         NameVisibility::default(),
         InferOptions {
             trust_foreign_pure: true,
+            recovering: false,
         },
     )
     .expect("trusted pure");

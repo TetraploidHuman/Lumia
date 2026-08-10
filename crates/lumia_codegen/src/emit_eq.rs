@@ -1,7 +1,7 @@
 //! Show / Eq / Ord overrides and typed ADT helpers.
 
 use super::Codegen;
-use anyhow::Result;
+use anyhow::{Context as AnyhowContext, Result};
 use inkwell::values::{BasicValueEnum, IntValue, PointerValue};
 use inkwell::AddressSpace;
 use lumia_core::Local;
@@ -36,13 +36,17 @@ impl<'ctx> Codegen<'ctx> {
         };
         let i = self.coerce_i64(arg)?;
         let call = crate::error::llvm(self.llvm.builder.build_call(fv, &[i.into()], "show_ov"))?;
-        let bits = call.try_as_basic_value().basic().unwrap().into_int_value();
+        let bits = call
+            .try_as_basic_value()
+            .basic()
+            .context("call return value")?
+            .into_int_value();
         let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
-        let ptr = self
-            .llvm
-            .builder
-            .build_int_to_ptr(bits, ptr_ty, "show_ov_ptr")
-            .unwrap();
+        let ptr = crate::error::llvm(self.llvm.builder.build_int_to_ptr(
+            bits,
+            ptr_ty,
+            "show_ov_ptr",
+        ))?;
         Ok(Some(ptr))
     }
 
@@ -57,13 +61,16 @@ impl<'ctx> Codegen<'ctx> {
         let Some(fv) = self.funs.functions.get(&mangled).copied() else {
             return Ok(None);
         };
-        let call = self
-            .llvm
-            .builder
-            .build_call(fv, &[left.into(), right.into()], "eq_ov")
-            .unwrap();
+        let call = crate::error::llvm(self.llvm.builder.build_call(
+            fv,
+            &[left.into(), right.into()],
+            "eq_ov",
+        ))?;
         Ok(Some(
-            call.try_as_basic_value().basic().unwrap().into_int_value(),
+            call.try_as_basic_value()
+                .basic()
+                .context("call return value")?
+                .into_int_value(),
         ))
     }
 
@@ -78,13 +85,16 @@ impl<'ctx> Codegen<'ctx> {
         let Some(fv) = self.funs.functions.get(&mangled).copied() else {
             return Ok(None);
         };
-        let call = self
-            .llvm
-            .builder
-            .build_call(fv, &[left.into(), right.into()], "less_ov")
-            .unwrap();
+        let call = crate::error::llvm(self.llvm.builder.build_call(
+            fv,
+            &[left.into(), right.into()],
+            "less_ov",
+        ))?;
         Ok(Some(
-            call.try_as_basic_value().basic().unwrap().into_int_value(),
+            call.try_as_basic_value()
+                .basic()
+                .context("call return value")?
+                .into_int_value(),
         ))
     }
 
@@ -120,15 +130,13 @@ impl<'ctx> Codegen<'ctx> {
             }
         }
         let f = self.runtime_fn("lumia_eq")?;
-        Ok(self
-            .llvm
-            .builder
-            .build_call(f, &[l.into(), r.into()], "eq")
-            .unwrap()
-            .try_as_basic_value()
-            .basic()
-            .unwrap()
-            .into_int_value())
+        Ok(
+            crate::error::llvm(self.llvm.builder.build_call(f, &[l.into(), r.into()], "eq"))?
+                .try_as_basic_value()
+                .basic()
+                .context("call return value")?
+                .into_int_value(),
+        )
     }
 
     /// Bit `i` set ⇒ field `i` uses IEEE eq/show (union of both sides' params).
@@ -166,26 +174,22 @@ impl<'ctx> Codegen<'ctx> {
     ) -> Result<IntValue<'ctx>> {
         let mask = Self::adt_float_field_mask(lp, rp);
         let f = self.runtime_fn("lumia_adt_eq")?;
-        Ok(self
-            .llvm
-            .builder
-            .build_call(
-                f,
-                &[
-                    left.into(),
-                    right.into(),
-                    self.llvm.i64_ty.const_int(mask, false).into(),
-                ],
-                "adt_eq",
-            )
-            .unwrap()
-            .try_as_basic_value()
-            .basic()
-            .unwrap()
-            .into_int_value())
+        Ok(crate::error::llvm(self.llvm.builder.build_call(
+            f,
+            &[
+                left.into(),
+                right.into(),
+                self.llvm.i64_ty.const_int(mask, false).into(),
+            ],
+            "adt_eq",
+        ))?
+        .try_as_basic_value()
+        .basic()
+        .context("call return value")?
+        .into_int_value())
     }
 
-    /// Structural ADT show; float_mask selects IEEE formatting per field index.
+    /// Structural ADT show) float_mask selects IEEE formatting per field index.
     pub(crate) fn emit_typed_adt_show(
         &mut self,
         arg: BasicValueEnum<'ctx>,
@@ -194,18 +198,15 @@ impl<'ctx> Codegen<'ctx> {
         let i = self.coerce_i64(arg)?;
         let mask = Self::adt_float_field_mask(params, &[]);
         let f = self.runtime_fn("lumia_show_adt")?;
-        Ok(self
-            .llvm
-            .builder
-            .build_call(
-                f,
-                &[i.into(), self.llvm.i64_ty.const_int(mask, false).into()],
-                "show_adt",
-            )
-            .unwrap()
+        let call = crate::error::llvm(self.llvm.builder.build_call(
+            f,
+            &[i.into(), self.llvm.i64_ty.const_int(mask, false).into()],
+            "show_adt",
+        ))?;
+        Ok(call
             .try_as_basic_value()
             .basic()
-            .unwrap()
+            .context("call return value")?
             .into_pointer_value())
     }
 }

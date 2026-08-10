@@ -1,7 +1,7 @@
 //! Heap allocations for List / Set / Map / ADT.
 
 use super::super::super::Codegen;
-use anyhow::{bail, Result};
+use anyhow::{bail, Context as AnyhowContext, Result};
 use inkwell::values::BasicValueEnum;
 use inkwell::AddressSpace;
 use lumia_abi::{list_type_id, map_type_id, set_type_id, TYPE_ADT};
@@ -25,47 +25,46 @@ impl<'ctx> Codegen<'ctx> {
             if float_elems {
                 let ens = self.runtime_fn(lumia_abi::ENSURE_LIST_F64)?;
                 let f = self.runtime_fn("lumia_list_empty")?;
-                let empty = self
-                    .llvm
-                    .builder
-                    .build_call(f, &[], "list_empty")
-                    .unwrap()
+                let __call1 =
+                    crate::error::llvm(self.llvm.builder.build_call(f, &[], "list_empty"))?;
+
+                let empty = __call1
                     .try_as_basic_value()
                     .basic()
-                    .unwrap()
+                    .context("call return value")?
                     .into_pointer_value();
-                let ptr = self
-                    .llvm
-                    .builder
-                    .build_call(ens, &[empty.into()], "ens_lf64")
-                    .unwrap()
+                let __call2 = crate::error::llvm(self.llvm.builder.build_call(
+                    ens,
+                    &[empty.into()],
+                    "ens_lf64",
+                ))?;
+
+                let ptr = __call2
                     .try_as_basic_value()
                     .basic()
-                    .unwrap()
+                    .context("call return value")?
                     .into_pointer_value();
-                return Ok(self
-                    .llvm
-                    .builder
-                    .build_ptr_to_int(ptr, self.llvm.i64_ty, "empty_f64_i64")
-                    .unwrap()
-                    .into());
+                return Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
+                    ptr,
+                    self.llvm.i64_ty,
+                    "empty_f64_i64",
+                ))?
+                .into());
             }
             let f = self.runtime_fn("lumia_list_empty")?;
-            let ptr = self
-                .llvm
-                .builder
-                .build_call(f, &[], "list_empty")
-                .unwrap()
+            let __call3 = crate::error::llvm(self.llvm.builder.build_call(f, &[], "list_empty"))?;
+
+            let ptr = __call3
                 .try_as_basic_value()
                 .basic()
-                .unwrap()
+                .context("call return value")?
                 .into_pointer_value();
-            return Ok(self
-                .llvm
-                .builder
-                .build_ptr_to_int(ptr, self.llvm.i64_ty, "empty_i64")
-                .unwrap()
-                .into());
+            return Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
+                ptr,
+                self.llvm.i64_ty,
+                "empty_i64",
+            ))?
+            .into());
         }
         if matches!(repr, lumia_core::ListRepr::LitList) {
             return self.emit_stack_array(elems, list_tid as u64);
@@ -92,27 +91,23 @@ impl<'ctx> Codegen<'ctx> {
         if elems.len() > 8 && !no_hash {
             let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
             let bits = self.coerce_i64(v)?;
-            let p = self
-                .llvm
-                .builder
-                .build_int_to_ptr(bits, ptr_ty, "set_lin")
-                .unwrap();
+            let p =
+                crate::error::llvm(self.llvm.builder.build_int_to_ptr(bits, ptr_ty, "set_lin"))?;
             let f = self.runtime_fn("lumia_set_finish")?;
-            let out = self
-                .llvm
-                .builder
-                .build_call(f, &[p.into()], "set_fin")
-                .unwrap()
+            let __call4 =
+                crate::error::llvm(self.llvm.builder.build_call(f, &[p.into()], "set_fin"))?;
+
+            let out = __call4
                 .try_as_basic_value()
                 .basic()
-                .unwrap()
+                .context("call return value")?
                 .into_pointer_value();
-            Ok(self
-                .llvm
-                .builder
-                .build_ptr_to_int(out, self.llvm.i64_ty, "set_i64")
-                .unwrap()
-                .into())
+            Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
+                out,
+                self.llvm.i64_ty,
+                "set_i64",
+            ))?
+            .into())
         } else {
             Ok(v)
         }
@@ -153,64 +148,58 @@ impl<'ctx> Codegen<'ctx> {
             .const_int((1 + flat_pairs.len() as u64) * 8, false);
         let type_id = self.llvm.context.i32_type().const_int(tid as u64, false);
         let alloc = self.runtime_fn("lumia_alloc")?;
-        let ptr = self
-            .llvm
-            .builder
-            .build_call(alloc, &[nbytes.into(), type_id.into()], "map_alloc")
-            .unwrap()
+        let __call5 = crate::error::llvm(self.llvm.builder.build_call(
+            alloc,
+            &[nbytes.into(), type_id.into()],
+            "map_alloc",
+        ))?;
+
+        let ptr = __call5
             .try_as_basic_value()
             .basic()
-            .unwrap()
+            .context("call return value")?
             .into_pointer_value();
         let len_slot = unsafe {
+            crate::error::llvm(self.llvm.builder.build_gep(
+                self.llvm.i64_ty,
+                ptr,
+                &[self.llvm.i64_ty.const_int(0, false)],
+                "len_slot",
+            ))?
+        };
+        crate::error::llvm(
             self.llvm
                 .builder
-                .build_gep(
-                    self.llvm.i64_ty,
-                    ptr,
-                    &[self.llvm.i64_ty.const_int(0, false)],
-                    "len_slot",
-                )
-                .unwrap()
-        };
-        self.llvm
-            .builder
-            .build_store(len_slot, self.llvm.i64_ty.const_int(n_pairs, false))
-            .unwrap();
+                .build_store(len_slot, self.llvm.i64_ty.const_int(n_pairs, false)),
+        )?;
         for (i, e) in flat_pairs.iter().enumerate() {
             let v = self.coerce_i64(self.local(*e)?)?;
             let slot = unsafe {
-                self.llvm
-                    .builder
-                    .build_gep(
-                        self.llvm.i64_ty,
-                        ptr,
-                        &[self.llvm.i64_ty.const_int((i + 1) as u64, false)],
-                        "kv",
-                    )
-                    .unwrap()
+                crate::error::llvm(self.llvm.builder.build_gep(
+                    self.llvm.i64_ty,
+                    ptr,
+                    &[self.llvm.i64_ty.const_int((i + 1) as u64, false)],
+                    "kv",
+                ))?
             };
             crate::error::llvm(self.llvm.builder.build_store(slot, v))?;
         }
         let ptr = if !no_hash && (n_pairs > 8 || matches!(repr, lumia_core::MapRepr::HashOrdered)) {
             let f = self.runtime_fn("lumia_map_finish")?;
-            self.llvm
-                .builder
-                .build_call(f, &[ptr.into()], "map_fin")
-                .unwrap()
+            crate::error::llvm(self.llvm.builder.build_call(f, &[ptr.into()], "map_fin"))?
                 .try_as_basic_value()
                 .basic()
-                .unwrap()
+                .context("call return value")?
                 .into_pointer_value()
         } else {
             ptr
         };
-        Ok(self
-            .llvm
-            .builder
-            .build_ptr_to_int(ptr, self.llvm.i64_ty, "map_as_i64")
-            .unwrap()
-            .into())
+        Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
+            ptr,
+            self.llvm.i64_ty,
+            "map_as_i64",
+        ))?
+        .into())
     }
 
     pub(crate) fn emit_value_alloc_adt(
@@ -231,14 +220,16 @@ impl<'ctx> Codegen<'ctx> {
             .i32_type()
             .const_int(TYPE_ADT as u64, false);
         let alloc = self.runtime_fn("lumia_alloc")?;
-        let ptr = self
-            .llvm
-            .builder
-            .build_call(alloc, &[nbytes.into(), type_id.into()], "adt_alloc")
-            .unwrap()
+        let __call6 = crate::error::llvm(self.llvm.builder.build_call(
+            alloc,
+            &[nbytes.into(), type_id.into()],
+            "adt_alloc",
+        ))?;
+
+        let ptr = __call6
             .try_as_basic_value()
             .basic()
-            .unwrap()
+            .context("call return value")?
             .into_pointer_value();
         let float_mask = self.adt_float_mask_from_fields(fields);
         if float_mask != 0 {
@@ -246,53 +237,49 @@ impl<'ctx> Codegen<'ctx> {
                 .llvm
                 .module
                 .get_function("lumia_adt_set_float_mask")
-                .unwrap();
+                .context("module function")?;
             let m = self
                 .llvm
                 .context
                 .i32_type()
                 .const_int(float_mask as u64, false);
-            self.llvm
-                .builder
-                .build_call(setm, &[ptr.into(), m.into()], "adt_fmask")
-                .unwrap();
+            crate::error::llvm(self.llvm.builder.build_call(
+                setm,
+                &[ptr.into(), m.into()],
+                "adt_fmask",
+            ))?;
         }
         let tag_slot = unsafe {
+            crate::error::llvm(self.llvm.builder.build_gep(
+                self.llvm.i64_ty,
+                ptr,
+                &[self.llvm.i64_ty.const_int(0, false)],
+                "tag_slot",
+            ))?
+        };
+        crate::error::llvm(
             self.llvm
                 .builder
-                .build_gep(
-                    self.llvm.i64_ty,
-                    ptr,
-                    &[self.llvm.i64_ty.const_int(0, false)],
-                    "tag_slot",
-                )
-                .unwrap()
-        };
-        self.llvm
-            .builder
-            .build_store(tag_slot, self.llvm.i64_ty.const_int(tag as u64, false))
-            .unwrap();
+                .build_store(tag_slot, self.llvm.i64_ty.const_int(tag as u64, false)),
+        )?;
         for (i, e) in fields.iter().enumerate() {
             let v = self.coerce_i64(self.local(*e)?)?;
             let slot = unsafe {
-                self.llvm
-                    .builder
-                    .build_gep(
-                        self.llvm.i64_ty,
-                        ptr,
-                        &[self.llvm.i64_ty.const_int((i + 1) as u64, false)],
-                        "adt_f",
-                    )
-                    .unwrap()
+                crate::error::llvm(self.llvm.builder.build_gep(
+                    self.llvm.i64_ty,
+                    ptr,
+                    &[self.llvm.i64_ty.const_int((i + 1) as u64, false)],
+                    "adt_f",
+                ))?
             };
             crate::error::llvm(self.llvm.builder.build_store(slot, v))?;
         }
-        Ok(self
-            .llvm
-            .builder
-            .build_ptr_to_int(ptr, self.llvm.i64_ty, "adt_as_i64")
-            .unwrap()
-            .into())
+        Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
+            ptr,
+            self.llvm.i64_ty,
+            "adt_as_i64",
+        ))?
+        .into())
     }
 
     pub(crate) fn emit_heap_array(
@@ -304,50 +291,47 @@ impl<'ctx> Codegen<'ctx> {
         let nbytes = self.llvm.i64_ty.const_int((1 + n) * 8, false);
         let type_id = self.llvm.context.i32_type().const_int(type_id, false);
         let alloc = self.runtime_fn("lumia_alloc")?;
-        let ptr = self
-            .llvm
-            .builder
-            .build_call(alloc, &[nbytes.into(), type_id.into()], "arr_alloc")
-            .unwrap()
+        let __call7 = crate::error::llvm(self.llvm.builder.build_call(
+            alloc,
+            &[nbytes.into(), type_id.into()],
+            "arr_alloc",
+        ))?;
+
+        let ptr = __call7
             .try_as_basic_value()
             .basic()
-            .unwrap()
+            .context("call return value")?
             .into_pointer_value();
         let len_slot = unsafe {
+            crate::error::llvm(self.llvm.builder.build_gep(
+                self.llvm.i64_ty,
+                ptr,
+                &[self.llvm.i64_ty.const_int(0, false)],
+                "len_slot",
+            ))?
+        };
+        crate::error::llvm(
             self.llvm
                 .builder
-                .build_gep(
-                    self.llvm.i64_ty,
-                    ptr,
-                    &[self.llvm.i64_ty.const_int(0, false)],
-                    "len_slot",
-                )
-                .unwrap()
-        };
-        self.llvm
-            .builder
-            .build_store(len_slot, self.llvm.i64_ty.const_int(n, false))
-            .unwrap();
+                .build_store(len_slot, self.llvm.i64_ty.const_int(n, false)),
+        )?;
         for (i, e) in elems.iter().enumerate() {
             let v = self.coerce_i64(self.local(*e)?)?;
             let slot = unsafe {
-                self.llvm
-                    .builder
-                    .build_gep(
-                        self.llvm.i64_ty,
-                        ptr,
-                        &[self.llvm.i64_ty.const_int((i + 1) as u64, false)],
-                        "elem",
-                    )
-                    .unwrap()
+                crate::error::llvm(self.llvm.builder.build_gep(
+                    self.llvm.i64_ty,
+                    ptr,
+                    &[self.llvm.i64_ty.const_int((i + 1) as u64, false)],
+                    "elem",
+                ))?
             };
             crate::error::llvm(self.llvm.builder.build_store(slot, v))?;
         }
-        Ok(self
-            .llvm
-            .builder
-            .build_ptr_to_int(ptr, self.llvm.i64_ty, "arr_as_i64")
-            .unwrap()
-            .into())
+        Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
+            ptr,
+            self.llvm.i64_ty,
+            "arr_as_i64",
+        ))?
+        .into())
     }
 }

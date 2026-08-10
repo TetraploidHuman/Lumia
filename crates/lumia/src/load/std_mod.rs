@@ -14,6 +14,8 @@ pub(super) fn is_std(path: &[String]) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum StdKind {
     /// Bodies are compiler builtins; `std/<mod>.lm` only lists `@exports`.
+    /// (Unused for current std modules — kept for a possible hybrid later.)
+    #[allow(dead_code)]
     Builtin,
     /// Real Lumia source under `std/<mod>.lm`, inlined like a user module.
     Source,
@@ -23,8 +25,8 @@ pub(super) enum StdKind {
 pub(super) fn std_module(path: &[String]) -> Result<(&'static str, StdKind)> {
     let key: Vec<&str> = path.iter().map(|s| s.as_str()).collect();
     match key.as_slice() {
-        ["std", "io"] => Ok(("io.lm", StdKind::Builtin)),
-        ["std", "string"] => Ok(("string.lm", StdKind::Builtin)),
+        ["std", "io"] => Ok(("io.lm", StdKind::Source)),
+        ["std", "string"] => Ok(("string.lm", StdKind::Source)),
         ["std", "option"] => Ok(("option.lm", StdKind::Source)),
         ["std", "result"] => Ok(("result.lm", StdKind::Source)),
         _ => bail!(

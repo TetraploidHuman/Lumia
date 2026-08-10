@@ -8,7 +8,8 @@ mod state;
 mod unify;
 
 pub use module::{
-    infer_module, infer_module_with_options, infer_module_with_visibility, InferOptions,
+    infer_module, infer_module_recovering, infer_module_with_options,
+    infer_module_with_visibility, InferOptions,
 };
 
 use crate::types::{at, Effect, NameVisibility, Scheme, Type, TypeError};

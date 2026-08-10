@@ -2,8 +2,8 @@
 
 use super::manifest::{load_manifest, resolve_dep_path, DepSpec, Manifest};
 use anyhow::{bail, Context, Result};
+use rustc_hash::FxHashSet as HashSet;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 

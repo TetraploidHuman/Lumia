@@ -90,6 +90,8 @@ pub fn optimize(module: &mut CoreModule, opts: &OptOptions) {
     ];
     if opts.release {
         passes.push(Box::new(InlinePass));
+        // Inline exposes fresh literals / builtins — fold again before fusion/repr.
+        passes.push(Box::new(ConstFoldPass));
         passes.push(Box::new(ConcatIdentPass));
         passes.push(Box::new(ReprSelect));
         passes.push(Box::new(CopyElimPass));
@@ -119,6 +121,7 @@ pub fn pass_names(release: bool) -> Vec<&'static str> {
             "licm",
             "escape",
             "inline",
+            "const_fold",
             "concat_ident",
             "repr_select",
             "copy_elim",

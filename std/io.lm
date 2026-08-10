@@ -1,7 +1,12 @@
 /// Standard I/O surface (`import std.io.{println, …}`).
 ///
-/// Implementations are compiler builtins. The loader reads `@exports` from this
-/// file as the single source of truth for allowed import names.
+/// Thin wrappers: bodies lower to compiler builtins (`println` / `assert` /
+/// `readStdin`) so polymorphic show / assert messages stay intact. Importing
+/// any name still registers these vals for `as` aliases and first-class use.
 ///
 /// @exports println, readStdin, assert
 module io
+
+val readStdin = { readStdin() }
+val println = { x -> println(x) }
+val assert = { c -> assert(c) }

@@ -26,6 +26,8 @@ pub(crate) struct FunTables<'ctx> {
     pub fun_param_tys: HashMap<String, Vec<Type>>,
     pub fun_param0_identity: HashSet<String>,
     pub external_funs: HashSet<String>,
+    /// `foreign` symbols that use the `lumia_rt` object ABI (no String↔cstr).
+    pub runtime_external_funs: HashSet<String>,
     pub funref_locals: HashMap<u32, String>,
     pub current_fun: String,
     pub tco_peers: HashSet<String>,

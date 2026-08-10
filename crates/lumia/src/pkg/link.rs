@@ -2,7 +2,7 @@
 
 use super::manifest::{load_manifest, resolve_dep_path, Manifest};
 use anyhow::{bail, Result};
-use std::collections::HashSet;
+use rustc_hash::FxHashSet as HashSet;
 use std::path::{Path, PathBuf};
 
 /// Collect `package.link` flags from the root manifest (+ transitive, unique).

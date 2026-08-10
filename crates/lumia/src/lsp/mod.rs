@@ -1,23 +1,39 @@
 //! LSP over stdio (JSON-RPC + Content-Length).
 //!
-//! - textDocument/didOpen|didChange → publishDiagnostics (editor overlays)
+//! - textDocument/didOpen|didChange|didClose → publishDiagnostics (editor overlays)
 //! - textDocument/hover → type from TypedModule.type_at / fun_types
 //! - textDocument/definition → decls (cross-file via Span.file)
 //! - textDocument/completion → in-scope names + common methods
 //! - textDocument/formatting → `lumia fmt` pretty-print
+//! - textDocument/documentSymbol → outline from module items
+//! - textDocument/inlayHint → binding / param / call-return types
 
 mod analyze;
+mod completion;
+mod cursor;
+mod definition;
+mod diagnostics;
+mod formatting;
+mod hover;
+mod inlay;
 mod protocol;
+mod state;
+mod symbols;
+mod uri;
 
-use analyze::{
-    on_completion, on_definition, on_did_change, on_did_open, on_formatting, on_hover, state_lock,
-    State,
-};
+use analyze::{on_did_change, on_did_close, on_did_open};
 use anyhow::Result;
+use completion::on_completion;
+use definition::on_definition;
+use formatting::on_formatting;
+use hover::on_hover;
+use inlay::on_inlay_hint;
 use protocol::{read_message, write_message};
 use rustc_hash::FxHashMap as HashMap;
 use serde_json::{json, Value};
+use state::{state_lock, State};
 use std::io;
+use symbols::on_document_symbol;
 
 pub fn run_lsp() -> Result<()> {
     *state_lock() = Some(State {
@@ -52,9 +68,11 @@ fn handle_message(msg: Value) -> Result<Option<Value>> {
                     "hoverProvider": true,
                     "definitionProvider": true,
                     "completionProvider": { "triggerCharacters": ["."] },
-                    "documentFormattingProvider": true
+                    "documentFormattingProvider": true,
+                    "documentSymbolProvider": true,
+                    "inlayHintProvider": true
                 },
-                "serverInfo": { "name": "lumia-lsp", "version": "0.3.0" }
+                "serverInfo": { "name": "lumia-lsp", "version": "0.3.1" }
             }
         }))),
         Some("initialized") | Some("shutdown") => {
@@ -76,6 +94,24 @@ fn handle_message(msg: Value) -> Result<Option<Value>> {
                 on_did_change(params)?;
             }
             Ok(None)
+        }
+        Some("textDocument/didClose") => {
+            if let Some(params) = msg.get("params") {
+                on_did_close(params)?;
+            }
+            Ok(None)
+        }
+        Some("textDocument/documentSymbol") => {
+            let result = on_document_symbol(msg.get("params"))?;
+            Ok(Some(
+                json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+            ))
+        }
+        Some("textDocument/inlayHint") => {
+            let result = on_inlay_hint(msg.get("params"))?;
+            Ok(Some(
+                json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+            ))
         }
         Some("textDocument/hover") => {
             let result = on_hover(msg.get("params"))?;
@@ -118,24 +154,8 @@ fn handle_message(msg: Value) -> Result<Option<Value>> {
 
 #[cfg(test)]
 mod tests {
-    use super::analyze::{path_to_uri, uri_to_path};
     use super::protocol::{read_message, MAX_LSP_CONTENT_LENGTH};
     use std::io::Cursor;
-    use std::path::{Path, PathBuf};
-
-    #[test]
-    fn uri_to_path_decodes_and_strips_file_prefix() {
-        let p = uri_to_path("file:///tmp/hello%20world.lm");
-        assert_eq!(p, PathBuf::from("/tmp/hello world.lm"));
-        let p = uri_to_path("file://localhost/tmp/x.lm");
-        assert_eq!(p, PathBuf::from("/tmp/x.lm"));
-        let p = uri_to_path("file:///C:/Users/me/x.lm");
-        assert_eq!(p, PathBuf::from("C:/Users/me/x.lm"));
-        assert_eq!(
-            path_to_uri(Path::new("C:/Users/me/x.lm")),
-            "file:///C:/Users/me/x.lm"
-        );
-    }
 
     #[test]
     fn read_message_rejects_huge_content_length() {

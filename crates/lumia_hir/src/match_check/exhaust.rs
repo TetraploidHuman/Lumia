@@ -61,7 +61,7 @@ pub(crate) fn check_pats_cover(
     products: &HashMap<String, Vec<String>>,
     path: &str,
 ) -> Result<(), LowerError> {
-    use std::collections::HashSet;
+    use rustc_hash::FxHashSet as HashSet;
 
     let mut flat = Vec::new();
     for p in pats {
@@ -317,8 +317,8 @@ pub(crate) fn check_pats_cover(
 /// `[]` covers length 0; `[e0,…,ek-1, ..rest]` covers all lengths `>= k`.
 /// Together they must cover `0..`.
 pub(crate) fn list_patterns_exhaustive(pats: &[&Pattern]) -> bool {
-    use std::collections::HashSet;
-    let mut exact: HashSet<usize> = HashSet::new();
+    use rustc_hash::FxHashSet as HashSet;
+    let mut exact: HashSet<usize> = HashSet::default();
     let mut rest_mins: Vec<usize> = Vec::new();
     for p in pats {
         match p {

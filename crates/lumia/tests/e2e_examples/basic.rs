@@ -147,6 +147,15 @@ fn e2e_doc_std_io() {
 
 e2e_ok!(e2e_import_as, "examples/import_as.lm", "42", "42");
 
+e2e_ok!(
+    e2e_std_string,
+    "examples/std_string.lm",
+    "Hello",
+    "hello",
+    "true",
+    "a/b/c"
+);
+
 e2e_ok!(e2e_use_priv, "examples/use_priv.lm", "42", "42");
 
 e2e_ok!(e2e_use_pkg, "examples/use_pkg.lm", "42", "42");

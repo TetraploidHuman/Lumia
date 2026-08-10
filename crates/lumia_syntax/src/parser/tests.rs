@@ -236,3 +236,30 @@ val main = {
     .expect("parse not");
     assert_eq!(m.name, "T");
 }
+
+#[test]
+fn recover_skips_bad_item_keeps_later() {
+    let src = r#"
+module Main
+val add = { a, b -> a + b
+val main = {
+    1
+}
+"#;
+    let out = crate::parse_module_recovering(src);
+    assert!(!out.errors.is_empty(), "expected parse error on add");
+    let names: Vec<_> = out
+        .module
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            crate::Item::Val(v) => Some(v.name.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        names.contains(&"main"),
+        "expected to recover `main`, got {names:?}, errors={:?}",
+        out.errors
+    );
+}

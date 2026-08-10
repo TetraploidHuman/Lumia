@@ -108,11 +108,26 @@ fn emit_llvm_module<'ctx>(
         } else {
             f.name.clone()
         };
-        let fv = if f.external.is_some() {
-            let fn_ty = c_abi_fn_type(context, &f.param_tys, &f.ret_ty);
-            let fv = cg.llvm.module.add_function(&name, fn_ty, None);
-            fv.set_linkage(inkwell::module::Linkage::External);
+        let fv = if let Some(sym) = &f.external {
+            let runtime_abi = sym.starts_with("lumia_");
+            // Prefer the declaration from `declare_runtime` when present so
+            // LLVM types match `lumia_rt` (e.g. Bool as i64, List as ptr).
+            let fv = if let Some(existing) = cg.llvm.module.get_function(sym) {
+                existing
+            } else {
+                let fn_ty = if runtime_abi {
+                    runtime_abi_fn_type(context, &f.param_tys, &f.ret_ty)
+                } else {
+                    c_abi_fn_type(context, &f.param_tys, &f.ret_ty)
+                };
+                let fv = cg.llvm.module.add_function(sym, fn_ty, None);
+                fv.set_linkage(inkwell::module::Linkage::External);
+                fv
+            };
             cg.funs.external_funs.insert(f.name.clone());
+            if runtime_abi {
+                cg.funs.runtime_external_funs.insert(f.name.clone());
+            }
             fv
         } else {
             let fn_ty = cg.llvm.i64_ty.fn_type(
@@ -205,7 +220,7 @@ fn emit_c_main<'ctx>(
     let main_fn = module.add_function("main", main_ty, None);
     let entry = context.append_basic_block(main_fn, "entry");
     builder.position_at_end(entry);
-    emit_trait_dict_registration(context, module, builder, core);
+    let _ = emit_trait_dict_registration(context, module, builder, core);
     if let Some(user) = module.get_function("lumia_user_main") {
         let _ = builder.build_call(user, &[], "call_main");
     }
@@ -218,9 +233,9 @@ fn emit_trait_dict_registration<'ctx>(
     module: &LlvmModule<'ctx>,
     builder: &Builder<'ctx>,
     core: &CoreModule,
-) {
+) -> Result<()> {
     let Some(reg) = module.get_function("lumia_dict_register") else {
-        return;
+        return Ok(());
     };
     // (prefix, trait_id) — ids match lumia_rt::TRAIT_*.
     let specs: &[(&str, i64)] = &[
@@ -248,22 +263,21 @@ fn emit_trait_dict_registration<'ctx>(
             };
             let ty_str = builder
                 .build_global_string_ptr(ty_name, &format!(".dict.ty.{ty_name}"))
-                .expect("dict type name");
+                .context("dict type name")?;
             let tid = context.i32_type().const_int(trait_id as u64, false);
-            builder
-                .build_call(
-                    reg,
-                    &[
-                        tid.into(),
-                        ty_str.as_pointer_value().into(),
-                        fv.as_global_value().as_pointer_value().into(),
-                    ],
-                    "",
-                )
-                .unwrap();
+            crate::error::llvm(builder.build_call(
+                reg,
+                &[
+                    tid.into(),
+                    ty_str.as_pointer_value().into(),
+                    fv.as_global_value().as_pointer_value().into(),
+                ],
+                "",
+            ))?;
             break;
         }
     }
+    Ok(())
 }
 
 pub(crate) struct Codegen<'ctx> {
@@ -324,6 +338,32 @@ fn c_abi_fn_type<'ctx>(
         Type::Float => f64_ty.fn_type(&meta, false),
         Type::Bool => i8_ty.fn_type(&meta, false),
         Type::String => ptr_ty.fn_type(&meta, false),
+        _ => i64_ty.fn_type(&meta, false),
+    }
+}
+
+/// ABI for `foreign` symbols implemented in `lumia_rt` (`lumia_*`):
+/// String/List as heap object pointers; Bool/Char as i64 (not C `_Bool`).
+fn runtime_abi_fn_type<'ctx>(
+    context: &'ctx Context,
+    params: &[Type],
+    ret: &Type,
+) -> inkwell::types::FunctionType<'ctx> {
+    let i64_ty = context.i64_type();
+    let f64_ty = context.f64_type();
+    let ptr_ty = context.ptr_type(AddressSpace::default());
+    let meta: Vec<BasicMetadataTypeEnum> = params
+        .iter()
+        .map(|t| match t {
+            Type::Float => f64_ty.into(),
+            Type::String | Type::List(_) => ptr_ty.into(),
+            _ => i64_ty.into(),
+        })
+        .collect();
+    match ret {
+        Type::Unit => context.void_type().fn_type(&meta, false),
+        Type::Float => f64_ty.fn_type(&meta, false),
+        Type::String | Type::List(_) => ptr_ty.fn_type(&meta, false),
         _ => i64_ty.fn_type(&meta, false),
     }
 }

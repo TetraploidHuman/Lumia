@@ -42,15 +42,9 @@ fn ensure_prelude_adt(
     });
 }
 
-pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
-    let mut adts = Vec::new();
-    let mut products = Vec::new();
-    let mut ctors = HashMap::default();
-    let mut product_map = HashMap::default();
-    let mut product_fields = HashMap::default();
-    let mut ambiguous_product_fields: HashSet<String> = HashSet::default();
-    // Builtin trait prerequisites (DESIGN §3.6); user `trait` decls may extend.
-    let mut trait_requires: HashMap<String, Vec<String>> = [
+/// Builtin trait prerequisites (DESIGN §3.6); user `trait` decls may extend.
+fn builtin_trait_requires() -> HashMap<String, Vec<String>> {
+    [
         ("Ord".into(), vec!["Eq".into()]),
         ("Eq".into(), vec![]),
         ("Hash".into(), vec![]),
@@ -58,8 +52,25 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
         ("Num".into(), vec![]),
     ]
     .into_iter()
-    .collect();
-    let mut instances: HashSet<(String, String)> = HashSet::default();
+    .collect()
+}
+
+struct TypeScan {
+    adts: Vec<AdtDef>,
+    products: Vec<ProductDef>,
+    ctors: HashMap<String, CtorInfo>,
+    product_map: HashMap<String, Vec<String>>,
+    product_fields: HashMap<String, (String, usize)>,
+    ambiguous_product_fields: HashSet<String>,
+}
+
+fn scan_type_decls(m: &lumia_syntax::Module) -> TypeScan {
+    let mut adts = Vec::new();
+    let mut products = Vec::new();
+    let mut ctors = HashMap::default();
+    let mut product_map = HashMap::default();
+    let mut product_fields = HashMap::default();
+    let mut ambiguous_product_fields: HashSet<String> = HashSet::default();
     for item in &m.items {
         if let lumia_syntax::Item::Type(t) = item {
             match &t.kind {
@@ -113,11 +124,26 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
             }
         }
     }
-
     // Prelude ADTs: inject Option / Result when the module does not declare them.
     ensure_prelude_adt(&mut adts, &mut ctors, "Option", &[("Some", 1), ("None", 0)]);
     ensure_prelude_adt(&mut adts, &mut ctors, "Result", &[("Ok", 1), ("Err", 1)]);
+    TypeScan {
+        adts,
+        products,
+        ctors,
+        product_map,
+        product_fields,
+        ambiguous_product_fields,
+    }
+}
 
+fn collect_instances(
+    m: &lumia_syntax::Module,
+    adts: &[AdtDef],
+    product_map: &HashMap<String, Vec<String>>,
+    trait_requires: &mut HashMap<String, Vec<String>>,
+) -> Result<HashSet<(String, String)>, LowerError> {
+    let mut instances: HashSet<(String, String)> = HashSet::default();
     for item in &m.items {
         match item {
             lumia_syntax::Item::Trait(t) => {
@@ -160,7 +186,6 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
             instances.insert((tr.into(), name.clone()));
         }
     }
-
     for (tr, ty) in &instances {
         if let Some(reqs) = trait_requires.get(tr) {
             for req in reqs {
@@ -187,10 +212,11 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
             }
         }
     }
+    Ok(instances)
+}
 
-    check_module_matches(m, &ctors, &adts, &product_map)?;
-
-    // Pre-register top-level function names for `--parallel` FunRef maps.
+/// Pre-register top-level function names for `--parallel` FunRef maps.
+fn collect_toplevel_funs(m: &lumia_syntax::Module) -> HashSet<String> {
     let mut toplevel_funs = HashSet::default();
     for item in &m.items {
         match item {
@@ -212,6 +238,10 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
             _ => {}
         }
     }
+    toplevel_funs
+}
+
+fn collect_fold_assoc(m: &lumia_syntax::Module) -> HashSet<String> {
     let mut toplevel_fold_assoc = HashSet::default();
     for item in &m.items {
         if let lumia_syntax::Item::Val(v) = item {
@@ -234,6 +264,26 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
             }
         }
     }
+    toplevel_fold_assoc
+}
+
+pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
+    let TypeScan {
+        adts,
+        products,
+        ctors,
+        product_map,
+        mut product_fields,
+        ambiguous_product_fields,
+    } = scan_type_decls(m);
+
+    let mut trait_requires = builtin_trait_requires();
+    let instances = collect_instances(m, &adts, &product_map, &mut trait_requires)?;
+
+    check_module_matches(m, &ctors, &adts, &product_map)?;
+
+    let toplevel_funs = collect_toplevel_funs(m);
+    let toplevel_fold_assoc = collect_fold_assoc(m);
 
     for f in &ambiguous_product_fields {
         product_fields.remove(f);

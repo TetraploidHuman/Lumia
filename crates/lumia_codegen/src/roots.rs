@@ -192,7 +192,7 @@ impl<'ctx> Codegen<'ctx> {
             .llvm
             .builder
             .build_global_string_ptr(name, &format!(".fname.{name}"))
-            .expect("global string");
+            .context("global string")?;
         crate::error::llvm(
             self.llvm
                 .builder

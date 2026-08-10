@@ -132,6 +132,45 @@ val main = {
         );
     }
 
+    /// Transitive FunRef HOF needs multiple clone rounds but must converge
+    /// well under [`super::specialize::`]-documented `MAX_MONO_CLONE_ROUNDS`.
+    #[test]
+    fn mono_hof_chain_converges_with_few_clones() {
+        let core = compile_source_to_core(
+            r#"
+module M
+type Option { Some(value) None }
+val dbl = { x -> x + x }
+val optMap = { o, f ->
+    o match {
+        None -> None
+        Some(v) -> Some(f(v))
+    }
+}
+val main = {
+    optMap(Some(1.5), dbl)
+}
+"#,
+        )
+        .expect("core");
+        let mono_clones = core.functions.iter().filter(|f| f.is_mono_clone()).count();
+        assert!(
+            mono_clones >= 1 && mono_clones < 8,
+            "expected a small number of mono clones, got {mono_clones}: {:?}",
+            core.functions
+                .iter()
+                .filter(|f| f.is_mono_clone())
+                .map(|f| &f.name)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            core.functions
+                .iter()
+                .any(|f| f.name.contains("dbl") && f.name.contains("$Float")),
+            "expected transitive dbl$Float clone"
+        );
+    }
+
     #[test]
     fn specialize_clones_map_get_key_mangling() {
         let core = compile_source_to_core(

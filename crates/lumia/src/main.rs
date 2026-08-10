@@ -71,7 +71,11 @@ enum Commands {
         output: Option<PathBuf>,
     },
     /// Language server (stdio JSON-RPC)
-    Lsp,
+    Lsp {
+        /// Accepted for VS Code / Cursor clients (`TransportKind.stdio` adds this).
+        #[arg(long = "stdio", hide = true)]
+        _stdio: bool,
+    },
     /// Package manifest / lockfile helpers
     Pkg {
         #[command(subcommand)]
@@ -164,7 +168,7 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        Commands::Lsp => lsp::run_lsp(),
+        Commands::Lsp { .. } => lsp::run_lsp(),
         Commands::Pkg { cmd } => match cmd {
             PkgCmd::Init { name } => {
                 let path = pkg::init_manifest(Path::new("."), &name)?;
@@ -274,30 +278,34 @@ fn option_ctor_tags(adts: &[lumia_hir::AdtDef]) -> (i64, i64) {
     (0, 1)
 }
 
+/// Workspace root that contains this compiler (`…/Lumia`), baked in at build time.
+/// Used so `lumia build` works outside the repo (e.g. `~/文档`) without hunting cwd.
+fn compiler_workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("lumia crate must live at <workspace>/crates/lumia")
+        .to_path_buf()
+}
+
 fn workspace_target_dir() -> PathBuf {
     if let Ok(t) = std::env::var("CARGO_TARGET_DIR") {
         return PathBuf::from(t);
     }
-    let mut dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    for _ in 0..6 {
-        let cand = dir.join("target");
-        if cand.exists() {
-            return cand;
-        }
-        if !dir.pop() {
-            break;
-        }
-    }
-    PathBuf::from("target")
+    compiler_workspace_root().join("target")
 }
 
 fn ensure_runtime_built(release: bool) -> Result<()> {
+    let root = compiler_workspace_root();
     let mut cmd = Command::new("cargo");
+    cmd.current_dir(&root);
     cmd.arg("build").arg("-p").arg("lumia_rt");
     if release {
         cmd.arg("--release");
     }
-    let status = cmd.status().context("spawn cargo build -p lumia_rt")?;
+    let status = cmd
+        .status()
+        .with_context(|| format!("spawn cargo build -p lumia_rt in {}", root.display()))?;
     if !status.success() {
         anyhow::bail!("failed to build lumia_rt");
     }
