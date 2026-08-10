@@ -9,8 +9,8 @@ fn e2e_trait_ord() {
 
 #[test]
 fn e2e_trait_show() {
-    // Custom Show override; structural `#tag(fields)` for types without a method body.
-    run_example("examples/trait_show.lm", &["Point", "#0(9)"]);
+    // Custom Show override; named structural Show for types without a method body.
+    run_example("examples/trait_show.lm", &["Point", "Box(9)"]);
 }
 
 #[test]

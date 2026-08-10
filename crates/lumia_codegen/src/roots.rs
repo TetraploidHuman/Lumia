@@ -6,7 +6,6 @@ use inkwell::types::IntType;
 use inkwell::values::{IntValue, PointerValue};
 use inkwell::AddressSpace;
 use lumia_core::{Block, Op, Value};
-use lumia_hir::Builtin;
 use lumia_ty::Type;
 
 impl<'ctx> Codegen<'ctx> {
@@ -44,36 +43,11 @@ impl<'ctx> Codegen<'ctx> {
                 .get(fun)
                 .map(Self::type_may_heap)
                 .unwrap_or(true),
-            Value::Builtin { name, .. } => matches!(
-                name,
-                Builtin::ListGet
-                    | Builtin::ListSlice
-                    | Builtin::ListAppend
-                    | Builtin::ListConcat
-                    | Builtin::ListTake
-                    | Builtin::ListReverse
-                    | Builtin::ListSort
-                    | Builtin::ListSortByKeys
-                    | Builtin::ListParMap
-                    | Builtin::ListJoin
-                    | Builtin::MapSet
-                    | Builtin::MapRemove
-                    | Builtin::SetInsert
-                    | Builtin::MapKeys
-                    | Builtin::MapValues
-                    | Builtin::MapItems
-                    | Builtin::Elems
-                    | Builtin::Range
-                    | Builtin::RangeInclusive
-                    | Builtin::Show
-                    | Builtin::StrTrim
-                    | Builtin::StrSplit
-                    | Builtin::StrSubstring
-                    | Builtin::StrToLower
-                    | Builtin::StrToUpper
-                    | Builtin::ReadStdin
-                    | Builtin::AdtField
-            ),
+            Value::Builtin { name, .. } => match name.result_heap() {
+                lumia_hir::ResultHeap::Never => false,
+                lumia_hir::ResultHeap::Always => true,
+                lumia_hir::ResultHeap::Typed => Self::type_may_heap(&self.infer_value_ty(v)),
+            },
             _ => false,
         }
     }

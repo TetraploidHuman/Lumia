@@ -302,9 +302,9 @@ mod tests {
 
     #[test]
     fn tco_scc_self_recursive() {
-        let core = CoreModule {
-            name: "M".into(),
-            functions: vec![fun(
+        let core = CoreModule::with_functions(
+            "M",
+            vec![fun(
                 "sum",
                 Block {
                     params: vec![],
@@ -313,9 +313,7 @@ mod tests {
                 },
                 Some("sum"),
             )],
-            hash_adts: HashSet::default(),
-            trait_methods: HashMap::default(),
-        };
+        );
         let sccs = compute_tco_sccs(&core);
         assert!(
             sccs.contains_key("sum"),
@@ -344,12 +342,7 @@ mod tests {
             },
             Some("even"),
         );
-        let core = CoreModule {
-            name: "M".into(),
-            functions: vec![even, odd],
-            hash_adts: HashSet::default(),
-            trait_methods: HashMap::default(),
-        };
+        let core = CoreModule::with_functions("M", vec![even, odd]);
         let sccs = compute_tco_sccs(&core);
         assert!(sccs.contains_key("even"));
         assert!(sccs["even"].contains("odd"));
@@ -368,12 +361,7 @@ mod tests {
             Some("sum"),
         );
         f.external = Some("c_sum".into());
-        let core = CoreModule {
-            name: "M".into(),
-            functions: vec![f],
-            hash_adts: HashSet::default(),
-            trait_methods: HashMap::default(),
-        };
+        let core = CoreModule::with_functions("M", vec![f]);
         let sccs = compute_tco_sccs(&core);
         assert!(
             sccs.is_empty(),

@@ -30,7 +30,7 @@ impl<'ctx> Codegen<'ctx> {
         adt_name: &str,
         arg: BasicValueEnum<'ctx>,
     ) -> Result<Option<PointerValue<'ctx>>> {
-        let mangled = format!("__Show_{adt_name}_show");
+        let mangled = lumia_hir::mangle_trait_method("Show", adt_name, "show");
         let Some(fv) = self.funs.functions.get(&mangled).copied() else {
             return Ok(None);
         };
@@ -57,7 +57,7 @@ impl<'ctx> Codegen<'ctx> {
         left: IntValue<'ctx>,
         right: IntValue<'ctx>,
     ) -> Result<Option<IntValue<'ctx>>> {
-        let mangled = format!("__Eq_{adt_name}_eq");
+        let mangled = lumia_hir::mangle_trait_method("Eq", adt_name, "eq");
         let Some(fv) = self.funs.functions.get(&mangled).copied() else {
             return Ok(None);
         };
@@ -81,7 +81,7 @@ impl<'ctx> Codegen<'ctx> {
         left: IntValue<'ctx>,
         right: IntValue<'ctx>,
     ) -> Result<Option<IntValue<'ctx>>> {
-        let mangled = format!("__Ord_{adt_name}_less");
+        let mangled = lumia_hir::mangle_trait_method("Ord", adt_name, "less");
         let Some(fv) = self.funs.functions.get(&mangled).copied() else {
             return Ok(None);
         };
@@ -189,19 +189,71 @@ impl<'ctx> Codegen<'ctx> {
         .into_int_value())
     }
 
-    /// Structural ADT show) float_mask selects IEEE formatting per field index.
+    /// Structural ADT show; uses constructor / type names when known.
     pub(crate) fn emit_typed_adt_show(
         &mut self,
+        adt_name: &str,
         arg: BasicValueEnum<'ctx>,
         params: &[Type],
     ) -> Result<PointerValue<'ctx>> {
         let i = self.coerce_i64(arg)?;
         let mask = Self::adt_float_field_mask(params, &[]);
+        let mask_v = self.llvm.i64_ty.const_int(mask, false);
+        if let Some(names) = self.funs.adt_variant_names.get(adt_name).cloned() {
+            return self.emit_show_adt_named(i, mask_v, &names);
+        }
         let f = self.runtime_fn("lumia_show_adt")?;
         let call = crate::error::llvm(self.llvm.builder.build_call(
             f,
-            &[i.into(), self.llvm.i64_ty.const_int(mask, false).into()],
+            &[i.into(), mask_v.into()],
             "show_adt",
+        ))?;
+        Ok(call
+            .try_as_basic_value()
+            .basic()
+            .context("call return value")?
+            .into_pointer_value())
+    }
+
+    /// `lumia_show_adt_named(obj, mask, names_ptr, n)`.
+    pub(crate) fn emit_show_adt_named(
+        &mut self,
+        obj: IntValue<'ctx>,
+        mask: IntValue<'ctx>,
+        names: &[String],
+    ) -> Result<PointerValue<'ctx>> {
+        use inkwell::AddressSpace;
+        let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
+        let mut name_ptrs = Vec::with_capacity(names.len());
+        for (i, n) in names.iter().enumerate() {
+            let label = if n.is_empty() { "?" } else { n.as_str() };
+            let gv = self
+                .llvm
+                .builder
+                .build_global_string_ptr(label, &format!(".adt_name.{i}"))
+                .map_err(|e| anyhow::anyhow!("adt name lit: {e}"))?;
+            name_ptrs.push(gv.as_pointer_value());
+        }
+        let arr_ty = ptr_ty.array_type(names.len() as u32);
+        let arr = self.llvm.module.add_global(
+            arr_ty,
+            Some(AddressSpace::default()),
+            &format!(".adt_names.{}", names.join("_")),
+        );
+        arr.set_linkage(inkwell::module::Linkage::Private);
+        arr.set_constant(true);
+        arr.set_initializer(&ptr_ty.const_array(&name_ptrs));
+        let names_ptr = crate::error::llvm(self.llvm.builder.build_pointer_cast(
+            arr.as_pointer_value(),
+            ptr_ty,
+            "adt_names_ptr",
+        ))?;
+        let n = self.llvm.i64_ty.const_int(names.len() as u64, false);
+        let f = self.runtime_fn("lumia_show_adt_named")?;
+        let call = crate::error::llvm(self.llvm.builder.build_call(
+            f,
+            &[obj.into(), mask.into(), names_ptr.into(), n.into()],
+            "show_adt_named",
         ))?;
         Ok(call
             .try_as_basic_value()

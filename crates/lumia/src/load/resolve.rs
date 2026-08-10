@@ -343,9 +343,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lumia_diamond_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        fs::write(&dir.join("c.lm"), "module C\nval c = 1\n").unwrap();
-        fs::write(&dir.join("a.lm"), "module A\nimport c.{c}\nval a = c\n").unwrap();
-        fs::write(&dir.join("b.lm"), "module B\nimport c.{c}\nval b = c\n").unwrap();
+        fs::write(dir.join("c.lm"), "module C\nval c = 1\n").unwrap();
+        fs::write(dir.join("a.lm"), "module A\nimport c.{c}\nval a = c\n").unwrap();
+        fs::write(dir.join("b.lm"), "module B\nimport c.{c}\nval b = c\n").unwrap();
         let entry = dir.join("main.lm");
         fs::write(
             &entry,
@@ -368,8 +368,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lumia_dup_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        fs::write(&dir.join("a.lm"), "module A\nval conflict = 1\n").unwrap();
-        fs::write(&dir.join("b.lm"), "module B\nval conflict = 2\n").unwrap();
+        fs::write(dir.join("a.lm"), "module A\nval conflict = 1\n").unwrap();
+        fs::write(dir.join("b.lm"), "module B\nval conflict = 2\n").unwrap();
         let entry = dir.join("main.lm");
         fs::write(
             &entry,
@@ -389,8 +389,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lumia_cycle_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        fs::write(&dir.join("a.lm"), "module A\nimport b.{b}\nval a = b\n").unwrap();
-        fs::write(&dir.join("b.lm"), "module B\nimport a.{a}\nval b = a\n").unwrap();
+        fs::write(dir.join("a.lm"), "module A\nimport b.{b}\nval a = b\n").unwrap();
+        fs::write(dir.join("b.lm"), "module B\nimport a.{a}\nval b = a\n").unwrap();
         let entry = dir.join("main.lm");
         fs::write(&entry, "module Main\nimport a.{a}\nval main = a\n").unwrap();
         let err = load_program(&entry).unwrap_err().to_string();

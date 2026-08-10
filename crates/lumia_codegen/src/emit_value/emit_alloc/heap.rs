@@ -4,7 +4,7 @@ use super::super::super::Codegen;
 use anyhow::{bail, Context as AnyhowContext, Result};
 use inkwell::values::BasicValueEnum;
 use inkwell::AddressSpace;
-use lumia_abi::{list_type_id, map_type_id, set_type_id, TYPE_ADT};
+use lumia_abi::{adt_type_id, list_type_id, map_type_id, set_type_id};
 use lumia_core::Local;
 use lumia_ty::Type;
 
@@ -204,21 +204,22 @@ impl<'ctx> Codegen<'ctx> {
 
     pub(crate) fn emit_value_alloc_adt(
         &mut self,
-        _adt_name: &str,
+        adt_name: &str,
         tag: i64,
         fields: &[Local],
         repr: lumia_core::AdtRepr,
     ) -> Result<BasicValueEnum<'ctx>> {
         if matches!(repr, lumia_core::AdtRepr::LitAdt) {
-            return self.emit_stack_adt(tag, fields);
+            return self.emit_stack_adt(adt_name, tag, fields);
         }
         let n = fields.len() as u64;
         let nbytes = self.llvm.i64_ty.const_int((1 + n) * 8, false);
+        let kind = self.funs.adt_show_kinds.get(adt_name).copied().unwrap_or(0);
         let type_id = self
             .llvm
             .context
             .i32_type()
-            .const_int(TYPE_ADT as u64, false);
+            .const_int(adt_type_id(kind) as u64, false);
         let alloc = self.runtime_fn("lumia_alloc")?;
         let __call6 = crate::error::llvm(self.llvm.builder.build_call(
             alloc,

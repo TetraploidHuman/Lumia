@@ -1,5 +1,18 @@
 e2e_ok!(e2e_hello, "examples/hello.lm", "42");
 
+e2e_ok!(e2e_unit_print, "examples/unit_print.lm", "1", "Unit");
+
+e2e_ok!(e2e_color_show, "examples/color_show.lm", "A", "B", "C");
+
+e2e_ok!(
+    e2e_nested_show,
+    "examples/nested_show.lm",
+    "Some(A)",
+    "[A, B]",
+    "[Box(1), Box(2)]",
+    "Some(Box(9))"
+);
+
 e2e_ok!(
     e2e_bool_print,
     "examples/bool_print.lm",

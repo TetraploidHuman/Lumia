@@ -2,7 +2,7 @@
   "name": "lumia",
   "displayName": "Lumia",
   "description": "Lumia language support — syntax highlight, LSP, run/build",
-  "version": "0.3.3",
+  "version": "0.3.9",
   "publisher": "lumia",
   "engines": {
     "vscode": "^1.85.0"
@@ -12,6 +12,10 @@
   ],
   "activationEvents": [
     "onLanguage:lumia",
+    "workspaceContains:Cargo.toml",
+    "workspaceContains:Lumia.toml",
+    "workspaceContains:std/*.lm",
+    "workspaceContains:examples/*.lm",
     "onCommand:lumia.run",
     "onCommand:lumia.buildRun",
     "onCommand:lumia.checkFile",
@@ -129,8 +133,8 @@
       "properties": {
         "lumia.lsp.path": {
           "type": "string",
-          "default": "lumia",
-          "description": "Path to the lumia binary (must support `lumia lsp` / `build` / `check`)."
+          "default": "",
+          "description": "Path to the lumia binary (or lumia-lsp). Empty = auto-detect ~/.local/lib/lumia/lumia-lsp then PATH."
         },
         "lumia.lsp.enabled": {
           "type": "boolean",
@@ -141,7 +145,8 @@
     },
     "configurationDefaults": {
       "[lumia]": {
-        "editor.inlayHints.enabled": "on"
+        "editor.inlayHints.enabled": "on",
+        "editor.semanticHighlighting.enabled": true
       }
     }
   },

@@ -2,43 +2,78 @@
 
 use super::state::{state_lock, Analysis};
 use anyhow::Result;
+use lumia_hir::{surface_names, SurfaceRole};
 use lumia_ty::display_type;
+use rustc_hash::FxHashSet as HashSet;
 use serde_json::{json, Value};
+
+/// True keywords (lexer / grammar) — not scanned from builtins.
+const KEYWORDS: &[&str] = &[
+    "val", "var", "match", "if", "else", "for", "in", "type", "import", "foreign", "pure", "trait",
+    "instance", "alt", "module",
+];
 
 pub(super) fn completion_items(analysis: Option<&Analysis>) -> Vec<Value> {
     let mut items = Vec::new();
-    let methods = [
-        "map", "filter", "fold", "flatMap", "len", "get", "set", "contains", "items", "keys",
-        "values", "sortBy", "take", "reverse", "concat", "join", "trim", "split", "toLower",
-        "toUpper",
-    ];
-    for m in methods {
-        items.push(json!({ "label": m, "kind": 2 })); // Method
+    let mut seen = HashSet::default();
+
+    let mut push = |label: &str, kind: u8, detail: Option<&str>| {
+        if !seen.insert(label.to_string()) {
+            return;
+        }
+        let mut v = json!({ "label": label, "kind": kind });
+        if let Some(d) = detail {
+            v["detail"] = json!(d);
+        }
+        items.push(v);
+    };
+
+    // Scan the shared language surface (prelude ctors + Builtin + HOF desugars).
+    for sn in surface_names() {
+        let kind = match sn.role {
+            SurfaceRole::Free => 3,   // Function
+            SurfaceRole::Method => 2, // Method
+        };
+        push(sn.name, kind, None);
     }
+
     if let Some(a) = analysis {
         for (name, ty) in &a.typed.fun_types {
+            if name.starts_with("__") {
+                continue;
+            }
             let num_vars = a
                 .typed
                 .fun_schemes
                 .get(name)
                 .map(|s| s.num_vars.as_slice())
                 .unwrap_or(&[]);
-            items.push(json!({
-                "label": name,
-                "kind": 3, // Function
-                "detail": display_type(ty, num_vars),
-            }));
+            let detail = display_type(ty, num_vars);
+            push(name, 3, Some(detail.as_str()));
         }
         for name in a.typed.decls.keys() {
-            if !a.typed.fun_types.contains_key(name) {
-                items.push(json!({ "label": name, "kind": 6 })); // Variable
+            if name.starts_with("__") || a.typed.fun_types.contains_key(name) {
+                continue;
+            }
+            push(name, 6, None); // Variable
+        }
+        for adt in &a.typed.module.adts {
+            for v in &adt.variants {
+                let detail = format!(
+                    "{} · {}",
+                    adt.name,
+                    if v.arity == 0 { "unit" } else { "ctor" }
+                );
+                push(&v.name, 4, Some(&detail)); // Constructor
             }
         }
+        for prod in &a.typed.module.products {
+            push(&prod.name, 22, Some("product type")); // Struct
+        }
     }
-    for kw in [
-        "val", "var", "match", "if", "else", "for", "in", "type", "import", "foreign", "pure",
-    ] {
-        items.push(json!({ "label": kw, "kind": 14 })); // Keyword
+
+    for kw in KEYWORDS {
+        push(kw, 14, None); // Keyword
     }
     items
 }
@@ -67,5 +102,17 @@ mod tests {
         assert!(labels.contains(&"val"));
         assert!(labels.contains(&"match"));
         assert!(labels.contains(&"map"));
+    }
+
+    #[test]
+    fn completion_scans_surface_builtins() {
+        let items = completion_items(None);
+        let labels: Vec<&str> = items.iter().filter_map(|v| v["label"].as_str()).collect();
+        assert!(labels.contains(&"listOf"), "{labels:?}");
+        assert!(labels.contains(&"setOf"), "{labels:?}");
+        assert!(labels.contains(&"mapOf"), "{labels:?}");
+        assert!(labels.contains(&"println"), "{labels:?}");
+        assert!(labels.contains(&"len"), "{labels:?}");
+        assert!(!labels.contains(&"adtTag"), "{labels:?}");
     }
 }

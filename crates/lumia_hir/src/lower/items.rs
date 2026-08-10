@@ -358,7 +358,8 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
             lumia_syntax::Item::Type(_) | lumia_syntax::Item::Trait(_) => {}
             lumia_syntax::Item::Instance(i) => {
                 for method in &i.methods {
-                    let mangled = format!("__{}_{}_{}", i.trait_name, i.type_name, method.name);
+                    let mangled =
+                        crate::mangle_trait_method(&i.trait_name, &i.type_name, &method.name);
                     push_lowered_val(&ctx, &mut items, method, &mangled);
                     lowered_methods.insert(mangled.clone());
                     note_method(
@@ -372,7 +373,8 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
                 }
                 if let Some(defaults) = trait_defaults.get(&i.trait_name) {
                     for (method_name, default) in defaults {
-                        let mangled = format!("__{}_{}_{}", i.trait_name, i.type_name, method_name);
+                        let mangled =
+                            crate::mangle_trait_method(&i.trait_name, &i.type_name, method_name);
                         if lowered_methods.contains(&mangled) {
                             continue;
                         }

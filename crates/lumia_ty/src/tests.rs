@@ -480,7 +480,7 @@ val main = {
     let hir = lower_module(&ast).expect("lower");
     assert!(
         contains_list_par_map(
-            &hir.items
+            hir.items
                 .iter()
                 .find_map(|i| match i {
                     Item::Fun(f) if f.is_main => Some(&f.body),
@@ -549,7 +549,7 @@ val main = {
     let hir = lower_module(&ast).expect("lower");
     assert!(
         contains_list_par_map(
-            &hir.items
+            hir.items
                 .iter()
                 .find_map(|i| match i {
                     Item::Fun(f) if f.is_main => Some(&f.body),

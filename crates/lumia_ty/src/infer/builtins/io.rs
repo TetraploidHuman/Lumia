@@ -23,6 +23,7 @@ impl Infer {
                     | Type::Bool
                     | Type::Float
                     | Type::Char
+                    | Type::Unit
                     | Type::Adt { .. }
                     | Type::List(_)
                     | Type::Map(_, _)

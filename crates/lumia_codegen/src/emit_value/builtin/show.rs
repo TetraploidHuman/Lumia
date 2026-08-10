@@ -13,6 +13,20 @@ impl<'ctx> Codegen<'ctx> {
         arg_ty: &Type,
     ) -> Result<()> {
         match arg_ty {
+            Type::Unit => {
+                // Unit is ABI i64 0; never print it as Int.
+                let _ = arg;
+                let s = self
+                    .llvm
+                    .builder
+                    .build_global_string_ptr("Unit", "unit_lit")
+                    .map_err(|e| anyhow::anyhow!("unit lit: {e}"))?;
+                self.call_rt_void(
+                    "lumia_println_cstr",
+                    &[s.as_pointer_value().into()],
+                    "println_unit",
+                )?;
+            }
             Type::Float => {
                 let f = match arg {
                     BasicValueEnum::FloatValue(f) => f,
@@ -32,8 +46,10 @@ impl<'ctx> Codegen<'ctx> {
             Type::Adt { name, params } => {
                 let ptr = if let Some(ptr) = self.emit_show_override(name, arg)? {
                     Some(ptr)
-                } else if params.iter().any(|p| matches!(p, Type::Float | Type::Bool)) {
-                    Some(self.emit_typed_adt_show(arg, params)?)
+                } else if self.funs.adt_variant_names.contains_key(name)
+                    || params.iter().any(|p| matches!(p, Type::Float | Type::Bool))
+                {
+                    Some(self.emit_typed_adt_show(name, arg, params)?)
                 } else {
                     None
                 };
@@ -66,6 +82,26 @@ impl<'ctx> Codegen<'ctx> {
         arg_ty: &Type,
     ) -> Result<PointerValue<'ctx>> {
         match arg_ty {
+            Type::Unit => {
+                let _ = arg;
+                let ptr = self
+                    .llvm
+                    .builder
+                    .build_global_string_ptr("Unit", "unit_show")
+                    .map_err(|e| anyhow::anyhow!("unit show: {e}"))?
+                    .as_pointer_value();
+                let fun = self.runtime_fn("lumia_alloc_string")?;
+                let len = self.llvm.i64_ty.const_int(4, false);
+                Ok(crate::error::llvm(self.llvm.builder.build_call(
+                    fun,
+                    &[ptr.into(), len.into()],
+                    "show_unit",
+                ))?
+                .try_as_basic_value()
+                .basic()
+                .context("call return value")?
+                .into_pointer_value())
+            }
             Type::Float => {
                 let f = match arg {
                     BasicValueEnum::FloatValue(f) => f,
@@ -105,8 +141,10 @@ impl<'ctx> Codegen<'ctx> {
             Type::Adt { name, params } => {
                 if let Some(ptr) = self.emit_show_override(name, arg)? {
                     Ok(ptr)
-                } else if params.iter().any(|p| matches!(p, Type::Float | Type::Bool)) {
-                    self.emit_typed_adt_show(arg, params)
+                } else if self.funs.adt_variant_names.contains_key(name)
+                    || params.iter().any(|p| matches!(p, Type::Float | Type::Bool))
+                {
+                    self.emit_typed_adt_show(name, arg, params)
                 } else {
                     self.emit_show_auto(arg)
                 }

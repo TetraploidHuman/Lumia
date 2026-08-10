@@ -1,0 +1,25 @@
+module NestedShow
+
+import std.io.{println}
+
+type Color {
+    A,
+    B,
+    C
+}
+
+type Box {
+    val n
+}
+
+type Option {
+    Some(value),
+    None
+}
+
+val main = {
+    println(Some(A))
+    println(listOf(A, B))
+    println(listOf(Box { n = 1 }, Box { n = 2 }))
+    println(Some(Box { n = 9 }))
+}

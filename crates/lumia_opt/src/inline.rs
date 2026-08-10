@@ -371,9 +371,9 @@ mod tests {
 
     #[test]
     fn inlines_small_pure_call() {
-        let mut module = CoreModule {
-            name: "M".into(),
-            functions: vec![
+        let mut module = CoreModule::with_functions(
+            "M",
+            vec![
                 pure_add(),
                 CoreFun {
                     name: "main".into(),
@@ -414,9 +414,7 @@ mod tests {
                     mono_of: None,
                 },
             ],
-            hash_adts: HashSet::default(),
-            trait_methods: HashMap::default(),
-        };
+        );
         inline_module(&mut module);
         let main = module.functions.iter().find(|f| f.name == "main").unwrap();
         let has_call = main.body.ops.iter().any(|op| {

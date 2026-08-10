@@ -168,7 +168,7 @@ impl Infer {
                         return Err(at(span, format!("sortBy: expected List, got {other:?}")));
                     }
                 };
-                match self.prune(kt.clone()) {
+                match self.prune(kt) {
                     Type::List(t) => {
                         let t = self.prune(*t);
                         match t {

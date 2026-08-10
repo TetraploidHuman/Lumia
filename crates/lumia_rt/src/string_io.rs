@@ -4,13 +4,13 @@ use std::io::{self, Read, Write};
 use std::ptr;
 
 use crate::common::{
-    header_from_payload, is_heap_payload, trap_abort, GcInhibitGuard, TYPE_ADT, TYPE_BYTES,
-    TYPE_CHAR, TYPE_LIST, TYPE_STRING,
+    header_from_payload, is_heap_payload, tid_base, trap_abort, GcInhibitGuard, TYPE_ADT,
+    TYPE_BYTES, TYPE_CHAR, TYPE_LIST, TYPE_STRING,
 };
 use crate::gc::{list_payload_bytes, lumia_alloc};
 use crate::list::is_list_tid;
 use crate::map_set::{is_map_tid, is_set_tid};
-use crate::show_eq::lumia_show;
+use crate::show::lumia_show;
 
 #[no_mangle]
 pub extern "C" fn lumia_println_int(n: i64) {
@@ -188,7 +188,7 @@ pub extern "C" fn lumia_println_auto(x: i64) {
                 return;
             }
             let tid = (*h).type_id;
-            if tid == TYPE_ADT || is_list_tid(tid) || is_map_tid(tid) || is_set_tid(tid) {
+            if tid_base(tid) == TYPE_ADT || is_list_tid(tid) || is_map_tid(tid) || is_set_tid(tid) {
                 let s = lumia_show(x);
                 let len = (*header_from_payload(s)).size as u64;
                 lumia_println_str(s, len);

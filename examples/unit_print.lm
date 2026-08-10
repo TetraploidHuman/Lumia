@@ -1,0 +1,12 @@
+module UnitPrint
+
+import std.io.{println}
+
+// Last expression is println → Unit; outer println must show Unit not 0.
+val side(x) = {
+    println(x)
+}
+
+val main = {
+    println(side(1))
+}

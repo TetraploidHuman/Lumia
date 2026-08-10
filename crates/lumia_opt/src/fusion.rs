@@ -76,13 +76,13 @@ mod tests {
     use crate::Pass;
     use lumia_core::{Block, CoreFun, CoreModule, ListRepr, Op, Value};
     use lumia_ty::{Effect, Type};
-    use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+    use rustc_hash::FxHashSet as HashSet;
 
     #[test]
     fn peels_concat_with_empty() {
-        let mut module = CoreModule {
-            name: "M".into(),
-            functions: vec![CoreFun {
+        let mut module = CoreModule::with_functions(
+            "M",
+            vec![CoreFun {
                 name: "f".into(),
                 params: vec![],
                 param_names: vec![],
@@ -131,9 +131,7 @@ mod tests {
                 scheme_poly: false,
                 mono_of: None,
             }],
-            hash_adts: HashSet::default(),
-            trait_methods: HashMap::default(),
-        };
+        );
         ConcatIdentPass.run(&mut module);
         assert!(matches!(
             &module.functions[0].body.ops[3],

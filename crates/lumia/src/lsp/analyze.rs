@@ -1,8 +1,8 @@
 //! Document analysis: typecheck, diagnostics, publish.
 
 use super::diagnostics::{diag_from_span, diag_json};
-use super::protocol::write_message;
-use super::state::{state_lock, Analysis};
+use super::protocol::write_stdout;
+use super::state::{next_analyze_gen, state_lock, Analysis, AnalyzeReq};
 use super::uri::uri_to_path;
 use crate::check::{
     check_program_with_overlays, check_source_recovering, OverlayCheckError, PartialCheck,
@@ -12,7 +12,6 @@ use anyhow::Result;
 use lumia_ty::TypedModule;
 use rustc_hash::FxHashMap as HashMap;
 use serde_json::{json, Value};
-use std::io;
 use std::path::{Path, PathBuf};
 
 pub(super) fn on_did_open(params: &Value) -> Result<()> {
@@ -25,8 +24,8 @@ pub(super) fn on_did_open(params: &Value) -> Result<()> {
             s.docs.insert(uri.clone(), text.clone());
         }
     }
-    publish_diagnostics(&uri, &text)?;
-    Ok(())
+    let _ = next_analyze_gen(&uri);
+    publish_diagnostics_for(&uri, &text)
 }
 
 pub(super) fn on_did_change(params: &Value) -> Result<()> {
@@ -47,8 +46,16 @@ pub(super) fn on_did_change(params: &Value) -> Result<()> {
             s.docs.insert(uri.clone(), text.clone());
         }
     }
-    publish_diagnostics(&uri, &text)?;
-    Ok(())
+    let gen = next_analyze_gen(&uri);
+    let tx = {
+        let st = state_lock();
+        st.as_ref().and_then(|s| s.analyze_tx.clone())
+    };
+    if let Some(tx) = tx {
+        let _ = tx.send(AnalyzeReq { uri, text, gen });
+        return Ok(());
+    }
+    publish_diagnostics_for(&uri, &text)
 }
 
 pub(super) fn on_did_close(params: &Value) -> Result<()> {
@@ -63,19 +70,15 @@ pub(super) fn on_did_close(params: &Value) -> Result<()> {
             s.analysis.remove(&uri);
         }
     }
-    let mut stdout = io::stdout();
-    write_message(
-        &mut stdout,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/publishDiagnostics",
-            "params": { "uri": uri, "diagnostics": [] }
-        }),
-    )?;
-    Ok(())
+    write_stdout(&json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/publishDiagnostics",
+        "params": { "uri": uri, "diagnostics": [] }
+    }))
 }
 
-fn publish_diagnostics(uri: &str, text: &str) -> Result<()> {
+/// Analyze and publish diagnostics (sync; also used by the debounce worker).
+pub(super) fn publish_diagnostics_for(uri: &str, text: &str) -> Result<()> {
     let overlays = current_overlays();
     let (diags, analysis) = analyze_buffer(uri, text, &overlays);
     // Only replace the cache on success. A local parse/type error must not wipe
@@ -86,16 +89,11 @@ fn publish_diagnostics(uri: &str, text: &str) -> Result<()> {
             s.analysis.insert(uri.to_string(), a);
         }
     }
-    let mut stdout = io::stdout();
-    write_message(
-        &mut stdout,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/publishDiagnostics",
-            "params": { "uri": uri, "diagnostics": diags }
-        }),
-    )?;
-    Ok(())
+    write_stdout(&json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/publishDiagnostics",
+        "params": { "uri": uri, "diagnostics": diags }
+    }))
 }
 
 fn current_overlays() -> HashMap<PathBuf, String> {

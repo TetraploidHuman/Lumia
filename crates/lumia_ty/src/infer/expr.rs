@@ -148,12 +148,12 @@ impl Infer {
                         }
                     }
                     BinOp::Eq | BinOp::Ne => {
-                        self.unify_at(*span, lt.clone(), rt)?;
+                        self.unify_at(*span, lt, rt)?;
                         Ok((Type::Bool, eff))
                     }
                     BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                         // DESIGN Ord: scalars always; ADT/product when `instance Ord for T`.
-                        self.unify_at(*span, lt.clone(), rt.clone())?;
+                        self.unify_at(*span, lt.clone(), rt)?;
                         let t = self.prune(lt);
                         if self.is_ord(&t) {
                             Ok((Type::Bool, eff))

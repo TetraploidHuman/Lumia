@@ -5,7 +5,7 @@ use lumia_hir::Builtin;
 use lumia_syntax::{BinOp, UnOp};
 use lumia_ty::{Effect, Type};
 
-use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use rustc_hash::FxHashSet as HashSet;
 fn bare_fun(name: &str, params: Vec<Local>, body: Block) -> CoreFun {
     let n = params.len();
     CoreFun {
@@ -28,9 +28,9 @@ fn bare_fun(name: &str, params: Vec<Local>, body: Block) -> CoreFun {
 #[test]
 fn cse_dedups_int_and_nontrapping_binary() {
     // Add/Sub/Mul/Div/Rem are not CSE'd (may trap). Eq is pure and may share.
-    let mut module = CoreModule {
-        name: "C".into(),
-        functions: vec![bare_fun(
+    let mut module = CoreModule::with_functions(
+        "C",
+        vec![bare_fun(
             "main",
             vec![],
             Block {
@@ -68,9 +68,7 @@ fn cse_dedups_int_and_nontrapping_binary() {
                 result: Some(Local(3)),
             },
         )],
-        hash_adts: HashSet::default(),
-        trait_methods: HashMap::default(),
-    };
+    );
     module.functions[0].is_main = true;
     module.functions[0].effect = Effect::io();
     cse_module(&mut module);
@@ -104,9 +102,9 @@ fn cse_preserves_distinct_external_calls() {
     );
     getpid.external = Some("getpid".into());
     getpid.effect = Effect::pure();
-    let mut module = CoreModule {
-        name: "C".into(),
-        functions: vec![
+    let mut module = CoreModule::with_functions(
+        "C",
+        vec![
             getpid,
             bare_fun(
                 "main",
@@ -135,9 +133,7 @@ fn cse_preserves_distinct_external_calls() {
                 },
             ),
         ],
-        hash_adts: HashSet::default(),
-        trait_methods: HashMap::default(),
-    };
+    );
     module.functions[1].is_main = true;
     module.functions[1].effect = Effect::io();
     cse_module(&mut module);
@@ -167,9 +163,9 @@ fn cse_preserves_distinct_external_calls() {
 #[test]
 fn const_fold_folds_list_len_get() {
     use lumia_core::ListRepr;
-    let mut module = CoreModule {
-        name: "C".into(),
-        functions: vec![bare_fun(
+    let mut module = CoreModule::with_functions(
+        "C",
+        vec![bare_fun(
             "f",
             vec![],
             Block {
@@ -218,9 +214,7 @@ fn const_fold_folds_list_len_get() {
                 result: Some(Local(5)),
             },
         )],
-        hash_adts: HashSet::default(),
-        trait_methods: HashMap::default(),
-    };
+    );
     ConstFoldPass.run(&mut module);
     assert!(matches!(
         &module.functions[0].body.ops[3],
@@ -241,9 +235,9 @@ fn const_fold_folds_list_len_get() {
 #[test]
 fn const_fold_folds_list_concat() {
     use lumia_core::ListRepr;
-    let mut module = CoreModule {
-        name: "C".into(),
-        functions: vec![bare_fun(
+    let mut module = CoreModule::with_functions(
+        "C",
+        vec![bare_fun(
             "f",
             vec![],
             Block {
@@ -295,9 +289,7 @@ fn const_fold_folds_list_concat() {
                 result: Some(Local(5)),
             },
         )],
-        hash_adts: HashSet::default(),
-        trait_methods: HashMap::default(),
-    };
+    );
     ConstFoldPass.run(&mut module);
     assert!(
         matches!(
@@ -325,9 +317,9 @@ fn const_fold_folds_list_concat() {
 #[test]
 fn const_fold_map_get_to_option() {
     use lumia_core::{AdtRepr, MapRepr};
-    let mut module = CoreModule {
-        name: "C".into(),
-        functions: vec![bare_fun(
+    let mut module = CoreModule::with_functions(
+        "C",
+        vec![bare_fun(
             "f",
             vec![],
             Block {
@@ -391,9 +383,7 @@ fn const_fold_map_get_to_option() {
                 result: Some(Local(6)),
             },
         )],
-        hash_adts: HashSet::default(),
-        trait_methods: HashMap::default(),
-    };
+    );
     ConstFoldPass.run(&mut module);
     assert!(
         matches!(
@@ -433,9 +423,9 @@ fn const_fold_map_get_to_option() {
 fn const_fold_contains_skips_nonconst_keys() {
     // mapOf(nonconst_key to 2).contains(1) must not fold to false.
     use lumia_core::MapRepr;
-    let mut module = CoreModule {
-        name: "C".into(),
-        functions: vec![bare_fun(
+    let mut module = CoreModule::with_functions(
+        "C",
+        vec![bare_fun(
             "f",
             vec![Local(0)],
             Block {
@@ -471,9 +461,7 @@ fn const_fold_contains_skips_nonconst_keys() {
                 result: Some(Local(4)),
             },
         )],
-        hash_adts: HashSet::default(),
-        trait_methods: HashMap::default(),
-    };
+    );
     ConstFoldPass.run(&mut module);
     assert!(
         matches!(
@@ -493,9 +481,9 @@ fn const_fold_contains_skips_nonconst_keys() {
 
 #[test]
 fn const_fold_arith() {
-    let mut module = CoreModule {
-        name: "C".into(),
-        functions: vec![bare_fun(
+    let mut module = CoreModule::with_functions(
+        "C",
+        vec![bare_fun(
             "f",
             vec![],
             Block {
@@ -524,9 +512,7 @@ fn const_fold_arith() {
                 result: Some(Local(2)),
             },
         )],
-        hash_adts: HashSet::default(),
-        trait_methods: HashMap::default(),
-    };
+    );
     ConstFoldPass.run(&mut module);
     assert!(matches!(
         &module.functions[0].body.ops[2],
@@ -539,9 +525,9 @@ fn const_fold_arith() {
 
 #[test]
 fn const_fold_folds_cmp_to_bool() {
-    let mut module = CoreModule {
-        name: "C".into(),
-        functions: vec![bare_fun(
+    let mut module = CoreModule::with_functions(
+        "C",
+        vec![bare_fun(
             "f",
             vec![],
             Block {
@@ -570,9 +556,7 @@ fn const_fold_folds_cmp_to_bool() {
                 result: Some(Local(2)),
             },
         )],
-        hash_adts: HashSet::default(),
-        trait_methods: HashMap::default(),
-    };
+    );
     ConstFoldPass.run(&mut module);
     assert!(matches!(
         &module.functions[0].body.ops[2],
@@ -586,9 +570,9 @@ fn const_fold_folds_cmp_to_bool() {
 #[test]
 fn licm_hoists_not_but_not_trapping_add() {
     // Checked Add may trap — must stay in-loop (§2.4). Pure Bool `not` is safe to hoist.
-    let mut module = CoreModule {
-        name: "L".into(),
-        functions: vec![bare_fun(
+    let mut module = CoreModule::with_functions(
+        "L",
+        vec![bare_fun(
             "f",
             vec![Local(0)],
             Block {
@@ -639,9 +623,7 @@ fn licm_hoists_not_but_not_trapping_add() {
                 result: Some(Local(10)),
             },
         )],
-        hash_adts: HashSet::default(),
-        trait_methods: HashMap::default(),
-    };
+    );
     LicmPass.run(&mut module);
     let ops = &module.functions[0].body.ops;
     assert!(
@@ -719,12 +701,7 @@ fn memo_tf_marks_dense_int() {
         },
     );
     fib.param_names = vec!["n".into()];
-    let module = CoreModule {
-        name: "M".into(),
-        functions: vec![fib],
-        hash_adts: HashSet::default(),
-        trait_methods: HashMap::default(),
-    };
+    let module = CoreModule::with_functions("M", vec![fib]);
     let plan = plan_memo_tf(&module);
     assert!(
         matches!(plan.get("fib"), Some(MemoTf::DenseInt { .. })),
@@ -815,12 +792,7 @@ fn memo_tf_marks_slots() {
         scheme_poly: false,
         mono_of: None,
     };
-    let module = CoreModule {
-        name: "M".into(),
-        functions: vec![sq, main],
-        hash_adts: HashSet::default(),
-        trait_methods: HashMap::default(),
-    };
+    let module = CoreModule::with_functions("M", vec![sq, main]);
     let plan = plan_memo_tf(&module);
     assert!(
         matches!(plan.get("sq"), Some(MemoTf::Slots { .. })),
@@ -865,12 +837,7 @@ fn memo_tf_increasing_recursion_not_dense() {
         },
     );
     f.param_names = vec!["n".into()];
-    let module = CoreModule {
-        name: "M".into(),
-        functions: vec![f],
-        hash_adts: HashSet::default(),
-        trait_methods: HashMap::default(),
-    };
+    let module = CoreModule::with_functions("M", vec![f]);
     let plan = plan_memo_tf(&module);
     assert!(
         !matches!(plan.get("inc"), Some(MemoTf::DenseInt { .. })),

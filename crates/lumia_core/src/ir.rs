@@ -18,6 +18,29 @@ pub struct CoreModule {
     pub hash_adts: HashSet<String>,
     /// `(type, method)` → mangled `__Trait_Type_method` (for poly UFCS resolve after mono).
     pub trait_methods: HashMap<(String, String), Vec<String>>,
+    /// Variant / product display names by type, indexed by tag (print/`Show` only).
+    pub adt_variant_names: HashMap<String, Vec<String>>,
+}
+
+impl CoreModule {
+    /// Empty module shell (tests / fixtures).
+    pub fn empty(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            functions: Vec::new(),
+            hash_adts: HashSet::default(),
+            trait_methods: HashMap::default(),
+            adt_variant_names: HashMap::default(),
+        }
+    }
+
+    /// Module with only the given functions (common test constructor).
+    pub fn with_functions(name: impl Into<String>, functions: Vec<CoreFun>) -> Self {
+        Self {
+            functions,
+            ..Self::empty(name)
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

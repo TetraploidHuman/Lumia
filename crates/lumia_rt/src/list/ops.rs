@@ -4,7 +4,7 @@ use super::core::{force_heap_list, list_len_of, lumia_list_empty, lumia_list_pro
 use super::tid::{heap_list_tid, list_float_elems, list_tid};
 use crate::common::{trap_abort, GcInhibitGuard, TYPE_LIST, TYPE_LIST_F64, TYPE_LIST_IOTA};
 use crate::gc::{list_payload_bytes, lumia_alloc};
-use crate::show_eq::lumia_ord_cmp;
+use crate::hash_ord::lumia_ord_cmp;
 use crate::string_io::{lumia_alloc_string, with_str_bytes};
 
 #[no_mangle]

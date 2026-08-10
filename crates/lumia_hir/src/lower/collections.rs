@@ -141,7 +141,7 @@ pub(crate) fn lower_set_intersect(ctx: &LowerCtx, a: Expr, b: Expr, span: Span) 
         span,
     };
     Expr::Let {
-        name: other.clone(),
+        name: other,
         value: Box::new(b),
         body: Box::new(Expr::Let {
             name: acc.clone(),

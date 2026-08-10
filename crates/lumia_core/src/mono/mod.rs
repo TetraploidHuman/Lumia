@@ -155,7 +155,7 @@ val main = {
         .expect("core");
         let mono_clones = core.functions.iter().filter(|f| f.is_mono_clone()).count();
         assert!(
-            mono_clones >= 1 && mono_clones < 8,
+            (1..8).contains(&mono_clones),
             "expected a small number of mono clones, got {mono_clones}: {:?}",
             core.functions
                 .iter()
@@ -186,11 +186,11 @@ val main = {
         .expect("core");
         let names: Vec<_> = core.functions.iter().map(|f| f.name.as_str()).collect();
         assert!(
-            names.iter().any(|n| *n == "id$Map_Int_Int"),
+            names.contains(&"id$Map_Int_Int"),
             "expected exact id$Map_Int_Int, funs={names:?}"
         );
         assert!(
-            names.iter().any(|n| *n == "id$Map_String_Int"),
+            names.contains(&"id$Map_String_Int"),
             "expected exact id$Map_String_Int, funs={names:?}"
         );
     }
@@ -210,11 +210,11 @@ val main = {
         .expect("core");
         let names: Vec<_> = core.functions.iter().map(|f| f.name.as_str()).collect();
         assert!(
-            names.iter().any(|n| *n == "id$Set_Int"),
+            names.contains(&"id$Set_Int"),
             "expected exact id$Set_Int, funs={names:?}"
         );
         assert!(
-            names.iter().any(|n| *n == "id$Set_String"),
+            names.contains(&"id$Set_String"),
             "expected exact id$Set_String, funs={names:?}"
         );
     }

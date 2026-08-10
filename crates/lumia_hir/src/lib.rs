@@ -4,15 +4,20 @@ mod ast;
 mod builtin_info;
 mod list_hof;
 mod lower;
+mod mangle;
 mod match_check;
 mod visit;
 
 pub use ast::{
     AdtDef, AdtVariant, Builtin, BuiltinFamily, CtorInfo, Expr, Fun, Item, Module, ProductDef,
 };
-pub use builtin_info::{BuiltinEffect, BuiltinEmit, BuiltinInfo};
+pub use builtin_info::{
+    surface_names, BuiltinEffect, BuiltinEmit, BuiltinInfo, ResultHeap, SurfaceName, SurfaceRole,
+    PRELUDE_CTORS,
+};
 pub use list_hof::{desugar_list_fold_sequential, desugar_list_map_sequential};
 pub use lower::{lower_module, LowerCtx, LowerError};
+pub use mangle::mangle_trait_method;
 pub use visit::{all_free_vars, fold, for_each_expr, free_vars_expr};
 
 #[cfg(test)]
@@ -51,6 +56,10 @@ mod tests {
             super::BuiltinEmit::ObjI64Ptr
         );
         assert_eq!(Builtin::StrSplit.info().emit, super::BuiltinEmit::ObjI64Ptr);
+        assert_eq!(
+            Builtin::ListGet.info().emit,
+            super::BuiltinEmit::ObjI64OptionTags
+        );
     }
 
     #[test]
