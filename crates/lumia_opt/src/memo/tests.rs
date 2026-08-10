@@ -21,6 +21,7 @@ fn bare_fun(name: &str, params: Vec<Local>, body: Block) -> CoreFun {
         external: None,
         escaping: HashSet::default(),
         scheme_poly: false,
+        mono_of: None,
     }
 }
 
@@ -705,6 +706,7 @@ fn memo_tf_marks_slots() {
         external: None,
         escaping: HashSet::default(),
         scheme_poly: false,
+        mono_of: None,
     };
     let module = CoreModule {
         name: "M".into(),

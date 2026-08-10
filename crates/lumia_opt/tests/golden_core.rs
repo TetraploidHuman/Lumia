@@ -92,3 +92,13 @@ golden!(golden_fuse_hof, "examples/fuse_hof.lm", release);
 golden!(golden_small_map_local, "examples/small_map_local.lm");
 golden!(golden_small_set_local, "examples/small_set_local.lm");
 golden!(golden_for, "examples/for.lm");
+golden!(golden_hof_float_apply, "examples/hof_float_apply.lm");
+golden!(golden_float_map_keys, "examples/float_map_keys.lm");
+golden!(golden_float_struct_eq, "examples/float_struct_eq.lm");
+golden!(golden_eq_hash_consistent, "examples/eq_hash_consistent.lm");
+golden!(golden_alt_option, "examples/alt_option.lm");
+golden!(golden_alt_option_return, "examples/alt_option_return.lm");
+golden!(golden_return_capture, "examples/return_capture.lm");
+golden!(golden_range_map, "examples/range_map.lm");
+golden!(golden_range_fold, "examples/range_fold.lm");
+// `import_as` needs multi-file load (CLI/`lumia::check_program`); not in Core pipeline.

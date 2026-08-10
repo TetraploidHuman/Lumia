@@ -11,7 +11,7 @@ impl<'ctx> Codegen<'ctx> {
     /// Emit `musttail call` + `ret` for pure Int TCO (self or mutual; no GC roots live).
     /// Returns true if the call was emitted as a terminator.
     pub(crate) fn emit_musttail_call(&mut self, fun: &str, args: &[Local]) -> Result<bool> {
-        let callee = match self.functions.get(fun).copied() {
+        let callee = match self.funs.functions.get(fun).copied() {
             Some(f) => f,
             None => return Ok(false),
         };
@@ -19,16 +19,16 @@ impl<'ctx> Codegen<'ctx> {
         for a in args {
             av.push(self.coerce_i64(self.local(*a)?)?.into());
         }
-        let call = self.builder.build_call(callee, &av, "tco").unwrap();
+        let call = crate::error::llvm(self.llvm.builder.build_call(callee, &av, "tco"))?;
         call.set_tail_call_kind(inkwell::values::LLVMTailCallKind::LLVMTailCallKindMustTail);
         let ret = call
             .try_as_basic_value()
             .basic()
-            .unwrap_or_else(|| self.i64_ty.const_int(0, false).into())
+            .unwrap_or_else(|| self.llvm.i64_ty.const_int(0, false).into())
             .into_int_value();
         // No root epilogue: musttail requires call immediately followed by ret.
-        debug_assert_eq!(self.root_depth, 0);
-        self.builder.build_return(Some(&ret)).unwrap();
+        debug_assert_eq!(self.frame.root_depth, 0);
+        crate::error::llvm(self.llvm.builder.build_return(Some(&ret)))?;
         Ok(true)
     }
 }
@@ -287,6 +287,7 @@ mod tests {
             external: None,
             escaping: HashSet::default(),
             scheme_poly: false,
+            mono_of: None,
         }
     }
 

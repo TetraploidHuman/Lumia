@@ -801,3 +801,78 @@ val main = {
     let hir = lower_module(&ast).expect("lower");
     infer_module(&hir).expect("println must leave open Var unconstrained");
 }
+
+#[test]
+fn builtin_arity_from_info_rejects_get() {
+    use lumia_hir::{Builtin, Expr, Fun, Item, Module};
+    use lumia_syntax::Span;
+    use rustc_hash::{FxHashMap, FxHashSet};
+    let span = Span::dummy();
+    let hir = Module {
+        name: "Bad".into(),
+        items: vec![Item::Fun(Fun {
+            name: "main".into(),
+            params: vec![],
+            body: Expr::BuiltinCall {
+                name: Builtin::ListGet,
+                args: vec![Expr::Int(1, span)], // missing index
+                span,
+            },
+            is_main: true,
+            external: None,
+            foreign_sig: None,
+            foreign_pure: false,
+        })],
+        adts: Vec::new(),
+        products: Vec::new(),
+        instances: FxHashSet::default(),
+        show_methods: FxHashMap::default(),
+        trait_methods: FxHashMap::default(),
+        method_traits: FxHashMap::default(),
+    };
+    let err = infer_module(&hir).expect_err("get arity");
+    assert!(
+        err.message().contains("get") && err.message().contains("argument"),
+        "unexpected: {}",
+        err.message()
+    );
+}
+
+#[test]
+fn typecheck_hir_runs_effects_and_parallel() {
+    let src = r#"
+module Ok
+import std.io.{println}
+val main = { println(1) }
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let typed = typecheck_hir(
+        &hir,
+        NameVisibility::default(),
+        &TypecheckOptions::default(),
+    )
+    .expect("typecheck");
+    assert!(typed.main_effect.has_io());
+
+    let bad = r#"
+module Bad
+import std.io.{println}
+val xs = println(1)
+val main = { 0 }
+"#;
+    let ast = parse_module(bad).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let err = typecheck_hir(
+        &hir,
+        NameVisibility::default(),
+        &TypecheckOptions::default(),
+    )
+    .expect_err("top-level IO");
+    assert!(
+        err.message().to_lowercase().contains("effect")
+            || err.message().to_lowercase().contains("io"),
+        "unexpected: {}",
+        err.message()
+    );
+}

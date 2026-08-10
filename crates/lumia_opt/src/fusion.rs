@@ -176,6 +176,7 @@ mod tests {
                 external: None,
                 escaping: HashSet::default(),
                 scheme_poly: false,
+                mono_of: None,
             }],
             hash_adts: HashSet::default(),
             trait_methods: HashMap::default(),

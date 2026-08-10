@@ -3,6 +3,8 @@
 //! Codegen emits these `type_id` values into object headers; `lumia_rt` interprets
 //! them. Memo caps must match between the opt planner and the runtime tables.
 //!
+//! Float / container tagging rules: [`float_contract`].
+//!
 //! # Container `type_id` packing
 //!
 //! Bases occupy bits `[7:0]` (dense 1..=9). Float / AssocList flags live in
@@ -11,6 +13,12 @@
 //! - bit 8 `TID_F_KEY` — List: float elems; Set: float elems; Map: float keys
 //! - bit 9 `TID_F_VAL` — Map: float values
 //! - bit 10 `TID_ASSOC` — Map/Set: AssocList (never hash-promote)
+
+mod float_contract;
+pub use float_contract::{
+    float_roles, gc_skip_float_slot, is_float_capable_container, FloatRoles, ENSURE_LIST_F64,
+    ENSURE_MAP_F64, ENSURE_MAP_VF64, ENSURE_SET_F64,
+};
 
 /// Object header type ids — **bases** (bits `[7:0]`).
 pub const TYPE_BYTES: u32 = 1;

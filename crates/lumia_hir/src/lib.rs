@@ -1,20 +1,32 @@
 //! High-level IR — named bindings after light desugaring from syntax AST.
 
 mod ast;
+mod builtin_info;
 mod list_hof;
 mod lower;
 mod match_check;
 mod visit;
 
-pub use ast::{AdtDef, AdtVariant, Builtin, CtorInfo, Expr, Fun, Item, Module, ProductDef};
+pub use ast::{
+    AdtDef, AdtVariant, Builtin, BuiltinFamily, CtorInfo, Expr, Fun, Item, Module, ProductDef,
+};
+pub use builtin_info::{BuiltinEffect, BuiltinInfo};
 pub use list_hof::{desugar_list_fold_sequential, desugar_list_map_sequential};
 pub use lower::{lower_module, LowerCtx, LowerError};
 pub use visit::{all_free_vars, fold, for_each_expr, free_vars_expr};
 
 #[cfg(test)]
 mod tests {
-    use super::{lower_module, Builtin, Expr, Item};
+    use super::{lower_module, Builtin, BuiltinFamily, Expr, Item};
     use lumia_syntax::parse_module;
+
+    #[test]
+    fn builtin_family_routes_map_keys_with_map_set() {
+        assert_eq!(Builtin::MapKeys.family(), BuiltinFamily::MapSet);
+        assert_eq!(Builtin::Elems.family(), BuiltinFamily::List);
+        assert_eq!(Builtin::ListLen.family(), BuiltinFamily::List);
+        assert_eq!(Builtin::Show.family(), BuiltinFamily::Io);
+    }
 
     #[test]
     fn exhaustiveness_rejects_missing_variant() {

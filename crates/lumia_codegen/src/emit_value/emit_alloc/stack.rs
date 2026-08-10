@@ -15,82 +15,95 @@ impl<'ctx> Codegen<'ctx> {
         let n = fields.len() as u64;
         let payload_bytes = (1 + n) * 8;
         let words = (2 + 1 + n) as u32; // 2 header + tag + fields
-        let arr_ty = self.i64_ty.array_type(words);
+        let arr_ty = self.llvm.i64_ty.array_type(words);
         let entry = self
+            .frame
             .entry_bb
             .context("emit_stack_adt before emit_function")?;
-        let cur = self.builder.get_insert_block().context("no insert block")?;
+        let cur = self
+            .llvm
+            .builder
+            .get_insert_block()
+            .context("no insert block")?;
         match entry.get_first_instruction() {
-            Some(first) => self.builder.position_before(&first),
-            None => self.builder.position_at_end(entry),
+            Some(first) => self.llvm.builder.position_before(&first),
+            None => self.llvm.builder.position_at_end(entry),
         }
-        let storage = self.builder.build_alloca(arr_ty, "stack_adt").unwrap();
-        self.builder.position_at_end(cur);
+        let storage = crate::error::llvm(self.llvm.builder.build_alloca(arr_ty, "stack_adt"))?;
+        self.llvm.builder.position_at_end(cur);
 
         let type_id = TYPE_ADT as u64;
         let float_mask = self.adt_float_mask_from_fields(fields) as u64;
         let hdr0 = self
+            .llvm
             .i64_ty
             .const_int(type_id | (payload_bytes << 32), false);
         let hdr0_slot = unsafe {
-            self.builder
+            self.llvm
+                .builder
                 .build_gep(
-                    self.i64_ty,
+                    self.llvm.i64_ty,
                     storage,
-                    &[self.i64_ty.const_int(0, false)],
+                    &[self.llvm.i64_ty.const_int(0, false)],
                     "adt_hdr0",
                 )
                 .unwrap()
         };
-        self.builder.build_store(hdr0_slot, hdr0).unwrap();
+        crate::error::llvm(self.llvm.builder.build_store(hdr0_slot, hdr0))?;
         let hdr1_slot = unsafe {
-            self.builder
+            self.llvm
+                .builder
                 .build_gep(
-                    self.i64_ty,
+                    self.llvm.i64_ty,
                     storage,
-                    &[self.i64_ty.const_int(1, false)],
+                    &[self.llvm.i64_ty.const_int(1, false)],
                     "adt_hdr1",
                 )
                 .unwrap()
         };
         // marked=1 (stack), `_pad` = float field mask
-        self.builder
+        self.llvm
+            .builder
             .build_store(
                 hdr1_slot,
-                self.i64_ty.const_int(1 | (float_mask << 32), false),
+                self.llvm.i64_ty.const_int(1 | (float_mask << 32), false),
             )
             .unwrap();
 
         let payload = unsafe {
-            self.builder
+            self.llvm
+                .builder
                 .build_gep(
-                    self.i64_ty,
+                    self.llvm.i64_ty,
                     storage,
-                    &[self.i64_ty.const_int(2, false)],
+                    &[self.llvm.i64_ty.const_int(2, false)],
                     "adt_payload",
                 )
                 .unwrap()
         };
-        self.builder
-            .build_store(payload, self.i64_ty.const_int(tag as u64, false))
+        self.llvm
+            .builder
+            .build_store(payload, self.llvm.i64_ty.const_int(tag as u64, false))
             .unwrap();
         for (i, e) in fields.iter().enumerate() {
             let v = self.coerce_i64(self.local(*e)?)?;
             let slot = unsafe {
-                self.builder
+                self.llvm
+                    .builder
                     .build_gep(
-                        self.i64_ty,
+                        self.llvm.i64_ty,
                         storage,
-                        &[self.i64_ty.const_int((3 + i) as u64, false)],
+                        &[self.llvm.i64_ty.const_int((3 + i) as u64, false)],
                         "adt_f",
                     )
                     .unwrap()
             };
-            self.builder.build_store(slot, v).unwrap();
+            crate::error::llvm(self.llvm.builder.build_store(slot, v))?;
         }
         Ok(self
+            .llvm
             .builder
-            .build_ptr_to_int(payload, self.i64_ty, "adt_stack_i64")
+            .build_ptr_to_int(payload, self.llvm.i64_ty, "adt_stack_i64")
             .unwrap()
             .into())
     }
@@ -104,76 +117,89 @@ impl<'ctx> Codegen<'ctx> {
         let n = elems.len() as u64;
         let payload_bytes = (1 + n) * 8;
         let words = (2 + 1 + n) as u32; // 2 header words + len + elems
-        let arr_ty = self.i64_ty.array_type(words);
+        let arr_ty = self.llvm.i64_ty.array_type(words);
         let entry = self
+            .frame
             .entry_bb
             .context("emit_stack_array before emit_function")?;
-        let cur = self.builder.get_insert_block().context("no insert block")?;
+        let cur = self
+            .llvm
+            .builder
+            .get_insert_block()
+            .context("no insert block")?;
         match entry.get_first_instruction() {
-            Some(first) => self.builder.position_before(&first),
-            None => self.builder.position_at_end(entry),
+            Some(first) => self.llvm.builder.position_before(&first),
+            None => self.llvm.builder.position_at_end(entry),
         }
-        let storage = self.builder.build_alloca(arr_ty, "stack_arr").unwrap();
-        self.builder.position_at_end(cur);
+        let storage = crate::error::llvm(self.llvm.builder.build_alloca(arr_ty, "stack_arr"))?;
+        self.llvm.builder.position_at_end(cur);
 
         let hdr0 = self
+            .llvm
             .i64_ty
             .const_int(type_id | (payload_bytes << 32), false);
         let hdr0_slot = unsafe {
-            self.builder
+            self.llvm
+                .builder
                 .build_gep(
-                    self.i64_ty,
+                    self.llvm.i64_ty,
                     storage,
-                    &[self.i64_ty.const_int(0, false)],
+                    &[self.llvm.i64_ty.const_int(0, false)],
                     "sa_hdr0",
                 )
                 .unwrap()
         };
-        self.builder.build_store(hdr0_slot, hdr0).unwrap();
+        crate::error::llvm(self.llvm.builder.build_store(hdr0_slot, hdr0))?;
         let hdr1_slot = unsafe {
-            self.builder
+            self.llvm
+                .builder
                 .build_gep(
-                    self.i64_ty,
+                    self.llvm.i64_ty,
                     storage,
-                    &[self.i64_ty.const_int(1, false)],
+                    &[self.llvm.i64_ty.const_int(1, false)],
                     "sa_hdr1",
                 )
                 .unwrap()
         };
-        self.builder
-            .build_store(hdr1_slot, self.i64_ty.const_int(1, false))
+        self.llvm
+            .builder
+            .build_store(hdr1_slot, self.llvm.i64_ty.const_int(1, false))
             .unwrap();
 
         let payload = unsafe {
-            self.builder
+            self.llvm
+                .builder
                 .build_gep(
-                    self.i64_ty,
+                    self.llvm.i64_ty,
                     storage,
-                    &[self.i64_ty.const_int(2, false)],
+                    &[self.llvm.i64_ty.const_int(2, false)],
                     "sa_payload",
                 )
                 .unwrap()
         };
-        self.builder
-            .build_store(payload, self.i64_ty.const_int(n, false))
+        self.llvm
+            .builder
+            .build_store(payload, self.llvm.i64_ty.const_int(n, false))
             .unwrap();
         for (i, e) in elems.iter().enumerate() {
             let v = self.coerce_i64(self.local(*e)?)?;
             let slot = unsafe {
-                self.builder
+                self.llvm
+                    .builder
                     .build_gep(
-                        self.i64_ty,
+                        self.llvm.i64_ty,
                         storage,
-                        &[self.i64_ty.const_int((3 + i) as u64, false)],
+                        &[self.llvm.i64_ty.const_int((3 + i) as u64, false)],
                         "sa_elem",
                     )
                     .unwrap()
             };
-            self.builder.build_store(slot, v).unwrap();
+            crate::error::llvm(self.llvm.builder.build_store(slot, v))?;
         }
         Ok(self
+            .llvm
             .builder
-            .build_ptr_to_int(payload, self.i64_ty, "sa_i64")
+            .build_ptr_to_int(payload, self.llvm.i64_ty, "sa_i64")
             .unwrap()
             .into())
     }
@@ -188,76 +214,89 @@ impl<'ctx> Codegen<'ctx> {
         let n_pairs = n_words / 2;
         let payload_bytes = (1 + n_words) * 8;
         let words = (2 + 1 + n_words) as u32;
-        let arr_ty = self.i64_ty.array_type(words);
+        let arr_ty = self.llvm.i64_ty.array_type(words);
         let entry = self
+            .frame
             .entry_bb
             .context("emit_stack_map before emit_function")?;
-        let cur = self.builder.get_insert_block().context("no insert block")?;
+        let cur = self
+            .llvm
+            .builder
+            .get_insert_block()
+            .context("no insert block")?;
         match entry.get_first_instruction() {
-            Some(first) => self.builder.position_before(&first),
-            None => self.builder.position_at_end(entry),
+            Some(first) => self.llvm.builder.position_before(&first),
+            None => self.llvm.builder.position_at_end(entry),
         }
-        let storage = self.builder.build_alloca(arr_ty, "stack_map").unwrap();
-        self.builder.position_at_end(cur);
+        let storage = crate::error::llvm(self.llvm.builder.build_alloca(arr_ty, "stack_map"))?;
+        self.llvm.builder.position_at_end(cur);
 
         let hdr0 = self
+            .llvm
             .i64_ty
             .const_int(type_id | (payload_bytes << 32), false);
         let hdr0_slot = unsafe {
-            self.builder
+            self.llvm
+                .builder
                 .build_gep(
-                    self.i64_ty,
+                    self.llvm.i64_ty,
                     storage,
-                    &[self.i64_ty.const_int(0, false)],
+                    &[self.llvm.i64_ty.const_int(0, false)],
                     "sm_hdr0",
                 )
                 .unwrap()
         };
-        self.builder.build_store(hdr0_slot, hdr0).unwrap();
+        crate::error::llvm(self.llvm.builder.build_store(hdr0_slot, hdr0))?;
         let hdr1_slot = unsafe {
-            self.builder
+            self.llvm
+                .builder
                 .build_gep(
-                    self.i64_ty,
+                    self.llvm.i64_ty,
                     storage,
-                    &[self.i64_ty.const_int(1, false)],
+                    &[self.llvm.i64_ty.const_int(1, false)],
                     "sm_hdr1",
                 )
                 .unwrap()
         };
-        self.builder
-            .build_store(hdr1_slot, self.i64_ty.const_int(1, false))
+        self.llvm
+            .builder
+            .build_store(hdr1_slot, self.llvm.i64_ty.const_int(1, false))
             .unwrap();
 
         let payload = unsafe {
-            self.builder
+            self.llvm
+                .builder
                 .build_gep(
-                    self.i64_ty,
+                    self.llvm.i64_ty,
                     storage,
-                    &[self.i64_ty.const_int(2, false)],
+                    &[self.llvm.i64_ty.const_int(2, false)],
                     "sm_payload",
                 )
                 .unwrap()
         };
-        self.builder
-            .build_store(payload, self.i64_ty.const_int(n_pairs, false))
+        self.llvm
+            .builder
+            .build_store(payload, self.llvm.i64_ty.const_int(n_pairs, false))
             .unwrap();
         for (i, e) in flat_pairs.iter().enumerate() {
             let v = self.coerce_i64(self.local(*e)?)?;
             let slot = unsafe {
-                self.builder
+                self.llvm
+                    .builder
                     .build_gep(
-                        self.i64_ty,
+                        self.llvm.i64_ty,
                         storage,
-                        &[self.i64_ty.const_int((3 + i) as u64, false)],
+                        &[self.llvm.i64_ty.const_int((3 + i) as u64, false)],
                         "sm_kv",
                     )
                     .unwrap()
             };
-            self.builder.build_store(slot, v).unwrap();
+            crate::error::llvm(self.llvm.builder.build_store(slot, v))?;
         }
         Ok(self
+            .llvm
             .builder
-            .build_ptr_to_int(payload, self.i64_ty, "sm_i64")
+            .build_ptr_to_int(payload, self.llvm.i64_ty, "sm_i64")
             .unwrap()
             .into())
     }

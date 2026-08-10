@@ -4,8 +4,8 @@ use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use super::{
-    MEMO_IDX_MAX_FUNS, MEMO_IDX_TABLE_BYTES, MEMO_L2_MAX_ARGS, MEMO_L2_MAX_FUNS,
-    MEMO_PROCESS_BYTE_CAP, MEMO_SLOTS_TABLE_BYTES,
+    MEMO_IDX_MAX_FUNS, MEMO_IDX_TABLE_BYTES, MEMO_PROCESS_BYTE_CAP, MEMO_SLOTS_TABLE_BYTES,
+    MEMO_TF_MAX_ARGS, MEMO_TF_MAX_FUNS,
 };
 
 pub fn plan_memo_tf(module: &CoreModule) -> HashMap<String, MemoTf> {
@@ -24,7 +24,7 @@ pub fn plan_memo_tf(module: &CoreModule) -> HashMap<String, MemoTf> {
             continue;
         }
         if slots_cost_ok(f, module)
-            && next_slots < MEMO_L2_MAX_FUNS
+            && next_slots < MEMO_TF_MAX_FUNS as u32
             && bytes_used + MEMO_SLOTS_TABLE_BYTES <= MEMO_PROCESS_BYTE_CAP
         {
             plan.insert(f.name.clone(), MemoTf::Slots { id: next_slots });
@@ -195,7 +195,7 @@ fn slots_cost_ok(f: &CoreFun, module: &CoreModule) -> bool {
         return false;
     }
     let n = f.params.len();
-    if n == 0 || n > MEMO_L2_MAX_ARGS {
+    if n == 0 || n > MEMO_TF_MAX_ARGS {
         return false;
     }
     // Heap values as raw i64 are identity-unsafe under GC; only scalar Int/Bool/Float.

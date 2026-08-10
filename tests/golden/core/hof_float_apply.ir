@@ -1,0 +1,36 @@
+module HofFloatApply
+
+fun apply(f, x) effect.io=false memo=None {
+  %2 = icall %0(%1)  // pure
+  return %2
+}
+
+fun apply$Fn_dbl_Float(f, x) effect.io=false memo=None {
+  %2 = call dbl$Float(%1)  // pure
+  return %2
+}
+
+fun dbl(x) effect.io=false memo=None {
+  %1 = %0 + %0  // pure
+  return %1
+}
+
+fun dbl$Float(x) effect.io=false memo=None {
+  %1 = %0 + %0  // pure
+  return %1
+}
+
+fun main() effect.io=true memo=None {
+  %0 = f64 1.5  // pure
+  %1 = call dbl$Float(%0)  // pure
+  %2 = builtin Println(%1)  // effect
+  %3 = funref dbl  // pure
+  %4 = %0  // pure
+  %5 = call apply$Fn_dbl_Float(%3, %0)  // pure
+  %6 = builtin Println(%5)  // effect
+  %7 = funref dbl  // pure
+  %8 = f64 2  // pure
+  %9 = call apply$Fn_dbl_Float(%7, %8)  // pure
+  %10 = builtin Println(%9)  // effect
+  return %10
+}

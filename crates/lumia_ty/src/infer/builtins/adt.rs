@@ -170,6 +170,7 @@ impl Infer {
                             } else {
                                 let arity = self
                                     .products
+                                    .products
                                     .get(want)
                                     .map(|fs| fs.len())
                                     .unwrap_or(idx + 1)

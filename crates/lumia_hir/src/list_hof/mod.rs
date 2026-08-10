@@ -173,3 +173,31 @@ pub(crate) fn bind_fun(f: Expr, span: Span) -> (Option<(String, Expr)>, Expr) {
         }
     }
 }
+
+/// `acc = ListAppend(acc, elem)` assign used by map/filter desugars.
+pub(crate) fn append_assign(acc: &str, elem: Expr, span: Span) -> Expr {
+    use crate::ast::Builtin;
+    Expr::Assign {
+        name: acc.to_string(),
+        value: Box::new(Expr::BuiltinCall {
+            name: Builtin::ListAppend,
+            args: vec![Expr::Var(acc.to_string(), span), elem],
+            span,
+        }),
+        span,
+    }
+}
+
+/// `acc = ListConcat(acc, chunk)` assign used by flatMap.
+pub(crate) fn concat_assign(acc: &str, chunk: Expr, span: Span) -> Expr {
+    use crate::ast::Builtin;
+    Expr::Assign {
+        name: acc.to_string(),
+        value: Box::new(Expr::BuiltinCall {
+            name: Builtin::ListConcat,
+            args: vec![Expr::Var(acc.to_string(), span), chunk],
+            span,
+        }),
+        span,
+    }
+}

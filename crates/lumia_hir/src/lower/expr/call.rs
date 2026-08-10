@@ -84,6 +84,147 @@ pub(super) fn lower_call(
     )
 }
 
+/// Direct `name`/`arity` → builtin (no HIR desugar). Keep in sync with method surface.
+fn simple_method_builtin(name: &str, arity: usize) -> Option<Builtin> {
+    Some(match (name, arity) {
+        ("len", 1) => Builtin::ListLen,
+        ("get", 2) => Builtin::ListGet,
+        ("append", 2) => Builtin::ListAppend,
+        ("contains", 2) => Builtin::Contains,
+        ("set", 3) => Builtin::MapSet,
+        ("remove", 2) => Builtin::MapRemove,
+        ("insert", 2) => Builtin::SetInsert,
+        ("keys", 1) => Builtin::MapKeys,
+        ("values", 1) => Builtin::MapValues,
+        ("items", 1) => Builtin::MapItems,
+        ("slice", 2) | ("drop", 2) => Builtin::ListSlice,
+        ("take", 2) => Builtin::ListTake,
+        ("reverse", 1) => Builtin::ListReverse,
+        ("sort", 1) => Builtin::ListSort,
+        ("join", 2) => Builtin::ListJoin,
+        ("trim", 1) => Builtin::StrTrim,
+        ("split", 2) => Builtin::StrSplit,
+        ("substring", 3) => Builtin::StrSubstring,
+        ("toLower", 1) => Builtin::StrToLower,
+        ("toUpper", 1) => Builtin::StrToUpper,
+        ("startsWith", 2) => Builtin::StrStartsWith,
+        ("endsWith", 2) => Builtin::StrEndsWith,
+        ("readStdin", 0) => Builtin::ReadStdin,
+        ("concat", 2) => Builtin::ListConcat,
+        ("range", 2) => Builtin::Range,
+        ("rangeInclusive", 2) => Builtin::RangeInclusive,
+        _ => return None,
+    })
+}
+
+fn take2(args: Vec<Expr>) -> (Expr, Expr) {
+    let mut it = args.into_iter();
+    (it.next().expect("arity"), it.next().expect("arity"))
+}
+
+fn take3(args: Vec<Expr>) -> (Expr, Expr, Expr) {
+    let mut it = args.into_iter();
+    (
+        it.next().expect("arity"),
+        it.next().expect("arity"),
+        it.next().expect("arity"),
+    )
+}
+
+/// Methods that desugar to loops / collections (not a single BuiltinCall).
+fn lower_desugar_method(ctx: &LowerCtx, name: &str, args: Vec<Expr>, span: Span) -> Option<Expr> {
+    Some(match (name, args.len()) {
+        ("map", 2) => {
+            let (xs, f) = take2(args);
+            lower_list_map(ctx, xs, f, span)
+        }
+        ("filter", 2) => {
+            let (xs, f) = take2(args);
+            lower_list_filter(ctx, xs, f, span)
+        }
+        ("flatMap", 2) => {
+            let (xs, f) = take2(args);
+            lower_list_flat_map(ctx, xs, f, span)
+        }
+        ("fold", 3) => {
+            let (xs, z, f) = take3(args);
+            lower_list_fold(ctx, xs, z, f, span)
+        }
+        ("any", 2) => {
+            let (xs, f) = take2(args);
+            lower_list_any(ctx, xs, f, span)
+        }
+        ("all", 2) => {
+            let (xs, f) = take2(args);
+            lower_list_all(ctx, xs, f, span)
+        }
+        ("find", 2) => {
+            let (xs, f) = take2(args);
+            lower_list_find(ctx, xs, f, span)
+        }
+        ("sortBy", 2) => {
+            let (xs, f) = take2(args);
+            lower_list_sort_by(ctx, xs, f, span)
+        }
+        ("isEmpty", 1) => Expr::Binary {
+            op: BinOp::Eq,
+            left: Box::new(Expr::BuiltinCall {
+                name: Builtin::ListLen,
+                args,
+                span,
+            }),
+            right: Box::new(Expr::Int(0, span)),
+            span,
+        },
+        ("toSet", 1) => lower_to_set(ctx, args.into_iter().next().expect("arity"), span),
+        ("toList", 1) => lower_to_list(ctx, args.into_iter().next().expect("arity"), span),
+        ("toMap", 1) => lower_to_map(ctx, args.into_iter().next().expect("arity"), span),
+        ("union", 2) => {
+            let (a, b) = take2(args);
+            lower_set_union(ctx, a, b, span)
+        }
+        ("intersect", 2) => {
+            let (a, b) = take2(args);
+            lower_set_intersect(ctx, a, b, span)
+        }
+        ("diff", 2) => {
+            let (a, b) = take2(args);
+            lower_set_diff(ctx, a, b, span)
+        }
+        ("lines", 1) => Expr::BuiltinCall {
+            name: Builtin::StrSplit,
+            args: vec![
+                args.into_iter().next().expect("arity"),
+                Expr::Char('\n', span),
+            ],
+            span,
+        },
+        _ => return None,
+    })
+}
+
+fn flatten_map_of_pairs(args: Vec<Expr>) -> Vec<Expr> {
+    let mut flat = Vec::with_capacity(args.len() * 2);
+    for a in args {
+        if let Expr::Call {
+            callee: inner,
+            args: kv,
+            ..
+        } = &a
+        {
+            if let Expr::Var(n, _) = inner.as_ref() {
+                if n == "to" && kv.len() == 2 {
+                    flat.push(kv[0].clone());
+                    flat.push(kv[1].clone());
+                    continue;
+                }
+            }
+        }
+        flat.push(a);
+    }
+    flat
+}
+
 pub(super) fn lower_call_from_parts(
     ctx: &LowerCtx,
     callee: Expr,
@@ -102,300 +243,22 @@ pub(super) fn lower_call_from_parts(
                 };
             }
         }
-        match name.as_str() {
-            "len" if args.len() == 1 => {
-                return Expr::BuiltinCall {
-                    name: Builtin::ListLen,
-                    args,
-                    span,
-                };
-            }
-            "get" if args.len() == 2 => {
-                return Expr::BuiltinCall {
-                    name: Builtin::ListGet,
-                    args,
-                    span,
-                };
-            }
-            "map" if args.len() == 2 => {
-                let mut it = args.into_iter();
-                return lower_list_map(ctx, it.next().unwrap(), it.next().unwrap(), span);
-            }
-            "filter" if args.len() == 2 => {
-                let mut it = args.into_iter();
-                return lower_list_filter(ctx, it.next().unwrap(), it.next().unwrap(), span);
-            }
-            "flatMap" if args.len() == 2 => {
-                let mut it = args.into_iter();
-                return lower_list_flat_map(ctx, it.next().unwrap(), it.next().unwrap(), span);
-            }
-            "fold" if args.len() == 3 => {
-                let mut it = args.into_iter();
-                return lower_list_fold(
-                    ctx,
-                    it.next().unwrap(),
-                    it.next().unwrap(),
-                    it.next().unwrap(),
-                    span,
-                );
-            }
-            "any" if args.len() == 2 => {
-                let mut it = args.into_iter();
-                return lower_list_any(ctx, it.next().unwrap(), it.next().unwrap(), span);
-            }
-            "all" if args.len() == 2 => {
-                let mut it = args.into_iter();
-                return lower_list_all(ctx, it.next().unwrap(), it.next().unwrap(), span);
-            }
-            "find" if args.len() == 2 => {
-                let mut it = args.into_iter();
-                return lower_list_find(ctx, it.next().unwrap(), it.next().unwrap(), span);
-            }
-            "append" if args.len() == 2 => {
-                return Expr::BuiltinCall {
-                    name: Builtin::ListAppend,
-                    args,
-                    span,
-                };
-            }
-            "isEmpty" if args.len() == 1 => {
-                return Expr::Binary {
-                    op: BinOp::Eq,
-                    left: Box::new(Expr::BuiltinCall {
-                        name: Builtin::ListLen,
-                        args,
-                        span,
-                    }),
-                    right: Box::new(Expr::Int(0, span)),
-                    span,
-                };
-            }
-            "toSet" if args.len() == 1 => {
-                return lower_to_set(ctx, args.into_iter().next().unwrap(), span);
-            }
-            "toList" if args.len() == 1 => {
-                return lower_to_list(ctx, args.into_iter().next().unwrap(), span);
-            }
-            "toMap" if args.len() == 1 => {
-                return lower_to_map(ctx, args.into_iter().next().unwrap(), span);
-            }
-            "union" if args.len() == 2 => {
-                let mut it = args.into_iter();
-                return lower_set_union(ctx, it.next().unwrap(), it.next().unwrap(), span);
-            }
-            "intersect" if args.len() == 2 => {
-                let mut it = args.into_iter();
-                return lower_set_intersect(ctx, it.next().unwrap(), it.next().unwrap(), span);
-            }
-            "diff" if args.len() == 2 => {
-                let mut it = args.into_iter();
-                return lower_set_diff(ctx, it.next().unwrap(), it.next().unwrap(), span);
-            }
-            "contains" if args.len() == 2 => {
-                return Expr::BuiltinCall {
-                    name: Builtin::Contains,
-                    args,
-                    span,
-                };
-            }
-            "set" if args.len() == 3 => {
-                return Expr::BuiltinCall {
-                    name: Builtin::MapSet,
-                    args,
-                    span,
-                };
-            }
-            "remove" if args.len() == 2 => {
-                return Expr::BuiltinCall {
-                    name: Builtin::MapRemove,
-                    args,
-                    span,
-                };
-            }
-            "insert" if args.len() == 2 => {
-                return Expr::BuiltinCall {
-                    name: Builtin::SetInsert,
-                    args,
-                    span,
-                };
-            }
-            "keys" if args.len() == 1 => {
-                return Expr::BuiltinCall {
-                    name: Builtin::MapKeys,
-                    args,
-                    span,
-                };
-            }
-            "values" if args.len() == 1 => {
-                return Expr::BuiltinCall {
-                    name: Builtin::MapValues,
-                    args,
-                    span,
-                };
-            }
-            "items" if args.len() == 1 => {
-                return Expr::BuiltinCall {
-                    name: Builtin::MapItems,
-                    args,
-                    span,
-                };
-            }
-            "slice" if args.len() == 2 => {
-                return Expr::BuiltinCall {
-                    name: Builtin::ListSlice,
-                    args,
-                    span,
-                };
-            }
-            "drop" if args.len() == 2 => {
-                return Expr::BuiltinCall {
-                    name: Builtin::ListSlice,
-                    args,
-                    span,
-                };
-            }
-            "take" if args.len() == 2 => {
-                return Expr::BuiltinCall {
-                    name: Builtin::ListTake,
-                    args,
-                    span,
-                };
-            }
-            "reverse" if args.len() == 1 => {
-                return Expr::BuiltinCall {
-                    name: Builtin::ListReverse,
-                    args,
-                    span,
-                };
-            }
-            "sort" if args.len() == 1 => {
-                return Expr::BuiltinCall {
-                    name: Builtin::ListSort,
-                    args,
-                    span,
-                };
-            }
-            "sortBy" if args.len() == 2 => {
-                return lower_list_sort_by(ctx, args[0].clone(), args[1].clone(), span);
-            }
-            "join" if args.len() == 2 => {
-                return Expr::BuiltinCall {
-                    name: Builtin::ListJoin,
-                    args,
-                    span,
-                };
-            }
-            "lines" if args.len() == 1 => {
-                return Expr::BuiltinCall {
-                    name: Builtin::StrSplit,
-                    args: vec![args[0].clone(), Expr::Char('\n', span)],
-                    span,
-                };
-            }
-            "trim" if args.len() == 1 => {
-                return Expr::BuiltinCall {
-                    name: Builtin::StrTrim,
-                    args,
-                    span,
-                };
-            }
-            "split" if args.len() == 2 => {
-                return Expr::BuiltinCall {
-                    name: Builtin::StrSplit,
-                    args,
-                    span,
-                };
-            }
-            "substring" if args.len() == 3 => {
-                return Expr::BuiltinCall {
-                    name: Builtin::StrSubstring,
-                    args,
-                    span,
-                };
-            }
-            "toLower" if args.len() == 1 => {
-                return Expr::BuiltinCall {
-                    name: Builtin::StrToLower,
-                    args,
-                    span,
-                };
-            }
-            "toUpper" if args.len() == 1 => {
-                return Expr::BuiltinCall {
-                    name: Builtin::StrToUpper,
-                    args,
-                    span,
-                };
-            }
-            "startsWith" if args.len() == 2 => {
-                return Expr::BuiltinCall {
-                    name: Builtin::StrStartsWith,
-                    args,
-                    span,
-                };
-            }
-            "endsWith" if args.len() == 2 => {
-                return Expr::BuiltinCall {
-                    name: Builtin::StrEndsWith,
-                    args,
-                    span,
-                };
-            }
-            "readStdin" if args.is_empty() => {
-                return Expr::BuiltinCall {
-                    name: Builtin::ReadStdin,
-                    args,
-                    span,
-                };
-            }
-            "concat" if args.len() == 2 => {
-                return Expr::BuiltinCall {
-                    name: Builtin::ListConcat,
-                    args,
-                    span,
-                };
-            }
-            "range" if args.len() == 2 => {
-                return Expr::BuiltinCall {
-                    name: Builtin::Range,
-                    args,
-                    span,
-                };
-            }
-            "rangeInclusive" if args.len() == 2 => {
-                return Expr::BuiltinCall {
-                    name: Builtin::RangeInclusive,
-                    args,
-                    span,
-                };
-            }
-            "mapOf" => {
-                // Flatten `k to v` → k, v for AllocMap flat layout
-                let mut flat = vec![];
-                for a in args {
-                    if let Expr::Call {
-                        callee: inner,
-                        args: kv,
-                        ..
-                    } = &a
-                    {
-                        if let Expr::Var(n, _) = inner.as_ref() {
-                            if n == "to" && kv.len() == 2 {
-                                flat.push(kv[0].clone());
-                                flat.push(kv[1].clone());
-                                continue;
-                            }
-                        }
-                    }
-                    flat.push(a);
-                }
-                return Expr::Call {
-                    callee: Box::new(callee),
-                    args: flat,
-                    span,
-                };
-            }
-            _ => {}
+        if let Some(b) = simple_method_builtin(name, args.len()) {
+            return Expr::BuiltinCall {
+                name: b,
+                args,
+                span,
+            };
+        }
+        if let Some(e) = lower_desugar_method(ctx, name, args.clone(), span) {
+            return e;
+        }
+        if name == "mapOf" {
+            return Expr::Call {
+                callee: Box::new(callee),
+                args: flatten_map_of_pairs(args),
+                span,
+            };
         }
     }
     Expr::Call {

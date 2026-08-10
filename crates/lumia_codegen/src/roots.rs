@@ -39,6 +39,7 @@ impl<'ctx> Codegen<'ctx> {
                 ..
             } => self.block_result_may_heap(then_block) || self.block_result_may_heap(else_block),
             Value::Call { fun, .. } => self
+                .funs
                 .fun_ret_tys
                 .get(fun)
                 .map(Self::type_may_heap)
@@ -94,18 +95,19 @@ impl<'ctx> Codegen<'ctx> {
     }
 
     pub(crate) fn root_push_i64(&mut self, bits: IntValue<'ctx>) -> Result<()> {
-        let slot = self.alloca_in_entry(self.i64_ty, "gc_root")?;
-        self.builder.build_store(slot, bits).unwrap();
-        let push = self.module.get_function("lumia_root_push").unwrap();
-        self.builder.build_call(push, &[slot.into()], "").unwrap();
-        self.root_depth += 1;
+        let slot = self.alloca_in_entry(self.llvm.i64_ty, "gc_root")?;
+        crate::error::llvm(self.llvm.builder.build_store(slot, bits))?;
+        let push = self.runtime_fn("lumia_root_push")?;
+        crate::error::llvm(self.llvm.builder.build_call(push, &[slot.into()], ""))?;
+        self.frame.root_depth += 1;
         Ok(())
     }
 
     /// Bump List COW refcount when aliasing a heap list as i64 bits.
     pub(crate) fn list_retain_i64(&self, bits: IntValue<'ctx>) -> Result<()> {
-        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+        let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
         let p = self
+            .llvm
             .builder
             .build_int_to_ptr(bits, ptr_ty, "list_rc_ptr")
             .map_err(|e| anyhow::anyhow!("int_to_ptr retain: {e}"))?;
@@ -114,8 +116,9 @@ impl<'ctx> Codegen<'ctx> {
 
     /// Drop a List alias when overwriting a mut slot (no-op for non-lists).
     pub(crate) fn list_release_i64(&self, bits: IntValue<'ctx>) -> Result<()> {
-        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+        let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
         let p = self
+            .llvm
             .builder
             .build_int_to_ptr(bits, ptr_ty, "list_rc_ptr")
             .map_err(|e| anyhow::anyhow!("int_to_ptr release: {e}"))?;
@@ -129,67 +132,85 @@ impl<'ctx> Codegen<'ctx> {
         name: &str,
     ) -> Result<PointerValue<'ctx>> {
         let entry = self
+            .frame
             .entry_bb
             .context("alloca_in_entry before emit_function")?;
-        let cur = self.builder.get_insert_block().context("no insert block")?;
+        let cur = self
+            .llvm
+            .builder
+            .get_insert_block()
+            .context("no insert block")?;
         // Insert before the first non-alloca, or at end if entry is empty/only allocas.
         match entry.get_first_instruction() {
-            Some(first) => self.builder.position_before(&first),
-            None => self.builder.position_at_end(entry),
+            Some(first) => self.llvm.builder.position_before(&first),
+            None => self.llvm.builder.position_at_end(entry),
         }
-        let slot = self.builder.build_alloca(ty, name).unwrap();
-        self.builder.position_at_end(cur);
+        let slot = crate::error::llvm(self.llvm.builder.build_alloca(ty, name))?;
+        self.llvm.builder.position_at_end(cur);
         Ok(slot)
     }
 
-    pub(crate) fn root_register_slot(&mut self, slot: PointerValue<'ctx>, name: &str) {
-        if self.rooted_slots.contains(name) {
-            return;
+    pub(crate) fn root_register_slot(
+        &mut self,
+        slot: PointerValue<'ctx>,
+        name: &str,
+    ) -> Result<()> {
+        if self.frame.rooted_slots.contains(name) {
+            return Ok(());
         }
-        let push = self.module.get_function("lumia_root_push").unwrap();
-        self.builder.build_call(push, &[slot.into()], "").unwrap();
-        self.root_depth += 1;
-        self.rooted_slots.insert(name.to_string());
+        let push = self.runtime_fn("lumia_root_push")?;
+        crate::error::llvm(self.llvm.builder.build_call(push, &[slot.into()], ""))?;
+        self.frame.root_depth += 1;
+        self.frame.rooted_slots.insert(name.to_string());
+        Ok(())
     }
 
     /// Pop shadow-stack entries until `root_depth == depth` (scope exit).
-    pub(crate) fn root_pop_to(&mut self, depth: u32) {
-        debug_assert!(self.root_depth >= depth);
-        let pop = self.module.get_function("lumia_root_pop").unwrap();
-        while self.root_depth > depth {
-            self.builder.build_call(pop, &[], "").unwrap();
-            self.root_depth -= 1;
+    pub(crate) fn root_pop_to(&mut self, depth: u32) -> Result<()> {
+        debug_assert!(self.frame.root_depth >= depth);
+        let pop = self.runtime_fn("lumia_root_pop")?;
+        while self.frame.root_depth > depth {
+            crate::error::llvm(self.llvm.builder.build_call(pop, &[], ""))?;
+            self.frame.root_depth -= 1;
         }
+        Ok(())
     }
 
-    fn emit_root_epilogue(&mut self) {
+    fn emit_root_epilogue(&mut self) -> Result<()> {
         // Emit pops for the current compile-time depth without clearing it:
         // early returns (memo hit) share the counter with the compute path.
-        let pop = self.module.get_function("lumia_root_pop").unwrap();
-        for _ in 0..self.root_depth {
-            self.builder.build_call(pop, &[], "").unwrap();
+        let pop = self.runtime_fn("lumia_root_pop")?;
+        for _ in 0..self.frame.root_depth {
+            crate::error::llvm(self.llvm.builder.build_call(pop, &[], ""))?;
         }
+        Ok(())
     }
 
-    pub(crate) fn emit_frame_push(&mut self, name: &str) {
-        let push = self.module.get_function("lumia_frame_push").unwrap();
+    pub(crate) fn emit_frame_push(&mut self, name: &str) -> Result<()> {
+        let push = self.runtime_fn("lumia_frame_push")?;
         let s = self
+            .llvm
             .builder
             .build_global_string_ptr(name, &format!(".fname.{name}"))
             .expect("global string");
-        self.builder
-            .build_call(push, &[s.as_pointer_value().into()], "")
-            .unwrap();
+        crate::error::llvm(
+            self.llvm
+                .builder
+                .build_call(push, &[s.as_pointer_value().into()], ""),
+        )?;
+        Ok(())
     }
 
-    pub(crate) fn emit_frame_pop(&mut self) {
-        let pop = self.module.get_function("lumia_frame_pop").unwrap();
-        self.builder.build_call(pop, &[], "").unwrap();
+    pub(crate) fn emit_frame_pop(&mut self) -> Result<()> {
+        let pop = self.runtime_fn("lumia_frame_pop")?;
+        crate::error::llvm(self.llvm.builder.build_call(pop, &[], ""))?;
+        Ok(())
     }
 
-    pub(crate) fn emit_return_i64(&mut self, ret: IntValue<'ctx>) {
-        self.emit_root_epilogue();
-        self.emit_frame_pop();
-        self.builder.build_return(Some(&ret)).unwrap();
+    pub(crate) fn emit_return_i64(&mut self, ret: IntValue<'ctx>) -> Result<()> {
+        self.emit_root_epilogue()?;
+        self.emit_frame_pop()?;
+        crate::error::llvm(self.llvm.builder.build_return(Some(&ret)))?;
+        Ok(())
     }
 }

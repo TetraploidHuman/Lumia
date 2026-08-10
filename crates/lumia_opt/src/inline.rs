@@ -366,6 +366,7 @@ mod tests {
             external: None,
             escaping: HashSet::default(),
             scheme_poly: false,
+            mono_of: None,
         }
     }
 
@@ -411,6 +412,7 @@ mod tests {
                     external: None,
                     escaping: HashSet::default(),
                     scheme_poly: false,
+                    mono_of: None,
                 },
             ],
             hash_adts: HashSet::default(),
@@ -466,6 +468,7 @@ mod tests {
             external: None,
             escaping: HashSet::default(),
             scheme_poly: false,
+            mono_of: None,
         };
         assert!(!is_inlineable(&f));
     }

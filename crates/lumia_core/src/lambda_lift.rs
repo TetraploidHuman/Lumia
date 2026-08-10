@@ -392,6 +392,7 @@ fn lift_value(
                     escaping: HashSet::default(),
                     // Local let-poly / nested lambdas: specialize at ground call sites.
                     scheme_poly: true,
+                    mono_of: None,
                 });
                 *value = Value::FunRef(name);
                 return;
@@ -458,6 +459,7 @@ fn lift_value(
                 external: None,
                 escaping: HashSet::default(),
                 scheme_poly: true,
+                mono_of: None,
             });
             *value = Value::AllocClosure {
                 fun: name,

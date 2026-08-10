@@ -535,3 +535,21 @@ pub extern "C" fn lumia_adt_field(obj: *mut u8, index: i64) -> i64 {
         *base.add(1 + index as usize)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::lumia_eq;
+
+    #[test]
+    fn scalar_non_heap_eq_is_bit_identity() {
+        // Contract: bare i64 (not a heap payload) short-circuits on bits.
+        assert_eq!(lumia_eq(0, 0), 1);
+        assert_eq!(lumia_eq(1, 2), 0);
+        let pos0 = 0.0f64.to_bits() as i64;
+        let neg0 = (-0.0f64).to_bits() as i64;
+        // Distinct Float bit patterns are unequal on the scalar path (IEEE ±0
+        // is handled only for Float-tagged containers / codegen fcmp).
+        assert_ne!(pos0, neg0);
+        assert_eq!(lumia_eq(pos0, neg0), 0);
+    }
+}

@@ -16,13 +16,15 @@ impl<'ctx> Codegen<'ctx> {
         match name {
             Builtin::AdtTag => {
                 let obj_i = self.coerce_i64(self.local(args[0])?)?;
-                let ptr_ty = self.context.ptr_type(AddressSpace::default());
+                let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
                 let obj = self
+                    .llvm
                     .builder
                     .build_int_to_ptr(obj_i, ptr_ty, "adt_ptr")
                     .unwrap();
-                let f = self.module.get_function("lumia_adt_tag").unwrap();
+                let f = self.runtime_fn("lumia_adt_tag")?;
                 let call = self
+                    .llvm
                     .builder
                     .build_call(f, &[obj.into()], "adt_tag")
                     .unwrap();
@@ -31,13 +33,15 @@ impl<'ctx> Codegen<'ctx> {
             Builtin::AdtField => {
                 let obj_i = self.coerce_i64(self.local(args[0])?)?;
                 let idx = self.coerce_i64(self.local(args[1])?)?;
-                let ptr_ty = self.context.ptr_type(AddressSpace::default());
+                let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
                 let obj = self
+                    .llvm
                     .builder
                     .build_int_to_ptr(obj_i, ptr_ty, "adt_ptr")
                     .unwrap();
-                let f = self.module.get_function("lumia_adt_field").unwrap();
+                let f = self.runtime_fn("lumia_adt_field")?;
                 let call = self
+                    .llvm
                     .builder
                     .build_call(f, &[obj.into(), idx.into()], "adt_field")
                     .unwrap();

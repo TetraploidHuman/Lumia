@@ -21,7 +21,7 @@
 - [x] **嵌套 Float ADT 的 eq/hash**：ADT header `_pad` 存 per-field Float mask；`lumia_eq` / `hash_value` / `lumia_adt_eq` 读 mask（IEEE）；codegen `lumia_adt_set_float_mask`；e2e `nested_float_adt_eq`。
 - [x] **ADT 字段 GC**：`mark` 对 `TYPE_ADT` 按 `_pad` 跳过 Float 槽。
 - [x] **`lumia_show` 集合格式**：List/Map/Set 递归展示元素（`[…]` / `{k: v}` / `#{…}`）；积/和 ADT 仍为 `#tag(…)`。
-- [ ] **标量路径 `lumia_eq` 未装箱 Float**：非堆 i64 仍 bit 短路；标量 `==` 走 codegen `fcmp`，通常不经过此路径。嵌套「无类型标签的 Float 位」仍可能漏网（依赖容器 type_id / typed eq）。
+- [x] **标量路径 `lumia_eq` 未装箱 Float（契约锁定）**：非堆 i64 仍 bit 短路（`lumia_rt`/`lumia_abi::float_contract` 单测）；标量 `==` 走 codegen `fcmp`；IEEE ±0/NaN 仅容器 typed eq / `fcmp`。嵌套无标签 Float 位不在 `lumia_eq` 保证范围。
 - [x] **`AssocList` Map + Float 键/值**：`TYPE_MAP_ASSOC_{F64,VF64,F64V}`；空 ASSOC 可 `ensure_*` 转标签且永不 Hash 晋升；codegen `mapOf` 在无 Hash 时选用 ASSOC_* 标签。
 - [x] **陷阱栈追踪**（DESIGN §2）：codegen `lumia_frame_push/pop` + `trap_abort` 打印 Lumia 调用栈；musttail 前 pop。
 - [x] **纯函数内嵌 lambda 效应**：构造 IO 闭包为纯（Fun 携 ε）；`assert_no_effects_in_pure` 进入 lambda 体作效应上下文；跟踪 let 绑定 IO thunk；e2e `pure_io_thunk`。
@@ -48,40 +48,9 @@
 - [x] **`lumia doc`**：CLI 生成 Markdown（`///`、公开 `val`/`type`/`foreign`、`@exports`）；`priv` 默认隐藏。
 - [ ] **并发 GC / `--mm=arc`**：BUILD 远期；写屏障在 STW 下为空（正确，非缺口）。
 
-## 本轮已修（便于对照）
+## 架构清理（已落地，详见 git 历史）
 
-- Ord：`<` 等走 `lumia_cmp`；拒绝非 Ord 类型；String 字典序。
-- let-polymorphism（HM scheme）。
-- const-fold 比较结果保持 `Bool`。
-- `List[Float]` 算术按 `local_tys` 走 IEEE。
-- LICM/CSE 不再提升/合并可 trap 的算术与 Range/AdtField。
-- 词法：非法字节、未闭合字符字面量为 Error。
-- LSP Windows `file:///C:/…` URI。
-- release 链接落到 debug `lumia_rt` 时告警。
-- **`lumia_trap_*` / `match_fail` / NUL cstr**：`extern "C"` 边界用 abort，避免 panic unwind 二次崩溃。
-- **空 match / 仅有守卫臂**：穷尽性检查拒绝（不再误放行）。
-- **运行时 `trap_abort`**：致命错误统一入口，避免跨 `extern "C"` unwind。
-- **常量模式**：`true`/`false`、`Char`、`String`、`Float`、负数字面量（含 `-1` / `-1.5`）；Bool 双臂穷尽。
-- **poly identity Float**：call-site 对堆哨兵 `ret_ty` + Float 实参恢复 Float，避免 `println(id(1.5))` 打印 bit pattern。
-- **`import … as`**：模块别名导入与原名不可见。
-- **Float Map/Set 键**：IEEE eq/hash 专用 type_id；与 `==` 对齐的 ±0 / NaN 行为。
-- **`foreign "C" pure`**：默认 IO；`pure` 需显式信任开关。
-- **`lumia doc`**：Markdown API 文档生成。
-- **自动并行默认开**：推断后保留/回退 `ListParMap`；`--no-parallel` 关闭。
-- **多态 trait 方法**：`{ x -> x.show() }` / `{ x -> x.toInt() }` 多实例单态；缺 instance 拒绝。
-- **Opt**：Map/Set PE；逃逸 callee 摘要；LitAdt；IO SCC musttail。
-- **Mono Map/Set + HOF**：`$Map_*`/`$Set_*`；Option/Result `optMap`/`andThen`/`resultMap` FunRef 多轮单态。
-- **`std.option` / `std.result`**：源文件组合子 + loader `StdKind::Source` 内联。
-- **Float 结构 `==`**：`List[Float]` / `Option[Float]` / `Map[K,Float]` / `ListParMap` 结果 IEEE（±0 / NaN）；list 溢出改 `trap_abort`；par worker `join` 失败改 abort。
-- **Mono 保留 ADT/容器 `ret_ty`**：`{ x -> Ok(x) }$Float` 不再把返回值当成 Float 做 `fcmp`；`refresh_body_fixed_ret_tys` 修复 HOF `apply(dbl, 1.5)` ABI（`hof_float_apply`）。
-- **`lumia_adt_eq` / `lumia_show_adt`**：按对象 size 比较/展示，修复 if-join 后 `None == None` 与 sum 越界读。
-- **Map/Set GC**：跳过 unboxed Float 键/值/元素的 `mark_value`。
-- **Show 逃逸**：`Show` 操作数强制堆化（避免 Lit* 地址当 Int）。
-- **e2e Bool**：`println(Bool)` 为 `true`/`false`；更新 `map_ops` / `set_ops` 等期望。
-- **`header_layout`**：溢出/非法 layout → `trap_abort`（不再 `unwrap` 跨 FFI）。
-- **stdin 读错误**：`trap_abort`，不再静默当 EOF。
-- **PE Contains**：非常量键不再假阴性折成 `false`。
-- **开放 `.field` / println Var / 并行 fold 结合律 / Show 集合 / AssocList×Float**：见上对应 `[x]`。
-- [x] **架构整理**：`lumia_abi`（TYPE_*/MEMO_* + 容器 classifiers）；Core `visit`/`value_ty`；codegen/ty/core/hir 多模块；rt 拆 `common`/`gc`/`list`/`map_set`/`show_eq`/`string_io`/`memo`；ty 模块 facade；mono/escape 减 clone；syntax `parser/`、opt `memo/`、rt `map_set/`、e2e 分文件；`lumia fmt` 往返（`not`/type braces）。
-- **scheme 驱动单态** / **纯函数×IO 闭包边界**：见上对应 `[x]`。
-- **嵌套 Float ADT layout mask + Hash/`==` 一致**：见上对应 `[x]`。
+- 共享前端：`lumia_ty::typecheck_hir`；`lumia` 为 lib+bin（`check_program` / LSP / CLI）。
+- `Builtin::info` 元数据；codegen `CodegenError` + 子状态；`lumia_abi::float_contract`。
+- Infer / pkg / lsp / syntax AST 模块拆分；Core `CoreLowerCtx`；`rustfmt.toml`。
+- 历史逐项修复列表已并入上方 `[x]` 条目与提交记录，不再在此重复。

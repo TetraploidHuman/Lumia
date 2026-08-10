@@ -3,6 +3,10 @@ name = "lumia"
 version.workspace = true
 edition.workspace = true
 
+[lib]
+name = "lumia"
+path = "src/lib.rs"
+
 [[bin]]
 name = "lumia"
 path = "src/main.rs"

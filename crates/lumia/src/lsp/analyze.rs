@@ -1,183 +1,39 @@
-//! LSP over stdio (JSON-RPC + Content-Length).
-//!
-//! - textDocument/didOpen|didChange → publishDiagnostics (editor overlays)
-//! - textDocument/hover → type from TypedModule.type_at / fun_types
-//! - textDocument/definition → decls (cross-file via Span.file)
-//! - textDocument/completion → in-scope names + common methods
-//! - textDocument/formatting → `lumia fmt` pretty-print
+//! Document analysis: typecheck, diagnostics, hover, definition, completion, formatting.
 
-use crate::load::{load_program_with_overlays, LoadedProgram, SourceFile};
+use super::protocol::write_message;
+use crate::check::{check_program_with_overlays, check_source, OverlayCheckError};
+use crate::load::{LoadedProgram, SourceFile};
 use anyhow::Result;
-use lumia_hir::lower_module;
 use lumia_syntax::{
-    byte_to_line_col, format_module_src, line_starts, parse_module, stamp_module, BytePos, Span,
+    byte_to_line_col, format_module_src, line_starts, parse_module, stamp_module, Span,
 };
-use lumia_ty::{
-    check_effect_boundaries, finalize_auto_parallel, infer_module_with_visibility, Type,
-    TypedModule,
-};
+use lumia_ty::{Type, TypedModule};
 use rustc_hash::FxHashMap as HashMap;
 use serde_json::{json, Value};
-use std::io::{self, BufRead, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-struct Analysis {
+pub(super) struct Analysis {
     typed: TypedModule,
     /// Primary document source (for hover/completion cursor).
     src: String,
     files: Vec<SourceFile>,
 }
 
-struct State {
-    docs: HashMap<String, String>,
+pub(super) struct State {
+    pub(super) docs: HashMap<String, String>,
     /// uri → last successful analysis
-    analysis: HashMap<String, Analysis>,
+    pub(super) analysis: HashMap<String, Analysis>,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
 
-fn state_lock() -> std::sync::MutexGuard<'static, Option<State>> {
+pub(super) fn state_lock() -> std::sync::MutexGuard<'static, Option<State>> {
     STATE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-pub fn run_lsp() -> Result<()> {
-    *state_lock() = Some(State {
-        docs: HashMap::default(),
-        analysis: HashMap::default(),
-    });
-    let stdin = io::stdin();
-    let mut stdin = stdin.lock();
-    let mut stdout = io::stdout();
-    loop {
-        let msg = match read_message(&mut stdin)? {
-            Some(m) => m,
-            None => break,
-        };
-        if let Some(resp) = handle_message(msg)? {
-            write_message(&mut stdout, &resp)?;
-        }
-    }
-    Ok(())
-}
-
-/// Cap LSP message bodies so a malicious/buggy client cannot OOM the server.
-const MAX_LSP_CONTENT_LENGTH: usize = 16 * 1024 * 1024;
-
-fn read_message(r: &mut impl BufRead) -> Result<Option<Value>> {
-    let mut content_length = None;
-    loop {
-        let mut line = String::new();
-        let n = r.read_line(&mut line)?;
-        if n == 0 {
-            return Ok(None);
-        }
-        let line = line.trim_end();
-        if line.is_empty() {
-            break;
-        }
-        if let Some(rest) = line.strip_prefix("Content-Length:") {
-            content_length = Some(rest.trim().parse::<usize>()?);
-        }
-    }
-    let len = match content_length {
-        Some(l) => l,
-        None => return Ok(None),
-    };
-    if len > MAX_LSP_CONTENT_LENGTH {
-        anyhow::bail!("LSP Content-Length {len} exceeds limit {MAX_LSP_CONTENT_LENGTH}");
-    }
-    let mut buf = vec![0u8; len];
-    r.read_exact(&mut buf)?;
-    Ok(Some(serde_json::from_slice(&buf)?))
-}
-
-fn write_message(w: &mut impl Write, v: &Value) -> Result<()> {
-    let body = serde_json::to_vec(v)?;
-    write!(w, "Content-Length: {}\r\n\r\n", body.len())?;
-    w.write_all(&body)?;
-    w.flush()?;
-    Ok(())
-}
-
-fn handle_message(msg: Value) -> Result<Option<Value>> {
-    let method = msg.get("method").and_then(|m| m.as_str());
-    let id = msg.get("id").cloned();
-    match method {
-        Some("initialize") => Ok(Some(json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "result": {
-                "capabilities": {
-                    "textDocumentSync": 1,
-                    "hoverProvider": true,
-                    "definitionProvider": true,
-                    "completionProvider": { "triggerCharacters": ["."] },
-                    "documentFormattingProvider": true
-                },
-                "serverInfo": { "name": "lumia-lsp", "version": "0.3.0" }
-            }
-        }))),
-        Some("initialized") | Some("shutdown") => {
-            if id.is_some() {
-                Ok(Some(json!({ "jsonrpc": "2.0", "id": id, "result": null })))
-            } else {
-                Ok(None)
-            }
-        }
-        Some("exit") => std::process::exit(0),
-        Some("textDocument/didOpen") => {
-            if let Some(params) = msg.get("params") {
-                on_did_open(params)?;
-            }
-            Ok(None)
-        }
-        Some("textDocument/didChange") => {
-            if let Some(params) = msg.get("params") {
-                on_did_change(params)?;
-            }
-            Ok(None)
-        }
-        Some("textDocument/hover") => {
-            let result = on_hover(msg.get("params"))?;
-            Ok(Some(
-                json!({ "jsonrpc": "2.0", "id": id, "result": result }),
-            ))
-        }
-        Some("textDocument/definition") => {
-            let result = on_definition(msg.get("params"))?;
-            Ok(Some(
-                json!({ "jsonrpc": "2.0", "id": id, "result": result }),
-            ))
-        }
-        Some("textDocument/completion") => {
-            let result = on_completion(msg.get("params"))?;
-            Ok(Some(
-                json!({ "jsonrpc": "2.0", "id": id, "result": result }),
-            ))
-        }
-        Some("textDocument/formatting") => {
-            let result = on_formatting(msg.get("params"))?;
-            Ok(Some(
-                json!({ "jsonrpc": "2.0", "id": id, "result": result }),
-            ))
-        }
-        Some(_) => {
-            if id.is_some() {
-                Ok(Some(json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "error": { "code": -32601, "message": "Method not found" }
-                })))
-            } else {
-                Ok(None)
-            }
-        }
-        None => Ok(None),
-    }
-}
-
-fn uri_to_path(uri: &str) -> PathBuf {
+pub(super) fn uri_to_path(uri: &str) -> PathBuf {
     let rest = match uri.strip_prefix("file:") {
         Some(r) => r,
         None => return PathBuf::from(uri),
@@ -235,7 +91,7 @@ fn from_hex(b: u8) -> Option<u8> {
     }
 }
 
-fn path_to_uri(path: &Path) -> String {
+pub(super) fn path_to_uri(path: &Path) -> String {
     let s = path.to_string_lossy();
     // RFC 8089: absolute paths use `file:///…`. Windows drive paths need a
     // leading slash (`file:///C:/…`); bare `file://C:/…` treats `C:` as host.
@@ -258,7 +114,7 @@ fn path_to_uri(path: &Path) -> String {
     enc
 }
 
-fn on_did_open(params: &Value) -> Result<()> {
+pub(super) fn on_did_open(params: &Value) -> Result<()> {
     let doc = &params["textDocument"];
     let uri = doc["uri"].as_str().unwrap_or("").to_string();
     let text = doc["text"].as_str().unwrap_or("").to_string();
@@ -272,7 +128,7 @@ fn on_did_open(params: &Value) -> Result<()> {
     Ok(())
 }
 
-fn on_did_change(params: &Value) -> Result<()> {
+pub(super) fn on_did_change(params: &Value) -> Result<()> {
     let uri = params["textDocument"]["uri"]
         .as_str()
         .unwrap_or("")
@@ -358,14 +214,14 @@ fn analyze_buffer(
                     return (diags, None);
                 }
                 // Fall through to single-buffer parse for a located span when possible.
-                if let Err((span, msg)) = check_source(text) {
+                if let Err((span, msg)) = check_source(text, true) {
                     return (vec![diag_from_span(text, span, &msg)], None);
                 }
                 return (vec![diag_json(1, 1, 1, 2, "analysis failed")], None);
             }
         }
     }
-    match check_source(text) {
+    match check_source(text, true) {
         Ok(typed) => (
             vec![],
             Some(Analysis {
@@ -381,38 +237,25 @@ fn analyze_buffer(
     }
 }
 
-/// Load + lower + infer, preserving spans in diagnostics (no `anyhow!(message)`).
+/// Load + typecheck via shared [`check_program_with_overlays`].
 fn load_and_typecheck(
     path: &Path,
     overlays: &HashMap<PathBuf, String>,
 ) -> Result<(LoadedProgram, TypedModule), Vec<Value>> {
-    let loaded = load_program_with_overlays(path, overlays)
-        .map_err(|e| vec![diag_json(1, 1, 1, 2, &format!("{e}"))])?;
-    let entry_src = loaded.files.first().map(|f| f.src.as_str()).unwrap_or("");
-    let hir = lower_module(&loaded.module)
-        .map_err(|e| vec![diag_from_span(entry_src, e.span, &e.message)])?;
-    let mut typed = infer_module_with_visibility(&hir, loaded.visibility.clone()).map_err(|e| {
-        let span = e.span().unwrap_or_default();
-        vec![diag_from_span(entry_src, span, e.message())]
-    })?;
-    finalize_auto_parallel(&mut typed, true);
-    check_effect_boundaries(&typed).map_err(|e| {
-        let span = e.span().unwrap_or_default();
-        vec![diag_from_span(entry_src, span, e.message())]
-    })?;
-    Ok((loaded, typed))
-}
-
-fn check_source(text: &str) -> Result<TypedModule, (Span, String)> {
-    let mut m = parse_module(text).map_err(|e| (e.span, e.message))?;
-    stamp_module(&mut m, 0);
-    let hir = lower_module(&m).map_err(|e| (e.span, e.message))?;
-    let mut typed = infer_module_with_visibility(&hir, Default::default())
-        .map_err(|e| (e.span().unwrap_or_default(), e.message().to_string()))?;
-    finalize_auto_parallel(&mut typed, true);
-    check_effect_boundaries(&typed)
-        .map_err(|e| (e.span().unwrap_or_default(), e.message().to_string()))?;
-    Ok(typed)
+    match check_program_with_overlays(path, overlays, true, false) {
+        Ok(v) => Ok(v),
+        Err(OverlayCheckError::Load(msg)) => Err(vec![diag_json(1, 1, 1, 2, &msg)]),
+        Err(OverlayCheckError::Analyze { loaded, err }) => {
+            let span = err.span().unwrap_or_default();
+            let src = loaded
+                .files
+                .get(span.file as usize)
+                .map(|f| f.src.as_str())
+                .or_else(|| loaded.files.first().map(|f| f.src.as_str()))
+                .unwrap_or("");
+            Err(vec![diag_from_span(src, span, err.message())])
+        }
+    }
 }
 
 fn diag_from_span(src: &str, span: Span, msg: &str) -> Value {
@@ -441,7 +284,7 @@ fn pos_to_byte(src: &str, line: u32, character: u32) -> u32 {
     start.saturating_add(character)
 }
 
-fn on_hover(params: Option<&Value>) -> Result<Value> {
+pub(super) fn on_hover(params: Option<&Value>) -> Result<Value> {
     let Some(params) = params else {
         return Ok(Value::Null);
     };
@@ -494,7 +337,7 @@ fn on_hover(params: Option<&Value>) -> Result<Value> {
     Ok(Value::Null)
 }
 
-fn on_definition(params: Option<&Value>) -> Result<Value> {
+pub(super) fn on_definition(params: Option<&Value>) -> Result<Value> {
     let Some(params) = params else {
         return Ok(Value::Null);
     };
@@ -536,7 +379,7 @@ fn on_definition(params: Option<&Value>) -> Result<Value> {
     }))
 }
 
-fn on_completion(params: Option<&Value>) -> Result<Value> {
+pub(super) fn on_completion(params: Option<&Value>) -> Result<Value> {
     let Some(params) = params else {
         return Ok(json!([]));
     };
@@ -572,7 +415,7 @@ fn on_completion(params: Option<&Value>) -> Result<Value> {
     Ok(Value::Array(items))
 }
 
-fn on_formatting(params: Option<&Value>) -> Result<Value> {
+pub(super) fn on_formatting(params: Option<&Value>) -> Result<Value> {
     let Some(params) = params else {
         return Ok(json!([]));
     };
@@ -627,38 +470,4 @@ fn ident_at(src: &str, byte: u32) -> Option<String> {
     std::str::from_utf8(&bytes[start..i])
         .ok()
         .map(|s| s.to_string())
-}
-
-#[allow(dead_code)]
-fn _byte_pos(p: u32) -> BytePos {
-    BytePos(p)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Cursor;
-
-    #[test]
-    fn uri_to_path_decodes_and_strips_file_prefix() {
-        let p = uri_to_path("file:///tmp/hello%20world.lm");
-        assert_eq!(p, PathBuf::from("/tmp/hello world.lm"));
-        let p = uri_to_path("file://localhost/tmp/x.lm");
-        assert_eq!(p, PathBuf::from("/tmp/x.lm"));
-        let p = uri_to_path("file:///C:/Users/me/x.lm");
-        assert_eq!(p, PathBuf::from("C:/Users/me/x.lm"));
-        assert_eq!(
-            path_to_uri(Path::new("C:/Users/me/x.lm")),
-            "file:///C:/Users/me/x.lm"
-        );
-    }
-
-    #[test]
-    fn read_message_rejects_huge_content_length() {
-        let huge = MAX_LSP_CONTENT_LENGTH + 1;
-        let raw = format!("Content-Length: {huge}\r\n\r\n");
-        let mut cur = Cursor::new(raw.into_bytes());
-        let err = read_message(&mut cur).expect_err("must reject oversized body");
-        assert!(err.to_string().contains("exceeds limit"), "got {err}");
-    }
 }

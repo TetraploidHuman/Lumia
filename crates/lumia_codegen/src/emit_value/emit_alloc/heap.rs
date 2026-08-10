@@ -18,14 +18,15 @@ impl<'ctx> Codegen<'ctx> {
         // (same layout as heap so RT len/get work). Escaping → heap.
         let float_elems = elems
             .first()
-            .and_then(|e| self.local_tys.get(&e.0).cloned())
+            .and_then(|e| self.frame.local_tys.get(&e.0).cloned())
             .is_some_and(|t| matches!(t, Type::Float));
         let list_tid = list_type_id(float_elems);
         if elems.is_empty() {
             if float_elems {
-                let ens = self.module.get_function("lumia_ensure_list_f64").unwrap();
-                let f = self.module.get_function("lumia_list_empty").unwrap();
+                let ens = self.runtime_fn(lumia_abi::ENSURE_LIST_F64)?;
+                let f = self.runtime_fn("lumia_list_empty")?;
                 let empty = self
+                    .llvm
                     .builder
                     .build_call(f, &[], "list_empty")
                     .unwrap()
@@ -34,6 +35,7 @@ impl<'ctx> Codegen<'ctx> {
                     .unwrap()
                     .into_pointer_value();
                 let ptr = self
+                    .llvm
                     .builder
                     .build_call(ens, &[empty.into()], "ens_lf64")
                     .unwrap()
@@ -42,13 +44,15 @@ impl<'ctx> Codegen<'ctx> {
                     .unwrap()
                     .into_pointer_value();
                 return Ok(self
+                    .llvm
                     .builder
-                    .build_ptr_to_int(ptr, self.i64_ty, "empty_f64_i64")
+                    .build_ptr_to_int(ptr, self.llvm.i64_ty, "empty_f64_i64")
                     .unwrap()
                     .into());
             }
-            let f = self.module.get_function("lumia_list_empty").unwrap();
+            let f = self.runtime_fn("lumia_list_empty")?;
             let ptr = self
+                .llvm
                 .builder
                 .build_call(f, &[], "list_empty")
                 .unwrap()
@@ -57,8 +61,9 @@ impl<'ctx> Codegen<'ctx> {
                 .unwrap()
                 .into_pointer_value();
             return Ok(self
+                .llvm
                 .builder
-                .build_ptr_to_int(ptr, self.i64_ty, "empty_i64")
+                .build_ptr_to_int(ptr, self.llvm.i64_ty, "empty_i64")
                 .unwrap()
                 .into());
         }
@@ -75,7 +80,7 @@ impl<'ctx> Codegen<'ctx> {
     ) -> Result<BasicValueEnum<'ctx>> {
         let elem_ty = elems
             .first()
-            .and_then(|e| self.local_tys.get(&e.0).cloned())
+            .and_then(|e| self.frame.local_tys.get(&e.0).cloned())
             .unwrap_or(Type::Int);
         let float_elems = matches!(elem_ty, Type::Float);
         let no_hash = !self.key_type_has_hash(&elem_ty);
@@ -85,14 +90,16 @@ impl<'ctx> Codegen<'ctx> {
         }
         let v = self.emit_heap_array(elems, tid as u64)?;
         if elems.len() > 8 && !no_hash {
-            let ptr_ty = self.context.ptr_type(AddressSpace::default());
+            let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
             let bits = self.coerce_i64(v)?;
             let p = self
+                .llvm
                 .builder
                 .build_int_to_ptr(bits, ptr_ty, "set_lin")
                 .unwrap();
-            let f = self.module.get_function("lumia_set_finish").unwrap();
+            let f = self.runtime_fn("lumia_set_finish")?;
             let out = self
+                .llvm
                 .builder
                 .build_call(f, &[p.into()], "set_fin")
                 .unwrap()
@@ -101,8 +108,9 @@ impl<'ctx> Codegen<'ctx> {
                 .unwrap()
                 .into_pointer_value();
             Ok(self
+                .llvm
                 .builder
-                .build_ptr_to_int(out, self.i64_ty, "set_i64")
+                .build_ptr_to_int(out, self.llvm.i64_ty, "set_i64")
                 .unwrap()
                 .into())
         } else {
@@ -122,11 +130,11 @@ impl<'ctx> Codegen<'ctx> {
         let n_pairs = (flat_pairs.len() / 2) as u64;
         let key_ty = flat_pairs
             .first()
-            .and_then(|k| self.local_tys.get(&k.0).cloned())
+            .and_then(|k| self.frame.local_tys.get(&k.0).cloned())
             .unwrap_or(Type::Int);
         let val_ty = flat_pairs
             .get(1)
-            .and_then(|v| self.local_tys.get(&v.0).cloned())
+            .and_then(|v| self.frame.local_tys.get(&v.0).cloned())
             .unwrap_or(Type::Int);
         let float_keys = matches!(key_ty, Type::Float);
         let float_vals = matches!(val_ty, Type::Float);
@@ -140,11 +148,13 @@ impl<'ctx> Codegen<'ctx> {
             return self.emit_stack_map(flat_pairs, tid as u64);
         }
         let nbytes = self
+            .llvm
             .i64_ty
             .const_int((1 + flat_pairs.len() as u64) * 8, false);
-        let type_id = self.context.i32_type().const_int(tid as u64, false);
-        let alloc = self.module.get_function("lumia_alloc").unwrap();
+        let type_id = self.llvm.context.i32_type().const_int(tid as u64, false);
+        let alloc = self.runtime_fn("lumia_alloc")?;
         let ptr = self
+            .llvm
             .builder
             .build_call(alloc, &[nbytes.into(), type_id.into()], "map_alloc")
             .unwrap()
@@ -153,35 +163,39 @@ impl<'ctx> Codegen<'ctx> {
             .unwrap()
             .into_pointer_value();
         let len_slot = unsafe {
-            self.builder
+            self.llvm
+                .builder
                 .build_gep(
-                    self.i64_ty,
+                    self.llvm.i64_ty,
                     ptr,
-                    &[self.i64_ty.const_int(0, false)],
+                    &[self.llvm.i64_ty.const_int(0, false)],
                     "len_slot",
                 )
                 .unwrap()
         };
-        self.builder
-            .build_store(len_slot, self.i64_ty.const_int(n_pairs, false))
+        self.llvm
+            .builder
+            .build_store(len_slot, self.llvm.i64_ty.const_int(n_pairs, false))
             .unwrap();
         for (i, e) in flat_pairs.iter().enumerate() {
             let v = self.coerce_i64(self.local(*e)?)?;
             let slot = unsafe {
-                self.builder
+                self.llvm
+                    .builder
                     .build_gep(
-                        self.i64_ty,
+                        self.llvm.i64_ty,
                         ptr,
-                        &[self.i64_ty.const_int((i + 1) as u64, false)],
+                        &[self.llvm.i64_ty.const_int((i + 1) as u64, false)],
                         "kv",
                     )
                     .unwrap()
             };
-            self.builder.build_store(slot, v).unwrap();
+            crate::error::llvm(self.llvm.builder.build_store(slot, v))?;
         }
         let ptr = if !no_hash && (n_pairs > 8 || matches!(repr, lumia_core::MapRepr::HashOrdered)) {
-            let f = self.module.get_function("lumia_map_finish").unwrap();
-            self.builder
+            let f = self.runtime_fn("lumia_map_finish")?;
+            self.llvm
+                .builder
                 .build_call(f, &[ptr.into()], "map_fin")
                 .unwrap()
                 .try_as_basic_value()
@@ -192,8 +206,9 @@ impl<'ctx> Codegen<'ctx> {
             ptr
         };
         Ok(self
+            .llvm
             .builder
-            .build_ptr_to_int(ptr, self.i64_ty, "map_as_i64")
+            .build_ptr_to_int(ptr, self.llvm.i64_ty, "map_as_i64")
             .unwrap()
             .into())
     }
@@ -209,10 +224,15 @@ impl<'ctx> Codegen<'ctx> {
             return self.emit_stack_adt(tag, fields);
         }
         let n = fields.len() as u64;
-        let nbytes = self.i64_ty.const_int((1 + n) * 8, false);
-        let type_id = self.context.i32_type().const_int(TYPE_ADT as u64, false);
-        let alloc = self.module.get_function("lumia_alloc").unwrap();
+        let nbytes = self.llvm.i64_ty.const_int((1 + n) * 8, false);
+        let type_id = self
+            .llvm
+            .context
+            .i32_type()
+            .const_int(TYPE_ADT as u64, false);
+        let alloc = self.runtime_fn("lumia_alloc")?;
         let ptr = self
+            .llvm
             .builder
             .build_call(alloc, &[nbytes.into(), type_id.into()], "adt_alloc")
             .unwrap()
@@ -223,44 +243,54 @@ impl<'ctx> Codegen<'ctx> {
         let float_mask = self.adt_float_mask_from_fields(fields);
         if float_mask != 0 {
             let setm = self
+                .llvm
                 .module
                 .get_function("lumia_adt_set_float_mask")
                 .unwrap();
-            let m = self.context.i32_type().const_int(float_mask as u64, false);
-            self.builder
+            let m = self
+                .llvm
+                .context
+                .i32_type()
+                .const_int(float_mask as u64, false);
+            self.llvm
+                .builder
                 .build_call(setm, &[ptr.into(), m.into()], "adt_fmask")
                 .unwrap();
         }
         let tag_slot = unsafe {
-            self.builder
+            self.llvm
+                .builder
                 .build_gep(
-                    self.i64_ty,
+                    self.llvm.i64_ty,
                     ptr,
-                    &[self.i64_ty.const_int(0, false)],
+                    &[self.llvm.i64_ty.const_int(0, false)],
                     "tag_slot",
                 )
                 .unwrap()
         };
-        self.builder
-            .build_store(tag_slot, self.i64_ty.const_int(tag as u64, false))
+        self.llvm
+            .builder
+            .build_store(tag_slot, self.llvm.i64_ty.const_int(tag as u64, false))
             .unwrap();
         for (i, e) in fields.iter().enumerate() {
             let v = self.coerce_i64(self.local(*e)?)?;
             let slot = unsafe {
-                self.builder
+                self.llvm
+                    .builder
                     .build_gep(
-                        self.i64_ty,
+                        self.llvm.i64_ty,
                         ptr,
-                        &[self.i64_ty.const_int((i + 1) as u64, false)],
+                        &[self.llvm.i64_ty.const_int((i + 1) as u64, false)],
                         "adt_f",
                     )
                     .unwrap()
             };
-            self.builder.build_store(slot, v).unwrap();
+            crate::error::llvm(self.llvm.builder.build_store(slot, v))?;
         }
         Ok(self
+            .llvm
             .builder
-            .build_ptr_to_int(ptr, self.i64_ty, "adt_as_i64")
+            .build_ptr_to_int(ptr, self.llvm.i64_ty, "adt_as_i64")
             .unwrap()
             .into())
     }
@@ -271,10 +301,11 @@ impl<'ctx> Codegen<'ctx> {
         type_id: u64,
     ) -> Result<BasicValueEnum<'ctx>> {
         let n = elems.len() as u64;
-        let nbytes = self.i64_ty.const_int((1 + n) * 8, false);
-        let type_id = self.context.i32_type().const_int(type_id, false);
-        let alloc = self.module.get_function("lumia_alloc").unwrap();
+        let nbytes = self.llvm.i64_ty.const_int((1 + n) * 8, false);
+        let type_id = self.llvm.context.i32_type().const_int(type_id, false);
+        let alloc = self.runtime_fn("lumia_alloc")?;
         let ptr = self
+            .llvm
             .builder
             .build_call(alloc, &[nbytes.into(), type_id.into()], "arr_alloc")
             .unwrap()
@@ -283,35 +314,39 @@ impl<'ctx> Codegen<'ctx> {
             .unwrap()
             .into_pointer_value();
         let len_slot = unsafe {
-            self.builder
+            self.llvm
+                .builder
                 .build_gep(
-                    self.i64_ty,
+                    self.llvm.i64_ty,
                     ptr,
-                    &[self.i64_ty.const_int(0, false)],
+                    &[self.llvm.i64_ty.const_int(0, false)],
                     "len_slot",
                 )
                 .unwrap()
         };
-        self.builder
-            .build_store(len_slot, self.i64_ty.const_int(n, false))
+        self.llvm
+            .builder
+            .build_store(len_slot, self.llvm.i64_ty.const_int(n, false))
             .unwrap();
         for (i, e) in elems.iter().enumerate() {
             let v = self.coerce_i64(self.local(*e)?)?;
             let slot = unsafe {
-                self.builder
+                self.llvm
+                    .builder
                     .build_gep(
-                        self.i64_ty,
+                        self.llvm.i64_ty,
                         ptr,
-                        &[self.i64_ty.const_int((i + 1) as u64, false)],
+                        &[self.llvm.i64_ty.const_int((i + 1) as u64, false)],
                         "elem",
                     )
                     .unwrap()
             };
-            self.builder.build_store(slot, v).unwrap();
+            crate::error::llvm(self.llvm.builder.build_store(slot, v))?;
         }
         Ok(self
+            .llvm
             .builder
-            .build_ptr_to_int(ptr, self.i64_ty, "arr_as_i64")
+            .build_ptr_to_int(ptr, self.llvm.i64_ty, "arr_as_i64")
             .unwrap()
             .into())
     }

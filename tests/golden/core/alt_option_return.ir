@@ -1,0 +1,40 @@
+module alt_option_return
+
+fun half(n) effect.io=false memo=None {
+  %1 = i64 2  // pure
+  %2 = %0 % %1  // pure
+  %3 = i64 0  // pure
+  %4 = %2 == %3  // pure
+  %9 = if ...  // pure
+  return %9
+}
+
+fun main() effect.io=true memo=None {
+  %0 = i64 10  // pure
+  %1 = call twice_even(%0)  // pure
+  %2 = builtin AdtTag(%1)  // pure
+  %3 = i64 0  // pure
+  %4 = %2 == %3  // pure
+  %14 = if ...  // pure
+  %15 = builtin Println(%14)  // effect
+  %16 = i64 7  // pure
+  %17 = call twice_even(%16)  // pure
+  %18 = builtin AdtTag(%17)  // pure
+  %19 = %3  // pure
+  %20 = %18 == %3  // pure
+  %30 = if ...  // pure
+  %31 = builtin Println(%30)  // effect
+  return %31
+}
+
+fun twice_even(n) effect.io=false memo=None {
+  %1 = call half(%0)  // pure
+  %2 = builtin AdtTag(%1)  // pure
+  %3 = i64 0  // pure
+  %4 = %2 == %3  // pure
+  %8 = if ...  // pure
+  %9 = i64 2  // pure
+  %10 = %8 * %9  // pure
+  %11 = alloc_adt(Option, tag=0, n=1)  // pure
+  return %11
+}

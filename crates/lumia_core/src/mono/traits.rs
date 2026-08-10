@@ -171,6 +171,7 @@ pub(crate) fn ensure_trait_method_stubs(module: &mut CoreModule) {
             external: None,
             escaping: Default::default(),
             scheme_poly: false,
+            mono_of: None,
         });
     }
     module.functions.append(&mut stubs);

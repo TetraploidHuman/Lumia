@@ -9,14 +9,14 @@ impl Infer {
     pub(crate) fn is_ord(&self, t: &Type) -> bool {
         match t {
             Type::Int | Type::Float | Type::Bool | Type::String | Type::Char | Type::Var(_) => true,
-            Type::Adt { name, .. } => self.ord_instances.contains(name),
+            Type::Adt { name, .. } => self.traits.ord_instances.contains(name),
             _ => false,
         }
     }
 
     pub(crate) fn mark_num(&mut self, t: &Type) {
         if let Type::Var(v) = self.prune(t.clone()) {
-            self.num_vars.insert(v);
+            self.uni.num_vars.insert(v);
         }
     }
 
@@ -40,6 +40,7 @@ impl Infer {
         match self.prune(recv_ty.clone()) {
             Type::Adt { name: ty_name, .. } => {
                 let cands = self
+                    .traits
                     .trait_methods
                     .get(&(ty_name.clone(), method.to_string()))
                     .cloned()
@@ -59,7 +60,7 @@ impl Infer {
                             _ => self.fresh_eff(),
                         };
                         self.unify_at(span, ct, Type::Fun(ats, Box::new(ret.clone()), call_eff))?;
-                        self.ufcs_rewrites.insert(span, mangled.clone());
+                        self.traits.ufcs_rewrites.insert(span, mangled.clone());
                         let fun_eff = self.prune_eff(call_eff);
                         Ok(Some((self.prune(ret), self.union_eff(aes, fun_eff))))
                     }
@@ -80,12 +81,13 @@ impl Infer {
                 }
             }
             Type::Var(v) => {
-                let Some(trait_name) = self.method_trait.get(method).cloned() else {
+                let Some(trait_name) = self.traits.method_trait.get(method).cloned() else {
                     return Ok(None);
                 };
                 // Peek a sample impl for arity/effect only — do NOT unify it with the
                 // open call (that froze `{ x -> x.toInt() }` to the first instance type).
                 let sample = self
+                    .traits
                     .trait_methods
                     .values()
                     .flatten()
@@ -116,7 +118,8 @@ impl Infer {
                     // Trait declared but no instance yet — open ret; call site checks.
                     Effect::pure()
                 };
-                self.trait_vars
+                self.traits
+                    .trait_vars
                     .entry(v)
                     .or_default()
                     .push((trait_name, method.to_string()));
@@ -128,7 +131,7 @@ impl Infer {
     }
 
     pub(crate) fn check_num_bind(&mut self, v: u32, t: &Type) -> Result<(), TypeError> {
-        if !self.num_vars.contains(&v) {
+        if !self.uni.num_vars.contains(&v) {
             return Ok(());
         }
         match self.prune(t.clone()) {
@@ -140,12 +143,12 @@ impl Infer {
     }
 
     pub(crate) fn check_trait_bind(&mut self, v: u32, t: &Type) -> Result<(), TypeError> {
-        let Some(preds) = self.trait_vars.get(&v).cloned() else {
+        let Some(preds) = self.traits.trait_vars.get(&v).cloned() else {
             return Ok(());
         };
         match self.prune(t.clone()) {
             Type::Var(u) => {
-                let entry = self.trait_vars.entry(u).or_default();
+                let entry = self.traits.trait_vars.entry(u).or_default();
                 for p in preds {
                     if !entry.contains(&p) {
                         entry.push(p);
@@ -155,7 +158,7 @@ impl Infer {
             }
             Type::Adt { name, .. } => {
                 for (tr, method) in preds {
-                    if !self.instances.contains(&(tr.clone(), name.clone())) {
+                    if !self.traits.instances.contains(&(tr.clone(), name.clone())) {
                         return Err(TypeError::Message(format!(
                             "no `instance {tr} for {name}` (required by `.{method}()`)"
                         )));

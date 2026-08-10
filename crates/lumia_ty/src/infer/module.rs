@@ -17,10 +17,10 @@ impl Infer {
             self.bind(p.clone(), tv);
         }
         let ret_tv = self.fresh();
-        self.return_stack.push(ret_tv.clone());
+        self.ctrl.return_stack.push(ret_tv.clone());
         let (rt, re) = self.infer_expr(&fun.body)?;
         self.unify_at(expr_span(&fun.body), rt, ret_tv.clone())?;
-        self.return_stack.pop();
+        self.ctrl.return_stack.pop();
         // main is always an effect root
         let re = if fun.is_main {
             self.union_eff(re, Effect::io())
@@ -71,30 +71,30 @@ pub fn infer_module_with_options(
     opts: InferOptions,
 ) -> Result<TypedModule, TypeError> {
     let mut inf = Infer::new(vis);
-    inf.ord_instances = module
+    inf.traits.ord_instances = module
         .instances
         .iter()
         .filter(|(tr, _)| tr == "Ord")
         .map(|(_, ty)| ty.clone())
         .collect();
-    inf.num_instances = module
+    inf.traits.num_instances = module
         .instances
         .iter()
         .filter(|(tr, _)| tr == "Num")
         .map(|(_, ty)| ty.clone())
         .collect();
-    inf.trait_methods = module
+    inf.traits.trait_methods = module
         .trait_methods
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
-    inf.instances = module.instances.iter().cloned().collect();
-    inf.method_trait = module
+    inf.traits.instances = module.instances.iter().cloned().collect();
+    inf.traits.method_trait = module
         .method_traits
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
-    inf.products = module
+    inf.products.products = module
         .products
         .iter()
         .map(|p| (p.name.clone(), p.fields.clone()))
@@ -147,7 +147,7 @@ pub fn infer_module_with_options(
                 // Remove the recursive placeholder before generalize; otherwise its
                 // free vars (via unify into the mono binding) look env-bound and
                 // top-level `val dbl = { x -> x + x }` never gets a polymorphic scheme.
-                for scope in inf.env.iter_mut().rev() {
+                for scope in inf.scopes.env.iter_mut().rev() {
                     if scope.remove(&f.name).is_some() {
                         break;
                     }
@@ -203,8 +203,12 @@ pub fn infer_module_with_options(
         .map(|(sp, t)| (sp, inf.zonk_type(t)))
         .collect();
     let decls: HashMap<_, _> = std::mem::take(&mut inf.decls).into_iter().collect();
-    let ufcs_rewrites: HashMap<_, _> = std::mem::take(&mut inf.ufcs_rewrites).into_iter().collect();
-    let alt_kinds: HashMap<_, _> = std::mem::take(&mut inf.alt_kinds).into_iter().collect();
+    let ufcs_rewrites: HashMap<_, _> = std::mem::take(&mut inf.traits.ufcs_rewrites)
+        .into_iter()
+        .collect();
+    let alt_kinds: HashMap<_, _> = std::mem::take(&mut inf.ctrl.alt_kinds)
+        .into_iter()
+        .collect();
     let mut module = module.clone();
     if !ufcs_rewrites.is_empty() {
         apply_ufcs_rewrites(&mut module, &ufcs_rewrites);

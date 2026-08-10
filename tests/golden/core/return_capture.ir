@@ -1,0 +1,26 @@
+module ReturnCapture
+
+fun __lam_0(env, p0) effect.io=false memo=None {
+  %9 = closure_cap(%8, 0)  // pure
+  %2 = i64 0  // pure
+  %3 = %1 == %2  // pure
+  %4 = if ...  // pure
+  return %4
+}
+
+fun main() effect.io=true memo=None {
+  %0 = i64 42  // pure
+  %1 = call make(%0)  // pure
+  %2 = i64 0  // pure
+  %3 = icall %1(%2)  // pure
+  %4 = builtin Println(%3)  // effect
+  %5 = i64 7  // pure
+  %6 = icall %1(%5)  // pure
+  %7 = builtin Println(%6)  // effect
+  return %7
+}
+
+fun make(x) effect.io=false memo=None {
+  %5 = alloc_closure(__lam_0, n=1)  // pure
+  return %5
+}

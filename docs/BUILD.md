@@ -65,14 +65,15 @@ Source.lm
 
 ```text
 crates/
-  lumia          CLI：check / build / fmt / lsp / pkg
-  lumia_syntax   词法 + 递归下降解析，带 Span
-  lumia_hir      语法糖降级后的具名 IR
-  lumia_ty       HM 推断 + 效应集合 ε
-  lumia_core     Core SSA + AST/HIR→Core
+  lumia          lib+bin：load / check_program / pkg / lsp / doc；CLI 为薄封装
+  lumia_syntax   词法 + 递归下降解析，带 Span（AST 在 ast.rs）
+  lumia_hir      语法糖降级后的具名 IR + Builtin::info
+  lumia_ty       HM 推断 + 效应；共享 typecheck_hir（infer→parallel→effects）
+  lumia_core     Core SSA + HIR→Core；pipeline 走 typecheck_hir
   lumia_opt      Pass 管道（§7.1.1）：CSE / Memo / Inline / Escape / ReprSelect / CopyElim
-  lumia_codegen  inkwell → .o → clang 链接
+  lumia_codegen  inkwell → .o → clang 链接（Codegen 子状态 + CodegenError）
   lumia_rt       GC ABI + mark-sweep + println*
+  lumia_abi      TYPE_*/MEMO_* + float_contract
 examples/        示例 .lm
 scripts/env.sh   NixOS：LLVM_SYS_211_PREFIX + 共享库 PATH（排除 *-static）
 scripts/e2e.sh   端到端：编译并跑 hello / add
@@ -80,6 +81,8 @@ scripts/check.sh 本地 CI 冒烟：`cargo test` workspace lib + lumia e2e
 ```
 
 根目录 `[workspace.dependencies]` 已钉 `inkwell` 的 `llvm21-1`。
+
+**前端统一**：CLI、LSP 与 `lumia_core::pipeline` 共用 `lumia_ty::typecheck_hir`（多文件 load / assert 注解仍在 `lumia` lib）。
 
 ---
 

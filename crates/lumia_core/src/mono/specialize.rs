@@ -115,12 +115,16 @@ fn specialize_mono_round(
     let mut clones = Vec::new();
     let mut clone_names: FxHashSet<String> = FxHashSet::default();
     for (name, key) in needed {
-        if name.contains('$') || !key.worth_cloning() {
+        if !key.worth_cloning() {
             continue;
         }
         let Some(orig) = index.get(&name) else {
             continue;
         };
+        // Do not specialize an existing mono clone (structured; `$` is only the name suffix).
+        if orig.is_mono_clone() {
+            continue;
+        }
         if orig.is_main || orig.external.is_some() || orig.params.is_empty() {
             continue;
         }
@@ -145,6 +149,7 @@ fn specialize_mono_round(
         let binds = key.funref_param_binds(&orig.params);
         let mut clone = orig.clone();
         clone.name = new_name.clone();
+        clone.mono_of = Some(name.clone());
         clone.param_tys = param_tys.clone();
         clone.memo = None;
         clone.scheme_poly = false;
@@ -272,6 +277,14 @@ fn walk_mono_nested_scan(
     }
 }
 
+/// True when `fun` already names a mono clone (or still uses legacy `$` suffix only).
+fn callee_is_mono_clone(fun: &str, index: &FunIndex<'_>) -> bool {
+    index
+        .get(fun)
+        .map(|f| f.is_mono_clone())
+        .unwrap_or_else(|| fun.contains('$'))
+}
+
 fn note_mono_call(
     value: &Value,
     local_tys: &HashMap<u32, Type>,
@@ -282,7 +295,7 @@ fn note_mono_call(
     let Value::Call { fun, args } = value else {
         return;
     };
-    if args.is_empty() || fun.contains('$') {
+    if args.is_empty() || callee_is_mono_clone(fun, index) {
         return;
     }
     let Some(key) = args_mono_key(args, local_tys, funref_of) else {
@@ -316,7 +329,8 @@ pub(crate) fn mono_value_ty(
         if let Some(f) = index.get(fun) {
             return Some(f.ret_ty.clone());
         }
-        if fun.contains('$') {
+        // Clone not yet indexed this round — recover ret from the call-site key.
+        if callee_is_mono_clone(fun, index) {
             if let Some(key) = args_mono_key(args, local_tys, &HashMap::default()) {
                 return Some(key.ret_ty(funs));
             }
@@ -372,7 +386,7 @@ fn rewrite_mono_value(
 ) {
     match value {
         Value::Call { fun, args } => {
-            if args.is_empty() || fun.contains('$') {
+            if args.is_empty() || callee_is_mono_clone(fun, index) {
                 return;
             }
             if let Some(key) = args_mono_key(args, local_tys, funref_of) {
@@ -421,10 +435,14 @@ fn mono_value_ty_rewrite(
                         return mk.ret_ty(funs);
                     }
                 }
-                if fun.contains('$') || key.worth_cloning() {
+                if callee_is_mono_clone(fun, index) || key.worth_cloning() {
                     return key.ret_ty(funs);
                 }
             }
+            if let Some(f) = index.get(fun) {
+                return f.ret_ty.clone();
+            }
+            // Legacy name-suffix fallback when the clone is not yet in the index.
             if fun.ends_with("$Float") {
                 return Type::Float;
             }
@@ -434,10 +452,7 @@ fn mono_value_ty_rewrite(
             if fun.ends_with("$String") {
                 return Type::String;
             }
-            index
-                .get(fun)
-                .map(|f| f.ret_ty.clone())
-                .unwrap_or(Type::Int)
+            Type::Int
         }
         other => mono_value_ty(other, local_tys, index),
     }

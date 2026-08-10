@@ -11,7 +11,8 @@ use crate::common::{
 use crate::map_set::{map_mark_payload, set_mark_payload};
 use crate::memo;
 use lumia_abi::{
-    list_elem_is_float, map_key_is_float, map_val_is_float, set_elem_is_float, tid_base,
+    gc_skip_float_slot, list_elem_is_float, map_key_is_float, map_val_is_float, set_elem_is_float,
+    tid_base,
 };
 
 impl MarkSweep {
@@ -114,10 +115,10 @@ pub(crate) fn mark(obj: *mut ObjectHeader) {
             TYPE_ADT => {
                 let words = ((*obj).size as usize) / 8;
                 let base = payload as *const i64;
-                let float_mask = (*obj)._pad as u64;
+                let float_mask = (*obj)._pad;
                 // ADT: [tag][fields…] — skip tag; skip unboxed Float fields (layout in `_pad`).
                 for i in 1..words {
-                    if float_mask & (1u64 << (i - 1)) != 0 {
+                    if gc_skip_float_slot(tid, i - 1, float_mask) {
                         continue;
                     }
                     mark_value(*base.add(i));

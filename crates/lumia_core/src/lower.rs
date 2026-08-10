@@ -12,7 +12,7 @@ use lumia_hir::{Builtin, Expr as HirExpr, Item, Module as HirModule};
 use lumia_ty::{Effect, Type};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
-struct LowerCtx {
+struct CoreLowerCtx {
     next: u32,
     name_to_local: HashMap<String, Local>,
     mutables: HashSet<String>,
@@ -22,7 +22,7 @@ struct LowerCtx {
     trait_method_names: HashSet<String>,
 }
 
-impl LowerCtx {
+impl CoreLowerCtx {
     fn new(
         toplevel_funs: HashSet<String>,
         toplevel_vals: HashSet<String>,
@@ -99,7 +99,7 @@ pub fn lower_hir_with_schemes(
     for item in &module.items {
         match item {
             Item::Fun(f) => {
-                let mut ctx = LowerCtx::new(
+                let mut ctx = CoreLowerCtx::new(
                     toplevel_funs.clone(),
                     toplevel_vals.clone(),
                     trait_method_names.clone(),
@@ -146,6 +146,7 @@ pub fn lower_hir_with_schemes(
                     external: f.external.clone(),
                     escaping: HashSet::default(),
                     scheme_poly,
+                    mono_of: None,
                 });
             }
             Item::Val { name, body } => {
@@ -157,7 +158,7 @@ pub fn lower_hir_with_schemes(
                     Some(t) => t.clone(),
                     None => Type::Int,
                 };
-                let mut ctx = LowerCtx::new(
+                let mut ctx = CoreLowerCtx::new(
                     toplevel_funs.clone(),
                     toplevel_vals.clone(),
                     trait_method_names.clone(),
@@ -181,6 +182,7 @@ pub fn lower_hir_with_schemes(
                     external: None,
                     escaping: HashSet::default(),
                     scheme_poly,
+                    mono_of: None,
                 });
             }
         }
@@ -218,7 +220,7 @@ fn type_is_open(t: &Type) -> bool {
     }
 }
 
-fn lower_expr_block(ctx: &mut LowerCtx, expr: &HirExpr) -> (Block, Option<Local>) {
+fn lower_expr_block(ctx: &mut CoreLowerCtx, expr: &HirExpr) -> (Block, Option<Local>) {
     let mut ops = vec![];
     let result = lower_expr(ctx, expr, &mut ops, true);
     (
@@ -232,7 +234,7 @@ fn lower_expr_block(ctx: &mut LowerCtx, expr: &HirExpr) -> (Block, Option<Local>
 }
 
 fn lower_expr(
-    ctx: &mut LowerCtx,
+    ctx: &mut CoreLowerCtx,
     expr: &HirExpr,
     ops: &mut Vec<Op>,
     pure_region: bool,
@@ -602,7 +604,7 @@ fn lower_expr(
             last
         }
         HirExpr::Lambda { params, body, .. } => {
-            let mut inner = LowerCtx {
+            let mut inner = CoreLowerCtx {
                 next: ctx.next,
                 name_to_local: ctx.name_to_local.clone(),
                 mutables: ctx.mutables.clone(),

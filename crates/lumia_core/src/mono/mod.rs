@@ -61,6 +61,7 @@ mod tests {
             memo: None,
             escaping: Default::default(),
             scheme_poly: false,
+            mono_of: None,
         };
         let key = MonoKey(vec![
             MonoKind::Adt {
@@ -117,8 +118,13 @@ val main = {
         let apply_clone = core
             .functions
             .iter()
-            .find(|f| f.name.contains("apply") && f.name.contains('$'))
+            .find(|f| f.name.contains("apply") && f.is_mono_clone())
             .expect("apply mono clone");
+        assert_eq!(
+            apply_clone.mono_of.as_deref(),
+            Some("apply"),
+            "mono_of should name the original"
+        );
         assert!(
             matches!(apply_clone.ret_ty, Type::Float),
             "apply clone ret_ty should be Float after refresh, got {:?}",

@@ -1,7 +1,9 @@
 //! List filter / flatMap desugaring.
 
-use super::{list_accum, resolve_unary_callback, with_fun_bind, UnaryCallback};
-use crate::ast::{Builtin, Expr};
+use super::{
+    append_assign, concat_assign, list_accum, resolve_unary_callback, with_fun_bind, UnaryCallback,
+};
+use crate::ast::Expr;
 use crate::lower::{empty_list, LowerCtx};
 use lumia_syntax::Span;
 
@@ -18,15 +20,7 @@ pub(crate) fn lower_list_filter(ctx: &LowerCtx, list: Expr, f: Expr, span: Span)
 
 fn lower_list_filter_inline(ctx: &LowerCtx, list: Expr, x: String, body: Expr, span: Span) -> Expr {
     let acc = format!("__flt_acc_{}", span.start.0);
-    let append = Expr::Assign {
-        name: acc.clone(),
-        value: Box::new(Expr::BuiltinCall {
-            name: Builtin::ListAppend,
-            args: vec![Expr::Var(acc.clone(), span), Expr::Var(x.clone(), span)],
-            span,
-        }),
-        span,
-    };
+    let append = append_assign(&acc, Expr::Var(x.clone(), span), span);
     let step = Expr::If {
         cond: Box::new(body),
         then_branch: Box::new(append),
@@ -50,15 +44,7 @@ fn lower_list_filter_call(
         args: vec![Expr::Var(x.clone(), span)],
         span,
     };
-    let append = Expr::Assign {
-        name: acc.clone(),
-        value: Box::new(Expr::BuiltinCall {
-            name: Builtin::ListAppend,
-            args: vec![Expr::Var(acc.clone(), span), Expr::Var(x.clone(), span)],
-            span,
-        }),
-        span,
-    };
+    let append = append_assign(&acc, Expr::Var(x.clone(), span), span);
     let step = Expr::If {
         cond: Box::new(pred),
         then_branch: Box::new(append),
@@ -99,15 +85,7 @@ pub(crate) fn lower_list_flat_map(ctx: &LowerCtx, list: Expr, f: Expr, span: Spa
                 body: Box::new(body),
                 mutable: false,
             };
-            let step = Expr::Assign {
-                name: acc.clone(),
-                value: Box::new(Expr::BuiltinCall {
-                    name: Builtin::ListConcat,
-                    args: vec![Expr::Var(acc.clone(), span), mapped],
-                    span,
-                }),
-                span,
-            };
+            let step = concat_assign(&acc, mapped, span);
             list_accum(ctx, acc, empty_list(span), &x, list, step, span)
         }
         UnaryCallback::Bound { f, f_name, x } => {
@@ -116,15 +94,7 @@ pub(crate) fn lower_list_flat_map(ctx: &LowerCtx, list: Expr, f: Expr, span: Spa
                 args: vec![Expr::Var(x.clone(), span)],
                 span,
             };
-            let step = Expr::Assign {
-                name: acc.clone(),
-                value: Box::new(Expr::BuiltinCall {
-                    name: Builtin::ListConcat,
-                    args: vec![Expr::Var(acc.clone(), span), mapped],
-                    span,
-                }),
-                span,
-            };
+            let step = concat_assign(&acc, mapped, span);
             with_fun_bind(
                 Some((f_name, f)),
                 list_accum(ctx, acc, empty_list(span), &x, list, step, span),

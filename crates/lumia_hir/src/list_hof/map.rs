@@ -1,6 +1,6 @@
 //! List map / sortBy desugaring.
 
-use super::{list_accum, resolve_unary_callback, with_fun_bind, UnaryCallback};
+use super::{append_assign, list_accum, resolve_unary_callback, with_fun_bind, UnaryCallback};
 use crate::ast::{Builtin, Expr};
 use crate::lower::{empty_list, LowerCtx};
 use crate::visit::free_vars_expr;
@@ -66,15 +66,7 @@ pub(crate) fn lower_list_sort_by(ctx: &LowerCtx, list: Expr, f: Expr, span: Span
 
 fn lower_list_map_inline(ctx: &LowerCtx, list: Expr, x: String, body: Expr, span: Span) -> Expr {
     let acc = format!("__map_acc_{}", span.start.0);
-    let step = Expr::Assign {
-        name: acc.clone(),
-        value: Box::new(Expr::BuiltinCall {
-            name: Builtin::ListAppend,
-            args: vec![Expr::Var(acc.clone(), span), body],
-            span,
-        }),
-        span,
-    };
+    let step = append_assign(&acc, body, span);
     list_accum(ctx, acc, empty_list(span), &x, list, step, span)
 }
 
@@ -92,15 +84,7 @@ fn lower_list_map_call(
         args: vec![Expr::Var(x.clone(), span)],
         span,
     };
-    let step = Expr::Assign {
-        name: acc.clone(),
-        value: Box::new(Expr::BuiltinCall {
-            name: Builtin::ListAppend,
-            args: vec![Expr::Var(acc.clone(), span), mapped],
-            span,
-        }),
-        span,
-    };
+    let step = append_assign(&acc, mapped, span);
     with_fun_bind(
         Some((f_name, f)),
         list_accum(ctx, acc, empty_list(span), &x, list, step, span),

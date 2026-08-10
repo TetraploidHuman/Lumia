@@ -39,6 +39,16 @@ pub struct CoreFun {
     pub escaping: HashSet<Local>,
     /// HM scheme needs call-site clones (`∀` / Num / trait preds), or signature still open.
     pub scheme_poly: bool,
+    /// When set, this function is a monomorphization clone of the named original.
+    /// Prefer this over parsing `$` out of [`Self::name`].
+    pub mono_of: Option<String>,
+}
+
+impl CoreFun {
+    #[inline]
+    pub fn is_mono_clone(&self) -> bool {
+        self.mono_of.is_some()
+    }
 }
 
 /// Bounded cross-call memo table — one mechanism, representation is a parameter.
