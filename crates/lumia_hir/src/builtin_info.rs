@@ -600,10 +600,7 @@ mod tests {
             assert_eq!(i.float_sensitive(), b.float_sensitive());
             if i.float_sensitive() {
                 assert!(
-                    matches!(
-                        i.emit,
-                        BuiltinEmit::ObjI64Ptr | BuiltinEmit::ObjI64I64Ptr
-                    ),
+                    matches!(i.emit, BuiltinEmit::ObjI64Ptr | BuiltinEmit::ObjI64I64Ptr),
                     "float ensure should use convention emit: {}",
                     b.display_name()
                 );
