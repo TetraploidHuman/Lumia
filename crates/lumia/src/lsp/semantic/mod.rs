@@ -80,11 +80,43 @@ val main = {
             "expected encoded token quintuples, got len={}",
             data.len()
         );
-        // At least one keyword / function / method / enum member.
+        // At least one keyword / function / method / enum member / type (module+import path).
         let types: Vec<u32> = data.chunks(5).map(|c| c[3]).collect();
         assert!(types.contains(&0), "function token missing: {types:?}");
         assert!(types.contains(&1), "method token missing: {types:?}");
         assert!(types.contains(&6), "enumMember missing: {types:?}");
         assert!(types.contains(&9), "keyword missing: {types:?}");
+        assert!(
+            types.contains(&8),
+            "type token (module/import) missing: {types:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_paint_import_alias() {
+        // `check_source` does not load packages, so aliased imports are not
+        // bound as callables — only paint the import AST (path + local name).
+        let src = r#"
+module Demo
+import std.io.{println as log}
+val main = { 1 }
+"#;
+        let typed = check_source(src, true).expect("typecheck");
+        let a = Analysis {
+            typed,
+            src: src.to_string(),
+            files: vec![],
+        };
+        let data = tokens_for_analysis(&a);
+        assert!(!data.is_empty() && data.len().is_multiple_of(5));
+        let types: Vec<u32> = data.chunks(5).map(|c| c[3]).collect();
+        assert!(
+            types.contains(&8),
+            "import path type tokens missing: {types:?}"
+        );
+        assert!(
+            types.contains(&0),
+            "imported local name should paint as function: {types:?}"
+        );
     }
 }

@@ -8,7 +8,8 @@ use super::token::{
 use crate::lsp::state::Analysis;
 use lumia_hir::{surface_names, SurfaceRole};
 use lumia_syntax::{
-    Expr, ForBinding, Item, MatchArm, MatchCondArm, Module, Pattern, Stmt, TypeKind, ValItem,
+    Expr, ForBinding, ImportNames, Item, MatchArm, MatchCondArm, Module, Pattern, Stmt, TypeKind,
+    ValItem,
 };
 use lumia_ty::Type;
 
@@ -17,8 +18,53 @@ pub(super) fn collect_module(a: &Analysis, module: &Module, src: &str, out: &mut
     if let Some((s, e)) = find_word(src, &module.name, module.span.start.0 as usize, src.len()) {
         push(out, s, e, TY_TYPE, 0);
     }
+    for imp in &module.imports {
+        collect_import(a, imp, src, out);
+    }
     for item in &module.items {
         collect_item(a, item, src, out);
+    }
+}
+
+fn collect_import(a: &Analysis, imp: &lumia_syntax::Import, src: &str, out: &mut Vec<AbsToken>) {
+    let start = imp.span.start.0 as usize;
+    let end = imp.span.end.0 as usize;
+    let mut cursor = start;
+    for seg in &imp.path {
+        if let Some((s, e)) = find_word(src, seg, cursor, end) {
+            push(out, s, e, TY_TYPE, 0);
+            cursor = e;
+        }
+    }
+    match &imp.names {
+        ImportNames::All => {}
+        ImportNames::Single(n) => paint_imported_name(a, src, n, cursor, end, out),
+        ImportNames::Selective(names) => {
+            for n in names {
+                paint_imported_name(a, src, n, cursor, end, out);
+            }
+        }
+    }
+}
+
+fn paint_imported_name(
+    a: &Analysis,
+    src: &str,
+    n: &lumia_syntax::ImportedName,
+    from: usize,
+    to: usize,
+    out: &mut Vec<AbsToken>,
+) {
+    let local = n.local();
+    // Prefer painting the local binding name (alias when present).
+    if let Some((s, e)) = find_word(src, local, from, to) {
+        let (ty, mods) = classify_ident(a, local, &Default::default());
+        push(out, s, e, ty, mods | MOD_DEFAULT_LIB);
+    } else if local != n.name.as_str() {
+        if let Some((s, e)) = find_word(src, &n.name, from, to) {
+            let (ty, mods) = classify_ident(a, &n.name, &Default::default());
+            push(out, s, e, ty, mods | MOD_DEFAULT_LIB);
+        }
     }
 }
 

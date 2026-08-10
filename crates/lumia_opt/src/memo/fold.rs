@@ -11,6 +11,8 @@ pub(crate) fn const_fold_block(block: &mut Block) {
     let mut known_list: HashMap<u32, Vec<Local>> = HashMap::default();
     // Local → field locals of a literal `AllocAdt` (for AdtField fold).
     let mut known_adt: HashMap<u32, Vec<Local>> = HashMap::default();
+    // Local → tag of a literal `AllocAdt` (for AdtTag fold).
+    let mut known_adt_tag: HashMap<u32, i64> = HashMap::default();
     // Local → flat key/value locals of a literal `AllocMap`.
     let mut known_map: HashMap<u32, Vec<Local>> = HashMap::default();
     // Local → element locals of a literal `AllocSet`.
@@ -40,6 +42,9 @@ pub(crate) fn const_fold_block(block: &mut Block) {
                         if let Some(fields) = known_adt.get(src).cloned() {
                             known_adt.insert(local.0, fields);
                         }
+                        if let Some(&tag) = known_adt_tag.get(src) {
+                            known_adt_tag.insert(local.0, tag);
+                        }
                         if let Some(pairs) = known_map.get(src).cloned() {
                             known_map.insert(local.0, pairs);
                         }
@@ -56,8 +61,9 @@ pub(crate) fn const_fold_block(block: &mut Block) {
                     Value::AllocSet { elems, .. } => {
                         known_set.insert(local.0, elems.clone());
                     }
-                    Value::AllocAdt { fields, .. } => {
+                    Value::AllocAdt { tag, fields, .. } => {
                         known_adt.insert(local.0, fields.clone());
+                        known_adt_tag.insert(local.0, *tag);
                     }
                     Value::Unary {
                         op: UnOp::Neg,
@@ -216,7 +222,16 @@ pub(crate) fn const_fold_block(block: &mut Block) {
                                     if let Some(inner) = known_adt.get(&el.0).cloned() {
                                         known_adt.insert(local.0, inner);
                                     }
+                                    if let Some(&tag) = known_adt_tag.get(&el.0) {
+                                        known_adt_tag.insert(local.0, tag);
+                                    }
                                 }
+                            }
+                        }
+                        (Builtin::AdtTag, [adt]) => {
+                            if let Some(&tag) = known_adt_tag.get(&adt.0) {
+                                *value = Value::Int(tag);
+                                known_int.insert(local.0, tag);
                             }
                         }
                         (Builtin::ListConcat, [a, b]) => {
@@ -241,6 +256,48 @@ pub(crate) fn const_fold_block(block: &mut Block) {
                                     repr: ListRepr::LitList,
                                 };
                                 known_list.insert(local.0, merged);
+                            }
+                        }
+                        (Builtin::ListTake, [xs, n]) => {
+                            if let (Some(elems), Some(&k)) =
+                                (known_list.get(&xs.0), known_int.get(&n.0))
+                            {
+                                if k >= 0 {
+                                    let take: Vec<_> =
+                                        elems.iter().take(k as usize).copied().collect();
+                                    *value = Value::AllocList {
+                                        elems: take.clone(),
+                                        repr: ListRepr::LitList,
+                                    };
+                                    known_list.insert(local.0, take);
+                                }
+                            }
+                        }
+                        (Builtin::ListSlice, [xs, n]) => {
+                            // `slice`/`drop`: drop the first `n` elements.
+                            if let (Some(elems), Some(&k)) =
+                                (known_list.get(&xs.0), known_int.get(&n.0))
+                            {
+                                if k >= 0 {
+                                    let drop_n = (k as usize).min(elems.len());
+                                    let rest: Vec<_> = elems[drop_n..].to_vec();
+                                    *value = Value::AllocList {
+                                        elems: rest.clone(),
+                                        repr: ListRepr::LitList,
+                                    };
+                                    known_list.insert(local.0, rest);
+                                }
+                            }
+                        }
+                        (Builtin::ListReverse, [xs]) => {
+                            if let Some(elems) = known_list.get(&xs.0) {
+                                let mut rev = elems.clone();
+                                rev.reverse();
+                                *value = Value::AllocList {
+                                    elems: rev.clone(),
+                                    repr: ListRepr::LitList,
+                                };
+                                known_list.insert(local.0, rev);
                             }
                         }
                         _ => {}

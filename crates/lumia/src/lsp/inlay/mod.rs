@@ -217,4 +217,31 @@ val outer = { x ->
             "expected x and y param hints, got {labels:?}"
         );
     }
+
+    #[test]
+    fn inlay_field_and_call_projection_hints() {
+        let src = r#"
+module Demo
+type Point {
+    val x
+    val y
+}
+val main = {
+    val p = Point { x = 1, y = 2 }
+    p.x
+}
+"#;
+        let typed = check_source(src, true).expect("typecheck");
+        let a = Analysis {
+            typed,
+            src: src.to_string(),
+            files: vec![],
+        };
+        let hints = hints_for_analysis(&a, None);
+        let labels: Vec<_> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
+        assert!(
+            labels.iter().any(|l| *l == ": Int"),
+            "expected Int hint on field/call, got {labels:?}"
+        );
+    }
 }
