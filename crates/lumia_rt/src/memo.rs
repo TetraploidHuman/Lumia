@@ -1,43 +1,43 @@
 //! Transparent Memo `T_f` tables (DESIGN §7.5).
 
-use crate::{MEMO_IDX_CAP, MEMO_IDX_MAX_FUNS, MEMO_L2_MAX_ARGS, MEMO_L2_MAX_FUNS, MEMO_L2_SLOTS};
+use crate::{MEMO_IDX_CAP, MEMO_IDX_MAX_FUNS, MEMO_TF_MAX_ARGS, MEMO_TF_MAX_FUNS, MEMO_TF_SLOTS};
 use std::cell::RefCell;
 
 /// Transparent Memo `T_f` — fixed small associative tables (DESIGN §7.5.1-B).
-/// Caps live in `lumia_abi` (`MEMO_TF_*` / `MEMO_L2_*`). C entry points stay
+/// Caps live in `lumia_abi` (`MEMO_TF_*`). C entry points stay
 /// `lumia_memo_l2_*` for ABI stability (DESIGN vocabulary is `T_f`, not L2).
 
 #[derive(Clone, Copy)]
-struct MemoL2Slot {
+struct MemoTfSlot {
     valid: bool,
     nargs: u8,
-    args: [i64; MEMO_L2_MAX_ARGS],
+    args: [i64; MEMO_TF_MAX_ARGS],
     result: i64,
 }
 
-impl MemoL2Slot {
+impl MemoTfSlot {
     const EMPTY: Self = Self {
         valid: false,
         nargs: 0,
-        args: [0; MEMO_L2_MAX_ARGS],
+        args: [0; MEMO_TF_MAX_ARGS],
         result: 0,
     };
 
-    fn matches(&self, nargs: u8, args: &[i64; MEMO_L2_MAX_ARGS]) -> bool {
+    fn matches(&self, nargs: u8, args: &[i64; MEMO_TF_MAX_ARGS]) -> bool {
         self.valid && self.nargs == nargs && self.args[..nargs as usize] == args[..nargs as usize]
     }
 }
 
-struct MemoL2Table {
-    slots: [MemoL2Slot; MEMO_L2_SLOTS],
+struct MemoTfTable {
+    slots: [MemoTfSlot; MEMO_TF_SLOTS],
     next_victim: usize,
     hits: u64,
     misses: u64,
 }
 
-impl MemoL2Table {
+impl MemoTfTable {
     const EMPTY: Self = Self {
-        slots: [MemoL2Slot::EMPTY; MEMO_L2_SLOTS],
+        slots: [MemoTfSlot::EMPTY; MEMO_TF_SLOTS],
         next_victim: 0,
         hits: 0,
         misses: 0,
@@ -45,11 +45,11 @@ impl MemoL2Table {
 }
 
 thread_local! {
-    static MEMO_L2: RefCell<[MemoL2Table; MEMO_L2_MAX_FUNS]> =
-        const { RefCell::new([MemoL2Table::EMPTY; MEMO_L2_MAX_FUNS]) };
+    static MEMO_TF: RefCell<[MemoTfTable; MEMO_TF_MAX_FUNS]> =
+        const { RefCell::new([MemoTfTable::EMPTY; MEMO_TF_MAX_FUNS]) };
 }
 
-fn pack_args(a0: i64, a1: i64, a2: i64, a3: i64) -> [i64; MEMO_L2_MAX_ARGS] {
+fn pack_args(a0: i64, a1: i64, a2: i64, a3: i64) -> [i64; MEMO_TF_MAX_ARGS] {
     [a0, a1, a2, a3]
 }
 
@@ -64,12 +64,12 @@ pub extern "C" fn lumia_memo_l2_lookup(
     a3: i64,
     out_result: *mut i64,
 ) -> i64 {
-    if fun_id < 0 || fun_id as usize >= MEMO_L2_MAX_FUNS || out_result.is_null() {
+    if fun_id < 0 || fun_id as usize >= MEMO_TF_MAX_FUNS || out_result.is_null() {
         return 0;
     }
-    let nargs = nargs.clamp(0, MEMO_L2_MAX_ARGS as i64) as u8;
+    let nargs = nargs.clamp(0, MEMO_TF_MAX_ARGS as i64) as u8;
     let args = pack_args(a0, a1, a2, a3);
-    MEMO_L2.with(|t| {
+    MEMO_TF.with(|t| {
         let mut tables = t.borrow_mut();
         let table = &mut tables[fun_id as usize];
         for slot in &table.slots {
@@ -97,12 +97,12 @@ pub extern "C" fn lumia_memo_l2_store(
     a3: i64,
     result: i64,
 ) {
-    if fun_id < 0 || fun_id as usize >= MEMO_L2_MAX_FUNS {
+    if fun_id < 0 || fun_id as usize >= MEMO_TF_MAX_FUNS {
         return;
     }
-    let nargs = nargs.clamp(0, MEMO_L2_MAX_ARGS as i64) as u8;
+    let nargs = nargs.clamp(0, MEMO_TF_MAX_ARGS as i64) as u8;
     let args = pack_args(a0, a1, a2, a3);
-    MEMO_L2.with(|t| {
+    MEMO_TF.with(|t| {
         let mut tables = t.borrow_mut();
         let table = &mut tables[fun_id as usize];
         for slot in &mut table.slots {
@@ -111,11 +111,11 @@ pub extern "C" fn lumia_memo_l2_store(
                 return;
             }
         }
-        let i = table.next_victim % MEMO_L2_SLOTS;
+        let i = table.next_victim % MEMO_TF_SLOTS;
         table.next_victim = i + 1;
-        let mut stored = [0i64; MEMO_L2_MAX_ARGS];
+        let mut stored = [0i64; MEMO_TF_MAX_ARGS];
         stored[..nargs as usize].copy_from_slice(&args[..nargs as usize]);
-        table.slots[i] = MemoL2Slot {
+        table.slots[i] = MemoTfSlot {
             valid: true,
             nargs,
             args: stored,
@@ -127,18 +127,18 @@ pub extern "C" fn lumia_memo_l2_store(
 /// Test / `--show-memo-stats` helper: total hits across tables.
 #[no_mangle]
 pub extern "C" fn lumia_memo_l2_hits() -> i64 {
-    MEMO_L2.with(|t| t.borrow().iter().map(|x| x.hits as i64).sum())
+    MEMO_TF.with(|t| t.borrow().iter().map(|x| x.hits as i64).sum())
 }
 
 #[no_mangle]
 pub extern "C" fn lumia_memo_l2_misses() -> i64 {
-    MEMO_L2.with(|t| t.borrow().iter().map(|x| x.misses as i64).sum())
+    MEMO_TF.with(|t| t.borrow().iter().map(|x| x.misses as i64).sum())
 }
 
 #[no_mangle]
 pub extern "C" fn lumia_memo_l2_reset() {
-    MEMO_L2.with(|t| {
-        *t.borrow_mut() = [MemoL2Table::EMPTY; MEMO_L2_MAX_FUNS];
+    MEMO_TF.with(|t| {
+        *t.borrow_mut() = [MemoTfTable::EMPTY; MEMO_TF_MAX_FUNS];
     });
 }
 
@@ -169,7 +169,7 @@ thread_local! {
 
 /// Walk memo table slots so GC can mark heap bits retained by `T_f`.
 pub(crate) fn for_each_memo_i64(mut f: impl FnMut(i64)) {
-    MEMO_L2.with(|t| {
+    MEMO_TF.with(|t| {
         for table in t.borrow().iter() {
             for slot in &table.slots {
                 if !slot.valid {

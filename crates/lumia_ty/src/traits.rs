@@ -37,12 +37,13 @@ impl Infer {
             ats.push(t);
             aes = self.union_eff(aes, e);
         }
-        match self.prune(recv_ty.clone()) {
+        match self.prune(recv_ty) {
             Type::Adt { name: ty_name, .. } => {
+                let key = (ty_name, method.to_string());
                 let cands = self
                     .traits
                     .trait_methods
-                    .get(&(ty_name.clone(), method.to_string()))
+                    .get(&key)
                     .cloned()
                     .unwrap_or_default();
                 match cands.as_slice() {
@@ -51,7 +52,7 @@ impl Infer {
                         let ct = self.lookup(mangled).ok_or_else(|| {
                             at(
                                 span,
-                                format!("trait method `{method}` for `{ty_name}` is not in scope"),
+                                format!("trait method `{method}` for `{}` is not in scope", key.0),
                             )
                         })?;
                         let ret = self.fresh();
@@ -72,8 +73,9 @@ impl Infer {
                         Err(at(
                             span,
                             format!(
-                                "ambiguous trait method `{method}` for `{ty_name}` \
+                                "ambiguous trait method `{method}` for `{}` \
                                  (candidates: {}); qualify or rename",
+                                key.0,
                                 names.join(", ")
                             ),
                         ))

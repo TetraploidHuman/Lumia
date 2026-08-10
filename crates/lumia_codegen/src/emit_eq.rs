@@ -30,7 +30,7 @@ impl<'ctx> Codegen<'ctx> {
         adt_name: &str,
         arg: BasicValueEnum<'ctx>,
     ) -> Result<Option<PointerValue<'ctx>>> {
-        let mangled = format!("__Show_{adt_name}_show");
+        let mangled = lumia_hir::mangle_trait_method("Show", adt_name, "show");
         let Some(fv) = self.funs.functions.get(&mangled).copied() else {
             return Ok(None);
         };
@@ -57,7 +57,7 @@ impl<'ctx> Codegen<'ctx> {
         left: IntValue<'ctx>,
         right: IntValue<'ctx>,
     ) -> Result<Option<IntValue<'ctx>>> {
-        let mangled = format!("__Eq_{adt_name}_eq");
+        let mangled = lumia_hir::mangle_trait_method("Eq", adt_name, "eq");
         let Some(fv) = self.funs.functions.get(&mangled).copied() else {
             return Ok(None);
         };
@@ -81,7 +81,7 @@ impl<'ctx> Codegen<'ctx> {
         left: IntValue<'ctx>,
         right: IntValue<'ctx>,
     ) -> Result<Option<IntValue<'ctx>>> {
-        let mangled = format!("__Ord_{adt_name}_less");
+        let mangled = lumia_hir::mangle_trait_method("Ord", adt_name, "less");
         let Some(fv) = self.funs.functions.get(&mangled).copied() else {
             return Ok(None);
         };

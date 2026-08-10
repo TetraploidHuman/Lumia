@@ -62,20 +62,20 @@ pub const TYPE_MAP_ASSOC_F64V: u32 = TYPE_MAP | TID_ASSOC | TID_F_KEY | TID_F_VA
 
 /// Transparent memo (`T_f`) hard caps — must stay in sync across opt planner and rt.
 ///
-/// Historical `MEMO_L2_*` names match the frozen `lumia_memo_l2_*` C ABI symbols;
-/// prefer `MEMO_TF_*` aliases in new Rust code.
-pub const MEMO_L2_MAX_FUNS: usize = 64;
-pub const MEMO_L2_SLOTS: usize = 4;
-pub const MEMO_L2_MAX_ARGS: usize = 4;
-pub const MEMO_TF_MAX_FUNS: usize = MEMO_L2_MAX_FUNS;
-pub const MEMO_TF_SLOTS: usize = MEMO_L2_SLOTS;
-pub const MEMO_TF_MAX_ARGS: usize = MEMO_L2_MAX_ARGS;
+/// C ABI entry points remain `lumia_memo_l2_*` (frozen). Prefer `MEMO_TF_*` in Rust;
+/// `MEMO_L2_*` are thin aliases for historical call sites.
+pub const MEMO_TF_MAX_FUNS: usize = 64;
+pub const MEMO_TF_SLOTS: usize = 4;
+pub const MEMO_TF_MAX_ARGS: usize = 4;
+pub const MEMO_L2_MAX_FUNS: usize = MEMO_TF_MAX_FUNS;
+pub const MEMO_L2_SLOTS: usize = MEMO_TF_SLOTS;
+pub const MEMO_L2_MAX_ARGS: usize = MEMO_TF_MAX_ARGS;
 pub const MEMO_PROCESS_BYTE_CAP: usize = 2 * 1024 * 1024;
 pub const MEMO_IDX_MAX_FUNS: usize = 16;
 /// Keys outside `0..MEMO_IDX_CAP` are never cached (DESIGN §7.5 hard bound).
 pub const MEMO_IDX_CAP: usize = 4096;
 pub const MEMO_IDX_TABLE_BYTES: usize = MEMO_IDX_CAP * (1 + 8);
-pub const MEMO_SLOTS_TABLE_BYTES: usize = MEMO_L2_SLOTS * (1 + MEMO_L2_MAX_ARGS * 8 + 8);
+pub const MEMO_SLOTS_TABLE_BYTES: usize = MEMO_TF_SLOTS * (1 + MEMO_TF_MAX_ARGS * 8 + 8);
 
 /// Repo root given a workspace crate's `CARGO_MANIFEST_DIR` (`crates/<name>` → `…/Lumia`).
 #[inline]

@@ -26,6 +26,16 @@ pub struct InferValueCtx<'a> {
     pub funref_locals: Option<&'a HashMap<u32, String>>,
 }
 
+/// Grouped codegen tables so [`InferValueCtx::full`] stays a short call site.
+#[derive(Clone, Copy)]
+pub struct CodegenTypeTables<'a> {
+    pub slot_tys: &'a HashMap<String, Type>,
+    pub fun_ret_tys: &'a HashMap<String, Type>,
+    pub fun_param_tys: &'a HashMap<String, Vec<Type>>,
+    pub fun_param0_identity: &'a HashSet<String>,
+    pub funref_locals: &'a HashMap<u32, String>,
+}
+
 impl<'a> InferValueCtx<'a> {
     pub fn local_only(local_tys: &'a HashMap<u32, Type>) -> Self {
         Self {
@@ -39,21 +49,14 @@ impl<'a> InferValueCtx<'a> {
     }
 
     /// Full codegen tables (slots + function ABI + FunRef locals).
-    pub fn full(
-        local_tys: &'a HashMap<u32, Type>,
-        slot_tys: &'a HashMap<String, Type>,
-        fun_ret_tys: &'a HashMap<String, Type>,
-        fun_param_tys: &'a HashMap<String, Vec<Type>>,
-        fun_param0_identity: &'a HashSet<String>,
-        funref_locals: &'a HashMap<u32, String>,
-    ) -> Self {
+    pub fn full(local_tys: &'a HashMap<u32, Type>, tables: CodegenTypeTables<'a>) -> Self {
         Self {
             local_tys,
-            slot_tys: Some(slot_tys),
-            fun_ret_tys: Some(fun_ret_tys),
-            fun_param_tys: Some(fun_param_tys),
-            fun_param0_identity: Some(fun_param0_identity),
-            funref_locals: Some(funref_locals),
+            slot_tys: Some(tables.slot_tys),
+            fun_ret_tys: Some(tables.fun_ret_tys),
+            fun_param_tys: Some(tables.fun_param_tys),
+            fun_param0_identity: Some(tables.fun_param0_identity),
+            funref_locals: Some(tables.funref_locals),
         }
     }
 }

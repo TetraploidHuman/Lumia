@@ -825,6 +825,70 @@ mod tests {
     }
 
     #[test]
+    fn surface_from_method_roundtrips_display_name() {
+        // Builtins reachable via method/free surface (not HOF/internal-only).
+        let surface = [
+            Builtin::ListLen,
+            Builtin::ListGet,
+            Builtin::ListAppend,
+            Builtin::Contains,
+            Builtin::MapSet,
+            Builtin::MapRemove,
+            Builtin::SetInsert,
+            Builtin::MapKeys,
+            Builtin::MapValues,
+            Builtin::MapItems,
+            Builtin::ListSlice,
+            Builtin::ListTake,
+            Builtin::ListReverse,
+            Builtin::ListSort,
+            Builtin::ListJoin,
+            Builtin::StrTrim,
+            Builtin::StrSplit,
+            Builtin::StrSubstring,
+            Builtin::StrToLower,
+            Builtin::StrToUpper,
+            Builtin::StrStartsWith,
+            Builtin::StrEndsWith,
+            Builtin::ReadStdin,
+            Builtin::ListConcat,
+            Builtin::Range,
+            Builtin::RangeInclusive,
+        ];
+        for b in surface {
+            let name = b.display_name();
+            let arity = b.info().min_arity as usize;
+            assert_eq!(
+                Builtin::from_method(name, arity),
+                Some(b),
+                "from_method({name:?}, {arity}) should yield {b:?}"
+            );
+        }
+        // Alias kept in from_method only.
+        assert_eq!(Builtin::from_method("drop", 2), Some(Builtin::ListSlice));
+        // Internal / HOF builtins stay out of from_method.
+        for b in [
+            Builtin::Println,
+            Builtin::Show,
+            Builtin::MatchFail,
+            Builtin::Assert,
+            Builtin::ListParMap,
+            Builtin::ListParFold,
+            Builtin::ListSortByKeys,
+            Builtin::Elems,
+            Builtin::AdtTag,
+            Builtin::AdtField,
+        ] {
+            assert_eq!(
+                Builtin::from_method(b.display_name(), b.info().min_arity as usize),
+                None,
+                "{} must not be a direct from_method surface",
+                b.display_name()
+            );
+        }
+    }
+
+    #[test]
     fn result_heap_projections_are_typed_not_capture() {
         assert_eq!(Builtin::ListGet.result_heap(), ResultHeap::Typed);
         assert_eq!(Builtin::AdtField.result_heap(), ResultHeap::Typed);

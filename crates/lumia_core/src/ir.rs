@@ -22,6 +22,27 @@ pub struct CoreModule {
     pub adt_variant_names: HashMap<String, Vec<String>>,
 }
 
+impl CoreModule {
+    /// Empty module shell (tests / fixtures).
+    pub fn empty(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            functions: Vec::new(),
+            hash_adts: HashSet::default(),
+            trait_methods: HashMap::default(),
+            adt_variant_names: HashMap::default(),
+        }
+    }
+
+    /// Module with only the given functions (common test constructor).
+    pub fn with_functions(name: impl Into<String>, functions: Vec<CoreFun>) -> Self {
+        Self {
+            functions,
+            ..Self::empty(name)
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CoreFun {
     pub name: String,

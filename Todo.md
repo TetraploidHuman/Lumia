@@ -55,5 +55,7 @@
 - Infer / pkg / lsp / syntax AST 模块拆分；Core `CoreLowerCtx`；`rustfmt.toml`。
 - **Builtin 结果 GC 根**：`ResultHeap::{Never,Always,Typed}` 驱动 `roots.rs`（与 `may_capture` 正交；`ListGet`/`AdtField`/`ListParFold` 走类型推断）。
 - **LSP semanticTokens**：`lsp/semantic/{token,overlay,walk}`；编辑器 shared↔vscode 由 `scripts/check_editor_assets.sh` 防漂移。
-- **runtime_decls**：单测保证每个 `BuiltinInfo.runtime_symbol` 已声明。
+- **runtime_decls**：表驱动 `RUNTIME_DECLS` + 单测保证每个 `BuiltinInfo.runtime_symbol` 已声明、名字唯一。
+- **Trait mangling**：`lumia_hir::mangle_trait_method` 统一 HIR/codegen；`from_method`↔`display_name` 一致性单测。
+- **CoreModule::with_functions** / **CodegenTypeTables**；opt 管线 `PipelinePass` 免 `Box<dyn Pass>`；Memo Rust 侧以 `MEMO_TF_*` 为准（C ABI 仍 `lumia_memo_l2_*`）。
 - 历史逐项修复列表已并入上方 `[x]` 条目与提交记录，不再在此重复。

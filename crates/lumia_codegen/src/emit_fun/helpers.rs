@@ -83,11 +83,13 @@ impl<'ctx> Codegen<'ctx> {
     pub(crate) fn infer_ctx(&self) -> lumia_core::InferValueCtx<'_> {
         lumia_core::InferValueCtx::full(
             &self.frame.local_tys,
-            &self.frame.slot_tys,
-            &self.funs.fun_ret_tys,
-            &self.funs.fun_param_tys,
-            &self.funs.fun_param0_identity,
-            &self.funs.funref_locals,
+            lumia_core::CodegenTypeTables {
+                slot_tys: &self.frame.slot_tys,
+                fun_ret_tys: &self.funs.fun_ret_tys,
+                fun_param_tys: &self.funs.fun_param_tys,
+                fun_param0_identity: &self.funs.fun_param0_identity,
+                funref_locals: &self.funs.funref_locals,
+            },
         )
     }
 

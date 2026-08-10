@@ -4,6 +4,7 @@ mod ast;
 mod builtin_info;
 mod list_hof;
 mod lower;
+mod mangle;
 mod match_check;
 mod visit;
 
@@ -16,6 +17,7 @@ pub use builtin_info::{
 };
 pub use list_hof::{desugar_list_fold_sequential, desugar_list_map_sequential};
 pub use lower::{lower_module, LowerCtx, LowerError};
+pub use mangle::mangle_trait_method;
 pub use visit::{all_free_vars, fold, for_each_expr, free_vars_expr};
 
 #[cfg(test)]

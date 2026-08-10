@@ -46,6 +46,77 @@ pub trait Pass {
     fn run(&self, module: &mut CoreModule);
 }
 
+/// Fixed pipeline stages — no `Box<dyn Pass>` allocation on the hot path.
+#[derive(Clone, Copy)]
+enum PipelinePass {
+    Cse,
+    ConstFold,
+    Licm,
+    Escape,
+    Inline,
+    ConcatIdent,
+    ReprSelect,
+    CopyElim,
+}
+
+impl PipelinePass {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Cse => "cse",
+            Self::ConstFold => "const_fold",
+            Self::Licm => "licm",
+            Self::Escape => "escape",
+            Self::Inline => "inline",
+            Self::ConcatIdent => "concat_ident",
+            Self::ReprSelect => "repr_select",
+            Self::CopyElim => "copy_elim",
+        }
+    }
+
+    fn run(self, module: &mut CoreModule) {
+        match self {
+            Self::Cse => CsePass.run(module),
+            Self::ConstFold => ConstFoldPass.run(module),
+            Self::Licm => LicmPass.run(module),
+            Self::Escape => EscapePass.run(module),
+            Self::Inline => InlinePass.run(module),
+            Self::ConcatIdent => ConcatIdentPass.run(module),
+            Self::ReprSelect => ReprSelect.run(module),
+            Self::CopyElim => CopyElimPass.run(module),
+        }
+    }
+}
+
+struct CsePass;
+impl Pass for CsePass {
+    fn name(&self) -> &str {
+        "cse"
+    }
+    fn run(&self, module: &mut CoreModule) {
+        cse_module(module);
+    }
+}
+
+const DEBUG_PASSES: &[PipelinePass] = &[
+    PipelinePass::Cse,
+    PipelinePass::ConstFold,
+    PipelinePass::Licm,
+    PipelinePass::Escape,
+    PipelinePass::ReprSelect,
+];
+const RELEASE_PASSES: &[PipelinePass] = &[
+    PipelinePass::Cse,
+    PipelinePass::ConstFold,
+    PipelinePass::Licm,
+    PipelinePass::Escape,
+    PipelinePass::Inline,
+    // Inline exposes fresh literals / builtins — fold again before fusion/repr.
+    PipelinePass::ConstFold,
+    PipelinePass::ConcatIdent,
+    PipelinePass::ReprSelect,
+    PipelinePass::CopyElim,
+];
+
 /// Frontend → Core → optimize (for tests and tooling).
 pub fn compile_source_to_optimized(src: &str, opts: &OptOptions) -> Result<CoreModule, String> {
     compile_source_to_optimized_with_frontend(src, opts, &lumia_core::FrontendOptions::default())
@@ -80,25 +151,11 @@ pub fn optimize(module: &mut CoreModule, opts: &OptOptions) {
         None
     };
 
-    // Local reuse always: CSE + const-fold/copy-prop + LICM (semantic-preserving).
-    let mut passes: Vec<Box<dyn Pass>> = vec![
-        Box::new(CsePass),
-        Box::new(ConstFoldPass),
-        Box::new(LicmPass),
-        // Escape always — ReprSelect and future codegen consume `CoreFun::escaping`.
-        Box::new(EscapePass),
-    ];
-    if opts.release {
-        passes.push(Box::new(InlinePass));
-        // Inline exposes fresh literals / builtins — fold again before fusion/repr.
-        passes.push(Box::new(ConstFoldPass));
-        passes.push(Box::new(ConcatIdentPass));
-        passes.push(Box::new(ReprSelect));
-        passes.push(Box::new(CopyElimPass));
+    let passes = if opts.release {
+        RELEASE_PASSES
     } else {
-        passes.push(Box::new(ReprSelect));
-    }
-
+        DEBUG_PASSES
+    };
     for p in passes {
         p.run(module);
     }
@@ -114,33 +171,15 @@ pub fn optimize(module: &mut CoreModule, opts: &OptOptions) {
 /// *before* CSE (not as a `Pass::run`); applying a fresh plan after CSE would
 /// drop const-reuse evidence (§7.5.2).
 pub fn pass_names(release: bool) -> Vec<&'static str> {
-    if release {
-        vec![
-            "cse",
-            "const_fold",
-            "licm",
-            "escape",
-            "inline",
-            "const_fold",
-            "concat_ident",
-            "repr_select",
-            "copy_elim",
-            "memo_tf",
-        ]
+    let mut names: Vec<&'static str> = if release {
+        RELEASE_PASSES.iter().map(|p| p.name()).collect()
     } else {
-        vec!["cse", "const_fold", "licm", "escape", "repr_select"]
+        DEBUG_PASSES.iter().map(|p| p.name()).collect()
+    };
+    if release {
+        names.push("memo_tf");
     }
-}
-
-/// CSE: identical pure expressions share one SSA local (§7.5.1-A).
-struct CsePass;
-impl Pass for CsePass {
-    fn name(&self) -> &str {
-        "cse"
-    }
-    fn run(&self, module: &mut CoreModule) {
-        cse_module(module);
-    }
+    names
 }
 
 /// Default Map representation when analysis cannot prove a better choice.
@@ -160,7 +199,7 @@ mod tests {
     use lumia_core::{Block, CoreFun, CoreModule, Local, Op, Value};
     use lumia_ty::{Effect, Type};
     use repr_select::ReprSelect;
-    use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+    use rustc_hash::FxHashSet as HashSet;
 
     #[test]
     fn defaults() {
@@ -183,9 +222,9 @@ mod tests {
 
     #[test]
     fn copy_elim_collapses_alias() {
-        let mut module = CoreModule {
-            name: "M".into(),
-            functions: vec![CoreFun {
+        let mut module = CoreModule::with_functions(
+            "M",
+            vec![CoreFun {
                 name: "f".into(),
                 params: vec![],
                 param_names: vec![],
@@ -215,10 +254,7 @@ mod tests {
                 scheme_poly: false,
                 mono_of: None,
             }],
-            hash_adts: HashSet::default(),
-            trait_methods: HashMap::default(),
-            adt_variant_names: HashMap::default(),
-        };
+        );
         CopyElimPass.run(&mut module);
         let f = &module.functions[0];
         assert_eq!(f.body.ops.len(), 1);
@@ -227,9 +263,9 @@ mod tests {
 
     #[test]
     fn repr_select_marks_nonescaping_small_list_lit() {
-        let mut module = CoreModule {
-            name: "M".into(),
-            functions: vec![CoreFun {
+        let mut module = CoreModule::with_functions(
+            "M",
+            vec![CoreFun {
                 name: "f".into(),
                 params: vec![],
                 param_names: vec![],
@@ -268,10 +304,7 @@ mod tests {
                 scheme_poly: false,
                 mono_of: None,
             }],
-            hash_adts: HashSet::default(),
-            trait_methods: HashMap::default(),
-            adt_variant_names: HashMap::default(),
-        };
+        );
         EscapePass.run(&mut module);
         ReprSelect.run(&mut module);
         let Op::Let { value, .. } = &module.functions[0].body.ops[1] else {
@@ -285,9 +318,9 @@ mod tests {
 
     #[test]
     fn repr_select_escaping_small_list_stays_heap() {
-        let mut module = CoreModule {
-            name: "M".into(),
-            functions: vec![CoreFun {
+        let mut module = CoreModule::with_functions(
+            "M",
+            vec![CoreFun {
                 name: "f".into(),
                 params: vec![],
                 param_names: vec![],
@@ -320,10 +353,7 @@ mod tests {
                 scheme_poly: false,
                 mono_of: None,
             }],
-            hash_adts: HashSet::default(),
-            trait_methods: HashMap::default(),
-            adt_variant_names: HashMap::default(),
-        };
+        );
         EscapePass.run(&mut module);
         ReprSelect.run(&mut module);
         let Op::Let { value, .. } = &module.functions[0].body.ops[1] else {
@@ -371,9 +401,9 @@ val main = {
 
     #[test]
     fn repr_select_empty_list_is_lit() {
-        let mut module = CoreModule {
-            name: "M".into(),
-            functions: vec![CoreFun {
+        let mut module = CoreModule::with_functions(
+            "M",
+            vec![CoreFun {
                 name: "f".into(),
                 params: vec![],
                 param_names: vec![],
@@ -399,10 +429,7 @@ val main = {
                 scheme_poly: false,
                 mono_of: None,
             }],
-            hash_adts: HashSet::default(),
-            trait_methods: HashMap::default(),
-            adt_variant_names: HashMap::default(),
-        };
+        );
         EscapePass.run(&mut module);
         ReprSelect.run(&mut module);
         let Op::Let { value, .. } = &module.functions[0].body.ops[0] else {

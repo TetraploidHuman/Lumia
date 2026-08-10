@@ -270,13 +270,7 @@ mod tests {
             scheme_poly: false,
             mono_of: None,
         };
-        let mut module = CoreModule {
-            name: "M".into(),
-            functions: vec![len_fun, main_fun],
-            hash_adts: HashSet::default(),
-            trait_methods: HashMap::default(),
-            adt_variant_names: HashMap::default(),
-        };
+        let mut module = CoreModule::with_functions("M", vec![len_fun, main_fun]);
         EscapePass.run(&mut module);
         let main = module.functions.iter().find(|f| f.name == "main").unwrap();
         assert!(

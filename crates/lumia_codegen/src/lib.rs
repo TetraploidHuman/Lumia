@@ -317,7 +317,8 @@ fn emit_trait_dict_registration<'ctx>(
     let Some(reg) = module.get_function("lumia_dict_register") else {
         return Ok(());
     };
-    // (prefix, trait_id) — ids match lumia_rt::TRAIT_*.
+    // (prefix, trait_id) — ids match lumia_rt::TRAIT_*; prefix is
+    // `mangle_trait_method(trait, …)` without the type/method suffix.
     let specs: &[(&str, i64)] = &[
         ("__Show_", 1),
         ("__Eq_", 2),

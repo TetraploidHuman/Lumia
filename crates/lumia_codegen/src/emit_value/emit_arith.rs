@@ -248,7 +248,7 @@ impl<'ctx> Codegen<'ctx> {
                 } else {
                     "mul"
                 };
-                let mangled = format!("__Num_{name}_{method}");
+                let mangled = lumia_hir::mangle_trait_method("Num", &name, method);
                 if let Some(callee) = self.funs.functions.get(&mangled).copied() {
                     let call = crate::error::llvm(self.llvm.builder.build_call(
                         callee,
@@ -289,7 +289,7 @@ impl<'ctx> Codegen<'ctx> {
                     if self
                         .funs
                         .functions
-                        .contains_key(&format!("__Ord_{name}_less"))
+                        .contains_key(&lumia_hir::mangle_trait_method("Ord", &name, "less"))
                     {
                         // DESIGN less(self, other): a < b
                         let (left, right) = match op {

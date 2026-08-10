@@ -122,7 +122,7 @@ pub fn load_program_with_overlays(
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
-    let mut search_roots = vec![package_root.clone()];
+    let mut search_roots = vec![package_root];
     let mut link_args = Vec::new();
     let mut trust_foreign_pure = false;
     if let Some(manifest_path) = crate::pkg::find_manifest(&entry) {
