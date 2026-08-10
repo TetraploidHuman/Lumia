@@ -13,6 +13,7 @@ pub use module::{
 };
 
 use crate::types::{at, Effect, NameVisibility, Scheme, Type, TypeError};
+use lumia_hir::Builtin;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use state::{AltReturnState, EnvState, ProductState, SubstState, TraitState};
 
@@ -32,40 +33,37 @@ pub(crate) struct Infer {
 impl Infer {
     pub(crate) fn new(vis: NameVisibility) -> Self {
         let mut builtins = HashMap::default();
-        // println: Int or String → Unit / IO (overloads via Call special-case)
+        // Free IO builtin kept as a Var for first-class / import-alias use.
         builtins.insert(
-            "println".into(),
+            Builtin::Println.display_name().into(),
             Scheme::mono(Type::Fun(
                 vec![Type::Int],
                 Box::new(Type::Unit),
                 Effect::io(),
             )),
         );
-        // listOf / mapOf / setOf: 0-arg empty; Call site special-cases arity
-        builtins.insert(
-            "listOf".into(),
-            Scheme::mono(Type::Fun(
-                vec![],
-                Box::new(Type::List(Box::new(Type::Int))),
-                Effect::pure(),
-            )),
-        );
-        builtins.insert(
-            "mapOf".into(),
-            Scheme::mono(Type::Fun(
-                vec![],
-                Box::new(Type::Map(Box::new(Type::Int), Box::new(Type::Int))),
-                Effect::pure(),
-            )),
-        );
-        builtins.insert(
-            "setOf".into(),
-            Scheme::mono(Type::Fun(
-                vec![],
-                Box::new(Type::Set(Box::new(Type::Int))),
-                Effect::pure(),
-            )),
-        );
+        // Collection ctors: names from [`PRELUDE_CTORS`]; arity specialized in `infer_call`.
+        for sn in lumia_hir::PRELUDE_CTORS {
+            let ty = match sn.name {
+                "listOf" => Type::Fun(
+                    vec![],
+                    Box::new(Type::List(Box::new(Type::Int))),
+                    Effect::pure(),
+                ),
+                "mapOf" => Type::Fun(
+                    vec![],
+                    Box::new(Type::Map(Box::new(Type::Int), Box::new(Type::Int))),
+                    Effect::pure(),
+                ),
+                "setOf" => Type::Fun(
+                    vec![],
+                    Box::new(Type::Set(Box::new(Type::Int))),
+                    Effect::pure(),
+                ),
+                other => panic!("lumia: unhandled PRELUDE_CTOR `{other}`"),
+            };
+            builtins.insert(sn.name.into(), Scheme::mono(ty));
+        }
         Self {
             uni: SubstState::default(),
             scopes: EnvState {

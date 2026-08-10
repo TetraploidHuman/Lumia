@@ -2,10 +2,13 @@
 
 use anyhow::Result;
 use serde_json::Value;
-use std::io::{BufRead, Write};
+use std::io::{self, BufRead, Write};
+use std::sync::Mutex;
 
 /// Cap LSP message bodies so a malicious/buggy client cannot OOM the server.
 pub(super) const MAX_LSP_CONTENT_LENGTH: usize = 16 * 1024 * 1024;
+
+static STDOUT_LOCK: Mutex<()> = Mutex::new(());
 
 pub(super) fn read_message(r: &mut impl BufRead) -> Result<Option<Value>> {
     let mut content_length = None;
@@ -41,4 +44,11 @@ pub(super) fn write_message(w: &mut impl Write, v: &Value) -> Result<()> {
     w.write_all(&body)?;
     w.flush()?;
     Ok(())
+}
+
+/// Thread-safe stdout write for responses and `publishDiagnostics` notifications.
+pub(super) fn write_stdout(v: &Value) -> Result<()> {
+    let _g = STDOUT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut out = io::stdout().lock();
+    write_message(&mut out, v)
 }

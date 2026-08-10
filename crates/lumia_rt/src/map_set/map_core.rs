@@ -5,8 +5,8 @@ use std::ptr;
 use crate::common::{
     float_key_eq, header_from_payload, is_heap_payload, trap_abort, GcInhibitGuard, TYPE_ADT,
 };
+use crate::eq::lumia_eq;
 use crate::gc::{list_payload_bytes, lumia_alloc, mark, mark_value};
-use crate::show_eq::lumia_eq;
 
 use super::tid::{key_eq, key_hash, map_float_keys, map_float_vals, map_is_assoc, map_type_id};
 

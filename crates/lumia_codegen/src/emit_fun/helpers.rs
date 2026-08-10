@@ -79,6 +79,81 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
+    /// Codegen tables for [`lumia_core::infer_value_ty_ctx`] / ParMap elem typing.
+    pub(crate) fn infer_ctx(&self) -> lumia_core::InferValueCtx<'_> {
+        lumia_core::InferValueCtx::full(
+            &self.frame.local_tys,
+            &self.frame.slot_tys,
+            &self.funs.fun_ret_tys,
+            &self.funs.fun_param_tys,
+            &self.funs.fun_param0_identity,
+            &self.funs.funref_locals,
+        )
+    }
+
+    /// FunRef values are tagged with the low bit; refuse heap closures for par_* workers.
+    pub(crate) fn ensure_funref_ptr(
+        &mut self,
+        fun_i: inkwell::values::IntValue<'ctx>,
+        prefix: &str,
+    ) -> Result<inkwell::values::PointerValue<'ctx>> {
+        use inkwell::{AddressSpace, IntPredicate};
+        let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
+        let one = self.llvm.i64_ty.const_int(1, false);
+        let tagged = crate::error::llvm(self.llvm.builder.build_and(
+            fun_i,
+            one,
+            &format!("{prefix}_tag"),
+        ))?;
+        let is_funref = crate::error::llvm(self.llvm.builder.build_int_compare(
+            IntPredicate::EQ,
+            tagged,
+            one,
+            &format!("{prefix}_is_fr"),
+        ))?;
+        let cur = self
+            .llvm
+            .builder
+            .get_insert_block()
+            .with_context(|| format!("{prefix} needs insert block"))?;
+        let parent = cur
+            .get_parent()
+            .with_context(|| format!("{prefix} bb parent"))?;
+        let ok_bb = self
+            .llvm
+            .context
+            .append_basic_block(parent, &format!("{prefix}_ok"));
+        let bad_bb = self
+            .llvm
+            .context
+            .append_basic_block(parent, &format!("{prefix}_bad"));
+        crate::error::llvm(
+            self.llvm
+                .builder
+                .build_conditional_branch(is_funref, ok_bb, bad_bb),
+        )?;
+        self.llvm.builder.position_at_end(bad_bb);
+        let fail = self.runtime_fn("lumia_match_fail")?;
+        crate::error::llvm(
+            self.llvm
+                .builder
+                .build_call(fail, &[], &format!("{prefix}_bad_fn")),
+        )?;
+        crate::error::llvm(self.llvm.builder.build_unreachable())?;
+        self.llvm.builder.position_at_end(ok_bb);
+        let not1 = crate::error::llvm(self.llvm.builder.build_not(one, &format!("{prefix}_not1")))?;
+        let cleared = crate::error::llvm(self.llvm.builder.build_and(
+            fun_i,
+            not1,
+            &format!("{prefix}_clear"),
+        ))?;
+        crate::error::llvm(self.llvm.builder.build_int_to_ptr(
+            cleared,
+            ptr_ty,
+            &format!("{prefix}_fn"),
+        ))
+    }
+
     pub(crate) fn build_call(
         &self,
         f: FunctionValue<'ctx>,

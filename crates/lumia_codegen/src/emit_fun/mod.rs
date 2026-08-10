@@ -179,19 +179,8 @@ impl<'ctx> Codegen<'ctx> {
         Ok(())
     }
 
-    fn infer_value_ty(&self, value: &Value) -> Type {
-        lumia_core::infer_value_ty_ctx(
-            value,
-            lumia_core::InferValueCtx {
-                local_tys: &self.frame.local_tys,
-                slot_tys: Some(&self.frame.slot_tys),
-                fun_ret_tys: Some(&self.funs.fun_ret_tys),
-                fun_param_tys: Some(&self.funs.fun_param_tys),
-                fun_param0_identity: Some(&self.funs.fun_param0_identity),
-                funref_locals: Some(&self.funs.funref_locals),
-            },
-            None,
-        )
+    pub(crate) fn infer_value_ty(&self, value: &Value) -> Type {
+        lumia_core::infer_value_ty_ctx(value, self.infer_ctx(), None)
     }
 
     pub(crate) fn load_slot(&self, name: &str) -> Result<BasicValueEnum<'ctx>> {

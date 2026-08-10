@@ -7,6 +7,7 @@
 //! - textDocument/formatting → `lumia fmt` pretty-print
 //! - textDocument/documentSymbol → outline from module items
 //! - textDocument/inlayHint → binding / param / call-return types
+//! - textDocument/semanticTokens/full → type-aware highlighting
 
 mod analyze;
 mod completion;
@@ -17,6 +18,7 @@ mod formatting;
 mod hover;
 mod inlay;
 mod protocol;
+mod semantic;
 mod state;
 mod symbols;
 mod uri;
@@ -28,28 +30,30 @@ use definition::on_definition;
 use formatting::on_formatting;
 use hover::on_hover;
 use inlay::on_inlay_hint;
-use protocol::{read_message, write_message};
+use protocol::{read_message, write_stdout};
 use rustc_hash::FxHashMap as HashMap;
+use semantic::{on_semantic_tokens, TOKEN_MODIFIERS, TOKEN_TYPES};
 use serde_json::{json, Value};
-use state::{state_lock, State};
+use state::{spawn_analyze_worker, state_lock, State};
 use std::io;
 use symbols::on_document_symbol;
 
 pub fn run_lsp() -> Result<()> {
+    let analyze_tx = spawn_analyze_worker();
     *state_lock() = Some(State {
         docs: HashMap::default(),
         analysis: HashMap::default(),
+        analyze_tx: Some(analyze_tx),
     });
     let stdin = io::stdin();
     let mut stdin = stdin.lock();
-    let mut stdout = io::stdout();
     loop {
         let msg = match read_message(&mut stdin)? {
             Some(m) => m,
             None => break,
         };
         if let Some(resp) = handle_message(msg)? {
-            write_message(&mut stdout, &resp)?;
+            write_stdout(&resp)?;
         }
     }
     Ok(())
@@ -67,10 +71,21 @@ fn handle_message(msg: Value) -> Result<Option<Value>> {
                     "textDocumentSync": 1,
                     "hoverProvider": true,
                     "definitionProvider": true,
-                    "completionProvider": { "triggerCharacters": ["."] },
+                    "completionProvider": {
+                        "triggerCharacters": [".", "("],
+                        "resolveProvider": false
+                    },
                     "documentFormattingProvider": true,
                     "documentSymbolProvider": true,
-                    "inlayHintProvider": true
+                    "inlayHintProvider": true,
+                    "semanticTokensProvider": {
+                        "legend": {
+                            "tokenTypes": TOKEN_TYPES,
+                            "tokenModifiers": TOKEN_MODIFIERS
+                        },
+                        "full": true,
+                        "range": false
+                    }
                 },
                 "serverInfo": { "name": "lumia-lsp", "version": "0.3.1" }
             }
@@ -109,6 +124,12 @@ fn handle_message(msg: Value) -> Result<Option<Value>> {
         }
         Some("textDocument/inlayHint") => {
             let result = on_inlay_hint(msg.get("params"))?;
+            Ok(Some(
+                json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+            ))
+        }
+        Some("textDocument/semanticTokens/full") => {
+            let result = on_semantic_tokens(msg.get("params"))?;
             Ok(Some(
                 json!({ "jsonrpc": "2.0", "id": id, "result": result }),
             ))

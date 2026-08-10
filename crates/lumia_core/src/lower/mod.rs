@@ -144,11 +144,28 @@ pub fn lower_hir_with_schemes(
         .filter(|(tr, _)| tr == "Hash")
         .map(|(_, ty)| ty.clone())
         .collect();
+    let mut adt_variant_names: HashMap<String, Vec<String>> = HashMap::default();
+    for adt in &module.adts {
+        let mut names = vec![String::new(); adt.variants.len()];
+        for v in &adt.variants {
+            let idx = v.tag as usize;
+            if idx >= names.len() {
+                names.resize(idx + 1, String::new());
+            }
+            names[idx] = v.name.clone();
+        }
+        adt_variant_names.insert(adt.name.clone(), names);
+    }
+    for prod in &module.products {
+        // Products are tag-0 payloads; print the type name.
+        adt_variant_names.insert(prod.name.clone(), vec![prod.name.clone()]);
+    }
     let mut core = CoreModule {
         name: module.name.clone(),
         functions,
         hash_adts,
         trait_methods: module.trait_methods.clone(),
+        adt_variant_names,
     };
     lift_lambdas(&mut core);
     directize_funref_calls(&mut core);

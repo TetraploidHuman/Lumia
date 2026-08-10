@@ -3,12 +3,13 @@
 use super::super::super::Codegen;
 use anyhow::{Context as AnyhowContext, Result};
 use inkwell::values::BasicValueEnum;
-use lumia_abi::TYPE_ADT;
+use lumia_abi::adt_type_id;
 use lumia_core::Local;
 
 impl<'ctx> Codegen<'ctx> {
     pub(crate) fn emit_stack_adt(
         &mut self,
+        adt_name: &str,
         tag: i64,
         fields: &[Local],
     ) -> Result<BasicValueEnum<'ctx>> {
@@ -32,7 +33,8 @@ impl<'ctx> Codegen<'ctx> {
         let storage = crate::error::llvm(self.llvm.builder.build_alloca(arr_ty, "stack_adt"))?;
         self.llvm.builder.position_at_end(cur);
 
-        let type_id = TYPE_ADT as u64;
+        let kind = self.funs.adt_show_kinds.get(adt_name).copied().unwrap_or(0);
+        let type_id = adt_type_id(kind) as u64;
         let float_mask = self.adt_float_mask_from_fields(fields) as u64;
         let hdr0 = self
             .llvm

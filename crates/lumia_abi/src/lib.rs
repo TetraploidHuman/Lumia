@@ -44,6 +44,10 @@ pub const TID_F_VAL: u32 = 1 << 9;
 /// Map/Set without Hash — linear forever (DESIGN AssocList).
 pub const TID_ASSOC: u32 = 1 << 10;
 
+/// ADT Show-kind occupies bits `[31:16]` (0 = anonymous / `#tag` fallback).
+pub const TID_ADT_KIND_SHIFT: u32 = 16;
+pub const TID_ADT_KIND_MASK: u32 = 0xFFFF << TID_ADT_KIND_SHIFT;
+
 /// Historical names as packed aliases (prefer constructors / flag helpers).
 pub const TYPE_LIST_F64: u32 = TYPE_LIST | TID_F_KEY;
 pub const TYPE_MAP_F64: u32 = TYPE_MAP | TID_F_KEY;
@@ -111,6 +115,21 @@ pub fn tid_f_val(tid: u32) -> bool {
 #[inline]
 pub fn tid_assoc(tid: u32) -> bool {
     tid & TID_ASSOC != 0
+}
+
+/// Pack ADT base with a Show-kind id (`0` = no registered names).
+#[inline]
+pub fn adt_type_id(show_kind: u16) -> u32 {
+    TYPE_ADT | ((show_kind as u32) << TID_ADT_KIND_SHIFT)
+}
+
+/// Extract Show-kind from an ADT `type_id` (`0` if unset / not an ADT).
+#[inline]
+pub fn adt_show_kind(tid: u32) -> u16 {
+    if tid_base(tid) != TYPE_ADT {
+        return 0;
+    }
+    ((tid & TID_ADT_KIND_MASK) >> TID_ADT_KIND_SHIFT) as u16
 }
 
 /// Heap list `type_id` from element scalar kind.
@@ -207,6 +226,11 @@ mod tests {
         assert_eq!(TID_F_KEY & TID_BASE_MASK, 0);
         assert_eq!(TID_F_VAL & TID_BASE_MASK, 0);
         assert_eq!(TID_ASSOC & TID_BASE_MASK, 0);
+        assert_eq!(adt_type_id(0), TYPE_ADT);
+        assert_eq!(adt_show_kind(adt_type_id(0)), 0);
+        assert_eq!(adt_show_kind(adt_type_id(42)), 42);
+        assert_eq!(tid_base(adt_type_id(42)), TYPE_ADT);
+        assert_eq!(TID_ADT_KIND_MASK & TID_BASE_MASK, 0);
     }
 
     #[test]

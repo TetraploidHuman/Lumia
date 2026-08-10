@@ -416,6 +416,7 @@ mod tests {
             ],
             hash_adts: HashSet::default(),
             trait_methods: HashMap::default(),
+            adt_variant_names: HashMap::default(),
         };
         inline_module(&mut module);
         let main = module.functions.iter().find(|f| f.name == "main").unwrap();

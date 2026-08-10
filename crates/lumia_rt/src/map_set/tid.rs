@@ -3,8 +3,9 @@
 use crate::common::{
     float_key_eq, float_key_hash, header_from_payload, trap_abort, TYPE_MAP, TYPE_SET,
 };
+use crate::eq::lumia_eq;
 use crate::gc::lumia_alloc;
-use crate::show_eq::{lumia_eq, lumia_hash};
+use crate::hash_ord::lumia_hash;
 use lumia_abi::{
     tid_f_key, tid_f_val, TID_F_KEY, TID_F_VAL, TYPE_MAP_F64, TYPE_MAP_VF64, TYPE_SET_F64,
 };

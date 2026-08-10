@@ -18,6 +18,8 @@ pub struct CoreModule {
     pub hash_adts: HashSet<String>,
     /// `(type, method)` → mangled `__Trait_Type_method` (for poly UFCS resolve after mono).
     pub trait_methods: HashMap<(String, String), Vec<String>>,
+    /// Variant / product display names by type, indexed by tag (print/`Show` only).
+    pub adt_variant_names: HashMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone)]

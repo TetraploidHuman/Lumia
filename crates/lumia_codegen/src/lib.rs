@@ -99,6 +99,8 @@ fn emit_llvm_module<'ctx>(
     declare_runtime(context, &cg.llvm.module);
     cg.funs.tco_sccs = compute_tco_sccs(core);
     cg.funs.hash_adts = core.hash_adts.clone();
+    cg.funs.adt_variant_names = core.adt_variant_names.clone();
+    cg.funs.adt_show_kinds = assign_adt_show_kinds(&cg.funs.adt_variant_names);
 
     for f in &core.functions {
         let name = if f.is_main {
@@ -153,7 +155,14 @@ fn emit_llvm_module<'ctx>(
         cg.emit_function(f)?;
     }
 
-    emit_c_main(context, &cg.llvm.module, &cg.llvm.builder, core);
+    emit_c_main(
+        context,
+        &cg.llvm.module,
+        &cg.llvm.builder,
+        core,
+        &cg.funs.adt_show_kinds,
+        &cg.funs.adt_variant_names,
+    );
 
     if opts.emit_ir {
         let ir_path = opts.output.with_extension("ll");
@@ -214,6 +223,8 @@ fn emit_c_main<'ctx>(
     module: &LlvmModule<'ctx>,
     builder: &Builder<'ctx>,
     core: &CoreModule,
+    adt_show_kinds: &HashMap<String, u16>,
+    adt_variant_names: &HashMap<String, Vec<String>>,
 ) {
     let i32_ty = context.i32_type();
     let main_ty = i32_ty.fn_type(&[], false);
@@ -221,10 +232,79 @@ fn emit_c_main<'ctx>(
     let entry = context.append_basic_block(main_fn, "entry");
     builder.position_at_end(entry);
     let _ = emit_trait_dict_registration(context, module, builder, core);
+    let _ = emit_adt_show_registration(context, module, builder, adt_show_kinds, adt_variant_names);
     if let Some(user) = module.get_function("lumia_user_main") {
         let _ = builder.build_call(user, &[], "call_main");
     }
     let _ = builder.build_return(Some(&i32_ty.const_int(0, false)));
+}
+
+/// Assign stable Show-kind ids (`1..`) for ADTs with known variant labels.
+fn assign_adt_show_kinds(names: &HashMap<String, Vec<String>>) -> HashMap<String, u16> {
+    let mut keys: Vec<&String> = names.keys().collect();
+    keys.sort();
+    let mut out = HashMap::default();
+    for (i, k) in keys.into_iter().enumerate() {
+        // Kind 0 is reserved for anonymous `#tag` fallback.
+        let kind = (i + 1) as u16;
+        out.insert(k.clone(), kind);
+    }
+    out
+}
+
+/// Register ADT constructor-name tables used by recursive `lumia_show`.
+fn emit_adt_show_registration<'ctx>(
+    context: &'ctx Context,
+    module: &LlvmModule<'ctx>,
+    builder: &Builder<'ctx>,
+    kinds: &HashMap<String, u16>,
+    names: &HashMap<String, Vec<String>>,
+) -> Result<()> {
+    let Some(reg) = module.get_function("lumia_adt_register_show") else {
+        return Ok(());
+    };
+    let i32_ty = context.i32_type();
+    let i64_ty = context.i64_type();
+    let ptr_ty = context.ptr_type(AddressSpace::default());
+    let mut entries: Vec<(&String, u16)> = kinds.iter().map(|(k, &v)| (k, v)).collect();
+    entries.sort_by_key(|(_, kind)| *kind);
+    for (adt_name, kind) in entries {
+        let Some(labels) = names.get(adt_name) else {
+            continue;
+        };
+        if labels.is_empty() {
+            continue;
+        }
+        let mut label_ptrs = Vec::with_capacity(labels.len());
+        for (i, label) in labels.iter().enumerate() {
+            let g = builder
+                .build_global_string_ptr(label, &format!(".adt.show.{adt_name}.{i}"))
+                .context("adt show label")?;
+            label_ptrs.push(g.as_pointer_value());
+        }
+        let arr_ty = ptr_ty.array_type(label_ptrs.len() as u32);
+        let global = module.add_global(
+            arr_ty,
+            Some(AddressSpace::default()),
+            &format!(".adt.show.names.{adt_name}"),
+        );
+        global.set_linkage(inkwell::module::Linkage::Private);
+        global.set_constant(true);
+        global.set_initializer(&ptr_ty.const_array(&label_ptrs));
+        let names_ptr = crate::error::llvm(builder.build_pointer_cast(
+            global.as_pointer_value(),
+            ptr_ty,
+            "adt_show_names_ptr",
+        ))?;
+        let kind_v = i32_ty.const_int(kind as u64, false);
+        let n = i64_ty.const_int(labels.len() as u64, false);
+        crate::error::llvm(builder.build_call(
+            reg,
+            &[kind_v.into(), names_ptr.into(), n.into()],
+            "",
+        ))?;
+    }
+    Ok(())
 }
 
 /// Register mangled instance methods in the runtime trait dictionary.

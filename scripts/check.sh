@@ -5,6 +5,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck disable=SC1091
 source "$ROOT/scripts/env.sh"
 
+echo "== scripts/check_editor_assets.sh =="
+"$ROOT/scripts/check_editor_assets.sh"
+
 echo "== cargo fmt --all -- --check =="
 cargo fmt --all -- --check
 

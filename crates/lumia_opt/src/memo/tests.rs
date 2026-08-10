@@ -70,6 +70,7 @@ fn cse_dedups_int_and_nontrapping_binary() {
         )],
         hash_adts: HashSet::default(),
         trait_methods: HashMap::default(),
+        adt_variant_names: HashMap::default(),
     };
     module.functions[0].is_main = true;
     module.functions[0].effect = Effect::io();
@@ -137,6 +138,7 @@ fn cse_preserves_distinct_external_calls() {
         ],
         hash_adts: HashSet::default(),
         trait_methods: HashMap::default(),
+        adt_variant_names: HashMap::default(),
     };
     module.functions[1].is_main = true;
     module.functions[1].effect = Effect::io();
@@ -220,6 +222,7 @@ fn const_fold_folds_list_len_get() {
         )],
         hash_adts: HashSet::default(),
         trait_methods: HashMap::default(),
+        adt_variant_names: HashMap::default(),
     };
     ConstFoldPass.run(&mut module);
     assert!(matches!(
@@ -297,6 +300,7 @@ fn const_fold_folds_list_concat() {
         )],
         hash_adts: HashSet::default(),
         trait_methods: HashMap::default(),
+        adt_variant_names: HashMap::default(),
     };
     ConstFoldPass.run(&mut module);
     assert!(
@@ -393,6 +397,7 @@ fn const_fold_map_get_to_option() {
         )],
         hash_adts: HashSet::default(),
         trait_methods: HashMap::default(),
+        adt_variant_names: HashMap::default(),
     };
     ConstFoldPass.run(&mut module);
     assert!(
@@ -473,6 +478,7 @@ fn const_fold_contains_skips_nonconst_keys() {
         )],
         hash_adts: HashSet::default(),
         trait_methods: HashMap::default(),
+        adt_variant_names: HashMap::default(),
     };
     ConstFoldPass.run(&mut module);
     assert!(
@@ -526,6 +532,7 @@ fn const_fold_arith() {
         )],
         hash_adts: HashSet::default(),
         trait_methods: HashMap::default(),
+        adt_variant_names: HashMap::default(),
     };
     ConstFoldPass.run(&mut module);
     assert!(matches!(
@@ -572,6 +579,7 @@ fn const_fold_folds_cmp_to_bool() {
         )],
         hash_adts: HashSet::default(),
         trait_methods: HashMap::default(),
+        adt_variant_names: HashMap::default(),
     };
     ConstFoldPass.run(&mut module);
     assert!(matches!(
@@ -641,6 +649,7 @@ fn licm_hoists_not_but_not_trapping_add() {
         )],
         hash_adts: HashSet::default(),
         trait_methods: HashMap::default(),
+        adt_variant_names: HashMap::default(),
     };
     LicmPass.run(&mut module);
     let ops = &module.functions[0].body.ops;
@@ -724,6 +733,7 @@ fn memo_tf_marks_dense_int() {
         functions: vec![fib],
         hash_adts: HashSet::default(),
         trait_methods: HashMap::default(),
+        adt_variant_names: HashMap::default(),
     };
     let plan = plan_memo_tf(&module);
     assert!(
@@ -820,6 +830,7 @@ fn memo_tf_marks_slots() {
         functions: vec![sq, main],
         hash_adts: HashSet::default(),
         trait_methods: HashMap::default(),
+        adt_variant_names: HashMap::default(),
     };
     let plan = plan_memo_tf(&module);
     assert!(
@@ -870,6 +881,7 @@ fn memo_tf_increasing_recursion_not_dense() {
         functions: vec![f],
         hash_adts: HashSet::default(),
         trait_methods: HashMap::default(),
+        adt_variant_names: HashMap::default(),
     };
     let plan = plan_memo_tf(&module);
     assert!(

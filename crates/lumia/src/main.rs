@@ -2,15 +2,24 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use lumia::check::{annotate_assert_messages, check_program};
+use lumia::check::check_program;
 use lumia::pkg;
 use lumia::{doc, lsp};
-use lumia_codegen::{compile_module, find_runtime_lib_prefer, CodegenOptions};
-use lumia_core::{format_module, lower_hir_with_schemes};
-use lumia_opt::{optimize, OptOptions};
 use lumia_syntax::{format_diagnostic, parse_module, stamp_module};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+#[cfg(not(feature = "codegen"))]
+use anyhow::bail;
+#[cfg(feature = "codegen")]
+use lumia::check::annotate_assert_messages;
+#[cfg(feature = "codegen")]
+use lumia_codegen::{compile_module, find_runtime_lib_prefer, CodegenOptions};
+#[cfg(feature = "codegen")]
+use lumia_core::{format_module, lower_hir_with_schemes};
+#[cfg(feature = "codegen")]
+use lumia_opt::{optimize, OptOptions};
+#[cfg(feature = "codegen")]
 use std::process::Command;
 
 #[derive(Parser, Debug)]
@@ -128,29 +137,50 @@ fn main() -> Result<()> {
             show_ir,
             emit_llvm,
         } => {
-            let out = output.unwrap_or_else(|| {
-                file.file_stem()
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| PathBuf::from("a.out"))
-            });
-            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            let mut validated_link = Vec::with_capacity(link.len());
-            for a in &link {
-                validated_link.push(pkg::validate_cli_link_arg(&cwd, a)?);
+            #[cfg(not(feature = "codegen"))]
+            {
+                let _ = (
+                    file,
+                    output,
+                    release,
+                    no_memo,
+                    no_parallel,
+                    trust_foreign_pure,
+                    link,
+                    show_ir,
+                    emit_llvm,
+                );
+                bail!(
+                    "`lumia build` needs a codegen-enabled binary \
+                     (install via ./scripts/install.sh, or cargo build -p lumia)"
+                );
             }
-            build_file(
-                &file,
-                &out,
-                release,
-                !no_memo,
-                !no_parallel,
-                trust_foreign_pure,
-                validated_link,
-                show_ir,
-                emit_llvm,
-            )?;
-            println!("wrote {}", out.display());
-            Ok(())
+            #[cfg(feature = "codegen")]
+            {
+                let out = output.unwrap_or_else(|| {
+                    file.file_stem()
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|| PathBuf::from("a.out"))
+                });
+                let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                let mut validated_link = Vec::with_capacity(link.len());
+                for a in &link {
+                    validated_link.push(pkg::validate_cli_link_arg(&cwd, a)?);
+                }
+                build_file(
+                    &file,
+                    &out,
+                    release,
+                    !no_memo,
+                    !no_parallel,
+                    trust_foreign_pure,
+                    validated_link,
+                    show_ir,
+                    emit_llvm,
+                )?;
+                println!("wrote {}", out.display());
+                Ok(())
+            }
         }
         Commands::Fmt { files, check } => {
             for f in files {
@@ -206,6 +236,7 @@ fn main() -> Result<()> {
     }
 }
 
+#[cfg(feature = "codegen")]
 fn build_file(
     file: &Path,
     output: &Path,
@@ -259,6 +290,7 @@ fn build_file(
     Ok(())
 }
 
+#[cfg(feature = "codegen")]
 fn option_ctor_tags(adts: &[lumia_hir::AdtDef]) -> (i64, i64) {
     for a in adts {
         if a.name == "Option" {
@@ -280,10 +312,12 @@ fn option_ctor_tags(adts: &[lumia_hir::AdtDef]) -> (i64, i64) {
 
 /// Workspace root that contains this compiler (`…/Lumia`), baked in at build time.
 /// Used so `lumia build` works outside the repo (e.g. `~/文档`) without hunting cwd.
+#[cfg(feature = "codegen")]
 fn compiler_workspace_root() -> PathBuf {
     lumia_abi::workspace_root(env!("CARGO_MANIFEST_DIR"))
 }
 
+#[cfg(feature = "codegen")]
 fn workspace_target_dir() -> PathBuf {
     if let Ok(t) = std::env::var("CARGO_TARGET_DIR") {
         return PathBuf::from(t);
@@ -291,6 +325,7 @@ fn workspace_target_dir() -> PathBuf {
     compiler_workspace_root().join("target")
 }
 
+#[cfg(feature = "codegen")]
 fn ensure_runtime_built(release: bool) -> Result<()> {
     let root = compiler_workspace_root();
     let mut cmd = Command::new("cargo");

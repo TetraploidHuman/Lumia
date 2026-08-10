@@ -47,6 +47,19 @@ pub(crate) fn declare_runtime<'ctx>(context: &'ctx Context, module: &LlvmModule<
         None,
     );
     module.add_function(
+        "lumia_show_adt_named",
+        ptr_ty.fn_type(
+            &[i64_ty.into(), i64_ty.into(), ptr_ty.into(), i64_ty.into()],
+            false,
+        ),
+        None,
+    );
+    module.add_function(
+        "lumia_adt_register_show",
+        void_ty.fn_type(&[i32_ty.into(), ptr_ty.into(), i64_ty.into()], false),
+        None,
+    );
+    module.add_function(
         "lumia_cmp",
         i64_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false),
         None,
@@ -420,4 +433,31 @@ pub(crate) fn declare_runtime<'ctx>(context: &'ctx Context, module: &LlvmModule<
             .fn_type(&[i64_ty.into(), i64_ty.into(), i64_ty.into()], false),
         None,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use inkwell::context::Context;
+    use lumia_hir::Builtin;
+
+    #[test]
+    fn every_builtin_runtime_symbol_is_declared() {
+        let context = Context::create();
+        let module = context.create_module("rt_decl_test");
+        super::declare_runtime(&context, &module);
+        let mut missing = Vec::new();
+        for &b in Builtin::ALL {
+            let Some(sym) = b.runtime_symbol() else {
+                continue;
+            };
+            if module.get_function(sym).is_none() {
+                missing.push(format!("{} → {sym}", b.display_name()));
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "BuiltinInfo.runtime_symbol missing from declare_runtime:\n  {}",
+            missing.join("\n  ")
+        );
+    }
 }

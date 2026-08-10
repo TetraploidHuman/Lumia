@@ -1,0 +1,15 @@
+module ColorShow
+
+import std.io.{println}
+
+type Color {
+    A,
+    B,
+    C
+}
+
+val main = {
+    println(A)
+    println(B)
+    println(C)
+}

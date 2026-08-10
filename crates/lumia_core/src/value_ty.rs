@@ -37,6 +37,25 @@ impl<'a> InferValueCtx<'a> {
             funref_locals: None,
         }
     }
+
+    /// Full codegen tables (slots + function ABI + FunRef locals).
+    pub fn full(
+        local_tys: &'a HashMap<u32, Type>,
+        slot_tys: &'a HashMap<String, Type>,
+        fun_ret_tys: &'a HashMap<String, Type>,
+        fun_param_tys: &'a HashMap<String, Vec<Type>>,
+        fun_param0_identity: &'a HashSet<String>,
+        funref_locals: &'a HashMap<u32, String>,
+    ) -> Self {
+        Self {
+            local_tys,
+            slot_tys: Some(slot_tys),
+            fun_ret_tys: Some(fun_ret_tys),
+            fun_param_tys: Some(fun_param_tys),
+            fun_param0_identity: Some(fun_param0_identity),
+            funref_locals: Some(funref_locals),
+        }
+    }
 }
 
 /// Whether emitting / analyzing `v` may produce a heap pointer under `policy`.

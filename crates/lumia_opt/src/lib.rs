@@ -217,6 +217,7 @@ mod tests {
             }],
             hash_adts: HashSet::default(),
             trait_methods: HashMap::default(),
+            adt_variant_names: HashMap::default(),
         };
         CopyElimPass.run(&mut module);
         let f = &module.functions[0];
@@ -269,6 +270,7 @@ mod tests {
             }],
             hash_adts: HashSet::default(),
             trait_methods: HashMap::default(),
+            adt_variant_names: HashMap::default(),
         };
         EscapePass.run(&mut module);
         ReprSelect.run(&mut module);
@@ -320,6 +322,7 @@ mod tests {
             }],
             hash_adts: HashSet::default(),
             trait_methods: HashMap::default(),
+            adt_variant_names: HashMap::default(),
         };
         EscapePass.run(&mut module);
         ReprSelect.run(&mut module);
@@ -398,6 +401,7 @@ val main = {
             }],
             hash_adts: HashSet::default(),
             trait_methods: HashMap::default(),
+            adt_variant_names: HashMap::default(),
         };
         EscapePass.run(&mut module);
         ReprSelect.run(&mut module);

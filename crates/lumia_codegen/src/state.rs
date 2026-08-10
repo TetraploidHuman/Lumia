@@ -33,6 +33,10 @@ pub(crate) struct FunTables<'ctx> {
     pub tco_peers: HashSet<String>,
     pub tco_sccs: HashMap<String, HashSet<String>>,
     pub hash_adts: HashSet<String>,
+    /// Variant labels by ADT/product type name (tag → display name) for Show.
+    pub adt_variant_names: HashMap<String, Vec<String>>,
+    /// Stable Show-kind ids (`≥ 1`) packed into ADT `type_id` for recursive `lumia_show`.
+    pub adt_show_kinds: HashMap<String, u16>,
 }
 
 /// Per-frame SSA / slot / GC-root state while emitting one function.

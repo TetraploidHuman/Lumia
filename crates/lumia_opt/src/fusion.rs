@@ -133,6 +133,7 @@ mod tests {
             }],
             hash_adts: HashSet::default(),
             trait_methods: HashMap::default(),
+            adt_variant_names: HashMap::default(),
         };
         ConcatIdentPass.run(&mut module);
         assert!(matches!(

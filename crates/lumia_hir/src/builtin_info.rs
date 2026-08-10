@@ -40,6 +40,20 @@ pub enum BuiltinEmit {
     ObjI64OptionTags,
 }
 
+/// Whether a builtin result may be a GC heap pointer (shadow-stack rooting).
+///
+/// Distinct from [`BuiltinInfo::may_capture`] (argument escape). Projections like
+/// `ListGet` / `AdtField` do not capture args but may return heap values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResultHeap {
+    /// Result is never a heap pointer (Int/Bool/Unit / noreturn).
+    Never,
+    /// Result is always a heap object (List/Map/Set/String/…).
+    Always,
+    /// Depends on argument types — codegen uses `infer_value_ty` + `type_may_heap`.
+    Typed,
+}
+
 /// Metadata driving ty arity checks and simple codegen symbol lookup.
 #[derive(Debug, Clone, Copy)]
 pub struct BuiltinInfo {
@@ -53,6 +67,13 @@ pub struct BuiltinInfo {
     /// before the runtime call (List/Map/Set IEEE tagging).
     pub float_ensures: &'static [(u8, &'static str)],
     pub emit: BuiltinEmit,
+    /// Escape analysis: whether arguments may be retained by the runtime
+    /// (collections / IO). Pure projections (len/get/tag) are `false`.
+    /// `Show` does not retain after return but is still `false` here — escape
+    /// seeds Show operands separately so they are heap-rooted for `lumia_show`.
+    pub may_capture: bool,
+    /// Codegen GC rooting for the *result* (not args). See [`ResultHeap`].
+    pub result_heap: ResultHeap,
 }
 
 impl BuiltinInfo {
@@ -401,6 +422,19 @@ impl Builtin {
                 ObjI64Scalar,
             ),
         };
+        // Projections / traps that do not retain args for later use.
+        let may_capture = !matches!(
+            self,
+            ListLen | ListGet | AdtTag | AdtField | Contains | Show | MatchFail
+        );
+        // Result GC rooting — orthogonal to may_capture (ListGet roots a String
+        // element without retaining the list; ListParFold roots only if init heaps).
+        let result_heap = match self {
+            Println | ListLen | Contains | StrStartsWith | StrEndsWith | MatchFail | Assert
+            | AdtTag => ResultHeap::Never,
+            ListGet | AdtField | ListParFold => ResultHeap::Typed,
+            _ => ResultHeap::Always,
+        };
         BuiltinInfo {
             family,
             min_arity,
@@ -409,7 +443,19 @@ impl Builtin {
             runtime_symbol,
             float_ensures,
             emit,
+            may_capture,
+            result_heap,
         }
+    }
+
+    /// Whether escape analysis should treat arguments as potentially captured.
+    pub fn may_capture(self) -> bool {
+        self.info().may_capture
+    }
+
+    /// How codegen should decide GC rooting for this builtin's result.
+    pub fn result_heap(self) -> ResultHeap {
+        self.info().result_heap
     }
 
     /// Whether this builtin may retag a Float container at the call site.
@@ -509,6 +555,181 @@ impl Builtin {
             AdtField => "adtField",
         }
     }
+
+    /// Exhaustive list of builtins — keep in sync when adding a variant.
+    pub const ALL: &[Builtin] = &[
+        Builtin::Println,
+        Builtin::ListLen,
+        Builtin::ListGet,
+        Builtin::ListSlice,
+        Builtin::ListAppend,
+        Builtin::ListConcat,
+        Builtin::Contains,
+        Builtin::MapSet,
+        Builtin::MapRemove,
+        Builtin::SetInsert,
+        Builtin::MapKeys,
+        Builtin::MapValues,
+        Builtin::MapItems,
+        Builtin::Elems,
+        Builtin::Range,
+        Builtin::RangeInclusive,
+        Builtin::Show,
+        Builtin::StrTrim,
+        Builtin::StrSplit,
+        Builtin::StrSubstring,
+        Builtin::StrToLower,
+        Builtin::StrToUpper,
+        Builtin::StrStartsWith,
+        Builtin::StrEndsWith,
+        Builtin::ReadStdin,
+        Builtin::MatchFail,
+        Builtin::ListTake,
+        Builtin::ListReverse,
+        Builtin::ListSort,
+        Builtin::ListSortByKeys,
+        Builtin::ListParMap,
+        Builtin::ListParFold,
+        Builtin::Assert,
+        Builtin::ListJoin,
+        Builtin::AdtTag,
+        Builtin::AdtField,
+    ];
+
+    /// Editor / docs role for this builtin, if it is a surface name at all.
+    ///
+    /// `None` hides compiler-internal ops (`adtTag`, `matchFail`, auto-par seeds).
+    pub fn surface_role(self) -> Option<SurfaceRole> {
+        use Builtin::*;
+        match self {
+            Println | Assert | ReadStdin | Range | RangeInclusive => Some(SurfaceRole::Free),
+            MatchFail | AdtTag | AdtField | ListParMap | ListParFold => None,
+            _ => Some(SurfaceRole::Method),
+        }
+    }
+}
+
+/// How a surface name is typically written in source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceRole {
+    /// Free call: `listOf(…)`, `println(…)`, `range(…)`.
+    Free,
+    /// Dot / UFCS method: `xs.len()`, `xs.map(f)`.
+    Method,
+}
+
+/// One completable / documentable surface identifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SurfaceName {
+    pub name: &'static str,
+    pub role: SurfaceRole,
+}
+
+/// Collection constructors typed specially in `lumia_ty` (not [`Builtin`] variants).
+pub const PRELUDE_CTORS: &[SurfaceName] = &[
+    SurfaceName {
+        name: "listOf",
+        role: SurfaceRole::Free,
+    },
+    SurfaceName {
+        name: "mapOf",
+        role: SurfaceRole::Free,
+    },
+    SurfaceName {
+        name: "setOf",
+        role: SurfaceRole::Free,
+    },
+];
+
+/// Aliases accepted by [`Builtin::from_method`] that are not `display_name`.
+const SURFACE_ALIASES: &[SurfaceName] = &[SurfaceName {
+    name: "drop",
+    role: SurfaceRole::Method,
+}];
+
+/// HOF / collection desugars in HIR lower (not a single [`Builtin`] call).
+const HOF_SURFACE: &[SurfaceName] = &[
+    SurfaceName {
+        name: "map",
+        role: SurfaceRole::Method,
+    },
+    SurfaceName {
+        name: "filter",
+        role: SurfaceRole::Method,
+    },
+    SurfaceName {
+        name: "flatMap",
+        role: SurfaceRole::Method,
+    },
+    SurfaceName {
+        name: "fold",
+        role: SurfaceRole::Method,
+    },
+    SurfaceName {
+        name: "any",
+        role: SurfaceRole::Method,
+    },
+    SurfaceName {
+        name: "all",
+        role: SurfaceRole::Method,
+    },
+    SurfaceName {
+        name: "find",
+        role: SurfaceRole::Method,
+    },
+    SurfaceName {
+        name: "sortBy",
+        role: SurfaceRole::Method,
+    },
+    SurfaceName {
+        name: "isEmpty",
+        role: SurfaceRole::Method,
+    },
+    SurfaceName {
+        name: "toSet",
+        role: SurfaceRole::Method,
+    },
+    SurfaceName {
+        name: "toList",
+        role: SurfaceRole::Method,
+    },
+    SurfaceName {
+        name: "toMap",
+        role: SurfaceRole::Method,
+    },
+    SurfaceName {
+        name: "union",
+        role: SurfaceRole::Method,
+    },
+    SurfaceName {
+        name: "intersect",
+        role: SurfaceRole::Method,
+    },
+    SurfaceName {
+        name: "diff",
+        role: SurfaceRole::Method,
+    },
+    SurfaceName {
+        name: "lines",
+        role: SurfaceRole::Method,
+    },
+];
+
+/// All editor-facing names: prelude ctors + builtins + aliases + HOF desugars.
+///
+/// LSP completion / docs should scan this instead of maintaining a parallel list.
+pub fn surface_names() -> impl Iterator<Item = SurfaceName> {
+    PRELUDE_CTORS
+        .iter()
+        .copied()
+        .chain(Builtin::ALL.iter().filter_map(|b| {
+            b.surface_role().map(|role| SurfaceName {
+                name: b.display_name(),
+                role,
+            })
+        }))
+        .chain(SURFACE_ALIASES.iter().copied())
+        .chain(HOF_SURFACE.iter().copied())
 }
 
 #[cfg(test)]
@@ -546,48 +767,28 @@ mod tests {
     }
 
     #[test]
-    fn every_builtin_has_coherent_info() {
-        // Exhaustive mirror of `Builtin` — adding a variant must update this list
-        // and `Builtin::info`.
-        let all = [
-            Builtin::Println,
+    fn may_capture_matches_escape_projection_set() {
+        let no_capture = [
             Builtin::ListLen,
             Builtin::ListGet,
-            Builtin::ListSlice,
-            Builtin::ListAppend,
-            Builtin::ListConcat,
-            Builtin::Contains,
-            Builtin::MapSet,
-            Builtin::MapRemove,
-            Builtin::SetInsert,
-            Builtin::MapKeys,
-            Builtin::MapValues,
-            Builtin::MapItems,
-            Builtin::Elems,
-            Builtin::Range,
-            Builtin::RangeInclusive,
-            Builtin::Show,
-            Builtin::StrTrim,
-            Builtin::StrSplit,
-            Builtin::StrSubstring,
-            Builtin::StrToLower,
-            Builtin::StrToUpper,
-            Builtin::StrStartsWith,
-            Builtin::StrEndsWith,
-            Builtin::ReadStdin,
-            Builtin::MatchFail,
-            Builtin::ListTake,
-            Builtin::ListReverse,
-            Builtin::ListSort,
-            Builtin::ListSortByKeys,
-            Builtin::ListParMap,
-            Builtin::ListParFold,
-            Builtin::Assert,
-            Builtin::ListJoin,
             Builtin::AdtTag,
             Builtin::AdtField,
+            Builtin::Contains,
+            Builtin::Show,
+            Builtin::MatchFail,
         ];
-        for b in all {
+        for b in no_capture {
+            assert!(!b.may_capture(), "{}", b.display_name());
+        }
+        assert!(Builtin::ListAppend.may_capture());
+        assert!(Builtin::MapSet.may_capture());
+        assert!(Builtin::Println.may_capture());
+        assert!(Builtin::ListParMap.may_capture());
+    }
+
+    #[test]
+    fn every_builtin_has_coherent_info() {
+        for &b in Builtin::ALL {
             let i = b.info();
             assert!(i.min_arity <= i.max_arity, "{}", b.display_name());
             if i.emit != BuiltinEmit::Custom {
@@ -600,6 +801,7 @@ mod tests {
             assert_eq!(i.family, b.family());
             assert_eq!(i.effect == BuiltinEffect::Io, b.is_io());
             assert_eq!(i.float_sensitive(), b.float_sensitive());
+            assert_eq!(i.result_heap, b.result_heap());
             if i.float_sensitive() {
                 assert!(
                     matches!(i.emit, BuiltinEmit::ObjI64Ptr | BuiltinEmit::ObjI64I64Ptr),
@@ -607,6 +809,41 @@ mod tests {
                     b.display_name()
                 );
             }
+            // Scalar convention emits that claim Always heap would over-root.
+            if matches!(
+                i.emit,
+                BuiltinEmit::UnaryObjScalar | BuiltinEmit::ObjI64Scalar | BuiltinEmit::ObjObjScalar
+            ) {
+                assert_ne!(
+                    i.result_heap,
+                    ResultHeap::Always,
+                    "scalar emit must not Always-root: {}",
+                    b.display_name()
+                );
+            }
         }
+    }
+
+    #[test]
+    fn result_heap_projections_are_typed_not_capture() {
+        assert_eq!(Builtin::ListGet.result_heap(), ResultHeap::Typed);
+        assert_eq!(Builtin::AdtField.result_heap(), ResultHeap::Typed);
+        assert_eq!(Builtin::ListParFold.result_heap(), ResultHeap::Typed);
+        assert!(!Builtin::ListGet.may_capture());
+        assert!(!Builtin::AdtField.may_capture());
+        assert!(Builtin::ListAppend.result_heap() == ResultHeap::Always);
+        assert!(Builtin::ListLen.result_heap() == ResultHeap::Never);
+        assert!(Builtin::Show.result_heap() == ResultHeap::Always);
+        assert!(!Builtin::Show.may_capture());
+    }
+
+    #[test]
+    fn surface_names_cover_prelude_and_common_methods() {
+        let names: Vec<&str> = surface_names().map(|s| s.name).collect();
+        for n in ["listOf", "setOf", "mapOf", "println", "len", "map", "drop"] {
+            assert!(names.contains(&n), "missing surface name {n}");
+        }
+        assert!(!names.contains(&"adtTag"));
+        assert!(!names.contains(&"matchFail"));
     }
 }

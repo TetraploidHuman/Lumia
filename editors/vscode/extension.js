@@ -68,10 +68,11 @@ function startLsp(context) {
     return;
   }
 
-  const command = resolveLumia();
+  const t0 = Date.now();
+  const command = resolveLumiaLsp();
   const lspEnv = { ...process.env, PATH: pathEnvWithCargo() };
-  // Do not set TransportKind.stdio — vscode-languageclient appends `--stdio`,
-  // which older lumia binaries reject. Default transport is already stdio.
+  // Executable without `transport` uses stdio pipes; do NOT set TransportKind.stdio
+  // or the client appends a bare `--stdio` argv that older binaries rejected.
   const serverOptions = {
     command,
     args: ["lsp"],
@@ -101,11 +102,27 @@ function startLsp(context) {
     },
   });
 
-  client.start().catch((err) => {
-    window.showErrorMessage(
-      `Lumia LSP failed to start (${command} lsp). Set lumia.lsp.path or add lumia to PATH. (${err})`
+  const ch = client.outputChannel;
+  if (ch) {
+    ch.appendLine(
+      `[lumia] starting LSP: ${command} lsp (activate+${Date.now() - t0}ms)`
     );
-  });
+  }
+
+  client
+    .start()
+    .then(() => {
+      if (ch) {
+        ch.appendLine(
+          `[lumia] LSP ready in ${Date.now() - t0}ms (command: ${command})`
+        );
+      }
+    })
+    .catch((err) => {
+      window.showErrorMessage(
+        `Lumia LSP failed to start (${command} lsp). Set lumia.lsp.path or add lumia to PATH. (${err})`
+      );
+    });
 }
 
 /**
@@ -127,7 +144,7 @@ async function restartLsp(context) {
 function resolveLumia() {
   const configured = workspace
     .getConfiguration("lumia")
-    .get("lsp.path", "lumia")
+    .get("lsp.path", "")
     .trim();
   const home = os.homedir();
   const candidates = [
@@ -144,6 +161,40 @@ function resolveLumia() {
     return configured;
   }
   return path.join(home, ".local", "bin", "lumia");
+}
+
+/** Prefer the slim no-LLVM LSP binary for fast cold start. */
+function resolveLumiaLsp() {
+  const home = os.homedir();
+  const slim = path.join(home, ".local", "lib", "lumia", "lumia-lsp");
+  const configured = workspace
+    .getConfiguration("lumia")
+    .get("lsp.path", "")
+    .trim();
+
+  // Wrapper / PATH name `lumia` still routes to the fat binary for `build`;
+  // for LSP always prefer the slim binary when present.
+  const looksLikeWrapper =
+    !configured ||
+    configured === "lumia" ||
+    configured.endsWith(`${path.sep}bin${path.sep}lumia`) ||
+    configured.endsWith("/bin/lumia");
+  if (looksLikeWrapper && isExecutableFile(slim)) {
+    return slim;
+  }
+
+  if (configured) {
+    if (looksLikePath(configured) && isExecutableFile(configured)) {
+      return configured;
+    }
+    if (!looksLikePath(configured)) {
+      return configured;
+    }
+  }
+  if (isExecutableFile(slim)) {
+    return slim;
+  }
+  return resolveLumia();
 }
 
 /** @param {string} p */

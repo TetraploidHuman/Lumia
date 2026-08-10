@@ -1,7 +1,7 @@
 e2e_ok!(
     e2e_show_float_adt,
     "examples/show_float_adt.lm",
-    "#0(1.5, 2.25)"
+    "Vec2(1.5, 2.25)"
 );
 
 #[test]

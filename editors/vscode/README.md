@@ -27,15 +27,19 @@ export PATH="$PWD/target/release:$PATH"
 ```bash
 cd editors/vscode
 npm install
+npx vsce package --allow-missing-repository
+cursor --install-extension lumia-0.3.5.vsix
+# or: code --install-extension lumia-0.3.5.vsix
 ```
 
-- **Debug:** open `editors/vscode` in VS Code and press F5 (`Run Lumia Extension`).
-- **Install locally:**
+Also install / refresh the CLI (ships a slim `lumia-lsp` without LLVM):
 
 ```bash
-npx vsce package --no-dependencies
-code --install-extension lumia-0.3.3.vsix
+./scripts/install.sh
 ```
+
+After upgrading the extension, **Reload Window**. Check Output → “Lumia Language Server” for:
+`[lumia] LSP command: …/lumia-lsp lsp` (should be the 3.6MB binary, not the 140MB compiler).
 
 The extension entry is `extension.js` (no TypeScript compile step).
 

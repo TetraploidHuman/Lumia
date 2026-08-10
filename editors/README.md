@@ -28,7 +28,7 @@ export PATH="$PWD/target/release:$PATH"
 echo '{}' | lumia lsp   # will wait on stdin — Ctrl-C is fine after process starts
 ```
 
-LSP features today: diagnostics, hover, go-to-definition, completion (`.` trigger, with type `detail`), formatting, document symbols (outline), inlay hints (bindings / params / call returns), `didClose` cleanup.
+LSP features today: diagnostics, hover, go-to-definition, completion (`.` trigger, with type `detail`), formatting, document symbols (outline), inlay hints (bindings / params / call returns), semantic tokens (type-aware highlighting), `didClose` cleanup.
 
 ## VS Code
 
@@ -66,5 +66,7 @@ cp editors/shared/syntaxes/lumia.tmLanguage.json editors/vscode/syntaxes/
 cp editors/shared/language-configuration.json editors/vscode/
 cp editors/shared/snippets/lumia.json editors/vscode/snippets/
 ```
+
+Or verify with `./scripts/check_editor_assets.sh` (also run from `./scripts/check.sh`).
 
 The IntelliJ plugin uses a hand-written lexer aligned with the same keywords (see `LumiaLexer.kt`).

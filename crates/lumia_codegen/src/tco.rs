@@ -315,6 +315,7 @@ mod tests {
             )],
             hash_adts: HashSet::default(),
             trait_methods: HashMap::default(),
+            adt_variant_names: HashMap::default(),
         };
         let sccs = compute_tco_sccs(&core);
         assert!(
@@ -349,6 +350,7 @@ mod tests {
             functions: vec![even, odd],
             hash_adts: HashSet::default(),
             trait_methods: HashMap::default(),
+            adt_variant_names: HashMap::default(),
         };
         let sccs = compute_tco_sccs(&core);
         assert!(sccs.contains_key("even"));
@@ -373,6 +375,7 @@ mod tests {
             functions: vec![f],
             hash_adts: HashSet::default(),
             trait_methods: HashMap::default(),
+            adt_variant_names: HashMap::default(),
         };
         let sccs = compute_tco_sccs(&core);
         assert!(

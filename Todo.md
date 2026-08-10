@@ -53,4 +53,7 @@
 - 共享前端：`lumia_ty::typecheck_hir`；`lumia` 为 lib+bin（`check_program` / LSP / CLI）。
 - `Builtin::info` 元数据；codegen `CodegenError` + 子状态；`lumia_abi::float_contract`。
 - Infer / pkg / lsp / syntax AST 模块拆分；Core `CoreLowerCtx`；`rustfmt.toml`。
+- **Builtin 结果 GC 根**：`ResultHeap::{Never,Always,Typed}` 驱动 `roots.rs`（与 `may_capture` 正交；`ListGet`/`AdtField`/`ListParFold` 走类型推断）。
+- **LSP semanticTokens**：`lsp/semantic/{token,overlay,walk}`；编辑器 shared↔vscode 由 `scripts/check_editor_assets.sh` 防漂移。
+- **runtime_decls**：单测保证每个 `BuiltinInfo.runtime_symbol` 已声明。
 - 历史逐项修复列表已并入上方 `[x]` 条目与提交记录，不再在此重复。
