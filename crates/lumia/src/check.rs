@@ -117,13 +117,9 @@ pub fn check_source_recovering(text: &str, auto_parallel: bool) -> PartialCheck 
         auto_parallel,
         trust_foreign_pure: false,
     };
-    let (typed, ty_errs) =
-        typecheck_hir_recovering(&hir, NameVisibility::default(), &opts);
+    let (typed, ty_errs) = typecheck_hir_recovering(&hir, NameVisibility::default(), &opts);
     for e in ty_errs {
-        diagnostics.push((
-            e.span().unwrap_or_default(),
-            e.message().to_string(),
-        ));
+        diagnostics.push((e.span().unwrap_or_default(), e.message().to_string()));
     }
     PartialCheck { typed, diagnostics }
 }
@@ -278,10 +274,7 @@ val main = {
 }
 "#;
         let partial = check_source_recovering(src, true);
-        assert!(
-            !partial.diagnostics.is_empty(),
-            "expected parse diagnostic"
-        );
+        assert!(!partial.diagnostics.is_empty(), "expected parse diagnostic");
         let typed = partial.typed.expect("typecheck recovered items");
         assert!(
             typed.fun_types.contains_key("main") || typed.fun_schemes.contains_key("main"),

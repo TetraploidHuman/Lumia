@@ -524,10 +524,10 @@ impl<'ctx> Codegen<'ctx> {
             Type::String | Type::List(_) => {
                 let s_i = self.coerce_i64(self.local(local)?)?;
                 let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
-                Ok(crate::error::llvm(
-                    self.llvm.builder.build_int_to_ptr(s_i, ptr_ty, "rt_obj"),
-                )?
-                .into())
+                Ok(
+                    crate::error::llvm(self.llvm.builder.build_int_to_ptr(s_i, ptr_ty, "rt_obj"))?
+                        .into(),
+                )
             }
             _ => Ok(self.coerce_i64(self.local(local)?)?.into()),
         }

@@ -180,7 +180,10 @@ fn load_and_typecheck(
 ) -> Result<(LoadedProgram, TypedModule), Vec<Value>> {
     match check_program_with_overlays(path, overlays, true, false) {
         Ok(v) => Ok(v),
-        Err(OverlayCheckError::Load(msg)) => Err(vec![diag_from_load_message(text_for_path(path, overlays), &msg)]),
+        Err(OverlayCheckError::Load(msg)) => Err(vec![diag_from_load_message(
+            text_for_path(path, overlays),
+            &msg,
+        )]),
         Err(OverlayCheckError::Analyze { loaded, err }) => {
             let span = err.span().unwrap_or_default();
             let src = loaded
@@ -277,10 +280,8 @@ mod tests {
 
     #[test]
     fn parse_cli_diag_prefix() {
-        let (l, c, rest) = parse_line_col_prefix(
-            "err.lm:5:1: parse: expected RBrace, found Eof",
-        )
-        .expect("prefix");
+        let (l, c, rest) =
+            parse_line_col_prefix("err.lm:5:1: parse: expected RBrace, found Eof").expect("prefix");
         assert_eq!((l, c), (5, 1));
         assert!(rest.starts_with("parse:"));
     }

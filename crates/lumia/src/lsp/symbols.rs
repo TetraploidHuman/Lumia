@@ -70,7 +70,12 @@ pub(super) fn symbols_for_analysis(a: &Analysis) -> Vec<Value> {
     for item in &m.items {
         match item {
             Item::Fun(f) => {
-                out.push(symbol(&f.name, kind::FUNCTION, src, span_for_name(a, &f.name)));
+                out.push(symbol(
+                    &f.name,
+                    kind::FUNCTION,
+                    src,
+                    span_for_name(a, &f.name),
+                ));
             }
             Item::Val { name, .. } => {
                 out.push(symbol(name, kind::VARIABLE, src, span_for_name(a, name)));
@@ -78,10 +83,20 @@ pub(super) fn symbols_for_analysis(a: &Analysis) -> Vec<Value> {
         }
     }
     for p in &m.products {
-        out.push(symbol(&p.name, kind::STRUCT, src, span_for_name(a, &p.name)));
+        out.push(symbol(
+            &p.name,
+            kind::STRUCT,
+            src,
+            span_for_name(a, &p.name),
+        ));
     }
     for adt in &m.adts {
-        out.push(symbol(&adt.name, kind::ENUM, src, span_for_name(a, &adt.name)));
+        out.push(symbol(
+            &adt.name,
+            kind::ENUM,
+            src,
+            span_for_name(a, &adt.name),
+        ));
     }
     for trait_name in m.method_traits.values() {
         // method_traits maps method → trait; emit each trait once.
@@ -99,12 +114,7 @@ pub(super) fn symbols_for_analysis(a: &Analysis) -> Vec<Value> {
     instances.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
     for (tr, ty) in instances {
         let name = format!("{tr} for {ty}");
-        out.push(symbol(
-            &name,
-            kind::CLASS,
-            src,
-            span_for_name(a, tr),
-        ));
+        out.push(symbol(&name, kind::CLASS, src, span_for_name(a, tr)));
     }
     out
 }

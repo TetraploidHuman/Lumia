@@ -53,9 +53,7 @@ impl<'a> Parser<'a> {
         Ok(full)
     }
 
-    fn parse_imports_and_items_recovering(
-        &mut self,
-    ) -> (Vec<Import>, Vec<Item>, Vec<ParseError>) {
+    fn parse_imports_and_items_recovering(&mut self) -> (Vec<Import>, Vec<Item>, Vec<ParseError>) {
         let mut errors = Vec::new();
         let mut imports = vec![];
         let mut last_err_pos: Option<u32> = None;

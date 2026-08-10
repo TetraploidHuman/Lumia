@@ -201,12 +201,7 @@ fn collect_vars(ty: &Type, out: &mut Vec<u32>) {
             }
             collect_vars(r, out);
         }
-        Type::Int
-        | Type::Float
-        | Type::Bool
-        | Type::String
-        | Type::Char
-        | Type::Unit => {}
+        Type::Int | Type::Float | Type::Bool | Type::String | Type::Char | Type::Unit => {}
     }
 }
 
@@ -266,10 +261,7 @@ fn var_names_for(ty: &Type) -> rustc_hash::FxHashMap<u32, String> {
 
 fn pretty_type_with(ty: &Type, names: &rustc_hash::FxHashMap<u32, String>) -> String {
     match ty {
-        Type::Var(v) => names
-            .get(v)
-            .cloned()
-            .unwrap_or_else(|| format!("?{v}")),
+        Type::Var(v) => names.get(v).cloned().unwrap_or_else(|| format!("?{v}")),
         Type::Int => "Int".into(),
         Type::Float => "Float".into(),
         Type::Bool => "Bool".into(),
@@ -509,11 +501,7 @@ fn collect_expr_hints(
     });
 }
 
-fn collect_toplevel_hints(
-    a: &Analysis,
-    out: &mut Vec<Value>,
-    range: Option<(u32, u32)>,
-) {
+fn collect_toplevel_hints(a: &Analysis, out: &mut Vec<Value>, range: Option<(u32, u32)>) {
     let src = &a.src;
     let type_at = &a.typed.type_at;
     for item in &a.typed.module.items {
@@ -579,9 +567,7 @@ pub(super) fn hints_for_analysis(a: &Analysis, range: Option<(u32, u32)>) -> Vec
             h["label"].as_str().unwrap_or("").to_string(),
         )
     });
-    out.dedup_by(|a, b| {
-        a["position"] == b["position"] && a["label"] == b["label"]
-    });
+    out.dedup_by(|a, b| a["position"] == b["position"] && a["label"] == b["label"]);
     out
 }
 
@@ -603,8 +589,8 @@ pub(super) fn on_inlay_hint(params: Option<&Value>) -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
-    use super::hints_for_analysis;
     use super::super::state::Analysis;
+    use super::hints_for_analysis;
     use crate::check::check_source;
 
     #[test]
