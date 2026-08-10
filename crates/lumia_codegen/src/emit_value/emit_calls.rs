@@ -85,11 +85,11 @@ impl<'ctx> Codegen<'ctx> {
             .unwrap_or_else(|| self.llvm.i64_ty.const_int(0, false).into());
         if matches!(self.funs.fun_ret_tys.get(fun), Some(Type::Float)) {
             let bits = raw.into_int_value();
-            Ok(crate::error::llvm(self.llvm.builder.build_bit_cast(
+            crate::error::llvm(self.llvm.builder.build_bit_cast(
                 bits,
                 self.llvm.context.f64_type(),
                 "call_f64",
-            ))?)
+            ))
         } else {
             Ok(raw)
         }
@@ -227,11 +227,11 @@ impl<'ctx> Codegen<'ctx> {
         phi.add_incoming(&[(&fr_i, funref_bb_end), (&cl_i, clos_bb_end)]);
         let bits = phi.as_basic_value().into_int_value();
         if float_ret {
-            Ok(crate::error::llvm(self.llvm.builder.build_bit_cast(
+            crate::error::llvm(self.llvm.builder.build_bit_cast(
                 bits,
                 self.llvm.context.f64_type(),
                 "icall_f64",
-            ))?)
+            ))
         } else {
             Ok(bits.into())
         }
@@ -344,11 +344,11 @@ impl<'ctx> Codegen<'ctx> {
         let loaded =
             crate::error::llvm(self.llvm.builder.build_load(self.llvm.i64_ty, slot, "cap"))?;
         if as_float {
-            Ok(crate::error::llvm(self.llvm.builder.build_bit_cast(
+            crate::error::llvm(self.llvm.builder.build_bit_cast(
                 loaded.into_int_value(),
                 self.llvm.context.f64_type(),
                 "cap_f64",
-            ))?)
+            ))
         } else {
             Ok(loaded)
         }

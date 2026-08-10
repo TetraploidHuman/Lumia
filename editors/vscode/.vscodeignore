@@ -8,5 +8,4 @@ tsconfig.json
 .gitignore
 node_modules/@types/**
 media/**
-snippets/**
 README.md

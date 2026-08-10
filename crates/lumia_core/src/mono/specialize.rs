@@ -276,34 +276,14 @@ fn walk_mono_nested_scan(
     needed: &mut FxHashSet<(String, MonoKey)>,
     funref_of: &HashMap<u32, String>,
 ) {
-    match value {
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            scan_mono_block(then_block, local_tys, index, needed, funref_of);
-            scan_mono_block(else_block, local_tys, index, needed, funref_of);
-        }
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => {
-            scan_mono_block(header, local_tys, index, needed, funref_of);
-            scan_mono_block(body, local_tys, index, needed, funref_of);
-            scan_mono_block(latch, local_tys, index, needed, funref_of);
-        }
-        _ => {}
-    }
+    crate::for_each_nested_block(value, &mut |b| {
+        scan_mono_block(b, local_tys, index, needed, funref_of);
+    });
 }
 
-/// True when `fun` already names a mono clone (or still uses legacy `$` suffix only).
+/// True when `fun` already names a mono clone registered in the index.
 fn callee_is_mono_clone(fun: &str, index: &FunIndex<'_>) -> bool {
-    index
-        .get(fun)
-        .map(|f| f.is_mono_clone())
-        .unwrap_or_else(|| fun.contains('$'))
+    index.get(fun).is_some_and(|f| f.is_mono_clone())
 }
 
 fn note_mono_call(
@@ -416,24 +396,11 @@ fn rewrite_mono_value(
                 }
             }
         }
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            rewrite_mono_block(then_block, local_tys, renames, funref_of, index);
-            rewrite_mono_block(else_block, local_tys, renames, funref_of, index);
+        _ => {
+            crate::for_each_nested_block_mut(value, &mut |b| {
+                rewrite_mono_block(b, local_tys, renames, funref_of, index);
+            });
         }
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => {
-            rewrite_mono_block(header, local_tys, renames, funref_of, index);
-            rewrite_mono_block(body, local_tys, renames, funref_of, index);
-            rewrite_mono_block(latch, local_tys, renames, funref_of, index);
-        }
-        _ => {}
     }
 }
 
@@ -462,16 +429,6 @@ fn mono_value_ty_rewrite(
             }
             if let Some(f) = index.get(fun) {
                 return f.ret_ty.clone();
-            }
-            // Legacy name-suffix fallback when the clone is not yet in the index.
-            if fun.ends_with("$Float") {
-                return Type::Float;
-            }
-            if fun.ends_with("$Bool") {
-                return Type::Bool;
-            }
-            if fun.ends_with("$String") {
-                return Type::String;
             }
             Type::Int
         }

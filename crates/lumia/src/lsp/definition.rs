@@ -52,3 +52,70 @@ pub(super) fn on_definition(params: Option<&Value>) -> Result<Value> {
     };
     Ok(definition_for_analysis(a, uri, line, character))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::definition_for_analysis;
+    use crate::check::check_source;
+    use crate::load::SourceFile;
+    use crate::lsp::state::Analysis;
+    use lumia_syntax::line_starts;
+    use std::path::PathBuf;
+
+    fn analysis(src: &str) -> Analysis {
+        let typed = check_source(src, true).expect("typecheck");
+        Analysis {
+            typed,
+            src: src.to_string(),
+            files: vec![SourceFile {
+                path: PathBuf::new(),
+                src: src.to_string(),
+            }],
+        }
+    }
+
+    fn line_col_of(src: &str, needle: &str) -> (u32, u32) {
+        let byte = src.find(needle).expect("needle") as u32;
+        let starts = line_starts(src);
+        let (line, col) = lumia_syntax::byte_to_line_col(&starts, lumia_syntax::BytePos(byte));
+        (line.saturating_sub(1), col.saturating_sub(1))
+    }
+
+    #[test]
+    fn definition_jumps_to_binding() {
+        let src = r#"
+module Demo
+val add = { x, y -> x + y }
+val main = {
+    add(1, 2)
+}
+"#;
+        let a = analysis(src);
+        // Use site of `add` inside main.
+        let use_byte = src.rfind("add").expect("use site");
+        let starts = line_starts(src);
+        let (line, col) =
+            lumia_syntax::byte_to_line_col(&starts, lumia_syntax::BytePos(use_byte as u32));
+        let loc = definition_for_analysis(
+            &a,
+            "file:///demo.lm",
+            line.saturating_sub(1),
+            col.saturating_sub(1),
+        );
+        assert!(!loc.is_null(), "expected Location for add use-site");
+        let (def_line, _) = line_col_of(src, "val add");
+        assert_eq!(
+            loc["range"]["start"]["line"].as_u64().unwrap(),
+            def_line as u64,
+            "definition should point at `val add`, got {loc}"
+        );
+    }
+
+    #[test]
+    fn definition_unknown_ident_is_null() {
+        let src = "module Demo\nval main = { 1 }\n";
+        let a = analysis(src);
+        let loc = definition_for_analysis(&a, "file:///demo.lm", 1, 0);
+        assert!(loc.is_null());
+    }
+}

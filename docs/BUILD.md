@@ -76,7 +76,7 @@ crates/
   lumia_abi      TYPE_*/MEMO_* + float_contract
 examples/        示例 .lm
 scripts/env.sh   NixOS：LLVM_SYS_211_PREFIX + 共享库 PATH（排除 *-static）
-scripts/e2e.sh   端到端：编译并跑 hello / add
+scripts/e2e.sh   薄包装 → cargo e2e_examples
 scripts/check.sh 本地 CI 冒烟：`cargo test` workspace lib + lumia e2e
 ```
 
@@ -319,8 +319,8 @@ cargo run -p lumia -- build examples/mapset.lm -o /tmp/ms && /tmp/ms
 | ------------------------------------ | --------------------------- |
 | [DESIGN.md](DESIGN.md)               | 语言设计（语义合同）                  |
 | `scripts/env.sh`                     | 本机构建环境                      |
-| `scripts/e2e.sh`                     | Linux 冒烟端到端                 |
-| `crates/lumia/tests/e2e_examples.rs` | 跨平台 examples e2e            |
+| `scripts/e2e.sh`                     | 薄包装：`cargo build` + `cargo test -p lumia --test e2e_examples` |
+| `crates/lumia/tests/e2e_examples/`   | 跨平台 examples e2e（主路径）        |
 | `.github/workflows/ci.yml`           | Linux / Windows CI          |
 | `crates/lumia_rt/src/lib.rs`         | GC ABI + mark-sweep         |
 | `crates/lumia_opt/src/lib.rs`        | Pass 管道                     |

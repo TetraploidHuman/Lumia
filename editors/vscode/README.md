@@ -5,16 +5,14 @@ Language support for Lumia (`.lm`): TextMate highlighting, snippets, and a Langu
 ## Features
 
 - Syntax highlighting and language configuration
-- Diagnostics, hover, go-to-definition, completion, formatting, outline (via LSP)
-- Inlay hints: binding types, lambda params, call returns (via LSP)
+- Diagnostics, hover, go-to-definition, completion, formatting, outline, inlay hints (via LSP)
 - Snippets (`module`, `val`, `match`, `trait`, …)
-- Commands: Check File, Build File, Format Document, Restart Language Server
-- Tasks: `lumia: check` / `build` / `fmt`
-- Settings: `lumia.path`, `lumia.lsp.trace`, `lumia.checkOnSave`
+- Commands: Run, Build & Run, Check File, Restart Language Server
+- Settings: `lumia.lsp.path`, `lumia.lsp.enabled`
 
 ## Prerequisites
 
-1. Build the Lumia CLI and put it on `PATH` (or set `lumia.path`):
+1. Build the Lumia CLI and put it on `PATH` (or set `lumia.lsp.path`):
 
 ```bash
 source scripts/env.sh
@@ -22,14 +20,13 @@ cargo build -p lumia --release
 export PATH="$PWD/target/release:$PATH"
 ```
 
-2. For **Build File**, LLVM env from `scripts/env.sh` must be available in the integrated terminal.
+2. For **Build & Run**, LLVM env from `scripts/env.sh` must be available in the integrated terminal.
 
 ## Develop / install
 
 ```bash
 cd editors/vscode
 npm install
-npm run compile
 ```
 
 - **Debug:** open `editors/vscode` in VS Code and press F5 (`Run Lumia Extension`).
@@ -37,13 +34,14 @@ npm run compile
 
 ```bash
 npx vsce package --no-dependencies
-code --install-extension lumia-0.3.0.vsix
+code --install-extension lumia-0.3.3.vsix
 ```
+
+The extension entry is `extension.js` (no TypeScript compile step).
 
 ## Settings
 
 | Setting | Default | Meaning |
 |---------|---------|---------|
-| `lumia.path` | `lumia` | Path to the `lumia` binary |
-| `lumia.lsp.trace` | `off` | LSP message trace |
-| `lumia.checkOnSave` | `false` | Extra CLI `check` on save |
+| `lumia.lsp.path` | `lumia` | Path to the `lumia` binary (`lsp` / `build` / `check`) |
+| `lumia.lsp.enabled` | `true` | Enable the Lumia language server |

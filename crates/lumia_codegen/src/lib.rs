@@ -18,7 +18,7 @@ use runtime_decls::declare_runtime;
 use state::{FrameState, FunTables, LlvmTypes, MemoEmit};
 use tco::compute_tco_sccs;
 
-use anyhow::{anyhow, Context as AnyhowContext, Result};
+use anyhow::{Context as AnyhowContext, Result};
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module as LlvmModule;
@@ -307,11 +307,13 @@ impl<'ctx> Codegen<'ctx> {
     }
 
     /// Look up a `lumia_rt` symbol declared by [`declare_runtime`].
+    ///
+    /// Prefer this over ad-hoc `module.get_function`; error text flags declare_runtime drift.
     pub(crate) fn runtime_fn(&self, name: &str) -> Result<FunctionValue<'ctx>> {
         self.llvm
             .module
             .get_function(name)
-            .ok_or_else(|| anyhow!("missing runtime function `{name}` (declare_runtime drift?)"))
+            .with_context(|| format!("missing runtime function `{name}` (declare_runtime drift?)"))
     }
 }
 
@@ -375,10 +377,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn workspace_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .canonicalize()
-            .expect("workspace root")
+        lumia_abi::workspace_root_canonical(env!("CARGO_MANIFEST_DIR"))
     }
 
     fn test_opts() -> CodegenOptions {

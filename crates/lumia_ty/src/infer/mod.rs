@@ -66,12 +66,6 @@ impl Infer {
                 Effect::pure(),
             )),
         );
-        // Bind std import aliases (`println as log`) to the same schemes.
-        for (alias, canon) in &vis.builtin_aliases {
-            if let Some(scheme) = builtins.get(canon).cloned() {
-                builtins.insert(alias.clone(), scheme);
-            }
-        }
         Self {
             uni: SubstState::default(),
             scopes: EnvState {

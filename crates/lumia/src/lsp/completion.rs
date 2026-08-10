@@ -2,6 +2,7 @@
 
 use super::state::{state_lock, Analysis};
 use anyhow::Result;
+use lumia_ty::display_type;
 use serde_json::{json, Value};
 
 pub(super) fn completion_items(analysis: Option<&Analysis>) -> Vec<Value> {
@@ -16,10 +17,16 @@ pub(super) fn completion_items(analysis: Option<&Analysis>) -> Vec<Value> {
     }
     if let Some(a) = analysis {
         for (name, ty) in &a.typed.fun_types {
+            let num_vars = a
+                .typed
+                .fun_schemes
+                .get(name)
+                .map(|s| s.num_vars.as_slice())
+                .unwrap_or(&[]);
             items.push(json!({
                 "label": name,
                 "kind": 3, // Function
-                "detail": format!("{ty}"),
+                "detail": display_type(ty, num_vars),
             }));
         }
         for name in a.typed.decls.keys() {

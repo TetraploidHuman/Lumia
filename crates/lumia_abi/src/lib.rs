@@ -14,6 +14,8 @@
 //! - bit 9 `TID_F_VAL` — Map: float values
 //! - bit 10 `TID_ASSOC` — Map/Set: AssocList (never hash-promote)
 
+use std::path::{Path, PathBuf};
+
 mod float_contract;
 pub use float_contract::{
     float_roles, gc_skip_float_slot, is_float_capable_container, FloatRoles, ENSURE_LIST_F64,
@@ -70,6 +72,19 @@ pub const MEMO_IDX_MAX_FUNS: usize = 16;
 pub const MEMO_IDX_CAP: usize = 4096;
 pub const MEMO_IDX_TABLE_BYTES: usize = MEMO_IDX_CAP * (1 + 8);
 pub const MEMO_SLOTS_TABLE_BYTES: usize = MEMO_L2_SLOTS * (1 + MEMO_L2_MAX_ARGS * 8 + 8);
+
+/// Repo root given a workspace crate's `CARGO_MANIFEST_DIR` (`crates/<name>` → `…/Lumia`).
+#[inline]
+pub fn workspace_root(manifest_dir: impl AsRef<Path>) -> PathBuf {
+    manifest_dir.as_ref().join("../..")
+}
+
+/// Like [`workspace_root`], but `canonicalize`s when the path exists.
+#[inline]
+pub fn workspace_root_canonical(manifest_dir: impl AsRef<Path>) -> PathBuf {
+    let p = workspace_root(manifest_dir);
+    p.canonicalize().unwrap_or(p)
+}
 
 /// Scalar classification for container element/key tagging.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

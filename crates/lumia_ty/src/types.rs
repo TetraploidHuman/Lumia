@@ -10,8 +10,6 @@ pub struct NameVisibility {
     pub name_origin: HashMap<String, u32>,
     pub cross_file_visible: HashSet<String>,
     pub entry_file: u32,
-    /// `import std.io.{println as log}` → local alias → builtin name.
-    pub builtin_aliases: HashMap<String, String>,
 }
 
 impl NameVisibility {
@@ -142,7 +140,7 @@ pub(crate) fn at(span: lumia_syntax::Span, msg: impl Into<String>) -> TypeError 
 }
 
 /// Source span for a HIR expression (walks into `Let`, which has no own span).
-pub(crate) fn expr_span(e: &Expr) -> lumia_syntax::Span {
+pub fn expr_span(e: &Expr) -> lumia_syntax::Span {
     match e {
         Expr::Int(_, s)
         | Expr::Float(_, s)
@@ -191,63 +189,10 @@ pub struct TypedModule {
 
 impl std::fmt::Display for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Type::Int => write!(f, "Int"),
-            Type::Float => write!(f, "Float"),
-            Type::Bool => write!(f, "Bool"),
-            Type::String => write!(f, "String"),
-            Type::Char => write!(f, "Char"),
-            Type::Unit => write!(f, "Unit"),
-            Type::Var(v) => write!(f, "?{v}"),
-            Type::List(t) => write!(f, "List[{t}]"),
-            Type::Set(t) => write!(f, "Set[{t}]"),
-            Type::Map(k, v) => write!(f, "Map[{k}, {v}]"),
-            Type::Tuple(ts) => {
-                write!(f, "(")?;
-                for (i, t) in ts.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{t}")?;
-                }
-                write!(f, ")")
-            }
-            Type::TuplePrefix(ts) => {
-                write!(f, "(")?;
-                for (i, t) in ts.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{t}")?;
-                }
-                write!(f, ", …)")
-            }
-            Type::Adt { name, params } => {
-                if params.is_empty() {
-                    write!(f, "{name}")
-                } else {
-                    write!(f, "{name}[")?;
-                    for (i, p) in params.iter().enumerate() {
-                        if i > 0 {
-                            write!(f, ", ")?;
-                        }
-                        write!(f, "{p}")?;
-                    }
-                    write!(f, "]")
-                }
-            }
-            Type::Fun(ps, r, e) => {
-                write!(f, "(")?;
-                for (i, p) in ps.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{p}")?;
-                }
-                let eff = if e.has_io() { " / IO" } else { "" };
-                write!(f, ") -> {r}{eff}")
-            }
-        }
+        // Debug / error messages: keep `?N` for unbound vars (empty name map).
+        // IDE paths use [`crate::display_type`] for grounded Num + letter names.
+        let names = rustc_hash::FxHashMap::default();
+        write!(f, "{}", super::display::pretty_type_with(self, &names))
     }
 }
 

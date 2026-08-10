@@ -4,7 +4,7 @@ use super::state::{state_lock, Analysis};
 use anyhow::Result;
 use lumia_hir::{for_each_expr, Expr, Item};
 use lumia_syntax::{byte_to_line_col, line_starts, Span};
-use lumia_ty::Type;
+use lumia_ty::{display_type, expr_span, pretty_type_with, subst_num_vars, var_names_for, Type};
 use serde_json::{json, Value};
 
 /// LSP InlayHintKind::Type
@@ -112,7 +112,7 @@ fn lambda_param_ends(src: &str, start: usize, end: usize) -> Vec<(String, usize)
     out
 }
 
-fn type_of_span<'a>(type_at: &'a [(Span, Type)], span: Span) -> Option<&'a Type> {
+fn type_of_span(type_at: &[(Span, Type)], span: Span) -> Option<&Type> {
     // Prefer the *first* recording: `Let` reuses the value span and would otherwise
     // overwrite the value's type with the let-body type (often Unit).
     type_at
@@ -123,7 +123,7 @@ fn type_of_span<'a>(type_at: &'a [(Span, Type)], span: Span) -> Option<&'a Type>
 
 /// Call result type: prefer the *last* recording at `span`.
 /// Callee `Var` used to share the Call span (Fun then Unit); last is the result.
-fn type_of_span_last<'a>(type_at: &'a [(Span, Type)], span: Span) -> Option<&'a Type> {
+fn type_of_span_last(type_at: &[(Span, Type)], span: Span) -> Option<&Type> {
     type_at
         .iter()
         .rev()
@@ -147,172 +147,6 @@ fn param_ends_in_window(
         }
     }
     out
-}
-
-fn expr_span(e: &Expr) -> Span {
-    // Mirror lumia_ty::types::expr_span (not public).
-    match e {
-        Expr::Int(_, s)
-        | Expr::Float(_, s)
-        | Expr::Bool(_, s)
-        | Expr::String(_, s)
-        | Expr::Char(_, s)
-        | Expr::Unit(s)
-        | Expr::Var(_, s)
-        | Expr::Break(s)
-        | Expr::Continue(s) => *s,
-        Expr::Assign { span, .. }
-        | Expr::Lambda { span, .. }
-        | Expr::Call { span, .. }
-        | Expr::Binary { span, .. }
-        | Expr::Unary { span, .. }
-        | Expr::If { span, .. }
-        | Expr::Loop { span, .. }
-        | Expr::Seq { span, .. }
-        | Expr::BuiltinCall { span, .. }
-        | Expr::AdtNew { span, .. }
-        | Expr::Return { span, .. }
-        | Expr::Alt { span, .. } => *span,
-        Expr::Let { value, .. } => expr_span(value),
-    }
-}
-
-fn collect_vars(ty: &Type, out: &mut Vec<u32>) {
-    match ty {
-        Type::Var(v) => out.push(*v),
-        Type::List(t) | Type::Set(t) => collect_vars(t, out),
-        Type::Map(k, v) => {
-            collect_vars(k, out);
-            collect_vars(v, out);
-        }
-        Type::Tuple(ts) | Type::TuplePrefix(ts) => {
-            for t in ts {
-                collect_vars(t, out);
-            }
-        }
-        Type::Adt { params, .. } => {
-            for p in params {
-                collect_vars(p, out);
-            }
-        }
-        Type::Fun(ps, r, _) => {
-            for p in ps {
-                collect_vars(p, out);
-            }
-            collect_vars(r, out);
-        }
-        Type::Int | Type::Float | Type::Bool | Type::String | Type::Char | Type::Unit => {}
-    }
-}
-
-/// Num MVP: arithmetic type vars default to Int in IDE hints (DESIGN: numeric default Int).
-fn subst_num_vars(ty: &Type, num_vars: &[u32]) -> Type {
-    match ty {
-        Type::Var(v) if num_vars.contains(v) => Type::Int,
-        Type::Var(v) => Type::Var(*v),
-        Type::List(t) => Type::List(Box::new(subst_num_vars(t, num_vars))),
-        Type::Set(t) => Type::Set(Box::new(subst_num_vars(t, num_vars))),
-        Type::Map(k, v) => Type::Map(
-            Box::new(subst_num_vars(k, num_vars)),
-            Box::new(subst_num_vars(v, num_vars)),
-        ),
-        Type::Tuple(ts) => Type::Tuple(ts.iter().map(|t| subst_num_vars(t, num_vars)).collect()),
-        Type::TuplePrefix(ts) => {
-            Type::TuplePrefix(ts.iter().map(|t| subst_num_vars(t, num_vars)).collect())
-        }
-        Type::Adt { name, params } => Type::Adt {
-            name: name.clone(),
-            params: params.iter().map(|t| subst_num_vars(t, num_vars)).collect(),
-        },
-        Type::Fun(ps, r, e) => Type::Fun(
-            ps.iter().map(|t| subst_num_vars(t, num_vars)).collect(),
-            Box::new(subst_num_vars(r, num_vars)),
-            *e,
-        ),
-        other => other.clone(),
-    }
-}
-
-fn display_type(ty: &Type, num_vars: &[u32]) -> String {
-    let grounded = subst_num_vars(ty, num_vars);
-    let names = var_names_for(&grounded);
-    pretty_type_with(&grounded, &names)
-}
-
-fn var_names_for(ty: &Type) -> rustc_hash::FxHashMap<u32, String> {
-    let mut vars = Vec::new();
-    collect_vars(ty, &mut vars);
-    vars.sort_unstable();
-    vars.dedup();
-    // Prefer T/U/V… over a/b/c (IDE-facing).
-    const LETTERS: &[&str] = &["T", "U", "V", "W", "X", "Y", "Z"];
-    vars.iter()
-        .enumerate()
-        .map(|(i, v)| {
-            let name = if i < LETTERS.len() {
-                LETTERS[i].to_string()
-            } else {
-                format!("T{}", i - LETTERS.len() + 1)
-            };
-            (*v, name)
-        })
-        .collect()
-}
-
-fn pretty_type_with(ty: &Type, names: &rustc_hash::FxHashMap<u32, String>) -> String {
-    match ty {
-        Type::Var(v) => names.get(v).cloned().unwrap_or_else(|| format!("?{v}")),
-        Type::Int => "Int".into(),
-        Type::Float => "Float".into(),
-        Type::Bool => "Bool".into(),
-        Type::String => "String".into(),
-        Type::Char => "Char".into(),
-        Type::Unit => "Unit".into(),
-        Type::List(t) => format!("List[{}]", pretty_type_with(t, names)),
-        Type::Set(t) => format!("Set[{}]", pretty_type_with(t, names)),
-        Type::Map(k, v) => format!(
-            "Map[{}, {}]",
-            pretty_type_with(k, names),
-            pretty_type_with(v, names)
-        ),
-        Type::Tuple(ts) => {
-            let inner = ts
-                .iter()
-                .map(|t| pretty_type_with(t, names))
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("({inner})")
-        }
-        Type::TuplePrefix(ts) => {
-            let inner = ts
-                .iter()
-                .map(|t| pretty_type_with(t, names))
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("({inner}, …)")
-        }
-        Type::Adt { name, params } => {
-            if params.is_empty() {
-                name.clone()
-            } else {
-                let inner = params
-                    .iter()
-                    .map(|t| pretty_type_with(t, names))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!("{name}[{inner}]")
-            }
-        }
-        Type::Fun(ps, r, e) => {
-            let args = ps
-                .iter()
-                .map(|t| pretty_type_with(t, names))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let eff = if e.has_io() { " / IO" } else { "" };
-            format!("({args}) -> {}{eff}", pretty_type_with(r, names))
-        }
-    }
 }
 
 fn in_range(byte: u32, range: Option<(u32, u32)>) -> bool {

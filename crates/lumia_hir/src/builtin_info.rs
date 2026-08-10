@@ -1,4 +1,4 @@
-//! Single source of truth for builtin arity / effects / runtime symbols.
+//! Single source of truth for builtin arity / effects / runtime symbols / emit shape.
 
 use super::ast::{Builtin, BuiltinFamily};
 
@@ -7,6 +7,35 @@ use super::ast::{Builtin, BuiltinFamily};
 pub enum BuiltinEffect {
     Pure,
     Io,
+}
+
+/// Codegen calling convention for builtins that are a direct `lumia_*` call.
+///
+/// `Custom` stays hand-written (println/show/assert, Option tags, FunRef checks).
+/// Float container retagging uses [`BuiltinInfo::float_ensures`] on convention emits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuiltinEmit {
+    Custom,
+    /// `()` → heap ptr boxed as i64.
+    NullaryPtr,
+    /// `()` → void (unit).
+    NullaryVoid,
+    /// `(obj ptr)` → ptr→i64.
+    UnaryObjPtr,
+    /// `(obj ptr)` → scalar i64.
+    UnaryObjScalar,
+    /// `(obj ptr, i64)` → ptr→i64  (e.g. take/slice; **StrSplit** char as i64).
+    ObjI64Ptr,
+    /// `(obj ptr, i64)` → scalar.
+    ObjI64Scalar,
+    /// `(obj, obj)` → ptr→i64.
+    ObjObjPtr,
+    /// `(obj, obj)` → scalar.
+    ObjObjScalar,
+    /// `(i64, i64)` → ptr→i64.
+    I64I64Ptr,
+    /// `(obj ptr, i64, i64)` → ptr→i64.
+    ObjI64I64Ptr,
 }
 
 /// Metadata driving ty arity checks and simple codegen symbol lookup.
@@ -18,41 +47,99 @@ pub struct BuiltinInfo {
     pub effect: BuiltinEffect,
     /// Primary `lumia_*` runtime symbol when emission is a direct call.
     pub runtime_symbol: Option<&'static str>,
-    /// Container / float tagging may be needed at the call site.
-    pub float_sensitive: bool,
+    /// When `args[arg_idx]` is Float, call `ensure_sym` on the container (`args[0]`)
+    /// before the runtime call (List/Map/Set IEEE tagging).
+    pub float_ensures: &'static [(u8, &'static str)],
+    pub emit: BuiltinEmit,
+}
+
+impl BuiltinInfo {
+    pub fn float_sensitive(self) -> bool {
+        !self.float_ensures.is_empty()
+    }
 }
 
 impl Builtin {
     /// Canonical metadata for this builtin.
     pub fn info(self) -> BuiltinInfo {
         use Builtin::*;
+        use BuiltinEmit::*;
         let pure = BuiltinEffect::Pure;
         let io = BuiltinEffect::Io;
-        let (family, min_arity, max_arity, effect, runtime_symbol, float_sensitive) = match self {
-            Println | PrintlnInt | PrintlnStr => (BuiltinFamily::Io, 1, 1, io, None, false),
-            Show => (BuiltinFamily::Io, 1, 1, pure, Some("lumia_show"), false),
-            ReadStdin => (BuiltinFamily::Io, 0, 0, io, Some("lumia_read_stdin"), false),
+        const NO_F: &[(u8, &str)] = &[];
+        const ENS_LIST_APPEND: &[(u8, &str)] = &[(1, lumia_abi::ENSURE_LIST_F64)];
+        const ENS_SET_INSERT: &[(u8, &str)] = &[(1, lumia_abi::ENSURE_SET_F64)];
+        const ENS_MAP_SET: &[(u8, &str)] = &[
+            (1, lumia_abi::ENSURE_MAP_F64),
+            (2, lumia_abi::ENSURE_MAP_VF64),
+        ];
+        let (family, min_arity, max_arity, effect, runtime_symbol, float_ensures, emit) = match self
+        {
+            Println => (BuiltinFamily::Io, 1, 1, io, None, NO_F, Custom),
+            Show => (
+                BuiltinFamily::Io,
+                1,
+                1,
+                pure,
+                Some("lumia_show"),
+                NO_F,
+                Custom,
+            ),
+            ReadStdin => (
+                BuiltinFamily::Io,
+                0,
+                0,
+                io,
+                Some("lumia_read_stdin"),
+                NO_F,
+                NullaryPtr,
+            ),
             MatchFail => (
                 BuiltinFamily::Io,
                 0,
                 0,
                 pure,
                 Some("lumia_match_fail"),
-                false,
+                NO_F,
+                NullaryVoid,
             ),
             // Annotated assert adds a message string → arity 1..=2.
-            Assert => (BuiltinFamily::Io, 1, 2, pure, Some("lumia_assert"), false),
+            Assert => (
+                BuiltinFamily::Io,
+                1,
+                2,
+                pure,
+                Some("lumia_assert"),
+                NO_F,
+                Custom,
+            ),
 
-            ListLen => (BuiltinFamily::List, 1, 1, pure, Some("lumia_len"), false),
-            ListGet => (BuiltinFamily::List, 2, 2, pure, Some("lumia_get"), false),
-            // `xs.slice(i)` / `xs.drop(n)` / match rest → (list, start); end is implicit.
+            ListLen => (
+                BuiltinFamily::List,
+                1,
+                1,
+                pure,
+                Some("lumia_len"),
+                NO_F,
+                UnaryObjScalar,
+            ),
+            ListGet => (
+                BuiltinFamily::List,
+                2,
+                2,
+                pure,
+                Some("lumia_get"),
+                NO_F,
+                Custom,
+            ),
             ListSlice => (
                 BuiltinFamily::List,
                 2,
                 2,
                 pure,
                 Some("lumia_list_slice"),
-                false,
+                NO_F,
+                ObjI64Ptr,
             ),
             ListAppend => (
                 BuiltinFamily::List,
@@ -60,16 +147,26 @@ impl Builtin {
                 2,
                 pure,
                 Some("lumia_list_append"),
-                true,
+                ENS_LIST_APPEND,
+                ObjI64Ptr,
             ),
-            ListConcat => (BuiltinFamily::List, 2, 2, pure, Some("lumia_concat"), false),
+            ListConcat => (
+                BuiltinFamily::List,
+                2,
+                2,
+                pure,
+                Some("lumia_concat"),
+                NO_F,
+                ObjObjPtr,
+            ),
             ListTake => (
                 BuiltinFamily::List,
                 2,
                 2,
                 pure,
                 Some("lumia_list_take"),
-                false,
+                NO_F,
+                ObjI64Ptr,
             ),
             ListReverse => (
                 BuiltinFamily::List,
@@ -77,7 +174,8 @@ impl Builtin {
                 1,
                 pure,
                 Some("lumia_list_reverse"),
-                false,
+                NO_F,
+                UnaryObjPtr,
             ),
             ListSort => (
                 BuiltinFamily::List,
@@ -85,7 +183,8 @@ impl Builtin {
                 1,
                 pure,
                 Some("lumia_list_sort"),
-                false,
+                NO_F,
+                UnaryObjPtr,
             ),
             ListSortByKeys => (
                 BuiltinFamily::List,
@@ -93,7 +192,8 @@ impl Builtin {
                 2,
                 pure,
                 Some("lumia_list_sort_by_keys"),
-                false,
+                NO_F,
+                ObjObjPtr,
             ),
             ListParMap => (
                 BuiltinFamily::List,
@@ -101,7 +201,8 @@ impl Builtin {
                 2,
                 pure,
                 Some("lumia_list_par_map"),
-                true,
+                NO_F,
+                Custom,
             ),
             ListParFold => (
                 BuiltinFamily::List,
@@ -109,7 +210,8 @@ impl Builtin {
                 3,
                 pure,
                 Some("lumia_list_par_fold"),
-                false,
+                NO_F,
+                Custom,
             ),
             ListJoin => (
                 BuiltinFamily::List,
@@ -117,17 +219,35 @@ impl Builtin {
                 2,
                 pure,
                 Some("lumia_list_join"),
-                false,
+                NO_F,
+                ObjObjPtr,
             ),
-            Elems => (BuiltinFamily::List, 1, 1, pure, Some("lumia_elems"), false),
-            Range => (BuiltinFamily::List, 2, 2, pure, Some("lumia_range"), false),
+            Elems => (
+                BuiltinFamily::List,
+                1,
+                1,
+                pure,
+                Some("lumia_elems"),
+                NO_F,
+                UnaryObjPtr,
+            ),
+            Range => (
+                BuiltinFamily::List,
+                2,
+                2,
+                pure,
+                Some("lumia_range"),
+                NO_F,
+                I64I64Ptr,
+            ),
             RangeInclusive => (
                 BuiltinFamily::List,
                 2,
                 2,
                 pure,
                 Some("lumia_range_inclusive"),
-                false,
+                NO_F,
+                I64I64Ptr,
             ),
 
             Contains => (
@@ -136,16 +256,26 @@ impl Builtin {
                 2,
                 pure,
                 Some("lumia_contains"),
-                false,
+                NO_F,
+                ObjI64Scalar,
             ),
-            MapSet => (BuiltinFamily::MapSet, 3, 3, pure, Some("lumia_set"), true),
+            MapSet => (
+                BuiltinFamily::MapSet,
+                3,
+                3,
+                pure,
+                Some("lumia_set"),
+                ENS_MAP_SET,
+                ObjI64I64Ptr,
+            ),
             MapRemove => (
                 BuiltinFamily::MapSet,
                 2,
                 2,
                 pure,
                 Some("lumia_remove"),
-                false,
+                NO_F,
+                ObjI64Ptr,
             ),
             SetInsert => (
                 BuiltinFamily::MapSet,
@@ -153,7 +283,8 @@ impl Builtin {
                 2,
                 pure,
                 Some("lumia_set_insert"),
-                true,
+                ENS_SET_INSERT,
+                ObjI64Ptr,
             ),
             MapKeys => (
                 BuiltinFamily::MapSet,
@@ -161,7 +292,8 @@ impl Builtin {
                 1,
                 pure,
                 Some("lumia_map_keys"),
-                false,
+                NO_F,
+                UnaryObjPtr,
             ),
             MapValues => (
                 BuiltinFamily::MapSet,
@@ -169,7 +301,8 @@ impl Builtin {
                 1,
                 pure,
                 Some("lumia_map_values"),
-                false,
+                NO_F,
+                UnaryObjPtr,
             ),
             MapItems => (
                 BuiltinFamily::MapSet,
@@ -177,7 +310,8 @@ impl Builtin {
                 1,
                 pure,
                 Some("lumia_map_items"),
-                false,
+                NO_F,
+                UnaryObjPtr,
             ),
 
             StrTrim => (
@@ -186,7 +320,8 @@ impl Builtin {
                 1,
                 pure,
                 Some("lumia_str_trim"),
-                false,
+                NO_F,
+                UnaryObjPtr,
             ),
             StrSplit => (
                 BuiltinFamily::String,
@@ -194,7 +329,8 @@ impl Builtin {
                 2,
                 pure,
                 Some("lumia_str_split"),
-                false,
+                NO_F,
+                ObjI64Ptr,
             ),
             StrSubstring => (
                 BuiltinFamily::String,
@@ -202,7 +338,8 @@ impl Builtin {
                 3,
                 pure,
                 Some("lumia_str_substring"),
-                false,
+                NO_F,
+                ObjI64I64Ptr,
             ),
             StrToLower => (
                 BuiltinFamily::String,
@@ -210,7 +347,8 @@ impl Builtin {
                 1,
                 pure,
                 Some("lumia_str_to_lower"),
-                false,
+                NO_F,
+                UnaryObjPtr,
             ),
             StrToUpper => (
                 BuiltinFamily::String,
@@ -218,7 +356,8 @@ impl Builtin {
                 1,
                 pure,
                 Some("lumia_str_to_upper"),
-                false,
+                NO_F,
+                UnaryObjPtr,
             ),
             StrStartsWith => (
                 BuiltinFamily::String,
@@ -226,7 +365,8 @@ impl Builtin {
                 2,
                 pure,
                 Some("lumia_str_starts_with"),
-                false,
+                NO_F,
+                ObjObjScalar,
             ),
             StrEndsWith => (
                 BuiltinFamily::String,
@@ -234,17 +374,29 @@ impl Builtin {
                 2,
                 pure,
                 Some("lumia_str_ends_with"),
-                false,
+                NO_F,
+                ObjObjScalar,
             ),
 
-            AdtTag => (BuiltinFamily::Adt, 1, 1, pure, Some("lumia_adt_tag"), false),
+            AdtTag => (
+                BuiltinFamily::Adt,
+                1,
+                1,
+                pure,
+                Some("lumia_adt_tag"),
+                NO_F,
+                UnaryObjScalar,
+            ),
             AdtField => (
+                // HIR may pass a 3rd name-hint arg; Core strips it before codegen
+                // (`lower/expr/call.rs`) so emit stays `ObjI64Scalar` (2 args).
                 BuiltinFamily::Adt,
                 2,
                 3,
                 pure,
                 Some("lumia_adt_field"),
-                false,
+                NO_F,
+                ObjI64Scalar,
             ),
         };
         BuiltinInfo {
@@ -253,13 +405,29 @@ impl Builtin {
             max_arity,
             effect,
             runtime_symbol,
-            float_sensitive,
+            float_ensures,
+            emit,
         }
+    }
+
+    /// Whether this builtin may retag a Float container at the call site.
+    pub fn float_sensitive(self) -> bool {
+        self.info().float_sensitive()
     }
 
     /// Shared family used by `lumia_ty` and `lumia_codegen` routers.
     pub fn family(self) -> BuiltinFamily {
         self.info().family
+    }
+
+    /// Whether this builtin is effectful (`println` / `readStdin`).
+    pub fn is_io(self) -> bool {
+        matches!(self.info().effect, BuiltinEffect::Io)
+    }
+
+    /// Primary runtime symbol when emission is a direct `lumia_*` call.
+    pub fn runtime_symbol(self) -> Option<&'static str> {
+        self.info().runtime_symbol
     }
 
     /// Resolve a surface method / free-function name + arity to a direct
@@ -301,7 +469,7 @@ impl Builtin {
     pub fn display_name(self) -> &'static str {
         use Builtin::*;
         match self {
-            Println | PrintlnInt | PrintlnStr => "println",
+            Println => "println",
             Show => "show",
             ReadStdin => "readStdin",
             MatchFail => "matchFail",
@@ -358,10 +526,88 @@ mod tests {
     }
 
     #[test]
+    fn str_split_is_obj_i64_not_obj_obj() {
+        // Char separator must stay i64 — this is what broke ABI when helpers were wrong.
+        assert_eq!(Builtin::StrSplit.info().emit, BuiltinEmit::ObjI64Ptr);
+        assert_eq!(
+            Builtin::StrStartsWith.info().emit,
+            BuiltinEmit::ObjObjScalar
+        );
+    }
+
+    #[test]
     fn from_method_covers_surface_aliases() {
         assert_eq!(Builtin::from_method("len", 1), Some(Builtin::ListLen));
         assert_eq!(Builtin::from_method("drop", 2), Some(Builtin::ListSlice));
         assert_eq!(Builtin::from_method("slice", 2), Some(Builtin::ListSlice));
         assert_eq!(Builtin::from_method("map", 2), None); // HOF desugar, not direct
+    }
+
+    #[test]
+    fn every_builtin_has_coherent_info() {
+        // Exhaustive mirror of `Builtin` — adding a variant must update this list
+        // and `Builtin::info`.
+        let all = [
+            Builtin::Println,
+            Builtin::ListLen,
+            Builtin::ListGet,
+            Builtin::ListSlice,
+            Builtin::ListAppend,
+            Builtin::ListConcat,
+            Builtin::Contains,
+            Builtin::MapSet,
+            Builtin::MapRemove,
+            Builtin::SetInsert,
+            Builtin::MapKeys,
+            Builtin::MapValues,
+            Builtin::MapItems,
+            Builtin::Elems,
+            Builtin::Range,
+            Builtin::RangeInclusive,
+            Builtin::Show,
+            Builtin::StrTrim,
+            Builtin::StrSplit,
+            Builtin::StrSubstring,
+            Builtin::StrToLower,
+            Builtin::StrToUpper,
+            Builtin::StrStartsWith,
+            Builtin::StrEndsWith,
+            Builtin::ReadStdin,
+            Builtin::MatchFail,
+            Builtin::ListTake,
+            Builtin::ListReverse,
+            Builtin::ListSort,
+            Builtin::ListSortByKeys,
+            Builtin::ListParMap,
+            Builtin::ListParFold,
+            Builtin::Assert,
+            Builtin::ListJoin,
+            Builtin::AdtTag,
+            Builtin::AdtField,
+        ];
+        for b in all {
+            let i = b.info();
+            assert!(i.min_arity <= i.max_arity, "{}", b.display_name());
+            if i.emit != BuiltinEmit::Custom {
+                assert!(
+                    i.runtime_symbol.is_some(),
+                    "convention emit needs symbol: {}",
+                    b.display_name()
+                );
+            }
+            assert_eq!(i.family, b.family());
+            assert_eq!(i.effect == BuiltinEffect::Io, b.is_io());
+            assert_eq!(i.float_sensitive(), b.float_sensitive());
+            if i.float_sensitive() {
+                assert!(
+                    matches!(
+                        i.emit,
+                        BuiltinEmit::ObjI64Ptr | BuiltinEmit::ObjI64I64Ptr
+                    ),
+                    "float ensure should use convention emit: {}",
+                    b.display_name()
+                );
+            }
+        }
     }
 }

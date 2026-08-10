@@ -4,7 +4,9 @@
 //! `try_fuse_hof_build_method`). This Core pass only peels
 //! `xs.concat([])` / `[].concat(xs)` → `xs`.
 
-use lumia_core::{Block, CoreFun, CoreModule, Local, Op, Value};
+use lumia_core::{
+    for_each_block_dfs, for_each_op_value_mut, Block, CoreFun, CoreModule, Local, Op, Value,
+};
 use lumia_hir::Builtin;
 use rustc_hash::FxHashSet as HashSet;
 
@@ -32,89 +34,40 @@ fn fuse_fun(f: &mut CoreFun) {
 }
 
 fn collect_empty_lists(block: &Block, empty: &mut HashSet<u32>) {
-    for op in &block.ops {
-        match op {
-            Op::Let { local, value, .. } => {
-                if matches!(value, Value::AllocList { elems, .. } if elems.is_empty()) {
+    for_each_block_dfs(block, &mut |b| {
+        for op in &b.ops {
+            if let Op::Let {
+                local,
+                value: Value::AllocList { elems, .. },
+                ..
+            } = op
+            {
+                if elems.is_empty() {
                     empty.insert(local.0);
                 }
-                collect_empty_in_value(value, empty);
             }
-            Op::Effect { value } => collect_empty_in_value(value, empty),
-            _ => {}
         }
-    }
-}
-
-fn collect_empty_in_value(value: &Value, empty: &mut HashSet<u32>) {
-    match value {
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            collect_empty_lists(then_block, empty);
-            collect_empty_lists(else_block, empty);
-        }
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => {
-            collect_empty_lists(header, empty);
-            collect_empty_lists(body, empty);
-            collect_empty_lists(latch, empty);
-        }
-        Value::Lambda { body, .. } => collect_empty_lists(body, empty),
-        _ => {}
-    }
+    });
 }
 
 fn rewrite_block(block: &mut Block, empty: &HashSet<u32>) {
-    for op in &mut block.ops {
-        match op {
-            Op::Let { value, .. } | Op::Effect { value, .. } => {
-                rewrite_value(value, empty);
-            }
-            _ => {}
-        }
-    }
-}
-
-fn rewrite_value(value: &mut Value, empty: &HashSet<u32>) {
-    match value {
-        Value::Builtin {
+    for_each_op_value_mut(block, &mut |value| {
+        if let Value::Builtin {
             name: Builtin::ListConcat,
             args,
-        } if args.len() == 2 => {
-            let a = args[0].0;
-            let b = args[1].0;
-            if empty.contains(&a) {
-                *value = Value::Local(Local(b));
-            } else if empty.contains(&b) {
-                *value = Value::Local(Local(a));
+        } = value
+        {
+            if args.len() == 2 {
+                let a = args[0].0;
+                let b = args[1].0;
+                if empty.contains(&a) {
+                    *value = Value::Local(Local(b));
+                } else if empty.contains(&b) {
+                    *value = Value::Local(Local(a));
+                }
             }
         }
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            rewrite_block(then_block, empty);
-            rewrite_block(else_block, empty);
-        }
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => {
-            rewrite_block(header, empty);
-            rewrite_block(body, empty);
-            rewrite_block(latch, empty);
-        }
-        Value::Lambda { body, .. } => rewrite_block(body, empty),
-        _ => {}
-    }
+    });
 }
 
 #[cfg(test)]

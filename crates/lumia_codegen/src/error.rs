@@ -1,4 +1,5 @@
-//! Fallible codegen errors (Builder / lookup failures no longer panic).
+//! Fallible codegen errors. Emit helpers convert inkwell failures via [`llvm`];
+//! the public compile API still surfaces [`anyhow::Error`] at the crate boundary.
 
 use thiserror::Error;
 
@@ -17,10 +18,11 @@ impl CodegenError {
     }
 }
 
-pub type Result<T> = std::result::Result<T, CodegenError>;
-
-/// Map an inkwell `Result` into [`CodegenError::Llvm`].
+/// Map an inkwell `Result` into [`anyhow::Error`] with an `LLVM:` prefix.
+///
+/// Emit modules use `anyhow::Result` end-to-end; this helper is the single
+/// conversion point from builder failures (avoids a parallel typed-Result stack).
 #[inline]
-pub(crate) fn llvm<T, E: std::fmt::Display>(r: std::result::Result<T, E>) -> Result<T> {
-    r.map_err(|e| CodegenError::Llvm(e.to_string()))
+pub(crate) fn llvm<T, E: std::fmt::Display>(r: std::result::Result<T, E>) -> anyhow::Result<T> {
+    r.map_err(|e| anyhow::anyhow!("{}", CodegenError::Llvm(e.to_string())))
 }

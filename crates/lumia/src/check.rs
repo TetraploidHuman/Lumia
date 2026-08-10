@@ -34,7 +34,7 @@ pub fn check_program(
 pub enum OverlayCheckError {
     Load(String),
     Analyze {
-        loaded: LoadedProgram,
+        loaded: Box<LoadedProgram>,
         err: TypeError,
     },
 }
@@ -49,7 +49,7 @@ pub fn check_program_with_overlays(
     let loaded = load_program_with_overlays(path, overlays)
         .map_err(|e| OverlayCheckError::Load(format!("{e}")))?;
     let hir = lower_module(&loaded.module).map_err(|e| OverlayCheckError::Analyze {
-        loaded: loaded.clone(),
+        loaded: Box::new(loaded.clone()),
         err: e.into(),
     })?;
     let opts = TypecheckOptions {
@@ -58,7 +58,10 @@ pub fn check_program_with_overlays(
     };
     match typecheck_hir(&hir, loaded.visibility.clone(), &opts) {
         Ok(typed) => Ok((loaded, typed)),
-        Err(err) => Err(OverlayCheckError::Analyze { loaded, err }),
+        Err(err) => Err(OverlayCheckError::Analyze {
+            loaded: Box::new(loaded),
+            err,
+        }),
     }
 }
 

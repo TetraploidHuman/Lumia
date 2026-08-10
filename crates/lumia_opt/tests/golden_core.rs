@@ -7,10 +7,7 @@ use lumia_opt::{compile_file_to_optimized, OptOptions};
 use std::path::{Path, PathBuf};
 
 fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .expect("workspace root")
+    lumia_abi::workspace_root_canonical(env!("CARGO_MANIFEST_DIR"))
 }
 
 fn golden_path(stem: &str) -> PathBuf {

@@ -261,7 +261,6 @@ fn inline_value(
 
 fn materialize_inline(callee: &CoreFun, args: &[Local], next: &mut u32) -> (Vec<Op>, Local) {
     let mut body = callee.body.clone();
-    // `rewrite_block_locals` takes std HashMap (core IR API).
     let mut remap: HashMap<u32, u32> = HashMap::default();
 
     // Map params → actuals (no new locals).

@@ -291,11 +291,7 @@ fn builtin_value_ty(name: Builtin, args: &[Local], local_tys: &HashMap<u32, Type
         | Builtin::ListJoin => Type::String,
         Builtin::ListLen | Builtin::AdtTag => Type::Int,
         Builtin::Contains | Builtin::StrStartsWith | Builtin::StrEndsWith => Type::Bool,
-        Builtin::Println
-        | Builtin::PrintlnInt
-        | Builtin::PrintlnStr
-        | Builtin::MatchFail
-        | Builtin::Assert => Type::Unit,
+        Builtin::Println | Builtin::MatchFail | Builtin::Assert => Type::Unit,
         Builtin::ListGet => args
             .first()
             .and_then(|a| local_tys.get(&a.0))

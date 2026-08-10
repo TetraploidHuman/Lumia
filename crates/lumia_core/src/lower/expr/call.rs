@@ -114,10 +114,7 @@ pub(super) fn lower_call_like(
                     arg_locals.push(l);
                 }
             }
-            let is_io = matches!(
-                name,
-                Builtin::Println | Builtin::PrintlnInt | Builtin::PrintlnStr | Builtin::ReadStdin
-            );
+            let is_io = name.is_io();
             let dest = ctx.fresh();
             ops.push(Op::Let {
                 local: dest,

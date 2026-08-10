@@ -2,7 +2,7 @@
 
 use anyhow::{bail, Context, Result};
 use lumia_syntax::{Import, ImportNames};
-use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use rustc_hash::FxHashSet as HashSet;
 use std::fs;
 use std::path::PathBuf;
 
@@ -10,25 +10,14 @@ pub(super) fn is_std(path: &[String]) -> bool {
     path.first().map(|s| s.as_str() == "std").unwrap_or(false)
 }
 
-/// How a `std.*` module is provided.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum StdKind {
-    /// Bodies are compiler builtins; `std/<mod>.lm` only lists `@exports`.
-    /// (Unused for current std modules — kept for a possible hybrid later.)
-    #[allow(dead_code)]
-    Builtin,
-    /// Real Lumia source under `std/<mod>.lm`, inlined like a user module.
-    Source,
-}
-
-/// Resolve `std.<name>` → (`rel` under workspace `std/`, kind).
-pub(super) fn std_module(path: &[String]) -> Result<(&'static str, StdKind)> {
+/// Resolve `std.<name>` → relative path under workspace `std/`.
+pub(super) fn std_module(path: &[String]) -> Result<&'static str> {
     let key: Vec<&str> = path.iter().map(|s| s.as_str()).collect();
     match key.as_slice() {
-        ["std", "io"] => Ok(("io.lm", StdKind::Source)),
-        ["std", "string"] => Ok(("string.lm", StdKind::Source)),
-        ["std", "option"] => Ok(("option.lm", StdKind::Source)),
-        ["std", "result"] => Ok(("result.lm", StdKind::Source)),
+        ["std", "io"] => Ok("io.lm"),
+        ["std", "string"] => Ok("string.lm"),
+        ["std", "option"] => Ok("option.lm"),
+        ["std", "result"] => Ok("result.lm"),
         _ => bail!(
             "unknown standard module `{}` (known: std.io, std.string, std.option, std.result)",
             path.join(".")
@@ -36,13 +25,9 @@ pub(super) fn std_module(path: &[String]) -> Result<(&'static str, StdKind)> {
     }
 }
 
-pub(super) fn is_std_builtin(path: &[String]) -> bool {
-    matches!(std_module(path), Ok((_, StdKind::Builtin)))
-}
-
 /// Export sets are read from `std/<mod>.lm` `@exports` lines — no hardcoded dual list.
 pub(super) fn std_exports(path: &[String]) -> Result<Vec<String>> {
-    let (rel, _) = std_module(path)?;
+    let rel = std_module(path)?;
     let file = workspace_std_dir().join(rel);
     let src = fs::read_to_string(&file).with_context(|| {
         format!(
@@ -56,9 +41,7 @@ pub(super) fn std_exports(path: &[String]) -> Result<Vec<String>> {
 
 pub(super) fn workspace_std_dir() -> PathBuf {
     // crates/lumia -> workspace root
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join("std")
+    lumia_abi::workspace_root(env!("CARGO_MANIFEST_DIR")).join("std")
 }
 
 pub(super) fn parse_std_exports(src: &str) -> Result<Vec<String>> {
@@ -116,33 +99,4 @@ pub(super) fn validate_std_import(imp: &Import) -> Result<()> {
             Ok(())
         }
     }
-}
-
-/// Register `as` aliases for std builtins (e.g. `println as log`).
-pub(super) fn collect_std_aliases(imp: &Import, out: &mut HashMap<String, String>) -> Result<()> {
-    let pairs: Vec<(&str, &str)> = match &imp.names {
-        ImportNames::All => return Ok(()),
-        ImportNames::Single(n) => {
-            if let Some(a) = &n.alias {
-                vec![(a.as_str(), n.name.as_str())]
-            } else {
-                return Ok(());
-            }
-        }
-        ImportNames::Selective(ns) => ns
-            .iter()
-            .filter_map(|n| n.alias.as_ref().map(|a| (a.as_str(), n.name.as_str())))
-            .collect(),
-    };
-    for (alias, canon) in pairs {
-        if alias == canon {
-            continue;
-        }
-        if let Some(prev) = out.insert(alias.to_string(), canon.to_string()) {
-            if prev != canon {
-                bail!("import alias `{alias}` conflict (`{prev}` vs `{canon}`)");
-            }
-        }
-    }
-    Ok(())
 }

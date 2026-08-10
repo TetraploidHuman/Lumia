@@ -24,7 +24,7 @@ impl<'ctx> Codegen<'ctx> {
 
     /// On hit: branch to return cached. On miss: fall through to `compute` BB.
     /// Captures parameters into allocas so store uses entry-time keys.
-    pub(crate) fn emit_memo_l2_prologue(
+    pub(crate) fn emit_memo_tf_prologue(
         &mut self,
         fun: &CoreFun,
         fv: FunctionValue<'ctx>,
@@ -183,7 +183,7 @@ impl<'ctx> Codegen<'ctx> {
         Ok(())
     }
 
-    pub(crate) fn emit_memo_l2_store(&mut self, mid: u32, result: IntValue<'ctx>) -> Result<()> {
+    pub(crate) fn emit_memo_tf_store(&mut self, mid: u32, result: IntValue<'ctx>) -> Result<()> {
         let nargs = self
             .llvm
             .i64_ty

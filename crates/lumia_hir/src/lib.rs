@@ -10,7 +10,7 @@ mod visit;
 pub use ast::{
     AdtDef, AdtVariant, Builtin, BuiltinFamily, CtorInfo, Expr, Fun, Item, Module, ProductDef,
 };
-pub use builtin_info::{BuiltinEffect, BuiltinInfo};
+pub use builtin_info::{BuiltinEffect, BuiltinEmit, BuiltinInfo};
 pub use list_hof::{desugar_list_fold_sequential, desugar_list_map_sequential};
 pub use lower::{lower_module, LowerCtx, LowerError};
 pub use visit::{all_free_vars, fold, for_each_expr, free_vars_expr};
@@ -26,6 +26,31 @@ mod tests {
         assert_eq!(Builtin::Elems.family(), BuiltinFamily::List);
         assert_eq!(Builtin::ListLen.family(), BuiltinFamily::List);
         assert_eq!(Builtin::Show.family(), BuiltinFamily::Io);
+    }
+
+    #[test]
+    fn builtin_effect_and_symbols_are_wired() {
+        assert!(Builtin::Println.is_io());
+        assert!(Builtin::ReadStdin.is_io());
+        assert!(!Builtin::ListLen.is_io());
+        assert!(!Builtin::Assert.is_io());
+        assert_eq!(Builtin::ListLen.runtime_symbol(), Some("lumia_len"));
+        assert_eq!(Builtin::Println.runtime_symbol(), None);
+        assert!(Builtin::ListAppend.info().float_sensitive());
+        assert!(!Builtin::ListLen.info().float_sensitive());
+        assert_eq!(
+            Builtin::ListAppend.info().float_ensures,
+            &[(1, lumia_abi::ENSURE_LIST_F64)]
+        );
+        assert_eq!(
+            Builtin::MapSet.info().emit,
+            super::BuiltinEmit::ObjI64I64Ptr
+        );
+        assert_eq!(
+            Builtin::SetInsert.info().emit,
+            super::BuiltinEmit::ObjI64Ptr
+        );
+        assert_eq!(Builtin::StrSplit.info().emit, super::BuiltinEmit::ObjI64Ptr);
     }
 
     #[test]

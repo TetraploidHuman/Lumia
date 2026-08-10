@@ -184,8 +184,6 @@ pub enum BuiltinFamily {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Builtin {
     Println,
-    PrintlnInt,
-    PrintlnStr,
     ListLen,
     ListGet,
     ListSlice,

@@ -4,8 +4,33 @@ use super::cursor::{ident_at, pos_to_byte};
 use super::state::{state_lock, Analysis};
 use anyhow::Result;
 use lumia_syntax::Span;
-use lumia_ty::Type;
+use lumia_ty::{display_type, Type};
 use serde_json::{json, Value};
+
+fn scheme_num_vars(a: &Analysis, name: &str) -> Vec<u32> {
+    a.typed
+        .fun_schemes
+        .get(name)
+        .map(|s| s.num_vars.clone())
+        .unwrap_or_default()
+}
+
+fn hover_markdown(ty: &Type, num_vars: &[u32]) -> Value {
+    markdown_code(&display_type(ty, num_vars))
+}
+
+fn hover_binding_markdown(name: &str, ty: &Type, num_vars: &[u32]) -> Value {
+    markdown_code(&format!("{name}: {}", display_type(ty, num_vars)))
+}
+
+fn markdown_code(text: &str) -> Value {
+    json!({
+        "contents": {
+            "kind": "markdown",
+            "value": format!("```lumia\n{text}\n```")
+        }
+    })
+}
 
 pub(super) fn hover_for_analysis(a: &Analysis, line: u32, character: u32) -> Value {
     let byte = pos_to_byte(&a.src, line, character);
@@ -27,21 +52,16 @@ pub(super) fn hover_for_analysis(a: &Analysis, line: u32, character: u32) -> Val
         }
     }
     if let Some((_, ty)) = best {
-        return json!({
-            "contents": {
-                "kind": "markdown",
-                "value": format!("```lumia\n{ty}\n```")
-            }
-        });
+        // Ground Num vars when hovering a known top-level binding name under the cursor.
+        let num_vars = ident_at(&a.src, byte)
+            .map(|n| scheme_num_vars(a, &n))
+            .unwrap_or_default();
+        return hover_markdown(ty, &num_vars);
     }
     if let Some(name) = ident_at(&a.src, byte) {
         if let Some(ty) = a.typed.fun_types.get(&name) {
-            return json!({
-                "contents": {
-                    "kind": "markdown",
-                    "value": format!("```lumia\n{name}: {ty}\n```")
-                }
-            });
+            let num_vars = scheme_num_vars(a, &name);
+            return hover_binding_markdown(&name, ty, &num_vars);
         }
     }
     Value::Null
@@ -62,4 +82,44 @@ pub(super) fn on_hover(params: Option<&Value>) -> Result<Value> {
         return Ok(Value::Null);
     };
     Ok(hover_for_analysis(a, line, character))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::state::Analysis;
+    use super::hover_for_analysis;
+    use crate::check::check_source;
+    use lumia_syntax::line_starts;
+
+    fn line_col_of(src: &str, needle: &str) -> (u32, u32) {
+        let byte = src.find(needle).expect("needle") as u32;
+        let starts = line_starts(src);
+        let (line, col) = lumia_syntax::byte_to_line_col(&starts, lumia_syntax::BytePos(byte));
+        (line.saturating_sub(1), col.saturating_sub(1))
+    }
+
+    #[test]
+    fn hover_matches_inlay_num_defaulting() {
+        let src = r#"
+module Demo
+val add = { x, y -> x + y }
+"#;
+        let typed = check_source(src, true).expect("typecheck");
+        let a = Analysis {
+            typed,
+            src: src.to_string(),
+            files: vec![],
+        };
+        let (line, character) = line_col_of(src, "add");
+        let hover = hover_for_analysis(&a, line, character);
+        let md = hover["contents"]["value"].as_str().unwrap_or("");
+        assert!(
+            md.contains("(Int, Int) -> Int"),
+            "hover should ground Num like inlay, got {md:?}"
+        );
+        assert!(
+            !md.contains('?'),
+            "hover must not show raw ?N vars, got {md:?}"
+        );
+    }
 }

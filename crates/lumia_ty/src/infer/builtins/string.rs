@@ -1,7 +1,7 @@
 //! BuiltinCall typing — string family.
 
 use super::super::Infer;
-use crate::types::{at, Effect, Type, TypeError};
+use crate::types::{Effect, Type, TypeError};
 use lumia_hir::{Builtin, Expr};
 
 impl Infer {
@@ -11,19 +11,14 @@ impl Infer {
         args: &[Expr],
         span: lumia_syntax::Span,
     ) -> Result<(Type, Effect), TypeError> {
+        // Arity already checked in `infer_builtin_call` via BuiltinInfo.
         match name {
             Builtin::StrTrim | Builtin::StrToLower | Builtin::StrToUpper => {
-                if args.len() != 1 {
-                    return Err(at(span, format!("{name:?} takes 1 argument")));
-                }
                 let (st, se) = self.infer_expr(&args[0])?;
                 self.unify_at(span, st, Type::String)?;
                 Ok((Type::String, se))
             }
             Builtin::StrSplit => {
-                if args.len() != 2 {
-                    return Err(at(span, "split takes 2 arguments"));
-                }
                 let (st, se) = self.infer_expr(&args[0])?;
                 let (ct, ce) = self.infer_expr(&args[1])?;
                 self.unify_at(span, st, Type::String)?;
@@ -31,9 +26,6 @@ impl Infer {
                 Ok((Type::List(Box::new(Type::String)), self.union_eff(se, ce)))
             }
             Builtin::StrSubstring => {
-                if args.len() != 3 {
-                    return Err(at(span, "substring takes 3 arguments (string, start, end)"));
-                }
                 let (st, se) = self.infer_expr(&args[0])?;
                 let (a, ae) = self.infer_expr(&args[1])?;
                 let (b, be) = self.infer_expr(&args[2])?;
@@ -43,9 +35,6 @@ impl Infer {
                 Ok((Type::String, self.union3_eff(se, ae, be)))
             }
             Builtin::StrStartsWith | Builtin::StrEndsWith => {
-                if args.len() != 2 {
-                    return Err(at(span, "startsWith/endsWith takes 2 arguments"));
-                }
                 let (st, se) = self.infer_expr(&args[0])?;
                 let (pt, pe) = self.infer_expr(&args[1])?;
                 self.unify_at(span, st, Type::String)?;

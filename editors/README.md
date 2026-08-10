@@ -34,14 +34,14 @@ LSP features today: diagnostics, hover, go-to-definition, completion (`.` trigge
 
 ```bash
 cd editors/vscode
-npm install && npm run compile
+npm install
 npx vsce package --no-dependencies
-code --install-extension lumia-0.3.0.vsix
+code --install-extension lumia-0.3.3.vsix
 ```
 
 Or open `editors/vscode` and press F5 to launch an Extension Development Host.
 
-Settings: `lumia.path`, `lumia.lsp.trace`, `lumia.checkOnSave`.
+Settings: `lumia.lsp.path`, `lumia.lsp.enabled`.
 
 ## IntelliJ IDEA
 

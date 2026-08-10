@@ -11,11 +11,10 @@ impl Infer {
         args: &[Expr],
         span: lumia_syntax::Span,
     ) -> Result<(Type, Effect), TypeError> {
+        // Arity checked in `infer_builtin_call`, except Assert: info allows 1..=2
+        // (message injected later) but typing still requires a single Bool arg.
         match name {
-            Builtin::Println | Builtin::PrintlnInt | Builtin::PrintlnStr => {
-                if args.len() != 1 {
-                    return Err(at(span, "println takes 1 argument"));
-                }
+            Builtin::Println => {
                 let (t, e) = self.infer_expr(&args[0])?;
                 let t = self.prune(t);
                 match t {
@@ -41,22 +40,11 @@ impl Infer {
                 Ok((Type::Unit, self.union_eff(Effect::io(), e)))
             }
             Builtin::Show => {
-                if args.len() != 1 {
-                    return Err(at(span, "show takes 1 argument"));
-                }
                 let (_, e) = self.infer_expr(&args[0])?;
                 Ok((Type::String, e))
             }
-            Builtin::ReadStdin => {
-                if !args.is_empty() {
-                    return Err(at(span, "readStdin takes 0 arguments"));
-                }
-                Ok((Type::String, Effect::io()))
-            }
+            Builtin::ReadStdin => Ok((Type::String, Effect::io())),
             Builtin::MatchFail => {
-                if !args.is_empty() {
-                    return Err(at(span, "match fail takes 0 arguments"));
-                }
                 // Diverges; fresh var unifies with any arm result type.
                 Ok((self.fresh(), Effect::pure()))
             }

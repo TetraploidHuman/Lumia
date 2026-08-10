@@ -36,9 +36,7 @@ impl<'ctx> Codegen<'ctx> {
         crate::error::llvm(self.llvm.builder.build_call(trap, &[], "trap_neg"))?;
         crate::error::llvm(self.llvm.builder.build_unreachable())?;
         self.llvm.builder.position_at_end(ok_bb);
-        Ok(crate::error::llvm(
-            self.llvm.builder.build_int_neg(o, "neg"),
-        )?)
+        crate::error::llvm(self.llvm.builder.build_int_neg(o, "neg"))
     }
 
     pub(crate) fn emit_checked_binop(

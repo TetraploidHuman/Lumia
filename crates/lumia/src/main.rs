@@ -281,11 +281,7 @@ fn option_ctor_tags(adts: &[lumia_hir::AdtDef]) -> (i64, i64) {
 /// Workspace root that contains this compiler (`…/Lumia`), baked in at build time.
 /// Used so `lumia build` works outside the repo (e.g. `~/文档`) without hunting cwd.
 fn compiler_workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("lumia crate must live at <workspace>/crates/lumia")
-        .to_path_buf()
+    lumia_abi::workspace_root(env!("CARGO_MANIFEST_DIR"))
 }
 
 fn workspace_target_dir() -> PathBuf {

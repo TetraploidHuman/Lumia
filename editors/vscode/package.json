@@ -39,6 +39,12 @@
         "path": "./syntaxes/lumia.tmLanguage.json"
       }
     ],
+    "snippets": [
+      {
+        "language": "lumia",
+        "path": "./snippets/lumia.json"
+      }
+    ],
     "commands": [
       {
         "command": "lumia.run",

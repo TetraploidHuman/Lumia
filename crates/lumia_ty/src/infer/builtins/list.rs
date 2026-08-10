@@ -13,9 +13,6 @@ impl Infer {
     ) -> Result<(Type, Effect), TypeError> {
         match name {
             Builtin::ListLen => {
-                if args.len() != 1 {
-                    return Err(at(span, "len takes 1 argument"));
-                }
                 let (t, e) = self.infer_expr(&args[0])?;
                 let t = self.prune(t);
                 match t {
@@ -35,9 +32,6 @@ impl Infer {
                 Ok((Type::Int, e))
             }
             Builtin::ListGet => {
-                if args.len() != 2 {
-                    return Err(at(span, "get takes 2 arguments"));
-                }
                 let (lt, le) = self.infer_expr(&args[0])?;
                 let (it, ie) = self.infer_expr(&args[1])?;
                 let lt_p = self.prune(lt);
@@ -74,9 +68,6 @@ impl Infer {
                 Ok((elem, self.union_eff(le, ie)))
             }
             Builtin::Elems => {
-                if args.len() != 1 {
-                    return Err(at(span, "elems takes 1 argument"));
-                }
                 let (ct, ce) = self.infer_expr(&args[0])?;
                 let list_ty = match self.prune(ct.clone()) {
                     Type::List(e) => Type::List(e),
@@ -97,9 +88,6 @@ impl Infer {
                 Ok((list_ty, ce))
             }
             Builtin::ListSlice => {
-                if args.len() != 2 {
-                    return Err(at(span, "slice/drop takes 2 arguments"));
-                }
                 let (lt, le) = self.infer_expr(&args[0])?;
                 let (it, ie) = self.infer_expr(&args[1])?;
                 self.unify_at(span, it, Type::Int)?;
@@ -120,9 +108,6 @@ impl Infer {
                 Ok((Type::List(elem), self.union_eff(le, ie)))
             }
             Builtin::ListTake => {
-                if args.len() != 2 {
-                    return Err(at(span, "take takes 2 arguments"));
-                }
                 let (lt, le) = self.infer_expr(&args[0])?;
                 let (it, ie) = self.infer_expr(&args[1])?;
                 self.unify_at(span, it, Type::Int)?;
@@ -140,9 +125,6 @@ impl Infer {
                 Ok((Type::List(elem), self.union_eff(le, ie)))
             }
             Builtin::ListReverse => {
-                if args.len() != 1 {
-                    return Err(at(span, "reverse takes 1 argument"));
-                }
                 let (lt, le) = self.infer_expr(&args[0])?;
                 let elem = match self.prune(lt.clone()) {
                     Type::List(t) => t,
@@ -158,9 +140,6 @@ impl Infer {
                 Ok((Type::List(elem), le))
             }
             Builtin::ListSort => {
-                if args.len() != 1 {
-                    return Err(at(span, "sort takes 1 argument"));
-                }
                 let (lt, le) = self.infer_expr(&args[0])?;
                 match self.prune(lt.clone()) {
                     Type::List(t) => {
@@ -176,9 +155,6 @@ impl Infer {
                 Ok((Type::List(Box::new(Type::Int)), le))
             }
             Builtin::ListSortByKeys => {
-                if args.len() != 2 {
-                    return Err(at(span, "sortByKeys takes 2 arguments (values, keys)"));
-                }
                 let (vt, ve) = self.infer_expr(&args[0])?;
                 let (kt, ke) = self.infer_expr(&args[1])?;
                 let elem = match self.prune(vt.clone()) {
@@ -220,9 +196,6 @@ impl Infer {
             Builtin::ListParMap => {
                 // FunRef-safe shape from lower; may be demoted after infer if
                 // impure or non-scalar (see `finalize_auto_parallel`).
-                if args.len() != 2 {
-                    return Err(at(span, "map takes 2 arguments"));
-                }
                 let (lt, le) = self.infer_expr(&args[0])?;
                 let (ft, fe) = self.infer_expr(&args[1])?;
                 let elem = match self.prune(lt.clone()) {
@@ -256,9 +229,6 @@ impl Infer {
                 // impure or non-scalar (see `finalize_auto_parallel`).
                 // Infer init/list first so lambda params are not free Vars
                 // (otherwise `acc.get` defaults to List and breaks Map folds).
-                if args.len() != 3 {
-                    return Err(at(span, "fold takes 3 arguments"));
-                }
                 let (lt, le) = self.infer_expr(&args[0])?;
                 let (it, ie) = self.infer_expr(&args[1])?;
                 let elem = match self.prune(lt.clone()) {
@@ -309,9 +279,6 @@ impl Infer {
                 Ok((acc, eff))
             }
             Builtin::ListJoin => {
-                if args.len() != 2 {
-                    return Err(at(span, "join takes 2 arguments (list, separator)"));
-                }
                 let (lt, le) = self.infer_expr(&args[0])?;
                 let (st, se) = self.infer_expr(&args[1])?;
                 self.unify_at(span, st, Type::String)?;
@@ -330,9 +297,6 @@ impl Infer {
                 Ok((Type::String, self.union_eff(le, se)))
             }
             Builtin::ListAppend => {
-                if args.len() != 2 {
-                    return Err(at(span, "append takes 2 arguments"));
-                }
                 let (lt, le) = self.infer_expr(&args[0])?;
                 let (et, ee) = self.infer_expr(&args[1])?;
                 let list_ty = match self.prune(lt.clone()) {
@@ -351,9 +315,6 @@ impl Infer {
                 Ok((list_ty, self.union_eff(le, ee)))
             }
             Builtin::ListConcat => {
-                if args.len() != 2 {
-                    return Err(at(span, "concat takes 2 arguments"));
-                }
                 let (lt, le) = self.infer_expr(&args[0])?;
                 let (rt, re) = self.infer_expr(&args[1])?;
                 let lt = self.prune(lt);
@@ -399,9 +360,6 @@ impl Infer {
                 }
             }
             Builtin::Range | Builtin::RangeInclusive => {
-                if args.len() != 2 {
-                    return Err(at(span, "range takes 2 arguments"));
-                }
                 let mut eff = Effect::pure();
                 for a in args {
                     let (t, e) = self.infer_expr(a)?;

@@ -4,7 +4,6 @@
 //! linkable, but [`lumia_ty::NameVisibility`] ensures `priv` names cannot be
 //! referenced from the entry module's own code.
 
-mod aliases;
 mod resolve;
 mod std_mod;
 
@@ -15,7 +14,6 @@ use lumia_ty::NameVisibility;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::path::{Path, PathBuf};
 
-use aliases::rewrite_builtin_alias_idents;
 use resolve::{load_module_file, path_label};
 
 pub(super) fn item_file_id(it: &Item) -> u32 {
@@ -171,8 +169,6 @@ pub fn load_program_with_overlays(
     )?;
     let entry_file = 0; // entry is always stamped as the first file pushed
     visibility.entry_file = entry_file;
-    let mut module = module;
-    rewrite_builtin_alias_idents(&mut module, &visibility.builtin_aliases, entry_file);
     Ok(LoadedProgram {
         files,
         module,

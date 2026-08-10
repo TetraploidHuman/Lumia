@@ -1,7 +1,9 @@
 //! Copy elimination: collapse `let x = y` aliases (SSA copy-prop).
 
 use crate::Pass;
-use lumia_core::{Block, CoreFun, CoreModule, Local, Op, Value};
+use lumia_core::{
+    for_each_block_dfs, for_each_nested_block_mut, Block, CoreFun, CoreModule, Local, Op, Value,
+};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// Copy elimination: collapse `let x = y` aliases (SSA copy-prop).
@@ -41,45 +43,18 @@ fn elim_copies_in_fun(f: &mut CoreFun) {
 }
 
 fn collect_copy_aliases(block: &Block, remap: &mut HashMap<u32, u32>) {
-    for op in &block.ops {
-        match op {
-            Op::Let {
+    for_each_block_dfs(block, &mut |b| {
+        for op in &b.ops {
+            if let Op::Let {
                 local,
                 value: Value::Local(src),
                 ..
-            } => {
+            } = op
+            {
                 remap.insert(local.0, src.0);
             }
-            Op::Let { value, .. } | Op::Effect { value, .. } => {
-                collect_copy_aliases_value(value, remap);
-            }
-            _ => {}
         }
-    }
-}
-
-fn collect_copy_aliases_value(value: &Value, remap: &mut HashMap<u32, u32>) {
-    match value {
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            collect_copy_aliases(then_block, remap);
-            collect_copy_aliases(else_block, remap);
-        }
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => {
-            collect_copy_aliases(header, remap);
-            collect_copy_aliases(body, remap);
-            collect_copy_aliases(latch, remap);
-        }
-        Value::Lambda { body, .. } => collect_copy_aliases(body, remap),
-        _ => {}
-    }
+    });
 }
 
 fn apply_local_remap(block: &mut Block, remap: &HashMap<u32, u32>) {
@@ -94,24 +69,20 @@ fn apply_local_remap(block: &mut Block, remap: &HashMap<u32, u32>) {
     for op in &mut block.ops {
         match op {
             Op::Let { value, .. } | Op::Effect { value, .. } => {
-                remap_value_locals(value, remap);
+                lumia_core::map_value_locals(
+                    value,
+                    &mut |l| {
+                        if let Some(&r) = remap.get(&l.0) {
+                            *l = Local(r);
+                        }
+                    },
+                    &mut |b| apply_local_remap(b, remap),
+                );
             }
             Op::Assign { value, .. } | Op::Return { value } => map_l(value),
             Op::Break | Op::Continue => {}
         }
     }
-}
-
-fn remap_value_locals(value: &mut Value, remap: &HashMap<u32, u32>) {
-    lumia_core::map_value_locals(
-        value,
-        &mut |l| {
-            if let Some(&r) = remap.get(&l.0) {
-                *l = Local(r);
-            }
-        },
-        &mut |b| apply_local_remap(b, remap),
-    );
 }
 
 fn strip_identity_lets(block: &mut Block, aliases: &HashMap<u32, u32>) {
@@ -123,34 +94,12 @@ fn strip_identity_lets(block: &mut Block, aliases: &HashMap<u32, u32>) {
     });
     for op in &mut block.ops {
         match op {
-            Op::Let { value, .. } | Op::Effect { value, .. } => {
-                strip_identity_lets_value(value, aliases);
+            Op::Let { value, .. } | Op::Effect { value } => {
+                for_each_nested_block_mut(value, &mut |nested| {
+                    strip_identity_lets(nested, aliases);
+                });
             }
             _ => {}
         }
-    }
-}
-
-fn strip_identity_lets_value(value: &mut Value, aliases: &HashMap<u32, u32>) {
-    match value {
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            strip_identity_lets(then_block, aliases);
-            strip_identity_lets(else_block, aliases);
-        }
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => {
-            strip_identity_lets(header, aliases);
-            strip_identity_lets(body, aliases);
-            strip_identity_lets(latch, aliases);
-        }
-        Value::Lambda { body, .. } => strip_identity_lets(body, aliases),
-        _ => {}
     }
 }
