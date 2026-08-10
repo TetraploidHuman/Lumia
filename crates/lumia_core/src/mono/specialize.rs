@@ -7,17 +7,47 @@ use crate::value_ty::infer_value_ty;
 use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet};
 
+/// Max clone-discovery iterations.
+///
+/// Transitive FunRef HOF chains (`optMap` → `apply` → `dbl`) typically need 2–3
+/// rounds. This cap is a safety fuse against non-termination bugs; the loop
+/// converges early when a round adds no clones.
+const MAX_MONO_CLONE_ROUNDS: usize = 8;
+
+/// Scheme-driven monomorphization:
+/// 1. **Collect clones** until fixed point (scan → clone worklist).
+/// 2. **Rewrite** call sites to mangled clones (single pass).
+/// 3. **Refresh** erased HOF return types from final bodies (single pass).
 pub(crate) fn specialize_mono_calls(module: &mut CoreModule) {
-    let mut renames: HashMap<(String, MonoKey), String> = HashMap::default();
-    for _round in 0..8 {
-        let added = specialize_mono_round(module, &mut renames);
-        if !added {
-            break;
-        }
-    }
+    let renames = collect_mono_clones_until_fixed_point(module);
     if renames.is_empty() {
         return;
     }
+    rewrite_all_mono_call_sites(module, &renames);
+    // After all clones exist, upgrade erased Int rets on HOF wrappers whose
+    // bodies now `Call(dbl$Float, …)` (directize order within a round varies).
+    refresh_erased_mono_return_types(module);
+}
+
+/// Fixed-point: scan all bodies for needed `(generic, MonoKey)` clones, append
+/// them, repeat until the worklist is empty or [`MAX_MONO_CLONE_ROUNDS`] hits.
+fn collect_mono_clones_until_fixed_point(
+    module: &mut CoreModule,
+) -> HashMap<(String, MonoKey), String> {
+    let mut renames: HashMap<(String, MonoKey), String> = HashMap::default();
+    for _round in 0..MAX_MONO_CLONE_ROUNDS {
+        if !specialize_mono_round(module, &mut renames) {
+            break;
+        }
+    }
+    renames
+}
+
+/// Rewrite every direct `Call(generic, …)` whose `(generic, key)` is in `renames`.
+fn rewrite_all_mono_call_sites(
+    module: &mut CoreModule,
+    renames: &HashMap<(String, MonoKey), String>,
+) {
     // Take bodies out first so one FunIndex can borrow the signature table immutably.
     let mut functions = std::mem::take(&mut module.functions);
     let empty = Block {
@@ -40,25 +70,16 @@ pub(crate) fn specialize_mono_calls(module: &mut CoreModule) {
                     functions[i].param_tys.get(j).cloned().unwrap_or(Type::Int),
                 );
             }
-            rewrite_mono_block(
-                &mut bodies[i],
-                &mut local_tys,
-                &renames,
-                &no_funrefs,
-                &index,
-            );
+            rewrite_mono_block(&mut bodies[i], &mut local_tys, renames, &no_funrefs, &index);
         }
     }
     for (fun, body) in functions.iter_mut().zip(bodies) {
         fun.body = body;
     }
     module.functions = functions;
-    // After all clones exist, upgrade erased Int rets on HOF wrappers whose
-    // bodies now `Call(dbl$Float, …)` (directize order within a round varies).
-    refresh_body_fixed_ret_tys(module);
 }
 
-fn refresh_body_fixed_ret_tys(module: &mut CoreModule) {
+fn refresh_erased_mono_return_types(module: &mut CoreModule) {
     // Analyze immutably first so we need not clone the whole function table.
     let upgrades: Vec<(usize, Type)> = {
         let snap = &module.functions;
@@ -115,12 +136,16 @@ fn specialize_mono_round(
     let mut clones = Vec::new();
     let mut clone_names: FxHashSet<String> = FxHashSet::default();
     for (name, key) in needed {
-        if name.contains('$') || !key.worth_cloning() {
+        if !key.worth_cloning() {
             continue;
         }
         let Some(orig) = index.get(&name) else {
             continue;
         };
+        // Do not specialize an existing mono clone (structured; `$` is only the name suffix).
+        if orig.is_mono_clone() {
+            continue;
+        }
         if orig.is_main || orig.external.is_some() || orig.params.is_empty() {
             continue;
         }
@@ -145,6 +170,7 @@ fn specialize_mono_round(
         let binds = key.funref_param_binds(&orig.params);
         let mut clone = orig.clone();
         clone.name = new_name.clone();
+        clone.mono_of = Some(name.clone());
         clone.param_tys = param_tys.clone();
         clone.memo = None;
         clone.scheme_poly = false;
@@ -250,26 +276,14 @@ fn walk_mono_nested_scan(
     needed: &mut FxHashSet<(String, MonoKey)>,
     funref_of: &HashMap<u32, String>,
 ) {
-    match value {
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            scan_mono_block(then_block, local_tys, index, needed, funref_of);
-            scan_mono_block(else_block, local_tys, index, needed, funref_of);
-        }
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => {
-            scan_mono_block(header, local_tys, index, needed, funref_of);
-            scan_mono_block(body, local_tys, index, needed, funref_of);
-            scan_mono_block(latch, local_tys, index, needed, funref_of);
-        }
-        _ => {}
-    }
+    crate::for_each_nested_block(value, &mut |b| {
+        scan_mono_block(b, local_tys, index, needed, funref_of);
+    });
+}
+
+/// True when `fun` already names a mono clone registered in the index.
+fn callee_is_mono_clone(fun: &str, index: &FunIndex<'_>) -> bool {
+    index.get(fun).is_some_and(|f| f.is_mono_clone())
 }
 
 fn note_mono_call(
@@ -282,7 +296,7 @@ fn note_mono_call(
     let Value::Call { fun, args } = value else {
         return;
     };
-    if args.is_empty() || fun.contains('$') {
+    if args.is_empty() || callee_is_mono_clone(fun, index) {
         return;
     }
     let Some(key) = args_mono_key(args, local_tys, funref_of) else {
@@ -316,7 +330,8 @@ pub(crate) fn mono_value_ty(
         if let Some(f) = index.get(fun) {
             return Some(f.ret_ty.clone());
         }
-        if fun.contains('$') {
+        // Clone not yet indexed this round — recover ret from the call-site key.
+        if callee_is_mono_clone(fun, index) {
             if let Some(key) = args_mono_key(args, local_tys, &HashMap::default()) {
                 return Some(key.ret_ty(funs));
             }
@@ -372,7 +387,7 @@ fn rewrite_mono_value(
 ) {
     match value {
         Value::Call { fun, args } => {
-            if args.is_empty() || fun.contains('$') {
+            if args.is_empty() || callee_is_mono_clone(fun, index) {
                 return;
             }
             if let Some(key) = args_mono_key(args, local_tys, funref_of) {
@@ -381,24 +396,11 @@ fn rewrite_mono_value(
                 }
             }
         }
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            rewrite_mono_block(then_block, local_tys, renames, funref_of, index);
-            rewrite_mono_block(else_block, local_tys, renames, funref_of, index);
+        _ => {
+            crate::for_each_nested_block_mut(value, &mut |b| {
+                rewrite_mono_block(b, local_tys, renames, funref_of, index);
+            });
         }
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => {
-            rewrite_mono_block(header, local_tys, renames, funref_of, index);
-            rewrite_mono_block(body, local_tys, renames, funref_of, index);
-            rewrite_mono_block(latch, local_tys, renames, funref_of, index);
-        }
-        _ => {}
     }
 }
 
@@ -421,23 +423,14 @@ fn mono_value_ty_rewrite(
                         return mk.ret_ty(funs);
                     }
                 }
-                if fun.contains('$') || key.worth_cloning() {
+                if callee_is_mono_clone(fun, index) || key.worth_cloning() {
                     return key.ret_ty(funs);
                 }
             }
-            if fun.ends_with("$Float") {
-                return Type::Float;
+            if let Some(f) = index.get(fun) {
+                return f.ret_ty.clone();
             }
-            if fun.ends_with("$Bool") {
-                return Type::Bool;
-            }
-            if fun.ends_with("$String") {
-                return Type::String;
-            }
-            index
-                .get(fun)
-                .map(|f| f.ret_ty.clone())
-                .unwrap_or(Type::Int)
+            Type::Int
         }
         other => mono_value_ty(other, local_tys, index),
     }

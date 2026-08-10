@@ -1,9 +1,6 @@
 //! Import path resolution and recursive module loading.
 
-use super::std_mod::{
-    collect_std_aliases, is_std, is_std_builtin, std_module, validate_std_import,
-    workspace_std_dir, StdKind,
-};
+use super::std_mod::{is_std, std_module, validate_std_import, workspace_std_dir};
 use super::{append_items_unique, check_no_duplicate_toplevel, SourceFile};
 use crate::vis::{
     apply_import_aliases, extend_visibility, import_visible_names, item_is_priv, item_name,
@@ -200,39 +197,29 @@ pub(super) fn load_module_file_uncached(
     for imp in &m.imports {
         if is_std(&imp.path) {
             validate_std_import(imp)?;
-            let (rel, kind) = std_module(&imp.path)?;
-            match kind {
-                StdKind::Builtin => {
-                    if is_entry {
-                        collect_std_aliases(imp, &mut visibility.builtin_aliases)?;
-                    }
-                    continue;
-                }
-                StdKind::Source => {
-                    let file = workspace_std_dir().join(rel);
-                    let file = file.canonicalize().unwrap_or(file);
-                    let dep = load_module_file(
-                        &file,
-                        search_roots,
-                        overlays,
-                        stack,
-                        done,
-                        files,
-                        visibility,
-                        false,
-                    )?;
-                    let visible = import_visible_names(&dep.items, &imp.names);
-                    let filtered = filter_items(dep.items, &imp.names)?;
-                    if is_entry {
-                        extend_visibility(visibility, &filtered, &visible);
-                    } else {
-                        let empty = HashSet::default();
-                        extend_visibility(visibility, &filtered, &empty);
-                    }
-                    append_items_unique(&mut imported_items, filtered);
-                    continue;
-                }
+            let rel = std_module(&imp.path)?;
+            let file = workspace_std_dir().join(rel);
+            let file = file.canonicalize().unwrap_or(file);
+            let dep = load_module_file(
+                &file,
+                search_roots,
+                overlays,
+                stack,
+                done,
+                files,
+                visibility,
+                false,
+            )?;
+            let visible = import_visible_names(&dep.items, &imp.names);
+            let filtered = filter_items(dep.items, &imp.names)?;
+            if is_entry {
+                extend_visibility(visibility, &filtered, &visible);
+            } else {
+                let empty = HashSet::default();
+                extend_visibility(visibility, &filtered, &empty);
             }
+            append_items_unique(&mut imported_items, filtered);
+            continue;
         }
         let file = resolve_import_file(&importer_dir, search_roots, imp)?;
         // Canonicalize so the same file via different relative paths shares one identity
@@ -269,8 +256,8 @@ pub(super) fn load_module_file_uncached(
         append_items_unique(&mut imported_items, filtered);
     }
 
-    // Keep only builtin-std imports (ty env / aliases); source std is inlined away.
-    m.imports.retain(|i| is_std_builtin(&i.path));
+    // Std modules are inlined; drop their import nodes from the entry AST.
+    m.imports.retain(|i| !is_std(&i.path));
     // Record this file's declarations (entry or dep). Entry names are visible
     // via same-file origin; deps rely on import_visible_names above.
     let local_visible: HashSet<String> = if is_entry {

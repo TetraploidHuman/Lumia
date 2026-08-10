@@ -65,21 +65,24 @@ Source.lm
 
 ```text
 crates/
-  lumia          CLI：check / build / fmt / lsp / pkg
-  lumia_syntax   词法 + 递归下降解析，带 Span
-  lumia_hir      语法糖降级后的具名 IR
-  lumia_ty       HM 推断 + 效应集合 ε
-  lumia_core     Core SSA + AST/HIR→Core
+  lumia          lib+bin：load / check_program / pkg / lsp / doc；CLI 为薄封装
+  lumia_syntax   词法 + 递归下降解析，带 Span（AST 在 ast.rs）
+  lumia_hir      语法糖降级后的具名 IR + Builtin::info
+  lumia_ty       HM 推断 + 效应；共享 typecheck_hir（infer→parallel→effects）
+  lumia_core     Core SSA + HIR→Core；pipeline 走 typecheck_hir
   lumia_opt      Pass 管道（§7.1.1）：CSE / Memo / Inline / Escape / ReprSelect / CopyElim
-  lumia_codegen  inkwell → .o → clang 链接
+  lumia_codegen  inkwell → .o → clang 链接（Codegen 子状态 + CodegenError）
   lumia_rt       GC ABI + mark-sweep + println*
+  lumia_abi      TYPE_*/MEMO_* + float_contract
 examples/        示例 .lm
 scripts/env.sh   NixOS：LLVM_SYS_211_PREFIX + 共享库 PATH（排除 *-static）
-scripts/e2e.sh   端到端：编译并跑 hello / add
+scripts/e2e.sh   薄包装 → cargo e2e_examples
 scripts/check.sh 本地 CI 冒烟：`cargo test` workspace lib + lumia e2e
 ```
 
 根目录 `[workspace.dependencies]` 已钉 `inkwell` 的 `llvm21-1`。
+
+**前端统一**：CLI、LSP 与 `lumia_core::pipeline` 共用 `lumia_ty::typecheck_hir`（多文件 load / assert 注解仍在 `lumia` lib）。
 
 ---
 
@@ -197,8 +200,8 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumia_rt` 内�
 | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | **已完成骨架**       | parse 子集 → 推断 + 效应 → Core → LLVM → 链 `lumia_rt` → `main` + `println` + `Int`；`listOf`→`AllocList`；CSE + ReprSelect 默认路径                       |
 | **已完成下一步（部分）**  | …；**sortBy / assert+行号**；**定位诊断（多文件）**；**Map Overlay**；**WordCount**；**lumia fmt**；…                                                          |
-| **已完成（相对原「下一里程碑」）** | Trait / instance + 运行时字典；非逃逸小对象栈分配（Lit* / LitAdt + 晋升）；`std.option` / `std.result` 源文件正文；逃逸分析 / 融合 / TCO SCC / 自动并行 / 透明 Memo |
-| **仍待** | `std.io` / `std.string` 可执行源码体（现仍 `@exports` + builtins）；完整 call-site specialization；`--mm=arc` / 并发 GC（STW 下写屏障为空属正确） |
+| **已完成（相对原「下一里程碑」）** | Trait / instance + 运行时字典；非逃逸小对象栈分配（Lit* / LitAdt + 晋升）；`std.option` / `std.result` / `std.string` / `std.io` 源文件正文；逃逸分析 / 融合 / TCO SCC / 自动并行 / 透明 Memo；L0 `Map.get` PE + Release 二次 `const_fold` |
+| **仍待** | 完整 call-site specialization；`--mm=arc` / 并发 GC（STW 下写屏障为空属正确） |
 | **工具链已落地** | **自动并行**（默认 `ListParMap` + 不安全回退；`--no-parallel`）；**包管理**（`Lumia.toml` / `lumia pkg`）；**LSP**（`lumia lsp`）；**FFI**（`foreign "C" fn`）；`priv` 跨文件可见性；`effect { }` 块；Map/Set `finish` 晋升；`lumia fmt` / `lumia doc` |
 
 
@@ -316,8 +319,8 @@ cargo run -p lumia -- build examples/mapset.lm -o /tmp/ms && /tmp/ms
 | ------------------------------------ | --------------------------- |
 | [DESIGN.md](DESIGN.md)               | 语言设计（语义合同）                  |
 | `scripts/env.sh`                     | 本机构建环境                      |
-| `scripts/e2e.sh`                     | Linux 冒烟端到端                 |
-| `crates/lumia/tests/e2e_examples.rs` | 跨平台 examples e2e            |
+| `scripts/e2e.sh`                     | 薄包装：`cargo build` + `cargo test -p lumia --test e2e_examples` |
+| `crates/lumia/tests/e2e_examples/`   | 跨平台 examples e2e（主路径）        |
 | `.github/workflows/ci.yml`           | Linux / Windows CI          |
 | `crates/lumia_rt/src/lib.rs`         | GC ABI + mark-sweep         |
 | `crates/lumia_opt/src/lib.rs`        | Pass 管道                     |

@@ -35,9 +35,11 @@ impl<'a> Parser<'a> {
         if is_lambda {
             let params = self.try_parse_lambda_params()?;
             self.expect(TokenKind::Arrow)?;
-            let (stmts, tail) = self.parse_block_contents()?;
-            let end = self.expect(TokenKind::RBrace)?;
-            let span = start.merge(end.span);
+            // Lambda bodies: stop before a column-0 top-level item so a missing
+            // `}` cannot swallow the next `val`/`type`/… declaration.
+            let (stmts, tail) = self.parse_block_contents(true)?;
+            let end = self.expect_rbrace_or_recover()?;
+            let span = start.merge(end);
             return Ok(Expr::Lambda {
                 params,
                 body: Box::new(Expr::Block { stmts, tail, span }),
@@ -45,9 +47,9 @@ impl<'a> Parser<'a> {
             });
         }
 
-        let (stmts, tail) = self.parse_block_contents()?;
-        let end = self.expect(TokenKind::RBrace)?;
-        let span = start.merge(end.span);
+        let (stmts, tail) = self.parse_block_contents(false)?;
+        let end = self.expect_rbrace_or_recover()?;
+        let span = start.merge(end);
         let uses_it = tail.as_ref().is_some_and(|e| expr_uses_ident(e, "it"));
         if stmts.is_empty() && uses_it {
             Ok(Expr::Lambda {
@@ -62,6 +64,19 @@ impl<'a> Parser<'a> {
         } else {
             Ok(Expr::Block { stmts, tail, span })
         }
+    }
+
+    /// Like `expect(RBrace)`, but if a top-level item starter is next, report the
+    /// missing `}` without consuming it (item-level recovery resumes there).
+    fn expect_rbrace_or_recover(&mut self) -> Result<Span, ParseError> {
+        if self.at(&TokenKind::RBrace) {
+            return Ok(self.bump().span);
+        }
+        Err(self.error(format!(
+            "expected {:?}, found {:?}",
+            TokenKind::RBrace,
+            self.cur.kind
+        )))
     }
 
     pub(super) fn try_parse_lambda_params(&mut self) -> Result<Vec<String>, ParseError> {
@@ -84,10 +99,16 @@ impl<'a> Parser<'a> {
     }
     pub(super) fn parse_block_contents(
         &mut self,
+        stop_at_column0_item: bool,
     ) -> Result<(Vec<Stmt>, Option<Box<Expr>>), ParseError> {
         let mut stmts = vec![];
         let mut tail = None;
         while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
+            // Only for `{ params -> … }` bodies: a column-0 item starter ends the
+            // lambda early. Plain `{ … }` blocks still allow unindented local `val`.
+            if stop_at_column0_item && self.at_column0_item_start() {
+                break;
+            }
             if self.at(&TokenKind::Val) {
                 let start = self.bump().span;
                 let pat = self.parse_pattern()?;

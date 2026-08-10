@@ -1,8 +1,45 @@
 use super::*;
 
 impl<'a> Parser<'a> {
-    pub(super) fn parse_module(&mut self) -> Result<Module, ParseError> {
+    pub(super) fn parse_module_recovering(&mut self) -> ParseOutcome {
+        let mut errors = Vec::new();
         let start = self.cur.span;
+
+        let full = match self.parse_module_header() {
+            Ok(name) => name,
+            Err(e) => {
+                errors.push(e);
+                self.synchronize_item();
+                // Header failed: still try imports/items if the cursor landed on them.
+                let (imports, items, more) = self.parse_imports_and_items_recovering();
+                errors.extend(more);
+                return ParseOutcome {
+                    module: Module {
+                        name: String::new(),
+                        span: start.merge(self.cur.span),
+                        imports,
+                        items,
+                    },
+                    errors,
+                };
+            }
+        };
+
+        let (imports, items, more) = self.parse_imports_and_items_recovering();
+        errors.extend(more);
+
+        ParseOutcome {
+            module: Module {
+                name: full,
+                span: start.merge(self.cur.span),
+                imports,
+                items,
+            },
+            errors,
+        }
+    }
+
+    fn parse_module_header(&mut self) -> Result<String, ParseError> {
         self.expect(TokenKind::Module)?;
         let (name, _) = self.expect_ident()?;
         // allow dotted module names: math.vector
@@ -13,23 +50,156 @@ impl<'a> Parser<'a> {
             full.push('.');
             full.push_str(&n);
         }
+        Ok(full)
+    }
 
+    fn parse_imports_and_items_recovering(&mut self) -> (Vec<Import>, Vec<Item>, Vec<ParseError>) {
+        let mut errors = Vec::new();
         let mut imports = vec![];
+        let mut last_err_pos: Option<u32> = None;
+
         while self.at(&TokenKind::Import) {
-            imports.push(self.parse_import()?);
+            match self.parse_import() {
+                Ok(imp) => {
+                    last_err_pos = None;
+                    imports.push(imp);
+                }
+                Err(e) => {
+                    let pos = self.cur.span.start.0;
+                    errors.push(e);
+                    if last_err_pos == Some(pos) && !self.at(&TokenKind::Eof) {
+                        self.bump();
+                    }
+                    last_err_pos = Some(pos);
+                    self.synchronize_item();
+                }
+            }
         }
 
         let mut items = vec![];
+        last_err_pos = None;
         while !self.at(&TokenKind::Eof) {
-            items.push(self.parse_item()?);
+            match self.parse_item_resilient(&mut errors) {
+                Ok(item) => {
+                    last_err_pos = None;
+                    items.push(item);
+                }
+                Err(e) => {
+                    let pos = self.cur.span.start.0;
+                    errors.push(e);
+                    if last_err_pos == Some(pos) && !self.at(&TokenKind::Eof) {
+                        self.bump();
+                    }
+                    last_err_pos = Some(pos);
+                    self.synchronize_item();
+                }
+            }
         }
 
-        Ok(Module {
-            name: full,
-            span: start.merge(self.cur.span),
-            imports,
-            items,
-        })
+        (imports, items, errors)
+    }
+
+    /// Like [`parse_item`], but a failed `val` body still emits a stub binding so
+    /// later items can resolve the name during IDE typecheck.
+    fn parse_item_resilient(&mut self, errors: &mut Vec<ParseError>) -> Result<Item, ParseError> {
+        let is_priv = if self.at(&TokenKind::Priv) {
+            self.bump();
+            true
+        } else {
+            false
+        };
+        if self.at(&TokenKind::Foreign) {
+            if is_priv {
+                return Err(self.error("`priv foreign` is not supported"));
+            }
+            return self.parse_foreign_item();
+        }
+        if self.at(&TokenKind::Val) {
+            let mut v = self.parse_val_item_resilient(errors)?;
+            v.is_priv = is_priv;
+            Ok(Item::Val(v))
+        } else if self.at(&TokenKind::Type) {
+            let mut t = self.parse_type_item()?;
+            t.is_priv = is_priv;
+            Ok(Item::Type(t))
+        } else if self.at(&TokenKind::Trait) {
+            if is_priv {
+                return Err(self.error("`priv trait` is not supported"));
+            }
+            self.parse_trait_item()
+        } else if self.at(&TokenKind::Instance) {
+            if is_priv {
+                return Err(self.error("`priv instance` is not supported"));
+            }
+            self.parse_instance_item()
+        } else if self.at(&TokenKind::Requires) {
+            Err(self.error("`requires` is only valid after a trait name"))
+        } else {
+            Err(self.error("expected `val`, `type`, `foreign`, `trait`, or `instance` item"))
+        }
+    }
+
+    fn parse_val_item_resilient(
+        &mut self,
+        errors: &mut Vec<ParseError>,
+    ) -> Result<ValItem, ParseError> {
+        let start = self.bump().span; // val
+        let (name, _) = self.expect_ident()?;
+        let params = if self.at(&TokenKind::LParen) {
+            self.bump();
+            let mut ps = vec![];
+            if !self.at(&TokenKind::RParen) {
+                loop {
+                    let (p, _) = self.expect_ident()?;
+                    ps.push(p);
+                    if self.at(&TokenKind::Comma) {
+                        self.bump();
+                        continue;
+                    }
+                    break;
+                }
+            }
+            self.expect(TokenKind::RParen)?;
+            Some(ps)
+        } else {
+            None
+        };
+        self.expect(TokenKind::Eq)?;
+        match self.parse_expr() {
+            Ok(body) => {
+                let span = start.merge(body.span());
+                Ok(ValItem {
+                    name,
+                    params,
+                    body,
+                    span,
+                    is_priv: false,
+                })
+            }
+            Err(e) => {
+                errors.push(e);
+                self.synchronize_item();
+                let span = start.merge(self.cur.span);
+                // Stub keeps the name in scope. Prefer a small lambda so common
+                // `val f = { a, b -> … }` holes still type-check call sites.
+                let lam_params = params
+                    .clone()
+                    .unwrap_or_else(|| vec!["_1".into(), "_2".into()]);
+                let ret_name = lam_params[0].clone();
+                let body = Expr::Lambda {
+                    params: lam_params,
+                    body: Box::new(Expr::Ident(ret_name, span)),
+                    span,
+                };
+                Ok(ValItem {
+                    name,
+                    params,
+                    body,
+                    span,
+                    is_priv: false,
+                })
+            }
+        }
     }
 
     pub(super) fn parse_import(&mut self) -> Result<Import, ParseError> {
@@ -93,44 +263,6 @@ impl<'a> Parser<'a> {
             names,
             span: start.merge(self.cur.span),
         })
-    }
-
-    pub(super) fn parse_item(&mut self) -> Result<Item, ParseError> {
-        let is_priv = if self.at(&TokenKind::Priv) {
-            self.bump();
-            true
-        } else {
-            false
-        };
-        if self.at(&TokenKind::Foreign) {
-            if is_priv {
-                return Err(self.error("`priv foreign` is not supported"));
-            }
-            return self.parse_foreign_item();
-        }
-        if self.at(&TokenKind::Val) {
-            let mut v = self.parse_val_item()?;
-            v.is_priv = is_priv;
-            Ok(Item::Val(v))
-        } else if self.at(&TokenKind::Type) {
-            let mut t = self.parse_type_item()?;
-            t.is_priv = is_priv;
-            Ok(Item::Type(t))
-        } else if self.at(&TokenKind::Trait) {
-            if is_priv {
-                return Err(self.error("`priv trait` is not supported"));
-            }
-            self.parse_trait_item()
-        } else if self.at(&TokenKind::Instance) {
-            if is_priv {
-                return Err(self.error("`priv instance` is not supported"));
-            }
-            self.parse_instance_item()
-        } else if self.at(&TokenKind::Requires) {
-            Err(self.error("`requires` is only valid after a trait name"))
-        } else {
-            Err(self.error("expected `val`, `type`, `foreign`, `trait`, or `instance` item"))
-        }
     }
 
     /// `trait Name [requires A, B] { val m = … }` (DESIGN §3.6).

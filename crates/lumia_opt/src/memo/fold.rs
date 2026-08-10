@@ -1,4 +1,4 @@
-use lumia_core::{Block, ListRepr, Local, Op, Value};
+use lumia_core::{AdtRepr, Block, ListRepr, Local, Op, Value};
 use lumia_hir::Builtin;
 use lumia_syntax::{BinOp, UnOp};
 use rustc_hash::FxHashMap as HashMap;
@@ -134,6 +134,42 @@ pub(crate) fn const_fold_block(block: &mut Block) {
                                     }
                                     if let Some(inner) = known_list.get(&el.0).cloned() {
                                         known_list.insert(local.0, inner);
+                                    }
+                                }
+                            } else if let (Some(pairs), Some(&k)) =
+                                (known_map.get(&xs.0), known_int.get(&idx.0))
+                            {
+                                // Map.get → Option: only when every key is a known Int
+                                // (same discipline as Contains — avoid false None).
+                                let keys: Vec<_> = pairs.chunks_exact(2).map(|kv| kv[0]).collect();
+                                if keys.iter().all(|kk| known_int.contains_key(&kk.0)) {
+                                    let found = keys.iter().enumerate().find_map(|(i, kk)| {
+                                        if known_int.get(&kk.0).copied() == Some(k) {
+                                            Some(pairs[i * 2 + 1])
+                                        } else {
+                                            None
+                                        }
+                                    });
+                                    // Prelude Option: Some = tag 0, None = tag 1.
+                                    match found {
+                                        Some(v) => {
+                                            *value = Value::AllocAdt {
+                                                adt_name: "Option".into(),
+                                                tag: 0,
+                                                fields: vec![v],
+                                                repr: AdtRepr::LitAdt,
+                                            };
+                                            known_adt.insert(local.0, vec![v]);
+                                        }
+                                        None => {
+                                            *value = Value::AllocAdt {
+                                                adt_name: "Option".into(),
+                                                tag: 1,
+                                                fields: vec![],
+                                                repr: AdtRepr::LitAdt,
+                                            };
+                                            known_adt.insert(local.0, vec![]);
+                                        }
                                     }
                                 }
                             }

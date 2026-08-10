@@ -15,7 +15,7 @@ impl Infer {
     pub(crate) fn collect_ty_vars(&mut self, ty: &Type, acc: &mut HashSet<u32>) {
         match ty {
             Type::Var(v) => {
-                if let Some(t) = self.subst.get(v).cloned() {
+                if let Some(t) = self.uni.subst.get(v).cloned() {
                     let t = self.prune(t);
                     self.collect_ty_vars(&t, acc);
                 } else {
@@ -49,6 +49,7 @@ impl Infer {
 
     pub(crate) fn env_free_ty_vars(&mut self) -> HashSet<u32> {
         let schemes: Vec<Scheme> = self
+            .scopes
             .env
             .iter()
             .flat_map(|scope| scope.values().cloned())
@@ -80,12 +81,12 @@ impl Infer {
         let mut num_vars: Vec<u32> = vars
             .iter()
             .copied()
-            .filter(|v| self.num_vars.contains(v))
+            .filter(|v| self.uni.num_vars.contains(v))
             .collect();
         num_vars.sort_unstable();
         let mut trait_preds: Vec<(u32, String, String)> = Vec::new();
         for &v in &vars {
-            if let Some(preds) = self.trait_vars.get(&v) {
+            if let Some(preds) = self.traits.trait_vars.get(&v) {
                 for (tr, method) in preds {
                     trait_preds.push((v, tr.clone(), method.clone()));
                 }
@@ -105,12 +106,13 @@ impl Infer {
         let ty_map: HashMap<u32, Type> = scheme.vars.iter().map(|&v| (v, self.fresh())).collect();
         for &old in &scheme.num_vars {
             if let Some(Type::Var(n)) = ty_map.get(&old) {
-                self.num_vars.insert(*n);
+                self.uni.num_vars.insert(*n);
             }
         }
         for (old, tr, method) in &scheme.trait_preds {
             if let Some(Type::Var(n)) = ty_map.get(old) {
-                self.trait_vars
+                self.traits
+                    .trait_vars
                     .entry(*n)
                     .or_default()
                     .push((tr.clone(), method.clone()));
@@ -175,9 +177,9 @@ impl Infer {
     pub(crate) fn prune(&mut self, ty: Type) -> Type {
         match ty {
             Type::Var(v) => {
-                if let Some(t) = self.subst.get(&v).cloned() {
+                if let Some(t) = self.uni.subst.get(&v).cloned() {
                     let t = self.prune(t);
-                    self.subst.insert(v, t.clone());
+                    self.uni.subst.insert(v, t.clone());
                     t
                 } else {
                     Type::Var(v)
@@ -198,9 +200,9 @@ impl Infer {
     pub(crate) fn prune_eff(&mut self, e: Effect) -> Effect {
         match e {
             Effect::Var(v) => {
-                if let Some(e2) = self.eff_subst.get(&v).cloned() {
+                if let Some(e2) = self.uni.eff_subst.get(&v).cloned() {
                     let e2 = self.prune_eff(e2);
-                    self.eff_subst.insert(v, e2);
+                    self.uni.eff_subst.insert(v, e2);
                     e2
                 } else {
                     Effect::Var(v)
@@ -253,7 +255,7 @@ impl Infer {
             (Effect::Var(v), Effect::Pure) | (Effect::Pure, Effect::Var(v)) => Effect::Var(v),
             (Effect::Var(a), Effect::Var(b)) => {
                 if a != b {
-                    self.eff_subst.insert(a, Effect::Var(b));
+                    self.uni.eff_subst.insert(a, Effect::Var(b));
                 }
                 Effect::Var(b)
             }
@@ -281,12 +283,12 @@ impl Infer {
                 Ok(())
             }
             (Effect::Var(v), Effect::Io) | (Effect::Io, Effect::Var(v)) => {
-                self.eff_subst.insert(v, Effect::Io);
+                self.uni.eff_subst.insert(v, Effect::Io);
                 Ok(())
             }
             (Effect::Var(v), Effect::Var(w)) => {
                 if v != w {
-                    self.eff_subst.insert(v, Effect::Var(w));
+                    self.uni.eff_subst.insert(v, Effect::Var(w));
                 }
                 Ok(())
             }
@@ -370,7 +372,7 @@ impl Infer {
     }
 
     pub(crate) fn rebind_scheme(&mut self, name: &str, scheme: Scheme) -> Result<(), TypeError> {
-        for scope in self.env.iter_mut().rev() {
+        for scope in self.scopes.env.iter_mut().rev() {
             if scope.contains_key(name) {
                 scope.insert(name.to_string(), scheme);
                 return Ok(());
@@ -391,14 +393,14 @@ impl Infer {
                 self.check_num_bind(v, &t)?;
                 self.check_trait_bind(v, &t)?;
                 if let Type::Var(u) = &t {
-                    if self.num_vars.contains(&v) {
-                        self.num_vars.insert(*u);
+                    if self.uni.num_vars.contains(&v) {
+                        self.uni.num_vars.insert(*u);
                     }
-                    if self.num_vars.contains(u) {
-                        self.num_vars.insert(v);
+                    if self.uni.num_vars.contains(u) {
+                        self.uni.num_vars.insert(v);
                     }
                 }
-                self.subst.insert(v, t);
+                self.uni.subst.insert(v, t);
                 Ok(())
             }
             (Type::Int, Type::Int)

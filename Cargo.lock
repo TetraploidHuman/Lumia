@@ -222,6 +222,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "lumia_abi",
  "lumia_codegen",
  "lumia_core",
  "lumia_hir",
@@ -269,6 +270,7 @@ dependencies = [
 name = "lumia_hir"
 version = "0.1.0"
 dependencies = [
+ "lumia_abi",
  "lumia_syntax",
  "rustc-hash",
  "thiserror",

@@ -1,21 +1,14 @@
-mod doc;
-mod load;
-mod lsp;
-mod pkg;
-mod vis;
+//! Lumia CLI — thin front-end over the `lumia` library.
 
-use crate::load::{load_program, LoadedProgram};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use lumia::check::{annotate_assert_messages, check_program};
+use lumia::pkg;
+use lumia::{doc, lsp};
 use lumia_codegen::{compile_module, find_runtime_lib_prefer, CodegenOptions};
 use lumia_core::{format_module, lower_hir_with_schemes};
-use lumia_hir::lower_module;
 use lumia_opt::{optimize, OptOptions};
-use lumia_syntax::{format_diagnostic, parse_module, stamp_module, Span};
-use lumia_ty::{
-    check_effect_boundaries, finalize_auto_parallel, infer_module_with_options, InferOptions,
-    TypeError,
-};
+use lumia_syntax::{format_diagnostic, parse_module, stamp_module};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -35,9 +28,6 @@ enum Commands {
         /// Disable auto-parallel `List.map` (default: on when safe).
         #[arg(long = "no-parallel")]
         no_parallel: bool,
-        /// Deprecated no-op (auto-parallel is on by default).
-        #[arg(long, hide = true)]
-        parallel: bool,
         /// Trust `foreign "C" pure` (FFI purity is not verified).
         #[arg(long = "trust-foreign-pure")]
         trust_foreign_pure: bool,
@@ -55,9 +45,6 @@ enum Commands {
         /// Disable auto-parallel `List.map` (default: on when safe; DESIGN §11.1).
         #[arg(long = "no-parallel")]
         no_parallel: bool,
-        /// Deprecated no-op (auto-parallel is on by default).
-        #[arg(long, hide = true)]
-        parallel: bool,
         /// Trust `foreign "C" pure` (FFI purity is not verified).
         #[arg(long = "trust-foreign-pure")]
         trust_foreign_pure: bool,
@@ -84,7 +71,11 @@ enum Commands {
         output: Option<PathBuf>,
     },
     /// Language server (stdio JSON-RPC)
-    Lsp,
+    Lsp {
+        /// Accepted for VS Code / Cursor clients (`TransportKind.stdio` adds this).
+        #[arg(long = "stdio", hide = true)]
+        _stdio: bool,
+    },
     /// Package manifest / lockfile helpers
     Pkg {
         #[command(subcommand)]
@@ -120,10 +111,9 @@ fn main() -> Result<()> {
         Commands::Check {
             file,
             no_parallel,
-            parallel: _,
             trust_foreign_pure,
         } => {
-            let _ = check_file(&file, !no_parallel, trust_foreign_pure)?;
+            let _ = check_program(&file, !no_parallel, trust_foreign_pure)?;
             println!("ok");
             Ok(())
         }
@@ -133,7 +123,6 @@ fn main() -> Result<()> {
             release,
             no_memo,
             no_parallel,
-            parallel: _,
             trust_foreign_pure,
             link,
             show_ir,
@@ -179,7 +168,7 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        Commands::Lsp => lsp::run_lsp(),
+        Commands::Lsp { .. } => lsp::run_lsp(),
         Commands::Pkg { cmd } => match cmd {
             PkgCmd::Init { name } => {
                 let path = pkg::init_manifest(Path::new("."), &name)?;
@@ -217,49 +206,6 @@ fn main() -> Result<()> {
     }
 }
 
-fn path_label(path: &Path) -> String {
-    path.file_name()
-        .and_then(|s| s.to_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| path.display().to_string())
-}
-
-fn diag_err(loaded: &LoadedProgram, span: Span, kind: &str, message: &str) -> anyhow::Error {
-    let file = loaded.file(span.file);
-    anyhow::anyhow!(format_diagnostic(
-        &path_label(&file.path),
-        &file.src,
-        span,
-        kind,
-        message,
-    ))
-}
-
-fn type_err(loaded: &LoadedProgram, e: TypeError) -> anyhow::Error {
-    match e.span() {
-        Some(span) => diag_err(loaded, span, "type", e.message()),
-        None => anyhow::anyhow!("type: {}", e.message()),
-    }
-}
-
-fn check_file(
-    file: &Path,
-    auto_parallel: bool,
-    trust_foreign_pure: bool,
-) -> Result<(lumia_ty::TypedModule, LoadedProgram)> {
-    let loaded = load_program(file)?;
-    let hir =
-        lower_module(&loaded.module).map_err(|e| diag_err(&loaded, e.span, "lower", &e.message))?;
-    let opts = InferOptions {
-        trust_foreign_pure: trust_foreign_pure || loaded.trust_foreign_pure,
-    };
-    let mut typed = infer_module_with_options(&hir, loaded.visibility.clone(), opts)
-        .map_err(|e| type_err(&loaded, e))?;
-    finalize_auto_parallel(&mut typed, auto_parallel);
-    check_effect_boundaries(&typed).map_err(|e| type_err(&loaded, e))?;
-    Ok((typed, loaded))
-}
-
 fn build_file(
     file: &Path,
     output: &Path,
@@ -271,7 +217,7 @@ fn build_file(
     show_ir: bool,
     emit_llvm: bool,
 ) -> Result<()> {
-    let (mut typed, loaded) = check_file(file, auto_parallel, trust_foreign_pure)?;
+    let (mut typed, loaded) = check_program(file, auto_parallel, trust_foreign_pure)?;
     annotate_assert_messages(&mut typed.module, &loaded);
     let option_tags = option_ctor_tags(&typed.module.adts);
     let mut core = lower_hir_with_schemes(&typed.module, &typed.fun_types, &typed.fun_schemes);
@@ -306,98 +252,11 @@ fn build_file(
             emit_ir: emit_llvm,
             option_some_tag: option_tags.0,
             option_none_tag: option_tags.1,
-            // Parallel selection happens in `finalize_auto_parallel` before Core.
             parallel: auto_parallel,
             link_args: link,
         },
     )?;
     Ok(())
-}
-
-fn annotate_assert_messages(module: &mut lumia_hir::Module, loaded: &LoadedProgram) {
-    for item in &mut module.items {
-        match item {
-            lumia_hir::Item::Fun(f) => annotate_assert_expr(&mut f.body, loaded),
-            lumia_hir::Item::Val { body, .. } => annotate_assert_expr(body, loaded),
-        }
-    }
-}
-
-fn annotate_assert_expr(e: &mut lumia_hir::Expr, loaded: &LoadedProgram) {
-    use lumia_hir::{Builtin, Expr};
-    match e {
-        Expr::BuiltinCall {
-            name: Builtin::Assert,
-            args,
-            span,
-        } => {
-            for a in args.iter_mut() {
-                annotate_assert_expr(a, loaded);
-            }
-            if args.len() == 1 {
-                let file = loaded.file(span.file);
-                let starts = lumia_syntax::line_starts(&file.src);
-                let (line, _) = lumia_syntax::byte_to_line_col(&starts, span.start);
-                let msg = format!("{}:{}: assert failed", path_label(&file.path), line);
-                args.push(Expr::String(msg, *span));
-            }
-        }
-        Expr::BuiltinCall { args, .. } | Expr::Call { args, .. } | Expr::AdtNew { args, .. } => {
-            for a in args {
-                annotate_assert_expr(a, loaded);
-            }
-        }
-        Expr::Let { value, body, .. } => {
-            annotate_assert_expr(value, loaded);
-            annotate_assert_expr(body, loaded);
-        }
-        Expr::If {
-            cond,
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            annotate_assert_expr(cond, loaded);
-            annotate_assert_expr(then_branch, loaded);
-            annotate_assert_expr(else_branch, loaded);
-        }
-        Expr::Loop {
-            cond, body, step, ..
-        } => {
-            annotate_assert_expr(cond, loaded);
-            annotate_assert_expr(body, loaded);
-            if let Some(s) = step {
-                annotate_assert_expr(s, loaded);
-            }
-        }
-        Expr::Binary { left, right, .. } => {
-            annotate_assert_expr(left, loaded);
-            annotate_assert_expr(right, loaded);
-        }
-        Expr::Unary { expr, .. } => annotate_assert_expr(expr, loaded),
-        Expr::Lambda { body, .. } => annotate_assert_expr(body, loaded),
-        Expr::Seq { stmts, .. } => {
-            for s in stmts {
-                annotate_assert_expr(s, loaded);
-            }
-        }
-        Expr::Assign { value, .. } | Expr::Return { value, .. } => {
-            annotate_assert_expr(value, loaded)
-        }
-        Expr::Alt { scrutinee, alt, .. } => {
-            annotate_assert_expr(scrutinee, loaded);
-            annotate_assert_expr(alt, loaded);
-        }
-        Expr::Var(_, _)
-        | Expr::Int(_, _)
-        | Expr::Float(_, _)
-        | Expr::Bool(_, _)
-        | Expr::String(_, _)
-        | Expr::Char(_, _)
-        | Expr::Unit(_)
-        | Expr::Break(_)
-        | Expr::Continue(_) => {}
-    }
 }
 
 fn option_ctor_tags(adts: &[lumia_hir::AdtDef]) -> (i64, i64) {
@@ -419,37 +278,41 @@ fn option_ctor_tags(adts: &[lumia_hir::AdtDef]) -> (i64, i64) {
     (0, 1)
 }
 
+/// Workspace root that contains this compiler (`…/Lumia`), baked in at build time.
+/// Used so `lumia build` works outside the repo (e.g. `~/文档`) without hunting cwd.
+fn compiler_workspace_root() -> PathBuf {
+    lumia_abi::workspace_root(env!("CARGO_MANIFEST_DIR"))
+}
+
 fn workspace_target_dir() -> PathBuf {
     if let Ok(t) = std::env::var("CARGO_TARGET_DIR") {
         return PathBuf::from(t);
     }
-    let mut dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    for _ in 0..6 {
-        let cand = dir.join("target");
-        if cand.exists() {
-            return cand;
-        }
-        if !dir.pop() {
-            break;
-        }
-    }
-    PathBuf::from("target")
+    compiler_workspace_root().join("target")
 }
 
 fn ensure_runtime_built(release: bool) -> Result<()> {
-    // Always invoke cargo: it is a no-op when up to date, and its file lock
-    // serializes parallel e2e builds. Skipping on "artifact exists" left a stale
-    // `liblumia_rt.a` after new C ABI symbols were added.
+    let root = compiler_workspace_root();
     let mut cmd = Command::new("cargo");
+    cmd.current_dir(&root);
     cmd.arg("build").arg("-p").arg("lumia_rt");
     if release {
         cmd.arg("--release");
     }
-    let status = cmd.status().context("spawn cargo build -p lumia_rt")?;
+    let status = cmd
+        .status()
+        .with_context(|| format!("spawn cargo build -p lumia_rt in {}", root.display()))?;
     if !status.success() {
         anyhow::bail!("failed to build lumia_rt");
     }
     Ok(())
+}
+
+fn path_label(path: &Path) -> String {
+    path.file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| path.display().to_string())
 }
 
 fn fmt_file(path: &Path, check: bool) -> Result<()> {

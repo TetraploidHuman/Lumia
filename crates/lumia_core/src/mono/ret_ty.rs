@@ -1,3 +1,4 @@
+use super::fun_index::FunIndex;
 use crate::ir::{Block, CoreFun, Local, Op, Value};
 use lumia_hir::Builtin;
 use lumia_syntax::BinOp;
@@ -94,15 +95,16 @@ pub(crate) fn block_result_fixed_ty(
     trait_methods: &HashMap<(String, String), Vec<String>>,
     param_tys: &HashMap<u32, Type>,
 ) -> Option<Type> {
+    let index = FunIndex::new(functions);
     let Local(r) = block.result?;
     let mut seen = HashSet::default();
-    local_fixed_ty(block, r, functions, trait_methods, param_tys, &mut seen)
+    local_fixed_ty(block, r, &index, trait_methods, param_tys, &mut seen)
 }
 
 fn local_fixed_ty(
     block: &Block,
     id: u32,
-    functions: &[CoreFun],
+    index: &FunIndex<'_>,
     trait_methods: &HashMap<(String, String), Vec<String>>,
     param_tys: &HashMap<u32, Type>,
     seen: &mut HashSet<u32>,
@@ -116,7 +118,7 @@ fn local_fixed_ty(
     for op in &block.ops {
         if let Op::Let { local, value, .. } = op {
             if local.0 == id {
-                return value_fixed_ty(block, value, functions, trait_methods, param_tys, seen);
+                return value_fixed_ty(block, value, index, trait_methods, param_tys, seen);
             }
         }
     }
@@ -126,14 +128,14 @@ fn local_fixed_ty(
 fn value_fixed_ty(
     block: &Block,
     value: &Value,
-    functions: &[CoreFun],
+    index: &FunIndex<'_>,
     trait_methods: &HashMap<(String, String), Vec<String>>,
     param_tys: &HashMap<u32, Type>,
     seen: &mut HashSet<u32>,
 ) -> Option<Type> {
     match value {
         Value::Local(Local(id)) => {
-            local_fixed_ty(block, *id, functions, trait_methods, param_tys, seen)
+            local_fixed_ty(block, *id, index, trait_methods, param_tys, seen)
         }
         Value::Builtin {
             name: Builtin::Show,
@@ -145,7 +147,7 @@ fn value_fixed_ty(
         Value::Float(_) => Some(Type::Float),
         Value::Char(_) => Some(Type::Char),
         Value::Call { fun, .. } => {
-            if let Some(f) = functions.iter().find(|f| f.name == *fun) {
+            if let Some(f) = index.get(fun) {
                 return Some(f.ret_ty.clone());
             }
             // Unresolved short trait method — sample any mangled impl's ret_ty.
@@ -153,7 +155,7 @@ fn value_fixed_ty(
                 .iter()
                 .find(|((_, m), _)| m == fun)
                 .and_then(|(_, mangled)| mangled.first())
-                .and_then(|m| functions.iter().find(|f| f.name == *m));
+                .and_then(|m| index.get(m));
             sample.map(|f| f.ret_ty.clone())
         }
         Value::AllocAdt {
@@ -165,7 +167,7 @@ fn value_fixed_ty(
             let field_tys: Vec<Type> = fields
                 .iter()
                 .map(|Local(id)| {
-                    local_fixed_ty(block, *id, functions, trait_methods, param_tys, seen)
+                    local_fixed_ty(block, *id, index, trait_methods, param_tys, seen)
                         .unwrap_or(Type::Int)
                 })
                 .collect();
@@ -193,8 +195,8 @@ fn value_fixed_ty(
             else_block,
             ..
         } => {
-            let t = block_result_fixed_ty(then_block, functions, trait_methods, param_tys)?;
-            let e = block_result_fixed_ty(else_block, functions, trait_methods, param_tys)?;
+            let t = block_result_fixed_ty_indexed(then_block, index, trait_methods, param_tys)?;
+            let e = block_result_fixed_ty_indexed(else_block, index, trait_methods, param_tys)?;
             join_fixed_ty(&t, &e)
         }
         Value::Binary {
@@ -211,6 +213,17 @@ fn value_fixed_ty(
         } => Some(Type::Bool),
         _ => None,
     }
+}
+
+fn block_result_fixed_ty_indexed(
+    block: &Block,
+    index: &FunIndex<'_>,
+    trait_methods: &HashMap<(String, String), Vec<String>>,
+    param_tys: &HashMap<u32, Type>,
+) -> Option<Type> {
+    let Local(r) = block.result?;
+    let mut seen = HashSet::default();
+    local_fixed_ty(block, r, index, trait_methods, param_tys, &mut seen)
 }
 
 fn join_fixed_ty(a: &Type, b: &Type) -> Option<Type> {

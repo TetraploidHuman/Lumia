@@ -1,34 +1,12 @@
 //! Lowering context and errors.
 
 use crate::ast::CtorInfo;
-use lumia_syntax::Span;
+use lumia_syntax::{LocatedError, Span};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::cell::RefCell;
-use thiserror::Error;
 
-/// Lowering / exhaustiveness failure (mirrors `lumia_ty::TypeError` shape).
-#[derive(Debug, Clone, Error)]
-#[error("{message}")]
-pub struct LowerError {
-    pub message: String,
-    pub span: Span,
-}
-
-impl LowerError {
-    pub fn at(span: Span, message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            span,
-        }
-    }
-
-    pub fn message_only(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            span: Span::dummy(),
-        }
-    }
-}
+/// Lowering / exhaustiveness failure (shared [`LocatedError`] shape).
+pub type LowerError = LocatedError;
 
 /// Explicit lowering context (ctors, products, parallel-safety sets).
 pub struct LowerCtx {

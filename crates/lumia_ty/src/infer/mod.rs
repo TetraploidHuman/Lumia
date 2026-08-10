@@ -4,51 +4,29 @@ mod builtins;
 mod calls;
 mod expr;
 mod module;
+mod state;
 mod unify;
 
 pub use module::{
-    infer_module, infer_module_with_options, infer_module_with_visibility, InferOptions,
+    infer_module, infer_module_recovering, infer_module_with_options, infer_module_with_visibility,
+    InferOptions,
 };
 
-use crate::alt::AltKind;
 use crate::types::{at, Effect, NameVisibility, Scheme, Type, TypeError};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use state::{AltReturnState, EnvState, ProductState, SubstState, TraitState};
 
 pub(crate) struct Infer {
-    pub(crate) next_var: u32,
-    pub(crate) next_eff: u32,
-    pub(crate) subst: HashMap<u32, Type>,
-    pub(crate) eff_subst: HashMap<u32, Effect>,
-    pub(crate) env: Vec<HashMap<String, Scheme>>,
-    /// Parallel to `env`: names bound with `var` (assignable) in that scope.
-    pub(crate) mutables: Vec<HashSet<String>>,
+    pub(crate) uni: SubstState,
+    pub(crate) scopes: EnvState,
+    pub(crate) traits: TraitState,
+    pub(crate) products: ProductState,
+    pub(crate) ctrl: AltReturnState,
     pub(crate) type_at: Vec<(lumia_syntax::Span, Type)>,
     pub(crate) decls: HashMap<String, lumia_syntax::Span>,
     pub(crate) vis: NameVisibility,
     /// File id of the function/val body currently being inferred.
     pub(crate) current_file: u32,
-    /// Type names with `instance Ord for T` (MVP type-class wiring).
-    pub(crate) ord_instances: HashSet<String>,
-    /// Type names with `instance Num for T` (`+`/`*` method dispatch).
-    pub(crate) num_instances: HashSet<String>,
-    /// Type vars used in arithmetic — may only resolve to Int/Float (Num MVP).
-    pub(crate) num_vars: HashSet<u32>,
-    /// Type var → required `(trait, method)` from deferred poly UFCS.
-    pub(crate) trait_vars: HashMap<u32, Vec<(String, String)>>,
-    /// All `(trait, type)` instances (incl. auto-derived) for constraint checks.
-    pub(crate) instances: HashSet<(String, String)>,
-    /// `(type, method)` → mangled instance methods (from HIR).
-    pub(crate) trait_methods: HashMap<(String, String), Vec<String>>,
-    /// method → unique trait name (error if the same method appears on multiple traits).
-    pub(crate) method_trait: HashMap<String, String>,
-    /// UFCS calls rewritten to mangled `__Trait_Type_method` (span of Call expr).
-    pub(crate) ufcs_rewrites: HashMap<lumia_syntax::Span, String>,
-    /// Product type name → field names (from HIR module tables).
-    pub(crate) products: HashMap<String, Vec<String>>,
-    /// Expected return types for nested functions/closures (nearest wins).
-    pub(crate) return_stack: Vec<Type>,
-    /// `Alt` expr span → Option vs Result (for post-infer desugar).
-    pub(crate) alt_kinds: HashMap<lumia_syntax::Span, AltKind>,
 }
 
 impl Infer {
@@ -88,34 +66,19 @@ impl Infer {
                 Effect::pure(),
             )),
         );
-        // Bind std import aliases (`println as log`) to the same schemes.
-        for (alias, canon) in &vis.builtin_aliases {
-            if let Some(scheme) = builtins.get(canon).cloned() {
-                builtins.insert(alias.clone(), scheme);
-            }
-        }
         Self {
-            next_var: 0,
-            next_eff: 0,
-            subst: HashMap::default(),
-            eff_subst: HashMap::default(),
-            env: vec![builtins],
-            mutables: vec![HashSet::default()],
+            uni: SubstState::default(),
+            scopes: EnvState {
+                env: vec![builtins],
+                mutables: vec![HashSet::default()],
+            },
+            traits: TraitState::default(),
+            products: ProductState::default(),
+            ctrl: AltReturnState::default(),
             type_at: Vec::new(),
             decls: HashMap::default(),
             vis,
             current_file: 0,
-            ord_instances: HashSet::default(),
-            num_instances: HashSet::default(),
-            num_vars: HashSet::default(),
-            trait_vars: HashMap::default(),
-            instances: HashSet::default(),
-            trait_methods: HashMap::default(),
-            method_trait: HashMap::default(),
-            ufcs_rewrites: HashMap::default(),
-            products: HashMap::default(),
-            return_stack: Vec::new(),
-            alt_kinds: HashMap::default(),
         }
     }
 
@@ -135,25 +98,25 @@ impl Infer {
     }
 
     pub(crate) fn fresh(&mut self) -> Type {
-        let v = self.next_var;
-        self.next_var += 1;
+        let v = self.uni.next_var;
+        self.uni.next_var += 1;
         Type::Var(v)
     }
 
     pub(crate) fn fresh_eff(&mut self) -> Effect {
-        let v = self.next_eff;
-        self.next_eff += 1;
+        let v = self.uni.next_eff;
+        self.uni.next_eff += 1;
         Effect::Var(v)
     }
 
     pub(crate) fn push(&mut self) {
-        self.env.push(HashMap::default());
-        self.mutables.push(HashSet::default());
+        self.scopes.env.push(HashMap::default());
+        self.scopes.mutables.push(HashSet::default());
     }
 
     pub(crate) fn pop(&mut self) {
-        self.env.pop();
-        self.mutables.pop();
+        self.scopes.env.pop();
+        self.scopes.mutables.pop();
     }
 
     pub(crate) fn bind(&mut self, name: String, ty: Type) {
@@ -165,8 +128,12 @@ impl Infer {
     }
 
     pub(crate) fn bind_scheme(&mut self, name: String, scheme: Scheme, mutable: bool) {
-        self.env.last_mut().unwrap().insert(name.clone(), scheme);
-        let m = self.mutables.last_mut().unwrap();
+        self.scopes
+            .env
+            .last_mut()
+            .unwrap()
+            .insert(name.clone(), scheme);
+        let m = self.scopes.mutables.last_mut().unwrap();
         if mutable {
             m.insert(name);
         } else {
@@ -176,6 +143,7 @@ impl Infer {
 
     pub(crate) fn lookup(&mut self, name: &str) -> Option<Type> {
         let scheme = self
+            .scopes
             .env
             .iter()
             .rev()
@@ -185,7 +153,13 @@ impl Infer {
 
     /// True when the binding that `lookup` would see was introduced with `var`.
     pub(crate) fn is_mutable(&self, name: &str) -> bool {
-        for (scope, muts) in self.env.iter().zip(self.mutables.iter()).rev() {
+        for (scope, muts) in self
+            .scopes
+            .env
+            .iter()
+            .zip(self.scopes.mutables.iter())
+            .rev()
+        {
             if scope.contains_key(name) {
                 return muts.contains(name);
             }

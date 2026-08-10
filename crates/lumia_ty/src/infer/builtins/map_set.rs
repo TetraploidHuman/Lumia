@@ -13,9 +13,6 @@ impl Infer {
     ) -> Result<(Type, Effect), TypeError> {
         match name {
             Builtin::Contains => {
-                if args.len() != 2 {
-                    return Err(at(span, "contains takes 2 arguments"));
-                }
                 let (ct, ce) = self.infer_expr(&args[0])?;
                 let (kt, ke) = self.infer_expr(&args[1])?;
                 match self.prune(ct) {
@@ -35,12 +32,6 @@ impl Infer {
                 Ok((Type::Bool, self.union_eff(ce, ke)))
             }
             Builtin::MapSet => {
-                if args.len() != 3 {
-                    return Err(at(
-                        span,
-                        "set takes 3 arguments (map/list, key/index, value)",
-                    ));
-                }
                 let (mt, me) = self.infer_expr(&args[0])?;
                 let (kt, ke) = self.infer_expr(&args[1])?;
                 let (vt, ve) = self.infer_expr(&args[2])?;
@@ -74,9 +65,6 @@ impl Infer {
                 }
             }
             Builtin::MapRemove => {
-                if args.len() != 2 {
-                    return Err(at(span, "remove takes 2 arguments"));
-                }
                 let (mt, me) = self.infer_expr(&args[0])?;
                 let (kt, ke) = self.infer_expr(&args[1])?;
                 match self.prune(mt.clone()) {
@@ -99,9 +87,6 @@ impl Infer {
                 }
             }
             Builtin::SetInsert => {
-                if args.len() != 2 {
-                    return Err(at(span, "insert takes 2 arguments"));
-                }
                 let (st, se) = self.infer_expr(&args[0])?;
                 let (et, ee) = self.infer_expr(&args[1])?;
                 match self.prune(st.clone()) {
@@ -117,9 +102,6 @@ impl Infer {
                 }
             }
             Builtin::MapKeys => {
-                if args.len() != 1 {
-                    return Err(at(span, "keys takes 1 argument"));
-                }
                 let (mt, me) = self.infer_expr(&args[0])?;
                 let k = match self.prune(mt.clone()) {
                     Type::Map(k, _) => *k,
@@ -136,9 +118,6 @@ impl Infer {
                 Ok((Type::List(Box::new(k)), me))
             }
             Builtin::MapValues => {
-                if args.len() != 1 {
-                    return Err(at(span, "values takes 1 argument"));
-                }
                 let (mt, me) = self.infer_expr(&args[0])?;
                 let v = match self.prune(mt.clone()) {
                     Type::Map(_, v) => *v,
@@ -155,9 +134,6 @@ impl Infer {
                 Ok((Type::List(Box::new(v)), me))
             }
             Builtin::MapItems => {
-                if args.len() != 1 {
-                    return Err(at(span, "items takes 1 argument"));
-                }
                 let (mt, me) = self.infer_expr(&args[0])?;
                 // Map → List[(K,V)]; already a List of pairs → identity (for-in sugar).
                 let pair_list = match self.prune(mt.clone()) {

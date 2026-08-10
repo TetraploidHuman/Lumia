@@ -150,14 +150,13 @@ fn is_hoistable(value: &Value, loop_defs: &HashSet<u32>) -> bool {
 }
 
 pub(super) fn builtin_may_trap_or_effect(b: &Builtin) -> bool {
+    if b.is_io() {
+        return true;
+    }
     matches!(
         b,
         Builtin::ListGet
             | Builtin::MapRemove
-            | Builtin::Println
-            | Builtin::PrintlnInt
-            | Builtin::PrintlnStr
-            | Builtin::ReadStdin
             | Builtin::MatchFail
             | Builtin::Assert
             | Builtin::ListParMap

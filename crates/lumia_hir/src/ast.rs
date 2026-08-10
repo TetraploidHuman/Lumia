@@ -171,11 +171,19 @@ pub enum Expr {
     },
 }
 
+/// Dispatch family for typing / codegen — keep ty and codegen routers in sync via [`Builtin::family`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuiltinFamily {
+    Io,
+    List,
+    MapSet,
+    String,
+    Adt,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Builtin {
     Println,
-    PrintlnInt,
-    PrintlnStr,
     ListLen,
     ListGet,
     ListSlice,
@@ -231,3 +239,5 @@ pub enum Builtin {
     AdtTag,
     AdtField,
 }
+
+// [`Builtin::family`] / [`Builtin::info`] live in `builtin_info.rs`.

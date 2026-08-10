@@ -1,0 +1,89 @@
+<idea-plugin>
+  <id>org.lumia.idea</id>
+  <name>Lumia</name>
+  <version>0.3.0</version>
+  <vendor>Lumia</vendor>
+  <description><![CDATA[
+    Lumia language support: syntax highlighting, Check / Build &amp; Run configurations,
+    New File, live templates, and LSP (diagnostics, completion, hover, go-to-definition,
+    formatting, outline) via <code>lumia lsp</code>.
+    <br/>Build the compiler: <code>source scripts/env.sh &amp;&amp; cargo build -p lumia --release</code>
+  ]]></description>
+
+  <idea-version since-build="262" until-build="262.*"/>
+
+  <depends>com.intellij.modules.platform</depends>
+  <depends>com.intellij.modules.ultimate</depends>
+  <depends>com.intellij.modules.lsp</depends>
+
+  <extensions defaultExtensionNs="com.intellij">
+    <fileType
+        name="Lumia"
+        implementationClass="org.lumia.idea.LumiaFileType"
+        fieldName="INSTANCE"
+        language="Lumia"
+        extensions="lm"/>
+    <lang.syntaxHighlighterFactory
+        language="Lumia"
+        implementationClass="org.lumia.idea.LumiaSyntaxHighlighterFactory"/>
+    <lang.braceMatcher language="Lumia" implementationClass="org.lumia.idea.LumiaBraceMatcher"/>
+    <lang.quoteHandler language="Lumia" implementationClass="org.lumia.idea.LumiaQuoteHandler"/>
+    <lang.LanguageCodeStyleSettingsProvider
+        implementation="org.lumia.idea.LumiaLanguageCodeStyleSettingsProvider"/>
+
+    <internalFileTemplate name="Lumia File"/>
+    <defaultLiveTemplates file="/liveTemplates/Lumia.xml"/>
+    <liveTemplateContext
+        contextId="Lumia"
+        implementation="org.lumia.idea.LumiaContextType"/>
+
+    <applicationConfigurable
+        parentId="language"
+        instance="org.lumia.idea.LumiaSettingsConfigurable"
+        id="org.lumia.idea.settings"
+        displayName="Lumia"/>
+    <applicationService serviceImplementation="org.lumia.idea.LumiaSettings"/>
+
+    <platform.lsp.integrationProvider
+        implementation="org.lumia.idea.LumiaLspServerSupportProvider"/>
+    <postStartupActivity implementation="org.lumia.idea.LumiaProjectActivity"/>
+
+    <configurationType implementation="org.lumia.idea.LumiaRunConfigurationType"/>
+    <runConfigurationProducer implementation="org.lumia.idea.LumiaCheckConfigurationProducer"/>
+    <runConfigurationProducer implementation="org.lumia.idea.LumiaBuildConfigurationProducer"/>
+  </extensions>
+
+  <actions>
+    <action
+        id="Lumia.NewFile"
+        class="org.lumia.idea.LumiaNewFileAction"
+        text="Lumia File"
+        description="Create a new Lumia (.lm) file"
+        icon="org.lumia.idea.LumiaIcons.FILE">
+      <add-to-group group-id="NewGroup" anchor="before" relative-to-action="Kotlin.NewScript"/>
+    </action>
+    <group id="Lumia.Menu" text="Lumia" popup="true">
+      <add-to-group group-id="ToolsMenu" anchor="last"/>
+      <action
+          id="Lumia.CheckFile"
+          class="org.lumia.idea.LumiaCheckFileAction"
+          text="Check File"
+          description="Run lumia check on the current file"/>
+      <action
+          id="Lumia.BuildFile"
+          class="org.lumia.idea.LumiaBuildFileAction"
+          text="Build File"
+          description="Run lumia build on the current file"/>
+      <action
+          id="Lumia.FormatFile"
+          class="org.lumia.idea.LumiaFormatFileAction"
+          text="Format File"
+          description="Format the current Lumia file"/>
+      <action
+          id="Lumia.RestartLsp"
+          class="org.lumia.idea.LumiaRestartLspAction"
+          text="Restart Language Server"
+          description="Restart lumia lsp for this project"/>
+    </group>
+  </actions>
+</idea-plugin>

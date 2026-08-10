@@ -1,7 +1,7 @@
 //! Shared walks over HIR [`Expr`] trees.
 
 use crate::Expr;
-use std::collections::HashSet;
+use rustc_hash::FxHashSet as HashSet;
 
 /// Visit every sub-expression in pre-order.
 pub fn for_each_expr(expr: &Expr, f: &mut impl FnMut(&Expr)) {

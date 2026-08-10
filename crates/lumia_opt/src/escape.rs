@@ -327,6 +327,7 @@ mod tests {
             external: None,
             escaping: HashSet::default(),
             scheme_poly: false,
+            mono_of: None,
         }
     }
 
@@ -442,6 +443,7 @@ mod tests {
             external: None,
             escaping: HashSet::default(),
             scheme_poly: false,
+            mono_of: None,
         };
         let main_fun = CoreFun {
             name: "main".into(),
@@ -482,6 +484,7 @@ mod tests {
             external: None,
             escaping: HashSet::default(),
             scheme_poly: false,
+            mono_of: None,
         };
         let mut module = CoreModule {
             name: "M".into(),

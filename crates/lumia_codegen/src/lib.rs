@@ -4,30 +4,33 @@ mod emit_eq;
 mod emit_fun;
 mod emit_memo;
 mod emit_value;
+mod error;
 mod link;
 mod roots;
 mod runtime_decls;
+mod state;
 mod tco;
 
+pub use error::CodegenError;
 pub use link::find_runtime_lib_prefer;
 use link::link_executable;
 use runtime_decls::declare_runtime;
+use state::{FrameState, FunTables, LlvmTypes, MemoEmit};
 use tco::compute_tco_sccs;
 
 use anyhow::{Context as AnyhowContext, Result};
-use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module as LlvmModule;
 use inkwell::targets::{
     CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine,
 };
-use inkwell::types::{BasicMetadataTypeEnum, IntType};
-use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
+use inkwell::types::BasicMetadataTypeEnum;
+use inkwell::values::FunctionValue;
 use inkwell::{AddressSpace, OptimizationLevel};
-use lumia_core::{CoreFun, CoreModule, Local, MemoTf, Op, Value};
+use lumia_core::{CoreFun, CoreModule, Local, Op, Value};
 use lumia_ty::Type;
-use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use rustc_hash::FxHashMap as HashMap;
 use std::path::PathBuf;
 
 fn core_fun_is_param0_identity(f: &CoreFun) -> bool {
@@ -78,7 +81,7 @@ pub struct CodegenOptions {
 pub fn emit_verified_llvm_ir(core: &CoreModule, opts: &CodegenOptions) -> Result<String> {
     let context = Context::create();
     let cg = emit_llvm_module(&context, core, opts)?;
-    let ir = cg.module.print_to_string().to_string();
+    let ir = cg.llvm.module.print_to_string().to_string();
     Ok(ir)
 }
 
@@ -93,9 +96,9 @@ fn emit_llvm_module<'ctx>(
         opts.option_some_tag,
         opts.option_none_tag,
     );
-    declare_runtime(context, &cg.module);
-    cg.tco_sccs = compute_tco_sccs(core);
-    cg.hash_adts = core.hash_adts.clone();
+    declare_runtime(context, &cg.llvm.module);
+    cg.funs.tco_sccs = compute_tco_sccs(core);
+    cg.funs.hash_adts = core.hash_adts.clone();
 
     for f in &core.functions {
         let name = if f.is_main {
@@ -105,24 +108,41 @@ fn emit_llvm_module<'ctx>(
         } else {
             f.name.clone()
         };
-        let fv = if f.external.is_some() {
-            let fn_ty = c_abi_fn_type(context, &f.param_tys, &f.ret_ty);
-            let fv = cg.module.add_function(&name, fn_ty, None);
-            fv.set_linkage(inkwell::module::Linkage::External);
-            cg.external_funs.insert(f.name.clone());
+        let fv = if let Some(sym) = &f.external {
+            let runtime_abi = sym.starts_with("lumia_");
+            // Prefer the declaration from `declare_runtime` when present so
+            // LLVM types match `lumia_rt` (e.g. Bool as i64, List as ptr).
+            let fv = if let Some(existing) = cg.llvm.module.get_function(sym) {
+                existing
+            } else {
+                let fn_ty = if runtime_abi {
+                    runtime_abi_fn_type(context, &f.param_tys, &f.ret_ty)
+                } else {
+                    c_abi_fn_type(context, &f.param_tys, &f.ret_ty)
+                };
+                let fv = cg.llvm.module.add_function(sym, fn_ty, None);
+                fv.set_linkage(inkwell::module::Linkage::External);
+                fv
+            };
+            cg.funs.external_funs.insert(f.name.clone());
+            if runtime_abi {
+                cg.funs.runtime_external_funs.insert(f.name.clone());
+            }
             fv
         } else {
-            let fn_ty = cg.i64_ty.fn_type(
-                &vec![BasicMetadataTypeEnum::from(cg.i64_ty); f.params.len()],
+            let fn_ty = cg.llvm.i64_ty.fn_type(
+                &vec![BasicMetadataTypeEnum::from(cg.llvm.i64_ty); f.params.len()],
                 false,
             );
-            cg.module.add_function(&name, fn_ty, None)
+            cg.llvm.module.add_function(&name, fn_ty, None)
         };
-        cg.functions.insert(f.name.clone(), fv);
-        cg.fun_ret_tys.insert(f.name.clone(), f.ret_ty.clone());
-        cg.fun_param_tys.insert(f.name.clone(), f.param_tys.clone());
+        cg.funs.functions.insert(f.name.clone(), fv);
+        cg.funs.fun_ret_tys.insert(f.name.clone(), f.ret_ty.clone());
+        cg.funs
+            .fun_param_tys
+            .insert(f.name.clone(), f.param_tys.clone());
         if core_fun_is_param0_identity(f) {
-            cg.fun_param0_identity.insert(f.name.clone());
+            cg.funs.fun_param0_identity.insert(f.name.clone());
         }
     }
 
@@ -133,16 +153,18 @@ fn emit_llvm_module<'ctx>(
         cg.emit_function(f)?;
     }
 
-    emit_c_main(context, &cg.module, &cg.builder, core);
+    emit_c_main(context, &cg.llvm.module, &cg.llvm.builder, core);
 
     if opts.emit_ir {
         let ir_path = opts.output.with_extension("ll");
-        cg.module
+        cg.llvm
+            .module
             .print_to_file(&ir_path)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
     }
 
-    cg.module
+    cg.llvm
+        .module
         .verify()
         .map_err(|e| anyhow::anyhow!("LLVM verify: {e}"))?;
     Ok(cg)
@@ -177,7 +199,7 @@ pub fn compile_module(core: &CoreModule, opts: &CodegenOptions) -> Result<()> {
     } else {
         opts.output.with_extension("o")
     };
-    tm.write_to_file(&cg.module, FileType::Object, &obj_path)
+    tm.write_to_file(&cg.llvm.module, FileType::Object, &obj_path)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     // Drop LLVM module before linking (owns no further need)
@@ -198,13 +220,11 @@ fn emit_c_main<'ctx>(
     let main_fn = module.add_function("main", main_ty, None);
     let entry = context.append_basic_block(main_fn, "entry");
     builder.position_at_end(entry);
-    emit_trait_dict_registration(context, module, builder, core);
+    let _ = emit_trait_dict_registration(context, module, builder, core);
     if let Some(user) = module.get_function("lumia_user_main") {
-        builder.build_call(user, &[], "call_main").unwrap();
+        let _ = builder.build_call(user, &[], "call_main");
     }
-    builder
-        .build_return(Some(&i32_ty.const_int(0, false)))
-        .unwrap();
+    let _ = builder.build_return(Some(&i32_ty.const_int(0, false)));
 }
 
 /// Register mangled instance methods in the runtime trait dictionary.
@@ -213,9 +233,9 @@ fn emit_trait_dict_registration<'ctx>(
     module: &LlvmModule<'ctx>,
     builder: &Builder<'ctx>,
     core: &CoreModule,
-) {
+) -> Result<()> {
     let Some(reg) = module.get_function("lumia_dict_register") else {
-        return;
+        return Ok(());
     };
     // (prefix, trait_id) — ids match lumia_rt::TRAIT_*.
     let specs: &[(&str, i64)] = &[
@@ -243,107 +263,57 @@ fn emit_trait_dict_registration<'ctx>(
             };
             let ty_str = builder
                 .build_global_string_ptr(ty_name, &format!(".dict.ty.{ty_name}"))
-                .expect("dict type name");
+                .context("dict type name")?;
             let tid = context.i32_type().const_int(trait_id as u64, false);
-            builder
-                .build_call(
-                    reg,
-                    &[
-                        tid.into(),
-                        ty_str.as_pointer_value().into(),
-                        fv.as_global_value().as_pointer_value().into(),
-                    ],
-                    "",
-                )
-                .unwrap();
+            crate::error::llvm(builder.build_call(
+                reg,
+                &[
+                    tid.into(),
+                    ty_str.as_pointer_value().into(),
+                    fv.as_global_value().as_pointer_value().into(),
+                ],
+                "",
+            ))?;
             break;
         }
     }
+    Ok(())
 }
 
 pub(crate) struct Codegen<'ctx> {
-    context: &'ctx Context,
-    module: LlvmModule<'ctx>,
-    builder: Builder<'ctx>,
-    i64_ty: IntType<'ctx>,
-    functions: HashMap<String, FunctionValue<'ctx>>,
-    locals: HashMap<u32, BasicValueEnum<'ctx>>,
-    /// Mutable bindings: alloca slots (i64 payload, pointers stored as i64).
-    slots: HashMap<String, PointerValue<'ctx>>,
-    /// Mutable names whose payload is IEEE-754 bits (restore as f64 on load).
-    float_slots: HashSet<String>,
-    /// Nested loop targets: (continue_bb, break_bb, shadow-stack depth at loop entry)
-    loop_stack: Vec<(BasicBlock<'ctx>, BasicBlock<'ctx>, u32)>,
-    option_some_tag: i64,
-    option_none_tag: i64,
-    /// Stable arg snapshots for Memo L2 store (entry-time values).
-    memo_arg_slots: Vec<PointerValue<'ctx>>,
-    /// Entry-time Int key for dense index Memo.
-    memo_idx_key: Option<PointerValue<'ctx>>,
-    /// Callee return types for float ABI restore after call.
-    fun_ret_tys: HashMap<String, Type>,
-    /// Callee parameter types (C ABI for `foreign`).
-    fun_param_tys: HashMap<String, Vec<Type>>,
-    /// Funs whose body is `return params[0]` (identity); ListParMap may keep Float tags.
-    fun_param0_identity: HashSet<String>,
-    /// Lumia names of `foreign` imports.
-    external_funs: HashSet<String>,
-    /// Locals currently bound to `FunRef(name)` — for IndirectCall float ABI.
-    funref_locals: HashMap<u32, String>,
-    /// Best-effort SSA local types (for typed println/show dispatch).
-    local_tys: HashMap<u32, Type>,
-    /// Mutable slot types.
-    slot_tys: HashMap<String, Type>,
-    /// Shadow-stack pushes currently live in this function (LIFO).
-    root_depth: u32,
-    /// Mutable slots that have already been registered as GC roots.
-    rooted_slots: HashSet<String>,
-    /// Function entry block — all GC root allocas go here (avoid loop stack growth).
-    entry_bb: Option<BasicBlock<'ctx>>,
-    /// Current Core function name (for TCO).
-    current_fun: String,
-    /// Memo transform for the function being emitted (early `return` must store too).
-    current_memo: Option<MemoTf>,
-    /// Pure Int mutual/self-recursion peers in the same SCC (musttail when `root_depth == 0`).
-    tco_peers: HashSet<String>,
-    /// Precomputed TCO SCCs: function → peers (including self).
-    tco_sccs: HashMap<String, HashSet<String>>,
-    /// ADT names with `instance Hash` (may promote Map/Set to hash tables).
-    hash_adts: HashSet<String>,
+    pub(crate) llvm: LlvmTypes<'ctx>,
+    pub(crate) funs: FunTables<'ctx>,
+    pub(crate) frame: FrameState<'ctx>,
+    pub(crate) memo: MemoEmit<'ctx>,
+    pub(crate) option_some_tag: i64,
+    pub(crate) option_none_tag: i64,
 }
 
 impl<'ctx> Codegen<'ctx> {
     fn new(context: &'ctx Context, name: &str, option_some_tag: i64, option_none_tag: i64) -> Self {
         Self {
-            context,
-            module: context.create_module(name),
-            builder: context.create_builder(),
-            i64_ty: context.i64_type(),
-            functions: HashMap::default(),
-            locals: HashMap::default(),
-            slots: HashMap::default(),
-            float_slots: HashSet::default(),
-            loop_stack: Vec::new(),
+            llvm: LlvmTypes {
+                context,
+                module: context.create_module(name),
+                builder: context.create_builder(),
+                i64_ty: context.i64_type(),
+            },
+            funs: FunTables::default(),
+            frame: FrameState::default(),
+            memo: MemoEmit::default(),
             option_some_tag,
             option_none_tag,
-            memo_arg_slots: Vec::new(),
-            memo_idx_key: None,
-            fun_ret_tys: HashMap::default(),
-            fun_param_tys: HashMap::default(),
-            fun_param0_identity: HashSet::default(),
-            external_funs: HashSet::default(),
-            funref_locals: HashMap::default(),
-            local_tys: HashMap::default(),
-            slot_tys: HashMap::default(),
-            root_depth: 0,
-            rooted_slots: HashSet::default(),
-            entry_bb: None,
-            current_fun: String::new(),
-            current_memo: None,
-            tco_peers: HashSet::default(),
-            tco_sccs: HashMap::default(),
-            hash_adts: HashSet::default(),
         }
+    }
+
+    /// Look up a `lumia_rt` symbol declared by [`declare_runtime`].
+    ///
+    /// Prefer this over ad-hoc `module.get_function`; error text flags declare_runtime drift.
+    pub(crate) fn runtime_fn(&self, name: &str) -> Result<FunctionValue<'ctx>> {
+        self.llvm
+            .module
+            .get_function(name)
+            .with_context(|| format!("missing runtime function `{name}` (declare_runtime drift?)"))
     }
 }
 
@@ -374,6 +344,32 @@ fn c_abi_fn_type<'ctx>(
     }
 }
 
+/// ABI for `foreign` symbols implemented in `lumia_rt` (`lumia_*`):
+/// String/List as heap object pointers; Bool/Char as i64 (not C `_Bool`).
+fn runtime_abi_fn_type<'ctx>(
+    context: &'ctx Context,
+    params: &[Type],
+    ret: &Type,
+) -> inkwell::types::FunctionType<'ctx> {
+    let i64_ty = context.i64_type();
+    let f64_ty = context.f64_type();
+    let ptr_ty = context.ptr_type(AddressSpace::default());
+    let meta: Vec<BasicMetadataTypeEnum> = params
+        .iter()
+        .map(|t| match t {
+            Type::Float => f64_ty.into(),
+            Type::String | Type::List(_) => ptr_ty.into(),
+            _ => i64_ty.into(),
+        })
+        .collect();
+    match ret {
+        Type::Unit => context.void_type().fn_type(&meta, false),
+        Type::Float => f64_ty.fn_type(&meta, false),
+        Type::String | Type::List(_) => ptr_ty.fn_type(&meta, false),
+        _ => i64_ty.fn_type(&meta, false),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -381,10 +377,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn workspace_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .canonicalize()
-            .expect("workspace root")
+        lumia_abi::workspace_root_canonical(env!("CARGO_MANIFEST_DIR"))
     }
 
     fn test_opts() -> CodegenOptions {
@@ -422,12 +415,32 @@ mod tests {
     }
 
     #[test]
-    fn emit_memo_tf_has_lookup() {
+    fn emit_memo_tf_has_lookup_and_store() {
         let ir = emit_example("examples/memo_tf.lm", true);
         // C ABI symbols stay `lumia_memo_l2_*` (frozen); planner name is `T_f`.
         assert!(
-            ir.contains("lumia_memo_l2_lookup") || ir.contains("lumia_memo_l2_store"),
-            "expected memo_l2 ABI calls in memo_tf IR"
+            ir.contains("lumia_memo_l2_lookup"),
+            "expected lumia_memo_l2_lookup in memo_tf IR"
+        );
+        assert!(
+            ir.contains("lumia_memo_l2_store"),
+            "expected lumia_memo_l2_store in memo_tf IR"
+        );
+    }
+
+    #[test]
+    fn emit_hof_float_apply_keeps_f64_ret() {
+        let ir = emit_example("examples/hof_float_apply.lm", false);
+        assert!(
+            ir.contains("dbl$Float") || ir.contains("apply$"),
+            "expected mono Float/HOF clone names in IR; snip:\n{}",
+            &ir[..ir.len().min(2500)]
+        );
+        // Float C ABI uses LLVM `double` for specialized / HOF-refined returns.
+        assert!(
+            ir.contains("double"),
+            "expected f64/`double` ABI in hof_float_apply IR; snip:\n{}",
+            &ir[..ir.len().min(2500)]
         );
     }
 
@@ -443,5 +456,54 @@ mod tests {
     #[test]
     fn emit_hello_verifies() {
         let _ir = emit_example("examples/hello.lm", false);
+    }
+
+    #[test]
+    fn emit_float_map_keys_verifies() {
+        let ir = emit_example("examples/float_map_keys.lm", false);
+        assert!(
+            ir.contains("lumia_ensure_map_f64") || ir.contains("lumia_map"),
+            "expected float-map runtime symbols; snip:\n{}",
+            &ir[..ir.len().min(2500)]
+        );
+    }
+
+    #[test]
+    fn emit_poly_option_map_verifies() {
+        let _ir = emit_example("examples/poly_option_map.lm", false);
+    }
+
+    #[test]
+    fn emit_par_map_verifies() {
+        let ir = emit_example("examples/par_map.lm", false);
+        assert!(
+            ir.contains("lumia_list_par_map")
+                || ir.contains("par_map")
+                || ir.contains("ListParMap"),
+            "expected parallel map-related IR; snip:\n{}",
+            &ir[..ir.len().min(2500)]
+        );
+    }
+
+    #[test]
+    fn runtime_fn_missing_returns_err_not_panic() {
+        let context = Context::create();
+        let cg = Codegen::new(&context, "empty", 0, 1);
+        let err = cg
+            .runtime_fn("lumia_definitely_missing_symbol_zz")
+            .expect_err("missing runtime symbol");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("missing runtime") || msg.contains("definitely_missing"),
+            "unexpected: {msg}"
+        );
+    }
+
+    #[test]
+    fn codegen_error_display() {
+        let e = CodegenError::msg("boom");
+        assert_eq!(e.to_string(), "boom");
+        let e2 = CodegenError::Llvm("bad".into());
+        assert!(e2.to_string().contains("LLVM"));
     }
 }

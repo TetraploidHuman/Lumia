@@ -21,8 +21,9 @@ pub use value_ty::{
     infer_value_ty, infer_value_ty_ctx, value_alloc_may_heap, HeapPolicy, InferValueCtx,
 };
 pub use visit::{
-    collect_uses_in_value, for_each_local, for_each_local_mut, for_each_nested_block,
-    for_each_nested_block_mut, map_value_locals, max_local_in_value, rewrite_value_locals,
+    collect_uses_in_value, for_each_block_dfs, for_each_local, for_each_local_mut,
+    for_each_nested_block, for_each_nested_block_mut, for_each_op_value_mut, map_value_locals,
+    max_local_in_value, rewrite_value_locals,
 };
 
 #[cfg(test)]

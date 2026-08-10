@@ -1,51 +1,24 @@
 //! Shared frontend→Core pipeline for tests and tooling.
 //!
-//! Multi-file load, import visibility, effect-boundary checks, and assert-message
-//! annotation remain CLI-only ([`lumia`] crate). This helper covers the single-file
-//! path used by unit tests and Core IR goldens.
+//! Multi-file load, import visibility, and assert-message annotation remain
+//! CLI-only ([`lumia`] crate). Effect-boundary checks mirror the CLI via
+//! [`lumia_ty::typecheck_hir`].
 
 use crate::ir::CoreModule;
 use crate::lower::lower_hir_with_schemes;
 use lumia_hir::lower_module;
 use lumia_syntax::parse_module;
-use lumia_ty::{finalize_auto_parallel, infer_module_with_options, InferOptions, NameVisibility};
+use lumia_ty::{typecheck_hir, NameVisibility, TypecheckOptions};
 
-/// Options for the test/tooling frontend (subset of CLI `check_file`).
-#[derive(Debug, Clone)]
-pub struct FrontendOptions {
-    /// Select FunRef-safe `ListParMap` / assoc `ListParFold` (default on).
-    pub auto_parallel: bool,
-    /// Honor `foreign "C" pure` as pure (default off; FFI purity unverified).
-    pub trust_foreign_pure: bool,
-}
-
-impl Default for FrontendOptions {
-    fn default() -> Self {
-        Self {
-            auto_parallel: true,
-            trust_foreign_pure: false,
-        }
-    }
-}
-
-impl FrontendOptions {
-    pub fn with_parallel(mut self, auto_parallel: bool) -> Self {
-        self.auto_parallel = auto_parallel;
-        self
-    }
-
-    pub fn with_trust_foreign_pure(mut self, trust: bool) -> Self {
-        self.trust_foreign_pure = trust;
-        self
-    }
-}
+/// Options for the test/tooling frontend — same as the shared typecheck path.
+pub type FrontendOptions = TypecheckOptions;
 
 /// Format a staged pipeline failure (`parse: …`, `lower: …`, …).
 fn stage<T, E: std::fmt::Display>(name: &str, r: Result<T, E>) -> Result<T, String> {
     r.map_err(|e| format!("{name}: {e}"))
 }
 
-/// Parse → HIR → infer → auto-parallel finalize → Core (incl. mono).
+/// Parse → HIR → [`typecheck_hir`] → Core (incl. mono).
 ///
 /// Mirrors the CLI path up to (but not including) `lumia_opt::optimize`,
 /// without multi-file load / visibility / assert annotation.
@@ -60,31 +33,21 @@ pub fn compile_source_to_core_with_parallel(
 ) -> Result<CoreModule, String> {
     compile_source_to_core_with_options(
         src,
-        &FrontendOptions {
-            auto_parallel,
-            ..FrontendOptions::default()
-        },
+        &FrontendOptions::default().with_parallel(auto_parallel),
     )
 }
 
-/// Parse → HIR → infer (with options) → auto-parallel finalize → Core.
+/// Parse → HIR → typecheck (infer + parallel finalize + effects) → Core.
 pub fn compile_source_to_core_with_options(
     src: &str,
     opts: &FrontendOptions,
 ) -> Result<CoreModule, String> {
     let ast = stage("parse", parse_module(src))?;
     let hir = stage("lower", lower_module(&ast))?;
-    let mut typed = stage(
-        "infer",
-        infer_module_with_options(
-            &hir,
-            NameVisibility::default(),
-            InferOptions {
-                trust_foreign_pure: opts.trust_foreign_pure,
-            },
-        ),
+    let typed = stage(
+        "typecheck",
+        typecheck_hir(&hir, NameVisibility::default(), opts),
     )?;
-    finalize_auto_parallel(&mut typed, opts.auto_parallel);
     Ok(lower_hir_with_schemes(
         &typed.module,
         &typed.fun_types,
@@ -153,12 +116,31 @@ val main = {
             &FrontendOptions::default().with_parallel(false),
         )
         .expect("core");
-        // With auto-parallel, FunRef-safe scalar map may become ListParMap.
-        // Without it, ListParMap must not appear.
         assert!(
             !has_builtin(&no_par, Builtin::ListParMap),
             "ListParMap must be absent when auto_parallel=false"
         );
-        let _ = with_par; // presence is optional if fusion/desugar chooses ListMap
+        let _ = with_par;
+    }
+
+    #[test]
+    fn effect_boundaries_run_on_default_pipeline() {
+        let bad = r#"
+module Bad
+import std.io.{println}
+val xs = println(1)
+val main = { 0 }
+"#;
+        let err = compile_source_to_core(bad).expect_err("top-level IO");
+        assert!(
+            err.contains("typecheck:") || err.to_lowercase().contains("effect"),
+            "unexpected error: {err}"
+        );
+        let ok = r#"
+module Ok
+import std.io.{println}
+val main = { println(1) }
+"#;
+        compile_source_to_core(ok).expect("main may perform IO");
     }
 }

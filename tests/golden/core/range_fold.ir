@@ -1,0 +1,20 @@
+module RangeFold
+
+fun main() effect.io=true memo=None {
+  %0 = i64 1000000  // pure
+  %1 = i64 0  // pure
+  acc := %1
+  %2 = %1  // pure
+  __i_143 := %1
+  %11 = loop ...  // effect
+  %12 = load acc  // pure
+  %13 = builtin Println(%12)  // effect
+  %14 = %1  // pure
+  acc2 := %1
+  %15 = i64 1  // pure
+  __i_219 := %15
+  %25 = loop ...  // effect
+  %26 = load acc2  // pure
+  %27 = builtin Println(%26)  // effect
+  return %27
+}

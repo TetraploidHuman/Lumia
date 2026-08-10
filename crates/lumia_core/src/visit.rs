@@ -284,6 +284,37 @@ pub fn for_each_nested_block(value: &Value, f: &mut impl FnMut(&Block)) {
     }
 }
 
+/// Depth-first over a block and every nested If/Loop/Lambda body reached from its ops.
+pub fn for_each_block_dfs(block: &Block, f: &mut impl FnMut(&Block)) {
+    f(block);
+    for op in &block.ops {
+        match op {
+            Op::Let { value, .. } | Op::Effect { value } => {
+                for_each_nested_block(value, &mut |nested| for_each_block_dfs(nested, f));
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Mutating walk: for each `Let`/`Effect` value, call `on_value` then recurse into nested blocks.
+///
+/// `on_value` should transform the current value leaf only — nested regions are visited
+/// automatically via [`for_each_nested_block_mut`].
+pub fn for_each_op_value_mut(block: &mut Block, on_value: &mut dyn FnMut(&mut Value)) {
+    for op in &mut block.ops {
+        match op {
+            Op::Let { value, .. } | Op::Effect { value } => {
+                on_value(value);
+                for_each_nested_block_mut(value, &mut |nested| {
+                    for_each_op_value_mut(nested, on_value);
+                });
+            }
+            _ => {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

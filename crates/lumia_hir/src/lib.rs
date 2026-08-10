@@ -1,20 +1,88 @@
 //! High-level IR — named bindings after light desugaring from syntax AST.
 
 mod ast;
+mod builtin_info;
 mod list_hof;
 mod lower;
 mod match_check;
 mod visit;
 
-pub use ast::{AdtDef, AdtVariant, Builtin, CtorInfo, Expr, Fun, Item, Module, ProductDef};
+pub use ast::{
+    AdtDef, AdtVariant, Builtin, BuiltinFamily, CtorInfo, Expr, Fun, Item, Module, ProductDef,
+};
+pub use builtin_info::{BuiltinEffect, BuiltinEmit, BuiltinInfo};
 pub use list_hof::{desugar_list_fold_sequential, desugar_list_map_sequential};
 pub use lower::{lower_module, LowerCtx, LowerError};
 pub use visit::{all_free_vars, fold, for_each_expr, free_vars_expr};
 
 #[cfg(test)]
 mod tests {
-    use super::{lower_module, Builtin, Expr, Item};
+    use super::{lower_module, Builtin, BuiltinFamily, Expr, Item};
     use lumia_syntax::parse_module;
+
+    #[test]
+    fn builtin_family_routes_map_keys_with_map_set() {
+        assert_eq!(Builtin::MapKeys.family(), BuiltinFamily::MapSet);
+        assert_eq!(Builtin::Elems.family(), BuiltinFamily::List);
+        assert_eq!(Builtin::ListLen.family(), BuiltinFamily::List);
+        assert_eq!(Builtin::Show.family(), BuiltinFamily::Io);
+    }
+
+    #[test]
+    fn builtin_effect_and_symbols_are_wired() {
+        assert!(Builtin::Println.is_io());
+        assert!(Builtin::ReadStdin.is_io());
+        assert!(!Builtin::ListLen.is_io());
+        assert!(!Builtin::Assert.is_io());
+        assert_eq!(Builtin::ListLen.runtime_symbol(), Some("lumia_len"));
+        assert_eq!(Builtin::Println.runtime_symbol(), None);
+        assert!(Builtin::ListAppend.info().float_sensitive());
+        assert!(!Builtin::ListLen.info().float_sensitive());
+        assert_eq!(
+            Builtin::ListAppend.info().float_ensures,
+            &[(1, lumia_abi::ENSURE_LIST_F64)]
+        );
+        assert_eq!(
+            Builtin::MapSet.info().emit,
+            super::BuiltinEmit::ObjI64I64Ptr
+        );
+        assert_eq!(
+            Builtin::SetInsert.info().emit,
+            super::BuiltinEmit::ObjI64Ptr
+        );
+        assert_eq!(Builtin::StrSplit.info().emit, super::BuiltinEmit::ObjI64Ptr);
+    }
+
+    #[test]
+    fn method_surface_lowers_to_builtin_calls() {
+        let src = r#"
+module M
+val main = {
+    listOf(1, 2).len()
+    listOf(1, 2).drop(1)
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let hir = lower_module(&ast).expect("lower");
+        let body = hir
+            .items
+            .iter()
+            .find_map(|it| match it {
+                Item::Fun(f) if f.name == "main" => Some(&f.body),
+                _ => None,
+            })
+            .expect("main");
+        let mut saw_len = false;
+        let mut saw_slice = false;
+        crate::visit::for_each_expr(body, &mut |e| {
+            if let Expr::BuiltinCall { name, .. } = e {
+                saw_len |= *name == Builtin::ListLen;
+                saw_slice |= *name == Builtin::ListSlice;
+            }
+        });
+        assert!(saw_len, "expected ListLen from .len()");
+        assert!(saw_slice, "expected ListSlice from .drop()");
+    }
 
     #[test]
     fn exhaustiveness_rejects_missing_variant() {

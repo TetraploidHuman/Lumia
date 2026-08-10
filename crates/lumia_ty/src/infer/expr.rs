@@ -74,10 +74,10 @@ impl Infer {
                     self.bind(p.clone(), tv);
                 }
                 let ret_tv = self.fresh();
-                self.return_stack.push(ret_tv.clone());
+                self.ctrl.return_stack.push(ret_tv.clone());
                 let (rt, re) = self.infer_expr(body)?;
                 self.unify_at(*span, rt, ret_tv.clone())?;
-                self.return_stack.pop();
+                self.ctrl.return_stack.pop();
                 self.pop();
                 Ok((Type::Fun(pts, Box::new(ret_tv), re), Effect::pure()))
             }
@@ -101,7 +101,7 @@ impl Infer {
                             if let (Type::Adt { name: a, .. }, Type::Adt { name: b, .. }) =
                                 (&lt, &rt)
                             {
-                                if a == b && self.num_instances.contains(a) {
+                                if a == b && self.traits.num_instances.contains(a) {
                                     self.unify_at(*span, lt.clone(), rt)?;
                                     return Ok((self.prune(lt), eff));
                                 }
@@ -227,7 +227,7 @@ impl Infer {
             }
             Expr::Break(_) | Expr::Continue(_) => Ok((Type::Unit, Effect::pure())),
             Expr::Return { value, span } => {
-                let Some(expect) = self.return_stack.last().cloned() else {
+                let Some(expect) = self.ctrl.return_stack.last().cloned() else {
                     return Err(at(
                         *span,
                         "`return` is only allowed inside a function or closure",
@@ -248,14 +248,14 @@ impl Infer {
                 let st = self.prune(st);
                 match st {
                     Type::Adt { name, params } if name == "Option" && params.len() == 1 => {
-                        self.alt_kinds.insert(*span, AltKind::Option);
+                        self.ctrl.alt_kinds.insert(*span, AltKind::Option);
                         let payload = params[0].clone();
                         let (at, ae) = self.infer_expr(alt)?;
                         self.unify_at(*span, at, payload.clone())?;
                         Ok((payload, self.union_eff(se, ae)))
                     }
                     Type::Adt { name, params } if name == "Result" && params.len() == 2 => {
-                        self.alt_kinds.insert(*span, AltKind::Result);
+                        self.ctrl.alt_kinds.insert(*span, AltKind::Result);
                         let ok_ty = params[0].clone();
                         let err_ty = params[1].clone();
                         self.push();

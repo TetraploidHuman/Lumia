@@ -1,0 +1,22 @@
+module PeMapGet
+
+import std.io.{println}
+
+type Option {
+    Some(value)
+    None
+}
+
+val unwrap_or = { opt, d ->
+    opt match {
+        None -> d
+        Some(n) -> n
+    }
+}
+
+/// Const-fold `mapOf(…).get(k)` → `Some` / `None` when keys are Int literals.
+val main = {
+    val m = mapOf(1, 10, 2, 20, 3, 30)
+    println(unwrap_or(m.get(2), -1))
+    println(unwrap_or(m.get(9), -1))
+}

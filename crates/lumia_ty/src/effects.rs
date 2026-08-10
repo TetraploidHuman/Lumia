@@ -12,7 +12,7 @@
 //!   function is rejected even when `f` is not in `fun_types`.
 
 use crate::types::{at, Type, TypeError, TypedModule};
-use lumia_hir::{Builtin, Expr, Item};
+use lumia_hir::{Expr, Item};
 use rustc_hash::FxHashMap as HashMap;
 
 /// Reject calling effectful functions from pure contexts (simplified whole-program check).
@@ -49,13 +49,7 @@ fn fun_body_has_io(body: &Expr, fun_types: &HashMap<String, Type>) -> bool {
     ) -> bool {
         match expr {
             Expr::BuiltinCall { name, args, .. } => {
-                if matches!(
-                    name,
-                    Builtin::Println
-                        | Builtin::PrintlnInt
-                        | Builtin::PrintlnStr
-                        | Builtin::ReadStdin
-                ) {
+                if name.is_io() {
                     return true;
                 }
                 args.iter().any(|a| walk(a, fun_types, locals))
@@ -144,17 +138,15 @@ pub(crate) fn assert_no_effects_in_pure(
     locals: &mut HashMap<String, bool>,
 ) -> Result<(), TypeError> {
     match expr {
-        Expr::BuiltinCall { name, args, span } => match name {
-            Builtin::Println | Builtin::PrintlnInt | Builtin::PrintlnStr | Builtin::ReadStdin => {
-                Err(at(*span, "effectful call not allowed in pure function"))
+        Expr::BuiltinCall { name, args, span } => {
+            if name.is_io() {
+                return Err(at(*span, "effectful call not allowed in pure function"));
             }
-            _ => {
-                for a in args {
-                    assert_no_effects_in_pure(a, fun_types, locals)?;
-                }
-                Ok(())
+            for a in args {
+                assert_no_effects_in_pure(a, fun_types, locals)?;
             }
-        },
+            Ok(())
+        }
         Expr::Call { callee, args, span } => {
             if let Expr::Var(name, _) = callee.as_ref() {
                 if locals.get(name).copied().unwrap_or(false) {
@@ -272,16 +264,8 @@ pub(crate) fn check_expr_effects(
 ) -> Result<(), TypeError> {
     match expr {
         Expr::BuiltinCall { name, args, span } => {
-            match name {
-                Builtin::Println
-                | Builtin::PrintlnInt
-                | Builtin::PrintlnStr
-                | Builtin::ReadStdin
-                    if !in_effect_ctx =>
-                {
-                    return Err(at(*span, "effectful call not allowed in pure context"));
-                }
-                _ => {}
+            if name.is_io() && !in_effect_ctx {
+                return Err(at(*span, "effectful call not allowed in pure context"));
             }
             for a in args {
                 check_expr_effects(a, in_effect_ctx, fun_types, locals)?;

@@ -100,6 +100,19 @@ fn e2e_pe_map_contains() {
 }
 
 #[test]
+fn e2e_pe_list_concat() {
+    run_example(
+        "examples/pe_list_concat.lm",
+        &["3", "1", "3", "4", "4"],
+    );
+}
+
+#[test]
+fn e2e_pe_map_get() {
+    run_example("examples/pe_map_get.lm", &["20", "-1"]);
+}
+
+#[test]
 fn e2e_escape_pure_len() {
     // Pure len callee must not force list escape → LitList still works.
     run_example("examples/escape_pure_len.lm", &["3", "20"]);

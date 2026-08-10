@@ -61,6 +61,7 @@ mod tests {
             memo: None,
             escaping: Default::default(),
             scheme_poly: false,
+            mono_of: None,
         };
         let key = MonoKey(vec![
             MonoKind::Adt {
@@ -117,12 +118,56 @@ val main = {
         let apply_clone = core
             .functions
             .iter()
-            .find(|f| f.name.contains("apply") && f.name.contains('$'))
+            .find(|f| f.name.contains("apply") && f.is_mono_clone())
             .expect("apply mono clone");
+        assert_eq!(
+            apply_clone.mono_of.as_deref(),
+            Some("apply"),
+            "mono_of should name the original"
+        );
         assert!(
             matches!(apply_clone.ret_ty, Type::Float),
             "apply clone ret_ty should be Float after refresh, got {:?}",
             apply_clone.ret_ty
+        );
+    }
+
+    /// Transitive FunRef HOF needs multiple clone rounds but must converge
+    /// well under [`super::specialize::`]-documented `MAX_MONO_CLONE_ROUNDS`.
+    #[test]
+    fn mono_hof_chain_converges_with_few_clones() {
+        let core = compile_source_to_core(
+            r#"
+module M
+type Option { Some(value) None }
+val dbl = { x -> x + x }
+val optMap = { o, f ->
+    o match {
+        None -> None
+        Some(v) -> Some(f(v))
+    }
+}
+val main = {
+    optMap(Some(1.5), dbl)
+}
+"#,
+        )
+        .expect("core");
+        let mono_clones = core.functions.iter().filter(|f| f.is_mono_clone()).count();
+        assert!(
+            mono_clones >= 1 && mono_clones < 8,
+            "expected a small number of mono clones, got {mono_clones}: {:?}",
+            core.functions
+                .iter()
+                .filter(|f| f.is_mono_clone())
+                .map(|f| &f.name)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            core.functions
+                .iter()
+                .any(|f| f.name.contains("dbl") && f.name.contains("$Float")),
+            "expected transitive dbl$Float clone"
         );
     }
 
@@ -141,8 +186,52 @@ val main = {
         .expect("core");
         let names: Vec<_> = core.functions.iter().map(|f| f.name.as_str()).collect();
         assert!(
-            names.iter().any(|n| n.contains("id") && n.contains("$Map")),
-            "expected id$Map_* clone, funs={names:?}"
+            names.iter().any(|n| *n == "id$Map_Int_Int"),
+            "expected exact id$Map_Int_Int, funs={names:?}"
+        );
+        assert!(
+            names.iter().any(|n| *n == "id$Map_String_Int"),
+            "expected exact id$Map_String_Int, funs={names:?}"
+        );
+    }
+
+    #[test]
+    fn specialize_clones_set_id_key_mangling() {
+        let core = compile_source_to_core(
+            r#"
+module M
+val id = { s -> s }
+val main = {
+    id(setOf(1, 2))
+    id(setOf("a", "b"))
+}
+"#,
+        )
+        .expect("core");
+        let names: Vec<_> = core.functions.iter().map(|f| f.name.as_str()).collect();
+        assert!(
+            names.iter().any(|n| *n == "id$Set_Int"),
+            "expected exact id$Set_Int, funs={names:?}"
+        );
+        assert!(
+            names.iter().any(|n| *n == "id$Set_String"),
+            "expected exact id$Set_String, funs={names:?}"
+        );
+    }
+
+    #[test]
+    fn mono_key_suffix_map_set() {
+        assert_eq!(
+            MonoKey(vec![MonoKind::Map(
+                Box::new(MonoKind::Int),
+                Box::new(MonoKind::Float)
+            )])
+            .suffix(),
+            "$Map_Int_Float"
+        );
+        assert_eq!(
+            MonoKey(vec![MonoKind::Set(Box::new(MonoKind::String))]).suffix(),
+            "$Set_String"
         );
     }
 
@@ -179,5 +268,74 @@ val main = {
                 .any(|n| n.contains("dbl") && n.contains("$Float")),
             "expected dbl$Float for Float Option path, funs={names:?}"
         );
+    }
+
+    #[test]
+    fn specialize_hof_funref_directizes_to_float_call() {
+        let core = compile_source_to_core(
+            r#"
+module M
+val dbl = { x -> x + x }
+val apply = { f, x -> f(x) }
+val main = {
+    apply(dbl, 1.5)
+}
+"#,
+        )
+        .expect("core");
+        let apply_clone = core
+            .functions
+            .iter()
+            .find(|f| f.name.starts_with("apply$") && f.name.contains("Fn_dbl"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected apply$*_Fn_dbl clone, funs={:?}",
+                    core.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+                )
+            });
+        assert!(
+            matches!(apply_clone.ret_ty, Type::Float),
+            "apply FunRef clone ret_ty should be Float, got {:?}",
+            apply_clone.ret_ty
+        );
+        assert!(
+            core.functions.iter().any(|f| f.name == "dbl$Float"),
+            "second-round Float clone missing, funs={:?}",
+            core.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+        );
+        assert!(
+            block_calls_named(&apply_clone.body, "dbl$Float"),
+            "FunRef should directize to Call(dbl$Float); body={:?}",
+            apply_clone.body
+        );
+    }
+
+    fn block_calls_named(block: &Block, fun: &str) -> bool {
+        use crate::ir::{Op, Value};
+        fn value_calls(v: &Value, fun: &str) -> bool {
+            match v {
+                Value::Call { fun: f, .. } if f == fun => true,
+                Value::If {
+                    then_block,
+                    else_block,
+                    ..
+                } => block_calls_named(then_block, fun) || block_calls_named(else_block, fun),
+                Value::Loop {
+                    header,
+                    body,
+                    latch,
+                } => {
+                    block_calls_named(header, fun)
+                        || block_calls_named(body, fun)
+                        || block_calls_named(latch, fun)
+                }
+                Value::Lambda { body, .. } => block_calls_named(body, fun),
+                _ => false,
+            }
+        }
+        block.ops.iter().any(|op| match op {
+            Op::Let { value, .. } | Op::Effect { value, .. } => value_calls(value, fun),
+            _ => false,
+        })
     }
 }

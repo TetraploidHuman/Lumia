@@ -24,3 +24,4 @@ Workspace crates: `lumia` (CLI), `lumia_abi`, `lumia_syntax`, `lumia_hir`, `lumi
 
 - 语言设计：[docs/DESIGN.md](docs/DESIGN.md)
 - **构建 / 技术栈 / 分期计划**：[docs/BUILD.md](docs/BUILD.md)（选型与编译步骤以该文档为准）
+- **编辑器插件**（VS Code / IntelliJ）：[editors/README.md](editors/README.md)

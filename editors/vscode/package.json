@@ -1,0 +1,152 @@
+{
+  "name": "lumia",
+  "displayName": "Lumia",
+  "description": "Lumia language support — syntax highlight, LSP, run/build",
+  "version": "0.3.3",
+  "publisher": "lumia",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:lumia",
+    "onCommand:lumia.run",
+    "onCommand:lumia.buildRun",
+    "onCommand:lumia.checkFile",
+    "onCommand:lumia.restartServer"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "lumia",
+        "aliases": [
+          "Lumia",
+          "lumia"
+        ],
+        "extensions": [
+          ".lm"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "lumia",
+        "scopeName": "source.lumia",
+        "path": "./syntaxes/lumia.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "lumia",
+        "path": "./snippets/lumia.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "lumia.run",
+        "title": "Lumia: Run",
+        "category": "Lumia",
+        "icon": "$(play)",
+        "enablement": "resourceExtname == .lm || editorLangId == lumia"
+      },
+      {
+        "command": "lumia.buildRun",
+        "title": "Lumia: Build & Run",
+        "category": "Lumia",
+        "icon": "$(tools)",
+        "enablement": "resourceExtname == .lm || editorLangId == lumia"
+      },
+      {
+        "command": "lumia.checkFile",
+        "title": "Lumia: Check File",
+        "category": "Lumia"
+      },
+      {
+        "command": "lumia.restartServer",
+        "title": "Lumia: Restart Language Server",
+        "category": "Lumia"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "lumia.run",
+          "when": "resourceExtname == .lm",
+          "group": "navigation@1"
+        },
+        {
+          "command": "lumia.buildRun",
+          "when": "resourceExtname == .lm",
+          "group": "navigation@2"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "lumia.run",
+          "when": "resourceExtname == .lm",
+          "group": "lumia@1"
+        },
+        {
+          "command": "lumia.buildRun",
+          "when": "resourceExtname == .lm",
+          "group": "lumia@2"
+        },
+        {
+          "command": "lumia.checkFile",
+          "when": "resourceExtname == .lm",
+          "group": "lumia@3"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "lumia.run",
+          "when": "resourceExtname == .lm",
+          "group": "navigation@10"
+        },
+        {
+          "command": "lumia.buildRun",
+          "when": "resourceExtname == .lm",
+          "group": "navigation@11"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "lumia.run",
+          "when": "resourceExtname == .lm || editorLangId == lumia"
+        },
+        {
+          "command": "lumia.buildRun",
+          "when": "resourceExtname == .lm || editorLangId == lumia"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Lumia",
+      "properties": {
+        "lumia.lsp.path": {
+          "type": "string",
+          "default": "lumia",
+          "description": "Path to the lumia binary (must support `lumia lsp` / `build` / `check`)."
+        },
+        "lumia.lsp.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the Lumia language server."
+        }
+      }
+    },
+    "configurationDefaults": {
+      "[lumia]": {
+        "editor.inlayHints.enabled": "on"
+      }
+    }
+  },
+  "scripts": {},
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  }
+}

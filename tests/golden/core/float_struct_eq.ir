@@ -1,0 +1,61 @@
+module FloatStructEq
+
+fun __lam_0(p0) effect.io=false memo=None {
+  return %59
+}
+
+fun main() effect.io=true memo=None {
+  %0 = f64 0  // pure
+  %1 = alloc_list[HeapList](n=1)  // pure
+  %2 = %0  // pure
+  %3 = Neg %0  // pure
+  %4 = alloc_list[HeapList](n=1)  // pure
+  %5 = %1 == %4  // pure
+  %8 = if ...  // pure
+  %9 = builtin Println(%8)  // effect
+  %10 = %0  // pure
+  %11 = %0  // pure
+  %12 = %0 / %0  // pure
+  %13 = alloc_list[HeapList](n=1)  // pure
+  %14 = alloc_list[HeapList](n=1)  // pure
+  %15 = %13 == %14  // pure
+  %18 = if ...  // pure
+  %19 = builtin Println(%18)  // effect
+  %20 = %0  // pure
+  %21 = alloc_adt(Option, tag=0, n=1)  // pure
+  %22 = %0  // pure
+  %23 = Neg %0  // pure
+  %24 = alloc_adt(Option, tag=0, n=1)  // pure
+  %25 = %21 == %24  // pure
+  %28 = if ...  // pure
+  %29 = builtin Println(%28)  // effect
+  %30 = alloc_adt(Option, tag=0, n=1)  // pure
+  %31 = alloc_adt(Option, tag=0, n=1)  // pure
+  %32 = %30 == %31  // pure
+  %35 = if ...  // pure
+  %36 = builtin Println(%35)  // effect
+  %37 = i64 1  // pure
+  %38 = %0  // pure
+  %39 = alloc_map[SmallMap](n=1)  // pure
+  %40 = %37  // pure
+  %41 = %0  // pure
+  %42 = Neg %0  // pure
+  %43 = alloc_map[SmallMap](n=1)  // pure
+  %44 = %39 == %43  // pure
+  %47 = if ...  // pure
+  %48 = builtin Println(%47)  // effect
+  %49 = %37  // pure
+  %50 = alloc_map[SmallMap](n=1)  // pure
+  %51 = %37  // pure
+  %52 = alloc_map[SmallMap](n=1)  // pure
+  %53 = %50 == %52  // pure
+  %56 = if ...  // pure
+  %57 = builtin Println(%56)  // effect
+  %58 = alloc_list[HeapList](n=1)  // pure
+  %60 = funref __lam_0  // pure
+  %61 = builtin ListParMap(%58, %60)  // pure
+  %62 = %61 == %61  // pure
+  %65 = if ...  // pure
+  %66 = builtin Println(%65)  // effect
+  return %66
+}

@@ -13,9 +13,6 @@ impl Infer {
     ) -> Result<(Type, Effect), TypeError> {
         match name {
             Builtin::AdtTag => {
-                if args.len() != 1 {
-                    return Err(at(span, "adt_tag takes 1 argument"));
-                }
                 let (_, e) = self.infer_expr(&args[0])?;
                 Ok((Type::Int, e))
             }
@@ -169,6 +166,7 @@ impl Infer {
                                 t
                             } else {
                                 let arity = self
+                                    .products
                                     .products
                                     .get(want)
                                     .map(|fs| fs.len())

@@ -2,10 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub(crate) fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .expect("workspace root")
+    lumia_abi::workspace_root_canonical(env!("CARGO_MANIFEST_DIR"))
 }
 
 pub(crate) fn lumia_bin() -> PathBuf {

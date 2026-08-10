@@ -3,6 +3,8 @@
 //! Codegen emits these `type_id` values into object headers; `lumia_rt` interprets
 //! them. Memo caps must match between the opt planner and the runtime tables.
 //!
+//! Float / container tagging rules: [`float_contract`].
+//!
 //! # Container `type_id` packing
 //!
 //! Bases occupy bits `[7:0]` (dense 1..=9). Float / AssocList flags live in
@@ -11,6 +13,14 @@
 //! - bit 8 `TID_F_KEY` — List: float elems; Set: float elems; Map: float keys
 //! - bit 9 `TID_F_VAL` — Map: float values
 //! - bit 10 `TID_ASSOC` — Map/Set: AssocList (never hash-promote)
+
+use std::path::{Path, PathBuf};
+
+mod float_contract;
+pub use float_contract::{
+    float_roles, gc_skip_float_slot, is_float_capable_container, FloatRoles, ENSURE_LIST_F64,
+    ENSURE_MAP_F64, ENSURE_MAP_VF64, ENSURE_SET_F64,
+};
 
 /// Object header type ids — **bases** (bits `[7:0]`).
 pub const TYPE_BYTES: u32 = 1;
@@ -62,6 +72,19 @@ pub const MEMO_IDX_MAX_FUNS: usize = 16;
 pub const MEMO_IDX_CAP: usize = 4096;
 pub const MEMO_IDX_TABLE_BYTES: usize = MEMO_IDX_CAP * (1 + 8);
 pub const MEMO_SLOTS_TABLE_BYTES: usize = MEMO_L2_SLOTS * (1 + MEMO_L2_MAX_ARGS * 8 + 8);
+
+/// Repo root given a workspace crate's `CARGO_MANIFEST_DIR` (`crates/<name>` → `…/Lumia`).
+#[inline]
+pub fn workspace_root(manifest_dir: impl AsRef<Path>) -> PathBuf {
+    manifest_dir.as_ref().join("../..")
+}
+
+/// Like [`workspace_root`], but `canonicalize`s when the path exists.
+#[inline]
+pub fn workspace_root_canonical(manifest_dir: impl AsRef<Path>) -> PathBuf {
+    let p = workspace_root(manifest_dir);
+    p.canonicalize().unwrap_or(p)
+}
 
 /// Scalar classification for container element/key tagging.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

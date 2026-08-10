@@ -1,0 +1,14 @@
+module StdString
+
+import std.io.{println}
+import std.string.{trim, toLower, split, join, startsWith}
+
+/// Exercise `std.string` Source wrappers (runtime `lumia_str_*` via foreign).
+val main = {
+    val t = trim("  Hello  ")
+    println(t)
+    println(toLower(t))
+    println(startsWith(t, "He"))
+    val parts = split("a-b-c", '-')
+    println(join(parts, "/"))
+}

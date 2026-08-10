@@ -3,7 +3,7 @@
 use crate::ir::{
     max_local_in_module, rewrite_block_locals, Block, CoreFun, CoreModule, Local, Op, Value,
 };
-use crate::visit::{collect_uses, for_each_nested_block};
+use crate::visit::{collect_uses, for_each_nested_block, for_each_op_value_mut};
 use lumia_hir::Builtin;
 use lumia_ty::{Effect, Type};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
@@ -239,12 +239,7 @@ fn value_may_heap(
         | Value::FunRef(_) => true,
         Value::Builtin { name, .. } => !matches!(
             name,
-            Builtin::ListLen
-                | Builtin::Contains
-                | Builtin::Println
-                | Builtin::PrintlnInt
-                | Builtin::PrintlnStr
-                | Builtin::Assert
+            Builtin::ListLen | Builtin::Contains | Builtin::Println | Builtin::Assert
         ),
         Value::Call { .. } | Value::IndirectCall { .. } => true,
         Value::If {
@@ -392,6 +387,7 @@ fn lift_value(
                     escaping: HashSet::default(),
                     // Local let-poly / nested lambdas: specialize at ground call sites.
                     scheme_poly: true,
+                    mono_of: None,
                 });
                 *value = Value::FunRef(name);
                 return;
@@ -458,6 +454,7 @@ fn lift_value(
                 external: None,
                 escaping: HashSet::default(),
                 scheme_poly: true,
+                mono_of: None,
             });
             *value = Value::AllocClosure {
                 fun: name,
@@ -534,41 +531,11 @@ fn rewrite_block_names(block: &mut Block, name_remap: &HashMap<String, Local>) {
     if name_remap.is_empty() {
         return;
     }
-    for op in &mut block.ops {
-        match op {
-            Op::Let { value, .. } | Op::Effect { value, .. } => {
-                rewrite_value_names(value, name_remap);
-            }
-            Op::Assign { .. } | Op::Break | Op::Continue | Op::Return { .. } => {}
-        }
-    }
-}
-
-fn rewrite_value_names(value: &mut Value, name_remap: &HashMap<String, Local>) {
-    match value {
-        Value::Name(n) => {
+    for_each_op_value_mut(block, &mut |value| {
+        if let Value::Name(n) = value {
             if let Some(l) = name_remap.get(n) {
                 *value = Value::Local(*l);
             }
         }
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            rewrite_block_names(then_block, name_remap);
-            rewrite_block_names(else_block, name_remap);
-        }
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => {
-            rewrite_block_names(header, name_remap);
-            rewrite_block_names(body, name_remap);
-            rewrite_block_names(latch, name_remap);
-        }
-        Value::Lambda { body, .. } => rewrite_block_names(body, name_remap),
-        _ => {}
-    }
+    });
 }

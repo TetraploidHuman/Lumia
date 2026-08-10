@@ -11,7 +11,7 @@ impl<'ctx> Codegen<'ctx> {
     /// Emit `musttail call` + `ret` for pure Int TCO (self or mutual; no GC roots live).
     /// Returns true if the call was emitted as a terminator.
     pub(crate) fn emit_musttail_call(&mut self, fun: &str, args: &[Local]) -> Result<bool> {
-        let callee = match self.functions.get(fun).copied() {
+        let callee = match self.funs.functions.get(fun).copied() {
             Some(f) => f,
             None => return Ok(false),
         };
@@ -19,16 +19,16 @@ impl<'ctx> Codegen<'ctx> {
         for a in args {
             av.push(self.coerce_i64(self.local(*a)?)?.into());
         }
-        let call = self.builder.build_call(callee, &av, "tco").unwrap();
+        let call = crate::error::llvm(self.llvm.builder.build_call(callee, &av, "tco"))?;
         call.set_tail_call_kind(inkwell::values::LLVMTailCallKind::LLVMTailCallKindMustTail);
         let ret = call
             .try_as_basic_value()
             .basic()
-            .unwrap_or_else(|| self.i64_ty.const_int(0, false).into())
+            .unwrap_or_else(|| self.llvm.i64_ty.const_int(0, false).into())
             .into_int_value();
         // No root epilogue: musttail requires call immediately followed by ret.
-        debug_assert_eq!(self.root_depth, 0);
-        self.builder.build_return(Some(&ret)).unwrap();
+        debug_assert_eq!(self.frame.root_depth, 0);
+        crate::error::llvm(self.llvm.builder.build_return(Some(&ret)))?;
         Ok(true)
     }
 }
@@ -79,7 +79,8 @@ pub(crate) fn compute_tco_sccs(core: &CoreModule) -> HashMap<String, HashSet<Str
         collect_direct_calls(&f.body, &mut callees);
         for c in callees {
             if eligible.contains(&c) {
-                graph.get_mut(&f.name).unwrap().insert(c);
+                // `f.name` was inserted into `graph` when building `eligible`.
+                graph.entry(f.name.clone()).or_default().insert(c);
             }
         }
     }
@@ -110,12 +111,20 @@ pub(crate) fn compute_tco_sccs(core: &CoreModule) -> HashMap<String, HashSet<Str
             for w in ns {
                 if !indices.contains_key(w) {
                     strongconnect(w, graph, index, stack, on_stack, indices, lowlink, sccs);
-                    let lw = *lowlink.get(w).unwrap();
-                    let lv = *lowlink.get(v).unwrap();
+                    let lw = *lowlink
+                        .get(w)
+                        .expect("ICE: Tarjan lowlink missing after recurse");
+                    let lv = *lowlink
+                        .get(v)
+                        .expect("ICE: Tarjan lowlink missing for current");
                     lowlink.insert(v.to_string(), lv.min(lw));
                 } else if on_stack.contains(w) {
-                    let iw = *indices.get(w).unwrap();
-                    let lv = *lowlink.get(v).unwrap();
+                    let iw = *indices
+                        .get(w)
+                        .expect("ICE: Tarjan index missing for on-stack neighbor");
+                    let lv = *lowlink
+                        .get(v)
+                        .expect("ICE: Tarjan lowlink missing for current");
                     lowlink.insert(v.to_string(), lv.min(iw));
                 }
             }
@@ -123,7 +132,7 @@ pub(crate) fn compute_tco_sccs(core: &CoreModule) -> HashMap<String, HashSet<Str
         if lowlink.get(v) == indices.get(v) {
             let mut comp = HashSet::default();
             loop {
-                let w = stack.pop().unwrap();
+                let w = stack.pop().expect("ICE: Tarjan SCC pop on empty stack");
                 on_stack.remove(&w);
                 comp.insert(w.clone());
                 if w == v {
@@ -287,6 +296,7 @@ mod tests {
             external: None,
             escaping: HashSet::default(),
             scheme_poly: false,
+            mono_of: None,
         }
     }
 

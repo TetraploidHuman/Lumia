@@ -21,6 +21,7 @@ fn bare_fun(name: &str, params: Vec<Local>, body: Block) -> CoreFun {
         external: None,
         escaping: HashSet::default(),
         scheme_poly: false,
+        mono_of: None,
     }
 }
 
@@ -319,6 +320,113 @@ fn const_fold_folds_list_concat() {
             ..
         }
     ));
+}
+
+#[test]
+fn const_fold_map_get_to_option() {
+    use lumia_core::{AdtRepr, MapRepr};
+    let mut module = CoreModule {
+        name: "C".into(),
+        functions: vec![bare_fun(
+            "f",
+            vec![],
+            Block {
+                params: vec![],
+                ops: vec![
+                    Op::Let {
+                        local: Local(0),
+                        value: Value::Int(1),
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(1),
+                        value: Value::Int(10),
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(2),
+                        value: Value::Int(2),
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(3),
+                        value: Value::Int(20),
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(4),
+                        value: Value::AllocMap {
+                            flat_pairs: vec![Local(0), Local(1), Local(2), Local(3)],
+                            repr: MapRepr::LitMap,
+                        },
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(5),
+                        value: Value::Int(2),
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(6),
+                        value: Value::Builtin {
+                            name: Builtin::ListGet,
+                            args: vec![Local(4), Local(5)],
+                        },
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(7),
+                        value: Value::Int(9),
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(8),
+                        value: Value::Builtin {
+                            name: Builtin::ListGet,
+                            args: vec![Local(4), Local(7)],
+                        },
+                        pure_region: true,
+                    },
+                ],
+                result: Some(Local(6)),
+            },
+        )],
+        hash_adts: HashSet::default(),
+        trait_methods: HashMap::default(),
+    };
+    ConstFoldPass.run(&mut module);
+    assert!(
+        matches!(
+            &module.functions[0].body.ops[6],
+            Op::Let {
+                value: Value::AllocAdt {
+                    adt_name,
+                    tag: 0,
+                    fields,
+                    repr: AdtRepr::LitAdt,
+                },
+                ..
+            } if adt_name == "Option" && fields == &[Local(3)]
+        ),
+        "map.get(hit) should PE to Some, got {:?}",
+        module.functions[0].body.ops[6]
+    );
+    assert!(
+        matches!(
+            &module.functions[0].body.ops[8],
+            Op::Let {
+                value: Value::AllocAdt {
+                    adt_name,
+                    tag: 1,
+                    fields,
+                    repr: AdtRepr::LitAdt,
+                },
+                ..
+            } if adt_name == "Option" && fields.is_empty()
+        ),
+        "map.get(miss) should PE to None, got {:?}",
+        module.functions[0].body.ops[8]
+    );
 }
 
 #[test]
@@ -705,6 +813,7 @@ fn memo_tf_marks_slots() {
         external: None,
         escaping: HashSet::default(),
         scheme_poly: false,
+        mono_of: None,
     };
     let module = CoreModule {
         name: "M".into(),
