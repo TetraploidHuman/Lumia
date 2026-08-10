@@ -279,6 +279,11 @@ fn list_par_map_result_elem(args: &[Local], ctx: InferValueCtx<'_>) -> Type {
     list_elem
 }
 
+/// Public helper for codegen: element type of `List.parMap` / `ListParMap` result.
+pub fn list_par_map_elem_ty(args: &[Local], ctx: InferValueCtx<'_>) -> Type {
+    list_par_map_result_elem(args, ctx)
+}
+
 fn builtin_value_ty(name: Builtin, args: &[Local], local_tys: &HashMap<u32, Type>) -> Type {
     match name {
         Builtin::Show
@@ -420,5 +425,31 @@ mod tests {
             |_, _| None,
         );
         assert_eq!(t, Type::Float);
+    }
+
+    #[test]
+    fn par_map_elem_ty_from_funref_ret() {
+        let mut local_tys = HashMap::default();
+        local_tys.insert(0, Type::List(Box::new(Type::Int)));
+        local_tys.insert(
+            1,
+            Type::Fun(vec![Type::Int], Box::new(Type::Float), Effect::pure()),
+        );
+        let mut funref = HashMap::default();
+        funref.insert(1, "dbl".into());
+        let mut rets = HashMap::default();
+        rets.insert("dbl".into(), Type::Float);
+        let ctx = InferValueCtx {
+            local_tys: &local_tys,
+            slot_tys: None,
+            fun_ret_tys: Some(&rets),
+            fun_param_tys: None,
+            fun_param0_identity: None,
+            funref_locals: Some(&funref),
+        };
+        assert_eq!(
+            list_par_map_elem_ty(&[Local(0), Local(1)], ctx),
+            Type::Float
+        );
     }
 }

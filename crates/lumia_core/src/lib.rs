@@ -18,7 +18,8 @@ pub use pipeline::{
     compile_source_to_core_with_parallel, FrontendOptions,
 };
 pub use value_ty::{
-    infer_value_ty, infer_value_ty_ctx, value_alloc_may_heap, HeapPolicy, InferValueCtx,
+    infer_value_ty, infer_value_ty_ctx, list_par_map_elem_ty, value_alloc_may_heap, HeapPolicy,
+    InferValueCtx,
 };
 pub use visit::{
     collect_uses_in_value, for_each_block_dfs, for_each_local, for_each_local_mut,

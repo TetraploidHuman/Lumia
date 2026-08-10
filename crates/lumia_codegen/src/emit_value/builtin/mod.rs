@@ -71,6 +71,25 @@ impl<'ctx> Codegen<'ctx> {
                 let sym = Self::builtin_symbol(b)?;
                 self.call_rt_ptr_as_i64(sym, &[obj.into(), a.into(), b_i.into()], label)
             }
+            BuiltinEmit::ObjI64OptionTags => {
+                let obj_i = self.coerce_i64(self.local(args[0])?)?;
+                let key = self.coerce_i64(self.local(args[1])?)?;
+                let obj = self.i64_as_ptr(obj_i, "obj")?;
+                let some = self
+                    .llvm
+                    .i64_ty
+                    .const_int(self.option_some_tag as u64, true);
+                let none = self
+                    .llvm
+                    .i64_ty
+                    .const_int(self.option_none_tag as u64, true);
+                let sym = Self::builtin_symbol(b)?;
+                self.call_rt_basic(
+                    sym,
+                    &[obj.into(), key.into(), some.into(), none.into()],
+                    label,
+                )
+            }
         }
     }
 

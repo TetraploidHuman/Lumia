@@ -11,7 +11,7 @@ pub enum BuiltinEffect {
 
 /// Codegen calling convention for builtins that are a direct `lumia_*` call.
 ///
-/// `Custom` stays hand-written (println/show/assert, Option tags, FunRef checks).
+/// `Custom` stays hand-written (println/show/assert, FunRef checks for par_*).
 /// Float container retagging uses [`BuiltinInfo::float_ensures`] on convention emits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinEmit {
@@ -36,6 +36,8 @@ pub enum BuiltinEmit {
     I64I64Ptr,
     /// `(obj ptr, i64, i64)` → ptr→i64.
     ObjI64I64Ptr,
+    /// `(obj ptr, i64)` + codegen Option some/none tags → scalar i64 (`lumia_get`).
+    ObjI64OptionTags,
 }
 
 /// Metadata driving ty arity checks and simple codegen symbol lookup.
@@ -130,7 +132,7 @@ impl Builtin {
                 pure,
                 Some("lumia_get"),
                 NO_F,
-                Custom,
+                ObjI64OptionTags,
             ),
             ListSlice => (
                 BuiltinFamily::List,

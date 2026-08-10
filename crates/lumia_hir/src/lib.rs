@@ -51,6 +51,10 @@ mod tests {
             super::BuiltinEmit::ObjI64Ptr
         );
         assert_eq!(Builtin::StrSplit.info().emit, super::BuiltinEmit::ObjI64Ptr);
+        assert_eq!(
+            Builtin::ListGet.info().emit,
+            super::BuiltinEmit::ObjI64OptionTags
+        );
     }
 
     #[test]

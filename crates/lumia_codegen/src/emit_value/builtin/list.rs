@@ -4,7 +4,7 @@ use super::super::super::Codegen;
 use anyhow::{Context as AnyhowContext, Result};
 use inkwell::values::{BasicValueEnum, PointerValue};
 use inkwell::{AddressSpace, IntPredicate};
-use lumia_core::{Local, Value};
+use lumia_core::{list_par_map_elem_ty, InferValueCtx, Local};
 use lumia_hir::Builtin;
 use lumia_ty::Type;
 
@@ -15,37 +15,15 @@ impl<'ctx> Codegen<'ctx> {
         args: &[Local],
     ) -> Result<BasicValueEnum<'ctx>> {
         match name {
-            Builtin::ListGet => {
-                let list_i = self.coerce_i64(self.local(args[0])?)?;
-                let idx = self.coerce_i64(self.local(args[1])?)?;
-                let list = self.i64_as_ptr(list_i, "col_ptr")?;
-                let some = self
-                    .llvm
-                    .i64_ty
-                    .const_int(self.option_some_tag as u64, true);
-                let none = self
-                    .llvm
-                    .i64_ty
-                    .const_int(self.option_none_tag as u64, true);
-                let sym = Self::builtin_symbol(name)?;
-                self.call_rt_basic(
-                    sym,
-                    &[list.into(), idx.into(), some.into(), none.into()],
-                    "get",
-                )
-            }
             Builtin::ListParMap => {
                 let list_i = self.coerce_i64(self.local(args[0])?)?;
                 let fun_i = self.coerce_i64(self.local(args[1])?)?;
                 let list = self.i64_as_ptr(list_i, "pmap_list")?;
                 let fptr = self.ensure_funref_ptr(fun_i, "pmap")?;
                 let elem_is_float = matches!(
-                    lumia_core::infer_value_ty_ctx(
-                        &Value::Builtin {
-                            name: Builtin::ListParMap,
-                            args: args.to_vec(),
-                        },
-                        lumia_core::InferValueCtx {
+                    list_par_map_elem_ty(
+                        args,
+                        InferValueCtx {
                             local_tys: &self.frame.local_tys,
                             slot_tys: Some(&self.frame.slot_tys),
                             fun_ret_tys: Some(&self.funs.fun_ret_tys),
@@ -53,9 +31,8 @@ impl<'ctx> Codegen<'ctx> {
                             fun_param0_identity: Some(&self.funs.fun_param0_identity),
                             funref_locals: Some(&self.funs.funref_locals),
                         },
-                        None,
                     ),
-                    Type::List(e) if matches!(e.as_ref(), Type::Float)
+                    Type::Float
                 );
                 let result_tid = lumia_abi::list_type_id(elem_is_float) as u64;
                 let sym = Self::builtin_symbol(name)?;
