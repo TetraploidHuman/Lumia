@@ -115,6 +115,28 @@ fn list_append_cow_unique_grows_and_alias_copies() {
 }
 
 #[test]
+fn list_set_preserves_old_binding() {
+    use crate::list::{
+        lumia_list_append, lumia_list_empty, lumia_list_get, lumia_list_len, lumia_list_set,
+    };
+    // Unique list (RC=1) must still allocate on set — live aliases observe old value.
+    let mut xs = lumia_list_empty();
+    let mut ys = ptr::null_mut();
+    lumia_root_push(&mut xs as *mut *mut u8);
+    lumia_root_push(&mut ys as *mut *mut u8);
+    xs = lumia_list_append(xs, 1);
+    xs = lumia_list_append(xs, 2);
+    xs = lumia_list_append(xs, 3);
+    ys = lumia_list_set(xs, 1, 99);
+    assert_eq!(lumia_list_len(xs), 3);
+    assert_eq!(lumia_list_get(xs, 1), 2, "xs must keep old elem after set");
+    assert_eq!(lumia_list_get(ys, 1), 99);
+    assert_ne!(xs, ys, "set must return a distinct list");
+    lumia_root_pop();
+    lumia_root_pop();
+}
+
+#[test]
 fn rooted_survives_soft_threshold() {
     // Lower limit temporarily via many small allocs with a rooted object.
     let mut slot: *mut u8 = lumia_alloc(64, TYPE_STRING);

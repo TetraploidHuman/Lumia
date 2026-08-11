@@ -155,7 +155,7 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumia_rt` 内�
 | 难   | 无对象头 / 无根约定的裸 malloc 与精确 GC 混用         |
 
 
-`List`/`Map`/`Set` 更新先走新分配 / overlay；**不依赖 ARC 唯一性**。以后若上 `--mm=arc`，再加 `is_unique` 做原地优化。
+`List`/`Map`/`Set` 更新默认走新分配 / overlay；`List.append` 在 **retain 证明唯一** 且有余量时可原地扩容（COW）。`List.set` 始终新分配，避免 SSA 别名被原地改写。`--mm=arc` 仍可作为另路径。
 
 ---
 
@@ -164,13 +164,13 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumia_rt` 内�
 - Pass 接口在 `lumia_opt`：`cse` / `const_fold` / `licm`（Debug+Release，局部消重）+ Release 的 `memo_tf`（有界 `T_f`：Slots / DenseInt；**CSE 前**做建表规划，非 pass 循环内空跑）；`--no-memo`（别名 `--no-memo-l2`）可关 runtime Memo 做对比。运行时 C 符号仍为 `lumia_memo_l2_*`（ABI 冻结）。
 - 测试/工具前端：`lumia_core::FrontendOptions`（`auto_parallel` / `trust_foreign_pure`）经 `compile_source_to_core_with_options`；多文件加载、visibility、assert 消息注解仍仅 CLI。
   - **Inline**：小纯函数直调内联（跳过 `main` / `foreign` / memo / 递归 / 效应）；Release 在 Inline 后再跑 `ConstFold` → `SpecializeConst` → `Escape` → `ReprSelect`（内联露出的字面量可栈分配）。
-  - **Escape**：保守逃逸分析；纯投影/`Take`/`Slice`/`Reverse` 等不 `may_capture`；`ReprSelect` 对**未逃逸**小 `List`/`Map` 标 `LitList` / `SmallMap`（codegen 栈布局已接）。
+  - **Escape**：保守逃逸分析；标量/`Join`/字符串深拷贝投影可不 `may_capture`；`Take`/`Elems` 等共享或拷贝元素指针的仍捕获；逃逸的 `ListGet`/`AdtField` 会标容器。`ReprSelect` 对**未逃逸**小 `List`/`Map` 标 `LitList` / `SmallMap`（codegen 栈布局已接）。
   - **SpecializeConst**：Int/Bool/Char 调用点常量特化（`f$c_…`）；Release 在 Inline 前后各一轮。
   - **CopyElim**：折叠 `let x = y` SSA 别名。
   - **concat_ident**：Core 消 `concat([])` 恒等（`map`/`filter`/`fold` 主融合在 HIR）；空 `listOf()` → `lumia_list_empty` 永生单例。
   - **稳健性**：foreign `String` 临时 cstr 在调用期间入根（防 GC UAF）；Iota 物化 / 取下标用 checked 算术并对过大物化 trap；跨 product 同名字段的 `with` 报歧义。
   - **List Iota**：`range` / `rangeInclusive` → `TYPE_LIST_IOTA`（`[start,end)`，O(1)）；`len`/`get`/eq/hash/`take`/`slice` 虚拟；修改类 API `force` 成 HeapList（见 `examples/range_iota.lm`）；PE 跟踪虚拟 iota；`par_map`/`concat` 空恒等不强制物化。
-- GC：分代 mark-sweep（young 默认 64KiB → minor：只标记 nursery + remembered/rooted old；old 默认 256KiB 或 `lumia_gc_collect` → full）+ **`lumia_write_barrier` remembered set**（List 原地 append/set、Map/Set hash upsert；codegen 堆字段 store 亦发出）+ **shadow-stack 根**；`is_heap_payload` O(1)；见 `examples/gc_roots.lm`。
+- GC：分代 mark-sweep（young 默认 64KiB → minor：只标记 nursery + remembered/rooted old；old 默认 256KiB 或 `lumia_gc_collect` → full）+ **`lumia_write_barrier` remembered set**（List 原地 append、Map/Set hash upsert；codegen 堆字段 store 亦发出）+ **shadow-stack 根**；`is_heap_payload` O(1)；见 `examples/gc_roots.lm`。
   - **Escape**：短生命周期 `var` 不再一律逃逸；经 `Name`/返回逃逸的赋值仍会标记，便于 `ReprSelect` 选栈 `Lit*`。
 - Map：小表线性 Assoc；超过 8 对晋升 **HashOrdered**；大表 `set` 走 **Overlay** 差分（满 8 条再压实）；见 `examples/map_hash.lm`。
 - Set：同哲学 — ≤8 线性，更大 **HashOrdered**（开址 + 插入序）；见 `examples/set_hash.lm`。
@@ -202,7 +202,7 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumia_rt` 内�
 | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | **已完成骨架**       | parse 子集 → 推断 + 效应 → Core → LLVM → 链 `lumia_rt` → `main` + `println` + `Int`；`listOf`→`AllocList`；CSE + ReprSelect 默认路径                       |
 | **已完成下一步（部分）**  | …；**sortBy / assert+行号**；**定位诊断（多文件）**；**Map Overlay**；**WordCount**；**lumia fmt**；…                                                          |
-| **已完成（相对原「下一里程碑」）** | Trait / instance + 运行时字典；非逃逸小对象栈分配（Lit* / LitAdt + 晋升）；`std.option` / `std.result` / `std.string` / `std.io` 源文件正文；逃逸分析 / 融合 / TCO SCC / 自动并行 / 透明 Memo；L0 `Map.get` PE + Release 二次 `const_fold`；**Int call-site specialization**（`SpecializeConstPass`）+ 字面 `ListTake`/`ListSlice`/`ListReverse`/`AdtTag` PE |
+| **已完成（相对原「下一里程碑」）** | Trait / instance + 运行时字典；非逃逸小对象栈分配（Lit* / LitAdt + 晋升）；`std.option` / `std.result` / `std.string` / `std.io` 源文件正文；逃逸分析 / 融合 / TCO SCC / 自动并行 / 透明 Memo；L0 `Map.get` PE + Release 二次 `const_fold`；**Int/Bool/Char call-site specialization**（`SpecializeConstPass`）+ 字面 `ListTake`/`ListSlice`/`ListReverse`/`AdtTag`/`Map.set`/`Set.insert` PE |
 | **仍待** | 并发 GC；`--mm=arc`（分代 + remembered set 已落地） |
 | **工具链已落地** | **自动并行**（默认 `ListParMap` + 不安全回退；`--no-parallel`）；**包管理**（`Lumia.toml` / `lumia pkg`）；**LSP**（`lumia lsp`）；**FFI**（`foreign "C" fn`）；`priv` 跨文件可见性；`effect { }` 块；Map/Set `finish` 晋升；`lumia fmt` / `lumia doc` |
 

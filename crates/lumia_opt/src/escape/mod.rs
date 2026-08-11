@@ -381,4 +381,97 @@ mod tests {
             "returning Name(xs) must escape assigns to xs: {esc:?}"
         );
     }
+
+    #[test]
+    fn returned_take_escapes_source_list() {
+        // Take copies element pointers — source must escape when take result does.
+        let body = Block {
+            params: vec![],
+            ops: vec![
+                Op::Let {
+                    local: Local(0),
+                    value: Value::Int(1),
+                    pure_region: true,
+                },
+                Op::Let {
+                    local: Local(1),
+                    value: Value::AllocList {
+                        elems: vec![Local(0)],
+                        repr: lumia_core::ListRepr::HeapList,
+                    },
+                    pure_region: true,
+                },
+                Op::Let {
+                    local: Local(2),
+                    value: Value::Int(1),
+                    pure_region: true,
+                },
+                Op::Let {
+                    local: Local(3),
+                    value: Value::Builtin {
+                        name: Builtin::ListTake,
+                        args: vec![Local(1), Local(2)],
+                    },
+                    pure_region: true,
+                },
+            ],
+            result: Some(Local(3)),
+        };
+        let esc = escaping_locals(&fun_with_body(body));
+        assert!(
+            esc.contains(&Local(1)),
+            "source list of escaping Take must escape: {esc:?}"
+        );
+        assert!(esc.contains(&Local(0)), "list elems must escape: {esc:?}");
+    }
+
+    #[test]
+    fn returned_list_get_escapes_source_list() {
+        let body = Block {
+            params: vec![],
+            ops: vec![
+                Op::Let {
+                    local: Local(0),
+                    value: Value::AllocAdt {
+                        adt_name: "Point".into(),
+                        tag: 0,
+                        fields: vec![],
+                        repr: lumia_core::AdtRepr::HeapAdt,
+                    },
+                    pure_region: true,
+                },
+                Op::Let {
+                    local: Local(1),
+                    value: Value::AllocList {
+                        elems: vec![Local(0)],
+                        repr: lumia_core::ListRepr::HeapList,
+                    },
+                    pure_region: true,
+                },
+                Op::Let {
+                    local: Local(2),
+                    value: Value::Int(0),
+                    pure_region: true,
+                },
+                Op::Let {
+                    local: Local(3),
+                    value: Value::Builtin {
+                        name: Builtin::ListGet,
+                        args: vec![Local(1), Local(2)],
+                    },
+                    pure_region: true,
+                },
+            ],
+            result: Some(Local(3)),
+        };
+        let esc = escaping_locals(&fun_with_body(body));
+        assert!(
+            esc.contains(&Local(1)),
+            "list of escaping ListGet must escape: {esc:?}"
+        );
+        assert!(
+            esc.contains(&Local(0)),
+            "elem behind escaping ListGet must escape: {esc:?}"
+        );
+    }
 }

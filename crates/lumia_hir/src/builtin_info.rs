@@ -422,27 +422,20 @@ impl Builtin {
                 ObjI64Scalar,
             ),
         };
-        // Projections / pure transformers that do not retain the *container*
-        // for later use (result is a fresh value or scalar). ListConcat/Append
-        // may share or mutate and stay capturing.
+        // Projections that yield scalars / deep-copied strings do not retain the
+        // container. Ops that share the container pointer (Elems/MapItems) or
+        // copy element pointers into a new container (Take/Slice/…) stay capturing
+        // so Escape → ReprSelect cannot leave stack Lit* behind escaping results.
         let may_capture = !matches!(
             self,
             ListLen
                 | ListGet
-                | ListTake
-                | ListSlice
-                | ListReverse
-                | ListSort
-                | ListJoin
                 | AdtTag
                 | AdtField
                 | Contains
                 | Show
                 | MatchFail
-                | MapKeys
-                | MapValues
-                | MapItems
-                | Elems
+                | ListJoin
                 | StrTrim
                 | StrToLower
                 | StrToUpper
@@ -793,20 +786,27 @@ mod tests {
         let no_capture = [
             Builtin::ListLen,
             Builtin::ListGet,
-            Builtin::ListTake,
-            Builtin::ListSlice,
-            Builtin::ListReverse,
             Builtin::AdtTag,
             Builtin::AdtField,
             Builtin::Contains,
             Builtin::Show,
             Builtin::MatchFail,
-            Builtin::MapKeys,
-            Builtin::Elems,
+            Builtin::ListJoin,
+            Builtin::StrTrim,
+            Builtin::StrSplit,
         ];
         for b in no_capture {
             assert!(!b.may_capture(), "{}", b.display_name());
         }
+        // Identity / element-pointer copiers must capture.
+        assert!(Builtin::Elems.may_capture());
+        assert!(Builtin::MapItems.may_capture());
+        assert!(Builtin::ListTake.may_capture());
+        assert!(Builtin::ListSlice.may_capture());
+        assert!(Builtin::ListReverse.may_capture());
+        assert!(Builtin::ListSort.may_capture());
+        assert!(Builtin::MapKeys.may_capture());
+        assert!(Builtin::MapValues.may_capture());
         assert!(Builtin::ListAppend.may_capture());
         assert!(Builtin::ListConcat.may_capture());
         assert!(Builtin::MapSet.may_capture());
