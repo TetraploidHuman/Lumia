@@ -226,7 +226,12 @@ fn slots_cost_ok(f: &CoreFun, module: &CoreModule) -> bool {
 fn const_arg_reuse_count(module: &CoreModule, fun: &str) -> usize {
     let mut freq: HashMap<Vec<i64>, usize> = HashMap::default();
     for f in &module.functions {
-        collect_const_calls(&f.body, fun, &mut HashMap::default(), &mut freq);
+        collect_const_calls(
+            &f.body,
+            fun,
+            &mut crate::ir_util::KnownScalars::new(),
+            &mut freq,
+        );
     }
     freq.values().copied().max().unwrap_or(0)
 }
@@ -234,7 +239,7 @@ fn const_arg_reuse_count(module: &CoreModule, fun: &str) -> usize {
 fn collect_const_calls(
     block: &Block,
     fun: &str,
-    known: &mut HashMap<u32, i64>,
+    known: &mut crate::ir_util::KnownScalars,
     freq: &mut HashMap<Vec<i64>, usize>,
 ) {
     for op in &block.ops {
@@ -244,20 +249,10 @@ fn collect_const_calls(
                     known.insert(local.0, *n);
                 }
                 Value::Call { fun: callee, args } if callee == fun => {
-                    let mut key = Vec::with_capacity(args.len());
-                    let mut ok = true;
-                    for a in args {
-                        if let Some(&n) = known.get(&a.0) {
-                            key.push(n);
-                        } else {
-                            ok = false;
-                            break;
-                        }
-                    }
-                    if ok {
+                    if let Some(key) = known.resolve_all(args) {
                         *freq.entry(key).or_default() += 1;
                     }
-                    known.remove(&local.0);
+                    known.remove(local.0);
                 }
                 Value::If {
                     then_block,
@@ -266,7 +261,7 @@ fn collect_const_calls(
                 } => {
                     collect_const_calls(then_block, fun, &mut known.clone(), freq);
                     collect_const_calls(else_block, fun, &mut known.clone(), freq);
-                    known.remove(&local.0);
+                    known.remove(local.0);
                 }
                 Value::Loop {
                     header,
@@ -276,26 +271,16 @@ fn collect_const_calls(
                     collect_const_calls(header, fun, &mut known.clone(), freq);
                     collect_const_calls(body, fun, &mut known.clone(), freq);
                     collect_const_calls(latch, fun, &mut known.clone(), freq);
-                    known.remove(&local.0);
+                    known.remove(local.0);
                 }
                 _ => {
-                    known.remove(&local.0);
+                    known.remove(local.0);
                 }
             },
             Op::Effect { value } => {
                 if let Value::Call { fun: callee, args } = value {
                     if callee == fun {
-                        let mut key = Vec::with_capacity(args.len());
-                        let mut ok = true;
-                        for a in args {
-                            if let Some(&n) = known.get(&a.0) {
-                                key.push(n);
-                            } else {
-                                ok = false;
-                                break;
-                            }
-                        }
-                        if ok {
+                        if let Some(key) = known.resolve_all(args) {
                             *freq.entry(key).or_default() += 1;
                         }
                     }

@@ -137,8 +137,38 @@ impl<'ctx> Codegen<'ctx> {
                 .build_conditional_branch(is_funref, funref_bb, clos_bb),
         )?;
 
-        // Bare FunRef (low bit set): call without env.
         self.llvm.builder.position_at_end(funref_bb);
+        let (fr_i, funref_bb_end) = self.emit_indirect_call_funref(cal_i, args, merge_bb)?;
+
+        self.llvm.builder.position_at_end(clos_bb);
+        let (cl_i, clos_bb_end) = self.emit_indirect_call_closure(cal_i, args, merge_bb)?;
+
+        self.llvm.builder.position_at_end(merge_bb);
+        let phi = crate::error::llvm(self.llvm.builder.build_phi(self.llvm.i64_ty, "icall_res"))?;
+        phi.add_incoming(&[(&fr_i, funref_bb_end), (&cl_i, clos_bb_end)]);
+        let bits = phi.as_basic_value().into_int_value();
+        if float_ret {
+            crate::error::llvm(self.llvm.builder.build_bit_cast(
+                bits,
+                self.llvm.context.f64_type(),
+                "icall_f64",
+            ))
+        } else {
+            Ok(bits.into())
+        }
+    }
+
+    /// Funref arm: builder already at `icall_funref`. Returns (i64 result, end BB).
+    fn emit_indirect_call_funref(
+        &mut self,
+        cal_i: inkwell::values::IntValue<'ctx>,
+        args: &[Local],
+        merge_bb: inkwell::basic_block::BasicBlock<'ctx>,
+    ) -> Result<(
+        inkwell::values::IntValue<'ctx>,
+        inkwell::basic_block::BasicBlock<'ctx>,
+    )> {
+        let one = self.llvm.i64_ty.const_int(1, false);
         let not_one = crate::error::llvm(self.llvm.builder.build_not(one, "not1"))?;
         let fn_i = crate::error::llvm(self.llvm.builder.build_and(cal_i, not_one, "fn_clear"))?;
         let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
@@ -147,10 +177,9 @@ impl<'ctx> Codegen<'ctx> {
         let param_tys: Vec<BasicMetadataTypeEnum> =
             args.iter().map(|_| self.llvm.i64_ty.into()).collect();
         let fn_ty = self.llvm.i64_ty.fn_type(&param_tys, false);
-        let mut av: Vec<BasicMetadataValueEnum> = vec![];
+        let mut av: Vec<BasicMetadataValueEnum> = Vec::with_capacity(args.len());
         for a in args {
-            let v = self.coerce_i64(self.local(*a)?)?;
-            av.push(v.into());
+            av.push(self.coerce_i64(self.local(*a)?)?.into());
         }
         let call_fr = crate::error::llvm(
             self.llvm
@@ -163,14 +192,25 @@ impl<'ctx> Codegen<'ctx> {
             .unwrap_or_else(|| self.llvm.i64_ty.const_int(0, false).into());
         let fr_i = self.coerce_i64(fr_v)?;
         crate::error::llvm(self.llvm.builder.build_unconditional_branch(merge_bb))?;
-        let funref_bb_end = self
+        let end = self
             .llvm
             .builder
             .get_insert_block()
             .context("insert block")?;
+        Ok((fr_i, end))
+    }
 
-        // Heap closure: load code ptr, pass env as first arg.
-        self.llvm.builder.position_at_end(clos_bb);
+    /// Closure arm: builder already at `icall_clos`. Returns (i64 result, end BB).
+    fn emit_indirect_call_closure(
+        &mut self,
+        cal_i: inkwell::values::IntValue<'ctx>,
+        args: &[Local],
+        merge_bb: inkwell::basic_block::BasicBlock<'ctx>,
+    ) -> Result<(
+        inkwell::values::IntValue<'ctx>,
+        inkwell::basic_block::BasicBlock<'ctx>,
+    )> {
+        let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
         let env_ptr = crate::error::llvm(
             self.llvm
                 .builder
@@ -195,15 +235,16 @@ impl<'ctx> Codegen<'ctx> {
             ptr_ty,
             "clos_fn_ptr",
         ))?;
-        let mut clos_param_tys: Vec<BasicMetadataTypeEnum> = vec![self.llvm.i64_ty.into()];
-        for _ in args.iter() {
+        let mut clos_param_tys: Vec<BasicMetadataTypeEnum> = Vec::with_capacity(args.len() + 1);
+        clos_param_tys.push(self.llvm.i64_ty.into());
+        for _ in args {
             clos_param_tys.push(self.llvm.i64_ty.into());
         }
         let clos_fn_ty = self.llvm.i64_ty.fn_type(&clos_param_tys, false);
-        let mut cav: Vec<BasicMetadataValueEnum> = vec![cal_i.into()];
+        let mut cav: Vec<BasicMetadataValueEnum> = Vec::with_capacity(args.len() + 1);
+        cav.push(cal_i.into());
         for a in args {
-            let v = self.coerce_i64(self.local(*a)?)?;
-            cav.push(v.into());
+            cav.push(self.coerce_i64(self.local(*a)?)?.into());
         }
         let call_cl = crate::error::llvm(
             self.llvm
@@ -216,25 +257,12 @@ impl<'ctx> Codegen<'ctx> {
             .unwrap_or_else(|| self.llvm.i64_ty.const_int(0, false).into());
         let cl_i = self.coerce_i64(cl_v)?;
         crate::error::llvm(self.llvm.builder.build_unconditional_branch(merge_bb))?;
-        let clos_bb_end = self
+        let end = self
             .llvm
             .builder
             .get_insert_block()
             .context("insert block")?;
-
-        self.llvm.builder.position_at_end(merge_bb);
-        let phi = crate::error::llvm(self.llvm.builder.build_phi(self.llvm.i64_ty, "icall_res"))?;
-        phi.add_incoming(&[(&fr_i, funref_bb_end), (&cl_i, clos_bb_end)]);
-        let bits = phi.as_basic_value().into_int_value();
-        if float_ret {
-            crate::error::llvm(self.llvm.builder.build_bit_cast(
-                bits,
-                self.llvm.context.f64_type(),
-                "icall_f64",
-            ))
-        } else {
-            Ok(bits.into())
-        }
+        Ok((cl_i, end))
     }
 
     pub(crate) fn emit_value_funref(&mut self, name: &str) -> Result<BasicValueEnum<'ctx>> {

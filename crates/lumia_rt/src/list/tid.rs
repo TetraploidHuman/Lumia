@@ -1,10 +1,10 @@
 //! List type_id helpers and Float-elem ensure.
 
 use crate::common::{
-    header_from_payload, list_elem_is_float, tid_base, trap_abort, TYPE_LIST, TYPE_LIST_F64,
-    TYPE_LIST_IOTA,
+    header_from_payload, list_elem_is_float, tid_base, trap_abort, TYPE_LIST, TYPE_LIST_IOTA,
 };
 use crate::gc::lumia_alloc;
+use lumia_abi::list_type_id;
 
 #[inline]
 pub(crate) fn is_list_tid(tid: u32) -> bool {
@@ -23,22 +23,18 @@ pub(crate) fn list_tid(list: *mut u8) -> u32 {
 /// Preserve Float-elem tagging when allocating a derived HeapList.
 #[inline]
 pub(crate) fn heap_list_tid(list: *mut u8) -> u32 {
-    if list_elem_is_float(list_tid(list)) {
-        TYPE_LIST_F64
-    } else {
-        TYPE_LIST
-    }
+    list_type_id(list_elem_is_float(list_tid(list)))
 }
 
 pub(crate) fn list_float_elems(list: *mut u8) -> bool {
     list_elem_is_float(list_tid(list))
 }
 
-/// Ensure a list uses IEEE elem eq/hash (`TYPE_LIST_F64`).
+/// Ensure a list uses IEEE elem eq/hash (`list_type_id(true)`).
 /// Empty ordinary lists become a fresh empty F64 list (no in-place retag).
 pub(crate) fn ensure_list_f64(list: *mut u8) -> *mut u8 {
     if list.is_null() {
-        let dest = lumia_alloc(8, TYPE_LIST_F64);
+        let dest = lumia_alloc(8, list_type_id(true));
         unsafe {
             *(dest as *mut i64) = 0;
         }
@@ -54,7 +50,7 @@ pub(crate) fn ensure_list_f64(list: *mut u8) -> *mut u8 {
             if *(list as *const i64) != 0 {
                 trap_abort("lumia: ensure_list_f64 on non-empty Int-elem list");
             }
-            let dest = lumia_alloc(8, TYPE_LIST_F64);
+            let dest = lumia_alloc(8, list_type_id(true));
             *(dest as *mut i64) = 0;
             return dest;
         }

@@ -8,6 +8,7 @@ mod copy_elim;
 mod escape;
 mod fusion;
 mod inline;
+mod ir_util;
 mod memo;
 mod repr_select;
 mod specialize_const;

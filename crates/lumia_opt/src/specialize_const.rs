@@ -192,7 +192,7 @@ fn collect_const_calls(
     candidates: &HashMap<String, CoreFun>,
     needed: &mut HashSet<ConstKey>,
 ) {
-    let mut known_int: HashMap<u32, i64> = HashMap::default();
+    let mut known = crate::ir_util::KnownScalars::new();
     for op in &block.ops {
         match op {
             Op::Let {
@@ -200,11 +200,11 @@ fn collect_const_calls(
                 value,
                 pure_region,
             } if *pure_region => {
-                track_int(local.0, value, &mut known_int);
+                known.track(local.0, value);
                 if let Value::Call { fun, args } = value {
                     if let Some(c) = candidates.get(fun) {
                         if c.params.len() == args.len() {
-                            if let Some(consts) = resolve_all_ints(args, &known_int) {
+                            if let Some(consts) = known.resolve_all(args) {
                                 needed.insert(ConstKey {
                                     fun: fun.clone(),
                                     args: consts,
@@ -259,7 +259,7 @@ fn rewrite_const_calls(
     renames: &HashMap<(String, Vec<i64>), String>,
     candidates: &HashMap<String, CoreFun>,
 ) {
-    let mut known_int: HashMap<u32, i64> = HashMap::default();
+    let mut known = crate::ir_util::KnownScalars::new();
     for op in &mut block.ops {
         match op {
             Op::Let {
@@ -269,7 +269,7 @@ fn rewrite_const_calls(
             } if *pure_region => {
                 if let Value::Call { fun, args } = value {
                     if candidates.contains_key(fun) {
-                        if let Some(consts) = resolve_all_ints(args, &known_int) {
+                        if let Some(consts) = known.resolve_all(args) {
                             if let Some(mangled) = renames.get(&(fun.clone(), consts)) {
                                 *value = Value::Call {
                                     fun: mangled.clone(),
@@ -279,7 +279,7 @@ fn rewrite_const_calls(
                         }
                     }
                 }
-                track_int(local.0, value, &mut known_int);
+                known.track(local.0, value);
                 walk_nested_rewrite(value, renames, candidates);
             }
             Op::Let { value, .. } | Op::Effect { value } => {
@@ -316,35 +316,6 @@ fn walk_nested_rewrite(
         Value::Lambda { body, .. } => rewrite_const_calls(body, renames, candidates),
         _ => {}
     }
-}
-
-fn track_int(local: u32, value: &Value, known: &mut HashMap<u32, i64>) {
-    // Track Int / Bool / Char as i64 bit patterns for call-site matching.
-    match value {
-        Value::Int(n) => {
-            known.insert(local, *n);
-        }
-        Value::Bool(b) => {
-            known.insert(local, if *b { 1 } else { 0 });
-        }
-        Value::Char(c) => {
-            known.insert(local, u32::from(*c) as i64);
-        }
-        Value::Local(Local(src)) => {
-            if let Some(&n) = known.get(src) {
-                known.insert(local, n);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn resolve_all_ints(args: &[Local], known: &HashMap<u32, i64>) -> Option<Vec<i64>> {
-    let mut out = Vec::with_capacity(args.len());
-    for a in args {
-        out.push(*known.get(&a.0)?);
-    }
-    Some(out)
 }
 
 #[cfg(test)]

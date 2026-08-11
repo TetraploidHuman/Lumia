@@ -429,7 +429,7 @@ fn list_f64_eq_follows_ieee() {
     let neg0 = (-0.0f64).to_bits() as i64;
     let nan = f64::NAN.to_bits() as i64;
     let a = {
-        let p = lumia_alloc(list_payload_bytes(1), TYPE_LIST_F64);
+        let p = lumia_alloc(list_payload_bytes(1), lumia_abi::list_type_id(true));
         unsafe {
             *(p as *mut i64) = 1;
             *((p as *mut i64).add(1)) = pos0;
@@ -437,7 +437,7 @@ fn list_f64_eq_follows_ieee() {
         p
     };
     let b = {
-        let p = lumia_alloc(list_payload_bytes(1), TYPE_LIST_F64);
+        let p = lumia_alloc(list_payload_bytes(1), lumia_abi::list_type_id(true));
         unsafe {
             *(p as *mut i64) = 1;
             *((p as *mut i64).add(1)) = neg0;
@@ -445,7 +445,7 @@ fn list_f64_eq_follows_ieee() {
         p
     };
     let c = {
-        let p = lumia_alloc(list_payload_bytes(1), TYPE_LIST_F64);
+        let p = lumia_alloc(list_payload_bytes(1), lumia_abi::list_type_id(true));
         unsafe {
             *(p as *mut i64) = 1;
             *((p as *mut i64).add(1)) = nan;
@@ -456,7 +456,7 @@ fn list_f64_eq_follows_ieee() {
     // Same object still NaN≠NaN under IEEE content compare.
     assert_eq!(lumia_eq(c as i64, c as i64), 0);
     let c2 = {
-        let p = lumia_alloc(list_payload_bytes(1), TYPE_LIST_F64);
+        let p = lumia_alloc(list_payload_bytes(1), lumia_abi::list_type_id(true));
         unsafe {
             *(p as *mut i64) = 1;
             *((p as *mut i64).add(1)) = nan;
