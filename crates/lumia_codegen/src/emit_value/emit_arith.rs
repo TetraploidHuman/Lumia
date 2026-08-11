@@ -114,6 +114,50 @@ impl<'ctx> Codegen<'ctx> {
         fv: FunctionValue<'ctx>,
         is_rem: bool,
     ) -> Result<IntValue<'ctx>> {
+        // Constant divisor: skip checks that cannot fire.
+        if let Some(c) = r.get_sign_extended_constant() {
+            if c == 0 {
+                let trap = self.runtime_fn("lumia_trap_div0")?;
+                crate::error::llvm(self.llvm.builder.build_call(trap, &[], "trap0"))?;
+                crate::error::llvm(self.llvm.builder.build_unreachable())?;
+                // Unreachable; keep a value for typing.
+                return Ok(self.llvm.i64_ty.const_int(0, false));
+            }
+            if c == -1 {
+                let i64_min = self.llvm.i64_ty.const_int(i64::MIN as u64, true);
+                let is_min = crate::error::llvm(self.llvm.builder.build_int_compare(
+                    IntPredicate::EQ,
+                    l,
+                    i64_min,
+                    "div_min",
+                ))?;
+                let trap_bb = self.llvm.context.append_basic_block(fv, "div_ov_trap");
+                let ok_bb = self.llvm.context.append_basic_block(fv, "div_ok");
+                crate::error::llvm(
+                    self.llvm
+                        .builder
+                        .build_conditional_branch(is_min, trap_bb, ok_bb),
+                )?;
+                self.llvm.builder.position_at_end(trap_bb);
+                let t1 = self.runtime_fn("lumia_trap_overflow")?;
+                crate::error::llvm(self.llvm.builder.build_call(t1, &[], "trap_ov"))?;
+                crate::error::llvm(self.llvm.builder.build_unreachable())?;
+                self.llvm.builder.position_at_end(ok_bb);
+            } else {
+                // c ∉ {0, -1}: no div0 / MIN÷-1.
+                return Ok(if is_rem {
+                    crate::error::llvm(self.llvm.builder.build_int_signed_rem(l, r, "rem"))?
+                } else {
+                    crate::error::llvm(self.llvm.builder.build_int_signed_div(l, r, "div"))?
+                });
+            }
+            return Ok(if is_rem {
+                crate::error::llvm(self.llvm.builder.build_int_signed_rem(l, r, "rem"))?
+            } else {
+                crate::error::llvm(self.llvm.builder.build_int_signed_div(l, r, "div"))?
+            });
+        }
+
         let zero = self.llvm.i64_ty.const_int(0, false);
         let minus_one = self.llvm.i64_ty.const_int((-1i64) as u64, true);
         let i64_min = self.llvm.i64_ty.const_int(i64::MIN as u64, true);
@@ -166,6 +210,53 @@ impl<'ctx> Codegen<'ctx> {
         } else {
             crate::error::llvm(self.llvm.builder.build_int_signed_div(l, r, "div"))?
         })
+    }
+
+    fn emit_unchecked_div_rem(
+        &self,
+        l: IntValue<'ctx>,
+        r: IntValue<'ctx>,
+        is_rem: bool,
+    ) -> Result<IntValue<'ctx>> {
+        Ok(if is_rem {
+            crate::error::llvm(self.llvm.builder.build_int_signed_rem(l, r, "rem"))?
+        } else {
+            crate::error::llvm(self.llvm.builder.build_int_signed_div(l, r, "div"))?
+        })
+    }
+
+    fn rhs_is_two(&self, r: IntValue<'ctx>) -> bool {
+        r.get_sign_extended_constant() == Some(2)
+    }
+
+    /// `x % 2` → `x & 1` when `x` is a loop-IV load proven `>= 0`.
+    fn try_emit_nonneg_rem2(
+        &self,
+        l: IntValue<'ctx>,
+        r: IntValue<'ctx>,
+        left: &Local,
+        _right: &Local,
+    ) -> Option<IntValue<'ctx>> {
+        if !self.rhs_is_two(r) || !self.frame.nonneg_iv_load_locals.contains(&left.0) {
+            return None;
+        }
+        let one = self.llvm.i64_ty.const_int(1, false);
+        crate::error::llvm(self.llvm.builder.build_and(l, one, "rem2")).ok()
+    }
+
+    /// `x / 2` → logical shift when `x` is a loop-IV load proven `>= 0`.
+    fn try_emit_nonneg_div2(
+        &self,
+        l: IntValue<'ctx>,
+        r: IntValue<'ctx>,
+        left: &Local,
+        _right: &Local,
+    ) -> Option<IntValue<'ctx>> {
+        if !self.rhs_is_two(r) || !self.frame.nonneg_iv_load_locals.contains(&left.0) {
+            return None;
+        }
+        let one = self.llvm.i64_ty.const_int(1, false);
+        crate::error::llvm(self.llvm.builder.build_right_shift(l, one, false, "div2")).ok()
     }
 
     pub(crate) fn emit_value_binary(
@@ -224,8 +315,24 @@ impl<'ctx> Codegen<'ctx> {
             BinOp::Add => self.emit_checked_binop(l, r, fv, "sadd")?,
             BinOp::Sub => self.emit_checked_binop(l, r, fv, "ssub")?,
             BinOp::Mul => self.emit_checked_binop(l, r, fv, "smul")?,
-            BinOp::Div => self.emit_checked_div_rem(l, r, fv, false)?,
-            BinOp::Rem => self.emit_checked_div_rem(l, r, fv, true)?,
+            BinOp::Div => {
+                if let Some(v) = self.try_emit_nonneg_div2(l, r, left, right) {
+                    v
+                } else if self.frame.safe_divisor_locals.contains(&right.0) {
+                    self.emit_unchecked_div_rem(l, r, false)?
+                } else {
+                    self.emit_checked_div_rem(l, r, fv, false)?
+                }
+            }
+            BinOp::Rem => {
+                if let Some(v) = self.try_emit_nonneg_rem2(l, r, left, right) {
+                    v
+                } else if self.frame.safe_divisor_locals.contains(&right.0) {
+                    self.emit_unchecked_div_rem(l, r, true)?
+                } else {
+                    self.emit_checked_div_rem(l, r, fv, true)?
+                }
+            }
             BinOp::Eq => self.emit_value_eq(&lt, &rt, l, r)?,
             BinOp::Ne => {
                 let eq = self.emit_value_eq(&lt, &rt, l, r)?;

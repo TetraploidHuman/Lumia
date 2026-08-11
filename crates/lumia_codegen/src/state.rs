@@ -55,6 +55,10 @@ pub(crate) struct FrameState<'ctx> {
     pub emit_dest: Option<u32>,
     /// `Binary` Add/Sub locals proven safe as loop IV `±1` (see `nsw_iv`).
     pub nsw_binop_locals: HashSet<u32>,
+    /// Locals safe as `div`/`rem` RHS (const ∉ {0,-1} or always-≥2 slots).
+    pub safe_divisor_locals: HashSet<u32>,
+    /// `Name(iv)` loads inside loops where the header proves `iv >= 0`.
+    pub nonneg_iv_load_locals: HashSet<u32>,
 }
 
 /// Memo transform emission scratch for the current function.
