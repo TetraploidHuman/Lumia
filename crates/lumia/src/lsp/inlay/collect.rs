@@ -193,6 +193,8 @@ fn collect_expr_hints(
             }
             push_type_hint(out, src, span.end.0, ty, true, range);
         }
+        // Field / index projections lower to `AdtField` / `ListGet` BuiltinCalls —
+        // already covered by the Call/BuiltinCall arm above.
         _ => {}
     });
 }

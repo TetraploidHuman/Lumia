@@ -40,7 +40,7 @@
 - [x] **自动并行**：默认对 FunRef-safe 纯标量 `List.map` 选 `ListParMap`；`List.fold` **仅**在语法上为 `+`/`*`（含顶层 `val add = { a, b -> a + b }`）时选 `ListParFold`（DESIGN：不影响值；非结合如 `-` 回退顺序）；IO/非标量/真捕获回退；`--no-parallel` 关闭。
 - [x] **PE `Contains` 假阴性**：仅当集合内**每一个**键/元素均为已知 Int 常量时才折叠；非常量键不再折成 `false`。
 - [x] **逃逸分析 → 栈分配 / 多表示 List·Map·Set**：Lit* / LitAdt / 纯 callee 摘要已接线；**晋升** `lumia_list_promote`（concat 空列表恒等返回前将栈 LitList 升堆）。更多表示仍可扩展。
-- [x] **部分求值 / specialization（增量）**：L0 增加字面 `ListConcat` / `ListAppend` 折叠；字面 `Map.get` → `Some`/`None`；Release 在 `inline` 后再跑一轮 `const_fold`；既有 Len/Get/AdtField/Contains。完整 call-site specialization 仍待。
+- [x] **部分求值 / specialization（增量）**：L0 增加字面 `ListConcat` / `ListAppend` / `ListTake` / `ListSlice` / `ListReverse` / `AdtTag` 折叠；字面 `Map.get` → `Some`/`None`；Release 在 `inline` 后再跑一轮 `const_fold`；既有 Len/Get/AdtField/Contains。**Int call-site specialization**：`SpecializeConstPass`（`f$c_41` 克隆，开放 `Var` 参数在调用点为已知 Int 时亦可特化）。
 - [x] **`std/` 可执行正文**：`std.option` / `std.result` / `std.string` / `std.io` 均为 Source 并经 loader 内联；string/io 薄包装 `lumia_*` runtime foreign（对象 ABI）；`println`/`assert` 仍降为编译器 builtin。
 
 ## 工具链
@@ -54,7 +54,8 @@
 - `Builtin::info` 元数据；codegen `CodegenError` + 子状态；`lumia_abi::float_contract`。
 - Infer / pkg / lsp / syntax AST 模块拆分；Core `CoreLowerCtx`；`rustfmt.toml`。
 - **Builtin 结果 GC 根**：`ResultHeap::{Never,Always,Typed}` 驱动 `roots.rs`（与 `may_capture` 正交；`ListGet`/`AdtField`/`ListParFold` 走类型推断）。
-- **LSP semanticTokens**：`lsp/semantic/{token,overlay,walk}`；编辑器 shared↔vscode 由 `scripts/check_editor_assets.sh` 防漂移。
+- **LSP semanticTokens**：`lsp/semantic/{token,overlay,walk}`（含 import 路径/别名着色）；编辑器 shared↔vscode 由 `scripts/check_editor_assets.sh` 防漂移。
+- **LSP inlayHint**：绑定 / 形参 / 调用与投影结果类型提示。
 - **runtime_decls**：表驱动 `RUNTIME_DECLS` + 单测保证每个 `BuiltinInfo.runtime_symbol` 已声明、名字唯一。
 - **Trait mangling**：`lumia_hir::mangle_trait_method` 统一 HIR/codegen；`from_method`↔`display_name` 一致性单测。
 - **CoreModule::with_functions** / **CodegenTypeTables**；opt 管线 `PipelinePass` 免 `Box<dyn Pass>`；Memo Rust 侧以 `MEMO_TF_*` 为准（C ABI 仍 `lumia_memo_l2_*`）。

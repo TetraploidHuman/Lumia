@@ -10,6 +10,7 @@ mod fusion;
 mod inline;
 mod memo;
 mod repr_select;
+mod specialize_const;
 
 pub use escape::{escaping_locals, EscapePass};
 pub use fusion::ConcatIdentPass;
@@ -19,6 +20,7 @@ pub use memo::{
     MEMO_IDX_TABLE_BYTES, MEMO_L2_MAX_ARGS, MEMO_L2_MAX_FUNS, MEMO_L2_SLOTS, MEMO_PROCESS_BYTE_CAP,
     MEMO_SLOTS_TABLE_BYTES, MEMO_TF_MAX_ARGS, MEMO_TF_MAX_FUNS, MEMO_TF_SLOTS,
 };
+pub use specialize_const::SpecializeConstPass;
 
 use copy_elim::CopyElimPass;
 use lumia_core::{CoreModule, ListRepr, MapRepr};
@@ -51,6 +53,7 @@ pub trait Pass {
 enum PipelinePass {
     Cse,
     ConstFold,
+    SpecializeConst,
     Licm,
     Escape,
     Inline,
@@ -64,6 +67,7 @@ impl PipelinePass {
         match self {
             Self::Cse => "cse",
             Self::ConstFold => "const_fold",
+            Self::SpecializeConst => "specialize_const",
             Self::Licm => "licm",
             Self::Escape => "escape",
             Self::Inline => "inline",
@@ -77,6 +81,7 @@ impl PipelinePass {
         match self {
             Self::Cse => CsePass.run(module),
             Self::ConstFold => ConstFoldPass.run(module),
+            Self::SpecializeConst => SpecializeConstPass.run(module),
             Self::Licm => LicmPass.run(module),
             Self::Escape => EscapePass.run(module),
             Self::Inline => InlinePass.run(module),
@@ -106,6 +111,9 @@ const DEBUG_PASSES: &[PipelinePass] = &[
 ];
 const RELEASE_PASSES: &[PipelinePass] = &[
     PipelinePass::Cse,
+    PipelinePass::ConstFold,
+    // Bake Int call-site constants into leaf clones before inline/PE.
+    PipelinePass::SpecializeConst,
     PipelinePass::ConstFold,
     PipelinePass::Licm,
     PipelinePass::Escape,
@@ -213,10 +221,12 @@ mod tests {
         assert!(pass_names(true).contains(&"escape"));
         assert!(pass_names(true).contains(&"copy_elim"));
         assert!(pass_names(true).contains(&"const_fold"));
+        assert!(pass_names(true).contains(&"specialize_const"));
         assert!(pass_names(true).contains(&"licm"));
         assert!(pass_names(true).contains(&"concat_ident"));
         assert!(pass_names(true).contains(&"memo_tf"));
         assert!(!pass_names(false).contains(&"inline"));
+        assert!(!pass_names(false).contains(&"specialize_const"));
         assert!(!pass_names(false).contains(&"memo_tf"));
     }
 
