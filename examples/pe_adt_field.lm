@@ -7,7 +7,7 @@ type Point {
     val y
 }
 
-/// Const-fold product field projection from a literal AllocAdt (memo L0).
+/// Const-fold product field projection from a literal AllocAdt (§7.5.1-A local).
 val main = {
     val p = Point { x = 10, y = 20 }
     println(p.x)

@@ -1,9 +1,9 @@
-module MemoL0L1
+module MemoLocal
 
 import std.io.{println}
 
-/// L0: duplicate pure ops in one block share one SSA value (CSE / const-fold).
-/// L1: loop-invariant pure lets are hoisted (LICM).
+/// §7.5.1-A local: duplicate pure ops in one block share one SSA value (CSE / const-fold).
+/// Loop-invariant pure lets are hoisted (LICM).
 val main = {
     val a = 21
     val b = 21
@@ -17,7 +17,7 @@ val main = {
     var acc = 0
     val base = 10
     val step = 3
-    // `base + step` is invariant — L1 LICM can hoist it out of the loop.
+    // `base + step` is invariant — LICM can hoist it out of the loop.
     for i < 5 {
         acc = acc + (base + step)
         i = i + 1

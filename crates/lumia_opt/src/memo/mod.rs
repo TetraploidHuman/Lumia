@@ -22,10 +22,6 @@ pub use lumia_abi::{
     MEMO_IDX_TABLE_BYTES, MEMO_PROCESS_BYTE_CAP, MEMO_SLOTS_TABLE_BYTES, MEMO_TF_MAX_ARGS,
     MEMO_TF_MAX_FUNS, MEMO_TF_SLOTS,
 };
-/// Thin aliases of `MEMO_TF_*` (C ABI symbols remain `lumia_memo_l2_*`).
-pub use lumia_abi::{MEMO_L2_MAX_ARGS, MEMO_L2_SLOTS};
-/// Historical `u32` alias of [`MEMO_TF_MAX_FUNS_U32`].
-pub const MEMO_L2_MAX_FUNS: u32 = MEMO_TF_MAX_FUNS_U32;
 
 pub(crate) use fold::{const_fold_block, copy_prop_block};
 pub(crate) use licm::licm_block;

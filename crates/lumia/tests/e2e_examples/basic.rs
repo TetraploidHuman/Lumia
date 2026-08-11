@@ -403,7 +403,7 @@ fn e2e_list_text() {
     );
 }
 
-// Transparent Memo L2 is enabled under `--release`; results must match.
+// Transparent Memo `T_f` is enabled under `--release`; results must match.
 
 #[test]
 fn e2e_correctness_fixes() {

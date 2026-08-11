@@ -2,7 +2,7 @@ module PeListConcat
 
 import std.io.{println}
 
-/// Const-fold literal `ListConcat` / `ListAppend` (memo L0 + post-inline fold).
+/// Const-fold literal `ListConcat` / `ListAppend` (§7.5.1-A local + post-inline fold).
 val main = {
     val a = listOf(1, 2)
     val b = listOf(3)

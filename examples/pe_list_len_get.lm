@@ -2,7 +2,7 @@ module PeListLenGet
 
 import std.io.{println}
 
-/// Const-fold `listOf` → ListLen / in-bounds ListGet (memo L0).
+/// Const-fold `listOf` → ListLen / in-bounds ListGet (§7.5.1-A local).
 val main = {
     val xs = listOf(10, 20, 30)
     println(xs.len())

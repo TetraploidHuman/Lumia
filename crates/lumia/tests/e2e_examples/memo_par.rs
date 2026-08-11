@@ -6,7 +6,7 @@ e2e_ok_release!(
     "285"
 );
 
-e2e_ok!(e2e_memo_l0l1, "examples/memo_l0l1.lm", "42", "42", "65");
+e2e_ok!(e2e_memo_local, "examples/memo_local.lm", "42", "42", "65");
 
 // Dense T_f path is Release-oriented; fib(30) is slow without memo tables.
 

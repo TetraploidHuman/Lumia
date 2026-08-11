@@ -297,6 +297,87 @@ pub fn for_each_block_dfs(block: &Block, f: &mut impl FnMut(&Block)) {
     }
 }
 
+/// Total SSA op count in `block` and nested If/Loop/Lambda bodies.
+pub fn count_ops(block: &Block) -> usize {
+    let mut n = 0;
+    for_each_block_dfs(block, &mut |b| n += b.ops.len());
+    n
+}
+
+/// Whether any nested region contains a direct `Call` to `fun` (enters Lambda).
+pub fn block_calls(block: &Block, fun: &str) -> bool {
+    for op in &block.ops {
+        match op {
+            Op::Let { value, .. } | Op::Effect { value } if value_calls(value, fun) => {
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+fn value_calls(value: &Value, fun: &str) -> bool {
+    match value {
+        Value::Call { fun: f, .. } if f == fun => true,
+        Value::If {
+            then_block,
+            else_block,
+            ..
+        } => block_calls(then_block, fun) || block_calls(else_block, fun),
+        Value::Loop {
+            header,
+            body,
+            latch,
+        } => block_calls(header, fun) || block_calls(body, fun) || block_calls(latch, fun),
+        Value::Lambda { body, .. } => block_calls(body, fun),
+        _ => false,
+    }
+}
+
+/// Whether `block` or a nested region contains `Op::Return`.
+pub fn has_early_return(block: &Block) -> bool {
+    let mut found = false;
+    for_each_block_dfs(block, &mut |b| {
+        if !found && b.ops.iter().any(|op| matches!(op, Op::Return { .. })) {
+            found = true;
+        }
+    });
+    found
+}
+
+/// Whether `block` or a nested region has `Op::Assign` or a `Value::Name` load.
+pub fn has_assign_or_name(block: &Block) -> bool {
+    for op in &block.ops {
+        match op {
+            Op::Assign { .. } => return true,
+            Op::Let { value, .. } | Op::Effect { value } if value_has_assign_or_name(value) => {
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+fn value_has_assign_or_name(value: &Value) -> bool {
+    match value {
+        Value::Name(_) => true,
+        Value::If {
+            then_block,
+            else_block,
+            ..
+        } => has_assign_or_name(then_block) || has_assign_or_name(else_block),
+        Value::Loop {
+            header,
+            body,
+            latch,
+        } => has_assign_or_name(header) || has_assign_or_name(body) || has_assign_or_name(latch),
+        Value::Lambda { body, .. } => has_assign_or_name(body),
+        _ => false,
+    }
+}
+
 /// Mutating walk: for each `Let`/`Effect` value, call `on_value` then recurse into nested blocks.
 ///
 /// `on_value` should transform the current value leaf only — nested regions are visited
@@ -397,5 +478,63 @@ mod tests {
             _ => panic!("expected return"),
         }
         assert_eq!(crate::max_local_in_block(&block), 9);
+    }
+
+    #[test]
+    fn count_ops_includes_nested_if() {
+        let block = Block {
+            params: vec![],
+            ops: vec![Op::Let {
+                local: Local(0),
+                value: Value::If {
+                    cond: Local(1),
+                    then_block: Box::new(Block {
+                        params: vec![],
+                        ops: vec![Op::Let {
+                            local: Local(2),
+                            value: Value::Int(1),
+                            pure_region: true,
+                        }],
+                        result: Some(Local(2)),
+                    }),
+                    else_block: Box::new(Block {
+                        params: vec![],
+                        ops: vec![],
+                        result: Some(Local(3)),
+                    }),
+                },
+                pure_region: true,
+            }],
+            result: Some(Local(0)),
+        };
+        assert_eq!(count_ops(&block), 2);
+        assert!(has_early_return(&Block {
+            params: vec![],
+            ops: vec![Op::Return { value: Local(0) }],
+            result: None,
+        }));
+        assert!(block_calls(
+            &Block {
+                params: vec![],
+                ops: vec![Op::Let {
+                    local: Local(0),
+                    value: Value::Call {
+                        fun: "f".into(),
+                        args: vec![],
+                    },
+                    pure_region: true,
+                }],
+                result: Some(Local(0)),
+            },
+            "f"
+        ));
+        assert!(has_assign_or_name(&Block {
+            params: vec![],
+            ops: vec![Op::Assign {
+                name: "x".into(),
+                value: Local(0),
+            }],
+            result: None,
+        }));
     }
 }

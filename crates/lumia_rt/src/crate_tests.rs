@@ -327,7 +327,7 @@ fn set_promotes_to_hash_and_contains() {
 }
 
 #[test]
-fn memo_l2_hit_miss() {
+fn memo_tf_hit_miss() {
     lumia_memo_l2_reset();
     let mut out = 0i64;
     assert_eq!(lumia_memo_l2_lookup(0, 1, 42, 0, 0, 0, &mut out), 0);

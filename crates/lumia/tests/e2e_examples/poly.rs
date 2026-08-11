@@ -78,7 +78,7 @@ e2e_ok!(
 
 #[test]
 fn e2e_pe_list_len_get() {
-    // Same output as small_list_local; ListLen/ListGet folded at opt L0 when possible.
+    // Same output as small_list_local; ListLen/ListGet folded at §7.5.1-A when possible.
     run_example("examples/pe_list_len_get.lm", &["3", "10", "30", "60"]);
 }
 
@@ -92,7 +92,7 @@ e2e_ok!(
 
 #[test]
 fn e2e_pe_map_contains() {
-    // Const-fold mapOf/setOf → len / contains (memo L0).
+    // Const-fold mapOf/setOf → len / contains (§7.5.1-A local).
     run_example(
         "examples/pe_map_contains.lm",
         &["3", "true", "false", "3", "true", "false"],
