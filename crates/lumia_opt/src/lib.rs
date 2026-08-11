@@ -112,15 +112,18 @@ const DEBUG_PASSES: &[PipelinePass] = &[
 const RELEASE_PASSES: &[PipelinePass] = &[
     PipelinePass::Cse,
     PipelinePass::ConstFold,
-    // Bake Int call-site constants into leaf clones before inline/PE.
+    // Bake Int/Bool/Char call-site constants into leaf clones before inline/PE.
     PipelinePass::SpecializeConst,
     PipelinePass::ConstFold,
     PipelinePass::Licm,
-    PipelinePass::Escape,
     PipelinePass::Inline,
-    // Inline exposes fresh literals / builtins — fold again before fusion/repr.
+    // Inline exposes fresh literals / builtins — fold, specialize, then escape.
     PipelinePass::ConstFold,
+    PipelinePass::SpecializeConst,
+    PipelinePass::ConstFold,
+    PipelinePass::Escape,
     PipelinePass::ConcatIdent,
+    PipelinePass::ConstFold,
     PipelinePass::ReprSelect,
     PipelinePass::CopyElim,
 ];

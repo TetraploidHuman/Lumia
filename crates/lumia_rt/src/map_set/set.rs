@@ -192,6 +192,7 @@ pub(crate) unsafe fn set_hash_put_new(dest: *mut u8, elem: i64, order_i: usize) 
         if st == SET_ST_EMPTY || st == SET_ST_TOMB {
             *cell = elem;
             *cell.add(1) = SET_ST_FULL;
+            crate::lumia_write_barrier(dest, order_i as u32, elem as *mut u8);
             *base.add(2 + order_i) = idx as i64;
             return;
         }

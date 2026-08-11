@@ -998,3 +998,204 @@ fn const_fold_adt_tag() {
         }
     ));
 }
+
+#[test]
+fn const_fold_map_set_and_set_insert() {
+    use lumia_core::{MapRepr, SetRepr};
+    let mut module = CoreModule::with_functions(
+        "C",
+        vec![bare_fun(
+            "f",
+            vec![],
+            Block {
+                params: vec![],
+                ops: vec![
+                    Op::Let {
+                        local: Local(0),
+                        value: Value::Int(1),
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(1),
+                        value: Value::Int(10),
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(2),
+                        value: Value::Int(20),
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(3),
+                        value: Value::AllocMap {
+                            flat_pairs: vec![Local(0), Local(1)],
+                            repr: MapRepr::LitMap,
+                        },
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(4),
+                        value: Value::Builtin {
+                            name: Builtin::MapSet,
+                            args: vec![Local(3), Local(0), Local(2)],
+                        },
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(5),
+                        value: Value::AllocSet {
+                            elems: vec![Local(0)],
+                            repr: SetRepr::LitSet,
+                        },
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(6),
+                        value: Value::Int(2),
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(7),
+                        value: Value::Builtin {
+                            name: Builtin::SetInsert,
+                            args: vec![Local(5), Local(6)],
+                        },
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(8),
+                        value: Value::AllocList {
+                            elems: vec![Local(0), Local(1), Local(2)],
+                            repr: lumia_core::ListRepr::LitList,
+                        },
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(9),
+                        value: Value::Int(1),
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(10),
+                        value: Value::Int(99),
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(11),
+                        value: Value::Builtin {
+                            name: Builtin::MapSet,
+                            args: vec![Local(8), Local(9), Local(10)],
+                        },
+                        pure_region: true,
+                    },
+                ],
+                result: Some(Local(11)),
+            },
+        )],
+    );
+    ConstFoldPass.run(&mut module);
+    assert!(
+        matches!(
+            &module.functions[0].body.ops[4],
+            Op::Let {
+                value: Value::AllocMap { flat_pairs, .. },
+                ..
+            } if flat_pairs == &[Local(0), Local(2)]
+        ),
+        "MapSet should PE upsert, got {:?}",
+        module.functions[0].body.ops[4]
+    );
+    assert!(
+        matches!(
+            &module.functions[0].body.ops[7],
+            Op::Let {
+                value: Value::AllocSet { elems, .. },
+                ..
+            } if elems == &[Local(0), Local(6)]
+        ),
+        "SetInsert should PE, got {:?}",
+        module.functions[0].body.ops[7]
+    );
+    assert!(
+        matches!(
+            &module.functions[0].body.ops[11],
+            Op::Let {
+                value: Value::AllocList { elems, .. },
+                ..
+            } if elems == &[Local(0), Local(10), Local(2)]
+        ),
+        "List.set via MapSet should PE, got {:?}",
+        module.functions[0].body.ops[11]
+    );
+}
+
+#[test]
+fn const_fold_iota_len_get() {
+    let mut module = CoreModule::with_functions(
+        "C",
+        vec![bare_fun(
+            "f",
+            vec![],
+            Block {
+                params: vec![],
+                ops: vec![
+                    Op::Let {
+                        local: Local(0),
+                        value: Value::Int(10),
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(1),
+                        value: Value::Int(13),
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(2),
+                        value: Value::Builtin {
+                            name: Builtin::Range,
+                            args: vec![Local(0), Local(1)],
+                        },
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(3),
+                        value: Value::Builtin {
+                            name: Builtin::ListLen,
+                            args: vec![Local(2)],
+                        },
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(4),
+                        value: Value::Int(1),
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(5),
+                        value: Value::Builtin {
+                            name: Builtin::ListGet,
+                            args: vec![Local(2), Local(4)],
+                        },
+                        pure_region: true,
+                    },
+                ],
+                result: Some(Local(5)),
+            },
+        )],
+    );
+    ConstFoldPass.run(&mut module);
+    assert!(matches!(
+        &module.functions[0].body.ops[3],
+        Op::Let {
+            value: Value::Int(3),
+            ..
+        }
+    ));
+    assert!(matches!(
+        &module.functions[0].body.ops[5],
+        Op::Let {
+            value: Value::Int(11),
+            ..
+        }
+    ));
+}

@@ -422,10 +422,32 @@ impl Builtin {
                 ObjI64Scalar,
             ),
         };
-        // Projections / traps that do not retain args for later use.
+        // Projections / pure transformers that do not retain the *container*
+        // for later use (result is a fresh value or scalar). ListConcat/Append
+        // may share or mutate and stay capturing.
         let may_capture = !matches!(
             self,
-            ListLen | ListGet | AdtTag | AdtField | Contains | Show | MatchFail
+            ListLen
+                | ListGet
+                | ListTake
+                | ListSlice
+                | ListReverse
+                | ListSort
+                | ListJoin
+                | AdtTag
+                | AdtField
+                | Contains
+                | Show
+                | MatchFail
+                | MapKeys
+                | MapValues
+                | MapItems
+                | Elems
+                | StrTrim
+                | StrToLower
+                | StrToUpper
+                | StrSubstring
+                | StrSplit
         );
         // Result GC rooting — orthogonal to may_capture (ListGet roots a String
         // element without retaining the list; ListParFold roots only if init heaps).
@@ -771,16 +793,22 @@ mod tests {
         let no_capture = [
             Builtin::ListLen,
             Builtin::ListGet,
+            Builtin::ListTake,
+            Builtin::ListSlice,
+            Builtin::ListReverse,
             Builtin::AdtTag,
             Builtin::AdtField,
             Builtin::Contains,
             Builtin::Show,
             Builtin::MatchFail,
+            Builtin::MapKeys,
+            Builtin::Elems,
         ];
         for b in no_capture {
             assert!(!b.may_capture(), "{}", b.display_name());
         }
         assert!(Builtin::ListAppend.may_capture());
+        assert!(Builtin::ListConcat.may_capture());
         assert!(Builtin::MapSet.may_capture());
         assert!(Builtin::Println.may_capture());
         assert!(Builtin::ListParMap.may_capture());

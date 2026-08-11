@@ -1,7 +1,7 @@
-//! Call-site specialization on known Int constants (DESIGN §7.2).
+//! Call-site specialization on known Int/Bool/Char constants (DESIGN §7.2).
 //!
 //! Type-driven mono lives in `lumia_core::mono`. This pass handles the
-//! complementary case: pure leaf calls whose **values** are known Ints at the
+//! complementary case: pure leaf calls whose **values** are known scalars at the
 //! call site. We clone `f` as `f$c_1_2`, bake constants into the body, and
 //! rewrite the call to `f$c_1_2()` so later `const_fold` / `inline` can PE it.
 
@@ -108,13 +108,16 @@ fn is_specializeable(f: &CoreFun) -> bool {
     if has_assign_or_name(&f.body) || has_early_return(&f.body) {
         return false;
     }
-    // Specialize when params are Int, or still-open vars (call-site Ints prove them).
-    // Reject known non-Int (Float / heap) — those need richer PE.
-    f.param_tys.iter().all(param_ok_for_const_int)
+    // Specialize when params are Int/Bool/Char, or still-open vars (call-site
+    // scalars prove them). Reject Float / heap — those need richer PE.
+    f.param_tys.iter().all(param_ok_for_const_scalar)
 }
 
-fn param_ok_for_const_int(t: &lumia_ty::Type) -> bool {
-    matches!(t, lumia_ty::Type::Int | lumia_ty::Type::Var(_))
+fn param_ok_for_const_scalar(t: &lumia_ty::Type) -> bool {
+    matches!(
+        t,
+        lumia_ty::Type::Int | lumia_ty::Type::Bool | lumia_ty::Type::Char | lumia_ty::Type::Var(_)
+    )
 }
 
 fn mangle_const_clone(fun: &str, args: &[i64]) -> String {
@@ -129,9 +132,20 @@ fn mangle_const_clone(fun: &str, args: &[i64]) -> String {
     out
 }
 
+fn bake_const_value(ty: &lumia_ty::Type, n: i64) -> Value {
+    match ty {
+        lumia_ty::Type::Bool => Value::Bool(n != 0),
+        lumia_ty::Type::Char => {
+            let c = char::from_u32(n as u32).unwrap_or('\0');
+            Value::Char(c)
+        }
+        _ => Value::Int(n),
+    }
+}
+
 fn build_const_clone(orig: &CoreFun, args: &[i64], name: String) -> CoreFun {
     let mut body = orig.body.clone();
-    // Remap original params to fresh locals, then bind them to Int constants
+    // Remap original params to fresh locals, then bind them to scalar constants
     // at the top of the body so SSA uses stay valid.
     let base = lumia_core::max_local_in_fun(orig).saturating_add(1);
     let mut remap: HashMap<u32, u32> = HashMap::default();
@@ -139,9 +153,14 @@ fn build_const_clone(orig: &CoreFun, args: &[i64], name: String) -> CoreFun {
     for (i, p) in orig.params.iter().enumerate() {
         let fresh = Local(base + i as u32);
         remap.insert(p.0, fresh.0);
+        let ty = orig
+            .param_tys
+            .get(i)
+            .cloned()
+            .unwrap_or(lumia_ty::Type::Int);
         preamble.push(Op::Let {
             local: fresh,
-            value: Value::Int(args[i]),
+            value: bake_const_value(&ty, args[i]),
             pure_region: true,
         });
     }
@@ -297,10 +316,16 @@ fn walk_nested_rewrite(
 }
 
 fn track_int(local: u32, value: &Value, known: &mut HashMap<u32, i64>) {
-    // Int only — do not treat Bool as 0/1 (would bake wrong constants into clones).
+    // Track Int / Bool / Char as i64 bit patterns for call-site matching.
     match value {
         Value::Int(n) => {
             known.insert(local, *n);
+        }
+        Value::Bool(b) => {
+            known.insert(local, if *b { 1 } else { 0 });
+        }
+        Value::Char(c) => {
+            known.insert(local, u32::from(*c) as i64);
         }
         Value::Local(Local(src)) => {
             if let Some(&n) = known.get(src) {
@@ -470,6 +495,27 @@ val main = {
             _ => false,
         });
         assert!(calls_clone, "main should call specialized clone");
+    }
+
+    #[test]
+    fn specialize_const_clones_pure_bool_call() {
+        let src = r#"
+module M
+val flip = { b -> if b { false } else { true } }
+val main = {
+    flip(false)
+}
+"#;
+        let mut core = lumia_core::compile_source_to_core(src).expect("core");
+        crate::ConstFoldPass.run(&mut core);
+        SpecializeConstPass.run(&mut core);
+        assert!(
+            core.functions
+                .iter()
+                .any(|f| f.name.starts_with("flip$c_") || f.name.contains("flip$c_")),
+            "expected bool const clone, funs={:?}",
+            core.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+        );
     }
 
     #[test]

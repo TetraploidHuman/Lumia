@@ -1,9 +1,10 @@
 //! Parallel list map / fold (C ABI workers; GC inhibited).
 
-use super::core::{force_heap_list, lumia_list_empty};
-use super::tid::ensure_list_f64;
+use super::core::{list_len_of, lumia_list_empty};
+use super::tid::{ensure_list_f64, list_tid};
 use crate::common::{
     list_elem_is_float, trap_abort, GcInhibitGuard, PAR_WORKER, TYPE_LIST, TYPE_LIST_F64,
+    TYPE_LIST_IOTA,
 };
 use crate::gc::{list_payload_bytes, lumia_alloc};
 
@@ -11,6 +12,9 @@ use crate::gc::{list_payload_bytes, lumia_alloc};
 /// `result_tid` is `TYPE_LIST` or `TYPE_LIST_F64` (codegen: result element sort).
 /// Type checker requires concrete Int/Bool/Float elems; workers must not heap-allocate.
 /// Falls back to sequential for small lists; inhibits GC while workers run.
+///
+/// Iota (`range`) is consumed virtually — no materialization. Workers write
+/// directly into the preallocated destination (no per-chunk `Vec` gather).
 #[no_mangle]
 pub extern "C" fn lumia_list_par_map(
     list: *mut u8,
@@ -25,15 +29,24 @@ pub extern "C" fn lumia_list_par_map(
     } else {
         TYPE_LIST
     };
-    // Cover force + sequential alloc; parallel path takes its own inhibit.
     let _gc = GcInhibitGuard::enter();
-    let list = force_heap_list(list);
-    unsafe {
-        let n = if list.is_null() {
-            0i64
+    let iota = !list.is_null() && list_tid(list) == TYPE_LIST_IOTA;
+    let (n, iota_start, src_addr) = unsafe {
+        if list.is_null() {
+            (0i64, 0i64, 0usize)
+        } else if iota {
+            let base = list as *const i64;
+            let start = *base;
+            let end = *base.add(1);
+            let len = if end > start { end - start } else { 0 };
+            (len, start, 0usize)
         } else {
-            *(list as *const i64)
-        };
+            // Heap or stack LitList share `[len][elems…]`; only Iota needs a virtual path.
+            let n = *(list as *const i64);
+            (n, 0i64, list as usize)
+        }
+    };
+    unsafe {
         if n <= 0 {
             return if list_elem_is_float(result_tid) {
                 ensure_list_f64(lumia_list_empty())
@@ -41,14 +54,23 @@ pub extern "C" fn lumia_list_par_map(
                 lumia_list_empty()
             };
         }
-        let src = list as *const i64;
+        let dest = lumia_alloc(list_payload_bytes(n), result_tid);
+        let dst = dest as *mut i64;
+        *dst = n;
         // Sequential for tiny lists.
         if n < 64 {
-            let dest = lumia_alloc(list_payload_bytes(n), result_tid);
-            let dst = dest as *mut i64;
-            *dst = n;
-            for i in 0..n as usize {
-                *dst.add(1 + i) = f(*src.add(1 + i));
+            if iota {
+                for i in 0..n as usize {
+                    let x = iota_start
+                        .checked_add(i as i64)
+                        .unwrap_or_else(|| trap_abort("lumia: iota index overflow"));
+                    *dst.add(1 + i) = f(x);
+                }
+            } else {
+                let src = src_addr as *const i64;
+                for i in 0..n as usize {
+                    *dst.add(1 + i) = f(*src.add(1 + i));
+                }
             }
             return dest;
         }
@@ -59,38 +81,37 @@ pub extern "C" fn lumia_list_par_map(
             .min(n as usize)
             .max(1);
         let chunk = (n as usize).div_ceil(workers);
-        let mut handles = Vec::new();
+        let dest_base = dst as usize;
+        let mut handles = Vec::with_capacity(workers);
         for w in 0..workers {
             let start = w * chunk;
             let end = ((w + 1) * chunk).min(n as usize);
-            // SAFETY: list is immutable during map; GC inhibited on main;
-            // workers must not allocate (PAR_WORKER).
-            let base = src as usize;
+            if start >= end {
+                continue;
+            }
+            // SAFETY: dest/list immutable layout during map; GC inhibited; workers
+            // must not allocate (PAR_WORKER). Each worker owns a disjoint dst slice.
             handles.push(std::thread::spawn(move || {
                 PAR_WORKER.with(|c| c.set(true));
-                let src = base as *const i64;
-                let mut out = Vec::with_capacity(end.saturating_sub(start));
-                for i in start..end {
-                    out.push(f(*src.add(1 + i)));
+                let dst = dest_base as *mut i64;
+                if iota {
+                    for i in start..end {
+                        let x = iota_start
+                            .checked_add(i as i64)
+                            .unwrap_or_else(|| trap_abort("lumia: iota index overflow"));
+                        *dst.add(1 + i) = f(x);
+                    }
+                } else {
+                    let src = src_addr as *const i64;
+                    for i in start..end {
+                        *dst.add(1 + i) = f(*src.add(1 + i));
+                    }
                 }
-                out
             }));
         }
-        let parts: Vec<Vec<i64>> = handles
-            .into_iter()
-            .map(|h| match h.join() {
-                Ok(v) => v,
-                Err(_) => trap_abort("lumia: par_map worker panicked"),
-            })
-            .collect();
-        let dest = lumia_alloc(list_payload_bytes(n), result_tid);
-        let dst = dest as *mut i64;
-        *dst = n;
-        let mut i = 0usize;
-        for part in parts {
-            for v in part {
-                *dst.add(1 + i) = v;
-                i += 1;
+        for h in handles {
+            if h.join().is_err() {
+                trap_abort("lumia: par_map worker panicked");
             }
         }
         dest
@@ -110,21 +131,39 @@ pub extern "C" fn lumia_list_par_fold(
         trap_abort("lumia: list_par_fold null function");
     };
     let _gc = GcInhibitGuard::enter();
-    let list = force_heap_list(list);
-    unsafe {
-        let n = if list.is_null() {
-            0i64
+    let iota = !list.is_null() && list_tid(list) == TYPE_LIST_IOTA;
+    let (n, iota_start, src_addr) = unsafe {
+        if list.is_null() {
+            (0i64, 0i64, 0usize)
+        } else if iota {
+            let base = list as *const i64;
+            let start = *base;
+            let end = *base.add(1);
+            let len = if end > start { end - start } else { 0 };
+            (len, start, 0usize)
         } else {
-            *(list as *const i64)
-        };
+            let n = list_len_of(list);
+            (n, 0i64, list as usize)
+        }
+    };
+    unsafe {
         if n <= 0 {
             return init;
         }
-        let src = list as *const i64;
         if n < 64 {
             let mut acc = init;
-            for i in 0..n as usize {
-                acc = f(acc, *src.add(1 + i));
+            if iota {
+                for i in 0..n as usize {
+                    let x = iota_start
+                        .checked_add(i as i64)
+                        .unwrap_or_else(|| trap_abort("lumia: iota index overflow"));
+                    acc = f(acc, x);
+                }
+            } else {
+                let src = src_addr as *const i64;
+                for i in 0..n as usize {
+                    acc = f(acc, *src.add(1 + i));
+                }
             }
             return acc;
         }
@@ -135,22 +174,35 @@ pub extern "C" fn lumia_list_par_fold(
             .min(n as usize)
             .max(1);
         let chunk = (n as usize).div_ceil(workers);
-        let mut handles = Vec::new();
+        let mut handles = Vec::with_capacity(workers);
         for w in 0..workers {
             let start = w * chunk;
             let end = ((w + 1) * chunk).min(n as usize);
             if start >= end {
                 continue;
             }
-            let base = src as usize;
             handles.push(std::thread::spawn(move || {
                 PAR_WORKER.with(|c| c.set(true));
-                let src = base as *const i64;
-                let mut acc = *src.add(1 + start);
-                for i in (start + 1)..end {
-                    acc = f(acc, *src.add(1 + i));
+                if iota {
+                    let x0 = iota_start
+                        .checked_add(start as i64)
+                        .unwrap_or_else(|| trap_abort("lumia: iota index overflow"));
+                    let mut a = x0;
+                    for i in (start + 1)..end {
+                        let x = iota_start
+                            .checked_add(i as i64)
+                            .unwrap_or_else(|| trap_abort("lumia: iota index overflow"));
+                        a = f(a, x);
+                    }
+                    a
+                } else {
+                    let src = src_addr as *const i64;
+                    let mut a = *src.add(1 + start);
+                    for i in (start + 1)..end {
+                        a = f(a, *src.add(1 + i));
+                    }
+                    a
                 }
-                acc
             }));
         }
         let mut acc = init;

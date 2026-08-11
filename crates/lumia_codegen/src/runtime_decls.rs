@@ -175,8 +175,12 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         ret: RtTy::Ptr,
         args: &[RtTy::I32, RtTy::Ptr],
     },
-    // `lumia_write_barrier` stays in `lumia_rt` ABI for future concurrent GC;
-    // STW mark-sweep does not emit calls.
+    // `lumia_write_barrier` — remembered set for minor GC (old→young stores).
+    RtDecl {
+        name: "lumia_write_barrier",
+        ret: RtTy::Void,
+        args: &[RtTy::Ptr, RtTy::I32, RtTy::Ptr],
+    },
     RtDecl {
         name: "lumia_list_promote",
         ret: RtTy::Ptr,
