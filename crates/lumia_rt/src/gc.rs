@@ -1,12 +1,18 @@
-//! Mark-sweep GC backend and allocation ABI.
+//! Generational mark-sweep GC backend and allocation ABI.
+//!
+//! Young allocations land in a nursery. Soft threshold → **minor** STW:
+//! mark from roots + scan all old objects as roots (no write barrier / card
+//! table yet), then free unmarked young and promote survivors.
+//! Old-generation pressure or `lumia_gc_collect` → **full** mark-sweep.
 
 use std::alloc::{alloc, dealloc};
 use std::cell::RefCell;
 
 use crate::common::{
     header_from_payload, header_layout, is_heap_payload, payload_ptr, trap_abort, MarkSweep,
-    MmBackend, ObjectHeader, BYTES_ALLOCATED, GC_INHIBIT, HEAP, HEAP_LIMIT, PAR_WORKER,
-    PERM_OBJECTS, ROOTS, TYPE_ADT, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_IOTA, TYPE_MAP, TYPE_SET,
+    MmBackend, ObjectHeader, BYTES_OLD, BYTES_YOUNG, GC_INHIBIT, HEAP_LIMIT, HEAP_OLD, HEAP_SET,
+    HEAP_YOUNG, PAR_WORKER, PERM_OBJECTS, ROOTS, TYPE_ADT, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_IOTA,
+    TYPE_MAP, TYPE_SET, YOUNG_LIMIT,
 };
 use crate::map_set::{map_mark_payload, set_mark_payload};
 use crate::memo;
@@ -40,6 +46,16 @@ impl MarkSweep {
         Self::mark_memo_tables();
     }
 
+    /// Old→young edges are found by treating every tenured object as a root.
+    /// Correct without a write barrier; later card tables can narrow this scan.
+    fn mark_from_old_generation() {
+        HEAP_OLD.with(|h| {
+            for &obj in h.borrow().iter() {
+                mark(obj);
+            }
+        });
+    }
+
     fn mark_i64_if_heap(bits: i64) {
         let p = bits as *mut u8;
         if is_heap_payload(p) {
@@ -51,33 +67,108 @@ impl MarkSweep {
         memo::for_each_memo_i64(Self::mark_i64_if_heap);
     }
 
-    fn sweep() {
-        let mut freed = 0usize;
-        HEAP.with(|h| {
-            let mut heap = h.borrow_mut();
-            let mut i = 0;
-            while i < heap.len() {
-                let obj = heap[i];
-                unsafe {
-                    if (*obj).marked == 0 {
-                        freed = freed.saturating_add((*obj).size as usize);
-                        let layout = header_layout((*obj).size as usize);
-                        dealloc(obj as *mut u8, layout);
-                        heap.swap_remove(i);
-                        continue;
-                    }
-                    (*obj).marked = 0;
-                }
-                i += 1;
+    fn clear_marks(objs: &[*mut ObjectHeader]) {
+        for &obj in objs {
+            unsafe {
+                (*obj).marked = 0;
             }
+        }
+    }
+
+    /// Free unmarked objects in `heap`; return freed payload bytes.
+    /// When `promote_survivors`, marked objects move into `HEAP_OLD`.
+    fn sweep_vec(
+        heap: &mut Vec<*mut ObjectHeader>,
+        promote_survivors: bool,
+    ) -> (usize /*freed*/, usize /*promoted*/) {
+        let mut freed = 0usize;
+        let mut promoted = 0usize;
+        let mut survivors: Vec<*mut ObjectHeader> = Vec::new();
+        let mut i = 0;
+        while i < heap.len() {
+            let obj = heap[i];
+            unsafe {
+                if (*obj).marked == 0 {
+                    freed = freed.saturating_add((*obj).size as usize);
+                    HEAP_SET.with(|s| {
+                        s.borrow_mut().remove(&obj);
+                    });
+                    let layout = header_layout((*obj).size as usize);
+                    dealloc(obj as *mut u8, layout);
+                    heap.swap_remove(i);
+                    continue;
+                }
+                (*obj).marked = 0;
+                if promote_survivors {
+                    promoted = promoted.saturating_add((*obj).size as usize);
+                    survivors.push(obj);
+                    heap.swap_remove(i);
+                    continue;
+                }
+            }
+            i += 1;
+        }
+        if promote_survivors && !survivors.is_empty() {
+            HEAP_OLD.with(|old| old.borrow_mut().extend(survivors));
+        }
+        (freed, promoted)
+    }
+
+    fn minor_collect() {
+        Self::mark_from_roots();
+        Self::mark_from_old_generation();
+        let (freed, promoted) = HEAP_YOUNG.with(|h| {
+            let mut young = h.borrow_mut();
+            Self::sweep_vec(&mut young, true)
         });
-        // Track approximate live payload bytes (not "bytes since last GC").
-        BYTES_ALLOCATED.with(|b| {
-            let mut live = b.borrow_mut();
-            *live = live.saturating_sub(freed);
+        // Old objects were marked as roots; clear their mark bits.
+        HEAP_OLD.with(|h| Self::clear_marks(&h.borrow()));
+        BYTES_YOUNG.with(|y| {
+            let mut live = y.borrow_mut();
+            *live = live.saturating_sub(freed.saturating_add(promoted));
+        });
+        BYTES_OLD.with(|o| {
+            let mut live = o.borrow_mut();
+            *live = live.saturating_add(promoted);
         });
     }
+
+    fn full_collect() {
+        Self::mark_from_roots();
+        let freed_y = HEAP_YOUNG.with(|h| {
+            let mut young = h.borrow_mut();
+            let (freed, _) = Self::sweep_vec(&mut young, false);
+            freed
+        });
+        let freed_o = HEAP_OLD.with(|h| {
+            let mut old = h.borrow_mut();
+            let (freed, _) = Self::sweep_vec(&mut old, false);
+            freed
+        });
+        BYTES_YOUNG.with(|y| {
+            let mut live = y.borrow_mut();
+            *live = live.saturating_sub(freed_y);
+        });
+        BYTES_OLD.with(|o| {
+            let mut live = o.borrow_mut();
+            *live = live.saturating_sub(freed_o);
+        });
+    }
+
+    fn maybe_collect_on_alloc() {
+        let young_limit = *YOUNG_LIMIT.lock().unwrap_or_else(|e| e.into_inner());
+        let old_limit = *HEAP_LIMIT.lock().unwrap_or_else(|e| e.into_inner());
+        let young = BYTES_YOUNG.with(|y| *y.borrow());
+        if young >= young_limit {
+            Self::minor_collect();
+        }
+        let old = BYTES_OLD.with(|o| *o.borrow());
+        if old >= old_limit {
+            Self::full_collect();
+        }
+    }
 }
+
 pub(crate) fn mark(obj: *mut ObjectHeader) {
     unsafe {
         if obj.is_null() || (*obj).marked != 0 {
@@ -143,6 +234,7 @@ pub(crate) fn mark_value(x: i64) {
         mark(header_from_payload(p));
     }
 }
+
 impl MmBackend for MarkSweep {
     fn alloc(&mut self, nbytes: usize, type_id: u32) -> *mut u8 {
         if PAR_WORKER.get() {
@@ -153,13 +245,7 @@ impl MmBackend for MarkSweep {
         }
         let inhibit = GC_INHIBIT.get();
         if inhibit == 0 {
-            let limit = *HEAP_LIMIT.lock().unwrap_or_else(|e| e.into_inner());
-            BYTES_ALLOCATED.with(|b| {
-                if *b.borrow() >= limit {
-                    Self::mark_from_roots();
-                    Self::sweep();
-                }
-            });
+            Self::maybe_collect_on_alloc();
         }
         let layout = header_layout(nbytes);
         unsafe {
@@ -172,10 +258,11 @@ impl MmBackend for MarkSweep {
     }
 
     fn collect(&mut self) {
-        Self::mark_from_roots();
-        Self::sweep();
+        // Explicit collect is always full (API contract / tests).
+        Self::full_collect();
     }
 }
+
 /// Payload bytes for a HeapList of `len` elements (`[len][e…]`), overflow-safe.
 pub(crate) fn list_payload_bytes(len: i64) -> u64 {
     if len < 0 {
@@ -187,6 +274,7 @@ pub(crate) fn list_payload_bytes(len: i64) -> u64 {
         .filter(|&b| b <= u32::MAX as u64)
         .unwrap_or_else(|| trap_abort(&format!("lumia: list too large (len={len})")))
 }
+
 pub(crate) unsafe fn finish_alloc(mem: *mut u8, nbytes: usize, type_id: u32) -> *mut u8 {
     if nbytes > u32::MAX as usize {
         trap_abort("lumia: allocation too large (exceeds u32 size field)");
@@ -197,8 +285,11 @@ pub(crate) unsafe fn finish_alloc(mem: *mut u8, nbytes: usize, type_id: u32) -> 
     (*header).marked = 0;
     // List COW uniqueness: `_pad` is a refcount (ADT uses `_pad` as float mask).
     (*header)._pad = if tid_base(type_id) == TYPE_LIST { 1 } else { 0 };
-    HEAP.with(|h| h.borrow_mut().push(header));
-    BYTES_ALLOCATED.with(|b| *b.borrow_mut() += nbytes);
+    HEAP_YOUNG.with(|h| h.borrow_mut().push(header));
+    HEAP_SET.with(|s| {
+        s.borrow_mut().insert(header);
+    });
+    BYTES_YOUNG.with(|b| *b.borrow_mut() += nbytes);
     payload_ptr(header)
 }
 
@@ -225,9 +316,9 @@ pub extern "C" fn lumia_root_pop() {
 
 #[no_mangle]
 pub extern "C" fn lumia_write_barrier(obj: *mut u8, field: u32, new_ptr: *mut u8) {
-    // STW mark-sweep + precise shadow-stack roots: mutations are stopped during
-    // collection, so a write barrier is unnecessary. Concurrent/incremental GCs
-    // must replace this with a real barrier; the ABI stays stable.
+    // Generational collector scans all old objects during minor GC, so a write
+    // barrier is not required for correctness yet. Concurrent / card-table
+    // collectors must replace this; the ABI stays stable.
     BACKEND.with(|b| b.borrow_mut().write_barrier(obj, field, new_ptr));
 }
 
