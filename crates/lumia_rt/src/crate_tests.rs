@@ -1,7 +1,10 @@
 //! Runtime integration tests (GC, map/set, memo, float eq).
 
 use super::*;
-use crate::common::{header_from_payload, trap_abort, PAR_WORKER};
+use crate::common::{
+    gc_heap_lens_for_test, gc_live_bytes_for_test, header_from_payload, set_gc_limits_for_test,
+    trap_abort, PAR_WORKER,
+};
 use crate::gc::list_payload_bytes;
 use crate::list::force_heap_list;
 use crate::map_set::{
@@ -10,6 +13,30 @@ use crate::map_set::{
 use crate::string_io::with_str_bytes;
 use crate::MmBackend;
 use std::ptr;
+
+struct GcLimitGuard {
+    young: usize,
+    old: usize,
+}
+impl GcLimitGuard {
+    fn set(young: usize, old: usize) -> Self {
+        let (y, o) = (
+            *crate::common::YOUNG_LIMIT
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+            *crate::common::HEAP_LIMIT
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+        );
+        set_gc_limits_for_test(young, old);
+        Self { young: y, old: o }
+    }
+}
+impl Drop for GcLimitGuard {
+    fn drop(&mut self) {
+        set_gc_limits_for_test(self.young, self.old);
+    }
+}
 
 #[test]
 #[should_panic(expected = "stack trace:")]
@@ -50,6 +77,7 @@ fn rooted_survives_collect() {
 #[test]
 fn write_barrier_empty_under_stw() {
     let p = lumia_alloc(8, TYPE_BYTES);
+    // Still a no-op: minor GC scans all old objects instead of a card table.
     lumia_write_barrier(p, 0, ptr::null_mut());
 }
 
@@ -64,6 +92,9 @@ fn list_append_cow_unique_grows_and_alias_copies() {
         lumia_list_append, lumia_list_empty, lumia_list_get, lumia_list_len, lumia_list_retain,
     };
     let mut xs = lumia_list_empty();
+    let mut ys: *mut u8 = ptr::null_mut();
+    lumia_root_push(&mut xs as *mut *mut u8);
+    lumia_root_push(&mut ys as *mut *mut u8);
     xs = lumia_list_append(xs, 1);
     for i in 2..=64 {
         xs = lumia_list_append(xs, i);
@@ -73,11 +104,13 @@ fn list_append_cow_unique_grows_and_alias_copies() {
     assert_eq!(lumia_list_get(xs, 63), 64);
     // Alias then append — old snapshot must stay length 64.
     lumia_list_retain(xs);
-    let ys = xs;
+    ys = xs;
     xs = lumia_list_append(xs, 65);
     assert_eq!(lumia_list_len(ys), 64);
     assert_eq!(lumia_list_len(xs), 65);
     assert_eq!(lumia_list_get(xs, 64), 65);
+    lumia_root_pop();
+    lumia_root_pop();
 }
 
 #[test]
@@ -98,8 +131,60 @@ fn rooted_survives_soft_threshold() {
 }
 
 #[test]
+fn minor_promotes_rooted_and_frees_garbage() {
+    let _limits = GcLimitGuard::set(256, 16 * 1024 * 1024);
+    let mut slot: *mut u8 = lumia_alloc(64, TYPE_STRING);
+    lumia_root_push(&mut slot as *mut *mut u8);
+    // Fill nursery with garbage past young limit → minor STW.
+    for _ in 0..32 {
+        let _ = lumia_alloc(64, TYPE_BYTES);
+    }
+    let (young_n, old_n) = gc_heap_lens_for_test();
+    assert!(
+        old_n >= 1,
+        "rooted survivor should promote to old, young={young_n} old={old_n}"
+    );
+    assert!(!slot.is_null());
+    unsafe {
+        assert_eq!((*header_from_payload(slot)).type_id, TYPE_STRING);
+    }
+    lumia_root_pop();
+}
+
+#[test]
+fn minor_keeps_young_reachable_from_old() {
+    use crate::list::{lumia_list_append, lumia_list_empty, lumia_list_get, lumia_list_len};
+    let _limits = GcLimitGuard::set(512, 16 * 1024 * 1024);
+    // Build a unique list, promote it, then store a fresh young heap pointer in it.
+    let mut xs = lumia_list_empty();
+    let mut child = lumia_alloc(16, TYPE_BYTES);
+    xs = lumia_list_append(xs, child as i64);
+    lumia_root_push(&mut xs as *mut *mut u8);
+    for _ in 0..64 {
+        let _ = lumia_alloc(64, TYPE_BYTES);
+    }
+    let (_y0, old0) = gc_heap_lens_for_test();
+    assert!(old0 >= 1, "list should have tenured");
+    // New young child stored into (possibly tenured) list via COW/in-place append.
+    child = lumia_alloc(16, TYPE_BYTES);
+    xs = lumia_list_append(xs, child as i64);
+    for _ in 0..64 {
+        let _ = lumia_alloc(64, TYPE_BYTES);
+    }
+    assert_eq!(lumia_list_len(xs), 2);
+    let kept = lumia_list_get(xs, 1) as *mut u8;
+    assert!(
+        crate::common::is_heap_payload(kept),
+        "young-from-old child must survive minor"
+    );
+    lumia_root_pop();
+    let (_y, _o) = gc_live_bytes_for_test();
+}
+
+#[test]
 fn map_promotes_to_hash_and_looks_up() {
     let mut m: *mut u8 = ptr::null_mut();
+    lumia_root_push(&mut m as *mut *mut u8);
     for i in 0..20 {
         m = lumia_map_set(m, i, i * 10);
     }
@@ -126,11 +211,13 @@ fn map_promotes_to_hash_and_looks_up() {
         assert_eq!(*(keys as *const i64), 19);
         assert_eq!(*((keys as *const i64).add(1)), 0);
     }
+    lumia_root_pop();
 }
 
 #[test]
 fn map_overlay_set_avoids_full_clone() {
     let mut m: *mut u8 = ptr::null_mut();
+    lumia_root_push(&mut m as *mut *mut u8);
     for i in 0..9 {
         m = lumia_map_set(m, i, i);
     }
@@ -151,11 +238,13 @@ fn map_overlay_set_avoids_full_clone() {
     }
     assert_eq!(map_count(m), 11);
     assert_eq!(lumia_map_contains(m, 101), 1);
+    lumia_root_pop();
 }
 
 #[test]
 fn set_promotes_to_hash_and_contains() {
     let mut s: *mut u8 = ptr::null_mut();
+    lumia_root_push(&mut s as *mut *mut u8);
     for i in 0..20 {
         s = lumia_set_insert(s, i);
     }
@@ -178,6 +267,7 @@ fn set_promotes_to_hash_and_contains() {
     }
     assert!(!set_is_hash(s));
     assert_eq!(unsafe { *(s as *const i64) }, 8);
+    lumia_root_pop();
 }
 
 #[test]

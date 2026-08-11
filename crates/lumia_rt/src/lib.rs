@@ -1,13 +1,12 @@
-//! Lumia runtime: pluggable GC ABI + first MmBackend (STW mark-sweep).
+//! Lumia runtime: pluggable GC ABI + first MmBackend (generational mark-sweep).
 //!
 //! C ABI contract used by codegen:
 //! - `lumia_alloc(nbytes, type_id) -> *mut u8`
 //! - `lumia_root_push(*mut *mut u8)` / `lumia_root_pop()`
-//! - `lumia_write_barrier(obj, field_index, new_ptr)` — no-op under STW mark-sweep
-//!   (roots are exact; concurrent/incremental collectors would use a real barrier)
-//!   (precise shadow-stack roots; barrier is part of the stable MmBackend ABI and
-//!   becomes meaningful for concurrent / generational collectors).
-//! - `lumia_gc_collect()`
+//! - `lumia_write_barrier(obj, field_index, new_ptr)` — no-op while minor GC
+//!   scans all old objects as roots; concurrent / card-table collectors would
+//!   install a real barrier (precise shadow-stack roots; ABI stays stable).
+//! - `lumia_gc_collect()` — full-heap collection
 //! - `lumia_println_int(i64)` / `lumia_println_str(*const u8, len)`
 //!
 //! C ABI entry points take raw pointers by design; they are not Rust `unsafe fn`

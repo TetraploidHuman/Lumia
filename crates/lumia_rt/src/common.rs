@@ -2,6 +2,7 @@
 
 use std::alloc::Layout;
 use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
 use std::ffi::CStr;
 use std::sync::Mutex;
 
@@ -86,11 +87,22 @@ pub(crate) fn frame_pop() {
 }
 
 thread_local! {
-    pub(crate) static HEAP: RefCell<Vec<*mut ObjectHeader>> = const { RefCell::new(Vec::new()) };
+    /// Nursery (young generation). New allocations land here.
+    pub(crate) static HEAP_YOUNG: RefCell<Vec<*mut ObjectHeader>> =
+        const { RefCell::new(Vec::new()) };
+    /// Tenured objects that survived at least one minor collection.
+    pub(crate) static HEAP_OLD: RefCell<Vec<*mut ObjectHeader>> =
+        const { RefCell::new(Vec::new()) };
+    /// O(1) membership for `is_heap_payload` (Int bits vs real headers).
+    pub(crate) static HEAP_SET: RefCell<HashSet<*mut ObjectHeader>> =
+        RefCell::new(HashSet::new());
     pub(crate) static ROOTS: RefCell<Vec<*mut *mut u8>> = const { RefCell::new(Vec::new()) };
     /// Immortal payloads (empty-list singleton, …) — always marked.
     pub(crate) static PERM_OBJECTS: RefCell<Vec<*mut u8>> = const { RefCell::new(Vec::new()) };
-    pub(crate) static BYTES_ALLOCATED: RefCell<usize> = const { RefCell::new(0) };
+    /// Approximate live payload bytes in the nursery.
+    pub(crate) static BYTES_YOUNG: RefCell<usize> = const { RefCell::new(0) };
+    /// Approximate live payload bytes in the old generation.
+    pub(crate) static BYTES_OLD: RefCell<usize> = const { RefCell::new(0) };
     /// Nestable: RT helpers that allocate multiple objects before they are reachable
     /// from roots must hold this to avoid soft-threshold GC UAF.
     pub(crate) static GC_INHIBIT: Cell<u32> = const { Cell::new(0) };
@@ -101,7 +113,10 @@ thread_local! {
     static CALL_STACK: RefCell<Vec<*const u8>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Soft GC threshold on approximate **live** payload bytes (see `BYTES_ALLOCATED`).
+/// Soft threshold on young-generation live payload (triggers minor STW).
+pub(crate) static YOUNG_LIMIT: Mutex<usize> = Mutex::new(64 * 1024);
+/// Soft threshold on old-generation live payload (triggers full STW).
+/// Also used as the historical `HEAP_LIMIT` full-heap fuse.
 pub(crate) static HEAP_LIMIT: Mutex<usize> = Mutex::new(256 * 1024);
 
 /// Refcount sentinel: immortal / permanently shared (empty-list singleton).
@@ -182,6 +197,7 @@ pub trait MmBackend {
     fn write_barrier(&mut self, _obj: *mut u8, _field: u32, _new: *mut u8) {}
 }
 
+/// Non-moving generational mark-sweep (young nursery + old tenure).
 pub struct MarkSweep;
 
 pub(crate) fn is_heap_payload(payload: *mut u8) -> bool {
@@ -189,7 +205,29 @@ pub(crate) fn is_heap_payload(payload: *mut u8) -> bool {
         return false;
     }
     let h = header_from_payload(payload);
-    HEAP.with(|heap| heap.borrow().contains(&h))
+    HEAP_SET.with(|set| set.borrow().contains(&h))
+}
+
+#[cfg(test)]
+pub(crate) fn set_gc_limits_for_test(young: usize, old: usize) {
+    *YOUNG_LIMIT.lock().unwrap_or_else(|e| e.into_inner()) = young;
+    *HEAP_LIMIT.lock().unwrap_or_else(|e| e.into_inner()) = old;
+}
+
+#[cfg(test)]
+pub(crate) fn gc_live_bytes_for_test() -> (usize, usize) {
+    (
+        BYTES_YOUNG.with(|y| *y.borrow()),
+        BYTES_OLD.with(|o| *o.borrow()),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn gc_heap_lens_for_test() -> (usize, usize) {
+    (
+        HEAP_YOUNG.with(|h| h.borrow().len()),
+        HEAP_OLD.with(|h| h.borrow().len()),
+    )
 }
 
 pub(crate) struct GcInhibitGuard;
