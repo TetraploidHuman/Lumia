@@ -39,6 +39,30 @@ impl<'ctx> Codegen<'ctx> {
         crate::error::llvm(self.llvm.builder.build_int_neg(o, "neg"))
     }
 
+    fn dest_is_nsw_safe(&self) -> bool {
+        self.frame
+            .emit_dest
+            .is_some_and(|d| self.frame.nsw_binop_locals.contains(&d))
+    }
+
+    fn emit_nsw_binop(
+        &self,
+        l: IntValue<'ctx>,
+        r: IntValue<'ctx>,
+        name: &str,
+    ) -> Result<IntValue<'ctx>> {
+        crate::error::llvm(self.llvm.builder.build_int_nsw_add(l, r, name))
+    }
+
+    fn emit_nsw_binop_sub(
+        &self,
+        l: IntValue<'ctx>,
+        r: IntValue<'ctx>,
+        name: &str,
+    ) -> Result<IntValue<'ctx>> {
+        crate::error::llvm(self.llvm.builder.build_int_nsw_sub(l, r, name))
+    }
+
     pub(crate) fn emit_checked_binop(
         &mut self,
         l: IntValue<'ctx>,
@@ -195,6 +219,8 @@ impl<'ctx> Codegen<'ctx> {
             return Ok(v);
         }
         let v = match op {
+            BinOp::Add if self.dest_is_nsw_safe() => self.emit_nsw_binop(l, r, "add")?,
+            BinOp::Sub if self.dest_is_nsw_safe() => self.emit_nsw_binop_sub(l, r, "sub")?,
             BinOp::Add => self.emit_checked_binop(l, r, fv, "sadd")?,
             BinOp::Sub => self.emit_checked_binop(l, r, fv, "ssub")?,
             BinOp::Mul => self.emit_checked_binop(l, r, fv, "smul")?,
@@ -381,11 +407,11 @@ impl<'ctx> Codegen<'ctx> {
                 _ => unreachable!(),
             };
             let c = crate::error::llvm(self.llvm.builder.build_int_compare(pred, l, r, "icmp"))?;
-            return crate::error::llvm(
-                self.llvm
-                    .builder
-                    .build_int_z_extend(c, self.llvm.i64_ty, "icmpz"),
-            );
+            return crate::error::llvm(self.llvm.builder.build_int_z_extend(
+                c,
+                self.llvm.i64_ty,
+                "icmpz",
+            ));
         }
         let f = self.runtime_fn("lumia_cmp")?;
         let call = crate::error::llvm(self.llvm.builder.build_call(

@@ -2,15 +2,18 @@
 //!
 //! Release-only: inline small pure leaf functions at direct call sites.
 //! Skips `main`, `foreign`, memoized, recursive, and effectful callees.
+//! Callees that use `var` (Assign / Name) are allowed: slot names are renamed
+//! to `$inl{tag}_…` so they cannot clash with the caller's mutable slots.
 
 use lumia_core::{
-    block_calls, count_ops, has_assign_or_name, has_early_return, max_local_in_fun,
+    block_calls, count_ops, for_each_block_dfs, has_early_return, max_local_in_fun,
     rewrite_block_locals, Block, CoreFun, CoreModule, Local, Op, Value,
 };
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// Max SSA ops in callee body (including nested) before we refuse to inline.
-const INLINE_MAX_OPS: usize = 24;
+/// Sized to cover small helpers with a loop + vars (e.g. `isPrime`, `collatzSteps`).
+const INLINE_MAX_OPS: usize = 32;
 
 pub struct InlinePass;
 
@@ -34,9 +37,16 @@ fn inline_module(module: &mut CoreModule) {
         return;
     }
 
+    let mut name_tag = 0u32;
     for fun in &mut module.functions {
         let mut next = max_local_in_fun(fun).saturating_add(1);
-        inline_block(&mut fun.body, &inlineable, &fun.name, &mut next);
+        inline_block(
+            &mut fun.body,
+            &inlineable,
+            &fun.name,
+            &mut next,
+            &mut name_tag,
+        );
     }
 }
 
@@ -53,10 +63,6 @@ fn is_inlineable(f: &CoreFun) -> bool {
     if block_calls(&f.body, &f.name) {
         return false; // recursive
     }
-    // Avoid inlining functions that assign to named slots (caller name clash).
-    if has_assign_or_name(&f.body) {
-        return false;
-    }
     // Early return must stay in the callee; inlining would return from the caller.
     if has_early_return(&f.body) {
         return false;
@@ -69,6 +75,7 @@ fn inline_block(
     inlineable: &HashMap<String, CoreFun>,
     caller: &str,
     next: &mut u32,
+    name_tag: &mut u32,
 ) {
     let mut out: Vec<Op> = Vec::with_capacity(block.ops.len());
     for op in std::mem::take(&mut block.ops) {
@@ -79,13 +86,24 @@ fn inline_block(
                 pure_region,
             } => {
                 let mut value = value;
-                inline_value(&mut value, inlineable, caller, next);
+                inline_value(&mut value, inlineable, caller, next, name_tag);
                 if let Value::Call { fun, args } = &value {
                     if fun != caller {
                         if let Some(callee) = inlineable.get(fun) {
                             if args.len() == callee.params.len() {
-                                let (prelude, result) = materialize_inline(callee, args, next);
-                                out.extend(prelude);
+                                let (prelude, result) =
+                                    materialize_inline(callee, args, next, name_tag);
+                                // Callee snapshot may still contain calls to other
+                                // inlineable leaves — expand those against the same map.
+                                let mut nested = Block {
+                                    params: vec![],
+                                    ops: prelude,
+                                    result: Some(result),
+                                };
+                                inline_block(&mut nested, inlineable, caller, next, name_tag);
+                                let result =
+                                    nested.result.expect("inlined function must return a value");
+                                out.extend(nested.ops);
                                 out.push(Op::Let {
                                     local,
                                     value: Value::Local(result),
@@ -103,7 +121,7 @@ fn inline_block(
                 });
             }
             Op::Effect { mut value } => {
-                inline_value(&mut value, inlineable, caller, next);
+                inline_value(&mut value, inlineable, caller, next, name_tag);
                 out.push(Op::Effect { value });
             }
             other => out.push(other),
@@ -117,6 +135,7 @@ fn inline_value(
     inlineable: &HashMap<String, CoreFun>,
     caller: &str,
     next: &mut u32,
+    name_tag: &mut u32,
 ) {
     match value {
         Value::If {
@@ -124,24 +143,29 @@ fn inline_value(
             else_block,
             ..
         } => {
-            inline_block(then_block, inlineable, caller, next);
-            inline_block(else_block, inlineable, caller, next);
+            inline_block(then_block, inlineable, caller, next, name_tag);
+            inline_block(else_block, inlineable, caller, next, name_tag);
         }
         Value::Loop {
             header,
             body,
             latch,
         } => {
-            inline_block(header, inlineable, caller, next);
-            inline_block(body, inlineable, caller, next);
-            inline_block(latch, inlineable, caller, next);
+            inline_block(header, inlineable, caller, next, name_tag);
+            inline_block(body, inlineable, caller, next, name_tag);
+            inline_block(latch, inlineable, caller, next, name_tag);
         }
-        Value::Lambda { body, .. } => inline_block(body, inlineable, caller, next),
+        Value::Lambda { body, .. } => inline_block(body, inlineable, caller, next, name_tag),
         _ => {}
     }
 }
 
-fn materialize_inline(callee: &CoreFun, args: &[Local], next: &mut u32) -> (Vec<Op>, Local) {
+fn materialize_inline(
+    callee: &CoreFun,
+    args: &[Local],
+    next: &mut u32,
+    name_tag: &mut u32,
+) -> (Vec<Op>, Local) {
     let mut body = callee.body.clone();
     let mut remap: HashMap<u32, u32> = HashMap::default();
 
@@ -163,6 +187,19 @@ fn materialize_inline(callee: &CoreFun, args: &[Local], next: &mut u32) -> (Vec<
     }
 
     rewrite_block_locals(&mut body, &remap);
+
+    // Rename mutable slots so they cannot collide with the caller's vars.
+    let mut slot_names: HashSet<String> = HashSet::default();
+    collect_slot_names(&body, &mut slot_names);
+    if !slot_names.is_empty() {
+        let tag = *name_tag;
+        *name_tag += 1;
+        let name_remap: HashMap<String, String> = slot_names
+            .into_iter()
+            .map(|n| (n.clone(), format!("$inl{tag}_{n}")))
+            .collect();
+        rewrite_block_slot_names(&mut body, &name_remap);
+    }
 
     let result = body
         .result
@@ -213,10 +250,80 @@ fn collect_defined_value(value: &Value, defined: &mut HashSet<u32>) {
     }
 }
 
+fn collect_slot_names(block: &Block, names: &mut HashSet<String>) {
+    for_each_block_dfs(block, &mut |b| {
+        for op in &b.ops {
+            match op {
+                Op::Assign { name, .. } => {
+                    names.insert(name.clone());
+                }
+                Op::Let {
+                    value: Value::Name(n),
+                    ..
+                }
+                | Op::Effect {
+                    value: Value::Name(n),
+                } => {
+                    names.insert(n.clone());
+                }
+                _ => {}
+            }
+        }
+    });
+}
+
+fn rewrite_block_slot_names(block: &mut Block, remap: &HashMap<String, String>) {
+    if remap.is_empty() {
+        return;
+    }
+    for op in &mut block.ops {
+        match op {
+            Op::Assign { name, .. } => {
+                if let Some(n) = remap.get(name) {
+                    *name = n.clone();
+                }
+            }
+            Op::Let { value, .. } | Op::Effect { value } => {
+                rewrite_value_slot_names(value, remap);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn rewrite_value_slot_names(value: &mut Value, remap: &HashMap<String, String>) {
+    match value {
+        Value::Name(n) => {
+            if let Some(r) = remap.get(n) {
+                *n = r.clone();
+            }
+        }
+        Value::If {
+            then_block,
+            else_block,
+            ..
+        } => {
+            rewrite_block_slot_names(then_block, remap);
+            rewrite_block_slot_names(else_block, remap);
+        }
+        Value::Loop {
+            header,
+            body,
+            latch,
+        } => {
+            rewrite_block_slot_names(header, remap);
+            rewrite_block_slot_names(body, remap);
+            rewrite_block_slot_names(latch, remap);
+        }
+        Value::Lambda { body, .. } => rewrite_block_slot_names(body, remap),
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lumia_core::{Block, CoreFun, CoreModule, Op, Value};
+    use lumia_core::{has_assign_or_name, Block, CoreFun, CoreModule, Op, Value};
     use lumia_syntax::BinOp;
     use lumia_ty::{Effect, Type};
 
@@ -319,6 +426,141 @@ mod tests {
             )
         });
         assert!(has_add, "inlined body should contain add");
+    }
+
+    #[test]
+    fn inlines_var_slots_with_renamed_names() {
+        // fun bump(n) { var x = n; x = x + 1; x }
+        let bump = CoreFun {
+            name: "bump".into(),
+            params: vec![Local(0)],
+            param_names: vec!["n".into()],
+            param_tys: vec![Type::Int],
+            body: Block {
+                params: vec![],
+                ops: vec![
+                    Op::Assign {
+                        name: "x".into(),
+                        value: Local(0),
+                    },
+                    Op::Let {
+                        local: Local(1),
+                        value: Value::Name("x".into()),
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(2),
+                        value: Value::Int(1),
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(3),
+                        value: Value::Binary {
+                            op: BinOp::Add,
+                            left: Local(1),
+                            right: Local(2),
+                        },
+                        pure_region: true,
+                    },
+                    Op::Assign {
+                        name: "x".into(),
+                        value: Local(3),
+                    },
+                    Op::Let {
+                        local: Local(4),
+                        value: Value::Name("x".into()),
+                        pure_region: true,
+                    },
+                ],
+                result: Some(Local(4)),
+            },
+            ret_ty: Type::Int,
+            effect: Effect::pure(),
+            is_main: false,
+            memo: None,
+            external: None,
+            escaping: HashSet::default(),
+            scheme_poly: false,
+            mono_of: None,
+        };
+        assert!(has_assign_or_name(&bump.body));
+        assert!(is_inlineable(&bump));
+
+        let mut module = CoreModule::with_functions(
+            "M",
+            vec![
+                bump,
+                CoreFun {
+                    name: "main".into(),
+                    params: vec![],
+                    param_names: vec![],
+                    param_tys: vec![],
+                    body: Block {
+                        params: vec![],
+                        ops: vec![
+                            Op::Let {
+                                local: Local(0),
+                                value: Value::Int(1),
+                                pure_region: true,
+                            },
+                            Op::Assign {
+                                name: "x".into(),
+                                value: Local(0),
+                            },
+                            Op::Let {
+                                local: Local(1),
+                                value: Value::Int(41),
+                                pure_region: true,
+                            },
+                            Op::Let {
+                                local: Local(2),
+                                value: Value::Call {
+                                    fun: "bump".into(),
+                                    args: vec![Local(1)],
+                                },
+                                pure_region: true,
+                            },
+                        ],
+                        result: Some(Local(2)),
+                    },
+                    ret_ty: Type::Int,
+                    effect: Effect::pure(),
+                    is_main: true,
+                    memo: None,
+                    external: None,
+                    escaping: HashSet::default(),
+                    scheme_poly: false,
+                    mono_of: None,
+                },
+            ],
+        );
+        inline_module(&mut module);
+        let main = module.functions.iter().find(|f| f.name == "main").unwrap();
+        let has_call = main.body.ops.iter().any(|op| {
+            matches!(
+                op,
+                Op::Let {
+                    value: Value::Call { fun, .. },
+                    ..
+                } if fun == "bump"
+            )
+        });
+        assert!(!has_call, "bump should be inlined");
+        // Caller keeps its own `x`; inlined body must use a tagged name.
+        let assigns: Vec<&str> = main
+            .body
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::Assign { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(assigns.contains(&"x"));
+        assert!(
+            assigns.iter().any(|n| n.starts_with("$inl")),
+            "inlined slots should be renamed, got {assigns:?}"
+        );
     }
 
     #[test]

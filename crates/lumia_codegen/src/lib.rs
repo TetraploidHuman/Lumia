@@ -6,6 +6,7 @@ mod emit_memo;
 mod emit_value;
 mod error;
 mod link;
+mod nsw_iv;
 mod roots;
 mod runtime_decls;
 mod state;
@@ -22,13 +23,13 @@ use anyhow::{Context as AnyhowContext, Result};
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module as LlvmModule;
+use inkwell::passes::PassBuilderOptions;
 use inkwell::targets::{
     CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine,
 };
 use inkwell::types::BasicMetadataTypeEnum;
 use inkwell::values::FunctionValue;
 use inkwell::{AddressSpace, OptimizationLevel};
-use inkwell::passes::PassBuilderOptions;
 use lumia_core::{CoreFun, CoreModule, Local, Op, Value};
 use lumia_ty::Type;
 use rustc_hash::FxHashMap as HashMap;

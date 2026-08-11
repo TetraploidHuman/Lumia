@@ -51,6 +51,10 @@ pub(crate) struct FrameState<'ctx> {
     pub root_depth: u32,
     pub rooted_slots: HashSet<String>,
     pub entry_bb: Option<BasicBlock<'ctx>>,
+    /// Dest local of the `Let` currently being emitted (for NSW lookup).
+    pub emit_dest: Option<u32>,
+    /// `Binary` Add/Sub locals proven safe as loop IV `±1` (see `nsw_iv`).
+    pub nsw_binop_locals: HashSet<u32>,
 }
 
 /// Memo transform emission scratch for the current function.

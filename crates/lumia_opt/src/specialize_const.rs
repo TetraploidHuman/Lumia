@@ -16,7 +16,7 @@ const MAX_CLONES_PER_FUN: usize = 16;
 /// Global safety fuse for one optimize run.
 const MAX_TOTAL_CLONES: usize = 64;
 /// Same size budget as inline — specialization targets the same leaf set.
-const MAX_OPS: usize = 24;
+const MAX_OPS: usize = 32;
 
 pub struct SpecializeConstPass;
 

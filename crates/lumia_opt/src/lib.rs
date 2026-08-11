@@ -163,6 +163,12 @@ pub fn optimize(module: &mut CoreModule, opts: &OptOptions) {
         None
     };
 
+    // Stamp Memo *before* Release inline / specialize so T_f callees are not
+    // absorbed into callers (which would drop runtime result reuse).
+    if let Some(ref plan) = memo_plan {
+        apply_memo_plan(module, plan);
+    }
+
     let passes = if opts.release {
         RELEASE_PASSES
     } else {
@@ -171,17 +177,14 @@ pub fn optimize(module: &mut CoreModule, opts: &OptOptions) {
     for p in passes {
         p.run(module);
     }
-
-    if let Some(plan) = memo_plan {
-        apply_memo_plan(module, &plan);
-    }
 }
 
 /// Named passes for tooling / diagnostics.
 ///
 /// `"memo_tf"` is listed for Release even though planning runs via [`plan_memo_tf`]
-/// *before* CSE (not as a `Pass::run`); applying a fresh plan after CSE would
-/// drop const-reuse evidence (§7.5.2).
+/// *before* CSE (not as a `Pass::run`); the plan is applied immediately so later
+/// inline/specialize see `memo` and leave T_f callees intact. Re-planning after
+/// CSE would drop const-reuse evidence (§7.5.2).
 pub fn pass_names(release: bool) -> Vec<&'static str> {
     let mut names: Vec<&'static str> = if release {
         RELEASE_PASSES.iter().map(|p| p.name()).collect()

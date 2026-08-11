@@ -121,11 +121,11 @@ impl<'ctx> Codegen<'ctx> {
                 r,
                 "eq_bits",
             ))?;
-            return crate::error::llvm(
-                self.llvm
-                    .builder
-                    .build_int_z_extend(c, self.llvm.i64_ty, "eqz"),
-            );
+            return crate::error::llvm(self.llvm.builder.build_int_z_extend(
+                c,
+                self.llvm.i64_ty,
+                "eqz",
+            ));
         }
         if let Some(name) = Self::adt_method_name(lt, rt) {
             // Hash ADTs use `lumia_eq` for Map/Set keys — keep `==` on the same path

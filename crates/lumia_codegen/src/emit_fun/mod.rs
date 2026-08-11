@@ -31,6 +31,8 @@ impl<'ctx> Codegen<'ctx> {
         self.funs.funref_locals.clear();
         self.frame.local_tys.clear();
         self.frame.slot_tys.clear();
+        self.frame.emit_dest = None;
+        self.frame.nsw_binop_locals = crate::nsw_iv::collect_nsw_binop_locals(&fun.body);
         self.funs.current_fun = fun.name.clone();
         self.memo.current_memo = fun.memo;
         self.funs.tco_peers = self
@@ -209,7 +211,9 @@ impl<'ctx> Codegen<'ctx> {
                     if self.try_emit_tco_let(block, *local, value)? {
                         return Ok(None);
                     }
+                    self.frame.emit_dest = Some(local.0);
                     let v = self.emit_value(value, fv)?;
+                    self.frame.emit_dest = None;
                     self.bind_let_after_emit(*local, value, v)?;
                 }
                 Op::Effect { value } => {
