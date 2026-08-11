@@ -75,10 +75,11 @@ fn rooted_survives_collect() {
 }
 
 #[test]
-fn write_barrier_empty_under_stw() {
+fn write_barrier_records_old_to_young() {
     let p = lumia_alloc(8, TYPE_BYTES);
-    // Still a no-op: minor GC scans all old objects instead of a card table.
+    // Young→young is a no-op for the remembered set.
     lumia_write_barrier(p, 0, ptr::null_mut());
+    assert_eq!(crate::common::gc_remembered_len_for_test(), 0);
 }
 
 #[test]
@@ -179,6 +180,39 @@ fn minor_keeps_young_reachable_from_old() {
     );
     lumia_root_pop();
     let (_y, _o) = gc_live_bytes_for_test();
+}
+
+#[test]
+fn write_barrier_remembers_old_to_young() {
+    use crate::list::{lumia_list_append, lumia_list_empty, lumia_list_len};
+    let _limits = GcLimitGuard::set(256, 16 * 1024 * 1024);
+    // Drop leftovers from earlier tests so nursery pressure is predictable.
+    lumia_gc_collect();
+    let mut xs = lumia_list_empty();
+    let child0 = lumia_alloc(16, TYPE_BYTES);
+    xs = lumia_list_append(xs, child0 as i64);
+    lumia_root_push(&mut xs as *mut *mut u8);
+    let old_before = gc_heap_lens_for_test().1;
+    for _ in 0..128 {
+        let _ = lumia_alloc(64, TYPE_BYTES);
+        if gc_heap_lens_for_test().1 > old_before {
+            break;
+        }
+    }
+    assert!(
+        gc_heap_lens_for_test().1 > old_before,
+        "rooted list should tenure under nursery pressure"
+    );
+    let before = crate::common::gc_remembered_len_for_test();
+    let child1 = lumia_alloc(16, TYPE_BYTES);
+    xs = lumia_list_append(xs, child1 as i64);
+    let after = crate::common::gc_remembered_len_for_test();
+    assert!(
+        after > before,
+        "in-place append into old list must dirty remembered set ({before} -> {after})"
+    );
+    assert_eq!(lumia_list_len(xs), 2);
+    lumia_root_pop();
 }
 
 #[test]

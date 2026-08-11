@@ -93,6 +93,12 @@ thread_local! {
     /// Tenured objects that survived at least one minor collection.
     pub(crate) static HEAP_OLD: RefCell<Vec<*mut ObjectHeader>> =
         const { RefCell::new(Vec::new()) };
+    /// O(1) "is tenured" for the write barrier / minor mark.
+    pub(crate) static HEAP_OLD_SET: RefCell<HashSet<*mut ObjectHeader>> =
+        RefCell::new(HashSet::new());
+    /// Old objects that may hold young pointers (remembered set / card table).
+    pub(crate) static REMEMBERED: RefCell<HashSet<*mut ObjectHeader>> =
+        RefCell::new(HashSet::new());
     /// O(1) membership for `is_heap_payload` (Int bits vs real headers).
     pub(crate) static HEAP_SET: RefCell<HashSet<*mut ObjectHeader>> =
         RefCell::new(HashSet::new());
@@ -194,7 +200,9 @@ pub(crate) fn header_from_payload(payload: *mut u8) -> *mut ObjectHeader {
 pub trait MmBackend {
     fn alloc(&mut self, nbytes: usize, type_id: u32) -> *mut u8;
     fn collect(&mut self);
-    fn write_barrier(&mut self, _obj: *mut u8, _field: u32, _new: *mut u8) {}
+    fn write_barrier(&mut self, obj: *mut u8, _field: u32, new_ptr: *mut u8) {
+        remember_old_to_young(obj, new_ptr as i64);
+    }
 }
 
 /// Non-moving generational mark-sweep (young nursery + old tenure).
@@ -206,6 +214,39 @@ pub(crate) fn is_heap_payload(payload: *mut u8) -> bool {
     }
     let h = header_from_payload(payload);
     HEAP_SET.with(|set| set.borrow().contains(&h))
+}
+
+pub(crate) fn is_old_header(h: *mut ObjectHeader) -> bool {
+    HEAP_OLD_SET.with(|set| set.borrow().contains(&h))
+}
+
+pub(crate) fn is_young_payload(payload: *mut u8) -> bool {
+    if payload.is_null() || !is_heap_payload(payload) {
+        return false;
+    }
+    !is_old_header(header_from_payload(payload))
+}
+
+pub(crate) fn is_old_payload(payload: *mut u8) -> bool {
+    if payload.is_null() || !is_heap_payload(payload) {
+        return false;
+    }
+    is_old_header(header_from_payload(payload))
+}
+
+/// Record a possible old→young edge (remembered set).
+pub(crate) fn remember_old_to_young(obj_payload: *mut u8, new_bits: i64) {
+    if !is_old_payload(obj_payload) {
+        return;
+    }
+    let new_p = new_bits as *mut u8;
+    if !is_young_payload(new_p) {
+        return;
+    }
+    let h = header_from_payload(obj_payload);
+    REMEMBERED.with(|r| {
+        r.borrow_mut().insert(h);
+    });
 }
 
 #[cfg(test)]
@@ -228,6 +269,11 @@ pub(crate) fn gc_heap_lens_for_test() -> (usize, usize) {
         HEAP_YOUNG.with(|h| h.borrow().len()),
         HEAP_OLD.with(|h| h.borrow().len()),
     )
+}
+
+#[cfg(test)]
+pub(crate) fn gc_remembered_len_for_test() -> usize {
+    REMEMBERED.with(|r| r.borrow().len())
 }
 
 pub(crate) struct GcInhibitGuard;

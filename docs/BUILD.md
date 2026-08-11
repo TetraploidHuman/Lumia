@@ -48,7 +48,7 @@ Source.lm
 | 后端    | **唯一 LLVM**（Debug / Release 都走 LLVM）                                             |
 | 泛型    | **单态化**（最终形态）                                                                    |
 | 运行时   | `lumia_rt`：Rust，对外 **C ABI**；GC 为可替换模块                                           |
-| 首发 GC | 分代 STW **mark-sweep**（nursery + tenure；minor 扫 old 作根，写屏障仍可为空）+ shadow stack 根 |
+| 首发 GC | 分代 STW **mark-sweep** + **remembered-set 写屏障**（minor 只扫 nursery + dirty old；`lumia_write_barrier`）+ shadow stack 根 |
 
 
 ### 明确拒绝
@@ -138,7 +138,7 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumia_rt` 内�
 | ---------------------------------------------------- | --------------------------------- |
 | `lumia_alloc(nbytes, type_id) -> *mut u8`            | 堆分配（可触发收集）；返回 **payload** 指针（头在前） |
 | `lumia_root_push(*mut *mut u8)` / `lumia_root_pop()` | shadow stack 根                    |
-| `lumia_write_barrier(obj, field, new)`               | 写屏障钩子；**当前分代 STW 下为空是正确的**（minor 全扫 old；换并发/card-table 时再实现） |
+| `lumia_write_barrier(obj, field, new)`               | 写屏障：old 写入 young 时记入 remembered set；young/非堆为 no-op |
 | `lumia_gc_collect()`                                 | 强制 **full** STW 收集                         |
 | `lumia_println_int` / `_cstr` / `_str` / `_bool`     | 效应 I/O                            |
 
@@ -169,7 +169,8 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumia_rt` 内�
   - **concat_ident**：Core 消 `concat([])` 恒等（`map`/`filter`/`fold` 主融合在 HIR）；空 `listOf()` → `lumia_list_empty` 永生单例。
   - **稳健性**：foreign `String` 临时 cstr 在调用期间入根（防 GC UAF）；Iota 物化 / 取下标用 checked 算术并对过大物化 trap；跨 product 同名字段的 `with` 报歧义。
   - **List Iota**：`range` / `rangeInclusive` → `TYPE_LIST_IOTA`（`[start,end)`，O(1)）；`len`/`get`/eq/hash/`take`/`slice` 虚拟；修改类 API `force` 成 HeapList（见 `examples/range_iota.lm`）。
-- GC：分代 mark-sweep（young 默认 64KiB 触发 minor；old 默认 256KiB 或 `lumia_gc_collect` 触发 full）+ **shadow-stack 根**（`lumia_root_push`/`pop`；**嵌套块 / 循环体作用域弹出**，`break`/`continue` 对齐循环入口深度）；`is_heap_payload` 为 O(1) 集合查询；见 `examples/gc_roots.lm`。
+- GC：分代 mark-sweep（young 默认 64KiB → minor：只标记 nursery + remembered/rooted old；old 默认 256KiB 或 `lumia_gc_collect` → full）+ **`lumia_write_barrier` remembered set**（List 原地 append / Map hash upsert）+ **shadow-stack 根**；`is_heap_payload` O(1)；见 `examples/gc_roots.lm`。
+  - **Escape**：短生命周期 `var` 不再一律逃逸；经 `Name`/返回逃逸的赋值仍会标记，便于 `ReprSelect` 选栈 `Lit*`。
 - Map：小表线性 Assoc；超过 8 对晋升 **HashOrdered**；大表 `set` 走 **Overlay** 差分（满 8 条再压实）；见 `examples/map_hash.lm`。
 - Set：同哲学 — ≤8 线性，更大 **HashOrdered**（开址 + 插入序）；见 `examples/set_hash.lm`。
 - 元组投影：`p.0` / `p.1`（`examples/tuple_fields.lm`）；Fun 效应变量 + HOF 拾取 IO（`examples/effect_hof.lm`）。
@@ -201,7 +202,7 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumia_rt` 内�
 | **已完成骨架**       | parse 子集 → 推断 + 效应 → Core → LLVM → 链 `lumia_rt` → `main` + `println` + `Int`；`listOf`→`AllocList`；CSE + ReprSelect 默认路径                       |
 | **已完成下一步（部分）**  | …；**sortBy / assert+行号**；**定位诊断（多文件）**；**Map Overlay**；**WordCount**；**lumia fmt**；…                                                          |
 | **已完成（相对原「下一里程碑」）** | Trait / instance + 运行时字典；非逃逸小对象栈分配（Lit* / LitAdt + 晋升）；`std.option` / `std.result` / `std.string` / `std.io` 源文件正文；逃逸分析 / 融合 / TCO SCC / 自动并行 / 透明 Memo；L0 `Map.get` PE + Release 二次 `const_fold`；**Int call-site specialization**（`SpecializeConstPass`）+ 字面 `ListTake`/`ListSlice`/`ListReverse`/`AdtTag` PE |
-| **仍待** | 并发 GC / card-table 写屏障；`--mm=arc`（STW 分代下写屏障为空属正确） |
+| **仍待** | 并发 GC；`--mm=arc`（分代 + remembered set 已落地） |
 | **工具链已落地** | **自动并行**（默认 `ListParMap` + 不安全回退；`--no-parallel`）；**包管理**（`Lumia.toml` / `lumia pkg`）；**LSP**（`lumia lsp`）；**FFI**（`foreign "C" fn`）；`priv` 跨文件可见性；`effect { }` 块；Map/Set `finish` 晋升；`lumia fmt` / `lumia doc` |
 
 
