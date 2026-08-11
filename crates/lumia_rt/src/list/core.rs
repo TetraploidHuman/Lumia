@@ -184,6 +184,8 @@ pub extern "C" fn lumia_list_append(list: *mut u8, elem: i64) -> *mut u8 {
             let dst = list as *mut i64;
             *dst = n1;
             *dst.add(n1 as usize) = elem;
+            // Old list + young heap elem → remembered set for minor GC.
+            crate::lumia_write_barrier(list, n1 as u32, elem as *mut u8);
             return list;
         }
 

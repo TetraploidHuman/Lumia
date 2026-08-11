@@ -46,7 +46,7 @@
 ## 工具链
 
 - [x] **`lumia doc`**：CLI 生成 Markdown（`///`、公开 `val`/`type`/`foreign`、`@exports`）；`priv` 默认隐藏。
-- [ ] **并发 GC / card-table**：BUILD 远期；当前已是分代 STW（minor 全扫 old，写屏障仍可为空）。`--mm=arc` 仍非优先。
+- [ ] **并发 GC**：BUILD 远期；分代 STW + remembered-set 写屏障已落地。`--mm=arc` 仍非优先。
 
 ## 架构清理（已落地，详见 git 历史）
 

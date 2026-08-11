@@ -3,9 +3,8 @@
 //! C ABI contract used by codegen:
 //! - `lumia_alloc(nbytes, type_id) -> *mut u8`
 //! - `lumia_root_push(*mut *mut u8)` / `lumia_root_pop()`
-//! - `lumia_write_barrier(obj, field_index, new_ptr)` — no-op while minor GC
-//!   scans all old objects as roots; concurrent / card-table collectors would
-//!   install a real barrier (precise shadow-stack roots; ABI stays stable).
+//! - `lumia_write_barrier(obj, field_index, new_ptr)` — records old→young edges
+//!   in the remembered set for minor GC (no-op when `obj` is young / `new` is not)
 //! - `lumia_gc_collect()` — full-heap collection
 //! - `lumia_println_int(i64)` / `lumia_println_str(*const u8, len)`
 //!

@@ -2,16 +2,17 @@
 //!
 //! Conservative: a local escapes if it may be observed after the current
 //! function returns, stored into a heap object that escapes, passed to an
-//! unknown callee, or written into a named binding.
+//! unknown callee, or read from a named `var` that escapes.
 //!
 //! Direct calls to known functions only mark args whose corresponding
 //! formals escape in the callee (fixed-point summaries).
+//! Short-lived `var` bindings that never escape can stay stack `Lit*`.
 
 mod propagate;
 mod seed;
 
 use propagate::propagate_block;
-use seed::seed_escaping;
+use seed::{collect_assigns, seed_escaping};
 
 use lumia_core::{CoreFun, CoreModule, Local};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
@@ -27,12 +28,14 @@ pub fn escaping_locals(fun: &CoreFun) -> HashSet<Local> {
 }
 
 fn escaping_locals_with(fun: &CoreFun, summaries: &HashMap<String, ParamEscape>) -> HashSet<Local> {
+    let mut assigns: HashMap<String, Vec<Local>> = HashMap::default();
+    collect_assigns(&fun.body, &mut assigns);
     let mut escaping: HashSet<Local> = HashSet::default();
-    seed_escaping(&fun.body, &mut escaping, summaries);
+    seed_escaping(&fun.body, &mut escaping, summaries, &assigns);
     let mut changed = true;
     while changed {
         changed = false;
-        changed |= propagate_block(&fun.body, &mut escaping);
+        changed |= propagate_block(&fun.body, &mut escaping, &assigns);
     }
     escaping
 }
@@ -304,5 +307,78 @@ mod tests {
         let esc = escaping_locals(&fun_with_body(body));
         assert!(esc.contains(&Local(1)));
         assert!(esc.contains(&Local(0)));
+    }
+
+    #[test]
+    fn short_lived_var_assign_does_not_escape() {
+        // `var xs = listOf(1)` used only for a pure projection must not escape.
+        let body = Block {
+            params: vec![],
+            ops: vec![
+                Op::Let {
+                    local: Local(0),
+                    value: Value::Int(1),
+                    pure_region: true,
+                },
+                Op::Let {
+                    local: Local(1),
+                    value: Value::AllocList {
+                        elems: vec![Local(0)],
+                        repr: lumia_core::ListRepr::HeapList,
+                    },
+                    pure_region: true,
+                },
+                Op::Assign {
+                    name: "xs".into(),
+                    value: Local(1),
+                },
+                Op::Let {
+                    local: Local(2),
+                    value: Value::Builtin {
+                        name: lumia_hir::Builtin::ListLen,
+                        args: vec![Local(1)],
+                    },
+                    pure_region: true,
+                },
+            ],
+            result: Some(Local(2)),
+        };
+        let esc = escaping_locals(&fun_with_body(body));
+        assert!(
+            !esc.contains(&Local(1)),
+            "non-escaping var list must stay stack-eligible: {esc:?}"
+        );
+    }
+
+    #[test]
+    fn var_name_read_that_returns_escapes_assigns() {
+        let body = Block {
+            params: vec![],
+            ops: vec![
+                Op::Let {
+                    local: Local(0),
+                    value: Value::AllocList {
+                        elems: vec![],
+                        repr: lumia_core::ListRepr::HeapList,
+                    },
+                    pure_region: true,
+                },
+                Op::Assign {
+                    name: "xs".into(),
+                    value: Local(0),
+                },
+                Op::Let {
+                    local: Local(1),
+                    value: Value::Name("xs".into()),
+                    pure_region: true,
+                },
+            ],
+            result: Some(Local(1)),
+        };
+        let esc = escaping_locals(&fun_with_body(body));
+        assert!(
+            esc.contains(&Local(0)),
+            "returning Name(xs) must escape assigns to xs: {esc:?}"
+        );
     }
 }
