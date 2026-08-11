@@ -1,4 +1,4 @@
-//! Memo L2 / dense-index prologue and store.
+//! Memo `T_f` / dense-index prologue and store.
 
 use super::Codegen;
 use anyhow::{Context as AnyhowContext, Result};

@@ -4,7 +4,8 @@
 //! Skips `main`, `foreign`, memoized, recursive, and effectful callees.
 
 use lumia_core::{
-    max_local_in_fun, rewrite_block_locals, Block, CoreFun, CoreModule, Local, Op, Value,
+    block_calls, count_ops, has_assign_or_name, has_early_return, max_local_in_fun,
+    rewrite_block_locals, Block, CoreFun, CoreModule, Local, Op, Value,
 };
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
@@ -49,7 +50,7 @@ fn is_inlineable(f: &CoreFun) -> bool {
     if count_ops(&f.body) > INLINE_MAX_OPS {
         return false;
     }
-    if calls_name(&f.body, &f.name) {
+    if block_calls(&f.body, &f.name) {
         return false; // recursive
     }
     // Avoid inlining functions that assign to named slots (caller name clash).
@@ -61,125 +62,6 @@ fn is_inlineable(f: &CoreFun) -> bool {
         return false;
     }
     true
-}
-
-fn has_early_return(block: &Block) -> bool {
-    for op in &block.ops {
-        match op {
-            Op::Return { .. } => return true,
-            Op::Let { value, .. } | Op::Effect { value, .. } if value_has_early_return(value) => {
-                return true;
-            }
-            _ => {}
-        }
-    }
-    false
-}
-
-fn value_has_early_return(value: &Value) -> bool {
-    match value {
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => has_early_return(then_block) || has_early_return(else_block),
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => has_early_return(header) || has_early_return(body) || has_early_return(latch),
-        Value::Lambda { body, .. } => has_early_return(body),
-        _ => false,
-    }
-}
-
-fn count_ops(block: &Block) -> usize {
-    let mut n = block.ops.len();
-    for op in &block.ops {
-        match op {
-            Op::Let { value, .. } | Op::Effect { value, .. } => n += count_ops_value(value),
-            _ => {}
-        }
-    }
-    n
-}
-
-fn count_ops_value(value: &Value) -> usize {
-    match value {
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => count_ops(then_block) + count_ops(else_block),
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => count_ops(header) + count_ops(body) + count_ops(latch),
-        Value::Lambda { body, .. } => count_ops(body),
-        _ => 0,
-    }
-}
-
-fn calls_name(block: &Block, name: &str) -> bool {
-    for op in &block.ops {
-        match op {
-            Op::Let { value, .. } | Op::Effect { value, .. } if value_calls_name(value, name) => {
-                return true;
-            }
-            _ => {}
-        }
-    }
-    false
-}
-
-fn value_calls_name(value: &Value, name: &str) -> bool {
-    match value {
-        Value::Call { fun, .. } if fun == name => true,
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => calls_name(then_block, name) || calls_name(else_block, name),
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => calls_name(header, name) || calls_name(body, name) || calls_name(latch, name),
-        Value::Lambda { body, .. } => calls_name(body, name),
-        _ => false,
-    }
-}
-
-fn has_assign_or_name(block: &Block) -> bool {
-    for op in &block.ops {
-        match op {
-            Op::Assign { .. } => return true,
-            Op::Let { value, .. } | Op::Effect { value, .. } if value_has_assign_or_name(value) => {
-                return true;
-            }
-            _ => {}
-        }
-    }
-    false
-}
-
-fn value_has_assign_or_name(value: &Value) -> bool {
-    match value {
-        Value::Name(_) => true,
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => has_assign_or_name(then_block) || has_assign_or_name(else_block),
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => has_assign_or_name(header) || has_assign_or_name(body) || has_assign_or_name(latch),
-        Value::Lambda { body, .. } => has_assign_or_name(body),
-        _ => false,
-    }
 }
 
 fn inline_block(

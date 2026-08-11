@@ -2,10 +2,11 @@
 
 mod abi;
 mod helpers;
+mod slots;
 
 use super::Codegen;
 use anyhow::{Context as AnyhowContext, Result};
-use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
+use inkwell::values::{BasicValueEnum, FunctionValue};
 use lumia_core::{Block, CoreFun, Local, MemoTf, Op, Value};
 use lumia_ty::Type;
 
@@ -110,96 +111,81 @@ impl<'ctx> Codegen<'ctx> {
         Ok(())
     }
 
-    fn ensure_slot(&mut self, name: &str) -> Result<PointerValue<'ctx>> {
-        if let Some(p) = self.frame.slots.get(name) {
-            return Ok(*p);
-        }
-        // Must be entry alloca — loop-body alloca grows the native stack each iteration.
-        let alloca = self.alloca_in_entry(self.llvm.i64_ty, &format!("mut_{name}"))?;
-        crate::error::llvm(
-            self.llvm
-                .builder
-                .build_store(alloca, self.llvm.i64_ty.const_int(0, false)),
-        )?;
-        self.root_register_slot(alloca, name)?;
-        self.frame.slots.insert(name.to_string(), alloca);
-        Ok(alloca)
-    }
-
-    fn store_slot(&mut self, name: &str, v: BasicValueEnum<'ctx>) -> Result<()> {
-        if matches!(v, BasicValueEnum::FloatValue(_)) {
-            // Float slots are not heap roots; create without rooting.
-            if !self.frame.slots.contains_key(name) {
-                let alloca = self.alloca_in_entry(self.llvm.i64_ty, &format!("mut_{name}"))?;
-                self.frame.slots.insert(name.to_string(), alloca);
-            }
-            self.frame.float_slots.insert(name.to_string());
-            self.frame.slot_tys.insert(name.to_string(), Type::Float);
-        }
-        let slot = self.ensure_slot(name)?;
-        let i = self.coerce_i64(v)?;
-        // COW: releasing the previous List when the pointer changes keeps uniqueness
-        // accurate for `xs = xs.append(e)` (in-place) vs aliased snapshots.
-        if !self.frame.float_slots.contains(name) {
-            let old = self
-                .llvm
-                .builder
-                .build_load(self.llvm.i64_ty, slot, "slot_old")
-                .map_err(|e| anyhow::anyhow!("load slot_old: {e}"))?
-                .into_int_value();
-            let same = self
-                .llvm
-                .builder
-                .build_int_compare(inkwell::IntPredicate::EQ, old, i, "slot_same")
-                .map_err(|e| anyhow::anyhow!("icmp slot_same: {e}"))?;
-            let cur_bb = self
-                .llvm
-                .builder
-                .get_insert_block()
-                .context("store_slot insert block")?;
-            let fv = cur_bb.get_parent().context("store_slot parent")?;
-            let rel_bb = self.llvm.context.append_basic_block(fv, "slot_release");
-            let cont_bb = self.llvm.context.append_basic_block(fv, "slot_store");
-            self.llvm
-                .builder
-                .build_conditional_branch(same, cont_bb, rel_bb)
-                .map_err(|e| anyhow::anyhow!("br slot_same: {e}"))?;
-            self.llvm.builder.position_at_end(rel_bb);
-            self.list_release_i64(old)?;
-            self.llvm
-                .builder
-                .build_unconditional_branch(cont_bb)
-                .map_err(|e| anyhow::anyhow!("br cont: {e}"))?;
-            self.llvm.builder.position_at_end(cont_bb);
-        }
-        self.llvm
-            .builder
-            .build_store(slot, i)
-            .map_err(|e| anyhow::anyhow!("store slot: {e}"))?;
-        Ok(())
-    }
-
     pub(crate) fn infer_value_ty(&self, value: &Value) -> Type {
         lumia_core::infer_value_ty_ctx(value, self.infer_ctx(), None)
     }
 
-    pub(crate) fn load_slot(&self, name: &str) -> Result<BasicValueEnum<'ctx>> {
-        let slot = self
-            .frame
-            .slots
-            .get(name)
-            .copied()
-            .with_context(|| format!("unbound mutable `{name}`"))?;
-        let bits = crate::error::llvm(self.llvm.builder.build_load(self.llvm.i64_ty, slot, name))?;
-        if self.frame.float_slots.contains(name) {
-            crate::error::llvm(self.llvm.builder.build_bit_cast(
-                bits.into_int_value(),
-                self.llvm.context.f64_type(),
-                "mut_f64",
-            ))
-        } else {
-            Ok(bits)
+    /// Pure self/mutual recursion in tail position → musttail (DESIGN §4.4).
+    /// Returns `Ok(true)` if the block was terminated by a musttail call.
+    fn try_emit_tco_let(&mut self, block: &Block, local: Local, value: &Value) -> Result<bool> {
+        let is_block_tail = block.result == Some(local)
+            && matches!(
+                block.ops.last(),
+                Some(Op::Let { local: last, .. }) if *last == local
+            );
+        if self.funs.tco_peers.is_empty() || !is_block_tail {
+            return Ok(false);
         }
+        match value {
+            Value::Call { fun, args } => {
+                if self.funs.tco_peers.contains(fun) {
+                    self.root_pop_to(0)?;
+                    self.emit_frame_pop()?;
+                    if self.emit_musttail_call(fun, args)? {
+                        return Ok(true);
+                    }
+                    // musttail failed — restore frame for normal call path.
+                    self.emit_frame_push(&self.funs.current_fun.clone())?;
+                }
+            }
+            Value::IndirectCall { callee, args } => {
+                if let Some(fun) = self.funs.funref_locals.get(&callee.0).cloned() {
+                    if self.funs.tco_peers.contains(&fun) {
+                        self.root_pop_to(0)?;
+                        self.emit_frame_pop()?;
+                        if self.emit_musttail_call(&fun, args)? {
+                            return Ok(true);
+                        }
+                        self.emit_frame_push(&self.funs.current_fun.clone())?;
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(false)
+    }
+
+    fn bind_let_after_emit(
+        &mut self,
+        local: Local,
+        value: &Value,
+        v: BasicValueEnum<'ctx>,
+    ) -> Result<()> {
+        if self.value_may_heap(value) {
+            if let Ok(bits) = self.coerce_i64(v) {
+                // Alias: `val a = xs` must bump List COW refcount.
+                if matches!(value, Value::Local(_) | Value::Name(_)) {
+                    self.list_retain_i64(bits)?;
+                }
+                self.root_push_i64(bits)?;
+            }
+        }
+        self.frame.locals.insert(local.0, v);
+        self.frame
+            .local_tys
+            .insert(local.0, self.infer_value_ty(value));
+        if let Value::FunRef(name) = value {
+            self.funs.funref_locals.insert(local.0, name.clone());
+        } else if let Value::Local(Local(src)) = value {
+            if let Some(n) = self.funs.funref_locals.get(src).cloned() {
+                self.funs.funref_locals.insert(local.0, n);
+            } else {
+                self.funs.funref_locals.remove(&local.0);
+            }
+        } else {
+            self.funs.funref_locals.remove(&local.0);
+        }
+        Ok(())
     }
 
     fn emit_block(
@@ -220,66 +206,11 @@ impl<'ctx> Codegen<'ctx> {
             }
             match op {
                 Op::Let { local, value, .. } => {
-                    // Pure self/mutual recursion in tail position → musttail (DESIGN §4.4).
-                    // Pop shadow-stack roots first so heap-param frames can musttail.
-                    let is_block_tail = block.result == Some(*local)
-                        && matches!(
-                            block.ops.last(),
-                            Some(Op::Let { local: last, .. }) if last == local
-                        );
-                    if !self.funs.tco_peers.is_empty() && is_block_tail {
-                        match value {
-                            Value::Call { fun, args } => {
-                                if self.funs.tco_peers.contains(fun) {
-                                    self.root_pop_to(0)?;
-                                    self.emit_frame_pop()?;
-                                    if self.emit_musttail_call(fun, args)? {
-                                        return Ok(None);
-                                    }
-                                    // musttail failed — restore frame for normal call path.
-                                    self.emit_frame_push(&self.funs.current_fun.clone())?;
-                                }
-                            }
-                            Value::IndirectCall { callee, args } => {
-                                if let Some(fun) = self.funs.funref_locals.get(&callee.0).cloned() {
-                                    if self.funs.tco_peers.contains(&fun) {
-                                        self.root_pop_to(0)?;
-                                        self.emit_frame_pop()?;
-                                        if self.emit_musttail_call(&fun, args)? {
-                                            return Ok(None);
-                                        }
-                                        self.emit_frame_push(&self.funs.current_fun.clone())?;
-                                    }
-                                }
-                            }
-                            _ => {}
-                        }
+                    if self.try_emit_tco_let(block, *local, value)? {
+                        return Ok(None);
                     }
                     let v = self.emit_value(value, fv)?;
-                    if self.value_may_heap(value) {
-                        if let Ok(bits) = self.coerce_i64(v) {
-                            // Alias: `val a = xs` must bump List COW refcount.
-                            if matches!(value, Value::Local(_) | Value::Name(_)) {
-                                self.list_retain_i64(bits)?;
-                            }
-                            self.root_push_i64(bits)?;
-                        }
-                    }
-                    self.frame.locals.insert(local.0, v);
-                    self.frame
-                        .local_tys
-                        .insert(local.0, self.infer_value_ty(value));
-                    if let Value::FunRef(name) = value {
-                        self.funs.funref_locals.insert(local.0, name.clone());
-                    } else if let Value::Local(Local(src)) = value {
-                        if let Some(n) = self.funs.funref_locals.get(src).cloned() {
-                            self.funs.funref_locals.insert(local.0, n);
-                        } else {
-                            self.funs.funref_locals.remove(&local.0);
-                        }
-                    } else {
-                        self.funs.funref_locals.remove(&local.0);
-                    }
+                    self.bind_let_after_emit(*local, value, v)?;
                 }
                 Op::Effect { value } => {
                     let _ = self.emit_value(value, fv)?;

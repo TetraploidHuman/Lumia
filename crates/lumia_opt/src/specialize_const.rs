@@ -5,7 +5,10 @@
 //! call site. We clone `f` as `f$c_1_2`, bake constants into the body, and
 //! rewrite the call to `f$c_1_2()` so later `const_fold` / `inline` can PE it.
 
-use lumia_core::{rewrite_block_locals, Block, CoreFun, CoreModule, Local, Op, Value};
+use lumia_core::{
+    block_calls, count_ops, has_assign_or_name, has_early_return, rewrite_block_locals, Block,
+    CoreFun, CoreModule, Local, Op, Value,
+};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// Cap clones per original function (avoid combinatorial blow-up).
@@ -102,7 +105,7 @@ fn is_specializeable(f: &CoreFun) -> bool {
     if count_ops(&f.body) > MAX_OPS {
         return false;
     }
-    if calls_self(&f.body, &f.name) {
+    if block_calls(&f.body, &f.name) {
         return false;
     }
     if has_assign_or_name(&f.body) || has_early_return(&f.body) {
@@ -189,7 +192,7 @@ fn collect_const_calls(
     candidates: &HashMap<String, CoreFun>,
     needed: &mut HashSet<ConstKey>,
 ) {
-    let mut known_int: HashMap<u32, i64> = HashMap::default();
+    let mut known = crate::ir_util::KnownScalars::new();
     for op in &block.ops {
         match op {
             Op::Let {
@@ -197,11 +200,11 @@ fn collect_const_calls(
                 value,
                 pure_region,
             } if *pure_region => {
-                track_int(local.0, value, &mut known_int);
+                known.track(local.0, value);
                 if let Value::Call { fun, args } = value {
                     if let Some(c) = candidates.get(fun) {
                         if c.params.len() == args.len() {
-                            if let Some(consts) = resolve_all_ints(args, &known_int) {
+                            if let Some(consts) = known.resolve_all(args) {
                                 needed.insert(ConstKey {
                                     fun: fun.clone(),
                                     args: consts,
@@ -256,7 +259,7 @@ fn rewrite_const_calls(
     renames: &HashMap<(String, Vec<i64>), String>,
     candidates: &HashMap<String, CoreFun>,
 ) {
-    let mut known_int: HashMap<u32, i64> = HashMap::default();
+    let mut known = crate::ir_util::KnownScalars::new();
     for op in &mut block.ops {
         match op {
             Op::Let {
@@ -266,7 +269,7 @@ fn rewrite_const_calls(
             } if *pure_region => {
                 if let Value::Call { fun, args } = value {
                     if candidates.contains_key(fun) {
-                        if let Some(consts) = resolve_all_ints(args, &known_int) {
+                        if let Some(consts) = known.resolve_all(args) {
                             if let Some(mangled) = renames.get(&(fun.clone(), consts)) {
                                 *value = Value::Call {
                                     fun: mangled.clone(),
@@ -276,7 +279,7 @@ fn rewrite_const_calls(
                         }
                     }
                 }
-                track_int(local.0, value, &mut known_int);
+                known.track(local.0, value);
                 walk_nested_rewrite(value, renames, candidates);
             }
             Op::Let { value, .. } | Op::Effect { value } => {
@@ -312,154 +315,6 @@ fn walk_nested_rewrite(
         }
         Value::Lambda { body, .. } => rewrite_const_calls(body, renames, candidates),
         _ => {}
-    }
-}
-
-fn track_int(local: u32, value: &Value, known: &mut HashMap<u32, i64>) {
-    // Track Int / Bool / Char as i64 bit patterns for call-site matching.
-    match value {
-        Value::Int(n) => {
-            known.insert(local, *n);
-        }
-        Value::Bool(b) => {
-            known.insert(local, if *b { 1 } else { 0 });
-        }
-        Value::Char(c) => {
-            known.insert(local, u32::from(*c) as i64);
-        }
-        Value::Local(Local(src)) => {
-            if let Some(&n) = known.get(src) {
-                known.insert(local, n);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn resolve_all_ints(args: &[Local], known: &HashMap<u32, i64>) -> Option<Vec<i64>> {
-    let mut out = Vec::with_capacity(args.len());
-    for a in args {
-        out.push(*known.get(&a.0)?);
-    }
-    Some(out)
-}
-
-fn count_ops(block: &Block) -> usize {
-    let mut n = block.ops.len();
-    for op in &block.ops {
-        match op {
-            Op::Let { value, .. } | Op::Effect { value } => n += count_ops_value(value),
-            _ => {}
-        }
-    }
-    n
-}
-
-fn count_ops_value(value: &Value) -> usize {
-    match value {
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => count_ops(then_block) + count_ops(else_block),
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => count_ops(header) + count_ops(body) + count_ops(latch),
-        Value::Lambda { body, .. } => count_ops(body),
-        _ => 0,
-    }
-}
-
-fn calls_self(block: &Block, name: &str) -> bool {
-    for op in &block.ops {
-        match op {
-            Op::Let { value, .. } | Op::Effect { value } if value_calls(value, name) => {
-                return true;
-            }
-            _ => {}
-        }
-    }
-    false
-}
-
-fn value_calls(value: &Value, name: &str) -> bool {
-    match value {
-        Value::Call { fun, .. } if fun == name => true,
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => calls_self(then_block, name) || calls_self(else_block, name),
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => calls_self(header, name) || calls_self(body, name) || calls_self(latch, name),
-        Value::Lambda { body, .. } => calls_self(body, name),
-        _ => false,
-    }
-}
-
-fn has_assign_or_name(block: &Block) -> bool {
-    for op in &block.ops {
-        match op {
-            Op::Assign { .. } => return true,
-            Op::Let { value, .. } | Op::Effect { value } if value_has_assign_or_name(value) => {
-                return true;
-            }
-            _ => {}
-        }
-    }
-    false
-}
-
-fn value_has_assign_or_name(value: &Value) -> bool {
-    match value {
-        Value::Name(_) => true,
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => has_assign_or_name(then_block) || has_assign_or_name(else_block),
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => has_assign_or_name(header) || has_assign_or_name(body) || has_assign_or_name(latch),
-        Value::Lambda { body, .. } => has_assign_or_name(body),
-        _ => false,
-    }
-}
-
-fn has_early_return(block: &Block) -> bool {
-    for op in &block.ops {
-        match op {
-            Op::Return { .. } => return true,
-            Op::Let { value, .. } | Op::Effect { value } if value_has_early_return(value) => {
-                return true;
-            }
-            _ => {}
-        }
-    }
-    false
-}
-
-fn value_has_early_return(value: &Value) -> bool {
-    match value {
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => has_early_return(then_block) || has_early_return(else_block),
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => has_early_return(header) || has_early_return(body) || has_early_return(latch),
-        Value::Lambda { body, .. } => has_early_return(body),
-        _ => false,
     }
 }
 

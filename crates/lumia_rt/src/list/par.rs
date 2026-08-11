@@ -2,14 +2,12 @@
 
 use super::core::{list_len_of, lumia_list_empty};
 use super::tid::{ensure_list_f64, list_tid};
-use crate::common::{
-    list_elem_is_float, trap_abort, GcInhibitGuard, PAR_WORKER, TYPE_LIST, TYPE_LIST_F64,
-    TYPE_LIST_IOTA,
-};
+use crate::common::{list_elem_is_float, trap_abort, GcInhibitGuard, PAR_WORKER, TYPE_LIST_IOTA};
 use crate::gc::{list_payload_bytes, lumia_alloc};
+use lumia_abi::list_type_id;
 
 /// Parallel map over List[scalar] with a C ABI `fn(i64) -> i64`.
-/// `result_tid` is `TYPE_LIST` or `TYPE_LIST_F64` (codegen: result element sort).
+/// `result_tid` is a list type_id (codegen: result element sort).
 /// Type checker requires concrete Int/Bool/Float elems; workers must not heap-allocate.
 /// Falls back to sequential for small lists; inhibits GC while workers run.
 ///
@@ -24,11 +22,7 @@ pub extern "C" fn lumia_list_par_map(
     let Some(f) = f else {
         trap_abort("lumia: list_par_map null function");
     };
-    let result_tid = if list_elem_is_float(result_tid) {
-        TYPE_LIST_F64
-    } else {
-        TYPE_LIST
-    };
+    let result_tid = list_type_id(list_elem_is_float(result_tid));
     let _gc = GcInhibitGuard::enter();
     let iota = !list.is_null() && list_tid(list) == TYPE_LIST_IOTA;
     let (n, iota_start, src_addr) = unsafe {

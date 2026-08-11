@@ -7,7 +7,8 @@ use crate::eq::lumia_eq;
 use crate::gc::lumia_alloc;
 use crate::hash_ord::lumia_hash;
 use lumia_abi::{
-    tid_f_key, tid_f_val, TID_F_KEY, TID_F_VAL, TYPE_MAP_F64, TYPE_MAP_VF64, TYPE_SET_F64,
+    map_type_id as abi_map_type_id, set_type_id as abi_set_type_id, tid_f_key, tid_f_val,
+    TID_F_KEY, TID_F_VAL,
 };
 
 use super::map_core::map_count;
@@ -72,7 +73,7 @@ pub(crate) fn key_hash(key: i64, float_keys: bool) -> u64 {
 /// Empty maps may be retagged (fresh alloc); non-empty wrong key sort traps.
 pub(crate) fn ensure_map_f64(map: *mut u8) -> *mut u8 {
     if map.is_null() {
-        let dest = lumia_alloc(8, TYPE_MAP_F64);
+        let dest = lumia_alloc(8, abi_map_type_id(true, false, false));
         unsafe {
             *(dest as *mut i64) = 0;
         }
@@ -99,7 +100,7 @@ pub(crate) fn ensure_map_f64(map: *mut u8) -> *mut u8 {
 /// Ensure a map uses IEEE equality for Float values.
 pub(crate) fn ensure_map_vf64(map: *mut u8) -> *mut u8 {
     if map.is_null() {
-        let dest = lumia_alloc(8, TYPE_MAP_VF64);
+        let dest = lumia_alloc(8, abi_map_type_id(false, true, false));
         unsafe {
             *(dest as *mut i64) = 0;
         }
@@ -125,7 +126,7 @@ pub(crate) fn ensure_map_vf64(map: *mut u8) -> *mut u8 {
 
 pub(crate) fn ensure_set_f64(set: *mut u8) -> *mut u8 {
     if set.is_null() {
-        let dest = lumia_alloc(8, TYPE_SET_F64);
+        let dest = lumia_alloc(8, abi_set_type_id(true, false));
         unsafe {
             *(dest as *mut i64) = 0;
         }

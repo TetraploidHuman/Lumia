@@ -5,6 +5,31 @@ use crate::types::{at, expr_span, Effect, Type, TypeError};
 use lumia_hir::{Builtin, Expr};
 
 impl Infer {
+    /// Expect `ty` to be `List[elem]`, or constrain a Var to a fresh List. Returns elem.
+    fn expect_list_elem(
+        &mut self,
+        ty: Type,
+        span: lumia_syntax::Span,
+        op: &str,
+    ) -> Result<Type, TypeError> {
+        match self.prune(ty.clone()) {
+            Type::List(t) => Ok(*t),
+            Type::Var(_) => {
+                let elem = self.fresh();
+                self.unify_at(span, ty, Type::List(Box::new(elem.clone())))?;
+                Ok(elem)
+            }
+            other => Err(at(span, format!("{op}: expected List, got {other:?}"))),
+        }
+    }
+
+    fn callback_effect(&mut self, ft: Type) -> Effect {
+        match self.prune(ft) {
+            Type::Fun(_, _, e) => self.prune_eff(e),
+            _ => Effect::pure(),
+        }
+    }
+
     pub(crate) fn infer_list_builtin(
         &mut self,
         name: &Builtin,
@@ -91,53 +116,20 @@ impl Infer {
                 let (lt, le) = self.infer_expr(&args[0])?;
                 let (it, ie) = self.infer_expr(&args[1])?;
                 self.unify_at(span, it, Type::Int)?;
-                let elem = match self.prune(lt.clone()) {
-                    Type::List(t) => t,
-                    Type::Var(_) => {
-                        let elem = self.fresh();
-                        self.unify_at(span, lt, Type::List(Box::new(elem.clone())))?;
-                        Box::new(elem)
-                    }
-                    other => {
-                        return Err(at(
-                            span,
-                            format!("slice/drop: expected List, got {other:?}"),
-                        ));
-                    }
-                };
-                Ok((Type::List(elem), self.union_eff(le, ie)))
+                let elem = self.expect_list_elem(lt, span, "slice/drop")?;
+                Ok((Type::List(Box::new(elem)), self.union_eff(le, ie)))
             }
             Builtin::ListTake => {
                 let (lt, le) = self.infer_expr(&args[0])?;
                 let (it, ie) = self.infer_expr(&args[1])?;
                 self.unify_at(span, it, Type::Int)?;
-                let elem = match self.prune(lt.clone()) {
-                    Type::List(t) => t,
-                    Type::Var(_) => {
-                        let elem = self.fresh();
-                        self.unify_at(span, lt, Type::List(Box::new(elem.clone())))?;
-                        Box::new(elem)
-                    }
-                    other => {
-                        return Err(at(span, format!("take: expected List, got {other:?}")));
-                    }
-                };
-                Ok((Type::List(elem), self.union_eff(le, ie)))
+                let elem = self.expect_list_elem(lt, span, "take")?;
+                Ok((Type::List(Box::new(elem)), self.union_eff(le, ie)))
             }
             Builtin::ListReverse => {
                 let (lt, le) = self.infer_expr(&args[0])?;
-                let elem = match self.prune(lt.clone()) {
-                    Type::List(t) => t,
-                    Type::Var(_) => {
-                        let elem = self.fresh();
-                        self.unify_at(span, lt, Type::List(Box::new(elem.clone())))?;
-                        Box::new(elem)
-                    }
-                    other => {
-                        return Err(at(span, format!("reverse: expected List, got {other:?}")));
-                    }
-                };
-                Ok((Type::List(elem), le))
+                let elem = self.expect_list_elem(lt, span, "reverse")?;
+                Ok((Type::List(Box::new(elem)), le))
             }
             Builtin::ListSort => {
                 let (lt, le) = self.infer_expr(&args[0])?;
@@ -157,17 +149,7 @@ impl Infer {
             Builtin::ListSortByKeys => {
                 let (vt, ve) = self.infer_expr(&args[0])?;
                 let (kt, ke) = self.infer_expr(&args[1])?;
-                let elem = match self.prune(vt.clone()) {
-                    Type::List(t) => *t,
-                    Type::Var(_) => {
-                        let e = self.fresh();
-                        self.unify_at(span, vt, Type::List(Box::new(e.clone())))?;
-                        e
-                    }
-                    other => {
-                        return Err(at(span, format!("sortBy: expected List, got {other:?}")));
-                    }
-                };
+                let elem = self.expect_list_elem(vt, span, "sortBy")?;
                 match self.prune(kt) {
                     Type::List(t) => {
                         let t = self.prune(*t);
@@ -198,22 +180,9 @@ impl Infer {
                 // impure or non-scalar (see `finalize_auto_parallel`).
                 let (lt, le) = self.infer_expr(&args[0])?;
                 let (ft, fe) = self.infer_expr(&args[1])?;
-                let elem = match self.prune(lt.clone()) {
-                    Type::List(t) => *t,
-                    Type::Var(_) => {
-                        let e = self.fresh();
-                        self.unify_at(span, lt, Type::List(Box::new(e.clone())))?;
-                        e
-                    }
-                    other => {
-                        return Err(at(span, format!("map: expected List, got {other:?}")));
-                    }
-                };
+                let elem = self.expect_list_elem(lt, span, "map")?;
                 let out = self.fresh();
-                let cb_eff = match self.prune(ft.clone()) {
-                    Type::Fun(_, _, e) => self.prune_eff(e),
-                    _ => Effect::pure(),
-                };
+                let cb_eff = self.callback_effect(ft.clone());
                 self.unify_at(
                     span,
                     ft,
@@ -231,17 +200,7 @@ impl Infer {
                 // (otherwise `acc.get` defaults to List and breaks Map folds).
                 let (lt, le) = self.infer_expr(&args[0])?;
                 let (it, ie) = self.infer_expr(&args[1])?;
-                let elem = match self.prune(lt.clone()) {
-                    Type::List(t) => *t,
-                    Type::Var(_) => {
-                        let e = self.fresh();
-                        self.unify_at(span, lt, Type::List(Box::new(e.clone())))?;
-                        e
-                    }
-                    other => {
-                        return Err(at(span, format!("fold: expected List, got {other:?}")));
-                    }
-                };
+                let elem = self.expect_list_elem(lt, span, "fold")?;
                 let acc = self.prune(it);
                 let (ft, fe) = match &args[2] {
                     Expr::Lambda {
@@ -263,10 +222,7 @@ impl Infer {
                     }
                     _ => self.infer_expr(&args[2])?,
                 };
-                let cb_eff = match self.prune(ft.clone()) {
-                    Type::Fun(_, _, e) => self.prune_eff(e),
-                    _ => Effect::pure(),
-                };
+                let cb_eff = self.callback_effect(ft.clone());
                 self.unify_at(
                     span,
                     ft,

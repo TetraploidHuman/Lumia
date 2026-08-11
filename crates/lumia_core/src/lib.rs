@@ -22,9 +22,10 @@ pub use value_ty::{
     CodegenTypeTables, HeapPolicy, InferValueCtx,
 };
 pub use visit::{
-    collect_uses_in_value, for_each_block_dfs, for_each_local, for_each_local_mut,
-    for_each_nested_block, for_each_nested_block_mut, for_each_op_value_mut, map_value_locals,
-    max_local_in_value, rewrite_value_locals,
+    block_calls, collect_uses_in_value, count_ops, for_each_block_dfs, for_each_local,
+    for_each_local_mut, for_each_nested_block, for_each_nested_block_mut, for_each_op_value_mut,
+    has_assign_or_name, has_early_return, map_value_locals, max_local_in_value,
+    rewrite_value_locals,
 };
 
 #[cfg(test)]

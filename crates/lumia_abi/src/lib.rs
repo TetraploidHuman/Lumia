@@ -62,14 +62,10 @@ pub const TYPE_MAP_ASSOC_F64V: u32 = TYPE_MAP | TID_ASSOC | TID_F_KEY | TID_F_VA
 
 /// Transparent memo (`T_f`) hard caps — must stay in sync across opt planner and rt.
 ///
-/// C ABI entry points remain `lumia_memo_l2_*` (frozen). Prefer `MEMO_TF_*` in Rust;
-/// `MEMO_L2_*` are thin aliases for historical call sites.
+/// C ABI entry points remain `lumia_memo_l2_*` (frozen). Use `MEMO_TF_*` in Rust.
 pub const MEMO_TF_MAX_FUNS: usize = 64;
 pub const MEMO_TF_SLOTS: usize = 4;
 pub const MEMO_TF_MAX_ARGS: usize = 4;
-pub const MEMO_L2_MAX_FUNS: usize = MEMO_TF_MAX_FUNS;
-pub const MEMO_L2_SLOTS: usize = MEMO_TF_SLOTS;
-pub const MEMO_L2_MAX_ARGS: usize = MEMO_TF_MAX_ARGS;
 pub const MEMO_PROCESS_BYTE_CAP: usize = 2 * 1024 * 1024;
 pub const MEMO_IDX_MAX_FUNS: usize = 16;
 /// Keys outside `0..MEMO_IDX_CAP` are never cached (DESIGN §7.5 hard bound).
@@ -294,15 +290,12 @@ mod tests {
     #[test]
     fn memo_caps_positive() {
         const {
-            assert!(MEMO_L2_MAX_FUNS > 0);
-            assert!(MEMO_L2_SLOTS > 0);
+            assert!(MEMO_TF_MAX_FUNS > 0);
+            assert!(MEMO_TF_SLOTS > 0);
             assert!(MEMO_SLOTS_TABLE_BYTES > 0);
             assert!(MEMO_PROCESS_BYTE_CAP >= MEMO_IDX_TABLE_BYTES);
         }
-        assert_eq!(MEMO_L2_MAX_ARGS, 4);
+        assert_eq!(MEMO_TF_MAX_ARGS, 4);
         assert_eq!(MEMO_IDX_TABLE_BYTES, MEMO_IDX_CAP * 9);
-        assert_eq!(MEMO_TF_MAX_FUNS, MEMO_L2_MAX_FUNS);
-        assert_eq!(MEMO_TF_SLOTS, MEMO_L2_SLOTS);
-        assert_eq!(MEMO_TF_MAX_ARGS, MEMO_L2_MAX_ARGS);
     }
 }

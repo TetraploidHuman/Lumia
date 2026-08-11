@@ -6,3 +6,11 @@
 /out/
 .idea/
 .vscode/
+
+# Editor plugin build artifacts (also covered by nested .gitignore)
+editors/**/node_modules/
+editors/**/build/
+editors/**/*.vsix
+editors/idea/.gradle/
+editors/idea/.kotlin/
+editors/idea/.intellijPlatform/

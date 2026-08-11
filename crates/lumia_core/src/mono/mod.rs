@@ -304,38 +304,9 @@ val main = {
             core.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
         );
         assert!(
-            block_calls_named(&apply_clone.body, "dbl$Float"),
+            crate::block_calls(&apply_clone.body, "dbl$Float"),
             "FunRef should directize to Call(dbl$Float); body={:?}",
             apply_clone.body
         );
-    }
-
-    fn block_calls_named(block: &Block, fun: &str) -> bool {
-        use crate::ir::{Op, Value};
-        fn value_calls(v: &Value, fun: &str) -> bool {
-            match v {
-                Value::Call { fun: f, .. } if f == fun => true,
-                Value::If {
-                    then_block,
-                    else_block,
-                    ..
-                } => block_calls_named(then_block, fun) || block_calls_named(else_block, fun),
-                Value::Loop {
-                    header,
-                    body,
-                    latch,
-                } => {
-                    block_calls_named(header, fun)
-                        || block_calls_named(body, fun)
-                        || block_calls_named(latch, fun)
-                }
-                Value::Lambda { body, .. } => block_calls_named(body, fun),
-                _ => false,
-            }
-        }
-        block.ops.iter().any(|op| match op {
-            Op::Let { value, .. } | Op::Effect { value, .. } => value_calls(value, fun),
-            _ => false,
-        })
     }
 }

@@ -5,6 +5,29 @@ use crate::types::{at, Effect, Type, TypeError};
 use lumia_hir::{Builtin, Expr};
 
 impl Infer {
+    /// Expect `ty` to be `Map[k,v]`, or constrain a Var to a fresh Map. Returns `(k, v)`.
+    fn map_kv_from_receiver(
+        &mut self,
+        mt: Type,
+        span: lumia_syntax::Span,
+        op: &str,
+    ) -> Result<(Type, Type), TypeError> {
+        match self.prune(mt.clone()) {
+            Type::Map(k, v) => Ok((*k, *v)),
+            Type::Var(_) => {
+                let k = self.fresh();
+                let v = self.fresh();
+                self.unify_at(
+                    span,
+                    mt,
+                    Type::Map(Box::new(k.clone()), Box::new(v.clone())),
+                )?;
+                Ok((k, v))
+            }
+            other => Err(at(span, format!("{op}: expected Map, got {other:?}"))),
+        }
+    }
+
     pub(crate) fn infer_map_set_builtin(
         &mut self,
         name: &Builtin,
@@ -103,34 +126,12 @@ impl Infer {
             }
             Builtin::MapKeys => {
                 let (mt, me) = self.infer_expr(&args[0])?;
-                let k = match self.prune(mt.clone()) {
-                    Type::Map(k, _) => *k,
-                    Type::Var(_) => {
-                        let k = self.fresh();
-                        let v = self.fresh();
-                        self.unify_at(span, mt, Type::Map(Box::new(k.clone()), Box::new(v)))?;
-                        k
-                    }
-                    other => {
-                        return Err(at(span, format!("keys: expected Map, got {other:?}")));
-                    }
-                };
+                let (k, _) = self.map_kv_from_receiver(mt, span, "keys")?;
                 Ok((Type::List(Box::new(k)), me))
             }
             Builtin::MapValues => {
                 let (mt, me) = self.infer_expr(&args[0])?;
-                let v = match self.prune(mt.clone()) {
-                    Type::Map(_, v) => *v,
-                    Type::Var(_) => {
-                        let k = self.fresh();
-                        let v = self.fresh();
-                        self.unify_at(span, mt, Type::Map(Box::new(k), Box::new(v.clone())))?;
-                        v
-                    }
-                    other => {
-                        return Err(at(span, format!("values: expected Map, got {other:?}")));
-                    }
-                };
+                let (_, v) = self.map_kv_from_receiver(mt, span, "values")?;
                 Ok((Type::List(Box::new(v)), me))
             }
             Builtin::MapItems => {

@@ -187,80 +187,12 @@ impl<'ctx> Codegen<'ctx> {
                     | BinOp::Ge
             )
         {
-            // Float-typed locals are IEEE bits in i64; Int locals are numeric
-            // (sitofp) so `{ x -> x + 1 }` works after Float monomorphization.
-            let l = self.arith_as_f64(lv, &lt)?;
-            let r = self.arith_as_f64(rv, &rt)?;
-            let v = match op {
-                BinOp::Add => crate::error::llvm(self.llvm.builder.build_float_add(l, r, "fadd"))?,
-                BinOp::Sub => self
-                    .llvm
-                    .builder
-                    .build_float_sub(l, r, "fsub")
-                    .context("call return value")?,
-                BinOp::Mul => self
-                    .llvm
-                    .builder
-                    .build_float_mul(l, r, "fmul")
-                    .context("call return value")?,
-                BinOp::Div => self
-                    .llvm
-                    .builder
-                    .build_float_div(l, r, "fdiv")
-                    .context("call return value")?,
-                BinOp::Rem => self
-                    .llvm
-                    .builder
-                    .build_float_rem(l, r, "frem")
-                    .context("call return value")?,
-                BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-                    let pred = match op {
-                        BinOp::Eq => FloatPredicate::OEQ,
-                        // UNE: NaN != x is true (IEEE unordered-or-ne).
-                        BinOp::Ne => FloatPredicate::UNE,
-                        BinOp::Lt => FloatPredicate::OLT,
-                        BinOp::Le => FloatPredicate::OLE,
-                        BinOp::Gt => FloatPredicate::OGT,
-                        BinOp::Ge => FloatPredicate::OGE,
-                        _ => unreachable!(),
-                    };
-                    let c = crate::error::llvm(
-                        self.llvm.builder.build_float_compare(pred, l, r, "fcmp"),
-                    )?;
-                    return Ok(crate::error::llvm(self.llvm.builder.build_int_z_extend(
-                        c,
-                        self.llvm.i64_ty,
-                        "fcmpz",
-                    ))?
-                    .into());
-                }
-                _ => unreachable!(),
-            };
-            return Ok(v.into());
+            return self.emit_float_binary(op, lv, rv, &lt, &rt);
         }
         let l = self.as_i64(lv)?;
         let r = self.as_i64(rv)?;
-        // `instance Num for T`: `__Num_T_add` / `__Num_T_mul`.
-        if matches!(op, BinOp::Add | BinOp::Mul) {
-            if let Some(name) = Self::adt_method_name(&lt, &rt) {
-                let method = if matches!(op, BinOp::Add) {
-                    "add"
-                } else {
-                    "mul"
-                };
-                let mangled = lumia_hir::mangle_trait_method("Num", &name, method);
-                if let Some(callee) = self.funs.functions.get(&mangled).copied() {
-                    let call = crate::error::llvm(self.llvm.builder.build_call(
-                        callee,
-                        &[l.into(), r.into()],
-                        "num_ov",
-                    ))?;
-                    return Ok(call
-                        .try_as_basic_value()
-                        .basic()
-                        .unwrap_or_else(|| self.llvm.i64_ty.const_int(0, false).into()));
-                }
-            }
+        if let Some(v) = self.try_emit_num_override(op, &lt, &rt, l, r)? {
+            return Ok(v);
         }
         let v = match op {
             BinOp::Add => self.emit_checked_binop(l, r, fv, "sadd")?,
@@ -285,70 +217,7 @@ impl<'ctx> Codegen<'ctx> {
                 ))?
             }
             BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-                if let Some(name) = Self::adt_method_name(&lt, &rt) {
-                    if self
-                        .funs
-                        .functions
-                        .contains_key(&lumia_hir::mangle_trait_method("Ord", &name, "less"))
-                    {
-                        // DESIGN less(self, other): a < b
-                        let (left, right) = match op {
-                            BinOp::Lt | BinOp::Ge => (l, r),
-                            BinOp::Gt | BinOp::Le => (r, l),
-                            _ => unreachable!(),
-                        };
-                        let less = self
-                            .emit_less_override(&name, left, right)?
-                            .context("Ord.less")?;
-                        let z = self.llvm.i64_ty.const_int(0, false);
-                        return Ok(match op {
-                            BinOp::Lt | BinOp::Gt => less.into(),
-                            BinOp::Le | BinOp::Ge => {
-                                // a <= b  iff  !(b < a); a >= b iff !(a < b)
-                                let c = crate::error::llvm(self.llvm.builder.build_int_compare(
-                                    IntPredicate::EQ,
-                                    less,
-                                    z,
-                                    "nless",
-                                ))?;
-                                crate::error::llvm(self.llvm.builder.build_int_z_extend(
-                                    c,
-                                    self.llvm.i64_ty,
-                                    "nlessz",
-                                ))?
-                                .into()
-                            }
-                            _ => unreachable!(),
-                        });
-                    }
-                }
-                // Structural Ord via runtime (String/Char/ADT); never SLT pointers.
-                let f = self.runtime_fn("lumia_cmp")?;
-                let call = crate::error::llvm(self.llvm.builder.build_call(
-                    f,
-                    &[l.into(), r.into()],
-                    "cmp",
-                ))?;
-                let cmp = call
-                    .try_as_basic_value()
-                    .basic()
-                    .context("call return value")?
-                    .into_int_value();
-                let z = self.llvm.i64_ty.const_int(0, false);
-                let pred = match op {
-                    BinOp::Lt => IntPredicate::SLT,
-                    BinOp::Le => IntPredicate::SLE,
-                    BinOp::Gt => IntPredicate::SGT,
-                    BinOp::Ge => IntPredicate::SGE,
-                    _ => unreachable!(),
-                };
-                let c =
-                    crate::error::llvm(self.llvm.builder.build_int_compare(pred, cmp, z, "ord"))?;
-                crate::error::llvm(self.llvm.builder.build_int_z_extend(
-                    c,
-                    self.llvm.i64_ty,
-                    "ordz",
-                ))?
+                self.emit_ord_compare(op, &lt, &rt, l, r)?
             }
             BinOp::And => self
                 .llvm
@@ -362,6 +231,171 @@ impl<'ctx> Codegen<'ctx> {
                 .context("call return value")?,
         };
         Ok(v.into())
+    }
+
+    fn emit_float_binary(
+        &mut self,
+        op: &BinOp,
+        lv: BasicValueEnum<'ctx>,
+        rv: BasicValueEnum<'ctx>,
+        lt: &Type,
+        rt: &Type,
+    ) -> Result<BasicValueEnum<'ctx>> {
+        // Float-typed locals are IEEE bits in i64; Int locals are numeric
+        // (sitofp) so `{ x -> x + 1 }` works after Float monomorphization.
+        let l = self.arith_as_f64(lv, lt)?;
+        let r = self.arith_as_f64(rv, rt)?;
+        let v = match op {
+            BinOp::Add => crate::error::llvm(self.llvm.builder.build_float_add(l, r, "fadd"))?,
+            BinOp::Sub => self
+                .llvm
+                .builder
+                .build_float_sub(l, r, "fsub")
+                .context("call return value")?,
+            BinOp::Mul => self
+                .llvm
+                .builder
+                .build_float_mul(l, r, "fmul")
+                .context("call return value")?,
+            BinOp::Div => self
+                .llvm
+                .builder
+                .build_float_div(l, r, "fdiv")
+                .context("call return value")?,
+            BinOp::Rem => self
+                .llvm
+                .builder
+                .build_float_rem(l, r, "frem")
+                .context("call return value")?,
+            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                let pred = match op {
+                    BinOp::Eq => FloatPredicate::OEQ,
+                    // UNE: NaN != x is true (IEEE unordered-or-ne).
+                    BinOp::Ne => FloatPredicate::UNE,
+                    BinOp::Lt => FloatPredicate::OLT,
+                    BinOp::Le => FloatPredicate::OLE,
+                    BinOp::Gt => FloatPredicate::OGT,
+                    BinOp::Ge => FloatPredicate::OGE,
+                    _ => unreachable!(),
+                };
+                let c =
+                    crate::error::llvm(self.llvm.builder.build_float_compare(pred, l, r, "fcmp"))?;
+                return Ok(crate::error::llvm(self.llvm.builder.build_int_z_extend(
+                    c,
+                    self.llvm.i64_ty,
+                    "fcmpz",
+                ))?
+                .into());
+            }
+            _ => unreachable!(),
+        };
+        Ok(v.into())
+    }
+
+    /// `instance Num for T`: `__Num_T_add` / `__Num_T_mul`.
+    fn try_emit_num_override(
+        &mut self,
+        op: &BinOp,
+        lt: &Type,
+        rt: &Type,
+        l: IntValue<'ctx>,
+        r: IntValue<'ctx>,
+    ) -> Result<Option<BasicValueEnum<'ctx>>> {
+        if !matches!(op, BinOp::Add | BinOp::Mul) {
+            return Ok(None);
+        }
+        let Some(name) = Self::adt_method_name(lt, rt) else {
+            return Ok(None);
+        };
+        let method = if matches!(op, BinOp::Add) {
+            "add"
+        } else {
+            "mul"
+        };
+        let mangled = lumia_hir::mangle_trait_method("Num", &name, method);
+        let Some(callee) = self.funs.functions.get(&mangled).copied() else {
+            return Ok(None);
+        };
+        let call = crate::error::llvm(self.llvm.builder.build_call(
+            callee,
+            &[l.into(), r.into()],
+            "num_ov",
+        ))?;
+        Ok(Some(call.try_as_basic_value().basic().unwrap_or_else(
+            || self.llvm.i64_ty.const_int(0, false).into(),
+        )))
+    }
+
+    fn emit_ord_compare(
+        &mut self,
+        op: &BinOp,
+        lt: &Type,
+        rt: &Type,
+        l: IntValue<'ctx>,
+        r: IntValue<'ctx>,
+    ) -> Result<IntValue<'ctx>> {
+        if let Some(name) = Self::adt_method_name(lt, rt) {
+            if self
+                .funs
+                .functions
+                .contains_key(&lumia_hir::mangle_trait_method("Ord", &name, "less"))
+            {
+                // DESIGN less(self, other): a < b
+                let (left, right) = match op {
+                    BinOp::Lt | BinOp::Ge => (l, r),
+                    BinOp::Gt | BinOp::Le => (r, l),
+                    _ => unreachable!(),
+                };
+                let less = self
+                    .emit_less_override(&name, left, right)?
+                    .context("Ord.less")?;
+                let z = self.llvm.i64_ty.const_int(0, false);
+                return Ok(match op {
+                    BinOp::Lt | BinOp::Gt => less,
+                    BinOp::Le | BinOp::Ge => {
+                        // a <= b  iff  !(b < a); a >= b iff !(a < b)
+                        let c = crate::error::llvm(self.llvm.builder.build_int_compare(
+                            IntPredicate::EQ,
+                            less,
+                            z,
+                            "nless",
+                        ))?;
+                        crate::error::llvm(self.llvm.builder.build_int_z_extend(
+                            c,
+                            self.llvm.i64_ty,
+                            "nlessz",
+                        ))?
+                    }
+                    _ => unreachable!(),
+                });
+            }
+        }
+        // Structural Ord via runtime (String/Char/ADT); never SLT pointers.
+        let f = self.runtime_fn("lumia_cmp")?;
+        let call = crate::error::llvm(self.llvm.builder.build_call(
+            f,
+            &[l.into(), r.into()],
+            "cmp",
+        ))?;
+        let cmp = call
+            .try_as_basic_value()
+            .basic()
+            .context("call return value")?
+            .into_int_value();
+        let z = self.llvm.i64_ty.const_int(0, false);
+        let pred = match op {
+            BinOp::Lt => IntPredicate::SLT,
+            BinOp::Le => IntPredicate::SLE,
+            BinOp::Gt => IntPredicate::SGT,
+            BinOp::Ge => IntPredicate::SGE,
+            _ => unreachable!(),
+        };
+        let c = crate::error::llvm(self.llvm.builder.build_int_compare(pred, cmp, z, "ord"))?;
+        crate::error::llvm(
+            self.llvm
+                .builder
+                .build_int_z_extend(c, self.llvm.i64_ty, "ordz"),
+        )
     }
 
     pub(crate) fn emit_value_unary(

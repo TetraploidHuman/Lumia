@@ -8,6 +8,7 @@ mod copy_elim;
 mod escape;
 mod fusion;
 mod inline;
+mod ir_util;
 mod memo;
 mod repr_select;
 mod specialize_const;
@@ -17,8 +18,8 @@ pub use fusion::ConcatIdentPass;
 pub use inline::InlinePass;
 pub use memo::{
     apply_memo_plan, plan_memo_tf, ConstFoldPass, LicmPass, MEMO_IDX_CAP, MEMO_IDX_MAX_FUNS,
-    MEMO_IDX_TABLE_BYTES, MEMO_L2_MAX_ARGS, MEMO_L2_MAX_FUNS, MEMO_L2_SLOTS, MEMO_PROCESS_BYTE_CAP,
-    MEMO_SLOTS_TABLE_BYTES, MEMO_TF_MAX_ARGS, MEMO_TF_MAX_FUNS, MEMO_TF_SLOTS,
+    MEMO_IDX_TABLE_BYTES, MEMO_PROCESS_BYTE_CAP, MEMO_SLOTS_TABLE_BYTES, MEMO_TF_MAX_ARGS,
+    MEMO_TF_MAX_FUNS, MEMO_TF_SLOTS,
 };
 pub use specialize_const::SpecializeConstPass;
 

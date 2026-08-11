@@ -1,11 +1,11 @@
-use lumia_core::{Block, CoreFun, CoreModule, Local, MemoTf, Op, Value};
+use lumia_core::{block_calls, Block, CoreFun, CoreModule, Local, MemoTf, Op, Value};
 use lumia_syntax::BinOp;
 use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use super::{
     MEMO_IDX_MAX_FUNS, MEMO_IDX_TABLE_BYTES, MEMO_PROCESS_BYTE_CAP, MEMO_SLOTS_TABLE_BYTES,
-    MEMO_TF_MAX_ARGS, MEMO_TF_MAX_FUNS,
+    MEMO_TF_MAX_ARGS, MEMO_TF_MAX_FUNS_U32,
 };
 
 pub fn plan_memo_tf(module: &CoreModule) -> HashMap<String, MemoTf> {
@@ -24,7 +24,7 @@ pub fn plan_memo_tf(module: &CoreModule) -> HashMap<String, MemoTf> {
             continue;
         }
         if slots_cost_ok(f, module)
-            && next_slots < MEMO_TF_MAX_FUNS as u32
+            && next_slots < MEMO_TF_MAX_FUNS_U32
             && bytes_used + MEMO_SLOTS_TABLE_BYTES <= MEMO_PROCESS_BYTE_CAP
         {
             plan.insert(f.name.clone(), MemoTf::Slots { id: next_slots });
@@ -207,7 +207,7 @@ fn slots_cost_ok(f: &CoreFun, module: &CoreModule) -> bool {
     if c_body < 2 {
         return false;
     }
-    let recursive = calls_self(&f.body, &f.name);
+    let recursive = block_calls(&f.body, &f.name);
     // Hit-rate proxy (§7.5.2): require *static* evidence of repeated keys.
     // Bare recursion is NOT enough — streaming unique outer keys with a recursive
     // body (e.g. collatzSteps(1..N)) thrash a 4-slot table. Structural Int
@@ -226,7 +226,12 @@ fn slots_cost_ok(f: &CoreFun, module: &CoreModule) -> bool {
 fn const_arg_reuse_count(module: &CoreModule, fun: &str) -> usize {
     let mut freq: HashMap<Vec<i64>, usize> = HashMap::default();
     for f in &module.functions {
-        collect_const_calls(&f.body, fun, &mut HashMap::default(), &mut freq);
+        collect_const_calls(
+            &f.body,
+            fun,
+            &mut crate::ir_util::KnownScalars::new(),
+            &mut freq,
+        );
     }
     freq.values().copied().max().unwrap_or(0)
 }
@@ -234,7 +239,7 @@ fn const_arg_reuse_count(module: &CoreModule, fun: &str) -> usize {
 fn collect_const_calls(
     block: &Block,
     fun: &str,
-    known: &mut HashMap<u32, i64>,
+    known: &mut crate::ir_util::KnownScalars,
     freq: &mut HashMap<Vec<i64>, usize>,
 ) {
     for op in &block.ops {
@@ -244,20 +249,10 @@ fn collect_const_calls(
                     known.insert(local.0, *n);
                 }
                 Value::Call { fun: callee, args } if callee == fun => {
-                    let mut key = Vec::with_capacity(args.len());
-                    let mut ok = true;
-                    for a in args {
-                        if let Some(&n) = known.get(&a.0) {
-                            key.push(n);
-                        } else {
-                            ok = false;
-                            break;
-                        }
-                    }
-                    if ok {
+                    if let Some(key) = known.resolve_all(args) {
                         *freq.entry(key).or_default() += 1;
                     }
-                    known.remove(&local.0);
+                    known.remove(local.0);
                 }
                 Value::If {
                     then_block,
@@ -266,7 +261,7 @@ fn collect_const_calls(
                 } => {
                     collect_const_calls(then_block, fun, &mut known.clone(), freq);
                     collect_const_calls(else_block, fun, &mut known.clone(), freq);
-                    known.remove(&local.0);
+                    known.remove(local.0);
                 }
                 Value::Loop {
                     header,
@@ -276,26 +271,16 @@ fn collect_const_calls(
                     collect_const_calls(header, fun, &mut known.clone(), freq);
                     collect_const_calls(body, fun, &mut known.clone(), freq);
                     collect_const_calls(latch, fun, &mut known.clone(), freq);
-                    known.remove(&local.0);
+                    known.remove(local.0);
                 }
                 _ => {
-                    known.remove(&local.0);
+                    known.remove(local.0);
                 }
             },
             Op::Effect { value } => {
                 if let Value::Call { fun: callee, args } = value {
                     if callee == fun {
-                        let mut key = Vec::with_capacity(args.len());
-                        let mut ok = true;
-                        for a in args {
-                            if let Some(&n) = known.get(&a.0) {
-                                key.push(n);
-                            } else {
-                                ok = false;
-                                break;
-                            }
-                        }
-                        if ok {
+                        if let Some(key) = known.resolve_all(args) {
                             *freq.entry(key).or_default() += 1;
                         }
                     }
@@ -303,34 +288,6 @@ fn collect_const_calls(
             }
             _ => {}
         }
-    }
-}
-
-fn calls_self(block: &Block, name: &str) -> bool {
-    for op in &block.ops {
-        if let Op::Let { value, .. } | Op::Effect { value } = op {
-            if value_calls(value, name) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-fn value_calls(v: &Value, name: &str) -> bool {
-    match v {
-        Value::Call { fun, .. } if fun == name => true,
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => calls_self(then_block, name) || calls_self(else_block, name),
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => calls_self(header, name) || calls_self(body, name) || calls_self(latch, name),
-        _ => false,
     }
 }
 
