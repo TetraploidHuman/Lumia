@@ -122,8 +122,9 @@ pub extern "C" fn lumia_list_promote(list: *mut u8) -> *mut u8 {
         let dst = dest as *mut i64;
         let src = list as *const i64;
         *dst = n;
-        for i in 0..n as usize {
-            *dst.add(1 + i) = *src.add(1 + i);
+        // Bulk copy elems; layout is contiguous `[len][elem…]`.
+        if n > 0 {
+            std::ptr::copy_nonoverlapping(src.add(1), dst.add(1), n as usize);
         }
     }
     dest

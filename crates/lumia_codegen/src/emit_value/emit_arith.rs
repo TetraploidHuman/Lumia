@@ -371,6 +371,22 @@ impl<'ctx> Codegen<'ctx> {
             }
         }
         // Structural Ord via runtime (String/Char/ADT); never SLT pointers.
+        // Int/Bool are bit-identity scalars — native icmp (hot path for loop latches).
+        if Self::is_bit_identity_scalar(lt) && Self::is_bit_identity_scalar(rt) {
+            let pred = match op {
+                BinOp::Lt => IntPredicate::SLT,
+                BinOp::Le => IntPredicate::SLE,
+                BinOp::Gt => IntPredicate::SGT,
+                BinOp::Ge => IntPredicate::SGE,
+                _ => unreachable!(),
+            };
+            let c = crate::error::llvm(self.llvm.builder.build_int_compare(pred, l, r, "icmp"))?;
+            return crate::error::llvm(
+                self.llvm
+                    .builder
+                    .build_int_z_extend(c, self.llvm.i64_ty, "icmpz"),
+            );
+        }
         let f = self.runtime_fn("lumia_cmp")?;
         let call = crate::error::llvm(self.llvm.builder.build_call(
             f,
@@ -396,6 +412,11 @@ impl<'ctx> Codegen<'ctx> {
                 .builder
                 .build_int_z_extend(c, self.llvm.i64_ty, "ordz"),
         )
+    }
+
+    /// Int / Bool / Unit: compare as i64 bits (not heap pointers).
+    pub(crate) fn is_bit_identity_scalar(ty: &Type) -> bool {
+        matches!(ty, Type::Int | Type::Bool | Type::Unit)
     }
 
     pub(crate) fn emit_value_unary(

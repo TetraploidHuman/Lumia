@@ -7,11 +7,6 @@ use crate::gc::lumia_alloc;
 use lumia_abi::list_type_id;
 
 #[inline]
-pub(crate) fn is_list_tid(tid: u32) -> bool {
-    lumia_abi::is_list_tid(tid)
-}
-
-#[inline]
 pub(crate) fn list_tid(list: *mut u8) -> u32 {
     if list.is_null() {
         TYPE_LIST

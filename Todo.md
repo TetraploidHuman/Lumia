@@ -51,12 +51,13 @@
 ## 架构清理（已落地，详见 git 历史）
 
 - 共享前端：`lumia_ty::typecheck_hir`；`lumia` 为 lib+bin（`check_program` / LSP / CLI）。
-- `Builtin::info` 元数据；codegen `CodegenError` + 子状态；`lumia_abi::float_contract`。
+- `Builtin::info` 元数据（按 family 表 + `may_capture`/`result_heap` 同表）；`builtin_surface`；codegen `CodegenError` + 子状态；`lumia_abi::float_contract`。
 - Infer / pkg / lsp / syntax AST 模块拆分；Core `CoreLowerCtx`；`rustfmt.toml`。
 - **Builtin 结果 GC 根**：`ResultHeap::{Never,Always,Typed}` 驱动 `roots.rs`（与 `may_capture` 正交；`ListGet`/`AdtField`/`ListParFold` 走类型推断）。
 - **LSP semanticTokens**：`lsp/semantic/{token,overlay,walk}`（含 import 路径/别名着色）；编辑器 shared↔vscode 由 `scripts/check_editor_assets.sh` 防漂移。
 - **LSP inlayHint**：绑定 / 形参 / 调用与投影结果类型提示。
-- **runtime_decls**：表驱动 `RUNTIME_DECLS` + 单测保证每个 `BuiltinInfo.runtime_symbol` 已声明、名字唯一。
+- **runtime_decls**：表驱动 `RUNTIME_DECLS`（`ENSURE_*` 引用 abi 常量）+ 单测保证每个 `BuiltinInfo.runtime_symbol` 已声明、名字唯一。
 - **Trait mangling**：`lumia_hir::mangle_trait_method` 统一 HIR/codegen；`from_method`↔`display_name` 一致性单测。
 - **CoreModule::with_functions** / **CodegenTypeTables**；opt 管线 `PipelinePass` 免 `Box<dyn Pass>`；Memo Rust 侧以 `MEMO_TF_*` 为准（C ABI 仍 `lumia_memo_l2_*`）。
+- **2026-08-11 深度卫生**：拆分 memo/escape/ty/rt 大测试；abi/rt `type_id` 边界（`map_tid`/`set_tid`）；opt `KnownScalars` 统一；memo lookup 只读借用 + DenseInt 冷 miss 不分配；par_map 去重复 GC inhibit。
 - 历史逐项修复列表已并入上方 `[x]` 条目与提交记录，不再在此重复。

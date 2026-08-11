@@ -1,7 +1,12 @@
-//! Transparent result reuse (DESIGN §7.5).
+//! Transparent result reuse family (DESIGN §7.5) — not a single pass.
 //!
-//! - **§7.5.1-A local**: CSE + const-fold / copy-prop + LICM (no `T_f`)
-//! - **§7.5.1-B `T_f`**: bounded cross-call table; representation = slots | DenseInt
+//! This module groups the §7.5 "reuse" pipeline pieces that share PE / scalar
+//! environments and the `T_f` planner:
+//!
+//! - **§7.5.1-A local**: [`cse`], const-fold / copy-prop ([`fold`]), [`licm`]
+//! - **§7.5.1-B `T_f`**: bounded cross-call table ([`plan`]); representation = slots | DenseInt
+//!
+//! Pipeline orchestration (pass order, Release interleaving) stays in `lumia_opt::optimize`.
 
 use lumia_core::CoreModule;
 

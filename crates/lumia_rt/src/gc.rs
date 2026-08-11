@@ -191,8 +191,8 @@ impl MarkSweep {
     }
 
     fn maybe_collect_on_alloc() {
-        let young_limit = *YOUNG_LIMIT.lock().unwrap_or_else(|e| e.into_inner());
-        let old_limit = *HEAP_LIMIT.lock().unwrap_or_else(|e| e.into_inner());
+        let young_limit = YOUNG_LIMIT.with(|c| c.get());
+        let old_limit = HEAP_LIMIT.with(|c| c.get());
         let young = BYTES_YOUNG.with(|y| *y.borrow());
         if young >= young_limit {
             Self::minor_collect();

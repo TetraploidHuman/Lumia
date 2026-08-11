@@ -6,13 +6,12 @@ use crate::common::{
     TYPE_CHAR, TYPE_STRING,
 };
 use crate::gc::lumia_alloc;
-use crate::list::{is_list_tid, list_float_elems, list_get_of, list_len_of};
+use crate::list::{list_float_elems, list_get_of, list_len_of};
 use crate::map_set::{
-    is_map_tid, is_set_tid, map_count, map_float_keys, map_float_vals, map_pair_at, set_elem_at,
-    set_float_elems,
+    map_count, map_float_keys, map_float_vals, map_pair_at, set_elem_at, set_float_elems,
 };
 use crate::string_io::{lumia_alloc_string, with_str_bytes};
-use lumia_abi::adt_show_kind;
+use lumia_abi::{adt_show_kind, is_list_tid, is_map_tid, is_set_tid};
 
 #[no_mangle]
 pub extern "C" fn lumia_alloc_char(codepoint: i64) -> *mut u8 {

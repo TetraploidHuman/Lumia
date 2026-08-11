@@ -4,8 +4,9 @@ use crate::common::{
     float_key_eq, header_from_payload, is_heap_payload, list_elem_is_float, tid_base, tid_f_key,
     tid_f_val, TYPE_ADT, TYPE_CHAR, TYPE_MAP, TYPE_SET, TYPE_STRING,
 };
-use crate::list::{is_list_tid, list_get_of, list_len_of};
+use crate::list::{list_get_of, list_len_of};
 use crate::map_set::{map_eq, set_eq};
+use lumia_abi::is_list_tid;
 
 /// Structural equality for scalars and heap objects (DESIGN: recursive `==`).
 #[no_mangle]

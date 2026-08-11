@@ -4,7 +4,6 @@ use std::alloc::Layout;
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::ffi::CStr;
-use std::sync::Mutex;
 
 pub use lumia_abi::{
     list_elem_is_float, tid_base, tid_f_key, tid_f_val, MEMO_IDX_CAP, MEMO_IDX_MAX_FUNS,
@@ -117,13 +116,12 @@ thread_local! {
     pub(crate) static PAR_WORKER: Cell<bool> = const { Cell::new(false) };
     /// Lumia-managed call stack for trap backtraces (nul-terminated name pointers).
     static CALL_STACK: RefCell<Vec<*const u8>> = const { RefCell::new(Vec::new()) };
+    /// Soft threshold on young-generation live payload (triggers minor STW).
+    /// TLS so parallel crate tests with different limits do not race.
+    pub(crate) static YOUNG_LIMIT: Cell<usize> = const { Cell::new(64 * 1024) };
+    /// Soft threshold on old-generation live payload (triggers full STW).
+    pub(crate) static HEAP_LIMIT: Cell<usize> = const { Cell::new(256 * 1024) };
 }
-
-/// Soft threshold on young-generation live payload (triggers minor STW).
-pub(crate) static YOUNG_LIMIT: Mutex<usize> = Mutex::new(64 * 1024);
-/// Soft threshold on old-generation live payload (triggers full STW).
-/// Also used as the historical `HEAP_LIMIT` full-heap fuse.
-pub(crate) static HEAP_LIMIT: Mutex<usize> = Mutex::new(256 * 1024);
 
 /// Refcount sentinel: immortal / permanently shared (empty-list singleton).
 pub(crate) const RC_SHARED: u32 = u32::MAX;
@@ -251,8 +249,8 @@ pub(crate) fn remember_old_to_young(obj_payload: *mut u8, new_bits: i64) {
 
 #[cfg(test)]
 pub(crate) fn set_gc_limits_for_test(young: usize, old: usize) {
-    *YOUNG_LIMIT.lock().unwrap_or_else(|e| e.into_inner()) = young;
-    *HEAP_LIMIT.lock().unwrap_or_else(|e| e.into_inner()) = old;
+    YOUNG_LIMIT.with(|c| c.set(young));
+    HEAP_LIMIT.with(|c| c.set(old));
 }
 
 #[cfg(test)]

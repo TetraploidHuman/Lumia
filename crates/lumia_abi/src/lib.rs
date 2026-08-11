@@ -113,6 +113,18 @@ pub fn tid_assoc(tid: u32) -> bool {
     tid & TID_ASSOC != 0
 }
 
+/// OR `TID_F_KEY` onto an existing packed container `type_id` (empty-shell retag).
+#[inline]
+pub fn tid_with_f_key(tid: u32) -> u32 {
+    tid | TID_F_KEY
+}
+
+/// OR `TID_F_VAL` onto an existing packed map `type_id` (empty-shell retag).
+#[inline]
+pub fn tid_with_f_val(tid: u32) -> u32 {
+    tid | TID_F_VAL
+}
+
 /// Pack ADT base with a Show-kind id (`0` = no registered names).
 #[inline]
 pub fn adt_type_id(show_kind: u16) -> u32 {
@@ -285,6 +297,15 @@ mod tests {
             TYPE_MAP_ASSOC_F64V,
             TYPE_MAP | TID_ASSOC | TID_F_KEY | TID_F_VAL
         );
+    }
+
+    #[test]
+    fn tid_with_f_flags_or_onto_base() {
+        assert_eq!(tid_with_f_key(TYPE_MAP), TYPE_MAP_F64);
+        assert_eq!(tid_with_f_val(TYPE_MAP), TYPE_MAP_VF64);
+        assert_eq!(tid_with_f_key(TYPE_MAP_ASSOC), TYPE_MAP_ASSOC_F64);
+        assert_eq!(tid_with_f_key(TYPE_SET), TYPE_SET_F64);
+        assert_eq!(tid_with_f_key(TYPE_LIST), TYPE_LIST_F64);
     }
 
     #[test]

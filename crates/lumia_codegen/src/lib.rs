@@ -28,6 +28,7 @@ use inkwell::targets::{
 use inkwell::types::BasicMetadataTypeEnum;
 use inkwell::values::FunctionValue;
 use inkwell::{AddressSpace, OptimizationLevel};
+use inkwell::passes::PassBuilderOptions;
 use lumia_core::{CoreFun, CoreModule, Local, Op, Value};
 use lumia_ty::Type;
 use rustc_hash::FxHashMap as HashMap;
@@ -202,6 +203,23 @@ pub fn compile_module(core: &CoreModule, opts: &CodegenOptions) -> Result<()> {
     let tm = target
         .create_target_machine(&triple, &cpu, &features, opt, reloc, CodeModel::Default)
         .context("create target machine")?;
+
+    // Release: run LLVM new-PM pipeline before object emit so mem2reg / loop
+    // opts / vectorize see our mut-slot allocas and checked arithmetic.
+    if opts.release {
+        let pb = PassBuilderOptions::create();
+        pb.set_loop_vectorization(true);
+        pb.set_loop_slp_vectorization(true);
+        pb.set_loop_unrolling(true);
+        cg.llvm
+            .module
+            .run_passes("default<O3>", &tm, pb)
+            .map_err(|e| anyhow::anyhow!("LLVM run_passes: {e}"))?;
+        cg.llvm
+            .module
+            .verify()
+            .map_err(|e| anyhow::anyhow!("LLVM verify after O3: {e}"))?;
+    }
 
     let obj_path = if cfg!(target_os = "windows") {
         opts.output.with_extension("obj")

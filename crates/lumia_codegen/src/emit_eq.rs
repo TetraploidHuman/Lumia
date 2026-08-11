@@ -113,6 +113,20 @@ impl<'ctx> Codegen<'ctx> {
         l: IntValue<'ctx>,
         r: IntValue<'ctx>,
     ) -> Result<IntValue<'ctx>> {
+        // Int/Bool/Unit: bit identity (matches `lumia_eq` scalar short-circuit).
+        if Self::is_bit_identity_scalar(lt) && Self::is_bit_identity_scalar(rt) {
+            let c = crate::error::llvm(self.llvm.builder.build_int_compare(
+                inkwell::IntPredicate::EQ,
+                l,
+                r,
+                "eq_bits",
+            ))?;
+            return crate::error::llvm(
+                self.llvm
+                    .builder
+                    .build_int_z_extend(c, self.llvm.i64_ty, "eqz"),
+            );
+        }
         if let Some(name) = Self::adt_method_name(lt, rt) {
             // Hash ADTs use `lumia_eq` for Map/Set keys — keep `==` on the same path
             // so a custom `__Eq_*_eq` cannot diverge from containment.

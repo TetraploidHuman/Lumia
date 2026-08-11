@@ -5,7 +5,7 @@ use std::ptr;
 use crate::common::{header_from_payload, trap_abort, GcInhibitGuard, TYPE_SET};
 use crate::gc::{list_payload_bytes, lumia_alloc, mark_value};
 
-use super::tid::{key_eq, key_hash, set_float_elems, set_is_assoc, set_type_id};
+use super::tid::{key_eq, key_hash, set_float_elems, set_is_assoc, set_tid};
 
 /// Set: small stays linear `[n][e0]…`; larger HashOrdered
 /// `[n][cap][order×cap][elem,state × cap]`.
@@ -224,7 +224,7 @@ pub(crate) unsafe fn set_from_linear_to_hash(src: *mut u8, extra: Option<i64>) -
     while (cap as i64) < n2 * 2 {
         cap *= 2;
     }
-    let dest = set_alloc_hash_tid(cap, 0, set_type_id(src));
+    let dest = set_alloc_hash_tid(cap, 0, set_tid(src));
     let base = src as *const i64;
     for i in 0..n as usize {
         set_hash_insert_build(dest, *base.add(1 + i));
@@ -240,7 +240,7 @@ pub(crate) unsafe fn set_from_linear_to_hash(src: *mut u8, extra: Option<i64>) -
 pub extern "C" fn lumia_set_insert(set: *mut u8, elem: i64) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
     unsafe {
-        let tid = set_type_id(set);
+        let tid = set_tid(set);
         if lumia_set_contains(set, elem) != 0 {
             if set.is_null() {
                 let dest = lumia_alloc(8, tid);
@@ -296,7 +296,7 @@ pub extern "C" fn lumia_set_insert(set: *mut u8, elem: i64) -> *mut u8 {
 pub extern "C" fn lumia_set_remove(set: *mut u8, elem: i64) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
     unsafe {
-        let tid = set_type_id(set);
+        let tid = set_tid(set);
         if set.is_null() {
             let dest = lumia_alloc(8, TYPE_SET);
             *(dest as *mut i64) = 0;

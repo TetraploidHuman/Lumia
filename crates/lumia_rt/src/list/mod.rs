@@ -12,8 +12,8 @@ pub use core::{
 };
 pub use ops::*;
 pub use par::*;
+pub(crate) use tid::list_float_elems;
 pub use tid::lumia_ensure_list_f64;
-pub(crate) use tid::{is_list_tid, list_float_elems};
 
 #[cfg(test)]
 mod tests {

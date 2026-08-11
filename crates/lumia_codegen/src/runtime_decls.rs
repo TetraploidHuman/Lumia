@@ -247,22 +247,22 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         args: &[RtTy::Ptr, RtTy::I64],
     },
     RtDecl {
-        name: "lumia_ensure_map_f64",
+        name: lumia_abi::ENSURE_MAP_F64,
         ret: RtTy::Ptr,
         args: &[RtTy::Ptr],
     },
     RtDecl {
-        name: "lumia_ensure_map_vf64",
+        name: lumia_abi::ENSURE_MAP_VF64,
         ret: RtTy::Ptr,
         args: &[RtTy::Ptr],
     },
     RtDecl {
-        name: "lumia_ensure_set_f64",
+        name: lumia_abi::ENSURE_SET_F64,
         ret: RtTy::Ptr,
         args: &[RtTy::Ptr],
     },
     RtDecl {
-        name: "lumia_ensure_list_f64",
+        name: lumia_abi::ENSURE_LIST_F64,
         ret: RtTy::Ptr,
         args: &[RtTy::Ptr],
     },

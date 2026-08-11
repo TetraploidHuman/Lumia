@@ -26,6 +26,10 @@ impl KnownScalars {
         self.map.get(&local).copied()
     }
 
+    pub(crate) fn contains(&self, local: u32) -> bool {
+        self.map.contains_key(&local)
+    }
+
     /// Track Int / Bool / Char (and Local aliases) as i64 bit patterns.
     pub(crate) fn track(&mut self, local: u32, value: &Value) {
         match value {

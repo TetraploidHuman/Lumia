@@ -14,7 +14,7 @@ pub(super) fn fold(
 ) -> bool {
     match (name, args) {
         (Builtin::Range, [lo, hi]) => {
-            if let (Some(&s), Some(&e)) = (env.known_int.get(&lo.0), env.known_int.get(&hi.0)) {
+            if let (Some(s), Some(e)) = (env.known_int.get(lo.0), env.known_int.get(hi.0)) {
                 if e >= s {
                     env.known_iota.insert(local, (s, e));
                 }
@@ -22,7 +22,7 @@ pub(super) fn fold(
             true
         }
         (Builtin::RangeInclusive, [lo, hi]) => {
-            if let (Some(&s), Some(&e)) = (env.known_int.get(&lo.0), env.known_int.get(&hi.0)) {
+            if let (Some(s), Some(e)) = (env.known_int.get(lo.0), env.known_int.get(hi.0)) {
                 if let Some(end) = e.checked_add(1) {
                     if end >= s {
                         env.known_iota.insert(local, (s, end));
@@ -37,7 +37,7 @@ pub(super) fn fold(
 
 /// Track iota after take/slice without forcing (keep Builtin).
 pub(super) fn track_iota_take(env: &mut FoldEnv, local: u32, xs: Local, n: Local) -> bool {
-    if let (Some(&(s, e)), Some(&k)) = (env.known_iota.get(&xs.0), env.known_int.get(&n.0)) {
+    if let (Some(&(s, e)), Some(k)) = (env.known_iota.get(&xs.0), env.known_int.get(n.0)) {
         if k >= 0 {
             let take_end = s.saturating_add(k).min(e);
             env.known_iota.insert(local, (s, take_end));
@@ -48,7 +48,7 @@ pub(super) fn track_iota_take(env: &mut FoldEnv, local: u32, xs: Local, n: Local
 }
 
 pub(super) fn track_iota_slice(env: &mut FoldEnv, local: u32, xs: Local, n: Local) -> bool {
-    if let (Some(&(s, e)), Some(&k)) = (env.known_iota.get(&xs.0), env.known_int.get(&n.0)) {
+    if let (Some(&(s, e)), Some(k)) = (env.known_iota.get(&xs.0), env.known_int.get(n.0)) {
         if k >= 0 {
             let start = s.saturating_add(k).min(e);
             env.known_iota.insert(local, (start, e));
@@ -76,7 +76,7 @@ pub(super) fn fold_iota_get(
     idx: Local,
     value: &mut Value,
 ) -> bool {
-    if let (Some(&(s, e)), Some(&i)) = (env.known_iota.get(&xs.0), env.known_int.get(&idx.0)) {
+    if let (Some(&(s, e)), Some(i)) = (env.known_iota.get(&xs.0), env.known_int.get(idx.0)) {
         let n = e.saturating_sub(s);
         if i >= 0 && i < n {
             if let Some(v) = s.checked_add(i) {

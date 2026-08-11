@@ -17,7 +17,17 @@ impl<'ctx> Codegen<'ctx> {
                 .builder
                 .build_store(alloca, self.llvm.i64_ty.const_int(0, false)),
         )?;
-        self.root_register_slot(alloca, name)?;
+        // Int/Bool vars are not GC roots (same as Float). Unknown / heap-capable
+        // slots stay rooted. Assign sets `slot_tys` before the first store.
+        let may_heap = self
+            .frame
+            .slot_tys
+            .get(name)
+            .map(Self::type_may_heap)
+            .unwrap_or(true);
+        if may_heap {
+            self.root_register_slot(alloca, name)?;
+        }
         self.frame.slots.insert(name.to_string(), alloca);
         Ok(alloca)
     }
@@ -36,7 +46,15 @@ impl<'ctx> Codegen<'ctx> {
         let i = self.coerce_i64(v)?;
         // COW: releasing the previous List when the pointer changes keeps uniqueness
         // accurate for `xs = xs.append(e)` (in-place) vs aliased snapshots.
-        if !self.frame.float_slots.contains(name) {
+        // Skip for known non-List scalars (loop latches: `i = i + 1`).
+        let need_list_cow = !self.frame.float_slots.contains(name)
+            && match self.frame.slot_tys.get(name) {
+                Some(Type::List(_)) => true,
+                Some(t) if Self::is_bit_identity_scalar(t) || matches!(t, Type::Float) => false,
+                Some(_) => true, // String/Map/Set/ADT/Char: keep release probe (cheap no-op)
+                None => true,    // unknown — conservative
+            };
+        if need_list_cow {
             let old = self
                 .llvm
                 .builder

@@ -12,7 +12,7 @@ use super::map_core::{
     map_linear_nbytes, map_lookup_val, map_materialize, map_overlay_dn, map_overlay_parent,
     map_pair_at, MAP_OVERLAY_MAX, MAP_SMALL_MAX,
 };
-use super::tid::{key_eq, map_float_keys, map_is_assoc, map_type_id};
+use super::tid::{key_eq, map_float_keys, map_is_assoc, map_tid};
 
 #[no_mangle]
 pub extern "C" fn lumia_map_contains(map: *mut u8, key: i64) -> i64 {
@@ -77,7 +77,7 @@ pub extern "C" fn lumia_map_set(map: *mut u8, key: i64, val: i64) -> *mut u8 {
             };
             if let Some(i) = map_find(map, key) {
                 let nbytes = map_linear_nbytes(n) as u64;
-                let dest = lumia_alloc(nbytes, map_type_id(map));
+                let dest = lumia_alloc(nbytes, map_tid(map));
                 let dst = dest as *mut i64;
                 *dst = n;
                 for j in 0..(n as usize * 2) {
@@ -91,7 +91,7 @@ pub extern "C" fn lumia_map_set(map: *mut u8, key: i64, val: i64) -> *mut u8 {
                 return map_from_linear_to_hash(map, Some((key, val)));
             }
             let nbytes = map_linear_nbytes(n2) as u64;
-            let dest = lumia_alloc(nbytes, map_type_id(map));
+            let dest = lumia_alloc(nbytes, map_tid(map));
             let dst = dest as *mut i64;
             *dst = n2;
             for j in 0..(n as usize * 2) {
@@ -114,7 +114,7 @@ pub extern "C" fn lumia_map_remove(map: *mut u8, key: i64) -> *mut u8 {
         } else {
             map
         };
-        let tid = map_type_id(map);
+        let tid = map_tid(map);
         if map.is_null() {
             let dest = lumia_alloc(8, TYPE_MAP);
             *(dest as *mut i64) = 0;

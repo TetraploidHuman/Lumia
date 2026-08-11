@@ -2,7 +2,7 @@
 
 > **状态**：最终形态技术栈已落地（骨架可跑）  
 > **配套**：语言语义见 [DESIGN.md](DESIGN.md)  
-> **最后更新**：2026-08-07
+> **最后更新**：2026-08-11
 
 本文档记录 **怎么实现 / 怎么编译**，避免事后忘记选型与约定。语义不妥协版仍以 DESIGN 为准；实现分期可以瘦，**架构不能换**。
 
@@ -73,12 +73,14 @@ crates/
   lumia_opt      Pass 管道（§7.1.1）：CSE / Memo / Inline / Escape / ReprSelect / CopyElim
   lumia_codegen  inkwell → .o → clang 链接（Codegen 子状态 + CodegenError）
   lumia_rt       GC ABI + mark-sweep + println*
-  lumia_abi      TYPE_*/MEMO_* + float_contract
+  lumia_abi      TYPE_*/MEMO_* + float_contract；packing / classifiers 唯一起源
 examples/        示例 .lm
 scripts/env.sh   NixOS：LLVM_SYS_211_PREFIX + 共享库 PATH（排除 *-static）
 scripts/e2e.sh   薄包装 → cargo e2e_examples
 scripts/check.sh 本地 CI 冒烟：`cargo test` workspace lib + lumia e2e
 ```
+
+**abi vs rt（Float / `type_id`）**：`lumia_abi` 拥有 packed `type_id` 构造器、标志位、`ENSURE_*` 符号名与纯分类器；`lumia_rt` 只做指针→header 读取（`list_tid` / `map_tid` / `set_tid`）与 `ensure_*_f64` 语义。C 符号 `lumia_ensure_*_f64` 冻结。
 
 根目录 `[workspace.dependencies]` 已钉 `inkwell` 的 `llvm21-1`。
 
@@ -162,6 +164,7 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumia_rt` 内�
 ## 6. 优化与表示选择
 
 - Pass 接口在 `lumia_opt`：`cse` / `const_fold` / `licm`（Debug+Release，局部消重）+ Release 的 `memo_tf`（有界 `T_f`：Slots / DenseInt；**CSE 前**做建表规划，非 pass 循环内空跑）；`--no-memo`（别名 `--no-memo-l2`）可关 runtime Memo 做对比。运行时 C 符号仍为 `lumia_memo_l2_*`（ABI 冻结）。
+  - **`memo/` 模块 = §7.5 reuse 族**（非单一 pass）：CSE + PE fold + LICM + `T_f` plan/apply；标量环境统一为 `KnownScalars`（与 `SpecializeConst` 共享）。
 - 测试/工具前端：`lumia_core::FrontendOptions`（`auto_parallel` / `trust_foreign_pure`）经 `compile_source_to_core_with_options`；多文件加载、visibility、assert 消息注解仍仅 CLI。
   - **Inline**：小纯函数直调内联（跳过 `main` / `foreign` / memo / 递归 / 效应）；Release 在 Inline 后再跑 `ConstFold` → `SpecializeConst` → `Escape` → `ReprSelect`（内联露出的字面量可栈分配）。
   - **Escape**：保守逃逸分析；标量/`Join`/字符串深拷贝投影可不 `may_capture`；`Take`/`Elems` 等共享或拷贝元素指针的仍捕获；逃逸的 `ListGet`/`AdtField` 会标容器。`ReprSelect` 对**未逃逸**小 `List`/`Map` 标 `LitList` / `SmallMap`（codegen 栈布局已接）。
@@ -256,7 +259,7 @@ printf '  hi hi there  ' | $(cargo run -q -p lumia -- build examples/read_stdin.
 printf 'Hello World\nhello there\nWORLD\n' | $(cargo run -q -p lumia -- build examples/word_count.lm -o /tmp/wc >/dev/null && echo /tmp/wc)
 cargo run -p lumia -- build examples/list_text.lm -o /tmp/lt && /tmp/lt
 cargo run -p lumia -- build --release examples/memo_tf.lm -o /tmp/memo && /tmp/memo
-cargo run -p lumia -- build examples/memo_local.lm -o /tmp/m01 && /tmp/m01
+cargo run -p lumia -- build examples/memo_local.lm -o /tmp/memo_local && /tmp/memo_local
 # Memo `T_f` microbench (with vs without cache):
 #   ./scripts/bench_memo.sh
 # CPU compute suite (primes / matmul / Mandelbrot / Collatz / fib):

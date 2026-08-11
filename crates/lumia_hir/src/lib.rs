@@ -2,6 +2,7 @@
 
 mod ast;
 mod builtin_info;
+mod builtin_surface;
 mod list_hof;
 mod lower;
 mod mangle;
@@ -11,10 +12,8 @@ mod visit;
 pub use ast::{
     AdtDef, AdtVariant, Builtin, BuiltinFamily, CtorInfo, Expr, Fun, Item, Module, ProductDef,
 };
-pub use builtin_info::{
-    surface_names, BuiltinEffect, BuiltinEmit, BuiltinInfo, ResultHeap, SurfaceName, SurfaceRole,
-    PRELUDE_CTORS,
-};
+pub use builtin_info::{BuiltinEffect, BuiltinEmit, BuiltinInfo, ResultHeap};
+pub use builtin_surface::{surface_names, SurfaceName, SurfaceRole, PRELUDE_CTORS};
 pub use list_hof::{desugar_list_fold_sequential, desugar_list_map_sequential};
 pub use lower::{lower_module, LowerCtx, LowerError};
 pub use mangle::mangle_trait_method;

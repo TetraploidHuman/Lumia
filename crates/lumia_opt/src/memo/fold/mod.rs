@@ -14,7 +14,7 @@ mod list;
 mod map_set;
 
 pub(crate) struct FoldEnv {
-    known_int: HashMap<u32, i64>,
+    known_int: crate::ir_util::KnownScalars,
     known_list: HashMap<u32, Vec<Local>>,
     known_adt: HashMap<u32, Vec<Local>>,
     known_adt_tag: HashMap<u32, i64>,
@@ -26,7 +26,7 @@ pub(crate) struct FoldEnv {
 impl FoldEnv {
     fn new() -> Self {
         Self {
-            known_int: HashMap::default(),
+            known_int: crate::ir_util::KnownScalars::new(),
             known_list: HashMap::default(),
             known_adt: HashMap::default(),
             known_adt_tag: HashMap::default(),
@@ -37,7 +37,7 @@ impl FoldEnv {
     }
 
     fn propagate_alias(&mut self, dst: u32, src: u32) {
-        if let Some(&n) = self.known_int.get(&src) {
+        if let Some(n) = self.known_int.get(src) {
             self.known_int.insert(dst, n);
         }
         if let Some(elems) = self.known_list.get(&src).cloned() {
@@ -78,11 +78,8 @@ pub(crate) fn const_fold_block(block: &mut Block) {
                 pure_region,
             } if *pure_region => {
                 match value {
-                    Value::Int(n) => {
-                        env.known_int.insert(local.0, *n);
-                    }
-                    Value::Bool(b) => {
-                        env.known_int.insert(local.0, if *b { 1 } else { 0 });
+                    Value::Int(_) | Value::Bool(_) | Value::Char(_) => {
+                        env.known_int.track(local.0, value);
                     }
                     Value::Local(Local(src)) => {
                         // Track constants through aliases; keep Local for CSE sharing.
@@ -105,7 +102,7 @@ pub(crate) fn const_fold_block(block: &mut Block) {
                         op: UnOp::Neg,
                         operand,
                     } => {
-                        if let Some(&n) = env.known_int.get(&operand.0) {
+                        if let Some(n) = env.known_int.get(operand.0) {
                             if let Some(r) = n.checked_neg() {
                                 *value = Value::Int(r);
                                 env.known_int.insert(local.0, r);
@@ -117,15 +114,15 @@ pub(crate) fn const_fold_block(block: &mut Block) {
                         op: UnOp::Not,
                         operand,
                     } => {
-                        if let Some(&n) = env.known_int.get(&operand.0) {
+                        if let Some(n) = env.known_int.get(operand.0) {
                             let r = n == 0;
                             *value = Value::Bool(r);
                             env.known_int.insert(local.0, if r { 1 } else { 0 });
                         }
                     }
                     Value::Binary { op, left, right } => {
-                        if let (Some(&a), Some(&b)) =
-                            (env.known_int.get(&left.0), env.known_int.get(&right.0))
+                        if let (Some(a), Some(b)) =
+                            (env.known_int.get(left.0), env.known_int.get(right.0))
                         {
                             if let Some(r) = fold_bin(*op, a, b) {
                                 // Keep Bool for cmp/logic so println / ABI typing stay correct.
@@ -278,16 +275,16 @@ pub(crate) fn copy_prop_block(block: &mut Block) {
             }
             Op::Effect { value } => rewrite_value(value, &rewrite),
             Op::Assign { value, .. } | Op::Return { value } => {
-                if let Some(&r) = rewrite.get(&value.0) {
-                    *value = Local(r);
+                if let Some(r) = rewrite.get(&value.0) {
+                    *value = Local(*r);
                 }
             }
             Op::Break | Op::Continue => {}
         }
     }
     if let Some(r) = block.result {
-        if let Some(&nr) = rewrite.get(&r.0) {
-            block.result = Some(Local(nr));
+        if let Some(nr) = rewrite.get(&r.0) {
+            block.result = Some(Local(*nr));
         }
     }
 }

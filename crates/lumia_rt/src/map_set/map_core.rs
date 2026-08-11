@@ -8,7 +8,7 @@ use crate::common::{
 use crate::eq::lumia_eq;
 use crate::gc::{list_payload_bytes, lumia_alloc, mark, mark_value};
 
-use super::tid::{key_eq, key_hash, map_float_keys, map_float_vals, map_is_assoc, map_type_id};
+use super::tid::{key_eq, key_hash, map_float_keys, map_float_vals, map_is_assoc, map_tid};
 
 /// Map: small maps stay linear `[n][k0][v0]…`; larger use HashOrdered
 /// `[n][cap][order×cap][key,val,state × cap]` (DESIGN default path).
@@ -164,7 +164,7 @@ pub(crate) unsafe fn map_materialize(map: *mut u8) -> *mut u8 {
             let pbase = parent as *const i64;
             let n = *pbase;
             let cap = *pbase.add(1) as usize;
-            let out = map_alloc_hash_tid(cap, 0, map_type_id(parent));
+            let out = map_alloc_hash_tid(cap, 0, map_tid(parent));
             for i in 0..n as usize {
                 let s = *pbase.add(2 + i) as usize;
                 let cell = pbase.add(2 + cap + s * 3);
@@ -179,7 +179,7 @@ pub(crate) unsafe fn map_materialize(map: *mut u8) -> *mut u8 {
         // Stay linear: copy parent then apply deltas via set path below
         let n = map_count(parent);
         let nbytes = map_linear_nbytes(n) as u64;
-        let out = lumia_alloc(nbytes, map_type_id(parent));
+        let out = lumia_alloc(nbytes, map_tid(parent));
         ptr::copy_nonoverlapping(parent, out, nbytes as usize);
         out
     };
@@ -203,7 +203,7 @@ pub(crate) unsafe fn map_clone_hash_upsert_or_linear(map: *mut u8, key: i64, val
         };
         if let Some(i) = map_find(map, key) {
             let nbytes = map_linear_nbytes(n) as u64;
-            let dest = lumia_alloc(nbytes, map_type_id(map));
+            let dest = lumia_alloc(nbytes, map_tid(map));
             let dst = dest as *mut i64;
             *dst = n;
             for j in 0..(n as usize * 2) {
@@ -217,7 +217,7 @@ pub(crate) unsafe fn map_clone_hash_upsert_or_linear(map: *mut u8, key: i64, val
             return map_from_linear_to_hash(map, Some((key, val)));
         }
         let nbytes = map_linear_nbytes(n2) as u64;
-        let dest = lumia_alloc(nbytes, map_type_id(map));
+        let dest = lumia_alloc(nbytes, map_tid(map));
         let dst = dest as *mut i64;
         *dst = n2;
         for j in 0..(n as usize * 2) {
@@ -232,7 +232,7 @@ pub(crate) unsafe fn map_clone_hash_upsert_or_linear(map: *mut u8, key: i64, val
 pub(crate) unsafe fn map_alloc_overlay(parent: *mut u8, pairs: &[(i64, i64)]) -> *mut u8 {
     let dn = pairs.len() as i64;
     let nbytes = map_overlay_nbytes(dn) as u64;
-    let dest = lumia_alloc(nbytes, map_type_id(parent));
+    let dest = lumia_alloc(nbytes, map_tid(parent));
     let dst = dest as *mut i64;
     *dst = MAP_OVERLAY_MARK;
     *dst.add(1) = parent as i64;
@@ -483,7 +483,7 @@ pub(crate) unsafe fn map_from_linear_to_hash(
     while (cap as i64) < n2 * 2 {
         cap *= 2;
     }
-    let dest = map_alloc_hash_tid(cap, 0, map_type_id(src)); // count filled by upserts
+    let dest = map_alloc_hash_tid(cap, 0, map_tid(src)); // count filled by upserts
     let base = src as *const i64;
     for i in 0..n as usize {
         let k = *base.add(1 + i * 2);
@@ -504,7 +504,7 @@ pub(crate) unsafe fn map_clone_hash_upsert(src: *mut u8, key: i64, val: i64) -> 
     let n2 = if replace.is_some() { n } else { n + 1 };
     let need_grow = replace.is_none() && (n2 as usize * 2 > cap);
     let new_cap = if need_grow { cap * 2 } else { cap };
-    let dest = map_alloc_hash_tid(new_cap, n2, map_type_id(src));
+    let dest = map_alloc_hash_tid(new_cap, n2, map_tid(src));
     let mut w = 0usize;
     for i in 0..n as usize {
         let slot = *base.add(2 + i) as usize;

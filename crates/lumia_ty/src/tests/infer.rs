@@ -1,0 +1,194 @@
+use super::*;
+
+#[test]
+fn infer_hello() {
+    let src = r#"
+module Hello
+import std.io.{println}
+val main = {
+    println(42)
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let typed = infer_module(&hir).unwrap();
+    check_effect_boundaries(&typed).unwrap();
+    assert!(typed.main_effect.has_io());
+}
+
+#[test]
+fn let_polymorphism_identity() {
+    let src = r#"
+module LetPoly
+import std.io.{println}
+val main = {
+    val id = { x -> x }
+    println(id(1))
+    println(id("hi"))
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let typed = infer_module(&hir).expect("let-poly id");
+    check_effect_boundaries(&typed).unwrap();
+}
+
+#[test]
+fn map_of_empty() {
+    let src = r#"
+module M
+val m = mapOf()
+val main = {
+    0
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let typed = infer_module(&hir).unwrap();
+    check_effect_boundaries(&typed).unwrap();
+}
+
+#[test]
+fn list_of_infers() {
+    let src = r#"
+module L
+val xs = listOf(1, 2, 3)
+val main = {
+    0
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let typed = infer_module(&hir).unwrap();
+    check_effect_boundaries(&typed).unwrap();
+}
+
+#[test]
+fn if_and_add() {
+    let src = r#"
+module I
+import std.io.{println}
+val main = {
+    val x = if true { 1 } else { 2 }
+    println(x + 40)
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let typed = infer_module(&hir).unwrap();
+    check_effect_boundaries(&typed).unwrap();
+}
+
+#[test]
+fn match_int_arms() {
+    let src = r#"
+module MatchDemo
+import std.io.{println}
+val main = {
+    val n = 1
+    val s = n match {
+        0 -> 10
+        1 -> 20
+        _ -> 30
+    }
+    println(s)
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let typed = infer_module(&hir).expect("infer");
+    check_effect_boundaries(&typed).unwrap();
+}
+
+#[test]
+fn println_does_not_freeze_var_to_int() {
+    let src = r#"
+module M
+import std.io.{println}
+val f = { x ->
+    println(x)
+    x
+}
+val main = {
+    println(f(1.5))
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    infer_module(&hir).expect("println must leave open Var unconstrained");
+}
+
+#[test]
+fn builtin_arity_from_info_rejects_get() {
+    use lumia_hir::{Builtin, Expr, Fun, Item, Module};
+    use lumia_syntax::Span;
+    use rustc_hash::{FxHashMap, FxHashSet};
+    let span = Span::dummy();
+    let hir = Module {
+        name: "Bad".into(),
+        items: vec![Item::Fun(Fun {
+            name: "main".into(),
+            params: vec![],
+            body: Expr::BuiltinCall {
+                name: Builtin::ListGet,
+                args: vec![Expr::Int(1, span)], // missing index
+                span,
+            },
+            is_main: true,
+            external: None,
+            foreign_sig: None,
+            foreign_pure: false,
+        })],
+        adts: Vec::new(),
+        products: Vec::new(),
+        instances: FxHashSet::default(),
+        show_methods: FxHashMap::default(),
+        trait_methods: FxHashMap::default(),
+        method_traits: FxHashMap::default(),
+    };
+    let err = infer_module(&hir).expect_err("get arity");
+    assert!(
+        err.message().contains("get") && err.message().contains("argument"),
+        "unexpected: {}",
+        err.message()
+    );
+}
+
+#[test]
+fn typecheck_hir_runs_effects_and_parallel() {
+    let src = r#"
+module Ok
+import std.io.{println}
+val main = { println(1) }
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let typed = typecheck_hir(
+        &hir,
+        NameVisibility::default(),
+        &TypecheckOptions::default(),
+    )
+    .expect("typecheck");
+    assert!(typed.main_effect.has_io());
+
+    let bad = r#"
+module Bad
+import std.io.{println}
+val xs = println(1)
+val main = { 0 }
+"#;
+    let ast = parse_module(bad).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let err = typecheck_hir(
+        &hir,
+        NameVisibility::default(),
+        &TypecheckOptions::default(),
+    )
+    .expect_err("top-level IO");
+    assert!(
+        err.message().to_lowercase().contains("effect")
+            || err.message().to_lowercase().contains("io"),
+        "unexpected: {}",
+        err.message()
+    );
+}
