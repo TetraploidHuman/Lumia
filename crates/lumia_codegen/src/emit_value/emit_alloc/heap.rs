@@ -183,6 +183,7 @@ impl<'ctx> Codegen<'ctx> {
                 ))?
             };
             crate::error::llvm(self.llvm.builder.build_store(slot, v))?;
+            self.emit_write_barrier(ptr, i as u32, v)?;
         }
         let ptr = if !no_hash && (n_pairs > 8 || matches!(repr, lumia_core::MapRepr::HashOrdered)) {
             let f = self.runtime_fn("lumia_map_finish")?;
@@ -274,6 +275,7 @@ impl<'ctx> Codegen<'ctx> {
                 ))?
             };
             crate::error::llvm(self.llvm.builder.build_store(slot, v))?;
+            self.emit_write_barrier(ptr, i as u32, v)?;
         }
         Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
             ptr,
@@ -327,6 +329,7 @@ impl<'ctx> Codegen<'ctx> {
                 ))?
             };
             crate::error::llvm(self.llvm.builder.build_store(slot, v))?;
+            self.emit_write_barrier(ptr, i as u32, v)?;
         }
         Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
             ptr,

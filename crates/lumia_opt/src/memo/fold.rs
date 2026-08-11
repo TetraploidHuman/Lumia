@@ -1,4 +1,4 @@
-use lumia_core::{AdtRepr, Block, ListRepr, Local, Op, Value};
+use lumia_core::{AdtRepr, Block, ListRepr, Local, MapRepr, Op, SetRepr, Value};
 use lumia_hir::Builtin;
 use lumia_syntax::{BinOp, UnOp};
 use rustc_hash::FxHashMap as HashMap;
@@ -17,6 +17,8 @@ pub(crate) fn const_fold_block(block: &mut Block) {
     let mut known_map: HashMap<u32, Vec<Local>> = HashMap::default();
     // Local → element locals of a literal `AllocSet`.
     let mut known_set: HashMap<u32, Vec<Local>> = HashMap::default();
+    // Local → virtual iota `[start, end)` from `range` / take / slice (no force).
+    let mut known_iota: HashMap<u32, (i64, i64)> = HashMap::default();
     for op in &mut block.ops {
         match op {
             Op::Let {
@@ -50,6 +52,9 @@ pub(crate) fn const_fold_block(block: &mut Block) {
                         }
                         if let Some(elems) = known_set.get(src).cloned() {
                             known_set.insert(local.0, elems);
+                        }
+                        if let Some(iota) = known_iota.get(src).copied() {
+                            known_iota.insert(local.0, iota);
                         }
                     }
                     Value::AllocList { elems, .. } => {
@@ -113,9 +118,33 @@ pub(crate) fn const_fold_block(block: &mut Block) {
                         }
                     }
                     Value::Builtin { name, args } => match (*name, args.as_slice()) {
+                        (Builtin::Range, [lo, hi]) => {
+                            if let (Some(&s), Some(&e)) =
+                                (known_int.get(&lo.0), known_int.get(&hi.0))
+                            {
+                                if e >= s {
+                                    known_iota.insert(local.0, (s, e));
+                                }
+                            }
+                        }
+                        (Builtin::RangeInclusive, [lo, hi]) => {
+                            if let (Some(&s), Some(&e)) =
+                                (known_int.get(&lo.0), known_int.get(&hi.0))
+                            {
+                                if let Some(end) = e.checked_add(1) {
+                                    if end >= s {
+                                        known_iota.insert(local.0, (s, end));
+                                    }
+                                }
+                            }
+                        }
                         (Builtin::ListLen, [xs]) => {
                             if let Some(elems) = known_list.get(&xs.0) {
                                 let n = elems.len() as i64;
+                                *value = Value::Int(n);
+                                known_int.insert(local.0, n);
+                            } else if let Some(&(s, e)) = known_iota.get(&xs.0) {
+                                let n = e.saturating_sub(s);
                                 *value = Value::Int(n);
                                 known_int.insert(local.0, n);
                             } else if let Some(pairs) = known_map.get(&xs.0) {
@@ -140,6 +169,16 @@ pub(crate) fn const_fold_block(block: &mut Block) {
                                     }
                                     if let Some(inner) = known_list.get(&el.0).cloned() {
                                         known_list.insert(local.0, inner);
+                                    }
+                                }
+                            } else if let (Some(&(s, e)), Some(&i)) =
+                                (known_iota.get(&xs.0), known_int.get(&idx.0))
+                            {
+                                let n = e.saturating_sub(s);
+                                if i >= 0 && i < n {
+                                    if let Some(v) = s.checked_add(i) {
+                                        *value = Value::Int(v);
+                                        known_int.insert(local.0, v);
                                     }
                                 }
                             } else if let (Some(pairs), Some(&k)) =
@@ -271,6 +310,14 @@ pub(crate) fn const_fold_block(block: &mut Block) {
                                     };
                                     known_list.insert(local.0, take);
                                 }
+                            } else if let (Some(&(s, e)), Some(&k)) =
+                                (known_iota.get(&xs.0), known_int.get(&n.0))
+                            {
+                                if k >= 0 {
+                                    let take_end = s.saturating_add(k).min(e);
+                                    known_iota.insert(local.0, (s, take_end));
+                                    // Keep Builtin; runtime iota take stays virtual. Track for PE.
+                                }
                             }
                         }
                         (Builtin::ListSlice, [xs, n]) => {
@@ -287,6 +334,13 @@ pub(crate) fn const_fold_block(block: &mut Block) {
                                     };
                                     known_list.insert(local.0, rest);
                                 }
+                            } else if let (Some(&(s, e)), Some(&k)) =
+                                (known_iota.get(&xs.0), known_int.get(&n.0))
+                            {
+                                if k >= 0 {
+                                    let start = s.saturating_add(k).min(e);
+                                    known_iota.insert(local.0, (start, e));
+                                }
                             }
                         }
                         (Builtin::ListReverse, [xs]) => {
@@ -298,6 +352,89 @@ pub(crate) fn const_fold_block(block: &mut Block) {
                                     repr: ListRepr::LitList,
                                 };
                                 known_list.insert(local.0, rev);
+                            }
+                        }
+                        (Builtin::MapSet, [col, k, v]) => {
+                            if let Some(pairs) = known_map.get(&col.0).cloned() {
+                                let keys_known = pairs
+                                    .chunks_exact(2)
+                                    .all(|kv| known_int.contains_key(&kv[0].0))
+                                    && known_int.contains_key(&k.0);
+                                let mut out = Vec::with_capacity(pairs.len() + 2);
+                                let mut replaced = false;
+                                for kv in pairs.chunks_exact(2) {
+                                    let same = kv[0] == *k
+                                        || (keys_known
+                                            && known_int.get(&kv[0].0) == known_int.get(&k.0));
+                                    if same && !replaced {
+                                        out.push(*k);
+                                        out.push(*v);
+                                        replaced = true;
+                                    } else {
+                                        out.push(kv[0]);
+                                        out.push(kv[1]);
+                                    }
+                                }
+                                // Inserting a "new" key is only safe when every existing
+                                // key is a known Int (else a non-const key may collide).
+                                // Empty-map insert also requires a known Int key so we
+                                // do not PE Float/ADT keys into LitMap incorrectly.
+                                if replaced {
+                                    *value = Value::AllocMap {
+                                        flat_pairs: out.clone(),
+                                        repr: MapRepr::LitMap,
+                                    };
+                                    known_map.insert(local.0, out);
+                                } else if keys_known
+                                    || (pairs.is_empty() && known_int.contains_key(&k.0))
+                                {
+                                    out.push(*k);
+                                    out.push(*v);
+                                    *value = Value::AllocMap {
+                                        flat_pairs: out.clone(),
+                                        repr: MapRepr::LitMap,
+                                    };
+                                    known_map.insert(local.0, out);
+                                }
+                            } else if let (Some(elems), Some(&i)) =
+                                (known_list.get(&col.0), known_int.get(&k.0))
+                            {
+                                // List.set(index, elem)
+                                if i >= 0 && (i as usize) < elems.len() {
+                                    let mut neu = elems.clone();
+                                    neu[i as usize] = *v;
+                                    *value = Value::AllocList {
+                                        elems: neu.clone(),
+                                        repr: ListRepr::LitList,
+                                    };
+                                    known_list.insert(local.0, neu);
+                                }
+                            }
+                        }
+                        (Builtin::SetInsert, [set, elem]) => {
+                            if let Some(elems) = known_set.get(&set.0).cloned() {
+                                let elems_known =
+                                    elems.iter().all(|e| known_int.contains_key(&e.0))
+                                        && known_int.contains_key(&elem.0);
+                                let already = elems.iter().any(|e| {
+                                    *e == *elem
+                                        || (elems_known
+                                            && known_int.get(&e.0) == known_int.get(&elem.0))
+                                });
+                                if already
+                                    || (elems.is_empty() && known_int.contains_key(&elem.0))
+                                    || elems_known
+                                {
+                                    let mut neu = elems;
+                                    if !already {
+                                        neu.push(*elem);
+                                    }
+                                    *value = Value::AllocSet {
+                                        elems: neu.clone(),
+                                        repr: SetRepr::LitSet,
+                                    };
+                                    known_set.insert(local.0, neu);
+                                }
                             }
                         }
                         _ => {}

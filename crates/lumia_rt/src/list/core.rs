@@ -92,19 +92,15 @@ pub(crate) fn force_heap_list(list: *mut u8) -> *mut u8 {
     dest
 }
 
-/// Promote stack `LitList` / Iota to a heap list so the pointer may escape.
-/// Immortal empty singleton and existing heap payloads are returned unchanged.
+/// Promote stack `LitList` to a heap list so the pointer may escape.
+/// Immortal empty singleton, existing heap payloads (incl. Iota) are unchanged.
 #[no_mangle]
 pub extern "C" fn lumia_list_promote(list: *mut u8) -> *mut u8 {
     if list.is_null() {
         return list;
     }
-    let list = force_heap_list(list);
+    // HeapList / Iota / permanent empty are already safe to escape.
     if is_heap_payload(list) {
-        return list;
-    }
-    // Empty immortal singleton is registered as a permanent object.
-    if list == lumia_list_empty() {
         return list;
     }
     let tid = list_tid(list);

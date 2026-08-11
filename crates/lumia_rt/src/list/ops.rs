@@ -2,7 +2,9 @@
 
 use super::core::{force_heap_list, list_len_of, lumia_list_empty, lumia_list_promote};
 use super::tid::{heap_list_tid, list_float_elems, list_tid};
-use crate::common::{trap_abort, GcInhibitGuard, TYPE_LIST, TYPE_LIST_F64, TYPE_LIST_IOTA};
+use crate::common::{
+    list_rc_is_unique, trap_abort, GcInhibitGuard, TYPE_LIST, TYPE_LIST_F64, TYPE_LIST_IOTA,
+};
 use crate::gc::{list_payload_bytes, lumia_alloc};
 use crate::hash_ord::lumia_ord_cmp;
 use crate::string_io::{lumia_alloc_string, with_str_bytes};
@@ -190,6 +192,7 @@ pub extern "C" fn lumia_list_join(list: *mut u8, sep: *mut u8) -> *mut u8 {
 }
 
 /// Immutable update: new List with index `i` set to `elem` (bounds trap).
+/// Unique owner → in-place write + write barrier (COW).
 #[no_mangle]
 pub extern "C" fn lumia_list_set(list: *mut u8, index: i64, elem: i64) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
@@ -201,6 +204,12 @@ pub extern "C" fn lumia_list_set(list: *mut u8, index: i64, elem: i64) -> *mut u
         let n = *(list as *const i64);
         if index >= n {
             trap_abort("lumia: list set out of bounds");
+        }
+        if list_rc_is_unique(list) {
+            let dst = list as *mut i64;
+            *dst.add(1 + index as usize) = elem;
+            crate::lumia_write_barrier(list, index as u32, elem as *mut u8);
+            return list;
         }
         let nbytes = list_payload_bytes(n);
         let dest = lumia_alloc(nbytes, heap_list_tid(list));
@@ -222,21 +231,12 @@ pub extern "C" fn lumia_list_set(list: *mut u8, index: i64, elem: i64) -> *mut u
 #[no_mangle]
 pub extern "C" fn lumia_list_concat(a: *mut u8, b: *mut u8) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
-    let a = force_heap_list(a);
-    let b = force_heap_list(b);
+    // Identity on empty without materializing Iota (len is O(1) for Iota).
+    let na = list_len_of(a);
+    let nb = list_len_of(b);
     unsafe {
-        let na = if a.is_null() {
-            0i64
-        } else {
-            *(a as *const i64)
-        };
-        let nb = if b.is_null() {
-            0i64
-        } else {
-            *(b as *const i64)
-        };
         // Immutable lists: concat with empty is identity (share the other),
-        // but stack LitList must be promoted before the pointer escapes.
+        // but stack LitList / Iota must be promoted before the pointer escapes.
         if na == 0 {
             return if nb == 0 {
                 lumia_list_empty()
@@ -247,6 +247,8 @@ pub extern "C" fn lumia_list_concat(a: *mut u8, b: *mut u8) -> *mut u8 {
         if nb == 0 {
             return lumia_list_promote(a);
         }
+        let a = force_heap_list(a);
+        let b = force_heap_list(b);
         let n = na
             .checked_add(nb)
             .unwrap_or_else(|| trap_abort("lumia: list concat length overflow"));
