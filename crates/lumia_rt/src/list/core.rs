@@ -43,7 +43,12 @@ pub(crate) fn list_get_of(list: *mut u8, index: i64) -> i64 {
                 let base = list as *const i64;
                 let start = *base;
                 let end = *base.add(1);
-                let len = if end > start { end - start } else { 0 };
+                let len = if end > start {
+                    end.checked_sub(start)
+                        .unwrap_or_else(|| trap_abort("lumia: iota length overflow"))
+                } else {
+                    0
+                };
                 if index >= len {
                     trap_abort("lumia: list get out of bounds");
                 }

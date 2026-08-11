@@ -1,0 +1,13 @@
+module ListSetAlias
+
+import std.io.{println}
+
+/// Regression: unique-list `set` must not mutate a live SSA binding.
+val main = {
+    var xs = listOf(1)
+    xs = xs.append(2)
+    xs = xs.append(3)
+    val ys = xs.set(1, 99)
+    println(xs.get(1))
+    println(ys.get(1))
+}

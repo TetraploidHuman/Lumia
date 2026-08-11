@@ -1,0 +1,28 @@
+module TakeEscape
+
+import std.io.{println}
+
+type Point {
+    val x
+}
+
+/// Regression: escaping `take(k)` must not leave LitAdt/LitList on the stack.
+val build = { n, k ->
+    if n <= 0 {
+        val p = Point { x = 42 }
+        val xs = listOf(p)
+        xs.take(k)
+    } else {
+        build(n - 1, k)
+    }
+}
+
+val main = {
+    val ys = build(8, 1)
+    var junk = 0
+    for i in range(0, 2000) {
+        junk = junk + i
+    }
+    println(ys.get(0).x)
+    println(junk)
+}

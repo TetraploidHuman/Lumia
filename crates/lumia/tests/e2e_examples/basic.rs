@@ -206,6 +206,15 @@ e2e_ok!(
     "3"
 );
 
+e2e_ok!(e2e_list_set_alias, "examples/list_set_alias.lm", "2", "99");
+
+e2e_ok!(
+    e2e_take_escape,
+    "examples/take_escape.lm",
+    "42",
+    "1999000"
+);
+
 e2e_ok!(e2e_match_guard, "examples/match_guard.lm", "1", "2", "0");
 
 e2e_ok!(e2e_match_cond, "examples/match_cond.lm", "1", "0", "-1");

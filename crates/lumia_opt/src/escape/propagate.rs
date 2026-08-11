@@ -1,6 +1,7 @@
 //! Fixed-point propagation of escaping locals through aliases and containers.
 
 use lumia_core::{Block, Local, Op, Value};
+use lumia_hir::Builtin;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 pub(super) fn propagate_block(
@@ -106,6 +107,11 @@ fn mark_inputs_escaping(
             if name.may_capture() {
                 for a in args {
                     mark(*a);
+                }
+            } else if matches!(*name, Builtin::ListGet | Builtin::AdtField) {
+                // Result may be an interior pointer (elem / field) — mark container.
+                if let Some(c) = args.first() {
+                    mark(*c);
                 }
             }
         }

@@ -37,9 +37,8 @@ pub extern "C" fn lumia_list_par_map(
         } else if iota {
             let base = list as *const i64;
             let start = *base;
-            let end = *base.add(1);
-            let len = if end > start { end - start } else { 0 };
-            (len, start, 0usize)
+            let n = list_len_of(list);
+            (n, start, 0usize)
         } else {
             // Heap or stack LitList share `[len][elems…]`; only Iota needs a virtual path.
             let n = *(list as *const i64);
@@ -138,9 +137,8 @@ pub extern "C" fn lumia_list_par_fold(
         } else if iota {
             let base = list as *const i64;
             let start = *base;
-            let end = *base.add(1);
-            let len = if end > start { end - start } else { 0 };
-            (len, start, 0usize)
+            let n = list_len_of(list);
+            (n, start, 0usize)
         } else {
             let n = list_len_of(list);
             (n, 0i64, list as usize)

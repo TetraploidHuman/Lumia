@@ -6,7 +6,7 @@ fun main() effect.io=true memo=None {
   %2 = i64 3  // pure
   %3 = i64 4  // pure
   %4 = i64 5  // pure
-  %5 = alloc_list[LitList](n=5)  // pure
+  %5 = alloc_list[HeapList](n=5)  // pure
   %6 = i64 0  // pure
   __fuse_acc_101 := %6
   %7 = builtin Elems(%5)  // pure
