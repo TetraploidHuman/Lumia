@@ -1,0 +1,48 @@
+/// Timed multi-episode loop for vs-Python comparison (same triad + 5×5 grid).
+module BenchCnLumiaEpisodes
+
+import std.io.{println}
+import config.{MAX_STEPS}
+import env.{newWorld, stepEnv, observe}
+import agent.{newAgent, forward, learn}
+
+val EPISODES = 500
+
+val main = {
+    var ep = 0
+    var totalSteps = 0
+    var actSum = 0
+
+    for ep < EPISODES {
+        // Fresh agent each episode avoids long-lived ADT update chains (GC stress).
+        var ag = newAgent
+        var world = newWorld
+        var steps = 0
+        var done = 0
+        var t = 0
+        for t < MAX_STEPS {
+            done match {
+                0 -> {
+                    val obs = observe(world)
+                    val fo = forward(ag, obs)
+                    ag = fo.agent
+                    val action = fo.action
+                    val so = stepEnv(world, action)
+                    world = so.world
+                    ag = learn(ag, so.reward)
+                    actSum = actSum + action
+                    done = so.done
+                    steps = steps + 1
+                    totalSteps = totalSteps + 1
+                }
+                _ -> {}
+            }
+            t = t + 1
+        }
+        ep = ep + 1
+    }
+
+    println(EPISODES)
+    println(totalSteps)
+    println(actSum)
+}
