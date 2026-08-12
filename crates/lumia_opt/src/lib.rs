@@ -112,6 +112,8 @@ const DEBUG_PASSES: &[PipelinePass] = &[
     PipelinePass::Cse,
     PipelinePass::ConstFold,
     PipelinePass::Licm,
+    // Same dense-float SR as Release so Debug matches hot RT kernels (no Inline).
+    PipelinePass::DenseF64Sr,
     PipelinePass::Escape,
     PipelinePass::ReprSelect,
 ];
@@ -245,10 +247,17 @@ mod tests {
 
     #[test]
     fn pass_pipeline_exact_order() {
-        // Debug: CSE → fold → LICM → Escape → ReprSelect (no inline/specialize/memo).
+        // Debug: CSE → fold → LICM → dense_f64_sr → Escape → ReprSelect (no inline/memo).
         assert_eq!(
             DEBUG_PASSES.iter().map(|p| p.name()).collect::<Vec<_>>(),
-            vec!["cse", "const_fold", "licm", "escape", "repr_select"]
+            vec![
+                "cse",
+                "const_fold",
+                "licm",
+                "dense_f64_sr",
+                "escape",
+                "repr_select"
+            ]
         );
         // Release interleaves specialize/fold/inline; Escape must immediately
         // precede ReprSelect (ConcatIdent/ConstFold in between do not allocate).

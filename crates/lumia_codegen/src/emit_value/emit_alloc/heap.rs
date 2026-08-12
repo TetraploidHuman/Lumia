@@ -183,14 +183,7 @@ impl<'ctx> Codegen<'ctx> {
                 ))?
             };
             crate::error::llvm(self.llvm.builder.build_store(slot, v))?;
-            let skip = if i.is_multiple_of(2) {
-                float_keys
-            } else {
-                float_vals
-            };
-            if !skip {
-                self.emit_write_barrier(ptr, i as u32, v)?;
-            }
+            // Young alloc: init stores need no write barrier.
         }
         let ptr = if !no_hash && (n_pairs > 8 || matches!(repr, lumia_core::MapRepr::HashOrdered)) {
             let f = self.runtime_fn("lumia_map_finish")?;
@@ -282,7 +275,7 @@ impl<'ctx> Codegen<'ctx> {
                 ))?
             };
             crate::error::llvm(self.llvm.builder.build_store(slot, v))?;
-            self.emit_write_barrier(ptr, i as u32, v)?;
+            // Young alloc: init stores need no write barrier.
         }
         Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
             ptr,
@@ -336,12 +329,8 @@ impl<'ctx> Codegen<'ctx> {
                 ))?
             };
             crate::error::llvm(self.llvm.builder.build_store(slot, v))?;
-            // Unboxed Float elems are not GC pointers (see float_contract).
-            if !lumia_abi::list_elem_is_float(type_id as u32)
-                && !lumia_abi::set_elem_is_float(type_id as u32)
-            {
-                self.emit_write_barrier(ptr, i as u32, v)?;
-            }
+            // Young alloc: init stores need no write barrier (Float elems are
+            // non-pointers anyway; see float_contract).
         }
         Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
             ptr,

@@ -1,10 +1,11 @@
 //! Nested affine rem-accumulate recognized by codegen.
 
+use crate::number_theory::lumia_affine1_rem_sum;
+
 /// `sum_{i=0}^{n-1} sum_{j=0}^{n-1} ((a*i + b*j + c) % m)`.
 ///
 /// Assumes the non-negative domain of the Lumia source pattern (`i,j ≥ 0`,
-/// positive `a,b,c,m`). When `gcd(b,m)=1`, each block of `m` consecutive `j`
-/// hits every residue once, so full periods collapse to `m*(m-1)/2`.
+/// positive `a,b,c,m`). Inner `j`-sums reuse the O(log) affine-1 kernel.
 #[no_mangle]
 pub extern "C" fn lumia_affine2_rem_sum(n: i64, a: i64, b: i64, c: i64, m: i64) -> i64 {
     if n <= 0 || m < 2 {
@@ -17,66 +18,27 @@ pub extern "C" fn lumia_affine2_rem_sum(n: i64, a: i64, b: i64, c: i64, m: i64) 
     let a_m = a.rem_euclid(m);
     let b_m = b.rem_euclid(m);
     let c_m = c.rem_euclid(m);
-    let g = gcd(b_m, m);
+    // Σ_i Σ_j (a·i + b·j + c) % m = Σ_i affine1_rem_sum(n, b, a·i+c, m)
     let mut s: i64 = 0;
-    if g == 1 {
-        // Full residue period of length `m`.
-        let t_full = m.wrapping_mul(m - 1) / 2;
-        let q = n / m;
-        let r = n % m;
-        let q_t = q.wrapping_mul(t_full);
-        for i in 0..n {
-            let mut term = (a_m.wrapping_mul(i).wrapping_add(c_m)).rem_euclid(m);
-            s = s.wrapping_add(q_t);
-            for _ in 0..r {
-                s = s.wrapping_add(term);
-                term += b_m;
-                if term >= m {
-                    term -= m;
-                }
-            }
-        }
-    } else {
-        // General: period `m/g` of the residue class; sum depends on start.
-        let per = m / g;
-        let q = n / per;
-        let r = n % per;
-        for i in 0..n {
-            let a0 = (a_m.wrapping_mul(i).wrapping_add(c_m)).rem_euclid(m);
-            let s_per = prefix_rem_sum(a0, b_m, per, m);
-            s = s.wrapping_add(q.wrapping_mul(s_per));
-            s = s.wrapping_add(prefix_rem_sum(a0, b_m, r, m));
-        }
+    for i in 0..n {
+        let c_i = (a_m.wrapping_mul(i).wrapping_add(c_m)).rem_euclid(m);
+        s = s.wrapping_add(lumia_affine1_rem_sum(n, b_m, c_i, m));
     }
     s
-}
-
-#[inline]
-fn prefix_rem_sum(mut term: i64, b_m: i64, len: i64, m: i64) -> i64 {
-    let mut s = 0i64;
-    for _ in 0..len {
-        s = s.wrapping_add(term);
-        term += b_m;
-        if term >= m {
-            term -= m;
-        }
-    }
-    s
-}
-
-#[inline]
-fn gcd(mut a: i64, mut b: i64) -> i64 {
-    while b != 0 {
-        let t = a % b;
-        a = b;
-        b = t;
-    }
-    a.abs()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn gcd(mut a: i64, mut b: i64) -> i64 {
+        while b != 0 {
+            let t = a % b;
+            a = b;
+            b = t;
+        }
+        a.abs()
+    }
 
     #[test]
     fn bench_cpu_poly_checksum() {
@@ -103,7 +65,6 @@ mod tests {
 
     #[test]
     fn matches_naive_when_gcd_b_m_gt_1() {
-        // Force the general period path (`gcd(b,m) > 1`).
         let (a, b, c, m) = (3i64, 6i64, 2i64, 15i64);
         assert!(gcd(b.rem_euclid(m), m) > 1);
         for n in [0i64, 1, 2, 7, 30, 60, 120] {

@@ -149,7 +149,12 @@ fn expr_key(value: &Value, pure_funs: &HashSet<String>) -> Option<ExprKey> {
 fn builtin_is_pure(b: &Builtin) -> bool {
     // Align with LICM: do not CSE traps / effects / parallel map (same key in
     // divergent control flow must not erase a failing path).
-    !super::licm::builtin_may_trap_or_effect(b)
+    if super::licm::builtin_may_trap_or_effect(b) {
+        return false;
+    }
+    // Heap-returning builtins must not CSE: shared identity breaks under COW
+    // (same class of bug as CSE of pure heap-returning calls).
+    !matches!(b.result_heap(), lumia_hir::ResultHeap::Always)
 }
 
 pub(crate) fn rewrite_value(v: &mut Value, rewrite: &HashMap<u32, u32>) {

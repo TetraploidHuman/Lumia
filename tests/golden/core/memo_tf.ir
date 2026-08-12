@@ -2,16 +2,46 @@ module MemoTf
 
 fun main() effect.io=true memo=None {
   %0 = i64 200  // pure
-  %1 = call sqsum(%0)  // pure
-  %2 = builtin Println(%1)  // effect
-  %5 = builtin Println(%1)  // effect
+  %12 = i64 200  // pure
+  %19 = i64 0  // pure
+  $inl0_a := %19
+  $inl0___i_221 := %19
+  %20 = loop ...  // effect
+  %17 = load $inl0_a  // pure
+  %2 = builtin Println(%17)  // effect
+  %5 = builtin Println(%17)  // effect
   %6 = i64 10  // pure
-  %7 = call sqsum(%6)  // pure
-  %8 = builtin Println(%7)  // effect
+  %26 = i64 10  // pure
+  %33 = i64 0  // pure
+  $inl1_a := %33
+  $inl1___i_221 := %33
+  %34 = loop ...  // effect
+  %31 = load $inl1_a  // pure
+  %8 = builtin Println(%31)  // effect
   return %8
 }
 
 fun sqsum(n) effect.io=false memo=Some(Slots { id: 0 }) {
+  %1 = i64 0  // pure
+  a := %1
+  __i_221 := %1
+  %12 = loop ...  // effect
+  %13 = load a  // pure
+  return %13
+}
+
+fun sqsum$c_10() effect.io=false memo=None {
+  %14 = i64 10  // pure
+  %1 = i64 0  // pure
+  a := %1
+  __i_221 := %1
+  %12 = loop ...  // effect
+  %13 = load a  // pure
+  return %13
+}
+
+fun sqsum$c_200() effect.io=false memo=None {
+  %14 = i64 200  // pure
   %1 = i64 0  // pure
   a := %1
   __i_221 := %1

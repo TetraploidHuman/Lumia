@@ -202,6 +202,12 @@ impl<'ctx> Codegen<'ctx> {
 
     /// Record a possible old→young edge after storing a pointer-sized field.
     /// No-op at runtime when `obj` is young / `new` is not a young heap ptr.
+    /// Remembered-set barrier for old→young pointer stores.
+    ///
+    /// List/Map/Set mutations emit barriers inside the RT. Direct field stores
+    /// from codegen (if added) should call this; alloc-init stores skip it
+    /// because `lumia_alloc` returns a young object.
+    #[allow(dead_code)]
     pub(crate) fn emit_write_barrier(
         &self,
         obj: inkwell::values::PointerValue<'ctx>,

@@ -97,7 +97,8 @@ fn specialize_const_calls(module: &mut CoreModule) {
 }
 
 fn is_specializeable(f: &CoreFun) -> bool {
-    if f.is_main || f.external.is_some() || f.memo.is_some() {
+    // Memo'd originals are OK: clones get `memo: None` and bake call-site scalars.
+    if f.is_main || f.external.is_some() {
         return false;
     }
     if !f.effect.is_pure() || f.params.is_empty() {

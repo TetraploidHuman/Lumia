@@ -81,24 +81,32 @@ fn collatz_steps_cached(
         }
         if xu <= lim && x > 0 {
             if let Some(last) = stack.last_mut() {
-                last.1 = edge;
+                last.1 += edge;
                 edge = 0;
             }
             stack.push((x, 0));
-            x = if x & 1 == 0 {
-                x >> 1
+            if x & 1 == 0 {
+                x >>= 1;
             } else {
-                x.wrapping_mul(3).wrapping_add(1)
-            };
+                // Syracuse: `3x+1` then strip twos; halvings count on this frame's edge.
+                let y = x.wrapping_mul(3).wrapping_add(1);
+                let k = y.trailing_zeros() as i64;
+                if let Some(last) = stack.last_mut() {
+                    last.1 += k;
+                }
+                x = y >> k;
+            }
         } else {
-            // Above the memo window: count steps without stacking (cttz batch on evens).
+            // Above the memo window: Syracuse-fuse odd with trailing even run.
             if x & 1 == 0 {
                 let k = x.trailing_zeros() as i64;
                 edge += k;
                 x >>= k;
             } else {
-                edge += 1;
-                x = x.wrapping_mul(3).wrapping_add(1);
+                let y = x.wrapping_mul(3).wrapping_add(1);
+                let k = y.trailing_zeros() as i64;
+                edge += 1 + k;
+                x = y >> k;
             }
         }
     }
