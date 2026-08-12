@@ -29,7 +29,7 @@ impl<'ctx> Codegen<'ctx> {
         crate::error::llvm(
             self.llvm
                 .builder
-                .build_conditional_branch(is_min, trap_bb, ok_bb),
+                .build_conditional_branch(self.expect_i1(is_min, false)?, trap_bb, ok_bb),
         )?;
         self.llvm.builder.position_at_end(trap_bb);
         let trap = self.runtime_fn("lumia_trap_overflow")?;
@@ -111,6 +111,8 @@ impl<'ctx> Codegen<'ctx> {
         let overflow =
             crate::error::llvm(self.llvm.builder.build_extract_value(agg, 1, "ov_flag"))?
                 .into_int_value();
+        // Overflow is vanishingly rare on proven-hot paths; hint the predictor / layout.
+        let overflow = self.expect_i1(overflow, false)?;
         let trap_bb = self.llvm.context.append_basic_block(fv, "overflow_trap");
         let ok_bb = self.llvm.context.append_basic_block(fv, "overflow_ok");
         crate::error::llvm(
@@ -124,6 +126,31 @@ impl<'ctx> Codegen<'ctx> {
         crate::error::llvm(self.llvm.builder.build_unreachable())?;
         self.llvm.builder.position_at_end(ok_bb);
         Ok(result)
+    }
+
+    /// `llvm.expect.i1(cond, expected)` — branch-weight hint for the predictor.
+    pub(crate) fn expect_i1(
+        &self,
+        cond: IntValue<'ctx>,
+        expected: bool,
+    ) -> Result<IntValue<'ctx>> {
+        let i1 = self.llvm.context.bool_type();
+        let intrinsic = inkwell::intrinsics::Intrinsic::find("llvm.expect.i1")
+            .context("missing llvm.expect.i1")?;
+        let fnty = intrinsic
+            .get_declaration(&self.llvm.module, &[i1.into()])
+            .context("llvm.expect.i1 declaration")?;
+        let exp = i1.const_int(u64::from(expected), false);
+        let call = crate::error::llvm(self.llvm.builder.build_call(
+            fnty,
+            &[cond.into(), exp.into()],
+            if expected { "expect_t" } else { "expect_f" },
+        ))?;
+        Ok(call
+            .try_as_basic_value()
+            .basic()
+            .context("expect return")?
+            .into_int_value())
     }
 
     pub(crate) fn emit_checked_div_rem(

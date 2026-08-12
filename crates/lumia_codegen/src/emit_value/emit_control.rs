@@ -2,11 +2,54 @@
 
 use super::super::Codegen;
 use anyhow::{Context as AnyhowContext, Result};
-use inkwell::values::{BasicValueEnum, FunctionValue};
+use inkwell::values::{BasicValueEnum, FunctionValue, IntValue};
 use inkwell::IntPredicate;
-use lumia_core::Local;
+use lumia_core::{Local, Value};
+use lumia_syntax::BinOp;
+use lumia_ty::Type;
 
 impl<'ctx> Codegen<'ctx> {
+    /// Core stores Bool as i64 0/1 (via `zext` of `icmp`). Prefer `trunc` to i1
+    /// over `icmp ne 0` when the value is known boolean — saves a compare on
+    /// every loop/if latch.
+    pub(crate) fn as_cond_i1(
+        &self,
+        bits: IntValue<'ctx>,
+        src: Option<Local>,
+    ) -> Result<IntValue<'ctx>> {
+        let i1 = self.llvm.context.bool_type();
+        let use_trunc = src.is_some_and(|l| {
+            matches!(self.frame.local_tys.get(&l.0), Some(Type::Bool))
+                || matches!(
+                    self.frame.leaf_defs.get(&l.0),
+                    Some(
+                        Value::Bool(_)
+                            | Value::Binary {
+                                op: BinOp::Eq
+                                    | BinOp::Ne
+                                    | BinOp::Lt
+                                    | BinOp::Le
+                                    | BinOp::Gt
+                                    | BinOp::Ge
+                                    | BinOp::And
+                                    | BinOp::Or,
+                                ..
+                            }
+                    )
+                )
+        });
+        if use_trunc {
+            return crate::error::llvm(self.llvm.builder.build_int_truncate(bits, i1, "cond"));
+        }
+        let zero = self.llvm.i64_ty.const_int(0, false);
+        crate::error::llvm(self.llvm.builder.build_int_compare(
+            IntPredicate::NE,
+            bits,
+            zero,
+            "cond_ne",
+        ))
+    }
+
     pub(crate) fn emit_value_if(
         &mut self,
         cond: &Local,
@@ -15,13 +58,7 @@ impl<'ctx> Codegen<'ctx> {
         fv: FunctionValue<'ctx>,
     ) -> Result<BasicValueEnum<'ctx>> {
         let c = self.as_i64(self.local(*cond)?)?;
-        let zero = self.llvm.i64_ty.const_int(0, false);
-        let cond_i1 = crate::error::llvm(self.llvm.builder.build_int_compare(
-            IntPredicate::NE,
-            c,
-            zero,
-            "ifcond",
-        ))?;
+        let cond_i1 = self.as_cond_i1(c, Some(*cond))?;
         let then_bb = self.llvm.context.append_basic_block(fv, "then");
         let else_bb = self.llvm.context.append_basic_block(fv, "else");
         let merge_bb = self.llvm.context.append_basic_block(fv, "merge");
@@ -137,13 +174,8 @@ impl<'ctx> Codegen<'ctx> {
             .is_none()
         {
             let c = self.coerce_i64(cond_raw)?;
-            let zero = self.llvm.i64_ty.const_int(0, false);
-            let cond_i1 = crate::error::llvm(self.llvm.builder.build_int_compare(
-                IntPredicate::NE,
-                c,
-                zero,
-                "loopcond",
-            ))?;
+            // Loop header result is the condition local when present.
+            let cond_i1 = self.as_cond_i1(c, header.result)?;
             crate::error::llvm(
                 self.llvm
                     .builder
