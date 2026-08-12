@@ -4,6 +4,9 @@
 Not bit-identical to `bench_cn_forward.lm` — that is a dense-float skeleton.
 This measures real PyTorch agent `forward` / `forward+learn` at the same
 vis/pfc/mot dims with EFE on and hip/amy off (closest triad match).
+
+Default AgentConfig matches current CogniNucleus (`strict_pe` + cluster rates).
+Pass `--legacy` for pre-strict PE (strict_pe=False, no cluster rates).
 """
 
 from __future__ import annotations
@@ -27,7 +30,7 @@ from cogninucleus.agent import FreeEnergyAgent  # noqa: E402
 from cogninucleus.config import AgentConfig  # noqa: E402
 
 
-def make_agent() -> FreeEnergyAgent:
+def make_agent(*, strict_pe: bool, enable_cluster_rates: bool) -> FreeEnergyAgent:
     cfg = AgentConfig(
         vis_size=16,
         pfc_size=32,
@@ -56,6 +59,8 @@ def make_agent() -> FreeEnergyAgent:
         mu_clip=10.0,
         weight_clip=5.0,
         weight_decay=1e-4,
+        strict_pe=strict_pe,
+        enable_cluster_rates=enable_cluster_rates,
     )
     agent = FreeEnergyAgent(cfg)
     agent.eval()
@@ -70,8 +75,17 @@ def bump_obs(obs: torch.Tensor, t: int) -> None:
     obs[11] = 0.1
 
 
-def time_loop(steps: int, learn: bool, warmup: int) -> float:
-    agent = make_agent()
+def time_loop(
+    steps: int,
+    learn: bool,
+    warmup: int,
+    *,
+    strict_pe: bool,
+    enable_cluster_rates: bool,
+) -> float:
+    agent = make_agent(
+        strict_pe=strict_pe, enable_cluster_rates=enable_cluster_rates
+    )
     obs = torch.zeros(16)
     for t in range(warmup):
         bump_obs(obs, t)
@@ -88,11 +102,58 @@ def time_loop(steps: int, learn: bool, warmup: int) -> float:
     return perf_counter() - t0
 
 
+def run_mode(
+    label: str,
+    steps: int,
+    warmup: int,
+    runs: int,
+    *,
+    strict_pe: bool,
+    enable_cluster_rates: bool,
+) -> None:
+    print(
+        f"config: triad 16/32/4  EFE horizon=2  hip/amy off  "
+        f"strict_pe={strict_pe}  cluster_rates={enable_cluster_rates}"
+    )
+    for mode, learn in (("forward", False), ("forward+learn", True)):
+        samples = []
+        for _ in range(runs):
+            samples.append(
+                time_loop(
+                    steps,
+                    learn=learn,
+                    warmup=warmup,
+                    strict_pe=strict_pe,
+                    enable_cluster_rates=enable_cluster_rates,
+                )
+            )
+        med = statistics.median(samples)
+        us = med / steps * 1e6
+        tag = f"{label}_{mode}" if label else mode
+        print(
+            f"torch_{tag}  time(s)  min/med/max  "
+            f"{min(samples):.4f}  {med:.4f}  {max(samples):.4f}  "
+            f"({us:.1f} µs/step med)"
+        )
+        key = tag.upper().replace("+", "_").replace("-", "_")
+        print(f"TORCH_{key}_US={us:.1f}")
+
+
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--steps", type=int, default=20000)
     p.add_argument("--warmup", type=int, default=200)
     p.add_argument("--runs", type=int, default=3)
+    p.add_argument(
+        "--legacy",
+        action="store_true",
+        help="strict_pe=False, enable_cluster_rates=False (pre-default CN)",
+    )
+    p.add_argument(
+        "--both",
+        action="store_true",
+        help="time both default strict+cluster and legacy modes",
+    )
     args = p.parse_args()
 
     torch.set_num_threads(int(os.environ.get("TORCH_NUM_THREADS", "1")))
@@ -105,20 +166,42 @@ def main() -> None:
 
     print(f"torch {torch.__version__}  threads={torch.get_num_threads()}")
     print(f"steps={args.steps} warmup={args.warmup} runs={args.runs}")
-    print("config: triad 16/32/4  EFE horizon=2  hip/amy off  prune/grow/async off")
 
-    for label, learn in (("forward", False), ("forward+learn", True)):
-        samples = []
-        for _ in range(args.runs):
-            samples.append(time_loop(args.steps, learn=learn, warmup=args.warmup))
-        med = statistics.median(samples)
-        us = med / args.steps * 1e6
-        print(
-            f"torch_{label}  time(s)  min/med/max  "
-            f"{min(samples):.4f}  {med:.4f}  {max(samples):.4f}  "
-            f"({us:.1f} µs/step med)"
+    if args.both:
+        run_mode(
+            "strict",
+            args.steps,
+            args.warmup,
+            args.runs,
+            strict_pe=True,
+            enable_cluster_rates=True,
         )
-        print(f"TORCH_{label.upper().replace('+', '_').replace('-', '_')}_US={us:.1f}")
+        run_mode(
+            "legacy",
+            args.steps,
+            args.warmup,
+            args.runs,
+            strict_pe=False,
+            enable_cluster_rates=False,
+        )
+    elif args.legacy:
+        run_mode(
+            "",
+            args.steps,
+            args.warmup,
+            args.runs,
+            strict_pe=False,
+            enable_cluster_rates=False,
+        )
+    else:
+        run_mode(
+            "",
+            args.steps,
+            args.warmup,
+            args.runs,
+            strict_pe=True,
+            enable_cluster_rates=True,
+        )
 
 
 if __name__ == "__main__":

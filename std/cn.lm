@@ -1,13 +1,15 @@
 /// CogniNucleus fused kernels (`import std.cn.{…}`).
 ///
-/// Hot-path helpers matching `cogninucleus/{nucleus,connection,agent}.py`
+/// Hot-path helpers matching `cogninucleus/{nucleus,connection,cluster,agent}.py`
 /// for tiny dense float (dim ≤ 64). Matrices are flat row-major `List[Float]`.
 ///
-/// - `projectClamp`: `clamp(μ @ W)` (W is from×to)
+/// - `projectClamp` / `projectError`: `clamp(x @ W)` (W is from×to; PE alias)
 /// - `backprojClamp`: `clamp(W @ x)` (lateral `error @ Wᵀ`)
 /// - `axpyClamp`: `clamp(y + α·x)`
+/// - `clusterRates`: optional strict-PE rate coding before nucleus PE
+/// - `learnGenerative`: local encoder/predictor plasticity
 ///
-/// @exports nucleusStep, hebbian, projectClamp, backprojClamp, axpyClamp, argMax
+/// @exports nucleusStep, hebbian, projectClamp, projectError, backprojClamp, axpyClamp, argMax, clusterRates, learnGenerative
 module cn
 
 foreign "C" pure fn lumia_cn_nucleus_step(mu: ListFloat, encW: ListFloat, predW: ListFloat, bottomUp: ListFloat, topDown: ListFloat, err: ListFloat, pred: ListFloat, size: Int, stateLr: Float, precision: Float, muClip: Float) -> ListFloat
@@ -16,6 +18,8 @@ foreign "C" pure fn lumia_cn_project_clamp(fromSize: Int, toSize: Int, w: ListFl
 foreign "C" pure fn lumia_cn_backproj_clamp(m: Int, n: Int, w: ListFloat, x: ListFloat, y: ListFloat, clip: Float) -> ListFloat
 foreign "C" pure fn lumia_cn_axpy_clamp(y: ListFloat, alpha: Float, x: ListFloat, clip: Float) -> ListFloat
 foreign "C" pure fn lumia_cn_argmax(xs: ListFloat) -> Int
+foreign "C" pure fn lumia_cn_cluster_rates(potential: ListFloat, input: ListFloat, output: ListFloat, size: Int, nClusters: Int, decay: Float, threshold: Float) -> ListFloat
+foreign "C" pure fn lumia_cn_learn_generative(encW: ListFloat, predW: ListFloat, mu: ListFloat, err: ListFloat, size: Int, lr: Float, weightClip: Float, weightDecay: Float, precision: Float) -> ListFloat
 
 val nucleusStep = { mu, encW, predW, bottomUp, topDown, err, pred, size, stateLr, precision, muClip ->
     lumia_cn_nucleus_step(mu, encW, predW, bottomUp, topDown, err, pred, size, stateLr, precision, muClip)
@@ -29,6 +33,11 @@ val projectClamp = { fromSize, toSize, w, x, y, clip ->
     lumia_cn_project_clamp(fromSize, toSize, w, x, y, clip)
 }
 
+/// Strict-PE bottom-up: same matvec as `projectClamp` (`Connection.project_error`).
+val projectError = { fromSize, toSize, w, x, y, clip ->
+    lumia_cn_project_clamp(fromSize, toSize, w, x, y, clip)
+}
+
 val backprojClamp = { m, n, w, x, y, clip ->
     lumia_cn_backproj_clamp(m, n, w, x, y, clip)
 }
@@ -38,3 +47,11 @@ val axpyClamp = { y, alpha, x, clip ->
 }
 
 val argMax = { xs -> lumia_cn_argmax(xs) }
+
+val clusterRates = { potential, input, output, size, nClusters, decay, threshold ->
+    lumia_cn_cluster_rates(potential, input, output, size, nClusters, decay, threshold)
+}
+
+val learnGenerative = { encW, predW, mu, err, size, lr, weightClip, weightDecay, precision ->
+    lumia_cn_learn_generative(encW, predW, mu, err, size, lr, weightClip, weightDecay, precision)
+}

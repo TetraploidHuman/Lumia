@@ -327,6 +327,126 @@ pub extern "C" fn lumia_cn_argmax(xs: *mut u8) -> i64 {
     }
 }
 
+/// Cluster rate coding (`Nucleus._effective_bottom_up` / `Cluster.step`).
+///
+/// `cluster_size = size / n_clusters`; only the first `n_clusters · cluster_size`
+/// elements are rate-coded (`pot = decay·pot + x`; `out = max(0, pot − thr)²`).
+/// Any remainder is written as `0` in `output` (potential left unchanged).
+/// Updates `potential` in place; returns `output`.
+#[no_mangle]
+pub extern "C" fn lumia_cn_cluster_rates(
+    potential: *mut u8,
+    input: *mut u8,
+    output: *mut u8,
+    size: i64,
+    n_clusters: i64,
+    decay: f64,
+    threshold: f64,
+) -> *mut u8 {
+    let _gc = GcInhibitGuard::enter();
+    if size < 1 || size as usize > MAX_DIM {
+        trap_abort("lumia: cn cluster_rates size out of range");
+    }
+    if n_clusters < 1 {
+        trap_abort("lumia: cn cluster_rates n_clusters < 1");
+    }
+    let n = size as usize;
+    let nc = n_clusters as usize;
+    let chunk = (n / nc).max(1);
+    let covered = (chunk * nc).min(n);
+    let input = force_f64(input);
+    let potential = ensure_unique_f64(potential);
+    let output = ensure_unique_f64(output);
+    require_len(input, size, "cn cluster input");
+    require_len(potential, size, "cn cluster pot");
+    require_len(output, size, "cn cluster out");
+    unsafe {
+        let (xp, _) = f64_elems(input);
+        let (pp, _) = f64_elems_mut(potential);
+        let (op, _) = f64_elems_mut(output);
+        let mut i = 0usize;
+        while i < covered {
+            let pot = *pp.add(i) * decay + *xp.add(i);
+            *pp.add(i) = pot;
+            let o = (pot - threshold).max(0.0);
+            *op.add(i) = o * o;
+            i += 1;
+        }
+        while i < n {
+            *op.add(i) = 0.0;
+            i += 1;
+        }
+    }
+    output
+}
+
+/// Nucleus local generative plasticity (`Nucleus.learn_generative`).
+///
+/// ```text
+/// pred_w += lr · (μ ⊗ err)          // after optional decay
+/// enc_w  += (lr/2) · (err ⊗ (π·err))
+/// clamp both to ±weight_clip
+/// ```
+/// Mutates `enc_w` and `pred_w` (unique). Returns `enc_w`.
+#[no_mangle]
+pub extern "C" fn lumia_cn_learn_generative(
+    enc_w: *mut u8,
+    pred_w: *mut u8,
+    mu: *mut u8,
+    err: *mut u8,
+    size: i64,
+    lr: f64,
+    weight_clip: f64,
+    weight_decay: f64,
+    precision: f64,
+) -> *mut u8 {
+    let _gc = GcInhibitGuard::enter();
+    if size < 1 || size as usize > MAX_DIM {
+        trap_abort("lumia: cn learn_generative size out of range");
+    }
+    let n = size as usize;
+    let mu = force_f64(mu);
+    let err = force_f64(err);
+    let enc_w = ensure_unique_f64(enc_w);
+    let pred_w = ensure_unique_f64(pred_w);
+    require_len(mu, size, "cn learn mu");
+    require_len(err, size, "cn learn err");
+    require_len(enc_w, size * size, "cn learn enc");
+    require_len(pred_w, size * size, "cn learn pred");
+    let keep = 1.0 - weight_decay;
+    let lo = -weight_clip;
+    let hi = weight_clip;
+    let half = lr * 0.5;
+    unsafe {
+        let (mp, _) = f64_elems(mu);
+        let (ep, _) = f64_elems(err);
+        let (enc, _) = f64_elems_mut(enc_w);
+        let (pw, _) = f64_elems_mut(pred_w);
+        if weight_decay > 0.0 {
+            for i in 0..n * n {
+                *enc.add(i) *= keep;
+                *pw.add(i) *= keep;
+            }
+        }
+        for i in 0..n {
+            let mi = *mp.add(i);
+            let ei = *ep.add(i);
+            let row_p = pw.add(i * n);
+            let row_e = enc.add(i * n);
+            for j in 0..n {
+                let ej = *ep.add(j);
+                *row_p.add(j) += lr * mi * ej;
+                *row_e.add(j) += half * ei * (precision * ej);
+            }
+        }
+        for i in 0..n * n {
+            *enc.add(i) = (*enc.add(i)).clamp(lo, hi);
+            *pw.add(i) = (*pw.add(i)).clamp(lo, hi);
+        }
+    }
+    enc_w
+}
+
 fn force_f64(list: *mut u8) -> *mut u8 {
     let list = force_heap_list(list);
     if list.is_null() {
@@ -444,5 +564,40 @@ mod tests {
         let y = lumia_cn_axpy_clamp(y, 1.0, x, 10.0);
         assert!((get_f(y, 0) - 10.0).abs() < 1e-12); // clamped
         assert_eq!(lumia_cn_argmax(y), 0);
+    }
+
+    #[test]
+    fn cluster_rates_square_relu() {
+        // size=4, n_clusters=2 → chunk=2; pot0=0, x=[1,0.4, 2,0]
+        let pot = from_slice(&[0.0, 0.0, 0.0, 0.0]);
+        let x = from_slice(&[1.0, 0.4, 2.0, 0.0]);
+        let out = from_slice(&[0.0, 0.0, 0.0, 0.0]);
+        let out = lumia_cn_cluster_rates(pot, x, out, 4, 2, 0.9, 0.5);
+        // pot=x; out=(max(0,pot-0.5))^2 → [0.25, 0, 2.25, 0]
+        assert!((get_f(out, 0) - 0.25).abs() < 1e-12);
+        assert!(get_f(out, 1).abs() < 1e-12);
+        assert!((get_f(out, 2) - 2.25).abs() < 1e-12);
+        assert!(get_f(out, 3).abs() < 1e-12);
+        assert!((get_f(pot, 0) - 1.0).abs() < 1e-12);
+        assert!((get_f(pot, 2) - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn learn_generative_outer_products() {
+        let size = 2i64;
+        let enc = from_slice(&[0.0, 0.0, 0.0, 0.0]);
+        let pred = from_slice(&[0.0, 0.0, 0.0, 0.0]);
+        let mu = from_slice(&[1.0, 0.0]);
+        let err = from_slice(&[0.0, 2.0]);
+        let enc = lumia_cn_learn_generative(enc, pred, mu, err, size, 1.0, 10.0, 0.0, 1.0);
+        // pred += μ⊗err → [[0,2],[0,0]]; enc += 0.5·err⊗(π·err) → [[0,0],[0,2]]
+        assert!(get_f(pred, 0).abs() < 1e-12);
+        assert!((get_f(pred, 1) - 2.0).abs() < 1e-12);
+        assert!(get_f(pred, 2).abs() < 1e-12);
+        assert!(get_f(pred, 3).abs() < 1e-12);
+        assert!(get_f(enc, 0).abs() < 1e-12);
+        assert!(get_f(enc, 1).abs() < 1e-12);
+        assert!(get_f(enc, 2).abs() < 1e-12);
+        assert!((get_f(enc, 3) - 2.0).abs() < 1e-12);
     }
 }

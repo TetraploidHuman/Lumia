@@ -2,7 +2,9 @@
 # Compare Lumia CN triad-forward microbench vs CogniNucleus PyTorch CPU agent.
 #
 # Lumia: examples/bench_cn_forward_{kernel,naive}.lm (dense skeleton).
-# Torch: FreeEnergyAgent triad+EFE (hip/amy off), forward and forward+learn.
+# Torch: FreeEnergyAgent triad+EFE (hip/amy off), default strict_pe+cluster.
+#   LEGACY=1  → pass --legacy to the Python harness
+#   BOTH=1    → time strict and legacy
 #
 # Env:
 #   RUNS=3 STEPS=20000
@@ -58,9 +60,16 @@ n_stats="$(measure_bin "$OUT_DIR/lumia_naive")"
 bench_print_stats "lumia_kernel" "$k_stats"
 bench_print_stats "lumia_naive" "$n_stats"
 
+PY_FLAGS=()
+if [[ "${BOTH:-0}" == "1" ]]; then
+  PY_FLAGS+=(--both)
+elif [[ "${LEGACY:-0}" == "1" ]]; then
+  PY_FLAGS+=(--legacy)
+fi
+
 echo
 echo "== PyTorch CogniNucleus =="
-torch_out="$("$CN_PYTHON" "$ROOT/scripts/bench_cn_vs_torch.py" --steps "$STEPS" --runs "$RUNS")"
+torch_out="$("$CN_PYTHON" "$ROOT/scripts/bench_cn_vs_torch.py" --steps "$STEPS" --runs "$RUNS" "${PY_FLAGS[@]+"${PY_FLAGS[@]}"}")"
 printf '%s\n' "$torch_out"
 
 echo
@@ -73,20 +82,16 @@ steps = int(sys.argv[3])
 torch_out = sys.argv[4]
 kt, nt = float(k[1]), float(n[1])
 kus, nus = kt / steps * 1e6, nt / steps * 1e6
-tf = tl = None
-for line in torch_out.splitlines():
-    if line.startswith("TORCH_FORWARD_US="):
-        tf = float(line.split("=", 1)[1])
-    elif line.startswith("TORCH_FORWARD_LEARN_US="):
-        tl = float(line.split("=", 1)[1])
 print(f"lumia_kernel        {kt:.4f}s  ({kus:.1f} µs/step)")
 print(f"lumia_naive         {nt:.4f}s  ({nus:.1f} µs/step)")
-if tf is not None:
-    print(f"torch_forward       ({tf:.1f} µs/step)  lumia_kernel is {tf/kus:.0f}× faster")
-if tl is not None:
-    print(f"torch_forward+learn ({tl:.1f} µs/step)  lumia_kernel is {tl/kus:.0f}× faster")
+for line in torch_out.splitlines():
+    if "_US=" in line and line.startswith("TORCH_"):
+        key, us = line.split("=", 1)
+        usf = float(us)
+        print(f"{key[6:].lower():20s} ({usf:.1f} µs/step)  lumia_kernel is {usf/kus:.0f}× faster")
 print()
 print("Caveat: Lumia bench is a dense triad+EFE+Hebbian skeleton (same dims),")
-print("not a full FreeEnergyAgent feature port. Numbers show dispatch/overhead gap.")
+print("not a full FreeEnergyAgent feature port. Default Torch config is")
+print("strict_pe+cluster_rates (CN defaults); LEGACY=1 / BOTH=1 for older PE.")
 PY
 echo "OK"
