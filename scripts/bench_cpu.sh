@@ -17,6 +17,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 source "$ROOT/scripts/env.sh"
 # shellcheck disable=SC1091
 source "$ROOT/scripts/bench_affinity.sh"
+# shellcheck disable=SC1091
+source "$ROOT/scripts/bench_measure.sh"
 
 sudo_shield() {
   # Run bench_shield.sh as root. Prefer cached/NOPASSWD; else BENCH_SUDO_PASS via -S.
@@ -31,6 +33,7 @@ sudo_shield() {
 }
 
 # Sort numeric samples → print min median max (space-separated on stdin).
+# Prefer bench_measure_stats (time+rss); kept for any external callers.
 stats_min_med_max() {
   awk '
     {
@@ -140,35 +143,45 @@ for i in "${!expect[@]}"; do
 done
 echo "checksums ok (${#expect[@]} scenarios)"
 
-# Collect RUNS wall times (one per line) for bin on cpus.
+# Collect RUNS "time rss_kb" samples for bin on cpus.
 collect_samples() {
   local bin=$1
   local runs=$2
   local cpus=$3
-  local i t
+  local i
   for ((i = 1; i <= runs; i++)); do
-    t="$(TIMEFORMAT='%R'; { time taskset -c "$cpus" "$bin" >/dev/null; } 2>&1)"
-    printf '%s\n' "$t"
+    if command -v taskset >/dev/null 2>&1; then
+      bench_measure taskset -c "$cpus" "$bin"
+    else
+      bench_measure "$bin"
+    fi
   done
 }
 
-echo "== timing (${RUNS} wall-clock samples, whole suite) =="
+echo "== timing + peak RSS (${RUNS} samples, whole suite) =="
 if [[ "$use_shield" -eq 1 ]]; then
   chmod +x "$ROOT/scripts/bench_shield.sh"
   samples="$(
     sudo_shield --cpus "$BENCH_CPU_LIST" -- \
-      bash -c 'bin=$1; runs=$2; cpus=$3
+      bash -c '
+        # shellcheck disable=SC1091
+        source "$1"
+        bin=$2; runs=$3; cpus=$4
         for ((i=1;i<=runs;i++)); do
-          t="$(TIMEFORMAT="%R"; { time taskset -c "$cpus" "$bin" >/dev/null; } 2>&1)"
-          printf "%s\n" "$t"
-        done' \
-      _ "$BIN" "$RUNS" "$BENCH_CPU_LIST"
+          if command -v taskset >/dev/null 2>&1; then
+            bench_measure taskset -c "$cpus" "$bin"
+          else
+            bench_measure "$bin"
+          fi
+        done
+      ' \
+      "$ROOT/scripts/bench_measure.sh" "$BIN" "$RUNS" "$BENCH_CPU_LIST"
   )"
 else
   samples="$(collect_samples "$BIN" "$RUNS" "$BENCH_CPU_LIST")"
 fi
-read -r t_min t_med t_max <<<"$(printf '%s\n' "$samples" | tr '\n' ' ' | stats_min_med_max)"
-printf 'bench_cpu Release: min=%ss  median=%ss  max=%ss\n' "$t_min" "$t_med" "$t_max"
+stats="$(printf '%s\n' "$samples" | bench_measure_stats)"
+bench_print_stats "bench_cpu" "$stats"
 printf '(%s scenarios: primes + matmul + mandel + collatz×2 + fib + poly + gcd + div + prodRem + floatOrbit + rangeFold + memTraffic)\n' "${#expect[@]}"
 
 # Optional: Debug vs Release contrast (same source).
@@ -185,20 +198,33 @@ if [[ "${COMPARE_DEBUG:-0}" == "1" ]]; then
   if [[ "$use_shield" -eq 1 ]]; then
     samples_d="$(
       sudo_shield --cpus "$BENCH_CPU_LIST" -- \
-        bash -c 'bin=$1; runs=$2; cpus=$3
+        bash -c '
+          # shellcheck disable=SC1091
+          source "$1"
+          bin=$2; runs=$3; cpus=$4
           for ((i=1;i<=runs;i++)); do
-            t="$(TIMEFORMAT="%R"; { time taskset -c "$cpus" "$bin" >/dev/null; } 2>&1)"
-            printf "%s\n" "$t"
-          done' \
-        _ "$DBG" "$RUNS" "$BENCH_CPU_LIST"
+            if command -v taskset >/dev/null 2>&1; then
+              bench_measure taskset -c "$cpus" "$bin"
+            else
+              bench_measure "$bin"
+            fi
+          done
+        ' \
+        "$ROOT/scripts/bench_measure.sh" "$DBG" "$RUNS" "$BENCH_CPU_LIST"
     )"
   else
     samples_d="$(collect_samples "$DBG" "$RUNS" "$BENCH_CPU_LIST")"
   fi
-  read -r d_min d_med d_max <<<"$(printf '%s\n' "$samples_d" | tr '\n' ' ' | stats_min_med_max)"
-  printf 'bench_cpu Debug:   min=%ss  median=%ss  max=%ss\n' "$d_min" "$d_med" "$d_max"
+  stats_d="$(printf '%s\n' "$samples_d" | bench_measure_stats)"
+  bench_print_stats "cpu_debug" "$stats_d"
+  read -r _ t_med _ _ r_med _ <<<"$stats"
+  read -r _ d_med _ _ dr_med _ <<<"$stats_d"
   awk -v d="$d_med" -v r="$t_med" 'BEGIN{
-    if (r+0 <= 0) { print "speedup (median Debug/Release): n/a"; exit }
-    printf "speedup (median Debug / Release): %.2fx\n", d/r
+    if (r+0 <= 0) { print "speedup (median Debug/Release time): n/a"; exit }
+    printf "speedup (median Debug / Release time): %.2fx\n", d/r
+  }'
+  awk -v d="$dr_med" -v r="$r_med" 'BEGIN{
+    if (r+0 <= 0) { print "rss_ratio (median Debug/Release): n/a"; exit }
+    printf "rss_ratio (median Debug / Release): %.2fx\n", d/r
   }'
 fi

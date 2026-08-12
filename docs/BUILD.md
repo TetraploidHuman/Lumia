@@ -188,9 +188,11 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumia_rt` 内�
 - **LSP**：`lumia lsp`（stdio；未保存 buffer overlay；诊断；hover；跨文件定义；补全；formatting）。
 - **FFI**：`foreign "C" [pure] fn …`（`Int`/`Bool`/`Float`/`Unit`/`String↔cstr`）+ `--link` / `package.link`（`examples/ffi_abs.lm` / `ffi_strlen.lm` / `ffi_getenv.lm`）。默认效应为 IO；`pure` 需 `--trust-foreign-pure` 或 `package.trust_foreign_pure = true`（荣誉系统，未验证）。
 - **自动并行**（默认开）：无捕获 lambda 或顶层函数名的纯标量 `List.map` → `ListParMap`（`examples/par_map.lm` / `par_map_fn.lm`）；IO/堆类型/捕获闭包回退顺序（`par_map_capture.lm` / `bad_par_map_io.lm`）。`--no-parallel` 关闭。worker 内禁止堆分配（TLS 堆隔离）。
-- Memo 性能：`scripts/bench_memo.sh`（同参热命中，约 **20×** vs `--no-memo`）；`examples/memo_dense.lm` 的 `fib` 下标表约 **1000×+**。
+- Memo 性能：`scripts/bench_memo.sh`（同参热命中，约 **20×** vs `--no-memo`；报时间 + 峰值 RSS）；`examples/memo_dense.lm` 的 `fib` 下标表约 **1000×+**。
   - `**bench_cpu` 整套**：收益几乎只来自 `fib`（其余核是单遍扫参，无跨调用复用 → 理论无命中）。曾有成本模型把「循环里调用一次」当成命中证据、误挂 4 槽表导致 Collatz **变慢**，已改为要求递归或静态同参复用；稠密表仅结构递减自递归。
-- CPU 计算密集：`scripts/bench_cpu.sh`（素数 / matmul / Mandelbrot / Collatz dense+strided / fib / poly / gcd / divisorSum / productRem / floatOrbit / rangeFold；约 0.5–1s 量级，报 min/median/max）。
+- CPU 计算密集：`scripts/bench_cpu.sh`（素数 / matmul / Mandelbrot / Collatz dense+strided / fib / poly / gcd / divisorSum / productRem / floatOrbit / rangeFold；约 0.5–1s 量级，报 min/median/max **时间 + 峰值 RSS**）。
+- Dense float（CogniNucleus 热路径）：`scripts/bench_cn_hot.sh`（naive 循环 vs `std.linalg`；checksum 对齐 + 时间/RSS）。
+- **聚合回归**：`scripts/bench_all.sh` 依次跑 cpu / memo / cn_hot（改 dense-float 等优化时应用此入口，避免单项过关、旧核回归）。
 - **纪律（DESIGN §7.1.1）**：分析能证明 → 特化；不能证明 → **默认稳定路径**：
   - `List` → `HeapList` / `COWList`
   - `Map`/`Set` → `HashOrdered` + COW / Overlay
@@ -265,6 +267,9 @@ cargo run -p lumia -- build examples/memo_local.lm -o /tmp/memo_local && /tmp/me
 # CPU compute suite (primes / matmul / Mandelbrot / Collatz / fib):
 #   ./scripts/bench_cpu.sh
 #   COMPARE_DEBUG=1 ./scripts/bench_cpu.sh   # also time Debug vs Release
+# Dense-float CN hot path + full perf gate (time + peak RSS):
+#   ./scripts/bench_cn_hot.sh
+#   ./scripts/bench_all.sh
 cargo run -p lumia -- build examples/mapset.lm -o /tmp/ms && /tmp/ms
 ```
 

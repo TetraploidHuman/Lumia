@@ -2,41 +2,13 @@
 # CogniNucleus-shaped dense-float hot-path microbench (Release).
 #
 # Compares nested Lumia List[Float] loops (auto-SR'd to RT kernels) vs
-# std.linalg wrappers (same fingerprints).
+# std.linalg wrappers (same fingerprints). Reports wall time and peak RSS.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck disable=SC1091
 source "$ROOT/scripts/env.sh"
-
-stats_min_med_max() {
-  awk '
-    {
-      n = split($0, a, /[[:space:]]+/)
-      m = 0
-      for (i = 1; i <= n; i++) if (a[i] != "") b[++m] = a[i] + 0
-    }
-    END {
-      if (m < 1) { print "n/a n/a n/a"; exit }
-      for (i = 1; i <= m; i++)
-        for (j = i + 1; j <= m; j++)
-          if (b[j] < b[i]) { t = b[i]; b[i] = b[j]; b[j] = t }
-      min = b[1]; max = b[m]
-      if (m % 2 == 1) med = b[int((m + 1) / 2)]
-      else med = (b[m / 2] + b[m / 2 + 1]) / 2
-      printf "%.4f %.4f %.4f\n", min, med, max
-    }'
-}
-
-elapsed() {
-  # prints elapsed seconds for "$@" to stdout; command stdout discarded
-  python3 - "$@" <<'PY'
-import subprocess, sys, time
-cmd = sys.argv[1:]
-t0 = time.perf_counter()
-subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL)
-print(f"{time.perf_counter() - t0:.6f}")
-PY
-}
+# shellcheck disable=SC1091
+source "$ROOT/scripts/bench_measure.sh"
 
 cd "$ROOT"
 cargo build -q -p lumia --release
@@ -61,31 +33,34 @@ if [[ "$k_out" != "$n_out" ]]; then
   exit 1
 fi
 
-time_bin() {
+measure_bin() {
   local bin=$1
   local samples="" i
   for ((i = 0; i < RUNS; i++)); do
-    samples+="$(elapsed "$bin") "
+    samples+="$(bench_measure "$bin")"$'\n'
   done
-  echo "$samples" | stats_min_med_max
+  printf '%s' "$samples" | bench_measure_stats
 }
 
-echo "== wall time (s) min/median/max  RUNS=$RUNS  STEPS=100000 =="
-k_stats="$(time_bin "$OUT_DIR/kernel")"
-n_stats="$(time_bin "$OUT_DIR/naive")"
-echo "kernel  $k_stats"
-echo "naive   $n_stats"
+echo "== wall time + peak RSS  RUNS=$RUNS  STEPS=100000 =="
+k_stats="$(measure_bin "$OUT_DIR/kernel")"
+n_stats="$(measure_bin "$OUT_DIR/naive")"
+bench_print_stats "kernel" "$k_stats"
+bench_print_stats "naive" "$n_stats"
 python3 - "$k_stats" "$n_stats" <<'PY'
 import sys
-k = float(sys.argv[1].split()[1])
-n = float(sys.argv[2].split()[1])
-print(f"speedup  {n/k:.2f}x  (naive_median / kernel_median)")
+k = sys.argv[1].split()
+n = sys.argv[2].split()
+kt, nt = float(k[1]), float(n[1])
+kr, nr = float(k[4]), float(n[4])
+print(f"speedup  {nt/kt:.2f}x  (naive_med_time / kernel_med_time)")
+print(f"rss_ratio {nr/kr:.2f}x  (naive_med_rss / kernel_med_rss)")
 PY
 
 if python3 -c 'import torch' 2>/dev/null; then
   echo "== torch reference =="
   python3 - "$RUNS" <<'PY'
-import sys, time
+import sys, time, resource
 import torch
 RUNS = int(sys.argv[1])
 VIS, PFC, STEPS = 16, 32, 100_000
@@ -115,11 +90,18 @@ def run():
 
 print("torch checksums:")
 print(run()[0]); print(run()[1])
-samples = []
+times, rss = [], []
 for _ in range(RUNS):
-    t0 = time.perf_counter(); run(); samples.append(time.perf_counter() - t0)
-samples.sort()
-print(f"torch   {samples[0]:.4f} {samples[len(samples)//2]:.4f} {samples[-1]:.4f}")
+    # self RSS before/after is noisy for in-process; report process maxrss delta loosely
+    before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    t0 = time.perf_counter()
+    run()
+    times.append(time.perf_counter() - t0)
+    after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    rss.append(max(before, after))
+times.sort(); rss.sort()
+print(f"torch   time {times[0]:.4f} {times[len(times)//2]:.4f} {times[-1]:.4f}")
+print(f"torch   rss  {rss[0]:.0f} {rss[len(rss)//2]:.0f} {rss[-1]:.0f}")
 PY
 else
   echo "(skip torch)"
