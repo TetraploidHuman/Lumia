@@ -476,6 +476,52 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         ret: RtTy::I64,
         args: &[RtTy::I64, RtTy::I64],
     },
+    // Dense List[Float] kernels (flat row-major; unique buffers stay in-place).
+    RtDecl {
+        name: "lumia_list_f64_zeros",
+        ret: RtTy::Ptr,
+        args: &[RtTy::I64],
+    },
+    RtDecl {
+        name: "lumia_f64_fill",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr, RtTy::F64],
+    },
+    RtDecl {
+        name: "lumia_f64_l2_norm",
+        ret: RtTy::F64,
+        args: &[RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_f64_l2_normalize",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr, RtTy::F64],
+    },
+    RtDecl {
+        name: "lumia_f64_clamp",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr, RtTy::F64, RtTy::F64],
+    },
+    RtDecl {
+        name: "lumia_f64_gemv",
+        ret: RtTy::Ptr,
+        args: &[RtTy::I64, RtTy::I64, RtTy::Ptr, RtTy::Ptr, RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_f64_gemv_t",
+        ret: RtTy::Ptr,
+        args: &[RtTy::I64, RtTy::I64, RtTy::Ptr, RtTy::Ptr, RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_f64_addmm",
+        ret: RtTy::Ptr,
+        args: &[RtTy::I64, RtTy::I64, RtTy::Ptr, RtTy::Ptr, RtTy::Ptr, RtTy::F64],
+    },
+    RtDecl {
+        name: "lumia_f64_checksum",
+        ret: RtTy::I64,
+        args: &[RtTy::Ptr],
+    },
     RtDecl {
         name: "lumia_str_starts_with",
         ret: RtTy::I64,

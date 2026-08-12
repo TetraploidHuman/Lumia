@@ -20,6 +20,7 @@ mod dict;
 mod dispatch;
 mod ensure;
 mod eq;
+mod dense_f64;
 mod float_kernels;
 mod gc;
 mod hash_ord;
@@ -51,6 +52,10 @@ pub use dict::{
 };
 pub use dispatch::*;
 pub use eq::*;
+pub use dense_f64::{
+    lumia_f64_addmm, lumia_f64_checksum, lumia_f64_clamp, lumia_f64_fill, lumia_f64_gemv,
+    lumia_f64_gemv_t, lumia_f64_l2_norm, lumia_f64_l2_normalize, lumia_list_f64_zeros,
+};
 pub use float_kernels::lumia_mandelbrot_checksum;
 pub use hash_ord::*;
 pub use list::*;

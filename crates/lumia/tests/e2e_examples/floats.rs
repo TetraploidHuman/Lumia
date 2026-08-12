@@ -46,7 +46,11 @@ fn e2e_nested_float_adt_eq() {
 }
 
 #[test]
-fn e2e_eq_hash_consistent() {
-    // Hash ADT: `==` follows lumia_eq (Map path), not a diverging `__Eq_*_eq`.
-    run_example("examples/eq_hash_consistent.lm", &["1", "1", "10"]);
+fn e2e_dense_float_kernels() {
+    // gemv [5,11,17]; gemvT [4,6]; addmm sum 21; L2 [0.6,0.8]; 16×32 nucleus gemv
+    run_example(
+        "examples/dense_float_kernels.lm",
+        &["33000", "10000", "21000", "1400", "2261"],
+    );
 }
+

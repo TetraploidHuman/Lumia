@@ -105,25 +105,63 @@ impl<'ctx> Codegen<'ctx> {
     }
 
     /// Apply [`BuiltinInfo::float_ensures`](lumia_hir::BuiltinInfo::float_ensures) to `obj`.
+    ///
+    /// `MapSet` is overloaded for `List.set` / `Map.set`. List destinations must
+    /// use `ENSURE_LIST_F64` when the written elem is Float — never map ensures.
     fn ensure_float_container(
         &mut self,
         b: &Builtin,
         args: &[Local],
         mut obj: PointerValue<'ctx>,
     ) -> Result<PointerValue<'ctx>> {
+        if matches!(b, Builtin::MapSet) {
+            let val_float = matches!(
+                self.frame.local_tys.get(&args[2].0),
+                Some(Type::Float)
+            );
+            let key_float = matches!(
+                self.frame.local_tys.get(&args[1].0),
+                Some(Type::Float)
+            );
+            match self.frame.local_tys.get(&args[0].0) {
+                Some(Type::List(_)) if val_float => {
+                    return self.call_ensure(obj, lumia_abi::ENSURE_LIST_F64);
+                }
+                Some(Type::Map(_, _)) => {
+                    if key_float {
+                        obj = self.call_ensure(obj, lumia_abi::ENSURE_MAP_F64)?;
+                    }
+                    if val_float {
+                        obj = self.call_ensure(obj, lumia_abi::ENSURE_MAP_VF64)?;
+                    }
+                    return Ok(obj);
+                }
+                // Unknown / poly: skip compile-time ensure; RT `lumia_set` dispatches.
+                _ => return Ok(obj),
+            }
+        }
         for &(idx, sym) in b.info().float_ensures {
             let i = idx as usize;
             if matches!(self.frame.local_tys.get(&args[i].0), Some(Type::Float)) {
-                let ens = self.runtime_fn(sym)?;
-                obj =
-                    crate::error::llvm(self.llvm.builder.build_call(ens, &[obj.into()], "ens_f"))?
-                        .try_as_basic_value()
-                        .basic()
-                        .with_context(|| format!("ensure `{sym}` return"))?
-                        .into_pointer_value();
+                obj = self.call_ensure(obj, sym)?;
             }
         }
         Ok(obj)
+    }
+
+    fn call_ensure(
+        &mut self,
+        obj: PointerValue<'ctx>,
+        sym: &str,
+    ) -> Result<PointerValue<'ctx>> {
+        let ens = self.runtime_fn(sym)?;
+        Ok(
+            crate::error::llvm(self.llvm.builder.build_call(ens, &[obj.into()], "ens_f"))?
+                .try_as_basic_value()
+                .basic()
+                .with_context(|| format!("ensure `{sym}` return"))?
+                .into_pointer_value(),
+        )
     }
 
     pub(crate) fn i64_as_ptr(&self, i: IntValue<'ctx>, name: &str) -> Result<PointerValue<'ctx>> {

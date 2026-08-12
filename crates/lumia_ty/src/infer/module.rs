@@ -41,10 +41,11 @@ pub(crate) fn parse_foreign_type(name: &str) -> Result<Type, TypeError> {
         "Unit" => Ok(Type::Unit),
         "String" => Ok(Type::String),
         "Char" => Ok(Type::Char),
-        // Flat alias for `List[String]` (foreign param syntax is a single ident).
+        // Flat aliases (foreign param syntax is a single ident).
         "ListString" => Ok(Type::List(Box::new(Type::String))),
+        "ListFloat" => Ok(Type::List(Box::new(Type::Float))),
         other => Err(TypeError::Message(format!(
-            "unsupported foreign type `{other}` (supported: Int, Bool, Float, Unit, String, Char, ListString)"
+            "unsupported foreign type `{other}` (supported: Int, Bool, Float, Unit, String, Char, ListString, ListFloat)"
         ))),
     }
 }

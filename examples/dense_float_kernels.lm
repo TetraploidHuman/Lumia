@@ -1,0 +1,47 @@
+module DenseFloatKernels
+
+import std.io.{println}
+import std.linalg.{zeros, gemv, gemvT, addmm, l2Normalize, checksum}
+
+/// Dense float kernels: tiny GEMV, Aᵀx, Hebbian addmm, L2 normalize.
+val main = {
+    val A = listOf(1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
+    val x = listOf(1.0, 2.0)
+    var y = zeros(3)
+    y = gemv(3, 2, A, x, y)
+    println(checksum(y))
+
+    var yt = zeros(2)
+    yt = gemvT(2, 2, listOf(1.0, 2.0, 3.0, 4.0), listOf(1.0, 1.0), yt)
+    println(checksum(yt))
+
+    var W = zeros(4)
+    W = addmm(2, 2, W, listOf(1.0, 2.0), listOf(3.0, 4.0), 1.0)
+    println(checksum(W))
+
+    var nrm = l2Normalize(listOf(3.0, 4.0), 0.0)
+    println(checksum(nrm))
+
+    // Nucleus-scale 16×32 gemv fingerprint (same formula as RT unit test).
+    val m = 16
+    val n = 32
+    var bigA = zeros(m * n)
+    var bigX = zeros(n)
+    var bigY = zeros(m)
+    var i = 0
+    for i < m {
+        var j = 0
+        for j < n {
+            bigA = bigA.set(i * n + j, (0.0 + i + j) * 0.001)
+            j = j + 1
+        }
+        i = i + 1
+    }
+    var j = 0
+    for j < n {
+        bigX = bigX.set(j, (0.0 + j) * 0.01)
+        j = j + 1
+    }
+    bigY = gemv(m, n, bigA, bigX, bigY)
+    println(checksum(bigY))
+}
