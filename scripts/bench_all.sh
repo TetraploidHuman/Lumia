@@ -8,7 +8,7 @@
 #   RUNS=5              # samples per timed binary (cn_hot / memo); cpu uses its own default
 #   BENCH_CPU_RUNS=5    # override bench_cpu.sh RUNS (default 5 here for quicker gates)
 #   BENCH_SHIELD=0      # default off in the aggregate gate (no sudo)
-#   SKIP_CPU=1 SKIP_MEMO=1 SKIP_CN=1 SKIP_CN_STEP=1 SKIP_CN_EFE=1
+#   SKIP_CPU=1 SKIP_MEMO=1 SKIP_CN=1 SKIP_CN_STEP=1 SKIP_CN_EFE=1 SKIP_CN_FUSE=1
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck disable=SC1091
@@ -75,6 +75,17 @@ if [[ "${SKIP_CN_EFE:-0}" != "1" ]]; then
     echo "OK bench_cn_efe"
   else
     echo "FAIL bench_cn_efe" >&2
+    fail=1
+  fi
+  echo
+fi
+
+if [[ "${SKIP_CN_FUSE:-0}" != "1" ]]; then
+  echo "######## bench_cn_fuse ########"
+  if RUNS="$CN_RUNS" bash "$ROOT/scripts/bench_cn_fuse.sh"; then
+    echo "OK bench_cn_fuse"
+  else
+    echo "FAIL bench_cn_fuse" >&2
     fail=1
   fi
   echo

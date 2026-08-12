@@ -1,0 +1,18 @@
+/// CogniNucleus fused kernels (`import std.cn.{…}`).
+///
+/// `nucleusStep` / `hebbian` match `cogninucleus/{nucleus,connection}.py`
+/// for tiny dense float (dim ≤ 64). Matrices are flat row-major `List[Float]`.
+///
+/// @exports nucleusStep, hebbian
+module cn
+
+foreign "C" pure fn lumia_cn_nucleus_step(mu: ListFloat, encW: ListFloat, predW: ListFloat, bottomUp: ListFloat, topDown: ListFloat, err: ListFloat, pred: ListFloat, size: Int, stateLr: Float, precision: Float, muClip: Float) -> ListFloat
+foreign "C" pure fn lumia_cn_hebbian(w: ListFloat, u: ListFloat, v: ListFloat, mask: ListFloat, fromSize: Int, toSize: Int, lr: Float, weightClip: Float, weightDecay: Float, eps: Float) -> ListFloat
+
+val nucleusStep = { mu, encW, predW, bottomUp, topDown, err, pred, size, stateLr, precision, muClip ->
+    lumia_cn_nucleus_step(mu, encW, predW, bottomUp, topDown, err, pred, size, stateLr, precision, muClip)
+}
+
+val hebbian = { w, u, v, mask, fromSize, toSize, lr, weightClip, weightDecay, eps ->
+    lumia_cn_hebbian(w, u, v, mask, fromSize, toSize, lr, weightClip, weightDecay, eps)
+}

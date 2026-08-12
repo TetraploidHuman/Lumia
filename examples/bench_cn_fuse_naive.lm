@@ -1,0 +1,86 @@
+module BenchCnFuseNaive
+
+/// Composed PC nucleus + Hebbian via `std.linalg` (same math as `std.cn` fused).
+import std.io.{println}
+import std.linalg.{
+    zeros, copy, checksum, sub, scale, gemv, axpy, clamp, l2Normalize, addmm, mul
+}
+
+val SIZE = 32
+val FROM = 16
+val TO = 32
+val STEPS = 50000
+val LR = 0.05
+val STATE_LR = 0.1
+val PI = 1.0
+val MU_CLIP = 10.0
+val W_CLIP = 5.0
+val DECAY = 0.0001
+val EPS = 0.001
+
+val main = {
+    var mu = zeros(SIZE)
+    var enc = zeros(SIZE * SIZE)
+    var predW = zeros(SIZE * SIZE)
+    var bu = zeros(SIZE)
+    var td = zeros(SIZE)
+    var err = zeros(SIZE)
+    var pred = zeros(SIZE)
+    var scratch = zeros(SIZE)
+    var delta = zeros(SIZE)
+    var w = zeros(FROM * TO)
+    var mask = zeros(FROM * TO)
+    var u = zeros(FROM)
+    var v = zeros(TO)
+    var uN = zeros(FROM)
+    var vN = zeros(TO)
+
+    var i = 0
+    for i < SIZE {
+        mu = mu.set(i, (0.0 + i) * 0.001)
+        bu = bu.set(i, (0.0 + i) * 0.01)
+        td = td.set(i, (0.0 + i) * 0.005)
+        enc = enc.set(i * SIZE + i, 1.0)
+        predW = predW.set(i * SIZE + i, 1.0)
+        i = i + 1
+    }
+    i = 0
+    for i < FROM {
+        u = u.set(i, (0.0 + i) * 0.02)
+        i = i + 1
+    }
+    i = 0
+    for i < FROM * TO {
+        mask = mask.set(i, 1.0)
+        w = w.set(i, (0.0 + (i % 17)) * 0.001)
+        i = i + 1
+    }
+
+    var t = 0
+    for t < STEPS {
+        bu = bu.set(t % SIZE, (0.0 + (t % 32)) * 0.001)
+        err = sub(err, bu, td)
+        scratch = copy(scratch, err)
+        scratch = scale(scratch, PI)
+        delta = gemv(SIZE, SIZE, enc, scratch, delta)
+        mu = axpy(mu, STATE_LR, delta)
+        mu = clamp(mu, 0.0 - MU_CLIP, MU_CLIP)
+        pred = gemv(SIZE, SIZE, predW, mu, pred)
+        td = copy(td, pred)
+
+        v = copy(v, err)
+        uN = copy(uN, u)
+        vN = copy(vN, v)
+        uN = l2Normalize(uN, EPS)
+        vN = l2Normalize(vN, EPS)
+        w = scale(w, 1.0 - DECAY)
+        w = addmm(FROM, TO, w, uN, vN, LR)
+        w = clamp(w, 0.0 - W_CLIP, W_CLIP)
+        w = mul(w, w, mask)
+        t = t + 1
+    }
+
+    println(checksum(mu))
+    println(checksum(w))
+    println(checksum(pred))
+}

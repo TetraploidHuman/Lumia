@@ -3,7 +3,7 @@
 /// Matrices are **flat row-major** float lists. Dest buffers that are uniquely
 /// owned are updated in place (zero-alloc); shared ones COW-clone.
 ///
-/// @exports zeros, fill, scale, mul, add, l2Norm, l2Normalize, clamp, gemv, gemvT, addmm, axpy, sub, copy, checksum
+/// @exports zeros, fill, scale, mul, add, l2Norm, l2Normalize, sumSq, mean, std, softMax, clamp, gemv, gemvT, addmm, axpy, sub, copy, checksum
 module linalg
 
 foreign "C" pure fn lumia_list_f64_zeros(n: Int) -> ListFloat
@@ -13,6 +13,10 @@ foreign "C" pure fn lumia_f64_mul(out: ListFloat, a: ListFloat, b: ListFloat) ->
 foreign "C" pure fn lumia_f64_add(out: ListFloat, a: ListFloat, b: ListFloat) -> ListFloat
 foreign "C" pure fn lumia_f64_l2_norm(xs: ListFloat) -> Float
 foreign "C" pure fn lumia_f64_l2_normalize(xs: ListFloat, eps: Float) -> ListFloat
+foreign "C" pure fn lumia_f64_sum_sq(xs: ListFloat) -> Float
+foreign "C" pure fn lumia_f64_mean(xs: ListFloat) -> Float
+foreign "C" pure fn lumia_f64_std(xs: ListFloat) -> Float
+foreign "C" pure fn lumia_f64_softmax(xs: ListFloat) -> ListFloat
 foreign "C" pure fn lumia_f64_clamp(xs: ListFloat, lo: Float, hi: Float) -> ListFloat
 foreign "C" pure fn lumia_f64_gemv(m: Int, n: Int, a: ListFloat, x: ListFloat, y: ListFloat) -> ListFloat
 foreign "C" pure fn lumia_f64_gemv_t(m: Int, n: Int, a: ListFloat, x: ListFloat, y: ListFloat) -> ListFloat
@@ -29,6 +33,10 @@ val mul = { out, a, b -> lumia_f64_mul(out, a, b) }
 val add = { out, a, b -> lumia_f64_add(out, a, b) }
 val l2Norm = { xs -> lumia_f64_l2_norm(xs) }
 val l2Normalize = { xs, eps -> lumia_f64_l2_normalize(xs, eps) }
+val sumSq = { xs -> lumia_f64_sum_sq(xs) }
+val mean = { xs -> lumia_f64_mean(xs) }
+val std = { xs -> lumia_f64_std(xs) }
+val softMax = { xs -> lumia_f64_softmax(xs) }
 val clamp = { xs, lo, hi -> lumia_f64_clamp(xs, lo, hi) }
 val gemv = { m, n, a, x, y -> lumia_f64_gemv(m, n, a, x, y) }
 val gemvT = { m, n, a, x, y -> lumia_f64_gemv_t(m, n, a, x, y) }

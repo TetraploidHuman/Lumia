@@ -113,6 +113,92 @@ pub extern "C" fn lumia_f64_l2_norm(xs: *mut u8) -> f64 {
     }
 }
 
+/// `∑ xᵢ²` (squared L2; used by soft-async skip checks).
+#[no_mangle]
+pub extern "C" fn lumia_f64_sum_sq(xs: *mut u8) -> f64 {
+    let xs = force_f64(xs);
+    unsafe {
+        let (p, n) = f64_elems(xs);
+        let mut s = 0.0_f64;
+        for i in 0..n {
+            let v = *p.add(i);
+            s += v * v;
+        }
+        s
+    }
+}
+
+/// Arithmetic mean. Empty list → `0.0`.
+#[no_mangle]
+pub extern "C" fn lumia_f64_mean(xs: *mut u8) -> f64 {
+    let xs = force_f64(xs);
+    unsafe {
+        let (p, n) = f64_elems(xs);
+        if n == 0 {
+            return 0.0;
+        }
+        let mut s = 0.0_f64;
+        for i in 0..n {
+            s += *p.add(i);
+        }
+        s / (n as f64)
+    }
+}
+
+/// Population standard deviation (`torch.std(unbiased=False)`). Empty → `0.0`.
+#[no_mangle]
+pub extern "C" fn lumia_f64_std(xs: *mut u8) -> f64 {
+    let xs = force_f64(xs);
+    unsafe {
+        let (p, n) = f64_elems(xs);
+        if n == 0 {
+            return 0.0;
+        }
+        let mut s = 0.0_f64;
+        for i in 0..n {
+            s += *p.add(i);
+        }
+        let mean = s / (n as f64);
+        let mut var = 0.0_f64;
+        for i in 0..n {
+            let d = *p.add(i) - mean;
+            var += d * d;
+        }
+        (var / (n as f64)).sqrt()
+    }
+}
+
+/// In-place softmax (numerically stable). Returns `xs` (COW if shared).
+#[no_mangle]
+pub extern "C" fn lumia_f64_softmax(xs: *mut u8) -> *mut u8 {
+    let _gc = GcInhibitGuard::enter();
+    let xs = ensure_unique_f64(xs);
+    unsafe {
+        let (p, n) = f64_elems_mut(xs);
+        if n == 0 {
+            return xs;
+        }
+        let mut m = *p;
+        for i in 1..n {
+            let v = *p.add(i);
+            if v > m {
+                m = v;
+            }
+        }
+        let mut z = 0.0_f64;
+        for i in 0..n {
+            let e = (*p.add(i) - m).exp();
+            *p.add(i) = e;
+            z += e;
+        }
+        let inv = 1.0 / z;
+        for i in 0..n {
+            *p.add(i) *= inv;
+        }
+    }
+    xs
+}
+
 /// In-place `x *= 1 / (‖x‖ + eps)`. Returns `x` (COW if shared).
 #[no_mangle]
 pub extern "C" fn lumia_f64_l2_normalize(xs: *mut u8, eps: f64) -> *mut u8 {
