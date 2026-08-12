@@ -22,18 +22,39 @@ pub extern "C" fn lumia_collatz_total(limit: i64) -> i64 {
     let mut stack = Vec::with_capacity(64);
     let mut total: i64 = 0;
     // Sequential: every even `n` has `n/2` already solved ⇒ O(1) write.
-    // No software prefetch: HW streamer already covers this scan; SW hints
-    // were neutral-to-slower on dense RMW and only ~3% on this kernel.
+    // Odds: one Syracuse hop often lands on an already-filled cell (skip stack).
     for n in 1..=lim {
         if n % 2 == 0 {
             let steps = cache[n / 2] + 1;
             cache[n] = steps;
             total += i64::from(steps);
         } else if n != 1 {
-            total += collatz_steps_cached(n as i64, &mut cache, lim, &mut stack);
+            total += collatz_odd_cached(n, &mut cache, lim, &mut stack);
         }
     }
     total
+}
+
+/// Odd `n > 1`: try `steps = 1 + cttz(3n+1) + cache[next]` before the general walker.
+#[inline]
+fn collatz_odd_cached(
+    n: usize,
+    cache: &mut [Step],
+    lim: usize,
+    stack: &mut Vec<(i64, i64)>,
+) -> i64 {
+    if cache_hit(cache, n, lim) {
+        return i64::from(cache[n]);
+    }
+    let y = (n as u64).wrapping_mul(3).wrapping_add(1);
+    let k = y.trailing_zeros();
+    let nxt = (y >> k) as usize;
+    if cache_hit(cache, nxt, lim) {
+        let steps = i64::from(cache[nxt]) + 1 + i64::from(k);
+        cache_set_with_doubles(cache, lim, n, steps as Step);
+        return steps;
+    }
+    collatz_steps_cached(n as i64, cache, lim, stack)
 }
 
 /// Sum of Collatz step counts for `n = start, start+stride, …` while `n ≤ limit`.
@@ -52,7 +73,12 @@ pub extern "C" fn lumia_collatz_strided(start: i64, limit: i64, stride: i64) -> 
     let mut total: i64 = 0;
     let mut n = start;
     while n <= limit {
-        total = total.wrapping_add(collatz_steps_cached(n, &mut cache, lim, &mut stack));
+        let s = if (n & 1) == 1 && n > 1 {
+            collatz_odd_cached(n as usize, &mut cache, lim, &mut stack)
+        } else {
+            collatz_steps_cached(n, &mut cache, lim, &mut stack)
+        };
+        total = total.wrapping_add(s);
         n = n.saturating_add(stride);
     }
     total

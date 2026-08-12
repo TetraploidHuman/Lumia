@@ -270,6 +270,62 @@ impl<'ctx> Codegen<'ctx> {
         true
     }
 
+    /// `Let t = Name(xs)|Local(…)` where `t` is only the receiver of list/map
+    /// get/set/append/concat/len later in this block — the source is already rooted
+    /// (mut slot or prior let), so skip retain+root on the alias.
+    fn let_is_ephemeral_rooted_recv(
+        &self,
+        block: &Block,
+        let_idx: usize,
+        local: Local,
+        value: &Value,
+    ) -> bool {
+        if !matches!(value, Value::Name(_) | Value::Local(_)) {
+            return false;
+        }
+        let ty = self.infer_value_ty(value);
+        if !matches!(ty, Type::List(_) | Type::Map(_, _) | Type::Set(_)) {
+            return false;
+        }
+        if block.result == Some(local) {
+            return false;
+        }
+        let mut uses = 0usize;
+        let mut only_recv = true;
+        for op in &block.ops[let_idx + 1..] {
+            if !Self::op_uses_local(op, local) {
+                continue;
+            }
+            uses += 1;
+            let ok = match op {
+                Op::Let {
+                    value: Value::Builtin { name, args },
+                    ..
+                } => {
+                    let recv = matches!(
+                        name,
+                        lumia_hir::Builtin::ListGet
+                            | lumia_hir::Builtin::ListLen
+                            | lumia_hir::Builtin::ListAppend
+                            | lumia_hir::Builtin::ListConcat
+                            | lumia_hir::Builtin::ListTake
+                            | lumia_hir::Builtin::ListSlice
+                            | lumia_hir::Builtin::MapSet
+                            | lumia_hir::Builtin::MapRemove
+                            | lumia_hir::Builtin::Contains
+                    );
+                    recv && args.first() == Some(&local) && args[1..].iter().all(|a| *a != local)
+                }
+                _ => false,
+            };
+            if !ok {
+                only_recv = false;
+                break;
+            }
+        }
+        uses >= 1 && only_recv
+    }
+
     fn op_uses_local(op: &Op, local: Local) -> bool {
         match op {
             Op::Let { value, .. } | Op::Effect { value } => Self::value_uses_local(value, local),
@@ -331,8 +387,12 @@ impl<'ctx> Codegen<'ctx> {
                     let v = self.emit_value(value, fv)?;
                     self.frame.emit_dest = None;
                     self.frame.cow_consume_unique = false;
-                    if self.let_only_feeds_next_assign(block, idx, *local) {
-                        // Skip shadow-stack root: next Assign stores into a rooted mut slot.
+                    if self.let_only_feeds_next_assign(block, idx, *local)
+                        || self.let_is_ephemeral_rooted_recv(block, idx, *local, value)
+                    {
+                        // Skip shadow-stack root: next Assign stores into a rooted mut
+                        // slot, or this is a Name/Local alias of an already-rooted list
+                        // used only as get/set/append receiver.
                         self.frame.locals.insert(local.0, v);
                         self.frame
                             .local_tys

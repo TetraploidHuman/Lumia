@@ -54,7 +54,13 @@ impl<'ctx> Codegen<'ctx> {
             BuiltinEmit::UnaryObjScalar => {
                 let obj_i = self.coerce_i64(self.local(args[0])?)?;
                 let obj = self.i64_as_ptr(obj_i, "obj")?;
-                let sym = Self::builtin_symbol(b)?;
+                let sym = if matches!(b, Builtin::ListLen)
+                    && matches!(self.frame.local_tys.get(&args[0].0), Some(Type::List(_)))
+                {
+                    "lumia_list_len"
+                } else {
+                    Self::builtin_symbol(b)?
+                };
                 self.call_rt_basic(sym, &[obj.into()], label)
             }
             BuiltinEmit::ObjI64Ptr => self.emit_rt_obj_i64(b, args, label),
@@ -73,13 +79,30 @@ impl<'ctx> Codegen<'ctx> {
                 if matches!(b, Builtin::MapSet) && !self.frame.cow_consume_unique {
                     self.list_retain_i64(obj_i)?;
                 }
-                let sym = Self::builtin_symbol(b)?;
+                // Known `List` → skip polymorphic `lumia_set` dispatch.
+                let sym = if matches!(b, Builtin::MapSet)
+                    && matches!(self.frame.local_tys.get(&args[0].0), Some(Type::List(_)))
+                {
+                    "lumia_list_set"
+                } else {
+                    Self::builtin_symbol(b)?
+                };
                 self.call_rt_ptr_as_i64(sym, &[obj.into(), a.into(), b_i.into()], label)
             }
             BuiltinEmit::ObjI64OptionTags => {
                 let obj_i = self.coerce_i64(self.local(args[0])?)?;
                 let key = self.coerce_i64(self.local(args[1])?)?;
                 let obj = self.i64_as_ptr(obj_i, "obj")?;
+                // Known `List` → `lumia_list_get` (no Option tags / map dispatch).
+                if matches!(b, Builtin::ListGet)
+                    && matches!(self.frame.local_tys.get(&args[0].0), Some(Type::List(_)))
+                {
+                    return self.call_rt_basic(
+                        "lumia_list_get",
+                        &[obj.into(), key.into()],
+                        label,
+                    );
+                }
                 let some = self
                     .llvm
                     .i64_ty
