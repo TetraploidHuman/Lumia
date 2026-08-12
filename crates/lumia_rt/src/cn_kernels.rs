@@ -189,6 +189,144 @@ pub extern "C" fn lumia_cn_hebbian(
     w
 }
 
+/// `y = clamp(x @ W, -clip, clip)` with `W` row-major `from×to` (CN `Connection.project`).
+#[no_mangle]
+pub extern "C" fn lumia_cn_project_clamp(
+    from_size: i64,
+    to_size: i64,
+    w: *mut u8,
+    x: *mut u8,
+    y: *mut u8,
+    clip: f64,
+) -> *mut u8 {
+    let _gc = GcInhibitGuard::enter();
+    if from_size < 1 || to_size < 1 {
+        trap_abort("lumia: cn project_clamp non-positive dims");
+    }
+    if from_size as usize > MAX_DIM || to_size as usize > MAX_DIM {
+        trap_abort("lumia: cn project_clamp dim out of range");
+    }
+    let m = from_size as usize;
+    let n = to_size as usize;
+    let w = force_f64(w);
+    let x = force_f64(x);
+    let y = ensure_unique_f64(y);
+    require_len(w, from_size * to_size, "cn project W");
+    require_len(x, from_size, "cn project x");
+    require_len(y, to_size, "cn project y");
+    let lo = -clip;
+    let hi = clip;
+    unsafe {
+        let (ap, _) = f64_elems(w);
+        let (xp, _) = f64_elems(x);
+        let (yp, _) = f64_elems_mut(y);
+        for j in 0..n {
+            *yp.add(j) = 0.0;
+        }
+        for i in 0..m {
+            let xi = *xp.add(i);
+            let row = ap.add(i * n);
+            for j in 0..n {
+                *yp.add(j) += *row.add(j) * xi;
+            }
+        }
+        for j in 0..n {
+            *yp.add(j) = (*yp.add(j)).clamp(lo, hi);
+        }
+    }
+    y
+}
+
+/// `y = clamp(W @ x, -clip, clip)` with `W` row-major `m×n` (CN lateral `error @ Wᵀ`).
+#[no_mangle]
+pub extern "C" fn lumia_cn_backproj_clamp(
+    m: i64,
+    n: i64,
+    w: *mut u8,
+    x: *mut u8,
+    y: *mut u8,
+    clip: f64,
+) -> *mut u8 {
+    let _gc = GcInhibitGuard::enter();
+    if m < 1 || n < 1 {
+        trap_abort("lumia: cn backproj_clamp non-positive dims");
+    }
+    if m as usize > MAX_DIM || n as usize > MAX_DIM {
+        trap_abort("lumia: cn backproj_clamp dim out of range");
+    }
+    let mm = m as usize;
+    let nn = n as usize;
+    let w = force_f64(w);
+    let x = force_f64(x);
+    let y = ensure_unique_f64(y);
+    require_len(w, m * n, "cn backproj W");
+    require_len(x, n, "cn backproj x");
+    require_len(y, m, "cn backproj y");
+    let lo = -clip;
+    let hi = clip;
+    unsafe {
+        let (ap, _) = f64_elems(w);
+        let (xp, _) = f64_elems(x);
+        let (yp, _) = f64_elems_mut(y);
+        for i in 0..mm {
+            let mut s = 0.0_f64;
+            let row = ap.add(i * nn);
+            for j in 0..nn {
+                s += *row.add(j) * *xp.add(j);
+            }
+            *yp.add(i) = s.clamp(lo, hi);
+        }
+    }
+    y
+}
+
+/// `y = clamp(y + α·x, -clip, clip)`.
+#[no_mangle]
+pub extern "C" fn lumia_cn_axpy_clamp(
+    y: *mut u8,
+    alpha: f64,
+    x: *mut u8,
+    clip: f64,
+) -> *mut u8 {
+    let _gc = GcInhibitGuard::enter();
+    let x = force_f64(x);
+    let y = ensure_unique_f64(y);
+    let n = list_len_of(x);
+    require_len(y, n, "cn axpy_clamp y");
+    let lo = -clip;
+    let hi = clip;
+    unsafe {
+        let (yp, nn) = f64_elems_mut(y);
+        let (xp, _) = f64_elems(x);
+        for i in 0..nn {
+            *yp.add(i) = (*yp.add(i) + alpha * *xp.add(i)).clamp(lo, hi);
+        }
+    }
+    y
+}
+
+/// Index of the maximum element (first on ties). Empty → `-1`.
+#[no_mangle]
+pub extern "C" fn lumia_cn_argmax(xs: *mut u8) -> i64 {
+    let xs = force_f64(xs);
+    unsafe {
+        let (p, n) = f64_elems(xs);
+        if n == 0 {
+            return -1;
+        }
+        let mut best_i = 0usize;
+        let mut best = *p;
+        for i in 1..n {
+            let v = *p.add(i);
+            if v > best {
+                best = v;
+                best_i = i;
+            }
+        }
+        best_i as i64
+    }
+}
+
 fn force_f64(list: *mut u8) -> *mut u8 {
     let list = force_heap_list(list);
     if list.is_null() {
@@ -289,5 +427,22 @@ mod tests {
         assert!((get_f(w, 1) - 1.0).abs() < 1e-3);
         assert!(get_f(w, 2).abs() < 1e-9);
         assert!(get_f(w, 3).abs() < 1e-9);
+    }
+
+    #[test]
+    fn project_and_axpy_clamp() {
+        // W 2×2 identity-ish: project [1,0] → [1,0] then clamp
+        let w = from_slice(&[1.0, 0.0, 0.0, 1.0]);
+        let x = from_slice(&[1.0, 0.0]);
+        let y = lumia_list_f64_zeros(2);
+        let y = lumia_cn_project_clamp(2, 2, w, x, y, 10.0);
+        assert!((get_f(y, 0) - 1.0).abs() < 1e-12);
+        assert!(get_f(y, 1).abs() < 1e-12);
+
+        let y = from_slice(&[9.0, 0.0]);
+        let x = from_slice(&[2.0, 0.0]);
+        let y = lumia_cn_axpy_clamp(y, 1.0, x, 10.0);
+        assert!((get_f(y, 0) - 10.0).abs() < 1e-12); // clamped
+        assert_eq!(lumia_cn_argmax(y), 0);
     }
 }

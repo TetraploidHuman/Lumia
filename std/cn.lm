@@ -1,13 +1,21 @@
 /// CogniNucleus fused kernels (`import std.cn.{…}`).
 ///
-/// `nucleusStep` / `hebbian` match `cogninucleus/{nucleus,connection}.py`
+/// Hot-path helpers matching `cogninucleus/{nucleus,connection,agent}.py`
 /// for tiny dense float (dim ≤ 64). Matrices are flat row-major `List[Float]`.
 ///
-/// @exports nucleusStep, hebbian
+/// - `projectClamp`: `clamp(μ @ W)` (W is from×to)
+/// - `backprojClamp`: `clamp(W @ x)` (lateral `error @ Wᵀ`)
+/// - `axpyClamp`: `clamp(y + α·x)`
+///
+/// @exports nucleusStep, hebbian, projectClamp, backprojClamp, axpyClamp, argMax
 module cn
 
 foreign "C" pure fn lumia_cn_nucleus_step(mu: ListFloat, encW: ListFloat, predW: ListFloat, bottomUp: ListFloat, topDown: ListFloat, err: ListFloat, pred: ListFloat, size: Int, stateLr: Float, precision: Float, muClip: Float) -> ListFloat
 foreign "C" pure fn lumia_cn_hebbian(w: ListFloat, u: ListFloat, v: ListFloat, mask: ListFloat, fromSize: Int, toSize: Int, lr: Float, weightClip: Float, weightDecay: Float, eps: Float) -> ListFloat
+foreign "C" pure fn lumia_cn_project_clamp(fromSize: Int, toSize: Int, w: ListFloat, x: ListFloat, y: ListFloat, clip: Float) -> ListFloat
+foreign "C" pure fn lumia_cn_backproj_clamp(m: Int, n: Int, w: ListFloat, x: ListFloat, y: ListFloat, clip: Float) -> ListFloat
+foreign "C" pure fn lumia_cn_axpy_clamp(y: ListFloat, alpha: Float, x: ListFloat, clip: Float) -> ListFloat
+foreign "C" pure fn lumia_cn_argmax(xs: ListFloat) -> Int
 
 val nucleusStep = { mu, encW, predW, bottomUp, topDown, err, pred, size, stateLr, precision, muClip ->
     lumia_cn_nucleus_step(mu, encW, predW, bottomUp, topDown, err, pred, size, stateLr, precision, muClip)
@@ -16,3 +24,17 @@ val nucleusStep = { mu, encW, predW, bottomUp, topDown, err, pred, size, stateLr
 val hebbian = { w, u, v, mask, fromSize, toSize, lr, weightClip, weightDecay, eps ->
     lumia_cn_hebbian(w, u, v, mask, fromSize, toSize, lr, weightClip, weightDecay, eps)
 }
+
+val projectClamp = { fromSize, toSize, w, x, y, clip ->
+    lumia_cn_project_clamp(fromSize, toSize, w, x, y, clip)
+}
+
+val backprojClamp = { m, n, w, x, y, clip ->
+    lumia_cn_backproj_clamp(m, n, w, x, y, clip)
+}
+
+val axpyClamp = { y, alpha, x, clip ->
+    lumia_cn_axpy_clamp(y, alpha, x, clip)
+}
+
+val argMax = { xs -> lumia_cn_argmax(xs) }

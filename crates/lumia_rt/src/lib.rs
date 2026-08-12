@@ -54,7 +54,10 @@ pub use dict::{
 };
 pub use dispatch::*;
 pub use eq::*;
-pub use cn_kernels::{lumia_cn_hebbian, lumia_cn_nucleus_step};
+pub use cn_kernels::{
+    lumia_cn_argmax, lumia_cn_axpy_clamp, lumia_cn_backproj_clamp, lumia_cn_hebbian,
+    lumia_cn_nucleus_step, lumia_cn_project_clamp,
+};
 pub use dense_f64::{
     lumia_f64_add, lumia_f64_addmm, lumia_f64_axpy, lumia_f64_checksum, lumia_f64_clamp,
     lumia_f64_copy, lumia_f64_exp, lumia_f64_fill, lumia_f64_gemv, lumia_f64_gemv_t,

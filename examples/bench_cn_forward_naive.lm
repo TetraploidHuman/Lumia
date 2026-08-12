@@ -1,0 +1,166 @@
+module BenchCnForwardNaive
+
+/// Same triad forward as `bench_cn_forward_kernel.lm`, but project/lateral/axpy
+/// via composed `std.linalg` (`gemvT`/`gemv`/`axpy` + `clamp`).
+import std.io.{println}
+import std.linalg.{zeros, copy, sub, scale, add, gemv, gemvT, axpy, clamp, checksum}
+import std.cn.{nucleusStep, hebbian, argMax}
+import std.efe.{actionScores}
+
+val VIS = 16
+val PFC = 32
+val MOT = 4
+val STEPS = 20000
+val STATE_LR = 0.1
+val LR = 0.05
+val PI = 1.0
+val CLIP = 10.0
+val W_CLIP = 5.0
+val DECAY = 0.0001
+val EPS = 0.001
+val LAT = 0.05
+val MIX = 0.35
+val REL = 4
+val THREAT = 11
+val CELL = 0.25
+val PREF = 1.2
+val EPI = 0.28
+val WALL = 3.2
+val GOAL_B = 0.8
+val THREAT_G = 2.0
+val COMPLEXITY = 0.1
+val HORIZON = 2
+
+val main = {
+    var muVis = zeros(VIS)
+    var muPfc = zeros(PFC)
+    var muMot = zeros(MOT)
+    var encV = zeros(VIS * VIS)
+    var predV = zeros(VIS * VIS)
+    var encP = zeros(PFC * PFC)
+    var predP = zeros(PFC * PFC)
+    var encM = zeros(MOT * MOT)
+    var predM = zeros(MOT * MOT)
+    var wVp = zeros(VIS * PFC)
+    var wPv = zeros(PFC * VIS)
+    var wPm = zeros(PFC * MOT)
+    var maskVp = zeros(VIS * PFC)
+    var maskPv = zeros(PFC * VIS)
+    var maskPm = zeros(PFC * MOT)
+    var obs = zeros(VIS)
+    var tdV = zeros(VIS)
+    var errV = zeros(VIS)
+    var predBufV = zeros(VIS)
+    var driveP = zeros(PFC)
+    var tdP = zeros(PFC)
+    var errP = zeros(PFC)
+    var predBufP = zeros(PFC)
+    var driveM = zeros(MOT)
+    var tdM = zeros(MOT)
+    var errM = zeros(MOT)
+    var predBufM = zeros(MOT)
+    var gen = zeros(VIS)
+    var genErr = zeros(VIS)
+    var lat = zeros(PFC)
+    var scores = zeros(MOT)
+    var logits = zeros(MOT)
+    var tmp = zeros(MOT)
+    var uVis = zeros(VIS)
+    var vPfc = zeros(PFC)
+    var uPfc = zeros(PFC)
+    var vMot = zeros(MOT)
+
+    var i = 0
+    for i < VIS {
+        muVis = muVis.set(i, (0.0 + i) * 0.01)
+        obs = obs.set(i, (0.0 + i) * 0.02)
+        encV = encV.set(i * VIS + i, 1.0)
+        predV = predV.set(i * VIS + i, 1.0)
+        i = i + 1
+    }
+    i = 0
+    for i < PFC {
+        muPfc = muPfc.set(i, (0.0 + i) * 0.001)
+        encP = encP.set(i * PFC + i, 1.0)
+        predP = predP.set(i * PFC + i, 1.0)
+        i = i + 1
+    }
+    i = 0
+    for i < MOT {
+        muMot = muMot.set(i, (0.0 + i) * 0.01)
+        encM = encM.set(i * MOT + i, 1.0)
+        predM = predM.set(i * MOT + i, 1.0)
+        i = i + 1
+    }
+    i = 0
+    for i < VIS * PFC {
+        maskVp = maskVp.set(i, 1.0)
+        wVp = wVp.set(i, (0.0 + (i % 13)) * 0.001)
+        i = i + 1
+    }
+    i = 0
+    for i < PFC * VIS {
+        maskPv = maskPv.set(i, 1.0)
+        wPv = wPv.set(i, (0.0 + (i % 11)) * 0.001)
+        i = i + 1
+    }
+    i = 0
+    for i < PFC * MOT {
+        maskPm = maskPm.set(i, 1.0)
+        wPm = wPm.set(i, (0.0 + (i % 7)) * 0.001)
+        i = i + 1
+    }
+    obs = obs.set(0, 0.5)
+    obs = obs.set(1, 0.5)
+    obs = obs.set(4, 0.25)
+    obs = obs.set(11, 0.1)
+
+    var t = 0
+    var acc = 0
+    for t < STEPS {
+        obs = obs.set(4, 0.25 - (0.0 + (t % 20)) * 0.01)
+
+        muVis = nucleusStep(muVis, encV, predV, obs, tdV, errV, predBufV, VIS, STATE_LR, PI, CLIP)
+        driveP = gemvT(VIS, PFC, wVp, muVis, driveP)
+        driveP = clamp(driveP, 0.0 - CLIP, CLIP)
+        muPfc = nucleusStep(muPfc, encP, predP, driveP, tdP, errP, predBufP, PFC, STATE_LR, PI, CLIP)
+        gen = gemvT(PFC, VIS, wPv, muPfc, gen)
+        gen = clamp(gen, 0.0 - CLIP, CLIP)
+        genErr = sub(genErr, obs, gen)
+        lat = gemv(PFC, VIS, wPv, genErr, lat)
+        lat = clamp(lat, 0.0 - CLIP, CLIP)
+        muPfc = axpy(muPfc, LAT, lat)
+        muPfc = clamp(muPfc, 0.0 - CLIP, CLIP)
+        muVis = nucleusStep(muVis, encV, predV, obs, gen, errV, predBufV, VIS, STATE_LR, PI, CLIP)
+        tdV = copy(tdV, predBufV)
+        driveM = gemvT(PFC, MOT, wPm, muPfc, driveM)
+        driveM = clamp(driveM, 0.0 - CLIP, CLIP)
+        muMot = nucleusStep(muMot, encM, predM, driveM, tdM, errM, predBufM, MOT, STATE_LR, PI, CLIP)
+        tdM = copy(tdM, predBufM)
+        tdP = copy(tdP, predBufP)
+
+        uVis = copy(uVis, muVis)
+        vPfc = copy(vPfc, errP)
+        wVp = hebbian(wVp, uVis, vPfc, maskVp, VIS, PFC, LR, W_CLIP, DECAY, EPS)
+        uPfc = copy(uPfc, muPfc)
+        vMot = copy(vMot, errM)
+        wPm = hebbian(wPm, uPfc, vMot, maskPm, PFC, MOT, LR, W_CLIP, DECAY, EPS)
+
+        scores = actionScores(
+            obs, gen, scores, MOT, HORIZON, REL, THREAT,
+            CELL, PREF, EPI, WALL, GOAL_B, THREAT_G, COMPLEXITY
+        )
+        logits = copy(logits, muMot)
+        logits = scale(logits, 1.0 - MIX)
+        tmp = copy(tmp, scores)
+        tmp = scale(tmp, 0.0 - MIX)
+        logits = add(logits, logits, tmp)
+        acc = acc + argMax(logits) + checksum(scores)
+        t = t + 1
+    }
+
+    println(acc)
+    println(checksum(muPfc))
+    println(checksum(wVp))
+    println(checksum(muMot))
+}

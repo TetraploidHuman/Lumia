@@ -636,6 +636,40 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         ],
     },
     RtDecl {
+        name: "lumia_cn_project_clamp",
+        ret: RtTy::Ptr,
+        args: &[
+            RtTy::I64,
+            RtTy::I64,
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::F64,
+        ],
+    },
+    RtDecl {
+        name: "lumia_cn_backproj_clamp",
+        ret: RtTy::Ptr,
+        args: &[
+            RtTy::I64,
+            RtTy::I64,
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::F64,
+        ],
+    },
+    RtDecl {
+        name: "lumia_cn_axpy_clamp",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr, RtTy::F64, RtTy::Ptr, RtTy::F64],
+    },
+    RtDecl {
+        name: "lumia_cn_argmax",
+        ret: RtTy::I64,
+        args: &[RtTy::Ptr],
+    },
+    RtDecl {
         name: "lumia_str_starts_with",
         ret: RtTy::I64,
         args: &[RtTy::Ptr, RtTy::Ptr],
