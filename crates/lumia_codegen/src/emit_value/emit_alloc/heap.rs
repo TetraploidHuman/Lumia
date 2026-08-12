@@ -299,11 +299,11 @@ impl<'ctx> Codegen<'ctx> {
     ) -> Result<BasicValueEnum<'ctx>> {
         let n = elems.len() as u64;
         let nbytes = self.llvm.i64_ty.const_int((1 + n) * 8, false);
-        let type_id = self.llvm.context.i32_type().const_int(type_id, false);
+        let tid_const = self.llvm.context.i32_type().const_int(type_id, false);
         let alloc = self.runtime_fn("lumia_alloc")?;
         let __call7 = crate::error::llvm(self.llvm.builder.build_call(
             alloc,
-            &[nbytes.into(), type_id.into()],
+            &[nbytes.into(), tid_const.into()],
             "arr_alloc",
         ))?;
 

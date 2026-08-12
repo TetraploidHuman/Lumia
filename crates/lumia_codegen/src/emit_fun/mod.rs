@@ -244,6 +244,60 @@ impl<'ctx> Codegen<'ctx> {
         )
     }
 
+    /// `slot = <heap expr>` lowered as `Let t = expr; Assign slot := t` with no other uses of `t`.
+    /// The mut slot is already a GC root, so the temp need not be shadow-stack rooted.
+    fn let_only_feeds_next_assign(&self, block: &Block, let_idx: usize, local: Local) -> bool {
+        let Some(Op::Assign { value, .. }) = block.ops.get(let_idx + 1) else {
+            return false;
+        };
+        if *value != local {
+            return false;
+        }
+        if block.result == Some(local) {
+            return false;
+        }
+        for op in &block.ops[let_idx + 2..] {
+            if Self::op_uses_local(op, local) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn op_uses_local(op: &Op, local: Local) -> bool {
+        match op {
+            Op::Let { value, .. } | Op::Effect { value } => Self::value_uses_local(value, local),
+            Op::Assign { value, .. } | Op::Return { value } => *value == local,
+            Op::Break | Op::Continue => false,
+        }
+    }
+
+    fn value_uses_local(value: &Value, local: Local) -> bool {
+        let mut hit = false;
+        lumia_core::for_each_local(value, &mut |l| {
+            if l == local {
+                hit = true;
+            }
+        });
+        if hit {
+            return true;
+        }
+        let mut nested_hit = false;
+        lumia_core::for_each_nested_block(value, &mut |b| {
+            if Self::block_uses_local(b, local) {
+                nested_hit = true;
+            }
+        });
+        nested_hit
+    }
+
+    fn block_uses_local(block: &Block, local: Local) -> bool {
+        if block.result == Some(local) {
+            return true;
+        }
+        block.ops.iter().any(|op| Self::op_uses_local(op, local))
+    }
+
     fn emit_block(
         &mut self,
         block: &Block,
@@ -271,7 +325,16 @@ impl<'ctx> Codegen<'ctx> {
                     let v = self.emit_value(value, fv)?;
                     self.frame.emit_dest = None;
                     self.frame.cow_consume_unique = false;
-                    self.bind_let_after_emit(*local, value, v)?;
+                    if self.let_only_feeds_next_assign(block, idx, *local) {
+                        // Skip shadow-stack root: next Assign stores into a rooted mut slot.
+                        self.frame.locals.insert(local.0, v);
+                        self.frame
+                            .local_tys
+                            .insert(local.0, self.infer_value_ty(value));
+                        self.funs.funref_locals.remove(&local.0);
+                    } else {
+                        self.bind_let_after_emit(*local, value, v)?;
+                    }
                 }
                 Op::Effect { value } => {
                     let _ = self.emit_value(value, fv)?;
