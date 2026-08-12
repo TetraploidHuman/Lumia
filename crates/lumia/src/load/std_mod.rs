@@ -19,8 +19,9 @@ pub(super) fn std_module(path: &[String]) -> Result<&'static str> {
         ["std", "option"] => Ok("option.lm"),
         ["std", "result"] => Ok("result.lm"),
         ["std", "linalg"] => Ok("linalg.lm"),
+        ["std", "efe"] => Ok("efe.lm"),
         _ => bail!(
-            "unknown standard module `{}` (known: std.io, std.string, std.option, std.result, std.linalg)",
+            "unknown standard module `{}` (known: std.io, std.string, std.option, std.result, std.linalg, std.efe)",
             path.join(".")
         ),
     }

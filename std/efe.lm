@@ -1,0 +1,10 @@
+/// CogniNucleus expected free energy (`import std.efe.{…}`).
+///
+/// @exports actionScores
+module efe
+
+foreign "C" pure fn lumia_efe_action_scores(obs: ListFloat, pred: ListFloat, scores: ListFloat, nActions: Int, horizon: Int, relativeObsIndex: Int, threatRelIndex: Int, cellStep: Float, prefGain: Float, epiGain: Float, wallGain: Float, goalBonus: Float, threatGain: Float, complexity: Float) -> ListFloat
+
+val actionScores = { obs, pred, scores, nActions, horizon, relativeObsIndex, threatRelIndex, cellStep, prefGain, epiGain, wallGain, goalBonus, threatGain, complexity ->
+    lumia_efe_action_scores(obs, pred, scores, nActions, horizon, relativeObsIndex, threatRelIndex, cellStep, prefGain, epiGain, wallGain, goalBonus, threatGain, complexity)
+}

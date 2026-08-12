@@ -21,6 +21,7 @@ mod dispatch;
 mod ensure;
 mod eq;
 mod dense_f64;
+mod efe;
 mod float_kernels;
 mod gc;
 mod hash_ord;
@@ -57,6 +58,7 @@ pub use dense_f64::{
     lumia_f64_copy, lumia_f64_fill, lumia_f64_gemv, lumia_f64_gemv_t, lumia_f64_l2_norm,
     lumia_f64_l2_normalize, lumia_f64_mul, lumia_f64_scale, lumia_f64_sub, lumia_list_f64_zeros,
 };
+pub use efe::lumia_efe_action_scores;
 pub use float_kernels::lumia_mandelbrot_checksum;
 pub use hash_ord::*;
 pub use list::*;
