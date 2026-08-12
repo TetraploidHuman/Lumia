@@ -518,6 +518,21 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         args: &[RtTy::I64, RtTy::I64, RtTy::Ptr, RtTy::Ptr, RtTy::Ptr, RtTy::F64],
     },
     RtDecl {
+        name: "lumia_f64_axpy",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr, RtTy::F64, RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_f64_sub",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr, RtTy::Ptr, RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_f64_copy",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr, RtTy::Ptr],
+    },
+    RtDecl {
         name: "lumia_f64_checksum",
         ret: RtTy::I64,
         args: &[RtTy::Ptr],

@@ -3,7 +3,7 @@
 /// Matrices are **flat row-major** float lists. Dest buffers that are uniquely
 /// owned are updated in place (zero-alloc); shared ones COW-clone.
 ///
-/// @exports zeros, fill, l2Norm, l2Normalize, clamp, gemv, gemvT, addmm, checksum
+/// @exports zeros, fill, l2Norm, l2Normalize, clamp, gemv, gemvT, addmm, axpy, sub, copy, checksum
 module linalg
 
 foreign "C" pure fn lumia_list_f64_zeros(n: Int) -> ListFloat
@@ -14,6 +14,9 @@ foreign "C" pure fn lumia_f64_clamp(xs: ListFloat, lo: Float, hi: Float) -> List
 foreign "C" pure fn lumia_f64_gemv(m: Int, n: Int, a: ListFloat, x: ListFloat, y: ListFloat) -> ListFloat
 foreign "C" pure fn lumia_f64_gemv_t(m: Int, n: Int, a: ListFloat, x: ListFloat, y: ListFloat) -> ListFloat
 foreign "C" pure fn lumia_f64_addmm(m: Int, n: Int, w: ListFloat, u: ListFloat, v: ListFloat, alpha: Float) -> ListFloat
+foreign "C" pure fn lumia_f64_axpy(y: ListFloat, alpha: Float, x: ListFloat) -> ListFloat
+foreign "C" pure fn lumia_f64_sub(out: ListFloat, a: ListFloat, b: ListFloat) -> ListFloat
+foreign "C" pure fn lumia_f64_copy(dst: ListFloat, src: ListFloat) -> ListFloat
 foreign "C" pure fn lumia_f64_checksum(xs: ListFloat) -> Int
 
 val zeros = { n -> lumia_list_f64_zeros(n) }
@@ -24,4 +27,7 @@ val clamp = { xs, lo, hi -> lumia_f64_clamp(xs, lo, hi) }
 val gemv = { m, n, a, x, y -> lumia_f64_gemv(m, n, a, x, y) }
 val gemvT = { m, n, a, x, y -> lumia_f64_gemv_t(m, n, a, x, y) }
 val addmm = { m, n, w, u, v, alpha -> lumia_f64_addmm(m, n, w, u, v, alpha) }
+val axpy = { y, alpha, x -> lumia_f64_axpy(y, alpha, x) }
+val sub = { out, a, b -> lumia_f64_sub(out, a, b) }
+val copy = { dst, src -> lumia_f64_copy(dst, src) }
 val checksum = { xs -> lumia_f64_checksum(xs) }

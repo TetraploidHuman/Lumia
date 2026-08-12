@@ -213,6 +213,61 @@ pub extern "C" fn lumia_f64_addmm(
     w
 }
 
+/// `y += α · x` (same length). Returns `y`.
+#[no_mangle]
+pub extern "C" fn lumia_f64_axpy(y: *mut u8, alpha: f64, x: *mut u8) -> *mut u8 {
+    let _gc = GcInhibitGuard::enter();
+    let x = force_f64(x);
+    let y = ensure_unique_f64(y);
+    let n = list_len_of(x);
+    require_len(y, n, "axpy y");
+    unsafe {
+        let (yp, _) = f64_elems_mut(y);
+        let (xp, _) = f64_elems(x);
+        for i in 0..n as usize {
+            *yp.add(i) += alpha * *xp.add(i);
+        }
+    }
+    y
+}
+
+/// `out = a - b` (same length). Returns `out`.
+#[no_mangle]
+pub extern "C" fn lumia_f64_sub(out: *mut u8, a: *mut u8, b: *mut u8) -> *mut u8 {
+    let _gc = GcInhibitGuard::enter();
+    let a = force_f64(a);
+    let b = force_f64(b);
+    let out = ensure_unique_f64(out);
+    let n = list_len_of(a);
+    require_len(b, n, "sub b");
+    require_len(out, n, "sub out");
+    unsafe {
+        let (op, _) = f64_elems_mut(out);
+        let (ap, _) = f64_elems(a);
+        let (bp, _) = f64_elems(b);
+        for i in 0..n as usize {
+            *op.add(i) = *ap.add(i) - *bp.add(i);
+        }
+    }
+    out
+}
+
+/// `dst = src` (same length). Returns `dst`.
+#[no_mangle]
+pub extern "C" fn lumia_f64_copy(dst: *mut u8, src: *mut u8) -> *mut u8 {
+    let _gc = GcInhibitGuard::enter();
+    let src = force_f64(src);
+    let dst = ensure_unique_f64(dst);
+    let n = list_len_of(src);
+    require_len(dst, n, "copy dst");
+    unsafe {
+        let (dp, _) = f64_elems_mut(dst);
+        let (sp, _) = f64_elems(src);
+        ptr::copy_nonoverlapping(sp, dp, n as usize);
+    }
+    dst
+}
+
 /// Stable int fingerprint: `⌊Σ xᵢ · 1000⌋` (for e2e / oracle).
 #[no_mangle]
 pub extern "C" fn lumia_f64_checksum(xs: *mut u8) -> i64 {

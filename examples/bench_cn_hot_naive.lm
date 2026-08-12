@@ -1,0 +1,184 @@
+module BenchCnHotNaive
+
+/// Same algorithm as `bench_cn_hot_kernel.lm`, with GEMV/addmm/axpy/sub/clamp
+/// as nested Lumia `List[Float]` get/set loops (linalg only for L2 + checksum).
+import std.io.{println}
+import std.linalg.{checksum, l2Normalize}
+
+val VIS = 16
+val PFC = 32
+val STEPS = 100000
+val LR = 0.05
+val CLIP = 10.0
+
+val nZeros(n) = {
+    var xs = listOf(0.0)
+    var i = 1
+    for i < n {
+        xs = xs.append(0.0)
+        i = i + 1
+    }
+    xs
+}
+
+val nGemv(m, n, a, x, y) = {
+    // Pin containers as List[Float] (bare `.set` on a free var prefers Map).
+    val _pin = y.get(0) + a.get(0) * x.get(0)
+    var out = y
+    var i = 0
+    for i < m {
+        var s = 0.0 + _pin * 0.0
+        var j = 0
+        for j < n {
+            s = s + a.get(i * n + j) * x.get(j)
+            j = j + 1
+        }
+        out = out.set(i, s)
+        i = i + 1
+    }
+    out
+}
+
+val nGemvT(m, n, a, x, y) = {
+    val _pin = y.get(0) + a.get(0) * x.get(0)
+    var out = y
+    var j = 0
+    for j < n {
+        out = out.set(j, 0.0 + _pin * 0.0)
+        j = j + 1
+    }
+    var i = 0
+    for i < m {
+        val xi = x.get(i)
+        var jj = 0
+        for jj < n {
+            out = out.set(jj, out.get(jj) + a.get(i * n + jj) * xi)
+            jj = jj + 1
+        }
+        i = i + 1
+    }
+    out
+}
+
+val nAddmm(m, n, w, u, v, alpha) = {
+    val _pin = w.get(0) + u.get(0) * v.get(0)
+    var out = w
+    var i = 0
+    for i < m {
+        val ui = u.get(i) * alpha
+        var j = 0
+        for j < n {
+            out = out.set(i * n + j, out.get(i * n + j) + ui * v.get(j) + _pin * 0.0)
+            j = j + 1
+        }
+        i = i + 1
+    }
+    out
+}
+
+val nAxpy(y, alpha, x) = {
+    val _pin = y.get(0) + x.get(0)
+    var out = y
+    val n = y.len()
+    var i = 0
+    for i < n {
+        out = out.set(i, out.get(i) + alpha * x.get(i) + _pin * 0.0)
+        i = i + 1
+    }
+    out
+}
+
+val nSub(out0, a, b) = {
+    val _pin = out0.get(0) + a.get(0) - b.get(0)
+    var out = out0
+    val n = a.len()
+    var i = 0
+    for i < n {
+        out = out.set(i, a.get(i) - b.get(i) + _pin * 0.0)
+        i = i + 1
+    }
+    out
+}
+
+val nClamp(xs, lo, hi) = {
+    val _pin = xs.get(0)
+    var out = xs
+    val n = xs.len()
+    var i = 0
+    for i < n {
+        val v = out.get(i) + _pin * 0.0
+        val c = if v < lo { lo } else { if v > hi { hi } else { v } }
+        out = out.set(i, c)
+        i = i + 1
+    }
+    out
+}
+
+val main = {
+    var muVis = nZeros(VIS)
+    var muPfc = nZeros(PFC)
+    var wVp = nZeros(PFC * VIS)
+    var enc = nZeros(PFC * PFC)
+    var pred = nZeros(PFC * PFC)
+    var drive = nZeros(PFC)
+    var predBuf = nZeros(PFC)
+    var err = nZeros(PFC)
+    var delta = nZeros(PFC)
+    var u = nZeros(VIS)
+    var v = nZeros(PFC)
+
+    var i = 0
+    for i < VIS {
+        muVis = muVis.set(i, (0.0 + i) * 0.01)
+        i = i + 1
+    }
+    i = 0
+    for i < PFC {
+        muPfc = muPfc.set(i, (0.0 + i) * 0.001)
+        i = i + 1
+    }
+    i = 0
+    for i < PFC {
+        var j = 0
+        for j < VIS {
+            wVp = wVp.set(i * VIS + j, (0.0 + i + j) * 0.001)
+            j = j + 1
+        }
+        i = i + 1
+    }
+    i = 0
+    for i < PFC {
+        enc = enc.set(i * PFC + i, 1.0)
+        pred = pred.set(i * PFC + i, 1.0)
+        i = i + 1
+    }
+
+    var t = 0
+    for t < STEPS {
+        drive = nGemv(PFC, VIS, wVp, muVis, drive)
+        predBuf = nGemvT(PFC, PFC, pred, muPfc, predBuf)
+        err = nSub(err, drive, predBuf)
+        delta = nGemvT(PFC, PFC, enc, err, delta)
+        muPfc = nAxpy(muPfc, LR, delta)
+        muPfc = nClamp(muPfc, 0.0 - CLIP, CLIP)
+        var ui = 0
+        for ui < VIS {
+            u = u.set(ui, muVis.get(ui))
+            ui = ui + 1
+        }
+        var vi = 0
+        for vi < PFC {
+            v = v.set(vi, err.get(vi))
+            vi = vi + 1
+        }
+        u = l2Normalize(u, 0.001)
+        v = l2Normalize(v, 0.001)
+        wVp = nAddmm(PFC, VIS, wVp, v, u, LR)
+        muVis = nAxpy(muVis, 0.0001, u)
+        muVis = nClamp(muVis, 0.0 - CLIP, CLIP)
+        t = t + 1
+    }
+
+    println(checksum(muPfc))
+    println(checksum(wVp))
+}

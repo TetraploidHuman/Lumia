@@ -381,12 +381,55 @@ fn builtin_value_ty(name: Builtin, args: &[Local], local_tys: &HashMap<u32, Type
                 params: vec![Type::Int, Type::Int],
             })),
         },
-        Builtin::MapSet | Builtin::MapRemove => {
+        Builtin::MapSet => {
+            let key_ty = args
+                .get(1)
+                .and_then(|a| local_tys.get(&a.0).cloned())
+                .unwrap_or(Type::Int);
+            let val_ty = args
+                .get(2)
+                .and_then(|a| local_tys.get(&a.0).cloned())
+                .unwrap_or(Type::Int);
+            match args.first().and_then(|a| local_tys.get(&a.0)) {
+                Some(Type::List(e)) => {
+                    let elem = if matches!(val_ty, Type::Float) {
+                        Type::Float
+                    } else {
+                        (**e).clone()
+                    };
+                    Type::List(Box::new(elem))
+                }
+                Some(Type::Map(k, v)) => {
+                    let k = if matches!(key_ty, Type::Float) {
+                        Box::new(Type::Float)
+                    } else {
+                        k.clone()
+                    };
+                    let v = if matches!(val_ty, Type::Float) {
+                        Box::new(Type::Float)
+                    } else {
+                        v.clone()
+                    };
+                    Type::Map(k, v)
+                }
+                // Free / poly: Int key ⇒ list index update (not Map).
+                _ if matches!(key_ty, Type::Int) => {
+                    Type::List(Box::new(if matches!(val_ty, Type::Float) {
+                        Type::Float
+                    } else {
+                        val_ty
+                    }))
+                }
+                _ => Type::Map(Box::new(key_ty), Box::new(val_ty)),
+            }
+        }
+        Builtin::MapRemove => {
             let key_ty = args
                 .get(1)
                 .and_then(|a| local_tys.get(&a.0).cloned())
                 .unwrap_or(Type::Int);
             match args.first().and_then(|a| local_tys.get(&a.0)) {
+                Some(Type::List(e)) => Type::List(e.clone()),
                 Some(Type::Map(k, v)) => {
                     let k = if matches!(key_ty, Type::Float) {
                         Box::new(Type::Float)
