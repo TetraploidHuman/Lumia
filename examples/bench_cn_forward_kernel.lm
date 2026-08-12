@@ -1,24 +1,31 @@
 module BenchCnForwardKernel
 
-/// End-to-end CN-ish triad step (vis/pfc/mot + Hebbian + EFE + argmax).
-/// Uses fused `std.cn` project/backproj/axpy clamps.
+/// Strict-PE triad forward (vis/pfc/mot): cluster rates, projectError upward,
+/// generative lateral via updateState, learnGenerative, Hebbian μ⊗ε, EFE+argmax.
+/// Dense skeleton aligned with CogniNucleus FreeEnergyAgent defaults (hip/amy/hyp off).
 import std.io.{println}
-import std.linalg.{zeros, copy, sub, scale, add, checksum}
-import std.cn.{nucleusStep, hebbian, projectClamp, backprojClamp, axpyClamp, argMax}
+import std.linalg.{zeros, copy, sub, scale, add, gemv, checksum}
+import std.cn.{
+    nucleusStep, hebbian, projectClamp, projectError, argMax,
+    clusterRates, learnGenerative, updateState
+}
 import std.efe.{actionScores}
 
 val VIS = 16
 val PFC = 32
 val MOT = 4
+val N_CLUSTERS = 4
 val STEPS = 20000
 val STATE_LR = 0.1
 val LR = 0.05
+val GEN_LR = 0.002
 val PI = 1.0
 val CLIP = 10.0
 val W_CLIP = 5.0
 val DECAY = 0.0001
 val EPS = 0.001
-val LAT = 0.05
+val C_DECAY = 0.9
+val C_THR = 0.5
 val MIX = 0.35
 val REL = 4
 val THREAT = 11
@@ -48,26 +55,36 @@ val main = {
     var maskPv = zeros(PFC * VIS)
     var maskPm = zeros(PFC * MOT)
     var obs = zeros(VIS)
-    var tdV = zeros(VIS)
+    var ratesV = zeros(VIS)
+    var potV = zeros(VIS)
+    var tdOpenV = zeros(VIS)
     var errV = zeros(VIS)
     var predBufV = zeros(VIS)
     var driveP = zeros(PFC)
-    var tdP = zeros(PFC)
+    var ratesP = zeros(PFC)
+    var potP = zeros(PFC)
+    var tdOpenP = zeros(PFC)
     var errP = zeros(PFC)
     var predBufP = zeros(PFC)
-    var driveM = zeros(MOT)
-    var tdM = zeros(MOT)
+    var zerosM = zeros(MOT)
+    var ratesM = zeros(MOT)
+    var potM = zeros(MOT)
+    var motTop = zeros(MOT)
     var errM = zeros(MOT)
     var predBufM = zeros(MOT)
     var gen = zeros(VIS)
     var genErr = zeros(VIS)
     var lat = zeros(PFC)
+    var halfLat = zeros(PFC)
+    var recog = zeros(PFC)
+    var recogErr = zeros(PFC)
     var scores = zeros(MOT)
     var logits = zeros(MOT)
     var tmp = zeros(MOT)
     var uVis = zeros(VIS)
-    var vPfc = zeros(PFC)
     var uPfc = zeros(PFC)
+    var vGen = zeros(VIS)
+    var vRec = zeros(PFC)
     var vMot = zeros(MOT)
 
     var i = 0
@@ -120,32 +137,56 @@ val main = {
     for t < STEPS {
         obs = obs.set(4, 0.25 - (0.0 + (t % 20)) * 0.01)
 
-        muVis = nucleusStep(muVis, encV, predV, obs, tdV, errV, predBufV, VIS, STATE_LR, PI, CLIP)
-        driveP = projectClamp(VIS, PFC, wVp, muVis, driveP, CLIP)
-        muPfc = nucleusStep(muPfc, encP, predP, driveP, tdP, errP, predBufP, PFC, STATE_LR, PI, CLIP)
+        // 1) Sensory: cluster rates + open-loop predictor as top-down
+        tdOpenV = gemv(VIS, VIS, predV, muVis, tdOpenV)
+        ratesV = clusterRates(potV, obs, ratesV, VIS, N_CLUSTERS, C_DECAY, C_THR)
+        muVis = nucleusStep(muVis, encV, predV, ratesV, tdOpenV, errV, predBufV, VIS, STATE_LR, PI, CLIP)
+
+        // 3) PFC from visual PE (strict upward)
+        driveP = projectError(VIS, PFC, wVp, errV, driveP, CLIP)
+        tdOpenP = gemv(PFC, PFC, predP, muPfc, tdOpenP)
+        ratesP = clusterRates(potP, driveP, ratesP, PFC, N_CLUSTERS, C_DECAY, C_THR)
+        muPfc = nucleusStep(muPfc, encP, predP, ratesP, tdOpenP, errP, predBufP, PFC, STATE_LR, PI, CLIP)
+
+        // 4) Generative top-down + half-step lateral update_state
         gen = projectClamp(PFC, VIS, wPv, muPfc, gen, CLIP)
         genErr = sub(genErr, obs, gen)
-        lat = backprojClamp(PFC, VIS, wPv, genErr, lat, CLIP)
-        muPfc = axpyClamp(muPfc, LAT, lat, CLIP)
-        muVis = nucleusStep(muVis, encV, predV, obs, gen, errV, predBufV, VIS, STATE_LR, PI, CLIP)
-        tdV = copy(tdV, predBufV)
-        driveM = projectClamp(PFC, MOT, wPm, muPfc, driveM, CLIP)
-        muMot = nucleusStep(muMot, encM, predM, driveM, tdM, errM, predBufM, MOT, STATE_LR, PI, CLIP)
-        tdM = copy(tdM, predBufM)
-        tdP = copy(tdP, predBufP)
+        lat = gemv(PFC, VIS, wPv, genErr, lat)
+        halfLat = copy(halfLat, lat)
+        halfLat = scale(halfLat, 0.5)
+        muPfc = updateState(muPfc, encP, halfLat, PFC, STATE_LR, PI, CLIP)
+        gen = projectClamp(PFC, VIS, wPv, muPfc, gen, CLIP)
+        genErr = sub(genErr, obs, gen)
 
+        ratesV = clusterRates(potV, obs, ratesV, VIS, N_CLUSTERS, C_DECAY, C_THR)
+        muVis = nucleusStep(muVis, encV, predV, ratesV, gen, errV, predBufV, VIS, STATE_LR, PI, CLIP)
+
+        recog = projectClamp(VIS, PFC, wVp, muVis, recog, CLIP)
+        recogErr = sub(recogErr, muPfc, recog)
+
+        // 6) Motor: empty bottom-up, top-down plan from PFC
+        motTop = projectClamp(PFC, MOT, wPm, muPfc, motTop, CLIP)
+        ratesM = clusterRates(potM, zerosM, ratesM, MOT, N_CLUSTERS, C_DECAY, C_THR)
+        muMot = nucleusStep(muMot, encM, predM, ratesM, motTop, errM, predBufM, MOT, STATE_LR, PI, CLIP)
+
+        // Inter-nucleus Hebbian μ⊗ε + local generative plasticity
         uVis = copy(uVis, muVis)
-        vPfc = copy(vPfc, errP)
-        wVp = hebbian(wVp, uVis, vPfc, maskVp, VIS, PFC, LR, W_CLIP, DECAY, EPS)
+        vRec = copy(vRec, recogErr)
+        wVp = hebbian(wVp, uVis, vRec, maskVp, VIS, PFC, LR, W_CLIP, DECAY, EPS)
         uPfc = copy(uPfc, muPfc)
+        vGen = copy(vGen, genErr)
+        wPv = hebbian(wPv, uPfc, vGen, maskPv, PFC, VIS, LR * 2.0, W_CLIP, DECAY, EPS)
         vMot = copy(vMot, errM)
         wPm = hebbian(wPm, uPfc, vMot, maskPm, PFC, MOT, LR, W_CLIP, DECAY, EPS)
+
+        encV = learnGenerative(encV, predV, muVis, genErr, VIS, GEN_LR * 2.0, W_CLIP, DECAY, PI)
+        encP = learnGenerative(encP, predP, muPfc, recogErr, PFC, GEN_LR * 2.0, W_CLIP, DECAY, PI)
+        encM = learnGenerative(encM, predM, muMot, errM, MOT, GEN_LR, W_CLIP, DECAY, PI)
 
         scores = actionScores(
             obs, gen, scores, MOT, HORIZON, REL, THREAT,
             CELL, PREF, EPI, WALL, GOAL_B, THREAT_G, COMPLEXITY
         )
-        // logits = (1-MIX)·μ_mot − MIX·G(a)
         logits = copy(logits, muMot)
         logits = scale(logits, 1.0 - MIX)
         tmp = copy(tmp, scores)

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# CogniNucleus end-to-end triad forward microbench (Release).
+# CogniNucleus strict-PE triad forward microbench (Release).
 #
-# Compares composed gemvT/gemv/axpy+clamp vs fused std.cn project/backproj/axpy clamps
-# inside a vis→pfc→mot + Hebbian + EFE + argmax step.
+# Vis→pfc→mot with clusterRates, projectError, updateState lateral,
+# learnGenerative, Hebbian μ⊗ε, EFE + argmax. Kernel uses std.cn fused ops;
+# naive composes the new pieces via std.linalg.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck disable=SC1091

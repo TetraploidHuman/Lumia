@@ -447,6 +447,55 @@ pub extern "C" fn lumia_cn_learn_generative(
     enc_w
 }
 
+/// Nucleus belief update from a PE (`Nucleus.update_state`).
+///
+/// ```text
+/// δ = enc @ (π · err);  μ += state_lr · δ;  clamp μ
+/// ```
+/// Mutates `mu` (and leaves `err` unchanged). Returns `mu`.
+#[no_mangle]
+pub extern "C" fn lumia_cn_update_state(
+    mu: *mut u8,
+    enc_w: *mut u8,
+    err: *mut u8,
+    size: i64,
+    state_lr: f64,
+    precision: f64,
+    mu_clip: f64,
+) -> *mut u8 {
+    let _gc = GcInhibitGuard::enter();
+    if size < 1 || size as usize > MAX_DIM {
+        trap_abort("lumia: cn update_state size out of range");
+    }
+    let n = size as usize;
+    let enc_w = force_f64(enc_w);
+    let err = force_f64(err);
+    let mu = ensure_unique_f64(mu);
+    require_len(enc_w, size * size, "cn update enc");
+    require_len(err, size, "cn update err");
+    require_len(mu, size, "cn update mu");
+    let lo = -mu_clip;
+    let hi = mu_clip;
+    unsafe {
+        let (ep, _) = f64_elems(err);
+        let (enc, _) = f64_elems(enc_w);
+        let (mp, _) = f64_elems_mut(mu);
+        let mut scratch = [0.0_f64; MAX_DIM];
+        for i in 0..n {
+            scratch[i] = precision * *ep.add(i);
+        }
+        for i in 0..n {
+            let mut s = 0.0_f64;
+            let row = enc.add(i * n);
+            for j in 0..n {
+                s += *row.add(j) * scratch[j];
+            }
+            *mp.add(i) = (*mp.add(i) + state_lr * s).clamp(lo, hi);
+        }
+    }
+    mu
+}
+
 fn force_f64(list: *mut u8) -> *mut u8 {
     let list = force_heap_list(list);
     if list.is_null() {
@@ -599,5 +648,20 @@ mod tests {
         assert!(get_f(enc, 1).abs() < 1e-12);
         assert!(get_f(enc, 2).abs() < 1e-12);
         assert!((get_f(enc, 3) - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn update_state_encoder_step() {
+        let size = 2i64;
+        let mu = from_slice(&[0.0, 0.0]);
+        let mut eye = vec![0.0; 4];
+        eye[0] = 1.0;
+        eye[3] = 1.0;
+        let enc = from_slice(&eye);
+        let err = from_slice(&[2.0, 0.0]);
+        let mu = lumia_cn_update_state(mu, enc, err, size, 0.5, 1.0, 10.0);
+        // δ = err; μ += 0.5·δ → [1, 0]
+        assert!((get_f(mu, 0) - 1.0).abs() < 1e-12);
+        assert!(get_f(mu, 1).abs() < 1e-12);
     }
 }

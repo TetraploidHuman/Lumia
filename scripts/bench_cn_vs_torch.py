@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Time CogniNucleus FreeEnergyAgent vs Lumia triad-forward shape (CPU).
 
-Not bit-identical to `bench_cn_forward.lm` — that is a dense-float skeleton.
-This measures real PyTorch agent `forward` / `forward+learn` at the same
-vis/pfc/mot dims with EFE on and hip/amy off (closest triad match).
+Not bit-identical to `bench_cn_forward.lm` — that is a dense-float skeleton of
+the strict-PE triad (cluster rates, projectError, updateState lateral,
+learnGenerative, μ⊗ε Hebbian). This measures real PyTorch agent
+`forward` / `forward+learn` at the same vis/pfc/mot dims with EFE on and
+hip/amy/hyp off (closest triad match).
 
 Default AgentConfig matches current CogniNucleus (`strict_pe` + cluster rates).
 Pass `--legacy` for pre-strict PE (strict_pe=False, no cluster rates).

@@ -1,24 +1,29 @@
 module BenchCnForwardNaive
 
-/// Same triad forward as `bench_cn_forward_kernel.lm`, but project/lateral/axpy
-/// via composed `std.linalg` (`gemvT`/`gemv`/`axpy` + `clamp`).
+/// Same strict-PE triad as `bench_cn_forward_kernel.lm`, with composed linalg
+/// for project/cluster/updateState/learnGenerative (nucleus/hebbian still fused).
 import std.io.{println}
-import std.linalg.{zeros, copy, sub, scale, add, gemv, gemvT, axpy, clamp, checksum}
+import std.linalg.{
+    zeros, copy, sub, scale, add, gemv, gemvT, axpy, clamp, addmm, checksum
+}
 import std.cn.{nucleusStep, hebbian, argMax}
 import std.efe.{actionScores}
 
 val VIS = 16
 val PFC = 32
 val MOT = 4
+val N_CLUSTERS = 4
 val STEPS = 20000
 val STATE_LR = 0.1
 val LR = 0.05
+val GEN_LR = 0.002
 val PI = 1.0
 val CLIP = 10.0
 val W_CLIP = 5.0
 val DECAY = 0.0001
 val EPS = 0.001
-val LAT = 0.05
+val C_DECAY = 0.9
+val C_THR = 0.5
 val MIX = 0.35
 val REL = 4
 val THREAT = 11
@@ -48,26 +53,41 @@ val main = {
     var maskPv = zeros(PFC * VIS)
     var maskPm = zeros(PFC * MOT)
     var obs = zeros(VIS)
-    var tdV = zeros(VIS)
+    var ratesV = zeros(VIS)
+    var potV = zeros(VIS)
+    var tdOpenV = zeros(VIS)
     var errV = zeros(VIS)
     var predBufV = zeros(VIS)
     var driveP = zeros(PFC)
-    var tdP = zeros(PFC)
+    var ratesP = zeros(PFC)
+    var potP = zeros(PFC)
+    var tdOpenP = zeros(PFC)
     var errP = zeros(PFC)
     var predBufP = zeros(PFC)
-    var driveM = zeros(MOT)
-    var tdM = zeros(MOT)
+    var zerosM = zeros(MOT)
+    var ratesM = zeros(MOT)
+    var potM = zeros(MOT)
+    var motTop = zeros(MOT)
     var errM = zeros(MOT)
     var predBufM = zeros(MOT)
     var gen = zeros(VIS)
     var genErr = zeros(VIS)
     var lat = zeros(PFC)
+    var halfLat = zeros(PFC)
+    var scratch = zeros(PFC)
+    var delta = zeros(PFC)
+    var weightedP = zeros(PFC)
+    var weightedV = zeros(VIS)
+    var weightedM = zeros(MOT)
+    var recog = zeros(PFC)
+    var recogErr = zeros(PFC)
     var scores = zeros(MOT)
     var logits = zeros(MOT)
     var tmp = zeros(MOT)
     var uVis = zeros(VIS)
-    var vPfc = zeros(PFC)
     var uPfc = zeros(PFC)
+    var vGen = zeros(VIS)
+    var vRec = zeros(PFC)
     var vMot = zeros(MOT)
 
     var i = 0
@@ -115,36 +135,137 @@ val main = {
     obs = obs.set(4, 0.25)
     obs = obs.set(11, 0.1)
 
+    val coveredV = (VIS / N_CLUSTERS) * N_CLUSTERS
+    val coveredP = (PFC / N_CLUSTERS) * N_CLUSTERS
+    val coveredM = (MOT / N_CLUSTERS) * N_CLUSTERS
+
     var t = 0
     var acc = 0
     for t < STEPS {
         obs = obs.set(4, 0.25 - (0.0 + (t % 20)) * 0.01)
 
-        muVis = nucleusStep(muVis, encV, predV, obs, tdV, errV, predBufV, VIS, STATE_LR, PI, CLIP)
-        driveP = gemvT(VIS, PFC, wVp, muVis, driveP)
+        tdOpenV = gemv(VIS, VIS, predV, muVis, tdOpenV)
+        var c = 0
+        for c < coveredV {
+            val potI = potV.get(c) * C_DECAY + obs.get(c)
+            potV = potV.set(c, potI)
+            val o = potI - C_THR
+            val o2 = if o < 0.0 { 0.0 } else { o }
+            ratesV = ratesV.set(c, o2 * o2)
+            c = c + 1
+        }
+        for c < VIS {
+            ratesV = ratesV.set(c, 0.0)
+            c = c + 1
+        }
+        muVis = nucleusStep(muVis, encV, predV, ratesV, tdOpenV, errV, predBufV, VIS, STATE_LR, PI, CLIP)
+
+        driveP = gemvT(VIS, PFC, wVp, errV, driveP)
         driveP = clamp(driveP, 0.0 - CLIP, CLIP)
-        muPfc = nucleusStep(muPfc, encP, predP, driveP, tdP, errP, predBufP, PFC, STATE_LR, PI, CLIP)
+        tdOpenP = gemv(PFC, PFC, predP, muPfc, tdOpenP)
+        c = 0
+        for c < coveredP {
+            val potI = potP.get(c) * C_DECAY + driveP.get(c)
+            potP = potP.set(c, potI)
+            val o = potI - C_THR
+            val o2 = if o < 0.0 { 0.0 } else { o }
+            ratesP = ratesP.set(c, o2 * o2)
+            c = c + 1
+        }
+        for c < PFC {
+            ratesP = ratesP.set(c, 0.0)
+            c = c + 1
+        }
+        muPfc = nucleusStep(muPfc, encP, predP, ratesP, tdOpenP, errP, predBufP, PFC, STATE_LR, PI, CLIP)
+
         gen = gemvT(PFC, VIS, wPv, muPfc, gen)
         gen = clamp(gen, 0.0 - CLIP, CLIP)
         genErr = sub(genErr, obs, gen)
         lat = gemv(PFC, VIS, wPv, genErr, lat)
-        lat = clamp(lat, 0.0 - CLIP, CLIP)
-        muPfc = axpy(muPfc, LAT, lat)
+        halfLat = copy(halfLat, lat)
+        halfLat = scale(halfLat, 0.5)
+        scratch = copy(scratch, halfLat)
+        scratch = scale(scratch, PI)
+        delta = gemv(PFC, PFC, encP, scratch, delta)
+        muPfc = axpy(muPfc, STATE_LR, delta)
         muPfc = clamp(muPfc, 0.0 - CLIP, CLIP)
-        muVis = nucleusStep(muVis, encV, predV, obs, gen, errV, predBufV, VIS, STATE_LR, PI, CLIP)
-        tdV = copy(tdV, predBufV)
-        driveM = gemvT(PFC, MOT, wPm, muPfc, driveM)
-        driveM = clamp(driveM, 0.0 - CLIP, CLIP)
-        muMot = nucleusStep(muMot, encM, predM, driveM, tdM, errM, predBufM, MOT, STATE_LR, PI, CLIP)
-        tdM = copy(tdM, predBufM)
-        tdP = copy(tdP, predBufP)
+
+        gen = gemvT(PFC, VIS, wPv, muPfc, gen)
+        gen = clamp(gen, 0.0 - CLIP, CLIP)
+        genErr = sub(genErr, obs, gen)
+
+        c = 0
+        for c < coveredV {
+            val potI = potV.get(c) * C_DECAY + obs.get(c)
+            potV = potV.set(c, potI)
+            val o = potI - C_THR
+            val o2 = if o < 0.0 { 0.0 } else { o }
+            ratesV = ratesV.set(c, o2 * o2)
+            c = c + 1
+        }
+        for c < VIS {
+            ratesV = ratesV.set(c, 0.0)
+            c = c + 1
+        }
+        muVis = nucleusStep(muVis, encV, predV, ratesV, gen, errV, predBufV, VIS, STATE_LR, PI, CLIP)
+
+        recog = gemvT(VIS, PFC, wVp, muVis, recog)
+        recog = clamp(recog, 0.0 - CLIP, CLIP)
+        recogErr = sub(recogErr, muPfc, recog)
+
+        motTop = gemvT(PFC, MOT, wPm, muPfc, motTop)
+        motTop = clamp(motTop, 0.0 - CLIP, CLIP)
+        c = 0
+        for c < coveredM {
+            val potI = potM.get(c) * C_DECAY + zerosM.get(c)
+            potM = potM.set(c, potI)
+            val o = potI - C_THR
+            val o2 = if o < 0.0 { 0.0 } else { o }
+            ratesM = ratesM.set(c, o2 * o2)
+            c = c + 1
+        }
+        for c < MOT {
+            ratesM = ratesM.set(c, 0.0)
+            c = c + 1
+        }
+        muMot = nucleusStep(muMot, encM, predM, ratesM, motTop, errM, predBufM, MOT, STATE_LR, PI, CLIP)
 
         uVis = copy(uVis, muVis)
-        vPfc = copy(vPfc, errP)
-        wVp = hebbian(wVp, uVis, vPfc, maskVp, VIS, PFC, LR, W_CLIP, DECAY, EPS)
+        vRec = copy(vRec, recogErr)
+        wVp = hebbian(wVp, uVis, vRec, maskVp, VIS, PFC, LR, W_CLIP, DECAY, EPS)
         uPfc = copy(uPfc, muPfc)
+        vGen = copy(vGen, genErr)
+        wPv = hebbian(wPv, uPfc, vGen, maskPv, PFC, VIS, LR * 2.0, W_CLIP, DECAY, EPS)
         vMot = copy(vMot, errM)
         wPm = hebbian(wPm, uPfc, vMot, maskPm, PFC, MOT, LR, W_CLIP, DECAY, EPS)
+
+        // learnGenerative composed
+        encV = scale(encV, 1.0 - DECAY)
+        predV = scale(predV, 1.0 - DECAY)
+        predV = addmm(VIS, VIS, predV, muVis, genErr, GEN_LR * 2.0)
+        weightedV = copy(weightedV, genErr)
+        weightedV = scale(weightedV, PI)
+        encV = addmm(VIS, VIS, encV, genErr, weightedV, GEN_LR)
+        encV = clamp(encV, 0.0 - W_CLIP, W_CLIP)
+        predV = clamp(predV, 0.0 - W_CLIP, W_CLIP)
+
+        encP = scale(encP, 1.0 - DECAY)
+        predP = scale(predP, 1.0 - DECAY)
+        predP = addmm(PFC, PFC, predP, muPfc, recogErr, GEN_LR * 2.0)
+        weightedP = copy(weightedP, recogErr)
+        weightedP = scale(weightedP, PI)
+        encP = addmm(PFC, PFC, encP, recogErr, weightedP, GEN_LR)
+        encP = clamp(encP, 0.0 - W_CLIP, W_CLIP)
+        predP = clamp(predP, 0.0 - W_CLIP, W_CLIP)
+
+        encM = scale(encM, 1.0 - DECAY)
+        predM = scale(predM, 1.0 - DECAY)
+        predM = addmm(MOT, MOT, predM, muMot, errM, GEN_LR)
+        weightedM = copy(weightedM, errM)
+        weightedM = scale(weightedM, PI)
+        encM = addmm(MOT, MOT, encM, errM, weightedM, GEN_LR * 0.5)
+        encM = clamp(encM, 0.0 - W_CLIP, W_CLIP)
+        predM = clamp(predM, 0.0 - W_CLIP, W_CLIP)
 
         scores = actionScores(
             obs, gen, scores, MOT, HORIZON, REL, THREAT,

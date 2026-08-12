@@ -698,6 +698,19 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         ],
     },
     RtDecl {
+        name: "lumia_cn_update_state",
+        ret: RtTy::Ptr,
+        args: &[
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::I64,
+            RtTy::F64,
+            RtTy::F64,
+            RtTy::F64,
+        ],
+    },
+    RtDecl {
         name: "lumia_str_starts_with",
         ret: RtTy::I64,
         args: &[RtTy::Ptr, RtTy::Ptr],
