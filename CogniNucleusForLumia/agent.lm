@@ -167,8 +167,12 @@ val forward = { agent, obs ->
 }
 
 val learn = { agent, reward ->
-    // Dopamine gate reserved; reward kept live so the signature matches CN learn(reward).
-    val mod = if reward < 0.0 { 0.5 } else { if reward > 0.5 { 1.5 } else { 1.0 } }
+    // Dopamine-like plasticity gate from reward sign/magnitude.
+    val mod = match {
+        reward < 0.0 -> 0.5
+        reward > 0.5 -> 1.5
+        _ -> 1.0
+    }
     var vis = agent.vis
     var pfc = agent.pfc
     var mot = agent.mot

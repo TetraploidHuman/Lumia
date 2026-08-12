@@ -22,18 +22,21 @@ val main = {
     var t = 0
 
     for t < MAX_STEPS {
-        if done == 0 {
-            val obs = observe(world)
-            val fo = forward(ag, obs)
-            ag = fo.agent
-            val action = fo.action
-            val so = stepEnv(world, action)
-            world = so.world
-            ag = learn(ag, so.reward)
-            totalReward = totalReward + so.reward
-            actSum = actSum + action * (steps + 1)
-            done = so.done
-            steps = steps + 1
+        done match {
+            0 -> {
+                val obs = observe(world)
+                val fo = forward(ag, obs)
+                ag = fo.agent
+                val action = fo.action
+                val so = stepEnv(world, action)
+                world = so.world
+                ag = learn(ag, so.reward)
+                totalReward = totalReward + so.reward
+                actSum = actSum + action * (steps + 1)
+                done = so.done
+                steps = steps + 1
+            }
+            _ -> {}
         }
         t = t + 1
     }
