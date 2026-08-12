@@ -43,11 +43,59 @@ pub extern "C" fn lumia_f64_fill(xs: *mut u8, v: f64) -> *mut u8 {
     let xs = ensure_unique_f64(xs);
     unsafe {
         let (p, n) = f64_elems_mut(xs);
-        for i in 0..n {
-            *p.add(i) = v;
-        }
+        fill_loop(p, n, v);
     }
     xs
+}
+
+/// `xs[i] *= alpha` (COW if shared). Returns `xs`.
+#[no_mangle]
+pub extern "C" fn lumia_f64_scale(xs: *mut u8, alpha: f64) -> *mut u8 {
+    let _gc = GcInhibitGuard::enter();
+    let xs = ensure_unique_f64(xs);
+    unsafe {
+        let (p, n) = f64_elems_mut(xs);
+        scale_loop(p, n, alpha);
+    }
+    xs
+}
+
+/// `out[i] = a[i] * b[i]` (same length). Returns `out`.
+#[no_mangle]
+pub extern "C" fn lumia_f64_mul(out: *mut u8, a: *mut u8, b: *mut u8) -> *mut u8 {
+    let _gc = GcInhibitGuard::enter();
+    let a = force_f64(a);
+    let b = force_f64(b);
+    let out = ensure_unique_f64(out);
+    let n = list_len_of(a);
+    require_len(b, n, "mul b");
+    require_len(out, n, "mul out");
+    unsafe {
+        let (op, _) = f64_elems_mut(out);
+        let (ap, _) = f64_elems(a);
+        let (bp, _) = f64_elems(b);
+        mul_loop(op, ap, bp, n as usize);
+    }
+    out
+}
+
+/// `out[i] = a[i] + b[i]` (same length). Returns `out`.
+#[no_mangle]
+pub extern "C" fn lumia_f64_add(out: *mut u8, a: *mut u8, b: *mut u8) -> *mut u8 {
+    let _gc = GcInhibitGuard::enter();
+    let a = force_f64(a);
+    let b = force_f64(b);
+    let out = ensure_unique_f64(out);
+    let n = list_len_of(a);
+    require_len(b, n, "add b");
+    require_len(out, n, "add out");
+    unsafe {
+        let (op, _) = f64_elems_mut(out);
+        let (ap, _) = f64_elems(a);
+        let (bp, _) = f64_elems(b);
+        add_loop(op, ap, bp, n as usize);
+    }
+    out
 }
 
 /// Euclidean L2 norm.
@@ -224,9 +272,7 @@ pub extern "C" fn lumia_f64_axpy(y: *mut u8, alpha: f64, x: *mut u8) -> *mut u8 
     unsafe {
         let (yp, _) = f64_elems_mut(y);
         let (xp, _) = f64_elems(x);
-        for i in 0..n as usize {
-            *yp.add(i) += alpha * *xp.add(i);
-        }
+        axpy_loop(yp, xp, alpha, n as usize);
     }
     y
 }
@@ -245,9 +291,7 @@ pub extern "C" fn lumia_f64_sub(out: *mut u8, a: *mut u8, b: *mut u8) -> *mut u8
         let (op, _) = f64_elems_mut(out);
         let (ap, _) = f64_elems(a);
         let (bp, _) = f64_elems(b);
-        for i in 0..n as usize {
-            *op.add(i) = *ap.add(i) - *bp.add(i);
-        }
+        sub_loop(op, ap, bp, n as usize);
     }
     out
 }
@@ -330,6 +374,103 @@ unsafe fn f64_elems_mut(list: *mut u8) -> (*mut f64, usize) {
     ((list as *mut i64).add(1) as *mut f64, n)
 }
 
+/// Unroll-4 bodies keep tiny (n≤32) CN kernels friendly to auto-vectorization.
+#[inline(always)]
+unsafe fn fill_loop(p: *mut f64, n: usize, v: f64) {
+    let mut i = 0;
+    while i + 4 <= n {
+        *p.add(i) = v;
+        *p.add(i + 1) = v;
+        *p.add(i + 2) = v;
+        *p.add(i + 3) = v;
+        i += 4;
+    }
+    while i < n {
+        *p.add(i) = v;
+        i += 1;
+    }
+}
+
+#[inline(always)]
+unsafe fn scale_loop(p: *mut f64, n: usize, alpha: f64) {
+    let mut i = 0;
+    while i + 4 <= n {
+        *p.add(i) *= alpha;
+        *p.add(i + 1) *= alpha;
+        *p.add(i + 2) *= alpha;
+        *p.add(i + 3) *= alpha;
+        i += 4;
+    }
+    while i < n {
+        *p.add(i) *= alpha;
+        i += 1;
+    }
+}
+
+#[inline(always)]
+unsafe fn mul_loop(out: *mut f64, a: *const f64, b: *const f64, n: usize) {
+    let mut i = 0;
+    while i + 4 <= n {
+        *out.add(i) = *a.add(i) * *b.add(i);
+        *out.add(i + 1) = *a.add(i + 1) * *b.add(i + 1);
+        *out.add(i + 2) = *a.add(i + 2) * *b.add(i + 2);
+        *out.add(i + 3) = *a.add(i + 3) * *b.add(i + 3);
+        i += 4;
+    }
+    while i < n {
+        *out.add(i) = *a.add(i) * *b.add(i);
+        i += 1;
+    }
+}
+
+#[inline(always)]
+unsafe fn add_loop(out: *mut f64, a: *const f64, b: *const f64, n: usize) {
+    let mut i = 0;
+    while i + 4 <= n {
+        *out.add(i) = *a.add(i) + *b.add(i);
+        *out.add(i + 1) = *a.add(i + 1) + *b.add(i + 1);
+        *out.add(i + 2) = *a.add(i + 2) + *b.add(i + 2);
+        *out.add(i + 3) = *a.add(i + 3) + *b.add(i + 3);
+        i += 4;
+    }
+    while i < n {
+        *out.add(i) = *a.add(i) + *b.add(i);
+        i += 1;
+    }
+}
+
+#[inline(always)]
+unsafe fn sub_loop(out: *mut f64, a: *const f64, b: *const f64, n: usize) {
+    let mut i = 0;
+    while i + 4 <= n {
+        *out.add(i) = *a.add(i) - *b.add(i);
+        *out.add(i + 1) = *a.add(i + 1) - *b.add(i + 1);
+        *out.add(i + 2) = *a.add(i + 2) - *b.add(i + 2);
+        *out.add(i + 3) = *a.add(i + 3) - *b.add(i + 3);
+        i += 4;
+    }
+    while i < n {
+        *out.add(i) = *a.add(i) - *b.add(i);
+        i += 1;
+    }
+}
+
+#[inline(always)]
+unsafe fn axpy_loop(y: *mut f64, x: *const f64, alpha: f64, n: usize) {
+    let mut i = 0;
+    while i + 4 <= n {
+        *y.add(i) += alpha * *x.add(i);
+        *y.add(i + 1) += alpha * *x.add(i + 1);
+        *y.add(i + 2) += alpha * *x.add(i + 2);
+        *y.add(i + 3) += alpha * *x.add(i + 3);
+        i += 4;
+    }
+    while i < n {
+        *y.add(i) += alpha * *x.add(i);
+        i += 1;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -348,6 +489,20 @@ mod tests {
             }
         }
         p
+    }
+
+    #[test]
+    fn scale_mul_add() {
+        let a = from_slice(&[1.0, 2.0, 3.0, 4.0]);
+        let b = from_slice(&[2.0, 2.0, 2.0, 2.0]);
+        let a = lumia_f64_scale(a, 0.5);
+        assert_eq!(lumia_list_get(a, 0), bits(0.5));
+        let out = lumia_list_f64_zeros(4);
+        let out = lumia_f64_mul(out, a, b);
+        assert_eq!(lumia_list_get(out, 1), bits(2.0));
+        let out2 = lumia_list_f64_zeros(4);
+        let out2 = lumia_f64_add(out2, a, b);
+        assert_eq!(lumia_list_get(out2, 0), bits(2.5));
     }
 
     #[test]

@@ -53,9 +53,9 @@ pub use dict::{
 pub use dispatch::*;
 pub use eq::*;
 pub use dense_f64::{
-    lumia_f64_addmm, lumia_f64_axpy, lumia_f64_checksum, lumia_f64_clamp, lumia_f64_copy,
-    lumia_f64_fill, lumia_f64_gemv, lumia_f64_gemv_t, lumia_f64_l2_norm, lumia_f64_l2_normalize,
-    lumia_f64_sub, lumia_list_f64_zeros,
+    lumia_f64_add, lumia_f64_addmm, lumia_f64_axpy, lumia_f64_checksum, lumia_f64_clamp,
+    lumia_f64_copy, lumia_f64_fill, lumia_f64_gemv, lumia_f64_gemv_t, lumia_f64_l2_norm,
+    lumia_f64_l2_normalize, lumia_f64_mul, lumia_f64_scale, lumia_f64_sub, lumia_list_f64_zeros,
 };
 pub use float_kernels::lumia_mandelbrot_checksum;
 pub use hash_ord::*;

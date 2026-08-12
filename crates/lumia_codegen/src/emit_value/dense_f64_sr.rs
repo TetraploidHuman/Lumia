@@ -5,7 +5,10 @@
 //! - gemv_t:  `y[j] += A[i·n+j] * x[i]` (after zero-fill)
 //! - addmm:   `W[i,j] += α * u[i] * v[j]`
 //! - axpy:    `y[i] += α * x[i]`
-//! - sub:     `out[i] = a[i] - b[i]`
+//! - sub/add: `out[i] = a[i] ± b[i]`
+//! - mul:     `out[i] = a[i] * b[i]`
+//! - scale:   `xs[i] *= α`
+//! - fill:    `xs[i] = v`
 //! - clamp:   `xs[i] = clamp(xs[i], lo, hi)`
 
 use inkwell::values::FunctionValue;
@@ -72,6 +75,18 @@ struct CopyPat {
     src: Local,
 }
 
+#[derive(Debug)]
+struct ScalePat {
+    xs: Local,
+    alpha: Local,
+}
+
+#[derive(Debug)]
+struct FillPat {
+    xs: Local,
+    v: Local,
+}
+
 impl<'ctx> Codegen<'ctx> {
     /// Whole-function SR for dense float helpers (params = pattern args).
     pub(crate) fn try_emit_dense_f64_fun(
@@ -95,8 +110,20 @@ impl<'ctx> Codegen<'ctx> {
         if let Some(p) = match_sub_fun(fun, defs) {
             return self.emit_sub_fun(&p).map(Some);
         }
+        if let Some(p) = match_add_fun(fun, defs) {
+            return self.emit_binop3_fun("lumia_f64_add", "fadd", &p).map(Some);
+        }
+        if let Some(p) = match_mul_fun(fun, defs) {
+            return self.emit_binop3_fun("lumia_f64_mul", "fmul", &p).map(Some);
+        }
         if let Some(p) = match_clamp_fun(fun, defs) {
             return self.emit_clamp_fun(&p).map(Some);
+        }
+        if let Some(p) = match_scale_fun(fun, defs) {
+            return self.emit_scale_fun(&p).map(Some);
+        }
+        if let Some(p) = match_fill_fun(fun, defs) {
+            return self.emit_fill_fun(&p).map(Some);
         }
         if let Some(p) = match_copy_fun(fun, defs) {
             return self.emit_copy_fun(&p).map(Some);
@@ -200,21 +227,25 @@ impl<'ctx> Codegen<'ctx> {
     }
 
     fn emit_sub_fun(&mut self, p: &SubPat) -> Result<()> {
-        let rt = self.runtime_fn("lumia_f64_sub")?;
+        self.emit_binop3_fun("lumia_f64_sub", "fsub", p)
+    }
+
+    fn emit_binop3_fun(&mut self, sym: &str, label: &str, p: &SubPat) -> Result<()> {
+        let rt = self.runtime_fn(sym)?;
         let o = self.i64_as_ptr(self.coerce_i64(self.local(p.out)?)?, "o")?;
         let a = self.i64_as_ptr(self.coerce_i64(self.local(p.a)?)?, "a")?;
         let b = self.i64_as_ptr(self.coerce_i64(self.local(p.b)?)?, "b")?;
         let call = crate::error::llvm(self.llvm.builder.build_call(
             rt,
             &[o.into(), a.into(), b.into()],
-            "fsub",
+            label,
         ))?;
         let out = call
             .try_as_basic_value()
             .basic()
-            .context("sub")?
+            .with_context(|| format!("{label}"))?
             .into_pointer_value();
-        let out_i = self.ptr_as_i64(out, "sub_i64")?.into_int_value();
+        let out_i = self.ptr_as_i64(out, &format!("{label}_i64"))?.into_int_value();
         crate::error::llvm(self.llvm.builder.build_return(Some(&out_i)))?;
         Ok(())
     }
@@ -235,6 +266,44 @@ impl<'ctx> Codegen<'ctx> {
             .context("clamp")?
             .into_pointer_value();
         let out_i = self.ptr_as_i64(out, "clamp_i64")?.into_int_value();
+        crate::error::llvm(self.llvm.builder.build_return(Some(&out_i)))?;
+        Ok(())
+    }
+
+    fn emit_scale_fun(&mut self, p: &ScalePat) -> Result<()> {
+        let rt = self.runtime_fn("lumia_f64_scale")?;
+        let xs = self.i64_as_ptr(self.coerce_i64(self.local(p.xs)?)?, "xs")?;
+        let alpha = self.promote_f64(self.local(p.alpha)?)?;
+        let call = crate::error::llvm(
+            self.llvm
+                .builder
+                .build_call(rt, &[xs.into(), alpha.into()], "fscale"),
+        )?;
+        let out = call
+            .try_as_basic_value()
+            .basic()
+            .context("scale")?
+            .into_pointer_value();
+        let out_i = self.ptr_as_i64(out, "scale_i64")?.into_int_value();
+        crate::error::llvm(self.llvm.builder.build_return(Some(&out_i)))?;
+        Ok(())
+    }
+
+    fn emit_fill_fun(&mut self, p: &FillPat) -> Result<()> {
+        let rt = self.runtime_fn("lumia_f64_fill")?;
+        let xs = self.i64_as_ptr(self.coerce_i64(self.local(p.xs)?)?, "xs")?;
+        let v = self.promote_f64(self.local(p.v)?)?;
+        let call = crate::error::llvm(
+            self.llvm
+                .builder
+                .build_call(rt, &[xs.into(), v.into()], "ffill"),
+        )?;
+        let out = call
+            .try_as_basic_value()
+            .basic()
+            .context("fill")?
+            .into_pointer_value();
+        let out_i = self.ptr_as_i64(out, "fill_i64")?.into_int_value();
         crate::error::llvm(self.llvm.builder.build_return(Some(&out_i)))?;
         Ok(())
     }
@@ -358,6 +427,32 @@ fn match_sub_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Optio
     Some(SubPat { out, a, b })
 }
 
+fn match_add_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<SubPat> {
+    if fun.params.len() != 3 {
+        return None;
+    }
+    let (out, a, b) = (fun.params[0], fun.params[1], fun.params[2]);
+    let body = &fun.body;
+    let out_slot = first_assign_from_local(body, out)?;
+    if !fun_has_add_shape(body, defs, &out_slot, a, b) {
+        return None;
+    }
+    Some(SubPat { out, a, b })
+}
+
+fn match_mul_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<SubPat> {
+    if fun.params.len() != 3 {
+        return None;
+    }
+    let (out, a, b) = (fun.params[0], fun.params[1], fun.params[2]);
+    let body = &fun.body;
+    let out_slot = first_assign_from_local(body, out)?;
+    if !fun_has_mul_shape(body, defs, &out_slot, a, b) {
+        return None;
+    }
+    Some(SubPat { out, a, b })
+}
+
 fn match_clamp_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<ClampPat> {
     if fun.params.len() != 3 {
         return None;
@@ -369,6 +464,32 @@ fn match_clamp_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Opt
         return None;
     }
     Some(ClampPat { xs, lo, hi })
+}
+
+fn match_scale_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<ScalePat> {
+    if fun.params.len() != 2 {
+        return None;
+    }
+    let (xs, alpha) = (fun.params[0], fun.params[1]);
+    let body = &fun.body;
+    let out_slot = first_assign_from_local(body, xs)?;
+    if !fun_has_scale_shape(body, defs, &out_slot, alpha) {
+        return None;
+    }
+    Some(ScalePat { xs, alpha })
+}
+
+fn match_fill_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<FillPat> {
+    if fun.params.len() != 2 {
+        return None;
+    }
+    let (xs, v) = (fun.params[0], fun.params[1]);
+    let body = &fun.body;
+    let out_slot = first_assign_from_local(body, xs)?;
+    if !fun_has_fill_shape(body, defs, &out_slot, v) {
+        return None;
+    }
+    Some(FillPat { xs, v })
 }
 
 fn match_copy_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<CopyPat> {
@@ -798,6 +919,234 @@ fn fun_has_sub_shape(
     get_a && get_b && sub && set
 }
 
+fn fun_has_add_shape(
+    body: &Block,
+    defs: &HashMap<u32, Value>,
+    out_slot: &str,
+    a: Local,
+    b: Local,
+) -> bool {
+    let mut get_a = false;
+    let mut get_b = false;
+    let mut add = false;
+    let mut set = false;
+    let mut mul = false;
+    for v in defs.values() {
+        if let Some((lst, _)) = is_list_get(v) {
+            if list_arg_is(lst, a, defs) || name_of(lst, defs).as_deref() == Some(out_slot) {
+                get_a = true;
+            }
+            if list_arg_is(lst, b, defs) {
+                get_b = true;
+            }
+        }
+        if matches!(v, Value::Binary { op: BinOp::Add, .. }) {
+            add = true;
+        }
+        if matches!(v, Value::Binary { op: BinOp::Mul, .. }) {
+            mul = true;
+        }
+        if is_list_set(v).is_some() {
+            set = true;
+        }
+    }
+    for_each_let(body, &mut |val| {
+        if is_list_set(val).is_some() {
+            set = true;
+        }
+        if let Some((lst, _)) = is_list_get(val) {
+            if list_arg_is(lst, a, defs) || name_of(lst, defs).as_deref() == Some(out_slot) {
+                get_a = true;
+            }
+            if list_arg_is(lst, b, defs) {
+                get_b = true;
+            }
+        }
+        if matches!(val, Value::Binary { op: BinOp::Add, .. }) {
+            add = true;
+        }
+        if matches!(val, Value::Binary { op: BinOp::Mul, .. }) {
+            mul = true;
+        }
+    });
+    get_a && get_b && add && set && !mul
+}
+
+fn fun_has_mul_shape(
+    body: &Block,
+    defs: &HashMap<u32, Value>,
+    out_slot: &str,
+    a: Local,
+    b: Local,
+) -> bool {
+    let mut get_a = false;
+    let mut get_b = false;
+    let mut mul = false;
+    let mut set = false;
+    let mut add_or_sub = false;
+    for v in defs.values() {
+        if let Some((lst, _)) = is_list_get(v) {
+            if list_arg_is(lst, a, defs) {
+                get_a = true;
+            }
+            if list_arg_is(lst, b, defs) {
+                get_b = true;
+            }
+        }
+        if matches!(v, Value::Binary { op: BinOp::Mul, .. }) {
+            mul = true;
+        }
+        if is_nontrivial_add_or_sub(v, defs) {
+            add_or_sub = true;
+        }
+        if is_list_set(v).is_some() {
+            set = true;
+        }
+    }
+    for_each_let(body, &mut |val| {
+        if is_list_set(val).is_some() {
+            set = true;
+        }
+        if matches!(val, Value::Binary { op: BinOp::Mul, .. }) {
+            mul = true;
+        }
+        if is_nontrivial_add_or_sub(val, defs) {
+            add_or_sub = true;
+        }
+    });
+    let _ = out_slot;
+    get_a && get_b && mul && set && !add_or_sub
+}
+
+fn fun_has_scale_shape(
+    body: &Block,
+    defs: &HashMap<u32, Value>,
+    out_slot: &str,
+    alpha: Local,
+) -> bool {
+    let mut get_y = false;
+    let mut mul = false;
+    let mut set = false;
+    let mut uses_alpha = false;
+    let mut add_or_sub = false;
+    for v in defs.values() {
+        if let Some((lst, _)) = is_list_get(v) {
+            if name_of(lst, defs).as_deref() == Some(out_slot) {
+                get_y = true;
+            }
+        }
+        if matches!(v, Value::Binary { op: BinOp::Mul, .. }) {
+            mul = true;
+        }
+        if is_nontrivial_add_or_sub(v, defs) {
+            add_or_sub = true;
+        }
+        if is_list_set(v).is_some() {
+            set = true;
+        }
+        if mentions_local(v, alpha) {
+            uses_alpha = true;
+        }
+    }
+    for_each_let(body, &mut |val| {
+        if is_list_set(val).is_some() {
+            set = true;
+        }
+        if let Some((lst, _)) = is_list_get(val) {
+            if name_of(lst, defs).as_deref() == Some(out_slot) {
+                get_y = true;
+            }
+        }
+        if matches!(val, Value::Binary { op: BinOp::Mul, .. }) {
+            mul = true;
+        }
+        if is_nontrivial_add_or_sub(val, defs) {
+            add_or_sub = true;
+        }
+    });
+    get_y && mul && set && uses_alpha && !add_or_sub
+}
+
+fn fun_has_fill_shape(
+    body: &Block,
+    defs: &HashMap<u32, Value>,
+    out_slot: &str,
+    v: Local,
+) -> bool {
+    let mut set = false;
+    let mut uses_v = false;
+    let mut get_any = false;
+    let mut arith = false;
+    for vdef in defs.values() {
+        if is_list_get(vdef).is_some() {
+            get_any = true;
+        }
+        if is_list_set(vdef).is_some() {
+            set = true;
+        }
+        if mentions_local(vdef, v) {
+            uses_v = true;
+        }
+        if is_nontrivial_arith(vdef, defs) {
+            arith = true;
+        }
+    }
+    for_each_let(body, &mut |val| {
+        if is_list_set(val).is_some() {
+            set = true;
+        }
+        if is_list_get(val).is_some() {
+            get_any = true;
+        }
+        if is_nontrivial_arith(val, defs) {
+            arith = true;
+        }
+    });
+    let _ = out_slot;
+    set && uses_v && !get_any && !arith
+}
+
+fn is_unit_inc_value(v: &Value, defs: &HashMap<u32, Value>) -> bool {
+    let Value::Binary {
+        op: BinOp::Add,
+        left,
+        right,
+        ..
+    } = v
+    else {
+        return false;
+    };
+    let one_l = matches!(defs.get(&left.0), Some(Value::Int(1)));
+    let one_r = matches!(defs.get(&right.0), Some(Value::Int(1)));
+    let name_l = name_of(*left, defs).is_some();
+    let name_r = name_of(*right, defs).is_some();
+    (name_l && one_r) || (name_r && one_l)
+}
+
+fn is_nontrivial_add_or_sub(v: &Value, defs: &HashMap<u32, Value>) -> bool {
+    match v {
+        Value::Binary {
+            op: BinOp::Add | BinOp::Sub,
+            ..
+        } if !is_unit_inc_value(v, defs) => true,
+        _ => false,
+    }
+}
+
+fn is_nontrivial_arith(v: &Value, defs: &HashMap<u32, Value>) -> bool {
+    match v {
+        Value::Binary {
+            op: BinOp::Mul | BinOp::Div,
+            ..
+        } => true,
+        Value::Binary {
+            op: BinOp::Add | BinOp::Sub,
+            ..
+        } if !is_unit_inc_value(v, defs) => true,
+        _ => false,
+    }
+}
+
 fn fun_has_clamp_shape(
     body: &Block,
     defs: &HashMap<u32, Value>,
@@ -826,15 +1175,6 @@ fn fun_has_clamp_shape(
         }
         if is_list_set(v).is_some() {
             set = true;
-        }
-        if matches!(
-            v,
-            Value::Binary {
-                op: BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge,
-                ..
-            }
-        ) {
-            saw_if = true;
         }
     }
     for op in &body.ops {

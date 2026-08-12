@@ -488,6 +488,21 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         args: &[RtTy::Ptr, RtTy::F64],
     },
     RtDecl {
+        name: "lumia_f64_scale",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr, RtTy::F64],
+    },
+    RtDecl {
+        name: "lumia_f64_mul",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr, RtTy::Ptr, RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_f64_add",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr, RtTy::Ptr, RtTy::Ptr],
+    },
+    RtDecl {
         name: "lumia_f64_l2_norm",
         ret: RtTy::F64,
         args: &[RtTy::Ptr],
