@@ -6,8 +6,8 @@
 //! rewrite the call to `f$c_1_2()` so later `const_fold` / `inline` can PE it.
 
 use lumia_core::{
-    block_calls, count_ops, has_assign_or_name, has_early_return, rewrite_block_locals, Block,
-    CoreFun, CoreModule, Local, Op, Value,
+    block_calls, count_ops, has_early_return, rewrite_block_locals, Block, CoreFun, CoreModule,
+    Local, Op, Value,
 };
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
@@ -15,8 +15,9 @@ use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 const MAX_CLONES_PER_FUN: usize = 16;
 /// Global safety fuse for one optimize run.
 const MAX_TOTAL_CLONES: usize = 64;
-/// Same size budget as inline — specialization targets the same leaf set.
-const MAX_OPS: usize = 32;
+/// Allow specializing mid-size pure leaves (e.g. matmulChecksum) so const
+/// bounds reach NSW / PE; still below pathological blow-up.
+const MAX_OPS: usize = 256;
 
 pub struct SpecializeConstPass;
 
@@ -108,7 +109,9 @@ fn is_specializeable(f: &CoreFun) -> bool {
     if block_calls(&f.body, &f.name) {
         return false;
     }
-    if has_assign_or_name(&f.body) || has_early_return(&f.body) {
+    // Assign / Name are fine: we only bake immutable param scalars into the clone.
+    // Early return still blocks (clone shape / PE assumptions).
+    if has_early_return(&f.body) {
         return false;
     }
     // Specialize when params are Int/Bool/Char, or still-open vars (call-site

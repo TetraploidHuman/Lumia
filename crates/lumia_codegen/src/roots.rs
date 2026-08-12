@@ -2,7 +2,7 @@
 
 use super::Codegen;
 use anyhow::{Context as AnyhowContext, Result};
-use inkwell::types::IntType;
+use inkwell::types::{BasicTypeEnum, IntType};
 use inkwell::values::{IntValue, PointerValue};
 use inkwell::AddressSpace;
 use lumia_core::{Block, Op, Value};
@@ -105,6 +105,14 @@ impl<'ctx> Codegen<'ctx> {
         ty: IntType<'ctx>,
         name: &str,
     ) -> Result<PointerValue<'ctx>> {
+        self.alloca_in_entry_ty(ty.into(), name)
+    }
+
+    pub(crate) fn alloca_in_entry_ty(
+        &mut self,
+        ty: BasicTypeEnum<'ctx>,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>> {
         let entry = self
             .frame
             .entry_bb
@@ -119,7 +127,15 @@ impl<'ctx> Codegen<'ctx> {
             Some(first) => self.llvm.builder.position_before(&first),
             None => self.llvm.builder.position_at_end(entry),
         }
-        let slot = crate::error::llvm(self.llvm.builder.build_alloca(ty, name))?;
+        let slot = crate::error::llvm(match ty {
+            BasicTypeEnum::IntType(t) => self.llvm.builder.build_alloca(t, name),
+            BasicTypeEnum::FloatType(t) => self.llvm.builder.build_alloca(t, name),
+            BasicTypeEnum::PointerType(t) => self.llvm.builder.build_alloca(t, name),
+            BasicTypeEnum::ArrayType(t) => self.llvm.builder.build_alloca(t, name),
+            BasicTypeEnum::StructType(t) => self.llvm.builder.build_alloca(t, name),
+            BasicTypeEnum::VectorType(t) => self.llvm.builder.build_alloca(t, name),
+            BasicTypeEnum::ScalableVectorType(t) => self.llvm.builder.build_alloca(t, name),
+        })?;
         self.llvm.builder.position_at_end(cur);
         Ok(slot)
     }
@@ -161,6 +177,11 @@ impl<'ctx> Codegen<'ctx> {
     }
 
     pub(crate) fn emit_frame_push(&mut self, name: &str) -> Result<()> {
+        // Release: omit backtrace frames — traps still abort; hot leaves (fib / isPrime)
+        // no longer pay TLS Vec push/pop on every call.
+        if self.release {
+            return Ok(());
+        }
         let push = self.runtime_fn("lumia_frame_push")?;
         let s = self
             .llvm
@@ -176,6 +197,9 @@ impl<'ctx> Codegen<'ctx> {
     }
 
     pub(crate) fn emit_frame_pop(&mut self) -> Result<()> {
+        if self.release {
+            return Ok(());
+        }
         let pop = self.runtime_fn("lumia_frame_pop")?;
         crate::error::llvm(self.llvm.builder.build_call(pop, &[], ""))?;
         Ok(())

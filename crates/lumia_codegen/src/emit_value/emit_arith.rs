@@ -4,7 +4,7 @@ use super::super::Codegen;
 use anyhow::{bail, Context as AnyhowContext, Result};
 use inkwell::values::{BasicValueEnum, FunctionValue, IntValue};
 use inkwell::{FloatPredicate, IntPredicate};
-use lumia_core::Local;
+use lumia_core::{Local, Value};
 use lumia_syntax::{BinOp, UnOp};
 use lumia_ty::Type;
 
@@ -45,6 +45,16 @@ impl<'ctx> Codegen<'ctx> {
             .is_some_and(|d| self.frame.nsw_binop_locals.contains(&d))
     }
 
+    /// Dividend proven ≥ 0 (NSW IV tree, nonneg IV load, or nonnegative Int) ⇒ `urem`/`udiv`.
+    fn dividend_nonneg(&self, left: &Local) -> bool {
+        if self.frame.nsw_binop_locals.contains(&left.0)
+            || self.frame.nonneg_iv_load_locals.contains(&left.0)
+        {
+            return true;
+        }
+        matches!(self.frame.leaf_defs.get(&left.0), Some(Value::Int(n)) if *n >= 0)
+    }
+
     fn emit_nsw_binop(
         &self,
         l: IntValue<'ctx>,
@@ -61,6 +71,15 @@ impl<'ctx> Codegen<'ctx> {
         name: &str,
     ) -> Result<IntValue<'ctx>> {
         crate::error::llvm(self.llvm.builder.build_int_nsw_sub(l, r, name))
+    }
+
+    fn emit_nsw_binop_mul(
+        &self,
+        l: IntValue<'ctx>,
+        r: IntValue<'ctx>,
+        name: &str,
+    ) -> Result<IntValue<'ctx>> {
+        crate::error::llvm(self.llvm.builder.build_int_nsw_mul(l, r, name))
     }
 
     pub(crate) fn emit_checked_binop(
@@ -217,46 +236,19 @@ impl<'ctx> Codegen<'ctx> {
         l: IntValue<'ctx>,
         r: IntValue<'ctx>,
         is_rem: bool,
+        unsigned: bool,
     ) -> Result<IntValue<'ctx>> {
         Ok(if is_rem {
-            crate::error::llvm(self.llvm.builder.build_int_signed_rem(l, r, "rem"))?
+            if unsigned {
+                crate::error::llvm(self.llvm.builder.build_int_unsigned_rem(l, r, "urem"))?
+            } else {
+                crate::error::llvm(self.llvm.builder.build_int_signed_rem(l, r, "rem"))?
+            }
+        } else if unsigned {
+            crate::error::llvm(self.llvm.builder.build_int_unsigned_div(l, r, "udiv"))?
         } else {
             crate::error::llvm(self.llvm.builder.build_int_signed_div(l, r, "div"))?
         })
-    }
-
-    fn rhs_is_two(&self, r: IntValue<'ctx>) -> bool {
-        r.get_sign_extended_constant() == Some(2)
-    }
-
-    /// `x % 2` → `x & 1` when `x` is a loop-IV load proven `>= 0`.
-    fn try_emit_nonneg_rem2(
-        &self,
-        l: IntValue<'ctx>,
-        r: IntValue<'ctx>,
-        left: &Local,
-        _right: &Local,
-    ) -> Option<IntValue<'ctx>> {
-        if !self.rhs_is_two(r) || !self.frame.nonneg_iv_load_locals.contains(&left.0) {
-            return None;
-        }
-        let one = self.llvm.i64_ty.const_int(1, false);
-        crate::error::llvm(self.llvm.builder.build_and(l, one, "rem2")).ok()
-    }
-
-    /// `x / 2` → logical shift when `x` is a loop-IV load proven `>= 0`.
-    fn try_emit_nonneg_div2(
-        &self,
-        l: IntValue<'ctx>,
-        r: IntValue<'ctx>,
-        left: &Local,
-        _right: &Local,
-    ) -> Option<IntValue<'ctx>> {
-        if !self.rhs_is_two(r) || !self.frame.nonneg_iv_load_locals.contains(&left.0) {
-            return None;
-        }
-        let one = self.llvm.i64_ty.const_int(1, false);
-        crate::error::llvm(self.llvm.builder.build_right_shift(l, one, false, "div2")).ok()
     }
 
     pub(crate) fn emit_value_binary(
@@ -312,23 +304,22 @@ impl<'ctx> Codegen<'ctx> {
         let v = match op {
             BinOp::Add if self.dest_is_nsw_safe() => self.emit_nsw_binop(l, r, "add")?,
             BinOp::Sub if self.dest_is_nsw_safe() => self.emit_nsw_binop_sub(l, r, "sub")?,
+            BinOp::Mul if self.dest_is_nsw_safe() => self.emit_nsw_binop_mul(l, r, "mul")?,
             BinOp::Add => self.emit_checked_binop(l, r, fv, "sadd")?,
             BinOp::Sub => self.emit_checked_binop(l, r, fv, "ssub")?,
             BinOp::Mul => self.emit_checked_binop(l, r, fv, "smul")?,
             BinOp::Div => {
-                if let Some(v) = self.try_emit_nonneg_div2(l, r, left, right) {
-                    v
-                } else if self.frame.safe_divisor_locals.contains(&right.0) {
-                    self.emit_unchecked_div_rem(l, r, false)?
+                if self.frame.safe_divisor_locals.contains(&right.0) {
+                    let unsigned = self.dividend_nonneg(left);
+                    self.emit_unchecked_div_rem(l, r, false, unsigned)?
                 } else {
                     self.emit_checked_div_rem(l, r, fv, false)?
                 }
             }
             BinOp::Rem => {
-                if let Some(v) = self.try_emit_nonneg_rem2(l, r, left, right) {
-                    v
-                } else if self.frame.safe_divisor_locals.contains(&right.0) {
-                    self.emit_unchecked_div_rem(l, r, true)?
+                if self.frame.safe_divisor_locals.contains(&right.0) {
+                    let unsigned = self.dividend_nonneg(left);
+                    self.emit_unchecked_div_rem(l, r, true, unsigned)?
                 } else {
                     self.emit_checked_div_rem(l, r, fv, true)?
                 }

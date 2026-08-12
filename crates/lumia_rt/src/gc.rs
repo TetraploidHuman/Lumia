@@ -103,6 +103,8 @@ impl MarkSweep {
     fn sweep_vec(
         heap: &mut Vec<*mut ObjectHeader>,
         promote_survivors: bool,
+        // When sweeping the old generation, also drop `HEAP_OLD_SET` entries.
+        from_old: bool,
     ) -> (usize /*freed*/, usize /*promoted*/) {
         let mut freed = 0usize;
         let mut promoted = 0usize;
@@ -116,9 +118,11 @@ impl MarkSweep {
                     HEAP_SET.with(|s| {
                         s.borrow_mut().remove(&obj);
                     });
-                    HEAP_OLD_SET.with(|s| {
-                        s.borrow_mut().remove(&obj);
-                    });
+                    if from_old {
+                        HEAP_OLD_SET.with(|s| {
+                            s.borrow_mut().remove(&obj);
+                        });
+                    }
                     REMEMBERED.with(|r| {
                         r.borrow_mut().remove(&obj);
                     });
@@ -153,7 +157,7 @@ impl MarkSweep {
         Self::mark_from_roots_minor();
         let (freed, promoted) = HEAP_YOUNG.with(|h| {
             let mut young = h.borrow_mut();
-            Self::sweep_vec(&mut young, true)
+            Self::sweep_vec(&mut young, true, false)
         });
         HEAP_OLD.with(|h| Self::clear_marks(&h.borrow()));
         REMEMBERED.with(|r| r.borrow_mut().clear());
@@ -171,12 +175,12 @@ impl MarkSweep {
         Self::mark_from_roots_full();
         let freed_y = HEAP_YOUNG.with(|h| {
             let mut young = h.borrow_mut();
-            let (freed, _) = Self::sweep_vec(&mut young, false);
+            let (freed, _) = Self::sweep_vec(&mut young, false, false);
             freed
         });
         let freed_o = HEAP_OLD.with(|h| {
             let mut old = h.borrow_mut();
-            let (freed, _) = Self::sweep_vec(&mut old, false);
+            let (freed, _) = Self::sweep_vec(&mut old, false, true);
             freed
         });
         REMEMBERED.with(|r| r.borrow_mut().clear());

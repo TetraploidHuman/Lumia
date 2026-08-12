@@ -110,7 +110,9 @@ pub struct SurfaceName {
     pub role: SurfaceRole,
 }
 
-/// Collection constructors typed specially in `lumia_ty` (not [`Builtin`] variants).
+/// Collection constructors: **not** [`Builtin`] variants.
+/// Typed in `lumia_ty::infer::prelude_ctors`, lowered to Core `AllocList` /
+/// `AllocSet` / `AllocMap` (not via [`BuiltinInfo`] / runtime `lumia_*` symbols).
 pub const PRELUDE_CTORS: &[SurfaceName] = &[
     SurfaceName {
         name: "listOf",

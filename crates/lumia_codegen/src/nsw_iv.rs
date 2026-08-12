@@ -1,22 +1,47 @@
-//! Mark loop induction `±1` updates as NSW-safe for codegen.
+//! Mark loop induction updates — and const-bounded IV arith trees — as NSW-safe.
 //!
-//! When a loop header is a strict compare (`<` / `>`) on a mutable slot `iv`,
-//! and the body/latch does `iv = iv ± 1`, that add/sub cannot overflow signed
-//! i64: the compare prevents the IV from reaching the overflowing extreme.
-//! (`<=` / `>=` are intentionally excluded — e.g. `i <= MAX; i = i + 1`.)
+//! ## Unit steps
+//! - Strict `<`/`>`: `iv = iv ± 1` cannot overflow signed i64.
+//! - Inclusive `<=`/`>=`: same only when the bound is a **known constant**
+//!   (unknown `n` in `i <= n` may be `i64::MAX`).
 //!
-//! The `±1` literal may be defined outside the loop body (shared const local);
-//! resolution therefore uses a function-wide def map.
+//! ## Bounded trees
+//! With a small const bound (`1..=NSW_BOUND_MAX`), Add/Sub/Mul(/Rem) closed under
+//! Accumulators: `Name(acc) + nsw` is included when the bound is ≤ `NSW_ACC_BOUND_MAX`.
+//! With a larger const IV upper (`≤ NSW_IV_UPPER_MAX`), `acc += unit_counter` is
+//! also NSW when the addend slot is only ever `0` / `+= 1` (Collatz `total += steps`).
+//!
+//! ## Extra peeps
+//! - `c * nonneg_iv` for tiny `|c|` (Collatz `3*x`)
+//! - `iv * iv` under `iv*iv ≤ C` (or ≤ outer const-bounded IV) headers
 
 use lumia_core::{for_each_block_dfs, Block, Local, Op, Value};
 use lumia_syntax::BinOp;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
-/// Locals that are `Binary` Add/Sub results proven safe for NSW emission.
+/// Max loop bound for IV×bound arith trees (products must fit i64 with margin).
+const NSW_BOUND_MAX: i64 = 30_000;
+/// Cap for recording IV uppers used only to prove `d*d ≤ n` NSW.
+const NSW_IV_UPPER_MAX: i64 = 1_000_000;
+/// Tighter cap so `acc += O(B^4)` over `O(B^3)` iters still fits i64 (matmul-style).
+const NSW_ACC_BOUND_MAX: i64 = 2_000;
+/// `|c|` for `c * nonneg_iv` NSW peep (Collatz `3*x`).
+const NSW_SMALL_FACTOR: i64 = 16;
+/// `acc += (… % C)` with `C ≤ this` is NSW under const-bounded IVs (`≤ NSW_BOUND_MAX`):
+/// rem ∈ `[0,C)` so `B²·C` fits i64 for `B ≤ 30_000`, `C ≤ 1_000_000`.
+const NSW_REM_MOD_MAX: i64 = 1_000_000;
+
+/// Locals that are `Binary` Add/Sub/Mul(/Rem) results proven safe for NSW emission.
 pub(crate) fn collect_nsw_binop_locals(body: &Block) -> HashSet<u32> {
     let all_defs = collect_leaf_defs(body);
+    let nonneg_loads = collect_nonneg_iv_load_locals(body);
 
     let mut out = HashSet::default();
+    let mut bounded_ivs: HashSet<String> = HashSet::default();
+    let mut iv_upper: HashMap<String, i64> = HashMap::default();
+    let mut max_bound: i64 = 0;
+
+    // Pass 1: unit steps + collect const-bounded IV uppers.
     for_each_block_dfs(body, &mut |b| {
         for op in &b.ops {
             if let Op::Let {
@@ -29,52 +54,220 @@ pub(crate) fn collect_nsw_binop_locals(body: &Block) -> HashSet<u32> {
                 ..
             } = op
             {
-                analyze_loop(header, body, latch, &all_defs, &mut out);
+                let info = iv_bound_info(header, &all_defs);
+                let unit_ok = info.strict
+                    || info
+                        .bound_const
+                        .is_some_and(|b| (0..=i64::MAX - 2).contains(&b));
+                if unit_ok {
+                    for name in &info.ivs {
+                        mark_unit_steps(body, name, &all_defs, &mut out);
+                        mark_unit_steps(latch, name, &all_defs, &mut out);
+                    }
+                    // Const-bounded loops: any `x = x ± 1` is NSW (e.g. prime counter `c`).
+                    if info.bound_const.is_some() {
+                        mark_any_unit_steps(body, &all_defs, &mut out);
+                        mark_any_unit_steps(latch, &all_defs, &mut out);
+                    }
+                }
+                if let Some(b) = info.bound_const {
+                    if (1..=NSW_IV_UPPER_MAX).contains(&b) {
+                        for name in &info.ivs {
+                            let e = iv_upper.entry(name.clone()).or_insert(b);
+                            *e = (*e).max(b);
+                        }
+                    }
+                    if (1..=NSW_BOUND_MAX).contains(&b) {
+                        bounded_ivs.extend(info.ivs.iter().cloned());
+                        max_bound = max_bound.max(b);
+                    }
+                }
             }
         }
     });
+
+    // Pass 2: `d*d ≤ C` / `d*d ≤ bounded_iv` — mark square + `d = d+1`.
+    for_each_block_dfs(body, &mut |b| {
+        for op in &b.ops {
+            if let Op::Let {
+                value:
+                    Value::Loop {
+                        header,
+                        body,
+                        latch,
+                    },
+                ..
+            } = op
+            {
+                if let Some((iv, c)) = square_bound(header, &all_defs, &iv_upper) {
+                    if (1..=NSW_IV_UPPER_MAX).contains(&c) {
+                        mark_unit_steps(body, &iv, &all_defs, &mut out);
+                        mark_unit_steps(latch, &iv, &all_defs, &mut out);
+                        mark_square_mul(body, latch, &iv, &all_defs, &mut out);
+                        let d_max = ((c as f64).sqrt().floor() as i64) + 2;
+                        let e = iv_upper.entry(iv.clone()).or_insert(d_max);
+                        *e = (*e).max(d_max);
+                        if (1..=NSW_BOUND_MAX).contains(&c) {
+                            bounded_ivs.insert(iv);
+                            max_bound = max_bound.max(d_max);
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    if !bounded_ivs.is_empty() {
+        mark_bounded_arith_tree(
+            body,
+            &bounded_ivs,
+            max_bound,
+            &all_defs,
+            &nonneg_loads,
+            &mut out,
+        );
+        // Even when bound > NSW_ACC_BOUND_MAX, `s += (e % C)` is safe: rem < C.
+        mark_acc_plus_bounded_rem(&all_defs, &mut out);
+    }
+    mark_small_factor_muls(&all_defs, &nonneg_loads, &mut out);
+
+    // `total += steps` under a large const-bounded outer IV: RHS is a unit
+    // counter (init 0, only +=1). Collatz max steps per n is tiny vs i64.
+    let max_upper = iv_upper.values().copied().max().unwrap_or(0);
+    if (1..=NSW_IV_UPPER_MAX).contains(&max_upper) {
+        mark_acc_plus_unit_counter(body, &all_defs, &mut out);
+    }
     out
 }
 
-fn analyze_loop(
-    header: &Block,
-    body: &Block,
-    latch: &Block,
-    all_defs: &HashMap<u32, Value>,
-    out: &mut HashSet<u32>,
-) {
-    let ivs = strict_iv_names(header, all_defs);
-    if ivs.is_empty() {
-        return;
-    }
-    for name in &ivs {
-        mark_unit_steps(body, name, all_defs, out);
-        mark_unit_steps(latch, name, all_defs, out);
-    }
+struct IvBoundInfo {
+    ivs: HashSet<String>,
+    bound_const: Option<i64>,
+    /// True for `<` / `>` (unit ±1 always NSW-safe).
+    strict: bool,
 }
 
-/// Slot names compared with a strict inequality in the loop header result.
-fn strict_iv_names(header: &Block, all_defs: &HashMap<u32, Value>) -> HashSet<String> {
-    let mut names = HashSet::default();
+/// IV names + optional const bound from `<`/`>`/`<=`/`>=`.
+fn iv_bound_info(header: &Block, all_defs: &HashMap<u32, Value>) -> IvBoundInfo {
+    let empty = IvBoundInfo {
+        ivs: HashSet::default(),
+        bound_const: None,
+        strict: false,
+    };
     let Some(res) = header.result else {
-        return names;
+        return empty;
     };
     let Some(Value::Binary {
         op, left, right, ..
     }) = all_defs.get(&res.0)
     else {
-        return names;
+        return empty;
     };
-    if !matches!(op, BinOp::Lt | BinOp::Gt) {
-        return names;
+    let strict = matches!(op, BinOp::Lt | BinOp::Gt);
+    if !strict && !matches!(op, BinOp::Le | BinOp::Ge) {
+        return empty;
     }
+    let mut ivs = HashSet::default();
     if let Some(n) = name_of_local(*left, all_defs) {
-        names.insert(n);
+        ivs.insert(n);
     }
     if let Some(n) = name_of_local(*right, all_defs) {
-        names.insert(n);
+        ivs.insert(n);
     }
-    names
+    let bound_const = match op {
+        BinOp::Lt | BinOp::Le => const_i64(*right, all_defs).or_else(|| const_i64(*left, all_defs)),
+        BinOp::Gt | BinOp::Ge => const_i64(*left, all_defs).or_else(|| const_i64(*right, all_defs)),
+        _ => None,
+    };
+    IvBoundInfo {
+        ivs,
+        bound_const,
+        strict,
+    }
+}
+
+/// `Name(iv) * Name(iv) ≤ Const` or `≤ Name(bounded)` (isPrime trial loop).
+fn square_bound(
+    header: &Block,
+    all_defs: &HashMap<u32, Value>,
+    iv_upper: &HashMap<String, i64>,
+) -> Option<(String, i64)> {
+    let res = header.result?;
+    let Value::Binary {
+        op, left, right, ..
+    } = all_defs.get(&res.0)?
+    else {
+        return None;
+    };
+    if !matches!(op, BinOp::Le | BinOp::Lt) {
+        return None;
+    }
+    let c = const_i64(*right, all_defs).or_else(|| {
+        name_of_local(*right, all_defs).and_then(|n| iv_upper.get(&n).copied())
+    })?;
+    let Value::Binary {
+        op: BinOp::Mul,
+        left: a,
+        right: b,
+        ..
+    } = all_defs.get(&left.0)?
+    else {
+        return None;
+    };
+    let na = name_of_local(*a, all_defs)?;
+    let nb = name_of_local(*b, all_defs)?;
+    if na == nb {
+        Some((na, c))
+    } else {
+        None
+    }
+}
+
+fn mark_square_mul(
+    body: &Block,
+    latch: &Block,
+    iv: &str,
+    all_defs: &HashMap<u32, Value>,
+    out: &mut HashSet<u32>,
+) {
+    for block in [body, latch] {
+        for op in &block.ops {
+            if let Op::Let {
+                local,
+                value:
+                    Value::Binary {
+                        op: BinOp::Mul,
+                        left,
+                        right,
+                        ..
+                    },
+                ..
+            } = op
+            {
+                let la = name_of_local(*left, all_defs);
+                let ra = name_of_local(*right, all_defs);
+                if la.as_deref() == Some(iv) && ra.as_deref() == Some(iv) {
+                    out.insert(local.0);
+                }
+            }
+        }
+    }
+    // Also scan all_defs (mul may be in header block).
+    for (id, v) in all_defs {
+        if let Value::Binary {
+            op: BinOp::Mul,
+            left,
+            right,
+            ..
+        } = v
+        {
+            let la = name_of_local(*left, all_defs);
+            let ra = name_of_local(*right, all_defs);
+            if la.as_deref() == Some(iv) && ra.as_deref() == Some(iv) {
+                out.insert(*id);
+            }
+        }
+    }
 }
 
 fn mark_unit_steps(
@@ -83,39 +276,363 @@ fn mark_unit_steps(
     all_defs: &HashMap<u32, Value>,
     out: &mut HashSet<u32>,
 ) {
-    for op in &block.ops {
-        let Op::Assign {
-            name,
-            value: Local(dest),
-        } = op
-        else {
-            continue;
-        };
-        if name != iv {
-            continue;
+    for_each_block_dfs(block, &mut |b| {
+        for op in &b.ops {
+            let Op::Assign {
+                name,
+                value: Local(dest),
+            } = op
+            else {
+                continue;
+            };
+            if name != iv {
+                continue;
+            }
+            if is_unit_step_of(*dest, name, all_defs) {
+                out.insert(*dest);
+            }
         }
-        let Some(Value::Binary {
-            op, left, right, ..
-        }) = all_defs.get(dest)
+    });
+}
+
+fn mark_any_unit_steps(block: &Block, all_defs: &HashMap<u32, Value>, out: &mut HashSet<u32>) {
+    for_each_block_dfs(block, &mut |b| {
+        for op in &b.ops {
+            let Op::Assign {
+                name,
+                value: Local(dest),
+            } = op
+            else {
+                continue;
+            };
+            if is_unit_step_of(*dest, name, all_defs) {
+                out.insert(*dest);
+            }
+        }
+    });
+}
+
+fn is_unit_step_of(dest: u32, iv: &str, all_defs: &HashMap<u32, Value>) -> bool {
+    let Some(Value::Binary {
+        op, left, right, ..
+    }) = all_defs.get(&dest)
+    else {
+        return false;
+    };
+    let step = match op {
+        BinOp::Add => 1i64,
+        BinOp::Sub => -1i64,
+        _ => return false,
+    };
+    let l_iv = name_of_local(*left, all_defs).as_deref() == Some(iv);
+    let r_iv = name_of_local(*right, all_defs).as_deref() == Some(iv);
+    let l_c = const_i64(*left, all_defs);
+    let r_c = const_i64(*right, all_defs);
+    match step {
+        1 => (l_iv && r_c == Some(1)) || (r_iv && l_c == Some(1)),
+        -1 => l_iv && r_c == Some(1),
+        _ => false,
+    }
+}
+
+fn mark_small_factor_muls(
+    all_defs: &HashMap<u32, Value>,
+    nonneg_loads: &HashSet<u32>,
+    out: &mut HashSet<u32>,
+) {
+    for (id, v) in all_defs {
+        let Value::Binary {
+            op: BinOp::Mul,
+            left,
+            right,
+            ..
+        } = v
         else {
             continue;
         };
-        let step = match op {
-            BinOp::Add => 1i64,
-            BinOp::Sub => -1i64,
-            _ => continue,
-        };
-        let l_iv = name_of_local(*left, all_defs).as_deref() == Some(iv);
-        let r_iv = name_of_local(*right, all_defs).as_deref() == Some(iv);
-        let l_c = const_i64(*left, all_defs);
-        let r_c = const_i64(*right, all_defs);
-        let ok = match step {
-            1 => (l_iv && r_c == Some(1)) || (r_iv && l_c == Some(1)),
-            -1 => l_iv && r_c == Some(1), // iv - 1 only (not 1 - iv)
-            _ => false,
-        };
+        let (lc, rc) = (const_i64(*left, all_defs), const_i64(*right, all_defs));
+        let ok = matches!(
+            (lc, rc),
+            (Some(c), _) if (1..=NSW_SMALL_FACTOR).contains(&c) && nonneg_loads.contains(&right.0)
+        ) || matches!(
+            (lc, rc),
+            (_, Some(c)) if (1..=NSW_SMALL_FACTOR).contains(&c) && nonneg_loads.contains(&left.0)
+        );
         if ok {
-            out.insert(*dest);
+            out.insert(*id);
+        }
+    }
+    // Close `3*x + 1` (Collatz) — add/sub of a just-marked factor mul and tiny const.
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for (id, v) in all_defs {
+            if out.contains(id) {
+                continue;
+            }
+            let Value::Binary {
+                op, left, right, ..
+            } = v
+            else {
+                continue;
+            };
+            if !matches!(op, BinOp::Add | BinOp::Sub) {
+                continue;
+            }
+            let l_ok = out.contains(&left.0)
+                && const_i64(*right, all_defs).is_some_and(|c| (0..=NSW_SMALL_FACTOR).contains(&c));
+            let r_ok = out.contains(&right.0)
+                && const_i64(*left, all_defs).is_some_and(|c| (0..=NSW_SMALL_FACTOR).contains(&c));
+            if l_ok || r_ok {
+                out.insert(*id);
+                changed = true;
+            }
+        }
+    }
+}
+
+/// Slots that are only ever assigned `0` or `self + 1` (Collatz `steps`, etc.).
+fn collect_unit_counter_slots(body: &Block, all_defs: &HashMap<u32, Value>) -> HashSet<String> {
+    let mut assigns: HashMap<String, Vec<u32>> = HashMap::default();
+    for_each_block_dfs(body, &mut |b| {
+        for op in &b.ops {
+            if let Op::Assign {
+                name,
+                value: Local(v),
+            } = op
+            {
+                assigns.entry(name.clone()).or_default().push(*v);
+            }
+        }
+    });
+    let mut out = HashSet::default();
+    for (name, vals) in assigns {
+        let mut has_zero = false;
+        let mut ok = !vals.is_empty();
+        for v in vals {
+            match all_defs.get(&v) {
+                Some(Value::Int(0)) => has_zero = true,
+                Some(Value::Binary {
+                    op: BinOp::Add,
+                    left,
+                    right,
+                    ..
+                }) => {
+                    let l_self = name_of_local(*left, all_defs).as_deref() == Some(name.as_str());
+                    let r_self = name_of_local(*right, all_defs).as_deref() == Some(name.as_str());
+                    let l_one = const_i64(*left, all_defs) == Some(1);
+                    let r_one = const_i64(*right, all_defs) == Some(1);
+                    if !((l_self && r_one) || (r_self && l_one)) {
+                        ok = false;
+                        break;
+                    }
+                }
+                _ => {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        if ok && has_zero {
+            out.insert(name);
+        }
+    }
+    out
+}
+
+/// Mark `Name(acc) + (e % C)` (and reverse) as NSW when `C` is a small positive const
+/// and `e % C` (or `e`) is already in `out`. Safe under const IV bounds ≤ [`NSW_BOUND_MAX`].
+fn mark_acc_plus_bounded_rem(all_defs: &HashMap<u32, Value>, out: &mut HashSet<u32>) {
+    let mut rem_ok: HashSet<u32> = HashSet::default();
+    for (id, v) in all_defs {
+        if let Value::Binary {
+            op: BinOp::Rem,
+            left,
+            right,
+            ..
+        } = v
+        {
+            let c = const_i64(*right, all_defs);
+            if c.is_some_and(|c| (2..=NSW_REM_MOD_MAX).contains(&c))
+                && (out.contains(&left.0) || out.contains(id))
+            {
+                rem_ok.insert(*id);
+                out.insert(*id);
+            }
+        }
+    }
+    if rem_ok.is_empty() {
+        return;
+    }
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for (id, v) in all_defs {
+            if out.contains(id) {
+                continue;
+            }
+            let Value::Binary {
+                op: BinOp::Add,
+                left,
+                right,
+                ..
+            } = v
+            else {
+                continue;
+            };
+            let l_rem =
+                rem_ok.contains(&left.0) || (out.contains(&left.0) && is_rem(*left, all_defs));
+            let r_rem =
+                rem_ok.contains(&right.0) || (out.contains(&right.0) && is_rem(*right, all_defs));
+            let l_acc = name_of_local(*left, all_defs).is_some() || out.contains(&left.0);
+            let r_acc = name_of_local(*right, all_defs).is_some() || out.contains(&right.0);
+            if (l_rem && r_acc) || (r_rem && l_acc) {
+                out.insert(*id);
+                changed = true;
+            }
+        }
+    }
+}
+
+fn is_rem(l: Local, defs: &HashMap<u32, Value>) -> bool {
+    matches!(defs.get(&l.0), Some(Value::Binary { op: BinOp::Rem, .. }))
+}
+
+/// Mark `Name(acc) + Name(unit_counter)` (and the reverse) as NSW.
+fn mark_acc_plus_unit_counter(
+    body: &Block,
+    all_defs: &HashMap<u32, Value>,
+    out: &mut HashSet<u32>,
+) {
+    let counters = collect_unit_counter_slots(body, all_defs);
+    if counters.is_empty() {
+        return;
+    }
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for (id, v) in all_defs {
+            if out.contains(id) {
+                continue;
+            }
+            let Value::Binary {
+                op: BinOp::Add,
+                left,
+                right,
+                ..
+            } = v
+            else {
+                continue;
+            };
+            let ln = name_of_local(*left, all_defs);
+            let rn = name_of_local(*right, all_defs);
+            let l_ctr = ln.as_ref().is_some_and(|n| counters.contains(n));
+            let r_ctr = rn.as_ref().is_some_and(|n| counters.contains(n));
+            // One side counter load, other side any Name (accumulator) or already NSW.
+            let l_acc = ln.is_some() || out.contains(&left.0);
+            let r_acc = rn.is_some() || out.contains(&right.0);
+            if (l_ctr && r_acc) || (r_ctr && l_acc) {
+                out.insert(*id);
+                changed = true;
+            }
+        }
+    }
+}
+
+/// Close Add/Sub/Mul/Rem under IV loads + small consts when some exclusive bound is const.
+fn mark_bounded_arith_tree(
+    body: &Block,
+    ivs: &HashSet<String>,
+    bound: i64,
+    all_defs: &HashMap<u32, Value>,
+    nonneg_loads: &HashSet<u32>,
+    out: &mut HashSet<u32>,
+) {
+    let mut seed: HashSet<u32> = out.clone();
+    let mut seed_names: HashSet<String> = ivs.clone();
+    let const_lim = bound.saturating_mul(bound).min(NSW_BOUND_MAX.saturating_mul(NSW_BOUND_MAX));
+    for (id, v) in all_defs {
+        match v {
+            Value::Int(n) if *n >= 0 && *n <= const_lim => {
+                seed.insert(*id);
+            }
+            Value::Name(n) if ivs.contains(n) => {
+                seed.insert(*id);
+            }
+            _ => {}
+        }
+    }
+    for_each_block_dfs(body, &mut |b| {
+        mark_name_loads_multi(b, ivs, &mut seed);
+    });
+    mark_small_factor_muls(all_defs, nonneg_loads, &mut seed);
+    for id in &seed {
+        if all_defs.get(id).is_some_and(|v| matches!(v, Value::Binary { .. })) {
+            out.insert(*id);
+        }
+    }
+
+    let allow_acc = bound <= NSW_ACC_BOUND_MAX;
+    let in_seed = |id: u32, seed: &HashSet<u32>, names: &HashSet<String>| {
+        seed.contains(&id)
+            || name_of_local(Local(id), all_defs).is_some_and(|n| names.contains(&n))
+    };
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for (id, v) in all_defs {
+            if seed.contains(id) {
+                continue;
+            }
+            let Value::Binary {
+                op, left, right, ..
+            } = v
+            else {
+                continue;
+            };
+            if !matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Rem) {
+                continue;
+            }
+            let l = in_seed(left.0, &seed, &seed_names);
+            let r = in_seed(right.0, &seed, &seed_names);
+            let both = l && r;
+            let acc_add = allow_acc
+                && matches!(op, BinOp::Add | BinOp::Sub)
+                && ((l && name_of_local(*right, all_defs).is_some())
+                    || (r && name_of_local(*left, all_defs).is_some()));
+            let rem_ok = matches!(op, BinOp::Rem)
+                && l
+                && const_i64(*right, all_defs).is_some_and(|c| c > 1);
+            if both || acc_add || rem_ok {
+                seed.insert(*id);
+                out.insert(*id);
+                if acc_add {
+                    if let Some(n) = name_of_local(*left, all_defs) {
+                        seed_names.insert(n);
+                        seed.insert(left.0);
+                    }
+                    if let Some(n) = name_of_local(*right, all_defs) {
+                        seed_names.insert(n);
+                        seed.insert(right.0);
+                    }
+                }
+                changed = true;
+            }
+        }
+    }
+}
+
+fn mark_name_loads_multi(block: &Block, names: &HashSet<String>, out: &mut HashSet<u32>) {
+    for op in &block.ops {
+        if let Op::Let {
+            local,
+            value: Value::Name(n),
+            ..
+        } = op
+        {
+            if names.contains(n) {
+                out.insert(local.0);
+            }
         }
     }
 }
@@ -134,12 +651,19 @@ fn const_i64(l: Local, defs: &HashMap<u32, Value>) -> Option<i64> {
     }
 }
 
-fn collect_leaf_defs(body: &Block) -> HashMap<u32, Value> {
+pub(crate) fn collect_leaf_defs(body: &Block) -> HashMap<u32, Value> {
     let mut all_defs: HashMap<u32, Value> = HashMap::default();
     for_each_block_dfs(body, &mut |b| {
         for op in &b.ops {
             if let Op::Let { local, value, .. } = op {
-                if matches!(value, Value::Int(_) | Value::Name(_) | Value::Binary { .. }) {
+                if matches!(
+                    value,
+                    Value::Int(_)
+                        | Value::Float(_)
+                        | Value::Name(_)
+                        | Value::Binary { .. }
+                        | Value::Builtin { .. }
+                ) {
                     all_defs.insert(local.0, value.clone());
                 }
             }
@@ -186,8 +710,8 @@ pub(crate) fn collect_nonneg_iv_load_locals(body: &Block) -> HashSet<u32> {
             } = op
             {
                 for iv in nonneg_iv_names(header, &all_defs) {
-                    mark_name_loads(body, &iv, &mut out);
-                    mark_name_loads(latch, &iv, &mut out);
+                    mark_name_loads(body, iv.as_str(), &mut out);
+                    mark_name_loads(latch, iv.as_str(), &mut out);
                 }
             }
         }
@@ -344,7 +868,7 @@ val main = {
     }
 
     #[test]
-    fn skips_le_increment() {
+    fn marks_le_const_increment() {
         let core = compile_source_to_core(
             r#"
 module M
@@ -362,7 +886,30 @@ val main = {
         .unwrap();
         let main = core.functions.iter().find(|f| f.name == "main").unwrap();
         let nsw = collect_nsw_binop_locals(&main.body);
-        assert!(nsw.is_empty(), "i=i+1 under i<=n must keep overflow checks");
+        assert!(!nsw.is_empty(), "i=i+1 under i<=10 (const) is NSW-safe");
+    }
+
+    #[test]
+    fn skips_le_unknown_bound() {
+        let core = compile_source_to_core(
+            r#"
+module M
+val main(limit) = {
+  var i = 0
+  for i <= limit {
+    i = i + 1
+  }
+  i
+}
+"#,
+        )
+        .unwrap();
+        let main = core.functions.iter().find(|f| f.name == "main").unwrap();
+        let nsw = collect_nsw_binop_locals(&main.body);
+        assert!(
+            nsw.is_empty(),
+            "i=i+1 under i<=limit (unknown) must keep overflow checks"
+        );
     }
 
     #[test]
@@ -373,15 +920,42 @@ val main = {
         let core =
             lumia_opt::compile_source_to_optimized(&src, &lumia_opt::OptOptions::for_build(true))
                 .unwrap();
+        // Prefer the const-specialized clone (`matmulChecksum$c_160`) when present.
         let f = core
             .functions
             .iter()
-            .find(|f| f.name == "matmulChecksum")
+            .find(|f| f.name.starts_with("matmulChecksum$c_"))
+            .or_else(|| core.functions.iter().find(|f| f.name == "matmulChecksum"))
             .unwrap();
         let nsw = collect_nsw_binop_locals(&f.body);
         assert!(
             nsw.len() >= 3,
             "expected i/j/k unit steps under strict <, got {nsw:?}"
+        );
+    }
+
+    #[test]
+    fn marks_const_bound_mul_tree() {
+        let core = compile_source_to_core(
+            r#"
+module M
+val main = {
+  var i = 0
+  var s = 0
+  for i < 10 {
+    s = s + i * 10 + 1
+    i = i + 1
+  }
+  s
+}
+"#,
+        )
+        .unwrap();
+        let main = core.functions.iter().find(|f| f.name == "main").unwrap();
+        let nsw = collect_nsw_binop_locals(&main.body);
+        assert!(
+            nsw.len() >= 2,
+            "expected unit step + i*10/+ tree under i<10, got {nsw:?}"
         );
     }
 

@@ -28,6 +28,7 @@ impl<'ctx> Codegen<'ctx> {
         self.memo.memo_idx_key = None;
         self.frame.root_depth = 0;
         self.frame.rooted_slots.clear();
+        self.frame.cow_consume_unique = false;
         self.funs.funref_locals.clear();
         self.frame.local_tys.clear();
         self.frame.slot_tys.clear();
@@ -35,6 +36,7 @@ impl<'ctx> Codegen<'ctx> {
         self.frame.nsw_binop_locals = crate::nsw_iv::collect_nsw_binop_locals(&fun.body);
         self.frame.safe_divisor_locals = crate::nsw_iv::collect_safe_divisor_locals(&fun.body);
         self.frame.nonneg_iv_load_locals = crate::nsw_iv::collect_nonneg_iv_load_locals(&fun.body);
+        self.frame.leaf_defs = crate::nsw_iv::collect_leaf_defs(&fun.body);
         self.funs.current_fun = fun.name.clone();
         self.memo.current_memo = fun.memo;
         self.funs.tco_peers = self
@@ -192,12 +194,35 @@ impl<'ctx> Codegen<'ctx> {
         Ok(())
     }
 
+    /// `xs = xs.set(i, v)` — next op assigns this MapSet result back onto the loaded slot.
+    fn map_set_reassign_consumes(
+        &self,
+        block: &Block,
+        let_idx: usize,
+        dest: Local,
+        value: &Value,
+    ) -> bool {
+        let Value::Builtin { name, args } = value else {
+            return false;
+        };
+        if !matches!(name, lumia_hir::Builtin::MapSet) || args.is_empty() {
+            return false;
+        }
+        let Some(Value::Name(slot)) = self.frame.leaf_defs.get(&args[0].0) else {
+            return false;
+        };
+        match block.ops.get(let_idx + 1) {
+            Some(Op::Assign { name, value: v }) if name == slot && *v == dest => true,
+            _ => false,
+        }
+    }
+
     fn emit_block(
         &mut self,
         block: &Block,
         fv: FunctionValue<'ctx>,
     ) -> Result<Option<BasicValueEnum<'ctx>>> {
-        for op in &block.ops {
+        for (idx, op) in block.ops.iter().enumerate() {
             // If current block already terminated (after break/continue), skip.
             if self
                 .llvm
@@ -213,9 +238,12 @@ impl<'ctx> Codegen<'ctx> {
                     if self.try_emit_tco_let(block, *local, value)? {
                         return Ok(None);
                     }
+                    self.frame.cow_consume_unique =
+                        self.map_set_reassign_consumes(block, idx, *local, value);
                     self.frame.emit_dest = Some(local.0);
                     let v = self.emit_value(value, fv)?;
                     self.frame.emit_dest = None;
+                    self.frame.cow_consume_unique = false;
                     self.bind_let_after_emit(*local, value, v)?;
                 }
                 Op::Effect { value } => {

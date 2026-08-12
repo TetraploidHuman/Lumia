@@ -108,11 +108,99 @@ fn ensure_map_vf64_accepts_empty_assoc() {
     unsafe {
         *(m as *mut i64) = 0;
     }
-    let m2 = lumia_ensure_map_vf64(m);
+    // Rust path (not extern C) so trap_abort can unwind for should_panic tests below.
+    let m2 = crate::map_set::ensure_map_vf64(m);
     assert!(!m2.is_null());
     unsafe {
         assert_eq!((*header_from_payload(m2)).type_id, TYPE_MAP_ASSOC_VF64);
     }
     // Still assoc (no hash promotion).
     assert!(map_is_assoc(m2));
+}
+
+#[test]
+fn ensure_map_f64_null_empty_identity() {
+    let from_null = crate::map_set::ensure_map_f64(ptr::null_mut());
+    assert!(!from_null.is_null());
+    unsafe {
+        assert_eq!((*header_from_payload(from_null)).type_id, TYPE_MAP_F64);
+        assert_eq!(*(from_null as *const i64), 0);
+    }
+
+    let empty = lumia_alloc(8, TYPE_MAP);
+    unsafe {
+        *(empty as *mut i64) = 0;
+    }
+    let retagged = crate::map_set::ensure_map_f64(empty);
+    unsafe {
+        assert_eq!((*header_from_payload(retagged)).type_id, TYPE_MAP_F64);
+    }
+
+    let already = lumia_alloc(8, TYPE_MAP_F64);
+    unsafe {
+        *(already as *mut i64) = 0;
+    }
+    assert_eq!(crate::map_set::ensure_map_f64(already), already);
+}
+
+#[test]
+fn ensure_map_vf64_null_and_identity() {
+    let from_null = crate::map_set::ensure_map_vf64(ptr::null_mut());
+    unsafe {
+        assert_eq!((*header_from_payload(from_null)).type_id, TYPE_MAP_VF64);
+    }
+    let already = lumia_alloc(8, TYPE_MAP_VF64);
+    unsafe {
+        *(already as *mut i64) = 0;
+    }
+    assert_eq!(crate::map_set::ensure_map_vf64(already), already);
+}
+
+#[test]
+fn ensure_set_f64_null_empty_identity() {
+    let from_null = crate::map_set::ensure_set_f64(ptr::null_mut());
+    unsafe {
+        assert_eq!((*header_from_payload(from_null)).type_id, TYPE_SET_F64);
+        assert_eq!(*(from_null as *const i64), 0);
+    }
+    let empty = lumia_alloc(8, TYPE_SET);
+    unsafe {
+        *(empty as *mut i64) = 0;
+    }
+    let retagged = crate::map_set::ensure_set_f64(empty);
+    unsafe {
+        assert_eq!((*header_from_payload(retagged)).type_id, TYPE_SET_F64);
+    }
+    let already = lumia_alloc(8, TYPE_SET_F64);
+    unsafe {
+        *(already as *mut i64) = 0;
+    }
+    assert_eq!(crate::map_set::ensure_set_f64(already), already);
+}
+
+#[test]
+#[should_panic(expected = "ensure_map_f64 on non-empty Int-key map")]
+fn ensure_map_f64_nonempty_traps() {
+    let mut m = ptr::null_mut();
+    lumia_root_push(&mut m as *mut *mut u8);
+    m = lumia_map_set(m, 1, 2);
+    let _ = crate::map_set::ensure_map_f64(m);
+}
+
+#[test]
+#[should_panic(expected = "ensure_map_vf64 on non-empty non-Float-value map")]
+fn ensure_map_vf64_nonempty_traps() {
+    let mut m = ptr::null_mut();
+    lumia_root_push(&mut m as *mut *mut u8);
+    m = lumia_map_set(m, 1, 2);
+    let _ = crate::map_set::ensure_map_vf64(m);
+}
+
+#[test]
+#[should_panic(expected = "ensure_set_f64 on non-empty Int-elem set")]
+fn ensure_set_f64_nonempty_traps() {
+    let mut s = ptr::null_mut();
+    lumia_root_push(&mut s as *mut *mut u8);
+    s = lumia_set_insert(s, 1);
+    let _ = crate::map_set::ensure_set_f64(s);
 }

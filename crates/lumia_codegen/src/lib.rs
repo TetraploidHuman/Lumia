@@ -1,5 +1,6 @@
 //! LLVM codegen via inkwell (LLVM 21). Links against `lumia_rt`.
 
+mod attrs;
 mod emit_eq;
 mod emit_fun;
 mod emit_memo;
@@ -97,6 +98,7 @@ fn emit_llvm_module<'ctx>(
         &core.name,
         opts.option_some_tag,
         opts.option_none_tag,
+        opts.release,
     );
     declare_runtime(context, &cg.llvm.module);
     cg.funs.tco_sccs = compute_tco_sccs(core);
@@ -145,6 +147,7 @@ fn emit_llvm_module<'ctx>(
         cg.funs
             .fun_param_tys
             .insert(f.name.clone(), f.param_tys.clone());
+        attrs::add_nounwind(context, fv);
         if core_fun_is_param0_identity(f) {
             cg.funs.fun_param0_identity.insert(f.name.clone());
         }
@@ -387,10 +390,18 @@ pub(crate) struct Codegen<'ctx> {
     pub(crate) memo: MemoEmit<'ctx>,
     pub(crate) option_some_tag: i64,
     pub(crate) option_none_tag: i64,
+    /// Release builds omit trap backtrace frames (hot-path call overhead).
+    pub(crate) release: bool,
 }
 
 impl<'ctx> Codegen<'ctx> {
-    fn new(context: &'ctx Context, name: &str, option_some_tag: i64, option_none_tag: i64) -> Self {
+    fn new(
+        context: &'ctx Context,
+        name: &str,
+        option_some_tag: i64,
+        option_none_tag: i64,
+        release: bool,
+    ) -> Self {
         Self {
             llvm: LlvmTypes {
                 context,
@@ -403,6 +414,7 @@ impl<'ctx> Codegen<'ctx> {
             memo: MemoEmit::default(),
             option_some_tag,
             option_none_tag,
+            release,
         }
     }
 
@@ -588,7 +600,7 @@ mod tests {
     #[test]
     fn runtime_fn_missing_returns_err_not_panic() {
         let context = Context::create();
-        let cg = Codegen::new(&context, "empty", 0, 1);
+        let cg = Codegen::new(&context, "empty", 0, 1, false);
         let err = cg
             .runtime_fn("lumia_definitely_missing_symbol_zz")
             .expect_err("missing runtime symbol");

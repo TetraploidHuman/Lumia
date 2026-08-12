@@ -1,4 +1,37 @@
 use super::*;
+use crate::common::{list_rc_is_unique, list_rc_retain, RC_SHARED};
+
+#[test]
+fn object_header_pad_list_rc_vs_adt_float_mask() {
+    // List: alloc initializes `_pad` to 1 (unique); retain bumps RC.
+    let list = lumia_alloc(8, TYPE_LIST);
+    unsafe {
+        *(list as *mut i64) = 0;
+        assert_eq!((*header_from_payload(list))._pad, 1);
+        assert!(list_rc_is_unique(list));
+    }
+    list_rc_retain(list);
+    unsafe {
+        assert_eq!((*header_from_payload(list))._pad, 2);
+        assert!(!list_rc_is_unique(list));
+    }
+
+    // ADT: `_pad` stores float field mask, not RC.
+    let adt = lumia_alloc(16, TYPE_ADT);
+    unsafe {
+        assert_eq!((*header_from_payload(adt))._pad, 0);
+    }
+    lumia_adt_set_float_mask(adt, 0b101);
+    unsafe {
+        assert_eq!((*header_from_payload(adt))._pad, 0b101);
+    }
+
+    // Immortal empty-list singleton uses RC_SHARED in `_pad`.
+    let empty = lumia_list_empty();
+    unsafe {
+        assert_eq!((*header_from_payload(empty))._pad, RC_SHARED);
+    }
+}
 
 #[test]
 fn list_f64_eq_follows_ieee() {

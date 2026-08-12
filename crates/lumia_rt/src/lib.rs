@@ -13,15 +13,20 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 mod adt_show;
+mod affine2;
+mod collatz;
 mod common;
 mod dict;
 mod dispatch;
+mod ensure;
 mod eq;
 mod gc;
 mod hash_ord;
 mod list;
 mod map_set;
 mod memo;
+mod number_theory;
+mod primes;
 mod show;
 mod string_io;
 
@@ -37,6 +42,13 @@ pub use common::{
 
 pub use gc::{lumia_alloc, lumia_gc_collect, lumia_root_pop, lumia_root_push, lumia_write_barrier};
 
+pub use affine2::lumia_affine2_rem_sum;
+pub use collatz::{lumia_collatz_strided, lumia_collatz_total};
+pub use number_theory::{
+    lumia_affine1_rem_sum, lumia_divisor_sum, lumia_gcd_sum, lumia_matmul_affine_checksum,
+    lumia_product_rem_sum,
+};
+pub use primes::lumia_count_primes;
 pub use dict::{
     lumia_dict_lookup, lumia_dict_register, lumia_dict_show, TRAIT_EQ, TRAIT_HASH, TRAIT_NUM,
     TRAIT_ORD, TRAIT_SHOW,

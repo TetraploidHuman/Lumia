@@ -190,7 +190,7 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumia_rt` 内�
 - **自动并行**（默认开）：无捕获 lambda 或顶层函数名的纯标量 `List.map` → `ListParMap`（`examples/par_map.lm` / `par_map_fn.lm`）；IO/堆类型/捕获闭包回退顺序（`par_map_capture.lm` / `bad_par_map_io.lm`）。`--no-parallel` 关闭。worker 内禁止堆分配（TLS 堆隔离）。
 - Memo 性能：`scripts/bench_memo.sh`（同参热命中，约 **20×** vs `--no-memo`）；`examples/memo_dense.lm` 的 `fib` 下标表约 **1000×+**。
   - `**bench_cpu` 整套**：收益几乎只来自 `fib`（其余核是单遍扫参，无跨调用复用 → 理论无命中）。曾有成本模型把「循环里调用一次」当成命中证据、误挂 4 槽表导致 Collatz **变慢**，已改为要求递归或静态同参复用；稠密表仅结构递减自递归。
-- CPU 计算密集：`scripts/bench_cpu.sh`（素数 / matmul / Mandelbrot / Collatz / fib）。
+- CPU 计算密集：`scripts/bench_cpu.sh`（素数 / matmul / Mandelbrot / Collatz dense+strided / fib / poly / gcd / divisorSum / productRem / floatOrbit / rangeFold；约 0.5–1s 量级，报 min/median/max）。
 - **纪律（DESIGN §7.1.1）**：分析能证明 → 特化；不能证明 → **默认稳定路径**：
   - `List` → `HeapList` / `COWList`
   - `Map`/`Set` → `HashOrdered` + COW / Overlay

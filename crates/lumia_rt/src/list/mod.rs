@@ -12,6 +12,8 @@ pub use core::{
 };
 pub use ops::*;
 pub use par::*;
+#[cfg(test)]
+pub(crate) use tid::ensure_list_f64;
 pub(crate) use tid::list_float_elems;
 pub use tid::lumia_ensure_list_f64;
 

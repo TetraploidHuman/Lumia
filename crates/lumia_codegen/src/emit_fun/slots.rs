@@ -33,14 +33,19 @@ impl<'ctx> Codegen<'ctx> {
     }
 
     pub(crate) fn store_slot(&mut self, name: &str, v: BasicValueEnum<'ctx>) -> Result<()> {
-        if matches!(v, BasicValueEnum::FloatValue(_)) {
-            // Float slots are not heap roots; create without rooting.
+        if let BasicValueEnum::FloatValue(f) = v {
+            // Native f64 mut slots — avoid bitcast round-trips in hot float loops.
             if !self.frame.slots.contains_key(name) {
-                let alloca = self.alloca_in_entry(self.llvm.i64_ty, &format!("mut_{name}"))?;
+                let fty = self.llvm.context.f64_type();
+                let alloca = self.alloca_in_entry_ty(fty.into(), &format!("mut_{name}"))?;
+                crate::error::llvm(self.llvm.builder.build_store(alloca, fty.const_float(0.0)))?;
                 self.frame.slots.insert(name.to_string(), alloca);
             }
             self.frame.float_slots.insert(name.to_string());
             self.frame.slot_tys.insert(name.to_string(), Type::Float);
+            let slot = *self.frame.slots.get(name).context("float slot")?;
+            crate::error::llvm(self.llvm.builder.build_store(slot, f))?;
+            return Ok(());
         }
         let slot = self.ensure_slot(name)?;
         let i = self.coerce_i64(v)?;
@@ -100,15 +105,11 @@ impl<'ctx> Codegen<'ctx> {
             .get(name)
             .copied()
             .with_context(|| format!("unbound mutable `{name}`"))?;
-        let bits = crate::error::llvm(self.llvm.builder.build_load(self.llvm.i64_ty, slot, name))?;
         if self.frame.float_slots.contains(name) {
-            crate::error::llvm(self.llvm.builder.build_bit_cast(
-                bits.into_int_value(),
-                self.llvm.context.f64_type(),
-                "mut_f64",
-            ))
+            let fty = self.llvm.context.f64_type();
+            crate::error::llvm(self.llvm.builder.build_load(fty, slot, name))
         } else {
-            Ok(bits)
+            crate::error::llvm(self.llvm.builder.build_load(self.llvm.i64_ty, slot, name))
         }
     }
 }

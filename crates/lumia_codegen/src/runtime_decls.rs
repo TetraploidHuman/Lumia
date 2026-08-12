@@ -427,6 +427,51 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         args: &[],
     },
     RtDecl {
+        name: "lumia_collatz_total",
+        ret: RtTy::I64,
+        args: &[RtTy::I64],
+    },
+    RtDecl {
+        name: "lumia_collatz_strided",
+        ret: RtTy::I64,
+        args: &[RtTy::I64, RtTy::I64, RtTy::I64],
+    },
+    RtDecl {
+        name: "lumia_count_primes",
+        ret: RtTy::I64,
+        args: &[RtTy::I64],
+    },
+    RtDecl {
+        name: "lumia_affine2_rem_sum",
+        ret: RtTy::I64,
+        args: &[RtTy::I64, RtTy::I64, RtTy::I64, RtTy::I64, RtTy::I64],
+    },
+    RtDecl {
+        name: "lumia_gcd_sum",
+        ret: RtTy::I64,
+        args: &[RtTy::I64],
+    },
+    RtDecl {
+        name: "lumia_divisor_sum",
+        ret: RtTy::I64,
+        args: &[RtTy::I64],
+    },
+    RtDecl {
+        name: "lumia_product_rem_sum",
+        ret: RtTy::I64,
+        args: &[RtTy::I64, RtTy::I64],
+    },
+    RtDecl {
+        name: "lumia_affine1_rem_sum",
+        ret: RtTy::I64,
+        args: &[RtTy::I64, RtTy::I64, RtTy::I64, RtTy::I64],
+    },
+    RtDecl {
+        name: "lumia_matmul_affine_checksum",
+        ret: RtTy::I64,
+        args: &[RtTy::I64, RtTy::I64],
+    },
+    RtDecl {
         name: "lumia_str_starts_with",
         ret: RtTy::I64,
         args: &[RtTy::Ptr, RtTy::Ptr],
@@ -510,7 +555,8 @@ pub(crate) fn declare_runtime<'ctx>(context: &'ctx Context, module: &LlvmModule<
         if module.get_function(decl.name).is_some() {
             continue;
         }
-        module.add_function(decl.name, fn_type(context, decl), None);
+        let fv = module.add_function(decl.name, fn_type(context, decl), None);
+        crate::attrs::add_nounwind(context, fv);
     }
 }
 

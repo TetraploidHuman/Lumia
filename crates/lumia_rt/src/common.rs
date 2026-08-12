@@ -15,11 +15,20 @@ pub use lumia_abi::{
 };
 
 /// Object header placed before payload.
+///
+/// `_pad` is **type_id-dependent** — do not invent a third meaning:
+/// - `TYPE_LIST` / `TYPE_LIST_F64`: COW refcount (`RC_SHARED` = immortal; alloc starts at 1).
+///   Iota lists do not use RC helpers (`list_rc_*` no-ops unless `tid_base == TYPE_LIST`).
+/// - `TYPE_ADT`: per-field Float layout mask (bit `i` ⇒ field `i` is unboxed Float), set by
+///   [`crate::lumia_adt_set_float_mask`] and read by eq/show/hash/GC skip.
+/// - All other type_ids: `_pad` is initialized to 0 and must not be overloaded for new semantics
+///   without updating this contract and the RT tests that lock it.
 #[repr(C)]
 pub struct ObjectHeader {
     pub type_id: u32,
     pub size: u32,
     pub marked: u32,
+    /// See struct-level `_pad` contract above.
     pub _pad: u32,
 }
 
@@ -206,12 +215,31 @@ pub trait MmBackend {
 /// Non-moving generational mark-sweep (young nursery + old tenure).
 pub struct MarkSweep;
 
-pub(crate) fn is_heap_payload(payload: *mut u8) -> bool {
+/// Heap generation of a live payload (absent ⇒ not a managed heap object).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HeapGen {
+    Young,
+    Old,
+}
+
+/// Single membership probe: `HEAP_SET` then `HEAP_OLD_SET` (at most two lookups).
+pub(crate) fn heap_gen(payload: *mut u8) -> Option<HeapGen> {
     if payload.is_null() {
-        return false;
+        return None;
     }
     let h = header_from_payload(payload);
-    HEAP_SET.with(|set| set.borrow().contains(&h))
+    if !HEAP_SET.with(|set| set.borrow().contains(&h)) {
+        return None;
+    }
+    if HEAP_OLD_SET.with(|set| set.borrow().contains(&h)) {
+        Some(HeapGen::Old)
+    } else {
+        Some(HeapGen::Young)
+    }
+}
+
+pub(crate) fn is_heap_payload(payload: *mut u8) -> bool {
+    heap_gen(payload).is_some()
 }
 
 pub(crate) fn is_old_header(h: *mut ObjectHeader) -> bool {
@@ -219,21 +247,17 @@ pub(crate) fn is_old_header(h: *mut ObjectHeader) -> bool {
 }
 
 pub(crate) fn is_young_payload(payload: *mut u8) -> bool {
-    if payload.is_null() || !is_heap_payload(payload) {
-        return false;
-    }
-    !is_old_header(header_from_payload(payload))
+    matches!(heap_gen(payload), Some(HeapGen::Young))
 }
 
+#[inline]
 pub(crate) fn is_old_payload(payload: *mut u8) -> bool {
-    if payload.is_null() || !is_heap_payload(payload) {
-        return false;
-    }
-    is_old_header(header_from_payload(payload))
+    matches!(heap_gen(payload), Some(HeapGen::Old))
 }
 
 /// Record a possible old→young edge (remembered set).
 pub(crate) fn remember_old_to_young(obj_payload: *mut u8, new_bits: i64) {
+    // Two gen probes max (obj + new); avoids the old 4× HashSet path.
     if !is_old_payload(obj_payload) {
         return;
     }

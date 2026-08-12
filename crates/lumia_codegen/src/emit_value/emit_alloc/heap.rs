@@ -160,7 +160,7 @@ impl<'ctx> Codegen<'ctx> {
             .context("call return value")?
             .into_pointer_value();
         let len_slot = unsafe {
-            crate::error::llvm(self.llvm.builder.build_gep(
+            crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
                 self.llvm.i64_ty,
                 ptr,
                 &[self.llvm.i64_ty.const_int(0, false)],
@@ -175,7 +175,7 @@ impl<'ctx> Codegen<'ctx> {
         for (i, e) in flat_pairs.iter().enumerate() {
             let v = self.coerce_i64(self.local(*e)?)?;
             let slot = unsafe {
-                crate::error::llvm(self.llvm.builder.build_gep(
+                crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
                     self.llvm.i64_ty,
                     ptr,
                     &[self.llvm.i64_ty.const_int((i + 1) as u64, false)],
@@ -252,7 +252,7 @@ impl<'ctx> Codegen<'ctx> {
             ))?;
         }
         let tag_slot = unsafe {
-            crate::error::llvm(self.llvm.builder.build_gep(
+            crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
                 self.llvm.i64_ty,
                 ptr,
                 &[self.llvm.i64_ty.const_int(0, false)],
@@ -267,7 +267,7 @@ impl<'ctx> Codegen<'ctx> {
         for (i, e) in fields.iter().enumerate() {
             let v = self.coerce_i64(self.local(*e)?)?;
             let slot = unsafe {
-                crate::error::llvm(self.llvm.builder.build_gep(
+                crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
                     self.llvm.i64_ty,
                     ptr,
                     &[self.llvm.i64_ty.const_int((i + 1) as u64, false)],
@@ -306,7 +306,7 @@ impl<'ctx> Codegen<'ctx> {
             .context("call return value")?
             .into_pointer_value();
         let len_slot = unsafe {
-            crate::error::llvm(self.llvm.builder.build_gep(
+            crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
                 self.llvm.i64_ty,
                 ptr,
                 &[self.llvm.i64_ty.const_int(0, false)],
@@ -321,7 +321,7 @@ impl<'ctx> Codegen<'ctx> {
         for (i, e) in elems.iter().enumerate() {
             let v = self.coerce_i64(self.local(*e)?)?;
             let slot = unsafe {
-                crate::error::llvm(self.llvm.builder.build_gep(
+                crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
                     self.llvm.i64_ty,
                     ptr,
                     &[self.llvm.i64_ty.const_int((i + 1) as u64, false)],

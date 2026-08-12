@@ -41,7 +41,7 @@ impl<'ctx> Codegen<'ctx> {
             .i64_ty
             .const_int(type_id | (payload_bytes << 32), false);
         let hdr0_slot = unsafe {
-            crate::error::llvm(self.llvm.builder.build_gep(
+            crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
                 self.llvm.i64_ty,
                 storage,
                 &[self.llvm.i64_ty.const_int(0, false)],
@@ -50,7 +50,7 @@ impl<'ctx> Codegen<'ctx> {
         };
         crate::error::llvm(self.llvm.builder.build_store(hdr0_slot, hdr0))?;
         let hdr1_slot = unsafe {
-            crate::error::llvm(self.llvm.builder.build_gep(
+            crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
                 self.llvm.i64_ty,
                 storage,
                 &[self.llvm.i64_ty.const_int(1, false)],
@@ -64,7 +64,7 @@ impl<'ctx> Codegen<'ctx> {
         ))?;
 
         let payload = unsafe {
-            crate::error::llvm(self.llvm.builder.build_gep(
+            crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
                 self.llvm.i64_ty,
                 storage,
                 &[self.llvm.i64_ty.const_int(2, false)],
@@ -79,7 +79,7 @@ impl<'ctx> Codegen<'ctx> {
         for (i, e) in fields.iter().enumerate() {
             let v = self.coerce_i64(self.local(*e)?)?;
             let slot = unsafe {
-                crate::error::llvm(self.llvm.builder.build_gep(
+                crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
                     self.llvm.i64_ty,
                     storage,
                     &[self.llvm.i64_ty.const_int((3 + i) as u64, false)],
@@ -127,7 +127,7 @@ impl<'ctx> Codegen<'ctx> {
             .i64_ty
             .const_int(type_id | (payload_bytes << 32), false);
         let hdr0_slot = unsafe {
-            crate::error::llvm(self.llvm.builder.build_gep(
+            crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
                 self.llvm.i64_ty,
                 storage,
                 &[self.llvm.i64_ty.const_int(0, false)],
@@ -136,7 +136,7 @@ impl<'ctx> Codegen<'ctx> {
         };
         crate::error::llvm(self.llvm.builder.build_store(hdr0_slot, hdr0))?;
         let hdr1_slot = unsafe {
-            crate::error::llvm(self.llvm.builder.build_gep(
+            crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
                 self.llvm.i64_ty,
                 storage,
                 &[self.llvm.i64_ty.const_int(1, false)],
@@ -150,7 +150,7 @@ impl<'ctx> Codegen<'ctx> {
         )?;
 
         let payload = unsafe {
-            crate::error::llvm(self.llvm.builder.build_gep(
+            crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
                 self.llvm.i64_ty,
                 storage,
                 &[self.llvm.i64_ty.const_int(2, false)],
@@ -165,7 +165,7 @@ impl<'ctx> Codegen<'ctx> {
         for (i, e) in elems.iter().enumerate() {
             let v = self.coerce_i64(self.local(*e)?)?;
             let slot = unsafe {
-                crate::error::llvm(self.llvm.builder.build_gep(
+                crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
                     self.llvm.i64_ty,
                     storage,
                     &[self.llvm.i64_ty.const_int((3 + i) as u64, false)],
@@ -214,7 +214,7 @@ impl<'ctx> Codegen<'ctx> {
             .i64_ty
             .const_int(type_id | (payload_bytes << 32), false);
         let hdr0_slot = unsafe {
-            crate::error::llvm(self.llvm.builder.build_gep(
+            crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
                 self.llvm.i64_ty,
                 storage,
                 &[self.llvm.i64_ty.const_int(0, false)],
@@ -223,7 +223,7 @@ impl<'ctx> Codegen<'ctx> {
         };
         crate::error::llvm(self.llvm.builder.build_store(hdr0_slot, hdr0))?;
         let hdr1_slot = unsafe {
-            crate::error::llvm(self.llvm.builder.build_gep(
+            crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
                 self.llvm.i64_ty,
                 storage,
                 &[self.llvm.i64_ty.const_int(1, false)],
@@ -237,7 +237,7 @@ impl<'ctx> Codegen<'ctx> {
         )?;
 
         let payload = unsafe {
-            crate::error::llvm(self.llvm.builder.build_gep(
+            crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
                 self.llvm.i64_ty,
                 storage,
                 &[self.llvm.i64_ty.const_int(2, false)],
@@ -252,7 +252,7 @@ impl<'ctx> Codegen<'ctx> {
         for (i, e) in flat_pairs.iter().enumerate() {
             let v = self.coerce_i64(self.local(*e)?)?;
             let slot = unsafe {
-                crate::error::llvm(self.llvm.builder.build_gep(
+                crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
                     self.llvm.i64_ty,
                     storage,
                     &[self.llvm.i64_ty.const_int((3 + i) as u64, false)],

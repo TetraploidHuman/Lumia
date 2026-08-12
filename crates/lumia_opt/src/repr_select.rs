@@ -12,7 +12,8 @@ impl Pass for ReprSelect {
     }
     fn run(&self, module: &mut CoreModule) {
         for f in &mut module.functions {
-            // EscapePass always runs first and fills `f.escaping`.
+            // EscapePass fills `f.escaping` and must run in the same pipeline
+            // pair immediately before ReprSelect (see DEBUG/RELEASE_PASSES).
             let escaping = f.escaping.clone();
             select_in_fun(f, &escaping);
         }
