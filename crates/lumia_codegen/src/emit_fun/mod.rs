@@ -211,10 +211,10 @@ impl<'ctx> Codegen<'ctx> {
         let Some(Value::Name(slot)) = self.frame.leaf_defs.get(&args[0].0) else {
             return false;
         };
-        match block.ops.get(let_idx + 1) {
-            Some(Op::Assign { name, value: v }) if name == slot && *v == dest => true,
-            _ => false,
-        }
+        matches!(
+            block.ops.get(let_idx + 1),
+            Some(Op::Assign { name, value: v }) if name == slot && *v == dest
+        )
     }
 
     fn emit_block(

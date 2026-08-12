@@ -45,22 +45,22 @@ pub use gc::{lumia_alloc, lumia_gc_collect, lumia_root_pop, lumia_root_push, lum
 
 pub use affine2::lumia_affine2_rem_sum;
 pub use collatz::{lumia_collatz_strided, lumia_collatz_total};
-pub use float_kernels::lumia_mandelbrot_checksum;
-pub use number_theory::{
-    lumia_affine1_rem_sum, lumia_divisor_sum, lumia_gcd_sum, lumia_matmul_affine_checksum,
-    lumia_product_rem_sum,
-};
-pub use primes::lumia_count_primes;
 pub use dict::{
     lumia_dict_lookup, lumia_dict_register, lumia_dict_show, TRAIT_EQ, TRAIT_HASH, TRAIT_NUM,
     TRAIT_ORD, TRAIT_SHOW,
 };
 pub use dispatch::*;
 pub use eq::*;
+pub use float_kernels::lumia_mandelbrot_checksum;
 pub use hash_ord::*;
 pub use list::*;
 pub use map_set::*;
 pub use memo::*;
+pub use number_theory::{
+    lumia_affine1_rem_sum, lumia_divisor_sum, lumia_gcd_sum, lumia_matmul_affine_checksum,
+    lumia_product_rem_sum,
+};
+pub use primes::lumia_count_primes;
 pub use show::*;
 pub use string_io::*;
 

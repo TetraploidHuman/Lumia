@@ -65,6 +65,9 @@ impl<'ctx> Codegen<'ctx> {
         let Some(pat) = match_gcd_sum(header, body, latch, &self.frame.leaf_defs) else {
             return Ok(None);
         };
+        if !self.slot_known_eq(&pat.i, 1) || !self.slot_known_eq(&pat.s, 0) {
+            return Ok(None);
+        }
         let rt = self.runtime_fn("lumia_gcd_sum")?;
         let n = self.llvm.i64_ty.const_int(pat.n as u64, true);
         let call = crate::error::llvm(self.llvm.builder.build_call(rt, &[n.into()], "gcd_sum"))?;
@@ -88,6 +91,9 @@ impl<'ctx> Codegen<'ctx> {
         let Some(pat) = match_divisor_sum(header, body, latch, &self.frame.leaf_defs) else {
             return Ok(None);
         };
+        if !self.slot_known_eq(&pat.i, 1) || !self.slot_known_eq(&pat.s, 0) {
+            return Ok(None);
+        }
         let rt = self.runtime_fn("lumia_divisor_sum")?;
         let n = self.llvm.i64_ty.const_int(pat.n as u64, true);
         let call = crate::error::llvm(self.llvm.builder.build_call(rt, &[n.into()], "div_sum"))?;
@@ -111,6 +117,9 @@ impl<'ctx> Codegen<'ctx> {
         let Some(pat) = match_product_rem_sum(header, body, latch, &self.frame.leaf_defs) else {
             return Ok(None);
         };
+        if !self.slot_known_eq(&pat.i, 0) || !self.slot_known_eq(&pat.s, 0) {
+            return Ok(None);
+        }
         let rt = self.runtime_fn("lumia_product_rem_sum")?;
         let args = [
             self.llvm.i64_ty.const_int(pat.n as u64, true).into(),
@@ -137,6 +146,13 @@ impl<'ctx> Codegen<'ctx> {
         let Some(pat) = match_range_affine1(header, body, latch, &self.frame.leaf_defs) else {
             return Ok(None);
         };
+        if !self.slot_known_eq(&pat.i, 0)
+            || !self.slot_known_eq(&pat.s, 0)
+            || pat.a < 0
+            || pat.c < 0
+        {
+            return Ok(None);
+        }
         let rt = self.runtime_fn("lumia_affine1_rem_sum")?;
         let args = [
             self.llvm.i64_ty.const_int(pat.n as u64, true).into(),
@@ -165,6 +181,9 @@ impl<'ctx> Codegen<'ctx> {
         let Some(pat) = match_matmul_affine(header, body, latch, &self.frame.leaf_defs) else {
             return Ok(None);
         };
+        if !self.slot_known_eq(&pat.i, 0) || !self.slot_known_eq(&pat.sum, 0) {
+            return Ok(None);
+        }
         let rt = self.runtime_fn("lumia_matmul_affine_checksum")?;
         let args = [
             self.llvm.i64_ty.const_int(pat.n as u64, true).into(),
@@ -203,6 +222,10 @@ fn match_gcd_sum(
     if n2 != n || j == i {
         return None;
     }
+    // Outer body must reset `j := 1` (RT / closed form assume j∈[1,n]).
+    if !body_assigns_const(body, &j, 1, defs) {
+        return None;
+    }
     // Inner: inlined Euclid on two temps copied from i,j; then s += x; j += 1
     let mut saw_euclid = false;
     let mut s_name: Option<String> = None;
@@ -210,11 +233,12 @@ fn match_gcd_sum(
     for op in &ib.ops {
         match op {
             Op::Let {
-                value: Value::Loop {
-                    header: eh,
-                    body: eb,
-                    latch: el,
-                },
+                value:
+                    Value::Loop {
+                        header: eh,
+                        body: eb,
+                        latch: el,
+                    },
                 ..
             } => {
                 if is_euclid_loop(eh, eb, el, defs) {
@@ -247,11 +271,7 @@ fn match_gcd_sum(
         }
     }
     if saw_euclid && saw_j_inc && saw_i_inc {
-        Some(GcdSum {
-            s: s_name?,
-            i,
-            n,
-        })
+        Some(GcdSum { s: s_name?, i, n })
     } else {
         None
     }
@@ -291,10 +311,7 @@ fn is_euclid_loop(header: &Block, body: &Block, latch: &Block, defs: &HashMap<u3
         } = op
         {
             if name == &y {
-                if let Some(Value::Binary {
-                    op: BinOp::Rem, ..
-                }) = defs.get(v)
-                {
+                if let Some(Value::Binary { op: BinOp::Rem, .. }) = defs.get(v) {
                     saw_rem = true;
                 }
             }
@@ -334,11 +351,7 @@ fn match_divisor_sum(
         }
     }
     if saw_div && saw_i_inc {
-        Some(DivisorSum {
-            s: s_name?,
-            i,
-            n,
-        })
+        Some(DivisorSum { s: s_name?, i, n })
     } else {
         None
     }
@@ -406,6 +419,10 @@ fn match_product_rem_sum(
     }
     let (j, n2) = header_lt_const(ih, defs)?;
     if n2 != n || j == i {
+        return None;
+    }
+    // Outer body must reset `j := 0` (RT assumes j∈[0,n)).
+    if !body_assigns_const(body, &j, 0, defs) {
         return None;
     }
     let mut s_name: Option<String> = None;
@@ -689,12 +706,19 @@ fn match_matmul_affine(
     if n2 != n || j == i {
         return None;
     }
+    // Outer body resets `j := 0`; j-body resets `k := 0` (and usually `cell := 0`).
+    if !body_assigns_const(body, &j, 0, defs) {
+        return None;
+    }
     let (kh, kb, kl) = find_inner_loop(jb)?;
     if !kl.ops.is_empty() {
         return None;
     }
     let (k, n3) = header_lt_const(kh, defs)?;
     if n3 != n || k == i || k == j {
+        return None;
+    }
+    if !body_assigns_const(jb, &k, 0, defs) {
         return None;
     }
     // k-body: cell += (i*n+k+1)*(k*n+j+1); k += 1
@@ -825,15 +849,15 @@ fn is_affine_ik1(l: Local, i: &str, k: &str, n: i64, defs: &HashMap<u32, Value>)
         return false;
     };
     // (i*n) + k
-    match (
-        is_name_mul_const(*a, i, n, defs),
-        name_of(*b, defs).as_deref() == Some(k),
-        is_name_mul_const(*b, i, n, defs),
-        name_of(*a, defs).as_deref() == Some(k),
-    ) {
-        (true, true, _, _) | (_, _, true, true) => true,
-        _ => false,
-    }
+    matches!(
+        (
+            is_name_mul_const(*a, i, n, defs),
+            name_of(*b, defs).as_deref() == Some(k),
+            is_name_mul_const(*b, i, n, defs),
+            name_of(*a, defs).as_deref() == Some(k),
+        ),
+        (true, true, _, _) | (_, _, true, true)
+    )
 }
 
 /// `k*n + j + 1`
@@ -866,15 +890,15 @@ fn is_affine_kj1(l: Local, k: &str, j: &str, n: i64, defs: &HashMap<u32, Value>)
     else {
         return false;
     };
-    match (
-        is_name_mul_const(*a, k, n, defs),
-        name_of(*b, defs).as_deref() == Some(j),
-        is_name_mul_const(*b, k, n, defs),
-        name_of(*a, defs).as_deref() == Some(j),
-    ) {
-        (true, true, _, _) | (_, _, true, true) => true,
-        _ => false,
-    }
+    matches!(
+        (
+            is_name_mul_const(*a, k, n, defs),
+            name_of(*b, defs).as_deref() == Some(j),
+            is_name_mul_const(*b, k, n, defs),
+            name_of(*a, defs).as_deref() == Some(j),
+        ),
+        (true, true, _, _) | (_, _, true, true)
+    )
 }
 
 fn is_name_mul_const(l: Local, name: &str, n: i64, defs: &HashMap<u32, Value>) -> bool {
@@ -936,11 +960,12 @@ fn parse_acc_rem_name(
 fn find_inner_loop(body: &Block) -> Option<(&Block, &Block, &Block)> {
     for op in &body.ops {
         if let Op::Let {
-            value: Value::Loop {
-                header,
-                body,
-                latch,
-            },
+            value:
+                Value::Loop {
+                    header,
+                    body,
+                    latch,
+                },
             ..
         } = op
         {
@@ -948,6 +973,21 @@ fn find_inner_loop(body: &Block) -> Option<(&Block, &Block, &Block)> {
         }
     }
     None
+}
+
+fn body_assigns_const(body: &Block, slot: &str, expect: i64, defs: &HashMap<u32, Value>) -> bool {
+    for op in &body.ops {
+        if let Op::Assign {
+            name,
+            value: Local(v),
+        } = op
+        {
+            if name == slot && const_of(Local(*v), defs) == Some(expect) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn header_lt_const(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String, i64)> {
@@ -1037,7 +1077,12 @@ mod match_tests {
     fn find_loops(b: &Block, out: &mut Vec<(Block, Block, Block)>) {
         for op in &b.ops {
             if let Op::Let {
-                value: Value::Loop { header, body, latch },
+                value:
+                    Value::Loop {
+                        header,
+                        body,
+                        latch,
+                    },
                 ..
             } = op
             {

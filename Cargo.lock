@@ -227,6 +227,7 @@ dependencies = [
  "lumia_core",
  "lumia_hir",
  "lumia_opt",
+ "lumia_rt",
  "lumia_syntax",
  "lumia_ty",
  "rustc-hash",

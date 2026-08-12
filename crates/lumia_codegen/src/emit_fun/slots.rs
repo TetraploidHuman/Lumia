@@ -17,6 +17,7 @@ impl<'ctx> Codegen<'ctx> {
                 .builder
                 .build_store(alloca, self.llvm.i64_ty.const_int(0, false)),
         )?;
+        self.frame.slot_i64_const.insert(name.to_string(), Some(0));
         // Int/Bool vars are not GC roots (same as Float). Unknown / heap-capable
         // slots stay rooted. Assign sets `slot_tys` before the first store.
         let may_heap = self
@@ -95,6 +96,7 @@ impl<'ctx> Codegen<'ctx> {
             .builder
             .build_store(slot, i)
             .map_err(|e| anyhow::anyhow!("store slot: {e}"))?;
+        self.note_slot_i64_const(name, i);
         Ok(())
     }
 
@@ -111,5 +113,16 @@ impl<'ctx> Codegen<'ctx> {
         } else {
             crate::error::llvm(self.llvm.builder.build_load(self.llvm.i64_ty, slot, name))
         }
+    }
+
+    /// Record whether `name` currently holds a compile-time i64 constant.
+    pub(crate) fn note_slot_i64_const(&mut self, name: &str, v: inkwell::values::IntValue<'ctx>) {
+        let known = v.get_sign_extended_constant();
+        self.frame.slot_i64_const.insert(name.to_string(), known);
+    }
+
+    /// True when the slot's last store was exactly the const `expect`.
+    pub(crate) fn slot_known_eq(&self, name: &str, expect: i64) -> bool {
+        self.frame.slot_i64_const.get(name) == Some(&Some(expect))
     }
 }

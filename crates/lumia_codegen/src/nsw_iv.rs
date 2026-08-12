@@ -202,9 +202,8 @@ fn square_bound(
     if !matches!(op, BinOp::Le | BinOp::Lt) {
         return None;
     }
-    let c = const_i64(*right, all_defs).or_else(|| {
-        name_of_local(*right, all_defs).and_then(|n| iv_upper.get(&n).copied())
-    })?;
+    let c = const_i64(*right, all_defs)
+        .or_else(|| name_of_local(*right, all_defs).and_then(|n| iv_upper.get(&n).copied()))?;
     let Value::Binary {
         op: BinOp::Mul,
         left: a,
@@ -550,7 +549,9 @@ fn mark_bounded_arith_tree(
 ) {
     let mut seed: HashSet<u32> = out.clone();
     let mut seed_names: HashSet<String> = ivs.clone();
-    let const_lim = bound.saturating_mul(bound).min(NSW_BOUND_MAX.saturating_mul(NSW_BOUND_MAX));
+    let const_lim = bound
+        .saturating_mul(bound)
+        .min(NSW_BOUND_MAX.saturating_mul(NSW_BOUND_MAX));
     for (id, v) in all_defs {
         match v {
             Value::Int(n) if *n >= 0 && *n <= const_lim => {
@@ -567,15 +568,17 @@ fn mark_bounded_arith_tree(
     });
     mark_small_factor_muls(all_defs, nonneg_loads, &mut seed);
     for id in &seed {
-        if all_defs.get(id).is_some_and(|v| matches!(v, Value::Binary { .. })) {
+        if all_defs
+            .get(id)
+            .is_some_and(|v| matches!(v, Value::Binary { .. }))
+        {
             out.insert(*id);
         }
     }
 
     let allow_acc = bound <= NSW_ACC_BOUND_MAX;
     let in_seed = |id: u32, seed: &HashSet<u32>, names: &HashSet<String>| {
-        seed.contains(&id)
-            || name_of_local(Local(id), all_defs).is_some_and(|n| names.contains(&n))
+        seed.contains(&id) || name_of_local(Local(id), all_defs).is_some_and(|n| names.contains(&n))
     };
     let mut changed = true;
     while changed {
@@ -600,9 +603,8 @@ fn mark_bounded_arith_tree(
                 && matches!(op, BinOp::Add | BinOp::Sub)
                 && ((l && name_of_local(*right, all_defs).is_some())
                     || (r && name_of_local(*left, all_defs).is_some()));
-            let rem_ok = matches!(op, BinOp::Rem)
-                && l
-                && const_i64(*right, all_defs).is_some_and(|c| c > 1);
+            let rem_ok =
+                matches!(op, BinOp::Rem) && l && const_i64(*right, all_defs).is_some_and(|c| c > 1);
             if both || acc_add || rem_ok {
                 seed.insert(*id);
                 out.insert(*id);

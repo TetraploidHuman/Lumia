@@ -4,6 +4,7 @@
 *.ll
 /hello
 /out/
+/matmul
 .idea/
 .vscode/
 

@@ -63,6 +63,9 @@ pub(crate) struct FrameState<'ctx> {
     pub nonneg_iv_load_locals: HashSet<u32>,
     /// Function-wide `Int`/`Name`/`Binary` Lets (includes LICM'd consts outside loops).
     pub leaf_defs: HashMap<u32, Value>,
+    /// Last known const for i64 mut slots (`None` = non-const / unknown).
+    /// Used to refuse SR when accumulators/IVs are not at the expected start.
+    pub slot_i64_const: HashMap<String, Option<i64>>,
 }
 
 /// Memo transform emission scratch for the current function.

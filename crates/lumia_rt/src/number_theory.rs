@@ -35,6 +35,7 @@ pub extern "C" fn lumia_gcd_sum(n: i64) -> i64 {
         let q = n / k;
         let k2 = n / q;
         let mut phi_sum = 0i64;
+        #[allow(clippy::needless_range_loop)]
         for t in k..=k2 {
             phi_sum = phi_sum.wrapping_add(phi[t]);
         }
@@ -51,7 +52,6 @@ pub extern "C" fn lumia_divisor_sum(n: i64) -> i64 {
     if n < 1 {
         return 0;
     }
-    let n = n as i64;
     let mut total: i64 = 0;
     let mut i = 1i64;
     while i <= n {
@@ -115,12 +115,7 @@ pub extern "C" fn lumia_matmul_affine_checksum(n: i64, modulus: i64) -> i64 {
             .wrapping_mul(sum_k)
             .wrapping_add(n.wrapping_mul(sum_k2));
         // Σ_{b=1}^{n} (K·b+L)%m = Σ_{t=0}^{n-1} (K·t + K+L)%m
-        total = total.wrapping_add(lumia_affine1_rem_sum(
-            n,
-            k,
-            k.wrapping_add(l),
-            modulus,
-        ));
+        total = total.wrapping_add(lumia_affine1_rem_sum(n, k, k.wrapping_add(l), modulus));
     }
     total
 }
@@ -131,6 +126,10 @@ pub extern "C" fn lumia_affine1_rem_sum(n: i64, a: i64, c: i64, m: i64) -> i64 {
     if n <= 0 || m < 2 {
         return 0;
     }
+    debug_assert!(
+        a >= 0 && c >= 0,
+        "affine1 SR domain is nonneg (a,c); got a={a} c={c}"
+    );
     let a_m = a.rem_euclid(m);
     let c_m = c.rem_euclid(m);
     let linear = (a_m as i128) * (n as i128) * ((n - 1) as i128) / 2 + (c_m as i128) * (n as i128);
@@ -220,10 +219,7 @@ mod tests {
             lumia_affine1_rem_sum(5_000_000, 131, 17, 10007),
             25_014_941_572
         );
-        assert_eq!(
-            lumia_matmul_affine_checksum(360, 1_000_003),
-            65_061_251_965
-        );
+        assert_eq!(lumia_matmul_affine_checksum(360, 1_000_003), 65_061_251_965);
         assert_eq!(
             lumia_matmul_affine_checksum(2000, 1_000_003),
             1_998_964_270_721
@@ -260,5 +256,62 @@ mod tests {
                 "matmul n={n}"
             );
         }
+    }
+
+    #[test]
+    fn product_rem_grouping_path_when_n_gt_m() {
+        // Exercises the O(m log m) branch (`n > m`).
+        for &(n, m) in &[(20i64, 7), (100, 13), (10007 + 3, 10007), (20_000, 10007)] {
+            assert_eq!(
+                lumia_product_rem_sum(n, m),
+                naive_prod(n, m),
+                "prod n={n} m={m}"
+            );
+        }
+    }
+
+    #[test]
+    fn product_rem_and_aff1_edges() {
+        assert_eq!(lumia_product_rem_sum(0, 10007), 0);
+        assert_eq!(lumia_product_rem_sum(-1, 10007), 0);
+        assert_eq!(lumia_product_rem_sum(10, 1), 0);
+        assert_eq!(lumia_affine1_rem_sum(0, 131, 17, 10007), 0);
+        assert_eq!(lumia_affine1_rem_sum(100, 0, 0, 10007), 0);
+        for n in 0..64 {
+            assert_eq!(
+                lumia_affine1_rem_sum(n, 3, 5, 17),
+                naive_aff1(n, 3, 5, 17),
+                "aff1 n={n}"
+            );
+        }
+    }
+
+    #[test]
+    fn matmul_dense_sweep_vs_naive() {
+        for n in [0i64, 1, 2, 3, 7, 16, 32, 64, 128] {
+            assert_eq!(
+                lumia_matmul_affine_checksum(n, 1_000_003),
+                naive_matmul(n, 1_000_003),
+                "matmul n={n}"
+            );
+        }
+    }
+
+    #[test]
+    fn gcd_div_medium_vs_naive() {
+        for n in [200i64, 400, 800] {
+            assert_eq!(lumia_gcd_sum(n), naive_gcd_sum(n), "gcd n={n}");
+            assert_eq!(lumia_divisor_sum(n), naive_div_sum(n), "div n={n}");
+        }
+        // Larger divisor sum still cheap (O(√n)).
+        assert_eq!(lumia_divisor_sum(1_000_000), naive_div_sum(1_000_000));
+    }
+
+    #[test]
+    fn gcd_div_empty() {
+        assert_eq!(lumia_gcd_sum(0), 0);
+        assert_eq!(lumia_gcd_sum(-3), 0);
+        assert_eq!(lumia_divisor_sum(0), 0);
+        assert_eq!(lumia_divisor_sum(-1), 0);
     }
 }

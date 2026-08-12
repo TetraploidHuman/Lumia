@@ -38,6 +38,9 @@ impl<'ctx> Codegen<'ctx> {
         let Some(pat) = match_affine2_rem_sum(header, body, latch, &self.frame.leaf_defs) else {
             return Ok(None);
         };
+        if !self.slot_known_eq(&pat.i, 0) || !self.slot_known_eq(&pat.s, 0) {
+            return Ok(None);
+        }
         let rt = self.runtime_fn("lumia_affine2_rem_sum")?;
         let args = [
             self.llvm.i64_ty.const_int(pat.n as u64, true).into(),
@@ -75,11 +78,12 @@ fn match_affine2_rem_sum(
     let mut inner: Option<(&Block, &Block, &Block)> = None;
     for op in &body.ops {
         if let Op::Let {
-            value: Value::Loop {
-                header: ih,
-                body: ib,
-                latch: il,
-            },
+            value:
+                Value::Loop {
+                    header: ih,
+                    body: ib,
+                    latch: il,
+                },
             ..
         } = op
         {
@@ -94,24 +98,38 @@ fn match_affine2_rem_sum(
     if n2 != n || j == i {
         return None;
     }
+    // Outer body must reset `j := 0` before the inner loop (RT assumes j∈[0,n)).
+    let mut saw_j_zero = false;
+    for op in &body.ops {
+        if let Op::Assign {
+            name,
+            value: Local(v),
+        } = op
+        {
+            if name == &j && const_of(Local(*v), defs) == Some(0) {
+                saw_j_zero = true;
+            }
+        }
+    }
+    if !saw_j_zero {
+        return None;
+    }
     // Inner body: s = s + ((a*i + b*j + c) % m); j += 1
     let mut s_name: Option<String> = None;
     let mut coeffs: Option<(i64, i64, i64, i64)> = None;
     let mut saw_j_inc = false;
     for op in &ib.ops {
-        match op {
-            Op::Assign {
-                name,
-                value: Local(v),
-            } => {
-                if name == &j && is_unit_inc(*v, &j, defs) {
-                    saw_j_inc = true;
-                } else if let Some(t) = parse_acc_affine_rem(*v, name, &i, &j, defs) {
-                    s_name = Some(name.clone());
-                    coeffs = Some(t);
-                }
+        if let Op::Assign {
+            name,
+            value: Local(v),
+        } = op
+        {
+            if name == &j && is_unit_inc(*v, &j, defs) {
+                saw_j_inc = true;
+            } else if let Some(t) = parse_acc_affine_rem(*v, name, &i, &j, defs) {
+                s_name = Some(name.clone());
+                coeffs = Some(t);
             }
-            _ => {}
         }
     }
     // Outer latch step may be in body after inner loop: i += 1
@@ -136,6 +154,10 @@ fn match_affine2_rem_sum(
         return None;
     }
     let (a, b, c, m) = coeffs?;
+    // rem_euclid RT matches Lumia `%` only on the nonneg domain.
+    if a < 0 || b < 0 || c < 0 {
+        return None;
+    }
     Some(Affine2RemSum {
         s: s_name?,
         i,
@@ -324,7 +346,12 @@ mod match_tests {
     fn find_loops(b: &Block, out: &mut Vec<(Block, Block, Block)>) {
         for op in &b.ops {
             if let Op::Let {
-                value: Value::Loop { header, body, latch },
+                value:
+                    Value::Loop {
+                        header,
+                        body,
+                        latch,
+                    },
                 ..
             } = op
             {
@@ -338,11 +365,12 @@ mod match_tests {
                 find_loops(latch, out);
             }
             if let Op::Let {
-                value: Value::If {
-                    then_block,
-                    else_block,
-                    ..
-                },
+                value:
+                    Value::If {
+                        then_block,
+                        else_block,
+                        ..
+                    },
                 ..
             } = op
             {

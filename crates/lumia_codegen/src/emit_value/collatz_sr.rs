@@ -54,6 +54,10 @@ impl<'ctx> Codegen<'ctx> {
         let Some(pat) = match_collatz_total_loop(header, body, latch, &self.frame.leaf_defs) else {
             return Ok(None);
         };
+        // RT sums `1..=limit` from a zero total — refuse if slots start elsewhere.
+        if !self.slot_known_eq(&pat.n, 1) || !self.slot_known_eq(&pat.total, 0) {
+            return Ok(None);
+        }
         let rt = self.runtime_fn("lumia_collatz_total")?;
         let lim = self.llvm.i64_ty.const_int(pat.limit as u64, true);
         let call = crate::error::llvm(self.llvm.builder.build_call(rt, &[lim.into()], "col_tot"))?;
@@ -64,10 +68,7 @@ impl<'ctx> Codegen<'ctx> {
             .into_int_value();
         self.store_slot_i64(&pat.total, total)?;
         // Match post-loop `n` (dead for the bench, but keep SSA slots consistent).
-        let n_end = self
-            .llvm
-            .i64_ty
-            .const_int((pat.limit + 1) as u64, true);
+        let n_end = self.llvm.i64_ty.const_int((pat.limit + 1) as u64, true);
         self.store_slot_i64(&pat.n, n_end)?;
         let _ = fv;
         Ok(Some(self.llvm.i64_ty.const_int(0, false).into()))
@@ -85,6 +86,9 @@ impl<'ctx> Codegen<'ctx> {
         else {
             return Ok(None);
         };
+        if !self.slot_known_eq(&pat.total, 0) {
+            return Ok(None);
+        }
         // `n` is already initialized to the arithmetic-sequence start.
         let start = self.load_slot_i64(&pat.n)?;
         let lim = self.llvm.i64_ty.const_int(pat.limit as u64, true);
@@ -120,11 +124,18 @@ impl<'ctx> Codegen<'ctx> {
         self.llvm.builder.position_at_end(past_bb);
         let diff =
             crate::error::llvm(self.llvm.builder.build_int_nsw_sub(lim, start, "col_str_d"))?;
-        let q = crate::error::llvm(self.llvm.builder.build_int_signed_div(diff, stride, "col_str_q"))?;
+        let q = crate::error::llvm(self.llvm.builder.build_int_signed_div(
+            diff,
+            stride,
+            "col_str_q",
+        ))?;
         let one = self.llvm.i64_ty.const_int(1, false);
         let q1 = crate::error::llvm(self.llvm.builder.build_int_nsw_add(q, one, "col_str_q1"))?;
-        let off =
-            crate::error::llvm(self.llvm.builder.build_int_nsw_mul(q1, stride, "col_str_off"))?;
+        let off = crate::error::llvm(self.llvm.builder.build_int_nsw_mul(
+            q1,
+            stride,
+            "col_str_off",
+        ))?;
         let n_past =
             crate::error::llvm(self.llvm.builder.build_int_nsw_add(start, off, "col_str_n"))?;
         self.store_slot_i64(&pat.n, n_past)?;
@@ -149,11 +160,7 @@ impl<'ctx> Codegen<'ctx> {
         Ok(Some(self.llvm.i64_ty.const_int(0, false).into()))
     }
 
-    fn emit_collatz_loop_fast(
-        &mut self,
-        pat: &CollatzLoop,
-        fv: FunctionValue<'ctx>,
-    ) -> Result<()> {
+    fn emit_collatz_loop_fast(&mut self, pat: &CollatzLoop, fv: FunctionValue<'ctx>) -> Result<()> {
         let header_bb = self.llvm.context.append_basic_block(fv, "col_header");
         let body_bb = self.llvm.context.append_basic_block(fv, "col_body");
         let even_bb = self.llvm.context.append_basic_block(fv, "col_even");
@@ -202,8 +209,7 @@ impl<'ctx> Codegen<'ctx> {
         let x2 = crate::error::llvm(self.llvm.builder.build_right_shift(x, k, false, "col_shr"))?;
         self.store_slot_i64(&pat.x, x2)?;
         let steps = self.load_slot_i64(&pat.steps)?;
-        let steps2 =
-            crate::error::llvm(self.llvm.builder.build_int_nsw_add(steps, k, "col_addk"))?;
+        let steps2 = crate::error::llvm(self.llvm.builder.build_int_nsw_add(steps, k, "col_addk"))?;
         self.store_slot_i64(&pat.steps, steps2)?;
         crate::error::llvm(self.llvm.builder.build_unconditional_branch(latch_bb))?;
 
@@ -253,13 +259,14 @@ impl<'ctx> Codegen<'ctx> {
         self.as_i64(v)
     }
 
-    pub(crate) fn store_slot_i64(&self, name: &str, v: IntValue<'ctx>) -> Result<()> {
+    pub(crate) fn store_slot_i64(&mut self, name: &str, v: IntValue<'ctx>) -> Result<()> {
         let ptr = *self
             .frame
             .slots
             .get(name)
             .with_context(|| format!("missing slot {name}"))?;
         crate::error::llvm(self.llvm.builder.build_store(ptr, v))?;
+        self.note_slot_i64_const(name, v);
         Ok(())
     }
 }
@@ -303,11 +310,12 @@ fn match_collatz_total_loop(
     for op in &body.ops {
         match op {
             Op::Let {
-                value: Value::Loop {
-                    header: ih,
-                    body: ib,
-                    latch: il,
-                },
+                value:
+                    Value::Loop {
+                        header: ih,
+                        body: ib,
+                        latch: il,
+                    },
                 ..
             } => {
                 if let Some(p) = match_collatz_loop(ih, ib, il, defs) {
@@ -364,11 +372,12 @@ fn match_collatz_strided_loop(
     for op in &body.ops {
         match op {
             Op::Let {
-                value: Value::Loop {
-                    header: ih,
-                    body: ib,
-                    latch: il,
-                },
+                value:
+                    Value::Loop {
+                        header: ih,
+                        body: ib,
+                        latch: il,
+                    },
                 ..
             } => {
                 if let Some(p) = match_collatz_loop(ih, ib, il, defs) {
@@ -448,12 +457,7 @@ fn header_le_const(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String
     }
 }
 
-fn is_add_name_plus_name(
-    dest: u32,
-    a: &str,
-    b: &str,
-    defs: &HashMap<u32, Value>,
-) -> bool {
+fn is_add_name_plus_name(dest: u32, a: &str, b: &str, defs: &HashMap<u32, Value>) -> bool {
     let Some(Value::Binary {
         op: BinOp::Add,
         left,
@@ -693,7 +697,12 @@ mod match_tests {
     fn find_loops(b: &Block, out: &mut Vec<(Block, Block, Block)>) {
         for op in &b.ops {
             if let Op::Let {
-                value: Value::Loop { header, body, latch },
+                value:
+                    Value::Loop {
+                        header,
+                        body,
+                        latch,
+                    },
                 ..
             } = op
             {
@@ -707,11 +716,12 @@ mod match_tests {
                 find_loops(latch, out);
             }
             if let Op::Let {
-                value: Value::If {
-                    then_block,
-                    else_block,
-                    ..
-                },
+                value:
+                    Value::If {
+                        then_block,
+                        else_block,
+                        ..
+                    },
                 ..
             } = op
             {

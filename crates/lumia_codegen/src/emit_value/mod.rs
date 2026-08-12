@@ -81,19 +81,22 @@ impl<'ctx> Codegen<'ctx> {
             } => {
                 if let Some(v) = self.try_emit_collatz_total_loop(header, body, latch, fv)? {
                     Ok(v)
-                } else if let Some(v) = self.try_emit_collatz_strided_loop(header, body, latch, fv)?
+                } else if let Some(v) =
+                    self.try_emit_collatz_strided_loop(header, body, latch, fv)?
                 {
                     Ok(v)
                 } else if let Some(v) = self.try_emit_count_primes_loop(header, body, latch, fv)? {
                     Ok(v)
-                } else if let Some(v) = self.try_emit_affine2_rem_sum_loop(header, body, latch, fv)?
+                } else if let Some(v) =
+                    self.try_emit_affine2_rem_sum_loop(header, body, latch, fv)?
                 {
                     Ok(v)
                 } else if let Some(v) = self.try_emit_gcd_sum_loop(header, body, latch, fv)? {
                     Ok(v)
                 } else if let Some(v) = self.try_emit_divisor_sum_loop(header, body, latch, fv)? {
                     Ok(v)
-                } else if let Some(v) = self.try_emit_product_rem_sum_loop(header, body, latch, fv)?
+                } else if let Some(v) =
+                    self.try_emit_product_rem_sum_loop(header, body, latch, fv)?
                 {
                     Ok(v)
                 } else if let Some(v) = self.try_emit_range_affine1_loop(header, body, latch, fv)? {

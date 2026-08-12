@@ -53,9 +53,7 @@ fn list_set_preserves_old_binding() {
 
 #[test]
 fn list_set_unique_writes_in_place() {
-    use crate::list::{
-        lumia_list_append, lumia_list_empty, lumia_list_get, lumia_list_set,
-    };
+    use crate::list::{lumia_list_append, lumia_list_empty, lumia_list_get, lumia_list_set};
     let mut xs = lumia_list_empty();
     lumia_root_push(&mut xs as *mut *mut u8);
     xs = lumia_list_append(xs, 1);
@@ -65,6 +63,44 @@ fn list_set_unique_writes_in_place() {
     xs = lumia_list_set(xs, 1, 99);
     assert_eq!(xs, before, "unique set should reuse the buffer");
     assert_eq!(lumia_list_get(xs, 1), 99);
+    lumia_root_pop();
+}
+
+#[test]
+fn list_set_cow_stress_alternating_alias() {
+    use crate::list::{
+        lumia_list_append, lumia_list_empty, lumia_list_get, lumia_list_len, lumia_list_retain,
+        lumia_list_set,
+    };
+    let mut xs = lumia_list_empty();
+    let mut snap = ptr::null_mut();
+    lumia_root_push(&mut xs as *mut *mut u8);
+    lumia_root_push(&mut snap as *mut *mut u8);
+    for i in 0..256 {
+        xs = lumia_list_append(xs, i);
+    }
+    // Unique in-place updates.
+    for i in 0..256 {
+        let before = xs;
+        xs = lumia_list_set(xs, i, i * 3 + 1);
+        assert_eq!(xs, before);
+        assert_eq!(lumia_list_get(xs, i), i * 3 + 1);
+    }
+    // Shared: snapshot must freeze, then unique path resumes.
+    lumia_list_retain(xs);
+    snap = xs;
+    xs = lumia_list_set(xs, 0, -1);
+    assert_ne!(xs, snap);
+    assert_eq!(lumia_list_get(snap, 0), 1);
+    assert_eq!(lumia_list_get(xs, 0), -1);
+    assert_eq!(lumia_list_len(snap), 256);
+    assert_eq!(lumia_list_len(xs), 256);
+    let before = xs;
+    xs = lumia_list_set(xs, 128, 42);
+    assert_eq!(xs, before);
+    assert_eq!(lumia_list_get(xs, 128), 42);
+    assert_eq!(lumia_list_get(snap, 128), 128 * 3 + 1);
+    lumia_root_pop();
     lumia_root_pop();
 }
 

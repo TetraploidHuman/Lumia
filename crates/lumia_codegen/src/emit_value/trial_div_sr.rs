@@ -12,7 +12,7 @@
 
 use inkwell::values::{BasicValueEnum, FunctionValue};
 use inkwell::IntPredicate;
-use lumia_core::{Block, Local, Op, Value};
+use lumia_core::{for_each_block_dfs, Block, Local, Op, Value};
 use lumia_syntax::BinOp;
 use rustc_hash::FxHashMap as HashMap;
 
@@ -45,6 +45,10 @@ impl<'ctx> Codegen<'ctx> {
         let Some(pat) = match_count_primes_loop(header, body, latch, &self.frame.leaf_defs) else {
             return Ok(None);
         };
+        // Sieve counts `2..=limit` from a zero accumulator.
+        if !self.slot_known_eq(&pat.n, 2) || !self.slot_known_eq(&pat.count, 0) {
+            return Ok(None);
+        }
         let rt = self.runtime_fn("lumia_count_primes")?;
         let lim = self.llvm.i64_ty.const_int(pat.limit as u64, true);
         let call = crate::error::llvm(self.llvm.builder.build_call(rt, &[lim.into()], "nprimes"))?;
@@ -118,11 +122,11 @@ impl<'ctx> Codegen<'ctx> {
             self.llvm.i64_ty.const_int(0, false),
             "td_divides",
         ))?;
-        crate::error::llvm(
-            self.llvm
-                .builder
-                .build_conditional_branch(is_div, composite_bb, step_bb),
-        )?;
+        crate::error::llvm(self.llvm.builder.build_conditional_branch(
+            is_div,
+            composite_bb,
+            step_bb,
+        ))?;
 
         self.llvm.builder.position_at_end(composite_bb);
         self.store_slot_i64(&pat.ok, self.llvm.i64_ty.const_int(0, false))?;
@@ -139,10 +143,13 @@ impl<'ctx> Codegen<'ctx> {
             two,
             "td_is2",
         ))?;
-        let d_plus_2 =
-            crate::error::llvm(self.llvm.builder.build_int_nsw_add(d, two, "td_d2"))?;
-        let next = crate::error::llvm(self.llvm.builder.build_select(is2, three, d_plus_2, "td_next"))?
-            .into_int_value();
+        let d_plus_2 = crate::error::llvm(self.llvm.builder.build_int_nsw_add(d, two, "td_d2"))?;
+        let next = crate::error::llvm(
+            self.llvm
+                .builder
+                .build_select(is2, three, d_plus_2, "td_next"),
+        )?
+        .into_int_value();
         self.store_slot_i64(&pat.d, next)?;
         crate::error::llvm(self.llvm.builder.build_unconditional_branch(header_bb))?;
 
@@ -182,14 +189,21 @@ fn match_count_primes_loop(
     let mut ok_name: Option<String> = None;
     let mut saw_trial = false;
     // Nested trial loop on the same `n`.
-    fn walk(b: &Block, n: &str, defs: &HashMap<u32, Value>, ok: &mut Option<String>, saw: &mut bool) {
+    fn walk(
+        b: &Block,
+        n: &str,
+        defs: &HashMap<u32, Value>,
+        ok: &mut Option<String>,
+        saw: &mut bool,
+    ) {
         for op in &b.ops {
             if let Op::Let {
-                value: Value::Loop {
-                    header,
-                    body,
-                    latch,
-                },
+                value:
+                    Value::Loop {
+                        header,
+                        body,
+                        latch,
+                    },
                 ..
             } = op
             {
@@ -202,11 +216,12 @@ fn match_count_primes_loop(
                 walk(body, n, defs, ok, saw);
             }
             if let Op::Let {
-                value: Value::If {
-                    then_block,
-                    else_block,
-                    ..
-                },
+                value:
+                    Value::If {
+                        then_block,
+                        else_block,
+                        ..
+                    },
                 ..
             } = op
             {
@@ -233,20 +248,17 @@ fn match_count_primes_loop(
                 }
             }
             Op::Let {
-                value:
-                    Value::If {
-                        cond,
-                        then_block,
-                        ..
-                    },
+                value: Value::If {
+                    cond, then_block, ..
+                },
                 ..
             } => {
-                // `if ok { c += 1 }` — cond may be Name(ok), `ok != 0`, or an If-result
-                // local from inlined `isPrime` (not in leaf_defs as Binary).
+                // `if ok { c += 1 }` — cond may be Name(ok), `ok != 0`, or the
+                // SSA result of an inlined `isPrime` `If` (`Value::If` is not in
+                // leaf_defs, so look it up on the block graph).
                 let cond_ok = name_of(*cond, defs).as_deref() == Some(ok.as_str())
                     || is_truthy_ok_cond(cond, &ok, defs)
-                    || defs.get(&cond.0).is_none()
-                    || matches!(defs.get(&cond.0), Some(Value::If { .. }));
+                    || local_defined_as_if(*cond, body);
                 if !cond_ok {
                     continue;
                 }
@@ -319,6 +331,30 @@ fn is_truthy_ok_cond(cond: &Local, ok: &str, defs: &HashMap<u32, Value>) -> bool
     false
 }
 
+/// `leaf_defs` omits `Value::If`; inlined `isPrime` leaves the prime flag as that local.
+fn local_defined_as_if(local: Local, block: &Block) -> bool {
+    let mut found = false;
+    for_each_block_dfs(block, &mut |b| {
+        if found {
+            return;
+        }
+        for op in &b.ops {
+            if let Op::Let {
+                local: l,
+                value: Value::If { .. },
+                ..
+            } = op
+            {
+                if *l == local {
+                    found = true;
+                    return;
+                }
+            }
+        }
+    });
+    found
+}
+
 fn name_of(l: Local, defs: &HashMap<u32, Value>) -> Option<String> {
     match defs.get(&l.0)? {
         Value::Name(n) => Some(n.clone()),
@@ -363,12 +399,7 @@ fn header_dd_le_n(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String,
     Some((da, n))
 }
 
-fn body_trial_parts(
-    body: &Block,
-    d: &str,
-    n: &str,
-    defs: &HashMap<u32, Value>,
-) -> Option<String> {
+fn body_trial_parts(body: &Block, d: &str, n: &str, defs: &HashMap<u32, Value>) -> Option<String> {
     let mut ok_name: Option<String> = None;
     let mut saw_break = false;
     let mut saw_step = false;
@@ -404,7 +435,7 @@ fn body_trial_parts(
                         {
                             ok_name = Some(name.clone());
                         }
-                        Op::Break { .. } => saw_break = true,
+                        Op::Break => saw_break = true,
                         _ => {}
                     }
                 }
@@ -491,7 +522,6 @@ fn is_unit_inc(dest: u32, name: &str, defs: &HashMap<u32, Value>) -> bool {
     (l && const_of(*right, defs) == Some(1)) || (r && const_of(*left, defs) == Some(1))
 }
 
-
 #[cfg(test)]
 mod match_tests {
     use super::*;
@@ -500,7 +530,12 @@ mod match_tests {
     fn find_loops(b: &Block, out: &mut Vec<(Block, Block, Block)>) {
         for op in &b.ops {
             if let Op::Let {
-                value: Value::Loop { header, body, latch },
+                value:
+                    Value::Loop {
+                        header,
+                        body,
+                        latch,
+                    },
                 ..
             } = op
             {
@@ -514,11 +549,12 @@ mod match_tests {
                 find_loops(latch, out);
             }
             if let Op::Let {
-                value: Value::If {
-                    then_block,
-                    else_block,
-                    ..
-                },
+                value:
+                    Value::If {
+                        then_block,
+                        else_block,
+                        ..
+                    },
                 ..
             } = op
             {

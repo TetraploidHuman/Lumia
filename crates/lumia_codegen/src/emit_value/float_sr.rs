@@ -51,6 +51,10 @@ impl<'ctx> Codegen<'ctx> {
         let Some(pat) = match_float_orbit(header, body, latch, &self.frame.leaf_defs) else {
             return Ok(None);
         };
+        // IR assumes `h = 0`, `i = 0` before the nest.
+        if !self.slot_known_eq(&pat.h, 0) || !self.slot_known_eq(&pat.i, 0) {
+            return Ok(None);
+        }
         self.emit_float_orbit_ir(&pat, fv)?;
         Ok(Some(self.llvm.i64_ty.const_int(0, false).into()))
     }
@@ -65,17 +69,17 @@ impl<'ctx> Codegen<'ctx> {
         let Some(pat) = match_mandelbrot(header, body, latch, &self.frame.leaf_defs) else {
             return Ok(None);
         };
+        if !self.slot_known_eq(&pat.acc, 0) || !self.slot_known_eq(&pat.y, 0) {
+            return Ok(None);
+        }
         // 4-wide interleaved escape lives in RT (ILP + successive cx+=dx for FP match).
         let max_it = match pat.max_it {
             MandelbrotIt::Const(c) => self.llvm.i64_ty.const_int(c as u64, true),
             MandelbrotIt::Local(l) => self.coerce_i64(self.local(l)?)?,
         };
         let rt = self.runtime_fn("lumia_mandelbrot_checksum")?;
-        let call = crate::error::llvm(
-            self.llvm
-                .builder
-                .build_call(rt, &[max_it.into()], "mb_chk"),
-        )?;
+        let call =
+            crate::error::llvm(self.llvm.builder.build_call(rt, &[max_it.into()], "mb_chk"))?;
         let acc = call
             .try_as_basic_value()
             .basic()
@@ -154,15 +158,13 @@ impl<'ctx> Codegen<'ctx> {
         )?;
 
         self.llvm.builder.position_at_end(o_body);
-        let i_f = crate::error::llvm(
-            self.llvm
-                .builder
-                .build_signed_int_to_float(i, fty, "fo_sitofp"),
-        )?;
-        let scaled =
-            crate::error::llvm(self.llvm.builder.build_float_mul(c_1e8, i_f, "fo_scale"))?;
-        let x_init =
-            crate::error::llvm(self.llvm.builder.build_float_add(c_0_1, scaled, "fo_x0"))?;
+        let i_f = crate::error::llvm(self.llvm.builder.build_signed_int_to_float(
+            i,
+            fty,
+            "fo_sitofp",
+        ))?;
+        let scaled = crate::error::llvm(self.llvm.builder.build_float_mul(c_1e8, i_f, "fo_scale"))?;
+        let x_init = crate::error::llvm(self.llvm.builder.build_float_add(c_0_1, scaled, "fo_x0"))?;
         crate::error::llvm(self.llvm.builder.build_unconditional_branch(i_hdr))?;
 
         self.llvm.builder.position_at_end(i_hdr);
@@ -269,14 +271,15 @@ impl<'ctx> Codegen<'ctx> {
         self.llvm.builder.position_at_end(o_body);
         let x_inits = {
             let mut xs = [c_0_1; 4];
+            #[allow(clippy::needless_range_loop)]
             for lane in 0..4 {
                 let off = self.llvm.i64_ty.const_int(lane as u64, false);
                 let iv = crate::error::llvm(self.llvm.builder.build_int_nsw_add(i, off, "fo4_iv"))?;
-                let i_f = crate::error::llvm(
-                    self.llvm
-                        .builder
-                        .build_signed_int_to_float(iv, fty, "fo4_sitofp"),
-                )?;
+                let i_f = crate::error::llvm(self.llvm.builder.build_signed_int_to_float(
+                    iv,
+                    fty,
+                    "fo4_sitofp",
+                ))?;
                 let scaled =
                     crate::error::llvm(self.llvm.builder.build_float_mul(c_1e8, i_f, "fo4_sc"))?;
                 xs[lane] =
@@ -292,9 +295,7 @@ impl<'ctx> Codegen<'ctx> {
         let mut x_phis = Vec::with_capacity(4);
         for lane in 0..4 {
             x_phis.push(crate::error::llvm(
-                self.llvm
-                    .builder
-                    .build_phi(fty, &format!("fo4_x{lane}")),
+                self.llvm.builder.build_phi(fty, &format!("fo4_x{lane}")),
             )?);
         }
         k_phi.add_incoming(&[(&zero, o_body)]);
@@ -370,29 +371,41 @@ impl<'ctx> Codegen<'ctx> {
         zero: IntValue<'ctx>,
         suf: &str,
     ) -> Result<(FloatValue<'ctx>, IntValue<'ctx>)> {
-        let one_m_x =
-            crate::error::llvm(self.llvm.builder.build_float_sub(c_1_0, x, &format!("fo_1mx{suf}")))?;
-        let t =
-            crate::error::llvm(self.llvm.builder.build_float_mul(c_3_7, x, &format!("fo_3_7x{suf}")))?;
-        let x1 =
-            crate::error::llvm(self.llvm.builder.build_float_mul(t, one_m_x, &format!("fo_x1{suf}")))?;
+        let one_m_x = crate::error::llvm(self.llvm.builder.build_float_sub(
+            c_1_0,
+            x,
+            &format!("fo_1mx{suf}"),
+        ))?;
+        let t = crate::error::llvm(self.llvm.builder.build_float_mul(
+            c_3_7,
+            x,
+            &format!("fo_3_7x{suf}"),
+        ))?;
+        let x1 = crate::error::llvm(self.llvm.builder.build_float_mul(
+            t,
+            one_m_x,
+            &format!("fo_x1{suf}"),
+        ))?;
         let gt = crate::error::llvm(self.llvm.builder.build_float_compare(
             FloatPredicate::OGT,
             x1,
             c_0_5,
             &format!("fo_gt{suf}"),
         ))?;
-        let add = crate::error::llvm(
-            self.llvm
-                .builder
-                .build_select(gt, one, zero, &format!("fo_hit{suf}")),
-        )?
+        let add = crate::error::llvm(self.llvm.builder.build_select(
+            gt,
+            one,
+            zero,
+            &format!("fo_hit{suf}"),
+        ))?
         .into_int_value();
-        let h1 =
-            crate::error::llvm(self.llvm.builder.build_int_nsw_add(h, add, &format!("fo_h1{suf}")))?;
+        let h1 = crate::error::llvm(self.llvm.builder.build_int_nsw_add(
+            h,
+            add,
+            &format!("fo_h1{suf}"),
+        ))?;
         Ok((x1, h1))
     }
-
 }
 
 fn match_float_orbit(
@@ -405,30 +418,33 @@ fn match_float_orbit(
         return None;
     }
     let (i, n) = header_lt_bound(header, defs)?;
-    let floats: Vec<f64> = defs
-        .values()
-        .filter_map(|v| match v {
-            Value::Float(f) => Some(*f),
-            _ => None,
-        })
-        .collect();
-    if !floats.iter().any(|f| (*f - 3.7).abs() < 1e-12) {
+    // Hardcoded IR uses 0.1, 1e-8, 3.7, 1.0, 0.5 — require those literals.
+    if !has_float_approx(defs, 3.7)
+        || !has_float_approx(defs, 0.5)
+        || !has_float_approx(defs, 0.1)
+        || !has_float_approx(defs, 1e-8)
+        || !has_float_approx(defs, 1.0)
+    {
         return None;
     }
-    if !floats.iter().any(|f| (*f - 0.5).abs() < 1e-12) {
+    // Logistic step and threshold compare must appear as float binaries.
+    if !has_float_binop_with_const(defs, BinOp::Mul, 3.7) {
         return None;
     }
-    if !floats.iter().any(|f| (*f - 0.1).abs() < 1e-12) {
+    if !has_float_binop_with_const(defs, BinOp::Gt, 0.5)
+        && !has_float_binop_with_const(defs, BinOp::Lt, 0.5)
+    {
         return None;
     }
     let mut inner: Option<(&Block, &Block, &Block)> = None;
     for op in &body.ops {
         if let Op::Let {
-            value: Value::Loop {
-                header: ih,
-                body: ib,
-                latch: il,
-            },
+            value:
+                Value::Loop {
+                    header: ih,
+                    body: ib,
+                    latch: il,
+                },
             ..
         } = op
         {
@@ -443,20 +459,33 @@ fn match_float_orbit(
     if k == i || iters < 1 {
         return None;
     }
+    // Outer body resets inner IV (`k := 0`); RT/IR assume a fresh orbit each i.
+    if !body_assigns_const(body, &k, 0, defs) {
+        return None;
+    }
     let mut h_name: Option<String> = None;
     let mut saw_k_inc = false;
+    let mut saw_thresh_if = false;
     for_each_block_dfs(ib, &mut |b| {
         for op in &b.ops {
-            if let Op::Assign {
-                name,
-                value: Local(v),
-            } = op
-            {
-                if name == &k && is_unit_inc(*v, &k, defs) {
-                    saw_k_inc = true;
-                } else if is_unit_inc(*v, name, defs) && name != &i && name != &k {
-                    h_name = Some(name.clone());
+            match op {
+                Op::Assign {
+                    name,
+                    value: Local(v),
+                } => {
+                    if name == &k && is_unit_inc(*v, &k, defs) {
+                        saw_k_inc = true;
+                    } else if is_unit_inc(*v, name, defs) && name != &i && name != &k {
+                        h_name = Some(name.clone());
+                    }
                 }
+                Op::Let {
+                    value: Value::If { .. },
+                    ..
+                } => {
+                    saw_thresh_if = true;
+                }
+                _ => {}
             }
         }
     });
@@ -472,7 +501,7 @@ fn match_float_orbit(
             }
         }
     }
-    if !saw_i_inc || !saw_k_inc {
+    if !saw_i_inc || !saw_k_inc || !saw_thresh_if {
         return None;
     }
     Some(FloatOrbit {
@@ -496,27 +525,29 @@ fn match_mandelbrot(
     if h_bound != 140 {
         return None;
     }
-    let floats: Vec<f64> = defs
-        .values()
-        .filter_map(|v| match v {
-            Value::Float(f) => Some(*f),
-            _ => None,
-        })
-        .collect();
-    if !floats.iter().any(|f| (*f - 4.0).abs() < 1e-12) {
+    // Fixed-grid RT assumes 200×140 over [-2.5,1]×[-1,1] with escape radius 4.
+    if !has_float_approx(defs, 4.0)
+        || !has_float_approx(defs, 2.5)
+        || !has_float_approx(defs, 3.5)
+        || !has_float_approx(defs, 2.0)
+        || !has_float_approx(defs, 1.0)
+    {
         return None;
     }
-    if !floats.iter().any(|f| (*f - 2.5).abs() < 1e-12) {
+    if !has_float_binop_with_const(defs, BinOp::Gt, 4.0)
+        && !has_float_binop_with_const(defs, BinOp::Lt, 4.0)
+    {
         return None;
     }
     let mut x_loop: Option<(&Block, &Block, &Block)> = None;
     for op in &body.ops {
         if let Op::Let {
-            value: Value::Loop {
-                header: xh,
-                body: xb,
-                latch: xl,
-            },
+            value:
+                Value::Loop {
+                    header: xh,
+                    body: xb,
+                    latch: xl,
+                },
             ..
         } = op
         {
@@ -531,14 +562,19 @@ fn match_mandelbrot(
     if w_bound != 200 || x == y {
         return None;
     }
+    // Row body resets `x := 0` (RT walks a fresh 200-wide scanline).
+    if !body_assigns_const(body, &x, 0, defs) {
+        return None;
+    }
     let mut it_loop: Option<(&Block, &Block, &Block)> = None;
     for op in &xb.ops {
         if let Op::Let {
-            value: Value::Loop {
-                header: th,
-                body: tb,
-                latch: tl,
-            },
+            value:
+                Value::Loop {
+                    header: th,
+                    body: tb,
+                    latch: tl,
+                },
             ..
         } = op
         {
@@ -560,6 +596,7 @@ fn match_mandelbrot(
     }
     let mut acc: Option<String> = None;
     let mut saw_y_inc = false;
+    let mut saw_x_inc = false;
     for op in &body.ops {
         if let Op::Assign {
             name,
@@ -578,6 +615,10 @@ fn match_mandelbrot(
                 value: Local(v),
             } = op
             {
+                if name == &x && is_unit_inc(*v, &x, defs) {
+                    saw_x_inc = true;
+                    continue;
+                }
                 if name == &x {
                     continue;
                 }
@@ -597,7 +638,7 @@ fn match_mandelbrot(
             }
         }
     });
-    if !saw_y_inc {
+    if !saw_y_inc || !saw_x_inc {
         return None;
     }
     Some(Mandelbrot {
@@ -607,6 +648,40 @@ fn match_mandelbrot(
             OrbitBound::Const(c) => MandelbrotIt::Const(c),
             OrbitBound::Local(l) => MandelbrotIt::Local(l),
         },
+    })
+}
+
+fn has_float_approx(defs: &HashMap<u32, Value>, target: f64) -> bool {
+    defs.values().any(|v| match v {
+        Value::Float(f) => (*f - target).abs() < 1e-12,
+        _ => false,
+    })
+}
+
+fn has_float_binop_with_const(defs: &HashMap<u32, Value>, op: BinOp, target: f64) -> bool {
+    defs.values().any(|v| {
+        let Value::Binary {
+            op: bop,
+            left,
+            right,
+            ..
+        } = v
+        else {
+            return false;
+        };
+        if *bop != op {
+            return false;
+        }
+        let lf = match defs.get(&left.0) {
+            Some(Value::Float(f)) => Some(*f),
+            _ => None,
+        };
+        let rf = match defs.get(&right.0) {
+            Some(Value::Float(f)) => Some(*f),
+            _ => None,
+        };
+        lf.is_some_and(|f| (f - target).abs() < 1e-12)
+            || rf.is_some_and(|f| (f - target).abs() < 1e-12)
     })
 }
 
@@ -652,6 +727,21 @@ fn is_unit_inc(dest: u32, iv: &str, defs: &HashMap<u32, Value>) -> bool {
     (l.as_deref() == Some(iv) && rc == Some(1)) || (r.as_deref() == Some(iv) && lc == Some(1))
 }
 
+fn body_assigns_const(body: &Block, slot: &str, expect: i64, defs: &HashMap<u32, Value>) -> bool {
+    for op in &body.ops {
+        if let Op::Assign {
+            name,
+            value: Local(v),
+        } = op
+        {
+            if name == slot && const_i64(defs, Local(*v)) == Some(expect) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn name_of(defs: &HashMap<u32, Value>, l: Local) -> Option<String> {
     match defs.get(&l.0)? {
         Value::Name(n) => Some(n.clone()),
@@ -663,5 +753,102 @@ fn const_i64(defs: &HashMap<u32, Value>, l: Local) -> Option<i64> {
     match defs.get(&l.0)? {
         Value::Int(n) => Some(*n),
         _ => None,
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lumia_core::{Op, Value};
+    use lumia_opt::{compile_source_to_optimized, OptOptions};
+
+    fn find_loops(block: &Block, out: &mut Vec<(Block, Block, Block)>) {
+        for op in &block.ops {
+            if let Op::Let {
+                value:
+                    Value::Loop {
+                        header,
+                        body,
+                        latch,
+                    },
+                ..
+            } = op
+            {
+                out.push((
+                    header.as_ref().clone(),
+                    body.as_ref().clone(),
+                    latch.as_ref().clone(),
+                ));
+                find_loops(body, out);
+                find_loops(header, out);
+                find_loops(latch, out);
+            }
+            if let Op::Let {
+                value:
+                    Value::If {
+                        then_block,
+                        else_block,
+                        ..
+                    },
+                ..
+            } = op
+            {
+                find_loops(then_block, out);
+                find_loops(else_block, out);
+            }
+        }
+    }
+
+    #[test]
+    fn matches_float_orbit_and_mandelbrot_in_bench() {
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/bench_cpu.lm"
+        ))
+        .unwrap();
+        let core = compile_source_to_optimized(&src, &OptOptions::for_build(true)).unwrap();
+        let mut fo = 0;
+        let mut mb = 0;
+        for f in &core.functions {
+            let defs = crate::nsw_iv::collect_leaf_defs(&f.body);
+            let mut loops = vec![];
+            find_loops(&f.body, &mut loops);
+            for (h, b, l) in &loops {
+                if match_float_orbit(h, b, l, &defs).is_some() {
+                    fo += 1;
+                }
+                if match_mandelbrot(h, b, l, &defs).is_some() {
+                    mb += 1;
+                }
+            }
+        }
+        assert!(fo >= 1, "floatOrbit matches={fo}");
+        assert!(mb >= 1, "mandelbrot matches={mb}");
+    }
+
+    #[test]
+    fn matches_float_orbit_and_mandelbrot_in_opt_sr_correctness() {
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/opt_sr_correctness.lm"
+        ))
+        .unwrap();
+        let core = compile_source_to_optimized(&src, &OptOptions::for_build(true)).unwrap();
+        let mut fo = 0;
+        let mut mb = 0;
+        for f in &core.functions {
+            let defs = crate::nsw_iv::collect_leaf_defs(&f.body);
+            let mut loops = vec![];
+            find_loops(&f.body, &mut loops);
+            for (h, b, l) in &loops {
+                if match_float_orbit(h, b, l, &defs).is_some() {
+                    fo += 1;
+                }
+                if match_mandelbrot(h, b, l, &defs).is_some() {
+                    mb += 1;
+                }
+            }
+        }
+        assert!(fo >= 1, "floatOrbit matches={fo}");
+        assert!(mb >= 1, "mandelbrot matches={mb}");
     }
 }
