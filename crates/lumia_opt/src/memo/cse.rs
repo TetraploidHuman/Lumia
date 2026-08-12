@@ -1,6 +1,7 @@
 use lumia_core::{Block, CoreModule, Local, Op, Value};
 use lumia_hir::Builtin;
 use lumia_syntax::{BinOp, UnOp};
+use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -16,14 +17,23 @@ enum ExprKey {
     Call(String, Vec<u32>),
 }
 
+fn ret_is_cse_safe(ty: &Type) -> bool {
+    // Heap identity matters: CSE of `zeros(16)` must not alias two mutable lists.
+    matches!(
+        ty,
+        Type::Int | Type::Bool | Type::Float | Type::Char | Type::Unit
+    )
+}
+
 pub fn cse_module(module: &mut CoreModule) {
     // Foreign (`external`) must never be CSE'd: even trusted
     // `foreign "C" pure` is an honor-system claim; libc calls like `getpid` /
     // `getenv` are not referentially transparent. Inline already skips `external`.
+    // Also skip pure wrappers that return heap objects (`zeros` → shared buffer).
     let pure_funs: HashSet<String> = module
         .functions
         .iter()
-        .filter(|f| f.effect.is_pure() && f.external.is_none())
+        .filter(|f| f.effect.is_pure() && f.external.is_none() && ret_is_cse_safe(&f.ret_ty))
         .map(|f| f.name.clone())
         .collect();
     for f in &mut module.functions {
