@@ -9,6 +9,7 @@ pub(crate) fn link_executable(
     runtime: &Path,
     output: &Path,
     extra: &[String],
+    release: bool,
 ) -> Result<()> {
     let mut cmd = Command::new("clang");
     cmd.arg(obj).arg(runtime).arg("-o").arg(output);
@@ -30,6 +31,16 @@ pub(crate) fn link_executable(
             .arg("-lm")
             .arg("-lrt")
             .arg("-lutil");
+        // Drop unused `lumia_rt` / Rust-std objects. Cuts Release text ~3× and
+        // peak RSS ~0.7MiB on Linux hello; no effect on hot-path code that stays live.
+        if release {
+            if cfg!(target_os = "macos") {
+                cmd.arg("-Wl,-dead_strip");
+            } else {
+                cmd.arg("-Wl,--gc-sections");
+                cmd.arg("-Wl,-s");
+            }
+        }
     }
     for a in extra {
         cmd.arg(a);

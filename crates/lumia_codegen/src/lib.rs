@@ -236,7 +236,13 @@ pub fn compile_module(core: &CoreModule, opts: &CodegenOptions) -> Result<()> {
     // Drop LLVM module before linking (owns no further need)
     drop(cg);
 
-    link_executable(&obj_path, &opts.runtime_lib, &opts.output, &opts.link_args)?;
+    link_executable(
+        &obj_path,
+        &opts.runtime_lib,
+        &opts.output,
+        &opts.link_args,
+        opts.release,
+    )?;
     Ok(())
 }
 

@@ -10,27 +10,28 @@
 #   bench_fmt_rss_kb <kb>             → human MiB string
 #   bench_print_stats <name> <stats>  → pretty two-line report
 
+# Resolve repo root even when this file is sourced.
+_BENCH_MEASURE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_BENCH_PEAK_RSS_SRC="$_BENCH_MEASURE_DIR/peak_rss.c"
+_BENCH_PEAK_RSS_BIN="${LUMIA_PEAK_RSS_BIN:-$(cd "$_BENCH_MEASURE_DIR/.." && pwd)/target/bench_peak_rss}"
+
+bench_ensure_peak_rss() {
+  if [[ -x "$_BENCH_PEAK_RSS_BIN" ]] \
+    && [[ "$_BENCH_PEAK_RSS_BIN" -nt "$_BENCH_PEAK_RSS_SRC" ]]; then
+    return 0
+  fi
+  mkdir -p "$(dirname "$_BENCH_PEAK_RSS_BIN")"
+  # Small parent avoids Python fork COW inflating ru_maxrss to the interpreter's RSS.
+  if ! clang -O2 "$_BENCH_PEAK_RSS_SRC" -o "$_BENCH_PEAK_RSS_BIN" 2>/dev/null; then
+    echo "bench_measure: failed to build $_BENCH_PEAK_RSS_BIN (need clang)" >&2
+    return 1
+  fi
+}
+
 bench_measure() {
   # Discard command stdout/stderr; print "elapsed_s peak_rss_kb" on stdout.
-  # Fresh Python process ⇒ RUSAGE_CHILDREN covers only this spawn.
-  python3 - "$@" <<'PY'
-import resource
-import subprocess
-import sys
-import time
-
-cmd = sys.argv[1:]
-t0 = time.perf_counter()
-subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-elapsed = time.perf_counter() - t0
-rss = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
-# Linux: kilobytes; macOS: bytes.
-if sys.platform == "darwin":
-    rss_kb = rss / 1024.0
-else:
-    rss_kb = float(rss)
-print(f"{elapsed:.6f} {rss_kb:.0f}")
-PY
+  bench_ensure_peak_rss || return 1
+  "$_BENCH_PEAK_RSS_BIN" "$@"
 }
 
 bench_fmt_rss_kb() {
