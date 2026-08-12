@@ -3,6 +3,7 @@
 mod affine2_sr;
 mod builtin;
 mod collatz_sr;
+mod dense_f64_sr;
 mod emit_alloc;
 mod emit_arith;
 mod emit_calls;

@@ -45,6 +45,33 @@ impl<'ctx> Codegen<'ctx> {
             .get(&fun.name)
             .cloned()
             .unwrap_or_default();
+
+        // Dense List[Float] helpers → thin RT trampoline (no frame / root traffic).
+        if fun.memo.is_none() {
+            for (i, p) in fun.params.iter().enumerate() {
+                let av = fv.get_nth_param(i as u32).context("function param")?;
+                let ty = fun.param_tys.get(i).cloned().unwrap_or(Type::Int);
+                self.frame.local_tys.insert(p.0, ty.clone());
+                if matches!(ty, Type::Float) {
+                    let bits = av.into_int_value();
+                    let f = crate::error::llvm(self.llvm.builder.build_bit_cast(
+                        bits,
+                        self.llvm.context.f64_type(),
+                        "arg_f64",
+                    ))?;
+                    self.frame.locals.insert(p.0, f);
+                } else {
+                    self.frame.locals.insert(p.0, av);
+                }
+            }
+            if self.try_emit_dense_f64_fun(fun, fv)?.is_some() {
+                return Ok(());
+            }
+            // Fall through: clear param bindings; normal path re-binds with roots.
+            self.frame.locals.clear();
+            self.frame.local_tys.clear();
+        }
+
         let frame_name = if fun.is_main {
             "main"
         } else {

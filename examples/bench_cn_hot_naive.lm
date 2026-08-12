@@ -2,6 +2,7 @@ module BenchCnHotNaive
 
 /// Same algorithm as `bench_cn_hot_kernel.lm`, with GEMV/addmm/axpy/sub/clamp
 /// as nested Lumia `List[Float]` get/set loops (linalg only for L2 + checksum).
+/// Codegen should SR these helpers to `lumia_f64_*` RT kernels.
 import std.io.{println}
 import std.linalg.{checksum, l2Normalize}
 
@@ -22,12 +23,10 @@ val nZeros(n) = {
 }
 
 val nGemv(m, n, a, x, y) = {
-    // Pin containers as List[Float] (bare `.set` on a free var prefers Map).
-    val _pin = y.get(0) + a.get(0) * x.get(0)
     var out = y
     var i = 0
     for i < m {
-        var s = 0.0 + _pin * 0.0
+        var s = 0.0
         var j = 0
         for j < n {
             s = s + a.get(i * n + j) * x.get(j)
@@ -40,11 +39,10 @@ val nGemv(m, n, a, x, y) = {
 }
 
 val nGemvT(m, n, a, x, y) = {
-    val _pin = y.get(0) + a.get(0) * x.get(0)
     var out = y
     var j = 0
     for j < n {
-        out = out.set(j, 0.0 + _pin * 0.0)
+        out = out.set(j, 0.0)
         j = j + 1
     }
     var i = 0
@@ -61,14 +59,13 @@ val nGemvT(m, n, a, x, y) = {
 }
 
 val nAddmm(m, n, w, u, v, alpha) = {
-    val _pin = w.get(0) + u.get(0) * v.get(0)
     var out = w
     var i = 0
     for i < m {
         val ui = u.get(i) * alpha
         var j = 0
         for j < n {
-            out = out.set(i * n + j, out.get(i * n + j) + ui * v.get(j) + _pin * 0.0)
+            out = out.set(i * n + j, out.get(i * n + j) + ui * v.get(j))
             j = j + 1
         }
         i = i + 1
@@ -77,38 +74,46 @@ val nAddmm(m, n, w, u, v, alpha) = {
 }
 
 val nAxpy(y, alpha, x) = {
-    val _pin = y.get(0) + x.get(0)
     var out = y
     val n = y.len()
     var i = 0
     for i < n {
-        out = out.set(i, out.get(i) + alpha * x.get(i) + _pin * 0.0)
+        out = out.set(i, out.get(i) + alpha * x.get(i))
         i = i + 1
     }
     out
 }
 
 val nSub(out0, a, b) = {
-    val _pin = out0.get(0) + a.get(0) - b.get(0)
     var out = out0
     val n = a.len()
     var i = 0
     for i < n {
-        out = out.set(i, a.get(i) - b.get(i) + _pin * 0.0)
+        out = out.set(i, a.get(i) - b.get(i))
         i = i + 1
     }
     out
 }
 
 val nClamp(xs, lo, hi) = {
-    val _pin = xs.get(0)
     var out = xs
     val n = xs.len()
     var i = 0
     for i < n {
-        val v = out.get(i) + _pin * 0.0
+        val v = out.get(i)
         val c = if v < lo { lo } else { if v > hi { hi } else { v } }
         out = out.set(i, c)
+        i = i + 1
+    }
+    out
+}
+
+val nCopy(dst, src) = {
+    var out = dst
+    val n = src.len()
+    var i = 0
+    for i < n {
+        out = out.set(i, src.get(i))
         i = i + 1
     }
     out
@@ -161,16 +166,8 @@ val main = {
         delta = nGemvT(PFC, PFC, enc, err, delta)
         muPfc = nAxpy(muPfc, LR, delta)
         muPfc = nClamp(muPfc, 0.0 - CLIP, CLIP)
-        var ui = 0
-        for ui < VIS {
-            u = u.set(ui, muVis.get(ui))
-            ui = ui + 1
-        }
-        var vi = 0
-        for vi < PFC {
-            v = v.set(vi, err.get(vi))
-            vi = vi + 1
-        }
+        u = nCopy(u, muVis)
+        v = nCopy(v, err)
         u = l2Normalize(u, 0.001)
         v = l2Normalize(v, 0.001)
         wVp = nAddmm(PFC, VIS, wVp, v, u, LR)

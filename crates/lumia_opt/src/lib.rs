@@ -5,6 +5,7 @@
 //! Escape analysis + small pure inlining live in [`escape`] / [`inline`].
 
 mod copy_elim;
+mod dense_f64_sr;
 mod escape;
 mod fusion;
 mod inline;
@@ -24,6 +25,7 @@ pub use memo::{
 pub use specialize_const::SpecializeConstPass;
 
 use copy_elim::CopyElimPass;
+use dense_f64_sr::DenseF64SrPass;
 use lumia_core::{CoreModule, ListRepr, MapRepr};
 use memo::cse_module;
 use repr_select::ReprSelect;
@@ -57,6 +59,7 @@ enum PipelinePass {
     SpecializeConst,
     Licm,
     Escape,
+    DenseF64Sr,
     Inline,
     ConcatIdent,
     ReprSelect,
@@ -71,6 +74,7 @@ impl PipelinePass {
             Self::SpecializeConst => "specialize_const",
             Self::Licm => "licm",
             Self::Escape => "escape",
+            Self::DenseF64Sr => "dense_f64_sr",
             Self::Inline => "inline",
             Self::ConcatIdent => "concat_ident",
             Self::ReprSelect => "repr_select",
@@ -85,6 +89,7 @@ impl PipelinePass {
             Self::SpecializeConst => SpecializeConstPass.run(module),
             Self::Licm => LicmPass.run(module),
             Self::Escape => EscapePass.run(module),
+            Self::DenseF64Sr => DenseF64SrPass.run(module),
             Self::Inline => InlinePass.run(module),
             Self::ConcatIdent => ConcatIdentPass.run(module),
             Self::ReprSelect => ReprSelect.run(module),
@@ -117,6 +122,7 @@ const RELEASE_PASSES: &[PipelinePass] = &[
     PipelinePass::SpecializeConst,
     PipelinePass::ConstFold,
     PipelinePass::Licm,
+    PipelinePass::DenseF64Sr,
     PipelinePass::Inline,
     // Inline exposes fresh literals / builtins — fold, specialize, then escape.
     PipelinePass::ConstFold,
@@ -254,6 +260,7 @@ mod tests {
                 "specialize_const",
                 "const_fold",
                 "licm",
+                "dense_f64_sr",
                 "inline",
                 "const_fold",
                 "specialize_const",

@@ -70,16 +70,23 @@ impl Infer {
                         Ok((Type::List(elem), self.union3_eff(me, ke, ve)))
                     }
                     Type::Var(_) => {
-                        // Prefer Map when unconstrained (UFCS `.set` on maps).
-                        self.unify_at(
-                            span,
-                            mt,
-                            Type::Map(Box::new(kt.clone()), Box::new(vt.clone())),
-                        )?;
-                        Ok((
-                            Type::Map(Box::new(kt), Box::new(vt)),
-                            self.union3_eff(me, ke, ve),
-                        ))
+                        let kt_p = self.prune(kt.clone());
+                        // Int key ⇒ list index update; otherwise map upsert.
+                        // Concrete `Map[Int,_]` receivers already hit the Map arm.
+                        if matches!(kt_p, Type::Int) {
+                            self.unify_at(span, mt, Type::List(Box::new(vt.clone())))?;
+                            Ok((Type::List(Box::new(vt)), self.union3_eff(me, ke, ve)))
+                        } else {
+                            self.unify_at(
+                                span,
+                                mt,
+                                Type::Map(Box::new(kt.clone()), Box::new(vt.clone())),
+                            )?;
+                            Ok((
+                                Type::Map(Box::new(kt), Box::new(vt)),
+                                self.union3_eff(me, ke, ve),
+                            ))
+                        }
                     }
                     other => Err(at(
                         span,

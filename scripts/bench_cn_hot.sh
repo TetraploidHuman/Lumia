@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # CogniNucleus-shaped dense-float hot-path microbench (Release).
 #
-# Compares nested Lumia List[Float] loops vs std.linalg kernels (same fingerprints).
+# Compares nested Lumia List[Float] loops (auto-SR'd to RT kernels) vs
+# std.linalg wrappers (same fingerprints).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck disable=SC1091
