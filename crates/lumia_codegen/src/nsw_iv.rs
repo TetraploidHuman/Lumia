@@ -16,20 +16,15 @@
 //! - `iv * iv` under `iv*iv ≤ C` (or ≤ outer const-bounded IV) headers
 //! - Fib-style `match { 0|1 → …; _ → …(n-1)/(n-2) }`: mark `n-1`/`n-2` NSW
 //!   in the residual arm (add of recursive results stays checked — fib(93)+ overflows)
-//! - Large const IV bounds (`≤ NSW_LARGE_BOUND_MAX`): `iv*c`, `acc+=iv`, and
-//!   `acc += list.get(…)` / `get*c` treating elems as O(bound) (range-style scans)
 
 use lumia_core::{for_each_block_dfs, Block, Local, Op, Value};
-use lumia_hir::Builtin;
 use lumia_syntax::BinOp;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// Max loop bound for IV×bound arith trees (products must fit i64 with margin).
 const NSW_BOUND_MAX: i64 = 30_000;
-/// Cap for recording IV uppers used only to prove `d*d ≤ n` NSW / large-loop peeps.
-const NSW_IV_UPPER_MAX: i64 = 5_000_000;
-/// Large const IV bound: `iv * c` / `acc += iv` when products still fit i64.
-const NSW_LARGE_BOUND_MAX: i64 = 5_000_000;
+/// Cap for recording IV uppers used only to prove `d*d ≤ n` NSW.
+const NSW_IV_UPPER_MAX: i64 = 1_000_000;
 /// Tighter cap so `acc += O(B^4)` over `O(B^3)` iters still fits i64 (matmul-style).
 const NSW_ACC_BOUND_MAX: i64 = 2_000;
 /// `|c|` for `c * nonneg_iv` NSW peep (Collatz `3*x`).
@@ -45,10 +40,8 @@ pub(crate) fn collect_nsw_binop_locals(body: &Block) -> HashSet<u32> {
 
     let mut out = HashSet::default();
     let mut bounded_ivs: HashSet<String> = HashSet::default();
-    let mut large_ivs: HashSet<String> = HashSet::default();
     let mut iv_upper: HashMap<String, i64> = HashMap::default();
     let mut max_bound: i64 = 0;
-    let mut large_max: i64 = 0;
 
     // Pass 1: unit steps + collect const-bounded IV uppers.
     for_each_block_dfs(body, &mut |b| {
@@ -89,10 +82,6 @@ pub(crate) fn collect_nsw_binop_locals(body: &Block) -> HashSet<u32> {
                     if (1..=NSW_BOUND_MAX).contains(&b) {
                         bounded_ivs.extend(info.ivs.iter().cloned());
                         max_bound = max_bound.max(b);
-                    }
-                    if (1..=NSW_LARGE_BOUND_MAX).contains(&b) {
-                        large_ivs.extend(info.ivs.iter().cloned());
-                        large_max = large_max.max(b);
                     }
                 }
             }
@@ -153,11 +142,6 @@ pub(crate) fn collect_nsw_binop_locals(body: &Block) -> HashSet<u32> {
 
     // Fib-style equality cascade on 0|1 → residual arm `n-1` / `n-2`.
     mark_match01_subs(body, &all_defs, &mut out);
-
-    // Large const bounds (e.g. memTraffic i < 1.5M): iv*c and acc+=iv when products fit.
-    if !large_ivs.is_empty() && large_max > 0 {
-        mark_large_bound_peeps(&large_ivs, large_max, &all_defs, &mut out);
-    }
     out
 }
 
@@ -786,236 +770,6 @@ fn mark_name_loads(block: &Block, iv: &str, out: &mut HashSet<u32>) {
             }
         }
     });
-}
-
-/// Under a large const IV bound `B`: mark `iv * c` / `c * iv` when `|c|*(B+1)` fits
-/// i64, and `acc += iv` when `B*(B+1)/2` fits. Also `acc += list.get(iv)` when the
-/// index is that IV (bench-style scans; elems treated as O(B)-bounded like range).
-fn mark_large_bound_peeps(
-    ivs: &HashSet<String>,
-    bound: i64,
-    all_defs: &HashMap<u32, Value>,
-    out: &mut HashSet<u32>,
-) {
-    let b1 = bound.saturating_add(1);
-    let sum_ok = bound
-        .checked_mul(b1)
-        .and_then(|p| p.checked_div(2))
-        .is_some();
-    let mut iv_loads: HashSet<u32> = HashSet::default();
-    for (id, v) in all_defs {
-        if let Value::Name(n) = v {
-            if ivs.contains(n) {
-                iv_loads.insert(*id);
-                // Name load itself is not a binop; used as seed for muls.
-            }
-        }
-    }
-    // iv * c / c * iv
-    for (id, v) in all_defs {
-        if out.contains(id) {
-            continue;
-        }
-        let Value::Binary {
-            op: BinOp::Mul,
-            left,
-            right,
-            ..
-        } = v
-        else {
-            continue;
-        };
-        let (iv_side, c_side) = if iv_loads.contains(&left.0) {
-            (left, right)
-        } else if iv_loads.contains(&right.0) {
-            (right, left)
-        } else {
-            continue;
-        };
-        let Some(c) = const_i64(*c_side, all_defs) else {
-            continue;
-        };
-        let _ = iv_side;
-        let ok = if c == 0 {
-            true
-        } else {
-            c.checked_mul(b1).is_some()
-        };
-        if ok {
-            out.insert(*id);
-        }
-    }
-    // Close: (iv*c) + const, then Rem — one hop for LCG-style `i*a+b`.
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for (id, v) in all_defs {
-            if out.contains(id) {
-                continue;
-            }
-            let Value::Binary {
-                op: BinOp::Add,
-                left,
-                right,
-                ..
-            } = v
-            else {
-                continue;
-            };
-            let l_out = out.contains(&left.0);
-            let r_out = out.contains(&right.0);
-            let l_c = const_i64(*left, all_defs).is_some();
-            let r_c = const_i64(*right, all_defs).is_some();
-            if (l_out && r_c) || (r_out && l_c) {
-                // (iv*c) + d still fits if |d| small relative to margin; require d const
-                // and |d| <= b1 (LCG +12345 with B≥12345) or |d| fits vs i64::MAX-ish.
-                let d = const_i64(*left, all_defs).or_else(|| const_i64(*right, all_defs));
-                if d.is_some_and(|d| d.checked_mul(b1).is_some() || d.abs() <= b1) {
-                    out.insert(*id);
-                    changed = true;
-                }
-            }
-        }
-    }
-    if !sum_ok {
-        return;
-    }
-    // acc += iv
-    for (id, v) in all_defs {
-        if out.contains(id) {
-            continue;
-        }
-        let Value::Binary {
-            op: BinOp::Add,
-            left,
-            right,
-            ..
-        } = v
-        else {
-            continue;
-        };
-        let l_iv = iv_loads.contains(&left.0) || name_of_local(*left, all_defs).is_some_and(|n| ivs.contains(&n));
-        let r_iv = iv_loads.contains(&right.0) || name_of_local(*right, all_defs).is_some_and(|n| ivs.contains(&n));
-        let l_acc = name_of_local(*left, all_defs).is_some() || out.contains(&left.0);
-        let r_acc = name_of_local(*right, all_defs).is_some() || out.contains(&right.0);
-        if (l_iv && r_acc) || (r_iv && l_acc) {
-            out.insert(*id);
-        }
-    }
-    // acc += list.get(iv-index)
-    let get_iv: HashSet<u32> = all_defs
-        .iter()
-        .filter_map(|(id, v)| match v {
-            Value::Builtin {
-                name: Builtin::ListGet,
-                args,
-            } if args.len() == 2
-                && (iv_loads.contains(&args[1].0)
-                    || name_of_local(args[1], all_defs).is_some_and(|n| ivs.contains(&n))) =>
-            {
-                Some(*id)
-            }
-            _ => None,
-        })
-        .collect();
-    // Any ListGet under this bound — elems treated O(B) (range / clamped scans).
-    let any_get: HashSet<u32> = all_defs
-        .iter()
-        .filter_map(|(id, v)| match v {
-            Value::Builtin {
-                name: Builtin::ListGet,
-                ..
-            } => Some(*id),
-            _ => None,
-        })
-        .collect();
-    // get * c / c * get / get + c when product fits
-    for (id, v) in all_defs {
-        if out.contains(id) {
-            continue;
-        }
-        let Value::Binary {
-            op,
-            left,
-            right,
-            ..
-        } = v
-        else {
-            continue;
-        };
-        if !matches!(op, BinOp::Mul | BinOp::Add) {
-            continue;
-        }
-        let (g, c_side) = if any_get.contains(&left.0) {
-            (left, right)
-        } else if any_get.contains(&right.0) {
-            (right, left)
-        } else {
-            continue;
-        };
-        let _ = g;
-        let Some(c) = const_i64(*c_side, all_defs) else {
-            continue;
-        };
-        if c == 0 || c.checked_mul(b1).is_some() {
-            out.insert(*id);
-        }
-    }
-    // Close (get*c)+d
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for (id, v) in all_defs {
-            if out.contains(id) {
-                continue;
-            }
-            let Value::Binary {
-                op: BinOp::Add,
-                left,
-                right,
-                ..
-            } = v
-            else {
-                continue;
-            };
-            let l_out = out.contains(&left.0);
-            let r_out = out.contains(&right.0);
-            let l_c = const_i64(*left, all_defs).is_some();
-            let r_c = const_i64(*right, all_defs).is_some();
-            if (l_out && r_c) || (r_out && l_c) {
-                let d = const_i64(*left, all_defs).or_else(|| const_i64(*right, all_defs));
-                if d.is_some_and(|d| d.checked_mul(b1).is_some() || d.abs() <= b1) {
-                    out.insert(*id);
-                    changed = true;
-                }
-            }
-        }
-    }
-    if get_iv.is_empty() && any_get.is_empty() {
-        return;
-    }
-    // Elem O(B) assumption: B*B fits (same as sum_ok scale).
-    for (id, v) in all_defs {
-        if out.contains(id) {
-            continue;
-        }
-        let Value::Binary {
-            op: BinOp::Add,
-            left,
-            right,
-            ..
-        } = v
-        else {
-            continue;
-        };
-        let l_g = get_iv.contains(&left.0) || any_get.contains(&left.0);
-        let r_g = get_iv.contains(&right.0) || any_get.contains(&right.0);
-        let l_acc = name_of_local(*left, all_defs).is_some() || out.contains(&left.0);
-        let r_acc = name_of_local(*right, all_defs).is_some() || out.contains(&right.0);
-        if (l_g && r_acc) || (r_g && l_acc) {
-            out.insert(*id);
-        }
-    }
 }
 
 /// `x == C` / `C == x` with `C ∈ {0,1}` → `(scrutinee_local, C)`.
