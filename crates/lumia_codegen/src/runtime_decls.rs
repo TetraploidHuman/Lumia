@@ -493,6 +493,16 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         args: &[RtTy::Ptr, RtTy::F64],
     },
     RtDecl {
+        name: "lumia_f64_sqrt",
+        ret: RtTy::F64,
+        args: &[RtTy::F64],
+    },
+    RtDecl {
+        name: "lumia_f64_exp",
+        ret: RtTy::F64,
+        args: &[RtTy::F64],
+    },
+    RtDecl {
         name: "lumia_f64_mul",
         ret: RtTy::Ptr,
         args: &[RtTy::Ptr, RtTy::Ptr, RtTy::Ptr],

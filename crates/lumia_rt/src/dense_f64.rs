@@ -60,6 +60,18 @@ pub extern "C" fn lumia_f64_scale(xs: *mut u8, alpha: f64) -> *mut u8 {
     xs
 }
 
+/// Scalar `√x` (for hand-written norms / std that SR into list kernels).
+#[no_mangle]
+pub extern "C" fn lumia_f64_sqrt(x: f64) -> f64 {
+    x.sqrt()
+}
+
+/// Scalar `eˣ` (for hand-written softmax that SR into `lumia_f64_softmax`).
+#[no_mangle]
+pub extern "C" fn lumia_f64_exp(x: f64) -> f64 {
+    x.exp()
+}
+
 /// `out[i] = a[i] * b[i]` (same length). Returns `out`.
 #[no_mangle]
 pub extern "C" fn lumia_f64_mul(out: *mut u8, a: *mut u8, b: *mut u8) -> *mut u8 {
