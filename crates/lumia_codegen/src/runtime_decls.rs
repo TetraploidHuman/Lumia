@@ -432,6 +432,11 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         args: &[RtTy::I64],
     },
     RtDecl {
+        name: "lumia_mandelbrot_checksum",
+        ret: RtTy::I64,
+        args: &[RtTy::I64],
+    },
+    RtDecl {
         name: "lumia_collatz_strided",
         ret: RtTy::I64,
         args: &[RtTy::I64, RtTy::I64, RtTy::I64],

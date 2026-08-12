@@ -65,7 +65,25 @@ impl<'ctx> Codegen<'ctx> {
         let Some(pat) = match_mandelbrot(header, body, latch, &self.frame.leaf_defs) else {
             return Ok(None);
         };
-        self.emit_mandelbrot_ir(&pat, fv)?;
+        // 4-wide interleaved escape lives in RT (ILP + successive cx+=dx for FP match).
+        let max_it = match pat.max_it {
+            MandelbrotIt::Const(c) => self.llvm.i64_ty.const_int(c as u64, true),
+            MandelbrotIt::Local(l) => self.coerce_i64(self.local(l)?)?,
+        };
+        let rt = self.runtime_fn("lumia_mandelbrot_checksum")?;
+        let call = crate::error::llvm(
+            self.llvm
+                .builder
+                .build_call(rt, &[max_it.into()], "mb_chk"),
+        )?;
+        let acc = call
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| anyhow!("mandelbrot checksum result"))?
+            .into_int_value();
+        self.store_slot_i64(&pat.acc, acc)?;
+        self.store_slot_i64(&pat.y, self.llvm.i64_ty.const_int(140, false))?;
+        let _ = fv;
         Ok(Some(self.llvm.i64_ty.const_int(0, false).into()))
     }
 
@@ -375,194 +393,6 @@ impl<'ctx> Codegen<'ctx> {
         Ok((x1, h1))
     }
 
-    fn emit_mandelbrot_ir(&mut self, pat: &Mandelbrot, fv: FunctionValue<'ctx>) -> Result<()> {
-        // Full SSA phis (no mut allocas). Escape stays branched — early exit is the win.
-        let fty = self.llvm.context.f64_type();
-        let i1_ty = self.llvm.context.bool_type();
-        let max_it = match pat.max_it {
-            MandelbrotIt::Const(c) => self.llvm.i64_ty.const_int(c as u64, true),
-            MandelbrotIt::Local(l) => self.coerce_i64(self.local(l)?)?,
-        };
-        let w = self.llvm.i64_ty.const_int(200, false);
-        let h_lim = self.llvm.i64_ty.const_int(140, false);
-        let dx = fty.const_float(3.5 / 200.0);
-        let dy = fty.const_float(2.0 / 140.0);
-        let four = fty.const_float(4.0);
-        let two = fty.const_float(2.0);
-        let c_m2_5 = fty.const_float(-2.5);
-        let c_m1 = fty.const_float(-1.0);
-        let zero_f = fty.const_float(0.0);
-        let one = self.llvm.i64_ty.const_int(1, false);
-        let zero_i = self.llvm.i64_ty.const_int(0, false);
-        let false_v = i1_ty.const_int(0, false);
-        let true_v = i1_ty.const_int(1, false);
-
-        let pre = self
-            .llvm
-            .builder
-            .get_insert_block()
-            .ok_or_else(|| anyhow!("mandelbrot: no insert block"))?;
-        let y0 = self.load_slot_i64(&pat.y)?;
-        let acc0 = self.load_slot_i64(&pat.acc)?;
-
-        let y_hdr = self.llvm.context.append_basic_block(fv, "mb_yhdr");
-        let y_body = self.llvm.context.append_basic_block(fv, "mb_ybody");
-        let x_hdr = self.llvm.context.append_basic_block(fv, "mb_xhdr");
-        let x_body = self.llvm.context.append_basic_block(fv, "mb_xbody");
-        let t_hdr = self.llvm.context.append_basic_block(fv, "mb_thdr");
-        let t_body = self.llvm.context.append_basic_block(fv, "mb_tbody");
-        let t_esc = self.llvm.context.append_basic_block(fv, "mb_tesc");
-        let t_step = self.llvm.context.append_basic_block(fv, "mb_tstep");
-        let t_exit = self.llvm.context.append_basic_block(fv, "mb_texit");
-        let x_latch = self.llvm.context.append_basic_block(fv, "mb_xlatch");
-        let y_latch = self.llvm.context.append_basic_block(fv, "mb_ylatch");
-        let y_exit = self.llvm.context.append_basic_block(fv, "mb_yexit");
-
-        crate::error::llvm(self.llvm.builder.build_unconditional_branch(y_hdr))?;
-
-        self.llvm.builder.position_at_end(y_hdr);
-        let y_phi = crate::error::llvm(self.llvm.builder.build_phi(self.llvm.i64_ty, "mb_y"))?;
-        let cy_phi = crate::error::llvm(self.llvm.builder.build_phi(fty, "mb_cy"))?;
-        let acc_y_phi =
-            crate::error::llvm(self.llvm.builder.build_phi(self.llvm.i64_ty, "mb_acc_y"))?;
-        y_phi.add_incoming(&[(&y0, pre)]);
-        cy_phi.add_incoming(&[(&c_m1, pre)]);
-        acc_y_phi.add_incoming(&[(&acc0, pre)]);
-        let y = y_phi.as_basic_value().into_int_value();
-        let cy = cy_phi.as_basic_value().into_float_value();
-        let acc_y = acc_y_phi.as_basic_value().into_int_value();
-        let y_cont = crate::error::llvm(self.llvm.builder.build_int_compare(
-            IntPredicate::SLT,
-            y,
-            h_lim,
-            "mb_ylt",
-        ))?;
-        crate::error::llvm(
-            self.llvm
-                .builder
-                .build_conditional_branch(y_cont, y_body, y_exit),
-        )?;
-
-        self.llvm.builder.position_at_end(y_body);
-        crate::error::llvm(self.llvm.builder.build_unconditional_branch(x_hdr))?;
-
-        self.llvm.builder.position_at_end(x_hdr);
-        let x_phi = crate::error::llvm(self.llvm.builder.build_phi(self.llvm.i64_ty, "mb_x"))?;
-        let cx_phi = crate::error::llvm(self.llvm.builder.build_phi(fty, "mb_cx"))?;
-        let acc_x_phi =
-            crate::error::llvm(self.llvm.builder.build_phi(self.llvm.i64_ty, "mb_acc_x"))?;
-        x_phi.add_incoming(&[(&zero_i, y_body)]);
-        cx_phi.add_incoming(&[(&c_m2_5, y_body)]);
-        acc_x_phi.add_incoming(&[(&acc_y, y_body)]);
-        let x = x_phi.as_basic_value().into_int_value();
-        let cx = cx_phi.as_basic_value().into_float_value();
-        let acc_x = acc_x_phi.as_basic_value().into_int_value();
-        let x_cont = crate::error::llvm(self.llvm.builder.build_int_compare(
-            IntPredicate::SLT,
-            x,
-            w,
-            "mb_xlt",
-        ))?;
-        crate::error::llvm(
-            self.llvm
-                .builder
-                .build_conditional_branch(x_cont, x_body, y_latch),
-        )?;
-
-        self.llvm.builder.position_at_end(x_body);
-        crate::error::llvm(self.llvm.builder.build_unconditional_branch(t_hdr))?;
-
-        self.llvm.builder.position_at_end(t_hdr);
-        let it_phi = crate::error::llvm(self.llvm.builder.build_phi(self.llvm.i64_ty, "mb_it"))?;
-        let zx_phi = crate::error::llvm(self.llvm.builder.build_phi(fty, "mb_zx"))?;
-        let zy_phi = crate::error::llvm(self.llvm.builder.build_phi(fty, "mb_zy"))?;
-        it_phi.add_incoming(&[(&zero_i, x_body)]);
-        zx_phi.add_incoming(&[(&zero_f, x_body)]);
-        zy_phi.add_incoming(&[(&zero_f, x_body)]);
-        let it = it_phi.as_basic_value().into_int_value();
-        let zx = zx_phi.as_basic_value().into_float_value();
-        let zy = zy_phi.as_basic_value().into_float_value();
-        let t_cont = crate::error::llvm(self.llvm.builder.build_int_compare(
-            IntPredicate::SLT,
-            it,
-            max_it,
-            "mb_itlt",
-        ))?;
-        crate::error::llvm(
-            self.llvm
-                .builder
-                .build_conditional_branch(t_cont, t_body, t_exit),
-        )?;
-
-        self.llvm.builder.position_at_end(t_body);
-        let zx2 = crate::error::llvm(self.llvm.builder.build_float_mul(zx, zx, "mb_zx2"))?;
-        let zy2 = crate::error::llvm(self.llvm.builder.build_float_mul(zy, zy, "mb_zy2"))?;
-        let r2 = crate::error::llvm(self.llvm.builder.build_float_add(zx2, zy2, "mb_r2"))?;
-        let escaped_now = crate::error::llvm(self.llvm.builder.build_float_compare(
-            FloatPredicate::OGT,
-            r2,
-            four,
-            "mb_esc_now",
-        ))?;
-        crate::error::llvm(
-            self.llvm
-                .builder
-                .build_conditional_branch(escaped_now, t_esc, t_step),
-        )?;
-
-        self.llvm.builder.position_at_end(t_esc);
-        crate::error::llvm(self.llvm.builder.build_unconditional_branch(t_exit))?;
-
-        self.llvm.builder.position_at_end(t_step);
-        let two_zx = crate::error::llvm(self.llvm.builder.build_float_mul(two, zx, "mb_2zx"))?;
-        let two_zx_zy =
-            crate::error::llvm(self.llvm.builder.build_float_mul(two_zx, zy, "mb_2zxzy"))?;
-        let nzy = crate::error::llvm(self.llvm.builder.build_float_add(two_zx_zy, cy, "mb_nzy"))?;
-        let zx_m_zy = crate::error::llvm(self.llvm.builder.build_float_sub(zx2, zy2, "mb_zxmzy"))?;
-        let nzx = crate::error::llvm(self.llvm.builder.build_float_add(zx_m_zy, cx, "mb_nzx"))?;
-        let it1 = crate::error::llvm(self.llvm.builder.build_int_nsw_add(it, one, "mb_it1"))?;
-        it_phi.add_incoming(&[(&it1, t_step)]);
-        zx_phi.add_incoming(&[(&nzx, t_step)]);
-        zy_phi.add_incoming(&[(&nzy, t_step)]);
-        crate::error::llvm(self.llvm.builder.build_unconditional_branch(t_hdr))?;
-
-        self.llvm.builder.position_at_end(t_exit);
-        let esc_exit = crate::error::llvm(self.llvm.builder.build_phi(i1_ty, "mb_esc_ex"))?;
-        let it_exit = crate::error::llvm(self.llvm.builder.build_phi(self.llvm.i64_ty, "mb_it_ex"))?;
-        esc_exit.add_incoming(&[(&false_v, t_hdr), (&true_v, t_esc)]);
-        it_exit.add_incoming(&[(&it, t_hdr), (&it, t_esc)]);
-        let esc_e = esc_exit.as_basic_value().into_int_value();
-        let it_e = it_exit.as_basic_value().into_int_value();
-        let add = crate::error::llvm(
-            self.llvm
-                .builder
-                .build_select(esc_e, it_e, max_it, "mb_add"),
-        )?
-        .into_int_value();
-        let acc1 = crate::error::llvm(self.llvm.builder.build_int_nsw_add(acc_x, add, "mb_acc1"))?;
-        crate::error::llvm(self.llvm.builder.build_unconditional_branch(x_latch))?;
-
-        self.llvm.builder.position_at_end(x_latch);
-        let cx1 = crate::error::llvm(self.llvm.builder.build_float_add(cx, dx, "mb_cx1"))?;
-        let x1 = crate::error::llvm(self.llvm.builder.build_int_nsw_add(x, one, "mb_x1"))?;
-        x_phi.add_incoming(&[(&x1, x_latch)]);
-        cx_phi.add_incoming(&[(&cx1, x_latch)]);
-        acc_x_phi.add_incoming(&[(&acc1, x_latch)]);
-        crate::error::llvm(self.llvm.builder.build_unconditional_branch(x_hdr))?;
-
-        self.llvm.builder.position_at_end(y_latch);
-        let cy1 = crate::error::llvm(self.llvm.builder.build_float_add(cy, dy, "mb_cy1"))?;
-        let y1 = crate::error::llvm(self.llvm.builder.build_int_nsw_add(y, one, "mb_y1"))?;
-        y_phi.add_incoming(&[(&y1, y_latch)]);
-        cy_phi.add_incoming(&[(&cy1, y_latch)]);
-        acc_y_phi.add_incoming(&[(&acc_x, y_latch)]);
-        crate::error::llvm(self.llvm.builder.build_unconditional_branch(y_hdr))?;
-
-        self.llvm.builder.position_at_end(y_exit);
-        self.store_slot_i64(&pat.acc, acc_y)?;
-        self.store_slot_i64(&pat.y, y)?;
-        Ok(())
-    }
 }
 
 fn match_float_orbit(

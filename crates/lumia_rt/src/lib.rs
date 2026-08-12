@@ -20,6 +20,7 @@ mod dict;
 mod dispatch;
 mod ensure;
 mod eq;
+mod float_kernels;
 mod gc;
 mod hash_ord;
 mod list;
@@ -44,6 +45,7 @@ pub use gc::{lumia_alloc, lumia_gc_collect, lumia_root_pop, lumia_root_push, lum
 
 pub use affine2::lumia_affine2_rem_sum;
 pub use collatz::{lumia_collatz_strided, lumia_collatz_total};
+pub use float_kernels::lumia_mandelbrot_checksum;
 pub use number_theory::{
     lumia_affine1_rem_sum, lumia_divisor_sum, lumia_gcd_sum, lumia_matmul_affine_checksum,
     lumia_product_rem_sum,
