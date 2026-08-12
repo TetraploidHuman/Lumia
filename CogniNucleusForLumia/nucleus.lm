@@ -1,0 +1,62 @@
+/// Nucleus state + predictive-coding step (`cogninucleus.nucleus`).
+///
+/// @exports Nucleus, newNucleus, openLoopTd, sensoryStep, stepWithTopDown, learnGen
+module nucleus
+
+import std.linalg.{zeros, gemv}
+import std.cn.{nucleusStep, clusterRates, learnGenerative}
+import vec.{eye}
+import config.{N_CLUSTERS, C_DECAY, C_THR, STATE_LR, PI, MU_CLIP, W_CLIP, W_DECAY}
+
+type Nucleus {
+    val size
+    val mu
+    val enc
+    val predW
+    val err
+    val pred
+    val pot
+    val rates
+    val tdOpen
+}
+
+val newNucleus = { size ->
+    Nucleus {
+        size = size,
+        mu = zeros(size),
+        enc = eye(size),
+        predW = eye(size),
+        err = zeros(size),
+        pred = zeros(size),
+        pot = zeros(size),
+        rates = zeros(size),
+        tdOpen = zeros(size)
+    }
+}
+
+val openLoopTd = { n ->
+    gemv(n.size, n.size, n.predW, n.mu, n.tdOpen)
+}
+
+/// One PC step with optional cluster rate coding on `bottomUp`.
+val sensoryStep = { n, bottomUp, topDown ->
+    var pot = n.pot
+    var rates = n.rates
+    rates = clusterRates(pot, bottomUp, rates, n.size, N_CLUSTERS, C_DECAY, C_THR)
+    var mu = n.mu
+    var err = n.err
+    var pred = n.pred
+    mu = nucleusStep(mu, n.enc, n.predW, rates, topDown, err, pred, n.size, STATE_LR, PI, MU_CLIP)
+    n with { mu = mu, err = err, pred = pred, pot = pot, rates = rates }
+}
+
+val stepWithTopDown = { n, bottomUp, topDown ->
+    sensoryStep(n, bottomUp, topDown)
+}
+
+val learnGen = { n, pe, lr ->
+    var enc = n.enc
+    var predW = n.predW
+    enc = learnGenerative(enc, predW, n.mu, pe, n.size, lr, W_CLIP, W_DECAY, PI)
+    n with { enc = enc, predW = predW }
+}

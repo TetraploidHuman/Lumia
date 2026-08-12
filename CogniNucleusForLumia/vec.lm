@@ -1,0 +1,26 @@
+/// Dense float helpers for CogniNucleus-For-Lumia.
+///
+/// @exports eye, fillRange
+module vec
+
+import std.linalg.{zeros}
+
+val eye = { n ->
+    var m = zeros(n * n)
+    var i = 0
+    for i < n {
+        m = m.set(i * n + i, 1.0)
+        i = i + 1
+    }
+    m
+}
+
+val fillRange = { n, scale ->
+    var xs = zeros(n)
+    var i = 0
+    for i < n {
+        xs = xs.set(i, (0.0 + i) * scale)
+        i = i + 1
+    }
+    xs
+}
