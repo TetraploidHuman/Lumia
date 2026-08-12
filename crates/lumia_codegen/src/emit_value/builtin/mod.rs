@@ -219,6 +219,11 @@ impl<'ctx> Codegen<'ctx> {
         let n = self.coerce_i64(self.local(args[1])?)?;
         let mut obj = self.i64_as_ptr(obj_i, "obj")?;
         obj = self.ensure_float_container(b, args, obj)?;
+        // List append/take: retain source when the old binding stays live.
+        // Skipped for proven `xs = xs.append(…)` so unique RC can write in place.
+        if matches!(b, Builtin::ListAppend) && !self.frame.cow_consume_unique {
+            self.list_retain_i64(obj_i)?;
+        }
         let sym = Self::builtin_symbol(b)?;
         self.call_rt_ptr_as_i64(sym, &[obj.into(), n.into()], label)
     }
@@ -234,6 +239,9 @@ impl<'ctx> Codegen<'ctx> {
         let b_i = self.coerce_i64(self.local(args[1])?)?;
         let a = self.i64_as_ptr(a_i, "a")?;
         let bb = self.i64_as_ptr(b_i, "b")?;
+        if matches!(b, Builtin::ListConcat) && !self.frame.cow_consume_unique {
+            self.list_retain_i64(a_i)?;
+        }
         let sym = Self::builtin_symbol(b)?;
         self.call_rt_ptr_as_i64(sym, &[a.into(), bb.into()], label)
     }

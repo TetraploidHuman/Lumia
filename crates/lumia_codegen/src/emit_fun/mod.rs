@@ -221,8 +221,9 @@ impl<'ctx> Codegen<'ctx> {
         Ok(())
     }
 
-    /// `xs = xs.set(i, v)` — next op assigns this MapSet result back onto the loaded slot.
-    fn map_set_reassign_consumes(
+    /// `xs = xs.set(…)` / `xs = xs.append(…)` — next op assigns this COW result
+    /// back onto the loaded slot (unique RC can mutate in place).
+    fn cow_reassign_consumes(
         &self,
         block: &Block,
         let_idx: usize,
@@ -232,10 +233,15 @@ impl<'ctx> Codegen<'ctx> {
         let Value::Builtin { name, args } = value else {
             return false;
         };
-        if !matches!(name, lumia_hir::Builtin::MapSet) || args.is_empty() {
+        let list_arg = match name {
+            lumia_hir::Builtin::MapSet | lumia_hir::Builtin::ListAppend => args.first(),
+            lumia_hir::Builtin::ListConcat => args.first(),
+            _ => None,
+        };
+        let Some(list_arg) = list_arg else {
             return false;
-        }
-        let Some(Value::Name(slot)) = self.frame.leaf_defs.get(&args[0].0) else {
+        };
+        let Some(Value::Name(slot)) = self.frame.leaf_defs.get(&list_arg.0) else {
             return false;
         };
         matches!(
@@ -320,7 +326,7 @@ impl<'ctx> Codegen<'ctx> {
                         return Ok(None);
                     }
                     self.frame.cow_consume_unique =
-                        self.map_set_reassign_consumes(block, idx, *local, value);
+                        self.cow_reassign_consumes(block, idx, *local, value);
                     self.frame.emit_dest = Some(local.0);
                     let v = self.emit_value(value, fv)?;
                     self.frame.emit_dest = None;

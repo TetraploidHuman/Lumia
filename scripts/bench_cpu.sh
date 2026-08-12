@@ -165,8 +165,9 @@ if [[ "$use_shield" -eq 1 ]]; then
     sudo_shield --cpus "$BENCH_CPU_LIST" -- \
       bash -c '
         # shellcheck disable=SC1091
-        source "$1"
-        bin=$2; runs=$3; cpus=$4
+        # bash -c: first arg after the script is $0.
+        source "$0"
+        bin=$1; runs=$2; cpus=$3
         for ((i=1;i<=runs;i++)); do
           if command -v taskset >/dev/null 2>&1; then
             bench_measure taskset -c "$cpus" "$bin"
@@ -200,8 +201,8 @@ if [[ "${COMPARE_DEBUG:-0}" == "1" ]]; then
       sudo_shield --cpus "$BENCH_CPU_LIST" -- \
         bash -c '
           # shellcheck disable=SC1091
-          source "$1"
-          bin=$2; runs=$3; cpus=$4
+          source "$0"
+          bin=$1; runs=$2; cpus=$3
           for ((i=1;i<=runs;i++)); do
             if command -v taskset >/dev/null 2>&1; then
               bench_measure taskset -c "$cpus" "$bin"

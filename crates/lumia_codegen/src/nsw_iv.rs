@@ -14,6 +14,8 @@
 //! ## Extra peeps
 //! - `c * nonneg_iv` for tiny `|c|` (Collatz `3*x`)
 //! - `iv * iv` under `iv*iv ≤ C` (or ≤ outer const-bounded IV) headers
+//! - Fib-style `match { 0|1 → …; _ → …(n-1)/(n-2) }`: mark `n-1`/`n-2` NSW
+//!   in the residual arm (add of recursive results stays checked — fib(93)+ overflows)
 
 use lumia_core::{for_each_block_dfs, Block, Local, Op, Value};
 use lumia_syntax::BinOp;
@@ -137,6 +139,9 @@ pub(crate) fn collect_nsw_binop_locals(body: &Block) -> HashSet<u32> {
     if (1..=NSW_IV_UPPER_MAX).contains(&max_upper) {
         mark_acc_plus_unit_counter(body, &all_defs, &mut out);
     }
+
+    // Fib-style equality cascade on 0|1 → residual arm `n-1` / `n-2`.
+    mark_match01_subs(body, &all_defs, &mut out);
     out
 }
 
@@ -767,6 +772,115 @@ fn mark_name_loads(block: &Block, iv: &str, out: &mut HashSet<u32>) {
     });
 }
 
+/// `x == C` / `C == x` with `C ∈ {0,1}` → `(scrutinee_local, C)`.
+fn eq_01_cond(cond: Local, all_defs: &HashMap<u32, Value>) -> Option<(Local, i64)> {
+    let Value::Binary {
+        op: BinOp::Eq,
+        left,
+        right,
+        ..
+    } = all_defs.get(&cond.0)?
+    else {
+        return None;
+    };
+    match (const_i64(*left, all_defs), const_i64(*right, all_defs)) {
+        (Some(c), None) if c == 0 || c == 1 => Some((*right, c)),
+        (None, Some(c)) if c == 0 || c == 1 => Some((*left, c)),
+        _ => None,
+    }
+}
+
+/// Mark `scrut - 1` / `scrut - 2` in a block (fib residual arm).
+fn mark_scrut_minus_small_with_defs(
+    block: &Block,
+    scrut: Local,
+    all_defs: &HashMap<u32, Value>,
+    out: &mut HashSet<u32>,
+) {
+    for_each_block_dfs(block, &mut |b| {
+        for op in &b.ops {
+            if let Op::Let {
+                local,
+                value:
+                    Value::Binary {
+                        op: BinOp::Sub,
+                        left,
+                        right,
+                        ..
+                    },
+                ..
+            } = op
+            {
+                if *left != scrut {
+                    continue;
+                }
+                if matches!(const_i64(*right, all_defs), Some(1 | 2)) {
+                    out.insert(local.0);
+                }
+            }
+        }
+    });
+}
+
+/// Walk the else-arm of `scrut == seen` looking for the other of `{0,1}`, then mark subs.
+fn walk_match01_else(
+    block: &Block,
+    scrut: Local,
+    seen: i64,
+    all_defs: &HashMap<u32, Value>,
+    out: &mut HashSet<u32>,
+) {
+    let other = if seen == 0 { 1 } else { 0 };
+    for op in &block.ops {
+        if let Op::Let {
+            value:
+                Value::If {
+                    cond,
+                    else_block,
+                    ..
+                },
+            ..
+        } = op
+        {
+            if let Some((s2, c2)) = eq_01_cond(*cond, all_defs) {
+                if s2 != scrut {
+                    continue;
+                }
+                if c2 == other {
+                    mark_scrut_minus_small_with_defs(else_block, scrut, all_defs, out);
+                    return;
+                }
+                // Same constant again — keep walking the residual.
+                if c2 == seen {
+                    walk_match01_else(else_block, scrut, seen, all_defs, out);
+                }
+            }
+        }
+    }
+}
+
+/// Fib-style nested `if n==0 / n==1`: mark `n-1`/`n-2` in the final else arm.
+fn mark_match01_subs(body: &Block, all_defs: &HashMap<u32, Value>, out: &mut HashSet<u32>) {
+    for_each_block_dfs(body, &mut |b| {
+        for op in &b.ops {
+            if let Op::Let {
+                value:
+                    Value::If {
+                        cond,
+                        else_block,
+                        ..
+                    },
+                ..
+            } = op
+            {
+                if let Some((scrut, c)) = eq_01_cond(*cond, all_defs) {
+                    walk_match01_else(else_block, scrut, c, all_defs, out);
+                }
+            }
+        }
+    });
+}
+
 /// Mutable slots whose every assignment is `≥ 2` or `slot = slot + 1`.
 fn collect_ge2_unit_slots(body: &Block, all_defs: &HashMap<u32, Value>) -> HashSet<String> {
     let mut assigns: HashMap<String, Vec<u32>> = HashMap::default();
@@ -1027,6 +1141,45 @@ val main = {
         assert!(
             !nonneg.is_empty(),
             "inlined collatzSteps `x` under x>1 should be nonneg loads"
+        );
+    }
+
+    #[test]
+    fn marks_fib_match01_subs() {
+        let core = compile_source_to_core(
+            r#"
+module M
+val fib(n) = {
+  n match {
+    0 -> 0
+    1 -> 1
+    _ -> fib(n - 1) + fib(n - 2)
+  }
+}
+val main = fib(10)
+"#,
+        )
+        .unwrap();
+        let fib = core.functions.iter().find(|f| f.name == "fib").unwrap();
+        let nsw = collect_nsw_binop_locals(&fib.body);
+        assert!(
+            nsw.len() >= 2,
+            "expected n-1 and n-2 NSW-safe after match 0|1, got {nsw:?}"
+        );
+        // Recursive result add must stay checked (fib(93) overflows i64).
+        let defs = collect_leaf_defs(&fib.body);
+        let add_locals: Vec<_> = defs
+            .iter()
+            .filter_map(|(id, v)| match v {
+                Value::Binary {
+                    op: BinOp::Add, ..
+                } => Some(*id),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            add_locals.iter().all(|id| !nsw.contains(id)),
+            "fib add must not be NSW: {add_locals:?} nsw={nsw:?}"
         );
     }
 }

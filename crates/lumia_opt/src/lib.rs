@@ -111,6 +111,9 @@ impl Pass for CsePass {
 const DEBUG_PASSES: &[PipelinePass] = &[
     PipelinePass::Cse,
     PipelinePass::ConstFold,
+    // Light PE without Inline/memo — bake Int/Bool/Char into leaf clones.
+    PipelinePass::SpecializeConst,
+    PipelinePass::ConstFold,
     PipelinePass::Licm,
     // Same dense-float SR as Release so Debug matches hot RT kernels (no Inline).
     PipelinePass::DenseF64Sr,
@@ -241,17 +244,20 @@ mod tests {
         assert!(pass_names(true).contains(&"concat_ident"));
         assert!(pass_names(true).contains(&"memo_tf"));
         assert!(!pass_names(false).contains(&"inline"));
-        assert!(!pass_names(false).contains(&"specialize_const"));
+        assert!(pass_names(false).contains(&"specialize_const"));
         assert!(!pass_names(false).contains(&"memo_tf"));
     }
 
     #[test]
     fn pass_pipeline_exact_order() {
-        // Debug: CSE → fold → LICM → dense_f64_sr → Escape → ReprSelect (no inline/memo).
+        // Debug: CSE → fold → specialize → fold → LICM → dense_f64_sr → Escape → ReprSelect
+        // (no inline/memo).
         assert_eq!(
             DEBUG_PASSES.iter().map(|p| p.name()).collect::<Vec<_>>(),
             vec![
                 "cse",
+                "const_fold",
+                "specialize_const",
                 "const_fold",
                 "licm",
                 "dense_f64_sr",
