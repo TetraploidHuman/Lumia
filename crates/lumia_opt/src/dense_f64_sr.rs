@@ -43,6 +43,8 @@ fn dense_f64_sr_module(module: &mut CoreModule) {
             Some("lumia_f64_clamp")
         } else if match_copy_fun(fun, &defs).is_some() {
             Some("lumia_f64_copy")
+        } else if match_zeros_fun(fun, &defs).is_some() {
+            Some("lumia_list_f64_zeros")
         } else {
             None
         };
@@ -109,6 +111,7 @@ fn external_sig(sym: &str) -> (Vec<Type>, Type) {
         "lumia_f64_sub" => (vec![lf.clone(), lf.clone(), lf.clone()], lf),
         "lumia_f64_clamp" => (vec![lf.clone(), Type::Float, Type::Float], lf),
         "lumia_f64_copy" => (vec![lf.clone(), lf.clone()], lf),
+        "lumia_list_f64_zeros" => (vec![Type::Int], lf),
         _ => (vec![], Type::Int),
     }
 }
@@ -143,6 +146,7 @@ fn collect_leaf_defs(body: &Block) -> HashMap<u32, Value> {
                         | Value::Name(_)
                         | Value::Binary { .. }
                         | Value::Builtin { .. }
+                        | Value::AllocList { .. }
                 ) {
                     all_defs.insert(local.0, value.clone());
                 }
@@ -268,6 +272,83 @@ fn match_copy_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Opti
         return None;
     }
     Some(())
+}
+
+/// `zeros(n)` via `listOf(0.0)` + `append(0.0)` loop (or empty + append from 0).
+fn match_zeros_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<()> {
+    if fun.params.len() != 1 {
+        return None;
+    }
+    let n = fun.params[0];
+    let body = &fun.body;
+    // Must allocate a float list seed and append 0.0 in a loop bounded by n.
+    let mut seed = false;
+    let mut append0 = false;
+    let mut bound_n = false;
+    for v in defs.values() {
+        if let Value::AllocList { elems, .. } = v {
+            if elems.len() <= 1
+                && elems.iter().all(|e| {
+                    matches!(defs.get(&e.0), Some(Value::Float(f)) if *f == 0.0)
+                })
+            {
+                seed = true;
+            }
+        }
+        if let Value::Builtin {
+            name: Builtin::ListAppend,
+            args,
+        } = v
+        {
+            if args.len() == 2 && matches!(defs.get(&args[1].0), Some(Value::Float(f)) if *f == 0.0)
+            {
+                append0 = true;
+            }
+        }
+        if let Value::Binary {
+            op: BinOp::Lt,
+            right,
+            ..
+        } = v
+        {
+            if same_local(*right, n, defs) {
+                bound_n = true;
+            }
+        }
+    }
+    for_each_let(body, &mut |val| {
+        if let Value::AllocList { elems, .. } = val {
+            if elems.len() <= 1
+                && elems.iter().all(|e| {
+                    matches!(defs.get(&e.0), Some(Value::Float(f)) if *f == 0.0)
+                })
+            {
+                seed = true;
+            }
+        }
+        if let Value::Builtin {
+            name: Builtin::ListAppend,
+            args,
+        } = val
+        {
+            if args.len() == 2 && matches!(defs.get(&args[1].0), Some(Value::Float(f)) if *f == 0.0)
+            {
+                append0 = true;
+            }
+        }
+        if let Value::Loop { header, .. } = val {
+            if let Some((_, bound)) = header_lt_bound(header, defs) {
+                if same_local(bound, n, defs) {
+                    bound_n = true;
+                }
+            }
+        }
+    });
+    if seed && append0 && bound_n {
+        Some(())
+    } else {
+        None
+    }
 }
 
 fn first_assign_from_local(body: &Block, src: Local) -> Option<String> {
@@ -861,6 +942,34 @@ val main = {
                 .iter()
                 .any(|f| f.external.as_deref() == Some("lumia_f64_gemv")),
             "expected injected lumia_f64_gemv foreign"
+        );
+    }
+
+    #[test]
+    fn rewrites_zeros_helper_to_foreign_call() {
+        let src = r#"
+module M
+val nZeros(n) = {
+  var xs = listOf(0.0)
+  var i = 1
+  for i < n {
+    xs = xs.append(0.0)
+    i = i + 1
+  }
+  xs
+}
+val main = {
+  val z = nZeros(4)
+  z.len()
+}
+"#;
+        let mut core = lumia_core::compile_source_to_core(src).unwrap();
+        optimize(&mut core, &OptOptions::for_build(true));
+        assert!(
+            core.functions
+                .iter()
+                .any(|f| f.external.as_deref() == Some("lumia_list_f64_zeros")),
+            "expected injected lumia_list_f64_zeros foreign"
         );
     }
 }

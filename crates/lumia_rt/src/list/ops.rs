@@ -212,7 +212,10 @@ pub extern "C" fn lumia_list_set(list: *mut u8, index: i64, elem: i64) -> *mut u
         if list_rc_is_unique(list) {
             let dst = list as *mut i64;
             *dst.add(1 + idx) = elem;
-            crate::lumia_write_barrier(list, (1 + idx) as u32, elem as *mut u8);
+            // Float elems are unboxed bits, not GC pointers (TYPE_LIST_F64).
+            if !list_float_elems(list) {
+                crate::lumia_write_barrier(list, (1 + idx) as u32, elem as *mut u8);
+            }
             return list;
         }
         let nbytes = list_payload_bytes(n);

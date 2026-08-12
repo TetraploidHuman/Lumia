@@ -187,7 +187,10 @@ pub extern "C" fn lumia_list_append(list: *mut u8, elem: i64) -> *mut u8 {
             *dst = n1;
             *dst.add(n1 as usize) = elem;
             // Old list + young heap elem → remembered set for minor GC.
-            crate::lumia_write_barrier(list, n1 as u32, elem as *mut u8);
+            // Skip for Float-elem lists: payload words are IEEE bits, not pointers.
+            if !super::tid::list_float_elems(list) {
+                crate::lumia_write_barrier(list, n1 as u32, elem as *mut u8);
+            }
             return list;
         }
 

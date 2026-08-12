@@ -442,8 +442,12 @@ pub(crate) unsafe fn map_hash_put_new(dest: *mut u8, key: i64, val: i64, order_i
             *cell = key;
             *cell.add(1) = val;
             *cell.add(2) = MAP_ST_FULL;
-            crate::lumia_write_barrier(dest, order_i as u32, key as *mut u8);
-            crate::lumia_write_barrier(dest, order_i as u32, val as *mut u8);
+            if !float_keys {
+                crate::lumia_write_barrier(dest, order_i as u32, key as *mut u8);
+            }
+            if !map_float_vals(dest) {
+                crate::lumia_write_barrier(dest, order_i as u32, val as *mut u8);
+            }
             *base.add(2 + order_i) = idx as i64;
             return;
         }
@@ -459,7 +463,9 @@ pub(crate) unsafe fn map_hash_upsert_build(dest: *mut u8, key: i64, val: i64) ->
         let cap = *base.add(1) as usize;
         let cell = base.add(2 + cap + slot * 3);
         *cell.add(1) = val; // last wins
-        crate::lumia_write_barrier(dest, slot as u32, val as *mut u8);
+        if !map_float_vals(dest) {
+            crate::lumia_write_barrier(dest, slot as u32, val as *mut u8);
+        }
         return false;
     }
     let base = dest as *mut i64;
