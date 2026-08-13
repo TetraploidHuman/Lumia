@@ -1,0 +1,41 @@
+/// Regression: `var s = adt.floatField` must keep IEEE bits (native f64 mut slot),
+/// not `sitofp` the bit pattern as a numeric Int (broke CogniNucleus LCG seeds).
+module var_adt_float_mut
+import std.io.{println}
+
+type SeedBox {
+    val seed
+}
+
+val lcgNext = { s ->
+    ((s % 46340.0) * 48271.0 + 11.0) % 2147483647.0
+}
+
+/// Body large enough that PE does not fold the ADT field into a float const.
+val firstUniform = { box ->
+    var s = box.seed
+    var i = 0
+    var acc = 0.0
+    for i < 3 {
+        acc = acc + s * 0.0
+        i = i + 1
+    }
+    s = lcgNext(s + acc)
+    0.2 + 0.6 * (s / 2147483647.0)
+}
+
+val main = {
+    var raw = 2106498180.0
+    var k = 0
+    for k < 1 {
+        raw = raw + 0.0 * (0.0 + k)
+        k = k + 1
+    }
+    val box = SeedBox { seed = raw }
+    val viaVar = firstUniform(box)
+    val s0 = box.seed
+    val s1 = lcgNext(s0)
+    val viaVal = 0.2 + 0.6 * (s1 / 2147483647.0)
+    println(viaVar)
+    println(viaVal)
+}

@@ -674,11 +674,19 @@ impl<'ctx> Codegen<'ctx> {
                 }
                 Op::Assign { name, value } => {
                     let v = self.local(*value)?;
-                    if let Some(ty) = self.frame.local_tys.get(&value.0).cloned() {
-                        if !matches!(ty, Type::Float) {
+                    // Float ADT fields / lets travel as i64 IEEE bits. Storing them
+                    // into a mut slot via coerce_i64 + Int typing makes later float
+                    // arith `sitofp` the bit pattern (eco `var s = eco.ecoRng` bug).
+                    // Promote to a native f64 slot whenever the RHS is Float-typed.
+                    let v = if matches!(self.frame.local_tys.get(&value.0), Some(Type::Float)) {
+                        self.frame.slot_tys.insert(name.clone(), Type::Float);
+                        self.promote_f64(v)?.into()
+                    } else {
+                        if let Some(ty) = self.frame.local_tys.get(&value.0).cloned() {
                             self.frame.slot_tys.insert(name.clone(), ty);
                         }
-                    }
+                        v
+                    };
                     self.store_slot(name, v)?;
                 }
                 Op::Break => {

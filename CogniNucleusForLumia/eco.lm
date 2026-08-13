@@ -299,10 +299,8 @@ val newEco = { seed ->
 }
 
 val resetEco = { eco0 ->
-    // `val` not `var`: untyped `var` from an ADT Float field can bitcast
-    // (e.g. 2106498180.0 → wrong ep1+ reset vs Python LumiaLCG).
-    val s0 = eco0.ecoRng
-    val rx = randRange(s0, 0.2, 0.8)
+    var s = eco0.ecoRng
+    val rx = randRange(s, 0.2, 0.8)
     val ry = randRange(rx.rngSeed, 0.2, 0.8)
     val rTh = rand01(ry.rngSeed)
     val theta = rTh.rngU * PI2 * 2.0 - PI2

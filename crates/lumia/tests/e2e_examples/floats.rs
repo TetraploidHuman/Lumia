@@ -58,6 +58,15 @@ fn e2e_mono_adt_float_field() {
 }
 
 #[test]
+fn e2e_var_adt_float_mut() {
+    // `var s = adt.floatField` must bitcast IEEE bits into an f64 mut slot (not sitofp).
+    run_example(
+        "examples/var_adt_float_mut.lm",
+        &["0.48052464447939985", "0.48052464447939985"],
+    );
+}
+
+#[test]
 fn e2e_dense_float_kernels() {
     // gemv [5,11,17]; gemvT [4,6]; addmm sum 21; L2 [0.6,0.8]; 16×32 nucleus gemv
     run_example(
