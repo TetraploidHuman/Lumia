@@ -3,7 +3,10 @@
 //! Young allocations land in a nursery. Soft threshold → **minor** STW:
 //! mark only young objects; old→young edges come from the **remembered set**
 //! (`lumia_write_barrier`) plus rooted/permanent old objects. Survivors promote.
-//! Old-generation pressure or `lumia_gc_collect` → **full** mark-sweep.
+//!
+//! Old-generation pressure → **incremental concurrent full mark** (Dijkstra-style
+//! shade on the write barrier + black allocation), with a final remark before
+//! sweep. `lumia_gc_collect` drains the mark to completion. Minor GC stays STW.
 
 use std::alloc::{alloc, dealloc};
 use std::cell::{Cell, RefCell};
@@ -24,6 +27,14 @@ use lumia_abi::{
 thread_local! {
     /// When true, [`mark_value`] / map-set markers only follow young payloads.
     static MARK_MINOR: Cell<bool> = const { Cell::new(false) };
+    /// Incremental full-heap mark in progress (mutator may run between quanta).
+    static FULL_MARKING: Cell<bool> = const { Cell::new(false) };
+    /// Grey objects for the concurrent/incremental full mark.
+    static MARK_WORK: RefCell<Vec<*mut ObjectHeader>> = const { RefCell::new(Vec::new()) };
+    /// Objects processed per alloc-triggered quantum.
+    static MARK_QUANTUM: Cell<usize> = const { Cell::new(256) };
+    /// When false, old pressure still does a classic STW full collect.
+    static INCREMENTAL_FULL: Cell<bool> = const { Cell::new(true) };
 }
 
 impl MarkSweep {
@@ -99,6 +110,11 @@ impl MarkSweep {
         }
     }
 
+    fn clear_all_marks() {
+        HEAP_YOUNG.with(|h| Self::clear_marks(&h.borrow()));
+        HEAP_OLD.with(|h| Self::clear_marks(&h.borrow()));
+    }
+
     fn sweep_vec(
         heap: &mut Vec<*mut ObjectHeader>,
         promote_survivors: bool,
@@ -153,6 +169,10 @@ impl MarkSweep {
     }
 
     fn minor_collect() {
+        // Never interleave minor with an in-flight full mark.
+        if FULL_MARKING.get() {
+            Self::drain_full_mark();
+        }
         Self::mark_from_roots_minor();
         let (freed, promoted) = HEAP_YOUNG.with(|h| {
             let mut young = h.borrow_mut();
@@ -170,8 +190,14 @@ impl MarkSweep {
         });
     }
 
-    fn full_collect() {
+    fn full_collect_stw() {
+        Self::clear_all_marks();
+        MARK_WORK.with(|w| w.borrow_mut().clear());
         Self::mark_from_roots_full();
+        Self::sweep_after_full_mark();
+    }
+
+    fn sweep_after_full_mark() {
         let freed_y = HEAP_YOUNG.with(|h| {
             let mut young = h.borrow_mut();
             let (freed, _) = Self::sweep_vec(&mut young, false, false);
@@ -193,7 +219,79 @@ impl MarkSweep {
         });
     }
 
+    fn begin_full_mark() {
+        Self::clear_all_marks();
+        MARK_WORK.with(|w| w.borrow_mut().clear());
+        FULL_MARKING.set(true);
+        MARK_MINOR.set(false);
+        // Seed greys from roots (worklist-based; `mark` shades under FULL_MARKING).
+        Self::mark_from_roots_full();
+    }
+
+    /// Process up to `budget` grey objects. Returns true if still marking.
+    fn mark_quantum(budget: usize) -> bool {
+        if !FULL_MARKING.get() {
+            return false;
+        }
+        let mut n = 0usize;
+        while n < budget {
+            let obj = MARK_WORK.with(|w| w.borrow_mut().pop());
+            let Some(obj) = obj else {
+                break;
+            };
+            scan_fields(obj);
+            n += 1;
+        }
+        if !MARK_WORK.with(|w| w.borrow().is_empty()) {
+            return true;
+        }
+        // Worklist drained: re-shade roots + remark black objects (covers alloc-init
+        // stores that skip the write barrier).
+        Self::mark_from_roots_full();
+        remark_black_objects();
+        if !MARK_WORK.with(|w| w.borrow().is_empty()) {
+            return true;
+        }
+        FULL_MARKING.set(false);
+        Self::sweep_after_full_mark();
+        false
+    }
+
+    fn drain_full_mark() {
+        if !FULL_MARKING.get() {
+            return;
+        }
+        while Self::mark_quantum(usize::MAX / 4) {}
+    }
+
+    fn full_collect() {
+        if FULL_MARKING.get() {
+            Self::drain_full_mark();
+            return;
+        }
+        if INCREMENTAL_FULL.get() {
+            Self::begin_full_mark();
+            Self::drain_full_mark();
+        } else {
+            Self::full_collect_stw();
+        }
+    }
+
     fn maybe_collect_on_alloc() {
+        if FULL_MARKING.get() {
+            let q = MARK_QUANTUM.with(|c| c.get());
+            Self::mark_quantum(q);
+            // Nursery pressure during concurrent mark: finish full, then minor.
+            let young_limit = YOUNG_LIMIT.with(|c| c.get());
+            let young = BYTES_YOUNG.with(|y| *y.borrow());
+            if FULL_MARKING.get() && young >= young_limit {
+                Self::drain_full_mark();
+            }
+            if !FULL_MARKING.get() && young >= young_limit {
+                Self::minor_collect();
+            }
+            return;
+        }
         let young_limit = YOUNG_LIMIT.with(|c| c.get());
         let old_limit = HEAP_LIMIT.with(|c| c.get());
         let young = BYTES_YOUNG.with(|y| *y.borrow());
@@ -202,12 +300,101 @@ impl MarkSweep {
         }
         let old = BYTES_OLD.with(|o| *o.borrow());
         if old >= old_limit {
-            Self::full_collect();
+            if INCREMENTAL_FULL.get() {
+                Self::begin_full_mark();
+                let q = MARK_QUANTUM.with(|c| c.get());
+                Self::mark_quantum(q);
+            } else {
+                Self::full_collect_stw();
+            }
         }
     }
 }
 
-/// Used by `map_set` mark helpers; respects [`MARK_MINOR`].
+/// Shade a heap object grey for the incremental full mark (Dijkstra).
+fn shade(obj: *mut ObjectHeader) {
+    if obj.is_null() {
+        return;
+    }
+    unsafe {
+        if (*obj).marked != 0 {
+            return;
+        }
+        (*obj).marked = 1;
+        MARK_WORK.with(|w| w.borrow_mut().push(obj));
+    }
+}
+
+fn shade_payload(payload: *mut u8) {
+    if payload.is_null() || !is_heap_payload(payload) {
+        return;
+    }
+    shade(header_from_payload(payload));
+}
+
+/// Scan fields of an already-black object; shade (or recursively mark) children.
+fn scan_fields(obj: *mut ObjectHeader) {
+    unsafe {
+        let payload = payload_ptr(obj);
+        let tid = (*obj).type_id;
+        match tid_base(tid) {
+            TYPE_LIST => {
+                if !list_elem_is_float(tid) {
+                    let n = *(payload as *const i64);
+                    let base = payload as *const i64;
+                    for i in 0..n as usize {
+                        mark_value(*base.add(1 + i));
+                    }
+                }
+            }
+            TYPE_LIST_IOTA => {}
+            TYPE_SET => {
+                set_mark_payload(payload, (*obj).size as usize, set_elem_is_float(tid));
+            }
+            TYPE_MAP => {
+                map_mark_payload(
+                    payload,
+                    (*obj).size as usize,
+                    map_key_is_float(tid),
+                    map_val_is_float(tid),
+                );
+            }
+            TYPE_ADT => {
+                // Do **not** trust `_pad` float bits for GC skip: product mono can
+                // over-tag List/ADT fields as Float (UAF). `mark_value` already
+                // no-ops on non-heap bit patterns, so true Float slots are safe.
+                let words = ((*obj).size as usize) / 8;
+                let base = payload as *const i64;
+                for i in 1..words {
+                    mark_value(*base.add(i));
+                }
+            }
+            TYPE_CLOSURE => {
+                let words = ((*obj).size as usize) / 8;
+                let base = payload as *const i64;
+                for i in 1..words {
+                    mark_value(*base.add(i));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn remark_black_objects() {
+    let mut blacks: Vec<*mut ObjectHeader> = Vec::new();
+    HEAP_YOUNG.with(|h| blacks.extend(h.borrow().iter().copied()));
+    HEAP_OLD.with(|h| blacks.extend(h.borrow().iter().copied()));
+    for obj in blacks {
+        unsafe {
+            if (*obj).marked != 0 {
+                scan_fields(obj);
+            }
+        }
+    }
+}
+
+/// Used by `map_set` mark helpers; respects [`MARK_MINOR`] / [`FULL_MARKING`].
 pub(crate) fn mark_value(x: i64) {
     let p = x as *mut u8;
     if MARK_MINOR.get() {
@@ -227,50 +414,13 @@ pub(crate) fn mark(obj: *mut ObjectHeader) {
         if MARK_MINOR.get() && is_old_header(obj) {
             return;
         }
-        (*obj).marked = 1;
-        let payload = payload_ptr(obj);
-        let tid = (*obj).type_id;
-        match tid_base(tid) {
-            TYPE_LIST => {
-                if !list_elem_is_float(tid) {
-                    let n = *(payload as *const i64);
-                    let base = payload as *const i64;
-                    for i in 0..n as usize {
-                        mark_value(*base.add(1 + i));
-                    }
-                }
-            }
-            TYPE_LIST_IOTA => {}
-            TYPE_SET => {
-                set_mark_payload(payload, (*obj).size as usize, set_elem_is_float(tid));
-            }
-            TYPE_MAP => {
-                map_mark_payload(
-                    payload,
-                    (*obj).size as usize,
-                    map_key_is_float(tid),
-                    map_val_is_float(tid),
-                );
-            }
-            TYPE_ADT => {
-                // Do **not** trust `_pad` float bits for GC skip: product mono can
-                // over-tag List/ADT fields as Float (UAF). `mark_value` already
-                // no-ops on non-heap bit patterns, so true Float slots are safe.
-                let words = ((*obj).size as usize) / 8;
-                let base = payload as *const i64;
-                for i in 1..words {
-                    mark_value(*base.add(i));
-                }
-            }
-            TYPE_CLOSURE => {
-                let words = ((*obj).size as usize) / 8;
-                let base = payload as *const i64;
-                for i in 1..words {
-                    mark_value(*base.add(i));
-                }
-            }
-            _ => {}
+        if FULL_MARKING.get() {
+            // Worklist mode: paint black and enqueue; fields scanned when popped.
+            shade(obj);
+            return;
         }
+        (*obj).marked = 1;
+        scan_fields(obj);
     }
 }
 
@@ -281,49 +431,7 @@ fn scan_old_for_young(obj: *mut ObjectHeader) {
             return;
         }
         (*obj).marked = 1; // "scanned this minor"
-        let payload = payload_ptr(obj);
-        let tid = (*obj).type_id;
-        match tid_base(tid) {
-            TYPE_LIST => {
-                if !list_elem_is_float(tid) {
-                    let n = *(payload as *const i64);
-                    let base = payload as *const i64;
-                    for i in 0..n as usize {
-                        mark_value(*base.add(1 + i));
-                    }
-                }
-            }
-            TYPE_LIST_IOTA => {}
-            TYPE_SET => {
-                set_mark_payload(payload, (*obj).size as usize, set_elem_is_float(tid));
-            }
-            TYPE_MAP => {
-                map_mark_payload(
-                    payload,
-                    (*obj).size as usize,
-                    map_key_is_float(tid),
-                    map_val_is_float(tid),
-                );
-            }
-            TYPE_ADT => {
-                // Do **not** trust `_pad` float bits for GC skip: product mono can
-                // over-tag List/ADT fields as Float (UAF). `mark_value` already
-                // no-ops on non-heap bit patterns, so true Float slots are safe.
-                let words = ((*obj).size as usize) / 8;
-                let base = payload as *const i64;
-                for i in 1..words {
-                    mark_value(*base.add(i));
-                }
-            }
-            TYPE_CLOSURE => {
-                let words = ((*obj).size as usize) / 8;
-                let base = payload as *const i64;
-                for i in 1..words {
-                    mark_value(*base.add(i));
-                }
-            }
-            _ => {}
-        }
+        scan_fields(obj);
     }
 }
 
@@ -354,6 +462,10 @@ impl MmBackend for MarkSweep {
 
     fn write_barrier(&mut self, obj: *mut u8, _field: u32, new_ptr: *mut u8) {
         remember_old_to_young(obj, new_ptr as i64);
+        // Dijkstra incremental-update: shade the installed pointer during full mark.
+        if FULL_MARKING.get() {
+            shade_payload(new_ptr);
+        }
     }
 }
 
@@ -375,7 +487,9 @@ pub(crate) unsafe fn finish_alloc(mem: *mut u8, nbytes: usize, type_id: u32) -> 
     let header = mem as *mut ObjectHeader;
     (*header).type_id = type_id;
     (*header).size = nbytes as u32;
-    (*header).marked = 0;
+    // Black allocation during concurrent mark: object is live; final remark
+    // picks up fields filled without a write barrier (codegen alloc-init).
+    (*header).marked = if FULL_MARKING.get() { 1 } else { 0 };
     (*header).rc = if matches!(tid_base(type_id), TYPE_LIST | TYPE_ADT) {
         1
     } else {
@@ -402,6 +516,11 @@ pub extern "C" fn lumia_alloc(nbytes: u64, type_id: u32) -> *mut u8 {
 #[no_mangle]
 pub extern "C" fn lumia_root_push(slot: *mut *mut u8) {
     ROOTS.with(|r| r.borrow_mut().push(slot));
+    if FULL_MARKING.get() {
+        unsafe {
+            shade_payload(*slot);
+        }
+    }
 }
 
 #[no_mangle]
@@ -419,4 +538,19 @@ pub extern "C" fn lumia_write_barrier(obj: *mut u8, field: u32, new_ptr: *mut u8
 #[no_mangle]
 pub extern "C" fn lumia_gc_collect() {
     BACKEND.with(|b| b.borrow_mut().collect());
+}
+
+#[cfg(test)]
+pub(crate) fn gc_full_marking_for_test() -> bool {
+    FULL_MARKING.with(|c| c.get())
+}
+
+#[cfg(test)]
+pub(crate) fn gc_set_incremental_full_for_test(on: bool) {
+    INCREMENTAL_FULL.with(|c| c.set(on));
+}
+
+#[cfg(test)]
+pub(crate) fn gc_set_mark_quantum_for_test(n: usize) {
+    MARK_QUANTUM.with(|c| c.set(n.max(1)));
 }

@@ -3,9 +3,9 @@
 //! C ABI contract used by codegen:
 //! - `lumia_alloc(nbytes, type_id) -> *mut u8`
 //! - `lumia_root_push(*mut *mut u8)` / `lumia_root_pop()`
-//! - `lumia_write_barrier(obj, field_index, new_ptr)` — records old→young edges
-//!   in the remembered set for minor GC (no-op when `obj` is young / `new` is not)
-//! - `lumia_gc_collect()` — full-heap collection
+//! - `lumia_write_barrier(obj, field_index, new_ptr)` — remembered-set (old→young)
+//!   plus Dijkstra shade while an incremental full mark is in flight
+//! - `lumia_gc_collect()` — full-heap collection (drains concurrent mark)
 //! - `lumia_println_int(i64)` / `lumia_println_str(*const u8, len)`
 //!
 //! C ABI entry points take raw pointers by design; they are not Rust `unsafe fn`

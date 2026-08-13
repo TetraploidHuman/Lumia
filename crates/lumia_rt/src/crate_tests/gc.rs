@@ -166,3 +166,59 @@ fn empty_list_singleton_survives_gc() {
     assert_eq!(lumia_list_len(id), 3);
     assert_eq!(lumia_list_concat(xs, lumia_list_empty()), xs);
 }
+
+#[test]
+fn incremental_full_mark_reclaims_garbage() {
+    use crate::gc::{
+        gc_full_marking_for_test, gc_set_incremental_full_for_test, gc_set_mark_quantum_for_test,
+    };
+    let _limits = GcLimitGuard::set(64 * 1024, 4 * 1024);
+    gc_set_incremental_full_for_test(true);
+    gc_set_mark_quantum_for_test(8);
+    let mut slot: *mut u8 = lumia_alloc(64, TYPE_STRING);
+    lumia_root_push(&mut slot as *mut *mut u8);
+    // Promote rooted object, then flood old with garbage past soft limit.
+    for _ in 0..200 {
+        let _ = lumia_alloc(64, TYPE_BYTES);
+    }
+    lumia_gc_collect();
+    // After a forced full drain, marking must be idle and root live.
+    assert!(!gc_full_marking_for_test());
+    assert!(!slot.is_null());
+    unsafe {
+        assert_eq!((*header_from_payload(slot)).type_id, TYPE_STRING);
+    }
+    // Soft old pressure should start/finish incremental mark across allocs.
+    for _ in 0..400 {
+        let _ = lumia_alloc(64, TYPE_BYTES);
+    }
+    assert!(!slot.is_null());
+    lumia_root_pop();
+    lumia_gc_collect();
+    assert!(!gc_full_marking_for_test());
+}
+
+#[test]
+fn write_barrier_shades_during_full_mark() {
+    use crate::gc::{
+        gc_full_marking_for_test, gc_set_incremental_full_for_test, gc_set_mark_quantum_for_test,
+    };
+    use crate::list::{lumia_list_append, lumia_list_empty};
+    let _limits = GcLimitGuard::set(1024, 2 * 1024);
+    gc_set_incremental_full_for_test(true);
+    gc_set_mark_quantum_for_test(4);
+    let mut xs = lumia_list_empty();
+    lumia_root_push(&mut xs as *mut *mut u8);
+    // Fill until old soft limit trips incremental mark.
+    for _ in 0..80 {
+        let junk = lumia_alloc(64, TYPE_BYTES);
+        xs = lumia_list_append(xs, junk as i64);
+    }
+    // Either mid-mark or already swept; installing a fresh child must stay safe.
+    let child = lumia_alloc(16, TYPE_BYTES);
+    xs = lumia_list_append(xs, child as i64);
+    lumia_gc_collect();
+    assert!(!gc_full_marking_for_test());
+    assert!(!xs.is_null());
+    lumia_root_pop();
+}
