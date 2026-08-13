@@ -175,17 +175,21 @@ impl<'ctx> Codegen<'ctx> {
         slot: PointerValue<'ctx>,
         name: &str,
     ) -> Result<()> {
-        if self.frame.rooted_slots.contains(name) {
+        if self.frame.rooted_slots.contains_key(name) {
             return Ok(());
         }
         let push = self.runtime_fn("lumia_root_push")?;
         crate::error::llvm(self.llvm.builder.build_call(push, &[slot.into()], ""))?;
         self.frame.root_depth += 1;
-        self.frame.rooted_slots.insert(name.to_string());
+        self.frame
+            .rooted_slots
+            .insert(name.to_string(), self.frame.root_depth);
         Ok(())
     }
 
     /// Pop shadow-stack entries until `root_depth == depth` (scope exit).
+    /// Also drops compile-time mut-slot root records whose push depth was unwound,
+    /// so subsequent loads/stores re-register the alloca.
     pub(crate) fn root_pop_to(&mut self, depth: u32) -> Result<()> {
         debug_assert!(self.frame.root_depth >= depth);
         let pop = self.runtime_fn("lumia_root_pop")?;
@@ -193,6 +197,7 @@ impl<'ctx> Codegen<'ctx> {
             crate::error::llvm(self.llvm.builder.build_call(pop, &[], ""))?;
             self.frame.root_depth -= 1;
         }
+        self.frame.rooted_slots.retain(|_, d| *d <= depth);
         Ok(())
     }
 

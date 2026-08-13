@@ -45,11 +45,12 @@ impl<'ctx> Codegen<'ctx> {
             .is_some_and(|d| self.frame.nsw_binop_locals.contains(&d))
     }
 
-    /// Dividend proven ≥ 0 (NSW IV tree, nonneg IV load, or nonnegative Int) ⇒ `urem`/`udiv`.
+    /// Dividend proven ≥ 0 (nonneg IV load or nonnegative Int) ⇒ `urem`/`udiv`.
+    ///
+    /// NSW-safe ≠ nonnegative: bounded trees mark `Sub` (e.g. `i - 5`) which can
+    /// be negative; those must keep signed `srem`/`sdiv`.
     fn dividend_nonneg(&self, left: &Local) -> bool {
-        if self.frame.nsw_binop_locals.contains(&left.0)
-            || self.frame.nonneg_iv_load_locals.contains(&left.0)
-        {
+        if self.frame.nonneg_iv_load_locals.contains(&left.0) {
             return true;
         }
         matches!(self.frame.leaf_defs.get(&left.0), Some(Value::Int(n)) if *n >= 0)

@@ -1,9 +1,9 @@
 //! Ord comparison, content hashing, and ADT tag/field accessors.
 
 use crate::common::{
-    float_key_hash, header_from_payload, is_heap_payload, list_elem_is_float, splitmix64, tid_base,
-    trap_abort, TYPE_ADT, TYPE_BYTES, TYPE_CHAR, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_IOTA, TYPE_MAP,
-    TYPE_SET, TYPE_STRING,
+    adt_float_slot, float_key_eq, float_key_hash, header_from_payload, is_heap_payload,
+    list_elem_is_float, splitmix64, tid_base, trap_abort, TYPE_ADT, TYPE_BYTES, TYPE_CHAR,
+    TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_IOTA, TYPE_MAP, TYPE_SET, TYPE_STRING,
 };
 use crate::list::{list_get_of, list_len_of};
 use crate::map_set::{
@@ -48,15 +48,32 @@ pub(crate) fn lumia_ord_cmp(a: i64, b: i64) -> std::cmp::Ordering {
                 }
                 TYPE_ADT => {
                     // Lexicographic: tag then fields (products use tag 0).
-                    let words_a = ((*header_from_payload(pa)).size as usize) / 8;
-                    let words_b = ((*header_from_payload(pb)).size as usize) / 8;
+                    // Float fields (header `_pad` mask) use IEEE order matching `float_key_eq`
+                    // so ±0 compare Equal (same as Eq / Map keys).
+                    let ha = header_from_payload(pa);
+                    let hb = header_from_payload(pb);
+                    let words_a = ((*ha).size as usize) / 8;
+                    let words_b = ((*hb).size as usize) / 8;
                     if words_a != words_b {
                         return words_a.cmp(&words_b);
                     }
+                    let mask = (*ha)._pad | (*hb)._pad;
                     let ba = pa as *const i64;
                     let bb = pb as *const i64;
-                    for i in 0..words_a {
-                        match lumia_ord_cmp(*ba.add(i), *bb.add(i)) {
+                    // Word 0 = tag (never Float).
+                    match (*ba).cmp(&*bb) {
+                        Ordering::Equal => {}
+                        other => return other,
+                    }
+                    for i in 1..words_a {
+                        let fa = *ba.add(i);
+                        let fb = *bb.add(i);
+                        let ord = if adt_float_slot(mask, i - 1) {
+                            float_key_ord(fa, fb)
+                        } else {
+                            lumia_ord_cmp(fa, fb)
+                        };
+                        match ord {
                             Ordering::Equal => continue,
                             other => return other,
                         }
@@ -71,6 +88,15 @@ pub(crate) fn lumia_ord_cmp(a: i64, b: i64) -> std::cmp::Ordering {
     } else {
         trap_abort("lumia: cannot compare scalar with heap value under Ord");
     }
+}
+
+/// Total order for Float key bits that agrees with [`float_key_eq`] on equality (±0).
+fn float_key_ord(a: i64, b: i64) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    if float_key_eq(a, b) {
+        return Ordering::Equal;
+    }
+    f64::from_bits(a as u64).total_cmp(&f64::from_bits(b as u64))
 }
 
 /// C ABI for `<`/`<=`/`>`/`>=`: returns -1 / 0 / 1.

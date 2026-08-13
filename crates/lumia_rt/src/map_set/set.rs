@@ -47,17 +47,43 @@ pub(crate) fn set_mark_payload(payload: *mut u8, size: usize, float_elems: bool)
     }
     unsafe {
         let base = payload as *const i64;
-        let n = *base;
-        if size == set_linear_nbytes(n) {
-            for i in 0..n as usize {
-                mark_value(*base.add(1 + i));
+        let n0 = *base;
+        if size == set_linear_nbytes(n0) {
+            if n0 > 0 {
+                let max = size.saturating_sub(8) / 8;
+                let n = (n0 as usize).min(max);
+                for i in 0..n {
+                    mark_value(*base.add(1 + i));
+                }
             }
             return;
         }
-        let cap = *base.add(1) as usize;
+        // HashOrdered — clamp like map_mark_payload.
+        if n0 <= 0 {
+            return;
+        }
+        let n = n0 as usize;
+        let cap = *base.add(1);
+        if cap <= 0 {
+            return;
+        }
+        let cap = cap as usize;
+        // Layout: [n][cap][order×cap][cells×cap×2].
+        let words = size / 8;
+        if words < 2 + cap + cap * 2 {
+            return;
+        }
+        let max_n = n.min(cap).min(words.saturating_sub(2 + cap));
         let order = base.add(2);
-        for i in 0..n as usize {
-            let slot = *order.add(i) as usize;
+        for i in 0..max_n {
+            let slot = *order.add(i);
+            if slot < 0 {
+                continue;
+            }
+            let slot = slot as usize;
+            if slot >= cap {
+                continue;
+            }
             let cell = base.add(2 + cap + slot * 2);
             mark_value(*cell);
         }

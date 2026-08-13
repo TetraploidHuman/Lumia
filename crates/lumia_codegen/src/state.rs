@@ -51,7 +51,11 @@ pub(crate) struct FrameState<'ctx> {
     /// Locals bound to `Value::Int(n)` — used to type `AdtField` as `params[n]`.
     pub local_int_consts: HashMap<u32, i64>,
     pub root_depth: u32,
-    pub rooted_slots: HashSet<String>,
+    /// Mut-slot names currently on the shadow stack → `root_depth` right after their push.
+    /// Evicted by [`crate::Codegen::root_pop_to`] when that depth is unwound so a later
+    /// `ensure_slot` / `load_slot` can re-push (scoped if/loop must not leave stale
+    /// "already rooted" compile-time state).
+    pub rooted_slots: HashMap<String, u32>,
     pub entry_bb: Option<BasicBlock<'ctx>>,
     /// Dest local of the `Let` currently being emitted (for NSW lookup).
     pub emit_dest: Option<u32>,

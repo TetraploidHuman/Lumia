@@ -19,6 +19,24 @@ fn e2e_float_map_keys() {
 }
 
 #[test]
+fn e2e_float_map_overlay_keys() {
+    // Overlay on HashOrdered Float map: ±0 same key; last write wins.
+    run_example("examples/float_map_overlay_keys.lm", &["200", "200", "10"]);
+}
+
+#[test]
+fn e2e_var_scoped_gc() {
+    // Heap `var` first rooted inside `for` must survive GC across iterations.
+    // sum_i (1+i)+2 for i in 0..50 = sum (3+i) = 50*3 + 49*50/2 = 150+1225 = 1375
+    run_example("examples/var_scoped_gc.lm", &["1375"]);
+}
+
+#[test]
+fn e2e_cow_nested_list() {
+    run_example("examples/cow_nested_list.lm", &["2", "1", "2", "3"]);
+}
+
+#[test]
 fn e2e_float_struct_eq() {
     // List/Option/Map Float payloads + ListParMap: ±0 equal; NaN ≠ NaN.
     run_example(

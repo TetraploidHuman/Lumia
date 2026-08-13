@@ -183,6 +183,12 @@ impl<'ctx> Codegen<'ctx> {
                 ))?
             };
             crate::error::llvm(self.llvm.builder.build_store(slot, v))?;
+            // Map holds a COW alias of nested List/Map/Set/ADT keys/values.
+            if let Some(ty) = self.frame.local_tys.get(&e.0) {
+                if Self::type_needs_cow_retain(ty) {
+                    self.adt_retain_i64(v)?;
+                }
+            }
             // Young alloc: init stores need no write barrier.
         }
         let ptr = if !no_hash && (n_pairs > 8 || matches!(repr, lumia_core::MapRepr::HashOrdered)) {
@@ -298,7 +304,8 @@ impl<'ctx> Codegen<'ctx> {
         slot: &str,
         updates: &[(u32, Local)],
     ) -> Result<BasicValueEnum<'ctx>> {
-        let raw = self.coerce_i64(self.load_slot(slot)?)?;
+        let loaded = self.load_slot(slot)?;
+        let raw = self.coerce_i64(loaded)?;
         let ptr0 = self.i64_as_ptr(raw, "adt_with_base")?;
         // Drop the with-temp `Name(slot)` retain from bind_let, then unique-check.
         // Extra aliases (`val snap = p`) keep RC ≥ 2 → clone.
@@ -382,6 +389,12 @@ impl<'ctx> Codegen<'ctx> {
                 ))?
             };
             crate::error::llvm(self.llvm.builder.build_store(slot, v))?;
+            // List/Set holds a COW alias of nested List/Map/Set/ADT elems.
+            if let Some(ty) = self.frame.local_tys.get(&e.0) {
+                if Self::type_needs_cow_retain(ty) {
+                    self.adt_retain_i64(v)?;
+                }
+            }
             // Young alloc: init stores need no write barrier (Float elems are
             // non-pointers anyway; see float_contract).
         }

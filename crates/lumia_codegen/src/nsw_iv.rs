@@ -66,11 +66,8 @@ pub(crate) fn collect_nsw_binop_locals(body: &Block) -> HashSet<u32> {
                         mark_unit_steps(body, name, &all_defs, &mut out);
                         mark_unit_steps(latch, name, &all_defs, &mut out);
                     }
-                    // Const-bounded loops: any `x = x ± 1` is NSW (e.g. prime counter `c`).
-                    if info.bound_const.is_some() {
-                        mark_any_unit_steps(body, &all_defs, &mut out);
-                        mark_any_unit_steps(latch, &all_defs, &mut out);
-                    }
+                    // Do **not** NSW-mark arbitrary `x = x ± 1` in the body: a separate
+                    // counter can still overflow while the IV stays in range.
                 }
                 if let Some(b) = info.bound_const {
                     if (1..=NSW_IV_UPPER_MAX).contains(&b) {
@@ -140,8 +137,8 @@ pub(crate) fn collect_nsw_binop_locals(body: &Block) -> HashSet<u32> {
         mark_acc_plus_unit_counter(body, &all_defs, &mut out);
     }
 
-    // Fib-style equality cascade on 0|1 → residual arm `n-1` / `n-2`.
-    mark_match01_subs(body, &all_defs, &mut out);
+    // Fib-style `n-1`/`n-2` after match 0|1 is **not** NSW: residual includes
+    // `n = i64::MIN` where `n-1` overflows. Keep checked sub there.
     out
 }
 
@@ -152,7 +149,11 @@ struct IvBoundInfo {
     strict: bool,
 }
 
-/// IV names + optional const bound from `<`/`>`/`<=`/`>=`.
+/// IV names + optional **upper** const bound from `<`/`>`/`<=`/`>=`.
+///
+/// Only the induction-side `Name` is recorded (never the bound variable).
+/// `bound_const` is set only when the constant is an exclusive/inclusive **upper**
+/// bound (`i < K` / `K > i`), not a lower bound (`i > K`), so mul/acc trees stay sound.
 fn iv_bound_info(header: &Block, all_defs: &HashMap<u32, Value>) -> IvBoundInfo {
     let empty = IvBoundInfo {
         ivs: HashSet::default(),
@@ -172,18 +173,28 @@ fn iv_bound_info(header: &Block, all_defs: &HashMap<u32, Value>) -> IvBoundInfo 
     if !strict && !matches!(op, BinOp::Le | BinOp::Ge) {
         return empty;
     }
-    let mut ivs = HashSet::default();
-    if let Some(n) = name_of_local(*left, all_defs) {
-        ivs.insert(n);
-    }
-    if let Some(n) = name_of_local(*right, all_defs) {
-        ivs.insert(n);
-    }
-    let bound_const = match op {
-        BinOp::Lt | BinOp::Le => const_i64(*right, all_defs).or_else(|| const_i64(*left, all_defs)),
-        BinOp::Gt | BinOp::Ge => const_i64(*left, all_defs).or_else(|| const_i64(*right, all_defs)),
-        _ => None,
+    let l_name = name_of_local(*left, all_defs);
+    let r_name = name_of_local(*right, all_defs);
+    let l_c = const_i64(*left, all_defs);
+    let r_c = const_i64(*right, all_defs);
+    let (iv, bound_const) = match op {
+        // `iv < K` / `iv <= K` — K is an upper bound.
+        BinOp::Lt | BinOp::Le if r_c.is_some() && l_name.is_some() => (l_name, r_c),
+        // `K > iv` / `K >= iv` — K is an upper bound on iv.
+        BinOp::Gt | BinOp::Ge if l_c.is_some() && r_name.is_some() => (r_name, l_c),
+        // `iv < n` / `n > iv` with non-const bound: IV only, no const upper.
+        BinOp::Lt | BinOp::Le if l_name.is_some() => (l_name, None),
+        BinOp::Gt | BinOp::Ge if r_name.is_some() => (r_name, None),
+        // Lower-bound forms (`iv > K`) — unit ±1 on iv is still NSW under strict
+        // compares, but K must not seed bounded arith trees.
+        BinOp::Gt | BinOp::Ge if l_name.is_some() && r_c.is_some() => (l_name, None),
+        BinOp::Lt | BinOp::Le if r_name.is_some() && l_c.is_some() => (r_name, None),
+        _ => return empty,
     };
+    let mut ivs = HashSet::default();
+    if let Some(n) = iv {
+        ivs.insert(n);
+    }
     IvBoundInfo {
         ivs,
         bound_const,
@@ -292,23 +303,6 @@ fn mark_unit_steps(
             if name != iv {
                 continue;
             }
-            if is_unit_step_of(*dest, name, all_defs) {
-                out.insert(*dest);
-            }
-        }
-    });
-}
-
-fn mark_any_unit_steps(block: &Block, all_defs: &HashMap<u32, Value>, out: &mut HashSet<u32>) {
-    for_each_block_dfs(block, &mut |b| {
-        for op in &b.ops {
-            let Op::Assign {
-                name,
-                value: Local(dest),
-            } = op
-            else {
-                continue;
-            };
             if is_unit_step_of(*dest, name, all_defs) {
                 out.insert(*dest);
             }
@@ -488,8 +482,9 @@ fn mark_acc_plus_bounded_rem(all_defs: &HashMap<u32, Value>, out: &mut HashSet<u
                 rem_ok.contains(&left.0) || (out.contains(&left.0) && is_rem(*left, all_defs));
             let r_rem =
                 rem_ok.contains(&right.0) || (out.contains(&right.0) && is_rem(*right, all_defs));
-            let l_acc = name_of_local(*left, all_defs).is_some() || out.contains(&left.0);
-            let r_acc = name_of_local(*right, all_defs).is_some() || out.contains(&right.0);
+            // Acc side must already be NSW-proven — not an arbitrary `Name`.
+            let l_acc = out.contains(&left.0);
+            let r_acc = out.contains(&right.0);
             if (l_rem && r_acc) || (r_rem && l_acc) {
                 out.insert(*id);
                 changed = true;
@@ -532,9 +527,9 @@ fn mark_acc_plus_unit_counter(
             let rn = name_of_local(*right, all_defs);
             let l_ctr = ln.as_ref().is_some_and(|n| counters.contains(n));
             let r_ctr = rn.as_ref().is_some_and(|n| counters.contains(n));
-            // One side counter load, other side any Name (accumulator) or already NSW.
-            let l_acc = ln.is_some() || out.contains(&left.0);
-            let r_acc = rn.is_some() || out.contains(&right.0);
+            // Other side must already be NSW (not an unbounded parameter `Name`).
+            let l_acc = out.contains(&left.0);
+            let r_acc = out.contains(&right.0);
             if (l_ctr && r_acc) || (r_ctr && l_acc) {
                 out.insert(*id);
                 changed = true;
@@ -553,7 +548,7 @@ fn mark_bounded_arith_tree(
     out: &mut HashSet<u32>,
 ) {
     let mut seed: HashSet<u32> = out.clone();
-    let mut seed_names: HashSet<String> = ivs.clone();
+    let seed_names: HashSet<String> = ivs.clone();
     let const_lim = bound
         .saturating_mul(bound)
         .min(NSW_BOUND_MAX.saturating_mul(NSW_BOUND_MAX));
@@ -604,25 +599,17 @@ fn mark_bounded_arith_tree(
             let l = in_seed(left.0, &seed, &seed_names);
             let r = in_seed(right.0, &seed, &seed_names);
             let both = l && r;
+            // Acc ± only when the Name side is already an IV / seed name — never
+            // pull arbitrary mut slots into the NSW seed.
             let acc_add = allow_acc
                 && matches!(op, BinOp::Add | BinOp::Sub)
-                && ((l && name_of_local(*right, all_defs).is_some())
-                    || (r && name_of_local(*left, all_defs).is_some()));
+                && ((l && name_of_local(*right, all_defs).is_some_and(|n| seed_names.contains(&n)))
+                    || (r && name_of_local(*left, all_defs).is_some_and(|n| seed_names.contains(&n))));
             let rem_ok =
                 matches!(op, BinOp::Rem) && l && const_i64(*right, all_defs).is_some_and(|c| c > 1);
             if both || acc_add || rem_ok {
                 seed.insert(*id);
                 out.insert(*id);
-                if acc_add {
-                    if let Some(n) = name_of_local(*left, all_defs) {
-                        seed_names.insert(n);
-                        seed.insert(left.0);
-                    }
-                    if let Some(n) = name_of_local(*right, all_defs) {
-                        seed_names.insert(n);
-                        seed.insert(right.0);
-                    }
-                }
                 changed = true;
             }
         }
@@ -766,109 +753,6 @@ fn mark_name_loads(block: &Block, iv: &str, out: &mut HashSet<u32>) {
             {
                 if n == iv {
                     out.insert(local.0);
-                }
-            }
-        }
-    });
-}
-
-/// `x == C` / `C == x` with `C ∈ {0,1}` → `(scrutinee_local, C)`.
-fn eq_01_cond(cond: Local, all_defs: &HashMap<u32, Value>) -> Option<(Local, i64)> {
-    let Value::Binary {
-        op: BinOp::Eq,
-        left,
-        right,
-        ..
-    } = all_defs.get(&cond.0)?
-    else {
-        return None;
-    };
-    match (const_i64(*left, all_defs), const_i64(*right, all_defs)) {
-        (Some(c), None) if c == 0 || c == 1 => Some((*right, c)),
-        (None, Some(c)) if c == 0 || c == 1 => Some((*left, c)),
-        _ => None,
-    }
-}
-
-/// Mark `scrut - 1` / `scrut - 2` in a block (fib residual arm).
-fn mark_scrut_minus_small_with_defs(
-    block: &Block,
-    scrut: Local,
-    all_defs: &HashMap<u32, Value>,
-    out: &mut HashSet<u32>,
-) {
-    for_each_block_dfs(block, &mut |b| {
-        for op in &b.ops {
-            if let Op::Let {
-                local,
-                value:
-                    Value::Binary {
-                        op: BinOp::Sub,
-                        left,
-                        right,
-                        ..
-                    },
-                ..
-            } = op
-            {
-                if *left != scrut {
-                    continue;
-                }
-                if matches!(const_i64(*right, all_defs), Some(1 | 2)) {
-                    out.insert(local.0);
-                }
-            }
-        }
-    });
-}
-
-/// Walk the else-arm of `scrut == seen` looking for the other of `{0,1}`, then mark subs.
-fn walk_match01_else(
-    block: &Block,
-    scrut: Local,
-    seen: i64,
-    all_defs: &HashMap<u32, Value>,
-    out: &mut HashSet<u32>,
-) {
-    let other = if seen == 0 { 1 } else { 0 };
-    for op in &block.ops {
-        if let Op::Let {
-            value: Value::If {
-                cond, else_block, ..
-            },
-            ..
-        } = op
-        {
-            if let Some((s2, c2)) = eq_01_cond(*cond, all_defs) {
-                if s2 != scrut {
-                    continue;
-                }
-                if c2 == other {
-                    mark_scrut_minus_small_with_defs(else_block, scrut, all_defs, out);
-                    return;
-                }
-                // Same constant again — keep walking the residual.
-                if c2 == seen {
-                    walk_match01_else(else_block, scrut, seen, all_defs, out);
-                }
-            }
-        }
-    }
-}
-
-/// Fib-style nested `if n==0 / n==1`: mark `n-1`/`n-2` in the final else arm.
-fn mark_match01_subs(body: &Block, all_defs: &HashMap<u32, Value>, out: &mut HashSet<u32>) {
-    for_each_block_dfs(body, &mut |b| {
-        for op in &b.ops {
-            if let Op::Let {
-                value: Value::If {
-                    cond, else_block, ..
-                },
-                ..
-            } = op
-            {
-                if let Some((scrut, c)) = eq_01_cond(*cond, all_defs) {
-                    walk_match01_else(else_block, scrut, c, all_defs, out);
                 }
             }
         }
@@ -1139,7 +1023,7 @@ val main = {
     }
 
     #[test]
-    fn marks_fib_match01_subs() {
+    fn fib_match01_subs_stay_checked() {
         let core = compile_source_to_core(
             r#"
 module M
@@ -1156,12 +1040,19 @@ val main = fib(10)
         .unwrap();
         let fib = core.functions.iter().find(|f| f.name == "fib").unwrap();
         let nsw = collect_nsw_binop_locals(&fib.body);
-        assert!(
-            nsw.len() >= 2,
-            "expected n-1 and n-2 NSW-safe after match 0|1, got {nsw:?}"
-        );
-        // Recursive result add must stay checked (fib(93) overflows i64).
+        // Residual arm includes n=i64::MIN where n-1 overflows — keep checked.
         let defs = collect_leaf_defs(&fib.body);
+        let sub_locals: Vec<_> = defs
+            .iter()
+            .filter_map(|(id, v)| match v {
+                Value::Binary { op: BinOp::Sub, .. } => Some(*id),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            sub_locals.iter().all(|id| !nsw.contains(id)),
+            "fib n-1/n-2 must not be NSW: {sub_locals:?} nsw={nsw:?}"
+        );
         let add_locals: Vec<_> = defs
             .iter()
             .filter_map(|(id, v)| match v {

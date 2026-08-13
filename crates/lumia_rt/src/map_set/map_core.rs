@@ -93,13 +93,15 @@ pub(crate) fn map_count(map: *mut u8) -> i64 {
             let parent = map_overlay_parent(map);
             let dn = map_overlay_dn(map) as usize;
             let base = map as *const i64;
+            // Overlay may sit on a Float-keyed parent — use key_eq (±0), not bit `lumia_eq`.
+            let float_keys = map_float_keys(map) || map_float_keys(parent);
             let mut n = map_count(parent);
             for i in 0..dn {
                 let k = *base.add(3 + i * 2);
                 // Count as new if not in parent and not earlier in delta.
                 let mut seen = false;
                 for j in 0..i {
-                    if lumia_eq(*base.add(3 + j * 2), k) != 0 {
+                    if key_eq(*base.add(3 + j * 2), k, float_keys) {
                         seen = true;
                         break;
                     }
@@ -126,12 +128,14 @@ pub(crate) unsafe fn map_lookup_val(map: *mut u8, key: i64) -> Option<i64> {
     if map_is_overlay(map) {
         let dn = map_overlay_dn(map) as usize;
         let base = map as *const i64;
+        let parent = map_overlay_parent(map);
+        let float_keys = map_float_keys(map) || map_float_keys(parent);
         for i in (0..dn).rev() {
-            if lumia_eq(*base.add(3 + i * 2), key) != 0 {
+            if key_eq(*base.add(3 + i * 2), key, float_keys) {
                 return Some(*base.add(4 + i * 2));
             }
         }
-        return map_lookup_val(map_overlay_parent(map), key);
+        return map_lookup_val(parent, key);
     }
     match map_find(map, key) {
         Some(i) if map_is_hash(map) => {
@@ -282,11 +286,32 @@ pub(crate) fn map_mark_payload(payload: *mut u8, size: usize, float_keys: bool, 
             }
             return;
         }
-        // HashOrdered
-        let cap = *base.add(1) as usize;
+        // HashOrdered — clamp n/cap/slot to payload so corrupt headers cannot OOB.
+        if n0 <= 0 {
+            return;
+        }
+        let n = n0 as usize;
+        let cap = *base.add(1);
+        if cap <= 0 {
+            return;
+        }
+        let cap = cap as usize;
+        // Layout: [n][cap][order×cap][cells×cap×3] — words after the two headers.
+        let words = size / 8;
+        if words < 2 + cap + cap * 3 {
+            return;
+        }
+        let max_n = n.min(cap).min(words.saturating_sub(2 + cap));
         let order = base.add(2);
-        for i in 0..n as usize {
-            let slot = *order.add(i) as usize;
+        for i in 0..max_n {
+            let slot = *order.add(i);
+            if slot < 0 {
+                continue;
+            }
+            let slot = slot as usize;
+            if slot >= cap {
+                continue;
+            }
             let cell = base.add(2 + cap + slot * 3);
             if !float_keys {
                 mark_value(*cell);

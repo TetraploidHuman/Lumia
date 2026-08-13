@@ -222,6 +222,11 @@ impl<'ctx> Codegen<'ctx> {
                 ))?
             };
             crate::error::llvm(self.llvm.builder.build_store(slot, v))?;
+            if let Some(ty) = self.frame.local_tys.get(&e.0) {
+                if Self::type_needs_cow_retain(ty) {
+                    self.adt_retain_i64(v)?;
+                }
+            }
         }
         Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
             payload,
@@ -322,6 +327,11 @@ impl<'ctx> Codegen<'ctx> {
                 ))?
             };
             crate::error::llvm(self.llvm.builder.build_store(slot, v))?;
+            if let Some(ty) = self.frame.local_tys.get(&e.0) {
+                if Self::type_needs_cow_retain(ty) {
+                    self.adt_retain_i64(v)?;
+                }
+            }
         }
         Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
             payload,
