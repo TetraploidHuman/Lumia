@@ -129,6 +129,8 @@ const RELEASE_PASSES: &[PipelinePass] = &[
     PipelinePass::Licm,
     PipelinePass::DenseF64Sr,
     PipelinePass::Inline,
+    // Inlined nests / composed helpers — second SR before fold/specialize.
+    PipelinePass::DenseF64Sr,
     // Inline exposes fresh literals / builtins — fold, specialize, then escape.
     PipelinePass::ConstFold,
     PipelinePass::SpecializeConst,
@@ -277,6 +279,7 @@ mod tests {
                 "licm",
                 "dense_f64_sr",
                 "inline",
+                "dense_f64_sr",
                 "const_fold",
                 "specialize_const",
                 "const_fold",

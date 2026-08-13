@@ -302,15 +302,23 @@ impl<'ctx> Codegen<'ctx> {
         let ptr0 = self.i64_as_ptr(raw, "adt_with_base")?;
         // Drop the with-temp `Name(slot)` retain from bind_let, then unique-check.
         // Extra aliases (`val snap = p`) keep RC ≥ 2 → clone.
-        let ensure = self.runtime_fn("lumia_adt_ensure_unique_consume")?;
+        // Overwrite mask: skip nested retain on fields we rewrite (brother buffers).
+        let mut overwrite_mask = 0u64;
+        for &(idx, _) in updates {
+            if idx < 64 {
+                overwrite_mask |= 1u64 << idx;
+            }
+        }
+        let ensure = self.runtime_fn("lumia_adt_ensure_unique_consume_mask")?;
+        let mask_v = self.llvm.i64_ty.const_int(overwrite_mask, false);
         let ptr = crate::error::llvm(self.llvm.builder.build_call(
             ensure,
-            &[ptr0.into()],
+            &[ptr0.into(), mask_v.into()],
             "adt_uniq",
         ))?
         .try_as_basic_value()
         .basic()
-        .context("ensure_unique_consume return")?
+        .context("ensure_unique_consume_mask return")?
         .into_pointer_value();
         let setf = self.runtime_fn("lumia_adt_set_field")?;
         for &(idx, loc) in updates {

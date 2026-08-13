@@ -27,6 +27,9 @@ pub(crate) fn specialize_mono_calls(module: &mut CoreModule) {
     // After all clones exist, upgrade erased Int rets on HOF wrappers whose
     // bodies now `Call(dbl$Float, …)` (directize order within a round varies).
     refresh_erased_mono_return_types(module);
+    // Toehold: thin FunRef wrappers that only forward to a concrete Call share
+    // that target at call sites (avoid an extra frame / duplicate body emit).
+    elide_trivial_mono_forwarders(module);
 }
 
 /// Fixed-point: scan all bodies for needed `(generic, MonoKey)` clones, append
@@ -439,5 +442,109 @@ fn mono_value_ty_rewrite(
             Type::Int
         }
         other => mono_value_ty(other, local_tys, index),
+    }
+}
+
+/// Mono FunRef toehold: if a clone's result is `Call(target, params)` (pure
+/// forwarder), rewrite call sites to `target` so bodies are shared in practice.
+fn elide_trivial_mono_forwarders(module: &mut CoreModule) {
+    let mut forward: HashMap<String, String> = HashMap::default();
+    for f in &module.functions {
+        if let Some(target) = trivial_param_forward_target(f) {
+            if target != f.name {
+                forward.insert(f.name.clone(), target);
+            }
+        }
+    }
+    if forward.is_empty() {
+        return;
+    }
+    // Collapse chains A→B→C.
+    let keys: Vec<String> = forward.keys().cloned().collect();
+    for k in keys {
+        let mut cur = forward.get(&k).cloned();
+        let mut guard = 0;
+        while let Some(ref t) = cur {
+            if let Some(next) = forward.get(t) {
+                cur = Some(next.clone());
+                guard += 1;
+                if guard > 8 {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        if let Some(t) = cur {
+            forward.insert(k, t);
+        }
+    }
+    for fun in &mut module.functions {
+        rewrite_forward_calls(&mut fun.body, &forward);
+    }
+}
+
+fn trivial_param_forward_target(fun: &CoreFun) -> Option<String> {
+    if fun.mono_of.is_none() {
+        return None;
+    }
+    let result = fun.body.result?;
+    for op in &fun.body.ops {
+        let Op::Let {
+            local,
+            value: Value::Call { fun: target, args },
+            ..
+        } = op
+        else {
+            continue;
+        };
+        if *local != result {
+            continue;
+        }
+        // Exact forward of all formals (identity-shaped mono clone).
+        if args.len() == fun.params.len() && args.iter().eq(fun.params.iter()) {
+            return Some(target.clone());
+        }
+    }
+    None
+}
+
+fn rewrite_forward_calls(block: &mut Block, forward: &HashMap<String, String>) {
+    for op in &mut block.ops {
+        match op {
+            Op::Let { value, .. } | Op::Effect { value } => {
+                rewrite_forward_value(value, forward);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn rewrite_forward_value(value: &mut Value, forward: &HashMap<String, String>) {
+    match value {
+        Value::Call { fun, .. } => {
+            if let Some(t) = forward.get(fun) {
+                *fun = t.clone();
+            }
+        }
+        Value::If {
+            then_block,
+            else_block,
+            ..
+        } => {
+            rewrite_forward_calls(then_block, forward);
+            rewrite_forward_calls(else_block, forward);
+        }
+        Value::Loop {
+            header,
+            body,
+            latch,
+        } => {
+            rewrite_forward_calls(header, forward);
+            rewrite_forward_calls(body, forward);
+            rewrite_forward_calls(latch, forward);
+        }
+        Value::Lambda { body, .. } => rewrite_forward_calls(body, forward),
+        _ => {}
     }
 }

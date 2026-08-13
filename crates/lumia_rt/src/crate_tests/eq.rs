@@ -305,3 +305,39 @@ fn adt_clone_retains_nested_field() {
         assert_eq!(*((cloned as *const i64).add(1)), inner as i64);
     }
 }
+
+#[test]
+fn adt_clone_overwrite_mask_skips_nested_retain() {
+    let inner = lumia_alloc(16, TYPE_ADT);
+    unsafe {
+        *(inner as *mut i64) = 0;
+        *((inner as *mut i64).add(1)) = 3;
+        (*header_from_payload(inner)).rc = 2;
+    }
+    let outer = lumia_alloc(24, TYPE_ADT);
+    unsafe {
+        *(outer as *mut i64) = 0;
+        *((outer as *mut i64).add(1)) = inner as i64;
+        *((outer as *mut i64).add(2)) = 1;
+        (*header_from_payload(outer)).rc = 2;
+    }
+    // Field 0 will be overwritten — do not bump inner RC on clone.
+    let cloned = lumia_adt_ensure_unique_mask(outer, 1);
+    assert_ne!(cloned as usize, outer as usize);
+    unsafe {
+        assert_eq!((*header_from_payload(inner)).rc, 2);
+        assert_eq!(*((cloned as *const i64).add(1)), 0);
+        assert_eq!(*((cloned as *const i64).add(2)), 1);
+    }
+    let replacement = lumia_alloc(16, TYPE_ADT);
+    unsafe {
+        *(replacement as *mut i64) = 0;
+        *((replacement as *mut i64).add(1)) = 9;
+    }
+    lumia_adt_set_field(cloned, 0, replacement as i64);
+    unsafe {
+        assert_eq!((*header_from_payload(inner)).rc, 2);
+        assert_eq!((*header_from_payload(replacement)).rc, 2);
+        assert_eq!(*((cloned as *const i64).add(1)), replacement as i64);
+    }
+}

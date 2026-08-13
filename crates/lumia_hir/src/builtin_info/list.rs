@@ -38,7 +38,8 @@ pub(crate) fn info_list(b: Builtin) -> BuiltinInfo {
             Some("lumia_list_slice"),
             NO_F,
             ObjI64Ptr,
-            true,
+            // Escape only when the slice result escapes (propagate), not every use.
+            false,
             Always,
         ),
         ListAppend => bi(
@@ -71,7 +72,8 @@ pub(crate) fn info_list(b: Builtin) -> BuiltinInfo {
             Some("lumia_list_take"),
             NO_F,
             ObjI64Ptr,
-            true,
+            // Same as ListSlice: copy elem pointers only if result escapes.
+            false,
             Always,
         ),
         ListReverse => bi(

@@ -426,7 +426,7 @@ impl<'ctx> Codegen<'ctx> {
         uses >= 1 && only_recv
     }
 
-    /// `Let t = Name/Local` used only as a `Call`/`IndirectCall` argument.
+    /// `Let t = Name/Local/AdtField` used only as a `Call`/`IndirectCall` argument.
     ///
     /// The source is already live/rooted; a temporary retain would bump COW RC and
     /// force `ensure_unique` clones inside `lumia_cn_*` / `lumia_f64_*` kernels.
@@ -437,7 +437,16 @@ impl<'ctx> Codegen<'ctx> {
         local: Local,
         value: &Value,
     ) -> bool {
-        if !matches!(value, Value::Name(_) | Value::Local(_)) {
+        let is_alias = matches!(
+            value,
+            Value::Name(_)
+                | Value::Local(_)
+                | Value::Builtin {
+                    name: Builtin::AdtField,
+                    ..
+                }
+        );
+        if !is_alias {
             return false;
         }
         let ty = self.infer_value_ty(value);
@@ -469,6 +478,56 @@ impl<'ctx> Codegen<'ctx> {
             }
         }
         uses >= 1 && only_arg
+    }
+
+    /// `Let t = AdtField(base,…)` whose only use is an unchanged field of an
+    /// `AllocAdt` rewritten to inplace `slot = slot with {…}` — skip retain+root
+    /// (codegen ignores these extracts on the inplace path).
+    fn let_is_unused_inplace_with_field(
+        &self,
+        block: &Block,
+        let_idx: usize,
+        local: Local,
+        value: &Value,
+    ) -> bool {
+        let Value::Builtin {
+            name: Builtin::AdtField,
+            ..
+        } = value
+        else {
+            return false;
+        };
+        if block.result == Some(local) {
+            return false;
+        }
+        let mut uses = 0usize;
+        let mut only_dead_with_field = true;
+        for (op_i, op) in block.ops[let_idx + 1..].iter().enumerate() {
+            if !Self::op_uses_local(op, local) {
+                continue;
+            }
+            uses += 1;
+            let abs_i = let_idx + 1 + op_i;
+            let ok = match op {
+                Op::Let {
+                    local: dest,
+                    value: alloc @ Value::AllocAdt { fields, .. },
+                    ..
+                } => match self.match_adt_with_reassign(block, abs_i, *dest, alloc) {
+                    Some((_slot, updates)) => {
+                        fields.iter().any(|f| *f == local)
+                            && updates.iter().all(|(_, u)| *u != local)
+                    }
+                    None => false,
+                },
+                _ => false,
+            };
+            if !ok {
+                only_dead_with_field = false;
+                break;
+            }
+        }
+        uses >= 1 && only_dead_with_field
     }
 
     fn op_uses_local(op: &Op, local: Local) -> bool {
@@ -538,6 +597,7 @@ impl<'ctx> Codegen<'ctx> {
                     if self.let_only_feeds_next_assign(block, idx, *local)
                         || self.let_is_ephemeral_rooted_recv(block, idx, *local, value)
                         || self.let_is_ephemeral_call_arg(block, idx, *local, value)
+                        || self.let_is_unused_inplace_with_field(block, idx, *local, value)
                     {
                         // Skip retain+root: source is already live (mut slot / prior let).
                         // Extra retain here inflated COW RC and forced kernel-side clones.

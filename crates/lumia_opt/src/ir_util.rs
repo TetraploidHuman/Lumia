@@ -3,7 +3,7 @@
 use lumia_core::{Local, Value};
 use rustc_hash::FxHashMap as HashMap;
 
-/// Known Int/Bool/Char locals as i64 bit patterns (for call-site matching).
+/// Known Int/Bool/Char/Float locals as i64 bit patterns (for call-site matching).
 #[derive(Clone, Default)]
 pub(crate) struct KnownScalars {
     map: HashMap<u32, i64>,
@@ -30,7 +30,7 @@ impl KnownScalars {
         self.map.contains_key(&local)
     }
 
-    /// Track Int / Bool / Char (and Local aliases) as i64 bit patterns.
+    /// Track Int / Bool / Char / Float (and Local aliases) as i64 bit patterns.
     pub(crate) fn track(&mut self, local: u32, value: &Value) {
         match value {
             Value::Int(n) => {
@@ -41,6 +41,9 @@ impl KnownScalars {
             }
             Value::Char(c) => {
                 self.map.insert(local, u32::from(*c) as i64);
+            }
+            Value::Float(f) => {
+                self.map.insert(local, f.to_bits() as i64);
             }
             Value::Local(Local(src)) => {
                 if let Some(&n) = self.map.get(src) {

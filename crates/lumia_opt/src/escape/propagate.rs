@@ -128,8 +128,12 @@ fn mark_inputs_escaping(
                 for a in args {
                     mark(*a);
                 }
-            } else if matches!(*name, Builtin::ListGet | Builtin::AdtField) {
-                // Result may be an interior pointer (elem / field) — mark container.
+            } else if matches!(
+                *name,
+                Builtin::ListGet | Builtin::AdtField | Builtin::ListTake | Builtin::ListSlice
+            ) {
+                // Escaping get/field/take/slice result ⇒ container escapes
+                // (take/slice copy element pointers into a fresh list).
                 if let Some(c) = args.first() {
                     mark(*c);
                 }

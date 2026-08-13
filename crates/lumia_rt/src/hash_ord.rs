@@ -220,7 +220,12 @@ pub extern "C" fn lumia_adt_field(obj: *mut u8, index: i64) -> i64 {
 
 /// Shallow-clone ADT payload to a fresh heap object (`rc=1`) and retain nested
 /// List/ADT fields (shared with `src`).
-unsafe fn adt_shallow_clone_heap(src: *mut u8) -> *mut u8 {
+///
+/// `overwrite_mask` bit `i` ⇒ field `i` will be replaced immediately (e.g. inplace
+/// `with`): leave the slot null and skip nested retain so brother float buffers
+/// are not falsely shared. [`lumia_adt_set_field`] then installs the new value
+/// (null old ⇒ no release).
+unsafe fn adt_shallow_clone_heap(src: *mut u8, overwrite_mask: u64) -> *mut u8 {
     use crate::common::{adt_retain_nested_fields, tid_base, GcInhibitGuard, TYPE_ADT};
     use crate::gc::lumia_alloc;
     let h = header_from_payload(src);
@@ -233,6 +238,15 @@ unsafe fn adt_shallow_clone_heap(src: *mut u8) -> *mut u8 {
     let nwords = ((*h).size as usize) / 8;
     std::ptr::copy_nonoverlapping(src as *const i64, dest as *mut i64, nwords);
     (*header_from_payload(dest))._pad = (*h)._pad;
+    if overwrite_mask != 0 {
+        let nfields = nwords.saturating_sub(1);
+        let base = dest as *mut i64;
+        for i in 0..nfields {
+            if overwrite_mask & (1u64 << i) != 0 {
+                *base.add(1 + i) = 0;
+            }
+        }
+    }
     adt_retain_nested_fields(dest);
     dest
 }
@@ -241,6 +255,14 @@ unsafe fn adt_shallow_clone_heap(src: *mut u8) -> *mut u8 {
 /// Stack LitAdt has no RC — always promote to a heap clone before in-place `with`.
 #[no_mangle]
 pub extern "C" fn lumia_adt_ensure_unique(obj: *mut u8) -> *mut u8 {
+    lumia_adt_ensure_unique_mask(obj, 0)
+}
+
+/// Like [`lumia_adt_ensure_unique`], but `overwrite_mask` skips nested retain on
+/// fields that inplace `with` will rewrite (avoids RC≥2 on untouched siblings
+/// when the product itself must clone).
+#[no_mangle]
+pub extern "C" fn lumia_adt_ensure_unique_mask(obj: *mut u8, overwrite_mask: u64) -> *mut u8 {
     use crate::common::{cow_rc_is_unique, tid_base, TYPE_ADT};
     if obj.is_null() {
         return obj;
@@ -251,12 +273,12 @@ pub extern "C" fn lumia_adt_ensure_unique(obj: *mut u8) -> *mut u8 {
             return obj;
         }
         if !is_heap_payload(obj) {
-            return adt_shallow_clone_heap(obj);
+            return adt_shallow_clone_heap(obj, overwrite_mask);
         }
         if cow_rc_is_unique(obj, true) {
             return obj;
         }
-        adt_shallow_clone_heap(obj)
+        adt_shallow_clone_heap(obj, overwrite_mask)
     }
 }
 
@@ -264,9 +286,18 @@ pub extern "C" fn lumia_adt_ensure_unique(obj: *mut u8) -> *mut u8 {
 /// Prefer plain `ensure_unique` when the with-temp Let was optimized away.
 #[no_mangle]
 pub extern "C" fn lumia_adt_ensure_unique_consume(obj: *mut u8) -> *mut u8 {
+    lumia_adt_ensure_unique_consume_mask(obj, 0)
+}
+
+/// Consume with-temp retain, then unique-check with overwrite mask for `with`.
+#[no_mangle]
+pub extern "C" fn lumia_adt_ensure_unique_consume_mask(
+    obj: *mut u8,
+    overwrite_mask: u64,
+) -> *mut u8 {
     use crate::common::cow_rc_drop_alias;
     cow_rc_drop_alias(obj, /*adt_ok=*/ true);
-    lumia_adt_ensure_unique(obj)
+    lumia_adt_ensure_unique_mask(obj, overwrite_mask)
 }
 
 /// Write ADT field `index` (0-based): release old List/ADT, retain new, barrier.
@@ -294,7 +325,9 @@ pub extern "C" fn lumia_adt_set_field(obj: *mut u8, index: i64, value: i64) {
             }
         }
         *slot = value;
-        // Float-masked slots are not pointers; barrier still no-ops for non-young.
-        crate::gc::lumia_write_barrier(obj, (index + 1) as u32, value as *mut u8);
+        // Float-masked slots are unboxed bits, not GC pointers.
+        if !float_field {
+            crate::gc::lumia_write_barrier(obj, (index + 1) as u32, value as *mut u8);
+        }
     }
 }

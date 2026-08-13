@@ -132,9 +132,10 @@ thread_local! {
     static CALL_STACK: RefCell<Vec<*const u8>> = const { RefCell::new(Vec::new()) };
     /// Soft threshold on young-generation live payload (triggers minor STW).
     /// TLS so parallel crate tests with different limits do not race.
-    pub(crate) static YOUNG_LIMIT: Cell<usize> = const { Cell::new(64 * 1024) };
+    /// Sized for CN-scale dense float weight clones (was 64KiB — too eager STW).
+    pub(crate) static YOUNG_LIMIT: Cell<usize> = const { Cell::new(1024 * 1024) };
     /// Soft threshold on old-generation live payload (triggers full STW).
-    pub(crate) static HEAP_LIMIT: Cell<usize> = const { Cell::new(256 * 1024) };
+    pub(crate) static HEAP_LIMIT: Cell<usize> = const { Cell::new(8 * 1024 * 1024) };
 }
 
 /// Refcount sentinel: immortal / permanently shared (empty-list singleton).
@@ -199,12 +200,16 @@ pub(crate) fn cow_rc_release(payload: *mut u8, adt_ok: bool) {
 
 #[inline]
 pub(crate) fn cow_rc_is_unique(payload: *mut u8, adt_ok: bool) -> bool {
-    if payload.is_null() || !is_heap_payload(payload) {
+    if payload.is_null() {
         return false;
     }
     unsafe {
         let h = header_from_payload(payload);
-        cow_tid_ok((*h).type_id, adt_ok) && (*h).rc == 1
+        // Fast reject shared / wrong-type before `HEAP_SET` (hot in f64 kernels).
+        if !cow_tid_ok((*h).type_id, adt_ok) || (*h).rc != 1 {
+            return false;
+        }
+        is_heap_payload(payload)
     }
 }
 

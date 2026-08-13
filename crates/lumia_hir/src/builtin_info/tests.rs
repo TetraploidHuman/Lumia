@@ -42,6 +42,8 @@ fn may_capture_matches_escape_projection_set() {
     let expected_no_capture = [
         Builtin::ListLen,
         Builtin::ListGet,
+        Builtin::ListTake,
+        Builtin::ListSlice,
         Builtin::AdtTag,
         Builtin::AdtField,
         Builtin::Contains,
@@ -87,11 +89,12 @@ fn may_capture_matches_escape_projection_set() {
         assert_eq!(b.result_heap(), ResultHeap::Never, "{}", b.display_name());
         assert!(!b.may_capture(), "{}", b.display_name());
     }
-    // Identity / element-pointer copiers must capture.
+    // Identity / element-pointer copiers must capture at seed (always).
+    // Take/Slice escape only when their result escapes (propagate).
     assert!(Builtin::Elems.may_capture());
     assert!(Builtin::MapItems.may_capture());
-    assert!(Builtin::ListTake.may_capture());
-    assert!(Builtin::ListSlice.may_capture());
+    assert!(!Builtin::ListTake.may_capture());
+    assert!(!Builtin::ListSlice.may_capture());
     assert!(Builtin::ListReverse.may_capture());
     assert!(Builtin::ListSort.may_capture());
     assert!(Builtin::MapKeys.may_capture());

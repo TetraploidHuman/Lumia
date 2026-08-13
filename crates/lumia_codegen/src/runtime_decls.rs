@@ -61,9 +61,19 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         args: &[RtTy::Ptr],
     },
     RtDecl {
+        name: "lumia_adt_ensure_unique_mask",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr, RtTy::I64],
+    },
+    RtDecl {
         name: "lumia_adt_ensure_unique_consume",
         ret: RtTy::Ptr,
         args: &[RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_adt_ensure_unique_consume_mask",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr, RtTy::I64],
     },
     RtDecl {
         name: "lumia_adt_set_field",

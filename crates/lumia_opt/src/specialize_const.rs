@@ -1,4 +1,4 @@
-//! Call-site specialization on known Int/Bool/Char constants (DESIGN §7.2).
+//! Call-site specialization on known Int/Bool/Char/Float constants (DESIGN §7.2).
 //!
 //! Type-driven mono lives in `lumia_core::mono`. This pass handles the
 //! complementary case: pure leaf calls whose **values** are known scalars at the
@@ -115,25 +115,30 @@ fn is_specializeable(f: &CoreFun) -> bool {
     if has_early_return(&f.body) {
         return false;
     }
-    // Specialize when params are Int/Bool/Char, or still-open vars (call-site
-    // scalars prove them). Reject Float / heap — those need richer PE.
+    // Specialize when params are Int/Bool/Char/Float, or still-open vars
+    // (call-site scalars prove them). Reject heap — those need richer PE.
     f.param_tys.iter().all(param_ok_for_const_scalar)
 }
 
 fn param_ok_for_const_scalar(t: &lumia_ty::Type) -> bool {
     matches!(
         t,
-        lumia_ty::Type::Int | lumia_ty::Type::Bool | lumia_ty::Type::Char | lumia_ty::Type::Var(_)
+        lumia_ty::Type::Int
+            | lumia_ty::Type::Bool
+            | lumia_ty::Type::Char
+            | lumia_ty::Type::Float
+            | lumia_ty::Type::Var(_)
     )
 }
 
 fn mangle_const_clone(fun: &str, args: &[i64]) -> String {
     let mut out = format!("{fun}$c");
     for a in args {
-        if *a < 0 {
-            out.push_str(&format!("_n{}", -a));
-        } else {
+        // Small non-neg ints keep decimal; Float bits / large / neg use hex.
+        if (0..=0xffff).contains(a) {
             out.push_str(&format!("_{a}"));
+        } else {
+            out.push_str(&format!("_x{:x}", *a as u64));
         }
     }
     out
@@ -146,6 +151,7 @@ fn bake_const_value(ty: &lumia_ty::Type, n: i64) -> Value {
             let c = char::from_u32(n as u32).unwrap_or('\0');
             Value::Char(c)
         }
+        lumia_ty::Type::Float => Value::Float(f64::from_bits(n as u64)),
         _ => Value::Int(n),
     }
 }
@@ -373,6 +379,27 @@ val main = {
                 .iter()
                 .any(|f| f.name.starts_with("flip$c_") || f.name.contains("flip$c_")),
             "expected bool const clone, funs={:?}",
+            core.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn specialize_const_clones_pure_float_call() {
+        let src = r#"
+module M
+val add1f = { x -> x + 1.0 }
+val main = {
+    add1f(41.0)
+}
+"#;
+        let mut core = lumia_core::compile_source_to_core(src).expect("core");
+        crate::ConstFoldPass.run(&mut core);
+        SpecializeConstPass.run(&mut core);
+        assert!(
+            core.functions
+                .iter()
+                .any(|f| f.name.starts_with("add1f$c_") || f.name.contains("add1f$c_")),
+            "expected float const clone, funs={:?}",
             core.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
         );
     }
