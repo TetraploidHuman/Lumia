@@ -486,9 +486,13 @@ impl<'ctx> Codegen<'ctx> {
         uses >= 1 && only_arg
     }
 
-    /// `Let t = Name/Local/AdtField` used only as the receiver of further
-    /// `AdtField` extracts. The source is already rooted (mut slot / prior let /
-    /// parent ADT); retaining `t` only bumps COW RC on every `p.field` chain.
+    /// `Let t = AdtField(…)` used only as the receiver of further `AdtField`
+    /// extracts (e.g. temps for `o.cell.n`). Read-only nested chains are safe:
+    /// the parent stays rooted and `t` is never a `with` receiver.
+    ///
+    /// **Not** applied to `Name`/`Local` (`load p` / `val snap = p`): those
+    /// retains feed COW — both snapshots and the with-temp that
+    /// `ensure_unique_consume` drops (`examples/adt_with_alias.lm`).
     fn let_is_ephemeral_adt_field_base(
         &self,
         block: &Block,
@@ -496,18 +500,13 @@ impl<'ctx> Codegen<'ctx> {
         local: Local,
         value: &Value,
     ) -> bool {
-        let is_alias = matches!(
-            value,
-            Value::Name(_)
-                | Value::Local(_)
-                | Value::Builtin {
-                    name: Builtin::AdtField,
-                    ..
-                }
-        );
-        if !is_alias {
+        let Value::Builtin {
+            name: Builtin::AdtField,
+            ..
+        } = value
+        else {
             return false;
-        }
+        };
         let ty = self.infer_value_ty(value);
         if !matches!(ty, Type::Adt { .. }) {
             return false;
