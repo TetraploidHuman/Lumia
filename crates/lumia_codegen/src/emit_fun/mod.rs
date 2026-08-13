@@ -432,10 +432,14 @@ impl<'ctx> Codegen<'ctx> {
         uses >= 1 && only_recv
     }
 
-    /// `Let t = Name/Local/AdtField` used only as a `Call`/`IndirectCall` argument.
+    /// `Let t = Name/Local` used only as a `Call`/`IndirectCall` argument.
     ///
     /// The source is already live/rooted; a temporary retain would bump COW RC and
     /// force `ensure_unique` clones inside `lumia_cn_*` / `lumia_f64_*` kernels.
+    ///
+    /// **Not** applied to `AdtField`: extracting a List/heap field without retain
+    /// lets the parent ADT drop while the callee still holds the unreained
+    /// pointer (`makeObs` → `nearest(eco, eco.ecoThreats, n)` zeroed threat obs).
     fn let_is_ephemeral_call_arg(
         &self,
         block: &Block,
@@ -443,15 +447,7 @@ impl<'ctx> Codegen<'ctx> {
         local: Local,
         value: &Value,
     ) -> bool {
-        let is_alias = matches!(
-            value,
-            Value::Name(_)
-                | Value::Local(_)
-                | Value::Builtin {
-                    name: Builtin::AdtField,
-                    ..
-                }
-        );
+        let is_alias = matches!(value, Value::Name(_) | Value::Local(_));
         if !is_alias {
             return false;
         }

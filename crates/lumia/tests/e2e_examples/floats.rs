@@ -67,6 +67,16 @@ fn e2e_var_adt_float_mut() {
 }
 
 #[test]
+fn e2e_poly_list_float_get() {
+    // Poly `{ pts -> pts.get(0) }` called with `var` List[Float] must not println
+    // IEEE bit patterns.
+    run_example(
+        "examples/poly_list_float_get.lm",
+        &["0.668", "0.668", "1.1280000000000001"],
+    );
+}
+
+#[test]
 fn e2e_dense_float_kernels() {
     // gemv [5,11,17]; gemvT [4,6]; addmm sum 21; L2 [0.6,0.8]; 16×32 nucleus gemv
     run_example(

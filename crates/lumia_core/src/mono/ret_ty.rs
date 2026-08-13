@@ -152,6 +152,21 @@ fn value_fixed_ty(
             ..
         } => Some(Type::String),
         Value::Builtin {
+            name: Builtin::ListGet,
+            args,
+        } => {
+            let list_ty =
+                local_fixed_ty(block, args.first()?.0, index, trait_methods, param_tys, seen)?;
+            match list_ty {
+                Type::List(e) | Type::Set(e) => Some(*e),
+                Type::Map(_, v) => Some(Type::Adt {
+                    name: "Option".into(),
+                    params: vec![*v],
+                }),
+                other => Some(other),
+            }
+        }
+        Value::Builtin {
             name: Builtin::AdtField,
             args,
         } => adt_field_fixed_ty(block, args, index, trait_methods, param_tys, seen),

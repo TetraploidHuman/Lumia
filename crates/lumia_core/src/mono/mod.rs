@@ -110,6 +110,53 @@ mod tests {
         );
     }
 
+
+    #[test]
+    fn specialize_clones_poly_list_float_from_var_slot() {
+        // Call-site `var xs = listOf(floats)` loads as `Name(xs)`. Mono must
+        // track slot types so `List[Float]` specializes (else ListGet stays Int
+        // and println shows IEEE bit patterns).
+        let core = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+val nearest = { pts, n ->
+    println(pts.get(0))
+    pts.get(0) + pts.get(1)
+}
+val main = {
+    var xs = listOf(0.668, 0.460)
+    println(xs.get(0))
+    println(nearest(xs, 2))
+}
+"#,
+        )
+        .expect("core");
+        let clone = core
+            .functions
+            .iter()
+            .find(|f| f.name.contains("nearest") && f.is_mono_clone())
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected nearest$List_Float clone, funs={:?}",
+                    core.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+                )
+            });
+        assert!(
+            matches!(
+                clone.param_tys.first(),
+                Some(Type::List(e)) if matches!(e.as_ref(), Type::Float)
+            ),
+            "clone param0 should be List[Float], got {:?}",
+            clone.param_tys
+        );
+        assert!(
+            matches!(clone.ret_ty, Type::Float),
+            "clone ret should be Float from ListGet+add, got {:?}",
+            clone.ret_ty
+        );
+    }
+
     #[test]
     fn specialize_clones_poly_dbl_for_float() {
         let core = compile_source_to_core(
