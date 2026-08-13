@@ -14,8 +14,15 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 source "$ROOT/scripts/env.sh"
 
 cd "$ROOT"
-cargo build -q -p lumia --release
-LUMIA="$ROOT/target/release/lumia"
+# Prefer a prebuilt compiler (CI sets LUMIA + builds with llvm-dynamic).
+if [[ -n "${LUMIA:-}" && -x "$LUMIA" ]]; then
+  echo "== using LUMIA=$LUMIA =="
+else
+  # Optional: LUMIA_CARGO_FEATURES='--features llvm-dynamic' on apt.llvm.org hosts.
+  # shellcheck disable=SC2086
+  cargo build -q -p lumia --release ${LUMIA_CARGO_FEATURES:-}
+  LUMIA="$ROOT/target/release/lumia"
+fi
 OUT_DIR="${TMPDIR:-/tmp}/lumia_cn_d2_smoke"
 mkdir -p "$OUT_DIR"
 BIN="$OUT_DIR/eval_behaviors_smoke"

@@ -174,4 +174,7 @@ jobs:
       # link of eval_behaviors_smoke; gates B2 / metrics_sane, not Python parity.
       - name: CogniNucleus D2 smoke gate
         if: runner.os == 'Linux'
-        run: ./scripts/cn_d2_smoke_gate.sh
+        run: |
+          set -euxo pipefail
+          cargo build -q -p lumia --release ${{ matrix.lumia_features }}
+          LUMIA="$PWD/target/release/lumia" ./scripts/cn_d2_smoke_gate.sh
