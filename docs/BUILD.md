@@ -194,6 +194,7 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumia_rt` 内�
 - Dense float（CogniNucleus 热路径）：`scripts/bench_cn_hot.sh`（naive 循环 vs `std.linalg`；checksum 对齐 + 时间/RSS）。
 - Dense float（整步）：`scripts/bench_cn_step.sh`（sensory fill/scale/add + gate mul + decay + PC/Hebbian；扩展 SR 面）。
 - CogniNucleus EFE：`scripts/bench_cn_efe.sh`（imagine+G(a) naive vs fused `lumia_efe_action_scores`）。
+- CogniNucleus D2 smoke 门禁：`scripts/cn_d2_smoke_gate.sh`（`eval_behaviors_smoke`；`metrics_sane` + B2；CI Linux）；对照 Python：`scripts/cn_d2_smoke_compare.sh`（`--lumia-align`，数值 parity 仍待）。
 - **聚合回归**：`scripts/bench_all.sh` 依次跑 cpu / memo / cn_hot / cn_step / cn_efe（改 dense-float 等优化时应用此入口，避免单项过关、旧核回归）。
 - **峰值 RSS**：`scripts/bench_measure.sh` 经小型 C 父进程 `wait4`（`scripts/peak_rss.c`）取样；勿用大 RSS 的 Python `subprocess` fork——COW 会把解释器常驻内存算进子进程 `ru_maxrss`。Release 链接加 `--gc-sections`（macOS：`-dead_strip`）丢掉未引用的 `lumia_rt`/Rust-std 目标文件，降低基线 RSS。
 - **纪律（DESIGN §7.1.1）**：分析能证明 → 特化；不能证明 → **默认稳定路径**：
