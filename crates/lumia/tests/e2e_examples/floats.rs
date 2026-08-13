@@ -77,6 +77,15 @@ fn e2e_poly_list_float_get() {
 }
 
 #[test]
+fn e2e_adt_field_call_arg() {
+    // `nearest(eco, eco.ecoThreats, n)` must keep the field list live across the call.
+    run_example(
+        "examples/adt_field_call_arg.lm",
+        &["0.668", "0.46", "0.535372767331324"],
+    );
+}
+
+#[test]
 fn e2e_dense_float_kernels() {
     // gemv [5,11,17]; gemvT [4,6]; addmm sum 21; L2 [0.6,0.8]; 16×32 nucleus gemv
     run_example(
