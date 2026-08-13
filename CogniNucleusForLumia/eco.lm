@@ -8,7 +8,7 @@ import std.linalg.{zeros, fill, sinF, cosF, atan2F, hypotF}
 import d2_config.{
     OBS_DIM, MAX_STEPS, N_FOODS, N_THREATS, MOVE_SPEED, TURN_ANGLE, FOV,
     FOOD_R, THREAT_R, NEST_R, HUNGER_RATE, HUNGER_EAT, PAIN_DECAY, PAIN_THREAT,
-    ENERGY_COST, PAIN_W, ARENA
+    ENERGY_COST, PAIN_W, FOOD_RESPAWN_DELAY, ARENA
 }
 
 type Eco {
@@ -21,6 +21,8 @@ type Eco {
     val ecoPrevPain
     val ecoSteps
     val ecoFoods
+    /// Per-food cooldown: 0 = active, >0 = steps until respawn (Python food_respawn_delay).
+    val ecoFoodTimers
     val ecoThreats
     val ecoNestX
     val ecoNestY
@@ -66,12 +68,15 @@ type PtsOut {
 val PI2 = 3.141592653589793
 
 val rngNext = { s ->
-    0.0 + (((s % 46340) * 48271 + 11) % 2147483647)
+    // Float literals keep the LCG in the Float domain (Int `%` can bitcast seeds).
+    ((s % 46340.0) * 48271.0 + 11.0) % 2147483647.0
 }
+
+val RNG_MOD = 2147483647.0
 
 val rand01 = { s ->
     val s2 = rngNext(s)
-    RngPair { rngU = s2 / 2147483647.0, rngSeed = s2 }
+    RngPair { rngU = s2 / RNG_MOD, rngSeed = s2 }
 }
 
 val randRange = { s, lo, hi ->
@@ -113,15 +118,17 @@ val bearing = { eco, tx, ty ->
     }
 }
 
-val nearest = { eco, pts, n ->
+/// Nearest threat; read from `eco` (do not pass `ecoThreats` as a bare arg —
+/// ephemeral list bases can be GC'd before the loop, zeroing threat obs).
+val nearestThreat = { eco ->
     var bestBx = 0.0
     var bestBy = 0.0
     var bestI = 0.0
     var bestD = 1000000.0
     var i = 0
-    for i < n {
-        val px = pts.get(i * 2)
-        val py = pts.get(i * 2 + 1)
+    for i < N_THREATS {
+        val px = eco.ecoThreats.get(i * 2)
+        val py = eco.ecoThreats.get(i * 2 + 1)
         val b = bearing(eco, px, py)
         val d = hypotF(px - eco.ecoX, py - eco.ecoY)
         match {
@@ -132,6 +139,37 @@ val nearest = { eco, pts, n ->
                 bestI = b.bearI
             }
             _ -> {}
+        }
+        i = i + 1
+    }
+    Bearing { bearX = bestBx, bearY = bestBy, bearI = bestI }
+}
+
+/// Nearest active food (timer == 0); matches Python iterating only present patches.
+val nearestFood = { eco ->
+    var bestBx = 0.0
+    var bestBy = 0.0
+    var bestI = 0.0
+    var bestD = 1000000.0
+    var i = 0
+    for i < N_FOODS {
+        match {
+            eco.ecoFoodTimers.get(i) > 0.0 -> {}
+            _ -> {
+                val px = eco.ecoFoods.get(i * 2)
+                val py = eco.ecoFoods.get(i * 2 + 1)
+                val b = bearing(eco, px, py)
+                val d = hypotF(px - eco.ecoX, py - eco.ecoY)
+                match {
+                    d < bestD -> {
+                        bestD = d
+                        bestBx = b.bearX
+                        bestBy = b.bearY
+                        bestI = b.bearI
+                    }
+                    _ -> {}
+                }
+            }
         }
         i = i + 1
     }
@@ -187,11 +225,11 @@ val makeObs = { eco ->
     val pain = match { eco.ecoPain > 1.0 -> 1.0 _ -> eco.ecoPain }
     obs = obs.set(4, hung)
     obs = obs.set(5, pain)
-    val nf = nearest(eco, eco.ecoFoods, N_FOODS)
+    val nf = nearestFood(eco)
     obs = obs.set(10, nf.bearX)
     obs = obs.set(11, nf.bearY)
     obs = obs.set(12, nf.bearI)
-    val nt = nearest(eco, eco.ecoThreats, N_THREATS)
+    val nt = nearestThreat(eco)
     obs = obs.set(14, nt.bearX)
     obs = obs.set(15, nt.bearY)
     obs = obs.set(16, nt.bearI)
@@ -222,7 +260,7 @@ val buildObs = { eco ->
 
 val fillPoints = { n, s0, lo, hi ->
     var pts = zeros(n * 2)
-    var s = s0
+    var s = 0.0 + s0
     var i = 0
     for i < n {
         val rx = randRange(s, lo, hi)
@@ -235,8 +273,11 @@ val fillPoints = { n, s0, lo, hi ->
     PtsOut { ptsData = pts, ptsSeed = s }
 }
 
+/// Allocate eco with RNG seed only — do **not** consume the LCG here.
+/// Callers must `resetEco` before the first step (matches Python: construct →
+/// install LCG(seed) → `reset()` once per episode).
 val newEco = { seed ->
-    resetEco(Eco {
+    Eco {
         ecoX = 0.5,
         ecoY = 0.5,
         ecoTheta = 0.0,
@@ -246,6 +287,7 @@ val newEco = { seed ->
         ecoPrevPain = 0.0,
         ecoSteps = 0,
         ecoFoods = zeros(N_FOODS * 2),
+        ecoFoodTimers = zeros(N_FOODS),
         ecoThreats = zeros(N_THREATS * 2),
         ecoNestX = 0.1,
         ecoNestY = 0.1,
@@ -253,12 +295,14 @@ val newEco = { seed ->
         ecoThreatContacts = 0,
         ecoObs = zeros(OBS_DIM),
         ecoRng = seed
-    })
+    }
 }
 
 val resetEco = { eco0 ->
-    var s = eco0.ecoRng
-    val rx = randRange(s, 0.2, 0.8)
+    // `val` not `var`: untyped `var` from an ADT Float field can bitcast
+    // (e.g. 2106498180.0 → wrong ep1+ reset vs Python LumiaLCG).
+    val s0 = eco0.ecoRng
+    val rx = randRange(s0, 0.2, 0.8)
     val ry = randRange(rx.rngSeed, 0.2, 0.8)
     val rTh = rand01(ry.rngSeed)
     val theta = rTh.rngU * PI2 * 2.0 - PI2
@@ -276,6 +320,7 @@ val resetEco = { eco0 ->
         ecoPrevPain = 0.0,
         ecoSteps = 0,
         ecoFoods = foods.ptsData,
+        ecoFoodTimers = zeros(N_FOODS),
         ecoThreats = threats.ptsData,
         ecoNestX = 0.1,
         ecoNestY = 0.1,
@@ -346,19 +391,44 @@ val stepEcoSeed = { eco0, action, seed ->
     var foodVisits = eco0.ecoFoodVisits
     var threatContacts = eco0.ecoThreatContacts
     var foods = eco0.ecoFoods
-    var rng = seed
+    var foodTimers = eco0.ecoFoodTimers
+    var rng = 0.0 + seed
     var i = 0
     var ate = 0
+    // Python: collide → pop food + start respawn timer (no immediate RNG spawn).
     for i < N_FOODS {
         match {
             ate == 0 -> {
-                val fx = foods.get(i * 2)
-                val fy = foods.get(i * 2 + 1)
                 match {
-                    hypotF(fx - x, fy - y) < FOOD_R -> {
-                        hunger = match { hunger - HUNGER_EAT < 0.0 -> 0.0 _ -> hunger - HUNGER_EAT }
-                        foodVisits = foodVisits + 1
-                        // Python `_spawn_point(min_dist=0.18)`; fallback uniform(0.15,0.85).
+                    foodTimers.get(i) > 0.0 -> {}
+                    _ -> {
+                        val fx = foods.get(i * 2)
+                        val fy = foods.get(i * 2 + 1)
+                        match {
+                            hypotF(fx - x, fy - y) < FOOD_R -> {
+                                hunger = match { hunger - HUNGER_EAT < 0.0 -> 0.0 _ -> hunger - HUNGER_EAT }
+                                foodVisits = foodVisits + 1
+                                foodTimers = foodTimers.set(i, 0.0 + FOOD_RESPAWN_DELAY)
+                                ate = 1
+                            }
+                            _ -> {}
+                        }
+                    }
+                }
+            }
+            _ -> {}
+        }
+        i = i + 1
+    }
+    // Tick cooldowns; on expire spawn like Python `_spawn_point(min_dist=0.18)`.
+    i = 0
+    for i < N_FOODS {
+        val t0 = foodTimers.get(i)
+        match {
+            t0 > 0.0 -> {
+                val t1 = t0 - 1.0
+                match {
+                    t1 <= 0.0 -> {
                         var tries = 0
                         var placed = 0
                         var lastPx = 0.5
@@ -394,9 +464,9 @@ val stepEcoSeed = { eco0, action, seed ->
                             }
                             _ -> {}
                         }
-                        ate = 1
+                        foodTimers = foodTimers.set(i, 0.0)
                     }
-                    _ -> {}
+                    _ -> { foodTimers = foodTimers.set(i, t1) }
                 }
             }
             _ -> {}
@@ -439,6 +509,7 @@ val stepEcoSeed = { eco0, action, seed ->
         ecoPrevPain = pain,
         ecoSteps = steps,
         ecoFoods = foods,
+        ecoFoodTimers = foodTimers,
         ecoFoodVisits = foodVisits,
         ecoThreatContacts = threatContacts,
         ecoRng = rng
