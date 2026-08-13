@@ -1,0 +1,11 @@
+module empty_float_list
+import std.io.{println}
+
+/// Reassigning `listOf()` into a List[Float] slot must keep the F64 type tag.
+val main = {
+    var xs = listOf(0.0)
+    xs = listOf()
+    val empty = listOf(0.0).take(0)
+    println(if xs == empty { 1 } else { 0 })
+    println(xs.len())
+}

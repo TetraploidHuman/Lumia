@@ -37,6 +37,11 @@ fn e2e_cow_nested_list() {
 }
 
 #[test]
+fn e2e_empty_float_list() {
+    run_example("examples/empty_float_list.lm", &["1", "0"]);
+}
+
+#[test]
 fn e2e_float_struct_eq() {
     // List/Option/Map Float payloads + ListParMap: ±0 equal; NaN ≠ NaN.
     run_example(

@@ -113,8 +113,9 @@ pub extern "C" fn lumia_adt_eq(a: i64, b: i64, float_mask: i64) -> i64 {
         if tid_base((*ha).type_id) != TYPE_ADT || tid_base((*hb).type_id) != TYPE_ADT {
             return lumia_eq(a, b);
         }
-        // Prefer call-site mask; also honour layout stored in header `_pad` (nested eq).
-        let mask = (float_mask as u64) | (*ha)._pad | (*hb)._pad;
+        // Prefer call-site mask; for headers require **both** sides to tag a field as
+        // Float so eq agrees with per-object `hash_value` (which reads only one `_pad`).
+        let mask = (float_mask as u64) | ((*ha)._pad & (*hb)._pad);
         adt_eq_payload(pa, pb, mask)
     }
 }

@@ -36,6 +36,7 @@ impl<'ctx> Codegen<'ctx> {
         self.frame.local_int_consts.clear();
         self.frame.slot_tys.clear();
         self.frame.emit_dest = None;
+        self.frame.expect_alloc_ty = None;
         self.frame.nsw_binop_locals = crate::nsw_iv::collect_nsw_binop_locals(&fun.body);
         self.frame.safe_divisor_locals = crate::nsw_iv::collect_safe_divisor_locals(&fun.body);
         self.frame.nonneg_iv_load_locals = crate::nsw_iv::collect_nonneg_iv_load_locals(&fun.body);
@@ -150,6 +151,36 @@ impl<'ctx> Codegen<'ctx> {
 
     pub(crate) fn infer_value_ty(&self, value: &Value) -> Type {
         lumia_core::infer_value_ty_ctx(value, self.infer_ctx(), None)
+    }
+
+    /// Best-effort expected type for empty container literals (Float tags).
+    fn peek_expected_alloc_ty(
+        &self,
+        block: &Block,
+        idx: usize,
+        local: Local,
+        value: &Value,
+    ) -> Option<Type> {
+        let empty = match value {
+            Value::AllocList { elems, .. } => elems.is_empty(),
+            Value::AllocSet { elems, .. } => elems.is_empty(),
+            Value::AllocMap { flat_pairs, .. } => flat_pairs.is_empty(),
+            _ => return None,
+        };
+        if !empty {
+            return None;
+        }
+        if let Some(Op::Assign { name, value: v }) = block.ops.get(idx + 1) {
+            if *v == local {
+                if let Some(ty) = self.frame.slot_tys.get(name) {
+                    return Some(ty.clone());
+                }
+            }
+        }
+        if block.result == Some(local) {
+            return self.funs.fun_ret_tys.get(&self.funs.current_fun).cloned();
+        }
+        None
     }
 
     /// Pure self/mutual recursion in tail position → musttail (DESIGN §4.4).
@@ -649,7 +680,10 @@ impl<'ctx> Codegen<'ctx> {
                     self.frame.adt_with_inplace =
                         self.match_adt_with_reassign(block, idx, *local, value);
                     self.frame.emit_dest = Some(local.0);
+                    self.frame.expect_alloc_ty =
+                        self.peek_expected_alloc_ty(block, idx, *local, value);
                     let v = self.emit_value(value, fv)?;
+                    self.frame.expect_alloc_ty = None;
                     self.frame.emit_dest = None;
                     self.frame.cow_consume_unique = false;
                     self.frame.adt_with_inplace = None;
