@@ -630,10 +630,9 @@ fn parse_acc_get_affine_rem(
     };
     let (mul_side, c) = if let Some(k) = const_of(*l, defs) {
         (*r, k)
-    } else if let Some(k) = const_of(*r, defs) {
-        (*l, k)
     } else {
-        return None;
+        let k = const_of(*r, defs)?;
+        (*l, k)
     };
     let Value::Binary {
         op: BinOp::Mul,
@@ -646,10 +645,9 @@ fn parse_acc_get_affine_rem(
     };
     let (get_l, a) = if let Some(k) = const_of(*ml, defs) {
         (*mr, k)
-    } else if let Some(k) = const_of(*mr, defs) {
-        (*ml, k)
     } else {
-        return None;
+        let k = const_of(*mr, defs)?;
+        (*ml, k)
     };
     // get_l must be ListGet(range(0,n), i)
     let Value::Builtin {
