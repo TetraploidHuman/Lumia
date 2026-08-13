@@ -227,6 +227,13 @@ pub extern "C" fn lumia_list_release(list: *mut u8) {
     crate::common::list_rc_release(list);
 }
 
+/// Pointer identity for heap values (`List` / ADT payloads). Used to skip
+/// redundant `with` when a kernel mutated buffers in place.
+#[no_mangle]
+pub extern "C" fn lumia_ptr_eq(a: *mut u8, b: *mut u8) -> i64 {
+    i64::from(a == b)
+}
+
 /// Retain a heap List **or** ADT alias (`val a = p`, `AdtField` extract, field store).
 #[no_mangle]
 pub extern "C" fn lumia_adt_retain(obj: *mut u8) {

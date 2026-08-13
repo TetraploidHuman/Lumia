@@ -7,7 +7,7 @@
 module connection
 
 import std.linalg.{zeros}
-import std.cn.{projectClamp, hebbian}
+import std.cn.{projectClamp, hebbian, ptrEq}
 
 type Conn {
     val fromSize
@@ -37,7 +37,11 @@ val linkProjectError = { c, x, y, muClip ->
 }
 
 val linkHebbian = { c, muFrom, errTo, lr, wClip, wDecay, eps ->
-    var w = c.w
-    w = hebbian(w, muFrom, errTo, c.mask, c.fromSize, c.toSize, lr, wClip, wDecay, eps)
-    c with { w = w }
+    val w0 = c.w
+    val w1 = hebbian(w0, muFrom, errTo, c.mask, c.fromSize, c.toSize, lr, wClip, wDecay, eps)
+    // In-place Hebbian: skip Conn `with` so shared parents don't bump W's rc.
+    match {
+        ptrEq(w0, w1) != 0 -> c
+        _ -> c with { w = w1 }
+    }
 }

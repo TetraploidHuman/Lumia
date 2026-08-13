@@ -426,6 +426,51 @@ impl<'ctx> Codegen<'ctx> {
         uses >= 1 && only_recv
     }
 
+    /// `Let t = Name/Local` used only as a `Call`/`IndirectCall` argument.
+    ///
+    /// The source is already live/rooted; a temporary retain would bump COW RC and
+    /// force `ensure_unique` clones inside `lumia_cn_*` / `lumia_f64_*` kernels.
+    fn let_is_ephemeral_call_arg(
+        &self,
+        block: &Block,
+        let_idx: usize,
+        local: Local,
+        value: &Value,
+    ) -> bool {
+        if !matches!(value, Value::Name(_) | Value::Local(_)) {
+            return false;
+        }
+        let ty = self.infer_value_ty(value);
+        if !Self::type_needs_cow_retain(&ty) {
+            return false;
+        }
+        if block.result == Some(local) {
+            return false;
+        }
+        let mut uses = 0usize;
+        let mut only_arg = true;
+        for op in &block.ops[let_idx + 1..] {
+            if !Self::op_uses_local(op, local) {
+                continue;
+            }
+            uses += 1;
+            let ok = match op {
+                Op::Let { value, .. } | Op::Effect { value } => match value {
+                    Value::Call { args, .. } | Value::IndirectCall { args, .. } => {
+                        args.iter().any(|a| *a == local)
+                    }
+                    _ => false,
+                },
+                _ => false,
+            };
+            if !ok {
+                only_arg = false;
+                break;
+            }
+        }
+        uses >= 1 && only_arg
+    }
+
     fn op_uses_local(op: &Op, local: Local) -> bool {
         match op {
             Op::Let { value, .. } | Op::Effect { value } => Self::value_uses_local(value, local),
@@ -492,17 +537,11 @@ impl<'ctx> Codegen<'ctx> {
                     self.frame.adt_with_inplace = None;
                     if self.let_only_feeds_next_assign(block, idx, *local)
                         || self.let_is_ephemeral_rooted_recv(block, idx, *local, value)
+                        || self.let_is_ephemeral_call_arg(block, idx, *local, value)
                     {
-                        // Skip shadow-stack root: next Assign stores into a rooted mut
-                        // slot, or this is a Name/Local alias of an already-rooted list
-                        // used only as get/set/append receiver.
-                        // Still bump COW RC for ADT/List aliases (`var i = o.inner`).
+                        // Skip retain+root: source is already live (mut slot / prior let).
+                        // Extra retain here inflated COW RC and forced kernel-side clones.
                         let ty = self.infer_value_ty(value);
-                        if Self::type_needs_cow_retain(&ty) && Self::value_is_cow_alias(value) {
-                            if let Ok(bits) = self.coerce_i64(v) {
-                                self.adt_retain_i64(bits)?;
-                            }
-                        }
                         self.frame.locals.insert(local.0, v);
                         self.frame.local_tys.insert(local.0, ty);
                         self.note_int_const(local.0, value);

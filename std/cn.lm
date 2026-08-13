@@ -10,7 +10,7 @@
 /// - `clusterRates`: optional strict-PE rate coding before nucleus PE
 /// - `learnGenerative`: local encoder/predictor plasticity
 ///
-/// @exports nucleusStep, hebbian, projectClamp, projectError, backprojClamp, axpyClamp, argMax, clusterRates, learnGenerative, updateState
+/// @exports nucleusStep, hebbian, projectClamp, projectError, backprojClamp, axpyClamp, argMax, clusterRates, learnGenerative, updateState, ptrEq
 module cn
 
 foreign "C" pure fn lumia_cn_nucleus_step(mu: ListFloat, encW: ListFloat, predW: ListFloat, bottomUp: ListFloat, topDown: ListFloat, err: ListFloat, pred: ListFloat, size: Int, stateLr: Float, precision: Float, muClip: Float) -> ListFloat
@@ -22,6 +22,7 @@ foreign "C" pure fn lumia_cn_argmax(xs: ListFloat) -> Int
 foreign "C" pure fn lumia_cn_cluster_rates(potential: ListFloat, input: ListFloat, output: ListFloat, size: Int, nClusters: Int, decay: Float, threshold: Float) -> ListFloat
 foreign "C" pure fn lumia_cn_learn_generative(encW: ListFloat, predW: ListFloat, mu: ListFloat, err: ListFloat, size: Int, lr: Float, weightClip: Float, weightDecay: Float, precision: Float) -> ListFloat
 foreign "C" pure fn lumia_cn_update_state(mu: ListFloat, encW: ListFloat, err: ListFloat, size: Int, stateLr: Float, precision: Float, muClip: Float) -> ListFloat
+foreign "C" pure fn lumia_ptr_eq(a: ListFloat, b: ListFloat) -> Int
 
 val nucleusStep = { mu, encW, predW, bottomUp, topDown, err, pred, size, stateLr, precision, muClip ->
     lumia_cn_nucleus_step(mu, encW, predW, bottomUp, topDown, err, pred, size, stateLr, precision, muClip)
@@ -61,3 +62,6 @@ val learnGenerative = { encW, predW, mu, err, size, lr, weightClip, weightDecay,
 val updateState = { mu, encW, err, size, stateLr, precision, muClip ->
     lumia_cn_update_state(mu, encW, err, size, stateLr, precision, muClip)
 }
+
+/// 1 if heap pointers are identical (in-place kernel result).
+val ptrEq = { a, b -> lumia_ptr_eq(a, b) }
