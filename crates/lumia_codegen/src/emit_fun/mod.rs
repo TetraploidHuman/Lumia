@@ -486,6 +486,60 @@ impl<'ctx> Codegen<'ctx> {
         uses >= 1 && only_arg
     }
 
+    /// `Let t = Name/Local/AdtField` used only as the receiver of further
+    /// `AdtField` extracts. The source is already rooted (mut slot / prior let /
+    /// parent ADT); retaining `t` only bumps COW RC on every `p.field` chain.
+    fn let_is_ephemeral_adt_field_base(
+        &self,
+        block: &Block,
+        let_idx: usize,
+        local: Local,
+        value: &Value,
+    ) -> bool {
+        let is_alias = matches!(
+            value,
+            Value::Name(_)
+                | Value::Local(_)
+                | Value::Builtin {
+                    name: Builtin::AdtField,
+                    ..
+                }
+        );
+        if !is_alias {
+            return false;
+        }
+        let ty = self.infer_value_ty(value);
+        if !matches!(ty, Type::Adt { .. }) {
+            return false;
+        }
+        if block.result == Some(local) {
+            return false;
+        }
+        let mut uses = 0usize;
+        let mut only_base = true;
+        for op in &block.ops[let_idx + 1..] {
+            if !Self::op_uses_local(op, local) {
+                continue;
+            }
+            uses += 1;
+            let ok = match op {
+                Op::Let { value, .. } | Op::Effect { value } => match value {
+                    Value::Builtin {
+                        name: Builtin::AdtField,
+                        args,
+                    } => args.first() == Some(&local) && args[1..].iter().all(|a| *a != local),
+                    _ => false,
+                },
+                _ => false,
+            };
+            if !ok {
+                only_base = false;
+                break;
+            }
+        }
+        uses >= 1 && only_base
+    }
+
     /// `Let t = AdtField(base,…)` whose only use is an unchanged field of an
     /// `AllocAdt` rewritten to inplace `slot = slot with {…}` — skip retain+root
     /// (codegen ignores these extracts on the inplace path).
@@ -602,6 +656,7 @@ impl<'ctx> Codegen<'ctx> {
                     if self.let_only_feeds_next_assign(block, idx, *local)
                         || self.let_is_ephemeral_rooted_recv(block, idx, *local, value)
                         || self.let_is_ephemeral_call_arg(block, idx, *local, value)
+                        || self.let_is_ephemeral_adt_field_base(block, idx, *local, value)
                         || self.let_is_unused_inplace_with_field(block, idx, *local, value)
                     {
                         // Skip retain+root: source is already live (mut slot / prior let).
