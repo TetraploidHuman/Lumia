@@ -8,6 +8,7 @@ use super::Codegen;
 use anyhow::{Context as AnyhowContext, Result};
 use inkwell::values::{BasicValueEnum, FunctionValue};
 use lumia_core::{Block, CoreFun, Local, MemoTf, Op, Value};
+use lumia_hir::Builtin;
 use lumia_ty::Type;
 
 impl<'ctx> Codegen<'ctx> {
@@ -29,8 +30,10 @@ impl<'ctx> Codegen<'ctx> {
         self.frame.root_depth = 0;
         self.frame.rooted_slots.clear();
         self.frame.cow_consume_unique = false;
+        self.frame.adt_with_inplace = None;
         self.funs.funref_locals.clear();
         self.frame.local_tys.clear();
+        self.frame.local_int_consts.clear();
         self.frame.slot_tys.clear();
         self.frame.emit_dest = None;
         self.frame.nsw_binop_locals = crate::nsw_iv::collect_nsw_binop_locals(&fun.body);
@@ -70,6 +73,7 @@ impl<'ctx> Codegen<'ctx> {
             // Fall through: clear param bindings; normal path re-binds with roots.
             self.frame.locals.clear();
             self.frame.local_tys.clear();
+            self.frame.local_int_consts.clear();
         }
 
         let frame_name = if fun.is_main {
@@ -194,19 +198,20 @@ impl<'ctx> Codegen<'ctx> {
         value: &Value,
         v: BasicValueEnum<'ctx>,
     ) -> Result<()> {
-        if self.value_may_heap(value) {
-            if let Ok(bits) = self.coerce_i64(v) {
-                // Alias: `val a = xs` must bump List COW refcount.
-                if matches!(value, Value::Local(_) | Value::Name(_)) {
-                    self.list_retain_i64(bits)?;
-                }
+        let ty = self.infer_value_ty(value);
+        if let Ok(bits) = self.coerce_i64(v) {
+            // `Name`/`Local` are not `value_alloc_may_heap`, but aliases of List/ADT
+            // still need COW retain + GC roots (`val snap = p`).
+            if Self::type_needs_cow_retain(&ty) && Self::value_is_cow_alias(value) {
+                self.adt_retain_i64(bits)?;
+            }
+            if self.value_may_heap(value) || Self::type_may_heap(&ty) {
                 self.root_push_i64(bits)?;
             }
         }
         self.frame.locals.insert(local.0, v);
-        self.frame
-            .local_tys
-            .insert(local.0, self.infer_value_ty(value));
+        self.frame.local_tys.insert(local.0, ty);
+        self.note_int_const(local.0, value);
         if let Value::FunRef(name) = value {
             self.funs.funref_locals.insert(local.0, name.clone());
         } else if let Value::Local(Local(src)) = value {
@@ -219,6 +224,37 @@ impl<'ctx> Codegen<'ctx> {
             self.funs.funref_locals.remove(&local.0);
         }
         Ok(())
+    }
+
+    /// `Name`/`Local` alias or `AdtField` extract — not a fresh alloc / call result.
+    fn value_is_cow_alias(value: &Value) -> bool {
+        match value {
+            Value::Local(_) | Value::Name(_) => true,
+            Value::Builtin {
+                name: Builtin::AdtField,
+                ..
+            } => true,
+            _ => false,
+        }
+    }
+
+    /// Track `Value::Int` / aliases so `AdtField` can resolve `params[idx]`.
+    fn note_int_const(&mut self, local: u32, value: &Value) {
+        match value {
+            Value::Int(n) => {
+                self.frame.local_int_consts.insert(local, *n);
+            }
+            Value::Local(Local(src)) => {
+                if let Some(n) = self.frame.local_int_consts.get(src).copied() {
+                    self.frame.local_int_consts.insert(local, n);
+                } else {
+                    self.frame.local_int_consts.remove(&local);
+                }
+            }
+            _ => {
+                self.frame.local_int_consts.remove(&local);
+            }
+        }
     }
 
     /// `xs = xs.set(…)` / `xs = xs.append(…)` — next op assigns this COW result
@@ -248,6 +284,70 @@ impl<'ctx> Codegen<'ctx> {
             block.ops.get(let_idx + 1),
             Some(Op::Assign { name, value: v }) if name == slot && *v == dest
         )
+    }
+
+    /// `p = p with { f = … }` lowered to unique/COW in-place field updates.
+    ///
+    /// Requires alias/`AdtField` retains (`bind_let_after_emit`) and
+    /// `lumia_adt_ensure_unique_consume` (drops the with-temp `Name(slot)` retain).
+    fn match_adt_with_reassign(
+        &self,
+        block: &Block,
+        let_idx: usize,
+        dest: Local,
+        value: &Value,
+    ) -> Option<(String, Vec<(u32, Local)>)> {
+        let Value::AllocAdt { fields, .. } = value else {
+            return None;
+        };
+        let Op::Assign { name: slot, value: v } = block.ops.get(let_idx + 1)? else {
+            return None;
+        };
+        if *v != dest {
+            return None;
+        }
+        let mut updates = Vec::new();
+        let mut saw_base = false;
+        for (i, f) in fields.iter().enumerate() {
+            match self.adt_field_from_slot(f, slot) {
+                Some(idx) if idx as usize == i => {
+                    saw_base = true;
+                }
+                Some(_) => return None, // wrong field index
+                None => {
+                    updates.push((i as u32, *f));
+                }
+            }
+        }
+        if !saw_base || updates.is_empty() {
+            return None;
+        }
+        Some((slot.clone(), updates))
+    }
+
+    /// `AdtField(Name(slot)|alias, idx)` → Some(idx).
+    fn adt_field_from_slot(&self, field: &Local, slot: &str) -> Option<i64> {
+        let Value::Builtin {
+            name: Builtin::AdtField,
+            args,
+        } = self.frame.leaf_defs.get(&field.0)?
+        else {
+            return None;
+        };
+        let base = args.first()?;
+        let idx_l = args.get(1)?;
+        let base_ok = match self.frame.leaf_defs.get(&base.0) {
+            Some(Value::Name(n)) if n == slot => true,
+            Some(Value::Local(Local(src))) => matches!(
+                self.frame.leaf_defs.get(src),
+                Some(Value::Name(n)) if n == slot
+            ),
+            _ => false,
+        };
+        if !base_ok {
+            return None;
+        }
+        self.frame.local_int_consts.get(&idx_l.0).copied()
     }
 
     /// `slot = <heap expr>` lowered as `Let t = expr; Assign slot := t` with no other uses of `t`.
@@ -383,20 +483,29 @@ impl<'ctx> Codegen<'ctx> {
                     }
                     self.frame.cow_consume_unique =
                         self.cow_reassign_consumes(block, idx, *local, value);
+                    self.frame.adt_with_inplace =
+                        self.match_adt_with_reassign(block, idx, *local, value);
                     self.frame.emit_dest = Some(local.0);
                     let v = self.emit_value(value, fv)?;
                     self.frame.emit_dest = None;
                     self.frame.cow_consume_unique = false;
+                    self.frame.adt_with_inplace = None;
                     if self.let_only_feeds_next_assign(block, idx, *local)
                         || self.let_is_ephemeral_rooted_recv(block, idx, *local, value)
                     {
                         // Skip shadow-stack root: next Assign stores into a rooted mut
                         // slot, or this is a Name/Local alias of an already-rooted list
                         // used only as get/set/append receiver.
+                        // Still bump COW RC for ADT/List aliases (`var i = o.inner`).
+                        let ty = self.infer_value_ty(value);
+                        if Self::type_needs_cow_retain(&ty) && Self::value_is_cow_alias(value) {
+                            if let Ok(bits) = self.coerce_i64(v) {
+                                self.adt_retain_i64(bits)?;
+                            }
+                        }
                         self.frame.locals.insert(local.0, v);
-                        self.frame
-                            .local_tys
-                            .insert(local.0, self.infer_value_ty(value));
+                        self.frame.local_tys.insert(local.0, ty);
+                        self.note_int_const(local.0, value);
                         self.funs.funref_locals.remove(&local.0);
                     } else {
                         self.bind_let_after_emit(*local, value, v)?;

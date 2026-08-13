@@ -35,7 +35,7 @@ val main = {
                     steps = steps + 1
                     totalSteps = totalSteps + 1
                 }
-                _ -> {}
+                _ -> { break }
             }
             t = t + 1
         }

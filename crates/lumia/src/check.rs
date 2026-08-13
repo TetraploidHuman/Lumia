@@ -202,6 +202,12 @@ fn annotate_assert_expr(e: &mut lumia_hir::Expr, loaded: &LoadedProgram) {
             annotate_assert_expr(scrutinee, loaded);
             annotate_assert_expr(alt, loaded);
         }
+        Expr::With { base, fields, .. } => {
+            annotate_assert_expr(base, loaded);
+            for (_, e) in fields {
+                annotate_assert_expr(e, loaded);
+            }
+        }
         Expr::Var(_, _)
         | Expr::Int(_, _)
         | Expr::Float(_, _)

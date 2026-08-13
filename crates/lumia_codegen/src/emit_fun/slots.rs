@@ -50,17 +50,21 @@ impl<'ctx> Codegen<'ctx> {
         }
         let slot = self.ensure_slot(name)?;
         let i = self.coerce_i64(v)?;
-        // COW: releasing the previous List when the pointer changes keeps uniqueness
-        // accurate for `xs = xs.append(e)` (in-place) vs aliased snapshots.
-        // Skip for known non-List scalars (loop latches: `i = i + 1`).
-        let need_list_cow = !self.frame.float_slots.contains(name)
+        // COW: releasing the previous List/ADT when the pointer changes keeps
+        // uniqueness accurate for `xs = xs.append` / `p = p with` vs snapshots.
+        // Skip for known scalars (loop latches: `i = i + 1`).
+        let need_cow_release = !self.frame.float_slots.contains(name)
             && match self.frame.slot_tys.get(name) {
-                Some(Type::List(_)) => true,
+                Some(Type::List(_))
+                | Some(Type::Map(_, _))
+                | Some(Type::Set(_))
+                | Some(Type::Adt { .. }) => true,
                 Some(t) if Self::is_bit_identity_scalar(t) || matches!(t, Type::Float) => false,
-                Some(_) => true, // String/Map/Set/ADT/Char: keep release probe (cheap no-op)
+                Some(Type::String) | Some(Type::Char) => false,
+                Some(_) => true, // unknown heap-ish
                 None => true,    // unknown — conservative
             };
-        if need_list_cow {
+        if need_cow_release {
             let old = self
                 .llvm
                 .builder
@@ -85,7 +89,14 @@ impl<'ctx> Codegen<'ctx> {
                 .build_conditional_branch(same, cont_bb, rel_bb)
                 .map_err(|e| anyhow::anyhow!("br slot_same: {e}"))?;
             self.llvm.builder.position_at_end(rel_bb);
-            self.list_release_i64(old)?;
+            match self.frame.slot_tys.get(name) {
+                Some(Type::List(_)) | Some(Type::Map(_, _)) | Some(Type::Set(_)) => {
+                    self.list_release_i64(old)?;
+                }
+                _ => {
+                    self.adt_release_i64(old)?;
+                }
+            }
             self.llvm
                 .builder
                 .build_unconditional_branch(cont_bb)

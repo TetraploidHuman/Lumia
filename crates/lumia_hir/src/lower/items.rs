@@ -61,6 +61,7 @@ struct TypeScan {
     ctors: HashMap<String, CtorInfo>,
     product_map: HashMap<String, Vec<String>>,
     product_fields: HashMap<String, (String, usize)>,
+    product_field_owners: HashMap<String, Vec<(String, usize)>>,
     ambiguous_product_fields: HashSet<String>,
 }
 
@@ -70,6 +71,7 @@ fn scan_type_decls(m: &lumia_syntax::Module) -> TypeScan {
     let mut ctors = HashMap::default();
     let mut product_map = HashMap::default();
     let mut product_fields = HashMap::default();
+    let mut product_field_owners: HashMap<String, Vec<(String, usize)>> = HashMap::default();
     let mut ambiguous_product_fields: HashSet<String> = HashSet::default();
     for item in &m.items {
         if let lumia_syntax::Item::Type(t) = item {
@@ -103,9 +105,13 @@ fn scan_type_decls(m: &lumia_syntax::Module) -> TypeScan {
                 }
                 lumia_syntax::TypeKind::Product(fields) => {
                     for (i, f) in fields.iter().enumerate() {
+                        product_field_owners
+                            .entry(f.clone())
+                            .or_default()
+                            .push((t.name.clone(), i));
                         match product_fields.get(f) {
                             Some((prev, _)) if prev != &t.name => {
-                                // Same field name on two products → `with { f = … }` is ambiguous.
+                                // Same field name on two products → resolve via receiver/`with` base type.
                                 ambiguous_product_fields.insert(f.clone());
                             }
                             None => {
@@ -133,6 +139,7 @@ fn scan_type_decls(m: &lumia_syntax::Module) -> TypeScan {
         ctors,
         product_map,
         product_fields,
+        product_field_owners,
         ambiguous_product_fields,
     }
 }
@@ -274,6 +281,7 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
         ctors,
         product_map,
         mut product_fields,
+        product_field_owners,
         ambiguous_product_fields,
     } = scan_type_decls(m);
 
@@ -325,6 +333,7 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
         ctors,
         product_map,
         product_fields,
+        product_field_owners,
         ambiguous_product_fields,
         toplevel_funs,
         toplevel_fold_assoc,

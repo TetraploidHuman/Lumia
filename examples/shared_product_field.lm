@@ -1,0 +1,13 @@
+module SharedField
+type Point { val x val y }
+type Rect { val x val w }
+
+val main = {
+    val p = Point { x = 1, y = 2 }
+    val r = Rect { x = 10, w = 20 }
+    println(p.x)
+    println(r.x)
+    val p2 = p with { x = 7 }
+    println(p2.x)
+    println(p2.y)
+}

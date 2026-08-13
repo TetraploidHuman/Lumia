@@ -18,7 +18,7 @@ use crate::common::{
 use crate::map_set::{map_mark_payload, set_mark_payload};
 use crate::memo;
 use lumia_abi::{
-    gc_skip_float_slot, list_elem_is_float, map_key_is_float, map_val_is_float, set_elem_is_float,
+    list_elem_is_float, map_key_is_float, map_val_is_float, set_elem_is_float,
     tid_base,
 };
 
@@ -254,13 +254,12 @@ pub(crate) fn mark(obj: *mut ObjectHeader) {
                 );
             }
             TYPE_ADT => {
+                // Do **not** trust `_pad` float bits for GC skip: product mono can
+                // over-tag List/ADT fields as Float (UAF). `mark_value` already
+                // no-ops on non-heap bit patterns, so true Float slots are safe.
                 let words = ((*obj).size as usize) / 8;
                 let base = payload as *const i64;
-                let float_mask = (*obj)._pad;
                 for i in 1..words {
-                    if gc_skip_float_slot(tid, i - 1, float_mask) {
-                        continue;
-                    }
                     mark_value(*base.add(i));
                 }
             }
@@ -308,13 +307,12 @@ fn scan_old_for_young(obj: *mut ObjectHeader) {
                 );
             }
             TYPE_ADT => {
+                // Do **not** trust `_pad` float bits for GC skip: product mono can
+                // over-tag List/ADT fields as Float (UAF). `mark_value` already
+                // no-ops on non-heap bit patterns, so true Float slots are safe.
                 let words = ((*obj).size as usize) / 8;
                 let base = payload as *const i64;
-                let float_mask = (*obj)._pad;
                 for i in 1..words {
-                    if gc_skip_float_slot(tid, i - 1, float_mask) {
-                        continue;
-                    }
                     mark_value(*base.add(i));
                 }
             }
@@ -379,7 +377,12 @@ pub(crate) unsafe fn finish_alloc(mem: *mut u8, nbytes: usize, type_id: u32) -> 
     (*header).type_id = type_id;
     (*header).size = nbytes as u32;
     (*header).marked = 0;
-    (*header)._pad = if tid_base(type_id) == TYPE_LIST { 1 } else { 0 };
+    (*header).rc = if matches!(tid_base(type_id), TYPE_LIST | TYPE_ADT) {
+        1
+    } else {
+        0
+    };
+    (*header)._pad = 0;
     HEAP_YOUNG.with(|h| h.borrow_mut().push(header));
     HEAP_SET.with(|s| {
         s.borrow_mut().insert(header);

@@ -8,6 +8,7 @@ crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 lumia_abi.workspace = true
+rustc-hash.workspace = true
 
 [lints]
 workspace = true

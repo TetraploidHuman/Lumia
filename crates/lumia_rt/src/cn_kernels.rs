@@ -76,14 +76,7 @@ pub extern "C" fn lumia_cn_nucleus_step(
         }
 
         // delta = enc @ scratch
-        for i in 0..n {
-            let mut s = 0.0_f64;
-            let row = enc.add(i * n);
-            for j in 0..n {
-                s += *row.add(j) * scratch[j];
-            }
-            delta[i] = s;
-        }
+        crate::f64_simd::matvec_f64(enc, scratch.as_ptr(), delta.as_mut_ptr(), n, n);
 
         // mu += lr * delta; clamp
         let lo = -mu_clip;
@@ -94,14 +87,7 @@ pub extern "C" fn lumia_cn_nucleus_step(
         }
 
         // pred = pred_w @ mu
-        for i in 0..n {
-            let mut s = 0.0_f64;
-            let row = pw.add(i * n);
-            for j in 0..n {
-                s += *row.add(j) * *mp.add(j);
-            }
-            *pp.add(i) = s;
-        }
+        crate::f64_simd::matvec_f64(pw, mp, pp, n, n);
     }
     mu
 }
@@ -151,39 +137,20 @@ pub extern "C" fn lumia_cn_hebbian(
 
         let mut uu = [0.0_f64; MAX_DIM];
         let mut vv = [0.0_f64; MAX_DIM];
-        let mut su = 0.0_f64;
-        let mut sv = 0.0_f64;
-        for i in 0..m {
-            let x = *up.add(i);
-            uu[i] = x;
-            su += x * x;
-        }
-        for j in 0..n {
-            let y = *vp.add(j);
-            vv[j] = y;
-            sv += y * y;
-        }
-        let inv_u = 1.0 / (su.sqrt() + eps);
-        let inv_v = 1.0 / (sv.sqrt() + eps);
-        for i in 0..m {
-            uu[i] *= inv_u;
-        }
-        for j in 0..n {
-            vv[j] *= inv_v;
-        }
+        let su = crate::f64_simd::dot_f64(up, up, m);
+        let sv = crate::f64_simd::dot_f64(vp, vp, n);
+        std::ptr::copy_nonoverlapping(up, uu.as_mut_ptr(), m);
+        std::ptr::copy_nonoverlapping(vp, vv.as_mut_ptr(), n);
+        crate::f64_simd::scale_f64(uu.as_mut_ptr(), m, 1.0 / (su.sqrt() + eps));
+        crate::f64_simd::scale_f64(vv.as_mut_ptr(), n, 1.0 / (sv.sqrt() + eps));
 
         let keep = 1.0 - weight_decay;
         let lo = -weight_clip;
         let hi = weight_clip;
         for i in 0..m {
             let ui = uu[i] * lr;
-            let row = i * n;
-            for j in 0..n {
-                let idx = row + j;
-                let mut zij = *wp.add(idx) * keep + ui * vv[j];
-                zij = zij.clamp(lo, hi);
-                *wp.add(idx) = zij * *mp.add(idx);
-            }
+            let row = wp.add(i * n);
+            crate::f64_simd::hebbian_row_f64(row, vv.as_ptr(), mp.add(i * n), n, ui, keep, lo, hi);
         }
     }
     w
@@ -220,19 +187,7 @@ pub extern "C" fn lumia_cn_project_clamp(
         let (ap, _) = f64_elems(w);
         let (xp, _) = f64_elems(x);
         let (yp, _) = f64_elems_mut(y);
-        for j in 0..n {
-            *yp.add(j) = 0.0;
-        }
-        for i in 0..m {
-            let xi = *xp.add(i);
-            let row = ap.add(i * n);
-            for j in 0..n {
-                *yp.add(j) += *row.add(j) * xi;
-            }
-        }
-        for j in 0..n {
-            *yp.add(j) = (*yp.add(j)).clamp(lo, hi);
-        }
+        crate::f64_simd::project_clamp_f64(ap, xp, yp, m, n, lo, hi);
     }
     y
 }
@@ -268,14 +223,7 @@ pub extern "C" fn lumia_cn_backproj_clamp(
         let (ap, _) = f64_elems(w);
         let (xp, _) = f64_elems(x);
         let (yp, _) = f64_elems_mut(y);
-        for i in 0..mm {
-            let mut s = 0.0_f64;
-            let row = ap.add(i * nn);
-            for j in 0..nn {
-                s += *row.add(j) * *xp.add(j);
-            }
-            *yp.add(i) = s.clamp(lo, hi);
-        }
+        crate::f64_simd::matvec_clamp_f64(ap, xp, yp, mm, nn, lo, hi);
     }
     y
 }
@@ -298,9 +246,7 @@ pub extern "C" fn lumia_cn_axpy_clamp(
     unsafe {
         let (yp, nn) = f64_elems_mut(y);
         let (xp, _) = f64_elems(x);
-        for i in 0..nn {
-            *yp.add(i) = (*yp.add(i) + alpha * *xp.add(i)).clamp(lo, hi);
-        }
+        crate::f64_simd::axpy_clamp_f64(yp, xp, alpha, nn, lo, hi);
     }
     y
 }
@@ -422,27 +368,40 @@ pub extern "C" fn lumia_cn_learn_generative(
         let (ep, _) = f64_elems(err);
         let (enc, _) = f64_elems_mut(enc_w);
         let (pw, _) = f64_elems_mut(pred_w);
+        if std::ptr::eq(enc, ep as *mut f64)
+            || std::ptr::eq(pw, ep as *mut f64)
+            || std::ptr::eq(enc, pw)
+        {
+            trap_abort("lumia: cn learn_generative aliased buffers");
+        }
+        // Match composed `std.linalg` path bit-for-bit:
+        //   scale(keep); pred += lr·(μ⊗err); tmp=π·err; enc += (lr/2)·(err⊗tmp); clamp
+        // (Do **not** fuse `(lr/2)·ei·π` — that changes IEEE association vs addmm.)
+        let mut err_s = [0.0_f64; MAX_DIM];
+        let mut weighted = [0.0_f64; MAX_DIM];
+        for i in 0..n {
+            let e = *ep.add(i);
+            err_s[i] = e;
+            weighted[i] = precision * e;
+        }
         if weight_decay > 0.0 {
-            for i in 0..n * n {
-                *enc.add(i) *= keep;
-                *pw.add(i) *= keep;
+            crate::f64_simd::scale_f64(enc, n * n, keep);
+            crate::f64_simd::scale_f64(pw, n * n, keep);
+        }
+        for i in 0..n {
+            let ui = lr * *mp.add(i);
+            if ui != 0.0 {
+                crate::f64_simd::axpy_scale_f64(pw.add(i * n), err_s.as_ptr(), ui, n);
             }
         }
         for i in 0..n {
-            let mi = *mp.add(i);
-            let ei = *ep.add(i);
-            let row_p = pw.add(i * n);
-            let row_e = enc.add(i * n);
-            for j in 0..n {
-                let ej = *ep.add(j);
-                *row_p.add(j) += lr * mi * ej;
-                *row_e.add(j) += half * ei * (precision * ej);
+            let ui = half * err_s[i];
+            if ui != 0.0 {
+                crate::f64_simd::axpy_scale_f64(enc.add(i * n), weighted.as_ptr(), ui, n);
             }
         }
-        for i in 0..n * n {
-            *enc.add(i) = (*enc.add(i)).clamp(lo, hi);
-            *pw.add(i) = (*pw.add(i)).clamp(lo, hi);
-        }
+        crate::f64_simd::clamp_f64(enc, n * n, lo, hi);
+        crate::f64_simd::clamp_f64(pw, n * n, lo, hi);
     }
     enc_w
 }
@@ -480,18 +439,15 @@ pub extern "C" fn lumia_cn_update_state(
         let (ep, _) = f64_elems(err);
         let (enc, _) = f64_elems(enc_w);
         let (mp, _) = f64_elems_mut(mu);
+        // Same association as: scratch=π·err; δ=enc@scratch; μ=axpy(μ,lr,δ); clamp(μ)
         let mut scratch = [0.0_f64; MAX_DIM];
+        let mut delta = [0.0_f64; MAX_DIM];
         for i in 0..n {
             scratch[i] = precision * *ep.add(i);
         }
-        for i in 0..n {
-            let mut s = 0.0_f64;
-            let row = enc.add(i * n);
-            for j in 0..n {
-                s += *row.add(j) * scratch[j];
-            }
-            *mp.add(i) = (*mp.add(i) + state_lr * s).clamp(lo, hi);
-        }
+        crate::f64_simd::matvec_f64(enc, scratch.as_ptr(), delta.as_mut_ptr(), n, n);
+        crate::f64_simd::axpy_scale_f64(mp, delta.as_ptr(), state_lr, n);
+        crate::f64_simd::clamp_f64(mp, n, lo, hi);
     }
     mu
 }

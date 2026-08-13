@@ -26,7 +26,8 @@ impl Infer {
         args: &[Expr],
         span: lumia_syntax::Span,
     ) -> Result<(Type, Effect), TypeError> {
-        // 2 args: tuple/positional `.0`; 3 args: product field with expected ADT name.
+        // 2 args: tuple/positional `.0`; 3 args: product field with expected ADT name
+        // — or unresolved field name when index is -1 (ambiguous at lower).
         if args.len() != 2 && args.len() != 3 {
             return Err(at(span, "adt_field takes 2 or 3 arguments"));
         }
@@ -34,7 +35,7 @@ impl Infer {
         let (it, ie) = self.infer_expr(&args[1])?;
         self.unify_at(span, it, Type::Int)?;
         let mut eff = self.union_eff(ae, ie);
-        let expect_adt = if args.len() == 3 {
+        let third = if args.len() == 3 {
             let (nt, ne) = self.infer_expr(&args[2])?;
             self.unify_at(span, nt, Type::String)?;
             eff = self.union_eff(eff, ne);
@@ -45,6 +46,14 @@ impl Infer {
         } else {
             None
         };
+        // Ambiguous `.field`: index -1, 3rd arg = field name.
+        if matches!(&args[1], Expr::Int(-1, _)) {
+            let fname = third.ok_or_else(|| {
+                at(span, "unresolved field projection missing field name")
+            })?;
+            return self.infer_unresolved_product_field(recv_ty, fname, span, eff);
+        }
+        let expect_adt = third;
         let idx = match &args[1] {
             Expr::Int(n, _) if *n >= 0 => *n as usize,
             _ => {
@@ -68,6 +77,49 @@ impl Infer {
             }
         };
         Ok((elem, eff))
+    }
+
+    fn infer_unresolved_product_field(
+        &mut self,
+        recv_ty: Type,
+        field: &str,
+        span: lumia_syntax::Span,
+        eff: Effect,
+    ) -> Result<(Type, Effect), TypeError> {
+        match self.prune(recv_ty) {
+            Type::Adt { name, params } => {
+                let order = self.products.products.get(&name).ok_or_else(|| {
+                    at(
+                        span,
+                        format!("unknown product type `{name}` for field `{field}`"),
+                    )
+                })?;
+                let idx = order.iter().position(|f| f == field).ok_or_else(|| {
+                    at(span, format!("type `{name}` has no field `{field}`"))
+                })?;
+                let elem = params.get(idx).cloned().ok_or_else(|| {
+                    at(
+                        span,
+                        format!("field `{field}` index {idx} out of range for `{name}`"),
+                    )
+                })?;
+                self.ctrl
+                    .product_field_rewrites
+                    .insert(span, (name, idx as i64));
+                Ok((elem, eff))
+            }
+            Type::Var(_) => Err(at(
+                span,
+                format!(
+                    "cannot resolve field `{field}` on an open type \
+                     (ambiguous across product types; give the receiver a concrete product type)"
+                ),
+            )),
+            other => Err(at(
+                span,
+                format!("field `{field}`: expected product type, got {other:?}"),
+            )),
+        }
     }
 
     fn field_from_adt(

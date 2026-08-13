@@ -64,6 +64,11 @@ impl Infer {
                 alt,
                 span,
             } => self.infer_alt(scrutinee, alt, *span),
+            Expr::With {
+                base,
+                fields,
+                span,
+            } => self.infer_with(base, fields, *span),
             Expr::AdtNew {
                 adt_name,
                 variant,
@@ -72,6 +77,57 @@ impl Infer {
             } => self.infer_adt_new(adt_name, variant, args),
             Expr::Seq { stmts, .. } => self.infer_seq(stmts),
         }
+    }
+
+    fn infer_with(
+        &mut self,
+        base: &Expr,
+        fields: &[(String, Expr)],
+        span: lumia_syntax::Span,
+    ) -> Result<(Type, Effect), TypeError> {
+        let (base_ty, mut eff) = self.infer_expr(base)?;
+        let Type::Adt { name, params } = self.prune(base_ty) else {
+            return Err(at(
+                span,
+                "product `with` requires a concrete product-typed base",
+            ));
+        };
+        let order = self.products.products.get(&name).cloned().ok_or_else(|| {
+            at(span, format!("unknown product type `{name}` in `with`"))
+        })?;
+        let mut by_name: rustc_hash::FxHashMap<String, Type> = rustc_hash::FxHashMap::default();
+        for (fname, e) in fields {
+            if !order.iter().any(|f| f == fname) {
+                return Err(at(
+                    span,
+                    format!("unknown field `{fname}` in `{name}` `with`"),
+                ));
+            }
+            let (t, e_eff) = self.infer_expr(e)?;
+            eff = self.union_eff(eff, e_eff);
+            by_name.insert(fname.clone(), t);
+        }
+        let mut out_params = Vec::with_capacity(order.len());
+        for (i, f) in order.iter().enumerate() {
+            if let Some(t) = by_name.remove(f) {
+                if let Some(old) = params.get(i) {
+                    self.unify_at(span, t.clone(), old.clone())?;
+                }
+                out_params.push(t);
+            } else if let Some(old) = params.get(i) {
+                out_params.push(old.clone());
+            } else {
+                out_params.push(self.fresh());
+            }
+        }
+        self.ctrl.with_rewrites.insert(span, name.clone());
+        Ok((
+            Type::Adt {
+                name,
+                params: out_params,
+            },
+            eff,
+        ))
     }
 
     fn infer_let(

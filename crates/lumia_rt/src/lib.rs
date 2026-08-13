@@ -23,6 +23,7 @@ mod eq;
 mod cn_kernels;
 mod dense_f64;
 mod efe;
+mod f64_simd;
 mod float_kernels;
 mod gc;
 mod hash_ord;
@@ -60,13 +61,13 @@ pub use cn_kernels::{
     lumia_cn_update_state,
 };
 pub use dense_f64::{
-    lumia_f64_add, lumia_f64_addmm, lumia_f64_axpy, lumia_f64_checksum, lumia_f64_clamp,
-    lumia_f64_copy, lumia_f64_exp, lumia_f64_fill, lumia_f64_gemv, lumia_f64_gemv_t,
-    lumia_f64_l2_norm, lumia_f64_l2_normalize, lumia_f64_mean, lumia_f64_mul, lumia_f64_scale,
-    lumia_f64_softmax, lumia_f64_sqrt, lumia_f64_std, lumia_f64_sub, lumia_f64_sum_sq,
-    lumia_list_f64_zeros,
+    lumia_f64_add, lumia_f64_addmm, lumia_f64_atan2, lumia_f64_axpy, lumia_f64_checksum,
+    lumia_f64_clamp, lumia_f64_copy, lumia_f64_cos, lumia_f64_exp, lumia_f64_fill,
+    lumia_f64_gemv, lumia_f64_gemv_t, lumia_f64_hypot, lumia_f64_l2_norm, lumia_f64_l2_normalize,
+    lumia_f64_mean, lumia_f64_mul, lumia_f64_scale, lumia_f64_sin, lumia_f64_softmax,
+    lumia_f64_sqrt, lumia_f64_std, lumia_f64_sub, lumia_f64_sum_sq, lumia_list_f64_zeros,
 };
-pub use efe::lumia_efe_action_scores;
+pub use efe::{lumia_efe_action_scores, lumia_efe_embodied_action_scores};
 pub use float_kernels::lumia_mandelbrot_checksum;
 pub use hash_ord::*;
 pub use list::*;

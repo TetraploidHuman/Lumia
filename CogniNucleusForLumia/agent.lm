@@ -8,7 +8,7 @@ import std.linalg.{zeros, copy, sub, scale, add, gemv}
 import std.cn.{updateState, argMax}
 import std.efe.{actionScores}
 import config.{
-    VIS, PFC, MOT, STATE_LR, CONN_LR, GEN_LR, PI, MU_CLIP,
+    VIS, PFC, MOT, N_CLUSTERS, C_DECAY, C_THR, STATE_LR, CONN_LR, GEN_LR, PI, MU_CLIP, W_CLIP, W_DECAY, EPS,
     EFE_MIX, REL, THREAT, CELL, PREF, EPI, WALL, GOAL_B, THREAT_G, COMPLEXITY, HORIZON
 }
 import nucleus.{newNucleus, openLoopTd, sensoryStep, learnGen}
@@ -100,15 +100,15 @@ val forward = { agent, obs ->
 
     // 1) Sensory open-loop
     val tdV = openLoopTd(vis)
-    vis = sensoryStep(vis, obs, tdV)
+    vis = sensoryStep(vis, obs, tdV, STATE_LR, PI, MU_CLIP, N_CLUSTERS, C_DECAY, C_THR)
 
     // 3) PFC from visual PE
-    driveP = linkProjectError(visPfc, vis.err, driveP)
+    driveP = linkProjectError(visPfc, vis.err, driveP, MU_CLIP)
     val tdP = openLoopTd(pfc)
-    pfc = sensoryStep(pfc, driveP, tdP)
+    pfc = sensoryStep(pfc, driveP, tdP, STATE_LR, PI, MU_CLIP, N_CLUSTERS, C_DECAY, C_THR)
 
     // 4) Generative top-down + half-step lateral update_state
-    gen = linkProject(pfcVis, pfc.mu, gen)
+    gen = linkProject(pfcVis, pfc.mu, gen, MU_CLIP)
     genErr = sub(genErr, obs, gen)
     lat = gemv(PFC, VIS, pfcVis.w, genErr, lat)
     halfLat = copy(halfLat, lat)
@@ -117,17 +117,17 @@ val forward = { agent, obs ->
     var encP = pfc.enc
     muP = updateState(muP, encP, halfLat, PFC, STATE_LR, PI, MU_CLIP)
     pfc = pfc with { mu = muP }
-    gen = linkProject(pfcVis, pfc.mu, gen)
+    gen = linkProject(pfcVis, pfc.mu, gen, MU_CLIP)
     genErr = sub(genErr, obs, gen)
 
-    vis = sensoryStep(vis, obs, gen)
+    vis = sensoryStep(vis, obs, gen, STATE_LR, PI, MU_CLIP, N_CLUSTERS, C_DECAY, C_THR)
 
-    recog = linkProject(visPfc, vis.mu, recog)
+    recog = linkProject(visPfc, vis.mu, recog, MU_CLIP)
     recogErr = sub(recogErr, pfc.mu, recog)
 
     // 6) Motor: empty BU, PFC top-down
-    motTop = linkProject(pfcMot, pfc.mu, motTop)
-    mot = sensoryStep(mot, agent.zerosMot, motTop)
+    motTop = linkProject(pfcMot, pfc.mu, motTop, MU_CLIP)
+    mot = sensoryStep(mot, agent.zerosMot, motTop, STATE_LR, PI, MU_CLIP, N_CLUSTERS, C_DECAY, C_THR)
 
     scores = actionScores(
         obs, gen, scores, MOT, HORIZON, REL, THREAT,
@@ -187,18 +187,18 @@ val learn = { agent, reward ->
 
     uVis = copy(uVis, vis.mu)
     vRec = copy(vRec, agent.lastRecogErr)
-    visPfc = linkHebbian(visPfc, uVis, vRec, CONN_LR * mod)
+    visPfc = linkHebbian(visPfc, uVis, vRec, CONN_LR * mod, W_CLIP, W_DECAY, EPS)
 
     uPfc = copy(uPfc, pfc.mu)
     vGen = copy(vGen, agent.lastGenErr)
-    pfcVis = linkHebbian(pfcVis, uPfc, vGen, CONN_LR * 2.0 * mod)
+    pfcVis = linkHebbian(pfcVis, uPfc, vGen, CONN_LR * 2.0 * mod, W_CLIP, W_DECAY, EPS)
 
     vMot = copy(vMot, agent.lastMotErr)
-    pfcMot = linkHebbian(pfcMot, uPfc, vMot, CONN_LR * mod)
+    pfcMot = linkHebbian(pfcMot, uPfc, vMot, CONN_LR * mod, W_CLIP, W_DECAY, EPS)
 
-    vis = learnGen(vis, agent.lastGenErr, GEN_LR * 2.0 * mod)
-    pfc = learnGen(pfc, agent.lastRecogErr, GEN_LR * 2.0 * mod)
-    mot = learnGen(mot, agent.lastMotErr, GEN_LR * mod)
+    vis = learnGen(vis, agent.lastGenErr, GEN_LR * 2.0 * mod, W_CLIP, W_DECAY, PI)
+    pfc = learnGen(pfc, agent.lastRecogErr, GEN_LR * 2.0 * mod, W_CLIP, W_DECAY, PI)
+    mot = learnGen(mot, agent.lastMotErr, GEN_LR * mod, W_CLIP, W_DECAY, PI)
 
     agent with {
         vis = vis,

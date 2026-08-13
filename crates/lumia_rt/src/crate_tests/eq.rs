@@ -3,33 +3,38 @@ use crate::common::{list_rc_is_unique, list_rc_retain, RC_SHARED};
 
 #[test]
 fn object_header_pad_list_rc_vs_adt_float_mask() {
-    // List: alloc initializes `_pad` to 1 (unique); retain bumps RC.
+    // List: alloc initializes `rc` to 1 (unique); retain bumps RC.
     let list = lumia_alloc(8, TYPE_LIST);
     unsafe {
         *(list as *mut i64) = 0;
-        assert_eq!((*header_from_payload(list))._pad, 1);
+        assert_eq!((*header_from_payload(list)).rc, 1);
+        assert_eq!((*header_from_payload(list))._pad, 0);
         assert!(list_rc_is_unique(list));
     }
     list_rc_retain(list);
     unsafe {
-        assert_eq!((*header_from_payload(list))._pad, 2);
+        assert_eq!((*header_from_payload(list)).rc, 2);
         assert!(!list_rc_is_unique(list));
     }
 
-    // ADT: `_pad` stores float field mask, not RC.
-    let adt = lumia_alloc(16, TYPE_ADT);
+    // ADT: `_pad` stores float field mask; `rc` is independent COW count.
+    let adt = lumia_alloc(16, TYPE_ADT); // tag + 1 field
     unsafe {
+        *(adt as *mut i64) = 0;
+        *((adt as *mut i64).add(1)) = 0.5f64.to_bits() as i64;
+        assert_eq!((*header_from_payload(adt)).rc, 1);
         assert_eq!((*header_from_payload(adt))._pad, 0);
     }
-    lumia_adt_set_float_mask(adt, 0b101);
+    lumia_adt_set_float_mask(adt, 0b1);
     unsafe {
-        assert_eq!((*header_from_payload(adt))._pad, 0b101);
+        assert_eq!((*header_from_payload(adt))._pad, 0b1);
+        assert_eq!((*header_from_payload(adt)).rc, 1);
     }
 
-    // Immortal empty-list singleton uses RC_SHARED in `_pad`.
+    // Immortal empty-list singleton uses RC_SHARED in `rc`.
     let empty = lumia_list_empty();
     unsafe {
-        assert_eq!((*header_from_payload(empty))._pad, RC_SHARED);
+        assert_eq!((*header_from_payload(empty)).rc, RC_SHARED);
     }
 }
 
@@ -82,11 +87,11 @@ fn adt_float_mask_nested_eq_and_hash() {
     let neg0 = (-0.0f64).to_bits() as i64;
     let mk = |bits: i64| {
         let p = lumia_alloc(16, TYPE_ADT); // tag + 1 field
-        lumia_adt_set_float_mask(p, 1); // field0 is Float
         unsafe {
             *(p as *mut i64) = 0; // tag Some
             *((p as *mut i64).add(1)) = bits;
         }
+        lumia_adt_set_float_mask(p, 1); // field0 is Float
         p as i64
     };
     let a = mk(pos0);
@@ -111,4 +116,192 @@ fn adt_float_mask_nested_eq_and_hash() {
         p as i64
     };
     assert_eq!(lumia_eq(la, lb), 1);
+}
+
+#[test]
+fn adt_float_mask_high_bit_skips_gc_mark() {
+    // Field index 37 (past the old u32 mask) must be skippable as Float.
+    let bits = 1.25f64.to_bits() as i64;
+    let nbytes = (1 + 38) * 8;
+    let mut adt = lumia_alloc(nbytes, TYPE_ADT);
+    unsafe {
+        let base = adt as *mut i64;
+        *base = 0;
+        for i in 1..=37 {
+            *base.add(i) = 0;
+        }
+        *base.add(38) = bits;
+    }
+    lumia_adt_set_float_mask(adt, 1u64 << 37);
+    lumia_root_push(&mut adt as *mut *mut u8);
+    lumia_gc_collect();
+    unsafe {
+        assert_eq!((*(adt as *const i64).add(38)), bits);
+        assert_eq!((*header_from_payload(adt))._pad, 1u64 << 37);
+    }
+    lumia_root_pop();
+}
+
+#[test]
+fn adt_float_mask_sanitizes_heap_pointer_slots() {
+    // Product mono may type a List field as Float; set_float_mask must clear that bit.
+    let list = lumia_alloc(8, TYPE_LIST);
+    unsafe {
+        *(list as *mut i64) = 0;
+    }
+    let adt = lumia_alloc(16, TYPE_ADT); // tag + 1 field
+    unsafe {
+        *(adt as *mut i64) = 0;
+        *((adt as *mut i64).add(1)) = list as i64;
+    }
+    lumia_adt_set_float_mask(adt, 0b1);
+    unsafe {
+        assert_eq!(
+            (*header_from_payload(adt))._pad,
+            0,
+            "heap pointer slot must not stay Float-tagged"
+        );
+    }
+}
+
+#[test]
+fn adt_mistagged_float_mask_still_marks_list() {
+    // Even if `_pad` wrongly tags a List field as Float, hybrid GC must keep it.
+    let list = lumia_alloc(8, TYPE_LIST);
+    unsafe {
+        *(list as *mut i64) = 0;
+    }
+    let list_bits = list as i64;
+    let mut adt = lumia_alloc(16, TYPE_ADT);
+    unsafe {
+        *(adt as *mut i64) = 0;
+        *((adt as *mut i64).add(1)) = list_bits;
+        // Bypass sanitize: force a bad mask.
+        (*header_from_payload(adt))._pad = 0b1;
+    }
+    lumia_root_push(&mut adt as *mut *mut u8);
+    lumia_gc_collect();
+    assert!(
+        crate::common::is_heap_payload(list_bits as *mut u8),
+        "List behind mistagged Float mask must survive GC"
+    );
+    lumia_root_pop();
+}
+
+#[test]
+fn adt_ensure_unique_consume_drops_with_alias() {
+    // with-temp retain (rc=2) + consume → unique in-place.
+    let adt = lumia_alloc(24, TYPE_ADT);
+    unsafe {
+        let b = adt as *mut i64;
+        *b = 0;
+        *b.add(1) = 1;
+        *b.add(2) = 2;
+        (*header_from_payload(adt)).rc = 2;
+    }
+    let out = lumia_adt_ensure_unique_consume(adt);
+    assert_eq!(out, adt);
+    unsafe {
+        assert_eq!((*header_from_payload(adt)).rc, 1);
+    }
+    lumia_adt_set_field(adt, 0, 9);
+    unsafe {
+        assert_eq!(*(adt as *const i64).add(1), 9);
+        assert_eq!(*(adt as *const i64).add(2), 2);
+    }
+}
+
+#[test]
+fn adt_ensure_unique_clones_when_shared() {
+    let adt = lumia_alloc(24, TYPE_ADT);
+    unsafe {
+        let b = adt as *mut i64;
+        *b = 0;
+        *b.add(1) = 1;
+        *b.add(2) = 2;
+        (*header_from_payload(adt)).rc = 2;
+    }
+    let out = lumia_adt_ensure_unique(adt);
+    assert_ne!(out as usize, adt as usize);
+    unsafe {
+        assert_eq!((*header_from_payload(out)).rc, 1);
+        assert_eq!(*(out as *const i64).add(1), 1);
+        assert_eq!(*(out as *const i64).add(2), 2);
+        // Nested retain is a no-op for immediate int fields.
+        assert_eq!((*header_from_payload(adt)).rc, 2);
+    }
+}
+
+#[test]
+fn adt_ensure_unique_consume_clones_when_shared() {
+    let adt = lumia_alloc(24, TYPE_ADT);
+    unsafe {
+        let b = adt as *mut i64;
+        *b = 0;
+        *b.add(1) = 1;
+        *b.add(2) = 2;
+        (*header_from_payload(adt)).rc = 3;
+    }
+    let out = lumia_adt_ensure_unique_consume(adt);
+    assert_ne!(out as usize, adt as usize);
+    unsafe {
+        assert_eq!((*header_from_payload(out)).rc, 1);
+        assert_eq!(*(out as *const i64).add(1), 1);
+        assert_eq!(*(out as *const i64).add(2), 2);
+    }
+}
+
+#[test]
+fn adt_set_field_retains_nested_adt() {
+    let inner = lumia_alloc(16, TYPE_ADT);
+    unsafe {
+        *(inner as *mut i64) = 0;
+        *((inner as *mut i64).add(1)) = 7;
+        assert_eq!((*header_from_payload(inner)).rc, 1);
+    }
+    let outer = lumia_alloc(24, TYPE_ADT);
+    unsafe {
+        *(outer as *mut i64) = 0;
+        *((outer as *mut i64).add(1)) = 0;
+        *((outer as *mut i64).add(2)) = 0;
+    }
+    lumia_adt_set_field(outer, 0, inner as i64);
+    unsafe {
+        assert_eq!((*header_from_payload(inner)).rc, 2);
+    }
+    let inner2 = lumia_alloc(16, TYPE_ADT);
+    unsafe {
+        *(inner2 as *mut i64) = 0;
+        *((inner2 as *mut i64).add(1)) = 8;
+    }
+    lumia_adt_set_field(outer, 0, inner2 as i64);
+    unsafe {
+        assert_eq!((*header_from_payload(inner)).rc, 1);
+        assert_eq!((*header_from_payload(inner2)).rc, 2);
+    }
+}
+
+#[test]
+fn adt_clone_retains_nested_field() {
+    let inner = lumia_alloc(16, TYPE_ADT);
+    unsafe {
+        *(inner as *mut i64) = 0;
+        *((inner as *mut i64).add(1)) = 3;
+    }
+    let outer = lumia_alloc(24, TYPE_ADT);
+    unsafe {
+        *(outer as *mut i64) = 0;
+        *((outer as *mut i64).add(1)) = inner as i64;
+        *((outer as *mut i64).add(2)) = 1;
+        // Simulate parent-field retain + extra alias.
+        (*header_from_payload(inner)).rc = 2;
+        (*header_from_payload(outer)).rc = 2;
+    }
+    let cloned = lumia_adt_ensure_unique(outer);
+    assert_ne!(cloned as usize, outer as usize);
+    unsafe {
+        // Clone retains nested Inner once more.
+        assert_eq!((*header_from_payload(inner)).rc, 3);
+        assert_eq!(*((cloned as *const i64).add(1)), inner as i64);
+    }
 }

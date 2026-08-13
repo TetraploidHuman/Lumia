@@ -53,7 +53,22 @@ const RUNTIME_DECLS: &[RtDecl] = &[
     RtDecl {
         name: "lumia_adt_set_float_mask",
         ret: RtTy::Void,
-        args: &[RtTy::Ptr, RtTy::I32],
+        args: &[RtTy::Ptr, RtTy::I64],
+    },
+    RtDecl {
+        name: "lumia_adt_ensure_unique",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_adt_ensure_unique_consume",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_adt_set_field",
+        ret: RtTy::Void,
+        args: &[RtTy::Ptr, RtTy::I64, RtTy::I64],
     },
     RtDecl {
         name: "lumia_show_adt",
@@ -142,6 +157,16 @@ const RUNTIME_DECLS: &[RtDecl] = &[
     },
     RtDecl {
         name: "lumia_list_release",
+        ret: RtTy::Void,
+        args: &[RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_adt_retain",
+        ret: RtTy::Void,
+        args: &[RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_adt_release",
         ret: RtTy::Void,
         args: &[RtTy::Ptr],
     },
@@ -503,6 +528,26 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         args: &[RtTy::F64],
     },
     RtDecl {
+        name: "lumia_f64_sin",
+        ret: RtTy::F64,
+        args: &[RtTy::F64],
+    },
+    RtDecl {
+        name: "lumia_f64_cos",
+        ret: RtTy::F64,
+        args: &[RtTy::F64],
+    },
+    RtDecl {
+        name: "lumia_f64_atan2",
+        ret: RtTy::F64,
+        args: &[RtTy::F64, RtTy::F64],
+    },
+    RtDecl {
+        name: "lumia_f64_hypot",
+        ret: RtTy::F64,
+        args: &[RtTy::F64, RtTy::F64],
+    },
+    RtDecl {
         name: "lumia_f64_mul",
         ret: RtTy::Ptr,
         args: &[RtTy::Ptr, RtTy::Ptr, RtTy::Ptr],
@@ -593,6 +638,29 @@ const RUNTIME_DECLS: &[RtDecl] = &[
             RtTy::I64,
             RtTy::I64,
             RtTy::I64,
+            RtTy::F64,
+            RtTy::F64,
+            RtTy::F64,
+            RtTy::F64,
+            RtTy::F64,
+            RtTy::F64,
+            RtTy::F64,
+        ],
+    },
+    RtDecl {
+        name: "lumia_efe_embodied_action_scores",
+        ret: RtTy::Ptr,
+        args: &[
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::I64,
+            RtTy::I64,
+            RtTy::I64,
+            RtTy::I64,
+            RtTy::F64,
+            RtTy::F64,
+            RtTy::F64,
             RtTy::F64,
             RtTy::F64,
             RtTy::F64,

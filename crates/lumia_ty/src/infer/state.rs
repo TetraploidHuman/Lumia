@@ -54,4 +54,8 @@ pub(crate) struct ProductState {
 pub(crate) struct AltReturnState {
     pub(crate) return_stack: Vec<Type>,
     pub(crate) alt_kinds: HashMap<lumia_syntax::Span, AltKind>,
+    /// Ambiguous `.field` → (adt_name, idx) once receiver is known.
+    pub(crate) product_field_rewrites: HashMap<lumia_syntax::Span, (String, i64)>,
+    /// Deferred `with` → product type name.
+    pub(crate) with_rewrites: HashMap<lumia_syntax::Span, String>,
 }

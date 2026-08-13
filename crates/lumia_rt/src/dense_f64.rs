@@ -29,9 +29,7 @@ pub extern "C" fn lumia_list_f64_zeros(n: i64) -> *mut u8 {
         let dst = dest as *mut i64;
         *dst = n;
         let elems = dst.add(1) as *mut f64;
-        for i in 0..n as usize {
-            *elems.add(i) = 0.0;
-        }
+        crate::f64_simd::zero_f64(elems, n as usize);
         dest
     }
 }
@@ -43,7 +41,7 @@ pub extern "C" fn lumia_f64_fill(xs: *mut u8, v: f64) -> *mut u8 {
     let xs = ensure_unique_f64(xs);
     unsafe {
         let (p, n) = f64_elems_mut(xs);
-        fill_loop(p, n, v);
+        crate::f64_simd::fill_f64(p, n, v);
     }
     xs
 }
@@ -55,7 +53,7 @@ pub extern "C" fn lumia_f64_scale(xs: *mut u8, alpha: f64) -> *mut u8 {
     let xs = ensure_unique_f64(xs);
     unsafe {
         let (p, n) = f64_elems_mut(xs);
-        scale_loop(p, n, alpha);
+        crate::f64_simd::scale_f64(p, n, alpha);
     }
     xs
 }
@@ -72,6 +70,30 @@ pub extern "C" fn lumia_f64_exp(x: f64) -> f64 {
     x.exp()
 }
 
+/// Scalar `sin(x)` (radians).
+#[no_mangle]
+pub extern "C" fn lumia_f64_sin(x: f64) -> f64 {
+    x.sin()
+}
+
+/// Scalar `cos(x)` (radians).
+#[no_mangle]
+pub extern "C" fn lumia_f64_cos(x: f64) -> f64 {
+    x.cos()
+}
+
+/// Scalar `atan2(y, x)`.
+#[no_mangle]
+pub extern "C" fn lumia_f64_atan2(y: f64, x: f64) -> f64 {
+    y.atan2(x)
+}
+
+/// Scalar `hypot(x, y)` = √(x²+y²).
+#[no_mangle]
+pub extern "C" fn lumia_f64_hypot(x: f64, y: f64) -> f64 {
+    x.hypot(y)
+}
+
 /// `out[i] = a[i] * b[i]` (same length). Returns `out`.
 #[no_mangle]
 pub extern "C" fn lumia_f64_mul(out: *mut u8, a: *mut u8, b: *mut u8) -> *mut u8 {
@@ -86,7 +108,7 @@ pub extern "C" fn lumia_f64_mul(out: *mut u8, a: *mut u8, b: *mut u8) -> *mut u8
         let (op, _) = f64_elems_mut(out);
         let (ap, _) = f64_elems(a);
         let (bp, _) = f64_elems(b);
-        mul_loop(op, ap, bp, n as usize);
+        crate::f64_simd::mul_f64(op, ap, bp, n as usize);
     }
     out
 }
@@ -105,7 +127,7 @@ pub extern "C" fn lumia_f64_add(out: *mut u8, a: *mut u8, b: *mut u8) -> *mut u8
         let (op, _) = f64_elems_mut(out);
         let (ap, _) = f64_elems(a);
         let (bp, _) = f64_elems(b);
-        add_loop(op, ap, bp, n as usize);
+        crate::f64_simd::add_f64(op, ap, bp, n as usize);
     }
     out
 }
@@ -116,12 +138,7 @@ pub extern "C" fn lumia_f64_l2_norm(xs: *mut u8) -> f64 {
     let xs = force_f64(xs);
     unsafe {
         let (p, n) = f64_elems(xs);
-        let mut s = 0.0_f64;
-        for i in 0..n {
-            let v = *p.add(i);
-            s += v * v;
-        }
-        s.sqrt()
+        crate::f64_simd::dot_f64(p, p, n).sqrt()
     }
 }
 
@@ -131,12 +148,7 @@ pub extern "C" fn lumia_f64_sum_sq(xs: *mut u8) -> f64 {
     let xs = force_f64(xs);
     unsafe {
         let (p, n) = f64_elems(xs);
-        let mut s = 0.0_f64;
-        for i in 0..n {
-            let v = *p.add(i);
-            s += v * v;
-        }
-        s
+        crate::f64_simd::dot_f64(p, p, n)
     }
 }
 
@@ -218,15 +230,8 @@ pub extern "C" fn lumia_f64_l2_normalize(xs: *mut u8, eps: f64) -> *mut u8 {
     let xs = ensure_unique_f64(xs);
     unsafe {
         let (p, n) = f64_elems_mut(xs);
-        let mut s = 0.0_f64;
-        for i in 0..n {
-            let v = *p.add(i);
-            s += v * v;
-        }
-        let inv = 1.0 / (s.sqrt() + eps);
-        for i in 0..n {
-            *p.add(i) *= inv;
-        }
+        let s = crate::f64_simd::dot_f64(p, p, n);
+        crate::f64_simd::scale_f64(p, n, 1.0 / (s.sqrt() + eps));
     }
     xs
 }
@@ -238,10 +243,7 @@ pub extern "C" fn lumia_f64_clamp(xs: *mut u8, lo: f64, hi: f64) -> *mut u8 {
     let xs = ensure_unique_f64(xs);
     unsafe {
         let (p, n) = f64_elems_mut(xs);
-        for i in 0..n {
-            let v = *p.add(i);
-            *p.add(i) = v.clamp(lo, hi);
-        }
+        crate::f64_simd::clamp_f64(p, n, lo, hi);
     }
     xs
 }
@@ -271,14 +273,7 @@ pub extern "C" fn lumia_f64_gemv(
         let (yp, _) = f64_elems_mut(y);
         let m = m as usize;
         let n = n as usize;
-        for i in 0..m {
-            let mut s = 0.0_f64;
-            let row = ap.add(i * n);
-            for j in 0..n {
-                s += *row.add(j) * *xp.add(j);
-            }
-            *yp.add(i) = s;
-        }
+        crate::f64_simd::matvec_f64(ap, xp, yp, m, n);
     }
     y
 }
@@ -308,14 +303,11 @@ pub extern "C" fn lumia_f64_gemv_t(
         let (yp, _) = f64_elems_mut(y);
         let m = m as usize;
         let n = n as usize;
-        for j in 0..n {
-            *yp.add(j) = 0.0;
-        }
+        crate::f64_simd::zero_f64(yp, n);
         for i in 0..m {
             let xi = *xp.add(i);
-            let row = ap.add(i * n);
-            for j in 0..n {
-                *yp.add(j) += *row.add(j) * xi;
+            if xi != 0.0 {
+                crate::f64_simd::axpy_scale_f64(yp, ap.add(i * n), xi, n);
             }
         }
     }
@@ -350,9 +342,8 @@ pub extern "C" fn lumia_f64_addmm(
         let n = n as usize;
         for i in 0..m {
             let ui = *up.add(i) * alpha;
-            let row = wp.add(i * n);
-            for j in 0..n {
-                *row.add(j) += ui * *vp.add(j);
+            if ui != 0.0 {
+                crate::f64_simd::axpy_scale_f64(wp.add(i * n), vp, ui, n);
             }
         }
     }
@@ -370,7 +361,7 @@ pub extern "C" fn lumia_f64_axpy(y: *mut u8, alpha: f64, x: *mut u8) -> *mut u8 
     unsafe {
         let (yp, _) = f64_elems_mut(y);
         let (xp, _) = f64_elems(x);
-        axpy_loop(yp, xp, alpha, n as usize);
+        crate::f64_simd::axpy_scale_f64(yp, xp, alpha, n as usize);
     }
     y
 }
@@ -389,7 +380,7 @@ pub extern "C" fn lumia_f64_sub(out: *mut u8, a: *mut u8, b: *mut u8) -> *mut u8
         let (op, _) = f64_elems_mut(out);
         let (ap, _) = f64_elems(a);
         let (bp, _) = f64_elems(b);
-        sub_loop(op, ap, bp, n as usize);
+        crate::f64_simd::sub_f64(op, ap, bp, n as usize);
     }
     out
 }
@@ -470,103 +461,6 @@ unsafe fn f64_elems(list: *mut u8) -> (*const f64, usize) {
 unsafe fn f64_elems_mut(list: *mut u8) -> (*mut f64, usize) {
     let n = *(list as *const i64) as usize;
     ((list as *mut i64).add(1) as *mut f64, n)
-}
-
-/// Unroll-4 bodies keep tiny (n≤32) CN kernels friendly to auto-vectorization.
-#[inline(always)]
-unsafe fn fill_loop(p: *mut f64, n: usize, v: f64) {
-    let mut i = 0;
-    while i + 4 <= n {
-        *p.add(i) = v;
-        *p.add(i + 1) = v;
-        *p.add(i + 2) = v;
-        *p.add(i + 3) = v;
-        i += 4;
-    }
-    while i < n {
-        *p.add(i) = v;
-        i += 1;
-    }
-}
-
-#[inline(always)]
-unsafe fn scale_loop(p: *mut f64, n: usize, alpha: f64) {
-    let mut i = 0;
-    while i + 4 <= n {
-        *p.add(i) *= alpha;
-        *p.add(i + 1) *= alpha;
-        *p.add(i + 2) *= alpha;
-        *p.add(i + 3) *= alpha;
-        i += 4;
-    }
-    while i < n {
-        *p.add(i) *= alpha;
-        i += 1;
-    }
-}
-
-#[inline(always)]
-unsafe fn mul_loop(out: *mut f64, a: *const f64, b: *const f64, n: usize) {
-    let mut i = 0;
-    while i + 4 <= n {
-        *out.add(i) = *a.add(i) * *b.add(i);
-        *out.add(i + 1) = *a.add(i + 1) * *b.add(i + 1);
-        *out.add(i + 2) = *a.add(i + 2) * *b.add(i + 2);
-        *out.add(i + 3) = *a.add(i + 3) * *b.add(i + 3);
-        i += 4;
-    }
-    while i < n {
-        *out.add(i) = *a.add(i) * *b.add(i);
-        i += 1;
-    }
-}
-
-#[inline(always)]
-unsafe fn add_loop(out: *mut f64, a: *const f64, b: *const f64, n: usize) {
-    let mut i = 0;
-    while i + 4 <= n {
-        *out.add(i) = *a.add(i) + *b.add(i);
-        *out.add(i + 1) = *a.add(i + 1) + *b.add(i + 1);
-        *out.add(i + 2) = *a.add(i + 2) + *b.add(i + 2);
-        *out.add(i + 3) = *a.add(i + 3) + *b.add(i + 3);
-        i += 4;
-    }
-    while i < n {
-        *out.add(i) = *a.add(i) + *b.add(i);
-        i += 1;
-    }
-}
-
-#[inline(always)]
-unsafe fn sub_loop(out: *mut f64, a: *const f64, b: *const f64, n: usize) {
-    let mut i = 0;
-    while i + 4 <= n {
-        *out.add(i) = *a.add(i) - *b.add(i);
-        *out.add(i + 1) = *a.add(i + 1) - *b.add(i + 1);
-        *out.add(i + 2) = *a.add(i + 2) - *b.add(i + 2);
-        *out.add(i + 3) = *a.add(i + 3) - *b.add(i + 3);
-        i += 4;
-    }
-    while i < n {
-        *out.add(i) = *a.add(i) - *b.add(i);
-        i += 1;
-    }
-}
-
-#[inline(always)]
-unsafe fn axpy_loop(y: *mut f64, x: *const f64, alpha: f64, n: usize) {
-    let mut i = 0;
-    while i + 4 <= n {
-        *y.add(i) += alpha * *x.add(i);
-        *y.add(i + 1) += alpha * *x.add(i + 1);
-        *y.add(i + 2) += alpha * *x.add(i + 2);
-        *y.add(i + 3) += alpha * *x.add(i + 3);
-        i += 4;
-    }
-    while i < n {
-        *y.add(i) += alpha * *x.add(i);
-        i += 1;
-    }
 }
 
 #[cfg(test)]

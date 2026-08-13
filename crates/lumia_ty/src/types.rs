@@ -162,7 +162,8 @@ pub fn expr_span(e: &Expr) -> lumia_syntax::Span {
         | Expr::BuiltinCall { span, .. }
         | Expr::AdtNew { span, .. }
         | Expr::Return { span, .. }
-        | Expr::Alt { span, .. } => *span,
+        | Expr::Alt { span, .. }
+        | Expr::With { span, .. } => *span,
         Expr::Let { value, .. } => expr_span(value),
     }
 }

@@ -8,7 +8,6 @@ module connection
 
 import std.linalg.{zeros}
 import std.cn.{projectClamp, hebbian}
-import config.{MU_CLIP, W_CLIP, W_DECAY, EPS}
 
 type Conn {
     val fromSize
@@ -29,16 +28,16 @@ val newConn = { fromSize, toSize, seedScale ->
     Conn { fromSize = fromSize, toSize = toSize, w = w, mask = mask }
 }
 
-val linkProject = { c, x, y ->
-    projectClamp(c.fromSize, c.toSize, c.w, x, y, MU_CLIP)
+val linkProject = { c, x, y, muClip ->
+    projectClamp(c.fromSize, c.toSize, c.w, x, y, muClip)
 }
 
-val linkProjectError = { c, x, y ->
-    projectClamp(c.fromSize, c.toSize, c.w, x, y, MU_CLIP)
+val linkProjectError = { c, x, y, muClip ->
+    projectClamp(c.fromSize, c.toSize, c.w, x, y, muClip)
 }
 
-val linkHebbian = { c, muFrom, errTo, lr ->
+val linkHebbian = { c, muFrom, errTo, lr, wClip, wDecay, eps ->
     var w = c.w
-    w = hebbian(w, muFrom, errTo, c.mask, c.fromSize, c.toSize, lr, W_CLIP, W_DECAY, EPS)
+    w = hebbian(w, muFrom, errTo, c.mask, c.fromSize, c.toSize, lr, wClip, wDecay, eps)
     c with { w = w }
 }

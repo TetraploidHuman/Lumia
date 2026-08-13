@@ -4,7 +4,7 @@
 //! RT kernel at the call site (same shape as `std.linalg` wrappers).
 //!
 //! Covered: gemv/gemvT/addmm/axpy/sub/add/mul/clamp/scale/fill/copy/zeros,
-//! plus sumSq/mean/std/l2Norm/l2Normalize/softMax (scalar `sqrt`/`exp` foreign
+//! plus sumSq/mean/std/l2Norm/l2Normalize/softMax (scalar `sqrtF`/`expF` foreign
 //! calls unlock the latter norms).
 
 use lumia_core::{
@@ -368,7 +368,7 @@ fn match_sum_sq_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Op
     if !fun_has_sum_sq_shape(&fun.body, defs, xs) {
         return None;
     }
-    if body_calls_any(&fun.body, &["lumia_f64_sqrt", "sqrt"]) {
+    if body_calls_any(&fun.body, &["lumia_f64_sqrt", "sqrtF", "sqrt"]) {
         return None;
     }
     Some(())
@@ -395,7 +395,7 @@ fn match_l2_norm_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> O
     if !fun_has_sum_sq_shape(&fun.body, defs, xs) {
         return None;
     }
-    if !body_calls_any(&fun.body, &["lumia_f64_sqrt", "sqrt"]) {
+    if !body_calls_any(&fun.body, &["lumia_f64_sqrt", "sqrtF", "sqrt"]) {
         return None;
     }
     Some(())
@@ -1407,7 +1407,7 @@ fn fun_has_std_shape(body: &Block, defs: &HashMap<u32, Value>, xs: Local) -> boo
         && mul
         && div
         && !set
-        && body_calls_any(body, &["lumia_f64_sqrt", "sqrt"])
+        && body_calls_any(body, &["lumia_f64_sqrt", "sqrtF", "sqrt"])
 }
 
 fn fun_has_l2_normalize_shape(
@@ -1453,7 +1453,7 @@ fn fun_has_l2_normalize_shape(
         && set
         && mul
         && uses_eps
-        && body_calls_any(body, &["lumia_f64_sqrt", "sqrt"])
+        && body_calls_any(body, &["lumia_f64_sqrt", "sqrtF", "sqrt"])
 }
 
 fn fun_has_softmax_shape(body: &Block, defs: &HashMap<u32, Value>, out_slot: &str) -> bool {
@@ -1497,7 +1497,7 @@ fn fun_has_softmax_shape(body: &Block, defs: &HashMap<u32, Value>, out_slot: &st
             gt = true;
         }
     });
-    get && set && div && gt && body_calls_any(body, &["lumia_f64_exp", "exp"])
+    get && set && div && gt && body_calls_any(body, &["lumia_f64_exp", "expF", "exp"])
 }
 
 fn body_calls_any(body: &Block, names: &[&str]) -> bool {

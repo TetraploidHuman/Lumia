@@ -9,6 +9,7 @@ mod items;
 mod match_arms;
 
 pub use ctx::{LowerCtx, LowerError};
+pub use expr::product::expand_with_known;
 pub use items::lower_module;
 
 pub(crate) use for_loops::{counter_for_in, empty_list, for_each_elem};

@@ -1,7 +1,7 @@
 use super::fun_index::FunIndex;
 use crate::ir::{Block, CoreFun, Local, Op, Value};
 use lumia_hir::Builtin;
-use lumia_syntax::BinOp;
+use lumia_syntax::{BinOp, UnOp};
 use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
@@ -109,20 +109,29 @@ fn local_fixed_ty(
     param_tys: &HashMap<u32, Type>,
     seen: &mut HashSet<u32>,
 ) -> Option<Type> {
+    // `seen` is an in-progress stack (cycle guard), not a permanent memo.
+    // Shared locals (e.g. one `n` used by meanFood/meanThreat/meanDisp) must
+    // be re-typed on sibling field walks — a sticky set typed only the first
+    // float field and left the rest as Int (println bit-patterns).
     if !seen.insert(id) {
         return None;
     }
-    if let Some(t) = param_tys.get(&id) {
-        return Some(t.clone());
-    }
-    for op in &block.ops {
-        if let Op::Let { local, value, .. } = op {
-            if local.0 == id {
-                return value_fixed_ty(block, value, index, trait_methods, param_tys, seen);
+    let result = if let Some(t) = param_tys.get(&id) {
+        Some(t.clone())
+    } else {
+        let mut found = None;
+        for op in &block.ops {
+            if let Op::Let { local, value, .. } = op {
+                if local.0 == id {
+                    found = value_fixed_ty(block, value, index, trait_methods, param_tys, seen);
+                    break;
+                }
             }
         }
-    }
-    None
+        found
+    };
+    seen.remove(&id);
+    result
 }
 
 fn value_fixed_ty(
@@ -137,15 +146,29 @@ fn value_fixed_ty(
         Value::Local(Local(id)) => {
             local_fixed_ty(block, *id, index, trait_methods, param_tys, seen)
         }
+        Value::Name(name) => slot_fixed_ty(block, name, index, trait_methods, param_tys, seen),
         Value::Builtin {
             name: Builtin::Show,
             ..
         } => Some(Type::String),
+        Value::Builtin {
+            name: Builtin::AdtField,
+            args,
+        } => adt_field_fixed_ty(block, args, index, trait_methods, param_tys, seen),
         Value::String(_) => Some(Type::String),
         Value::Bool(_) => Some(Type::Bool),
         Value::Int(_) => Some(Type::Int),
         Value::Float(_) => Some(Type::Float),
         Value::Char(_) => Some(Type::Char),
+        Value::Binary { op, left, right } => {
+            binary_fixed_ty(block, *op, left.0, right.0, index, trait_methods, param_tys, seen)
+        }
+        Value::Unary { op, operand } => match op {
+            UnOp::Not => Some(Type::Bool),
+            UnOp::Neg => {
+                local_fixed_ty(block, operand.0, index, trait_methods, param_tys, seen)
+            }
+        },
         Value::Call { fun, .. } => {
             if let Some(f) = index.get(fun) {
                 return Some(f.ret_ty.clone());
@@ -199,20 +222,183 @@ fn value_fixed_ty(
             let e = block_result_fixed_ty_indexed(else_block, index, trait_methods, param_tys)?;
             join_fixed_ty(&t, &e)
         }
-        Value::Binary {
-            op:
-                BinOp::Eq
-                | BinOp::Ne
-                | BinOp::Lt
-                | BinOp::Le
-                | BinOp::Gt
-                | BinOp::Ge
-                | BinOp::And
-                | BinOp::Or,
-            ..
-        } => Some(Type::Bool),
         _ => None,
     }
+}
+
+/// Mutable/immutable slot load: type from any Let/Assign into `name`.
+/// Numeric slots prefer Float; a heap/container type must not be overwritten
+/// by Float (that put live pointers in XMM regs → NaN-canon UAF).
+fn slot_fixed_ty(
+    block: &Block,
+    name: &str,
+    index: &FunIndex<'_>,
+    trait_methods: &HashMap<(String, String), Vec<String>>,
+    param_tys: &HashMap<u32, Type>,
+    seen: &mut HashSet<u32>,
+) -> Option<Type> {
+    let mut found: Option<Type> = None;
+    scan_slot_ty(block, name, index, trait_methods, param_tys, seen, &mut found);
+    found
+}
+
+fn scan_slot_ty(
+    block: &Block,
+    name: &str,
+    index: &FunIndex<'_>,
+    trait_methods: &HashMap<(String, String), Vec<String>>,
+    param_tys: &HashMap<u32, Type>,
+    seen: &mut HashSet<u32>,
+    found: &mut Option<Type>,
+) {
+    for op in &block.ops {
+        match op {
+            Op::Assign {
+                name: n,
+                value: Local(id),
+            } if n == name => {
+                if let Some(t) = local_fixed_ty(block, *id, index, trait_methods, param_tys, seen) {
+                    *found = Some(merge_slot_ty(found.take(), t));
+                }
+            }
+            Op::Let { value, .. } => {
+                scan_value_slots(value, name, index, trait_methods, param_tys, seen, found);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn scan_value_slots(
+    value: &Value,
+    name: &str,
+    index: &FunIndex<'_>,
+    trait_methods: &HashMap<(String, String), Vec<String>>,
+    param_tys: &HashMap<u32, Type>,
+    seen: &mut HashSet<u32>,
+    found: &mut Option<Type>,
+) {
+    match value {
+        Value::If {
+            then_block,
+            else_block,
+            ..
+        } => {
+            scan_slot_ty(then_block, name, index, trait_methods, param_tys, seen, found);
+            scan_slot_ty(else_block, name, index, trait_methods, param_tys, seen, found);
+        }
+        Value::Loop {
+            header,
+            body,
+            latch,
+        } => {
+            scan_slot_ty(header, name, index, trait_methods, param_tys, seen, found);
+            scan_slot_ty(body, name, index, trait_methods, param_tys, seen, found);
+            scan_slot_ty(latch, name, index, trait_methods, param_tys, seen, found);
+        }
+        _ => {}
+    }
+}
+
+fn is_ref_ty(t: &Type) -> bool {
+    matches!(
+        t,
+        Type::List(_)
+            | Type::Map(_, _)
+            | Type::Set(_)
+            | Type::Adt { .. }
+            | Type::String
+            | Type::Fun(_, _, _)
+            | Type::Tuple(_)
+            | Type::TuplePrefix(_)
+    )
+}
+
+fn merge_slot_ty(prev: Option<Type>, next: Type) -> Type {
+    match (prev, next) {
+        (None, t) => t,
+        (Some(p), n) if p == n => p,
+        // Pointer-carrying slots win over unboxed numeric — never store a
+        // List/ADT pointer as Float (XMM NaN canonicalization / missed GC root).
+        (Some(p), n) if is_ref_ty(&p) && !is_ref_ty(&n) => p,
+        (Some(p), n) if !is_ref_ty(&p) && is_ref_ty(&n) => n,
+        (Some(Type::Float), _) | (_, Type::Float) => Type::Float,
+        (Some(p), _) => p,
+    }
+}
+
+fn binary_fixed_ty(
+    block: &Block,
+    op: BinOp,
+    left: u32,
+    right: u32,
+    index: &FunIndex<'_>,
+    trait_methods: &HashMap<(String, String), Vec<String>>,
+    param_tys: &HashMap<u32, Type>,
+    seen: &mut HashSet<u32>,
+) -> Option<Type> {
+    match op {
+        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::And
+        | BinOp::Or => Some(Type::Bool),
+        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => {
+            let l = local_fixed_ty(block, left, index, trait_methods, param_tys, seen)?;
+            let r = local_fixed_ty(block, right, index, trait_methods, param_tys, seen)?;
+            match (&l, &r) {
+                (Type::Float, _) | (_, Type::Float) => Some(Type::Float),
+                (Type::Int, Type::Int) => Some(Type::Int),
+                _ => Some(l),
+            }
+        }
+    }
+}
+
+fn adt_field_fixed_ty(
+    block: &Block,
+    args: &[Local],
+    index: &FunIndex<'_>,
+    trait_methods: &HashMap<(String, String), Vec<String>>,
+    param_tys: &HashMap<u32, Type>,
+    seen: &mut HashSet<u32>,
+) -> Option<Type> {
+    let recv = args.first()?;
+    let idx_local = args.get(1)?;
+    let recv_ty = local_fixed_ty(block, recv.0, index, trait_methods, param_tys, seen)?;
+    let idx = int_const_in_block(block, idx_local.0)?;
+    if idx < 0 {
+        return None;
+    }
+    match recv_ty {
+        Type::Adt { params, .. } | Type::Tuple(params) | Type::TuplePrefix(params) => {
+            params.get(idx as usize).cloned()
+        }
+        _ => None,
+    }
+}
+
+fn int_const_in_block(block: &Block, id: u32) -> Option<i64> {
+    for op in &block.ops {
+        if let Op::Let {
+            local,
+            value: Value::Int(n),
+            ..
+        } = op
+        {
+            if local.0 == id {
+                return Some(*n);
+            }
+        }
+        if let Op::Let {
+            local,
+            value: Value::Local(Local(src)),
+            ..
+        } = op
+        {
+            if local.0 == id {
+                return int_const_in_block(block, *src);
+            }
+        }
+    }
+    None
 }
 
 fn block_result_fixed_ty_indexed(

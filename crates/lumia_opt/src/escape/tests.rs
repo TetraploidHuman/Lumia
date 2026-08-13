@@ -379,3 +379,58 @@ fn returned_list_get_escapes_source_list() {
         "elem behind escaping ListGet must escape: {esc:?}"
     );
 }
+
+#[test]
+fn wide_heap_adt_fields_escape_even_if_adt_local_does_not() {
+    // ReprSelect: >8 fields ⇒ HeapAdt even when the product itself does not escape.
+    // Stack LitList fields stored in that heap object are GC-invisible / UAF.
+    let mut fields = Vec::new();
+    let mut ops = Vec::new();
+    for i in 0..9 {
+        ops.push(Op::Let {
+            local: Local(i),
+            value: Value::Int(i as i64),
+            pure_region: true,
+        });
+        fields.push(Local(i));
+    }
+    // Small list used only as a wide-product field (product result unused).
+    ops.push(Op::Let {
+        local: Local(9),
+        value: Value::AllocList {
+            elems: vec![Local(0)],
+            repr: lumia_core::ListRepr::HeapList,
+        },
+        pure_region: true,
+    });
+    fields.push(Local(9));
+    ops.push(Op::Let {
+        local: Local(10),
+        value: Value::AllocAdt {
+            adt_name: "Wide".into(),
+            tag: 0,
+            fields,
+            repr: lumia_core::AdtRepr::HeapAdt,
+        },
+        pure_region: true,
+    });
+    ops.push(Op::Let {
+        local: Local(11),
+        value: Value::Int(0),
+        pure_region: true,
+    });
+    let body = Block {
+        params: vec![],
+        ops,
+        result: Some(Local(11)),
+    };
+    let esc = escaping_locals(&fun_with_body(body));
+    assert!(
+        !esc.contains(&Local(10)),
+        "wide product itself need not escape: {esc:?}"
+    );
+    assert!(
+        esc.contains(&Local(9)),
+        "list field of non-escaping HeapAdt must escape (no stack LitList): {esc:?}"
+    );
+}

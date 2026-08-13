@@ -1,0 +1,20 @@
+module WithOpenRecv
+import std.io.{println}
+
+type Point {
+    val x
+    val y
+}
+
+/// Open param + `with` must stay a named product (not TuplePrefix).
+val bumpX = { p ->
+    p with { x = 10 }
+}
+
+val main = {
+    val p = Point { x = 3, y = 4 }
+    val p2 = bumpX(p)
+    println(p2.x)
+    println(p2.y)
+    println(p.x)
+}

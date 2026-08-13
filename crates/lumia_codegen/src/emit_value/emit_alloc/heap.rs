@@ -213,6 +213,10 @@ impl<'ctx> Codegen<'ctx> {
         if matches!(repr, lumia_core::AdtRepr::LitAdt) {
             return self.emit_stack_adt(adt_name, tag, fields);
         }
+        // `slot = slot with { f = … }` on a heap product: consume alias + field stores.
+        if let Some((slot, updates)) = self.frame.adt_with_inplace.take() {
+            return self.emit_adt_with_inplace(&slot, &updates);
+        }
         let n = fields.len() as u64;
         let nbytes = self.llvm.i64_ty.const_int((1 + n) * 8, false);
         let kind = self.funs.adt_show_kinds.get(adt_name).copied().unwrap_or(0);
@@ -233,24 +237,6 @@ impl<'ctx> Codegen<'ctx> {
             .basic()
             .context("call return value")?
             .into_pointer_value();
-        let float_mask = self.adt_float_mask_from_fields(fields);
-        if float_mask != 0 {
-            let setm = self
-                .llvm
-                .module
-                .get_function("lumia_adt_set_float_mask")
-                .context("module function")?;
-            let m = self
-                .llvm
-                .context
-                .i32_type()
-                .const_int(float_mask as u64, false);
-            crate::error::llvm(self.llvm.builder.build_call(
-                setm,
-                &[ptr.into(), m.into()],
-                "adt_fmask",
-            ))?;
-        }
         let tag_slot = unsafe {
             crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
                 self.llvm.i64_ty,
@@ -275,12 +261,71 @@ impl<'ctx> Codegen<'ctx> {
                 ))?
             };
             crate::error::llvm(self.llvm.builder.build_store(slot, v))?;
+            // Parent holds a COW alias of nested List/ADT fields.
+            if let Some(ty) = self.frame.local_tys.get(&e.0) {
+                if Self::type_needs_cow_retain(ty) {
+                    self.adt_retain_i64(v)?;
+                }
+            }
             // Young alloc: init stores need no write barrier.
+        }
+        // After fields are live: set mask, clearing bits that actually hold heap ptrs.
+        let float_mask = self.adt_float_mask_from_fields(fields);
+        if float_mask != 0 {
+            let setm = self
+                .llvm
+                .module
+                .get_function("lumia_adt_set_float_mask")
+                .context("module function")?;
+            let m = self.llvm.i64_ty.const_int(float_mask, false);
+            crate::error::llvm(self.llvm.builder.build_call(
+                setm,
+                &[ptr.into(), m.into()],
+                "adt_fmask",
+            ))?;
         }
         Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
             ptr,
             self.llvm.i64_ty,
             "adt_as_i64",
+        ))?
+        .into())
+    }
+
+    /// Unique / COW path for `slot = slot with { … }` (heap products only).
+    fn emit_adt_with_inplace(
+        &mut self,
+        slot: &str,
+        updates: &[(u32, Local)],
+    ) -> Result<BasicValueEnum<'ctx>> {
+        let raw = self.coerce_i64(self.load_slot(slot)?)?;
+        let ptr0 = self.i64_as_ptr(raw, "adt_with_base")?;
+        // Drop the with-temp `Name(slot)` retain from bind_let, then unique-check.
+        // Extra aliases (`val snap = p`) keep RC ≥ 2 → clone.
+        let ensure = self.runtime_fn("lumia_adt_ensure_unique_consume")?;
+        let ptr = crate::error::llvm(self.llvm.builder.build_call(
+            ensure,
+            &[ptr0.into()],
+            "adt_uniq",
+        ))?
+        .try_as_basic_value()
+        .basic()
+        .context("ensure_unique_consume return")?
+        .into_pointer_value();
+        let setf = self.runtime_fn("lumia_adt_set_field")?;
+        for &(idx, loc) in updates {
+            let v = self.coerce_i64(self.local(loc)?)?;
+            let i = self.llvm.i64_ty.const_int(idx as u64, false);
+            crate::error::llvm(self.llvm.builder.build_call(
+                setf,
+                &[ptr.into(), i.into(), v.into()],
+                "adt_set_f",
+            ))?;
+        }
+        Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
+            ptr,
+            self.llvm.i64_ty,
+            "adt_with_i64",
         ))?
         .into())
     }

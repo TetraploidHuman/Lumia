@@ -99,6 +99,36 @@ impl<'ctx> Codegen<'ctx> {
         self.call_rt_void("lumia_list_release", &[p.into()], "list_release")
     }
 
+    /// Bump List **or** ADT COW refcount (`val a = p`, nested `AdtField`).
+    pub(crate) fn adt_retain_i64(&self, bits: IntValue<'ctx>) -> Result<()> {
+        let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
+        let p = self
+            .llvm
+            .builder
+            .build_int_to_ptr(bits, ptr_ty, "adt_rc_ptr")
+            .map_err(|e| anyhow::anyhow!("int_to_ptr adt_retain: {e}"))?;
+        self.call_rt_void("lumia_adt_retain", &[p.into()], "adt_retain")
+    }
+
+    /// Drop List **or** ADT alias (mut-slot overwrite).
+    pub(crate) fn adt_release_i64(&self, bits: IntValue<'ctx>) -> Result<()> {
+        let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
+        let p = self
+            .llvm
+            .builder
+            .build_int_to_ptr(bits, ptr_ty, "adt_rc_rel")
+            .map_err(|e| anyhow::anyhow!("int_to_ptr adt_release: {e}"))?;
+        self.call_rt_void("lumia_adt_release", &[p.into()], "adt_release")
+    }
+
+    /// Heap COW types that need retain on alias / extract.
+    pub(crate) fn type_needs_cow_retain(ty: &Type) -> bool {
+        matches!(
+            ty,
+            Type::List(_) | Type::Map(_, _) | Type::Set(_) | Type::Adt { .. }
+        )
+    }
+
     /// `alloca` at function entry so loops do not grow the native stack.
     pub(crate) fn alloca_in_entry(
         &mut self,

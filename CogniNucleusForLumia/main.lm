@@ -36,7 +36,7 @@ val main = {
                 done = so.done
                 steps = steps + 1
             }
-            _ -> {}
+            _ -> { break }
         }
         t = t + 1
     }

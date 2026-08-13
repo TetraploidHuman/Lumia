@@ -1,12 +1,11 @@
 /// Nucleus state + predictive-coding step (`cogninucleus.nucleus`).
 ///
-/// @exports Nucleus, newNucleus, openLoopTd, sensoryStep, stepWithTopDown, learnGen
+/// @exports Nucleus, newNucleus, openLoopTd, sensoryStep, pcStep, stepWithTopDown, learnGen
 module nucleus
 
 import std.linalg.{zeros, gemv}
 import std.cn.{nucleusStep, clusterRates, learnGenerative}
 import vec.{eye}
-import config.{N_CLUSTERS, C_DECAY, C_THR, STATE_LR, PI, MU_CLIP, W_CLIP, W_DECAY}
 
 type Nucleus {
     val size
@@ -38,25 +37,44 @@ val openLoopTd = { n ->
     gemv(n.size, n.size, n.predW, n.mu, n.tdOpen)
 }
 
-/// One PC step with optional cluster rate coding on `bottomUp`.
-val sensoryStep = { n, bottomUp, topDown ->
+/// PC step with cluster rate coding (strict_pe + enable_cluster_rates).
+val sensoryStep = { n, bottomUp, topDown, stateLr, pi, muClip, nClusters, cDecay, cThr ->
     var pot = n.pot
     var rates = n.rates
-    rates = clusterRates(pot, bottomUp, rates, n.size, N_CLUSTERS, C_DECAY, C_THR)
+    rates = clusterRates(pot, bottomUp, rates, n.size, nClusters, cDecay, cThr)
     var mu = n.mu
     var err = n.err
     var pred = n.pred
-    mu = nucleusStep(mu, n.enc, n.predW, rates, topDown, err, pred, n.size, STATE_LR, PI, MU_CLIP)
-    n with { mu = mu, err = err, pred = pred, pot = pot, rates = rates }
+    mu = nucleusStep(mu, n.enc, n.predW, rates, topDown, err, pred, n.size, stateLr, pi, muClip)
+    n with {
+        mu = mu,
+        err = err,
+        pred = pred,
+        pot = pot,
+        rates = rates
+    }
 }
 
-val stepWithTopDown = { n, bottomUp, topDown ->
-    sensoryStep(n, bottomUp, topDown)
+/// PC step without cluster rates; caller supplies lr/π/clip (D2 uses different defaults).
+val pcStep = { n, bottomUp, topDown, stateLr, pi, muClip ->
+    var mu = n.mu
+    var err = n.err
+    var pred = n.pred
+    mu = nucleusStep(mu, n.enc, n.predW, bottomUp, topDown, err, pred, n.size, stateLr, pi, muClip)
+    n with {
+        mu = mu,
+        err = err,
+        pred = pred
+    }
 }
 
-val learnGen = { n, pe, lr ->
+val stepWithTopDown = { n, bottomUp, topDown, stateLr, pi, muClip, nClusters, cDecay, cThr ->
+    sensoryStep(n, bottomUp, topDown, stateLr, pi, muClip, nClusters, cDecay, cThr)
+}
+
+val learnGen = { n, pe, lr, wClip, wDecay, pi ->
     var enc = n.enc
     var predW = n.predW
-    enc = learnGenerative(enc, predW, n.mu, pe, n.size, lr, W_CLIP, W_DECAY, PI)
+    enc = learnGenerative(enc, predW, n.mu, pe, n.size, lr, wClip, wDecay, pi)
     n with { enc = enc, predW = predW }
 }

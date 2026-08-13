@@ -1,5 +1,5 @@
 use super::fun_index::FunIndex;
-use super::key::{args_mono_key, MonoKey, MonoKind};
+use super::key::{args_mono_key, materialize_mono_param_tys, MonoKey, MonoKind};
 use super::ret_ty::{block_result_fixed_ty, param_ty_map, refine_mono_container_ret};
 use super::traits::directize_block;
 use crate::ir::{Block, CoreFun, CoreModule, Local, Op, Value};
@@ -165,7 +165,11 @@ fn specialize_mono_round(
             renames.insert((name, key), new_name);
             continue;
         }
-        let param_tys = key.param_tys(index.funs());
+        // Call-site ABI often types heap products/lists as `Int`. Prefer the
+        // generic's structural formals when materializing clone `param_tys` so
+        // `AdtField` keeps Float/List params (otherwise float arith `sitofp`s
+        // IEEE bit patterns — D2 `learnSteps`).
+        let param_tys = materialize_mono_param_tys(&key, &orig.param_tys, index.funs());
         let inferred = key.ret_ty(index.funs());
         let binds = key.funref_param_binds(&orig.params);
         let mut clone = orig.clone();
@@ -299,20 +303,20 @@ fn note_mono_call(
     if args.is_empty() || callee_is_mono_clone(fun, index) {
         return;
     }
-    let Some(key) = args_mono_key(args, local_tys, funref_of) else {
+    let Some(f) = index.get(fun) else {
+        return;
+    };
+    let Some(key) = args_mono_key(args, local_tys, funref_of, Some(f.param_tys.as_slice())) else {
         return;
     };
     if !key.worth_cloning() {
         return;
     }
-    let Some(f) = index.get(fun) else {
-        return;
-    };
     if f.params.len() != key.0.len() {
         return;
     }
     let funs = index.funs();
-    let param_tys = key.param_tys(funs);
+    let param_tys = materialize_mono_param_tys(&key, &f.param_tys, funs);
     let ret = key.ret_ty(funs);
     if f.param_tys == param_tys && f.ret_ty == ret && key.funref_param_binds(&f.params).is_empty() {
         return;
@@ -332,7 +336,7 @@ pub(crate) fn mono_value_ty(
         }
         // Clone not yet indexed this round — recover ret from the call-site key.
         if callee_is_mono_clone(fun, index) {
-            if let Some(key) = args_mono_key(args, local_tys, &HashMap::default()) {
+            if let Some(key) = args_mono_key(args, local_tys, &HashMap::default(), None) {
                 return Some(key.ret_ty(funs));
             }
         }
@@ -390,7 +394,8 @@ fn rewrite_mono_value(
             if args.is_empty() || callee_is_mono_clone(fun, index) {
                 return;
             }
-            if let Some(key) = args_mono_key(args, local_tys, funref_of) {
+            let formals = index.get(fun).map(|f| f.param_tys.as_slice());
+            if let Some(key) = args_mono_key(args, local_tys, funref_of, formals) {
                 if let Some(new) = renames.get(&(fun.clone(), key)) {
                     *fun = new.clone();
                 }
@@ -417,7 +422,8 @@ fn mono_value_ty_rewrite(
             if let Some(((_, mk), _)) = renames.iter().find(|(_, n)| *n == fun) {
                 return mk.ret_ty(funs);
             }
-            if let Some(key) = args_mono_key(args, local_tys, funref_of) {
+            let formals = index.get(fun).map(|f| f.param_tys.as_slice());
+            if let Some(key) = args_mono_key(args, local_tys, funref_of, formals) {
                 if let Some(new) = renames.get(&(fun.clone(), key.clone())) {
                     if let Some(((_, mk), _)) = renames.iter().find(|(_, n)| *n == new) {
                         return mk.ret_ty(funs);

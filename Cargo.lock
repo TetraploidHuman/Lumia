@@ -294,6 +294,7 @@ name = "lumia_rt"
 version = "0.1.0"
 dependencies = [
  "lumia_abi",
+ "rustc-hash",
 ]
 
 [[package]]

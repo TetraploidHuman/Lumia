@@ -168,11 +168,12 @@ impl<'ctx> Codegen<'ctx> {
     }
 
     /// Layout mask from concrete field SSA types at an `AllocAdt` site.
-    pub(crate) fn adt_float_mask_from_fields(&self, fields: &[Local]) -> u32 {
-        let mut mask = 0u32;
-        for (i, f) in fields.iter().enumerate().take(32) {
+    /// Bits beyond 63 are dropped (runtime header stores a `u64` mask).
+    pub(crate) fn adt_float_mask_from_fields(&self, fields: &[Local]) -> u64 {
+        let mut mask = 0u64;
+        for (i, f) in fields.iter().enumerate().take(64) {
             if matches!(self.frame.local_tys.get(&f.0), Some(Type::Float)) {
-                mask |= 1u32 << i;
+                mask |= 1u64 << i;
             }
         }
         mask

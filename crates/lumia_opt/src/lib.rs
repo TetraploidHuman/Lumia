@@ -481,6 +481,57 @@ val main = {
     }
 
     #[test]
+    fn repr_select_list_field_of_wide_product_is_heap() {
+        use lumia_hir::lower_module;
+        use lumia_syntax::parse_module;
+        use lumia_ty::infer_module;
+        // >8 fields ⇒ HeapAdt; list field must not stay LitList (GC / UAF).
+        let src = r#"
+module M
+type Wide {
+    val a0
+    val a1
+    val a2
+    val a3
+    val a4
+    val a5
+    val a6
+    val a7
+    val a8
+    val xs
+}
+val main = {
+    val w = Wide {
+        a0 = 0, a1 = 1, a2 = 2, a3 = 3, a4 = 4,
+        a5 = 5, a6 = 6, a7 = 7, a8 = 8,
+        xs = listOf(10, 20)
+    }
+    w.a0
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let hir = lower_module(&ast).expect("lower");
+        let typed = infer_module(&hir).expect("infer");
+        let mut core =
+            lumia_core::lower_hir_with_schemes(&typed.module, &typed.fun_types, &typed.fun_schemes);
+        optimize(&mut core, &OptOptions::default());
+        let main = core.functions.iter().find(|f| f.is_main).expect("main");
+        let list_repr = main.body.ops.iter().find_map(|op| match op {
+            Op::Let {
+                value: Value::AllocList { elems, repr },
+                ..
+            } if elems.len() == 2 => Some(*repr),
+            _ => None,
+        });
+        assert_eq!(
+            list_repr,
+            Some(ListRepr::HeapList),
+            "list field of wide HeapAdt must be HeapList; escaping={:?}",
+            main.escaping
+        );
+    }
+
+    #[test]
     fn repr_select_empty_list_is_lit() {
         let mut module = CoreModule::with_functions(
             "M",

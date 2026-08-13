@@ -1,8 +1,9 @@
 //! Escape analysis (DESIGN §7.2 Escape Analysis).
 //!
 //! Conservative: a local escapes if it may be observed after the current
-//! function returns, stored into a heap object that escapes, passed to an
-//! unknown callee, or read from a named `var` that escapes.
+//! function returns, stored into a heap object (including non-escaping
+//! size-forced `HeapAdt`/`HeapList`/…), passed to an unknown callee, or read
+//! from a named `var` that escapes.
 //!
 //! Direct calls to known functions only mark args whose corresponding
 //! formals escape in the callee (fixed-point summaries).

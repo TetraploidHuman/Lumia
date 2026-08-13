@@ -238,16 +238,34 @@ pub extern "C" fn lumia_show_adt_named(
 }
 
 /// Store per-field Float layout mask in ADT header `_pad` (bit `i` ⇒ field `i` is unboxed Float).
+///
+/// Call **after** field slots are written. Any mask bit whose slot currently holds a
+/// live heap pointer is cleared — product mono sometimes types List fields as Float,
+/// which would otherwise make GC skip those edges (UAF).
 #[no_mangle]
-pub extern "C" fn lumia_adt_set_float_mask(obj: *mut u8, float_mask: u32) {
-    if obj.is_null() || !is_heap_payload(obj) {
+pub extern "C" fn lumia_adt_set_float_mask(obj: *mut u8, float_mask: u64) {
+    if obj.is_null() {
         return;
     }
     unsafe {
         let h = header_from_payload(obj);
-        if tid_base((*h).type_id) == TYPE_ADT {
-            (*h)._pad = float_mask;
+        if tid_base((*h).type_id) != TYPE_ADT {
+            return;
         }
+        let mut mask = float_mask;
+        let words = ((*h).size as usize) / 8;
+        let nfields = words.saturating_sub(1).min(64);
+        let base = obj as *const i64;
+        for i in 0..nfields {
+            if (mask >> i) & 1 == 0 {
+                continue;
+            }
+            let v = *base.add(i + 1);
+            if is_heap_payload(v as *mut u8) {
+                mask &= !(1u64 << i);
+            }
+        }
+        (*h)._pad = mask;
     }
 }
 

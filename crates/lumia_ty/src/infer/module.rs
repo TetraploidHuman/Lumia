@@ -2,6 +2,7 @@
 
 use super::Infer;
 use crate::alt::apply_alt_desugars;
+use crate::product_resolve::apply_product_field_rewrites;
 use crate::traits::apply_ufcs_rewrites;
 use crate::types::{at, expr_span, Effect, NameVisibility, Type, TypeError, TypedModule};
 use lumia_hir::{Fun, Item, Module};
@@ -275,11 +276,18 @@ fn infer_module_inner(
     let alt_kinds: HashMap<_, _> = std::mem::take(&mut inf.ctrl.alt_kinds)
         .into_iter()
         .collect();
+    let field_rewrites: HashMap<_, _> = std::mem::take(&mut inf.ctrl.product_field_rewrites)
+        .into_iter()
+        .collect();
+    let with_rewrites: HashMap<_, _> = std::mem::take(&mut inf.ctrl.with_rewrites)
+        .into_iter()
+        .collect();
     let mut module = module.clone();
     if !ufcs_rewrites.is_empty() {
         apply_ufcs_rewrites(&mut module, &ufcs_rewrites);
     }
     apply_alt_desugars(&mut module, &alt_kinds);
+    apply_product_field_rewrites(&mut module, &field_rewrites, &with_rewrites);
     (
         Some(TypedModule {
             module,

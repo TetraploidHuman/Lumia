@@ -2,8 +2,8 @@
 
 use std::alloc::Layout;
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
 use std::ffi::CStr;
+use rustc_hash::FxHashSet;
 
 pub use lumia_abi::{
     list_elem_is_float, tid_base, tid_f_key, tid_f_val, MEMO_IDX_CAP, MEMO_IDX_MAX_FUNS,
@@ -14,23 +14,28 @@ pub use lumia_abi::{
     TYPE_STRING,
 };
 
-/// Object header placed before payload.
+/// Object header placed before payload (24 bytes).
 ///
-/// `_pad` is **type_id-dependent** — do not invent a third meaning:
-/// - `TYPE_LIST` / `TYPE_LIST_F64`: COW refcount (`RC_SHARED` = immortal; alloc starts at 1).
-///   Iota lists do not use RC helpers (`list_rc_*` no-ops unless `tid_base == TYPE_LIST`).
-/// - `TYPE_ADT`: per-field Float layout mask (bit `i` ⇒ field `i` is unboxed Float), set by
-///   [`crate::lumia_adt_set_float_mask`] and read by eq/show/hash/GC skip.
-/// - All other type_ids: `_pad` is initialized to 0 and must not be overloaded for new semantics
-///   without updating this contract and the RT tests that lock it.
+/// Stack Lit* layouts must use **3** `i64` header words so `header_from_payload` matches:
+/// word0 = `type_id|size`, word1 = `marked|rc`, word2 = `_pad`.
+///
+/// - `rc`: COW refcount for `TYPE_LIST` / `TYPE_LIST_F64` / `TYPE_ADT`
+///   (`RC_SHARED` = immortal; alloc starts at 1). Other type_ids leave `rc` at 0.
+/// - `_pad`: **type_id-dependent**
+///   - `TYPE_ADT`: 64-bit per-field Float layout mask (bit `i` ⇒ field `i` is Float)
+///   - All other type_ids: initialized to 0 (lists no longer store RC here)
 #[repr(C)]
 pub struct ObjectHeader {
     pub type_id: u32,
     pub size: u32,
     pub marked: u32,
-    /// See struct-level `_pad` contract above.
-    pub _pad: u32,
+    /// COW refcount for List / ADT (see struct contract).
+    pub rc: u32,
+    /// ADT float-field mask; otherwise 0.
+    pub _pad: u64,
 }
+
+const _: () = assert!(std::mem::size_of::<ObjectHeader>() == 24);
 
 /// Max frames retained for trap backtraces (DESIGN §2 / error table).
 const CALL_STACK_CAP: usize = 256;
@@ -102,14 +107,14 @@ thread_local! {
     pub(crate) static HEAP_OLD: RefCell<Vec<*mut ObjectHeader>> =
         const { RefCell::new(Vec::new()) };
     /// O(1) "is tenured" for the write barrier / minor mark.
-    pub(crate) static HEAP_OLD_SET: RefCell<HashSet<*mut ObjectHeader>> =
-        RefCell::new(HashSet::new());
+    pub(crate) static HEAP_OLD_SET: RefCell<FxHashSet<*mut ObjectHeader>> =
+        RefCell::new(FxHashSet::default());
     /// Old objects that may hold young pointers (remembered set / card table).
-    pub(crate) static REMEMBERED: RefCell<HashSet<*mut ObjectHeader>> =
-        RefCell::new(HashSet::new());
+    pub(crate) static REMEMBERED: RefCell<FxHashSet<*mut ObjectHeader>> =
+        RefCell::new(FxHashSet::default());
     /// O(1) membership for `is_heap_payload` (Int bits vs real headers).
-    pub(crate) static HEAP_SET: RefCell<HashSet<*mut ObjectHeader>> =
-        RefCell::new(HashSet::new());
+    pub(crate) static HEAP_SET: RefCell<FxHashSet<*mut ObjectHeader>> =
+        RefCell::new(FxHashSet::default());
     pub(crate) static ROOTS: RefCell<Vec<*mut *mut u8>> = const { RefCell::new(Vec::new()) };
     /// Immortal payloads (empty-list singleton, …) — always marked.
     pub(crate) static PERM_OBJECTS: RefCell<Vec<*mut u8>> = const { RefCell::new(Vec::new()) };
@@ -135,53 +140,142 @@ thread_local! {
 /// Refcount sentinel: immortal / permanently shared (empty-list singleton).
 pub(crate) const RC_SHARED: u32 = u32::MAX;
 
-/// Retain a heap List for COW uniqueness (`TYPE_LIST` / `TYPE_LIST_F64` only).
+/// Retain a heap List/ADT for COW uniqueness.
 #[inline]
 pub(crate) fn list_rc_retain(payload: *mut u8) {
-    if payload.is_null() || !is_heap_payload(payload) {
-        return;
-    }
-    unsafe {
-        let h = header_from_payload(payload);
-        let tid = (*h).type_id;
-        if tid_base(tid) != TYPE_LIST {
-            return;
-        }
-        let rc = (*h)._pad;
-        if rc != RC_SHARED {
-            (*h)._pad = rc.saturating_add(1);
-        }
-    }
+    cow_rc_retain(payload, /*adt_ok=*/ false);
 }
 
 /// Release a heap List refcount (does not free; GC reclaims).
 #[inline]
 pub(crate) fn list_rc_release(payload: *mut u8) {
+    cow_rc_release(payload, /*adt_ok=*/ false);
+}
+
+#[inline]
+pub(crate) fn list_rc_is_unique(payload: *mut u8) -> bool {
+    cow_rc_is_unique(payload, /*adt_ok=*/ false)
+}
+
+#[inline]
+fn cow_tid_ok(tid: u32, adt_ok: bool) -> bool {
+    let b = tid_base(tid);
+    b == TYPE_LIST || (adt_ok && b == TYPE_ADT)
+}
+
+#[inline]
+pub(crate) fn cow_rc_retain(payload: *mut u8, adt_ok: bool) {
     if payload.is_null() || !is_heap_payload(payload) {
         return;
     }
     unsafe {
         let h = header_from_payload(payload);
-        let tid = (*h).type_id;
-        if tid_base(tid) != TYPE_LIST {
+        if !cow_tid_ok((*h).type_id, adt_ok) {
             return;
         }
-        let rc = (*h)._pad;
-        if rc != RC_SHARED && rc > 0 {
-            (*h)._pad = rc - 1;
+        let rc = (*h).rc;
+        if rc != RC_SHARED {
+            (*h).rc = rc.saturating_add(1);
         }
     }
 }
 
 #[inline]
-pub(crate) fn list_rc_is_unique(payload: *mut u8) -> bool {
+pub(crate) fn cow_rc_release(payload: *mut u8, adt_ok: bool) {
+    if payload.is_null() || !is_heap_payload(payload) {
+        return;
+    }
+    unsafe {
+        let h = header_from_payload(payload);
+        if !cow_tid_ok((*h).type_id, adt_ok) {
+            return;
+        }
+        let rc = (*h).rc;
+        if rc != RC_SHARED && rc > 0 {
+            (*h).rc = rc - 1;
+        }
+    }
+}
+
+#[inline]
+pub(crate) fn cow_rc_is_unique(payload: *mut u8, adt_ok: bool) -> bool {
     if payload.is_null() || !is_heap_payload(payload) {
         return false;
     }
     unsafe {
         let h = header_from_payload(payload);
-        let tid = (*h).type_id;
-        tid_base(tid) == TYPE_LIST && (*h)._pad == 1
+        cow_tid_ok((*h).type_id, adt_ok) && (*h).rc == 1
+    }
+}
+
+/// Drop one alias retain when `rc > 1` (no-op if unique or immortal).
+/// Used by `p = p with {…}` before uniqueness check: `with` desugars to
+/// `Let tmp = Name(p)` which retains, while the mut slot does not.
+#[inline]
+pub(crate) fn cow_rc_drop_alias(payload: *mut u8, adt_ok: bool) {
+    if payload.is_null() || !is_heap_payload(payload) {
+        return;
+    }
+    unsafe {
+        let h = header_from_payload(payload);
+        if !cow_tid_ok((*h).type_id, adt_ok) {
+            return;
+        }
+        let rc = (*h).rc;
+        if rc != RC_SHARED && rc > 1 {
+            (*h).rc = rc - 1;
+        }
+    }
+}
+
+/// Retain List **or** ADT (codegen aliases).
+#[inline]
+pub(crate) fn value_rc_retain(payload: *mut u8) {
+    cow_rc_retain(payload, /*adt_ok=*/ true);
+}
+
+#[inline]
+pub(crate) fn value_rc_release(payload: *mut u8) {
+    cow_rc_release(payload, /*adt_ok=*/ true);
+}
+
+/// Retain a field word if it points at a heap List/ADT (skip floats / immediates).
+#[inline]
+pub(crate) fn value_rc_retain_bits(bits: i64) {
+    let p = bits as *mut u8;
+    if is_heap_payload(p) {
+        value_rc_retain(p);
+    }
+}
+
+#[inline]
+pub(crate) fn value_rc_release_bits(bits: i64) {
+    let p = bits as *mut u8;
+    if is_heap_payload(p) {
+        value_rc_release(p);
+    }
+}
+
+/// After shallow-copying an ADT, bump RC on nested List/ADT fields (shared).
+///
+/// `float_mask` bit `i` ⇒ field `i` is unboxed Float (not a pointer).
+pub(crate) unsafe fn adt_retain_nested_fields(obj: *mut u8) {
+    if obj.is_null() {
+        return;
+    }
+    let h = header_from_payload(obj);
+    if tid_base((*h).type_id) != TYPE_ADT {
+        return;
+    }
+    let mask = (*h)._pad;
+    let words = ((*h).size as usize) / 8;
+    let nfields = words.saturating_sub(1);
+    let base = obj as *const i64;
+    for i in 0..nfields {
+        if mask & (1u64 << i) != 0 {
+            continue;
+        }
+        value_rc_retain_bits(*base.add(1 + i));
     }
 }
 

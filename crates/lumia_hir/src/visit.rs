@@ -51,6 +51,12 @@ pub fn for_each_expr(expr: &Expr, f: &mut impl FnMut(&Expr)) {
             for_each_expr(scrutinee, f);
             for_each_expr(alt, f);
         }
+        Expr::With { base, fields, .. } => {
+            for_each_expr(base, f);
+            for (_, e) in fields {
+                for_each_expr(e, f);
+            }
+        }
         Expr::Int(..)
         | Expr::Float(..)
         | Expr::Bool(..)
@@ -118,6 +124,12 @@ fn fold_impl<T>(expr: &Expr, init: T, f: &mut impl FnMut(T, &Expr) -> T) -> T {
         Expr::Alt { scrutinee, alt, .. } => {
             let acc = fold_impl(scrutinee, init, f);
             fold_impl(alt, acc, f)
+        }
+        Expr::With { base, fields, .. } => {
+            let acc = fold_impl(base, init, f);
+            fields
+                .iter()
+                .fold(acc, |acc, (_, e)| fold_impl(e, acc, f))
         }
         Expr::Int(..)
         | Expr::Float(..)
@@ -209,6 +221,12 @@ fn collect_free_vars(expr: &Expr, bound: &mut Vec<String>, out: &mut Vec<String>
         Expr::Alt { scrutinee, alt, .. } => {
             collect_free_vars(scrutinee, bound, out);
             collect_free_vars(alt, bound, out);
+        }
+        Expr::With { base, fields, .. } => {
+            collect_free_vars(base, bound, out);
+            for (_, e) in fields {
+                collect_free_vars(e, bound, out);
+            }
         }
         Expr::Int(..)
         | Expr::Float(..)

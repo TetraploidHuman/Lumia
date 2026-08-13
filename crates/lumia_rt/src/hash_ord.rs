@@ -197,16 +197,104 @@ pub extern "C" fn lumia_adt_tag(obj: *mut u8) -> i64 {
 #[no_mangle]
 pub extern "C" fn lumia_adt_field(obj: *mut u8, index: i64) -> i64 {
     if obj.is_null() || index < 0 {
-        trap_abort("lumia: adt_field OOB");
+        trap_abort(&format!("lumia: adt_field OOB (null or neg index={index})"));
     }
     unsafe {
         let h = header_from_payload(obj);
         let words = ((*h).size as usize) / 8;
         // Layout: [tag][field0]… → field count = words - 1
         if words == 0 || (index as usize) + 1 >= words {
-            trap_abort("lumia: adt_field OOB");
+            let nfields = words.saturating_sub(1);
+            let tag = *(obj as *const i64);
+            let tid = (*h).type_id;
+            let bits = obj as usize;
+            trap_abort(&format!(
+                "lumia: adt_field OOB index={index} nfields={nfields} tag={tag} bytes={} tid={tid} ptr=0x{bits:x}",
+                (*h).size
+            ));
         }
         let base = obj as *const i64;
         *base.add(1 + index as usize)
+    }
+}
+
+/// Shallow-clone ADT payload to a fresh heap object (`rc=1`) and retain nested
+/// List/ADT fields (shared with `src`).
+unsafe fn adt_shallow_clone_heap(src: *mut u8) -> *mut u8 {
+    use crate::common::{adt_retain_nested_fields, tid_base, GcInhibitGuard, TYPE_ADT};
+    use crate::gc::lumia_alloc;
+    let h = header_from_payload(src);
+    if tid_base((*h).type_id) != TYPE_ADT {
+        return src;
+    }
+    let _gc = GcInhibitGuard::enter();
+    let nbytes = (*h).size as u64;
+    let dest = lumia_alloc(nbytes, (*h).type_id);
+    let nwords = ((*h).size as usize) / 8;
+    std::ptr::copy_nonoverlapping(src as *const i64, dest as *mut i64, nwords);
+    (*header_from_payload(dest))._pad = (*h)._pad;
+    adt_retain_nested_fields(dest);
+    dest
+}
+
+/// COW: shared heap ADT → shallow clone; unique heap ADT unchanged.
+/// Stack LitAdt has no RC — always promote to a heap clone before in-place `with`.
+#[no_mangle]
+pub extern "C" fn lumia_adt_ensure_unique(obj: *mut u8) -> *mut u8 {
+    use crate::common::{cow_rc_is_unique, tid_base, TYPE_ADT};
+    if obj.is_null() {
+        return obj;
+    }
+    unsafe {
+        let h = header_from_payload(obj);
+        if tid_base((*h).type_id) != TYPE_ADT {
+            return obj;
+        }
+        if !is_heap_payload(obj) {
+            return adt_shallow_clone_heap(obj);
+        }
+        if cow_rc_is_unique(obj, true) {
+            return obj;
+        }
+        adt_shallow_clone_heap(obj)
+    }
+}
+
+/// Drop one alias retain (e.g. with-temp), then [`lumia_adt_ensure_unique`].
+/// Prefer plain `ensure_unique` when the with-temp Let was optimized away.
+#[no_mangle]
+pub extern "C" fn lumia_adt_ensure_unique_consume(obj: *mut u8) -> *mut u8 {
+    use crate::common::cow_rc_drop_alias;
+    cow_rc_drop_alias(obj, /*adt_ok=*/ true);
+    lumia_adt_ensure_unique(obj)
+}
+
+/// Write ADT field `index` (0-based): release old List/ADT, retain new, barrier.
+#[no_mangle]
+pub extern "C" fn lumia_adt_set_field(obj: *mut u8, index: i64, value: i64) {
+    use crate::common::{value_rc_release_bits, value_rc_retain_bits};
+    if obj.is_null() || index < 0 {
+        trap_abort(&format!("lumia: adt_set_field OOB (null or neg index={index})"));
+    }
+    unsafe {
+        let h = header_from_payload(obj);
+        let words = ((*h).size as usize) / 8;
+        if words == 0 || (index as usize) + 1 >= words {
+            trap_abort(&format!(
+                "lumia: adt_set_field OOB index={index} words={words}"
+            ));
+        }
+        let slot = (obj as *mut i64).add(1 + index as usize);
+        let float_field = ((*h)._pad & (1u64 << (index as u32))) != 0;
+        if !float_field {
+            let old = *slot;
+            if old != value {
+                value_rc_release_bits(old);
+                value_rc_retain_bits(value);
+            }
+        }
+        *slot = value;
+        // Float-masked slots are not pointers; barrier still no-ops for non-young.
+        crate::gc::lumia_write_barrier(obj, (index + 1) as u32, value as *mut u8);
     }
 }

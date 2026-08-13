@@ -89,6 +89,7 @@ impl<'ctx> Codegen<'ctx> {
                 fun_param_tys: &self.funs.fun_param_tys,
                 fun_param0_identity: &self.funs.fun_param0_identity,
                 funref_locals: &self.funs.funref_locals,
+                local_int_consts: &self.frame.local_int_consts,
             },
         )
     }

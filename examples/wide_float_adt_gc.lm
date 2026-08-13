@@ -1,0 +1,60 @@
+module WideFloatAdtGc
+
+import std.io.{println}
+
+/// 33 Int pads + trailing Float — exercises ADT float_mask bit ≥ 32 (GC skip).
+type Wide {
+    val i0
+    val i1
+    val i2
+    val i3
+    val i4
+    val i5
+    val i6
+    val i7
+    val i8
+    val i9
+    val i10
+    val i11
+    val i12
+    val i13
+    val i14
+    val i15
+    val i16
+    val i17
+    val i18
+    val i19
+    val i20
+    val i21
+    val i22
+    val i23
+    val i24
+    val i25
+    val i26
+    val i27
+    val i28
+    val i29
+    val i30
+    val i31
+    val i32
+    val f
+}
+
+val mk = { x ->
+    Wide {
+        i0 = 0, i1 = 0, i2 = 0, i3 = 0, i4 = 0, i5 = 0, i6 = 0, i7 = 0,
+        i8 = 0, i9 = 0, i10 = 0, i11 = 0, i12 = 0, i13 = 0, i14 = 0, i15 = 0,
+        i16 = 0, i17 = 0, i18 = 0, i19 = 0, i20 = 0, i21 = 0, i22 = 0, i23 = 0,
+        i24 = 0, i25 = 0, i26 = 0, i27 = 0, i28 = 0, i29 = 0, i30 = 0, i31 = 0,
+        i32 = 0, f = x
+    }
+}
+
+val main = {
+    // Heap-escape via list so GC sees the ADT header mask.
+    val xs = listOf(mk(1.25), mk(2.5))
+    val junk = listOf(0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
+    val _ = junk.len + xs.len
+    println(xs.get(0).f)
+    println(xs.get(1).f)
+}

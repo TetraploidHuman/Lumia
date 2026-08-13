@@ -53,6 +53,7 @@ pub(super) fn lower_expr(
         | HirExpr::Break(_)
         | HirExpr::Continue(_)
         | HirExpr::Return { .. }
-        | HirExpr::Alt { .. } => control::lower_control(ctx, expr, ops, pure_region),
+        | HirExpr::Alt { .. }
+        | HirExpr::With { .. } => control::lower_control(ctx, expr, ops, pure_region),
     }
 }
