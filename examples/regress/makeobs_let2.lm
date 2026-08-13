@@ -1,0 +1,27 @@
+module makeobs_let2
+import std.io.{println}
+import std.linalg.{zeros, hypotF}
+
+type Eco {
+    val ecoX
+    val ecoY
+    val ecoThreats
+}
+
+val nearest = { pts, n ->
+    println(pts.get(0))
+    pts.get(0) + pts.get(1)
+}
+
+val main = {
+    var pts0 = zeros(4)
+    pts0 = pts0.set(0, 0.668)
+    pts0 = pts0.set(1, 0.460)
+    val eco = Eco { ecoX = 0.2, ecoY = 0.2, ecoThreats = pts0 }
+    println(pts0.get(0))
+    val pts1 = eco.ecoThreats
+    println(pts1.get(0))
+    println(nearest(pts0, 2))
+    println(nearest(pts1, 2))
+    println(nearest(eco.ecoThreats, 2))
+}

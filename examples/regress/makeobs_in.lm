@@ -1,0 +1,58 @@
+module makeobs_in
+import std.io.{println}
+import std.linalg.{zeros, fill, hypotF}
+
+type Eco {
+    val ecoX
+    val ecoY
+    val ecoThreats
+    val ecoObs
+}
+
+type Bearing { val bearX, val bearY, val bearI }
+
+val nearestIn = { eco, n ->
+    var bestBx = 0.0
+    var bestBy = 0.0
+    var bestI = 0.0
+    var bestD = 1000000.0
+    var i = 0
+    for i < n {
+        val px = eco.ecoThreats.get(i * 2)
+        val py = eco.ecoThreats.get(i * 2 + 1)
+        val d = hypotF(px - eco.ecoX, py - eco.ecoY)
+        match {
+            d < bestD -> {
+                bestD = d
+                bestBx = px
+                bestBy = py
+                bestI = d
+            }
+            _ -> {}
+        }
+        i = i + 1
+    }
+    Bearing { bearX = bestBx, bearY = bestBy, bearI = bestI }
+}
+
+val makeObs = { eco ->
+    var obs = fill(eco.ecoObs, 0.0)
+    val nt = nearestIn(eco, 2)
+    obs = obs.set(14, nt.bearX)
+    obs = obs.set(15, nt.bearY)
+    obs = obs.set(16, nt.bearI)
+    obs
+}
+
+val main = {
+    var pts = zeros(4)
+    pts = pts.set(0, 0.668)
+    pts = pts.set(1, 0.460)
+    pts = pts.set(2, 0.764)
+    pts = pts.set(3, 0.684)
+    val eco = Eco { ecoX = 0.2, ecoY = 0.2, ecoThreats = pts, ecoObs = zeros(64) }
+    val obs = makeObs(eco)
+    println(obs.get(14))
+    println(obs.get(15))
+    println(obs.get(16))
+}

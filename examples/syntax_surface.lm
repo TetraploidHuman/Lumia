@@ -1,0 +1,147 @@
+module syntax_surface
+import std.io.{println}
+
+/// Broad surface-syntax smoke: literals, ops, control, patterns, collections, pipe.
+type Point { val x, val y }
+type Color { Red, Green, Blue }
+
+val abs = { n ->
+    if n < 0 { 0 - n } else { n }
+}
+
+val main = {
+    // Literals
+    println(42)
+    println(3.5)
+    println(true)
+    println(false)
+    println('Q')
+    println("hi")
+
+    // Unary / binary / compare
+    println(abs(0 - 7))
+    println(2 + 3 * 4)
+    println(if 1 < 2 { 1 } else { 0 })
+    println(if 3 >= 3 { 1 } else { 0 })
+    println(if 1 != 2 { 1 } else { 0 })
+
+    // Short-circuit and / or / not
+    println(if true and false { 1 } else { 0 })
+    println(if false or true { 1 } else { 0 })
+    println(if not false { 1 } else { 0 })
+    println(if not (true and false) or false { 1 } else { 0 })
+
+    // val / var / assign
+    val a = 10
+    var b = a
+    b = b + 1
+    println(b)
+
+    // if / else
+    println(if b > 10 { 100 } else { 0 })
+
+    // for-cond + break / continue
+    var i = 0
+    var s = 0
+    for i < 20 {
+        i = i + 1
+        if i % 2 == 0 {
+            continue
+        }
+        if i > 9 {
+            break
+        }
+        s = s + i
+    }
+    println(s)
+
+    // for-in range + list
+    var r = 0
+    for j in 1..=5 {
+        r = r + j
+    }
+    println(r)
+    var t = 0
+    for x in listOf(10, 20, 30) {
+        t = t + x
+    }
+    println(t)
+
+    // List / Map / Set literals + pipe
+    val xs = [1, 2, 3, 4]
+    val ys = xs >> map { it * 2 } >> filter { it > 4 }
+    println(ys.len())
+    println(ys[0])
+    val m = mapOf(1 to 10, 2 to 20)
+    println(m[1] alt 0)
+    val st = setOf(1, 2, 2, 3)
+    println(st.len())
+    println(if st.contains(2) { 1 } else { 0 })
+
+    // Tuple + product + with + field
+    val tup = (1, 2, 3)
+    println(tup.0 + tup.2)
+    val p0 = Point { x = 3, y = 4 }
+    val p1 = p0 with { y = 9 }
+    println(p0.y)
+    println(p1.y)
+
+    // Match: bool / int / list / ADT / guard
+    println(true match {
+        true -> 1
+        false -> 0
+    })
+    println(2 match {
+        0 -> 0
+        1 -> 1
+        n if n > 1 -> 2
+        _ -> -1
+    })
+    println([1, 2, 3] match {
+        [] -> 0
+        [h, ..t] -> h + t.len()
+    })
+    println(Red match {
+        Red -> 1
+        Green -> 2
+        Blue -> 3
+    })
+
+    // Option alt + early return in lambda
+    val pick = { x ->
+        if x < 0 {
+            return 0 - 1
+        }
+        x
+    }
+    println(pick(5))
+    println(pick(0 - 3))
+    println(m.get(9) alt 99)
+
+    // Char / string / float const patterns
+    println('z' match {
+        'z' -> 1
+        _ -> 0
+    })
+    println("ok" match {
+        "ok" -> 1
+        _ -> 0
+    })
+    println(1.5 match {
+        1.5 -> 1
+        _ -> 0
+    })
+
+    // Nested let destructure
+    val (u, v) = (7, 8)
+    println(u + v)
+    val Point { x, y } = Point { x = 1, y = 2 }
+    println(x + y)
+
+    // for Map pairs
+    var sumKv = 0
+    for (k, v) in mapOf(1 to 2, 3 to 4) {
+        sumKv = sumKv + k + v
+    }
+    println(sumKv)
+}

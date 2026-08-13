@@ -19,3 +19,5 @@ include!("floats.rs");
 include!("memo_par.rs");
 include!("ffi.rs");
 include!("reject.rs");
+include!("regress.rs");
+include!("syntax.rs");

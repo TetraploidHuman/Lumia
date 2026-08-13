@@ -1,0 +1,46 @@
+module field_list_arg_gc
+import std.io.{println}
+import std.linalg.{zeros}
+
+type Wrap { val pts }
+
+/// Same shape as eco.nearest(eco, eco.ecoThreats, n): field load as arg.
+val sumPts = { pts, n ->
+    var s = 0.0
+    var i = 0
+    for i < n {
+        s = s + pts.get(i)
+        i = i + 1
+    }
+    s
+}
+
+val makeWrap = {
+    var pts = zeros(4)
+    pts = pts.set(0, 1.5)
+    pts = pts.set(1, 2.5)
+    pts = pts.set(2, 3.5)
+    pts = pts.set(3, 4.5)
+    Wrap { pts = pts }
+}
+
+val main = {
+    // Allocate garbage to stress GC between field load and use
+    var g = 0
+    var junk = zeros(1)
+    for g < 200 {
+        junk = zeros(64)
+        junk = junk.set(0, 0.0 + g)
+        g = g + 1
+    }
+    val w = makeWrap()
+    // Force more GC before call
+    g = 0
+    for g < 100 {
+        junk = zeros(32)
+        g = g + 1
+    }
+    println(sumPts(w.pts, 4))
+    // control: read through receiver
+    println(w.pts.get(0) + w.pts.get(1) + w.pts.get(2) + w.pts.get(3))
+}

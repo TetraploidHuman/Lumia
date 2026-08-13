@@ -1,0 +1,57 @@
+module nearest_elision
+import std.io.{println}
+import std.linalg.{zeros}
+
+type Eco {
+    val ecoX
+    val ecoY
+    val ecoThreats
+    val ecoObs
+}
+
+val nearest = { eco, pts, n ->
+    var best = 0.0
+    var i = 0
+    for i < n {
+        best = best + pts.get(i * 2) + pts.get(i * 2 + 1)
+        i = i + 1
+    }
+    best
+}
+
+val nearestIn = { eco, n ->
+    var best = 0.0
+    var i = 0
+    for i < n {
+        best = best + eco.ecoThreats.get(i * 2) + eco.ecoThreats.get(i * 2 + 1)
+        i = i + 1
+    }
+    best
+}
+
+val build = {
+    var pts = zeros(4)
+    pts = pts.set(0, 0.6684626674598375)
+    pts = pts.set(1, 0.46051029025600776)
+    pts = pts.set(2, 0.764380516002132)
+    pts = pts.set(3, 0.6848221092879876)
+    Eco {
+        ecoX = 0.2,
+        ecoY = 0.2,
+        ecoThreats = pts,
+        ecoObs = zeros(64)
+    }
+}
+
+val main = {
+    val eco = build()
+    // Stress GC
+    var g = 0
+    var junk = zeros(1)
+    for g < 500 {
+        junk = zeros(128)
+        g = g + 1
+    }
+    println(nearest(eco, eco.ecoThreats, 2))
+    println(nearestIn(eco, 2))
+}

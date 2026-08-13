@@ -1,0 +1,62 @@
+module syntax_hof_match
+import std.io.{println}
+import std.string.{startsWith}
+
+/// Extra syntax: nested match, closures, Option/Result, string helpers.
+type Shape {
+    Circle(r)
+    Rect(w, h)
+}
+
+val area = { s ->
+    s match {
+        Circle(r) -> r * r
+        Rect(w, h) -> w * h
+    }
+}
+
+val main = {
+    println(area(Circle(3)))
+    println(area(Rect(2, 5)))
+
+    // Nested lambda + capture
+    val k = 10
+    val addK = { x -> x + k }
+    println(listOf(1, 2, 3).map(addK).get(2))
+
+    // Nested match on Option
+    val o = Some(7)
+    println(o match {
+        None -> 0
+        Some(n) -> n match {
+            0 -> 0
+            n if n > 0 -> n
+            _ -> 0 - 1
+        }
+    })
+
+    // Result
+    val r = Ok(42)
+    println(r match {
+        Ok(v) -> v
+        Err(_) -> 0
+    })
+
+    // String helpers
+    val s = "Hello"
+    println(s.len())
+    println(if startsWith(s, "He") { 1 } else { 0 })
+
+    // Empty containers + append/set
+    var xs = listOf()
+    xs = xs.append(1)
+    xs = xs.append(2)
+    println(xs.len())
+    var m = mapOf()
+    m = m.set("a", 1)
+    println(m["a"] alt 0)
+
+    // assert (effect)
+    assert(1 == 1)
+    println(1)
+}

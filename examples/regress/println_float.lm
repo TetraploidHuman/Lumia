@@ -1,0 +1,12 @@
+module println_float
+import std.io.{println}
+type Box { val f }
+val main = {
+    println(2106498180.0)
+    println(0.4805246444793999)
+    println(3.5)
+    val x = 2106498180.0
+    println(x)
+    val b = Box { f = 2106498180.0 }
+    println(b.f)
+}

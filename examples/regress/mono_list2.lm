@@ -1,0 +1,25 @@
+module mono_list2
+import std.io.{println}
+import std.linalg.{zeros}
+
+val headAt = { xs, i ->
+    xs.get(i)
+}
+
+val headSum = { xs, n ->
+    var s = 0.0
+    var i = 0
+    for i < n {
+        s = s + xs.get(i)
+        i = i + 1
+    }
+    s
+}
+
+val main = {
+    var xs = zeros(2)
+    xs = xs.set(0, 1.25)
+    xs = xs.set(1, 2.5)
+    println(headAt(xs, 0))
+    println(headSum(xs, 2))
+}
