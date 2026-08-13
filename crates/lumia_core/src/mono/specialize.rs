@@ -63,7 +63,7 @@ fn rewrite_all_mono_call_sites(
         .map(|f| std::mem::replace(&mut f.body, empty.clone()))
         .collect();
     {
-        let index = FunIndex::new(&functions);
+        let index = FunIndex::new(&functions, &module.sum_max_arity);
         let no_funrefs = HashMap::default();
         for i in 0..functions.len() {
             let mut local_tys: HashMap<u32, Type> = HashMap::default();
@@ -130,7 +130,7 @@ fn specialize_mono_round(
     module: &mut CoreModule,
     renames: &mut HashMap<(String, MonoKey), String>,
 ) -> bool {
-    let index = FunIndex::new(&module.functions);
+    let index = FunIndex::new(&module.functions, &module.sum_max_arity);
     let mut needed: FxHashSet<(String, MonoKey)> = FxHashSet::default();
     for fun in &module.functions {
         let mut local_tys: HashMap<u32, Type> = HashMap::default();
@@ -413,6 +413,7 @@ pub(crate) fn mono_value_ty(
             fun_param0_identity: None,
             funref_locals: None,
             local_int_consts: Some(int_consts),
+            sum_max_arity: Some(index.sum_max_arity),
         },
         Some(&mut call_ret),
     )

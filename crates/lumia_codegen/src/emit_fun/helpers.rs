@@ -90,6 +90,7 @@ impl<'ctx> Codegen<'ctx> {
                 fun_param0_identity: &self.funs.fun_param0_identity,
                 funref_locals: &self.funs.funref_locals,
                 local_int_consts: &self.frame.local_int_consts,
+                sum_max_arity: &self.funs.sum_max_arity,
             },
         )
     }

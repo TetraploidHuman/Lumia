@@ -7,15 +7,20 @@ use rustc_hash::FxHashMap;
 pub(crate) struct FunIndex<'a> {
     funs: &'a [CoreFun],
     by_name: FxHashMap<&'a str, usize>,
+    pub(crate) sum_max_arity: &'a FxHashMap<String, usize>,
 }
 
 impl<'a> FunIndex<'a> {
-    pub(crate) fn new(funs: &'a [CoreFun]) -> Self {
+    pub(crate) fn new(funs: &'a [CoreFun], sum_max_arity: &'a FxHashMap<String, usize>) -> Self {
         let mut by_name = FxHashMap::with_capacity_and_hasher(funs.len(), Default::default());
         for (i, f) in funs.iter().enumerate() {
             by_name.insert(f.name.as_str(), i);
         }
-        Self { funs, by_name }
+        Self {
+            funs,
+            by_name,
+            sum_max_arity,
+        }
     }
 
     pub(crate) fn get(&self, name: &str) -> Option<&'a CoreFun> {

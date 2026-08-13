@@ -131,6 +131,26 @@ fn infer_module_inner(
         .iter()
         .map(|p| (p.name.clone(), p.fields.clone()))
         .collect();
+    inf.products.sum_max_arity = module
+        .adts
+        .iter()
+        .map(|a| {
+            let max = a.variants.iter().map(|v| v.arity).max().unwrap_or(0);
+            (a.name.clone(), max)
+        })
+        .collect();
+    inf.products.sum_ctors = module
+        .adts
+        .iter()
+        .flat_map(|a| {
+            a.variants.iter().map(|v| {
+                (
+                    v.name.clone(),
+                    (a.name.clone(), v.arity),
+                )
+            })
+        })
+        .collect();
     let mut fun_types = HashMap::default();
     let mut fun_schemes = HashMap::default();
     let mut main_effect = Effect::pure();

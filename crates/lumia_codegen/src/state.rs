@@ -35,6 +35,8 @@ pub(crate) struct FunTables<'ctx> {
     pub hash_adts: HashSet<String>,
     /// Variant labels by ADT/product type name (tag → display name) for Show.
     pub adt_variant_names: HashMap<String, Vec<String>>,
+    /// Sum ADT name → max variant payload arity (shared typed params slots).
+    pub sum_max_arity: HashMap<String, usize>,
     /// Stable Show-kind ids (`≥ 1`) packed into ADT `type_id` for recursive `lumia_show`.
     pub adt_show_kinds: HashMap<String, u16>,
 }

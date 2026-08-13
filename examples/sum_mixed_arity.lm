@@ -1,0 +1,24 @@
+module sum_mixed_arity
+import std.io.{println}
+
+/// Variants with different payload arities share one ADT param vector.
+type Shape {
+    Circle(r)
+    Rect(w, h)
+}
+
+val area = { s ->
+    s match {
+        Circle(r) -> r * r
+        Rect(w, h) -> w * h
+    }
+}
+
+val main = {
+    println(area(Circle(3)))
+    println(area(Rect(2, 5)))
+    println(Circle(4) match {
+        Rect(w, h) -> w + h
+        Circle(r) -> r
+    })
+}

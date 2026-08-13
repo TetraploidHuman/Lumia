@@ -89,16 +89,15 @@ fn pattern_cond_variant(
     let mut binds = vec![];
     let nfields = args.len().min(c.arity);
     for (i, ep) in args.iter().take(nfields).enumerate() {
-        // Result/Option: pass ctor so ty maps Ok→T / Err→E / Some→T.
-        // Other sum ctors keep 2-arg field (params[idx]); product names
-        // would incorrectly fail nominal checks if we passed the ctor.
-        let mut field_args = vec![scrut.clone(), Expr::Int(i as i64, span)];
-        if matches!(name, "Ok" | "Err" | "Some") {
-            field_args.push(Expr::String(name.into(), span));
-        }
+        // Pass ctor name so ty can constrain open scrutinees to the ADT
+        // (Ok→T / Err→E / Some→T; user sums → shared max-arity params).
         let field = Expr::BuiltinCall {
             name: Builtin::AdtField,
-            args: field_args,
+            args: vec![
+                scrut.clone(),
+                Expr::Int(i as i64, span),
+                Expr::String(name.into(), span),
+            ],
             span,
         };
         bind_or_nest(ctx, ep, field, span, &mut cond, &mut binds);

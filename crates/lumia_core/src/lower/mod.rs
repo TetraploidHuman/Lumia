@@ -160,12 +160,21 @@ pub fn lower_hir_with_schemes(
         // Products are tag-0 payloads; print the type name.
         adt_variant_names.insert(prod.name.clone(), vec![prod.name.clone()]);
     }
+    let sum_max_arity: HashMap<String, usize> = module
+        .adts
+        .iter()
+        .map(|a| {
+            let max = a.variants.iter().map(|v| v.arity).max().unwrap_or(0);
+            (a.name.clone(), max)
+        })
+        .collect();
     let mut core = CoreModule {
         name: module.name.clone(),
         functions,
         hash_adts,
         trait_methods: module.trait_methods.clone(),
         adt_variant_names,
+        sum_max_arity,
     };
     lift_lambdas(&mut core);
     directize_funref_calls(&mut core);

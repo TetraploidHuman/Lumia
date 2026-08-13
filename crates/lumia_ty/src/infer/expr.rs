@@ -425,12 +425,20 @@ impl Infer {
                 _ if arg_tys.is_empty() => vec![self.fresh(), self.fresh()],
                 _ => arg_tys,
             }
-        } else if arg_tys.is_empty() {
-            // Unit ctors: Option[α] with fresh α.
-            vec![self.fresh()]
         } else {
-            // Product / unary sum: field / payload types as params.
-            arg_tys
+            // Product / sum: payload types as params. Sum variants pad to the
+            // ADT's max arity so `Circle(r)` and `Rect(w, h)` share Shape[_, _].
+            let max = self
+                .products
+                .sum_max_arity
+                .get(adt_name)
+                .copied()
+                .unwrap_or(arg_tys.len());
+            let mut params = arg_tys;
+            while params.len() < max {
+                params.push(self.fresh());
+            }
+            params
         };
         Ok((
             Type::Adt {

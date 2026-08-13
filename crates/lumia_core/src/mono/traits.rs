@@ -23,7 +23,7 @@ pub(crate) fn resolve_trait_method_calls(module: &mut CoreModule) {
         .map(|f| std::mem::replace(&mut f.body, empty.clone()))
         .collect();
     {
-        let index = FunIndex::new(&functions);
+        let index = FunIndex::new(&functions, &module.sum_max_arity);
         for i in 0..functions.len() {
             let mut local_tys: HashMap<u32, Type> = HashMap::default();
             for (j, p) in functions[i].params.iter().enumerate() {
@@ -200,7 +200,7 @@ pub(crate) fn ensure_trait_method_stubs(module: &mut CoreModule) {
     for fun in &module.functions {
         collect_trait_method_refs(&fun.body, &method_names, &mut referenced);
     }
-    let index = FunIndex::new(&module.functions);
+    let index = FunIndex::new(&module.functions, &module.sum_max_arity);
     let mut stubs = Vec::new();
     for name in referenced {
         if index.contains(&name) {

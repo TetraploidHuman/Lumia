@@ -80,6 +80,32 @@ val main = {
 }
 
 #[test]
+fn sum_mixed_arity_shared_params() {
+    let src = r#"
+module ShapeMix
+import std.io.{println}
+type Shape {
+    Circle(r)
+    Rect(w, h)
+}
+val area = { s ->
+    s match {
+        Circle(r) -> r * r
+        Rect(w, h) -> w * h
+    }
+}
+val main = {
+    println(area(Circle(3)))
+    println(area(Rect(2, 5)))
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let typed = infer_module(&hir).expect("mixed-arity sum ADT");
+    check_effect_boundaries(&typed).unwrap();
+}
+
+#[test]
 fn match_int_arms() {
     let src = r#"
 module MatchDemo

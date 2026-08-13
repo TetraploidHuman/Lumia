@@ -26,6 +26,8 @@ pub struct InferValueCtx<'a> {
     pub funref_locals: Option<&'a HashMap<u32, String>>,
     /// SSA locals bound to `Value::Int` (for `AdtField` index → `params[i]`).
     pub local_int_consts: Option<&'a HashMap<u32, i64>>,
+    /// Sum ADT name → max variant payload arity (pad `AllocAdt` params).
+    pub sum_max_arity: Option<&'a HashMap<String, usize>>,
 }
 
 /// Grouped codegen tables so [`InferValueCtx::full`] stays a short call site.
@@ -37,6 +39,7 @@ pub struct CodegenTypeTables<'a> {
     pub fun_param0_identity: &'a HashSet<String>,
     pub funref_locals: &'a HashMap<u32, String>,
     pub local_int_consts: &'a HashMap<u32, i64>,
+    pub sum_max_arity: &'a HashMap<String, usize>,
 }
 
 impl<'a> InferValueCtx<'a> {
@@ -49,6 +52,7 @@ impl<'a> InferValueCtx<'a> {
             fun_param0_identity: None,
             funref_locals: None,
             local_int_consts: None,
+            sum_max_arity: None,
         }
     }
 
@@ -62,6 +66,7 @@ impl<'a> InferValueCtx<'a> {
             fun_param0_identity: Some(tables.fun_param0_identity),
             funref_locals: Some(tables.funref_locals),
             local_int_consts: Some(tables.local_int_consts),
+            sum_max_arity: Some(tables.sum_max_arity),
         }
     }
 }
@@ -179,10 +184,18 @@ pub fn infer_value_ty_ctx(
         Value::AllocAdt {
             adt_name, fields, ..
         } => {
-            let params: Vec<Type> = fields
+            let mut params: Vec<Type> = fields
                 .iter()
                 .map(|f| ctx.local_tys.get(&f.0).cloned().unwrap_or(Type::Int))
                 .collect();
+            if let Some(max) = ctx
+                .sum_max_arity
+                .and_then(|m| m.get(adt_name).copied())
+            {
+                while params.len() < max {
+                    params.push(Type::Int);
+                }
+            }
             Type::Adt {
                 name: adt_name.clone(),
                 params,
@@ -217,7 +230,11 @@ pub fn infer_value_ty_ctx(
             let e = else_block
                 .result
                 .and_then(|Local(id)| ctx.local_tys.get(&id).cloned());
-            t.or(e).unwrap_or(Type::Int)
+            match (t, e) {
+                (Some(a), Some(b)) => join_value_tys(&a, &b).unwrap_or(a),
+                (Some(a), None) | (None, Some(a)) => a,
+                (None, None) => Type::Int,
+            }
         }
         Value::IndirectCall { callee, args } => {
             let ret = match ctx.local_tys.get(&callee.0) {
@@ -335,6 +352,46 @@ fn adt_field_result_ty(args: &[Local], ctx: InferValueCtx<'_>) -> Type {
         return Type::Int;
     }
     params.get(idx as usize).cloned().unwrap_or(Type::Int)
+}
+
+/// Merge branch result types for `Value::If` (pad sum ADT params to a shared width).
+fn join_value_tys(a: &Type, b: &Type) -> Option<Type> {
+    if a == b {
+        return Some(a.clone());
+    }
+    match (a, b) {
+        (
+            Type::Adt {
+                name: n1,
+                params: p1,
+            },
+            Type::Adt {
+                name: n2,
+                params: p2,
+            },
+        ) if n1 == n2 => {
+            let n = p1.len().max(p2.len());
+            let mut params = Vec::with_capacity(n);
+            for i in 0..n {
+                let x = p1.get(i).cloned().unwrap_or(Type::Int);
+                let y = p2.get(i).cloned().unwrap_or(Type::Int);
+                params.push(if x == y {
+                    x
+                } else if matches!(x, Type::Int | Type::Var(_)) {
+                    y
+                } else if matches!(y, Type::Int | Type::Var(_)) {
+                    x
+                } else {
+                    x
+                });
+            }
+            Some(Type::Adt {
+                name: n1.clone(),
+                params,
+            })
+        }
+        _ => None,
+    }
 }
 
 fn builtin_value_ty(name: Builtin, args: &[Local], ctx: InferValueCtx<'_>) -> Type {
@@ -536,6 +593,7 @@ mod tests {
             fun_param0_identity: None,
             funref_locals: Some(&funref),
             local_int_consts: None,
+            sum_max_arity: None,
         };
         assert_eq!(
             list_par_map_elem_ty(&[Local(0), Local(1)], ctx),
@@ -564,6 +622,7 @@ mod tests {
             fun_param0_identity: None,
             funref_locals: None,
             local_int_consts: Some(&consts),
+            sum_max_arity: None,
         };
         let t = infer_value_ty_ctx(
             &Value::Builtin {
