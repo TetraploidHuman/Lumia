@@ -688,6 +688,18 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         ],
     },
     RtDecl {
+        name: "lumia_efe_apply_embodied_reflexes",
+        ret: RtTy::Ptr,
+        args: &[
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::I64,
+            RtTy::I64,
+            RtTy::F64,
+        ],
+    },
+    RtDecl {
         name: "lumia_cn_nucleus_step",
         ret: RtTy::Ptr,
         args: &[

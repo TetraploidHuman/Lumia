@@ -15,6 +15,9 @@ use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 /// Sized to cover small helpers with a loop + vars (e.g. `isPrime`, `collatzSteps`).
 const INLINE_MAX_OPS: usize = 32;
 
+/// Cap nested expand depth (mutual a↔b both inlineable must not recurse forever).
+const INLINE_MAX_EXPAND_DEPTH: usize = 8;
+
 pub struct InlinePass;
 
 impl crate::Pass for InlinePass {
@@ -40,12 +43,15 @@ fn inline_module(module: &mut CoreModule) {
     let mut name_tag = 0u32;
     for fun in &mut module.functions {
         let mut next = max_local_in_fun(fun).saturating_add(1);
+        let mut expanding = HashSet::default();
         inline_block(
             &mut fun.body,
             &inlineable,
             &fun.name,
             &mut next,
             &mut name_tag,
+            &mut expanding,
+            0,
         );
     }
 }
@@ -76,6 +82,8 @@ fn inline_block(
     caller: &str,
     next: &mut u32,
     name_tag: &mut u32,
+    expanding: &mut HashSet<String>,
+    depth: usize,
 ) {
     let mut out: Vec<Op> = Vec::with_capacity(block.ops.len());
     for op in std::mem::take(&mut block.ops) {
@@ -86,9 +94,22 @@ fn inline_block(
                 pure_region,
             } => {
                 let mut value = value;
-                inline_value(&mut value, inlineable, caller, next, name_tag);
+                inline_value(
+                    &mut value,
+                    inlineable,
+                    caller,
+                    next,
+                    name_tag,
+                    expanding,
+                    depth,
+                );
                 if let Value::Call { fun, args } = &value {
-                    if fun != caller {
+                    // Refuse self-recursion, re-entry on the expand stack (mutual
+                    // a↔b), and runaway nested expand depth.
+                    let can_expand = fun != caller
+                        && depth < INLINE_MAX_EXPAND_DEPTH
+                        && !expanding.contains(fun);
+                    if can_expand {
                         if let Some(callee) = inlineable.get(fun) {
                             if args.len() == callee.params.len() {
                                 let (prelude, result) =
@@ -100,7 +121,17 @@ fn inline_block(
                                     ops: prelude,
                                     result: Some(result),
                                 };
-                                inline_block(&mut nested, inlineable, caller, next, name_tag);
+                                expanding.insert(fun.clone());
+                                inline_block(
+                                    &mut nested,
+                                    inlineable,
+                                    fun.as_str(),
+                                    next,
+                                    name_tag,
+                                    expanding,
+                                    depth + 1,
+                                );
+                                expanding.remove(fun);
                                 let result =
                                     nested.result.expect("inlined function must return a value");
                                 out.extend(nested.ops);
@@ -121,7 +152,15 @@ fn inline_block(
                 });
             }
             Op::Effect { mut value } => {
-                inline_value(&mut value, inlineable, caller, next, name_tag);
+                inline_value(
+                    &mut value,
+                    inlineable,
+                    caller,
+                    next,
+                    name_tag,
+                    expanding,
+                    depth,
+                );
                 out.push(Op::Effect { value });
             }
             other => out.push(other),
@@ -136,6 +175,8 @@ fn inline_value(
     caller: &str,
     next: &mut u32,
     name_tag: &mut u32,
+    expanding: &mut HashSet<String>,
+    depth: usize,
 ) {
     match value {
         Value::If {
@@ -143,19 +184,37 @@ fn inline_value(
             else_block,
             ..
         } => {
-            inline_block(then_block, inlineable, caller, next, name_tag);
-            inline_block(else_block, inlineable, caller, next, name_tag);
+            inline_block(
+                then_block,
+                inlineable,
+                caller,
+                next,
+                name_tag,
+                expanding,
+                depth,
+            );
+            inline_block(
+                else_block,
+                inlineable,
+                caller,
+                next,
+                name_tag,
+                expanding,
+                depth,
+            );
         }
         Value::Loop {
             header,
             body,
             latch,
         } => {
-            inline_block(header, inlineable, caller, next, name_tag);
-            inline_block(body, inlineable, caller, next, name_tag);
-            inline_block(latch, inlineable, caller, next, name_tag);
+            inline_block(header, inlineable, caller, next, name_tag, expanding, depth);
+            inline_block(body, inlineable, caller, next, name_tag, expanding, depth);
+            inline_block(latch, inlineable, caller, next, name_tag, expanding, depth);
         }
-        Value::Lambda { body, .. } => inline_block(body, inlineable, caller, next, name_tag),
+        Value::Lambda { body, .. } => {
+            inline_block(body, inlineable, caller, next, name_tag, expanding, depth)
+        }
         _ => {}
     }
 }
@@ -592,5 +651,106 @@ mod tests {
             mono_of: None,
         };
         assert!(!is_inlineable(&f));
+    }
+
+    #[test]
+    fn mutual_inlineable_pair_does_not_hang() {
+        // a calls b, b calls a — both small/pure. Expand stack must cut the cycle.
+        let a = CoreFun {
+            name: "a".into(),
+            params: vec![Local(0)],
+            param_names: vec!["x".into()],
+            param_tys: vec![Type::Int],
+            body: Block {
+                params: vec![],
+                ops: vec![Op::Let {
+                    local: Local(1),
+                    value: Value::Call {
+                        fun: "b".into(),
+                        args: vec![Local(0)],
+                    },
+                    pure_region: true,
+                }],
+                result: Some(Local(1)),
+            },
+            ret_ty: Type::Int,
+            effect: Effect::pure(),
+            is_main: false,
+            memo: None,
+            external: None,
+            escaping: HashSet::default(),
+            scheme_poly: false,
+            mono_of: None,
+        };
+        let b = CoreFun {
+            name: "b".into(),
+            params: vec![Local(0)],
+            param_names: vec!["x".into()],
+            param_tys: vec![Type::Int],
+            body: Block {
+                params: vec![],
+                ops: vec![Op::Let {
+                    local: Local(1),
+                    value: Value::Call {
+                        fun: "a".into(),
+                        args: vec![Local(0)],
+                    },
+                    pure_region: true,
+                }],
+                result: Some(Local(1)),
+            },
+            ret_ty: Type::Int,
+            effect: Effect::pure(),
+            is_main: false,
+            memo: None,
+            external: None,
+            escaping: HashSet::default(),
+            scheme_poly: false,
+            mono_of: None,
+        };
+        let mut module = CoreModule::with_functions(
+            "M",
+            vec![
+                a,
+                b,
+                CoreFun {
+                    name: "main".into(),
+                    params: vec![],
+                    param_names: vec![],
+                    param_tys: vec![],
+                    body: Block {
+                        params: vec![],
+                        ops: vec![
+                            Op::Let {
+                                local: Local(0),
+                                value: Value::Int(1),
+                                pure_region: true,
+                            },
+                            Op::Let {
+                                local: Local(1),
+                                value: Value::Call {
+                                    fun: "a".into(),
+                                    args: vec![Local(0)],
+                                },
+                                pure_region: true,
+                            },
+                        ],
+                        result: Some(Local(1)),
+                    },
+                    ret_ty: Type::Int,
+                    effect: Effect::pure(),
+                    is_main: true,
+                    memo: None,
+                    external: None,
+                    escaping: HashSet::default(),
+                    scheme_poly: false,
+                    mono_of: None,
+                },
+            ],
+        );
+        inline_module(&mut module);
+        let main = module.functions.iter().find(|f| f.name == "main").unwrap();
+        let ops = count_ops(&main.body);
+        assert!(ops < 64, "mutual inline must terminate, got {ops} ops");
     }
 }

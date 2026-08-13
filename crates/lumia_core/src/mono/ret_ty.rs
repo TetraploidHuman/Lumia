@@ -193,13 +193,11 @@ fn value_fixed_ty(
             if let Some(f) = index.get(fun) {
                 return Some(f.ret_ty.clone());
             }
-            // Unresolved short trait method — sample any mangled impl's ret_ty.
-            let sample = trait_methods
-                .iter()
-                .find(|((_, m), _)| m == fun)
-                .and_then(|(_, mangled)| mangled.first())
-                .and_then(|m| index.get(m));
-            sample.map(|f| f.ret_ty.clone())
+            // Unresolved short trait method: do **not** sample an arbitrary
+            // mangled impl (Float vs Int / heap vs scalar can disagree). Leave
+            // open until `resolve_trait_method_calls` rewrites the Call.
+            let _ = trait_methods;
+            None
         }
         Value::AllocAdt {
             adt_name,

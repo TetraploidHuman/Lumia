@@ -136,7 +136,7 @@ pub(crate) fn hash_value(key: i64, depth: u32) -> u64 {
                 }
                 for i in 1..words {
                     let e = *base.add(i);
-                    let he = if float_mask & (1u64 << (i - 1)) != 0 {
+                    let he = if crate::common::adt_float_slot(float_mask, i - 1) {
                         float_key_hash(e)
                     } else {
                         hash_value(e, depth + 1)
@@ -242,7 +242,7 @@ unsafe fn adt_shallow_clone_heap(src: *mut u8, overwrite_mask: u64) -> *mut u8 {
         let nfields = nwords.saturating_sub(1);
         let base = dest as *mut i64;
         for i in 0..nfields {
-            if overwrite_mask & (1u64 << i) != 0 {
+            if crate::common::adt_float_slot(overwrite_mask, i) {
                 *base.add(1 + i) = 0;
             }
         }
@@ -267,15 +267,23 @@ pub extern "C" fn lumia_adt_ensure_unique_mask(obj: *mut u8, overwrite_mask: u64
     if obj.is_null() {
         return obj;
     }
+    // Membership before header use for heap path (immediates never look unique).
+    if is_heap_payload(obj) {
+        unsafe {
+            let h = header_from_payload(obj);
+            if tid_base((*h).type_id) != TYPE_ADT {
+                return obj;
+            }
+            if cow_rc_is_unique(obj, true) {
+                return obj;
+            }
+            return adt_shallow_clone_heap(obj, overwrite_mask);
+        }
+    }
+    // Stack LitAdt (valid header on stack) → promote via shallow clone.
     unsafe {
         let h = header_from_payload(obj);
         if tid_base((*h).type_id) != TYPE_ADT {
-            return obj;
-        }
-        if !is_heap_payload(obj) {
-            return adt_shallow_clone_heap(obj, overwrite_mask);
-        }
-        if cow_rc_is_unique(obj, true) {
             return obj;
         }
         adt_shallow_clone_heap(obj, overwrite_mask)
@@ -318,17 +326,17 @@ pub extern "C" fn lumia_adt_set_field(obj: *mut u8, index: i64, value: i64) {
             ));
         }
         let slot = (obj as *mut i64).add(1 + index as usize);
-        let float_field = ((*h)._pad & (1u64 << (index as u32))) != 0;
-        if !float_field {
-            let old = *slot;
-            if old != value {
-                value_rc_release_bits(old);
-                value_rc_retain_bits(value);
-            }
+        let float_field = crate::common::adt_float_slot((*h)._pad, index as usize);
+        let value_heap = is_heap_payload(value as *mut u8);
+        // Mistag-safe: always RC/barrier when the new word is a live heap ptr,
+        // even if `_pad` claims Float (matches ADT mark policy).
+        let old = *slot;
+        if (!float_field || value_heap || is_heap_payload(old as *mut u8)) && old != value {
+            value_rc_release_bits(old);
+            value_rc_retain_bits(value);
         }
         *slot = value;
-        // Float-masked slots are unboxed bits, not GC pointers.
-        if !float_field {
+        if value_heap || !float_field {
             crate::gc::lumia_write_barrier(obj, (index + 1) as u32, value as *mut u8);
         }
     }

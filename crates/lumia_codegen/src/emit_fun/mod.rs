@@ -166,24 +166,29 @@ impl<'ctx> Codegen<'ctx> {
         match value {
             Value::Call { fun, args } => {
                 if self.funs.tco_peers.contains(fun) {
+                    // Only drop roots/frame once the callee is known to exist;
+                    // otherwise fall through to a normal call with roots intact.
+                    if !self.funs.functions.contains_key(fun) {
+                        return Ok(false);
+                    }
                     self.root_pop_to(0)?;
                     self.emit_frame_pop()?;
-                    if self.emit_musttail_call(fun, args)? {
-                        return Ok(true);
-                    }
-                    // musttail failed — restore frame for normal call path.
-                    self.emit_frame_push(&self.funs.current_fun.clone())?;
+                    let ok = self.emit_musttail_call(fun, args)?;
+                    debug_assert!(ok, "musttail callee was declared");
+                    return Ok(ok);
                 }
             }
             Value::IndirectCall { callee, args } => {
                 if let Some(fun) = self.funs.funref_locals.get(&callee.0).cloned() {
                     if self.funs.tco_peers.contains(&fun) {
+                        if !self.funs.functions.contains_key(&fun) {
+                            return Ok(false);
+                        }
                         self.root_pop_to(0)?;
                         self.emit_frame_pop()?;
-                        if self.emit_musttail_call(&fun, args)? {
-                            return Ok(true);
-                        }
-                        self.emit_frame_push(&self.funs.current_fun.clone())?;
+                        let ok = self.emit_musttail_call(&fun, args)?;
+                        debug_assert!(ok, "musttail callee was declared");
+                        return Ok(ok);
                     }
                 }
             }

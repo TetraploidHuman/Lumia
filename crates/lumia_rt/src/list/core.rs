@@ -68,12 +68,17 @@ pub(crate) fn list_get_of(list: *mut u8, index: i64) -> i64 {
     }
 }
 
-/// Materialize Iota → HeapList (identity for HeapList / null).
+/// Materialize Iota → HeapList; promote stack LitList; identity for heap / null.
 pub(crate) fn force_heap_list(list: *mut u8) -> *mut u8 {
     if list.is_null() {
         return list;
     }
-    if list_tid(list) != TYPE_LIST_IOTA {
+    let tid = list_tid(list);
+    if tid != TYPE_LIST_IOTA {
+        // Stack LitList must become heap before escape into containers / kernels.
+        if tid_base(tid) == TYPE_LIST && !is_heap_payload(list) {
+            return lumia_list_promote(list);
+        }
         return list;
     }
     let _guard = GcInhibitGuard::enter();

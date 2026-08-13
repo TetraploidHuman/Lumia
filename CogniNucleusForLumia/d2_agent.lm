@@ -7,11 +7,11 @@ module d2_agent
 
 import std.linalg.{zeros, fill, copy, sub, scale, add, axpy, gemv, mean, std, softMax}
 import std.cn.{updateState, argMax}
-import std.efe.{embodiedActionScores}
+import std.efe.{embodiedActionScores, applyEmbodiedReflexes}
 import d2_config.{
     VIS, PFC, MOT, AMY, HYP, STATE_LR, CONN_LR, GEN_LR, PI, MU_CLIP, W_CLIP, W_DECAY, EPS,
     EFE_MIX, REL, THREAT_IDX, CELL, PREF, EPI, WALL, GOAL_B, THREAT_G, COMPLEXITY, HORIZON,
-    AMY_GAIN, HYP_GAIN, HUNGER_EXPLORE, TURN_ANGLE, FOV
+    AMY_GAIN, HYP_GAIN, HUNGER_EXPLORE, AMY_THREAT, TURN_ANGLE, FOV
 }
 import nucleus.{Nucleus, newNucleus, openLoopTd, pcStep, learnGen}
 import connection.{Conn, newConn, linkProject, linkProjectError, linkHebbian}
@@ -118,7 +118,11 @@ val resetNuc = { n ->
 val innateAmyMot = { c ->
     var w = c.w
     var i = 0
-    for i < MOT {
+    val n = match {
+        AMY < MOT -> AMY
+        _ -> MOT
+    }
+    for i < n {
         val idx = i * MOT + i
         w = w.set(idx, w.get(idx) + 0.55)
         i = i + 1
@@ -332,6 +336,8 @@ val forwardD2 = { p0, obs, explore, seed0 ->
     logits = copy(logits, mot.mu)
     logits = scale(logits, 1.0 - EFE_MIX)
     logits = axpy(logits, EFE_MIX, tmp)
+    // Python: `_apply_embodied_reflexes` after EFE mix (B2/B3).
+    logits = applyEmbodiedReflexes(logits, obs, obs, REL, THREAT_IDX, AMY_THREAT)
     var action = 0
     explore match {
         1 -> {

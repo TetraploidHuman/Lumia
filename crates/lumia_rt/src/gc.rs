@@ -356,8 +356,13 @@ fn scan_fields(obj: *mut ObjectHeader) {
                 if !list_elem_is_float(tid) {
                     let n = *(payload as *const i64);
                     let base = payload as *const i64;
-                    for i in 0..n as usize {
-                        mark_value(*base.add(1 + i));
+                    // Clamp to payload size: corrupted / negative `len` must not OOB.
+                    let max_elems = ((*obj).size as usize).saturating_sub(8) / 8;
+                    if n > 0 {
+                        let n = (n as usize).min(max_elems);
+                        for i in 0..n {
+                            mark_value(*base.add(1 + i));
+                        }
                     }
                 }
             }

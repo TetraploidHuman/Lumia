@@ -252,7 +252,14 @@ pub(crate) fn map_mark_payload(payload: *mut u8, size: usize, float_keys: bool, 
             if is_heap_payload(parent) {
                 mark(header_from_payload(parent));
             }
-            let dn = map_overlay_dn(payload) as usize;
+            let dn0 = map_overlay_dn(payload);
+            // Overlay pairs start at word 3; clamp to declared payload size.
+            let max_pairs = size.saturating_sub(3 * 8) / 16;
+            let dn = if dn0 > 0 {
+                (dn0 as usize).min(max_pairs)
+            } else {
+                0
+            };
             for i in 0..dn {
                 if !float_keys {
                     mark_value(*base.add(3 + i * 2));

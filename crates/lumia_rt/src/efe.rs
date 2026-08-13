@@ -523,6 +523,189 @@ fn expected_free_energy(
     pref_gain * pref + epi_gain * epi + wall_gain * wall + threat_gain * threat + complexity + homeo
 }
 
+/// Late innate reflexes after EFE mix (`FreeEnergyAgent._apply_embodied_reflexes`).
+///
+/// Threat + hunger + pain paths for embodied MiniEcoWorld (B2/B3). Cue/memory
+/// steering (B6) is omitted until hippocampal goal memory is ported.
+///
+/// Mutates `logits` (len ≥ 4). Returns `logits`.
+#[no_mangle]
+pub extern "C" fn lumia_efe_apply_embodied_reflexes(
+    logits: *mut u8,
+    plan_obs: *mut u8,
+    obs: *mut u8,
+    relative_obs_index: i64,
+    threat_rel_index: i64,
+    amy_threat_gain: f64,
+) -> *mut u8 {
+    let _gc = GcInhibitGuard::enter();
+    let logits = ensure_unique_f64(logits);
+    let plan = force_f64(plan_obs);
+    let obs = force_f64(obs);
+    require_len(logits, 4, "efe reflex logits");
+    let n_plan = list_len_of(plan) as usize;
+    let n_obs = list_len_of(obs) as usize;
+    let tidx = threat_rel_index as usize;
+    let rel = relative_obs_index as usize;
+    unsafe {
+        let (lp, _) = f64_elems_mut(logits);
+        let (pp, _) = f64_elems(plan);
+        let (op, _) = f64_elems(obs);
+        let get = |base: *const f64, n: usize, i: usize| -> f64 {
+            if i < n {
+                *base.add(i)
+            } else {
+                0.0
+            }
+        };
+        let pain = get(pp, n_plan, 5);
+        let hunger = get(pp, n_plan, 4);
+        let tdx = get(pp, n_plan, tidx);
+        let tdy = get(pp, n_plan, tidx + 1);
+        let tloc = get(pp, n_plan, tidx + 2);
+        let on_threat = tloc > 0.82 || (pain > 0.20 && tloc > 0.40);
+        let threat_near = tloc > 0.16 || pain > 0.10 || on_threat;
+        let threat_block = tloc > 0.22 || pain > 0.14 || on_threat;
+        if threat_block {
+            let reflex_gain = amy_threat_gain.max(0.55);
+            let mut avoid = [0.0_f64; 4];
+            fill_threat_avoid(&mut avoid, tdx, tdy, tloc, op, n_obs);
+            for i in 0..4 {
+                *lp.add(i) += 1.12 * reflex_gain * avoid[i];
+            }
+            let mut food = [0.0_f64; 4];
+            fill_goal_approach(&mut food, get(pp, n_plan, rel), get(pp, n_plan, rel + 1), op, n_obs);
+            let sub = if on_threat || tloc > 0.40 || pain > 0.18 {
+                0.75
+            } else {
+                0.28
+            };
+            for i in 0..4 {
+                *lp.add(i) -= sub * food[i];
+            }
+        }
+        if on_threat {
+            let tg = amy_threat_gain.max(0.55);
+            if tdy > 0.0 {
+                *lp.add(2) += 0.85 * tg;
+                *lp.add(1) -= 0.30 * tg;
+            } else {
+                *lp.add(1) += 0.85 * tg;
+                *lp.add(2) -= 0.30 * tg;
+            }
+            if tdx <= 0.05 {
+                *lp.add(3) -= 0.85 * tg;
+                *lp.add(0) += 0.55 * tg;
+            } else {
+                *lp.add(0) -= 0.65 * tg;
+                *lp.add(3) += 0.20 * tg;
+            }
+        } else if tloc > 0.18 && tdx > 0.16 {
+            let tg = amy_threat_gain.max(0.50);
+            *lp.add(0) -= 0.80 * tg;
+            if tdy > 0.0 {
+                *lp.add(2) += 0.60 * tg;
+            } else {
+                *lp.add(1) += 0.60 * tg;
+            }
+        }
+        if pain > 0.14 {
+            *lp.add(0) -= 0.55 * pain;
+            *lp.add(3) -= 0.10 * pain;
+        }
+        // Nest mode when relative_obs_index == nest (not used on D2 food-relative).
+        let nest_mode = false;
+        if !nest_mode && !threat_near && hunger >= 0.52 {
+            let drive = hunger - 0.32;
+            let dx = get(pp, n_plan, rel);
+            let dy = get(pp, n_plan, rel + 1);
+            let intensity = get(pp, n_plan, rel + 2);
+            let facing_goal = dx > 0.10 && dy.abs() < 0.60;
+            let sees_goal = intensity > 0.05 && dx > 0.05;
+            // No goal memory yet ⇒ treat as `not _goal_mem_valid` (always allow).
+            let _ = (facing_goal, sees_goal);
+            *lp.add(0) += 0.58 * drive;
+            *lp.add(3) -= 0.50 * drive;
+        } else if !nest_mode && hunger <= 0.22 {
+            let rest = 0.22 - hunger;
+            *lp.add(0) -= 0.55 * rest;
+            *lp.add(3) += 0.80 * rest;
+        }
+    }
+    logits
+}
+
+fn fill_embodied_steer(buf: &mut [f64; 4], dx: f64, dy: f64, flee: bool) {
+    if flee {
+        buf[0] = (-dx).max(0.0);
+        buf[1] = (-dy).max(0.0);
+        buf[2] = dy.max(0.0);
+        buf[3] = dx.max(0.0);
+    } else {
+        buf[0] = dx.max(0.0);
+        buf[1] = dy.max(0.0);
+        buf[2] = (-dy).max(0.0);
+        buf[3] = (-dx).max(0.0);
+    }
+}
+
+fn fill_threat_avoid(buf: &mut [f64; 4], tdx: f64, tdy: f64, intensity: f64, obs: *const f64, n_obs: usize) {
+    *buf = [0.0; 4];
+    if intensity <= 1e-6 && tdx.abs() + tdy.abs() < 1e-6 {
+        return;
+    }
+    let scale = intensity.max(0.35);
+    let near = intensity >= 0.82;
+    fill_embodied_steer(buf, tdx, tdy, true);
+    if near {
+        if tdy > 0.0 {
+            buf[2] = buf[2].max(0.95);
+            buf[1] = 0.0;
+        } else {
+            buf[1] = buf[1].max(0.95);
+            buf[2] = 0.0;
+        }
+        if tdx <= 0.05 {
+            buf[3] = 0.0;
+            buf[0] = buf[0].max(0.85);
+        } else {
+            buf[0] = 0.0;
+            buf[3] = buf[3].max(0.35);
+        }
+    } else if tdx > 0.18 && tdy.abs() < 0.22 {
+        buf[0] = 0.0;
+        buf[3] = buf[3].max(0.45);
+        if tdy > 0.0 {
+            buf[2] = buf[2].max(0.70);
+        } else {
+            buf[1] = buf[1].max(0.70);
+        }
+    }
+    for v in buf.iter_mut() {
+        *v *= scale;
+    }
+    if n_obs >= 10 {
+        unsafe {
+            for i in 0..4 {
+                let blocked = (*obs.add(6 + i)).clamp(0.0, 1.0);
+                buf[i] *= 1.0 - blocked;
+            }
+        }
+    }
+}
+
+fn fill_goal_approach(buf: &mut [f64; 4], dx: f64, dy: f64, obs: *const f64, n_obs: usize) {
+    fill_embodied_steer(buf, dx, dy, false);
+    if n_obs >= 10 {
+        unsafe {
+            for i in 0..4 {
+                let blocked = (*obs.add(6 + i)).clamp(0.0, 1.0);
+                buf[i] *= 1.0 - blocked;
+            }
+        }
+    }
+}
+
 fn force_f64(list: *mut u8) -> *mut u8 {
     use crate::list::{force_heap_list, list_float_elems};
     let list = force_heap_list(list);
