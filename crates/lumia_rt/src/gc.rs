@@ -34,7 +34,21 @@ thread_local! {
     /// Objects processed per alloc-triggered quantum.
     static MARK_QUANTUM: Cell<usize> = const { Cell::new(256) };
     /// When false, old pressure still does a classic STW full collect.
+    /// Overridden by `LUMIA_GC_INCREMENTAL=0|false|off|stw`.
     static INCREMENTAL_FULL: Cell<bool> = const { Cell::new(true) };
+}
+
+fn incremental_full_enabled() -> bool {
+    match std::env::var("LUMIA_GC_INCREMENTAL") {
+        Ok(v) => {
+            let v = v.trim();
+            !(v.eq_ignore_ascii_case("0")
+                || v.eq_ignore_ascii_case("false")
+                || v.eq_ignore_ascii_case("off")
+                || v.eq_ignore_ascii_case("stw"))
+        }
+        Err(_) => INCREMENTAL_FULL.get(),
+    }
 }
 
 impl MarkSweep {
@@ -269,7 +283,7 @@ impl MarkSweep {
             Self::drain_full_mark();
             return;
         }
-        if INCREMENTAL_FULL.get() {
+        if incremental_full_enabled() {
             Self::begin_full_mark();
             Self::drain_full_mark();
         } else {
@@ -300,7 +314,7 @@ impl MarkSweep {
         }
         let old = BYTES_OLD.with(|o| *o.borrow());
         if old >= old_limit {
-            if INCREMENTAL_FULL.get() {
+            if incremental_full_enabled() {
                 Self::begin_full_mark();
                 let q = MARK_QUANTUM.with(|c| c.get());
                 Self::mark_quantum(q);

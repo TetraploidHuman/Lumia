@@ -6,6 +6,9 @@
 //! - `lumia_write_barrier(obj, field_index, new_ptr)` — remembered-set (old→young)
 //!   plus Dijkstra shade while an incremental full mark is in flight
 //! - `lumia_gc_collect()` — full-heap collection (drains concurrent mark)
+//!
+//! Env: `LUMIA_GC_INCREMENTAL=0|false|off|stw` forces classic STW full collect
+//! (default: incremental concurrent full mark).
 //! - `lumia_println_int(i64)` / `lumia_println_str(*const u8, len)`
 //!
 //! C ABI entry points take raw pointers by design; they are not Rust `unsafe fn`
