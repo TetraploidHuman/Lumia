@@ -21,9 +21,7 @@ pub(crate) fn apply_product_field_rewrites(
     for item in &mut module.items {
         match item {
             Item::Fun(f) => rewrite_expr(&mut f.body, field_rewrites, with_rewrites, &products),
-            Item::Val { body, .. } => {
-                rewrite_expr(body, field_rewrites, with_rewrites, &products)
-            }
+            Item::Val { body, .. } => rewrite_expr(body, field_rewrites, with_rewrites, &products),
         }
     }
 }
@@ -42,8 +40,7 @@ fn rewrite_expr(
             }
             let span = *span;
             if let Some(adt) = with_rewrites.get(&span) {
-                let Expr::With { base, fields, span } =
-                    std::mem::replace(expr, Expr::Unit(span))
+                let Expr::With { base, fields, span } = std::mem::replace(expr, Expr::Unit(span))
                 else {
                     unreachable!()
                 };
@@ -70,7 +67,9 @@ fn rewrite_expr(
             rewrite_expr(value, field_rewrites, with_rewrites, products);
             rewrite_expr(body, field_rewrites, with_rewrites, products);
         }
-        Expr::Assign { value, .. } | Expr::Unary { expr: value, .. } | Expr::Return { value, .. } => {
+        Expr::Assign { value, .. }
+        | Expr::Unary { expr: value, .. }
+        | Expr::Return { value, .. } => {
             rewrite_expr(value, field_rewrites, with_rewrites, products);
         }
         Expr::Lambda { body, .. } => rewrite_expr(body, field_rewrites, with_rewrites, products),

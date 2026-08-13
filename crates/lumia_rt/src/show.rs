@@ -69,7 +69,7 @@ pub extern "C" fn lumia_show(x: i64) -> *mut u8 {
 pub(crate) unsafe fn show_adt(payload: *mut u8) -> *mut u8 {
     let h = header_from_payload(payload);
     let tid = (*h).type_id;
-    let mask = (*h)._pad as u64;
+    let mask = (*h)._pad;
     let kind = adt_show_kind(tid);
     let ptrs = adt_show_name_ptrs(kind);
     if !ptrs.is_empty() {
@@ -210,7 +210,7 @@ pub extern "C" fn lumia_show_adt(x: i64, float_mask: i64) -> *mut u8 {
         if tid_base((*h).type_id) != TYPE_ADT {
             return lumia_show(x);
         }
-        let mask = (float_mask as u64) | ((*h)._pad as u64);
+        let mask = (float_mask as u64) | (*h)._pad;
         show_adt_masked(p, mask)
     }
 }
@@ -232,7 +232,7 @@ pub extern "C" fn lumia_show_adt_named(
         if tid_base((*h).type_id) != TYPE_ADT {
             return lumia_show(x);
         }
-        let mask = (float_mask as u64) | ((*h)._pad as u64);
+        let mask = (float_mask as u64) | (*h)._pad;
         show_adt_masked_named(p, mask, names, n_names)
     }
 }

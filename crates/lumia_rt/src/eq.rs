@@ -90,7 +90,7 @@ pub extern "C" fn lumia_eq(a: i64, b: i64) -> i64 {
             TYPE_SET => set_eq(pa, pb),
             TYPE_MAP => map_eq(pa, pb),
             TYPE_ADT => {
-                let mask = ((*ha)._pad as u64) | ((*hb)._pad as u64);
+                let mask = (*ha)._pad | (*hb)._pad;
                 adt_eq_payload(pa, pb, mask)
             }
             _ => 0,
@@ -114,7 +114,7 @@ pub extern "C" fn lumia_adt_eq(a: i64, b: i64, float_mask: i64) -> i64 {
             return lumia_eq(a, b);
         }
         // Prefer call-site mask; also honour layout stored in header `_pad` (nested eq).
-        let mask = (float_mask as u64) | ((*ha)._pad as u64) | ((*hb)._pad as u64);
+        let mask = (float_mask as u64) | (*ha)._pad | (*hb)._pad;
         adt_eq_payload(pa, pb, mask)
     }
 }

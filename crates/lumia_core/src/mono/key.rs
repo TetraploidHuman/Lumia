@@ -257,10 +257,7 @@ impl MonoKey {
             Type::Int | Type::Var(_) => None,
             other => Some(other.clone()),
         };
-        let data = self
-            .0
-            .iter()
-            .find(|k| !matches!(k, MonoKind::FunRef(_)))?;
+        let data = self.0.iter().find(|k| !matches!(k, MonoKind::FunRef(_)))?;
         match data {
             MonoKind::Adt { name, params } if name == "Option" => {
                 let inner = payload.or_else(|| params.first().map(MonoKind::to_type))?;

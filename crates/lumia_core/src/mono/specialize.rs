@@ -485,9 +485,7 @@ fn elide_trivial_mono_forwarders(module: &mut CoreModule) {
 }
 
 fn trivial_param_forward_target(fun: &CoreFun) -> Option<String> {
-    if fun.mono_of.is_none() {
-        return None;
-    }
+    fun.mono_of.as_ref()?;
     let result = fun.body.result?;
     for op in &fun.body.ops {
         let Op::Let {

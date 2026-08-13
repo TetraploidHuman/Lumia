@@ -8,15 +8,15 @@ fun main() effect.io=true memo=None {
   %4 = alloc_map[LitMap](n=2)  // pure
   %5 = %0  // pure
   %6 = alloc_adt(Option, tag=0, n=1)  // pure
-  %7 = builtin AdtTag(%6)  // pure
+  %7 = i64 0  // pure
   %8 = i64 0  // pure
-  %9 = %7 == %8  // pure
+  %9 = bool true  // pure
   %13 = if ...  // pure
   %14 = i64 9  // pure
   %15 = alloc_adt(Option, tag=1, n=0)  // pure
-  %16 = builtin AdtTag(%15)  // pure
+  %16 = i64 1  // pure
   %17 = %8  // pure
-  %18 = %16 == %8  // pure
+  %18 = bool false  // pure
   %22 = if ...  // pure
   %23 = builtin Println(%13)  // effect
   %24 = builtin Println(%22)  // effect

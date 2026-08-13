@@ -31,7 +31,7 @@ pub extern "C" fn lumia_efe_action_scores(
     complexity: f64,
 ) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
-    if n_actions < 1 || n_actions > 16 {
+    if !(1..=16).contains(&n_actions) {
         trap_abort("lumia: efe n_actions out of range");
     }
     let obs = force_f64(obs);
@@ -63,14 +63,7 @@ pub extern "C" fn lumia_efe_action_scores(
         let pred_s = std::slice::from_raw_parts(pp, n_pred);
 
         for a in 0..n_actions as usize {
-            let bumped = imagine_into(
-                obs_s,
-                a,
-                rel,
-                trel,
-                cell_step,
-                &mut scratch[..n_obs],
-            );
+            let bumped = imagine_into(obs_s, a, rel, trel, cell_step, &mut scratch[..n_obs]);
             let g1 = expected_free_energy(
                 &scratch[..n_obs],
                 pred_s,
@@ -150,7 +143,7 @@ pub extern "C" fn lumia_efe_embodied_action_scores(
     hunger_explore_gain: f64,
 ) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
-    if n_actions < 1 || n_actions > 16 {
+    if !(1..=16).contains(&n_actions) {
         trap_abort("lumia: efe embodied n_actions out of range");
     }
     let obs = force_f64(obs);
@@ -447,12 +440,7 @@ fn expected_free_energy(
             }
         }
     }
-    pref_gain * pref
-        + epi_gain * epi
-        + wall_gain * wall
-        + threat_gain * threat
-        + complexity
-        + homeo
+    pref_gain * pref + epi_gain * epi + wall_gain * wall + threat_gain * threat + complexity + homeo
 }
 
 fn force_f64(list: *mut u8) -> *mut u8 {

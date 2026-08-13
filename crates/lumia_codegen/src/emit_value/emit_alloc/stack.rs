@@ -59,10 +59,11 @@ impl<'ctx> Codegen<'ctx> {
                 "adt_hdr1",
             ))?
         };
-        crate::error::llvm(self.llvm.builder.build_store(
-            hdr1_slot,
-            self.llvm.i64_ty.const_int(1, false),
-        ))?;
+        crate::error::llvm(
+            self.llvm
+                .builder
+                .build_store(hdr1_slot, self.llvm.i64_ty.const_int(1, false)),
+        )?;
         // word2: `_pad` filled after fields via `lumia_adt_set_float_mask` (sanitizes).
         let hdr2_slot = unsafe {
             crate::error::llvm(self.llvm.builder.build_in_bounds_gep(

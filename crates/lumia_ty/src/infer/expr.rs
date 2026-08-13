@@ -64,11 +64,7 @@ impl Infer {
                 alt,
                 span,
             } => self.infer_alt(scrutinee, alt, *span),
-            Expr::With {
-                base,
-                fields,
-                span,
-            } => self.infer_with(base, fields, *span),
+            Expr::With { base, fields, span } => self.infer_with(base, fields, *span),
             Expr::AdtNew {
                 adt_name,
                 variant,
@@ -92,9 +88,12 @@ impl Infer {
                 "product `with` requires a concrete product-typed base",
             ));
         };
-        let order = self.products.products.get(&name).cloned().ok_or_else(|| {
-            at(span, format!("unknown product type `{name}` in `with`"))
-        })?;
+        let order = self
+            .products
+            .products
+            .get(&name)
+            .cloned()
+            .ok_or_else(|| at(span, format!("unknown product type `{name}` in `with`")))?;
         let mut by_name: rustc_hash::FxHashMap<String, Type> = rustc_hash::FxHashMap::default();
         for (fname, e) in fields {
             if !order.iter().any(|f| f == fname) {

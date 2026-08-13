@@ -833,12 +833,9 @@ fn walk_match01_else(
     let other = if seen == 0 { 1 } else { 0 };
     for op in &block.ops {
         if let Op::Let {
-            value:
-                Value::If {
-                    cond,
-                    else_block,
-                    ..
-                },
+            value: Value::If {
+                cond, else_block, ..
+            },
             ..
         } = op
         {
@@ -864,12 +861,9 @@ fn mark_match01_subs(body: &Block, all_defs: &HashMap<u32, Value>, out: &mut Has
     for_each_block_dfs(body, &mut |b| {
         for op in &b.ops {
             if let Op::Let {
-                value:
-                    Value::If {
-                        cond,
-                        else_block,
-                        ..
-                    },
+                value: Value::If {
+                    cond, else_block, ..
+                },
                 ..
             } = op
             {
@@ -1171,9 +1165,7 @@ val main = fib(10)
         let add_locals: Vec<_> = defs
             .iter()
             .filter_map(|(id, v)| match v {
-                Value::Binary {
-                    op: BinOp::Add, ..
-                } => Some(*id),
+                Value::Binary { op: BinOp::Add, .. } => Some(*id),
                 _ => None,
             })
             .collect();

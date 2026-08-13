@@ -1,9 +1,9 @@
 //! Shared runtime primitives: headers, TLS, traps, float-key helpers.
 
+use rustc_hash::FxHashSet;
 use std::alloc::Layout;
 use std::cell::{Cell, RefCell};
 use std::ffi::CStr;
-use rustc_hash::FxHashSet;
 
 pub use lumia_abi::{
     list_elem_is_float, tid_base, tid_f_key, tid_f_val, MEMO_IDX_CAP, MEMO_IDX_MAX_FUNS,

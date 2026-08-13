@@ -316,13 +316,14 @@ pub fn list_par_map_elem_ty(args: &[Local], ctx: InferValueCtx<'_>) -> Type {
 /// Mis-typing every field as `params[0]` made List fields look like Float, so ADT
 /// float-masks skipped GC marks on live lists (UAF → `get unsupported type_id`).
 fn adt_field_result_ty(args: &[Local], ctx: InferValueCtx<'_>) -> Type {
-    let params: Option<&[Type]> = args.first().and_then(|a| ctx.local_tys.get(&a.0)).and_then(
-        |t| match t {
-            Type::Adt { params, .. } if !params.is_empty() => Some(params.as_slice()),
-            Type::Tuple(ts) | Type::TuplePrefix(ts) if !ts.is_empty() => Some(ts.as_slice()),
-            _ => None,
-        },
-    );
+    let params: Option<&[Type]> =
+        args.first()
+            .and_then(|a| ctx.local_tys.get(&a.0))
+            .and_then(|t| match t {
+                Type::Adt { params, .. } if !params.is_empty() => Some(params.as_slice()),
+                Type::Tuple(ts) | Type::TuplePrefix(ts) if !ts.is_empty() => Some(ts.as_slice()),
+                _ => None,
+            });
     let Some(params) = params else {
         return Type::Int;
     };
@@ -549,11 +550,7 @@ mod tests {
             0,
             Type::Adt {
                 name: "Eco".into(),
-                params: vec![
-                    Type::Float,
-                    Type::Float,
-                    Type::List(Box::new(Type::Float)),
-                ],
+                params: vec![Type::Float, Type::Float, Type::List(Box::new(Type::Float))],
             },
         );
         local_tys.insert(1, Type::Int);

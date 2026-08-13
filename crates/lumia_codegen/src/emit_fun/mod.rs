@@ -228,14 +228,15 @@ impl<'ctx> Codegen<'ctx> {
 
     /// `Name`/`Local` alias or `AdtField` extract — not a fresh alloc / call result.
     fn value_is_cow_alias(value: &Value) -> bool {
-        match value {
-            Value::Local(_) | Value::Name(_) => true,
-            Value::Builtin {
-                name: Builtin::AdtField,
-                ..
-            } => true,
-            _ => false,
-        }
+        matches!(
+            value,
+            Value::Local(_)
+                | Value::Name(_)
+                | Value::Builtin {
+                    name: Builtin::AdtField,
+                    ..
+                }
+        )
     }
 
     /// Track `Value::Int` / aliases so `AdtField` can resolve `params[idx]`.
@@ -289,7 +290,8 @@ impl<'ctx> Codegen<'ctx> {
     /// `p = p with { f = … }` lowered to unique/COW in-place field updates.
     ///
     /// Requires alias/`AdtField` retains (`bind_let_after_emit`) and
-    /// `lumia_adt_ensure_unique_consume` (drops the with-temp `Name(slot)` retain).
+    /// `lumia_adt_ensure_unique_consume_mask` (drops the with-temp `Name(slot)`
+    /// retain; overwrite mask skips nested retain on rewritten fields).
     fn match_adt_with_reassign(
         &self,
         block: &Block,
@@ -300,7 +302,11 @@ impl<'ctx> Codegen<'ctx> {
         let Value::AllocAdt { fields, .. } = value else {
             return None;
         };
-        let Op::Assign { name: slot, value: v } = block.ops.get(let_idx + 1)? else {
+        let Op::Assign {
+            name: slot,
+            value: v,
+        } = block.ops.get(let_idx + 1)?
+        else {
             return None;
         };
         if *v != dest {
@@ -466,7 +472,7 @@ impl<'ctx> Codegen<'ctx> {
             let ok = match op {
                 Op::Let { value, .. } | Op::Effect { value } => match value {
                     Value::Call { args, .. } | Value::IndirectCall { args, .. } => {
-                        args.iter().any(|a| *a == local)
+                        args.contains(&local)
                     }
                     _ => false,
                 },
@@ -515,8 +521,7 @@ impl<'ctx> Codegen<'ctx> {
                     ..
                 } => match self.match_adt_with_reassign(block, abs_i, *dest, alloc) {
                     Some((_slot, updates)) => {
-                        fields.iter().any(|f| *f == local)
-                            && updates.iter().all(|(_, u)| *u != local)
+                        fields.contains(&local) && updates.iter().all(|(_, u)| *u != local)
                     }
                     None => false,
                 },

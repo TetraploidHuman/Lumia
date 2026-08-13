@@ -18,8 +18,7 @@ use crate::common::{
 use crate::map_set::{map_mark_payload, set_mark_payload};
 use crate::memo;
 use lumia_abi::{
-    list_elem_is_float, map_key_is_float, map_val_is_float, set_elem_is_float,
-    tid_base,
+    list_elem_is_float, map_key_is_float, map_val_is_float, set_elem_is_float, tid_base,
 };
 
 thread_local! {

@@ -69,10 +69,10 @@ pub extern "C" fn lumia_cn_nucleus_step(
         // err = bu - td; scratch = π * err
         let mut scratch = [0.0_f64; MAX_DIM];
         let mut delta = [0.0_f64; MAX_DIM];
-        for i in 0..n {
+        for (i, s) in scratch.iter_mut().enumerate().take(n) {
             let e = *bu.add(i) - *td.add(i);
             *ep.add(i) = e;
-            scratch[i] = precision * e;
+            *s = precision * e;
         }
 
         // delta = enc @ scratch
@@ -81,8 +81,8 @@ pub extern "C" fn lumia_cn_nucleus_step(
         // mu += lr * delta; clamp
         let lo = -mu_clip;
         let hi = mu_clip;
-        for i in 0..n {
-            let v = (*mp.add(i) + state_lr * delta[i]).clamp(lo, hi);
+        for (i, d) in delta.iter().enumerate().take(n) {
+            let v = (*mp.add(i) + state_lr * *d).clamp(lo, hi);
             *mp.add(i) = v;
         }
 
@@ -147,8 +147,8 @@ pub extern "C" fn lumia_cn_hebbian(
         let keep = 1.0 - weight_decay;
         let lo = -weight_clip;
         let hi = weight_clip;
-        for i in 0..m {
-            let ui = uu[i] * lr;
+        for (i, ui) in uu.iter().enumerate().take(m) {
+            let ui = *ui * lr;
             let row = wp.add(i * n);
             crate::f64_simd::hebbian_row_f64(row, vv.as_ptr(), mp.add(i * n), n, ui, keep, lo, hi);
         }
@@ -230,12 +230,7 @@ pub extern "C" fn lumia_cn_backproj_clamp(
 
 /// `y = clamp(y + α·x, -clip, clip)`.
 #[no_mangle]
-pub extern "C" fn lumia_cn_axpy_clamp(
-    y: *mut u8,
-    alpha: f64,
-    x: *mut u8,
-    clip: f64,
-) -> *mut u8 {
+pub extern "C" fn lumia_cn_axpy_clamp(y: *mut u8, alpha: f64, x: *mut u8, clip: f64) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
     let x = force_f64(x);
     let y = ensure_unique_f64(y);
@@ -394,8 +389,8 @@ pub extern "C" fn lumia_cn_learn_generative(
                 crate::f64_simd::axpy_scale_f64(pw.add(i * n), err_s.as_ptr(), ui, n);
             }
         }
-        for i in 0..n {
-            let ui = half * err_s[i];
+        for (i, e) in err_s.iter().enumerate().take(n) {
+            let ui = half * *e;
             if ui != 0.0 {
                 crate::f64_simd::axpy_scale_f64(enc.add(i * n), weighted.as_ptr(), ui, n);
             }
@@ -442,8 +437,8 @@ pub extern "C" fn lumia_cn_update_state(
         // Same association as: scratch=π·err; δ=enc@scratch; μ=axpy(μ,lr,δ); clamp(μ)
         let mut scratch = [0.0_f64; MAX_DIM];
         let mut delta = [0.0_f64; MAX_DIM];
-        for i in 0..n {
-            scratch[i] = precision * *ep.add(i);
+        for (i, s) in scratch.iter_mut().enumerate().take(n) {
+            *s = precision * *ep.add(i);
         }
         crate::f64_simd::matvec_f64(enc, scratch.as_ptr(), delta.as_mut_ptr(), n, n);
         crate::f64_simd::axpy_scale_f64(mp, delta.as_ptr(), state_lr, n);
@@ -531,9 +526,7 @@ mod tests {
         let td = from_slice(&[0.0, 0.0, 0.0, 0.0]);
         let err = lumia_list_f64_zeros(size);
         let pred = lumia_list_f64_zeros(size);
-        let mu = lumia_cn_nucleus_step(
-            mu, enc, pred_w, bu, td, err, pred, size, 0.5, 1.0, 10.0,
-        );
+        let mu = lumia_cn_nucleus_step(mu, enc, pred_w, bu, td, err, pred, size, 0.5, 1.0, 10.0);
         // err=[1,0,0,0]; delta=err; mu=0.5*err; pred=mu
         assert!((get_f(mu, 0) - 0.5).abs() < 1e-12);
         assert!((get_f(pred, 0) - 0.5).abs() < 1e-12);
@@ -545,7 +538,7 @@ mod tests {
         let w = from_slice(&[0.0, 0.0, 0.0, 0.0]);
         let u = from_slice(&[3.0, 0.0]); // → ≈[1,0]
         let v = from_slice(&[0.0, 4.0]); // → ≈[0,1]
-        // Zero the (1,0) synapse; keep (0,1) which receives the outer product.
+                                         // Zero the (1,0) synapse; keep (0,1) which receives the outer product.
         let mask = from_slice(&[1.0, 1.0, 0.0, 1.0]);
         let w = lumia_cn_hebbian(w, u, v, mask, 2, 2, 1.0, 10.0, 0.0, 1e-3);
         assert!(get_f(w, 0).abs() < 1e-9);

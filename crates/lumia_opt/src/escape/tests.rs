@@ -331,6 +331,61 @@ fn returned_take_escapes_source_list() {
 }
 
 #[test]
+fn dead_take_does_not_force_source_escape() {
+    // Take/Slice are not may_capture: a non-escaping take result must not force
+    // the source list onto the heap (GC mark_value no-ops non-heap elem bits).
+    let body = Block {
+        params: vec![],
+        ops: vec![
+            Op::Let {
+                local: Local(0),
+                value: Value::Int(1),
+                pure_region: true,
+            },
+            Op::Let {
+                local: Local(1),
+                value: Value::AllocList {
+                    elems: vec![Local(0)],
+                    repr: lumia_core::ListRepr::HeapList,
+                },
+                pure_region: true,
+            },
+            Op::Let {
+                local: Local(2),
+                value: Value::Int(1),
+                pure_region: true,
+            },
+            Op::Let {
+                local: Local(3),
+                value: Value::Builtin {
+                    name: Builtin::ListTake,
+                    args: vec![Local(1), Local(2)],
+                },
+                pure_region: true,
+            },
+            Op::Let {
+                local: Local(4),
+                value: Value::Builtin {
+                    name: Builtin::ListLen,
+                    args: vec![Local(3)],
+                },
+                pure_region: true,
+            },
+        ],
+        result: Some(Local(4)),
+    };
+    let esc = escaping_locals(&fun_with_body(body));
+    assert!(
+        !esc.contains(&Local(1)),
+        "dead take must not escape source list: {esc:?}"
+    );
+    assert!(
+        !esc.contains(&Local(3)),
+        "take result used only for len must not escape: {esc:?}"
+    );
+}
+
+#[test]
 fn returned_list_get_escapes_source_list() {
     let body = Block {
         params: vec![],

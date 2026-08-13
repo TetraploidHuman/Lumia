@@ -160,14 +160,19 @@ fn value_fixed_ty(
         Value::Int(_) => Some(Type::Int),
         Value::Float(_) => Some(Type::Float),
         Value::Char(_) => Some(Type::Char),
-        Value::Binary { op, left, right } => {
-            binary_fixed_ty(block, *op, left.0, right.0, index, trait_methods, param_tys, seen)
-        }
+        Value::Binary { op, left, right } => binary_fixed_ty(
+            block,
+            *op,
+            left.0,
+            right.0,
+            index,
+            trait_methods,
+            param_tys,
+            seen,
+        ),
         Value::Unary { op, operand } => match op {
             UnOp::Not => Some(Type::Bool),
-            UnOp::Neg => {
-                local_fixed_ty(block, operand.0, index, trait_methods, param_tys, seen)
-            }
+            UnOp::Neg => local_fixed_ty(block, operand.0, index, trait_methods, param_tys, seen),
         },
         Value::Call { fun, .. } => {
             if let Some(f) = index.get(fun) {
@@ -238,7 +243,15 @@ fn slot_fixed_ty(
     seen: &mut HashSet<u32>,
 ) -> Option<Type> {
     let mut found: Option<Type> = None;
-    scan_slot_ty(block, name, index, trait_methods, param_tys, seen, &mut found);
+    scan_slot_ty(
+        block,
+        name,
+        index,
+        trait_methods,
+        param_tys,
+        seen,
+        &mut found,
+    );
     found
 }
 
@@ -284,8 +297,24 @@ fn scan_value_slots(
             else_block,
             ..
         } => {
-            scan_slot_ty(then_block, name, index, trait_methods, param_tys, seen, found);
-            scan_slot_ty(else_block, name, index, trait_methods, param_tys, seen, found);
+            scan_slot_ty(
+                then_block,
+                name,
+                index,
+                trait_methods,
+                param_tys,
+                seen,
+                found,
+            );
+            scan_slot_ty(
+                else_block,
+                name,
+                index,
+                trait_methods,
+                param_tys,
+                seen,
+                found,
+            );
         }
         Value::Loop {
             header,
@@ -338,7 +367,13 @@ fn binary_fixed_ty(
     seen: &mut HashSet<u32>,
 ) -> Option<Type> {
     match op {
-        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::And
+        BinOp::Eq
+        | BinOp::Ne
+        | BinOp::Lt
+        | BinOp::Le
+        | BinOp::Gt
+        | BinOp::Ge
+        | BinOp::And
         | BinOp::Or => Some(Type::Bool),
         BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => {
             let l = local_fixed_ty(block, left, index, trait_methods, param_tys, seen)?;

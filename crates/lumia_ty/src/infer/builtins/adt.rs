@@ -48,9 +48,8 @@ impl Infer {
         };
         // Ambiguous `.field`: index -1, 3rd arg = field name.
         if matches!(&args[1], Expr::Int(-1, _)) {
-            let fname = third.ok_or_else(|| {
-                at(span, "unresolved field projection missing field name")
-            })?;
+            let fname =
+                third.ok_or_else(|| at(span, "unresolved field projection missing field name"))?;
             return self.infer_unresolved_product_field(recv_ty, fname, span, eff);
         }
         let expect_adt = third;
@@ -94,9 +93,10 @@ impl Infer {
                         format!("unknown product type `{name}` for field `{field}`"),
                     )
                 })?;
-                let idx = order.iter().position(|f| f == field).ok_or_else(|| {
-                    at(span, format!("type `{name}` has no field `{field}`"))
-                })?;
+                let idx = order
+                    .iter()
+                    .position(|f| f == field)
+                    .ok_or_else(|| at(span, format!("type `{name}` has no field `{field}`")))?;
                 let elem = params.get(idx).cloned().ok_or_else(|| {
                     at(
                         span,

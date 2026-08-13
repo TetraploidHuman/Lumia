@@ -13,7 +13,9 @@ fn alloc_forces_heap(value: &Value) -> bool {
         Value::AllocAdt { fields, .. } => fields.len() > 8,
         Value::AllocList { elems, .. } => elems.len() > 8,
         Value::AllocSet { elems, .. } => elems.is_empty() || elems.len() > 8,
-        Value::AllocMap { flat_pairs, repr, .. } => {
+        Value::AllocMap {
+            flat_pairs, repr, ..
+        } => {
             let n = flat_pairs.len() / 2;
             matches!(repr, MapRepr::AssocList) || n == 0 || n > 8
         }

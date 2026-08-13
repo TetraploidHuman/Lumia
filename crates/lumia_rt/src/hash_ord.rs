@@ -128,7 +128,7 @@ pub(crate) fn hash_value(key: i64, depth: u32) -> u64 {
             TYPE_ADT => {
                 let words = ((*h).size as usize) / 8;
                 let base = p as *const i64;
-                let float_mask = (*h)._pad as u64;
+                let float_mask = (*h)._pad;
                 let mut acc = splitmix64(0x414454u64 ^ (words as u64));
                 // Tag (word 0) always hashed as bits; fields honour IEEE layout mask.
                 if words > 0 {
@@ -305,7 +305,9 @@ pub extern "C" fn lumia_adt_ensure_unique_consume_mask(
 pub extern "C" fn lumia_adt_set_field(obj: *mut u8, index: i64, value: i64) {
     use crate::common::{value_rc_release_bits, value_rc_retain_bits};
     if obj.is_null() || index < 0 {
-        trap_abort(&format!("lumia: adt_set_field OOB (null or neg index={index})"));
+        trap_abort(&format!(
+            "lumia: adt_set_field OOB (null or neg index={index})"
+        ));
     }
     unsafe {
         let h = header_from_payload(obj);

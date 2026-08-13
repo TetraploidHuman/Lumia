@@ -243,9 +243,11 @@ impl<'ctx> Codegen<'ctx> {
         let out = call
             .try_as_basic_value()
             .basic()
-            .with_context(|| format!("{label}"))?
+            .with_context(|| label.to_string())?
             .into_pointer_value();
-        let out_i = self.ptr_as_i64(out, &format!("{label}_i64"))?.into_int_value();
+        let out_i = self
+            .ptr_as_i64(out, &format!("{label}_i64"))?
+            .into_int_value();
         crate::error::llvm(self.llvm.builder.build_return(Some(&out_i)))?;
         Ok(())
     }
@@ -274,11 +276,11 @@ impl<'ctx> Codegen<'ctx> {
         let rt = self.runtime_fn("lumia_f64_scale")?;
         let xs = self.i64_as_ptr(self.coerce_i64(self.local(p.xs)?)?, "xs")?;
         let alpha = self.promote_f64(self.local(p.alpha)?)?;
-        let call = crate::error::llvm(
-            self.llvm
-                .builder
-                .build_call(rt, &[xs.into(), alpha.into()], "fscale"),
-        )?;
+        let call = crate::error::llvm(self.llvm.builder.build_call(
+            rt,
+            &[xs.into(), alpha.into()],
+            "fscale",
+        ))?;
         let out = call
             .try_as_basic_value()
             .basic()
@@ -293,11 +295,11 @@ impl<'ctx> Codegen<'ctx> {
         let rt = self.runtime_fn("lumia_f64_fill")?;
         let xs = self.i64_as_ptr(self.coerce_i64(self.local(p.xs)?)?, "xs")?;
         let v = self.promote_f64(self.local(p.v)?)?;
-        let call = crate::error::llvm(
-            self.llvm
-                .builder
-                .build_call(rt, &[xs.into(), v.into()], "ffill"),
-        )?;
+        let call = crate::error::llvm(self.llvm.builder.build_call(
+            rt,
+            &[xs.into(), v.into()],
+            "ffill",
+        ))?;
         let out = call
             .try_as_basic_value()
             .basic()
@@ -312,11 +314,11 @@ impl<'ctx> Codegen<'ctx> {
         let rt = self.runtime_fn("lumia_f64_copy")?;
         let dst = self.i64_as_ptr(self.coerce_i64(self.local(p.dst)?)?, "dst")?;
         let src = self.i64_as_ptr(self.coerce_i64(self.local(p.src)?)?, "src")?;
-        let call = crate::error::llvm(
-            self.llvm
-                .builder
-                .build_call(rt, &[dst.into(), src.into()], "fcopy"),
-        )?;
+        let call = crate::error::llvm(self.llvm.builder.build_call(
+            rt,
+            &[dst.into(), src.into()],
+            "fcopy",
+        ))?;
         let out = call
             .try_as_basic_value()
             .basic()
@@ -1067,12 +1069,7 @@ fn fun_has_scale_shape(
     get_y && mul && set && uses_alpha && !add_or_sub
 }
 
-fn fun_has_fill_shape(
-    body: &Block,
-    defs: &HashMap<u32, Value>,
-    out_slot: &str,
-    v: Local,
-) -> bool {
+fn fun_has_fill_shape(body: &Block, defs: &HashMap<u32, Value>, out_slot: &str, v: Local) -> bool {
     let mut set = false;
     let mut uses_v = false;
     let mut get_any = false;
@@ -1124,13 +1121,13 @@ fn is_unit_inc_value(v: &Value, defs: &HashMap<u32, Value>) -> bool {
 }
 
 fn is_nontrivial_add_or_sub(v: &Value, defs: &HashMap<u32, Value>) -> bool {
-    match v {
+    matches!(
+        v,
         Value::Binary {
             op: BinOp::Add | BinOp::Sub,
             ..
-        } if !is_unit_inc_value(v, defs) => true,
-        _ => false,
-    }
+        } if !is_unit_inc_value(v, defs)
+    )
 }
 
 fn is_nontrivial_arith(v: &Value, defs: &HashMap<u32, Value>) -> bool {

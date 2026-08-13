@@ -97,11 +97,7 @@ impl<'ctx> Codegen<'ctx> {
                 if matches!(b, Builtin::ListGet)
                     && matches!(self.frame.local_tys.get(&args[0].0), Some(Type::List(_)))
                 {
-                    return self.call_rt_basic(
-                        "lumia_list_get",
-                        &[obj.into(), key.into()],
-                        label,
-                    );
+                    return self.call_rt_basic("lumia_list_get", &[obj.into(), key.into()], label);
                 }
                 let some = self
                     .llvm
@@ -138,14 +134,8 @@ impl<'ctx> Codegen<'ctx> {
         mut obj: PointerValue<'ctx>,
     ) -> Result<PointerValue<'ctx>> {
         if matches!(b, Builtin::MapSet) {
-            let val_float = matches!(
-                self.frame.local_tys.get(&args[2].0),
-                Some(Type::Float)
-            );
-            let key_float = matches!(
-                self.frame.local_tys.get(&args[1].0),
-                Some(Type::Float)
-            );
+            let val_float = matches!(self.frame.local_tys.get(&args[2].0), Some(Type::Float));
+            let key_float = matches!(self.frame.local_tys.get(&args[1].0), Some(Type::Float));
             match self.frame.local_tys.get(&args[0].0) {
                 Some(Type::List(_)) if val_float => {
                     return self.call_ensure(obj, lumia_abi::ENSURE_LIST_F64);
@@ -172,11 +162,7 @@ impl<'ctx> Codegen<'ctx> {
         Ok(obj)
     }
 
-    fn call_ensure(
-        &mut self,
-        obj: PointerValue<'ctx>,
-        sym: &str,
-    ) -> Result<PointerValue<'ctx>> {
+    fn call_ensure(&mut self, obj: PointerValue<'ctx>, sym: &str) -> Result<PointerValue<'ctx>> {
         let ens = self.runtime_fn(sym)?;
         Ok(
             crate::error::llvm(self.llvm.builder.build_call(ens, &[obj.into()], "ens_f"))?

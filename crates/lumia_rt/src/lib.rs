@@ -14,15 +14,15 @@
 
 mod adt_show;
 mod affine2;
+mod cn_kernels;
 mod collatz;
 mod common;
+mod dense_f64;
 mod dict;
 mod dispatch;
+mod efe;
 mod ensure;
 mod eq;
-mod cn_kernels;
-mod dense_f64;
-mod efe;
 mod f64_simd;
 mod float_kernels;
 mod gc;
@@ -48,26 +48,26 @@ pub use common::{
 pub use gc::{lumia_alloc, lumia_gc_collect, lumia_root_pop, lumia_root_push, lumia_write_barrier};
 
 pub use affine2::lumia_affine2_rem_sum;
-pub use collatz::{lumia_collatz_strided, lumia_collatz_total};
-pub use dict::{
-    lumia_dict_lookup, lumia_dict_register, lumia_dict_show, TRAIT_EQ, TRAIT_HASH, TRAIT_NUM,
-    TRAIT_ORD, TRAIT_SHOW,
-};
-pub use dispatch::*;
-pub use eq::*;
 pub use cn_kernels::{
     lumia_cn_argmax, lumia_cn_axpy_clamp, lumia_cn_backproj_clamp, lumia_cn_cluster_rates,
     lumia_cn_hebbian, lumia_cn_learn_generative, lumia_cn_nucleus_step, lumia_cn_project_clamp,
     lumia_cn_update_state,
 };
+pub use collatz::{lumia_collatz_strided, lumia_collatz_total};
 pub use dense_f64::{
     lumia_f64_add, lumia_f64_addmm, lumia_f64_atan2, lumia_f64_axpy, lumia_f64_checksum,
-    lumia_f64_clamp, lumia_f64_copy, lumia_f64_cos, lumia_f64_exp, lumia_f64_fill,
-    lumia_f64_gemv, lumia_f64_gemv_t, lumia_f64_hypot, lumia_f64_l2_norm, lumia_f64_l2_normalize,
-    lumia_f64_mean, lumia_f64_mul, lumia_f64_scale, lumia_f64_sin, lumia_f64_softmax,
-    lumia_f64_sqrt, lumia_f64_std, lumia_f64_sub, lumia_f64_sum_sq, lumia_list_f64_zeros,
+    lumia_f64_clamp, lumia_f64_copy, lumia_f64_cos, lumia_f64_exp, lumia_f64_fill, lumia_f64_gemv,
+    lumia_f64_gemv_t, lumia_f64_hypot, lumia_f64_l2_norm, lumia_f64_l2_normalize, lumia_f64_mean,
+    lumia_f64_mul, lumia_f64_scale, lumia_f64_sin, lumia_f64_softmax, lumia_f64_sqrt,
+    lumia_f64_std, lumia_f64_sub, lumia_f64_sum_sq, lumia_list_f64_zeros,
 };
+pub use dict::{
+    lumia_dict_lookup, lumia_dict_register, lumia_dict_show, TRAIT_EQ, TRAIT_HASH, TRAIT_NUM,
+    TRAIT_ORD, TRAIT_SHOW,
+};
+pub use dispatch::*;
 pub use efe::{lumia_efe_action_scores, lumia_efe_embodied_action_scores};
+pub use eq::*;
 pub use float_kernels::lumia_mandelbrot_checksum;
 pub use hash_ord::*;
 pub use list::*;

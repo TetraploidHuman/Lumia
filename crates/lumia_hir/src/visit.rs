@@ -127,9 +127,7 @@ fn fold_impl<T>(expr: &Expr, init: T, f: &mut impl FnMut(T, &Expr) -> T) -> T {
         }
         Expr::With { base, fields, .. } => {
             let acc = fold_impl(base, init, f);
-            fields
-                .iter()
-                .fold(acc, |acc, (_, e)| fold_impl(e, acc, f))
+            fields.iter().fold(acc, |acc, (_, e)| fold_impl(e, acc, f))
         }
         Expr::Int(..)
         | Expr::Float(..)

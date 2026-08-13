@@ -92,7 +92,11 @@ fn dense_f64_sr_module(module: &mut CoreModule) {
 }
 
 fn ensure_external(module: &mut CoreModule, sym: &str) {
-    if module.functions.iter().any(|f| f.name == sym || f.external.as_deref() == Some(sym)) {
+    if module
+        .functions
+        .iter()
+        .any(|f| f.name == sym || f.external.as_deref() == Some(sym))
+    {
         return;
     }
     let (param_tys, ret_ty) = external_sig(sym);
@@ -128,7 +132,14 @@ fn external_sig(sym: &str) -> (Vec<Type>, Type) {
             lf,
         ),
         "lumia_f64_addmm" => (
-            vec![Type::Int, Type::Int, lf.clone(), lf.clone(), lf.clone(), Type::Float],
+            vec![
+                Type::Int,
+                Type::Int,
+                lf.clone(),
+                lf.clone(),
+                lf.clone(),
+                Type::Float,
+            ],
             lf,
         ),
         "lumia_f64_axpy" => (vec![lf.clone(), Type::Float, lf.clone()], lf),
@@ -455,9 +466,9 @@ fn match_zeros_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Opt
     for v in defs.values() {
         if let Value::AllocList { elems, .. } = v {
             if elems.len() <= 1
-                && elems.iter().all(|e| {
-                    matches!(defs.get(&e.0), Some(Value::Float(f)) if *f == 0.0)
-                })
+                && elems
+                    .iter()
+                    .all(|e| matches!(defs.get(&e.0), Some(Value::Float(f)) if *f == 0.0))
             {
                 seed = true;
             }
@@ -486,9 +497,9 @@ fn match_zeros_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Opt
     for_each_let(body, &mut |val| {
         if let Value::AllocList { elems, .. } = val {
             if elems.len() <= 1
-                && elems.iter().all(|e| {
-                    matches!(defs.get(&e.0), Some(Value::Float(f)) if *f == 0.0)
-                })
+                && elems
+                    .iter()
+                    .all(|e| matches!(defs.get(&e.0), Some(Value::Float(f)) if *f == 0.0))
             {
                 seed = true;
             }
@@ -1081,12 +1092,7 @@ fn fun_has_scale_shape(
     get_y && mul && set && uses_alpha && !add_or_sub
 }
 
-fn fun_has_fill_shape(
-    body: &Block,
-    defs: &HashMap<u32, Value>,
-    out_slot: &str,
-    v: Local,
-) -> bool {
+fn fun_has_fill_shape(body: &Block, defs: &HashMap<u32, Value>, out_slot: &str, v: Local) -> bool {
     let mut set = false;
     let mut uses_v = false;
     let mut get_any = false;
@@ -1139,13 +1145,13 @@ fn is_unit_inc_value(v: &Value, defs: &HashMap<u32, Value>) -> bool {
 }
 
 fn is_nontrivial_add_or_sub(v: &Value, defs: &HashMap<u32, Value>) -> bool {
-    match v {
+    matches!(
+        v,
         Value::Binary {
             op: BinOp::Add | BinOp::Sub,
             ..
-        } if !is_unit_inc_value(v, defs) => true,
-        _ => false,
-    }
+        } if !is_unit_inc_value(v, defs)
+    )
 }
 
 fn is_nontrivial_arith(v: &Value, defs: &HashMap<u32, Value>) -> bool {
@@ -1271,9 +1277,7 @@ fn fun_has_sum_sq_shape(body: &Block, defs: &HashMap<u32, Value>, xs: Local) -> 
         if matches!(v, Value::Binary { op: BinOp::Mul, .. }) {
             mul = true;
         }
-        if is_nontrivial_add_or_sub(v, defs)
-            && matches!(v, Value::Binary { op: BinOp::Add, .. })
-        {
+        if is_nontrivial_add_or_sub(v, defs) && matches!(v, Value::Binary { op: BinOp::Add, .. }) {
             add = true;
         }
         if matches!(v, Value::Binary { op: BinOp::Div, .. }) {
@@ -1319,9 +1323,7 @@ fn fun_has_mean_shape(body: &Block, defs: &HashMap<u32, Value>, xs: Local) -> bo
                 get = true;
             }
         }
-        if is_nontrivial_add_or_sub(v, defs)
-            && matches!(v, Value::Binary { op: BinOp::Add, .. })
-        {
+        if is_nontrivial_add_or_sub(v, defs) && matches!(v, Value::Binary { op: BinOp::Add, .. }) {
             add = true;
         }
         if matches!(v, Value::Binary { op: BinOp::Div, .. }) {
@@ -1402,12 +1404,7 @@ fn fun_has_std_shape(body: &Block, defs: &HashMap<u32, Value>, xs: Local) -> boo
             set = true;
         }
     });
-    get
-        && sub
-        && mul
-        && div
-        && !set
-        && body_calls_any(body, &["lumia_f64_sqrt", "sqrtF", "sqrt"])
+    get && sub && mul && div && !set && body_calls_any(body, &["lumia_f64_sqrt", "sqrtF", "sqrt"])
 }
 
 fn fun_has_l2_normalize_shape(
@@ -1449,11 +1446,7 @@ fn fun_has_l2_normalize_shape(
             mul = true;
         }
     });
-    get
-        && set
-        && mul
-        && uses_eps
-        && body_calls_any(body, &["lumia_f64_sqrt", "sqrtF", "sqrt"])
+    get && set && mul && uses_eps && body_calls_any(body, &["lumia_f64_sqrt", "sqrtF", "sqrt"])
 }
 
 fn fun_has_softmax_shape(body: &Block, defs: &HashMap<u32, Value>, out_slot: &str) -> bool {
@@ -1657,7 +1650,10 @@ val main = {
             .iter()
             .filter_map(|f| f.external.as_deref())
             .collect();
-        assert!(ext.contains(&"lumia_f64_sum_sq"), "sum_sq missing in {ext:?}");
+        assert!(
+            ext.contains(&"lumia_f64_sum_sq"),
+            "sum_sq missing in {ext:?}"
+        );
         assert!(ext.contains(&"lumia_f64_mean"), "mean missing in {ext:?}");
     }
 
@@ -1759,7 +1755,9 @@ val main = {
             ext.contains(&"lumia_f64_l2_normalize"),
             "normalize missing in {ext:?}"
         );
-        assert!(ext.contains(&"lumia_f64_softmax"), "softmax missing in {ext:?}");
+        assert!(
+            ext.contains(&"lumia_f64_softmax"),
+            "softmax missing in {ext:?}"
+        );
     }
 }
-

@@ -615,7 +615,14 @@ const RUNTIME_DECLS: &[RtDecl] = &[
     RtDecl {
         name: "lumia_f64_addmm",
         ret: RtTy::Ptr,
-        args: &[RtTy::I64, RtTy::I64, RtTy::Ptr, RtTy::Ptr, RtTy::Ptr, RtTy::F64],
+        args: &[
+            RtTy::I64,
+            RtTy::I64,
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::F64,
+        ],
     },
     RtDecl {
         name: "lumia_f64_axpy",

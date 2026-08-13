@@ -406,7 +406,10 @@ unsafe fn scale_avx2(y: *mut f64, n: usize, alpha: f64) {
     let mut j = 0usize;
     while j + 8 <= n {
         _mm256_storeu_pd(y.add(j), _mm256_mul_pd(_mm256_loadu_pd(y.add(j)), va));
-        _mm256_storeu_pd(y.add(j + 4), _mm256_mul_pd(_mm256_loadu_pd(y.add(j + 4)), va));
+        _mm256_storeu_pd(
+            y.add(j + 4),
+            _mm256_mul_pd(_mm256_loadu_pd(y.add(j + 4)), va),
+        );
         j += 8;
     }
     while j + 4 <= n {
