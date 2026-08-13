@@ -8,12 +8,14 @@ mod tid;
 pub(crate) use core::{force_heap_list, list_get_of, list_len_of};
 pub use core::{
     lumia_list_append, lumia_list_empty, lumia_list_get, lumia_list_len, lumia_list_promote,
-    lumia_list_release, lumia_list_retain,
+    lumia_list_release, lumia_list_retain, lumia_ptr_eq,
 };
 pub use ops::*;
 pub use par::*;
+#[cfg(test)]
+pub(crate) use tid::ensure_list_f64;
+pub(crate) use tid::list_float_elems;
 pub use tid::lumia_ensure_list_f64;
-pub(crate) use tid::{is_list_tid, list_float_elems};
 
 #[cfg(test)]
 mod tests {

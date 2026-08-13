@@ -1,0 +1,33 @@
+module AdtWithAlias
+import std.io.{println}
+
+type Point {
+    val x
+    val y
+}
+
+type Cell {
+    val n
+    val m
+}
+
+type Box {
+    val cell
+    val z
+}
+
+val main = {
+    // Snapshot must stay stable across `p = p with`.
+    var p = Point { x = 1, y = 2 }
+    val snap = p
+    p = p with { x = 99 }
+    println(snap.x)
+    println(p.x)
+
+    // Nested extract + with must not mutate the parent field.
+    var o = Box { cell = Cell { n = 1, m = 2 }, z = 3 }
+    var c = o.cell
+    c = c with { n = 99 }
+    println(o.cell.n)
+    println(c.n)
+}

@@ -84,6 +84,18 @@ impl MonoKind {
     }
 }
 
+fn type_is_heap_structure(t: &Type) -> bool {
+    matches!(
+        t,
+        Type::Adt { .. }
+            | Type::List(_)
+            | Type::Map(_, _)
+            | Type::Set(_)
+            | Type::Tuple(_)
+            | Type::TuplePrefix(_)
+    )
+}
+
 fn type_to_mono(t: &Type) -> Option<MonoKind> {
     match t {
         Type::Int => Some(MonoKind::Int),
@@ -97,7 +109,8 @@ fn type_to_mono(t: &Type) -> Option<MonoKind> {
             Box::new(type_to_mono(v)?),
         )),
         Type::Set(e) => type_to_mono(e).map(|k| MonoKind::Set(Box::new(k))),
-        Type::Adt { name, params } => {
+        Type::Adt { name, params } if name == "Option" || name == "Result" => {
+            // Polymorphic payloads must appear in the key (map/andThen/…).
             let mut ps = Vec::with_capacity(params.len());
             for p in params {
                 ps.push(type_to_mono(p)?);
@@ -107,9 +120,55 @@ fn type_to_mono(t: &Type) -> Option<MonoKind> {
                 params: ps,
             })
         }
+        Type::Adt { name, .. } => {
+            // User products/sums: key by type name only. Field layouts are taken
+            // from the generic's `param_tys` when materializing a clone — call
+            // sites often erase these values to ABI `Int`, which must not become
+            // the clone's structural type (AdtField Float → sitofp of IEEE bits).
+            Some(MonoKind::Adt {
+                name: name.clone(),
+                params: vec![],
+            })
+        }
         // Unit / Fun / Var: FunRef args use `MonoKind::FunRef` via funref map.
         _ => None,
     }
+}
+
+/// Restore container structure that mono keys intentionally collapse / that call
+/// sites erase to ABI `Int`.
+pub(crate) fn restore_mono_param_ty(key_ty: &mut Type, formal: Option<&Type>) {
+    let Some(formal) = formal else {
+        return;
+    };
+    match (&*key_ty, formal) {
+        (Type::Int, t) if type_is_heap_structure(t) => {
+            *key_ty = t.clone();
+        }
+        (
+            Type::Adt { name, params },
+            Type::Adt {
+                name: formal_name,
+                params: formal_params,
+            },
+        ) if name == formal_name && params.is_empty() && !formal_params.is_empty() => {
+            *key_ty = formal.clone();
+        }
+        _ => {}
+    }
+}
+
+/// `key.param_tys` then [`restore_mono_param_ty`] against the generic's formals.
+pub(crate) fn materialize_mono_param_tys(
+    key: &MonoKey,
+    formals: &[Type],
+    funs: &[CoreFun],
+) -> Vec<Type> {
+    let mut tys = key.param_tys(funs);
+    for (i, ty) in tys.iter_mut().enumerate() {
+        restore_mono_param_ty(ty, formals.get(i));
+    }
+    tys
 }
 
 /// Call-site specialization key: one ground kind per argument.
@@ -185,89 +244,42 @@ impl MonoKey {
 
     /// `map` / `andThen` / `apply` shaped keys with a FunRef callback.
     pub(crate) fn hof_ret_ty(&self, functions: &[CoreFun]) -> Option<Type> {
-        let (fun_name, fun_ret) = self.0.iter().find_map(|k| match k {
-            MonoKind::FunRef(n) => {
-                let f = functions.iter().find(|f| f.name == *n)?;
-                Some((n.clone(), f.ret_ty.clone()))
-            }
+        let fun_ret = self.0.iter().find_map(|k| match k {
+            MonoKind::FunRef(n) => functions
+                .iter()
+                .find(|f| f.name == *n)
+                .map(|f| f.ret_ty.clone()),
             _ => None,
         })?;
-        let _ = fun_name;
-        let first = self.0.first()?;
         // Shared Fun bodies often keep erased `Int` / heap-marker ret; for
         // Option/Result map, the payload kind is the best U when ret is erased.
-        let refine_u = |u: Type, payload: &Type| -> Type {
-            match (&u, payload) {
-                (Type::Int | Type::Var(_), p) if !matches!(p, Type::Int | Type::Var(_)) => {
-                    p.clone()
-                }
-                (Type::List(e), p) if matches!(e.as_ref(), Type::Int) => {
-                    if !matches!(p, Type::Int | Type::Var(_)) {
-                        p.clone()
-                    } else {
-                        u
-                    }
-                }
-                _ => u,
-            }
+        let payload = match &fun_ret {
+            Type::Int | Type::Var(_) => None,
+            other => Some(other.clone()),
         };
-        match first {
+        let data = self.0.iter().find(|k| !matches!(k, MonoKind::FunRef(_)))?;
+        match data {
             MonoKind::Adt { name, params } if name == "Option" => {
-                let payload = params.first().map(MonoKind::to_type).unwrap_or(Type::Int);
-                match fun_ret {
-                    // andThen: T → Option[U]
-                    Type::Adt {
-                        name,
-                        params: mut ps,
-                    } if name == "Option" => {
-                        if let Some(u) = ps.first_mut() {
-                            *u = refine_u(u.clone(), &payload);
-                        }
-                        Some(Type::Adt {
-                            name: "Option".into(),
-                            params: ps,
-                        })
-                    }
-                    // map: T → U
-                    other => Some(Type::Adt {
-                        name: "Option".into(),
-                        params: vec![refine_u(other, &payload)],
-                    }),
-                }
+                let inner = payload.or_else(|| params.first().map(MonoKind::to_type))?;
+                Some(Type::Adt {
+                    name: "Option".into(),
+                    params: vec![inner],
+                })
             }
             MonoKind::Adt { name, params } if name == "Result" => {
-                let payload = params.first().map(MonoKind::to_type).unwrap_or(Type::Int);
-                let e = params.get(1).map(MonoKind::to_type).unwrap_or(Type::Int);
-                match fun_ret {
-                    Type::Adt {
-                        name,
-                        params: mut ps,
-                    } if name == "Result" => {
-                        if let Some(u) = ps.first_mut() {
-                            *u = refine_u(u.clone(), &payload);
-                        }
-                        Some(Type::Adt {
-                            name: "Result".into(),
-                            params: ps,
-                        })
-                    }
-                    other => Some(Type::Adt {
-                        name: "Result".into(),
-                        params: vec![refine_u(other, &payload), e],
-                    }),
-                }
+                let ok = payload.or_else(|| params.first().map(MonoKind::to_type))?;
+                let err = params.get(1).map(MonoKind::to_type).unwrap_or(Type::Int);
+                Some(Type::Adt {
+                    name: "Result".into(),
+                    params: vec![ok, err],
+                })
             }
-            // apply(f, x) / similar: first slot is the FunRef.
-            MonoKind::FunRef(_) => Some(fun_ret),
             _ => None,
         }
     }
 
-    /// Int-only data sites stay shared; FunRef or non-Int ground → clone.
+    /// Clone when any arg is non-Int or a FunRef (HOF).
     pub(crate) fn worth_cloning(&self) -> bool {
-        if self.0.is_empty() {
-            return false;
-        }
         self.0
             .iter()
             .any(|k| matches!(k, MonoKind::FunRef(_)) || !matches!(k, MonoKind::Int))
@@ -286,19 +298,32 @@ impl MonoKey {
     }
 }
 
+/// Build a mono key from call-site arg types.
+///
+/// When `formals` is the callee's `param_tys` and a site arg is ABI-erased `Int`
+/// but the formal is a heap structure (`Adt`/`List`/…), prefer the formal so the
+/// key does not treat a product as a numeric `Int`.
 pub(crate) fn args_mono_key(
     args: &[Local],
     local_tys: &HashMap<u32, Type>,
     funref_of: &HashMap<u32, String>,
+    formals: Option<&[Type]>,
 ) -> Option<MonoKey> {
     let mut kinds = Vec::with_capacity(args.len());
-    for a in args {
+    for (i, a) in args.iter().enumerate() {
         if let Some(name) = funref_of.get(&a.0) {
             kinds.push(MonoKind::FunRef(name.clone()));
             continue;
         }
-        let ty = local_tys.get(&a.0)?;
-        kinds.push(type_to_mono(ty)?);
+        let mut ty = local_tys.get(&a.0)?.clone();
+        if matches!(ty, Type::Int) {
+            if let Some(formal) = formals.and_then(|f| f.get(i)) {
+                if type_is_heap_structure(formal) {
+                    ty = formal.clone();
+                }
+            }
+        }
+        kinds.push(type_to_mono(&ty)?);
     }
     Some(MonoKey(kinds))
 }

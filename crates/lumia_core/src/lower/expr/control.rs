@@ -88,6 +88,9 @@ pub(super) fn lower_control(
         HirExpr::Alt { .. } => {
             panic!("lumia: Alt reached Core lower; expected typecheck desugar");
         }
+        HirExpr::With { .. } => {
+            panic!("lumia: With reached Core lower; expected typecheck rewrite");
+        }
         _ => unreachable!("lower_control: unexpected expr"),
     }
 }

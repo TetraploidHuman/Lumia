@@ -4,6 +4,7 @@ mod builtins;
 mod calls;
 mod expr;
 mod module;
+mod prelude_ctors;
 mod state;
 mod unify;
 
@@ -42,7 +43,8 @@ impl Infer {
                 Effect::io(),
             )),
         );
-        // Collection ctors: names from [`PRELUDE_CTORS`]; arity specialized in `infer_call`.
+        // Collection ctors: [`lumia_hir::PRELUDE_CTORS`]; arity specialized in
+        // `prelude_ctors` (not Builtin / BuiltinInfo — lower to Core Alloc*).
         for sn in lumia_hir::PRELUDE_CTORS {
             let ty = match sn.name {
                 "listOf" => Type::Fun(

@@ -2,11 +2,12 @@
 
 use super::core::{force_heap_list, list_len_of, lumia_list_empty, lumia_list_promote};
 use super::tid::{heap_list_tid, list_float_elems, list_tid};
-use crate::common::{trap_abort, GcInhibitGuard, TYPE_LIST, TYPE_LIST_IOTA};
+use crate::common::{list_rc_is_unique, trap_abort, GcInhibitGuard, TYPE_LIST, TYPE_LIST_IOTA};
 use crate::gc::{list_payload_bytes, lumia_alloc};
 use crate::hash_ord::lumia_ord_cmp;
 use crate::string_io::{lumia_alloc_string, with_str_bytes};
 use lumia_abi::list_type_id;
+use std::ptr;
 
 #[no_mangle]
 pub extern "C" fn lumia_list_take(list: *mut u8, n: i64) -> *mut u8 {
@@ -190,9 +191,11 @@ pub extern "C" fn lumia_list_join(list: *mut u8, sep: *mut u8) -> *mut u8 {
     lumia_alloc_string(buf.as_ptr(), buf.len() as u64)
 }
 
-/// Immutable update: new List with index `i` set to `elem` (bounds trap).
-/// Always allocates a fresh list — live SSA aliases must keep the old value
-/// (uniqueness COW is only for append growth, where retain tracks aliases).
+/// Update index `i` to `elem` (bounds trap).
+///
+/// COW like append: unique RC → in-place; shared → fresh copy. Codegen must
+/// `retain` the source when the old binding stays live (`val ys = xs.set(…)`);
+/// `xs = xs.set(…)` may consume uniqueness and write in place.
 #[no_mangle]
 pub extern "C" fn lumia_list_set(list: *mut u8, index: i64, elem: i64) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
@@ -205,6 +208,16 @@ pub extern "C" fn lumia_list_set(list: *mut u8, index: i64, elem: i64) -> *mut u
         if index >= n {
             trap_abort("lumia: list set out of bounds");
         }
+        let idx = index as usize;
+        if list_rc_is_unique(list) {
+            let dst = list as *mut i64;
+            *dst.add(1 + idx) = elem;
+            // Float elems are unboxed bits, not GC pointers (TYPE_LIST_F64).
+            if !list_float_elems(list) {
+                crate::lumia_write_barrier(list, (1 + idx) as u32, elem as *mut u8);
+            }
+            return list;
+        }
         let nbytes = list_payload_bytes(n);
         let dest = lumia_alloc(nbytes, heap_list_tid(list));
         if dest.is_null() {
@@ -212,11 +225,8 @@ pub extern "C" fn lumia_list_set(list: *mut u8, index: i64, elem: i64) -> *mut u
         }
         let src = list as *const i64;
         let dst = dest as *mut i64;
-        *dst = n;
-        for j in 0..n as usize {
-            *dst.add(1 + j) = *src.add(1 + j);
-        }
-        *dst.add(1 + index as usize) = elem;
+        ptr::copy_nonoverlapping(src, dst, (n as usize) + 1);
+        *dst.add(1 + idx) = elem;
         dest
     }
 }

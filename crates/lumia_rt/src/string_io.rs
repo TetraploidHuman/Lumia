@@ -8,9 +8,8 @@ use crate::common::{
     TYPE_BYTES, TYPE_CHAR, TYPE_LIST, TYPE_STRING,
 };
 use crate::gc::{list_payload_bytes, lumia_alloc};
-use crate::list::is_list_tid;
-use crate::map_set::{is_map_tid, is_set_tid};
 use crate::show::lumia_show;
+use lumia_abi::{is_list_tid, is_map_tid, is_set_tid};
 
 #[no_mangle]
 pub extern "C" fn lumia_println_int(n: i64) {

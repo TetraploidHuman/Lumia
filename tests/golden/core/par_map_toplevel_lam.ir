@@ -1,0 +1,29 @@
+module ParMapToplevelLam
+
+fun __lam_0(p0) effect.io=false memo=None {
+  %4 = call double(%3)  // pure
+  return %4
+}
+
+fun double(x) effect.io=false memo=None {
+  %1 = i64 2  // pure
+  %2 = %0 * %1  // pure
+  return %2
+}
+
+fun main() effect.io=true memo=None {
+  %0 = i64 0  // pure
+  %1 = i64 50  // pure
+  %2 = builtin Range(%0, %1)  // pure
+  %5 = funref __lam_0  // pure
+  %6 = builtin ListParMap(%2, %5)  // pure
+  %7 = builtin ListLen(%6)  // pure
+  %8 = builtin Println(%7)  // effect
+  %9 = %0  // pure
+  %10 = builtin ListGet(%6, %0)  // pure
+  %11 = builtin Println(%10)  // effect
+  %12 = i64 49  // pure
+  %13 = builtin ListGet(%6, %12)  // pure
+  %14 = builtin Println(%13)  // effect
+  return %14
+}

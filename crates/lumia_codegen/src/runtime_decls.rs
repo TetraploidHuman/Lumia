@@ -53,7 +53,32 @@ const RUNTIME_DECLS: &[RtDecl] = &[
     RtDecl {
         name: "lumia_adt_set_float_mask",
         ret: RtTy::Void,
-        args: &[RtTy::Ptr, RtTy::I32],
+        args: &[RtTy::Ptr, RtTy::I64],
+    },
+    RtDecl {
+        name: "lumia_adt_ensure_unique",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_adt_ensure_unique_mask",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr, RtTy::I64],
+    },
+    RtDecl {
+        name: "lumia_adt_ensure_unique_consume",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_adt_ensure_unique_consume_mask",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr, RtTy::I64],
+    },
+    RtDecl {
+        name: "lumia_adt_set_field",
+        ret: RtTy::Void,
+        args: &[RtTy::Ptr, RtTy::I64, RtTy::I64],
     },
     RtDecl {
         name: "lumia_show_adt",
@@ -142,6 +167,16 @@ const RUNTIME_DECLS: &[RtDecl] = &[
     },
     RtDecl {
         name: "lumia_list_release",
+        ret: RtTy::Void,
+        args: &[RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_adt_retain",
+        ret: RtTy::Void,
+        args: &[RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_adt_release",
         ret: RtTy::Void,
         args: &[RtTy::Ptr],
     },
@@ -247,22 +282,22 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         args: &[RtTy::Ptr, RtTy::I64],
     },
     RtDecl {
-        name: "lumia_ensure_map_f64",
+        name: lumia_abi::ENSURE_MAP_F64,
         ret: RtTy::Ptr,
         args: &[RtTy::Ptr],
     },
     RtDecl {
-        name: "lumia_ensure_map_vf64",
+        name: lumia_abi::ENSURE_MAP_VF64,
         ret: RtTy::Ptr,
         args: &[RtTy::Ptr],
     },
     RtDecl {
-        name: "lumia_ensure_set_f64",
+        name: lumia_abi::ENSURE_SET_F64,
         ret: RtTy::Ptr,
         args: &[RtTy::Ptr],
     },
     RtDecl {
-        name: "lumia_ensure_list_f64",
+        name: lumia_abi::ENSURE_LIST_F64,
         ret: RtTy::Ptr,
         args: &[RtTy::Ptr],
     },
@@ -427,6 +462,345 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         args: &[],
     },
     RtDecl {
+        name: "lumia_collatz_total",
+        ret: RtTy::I64,
+        args: &[RtTy::I64],
+    },
+    RtDecl {
+        name: "lumia_mandelbrot_checksum",
+        ret: RtTy::I64,
+        args: &[RtTy::I64],
+    },
+    RtDecl {
+        name: "lumia_collatz_strided",
+        ret: RtTy::I64,
+        args: &[RtTy::I64, RtTy::I64, RtTy::I64],
+    },
+    RtDecl {
+        name: "lumia_count_primes",
+        ret: RtTy::I64,
+        args: &[RtTy::I64],
+    },
+    RtDecl {
+        name: "lumia_affine2_rem_sum",
+        ret: RtTy::I64,
+        args: &[RtTy::I64, RtTy::I64, RtTy::I64, RtTy::I64, RtTy::I64],
+    },
+    RtDecl {
+        name: "lumia_gcd_sum",
+        ret: RtTy::I64,
+        args: &[RtTy::I64],
+    },
+    RtDecl {
+        name: "lumia_divisor_sum",
+        ret: RtTy::I64,
+        args: &[RtTy::I64],
+    },
+    RtDecl {
+        name: "lumia_product_rem_sum",
+        ret: RtTy::I64,
+        args: &[RtTy::I64, RtTy::I64],
+    },
+    RtDecl {
+        name: "lumia_affine1_rem_sum",
+        ret: RtTy::I64,
+        args: &[RtTy::I64, RtTy::I64, RtTy::I64, RtTy::I64],
+    },
+    RtDecl {
+        name: "lumia_matmul_affine_checksum",
+        ret: RtTy::I64,
+        args: &[RtTy::I64, RtTy::I64],
+    },
+    // Dense List[Float] kernels (flat row-major; unique buffers stay in-place).
+    RtDecl {
+        name: "lumia_list_f64_zeros",
+        ret: RtTy::Ptr,
+        args: &[RtTy::I64],
+    },
+    RtDecl {
+        name: "lumia_f64_fill",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr, RtTy::F64],
+    },
+    RtDecl {
+        name: "lumia_f64_scale",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr, RtTy::F64],
+    },
+    RtDecl {
+        name: "lumia_f64_sqrt",
+        ret: RtTy::F64,
+        args: &[RtTy::F64],
+    },
+    RtDecl {
+        name: "lumia_f64_exp",
+        ret: RtTy::F64,
+        args: &[RtTy::F64],
+    },
+    RtDecl {
+        name: "lumia_f64_sin",
+        ret: RtTy::F64,
+        args: &[RtTy::F64],
+    },
+    RtDecl {
+        name: "lumia_f64_cos",
+        ret: RtTy::F64,
+        args: &[RtTy::F64],
+    },
+    RtDecl {
+        name: "lumia_f64_atan2",
+        ret: RtTy::F64,
+        args: &[RtTy::F64, RtTy::F64],
+    },
+    RtDecl {
+        name: "lumia_f64_hypot",
+        ret: RtTy::F64,
+        args: &[RtTy::F64, RtTy::F64],
+    },
+    RtDecl {
+        name: "lumia_f64_mul",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr, RtTy::Ptr, RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_f64_add",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr, RtTy::Ptr, RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_f64_l2_norm",
+        ret: RtTy::F64,
+        args: &[RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_f64_sum_sq",
+        ret: RtTy::F64,
+        args: &[RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_f64_mean",
+        ret: RtTy::F64,
+        args: &[RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_f64_std",
+        ret: RtTy::F64,
+        args: &[RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_f64_softmax",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_f64_l2_normalize",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr, RtTy::F64],
+    },
+    RtDecl {
+        name: "lumia_f64_clamp",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr, RtTy::F64, RtTy::F64],
+    },
+    RtDecl {
+        name: "lumia_f64_gemv",
+        ret: RtTy::Ptr,
+        args: &[RtTy::I64, RtTy::I64, RtTy::Ptr, RtTy::Ptr, RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_f64_gemv_t",
+        ret: RtTy::Ptr,
+        args: &[RtTy::I64, RtTy::I64, RtTy::Ptr, RtTy::Ptr, RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_f64_addmm",
+        ret: RtTy::Ptr,
+        args: &[
+            RtTy::I64,
+            RtTy::I64,
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::F64,
+        ],
+    },
+    RtDecl {
+        name: "lumia_f64_axpy",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr, RtTy::F64, RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_f64_sub",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr, RtTy::Ptr, RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_f64_copy",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr, RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_f64_checksum",
+        ret: RtTy::I64,
+        args: &[RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_efe_action_scores",
+        ret: RtTy::Ptr,
+        args: &[
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::I64,
+            RtTy::I64,
+            RtTy::I64,
+            RtTy::I64,
+            RtTy::F64,
+            RtTy::F64,
+            RtTy::F64,
+            RtTy::F64,
+            RtTy::F64,
+            RtTy::F64,
+            RtTy::F64,
+        ],
+    },
+    RtDecl {
+        name: "lumia_efe_embodied_action_scores",
+        ret: RtTy::Ptr,
+        args: &[
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::I64,
+            RtTy::I64,
+            RtTy::I64,
+            RtTy::I64,
+            RtTy::F64,
+            RtTy::F64,
+            RtTy::F64,
+            RtTy::F64,
+            RtTy::F64,
+            RtTy::F64,
+            RtTy::F64,
+            RtTy::F64,
+            RtTy::F64,
+            RtTy::F64,
+        ],
+    },
+    RtDecl {
+        name: "lumia_cn_nucleus_step",
+        ret: RtTy::Ptr,
+        args: &[
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::I64,
+            RtTy::F64,
+            RtTy::F64,
+            RtTy::F64,
+        ],
+    },
+    RtDecl {
+        name: "lumia_cn_hebbian",
+        ret: RtTy::Ptr,
+        args: &[
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::I64,
+            RtTy::I64,
+            RtTy::F64,
+            RtTy::F64,
+            RtTy::F64,
+            RtTy::F64,
+        ],
+    },
+    RtDecl {
+        name: "lumia_cn_project_clamp",
+        ret: RtTy::Ptr,
+        args: &[
+            RtTy::I64,
+            RtTy::I64,
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::F64,
+        ],
+    },
+    RtDecl {
+        name: "lumia_cn_backproj_clamp",
+        ret: RtTy::Ptr,
+        args: &[
+            RtTy::I64,
+            RtTy::I64,
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::F64,
+        ],
+    },
+    RtDecl {
+        name: "lumia_cn_axpy_clamp",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr, RtTy::F64, RtTy::Ptr, RtTy::F64],
+    },
+    RtDecl {
+        name: "lumia_cn_argmax",
+        ret: RtTy::I64,
+        args: &[RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_cn_cluster_rates",
+        ret: RtTy::Ptr,
+        args: &[
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::I64,
+            RtTy::I64,
+            RtTy::F64,
+            RtTy::F64,
+        ],
+    },
+    RtDecl {
+        name: "lumia_cn_learn_generative",
+        ret: RtTy::Ptr,
+        args: &[
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::I64,
+            RtTy::F64,
+            RtTy::F64,
+            RtTy::F64,
+            RtTy::F64,
+        ],
+    },
+    RtDecl {
+        name: "lumia_cn_update_state",
+        ret: RtTy::Ptr,
+        args: &[
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::Ptr,
+            RtTy::I64,
+            RtTy::F64,
+            RtTy::F64,
+            RtTy::F64,
+        ],
+    },
+    RtDecl {
+        name: "lumia_ptr_eq",
+        ret: RtTy::I64,
+        args: &[RtTy::Ptr, RtTy::Ptr],
+    },
+    RtDecl {
         name: "lumia_str_starts_with",
         ret: RtTy::I64,
         args: &[RtTy::Ptr, RtTy::Ptr],
@@ -510,7 +884,8 @@ pub(crate) fn declare_runtime<'ctx>(context: &'ctx Context, module: &LlvmModule<
         if module.get_function(decl.name).is_some() {
             continue;
         }
-        module.add_function(decl.name, fn_type(context, decl), None);
+        let fv = module.add_function(decl.name, fn_type(context, decl), None);
+        crate::attrs::add_nounwind(context, fv);
     }
 }
 

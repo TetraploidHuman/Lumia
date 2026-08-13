@@ -1,0 +1,47 @@
+/// Directed dense connection (`cogninucleus.connection`).
+///
+/// Names are prefixed to avoid colliding with `std.cn` exports (Lumia merges
+/// imported module top-levels into one namespace).
+///
+/// @exports Conn, newConn, linkProject, linkProjectError, linkHebbian
+module connection
+
+import std.linalg.{zeros}
+import std.cn.{projectClamp, hebbian, ptrEq}
+
+type Conn {
+    val fromSize
+    val toSize
+    val w
+    val mask
+}
+
+val newConn = { fromSize, toSize, seedScale ->
+    var w = zeros(fromSize * toSize)
+    var mask = zeros(fromSize * toSize)
+    var i = 0
+    for i < fromSize * toSize {
+        mask = mask.set(i, 1.0)
+        w = w.set(i, (0.0 + (i % 13)) * seedScale)
+        i = i + 1
+    }
+    Conn { fromSize = fromSize, toSize = toSize, w = w, mask = mask }
+}
+
+val linkProject = { c, x, y, muClip ->
+    projectClamp(c.fromSize, c.toSize, c.w, x, y, muClip)
+}
+
+val linkProjectError = { c, x, y, muClip ->
+    projectClamp(c.fromSize, c.toSize, c.w, x, y, muClip)
+}
+
+val linkHebbian = { c, muFrom, errTo, lr, wClip, wDecay, eps ->
+    val w0 = c.w
+    val w1 = hebbian(w0, muFrom, errTo, c.mask, c.fromSize, c.toSize, lr, wClip, wDecay, eps)
+    // In-place Hebbian: skip Conn `with` so shared parents don't bump W's rc.
+    match {
+        ptrEq(w0, w1) != 0 -> c
+        _ -> c with { w = w1 }
+    }
+}

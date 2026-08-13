@@ -1,15 +1,8 @@
 //! List type_id helpers and Float-elem ensure.
 
-use crate::common::{
-    header_from_payload, list_elem_is_float, tid_base, trap_abort, TYPE_LIST, TYPE_LIST_IOTA,
-};
-use crate::gc::lumia_alloc;
+use crate::common::{header_from_payload, list_elem_is_float, tid_base, TYPE_LIST, TYPE_LIST_IOTA};
+use crate::ensure::ensure_empty_float_retag;
 use lumia_abi::list_type_id;
-
-#[inline]
-pub(crate) fn is_list_tid(tid: u32) -> bool {
-    lumia_abi::is_list_tid(tid)
-}
 
 #[inline]
 pub(crate) fn list_tid(list: *mut u8) -> u32 {
@@ -33,32 +26,18 @@ pub(crate) fn list_float_elems(list: *mut u8) -> bool {
 /// Ensure a list uses IEEE elem eq/hash (`list_type_id(true)`).
 /// Empty ordinary lists become a fresh empty F64 list (no in-place retag).
 pub(crate) fn ensure_list_f64(list: *mut u8) -> *mut u8 {
-    if list.is_null() {
-        let dest = lumia_alloc(8, list_type_id(true));
-        unsafe {
-            *(dest as *mut i64) = 0;
-        }
-        return dest;
-    }
-    unsafe {
-        let h = header_from_payload(list);
-        let tid = (*h).type_id;
-        if list_elem_is_float(tid) {
-            return list;
-        }
+    ensure_empty_float_retag(list, list_type_id(true), list_elem_is_float, |tid, list| {
         if tid_base(tid) == TYPE_LIST {
-            if *(list as *const i64) != 0 {
-                trap_abort("lumia: ensure_list_f64 on non-empty Int-elem list");
+            if unsafe { *(list as *const i64) } != 0 {
+                return Err("lumia: ensure_list_f64 on non-empty Int-elem list".into());
             }
-            let dest = lumia_alloc(8, list_type_id(true));
-            *(dest as *mut i64) = 0;
-            return dest;
+            return Ok(list_type_id(true));
         }
         if tid_base(tid) == TYPE_LIST_IOTA {
-            trap_abort("lumia: ensure_list_f64 on Iota");
+            return Err("lumia: ensure_list_f64 on Iota".into());
         }
-        trap_abort(&format!("lumia: ensure_list_f64 on type_id={tid}"))
-    }
+        Err(format!("lumia: ensure_list_f64 on type_id={tid}"))
+    })
 }
 
 #[no_mangle]

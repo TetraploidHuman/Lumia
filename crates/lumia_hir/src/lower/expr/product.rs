@@ -63,20 +63,81 @@ pub(super) fn lower_with(
     fields: &[(String, lumia_syntax::Expr)],
     span: Span,
 ) -> Expr {
-    // Infer product from first updated field name. Shared field names across
-    // product types are stripped from the map (ambiguous) and must error here.
     let Some((fname, _)) = fields.first() else {
         return lower_expr(ctx, base);
     };
-    let Some((type_name, _)) = ctx.lookup_product_field(fname) else {
-        ctx.set_err(
-            format!(
-                "cannot resolve `with` field `{fname}` (unknown or ambiguous across product types)"
-            ),
+    let names: Vec<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
+    let type_name = ctx
+        .lookup_product_field(fname)
+        .map(|(t, _)| t)
+        .or_else(|| ctx.unique_product_for_fields(&names));
+    let Some(type_name) = type_name else {
+        // Field names alone do not pick a product — resolve after ty knows `base`.
+        return Expr::With {
+            base: Box::new(lower_expr(ctx, base)),
+            fields: fields
+                .iter()
+                .map(|(n, e)| (n.clone(), lower_expr(ctx, e)))
+                .collect(),
             span,
-        );
-        return lower_expr(ctx, base);
+        };
     };
+    expand_with(ctx, type_name, base, fields, span)
+}
+
+/// Expand `base with { … }` once the product type is known (lower or ty rewrite).
+pub fn expand_with_known(
+    products: &HashMap<String, Vec<String>>,
+    type_name: String,
+    base: Expr,
+    fields: Vec<(String, Expr)>,
+    span: Span,
+) -> Expr {
+    let Some(order) = products.get(&type_name) else {
+        return base;
+    };
+    let tmp = format!("__with_{}", span.start.0);
+    let mut by_name: HashMap<String, Expr> = HashMap::default();
+    for (f, e) in fields {
+        by_name.insert(f, e);
+    }
+    let mut args = Vec::with_capacity(order.len());
+    for (i, f) in order.iter().enumerate() {
+        if let Some(e) = by_name.remove(f) {
+            args.push(e);
+        } else {
+            args.push(Expr::BuiltinCall {
+                name: Builtin::AdtField,
+                args: vec![
+                    Expr::Var(tmp.clone(), span),
+                    Expr::Int(i as i64, span),
+                    Expr::String(type_name.clone(), span),
+                ],
+                span,
+            });
+        }
+    }
+    Expr::Let {
+        name: tmp,
+        value: Box::new(base),
+        body: Box::new(Expr::AdtNew {
+            adt_name: type_name,
+            variant: String::new(),
+            tag: 0,
+            args,
+            span,
+        }),
+        mutable: false,
+    }
+}
+
+fn expand_with(
+    ctx: &LowerCtx,
+    type_name: String,
+    base: &lumia_syntax::Expr,
+    fields: &[(String, lumia_syntax::Expr)],
+    span: Span,
+) -> Expr {
     let Some(order) = ctx.lookup_product(&type_name) else {
         ctx.set_err(
             format!("unknown product type `{type_name}` in `with`"),
@@ -85,7 +146,6 @@ pub(super) fn lower_with(
         return lower_expr(ctx, base);
     };
     let base_e = lower_expr(ctx, base);
-    // Bind base once
     let tmp = format!("__with_{}", span.start.0);
     let mut by_name: HashMap<String, Expr> = HashMap::default();
     for (f, e) in fields {
@@ -98,7 +158,11 @@ pub(super) fn lower_with(
         } else {
             args.push(Expr::BuiltinCall {
                 name: Builtin::AdtField,
-                args: vec![Expr::Var(tmp.clone(), span), Expr::Int(i as i64, span)],
+                args: vec![
+                    Expr::Var(tmp.clone(), span),
+                    Expr::Int(i as i64, span),
+                    Expr::String(type_name.clone(), span),
+                ],
                 span,
             });
         }

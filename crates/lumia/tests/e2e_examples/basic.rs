@@ -31,7 +31,8 @@ e2e_ok!(e2e_for, "examples/for.lm", "15", "3");
 e2e_ok!(e2e_list, "examples/list.lm", "42");
 
 // `examples/math.lm` / `math_priv.lm` are library modules (no `main`); covered by
-// `use_math` / `use_priv`. `bench_*.lm` are timing harnesses, not e2e.
+// `use_math` / `use_priv`. Full `bench_cpu.lm` fingerprints live in
+// `tests/opt_correctness.rs` (Release + Debug≡Release via `opt_sr_correctness.lm`).
 
 e2e_ok!(e2e_alt_option, "examples/alt_option.lm", "10", "42");
 
@@ -207,6 +208,26 @@ e2e_ok!(
 );
 
 e2e_ok!(e2e_list_set_alias, "examples/list_set_alias.lm", "2", "99");
+
+e2e_ok!(
+    e2e_adt_with_alias,
+    "examples/adt_with_alias.lm",
+    "1",
+    "99",
+    "1",
+    "99"
+);
+
+e2e_ok!(e2e_with_open_recv, "examples/with_open_recv.lm", "10", "4", "3");
+
+e2e_ok!(
+    e2e_shared_product_field,
+    "examples/shared_product_field.lm",
+    "1",
+    "10",
+    "7",
+    "2"
+);
 
 e2e_ok!(
     e2e_take_escape,

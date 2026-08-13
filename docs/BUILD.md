@@ -2,7 +2,7 @@
 
 > **状态**：最终形态技术栈已落地（骨架可跑）  
 > **配套**：语言语义见 [DESIGN.md](DESIGN.md)  
-> **最后更新**：2026-08-07
+> **最后更新**：2026-08-11
 
 本文档记录 **怎么实现 / 怎么编译**，避免事后忘记选型与约定。语义不妥协版仍以 DESIGN 为准；实现分期可以瘦，**架构不能换**。
 
@@ -15,7 +15,7 @@
 - **本编译器需要支持 Linux、Windows 平台**；在 GitHub（[TetraploidHuman/Lumia](https://github.com/TetraploidHuman/Lumia)）上维护仓库，并以 CI 跑相关测试用例（`cargo test` + examples e2e）。
 - **不做**：树遍历解释器、字节码 VM、Cranelift 并行后端、JVM / 自托管编译器作为主路径。
 - **允许**：功能子集（少优化 Pass），但 **执行路径始终是 LLVM 产出的机器码**。
-- **内存**：回收器可更换；**先轻量 tracing GC（STW mark-sweep）**，以后可换更强 GC 或 ARC 模式。
+- **内存**：回收器可更换；首发分代 mark-sweep（minor STW + 增量并发 full mark），以后可换更强 GC 或 ARC 模式。
 
 ```text
 Source.lm
@@ -48,7 +48,7 @@ Source.lm
 | 后端    | **唯一 LLVM**（Debug / Release 都走 LLVM）                                             |
 | 泛型    | **单态化**（最终形态）                                                                    |
 | 运行时   | `lumia_rt`：Rust，对外 **C ABI**；GC 为可替换模块                                           |
-| 首发 GC | 分代 STW **mark-sweep** + **remembered-set 写屏障**（minor 只扫 nursery + dirty old；`lumia_write_barrier`）+ shadow stack 根 |
+| 首发 GC | 分代 **mark-sweep**：minor STW + remembered-set 写屏障；full 为 **增量并发 mark**（Dijkstra 着色）+ 收尾 remark/sweep；`lumia_write_barrier`；shadow stack 根 |
 
 
 ### 明确拒绝
@@ -73,12 +73,14 @@ crates/
   lumia_opt      Pass 管道（§7.1.1）：CSE / Memo / Inline / Escape / ReprSelect / CopyElim
   lumia_codegen  inkwell → .o → clang 链接（Codegen 子状态 + CodegenError）
   lumia_rt       GC ABI + mark-sweep + println*
-  lumia_abi      TYPE_*/MEMO_* + float_contract
+  lumia_abi      TYPE_*/MEMO_* + float_contract；packing / classifiers 唯一起源
 examples/        示例 .lm
 scripts/env.sh   NixOS：LLVM_SYS_211_PREFIX + 共享库 PATH（排除 *-static）
 scripts/e2e.sh   薄包装 → cargo e2e_examples
 scripts/check.sh 本地 CI 冒烟：`cargo test` workspace lib + lumia e2e
 ```
+
+**abi vs rt（Float / `type_id`）**：`lumia_abi` 拥有 packed `type_id` 构造器、标志位、`ENSURE_*` 符号名与纯分类器；`lumia_rt` 只做指针→header 读取（`list_tid` / `map_tid` / `set_tid`）与 `ensure_*_f64` 语义。C 符号 `lumia_ensure_*_f64` 冻结。
 
 根目录 `[workspace.dependencies]` 已钉 `inkwell` 的 `llvm21-1`。
 
@@ -139,7 +141,7 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumia_rt` 内�
 | `lumia_alloc(nbytes, type_id) -> *mut u8`            | 堆分配（可触发收集）；返回 **payload** 指针（头在前） |
 | `lumia_root_push(*mut *mut u8)` / `lumia_root_pop()` | shadow stack 根                    |
 | `lumia_write_barrier(obj, field, new)`               | 写屏障：old 写入 young 时记入 remembered set；young/非堆为 no-op |
-| `lumia_gc_collect()`                                 | 强制 **full** STW 收集                         |
+| `lumia_gc_collect()`                                 | 强制 **full** 收集（若增量 mark 进行中则先排空） |
 | `lumia_println_int` / `_cstr` / `_str` / `_bool`     | 效应 I/O                            |
 
 
@@ -162,6 +164,7 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumia_rt` 内�
 ## 6. 优化与表示选择
 
 - Pass 接口在 `lumia_opt`：`cse` / `const_fold` / `licm`（Debug+Release，局部消重）+ Release 的 `memo_tf`（有界 `T_f`：Slots / DenseInt；**CSE 前**做建表规划，非 pass 循环内空跑）；`--no-memo`（别名 `--no-memo-l2`）可关 runtime Memo 做对比。运行时 C 符号仍为 `lumia_memo_l2_*`（ABI 冻结）。
+  - **`memo/` 模块 = §7.5 reuse 族**（非单一 pass）：CSE + PE fold + LICM + `T_f` plan/apply；标量环境统一为 `KnownScalars`（与 `SpecializeConst` 共享）。
 - 测试/工具前端：`lumia_core::FrontendOptions`（`auto_parallel` / `trust_foreign_pure`）经 `compile_source_to_core_with_options`；多文件加载、visibility、assert 消息注解仍仅 CLI。
   - **Inline**：小纯函数直调内联（跳过 `main` / `foreign` / memo / 递归 / 效应）；Release 在 Inline 后再跑 `ConstFold` → `SpecializeConst` → `Escape` → `ReprSelect`（内联露出的字面量可栈分配）。
   - **Escape**：保守逃逸分析；标量/`Join`/字符串深拷贝投影可不 `may_capture`；`Take`/`Elems` 等共享或拷贝元素指针的仍捕获；逃逸的 `ListGet`/`AdtField` 会标容器。`ReprSelect` 对**未逃逸**小 `List`/`Map` 标 `LitList` / `SmallMap`（codegen 栈布局已接）。
@@ -170,7 +173,7 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumia_rt` 内�
   - **concat_ident**：Core 消 `concat([])` 恒等（`map`/`filter`/`fold` 主融合在 HIR）；空 `listOf()` → `lumia_list_empty` 永生单例。
   - **稳健性**：foreign `String` 临时 cstr 在调用期间入根（防 GC UAF）；Iota 物化 / 取下标用 checked 算术并对过大物化 trap；跨 product 同名字段的 `with` 报歧义。
   - **List Iota**：`range` / `rangeInclusive` → `TYPE_LIST_IOTA`（`[start,end)`，O(1)）；`len`/`get`/eq/hash/`take`/`slice` 虚拟；修改类 API `force` 成 HeapList（见 `examples/range_iota.lm`）；PE 跟踪虚拟 iota；`par_map`/`concat` 空恒等不强制物化。
-- GC：分代 mark-sweep（young 默认 64KiB → minor：只标记 nursery + remembered/rooted old；old 默认 256KiB 或 `lumia_gc_collect` → full）+ **`lumia_write_barrier` remembered set**（List 原地 append、Map/Set hash upsert；codegen 堆字段 store 亦发出）+ **shadow-stack 根**；`is_heap_payload` O(1)；见 `examples/gc_roots.lm`。
+- GC：分代 mark-sweep（young 默认 1MiB → minor STW：只标记 nursery + remembered/rooted old；old 默认 8MiB → **增量并发 full mark**，或 `lumia_gc_collect` 排空）+ **`lumia_write_barrier`**（remembered set + Dijkstra 着色）+ **shadow-stack 根**；`is_heap_payload` O(1)；见 `examples/gc_roots.lm`。
   - **Escape**：短生命周期 `var` 不再一律逃逸；经 `Name`/返回逃逸的赋值仍会标记，便于 `ReprSelect` 选栈 `Lit*`。
 - Map：小表线性 Assoc；超过 8 对晋升 **HashOrdered**；大表 `set` 走 **Overlay** 差分（满 8 条再压实）；见 `examples/map_hash.lm`。
 - Set：同哲学 — ≤8 线性，更大 **HashOrdered**（开址 + 插入序）；见 `examples/set_hash.lm`。
@@ -185,9 +188,15 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumia_rt` 内�
 - **LSP**：`lumia lsp`（stdio；未保存 buffer overlay；诊断；hover；跨文件定义；补全；formatting）。
 - **FFI**：`foreign "C" [pure] fn …`（`Int`/`Bool`/`Float`/`Unit`/`String↔cstr`）+ `--link` / `package.link`（`examples/ffi_abs.lm` / `ffi_strlen.lm` / `ffi_getenv.lm`）。默认效应为 IO；`pure` 需 `--trust-foreign-pure` 或 `package.trust_foreign_pure = true`（荣誉系统，未验证）。
 - **自动并行**（默认开）：无捕获 lambda 或顶层函数名的纯标量 `List.map` → `ListParMap`（`examples/par_map.lm` / `par_map_fn.lm`）；IO/堆类型/捕获闭包回退顺序（`par_map_capture.lm` / `bad_par_map_io.lm`）。`--no-parallel` 关闭。worker 内禁止堆分配（TLS 堆隔离）。
-- Memo 性能：`scripts/bench_memo.sh`（同参热命中，约 **20×** vs `--no-memo`）；`examples/memo_dense.lm` 的 `fib` 下标表约 **1000×+**。
+- Memo 性能：`scripts/bench_memo.sh`（同参热命中，约 **20×** vs `--no-memo`；报时间 + 峰值 RSS）；`examples/memo_dense.lm` 的 `fib` 下标表约 **1000×+**。
   - `**bench_cpu` 整套**：收益几乎只来自 `fib`（其余核是单遍扫参，无跨调用复用 → 理论无命中）。曾有成本模型把「循环里调用一次」当成命中证据、误挂 4 槽表导致 Collatz **变慢**，已改为要求递归或静态同参复用；稠密表仅结构递减自递归。
-- CPU 计算密集：`scripts/bench_cpu.sh`（素数 / matmul / Mandelbrot / Collatz / fib）。
+- CPU 计算密集：`scripts/bench_cpu.sh`（素数 / matmul / Mandelbrot / Collatz dense+strided / fib / poly / gcd / divisorSum / productRem / floatOrbit / rangeFold；约 0.5–1s 量级，报 min/median/max **时间 + 峰值 RSS**）。
+- Dense float（CogniNucleus 热路径）：`scripts/bench_cn_hot.sh`（naive 循环 vs `std.linalg`；checksum 对齐 + 时间/RSS）。
+- Dense float（整步）：`scripts/bench_cn_step.sh`（sensory fill/scale/add + gate mul + decay + PC/Hebbian；扩展 SR 面）。
+- CogniNucleus EFE：`scripts/bench_cn_efe.sh`（imagine+G(a) naive vs fused `lumia_efe_action_scores`）。
+- CogniNucleus D2 smoke 门禁：`scripts/cn_d2_smoke_gate.sh`（`eval_behaviors_smoke`；`metrics_sane` + B2；CI Linux）；对照 Python：`scripts/cn_d2_smoke_compare.sh`（`--lumia-align`，数值 parity 仍待）。
+- **聚合回归**：`scripts/bench_all.sh` 依次跑 cpu / memo / cn_hot / cn_step / cn_efe（改 dense-float 等优化时应用此入口，避免单项过关、旧核回归）。
+- **峰值 RSS**：`scripts/bench_measure.sh` 经小型 C 父进程 `wait4`（`scripts/peak_rss.c`）取样；勿用大 RSS 的 Python `subprocess` fork——COW 会把解释器常驻内存算进子进程 `ru_maxrss`。Release 链接加 `--gc-sections`（macOS：`-dead_strip`）丢掉未引用的 `lumia_rt`/Rust-std 目标文件，降低基线 RSS。
 - **纪律（DESIGN §7.1.1）**：分析能证明 → 特化；不能证明 → **默认稳定路径**：
   - `List` → `HeapList` / `COWList`
   - `Map`/`Set` → `HashOrdered` + COW / Overlay
@@ -203,7 +212,7 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumia_rt` 内�
 | **已完成骨架**       | parse 子集 → 推断 + 效应 → Core → LLVM → 链 `lumia_rt` → `main` + `println` + `Int`；`listOf`→`AllocList`；CSE + ReprSelect 默认路径                       |
 | **已完成下一步（部分）**  | …；**sortBy / assert+行号**；**定位诊断（多文件）**；**Map Overlay**；**WordCount**；**lumia fmt**；…                                                          |
 | **已完成（相对原「下一里程碑」）** | Trait / instance + 运行时字典；非逃逸小对象栈分配（Lit* / LitAdt + 晋升）；`std.option` / `std.result` / `std.string` / `std.io` 源文件正文；逃逸分析 / 融合 / TCO SCC / 自动并行 / 透明 Memo；local `Map.get` PE (§7.5.1-A) + Release 二次 `const_fold`；**Int/Bool/Char call-site specialization**（`SpecializeConstPass`）+ 字面 `ListTake`/`ListSlice`/`ListReverse`/`AdtTag`/`Map.set`/`Set.insert` PE |
-| **仍待** | 并发 GC；`--mm=arc`（分代 + remembered set 已落地） |
+| **仍待** | 更强并发（多线程共享堆 / 真并行 mark）；`--mm=arc`（分代 + remembered set + **增量并发 full mark** 已落地） |
 | **工具链已落地** | **自动并行**（默认 `ListParMap` + 不安全回退；`--no-parallel`）；**包管理**（`Lumia.toml` / `lumia pkg`）；**LSP**（`lumia lsp`）；**FFI**（`foreign "C" fn`）；`priv` 跨文件可见性；`effect { }` 块；Map/Set `finish` 晋升；`lumia fmt` / `lumia doc` |
 
 
@@ -256,12 +265,15 @@ printf '  hi hi there  ' | $(cargo run -q -p lumia -- build examples/read_stdin.
 printf 'Hello World\nhello there\nWORLD\n' | $(cargo run -q -p lumia -- build examples/word_count.lm -o /tmp/wc >/dev/null && echo /tmp/wc)
 cargo run -p lumia -- build examples/list_text.lm -o /tmp/lt && /tmp/lt
 cargo run -p lumia -- build --release examples/memo_tf.lm -o /tmp/memo && /tmp/memo
-cargo run -p lumia -- build examples/memo_local.lm -o /tmp/m01 && /tmp/m01
+cargo run -p lumia -- build examples/memo_local.lm -o /tmp/memo_local && /tmp/memo_local
 # Memo `T_f` microbench (with vs without cache):
 #   ./scripts/bench_memo.sh
 # CPU compute suite (primes / matmul / Mandelbrot / Collatz / fib):
 #   ./scripts/bench_cpu.sh
 #   COMPARE_DEBUG=1 ./scripts/bench_cpu.sh   # also time Debug vs Release
+# Dense-float CN hot path + full perf gate (time + peak RSS):
+#   ./scripts/bench_cn_hot.sh
+#   ./scripts/bench_all.sh
 cargo run -p lumia -- build examples/mapset.lm -o /tmp/ms && /tmp/ms
 ```
 

@@ -24,6 +24,8 @@ pub struct InferValueCtx<'a> {
     pub fun_param_tys: Option<&'a HashMap<String, Vec<Type>>>,
     pub fun_param0_identity: Option<&'a HashSet<String>>,
     pub funref_locals: Option<&'a HashMap<u32, String>>,
+    /// SSA locals bound to `Value::Int` (for `AdtField` index → `params[i]`).
+    pub local_int_consts: Option<&'a HashMap<u32, i64>>,
 }
 
 /// Grouped codegen tables so [`InferValueCtx::full`] stays a short call site.
@@ -34,6 +36,7 @@ pub struct CodegenTypeTables<'a> {
     pub fun_param_tys: &'a HashMap<String, Vec<Type>>,
     pub fun_param0_identity: &'a HashSet<String>,
     pub funref_locals: &'a HashMap<u32, String>,
+    pub local_int_consts: &'a HashMap<u32, i64>,
 }
 
 impl<'a> InferValueCtx<'a> {
@@ -45,10 +48,11 @@ impl<'a> InferValueCtx<'a> {
             fun_param_tys: None,
             fun_param0_identity: None,
             funref_locals: None,
+            local_int_consts: None,
         }
     }
 
-    /// Full codegen tables (slots + function ABI + FunRef locals).
+    /// Full codegen tables (slots + function ABI + FunRef locals + int consts).
     pub fn full(local_tys: &'a HashMap<u32, Type>, tables: CodegenTypeTables<'a>) -> Self {
         Self {
             local_tys,
@@ -57,6 +61,7 @@ impl<'a> InferValueCtx<'a> {
             fun_param_tys: Some(tables.fun_param_tys),
             fun_param0_identity: Some(tables.fun_param0_identity),
             funref_locals: Some(tables.funref_locals),
+            local_int_consts: Some(tables.local_int_consts),
         }
     }
 }
@@ -197,7 +202,7 @@ pub fn infer_value_ty_ctx(
             name: Builtin::ListParMap,
             args,
         } => Type::List(Box::new(list_par_map_result_elem(args, ctx))),
-        Value::Builtin { name, args } => builtin_value_ty(*name, args, ctx.local_tys),
+        Value::Builtin { name, args } => builtin_value_ty(*name, args, ctx),
         Value::AllocClosure { .. } | Value::FunRef(_) | Value::ClosureCap { .. } => {
             Type::Fun(vec![], Box::new(Type::Int), Effect::pure())
         }
@@ -306,7 +311,34 @@ pub fn list_par_map_elem_ty(args: &[Local], ctx: InferValueCtx<'_>) -> Type {
     list_par_map_result_elem(args, ctx)
 }
 
-fn builtin_value_ty(name: Builtin, args: &[Local], local_tys: &HashMap<u32, Type>) -> Type {
+/// `AdtField(obj, idx)` → `params[idx]` (not always `params[0]`).
+///
+/// Mis-typing every field as `params[0]` made List fields look like Float, so ADT
+/// float-masks skipped GC marks on live lists (UAF → `get unsupported type_id`).
+fn adt_field_result_ty(args: &[Local], ctx: InferValueCtx<'_>) -> Type {
+    let params: Option<&[Type]> =
+        args.first()
+            .and_then(|a| ctx.local_tys.get(&a.0))
+            .and_then(|t| match t {
+                Type::Adt { params, .. } if !params.is_empty() => Some(params.as_slice()),
+                Type::Tuple(ts) | Type::TuplePrefix(ts) if !ts.is_empty() => Some(ts.as_slice()),
+                _ => None,
+            });
+    let Some(params) = params else {
+        return Type::Int;
+    };
+    let idx = args
+        .get(1)
+        .and_then(|a| ctx.local_int_consts.and_then(|m| m.get(&a.0).copied()))
+        .unwrap_or(0);
+    if idx < 0 {
+        return Type::Int;
+    }
+    params.get(idx as usize).cloned().unwrap_or(Type::Int)
+}
+
+fn builtin_value_ty(name: Builtin, args: &[Local], ctx: InferValueCtx<'_>) -> Type {
+    let local_tys = ctx.local_tys;
     match name {
         Builtin::Show
         | Builtin::ReadStdin
@@ -332,15 +364,7 @@ fn builtin_value_ty(name: Builtin, args: &[Local], local_tys: &HashMap<u32, Type
                 _ => Type::Int,
             })
             .unwrap_or(Type::Int),
-        Builtin::AdtField => args
-            .first()
-            .and_then(|a| local_tys.get(&a.0))
-            .and_then(|t| match t {
-                Type::Adt { params, .. } if !params.is_empty() => Some(params[0].clone()),
-                Type::Tuple(ts) | Type::TuplePrefix(ts) if !ts.is_empty() => Some(ts[0].clone()),
-                _ => None,
-            })
-            .unwrap_or(Type::Int),
+        Builtin::AdtField => adt_field_result_ty(args, ctx),
         Builtin::ListParFold => args
             .get(1)
             .and_then(|a| local_tys.get(&a.0).cloned())
@@ -381,12 +405,55 @@ fn builtin_value_ty(name: Builtin, args: &[Local], local_tys: &HashMap<u32, Type
                 params: vec![Type::Int, Type::Int],
             })),
         },
-        Builtin::MapSet | Builtin::MapRemove => {
+        Builtin::MapSet => {
+            let key_ty = args
+                .get(1)
+                .and_then(|a| local_tys.get(&a.0).cloned())
+                .unwrap_or(Type::Int);
+            let val_ty = args
+                .get(2)
+                .and_then(|a| local_tys.get(&a.0).cloned())
+                .unwrap_or(Type::Int);
+            match args.first().and_then(|a| local_tys.get(&a.0)) {
+                Some(Type::List(e)) => {
+                    let elem = if matches!(val_ty, Type::Float) {
+                        Type::Float
+                    } else {
+                        (**e).clone()
+                    };
+                    Type::List(Box::new(elem))
+                }
+                Some(Type::Map(k, v)) => {
+                    let k = if matches!(key_ty, Type::Float) {
+                        Box::new(Type::Float)
+                    } else {
+                        k.clone()
+                    };
+                    let v = if matches!(val_ty, Type::Float) {
+                        Box::new(Type::Float)
+                    } else {
+                        v.clone()
+                    };
+                    Type::Map(k, v)
+                }
+                // Free / poly: Int key ⇒ list index update (not Map).
+                _ if matches!(key_ty, Type::Int) => {
+                    Type::List(Box::new(if matches!(val_ty, Type::Float) {
+                        Type::Float
+                    } else {
+                        val_ty
+                    }))
+                }
+                _ => Type::Map(Box::new(key_ty), Box::new(val_ty)),
+            }
+        }
+        Builtin::MapRemove => {
             let key_ty = args
                 .get(1)
                 .and_then(|a| local_tys.get(&a.0).cloned())
                 .unwrap_or(Type::Int);
             match args.first().and_then(|a| local_tys.get(&a.0)) {
+                Some(Type::List(e)) => Type::List(e.clone()),
                 Some(Type::Map(k, v)) => {
                     let k = if matches!(key_ty, Type::Float) {
                         Box::new(Type::Float)
@@ -468,10 +535,44 @@ mod tests {
             fun_param_tys: None,
             fun_param0_identity: None,
             funref_locals: Some(&funref),
+            local_int_consts: None,
         };
         assert_eq!(
             list_par_map_elem_ty(&[Local(0), Local(1)], ctx),
             Type::Float
         );
+    }
+
+    #[test]
+    fn adt_field_uses_index_not_params0() {
+        let mut local_tys = HashMap::default();
+        local_tys.insert(
+            0,
+            Type::Adt {
+                name: "Eco".into(),
+                params: vec![Type::Float, Type::Float, Type::List(Box::new(Type::Float))],
+            },
+        );
+        local_tys.insert(1, Type::Int);
+        let mut consts = HashMap::default();
+        consts.insert(1, 2i64);
+        let ctx = InferValueCtx {
+            local_tys: &local_tys,
+            slot_tys: None,
+            fun_ret_tys: None,
+            fun_param_tys: None,
+            fun_param0_identity: None,
+            funref_locals: None,
+            local_int_consts: Some(&consts),
+        };
+        let t = infer_value_ty_ctx(
+            &Value::Builtin {
+                name: Builtin::AdtField,
+                args: vec![Local(0), Local(1)],
+            },
+            ctx,
+            None,
+        );
+        assert_eq!(t, Type::List(Box::new(Type::Float)));
     }
 }

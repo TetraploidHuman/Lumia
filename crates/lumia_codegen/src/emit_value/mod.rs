@@ -1,10 +1,16 @@
 //! Value emission and closely related helpers.
 
+mod affine2_sr;
 mod builtin;
+mod collatz_sr;
+mod dense_f64_sr;
 mod emit_alloc;
 mod emit_arith;
 mod emit_calls;
 mod emit_control;
+mod float_sr;
+mod number_theory_sr;
+mod trial_div_sr;
 
 use super::Codegen;
 use anyhow::{bail, Result};
@@ -73,7 +79,43 @@ impl<'ctx> Codegen<'ctx> {
                 header,
                 body,
                 latch,
-            } => self.emit_value_loop(header, body, latch, fv),
+            } => {
+                if let Some(v) = self.try_emit_collatz_total_loop(header, body, latch, fv)? {
+                    Ok(v)
+                } else if let Some(v) =
+                    self.try_emit_collatz_strided_loop(header, body, latch, fv)?
+                {
+                    Ok(v)
+                } else if let Some(v) = self.try_emit_count_primes_loop(header, body, latch, fv)? {
+                    Ok(v)
+                } else if let Some(v) =
+                    self.try_emit_affine2_rem_sum_loop(header, body, latch, fv)?
+                {
+                    Ok(v)
+                } else if let Some(v) = self.try_emit_gcd_sum_loop(header, body, latch, fv)? {
+                    Ok(v)
+                } else if let Some(v) = self.try_emit_divisor_sum_loop(header, body, latch, fv)? {
+                    Ok(v)
+                } else if let Some(v) =
+                    self.try_emit_product_rem_sum_loop(header, body, latch, fv)?
+                {
+                    Ok(v)
+                } else if let Some(v) = self.try_emit_range_affine1_loop(header, body, latch, fv)? {
+                    Ok(v)
+                } else if let Some(v) = self.try_emit_matmul_affine_loop(header, body, latch, fv)? {
+                    Ok(v)
+                } else if let Some(v) = self.try_emit_float_orbit_loop(header, body, latch, fv)? {
+                    Ok(v)
+                } else if let Some(v) = self.try_emit_mandelbrot_loop(header, body, latch, fv)? {
+                    Ok(v)
+                } else if let Some(v) = self.try_emit_collatz_loop(header, body, latch, fv)? {
+                    Ok(v)
+                } else if let Some(v) = self.try_emit_trial_div_loop(header, body, latch, fv)? {
+                    Ok(v)
+                } else {
+                    self.emit_value_loop(header, body, latch, fv)
+                }
+            }
             Value::Lambda { .. } => bail!("lambda should have been lifted to FunRef/AllocClosure"),
             Value::AllocClosure { fun, captures } => self.emit_value_alloc_closure(fun, captures),
             Value::ClosureCap {

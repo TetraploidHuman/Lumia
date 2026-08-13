@@ -1,8 +1,28 @@
 //! Fixed-point propagation of escaping locals through aliases and containers.
 
-use lumia_core::{Block, Local, Op, Value};
+use lumia_core::{Block, Local, MapRepr, Op, Value};
 use lumia_hir::Builtin;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+
+/// Must match [`crate::repr_select`] heap thresholds: large / always-heap
+/// containers store field pointers on the GC heap even when the container
+/// local itself does not "escape". Stack `Lit*` fields in those slots are
+/// invisible to the collector (and dangle after the frame returns).
+fn alloc_forces_heap(value: &Value) -> bool {
+    match value {
+        Value::AllocAdt { fields, .. } => fields.len() > 8,
+        Value::AllocList { elems, .. } => elems.len() > 8,
+        Value::AllocSet { elems, .. } => elems.is_empty() || elems.len() > 8,
+        Value::AllocMap {
+            flat_pairs, repr, ..
+        } => {
+            let n = flat_pairs.len() / 2;
+            matches!(repr, MapRepr::AssocList) || n == 0 || n > 8
+        }
+        Value::AllocClosure { .. } => true,
+        _ => false,
+    }
+}
 
 pub(super) fn propagate_block(
     block: &Block,
@@ -41,7 +61,9 @@ fn propagate_let(
     assigns: &HashMap<String, Vec<Local>>,
 ) -> bool {
     let mut changed = false;
-    if escaping.contains(&local) {
+    // Escaping container **or** non-escaping Heap* (size / always-heap): fields
+    // must not stay stack Lit* — GC cannot trace stack payloads via heap edges.
+    if escaping.contains(&local) || alloc_forces_heap(value) {
         changed |= mark_inputs_escaping(value, escaping, assigns);
     }
     changed |= propagate_value_only(value, escaping, assigns);
@@ -108,8 +130,12 @@ fn mark_inputs_escaping(
                 for a in args {
                     mark(*a);
                 }
-            } else if matches!(*name, Builtin::ListGet | Builtin::AdtField) {
-                // Result may be an interior pointer (elem / field) — mark container.
+            } else if matches!(
+                *name,
+                Builtin::ListGet | Builtin::AdtField | Builtin::ListTake | Builtin::ListSlice
+            ) {
+                // Escaping get/field/take/slice result ⇒ container escapes
+                // (take/slice copy element pointers into a fresh list).
                 if let Some(c) = args.first() {
                     mark(*c);
                 }

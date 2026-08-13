@@ -21,7 +21,7 @@ cargo test --workspace --exclude lumia --lib
 echo "== cargo test -p lumia_opt --tests =="
 cargo test -p lumia_opt --tests
 
-echo "== cargo test -p lumia --tests =="
+echo "== cargo test -p lumia --tests (e2e + opt_correctness fingerprints) =="
 cargo test -p lumia --tests
 
 echo "OK: check passed"

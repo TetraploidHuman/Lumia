@@ -1,11 +1,13 @@
 //! LLVM codegen via inkwell (LLVM 21). Links against `lumia_rt`.
 
+mod attrs;
 mod emit_eq;
 mod emit_fun;
 mod emit_memo;
 mod emit_value;
 mod error;
 mod link;
+mod nsw_iv;
 mod roots;
 mod runtime_decls;
 mod state;
@@ -22,6 +24,7 @@ use anyhow::{Context as AnyhowContext, Result};
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module as LlvmModule;
+use inkwell::passes::PassBuilderOptions;
 use inkwell::targets::{
     CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine,
 };
@@ -95,6 +98,7 @@ fn emit_llvm_module<'ctx>(
         &core.name,
         opts.option_some_tag,
         opts.option_none_tag,
+        opts.release,
     );
     declare_runtime(context, &cg.llvm.module);
     cg.funs.tco_sccs = compute_tco_sccs(core);
@@ -143,6 +147,7 @@ fn emit_llvm_module<'ctx>(
         cg.funs
             .fun_param_tys
             .insert(f.name.clone(), f.param_tys.clone());
+        attrs::add_nounwind(context, fv);
         if core_fun_is_param0_identity(f) {
             cg.funs.fun_param0_identity.insert(f.name.clone());
         }
@@ -203,6 +208,23 @@ pub fn compile_module(core: &CoreModule, opts: &CodegenOptions) -> Result<()> {
         .create_target_machine(&triple, &cpu, &features, opt, reloc, CodeModel::Default)
         .context("create target machine")?;
 
+    // Release: run LLVM new-PM pipeline before object emit so mem2reg / loop
+    // opts / vectorize see our mut-slot allocas and checked arithmetic.
+    if opts.release {
+        let pb = PassBuilderOptions::create();
+        pb.set_loop_vectorization(true);
+        pb.set_loop_slp_vectorization(true);
+        pb.set_loop_unrolling(true);
+        cg.llvm
+            .module
+            .run_passes("default<O3>", &tm, pb)
+            .map_err(|e| anyhow::anyhow!("LLVM run_passes: {e}"))?;
+        cg.llvm
+            .module
+            .verify()
+            .map_err(|e| anyhow::anyhow!("LLVM verify after O3: {e}"))?;
+    }
+
     let obj_path = if cfg!(target_os = "windows") {
         opts.output.with_extension("obj")
     } else {
@@ -214,7 +236,13 @@ pub fn compile_module(core: &CoreModule, opts: &CodegenOptions) -> Result<()> {
     // Drop LLVM module before linking (owns no further need)
     drop(cg);
 
-    link_executable(&obj_path, &opts.runtime_lib, &opts.output, &opts.link_args)?;
+    link_executable(
+        &obj_path,
+        &opts.runtime_lib,
+        &opts.output,
+        &opts.link_args,
+        opts.release,
+    )?;
     Ok(())
 }
 
@@ -368,10 +396,18 @@ pub(crate) struct Codegen<'ctx> {
     pub(crate) memo: MemoEmit<'ctx>,
     pub(crate) option_some_tag: i64,
     pub(crate) option_none_tag: i64,
+    /// Release builds omit trap backtrace frames (hot-path call overhead).
+    pub(crate) release: bool,
 }
 
 impl<'ctx> Codegen<'ctx> {
-    fn new(context: &'ctx Context, name: &str, option_some_tag: i64, option_none_tag: i64) -> Self {
+    fn new(
+        context: &'ctx Context,
+        name: &str,
+        option_some_tag: i64,
+        option_none_tag: i64,
+        release: bool,
+    ) -> Self {
         Self {
             llvm: LlvmTypes {
                 context,
@@ -384,6 +420,7 @@ impl<'ctx> Codegen<'ctx> {
             memo: MemoEmit::default(),
             option_some_tag,
             option_none_tag,
+            release,
         }
     }
 
@@ -569,7 +606,7 @@ mod tests {
     #[test]
     fn runtime_fn_missing_returns_err_not_panic() {
         let context = Context::create();
-        let cg = Codegen::new(&context, "empty", 0, 1);
+        let cg = Codegen::new(&context, "empty", 0, 1, false);
         let err = cg
             .runtime_fn("lumia_definitely_missing_symbol_zz")
             .expect_err("missing runtime symbol");

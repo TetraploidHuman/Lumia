@@ -46,7 +46,23 @@ fn e2e_nested_float_adt_eq() {
 }
 
 #[test]
-fn e2e_eq_hash_consistent() {
-    // Hash ADT: `==` follows lumia_eq (Map path), not a diverging `__Eq_*_eq`.
-    run_example("examples/eq_hash_consistent.lm", &["1", "1", "10"]);
+fn e2e_wide_float_adt_gc() {
+    // Float past field index 31 must stay in the u64 ADT mask (GC must not follow bits).
+    run_example("examples/wide_float_adt_gc.lm", &["1.25", "2.5"]);
 }
+
+#[test]
+fn e2e_mono_adt_float_field() {
+    // Call-site ABI Int must not make mono clones sitofp product float fields.
+    run_example("examples/mono_adt_float_field.lm", &["3"]);
+}
+
+#[test]
+fn e2e_dense_float_kernels() {
+    // gemv [5,11,17]; gemvT [4,6]; addmm sum 21; L2 [0.6,0.8]; 16×32 nucleus gemv
+    run_example(
+        "examples/dense_float_kernels.lm",
+        &["33000", "10000", "21000", "1400", "2261"],
+    );
+}
+

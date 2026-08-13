@@ -100,4 +100,14 @@ golden!(golden_alt_option_return, "examples/alt_option_return.lm");
 golden!(golden_return_capture, "examples/return_capture.lm");
 golden!(golden_range_map, "examples/range_map.lm");
 golden!(golden_range_fold, "examples/range_fold.lm");
+golden!(golden_take_escape, "examples/take_escape.lm");
+golden!(golden_list_set, "examples/list_set.lm");
+golden!(golden_list_set_alias, "examples/list_set_alias.lm");
+golden!(golden_pe_adt_field, "examples/pe_adt_field.lm");
+golden!(
+    golden_par_map_toplevel_lam,
+    "examples/par_map_toplevel_lam.lm"
+);
+golden!(golden_par_map_fn, "examples/par_map_fn.lm");
+golden!(golden_float_ops, "examples/float_ops.lm");
 // `import_as` needs multi-file load (CLI/`lumia::check_program`); not in Core pipeline.

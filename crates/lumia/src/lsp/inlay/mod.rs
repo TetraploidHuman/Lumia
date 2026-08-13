@@ -240,7 +240,7 @@ val main = {
         let hints = hints_for_analysis(&a, None);
         let labels: Vec<_> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
         assert!(
-            labels.iter().any(|l| *l == ": Int"),
+            labels.contains(&": Int"),
             "expected Int hint on field/call, got {labels:?}"
         );
     }

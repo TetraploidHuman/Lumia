@@ -4,6 +4,8 @@
 
 ## 类型与单态化
 
+- [x] **产品字段类型导向解析**：歧义 `.f` → `AdtField(_, -1, field)`；`with` 在字段集无法唯一确定 product 时保留 HIR `With`；ty 按接收者/`with` 基表达式的具体产品消解并 rewrite（开放接收者仍报错）。e2e `shared_product_field`。
+- [x] **`with` 开放接收者类型**：`lower_with` 未拷贝字段时曾发 2 参 `AdtField`，开放 `p` 被收成 `TuplePrefix`（`{ p -> p with { x = … } }` 无法返回具名产品）。已改为与 `.field` 相同的 3 参（带 product 名）。
 - [x] **单态化管线**：按 call-site 实参 ground 键克隆：`$Float`/`$Bool`/`$String`/`$List_*`/`$Map_*`/`$Set_*`/`$Option_*`（`poly_*` / `poly_map_id` / `poly_set_id` / `poly_unwrap`）；**FunRef HOF** 多轮克隆 + 体内直连（`poly_option_map` / `poly_option_and_then` / `poly_result_map`）；同名多体共存；`instance Num` 已接线。**scheme 驱动**：`TypedModule.fun_schemes` + `CoreFun.scheme_poly`；仅 `needs_mono` / 抬升 lambda / FunRef HOF 克隆。
 - [x] **类型类 `trait` / `instance` / `requires`**：显式 instance / UFCS / 派生 / Hash opt-in / 多态方法经单态解析已接线；**运行时字典** `lumia_dict_register/lookup`（Show/Eq/Ord/Hash/Num）在 `main` 启动注册 mangled instance（动态分发可查表；热路径仍直连单态）。
 - [x] **`import … as` / `{ name as alias }`**：DESIGN §9.3；`ImportedName` + 公开项改名、原名 `priv` 副本；e2e `import_as` / `bad_import_as_original`。
@@ -33,6 +35,7 @@
 - [x] **自定义 `Eq.eq` 与 Map/Set 键相等分裂**：有 `instance Hash` 的 ADT 上 `==` 强制走 `lumia_eq`（与 Map/Set 一致），忽略发散的 `__Eq_*_eq`；e2e `eq_hash_consistent`。
 - [x] **堆软上限 / live-bytes**：`BYTES_ALLOCATED` 在 sweep 时按释放 payload 递减，阈值近似 live set（非 RSS 硬上限；DoS/资源策略另项）。
 - [x] **List COW append**：唯一引用 + 余量原地写；别名则几何扩容拷贝；codegen `retain`/`release` 维持唯一性。
+- [x] **ADT product COW**：嵌套 ADT/`AdtField`/`Name` 别名 `retain`；`set_field`/浅拷贝 retain 嵌套；`p = p with` → `ensure_unique_consume` 原地写；e2e `adt_with_alias`。栈 LitAdt `with` 升堆克隆。
 
 ## 优化与表示（DESIGN / BUILD 下一里程碑）
 
@@ -46,17 +49,18 @@
 ## 工具链
 
 - [x] **`lumia doc`**：CLI 生成 Markdown（`///`、公开 `val`/`type`/`foreign`、`@exports`）；`priv` 默认隐藏。
-- [ ] **并发 GC**：BUILD 远期；分代 STW + remembered-set 写屏障已落地。`--mm=arc` 仍非优先。
+- [~] **并发 GC**：分代 STW minor 不变；**增量并发 full mark**（worklist + Dijkstra 写屏障着色 + 黑分配 + 收尾 remark）已落地。`--mm=arc` 仍非优先。
 
 ## 架构清理（已落地，详见 git 历史）
 
 - 共享前端：`lumia_ty::typecheck_hir`；`lumia` 为 lib+bin（`check_program` / LSP / CLI）。
-- `Builtin::info` 元数据；codegen `CodegenError` + 子状态；`lumia_abi::float_contract`。
+- `Builtin::info` 元数据（按 family 表 + `may_capture`/`result_heap` 同表）；`builtin_surface`；codegen `CodegenError` + 子状态；`lumia_abi::float_contract`。
 - Infer / pkg / lsp / syntax AST 模块拆分；Core `CoreLowerCtx`；`rustfmt.toml`。
 - **Builtin 结果 GC 根**：`ResultHeap::{Never,Always,Typed}` 驱动 `roots.rs`（与 `may_capture` 正交；`ListGet`/`AdtField`/`ListParFold` 走类型推断）。
 - **LSP semanticTokens**：`lsp/semantic/{token,overlay,walk}`（含 import 路径/别名着色）；编辑器 shared↔vscode 由 `scripts/check_editor_assets.sh` 防漂移。
 - **LSP inlayHint**：绑定 / 形参 / 调用与投影结果类型提示。
-- **runtime_decls**：表驱动 `RUNTIME_DECLS` + 单测保证每个 `BuiltinInfo.runtime_symbol` 已声明、名字唯一。
+- **runtime_decls**：表驱动 `RUNTIME_DECLS`（`ENSURE_*` 引用 abi 常量）+ 单测保证每个 `BuiltinInfo.runtime_symbol` 已声明、名字唯一。
 - **Trait mangling**：`lumia_hir::mangle_trait_method` 统一 HIR/codegen；`from_method`↔`display_name` 一致性单测。
 - **CoreModule::with_functions** / **CodegenTypeTables**；opt 管线 `PipelinePass` 免 `Box<dyn Pass>`；Memo Rust 侧以 `MEMO_TF_*` 为准（C ABI 仍 `lumia_memo_l2_*`）。
+- **2026-08-11 深度卫生**：拆分 memo/escape/ty/rt 大测试；abi/rt `type_id` 边界（`map_tid`/`set_tid`）；opt `KnownScalars` 统一；memo lookup 只读借用 + DenseInt 冷 miss 不分配；par_map 去重复 GC inhibit。
 - 历史逐项修复列表已并入上方 `[x]` 条目与提交记录，不再在此重复。

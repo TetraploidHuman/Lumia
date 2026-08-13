@@ -4,8 +4,9 @@ use crate::common::{
     float_key_eq, header_from_payload, is_heap_payload, list_elem_is_float, tid_base, tid_f_key,
     tid_f_val, TYPE_ADT, TYPE_CHAR, TYPE_MAP, TYPE_SET, TYPE_STRING,
 };
-use crate::list::{is_list_tid, list_get_of, list_len_of};
+use crate::list::{list_get_of, list_len_of};
 use crate::map_set::{map_eq, set_eq};
+use lumia_abi::is_list_tid;
 
 /// Structural equality for scalars and heap objects (DESIGN: recursive `==`).
 #[no_mangle]
@@ -89,7 +90,7 @@ pub extern "C" fn lumia_eq(a: i64, b: i64) -> i64 {
             TYPE_SET => set_eq(pa, pb),
             TYPE_MAP => map_eq(pa, pb),
             TYPE_ADT => {
-                let mask = ((*ha)._pad as u64) | ((*hb)._pad as u64);
+                let mask = (*ha)._pad | (*hb)._pad;
                 adt_eq_payload(pa, pb, mask)
             }
             _ => 0,
@@ -113,7 +114,7 @@ pub extern "C" fn lumia_adt_eq(a: i64, b: i64, float_mask: i64) -> i64 {
             return lumia_eq(a, b);
         }
         // Prefer call-site mask; also honour layout stored in header `_pad` (nested eq).
-        let mask = (float_mask as u64) | ((*ha)._pad as u64) | ((*hb)._pad as u64);
+        let mask = (float_mask as u64) | (*ha)._pad | (*hb)._pad;
         adt_eq_payload(pa, pb, mask)
     }
 }

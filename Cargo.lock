@@ -227,6 +227,7 @@ dependencies = [
  "lumia_core",
  "lumia_hir",
  "lumia_opt",
+ "lumia_rt",
  "lumia_syntax",
  "lumia_ty",
  "rustc-hash",
@@ -293,6 +294,7 @@ name = "lumia_rt"
 version = "0.1.0"
 dependencies = [
  "lumia_abi",
+ "rustc-hash",
 ]
 
 [[package]]

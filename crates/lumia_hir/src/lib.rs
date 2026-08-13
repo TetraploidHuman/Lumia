@@ -2,6 +2,7 @@
 
 mod ast;
 mod builtin_info;
+mod builtin_surface;
 mod list_hof;
 mod lower;
 mod mangle;
@@ -11,18 +12,16 @@ mod visit;
 pub use ast::{
     AdtDef, AdtVariant, Builtin, BuiltinFamily, CtorInfo, Expr, Fun, Item, Module, ProductDef,
 };
-pub use builtin_info::{
-    surface_names, BuiltinEffect, BuiltinEmit, BuiltinInfo, ResultHeap, SurfaceName, SurfaceRole,
-    PRELUDE_CTORS,
-};
+pub use builtin_info::{BuiltinEffect, BuiltinEmit, BuiltinInfo, ResultHeap};
+pub use builtin_surface::{surface_names, SurfaceName, SurfaceRole, PRELUDE_CTORS};
 pub use list_hof::{desugar_list_fold_sequential, desugar_list_map_sequential};
-pub use lower::{lower_module, LowerCtx, LowerError};
+pub use lower::{expand_with_known, lower_module, LowerCtx, LowerError};
 pub use mangle::mangle_trait_method;
 pub use visit::{all_free_vars, fold, for_each_expr, free_vars_expr};
 
 #[cfg(test)]
 mod tests {
-    use super::{lower_module, Builtin, BuiltinFamily, Expr, Item};
+    use super::{for_each_expr, lower_module, Builtin, BuiltinFamily, Expr, Item};
     use lumia_syntax::parse_module;
 
     #[test]
@@ -391,7 +390,7 @@ val f = { o ->
     }
 
     #[test]
-    fn with_rejects_ambiguous_product_field() {
+    fn with_ambiguous_product_field_defers_to_ty() {
         let src = r#"
 module M
 type Point { val x val y }
@@ -402,11 +401,20 @@ val main = {
 }
 "#;
         let ast = parse_module(src).unwrap();
-        let err = lower_module(&ast).unwrap_err().to_string();
-        assert!(
-            err.contains("ambiguous") || err.contains("cannot resolve"),
-            "{err}"
-        );
+        let hir = lower_module(&ast).expect("ambiguous `with` should lower (resolve in ty)");
+        let mut found = false;
+        for it in &hir.items {
+            let body = match it {
+                Item::Fun(f) => &f.body,
+                Item::Val { body, .. } => body,
+            };
+            for_each_expr(body, &mut |e| {
+                if matches!(e, Expr::With { .. } | Expr::AdtNew { .. }) {
+                    found = true;
+                }
+            });
+        }
+        assert!(found, "expected With or expanded AdtNew in module");
     }
 
     #[test]

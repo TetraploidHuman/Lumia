@@ -39,12 +39,11 @@ pub(super) fn fold(
             true
         }
         (Builtin::ListGet, [xs, idx]) => {
-            if let (Some(elems), Some(&i)) = (env.known_list.get(&xs.0), env.known_int.get(&idx.0))
-            {
+            if let (Some(elems), Some(i)) = (env.known_list.get(&xs.0), env.known_int.get(idx.0)) {
                 if i >= 0 && (i as usize) < elems.len() {
                     let el = elems[i as usize];
                     *value = Value::Local(el);
-                    if let Some(&n) = env.known_int.get(&el.0) {
+                    if let Some(n) = env.known_int.get(el.0) {
                         env.known_int.insert(local, n);
                     }
                     if let Some(inner) = env.known_list.get(&el.0).cloned() {
@@ -57,14 +56,13 @@ pub(super) fn fold(
                 return true;
             }
             // Map.get → Option (ListGet is also used for Map.get).
-            if let (Some(pairs), Some(k)) = (
-                env.known_map.get(&xs.0).cloned(),
-                env.known_int.get(&idx.0).copied(),
-            ) {
+            if let (Some(pairs), Some(k)) =
+                (env.known_map.get(&xs.0).cloned(), env.known_int.get(idx.0))
+            {
                 let keys: Vec<_> = pairs.chunks_exact(2).map(|kv| kv[0]).collect();
                 if all_int_keys(env, &keys) {
                     let found = keys.iter().enumerate().find_map(|(i, kk)| {
-                        if env.known_int.get(&kk.0).copied() == Some(k) {
+                        if env.known_int.get(kk.0) == Some(k) {
                             Some(pairs[i * 2 + 1])
                         } else {
                             None
@@ -101,7 +99,7 @@ pub(super) fn fold(
             true
         }
         (Builtin::ListTake, [xs, n]) => {
-            if let (Some(elems), Some(&k)) = (env.known_list.get(&xs.0), env.known_int.get(&n.0)) {
+            if let (Some(elems), Some(k)) = (env.known_list.get(&xs.0), env.known_int.get(n.0)) {
                 if k >= 0 {
                     let take: Vec<_> = elems.iter().take(k as usize).copied().collect();
                     rewrite_lit_list(env, local, take, value);
@@ -113,7 +111,7 @@ pub(super) fn fold(
         }
         (Builtin::ListSlice, [xs, n]) => {
             // `slice`/`drop`: drop the first `n` elements.
-            if let (Some(elems), Some(&k)) = (env.known_list.get(&xs.0), env.known_int.get(&n.0)) {
+            if let (Some(elems), Some(k)) = (env.known_list.get(&xs.0), env.known_int.get(n.0)) {
                 if k >= 0 {
                     let drop_n = (k as usize).min(elems.len());
                     let rest: Vec<_> = elems[drop_n..].to_vec();
@@ -145,7 +143,7 @@ pub(super) fn fold_list_set(
     v: Local,
     value: &mut Value,
 ) -> bool {
-    if let (Some(elems), Some(&i)) = (env.known_list.get(&col.0), env.known_int.get(&k.0)) {
+    if let (Some(elems), Some(i)) = (env.known_list.get(&col.0), env.known_int.get(k.0)) {
         if i >= 0 && (i as usize) < elems.len() {
             let mut neu = elems.clone();
             neu[i as usize] = v;

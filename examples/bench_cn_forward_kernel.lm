@@ -1,0 +1,203 @@
+module BenchCnForwardKernel
+
+/// Strict-PE triad forward (vis/pfc/mot): cluster rates, projectError upward,
+/// generative lateral via updateState, learnGenerative, Hebbian μ⊗ε, EFE+argmax.
+/// Dense skeleton aligned with CogniNucleus FreeEnergyAgent defaults (hip/amy/hyp off).
+import std.io.{println}
+import std.linalg.{zeros, copy, sub, scale, add, gemv, checksum}
+import std.cn.{
+    nucleusStep, hebbian, projectClamp, projectError, argMax,
+    clusterRates, learnGenerative, updateState
+}
+import std.efe.{actionScores}
+
+val VIS = 16
+val PFC = 32
+val MOT = 4
+val N_CLUSTERS = 4
+val STEPS = 20000
+val STATE_LR = 0.1
+val LR = 0.05
+val GEN_LR = 0.002
+val PI = 1.0
+val CLIP = 10.0
+val W_CLIP = 5.0
+val DECAY = 0.0001
+val EPS = 0.001
+val C_DECAY = 0.9
+val C_THR = 0.5
+val MIX = 0.35
+val REL = 4
+val THREAT = 11
+val CELL = 0.25
+val PREF = 1.2
+val EPI = 0.28
+val WALL = 3.2
+val GOAL_B = 0.8
+val THREAT_G = 2.0
+val COMPLEXITY = 0.1
+val HORIZON = 2
+
+val main = {
+    var muVis = zeros(VIS)
+    var muPfc = zeros(PFC)
+    var muMot = zeros(MOT)
+    var encV = zeros(VIS * VIS)
+    var predV = zeros(VIS * VIS)
+    var encP = zeros(PFC * PFC)
+    var predP = zeros(PFC * PFC)
+    var encM = zeros(MOT * MOT)
+    var predM = zeros(MOT * MOT)
+    var wVp = zeros(VIS * PFC)
+    var wPv = zeros(PFC * VIS)
+    var wPm = zeros(PFC * MOT)
+    var maskVp = zeros(VIS * PFC)
+    var maskPv = zeros(PFC * VIS)
+    var maskPm = zeros(PFC * MOT)
+    var obs = zeros(VIS)
+    var ratesV = zeros(VIS)
+    var potV = zeros(VIS)
+    var tdOpenV = zeros(VIS)
+    var errV = zeros(VIS)
+    var predBufV = zeros(VIS)
+    var driveP = zeros(PFC)
+    var ratesP = zeros(PFC)
+    var potP = zeros(PFC)
+    var tdOpenP = zeros(PFC)
+    var errP = zeros(PFC)
+    var predBufP = zeros(PFC)
+    var zerosM = zeros(MOT)
+    var ratesM = zeros(MOT)
+    var potM = zeros(MOT)
+    var motTop = zeros(MOT)
+    var errM = zeros(MOT)
+    var predBufM = zeros(MOT)
+    var gen = zeros(VIS)
+    var genErr = zeros(VIS)
+    var lat = zeros(PFC)
+    var halfLat = zeros(PFC)
+    var recog = zeros(PFC)
+    var recogErr = zeros(PFC)
+    var scores = zeros(MOT)
+    var logits = zeros(MOT)
+    var tmp = zeros(MOT)
+    var uVis = zeros(VIS)
+    var uPfc = zeros(PFC)
+    var vGen = zeros(VIS)
+    var vRec = zeros(PFC)
+    var vMot = zeros(MOT)
+
+    var i = 0
+    for i < VIS {
+        muVis = muVis.set(i, (0.0 + i) * 0.01)
+        obs = obs.set(i, (0.0 + i) * 0.02)
+        encV = encV.set(i * VIS + i, 1.0)
+        predV = predV.set(i * VIS + i, 1.0)
+        i = i + 1
+    }
+    i = 0
+    for i < PFC {
+        muPfc = muPfc.set(i, (0.0 + i) * 0.001)
+        encP = encP.set(i * PFC + i, 1.0)
+        predP = predP.set(i * PFC + i, 1.0)
+        i = i + 1
+    }
+    i = 0
+    for i < MOT {
+        muMot = muMot.set(i, (0.0 + i) * 0.01)
+        encM = encM.set(i * MOT + i, 1.0)
+        predM = predM.set(i * MOT + i, 1.0)
+        i = i + 1
+    }
+    i = 0
+    for i < VIS * PFC {
+        maskVp = maskVp.set(i, 1.0)
+        wVp = wVp.set(i, (0.0 + (i % 13)) * 0.001)
+        i = i + 1
+    }
+    i = 0
+    for i < PFC * VIS {
+        maskPv = maskPv.set(i, 1.0)
+        wPv = wPv.set(i, (0.0 + (i % 11)) * 0.001)
+        i = i + 1
+    }
+    i = 0
+    for i < PFC * MOT {
+        maskPm = maskPm.set(i, 1.0)
+        wPm = wPm.set(i, (0.0 + (i % 7)) * 0.001)
+        i = i + 1
+    }
+    obs = obs.set(0, 0.5)
+    obs = obs.set(1, 0.5)
+    obs = obs.set(4, 0.25)
+    obs = obs.set(11, 0.1)
+
+    var t = 0
+    var acc = 0
+    for t < STEPS {
+        obs = obs.set(4, 0.25 - (0.0 + (t % 20)) * 0.01)
+
+        // 1) Sensory: cluster rates + open-loop predictor as top-down
+        tdOpenV = gemv(VIS, VIS, predV, muVis, tdOpenV)
+        ratesV = clusterRates(potV, obs, ratesV, VIS, N_CLUSTERS, C_DECAY, C_THR)
+        muVis = nucleusStep(muVis, encV, predV, ratesV, tdOpenV, errV, predBufV, VIS, STATE_LR, PI, CLIP)
+
+        // 3) PFC from visual PE (strict upward)
+        driveP = projectError(VIS, PFC, wVp, errV, driveP, CLIP)
+        tdOpenP = gemv(PFC, PFC, predP, muPfc, tdOpenP)
+        ratesP = clusterRates(potP, driveP, ratesP, PFC, N_CLUSTERS, C_DECAY, C_THR)
+        muPfc = nucleusStep(muPfc, encP, predP, ratesP, tdOpenP, errP, predBufP, PFC, STATE_LR, PI, CLIP)
+
+        // 4) Generative top-down + half-step lateral update_state
+        gen = projectClamp(PFC, VIS, wPv, muPfc, gen, CLIP)
+        genErr = sub(genErr, obs, gen)
+        lat = gemv(PFC, VIS, wPv, genErr, lat)
+        halfLat = copy(halfLat, lat)
+        halfLat = scale(halfLat, 0.5)
+        muPfc = updateState(muPfc, encP, halfLat, PFC, STATE_LR, PI, CLIP)
+        gen = projectClamp(PFC, VIS, wPv, muPfc, gen, CLIP)
+        genErr = sub(genErr, obs, gen)
+
+        ratesV = clusterRates(potV, obs, ratesV, VIS, N_CLUSTERS, C_DECAY, C_THR)
+        muVis = nucleusStep(muVis, encV, predV, ratesV, gen, errV, predBufV, VIS, STATE_LR, PI, CLIP)
+
+        recog = projectClamp(VIS, PFC, wVp, muVis, recog, CLIP)
+        recogErr = sub(recogErr, muPfc, recog)
+
+        // 6) Motor: empty bottom-up, top-down plan from PFC
+        motTop = projectClamp(PFC, MOT, wPm, muPfc, motTop, CLIP)
+        ratesM = clusterRates(potM, zerosM, ratesM, MOT, N_CLUSTERS, C_DECAY, C_THR)
+        muMot = nucleusStep(muMot, encM, predM, ratesM, motTop, errM, predBufM, MOT, STATE_LR, PI, CLIP)
+
+        // Inter-nucleus Hebbian μ⊗ε + local generative plasticity
+        uVis = copy(uVis, muVis)
+        vRec = copy(vRec, recogErr)
+        wVp = hebbian(wVp, uVis, vRec, maskVp, VIS, PFC, LR, W_CLIP, DECAY, EPS)
+        uPfc = copy(uPfc, muPfc)
+        vGen = copy(vGen, genErr)
+        wPv = hebbian(wPv, uPfc, vGen, maskPv, PFC, VIS, LR * 2.0, W_CLIP, DECAY, EPS)
+        vMot = copy(vMot, errM)
+        wPm = hebbian(wPm, uPfc, vMot, maskPm, PFC, MOT, LR, W_CLIP, DECAY, EPS)
+
+        encV = learnGenerative(encV, predV, muVis, genErr, VIS, GEN_LR * 2.0, W_CLIP, DECAY, PI)
+        encP = learnGenerative(encP, predP, muPfc, recogErr, PFC, GEN_LR * 2.0, W_CLIP, DECAY, PI)
+        encM = learnGenerative(encM, predM, muMot, errM, MOT, GEN_LR, W_CLIP, DECAY, PI)
+
+        scores = actionScores(
+            obs, gen, scores, MOT, HORIZON, REL, THREAT,
+            CELL, PREF, EPI, WALL, GOAL_B, THREAT_G, COMPLEXITY
+        )
+        logits = copy(logits, muMot)
+        logits = scale(logits, 1.0 - MIX)
+        tmp = copy(tmp, scores)
+        tmp = scale(tmp, 0.0 - MIX)
+        logits = add(logits, logits, tmp)
+        acc = acc + argMax(logits) + checksum(scores)
+        t = t + 1
+    }
+
+    println(acc)
+    println(checksum(muPfc))
+    println(checksum(wVp))
+    println(checksum(muMot))
+}

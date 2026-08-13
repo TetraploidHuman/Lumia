@@ -10,7 +10,7 @@ fun __lam_0(env, p0) effect.io=false memo=None {
 
 fun main() effect.io=true memo=None {
   %0 = i64 42  // pure
-  %1 = call make(%0)  // pure
+  %1 = call make$c_42()  // pure
   %2 = i64 0  // pure
   %3 = icall %1(%2)  // pure
   %4 = builtin Println(%3)  // effect
@@ -21,6 +21,12 @@ fun main() effect.io=true memo=None {
 }
 
 fun make(x) effect.io=false memo=None {
+  %5 = alloc_closure(__lam_0, n=1)  // pure
+  return %5
+}
+
+fun make$c_42() effect.io=false memo=None {
+  %6 = i64 42  // pure
   %5 = alloc_closure(__lam_0, n=1)  // pure
   return %5
 }

@@ -33,5 +33,8 @@ serde_json.workspace = true
 toml.workspace = true
 rustc-hash = { workspace = true }
 
+[dev-dependencies]
+lumia_rt.workspace = true
+
 [lints]
 workspace = true

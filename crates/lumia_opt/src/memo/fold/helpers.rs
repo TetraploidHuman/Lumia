@@ -5,7 +5,7 @@ use lumia_core::{AdtRepr, ListRepr, Local, Value};
 use super::FoldEnv;
 
 pub(super) fn all_int_keys(env: &FoldEnv, keys: &[Local]) -> bool {
-    keys.iter().all(|k| env.known_int.contains_key(&k.0))
+    keys.iter().all(|k| env.known_int.contains(k.0))
 }
 
 pub(super) fn alloc_option_some(v: Local) -> Value {

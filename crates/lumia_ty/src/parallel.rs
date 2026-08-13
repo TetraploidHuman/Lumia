@@ -165,6 +165,12 @@ pub(crate) fn finalize_par_maps_in_expr(
             finalize_par_maps_in_expr(scrutinee, type_at, enabled);
             finalize_par_maps_in_expr(alt, type_at, enabled);
         }
+        Expr::With { base, fields, .. } => {
+            finalize_par_maps_in_expr(base, type_at, enabled);
+            for (_, e) in fields {
+                finalize_par_maps_in_expr(e, type_at, enabled);
+            }
+        }
         Expr::Int(..)
         | Expr::Float(..)
         | Expr::Bool(..)

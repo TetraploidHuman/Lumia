@@ -6,7 +6,7 @@ use inkwell::context::Context;
 use inkwell::module::Module as LlvmModule;
 use inkwell::types::IntType;
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
-use lumia_core::MemoTf;
+use lumia_core::{Local, MemoTf, Value};
 use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
@@ -48,9 +48,28 @@ pub(crate) struct FrameState<'ctx> {
     pub loop_stack: Vec<(BasicBlock<'ctx>, BasicBlock<'ctx>, u32)>,
     pub local_tys: HashMap<u32, Type>,
     pub slot_tys: HashMap<String, Type>,
+    /// Locals bound to `Value::Int(n)` — used to type `AdtField` as `params[n]`.
+    pub local_int_consts: HashMap<u32, i64>,
     pub root_depth: u32,
     pub rooted_slots: HashSet<String>,
     pub entry_bb: Option<BasicBlock<'ctx>>,
+    /// Dest local of the `Let` currently being emitted (for NSW lookup).
+    pub emit_dest: Option<u32>,
+    /// `MapSet` may mutate in place: codegen proved `xs = xs.set(…)` consumes the slot.
+    pub cow_consume_unique: bool,
+    /// `slot = slot with {…}`: mut slot name + updated field indices/locals.
+    pub adt_with_inplace: Option<(String, Vec<(u32, Local)>)>,
+    /// `Binary` Add/Sub locals proven safe as loop IV `±1` (see `nsw_iv`).
+    pub nsw_binop_locals: HashSet<u32>,
+    /// Locals safe as `div`/`rem` RHS (const ∉ {0,-1} or always-≥2 slots).
+    pub safe_divisor_locals: HashSet<u32>,
+    /// `Name(iv)` loads inside loops where the header proves `iv >= 0`.
+    pub nonneg_iv_load_locals: HashSet<u32>,
+    /// Function-wide `Int`/`Name`/`Binary` Lets (includes LICM'd consts outside loops).
+    pub leaf_defs: HashMap<u32, Value>,
+    /// Last known const for i64 mut slots (`None` = non-const / unknown).
+    /// Used to refuse SR when accumulators/IVs are not at the expected start.
+    pub slot_i64_const: HashMap<String, Option<i64>>,
 }
 
 /// Memo transform emission scratch for the current function.

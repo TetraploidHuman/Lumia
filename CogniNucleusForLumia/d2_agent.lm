@@ -1,0 +1,453 @@
+/// D2 FreeEnergyAgent subset: vis + pfc + mot + amy + hyp (no hip).
+/// Hot Nucleus/buffers updated via `with` (cold Conns left untouched); ADT COW
+/// applies when the product is uniquely owned.
+///
+/// @exports D2Parts, newD2, forwardD2, learnD2, lesionAmyMotor, resetD2, ForwardD2
+module d2_agent
+
+import std.linalg.{zeros, fill, copy, sub, scale, add, axpy, gemv, mean, std, softMax}
+import std.cn.{updateState, argMax}
+import std.efe.{embodiedActionScores}
+import d2_config.{
+    VIS, PFC, MOT, AMY, HYP, STATE_LR, CONN_LR, GEN_LR, PI, MU_CLIP, W_CLIP, W_DECAY, EPS,
+    EFE_MIX, REL, THREAT_IDX, CELL, PREF, EPI, WALL, GOAL_B, THREAT_G, COMPLEXITY, HORIZON,
+    AMY_GAIN, HYP_GAIN, HUNGER_EXPLORE, TURN_ANGLE, FOV
+}
+import nucleus.{Nucleus, newNucleus, openLoopTd, pcStep, learnGen}
+import connection.{Conn, newConn, linkProject, linkProjectError, linkHebbian}
+
+type D2Parts {
+    val vis
+    val pfc
+    val mot
+    val amy
+    val hyp
+    val visPfc
+    val pfcVis
+    val pfcMot
+    val visAmy
+    val pfcAmy
+    val amyMot
+    val visHyp
+    val hypMot
+    val zerosMot
+    val gen
+    val genErr
+    val lat
+    val halfLat
+    val recog
+    val recogErr
+    val driveP
+    val driveAmy
+    val driveHyp
+    val tdAmy
+    val motTop
+    val scores
+    val logits
+    val tmp
+    val amyBias
+    val hypBias
+    val lastGenErr
+    val lastRecogErr
+    val lastMotErr
+    val lastAmyErr
+    val lastHypErr
+    val amyLesioned
+    val learnSteps
+}
+
+type ForwardD2 {
+    val fwdAgent
+    val fwdAction
+    val fwdSeed
+}
+
+type FwdRng {
+    val fwdRngU
+    val fwdRngSeed
+}
+
+val d2RngNext = { s ->
+    0.0 + (((s % 46340) * 48271 + 11) % 2147483647)
+}
+
+val d2Rand01 = { s ->
+    val s2 = d2RngNext(s)
+    FwdRng { fwdRngU = s2 / 2147483647.0, fwdRngSeed = s2 }
+}
+
+val sampleCat = { probs, u0 ->
+    var cum = 0.0
+    var a = MOT - 1
+    var found = 0
+    var i = 0
+    for i < MOT {
+        cum = cum + probs.get(i)
+        match {
+            found == 0 -> {
+                match {
+                    u0 < cum -> {
+                        a = i
+                        found = 1
+                    }
+                    _ -> {}
+                }
+            }
+            _ -> {}
+        }
+        i = i + 1
+    }
+    a
+}
+
+val resetNuc = { n ->
+    Nucleus {
+        size = n.size,
+        mu = fill(n.mu, 0.0),
+        enc = n.enc,
+        predW = n.predW,
+        err = fill(n.err, 0.0),
+        pred = fill(n.pred, 0.0),
+        pot = fill(n.pot, 0.0),
+        rates = fill(n.rates, 0.0),
+        tdOpen = n.tdOpen
+    }
+}
+
+// Innate amy→mot diagonal (Python: +0.55·I on min(amy,mot)).
+val innateAmyMot = { c ->
+    var w = c.w
+    var i = 0
+    for i < MOT {
+        val idx = i * MOT + i
+        w = w.set(idx, w.get(idx) + 0.55)
+        i = i + 1
+    }
+    c with { w = w }
+}
+
+// Innate: hunger→forward / anti-brake; pain→turn.
+val innateHypMot = { c ->
+    var w = c.w
+    w = w.set(0, w.get(0) + 0.55)
+    w = w.set(3, w.get(3) - 0.45)
+    w = w.set(1 * MOT + 1, w.get(1 * MOT + 1) + 0.25)
+    w = w.set(1 * MOT + 2, w.get(1 * MOT + 2) + 0.25)
+    c with { w = w }
+}
+
+// Value (not a thunk): callers use `parts = newD2`.
+val newD2 = D2Parts {
+        vis = newNucleus(VIS),
+        pfc = newNucleus(PFC),
+        mot = newNucleus(MOT),
+        amy = newNucleus(AMY),
+        hyp = newNucleus(HYP),
+        visPfc = newConn(VIS, PFC, 0.001),
+        pfcVis = newConn(PFC, VIS, 0.001),
+        pfcMot = newConn(PFC, MOT, 0.001),
+        visAmy = newConn(VIS, AMY, 0.001),
+        pfcAmy = newConn(PFC, AMY, 0.001),
+        amyMot = innateAmyMot(newConn(AMY, MOT, 0.001)),
+        visHyp = newConn(VIS, HYP, 0.001),
+        hypMot = innateHypMot(newConn(HYP, MOT, 0.001)),
+        zerosMot = zeros(MOT),
+        gen = zeros(VIS),
+        genErr = zeros(VIS),
+        lat = zeros(PFC),
+        halfLat = zeros(PFC),
+        recog = zeros(PFC),
+        recogErr = zeros(PFC),
+        driveP = zeros(PFC),
+        driveAmy = zeros(AMY),
+        driveHyp = zeros(HYP),
+        tdAmy = zeros(AMY),
+        motTop = zeros(MOT),
+        scores = zeros(MOT),
+        logits = zeros(MOT),
+        tmp = zeros(MOT),
+        amyBias = zeros(MOT),
+        hypBias = zeros(MOT),
+        lastGenErr = zeros(VIS),
+        lastRecogErr = zeros(PFC),
+        lastMotErr = zeros(MOT),
+        lastAmyErr = zeros(AMY),
+        lastHypErr = zeros(HYP),
+        amyLesioned = 0,
+        learnSteps = 0.0
+}
+
+val lesionAmyMotor = { p ->
+    var mask = p.amyMot.mask
+    var i = 0
+    for i < AMY * MOT {
+        mask = mask.set(i, 0.0)
+        i = i + 1
+    }
+    var w = p.amyMot.w
+    i = 0
+    for i < AMY * MOT {
+        w = w.set(i, 0.0)
+        i = i + 1
+    }
+    p with {
+        amyMot = p.amyMot with { w = w, mask = mask },
+        amyLesioned = 1
+    }
+}
+
+val resetD2 = { p ->
+    D2Parts {
+        vis = resetNuc(p.vis),
+        pfc = resetNuc(p.pfc),
+        mot = resetNuc(p.mot),
+        amy = resetNuc(p.amy),
+        hyp = resetNuc(p.hyp),
+        visPfc = p.visPfc,
+        pfcVis = p.pfcVis,
+        pfcMot = p.pfcMot,
+        visAmy = p.visAmy,
+        pfcAmy = p.pfcAmy,
+        amyMot = p.amyMot,
+        visHyp = p.visHyp,
+        hypMot = p.hypMot,
+        zerosMot = p.zerosMot,
+        gen = fill(p.gen, 0.0),
+        genErr = fill(p.genErr, 0.0),
+        lat = fill(p.lat, 0.0),
+        halfLat = fill(p.halfLat, 0.0),
+        recog = fill(p.recog, 0.0),
+        recogErr = fill(p.recogErr, 0.0),
+        driveP = fill(p.driveP, 0.0),
+        driveAmy = fill(p.driveAmy, 0.0),
+        driveHyp = fill(p.driveHyp, 0.0),
+        tdAmy = fill(p.tdAmy, 0.0),
+        motTop = fill(p.motTop, 0.0),
+        scores = fill(p.scores, 0.0),
+        logits = fill(p.logits, 0.0),
+        tmp = fill(p.tmp, 0.0),
+        amyBias = fill(p.amyBias, 0.0),
+        hypBias = fill(p.hypBias, 0.0),
+        lastGenErr = fill(p.lastGenErr, 0.0),
+        lastRecogErr = fill(p.lastRecogErr, 0.0),
+        lastMotErr = fill(p.lastMotErr, 0.0),
+        lastAmyErr = fill(p.lastAmyErr, 0.0),
+        lastHypErr = fill(p.lastHypErr, 0.0),
+        amyLesioned = p.amyLesioned,
+        learnSteps = p.learnSteps
+    }
+}
+
+val forwardD2 = { p0, obs, explore, seed0 ->
+    var p = p0
+    var vis = p.vis
+    var pfc = p.pfc
+    var mot = p.mot
+    var amy = p.amy
+    var hyp = p.hyp
+    var gen = p.gen
+    var genErr = p.genErr
+    var lat = p.lat
+    var halfLat = p.halfLat
+    var recog = p.recog
+    var recogErr = p.recogErr
+    var driveP = p.driveP
+    var driveAmy = p.driveAmy
+    var driveHyp = p.driveHyp
+    var tdAmy = p.tdAmy
+    var motTop = p.motTop
+    var scores = p.scores
+    var logits = p.logits
+    var tmp = p.tmp
+    var amyBias = p.amyBias
+    var hypBias = p.hypBias
+    var seed = seed0
+
+    // visual open-loop (D2: cluster rates off)
+    val tdV = openLoopTd(vis)
+    vis = pcStep(vis, obs, tdV, STATE_LR, PI, MU_CLIP)
+
+    // hyp interoception: hunger/pain + weak vis PE (strict_pe)
+    driveHyp = fill(driveHyp, 0.0)
+    driveHyp = driveHyp.set(0, obs.get(4))
+    driveHyp = driveHyp.set(1, obs.get(5))
+    tmp = linkProjectError(p.visHyp, vis.err, tmp, MU_CLIP)
+    driveHyp = axpy(driveHyp, 0.2, tmp)
+    val tdH = openLoopTd(hyp)
+    hyp = pcStep(hyp, driveHyp, tdH, STATE_LR * 0.8, PI, MU_CLIP)
+
+    // PFC from visual PE
+    driveP = linkProjectError(p.visPfc, vis.err, driveP, MU_CLIP)
+    val tdP = openLoopTd(pfc)
+    pfc = pcStep(pfc, driveP, tdP, STATE_LR, PI, MU_CLIP)
+
+    // generative lateral
+    gen = linkProject(p.pfcVis, pfc.mu, gen, MU_CLIP)
+    genErr = sub(genErr, obs, gen)
+    lat = gemv(PFC, VIS, p.pfcVis.w, genErr, lat)
+    halfLat = copy(halfLat, lat)
+    halfLat = scale(halfLat, 0.5)
+    val muP = updateState(pfc.mu, pfc.enc, halfLat, PFC, STATE_LR, PI, MU_CLIP)
+    pfc = pfc with { mu = muP }
+    gen = linkProject(p.pfcVis, pfc.mu, gen, MU_CLIP)
+    genErr = sub(genErr, obs, gen)
+    vis = pcStep(vis, obs, gen, STATE_LR, PI, MU_CLIP)
+
+    recog = linkProject(p.visPfc, vis.mu, recog, MU_CLIP)
+    recogErr = sub(recogErr, pfc.mu, recog)
+
+    // amy: vis PE bottom-up, pfc top-down
+    driveAmy = linkProjectError(p.visAmy, vis.err, driveAmy, MU_CLIP)
+    tdAmy = linkProject(p.pfcAmy, pfc.mu, tdAmy, MU_CLIP)
+    amy = pcStep(amy, driveAmy, tdAmy, STATE_LR, PI, MU_CLIP)
+
+    // Soft ramp (Python: amy_gain *= 0.45+0.55*min(1, learn_steps/400))
+    val maturity = match {
+        p.learnSteps > 400.0 -> 1.0
+        _ -> p.learnSteps / 400.0
+    }
+    val amyGainEff = AMY_GAIN * (0.45 + 0.55 * maturity)
+
+    // motor: empty BU + top-down mix
+    motTop = linkProject(p.pfcMot, pfc.mu, motTop, MU_CLIP)
+    amyBias = linkProject(p.amyMot, amy.mu, amyBias, MU_CLIP)
+    amyBias = scale(amyBias, 0.75 * amyGainEff)
+    motTop = add(motTop, motTop, amyBias)
+    hypBias = linkProject(p.hypMot, hyp.mu, hypBias, MU_CLIP)
+    hypBias = scale(hypBias, HYP_GAIN)
+    motTop = add(motTop, motTop, hypBias)
+    mot = pcStep(mot, p.zerosMot, motTop, STATE_LR, PI, MU_CLIP)
+
+    scores = embodiedActionScores(
+        obs, gen, scores, MOT, HORIZON, REL, THREAT_IDX,
+        CELL, PREF, EPI, WALL, GOAL_B, THREAT_G, COMPLEXITY,
+        TURN_ANGLE, FOV, HUNGER_EXPLORE
+    )
+    // z-score G → preference (Python: efe_pref = -(g-mean)/std)
+    val gMean = mean(scores)
+    val gStd = std(scores) + 0.001
+    tmp = fill(tmp, gMean)
+    tmp = sub(tmp, scores, tmp)
+    tmp = scale(tmp, 0.0 - 1.0 / gStd)
+    logits = copy(logits, mot.mu)
+    logits = scale(logits, 1.0 - EFE_MIX)
+    logits = axpy(logits, EFE_MIX, tmp)
+    var action = 0
+    explore match {
+        1 -> {
+            tmp = copy(tmp, logits)
+            tmp = softMax(tmp)
+            val r = d2Rand01(seed)
+            seed = r.fwdRngSeed
+            action = sampleCat(tmp, r.fwdRngU)
+        }
+        _ -> { action = argMax(logits) }
+    }
+
+    p = p with {
+        vis = vis,
+        pfc = pfc,
+        mot = mot,
+        amy = amy,
+        hyp = hyp,
+        gen = gen,
+        genErr = genErr,
+        lat = lat,
+        halfLat = halfLat,
+        recog = recog,
+        recogErr = recogErr,
+        driveP = driveP,
+        driveAmy = driveAmy,
+        driveHyp = driveHyp,
+        tdAmy = tdAmy,
+        motTop = motTop,
+        scores = scores,
+        logits = logits,
+        tmp = tmp,
+        amyBias = amyBias,
+        hypBias = hypBias,
+        lastGenErr = genErr,
+        lastRecogErr = recogErr,
+        lastMotErr = mot.err,
+        lastAmyErr = amy.err,
+        lastHypErr = hyp.err
+    }
+    ForwardD2 { fwdAgent = p, fwdAction = action, fwdSeed = seed }
+}
+
+val learnD2 = { p0, reward ->
+    // Python reward_lr_mod: clamp(1+reward, 0.1, 10)
+    val mod0 = 1.0 + reward
+    val mod = match {
+        mod0 < 0.1 -> 0.1
+        mod0 > 10.0 -> 10.0
+        _ -> mod0
+    }
+    // D2 motor_prior_gain=0 → motor_scale=12
+    val motScale = 12.0
+    val lr = CONN_LR * mod
+    var p = p0
+    var vis = p.vis
+    var pfc = p.pfc
+    var mot = p.mot
+    var amy = p.amy
+    var hyp = p.hyp
+    var visPfc = p.visPfc
+    var pfcVis = p.pfcVis
+    var pfcMot = p.pfcMot
+    var visAmy = p.visAmy
+    var pfcAmy = p.pfcAmy
+    var amyMot = p.amyMot
+    var visHyp = p.visHyp
+    var hypMot = p.hypMot
+    var driveAmy = p.driveAmy
+    var recog = p.recog
+    var recogErr = p.recogErr
+
+    pfcVis = linkHebbian(pfcVis, pfc.mu, p.lastGenErr, lr * 2.0, W_CLIP, W_DECAY, EPS)
+    visPfc = linkHebbian(visPfc, vis.mu, p.lastRecogErr, lr * 6.0, W_CLIP, W_DECAY, EPS)
+    recog = linkProject(visPfc, vis.mu, recog, MU_CLIP)
+    recogErr = sub(recogErr, pfc.mu, recog)
+    visPfc = linkHebbian(visPfc, vis.mu, recogErr, lr * 3.0, W_CLIP, W_DECAY, EPS)
+    pfcMot = linkHebbian(pfcMot, pfc.mu, p.lastMotErr, lr * motScale, W_CLIP, W_DECAY, EPS)
+
+    // Amygdala: affordance PE + value PE at amy_value_index=0
+    driveAmy = copy(driveAmy, p.lastAmyErr)
+    driveAmy = driveAmy.set(0, reward - amy.mu.get(0))
+    val muA = updateState(amy.mu, amy.enc, driveAmy, AMY, STATE_LR, PI, MU_CLIP)
+    amy = amy with { mu = muA, err = driveAmy }
+    visAmy = linkHebbian(visAmy, vis.mu, driveAmy, lr * 5.0, W_CLIP, W_DECAY, EPS)
+    pfcAmy = linkHebbian(pfcAmy, pfc.mu, driveAmy, lr * 4.0, W_CLIP, W_DECAY, EPS)
+    amyMot = linkHebbian(amyMot, amy.mu, p.lastMotErr, lr * motScale * 3.0, W_CLIP, W_DECAY * 0.5, EPS)
+
+    visHyp = linkHebbian(visHyp, vis.mu, p.lastHypErr, lr * 4.0, W_CLIP, W_DECAY, EPS)
+    hypMot = linkHebbian(hypMot, hyp.mu, p.lastMotErr, lr * 5.0, W_CLIP, W_DECAY, EPS)
+
+    vis = learnGen(vis, p.lastGenErr, GEN_LR * 2.0 * mod, W_CLIP, W_DECAY, PI)
+    pfc = learnGen(pfc, p.lastRecogErr, GEN_LR * 2.0 * mod, W_CLIP, W_DECAY, PI)
+    mot = learnGen(mot, p.lastMotErr, GEN_LR * mod, W_CLIP, W_DECAY, PI)
+    amy = learnGen(amy, driveAmy, GEN_LR * mod, W_CLIP, W_DECAY, PI)
+    hyp = learnGen(hyp, p.lastHypErr, GEN_LR * mod, W_CLIP, W_DECAY, PI)
+
+    p = p with {
+        vis = vis,
+        pfc = pfc,
+        mot = mot,
+        amy = amy,
+        hyp = hyp,
+        visPfc = visPfc,
+        pfcVis = pfcVis,
+        pfcMot = pfcMot,
+        visAmy = visAmy,
+        pfcAmy = pfcAmy,
+        amyMot = amyMot,
+        visHyp = visHyp,
+        hypMot = hypMot,
+        recog = recog,
+        recogErr = recogErr,
+        driveAmy = driveAmy,
+        lastAmyErr = driveAmy,
+        learnSteps = p.learnSteps + 1.0
+    }
+    p
+}

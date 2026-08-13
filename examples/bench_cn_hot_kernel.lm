@@ -1,0 +1,73 @@
+module BenchCnHotKernel
+
+/// CogniNucleus-shaped hot step via `std.linalg` (vis=16, pfc=32).
+/// One step ≈ project + predictive-coding update + Hebbian rank-1.
+import std.io.{println}
+import std.linalg.{zeros, gemv, gemvT, addmm, axpy, sub, clamp, l2Normalize, copy, checksum}
+
+val VIS = 16
+val PFC = 32
+val STEPS = 100000
+val LR = 0.05
+val CLIP = 10.0
+
+val main = {
+    var muVis = zeros(VIS)
+    var muPfc = zeros(PFC)
+    var wVp = zeros(PFC * VIS)
+    var enc = zeros(PFC * PFC)
+    var pred = zeros(PFC * PFC)
+    var drive = zeros(PFC)
+    var predBuf = zeros(PFC)
+    var err = zeros(PFC)
+    var delta = zeros(PFC)
+    var u = zeros(VIS)
+    var v = zeros(PFC)
+
+    var i = 0
+    for i < VIS {
+        muVis = muVis.set(i, (0.0 + i) * 0.01)
+        i = i + 1
+    }
+    i = 0
+    for i < PFC {
+        muPfc = muPfc.set(i, (0.0 + i) * 0.001)
+        i = i + 1
+    }
+    i = 0
+    for i < PFC {
+        var j = 0
+        for j < VIS {
+            wVp = wVp.set(i * VIS + j, (0.0 + i + j) * 0.001)
+            j = j + 1
+        }
+        i = i + 1
+    }
+    i = 0
+    for i < PFC {
+        enc = enc.set(i * PFC + i, 1.0)
+        pred = pred.set(i * PFC + i, 1.0)
+        i = i + 1
+    }
+
+    var t = 0
+    for t < STEPS {
+        drive = gemv(PFC, VIS, wVp, muVis, drive)
+        predBuf = gemvT(PFC, PFC, pred, muPfc, predBuf)
+        err = sub(err, drive, predBuf)
+        delta = gemvT(PFC, PFC, enc, err, delta)
+        muPfc = axpy(muPfc, LR, delta)
+        muPfc = clamp(muPfc, 0.0 - CLIP, CLIP)
+        u = copy(u, muVis)
+        v = copy(v, err)
+        u = l2Normalize(u, 0.001)
+        v = l2Normalize(v, 0.001)
+        wVp = addmm(PFC, VIS, wVp, v, u, LR)
+        muVis = axpy(muVis, 0.0001, u)
+        muVis = clamp(muVis, 0.0 - CLIP, CLIP)
+        t = t + 1
+    }
+
+    println(checksum(muPfc))
+    println(checksum(wVp))
+}

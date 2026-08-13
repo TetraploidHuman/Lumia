@@ -53,7 +53,18 @@ _filter_path() {
 }
 
 _JOINED=$(IFS=:; echo "${_LIB_DIRS[*]}")
-export LIBRARY_PATH="$(_filter_path "${_JOINED}${LIBRARY_PATH:+:}$LIBRARY_PATH")"
-export LD_LIBRARY_PATH="$(_filter_path "${_JOINED}${LD_LIBRARY_PATH:+:}$LD_LIBRARY_PATH")"
+# Defaults first so `set -u` (e.g. scripts/check.sh) never trips on unset paths.
+: "${LIBRARY_PATH:=}"
+: "${LD_LIBRARY_PATH:=}"
+if [[ -n "$LIBRARY_PATH" ]]; then
+  export LIBRARY_PATH="$(_filter_path "${_JOINED}:$LIBRARY_PATH")"
+else
+  export LIBRARY_PATH="$(_filter_path "$_JOINED")"
+fi
+if [[ -n "$LD_LIBRARY_PATH" ]]; then
+  export LD_LIBRARY_PATH="$(_filter_path "${_JOINED}:$LD_LIBRARY_PATH")"
+else
+  export LD_LIBRARY_PATH="$(_filter_path "$_JOINED")"
+fi
 
 echo "Lumia env: LLVM_SYS_211_PREFIX=${LLVM_SYS_211_PREFIX:-unset}"

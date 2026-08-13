@@ -217,7 +217,7 @@ impl<'ctx> Codegen<'ctx> {
                 .build_int_to_ptr(cal_i, ptr_ty, "clos_env"),
         )?;
         let fn_slot = unsafe {
-            crate::error::llvm(self.llvm.builder.build_gep(
+            crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
                 self.llvm.i64_ty,
                 env_ptr,
                 &[self.llvm.i64_ty.const_int(0, false)],
@@ -323,7 +323,7 @@ impl<'ctx> Codegen<'ctx> {
             "clos_fn_i",
         ))?;
         let fn_slot = unsafe {
-            crate::error::llvm(self.llvm.builder.build_gep(
+            crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
                 self.llvm.i64_ty,
                 ptr,
                 &[self.llvm.i64_ty.const_int(0, false)],
@@ -334,7 +334,7 @@ impl<'ctx> Codegen<'ctx> {
         for (i, e) in captures.iter().enumerate() {
             let v = self.coerce_i64(self.local(*e)?)?;
             let slot = unsafe {
-                crate::error::llvm(self.llvm.builder.build_gep(
+                crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
                     self.llvm.i64_ty,
                     ptr,
                     &[self.llvm.i64_ty.const_int((i + 1) as u64, false)],
@@ -362,7 +362,7 @@ impl<'ctx> Codegen<'ctx> {
         let env_ptr =
             crate::error::llvm(self.llvm.builder.build_int_to_ptr(env_i, ptr_ty, "cap_env"))?;
         let slot = unsafe {
-            crate::error::llvm(self.llvm.builder.build_gep(
+            crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
                 self.llvm.i64_ty,
                 env_ptr,
                 &[self.llvm.i64_ty.const_int((index as u64) + 1, false)],

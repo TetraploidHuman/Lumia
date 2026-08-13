@@ -1,0 +1,26 @@
+module ListSet
+
+fun main() effect.io=true memo=None {
+  %0 = i64 1  // pure
+  %1 = i64 2  // pure
+  %2 = i64 3  // pure
+  %3 = alloc_list[LitList](n=3)  // pure
+  %4 = %0  // pure
+  %5 = i64 99  // pure
+  %6 = alloc_list[LitList](n=3)  // pure
+  %7 = i64 0  // pure
+  %8 = %0  // pure
+  %9 = builtin Println(%0)  // effect
+  %10 = %0  // pure
+  %11 = %5  // pure
+  %12 = builtin Println(%5)  // effect
+  %13 = %1  // pure
+  %14 = %2  // pure
+  %15 = builtin Println(%2)  // effect
+  %16 = %0  // pure
+  %17 = %1  // pure
+  %18 = builtin Println(%1)  // effect
+  %19 = i64 3  // pure
+  %20 = builtin Println(%19)  // effect
+  return %20
+}

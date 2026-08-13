@@ -5,6 +5,7 @@ mod display;
 mod effects;
 mod infer;
 mod parallel;
+mod product_resolve;
 mod traits;
 mod typecheck;
 mod types;

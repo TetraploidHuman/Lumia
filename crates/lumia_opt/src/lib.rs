@@ -5,6 +5,7 @@
 //! Escape analysis + small pure inlining live in [`escape`] / [`inline`].
 
 mod copy_elim;
+mod dense_f64_sr;
 mod escape;
 mod fusion;
 mod inline;
@@ -24,6 +25,7 @@ pub use memo::{
 pub use specialize_const::SpecializeConstPass;
 
 use copy_elim::CopyElimPass;
+use dense_f64_sr::DenseF64SrPass;
 use lumia_core::{CoreModule, ListRepr, MapRepr};
 use memo::cse_module;
 use repr_select::ReprSelect;
@@ -57,6 +59,7 @@ enum PipelinePass {
     SpecializeConst,
     Licm,
     Escape,
+    DenseF64Sr,
     Inline,
     ConcatIdent,
     ReprSelect,
@@ -71,6 +74,7 @@ impl PipelinePass {
             Self::SpecializeConst => "specialize_const",
             Self::Licm => "licm",
             Self::Escape => "escape",
+            Self::DenseF64Sr => "dense_f64_sr",
             Self::Inline => "inline",
             Self::ConcatIdent => "concat_ident",
             Self::ReprSelect => "repr_select",
@@ -85,6 +89,7 @@ impl PipelinePass {
             Self::SpecializeConst => SpecializeConstPass.run(module),
             Self::Licm => LicmPass.run(module),
             Self::Escape => EscapePass.run(module),
+            Self::DenseF64Sr => DenseF64SrPass.run(module),
             Self::Inline => InlinePass.run(module),
             Self::ConcatIdent => ConcatIdentPass.run(module),
             Self::ReprSelect => ReprSelect.run(module),
@@ -106,7 +111,12 @@ impl Pass for CsePass {
 const DEBUG_PASSES: &[PipelinePass] = &[
     PipelinePass::Cse,
     PipelinePass::ConstFold,
+    // Light PE without Inline/memo — bake Int/Bool/Char into leaf clones.
+    PipelinePass::SpecializeConst,
+    PipelinePass::ConstFold,
     PipelinePass::Licm,
+    // Same dense-float SR as Release so Debug matches hot RT kernels (no Inline).
+    PipelinePass::DenseF64Sr,
     PipelinePass::Escape,
     PipelinePass::ReprSelect,
 ];
@@ -117,7 +127,10 @@ const RELEASE_PASSES: &[PipelinePass] = &[
     PipelinePass::SpecializeConst,
     PipelinePass::ConstFold,
     PipelinePass::Licm,
+    PipelinePass::DenseF64Sr,
     PipelinePass::Inline,
+    // Inlined nests / composed helpers — second SR before fold/specialize.
+    PipelinePass::DenseF64Sr,
     // Inline exposes fresh literals / builtins — fold, specialize, then escape.
     PipelinePass::ConstFold,
     PipelinePass::SpecializeConst,
@@ -163,6 +176,12 @@ pub fn optimize(module: &mut CoreModule, opts: &OptOptions) {
         None
     };
 
+    // Stamp Memo *before* Release inline / specialize so T_f callees are not
+    // absorbed into callers (which would drop runtime result reuse).
+    if let Some(ref plan) = memo_plan {
+        apply_memo_plan(module, plan);
+    }
+
     let passes = if opts.release {
         RELEASE_PASSES
     } else {
@@ -171,17 +190,14 @@ pub fn optimize(module: &mut CoreModule, opts: &OptOptions) {
     for p in passes {
         p.run(module);
     }
-
-    if let Some(plan) = memo_plan {
-        apply_memo_plan(module, &plan);
-    }
 }
 
 /// Named passes for tooling / diagnostics.
 ///
 /// `"memo_tf"` is listed for Release even though planning runs via [`plan_memo_tf`]
-/// *before* CSE (not as a `Pass::run`); applying a fresh plan after CSE would
-/// drop const-reuse evidence (§7.5.2).
+/// *before* CSE (not as a `Pass::run`); the plan is applied immediately so later
+/// inline/specialize see `memo` and leave T_f callees intact. Re-planning after
+/// CSE would drop const-reuse evidence (§7.5.2).
 pub fn pass_names(release: bool) -> Vec<&'static str> {
     let mut names: Vec<&'static str> = if release {
         RELEASE_PASSES.iter().map(|p| p.name()).collect()
@@ -230,8 +246,62 @@ mod tests {
         assert!(pass_names(true).contains(&"concat_ident"));
         assert!(pass_names(true).contains(&"memo_tf"));
         assert!(!pass_names(false).contains(&"inline"));
-        assert!(!pass_names(false).contains(&"specialize_const"));
+        assert!(pass_names(false).contains(&"specialize_const"));
         assert!(!pass_names(false).contains(&"memo_tf"));
+    }
+
+    #[test]
+    fn pass_pipeline_exact_order() {
+        // Debug: CSE → fold → specialize → fold → LICM → dense_f64_sr → Escape → ReprSelect
+        // (no inline/memo).
+        assert_eq!(
+            DEBUG_PASSES.iter().map(|p| p.name()).collect::<Vec<_>>(),
+            vec![
+                "cse",
+                "const_fold",
+                "specialize_const",
+                "const_fold",
+                "licm",
+                "dense_f64_sr",
+                "escape",
+                "repr_select"
+            ]
+        );
+        // Release interleaves specialize/fold/inline; Escape must immediately
+        // precede ReprSelect (ConcatIdent/ConstFold in between do not allocate).
+        assert_eq!(
+            RELEASE_PASSES.iter().map(|p| p.name()).collect::<Vec<_>>(),
+            vec![
+                "cse",
+                "const_fold",
+                "specialize_const",
+                "const_fold",
+                "licm",
+                "dense_f64_sr",
+                "inline",
+                "dense_f64_sr",
+                "const_fold",
+                "specialize_const",
+                "const_fold",
+                "escape",
+                "concat_ident",
+                "const_fold",
+                "repr_select",
+                "copy_elim",
+            ]
+        );
+        let release = pass_names(true);
+        let escape_i = release.iter().position(|&n| n == "escape").unwrap();
+        let repr_i = release.iter().position(|&n| n == "repr_select").unwrap();
+        assert!(escape_i < repr_i);
+        // No second Escape after the Escape→ReprSelect pair today.
+        assert_eq!(
+            RELEASE_PASSES
+                .iter()
+                .filter(|p| matches!(p, PipelinePass::Escape))
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -409,6 +479,57 @@ val main = {
             alloc,
             Some(ListRepr::LitList),
             "expected LitList for non-escaping listOf; escaping={:?}",
+            main.escaping
+        );
+    }
+
+    #[test]
+    fn repr_select_list_field_of_wide_product_is_heap() {
+        use lumia_hir::lower_module;
+        use lumia_syntax::parse_module;
+        use lumia_ty::infer_module;
+        // >8 fields ⇒ HeapAdt; list field must not stay LitList (GC / UAF).
+        let src = r#"
+module M
+type Wide {
+    val a0
+    val a1
+    val a2
+    val a3
+    val a4
+    val a5
+    val a6
+    val a7
+    val a8
+    val xs
+}
+val main = {
+    val w = Wide {
+        a0 = 0, a1 = 1, a2 = 2, a3 = 3, a4 = 4,
+        a5 = 5, a6 = 6, a7 = 7, a8 = 8,
+        xs = listOf(10, 20)
+    }
+    w.a0
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let hir = lower_module(&ast).expect("lower");
+        let typed = infer_module(&hir).expect("infer");
+        let mut core =
+            lumia_core::lower_hir_with_schemes(&typed.module, &typed.fun_types, &typed.fun_schemes);
+        optimize(&mut core, &OptOptions::default());
+        let main = core.functions.iter().find(|f| f.is_main).expect("main");
+        let list_repr = main.body.ops.iter().find_map(|op| match op {
+            Op::Let {
+                value: Value::AllocList { elems, repr },
+                ..
+            } if elems.len() == 2 => Some(*repr),
+            _ => None,
+        });
+        assert_eq!(
+            list_repr,
+            Some(ListRepr::HeapList),
+            "list field of wide HeapAdt must be HeapList; escaping={:?}",
             main.escaping
         );
     }

@@ -249,6 +249,12 @@ pub(crate) fn rewrite_ufcs_in_expr(
             rewrite_ufcs_in_expr(scrutinee, rewrites);
             rewrite_ufcs_in_expr(alt, rewrites);
         }
+        Expr::With { base, fields, .. } => {
+            rewrite_ufcs_in_expr(base, rewrites);
+            for (_, e) in fields {
+                rewrite_ufcs_in_expr(e, rewrites);
+            }
+        }
         Expr::Var(_, _)
         | Expr::Int(_, _)
         | Expr::Float(_, _)

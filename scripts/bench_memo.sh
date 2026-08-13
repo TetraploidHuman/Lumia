@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Compare Release builds with transparent Memo `T_f` on vs off (same LLVM opt level).
+# Reports wall time and peak RSS (best-of / multi-sample).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck disable=SC1091
 source "$ROOT/scripts/env.sh"
+# shellcheck disable=SC1091
+source "$ROOT/scripts/bench_measure.sh"
 
 cd "$ROOT"
 cargo build -q -p lumia
@@ -13,6 +16,7 @@ OUT_DIR="${TMPDIR:-/tmp}/lumia_bench_memo"
 mkdir -p "$OUT_DIR"
 WITH="$OUT_DIR/with_memo"
 WITHOUT="$OUT_DIR/without_memo"
+RUNS="${RUNS:-5}"
 
 echo "== build Release + Memo T_f =="
 "$LUMIA" build --release "$SRC" -o "$WITH"
@@ -32,23 +36,25 @@ if [[ "$out_with" != "$out_without" ]]; then
 fi
 echo "checksum ok: $out_with"
 
-best_of_three() {
+measure_n() {
   local bin=$1
-  local best=999999
-  local i t
-  for i in 1 2 3; do
-    t="$(TIMEFORMAT='%R'; { time "$bin" >/dev/null; } 2>&1)"
-    best="$(awk -v a="$best" -v b="$t" 'BEGIN{ if (b+0 < a+0) print b; else print a }')"
+  local i samples=""
+  for ((i = 0; i < RUNS; i++)); do
+    samples+="$(bench_measure "$bin")"$'\n'
   done
-  echo "$best"
+  printf '%s' "$samples" | bench_measure_stats
 }
 
-echo "== timing (best of 3 wall-clock seconds) =="
-t_with="$(best_of_three "$WITH")"
-t_without="$(best_of_three "$WITHOUT")"
-printf 'with Memo T_f:    %ss\n' "$t_with"
-printf 'without Memo T_f: %ss\n' "$t_without"
-awk -v w="$t_with" -v o="$t_without" 'BEGIN{
-  if (w+0 <= 0) { print "speedup: n/a"; exit }
-  printf "speedup (without / with): %.2fx\n", o/w
-}'
+echo "== timing + peak RSS (RUNS=$RUNS) =="
+s_with="$(measure_n "$WITH")"
+s_without="$(measure_n "$WITHOUT")"
+bench_print_stats "memo_on" "$s_with"
+bench_print_stats "memo_off" "$s_without"
+python3 - "$s_with" "$s_without" <<'PY'
+import sys
+w, o = sys.argv[1].split(), sys.argv[2].split()
+wt, ot = float(w[1]), float(o[1])
+wr, or_ = float(w[4]), float(o[4])
+print(f"speedup  {ot/wt:.2f}x  (memo_off_med_time / memo_on_med_time)")
+print(f"rss_ratio {or_/wr:.2f}x  (memo_off_med_rss / memo_on_med_rss)")
+PY

@@ -151,6 +151,13 @@ pub enum Expr {
         alt: Box<Expr>,
         span: Span,
     },
+    /// Product update whose type is not unique from field names alone.
+    /// Desugared after typecheck once the base expression's ADT is known.
+    With {
+        base: Box<Expr>,
+        fields: Vec<(String, Expr)>,
+        span: Span,
+    },
     Seq {
         stmts: Vec<Expr>,
         span: Span,

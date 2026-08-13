@@ -4,7 +4,7 @@ use super::super::Codegen;
 use anyhow::{bail, Context as AnyhowContext, Result};
 use inkwell::values::{BasicValueEnum, FunctionValue, IntValue};
 use inkwell::{FloatPredicate, IntPredicate};
-use lumia_core::Local;
+use lumia_core::{Local, Value};
 use lumia_syntax::{BinOp, UnOp};
 use lumia_ty::Type;
 
@@ -37,6 +37,49 @@ impl<'ctx> Codegen<'ctx> {
         crate::error::llvm(self.llvm.builder.build_unreachable())?;
         self.llvm.builder.position_at_end(ok_bb);
         crate::error::llvm(self.llvm.builder.build_int_neg(o, "neg"))
+    }
+
+    fn dest_is_nsw_safe(&self) -> bool {
+        self.frame
+            .emit_dest
+            .is_some_and(|d| self.frame.nsw_binop_locals.contains(&d))
+    }
+
+    /// Dividend proven ≥ 0 (NSW IV tree, nonneg IV load, or nonnegative Int) ⇒ `urem`/`udiv`.
+    fn dividend_nonneg(&self, left: &Local) -> bool {
+        if self.frame.nsw_binop_locals.contains(&left.0)
+            || self.frame.nonneg_iv_load_locals.contains(&left.0)
+        {
+            return true;
+        }
+        matches!(self.frame.leaf_defs.get(&left.0), Some(Value::Int(n)) if *n >= 0)
+    }
+
+    fn emit_nsw_binop(
+        &self,
+        l: IntValue<'ctx>,
+        r: IntValue<'ctx>,
+        name: &str,
+    ) -> Result<IntValue<'ctx>> {
+        crate::error::llvm(self.llvm.builder.build_int_nsw_add(l, r, name))
+    }
+
+    fn emit_nsw_binop_sub(
+        &self,
+        l: IntValue<'ctx>,
+        r: IntValue<'ctx>,
+        name: &str,
+    ) -> Result<IntValue<'ctx>> {
+        crate::error::llvm(self.llvm.builder.build_int_nsw_sub(l, r, name))
+    }
+
+    fn emit_nsw_binop_mul(
+        &self,
+        l: IntValue<'ctx>,
+        r: IntValue<'ctx>,
+        name: &str,
+    ) -> Result<IntValue<'ctx>> {
+        crate::error::llvm(self.llvm.builder.build_int_nsw_mul(l, r, name))
     }
 
     pub(crate) fn emit_checked_binop(
@@ -90,6 +133,50 @@ impl<'ctx> Codegen<'ctx> {
         fv: FunctionValue<'ctx>,
         is_rem: bool,
     ) -> Result<IntValue<'ctx>> {
+        // Constant divisor: skip checks that cannot fire.
+        if let Some(c) = r.get_sign_extended_constant() {
+            if c == 0 {
+                let trap = self.runtime_fn("lumia_trap_div0")?;
+                crate::error::llvm(self.llvm.builder.build_call(trap, &[], "trap0"))?;
+                crate::error::llvm(self.llvm.builder.build_unreachable())?;
+                // Unreachable; keep a value for typing.
+                return Ok(self.llvm.i64_ty.const_int(0, false));
+            }
+            if c == -1 {
+                let i64_min = self.llvm.i64_ty.const_int(i64::MIN as u64, true);
+                let is_min = crate::error::llvm(self.llvm.builder.build_int_compare(
+                    IntPredicate::EQ,
+                    l,
+                    i64_min,
+                    "div_min",
+                ))?;
+                let trap_bb = self.llvm.context.append_basic_block(fv, "div_ov_trap");
+                let ok_bb = self.llvm.context.append_basic_block(fv, "div_ok");
+                crate::error::llvm(
+                    self.llvm
+                        .builder
+                        .build_conditional_branch(is_min, trap_bb, ok_bb),
+                )?;
+                self.llvm.builder.position_at_end(trap_bb);
+                let t1 = self.runtime_fn("lumia_trap_overflow")?;
+                crate::error::llvm(self.llvm.builder.build_call(t1, &[], "trap_ov"))?;
+                crate::error::llvm(self.llvm.builder.build_unreachable())?;
+                self.llvm.builder.position_at_end(ok_bb);
+            } else {
+                // c ∉ {0, -1}: no div0 / MIN÷-1.
+                return Ok(if is_rem {
+                    crate::error::llvm(self.llvm.builder.build_int_signed_rem(l, r, "rem"))?
+                } else {
+                    crate::error::llvm(self.llvm.builder.build_int_signed_div(l, r, "div"))?
+                });
+            }
+            return Ok(if is_rem {
+                crate::error::llvm(self.llvm.builder.build_int_signed_rem(l, r, "rem"))?
+            } else {
+                crate::error::llvm(self.llvm.builder.build_int_signed_div(l, r, "div"))?
+            });
+        }
+
         let zero = self.llvm.i64_ty.const_int(0, false);
         let minus_one = self.llvm.i64_ty.const_int((-1i64) as u64, true);
         let i64_min = self.llvm.i64_ty.const_int(i64::MIN as u64, true);
@@ -139,6 +226,26 @@ impl<'ctx> Codegen<'ctx> {
         self.llvm.builder.position_at_end(ok_bb);
         Ok(if is_rem {
             crate::error::llvm(self.llvm.builder.build_int_signed_rem(l, r, "rem"))?
+        } else {
+            crate::error::llvm(self.llvm.builder.build_int_signed_div(l, r, "div"))?
+        })
+    }
+
+    fn emit_unchecked_div_rem(
+        &self,
+        l: IntValue<'ctx>,
+        r: IntValue<'ctx>,
+        is_rem: bool,
+        unsigned: bool,
+    ) -> Result<IntValue<'ctx>> {
+        Ok(if is_rem {
+            if unsigned {
+                crate::error::llvm(self.llvm.builder.build_int_unsigned_rem(l, r, "urem"))?
+            } else {
+                crate::error::llvm(self.llvm.builder.build_int_signed_rem(l, r, "rem"))?
+            }
+        } else if unsigned {
+            crate::error::llvm(self.llvm.builder.build_int_unsigned_div(l, r, "udiv"))?
         } else {
             crate::error::llvm(self.llvm.builder.build_int_signed_div(l, r, "div"))?
         })
@@ -195,11 +302,28 @@ impl<'ctx> Codegen<'ctx> {
             return Ok(v);
         }
         let v = match op {
+            BinOp::Add if self.dest_is_nsw_safe() => self.emit_nsw_binop(l, r, "add")?,
+            BinOp::Sub if self.dest_is_nsw_safe() => self.emit_nsw_binop_sub(l, r, "sub")?,
+            BinOp::Mul if self.dest_is_nsw_safe() => self.emit_nsw_binop_mul(l, r, "mul")?,
             BinOp::Add => self.emit_checked_binop(l, r, fv, "sadd")?,
             BinOp::Sub => self.emit_checked_binop(l, r, fv, "ssub")?,
             BinOp::Mul => self.emit_checked_binop(l, r, fv, "smul")?,
-            BinOp::Div => self.emit_checked_div_rem(l, r, fv, false)?,
-            BinOp::Rem => self.emit_checked_div_rem(l, r, fv, true)?,
+            BinOp::Div => {
+                if self.frame.safe_divisor_locals.contains(&right.0) {
+                    let unsigned = self.dividend_nonneg(left);
+                    self.emit_unchecked_div_rem(l, r, false, unsigned)?
+                } else {
+                    self.emit_checked_div_rem(l, r, fv, false)?
+                }
+            }
+            BinOp::Rem => {
+                if self.frame.safe_divisor_locals.contains(&right.0) {
+                    let unsigned = self.dividend_nonneg(left);
+                    self.emit_unchecked_div_rem(l, r, true, unsigned)?
+                } else {
+                    self.emit_checked_div_rem(l, r, fv, true)?
+                }
+            }
             BinOp::Eq => self.emit_value_eq(&lt, &rt, l, r)?,
             BinOp::Ne => {
                 let eq = self.emit_value_eq(&lt, &rt, l, r)?;
@@ -371,6 +495,22 @@ impl<'ctx> Codegen<'ctx> {
             }
         }
         // Structural Ord via runtime (String/Char/ADT); never SLT pointers.
+        // Int/Bool are bit-identity scalars — native icmp (hot path for loop latches).
+        if Self::is_bit_identity_scalar(lt) && Self::is_bit_identity_scalar(rt) {
+            let pred = match op {
+                BinOp::Lt => IntPredicate::SLT,
+                BinOp::Le => IntPredicate::SLE,
+                BinOp::Gt => IntPredicate::SGT,
+                BinOp::Ge => IntPredicate::SGE,
+                _ => unreachable!(),
+            };
+            let c = crate::error::llvm(self.llvm.builder.build_int_compare(pred, l, r, "icmp"))?;
+            return crate::error::llvm(self.llvm.builder.build_int_z_extend(
+                c,
+                self.llvm.i64_ty,
+                "icmpz",
+            ));
+        }
         let f = self.runtime_fn("lumia_cmp")?;
         let call = crate::error::llvm(self.llvm.builder.build_call(
             f,
@@ -396,6 +536,11 @@ impl<'ctx> Codegen<'ctx> {
                 .builder
                 .build_int_z_extend(c, self.llvm.i64_ty, "ordz"),
         )
+    }
+
+    /// Int / Bool / Unit: compare as i64 bits (not heap pointers).
+    pub(crate) fn is_bit_identity_scalar(ty: &Type) -> bool {
+        matches!(ty, Type::Int | Type::Bool | Type::Unit)
     }
 
     pub(crate) fn emit_value_unary(

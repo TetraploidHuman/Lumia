@@ -20,9 +20,15 @@ fun dbl$Float(x) effect.io=false memo=None {
   return %1
 }
 
+fun dbl$Float$c_x3ff8000000000000() effect.io=false memo=None {
+  %2 = f64 1.5  // pure
+  %1 = %2 + %2  // pure
+  return %1
+}
+
 fun main() effect.io=true memo=None {
   %0 = f64 1.5  // pure
-  %1 = call dbl$Float(%0)  // pure
+  %1 = call dbl$Float$c_x3ff8000000000000()  // pure
   %2 = builtin Println(%1)  // effect
   %3 = funref dbl  // pure
   %4 = %0  // pure

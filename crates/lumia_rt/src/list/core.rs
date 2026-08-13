@@ -5,8 +5,8 @@ use std::ptr;
 
 use super::tid::{heap_list_tid, list_tid};
 use crate::common::{
-    header_from_payload, is_heap_payload, list_rc_is_unique, list_rc_release, list_rc_retain,
-    tid_base, trap_abort, GcInhibitGuard, PERM_OBJECTS, RC_SHARED, TYPE_LIST, TYPE_LIST_IOTA,
+    header_from_payload, is_heap_payload, list_rc_is_unique, tid_base, trap_abort, GcInhibitGuard,
+    PERM_OBJECTS, RC_SHARED, TYPE_LIST, TYPE_LIST_IOTA,
 };
 use crate::gc::{list_payload_bytes, lumia_alloc};
 
@@ -122,8 +122,9 @@ pub extern "C" fn lumia_list_promote(list: *mut u8) -> *mut u8 {
         let dst = dest as *mut i64;
         let src = list as *const i64;
         *dst = n;
-        for i in 0..n as usize {
-            *dst.add(1 + i) = *src.add(1 + i);
+        // Bulk copy elems; layout is contiguous `[len][elem…]`.
+        if n > 0 {
+            std::ptr::copy_nonoverlapping(src.add(1), dst.add(1), n as usize);
         }
     }
     dest
@@ -186,7 +187,10 @@ pub extern "C" fn lumia_list_append(list: *mut u8, elem: i64) -> *mut u8 {
             *dst = n1;
             *dst.add(n1 as usize) = elem;
             // Old list + young heap elem → remembered set for minor GC.
-            crate::lumia_write_barrier(list, n1 as u32, elem as *mut u8);
+            // Skip for Float-elem lists: payload words are IEEE bits, not pointers.
+            if !super::tid::list_float_elems(list) {
+                crate::lumia_write_barrier(list, n1 as u32, elem as *mut u8);
+            }
             return list;
         }
 
@@ -211,16 +215,35 @@ pub extern "C" fn lumia_list_append(list: *mut u8, elem: i64) -> *mut u8 {
     }
 }
 
-/// Retain a List value when aliasing (`val a = xs`). No-op for non-lists.
+/// Retain a List value when aliasing (`val a = xs`). No-op for non-lists / ADTs.
 #[no_mangle]
 pub extern "C" fn lumia_list_retain(list: *mut u8) {
-    list_rc_retain(list);
+    crate::common::list_rc_retain(list);
 }
 
-/// Release a List alias (does not free; GC reclaims unreachable objects).
+/// Release a List alias (does not free; GC reclaims). No-op for ADTs.
 #[no_mangle]
 pub extern "C" fn lumia_list_release(list: *mut u8) {
-    list_rc_release(list);
+    crate::common::list_rc_release(list);
+}
+
+/// Pointer identity for heap values (`List` / ADT payloads). Used to skip
+/// redundant `with` when a kernel mutated buffers in place.
+#[no_mangle]
+pub extern "C" fn lumia_ptr_eq(a: *mut u8, b: *mut u8) -> i64 {
+    i64::from(a == b)
+}
+
+/// Retain a heap List **or** ADT alias (`val a = p`, `AdtField` extract, field store).
+#[no_mangle]
+pub extern "C" fn lumia_adt_retain(obj: *mut u8) {
+    crate::common::value_rc_retain(obj);
+}
+
+/// Release a heap List **or** ADT alias (mut-slot overwrite / field replace).
+#[no_mangle]
+pub extern "C" fn lumia_adt_release(obj: *mut u8) {
+    crate::common::value_rc_release(obj);
 }
 
 /// Shared empty `List` (`LitList` / `listOf()`). Immortal — survives GC.
@@ -238,7 +261,8 @@ pub extern "C" fn lumia_list_empty() -> *mut u8 {
         unsafe {
             *(dest as *mut i64) = 0;
             // Immortal shared empty list — never COW in-place.
-            (*header_from_payload(dest))._pad = RC_SHARED;
+            (*header_from_payload(dest)).rc = RC_SHARED;
+            (*header_from_payload(dest))._pad = 0;
         }
         PERM_OBJECTS.with(|p| p.borrow_mut().push(dest));
         c.set(dest);

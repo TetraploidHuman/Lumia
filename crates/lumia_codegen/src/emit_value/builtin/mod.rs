@@ -54,7 +54,13 @@ impl<'ctx> Codegen<'ctx> {
             BuiltinEmit::UnaryObjScalar => {
                 let obj_i = self.coerce_i64(self.local(args[0])?)?;
                 let obj = self.i64_as_ptr(obj_i, "obj")?;
-                let sym = Self::builtin_symbol(b)?;
+                let sym = if matches!(b, Builtin::ListLen)
+                    && matches!(self.frame.local_tys.get(&args[0].0), Some(Type::List(_)))
+                {
+                    "lumia_list_len"
+                } else {
+                    Self::builtin_symbol(b)?
+                };
                 self.call_rt_basic(sym, &[obj.into()], label)
             }
             BuiltinEmit::ObjI64Ptr => self.emit_rt_obj_i64(b, args, label),
@@ -68,13 +74,31 @@ impl<'ctx> Codegen<'ctx> {
                 let b_i = self.coerce_i64(self.local(args[2])?)?;
                 let mut obj = self.i64_as_ptr(obj_i, "obj")?;
                 obj = self.ensure_float_container(b, args, obj)?;
-                let sym = Self::builtin_symbol(b)?;
+                // List/Map `set`: retain source when the old binding stays live.
+                // Skipped for proven `xs = xs.set(…)` so unique RC can write in place.
+                if matches!(b, Builtin::MapSet) && !self.frame.cow_consume_unique {
+                    self.list_retain_i64(obj_i)?;
+                }
+                // Known `List` → skip polymorphic `lumia_set` dispatch.
+                let sym = if matches!(b, Builtin::MapSet)
+                    && matches!(self.frame.local_tys.get(&args[0].0), Some(Type::List(_)))
+                {
+                    "lumia_list_set"
+                } else {
+                    Self::builtin_symbol(b)?
+                };
                 self.call_rt_ptr_as_i64(sym, &[obj.into(), a.into(), b_i.into()], label)
             }
             BuiltinEmit::ObjI64OptionTags => {
                 let obj_i = self.coerce_i64(self.local(args[0])?)?;
                 let key = self.coerce_i64(self.local(args[1])?)?;
                 let obj = self.i64_as_ptr(obj_i, "obj")?;
+                // Known `List` → `lumia_list_get` (no Option tags / map dispatch).
+                if matches!(b, Builtin::ListGet)
+                    && matches!(self.frame.local_tys.get(&args[0].0), Some(Type::List(_)))
+                {
+                    return self.call_rt_basic("lumia_list_get", &[obj.into(), key.into()], label);
+                }
                 let some = self
                     .llvm
                     .i64_ty
@@ -100,25 +124,53 @@ impl<'ctx> Codegen<'ctx> {
     }
 
     /// Apply [`BuiltinInfo::float_ensures`](lumia_hir::BuiltinInfo::float_ensures) to `obj`.
+    ///
+    /// `MapSet` is overloaded for `List.set` / `Map.set`. List destinations must
+    /// use `ENSURE_LIST_F64` when the written elem is Float — never map ensures.
     fn ensure_float_container(
         &mut self,
         b: &Builtin,
         args: &[Local],
         mut obj: PointerValue<'ctx>,
     ) -> Result<PointerValue<'ctx>> {
+        if matches!(b, Builtin::MapSet) {
+            let val_float = matches!(self.frame.local_tys.get(&args[2].0), Some(Type::Float));
+            let key_float = matches!(self.frame.local_tys.get(&args[1].0), Some(Type::Float));
+            match self.frame.local_tys.get(&args[0].0) {
+                Some(Type::List(_)) if val_float => {
+                    return self.call_ensure(obj, lumia_abi::ENSURE_LIST_F64);
+                }
+                Some(Type::Map(_, _)) => {
+                    if key_float {
+                        obj = self.call_ensure(obj, lumia_abi::ENSURE_MAP_F64)?;
+                    }
+                    if val_float {
+                        obj = self.call_ensure(obj, lumia_abi::ENSURE_MAP_VF64)?;
+                    }
+                    return Ok(obj);
+                }
+                // Unknown / poly: skip compile-time ensure; RT `lumia_set` dispatches.
+                _ => return Ok(obj),
+            }
+        }
         for &(idx, sym) in b.info().float_ensures {
             let i = idx as usize;
             if matches!(self.frame.local_tys.get(&args[i].0), Some(Type::Float)) {
-                let ens = self.runtime_fn(sym)?;
-                obj =
-                    crate::error::llvm(self.llvm.builder.build_call(ens, &[obj.into()], "ens_f"))?
-                        .try_as_basic_value()
-                        .basic()
-                        .with_context(|| format!("ensure `{sym}` return"))?
-                        .into_pointer_value();
+                obj = self.call_ensure(obj, sym)?;
             }
         }
         Ok(obj)
+    }
+
+    fn call_ensure(&mut self, obj: PointerValue<'ctx>, sym: &str) -> Result<PointerValue<'ctx>> {
+        let ens = self.runtime_fn(sym)?;
+        Ok(
+            crate::error::llvm(self.llvm.builder.build_call(ens, &[obj.into()], "ens_f"))?
+                .try_as_basic_value()
+                .basic()
+                .with_context(|| format!("ensure `{sym}` return"))?
+                .into_pointer_value(),
+        )
     }
 
     pub(crate) fn i64_as_ptr(&self, i: IntValue<'ctx>, name: &str) -> Result<PointerValue<'ctx>> {
@@ -176,6 +228,11 @@ impl<'ctx> Codegen<'ctx> {
         let n = self.coerce_i64(self.local(args[1])?)?;
         let mut obj = self.i64_as_ptr(obj_i, "obj")?;
         obj = self.ensure_float_container(b, args, obj)?;
+        // List append/take: retain source when the old binding stays live.
+        // Skipped for proven `xs = xs.append(…)` so unique RC can write in place.
+        if matches!(b, Builtin::ListAppend) && !self.frame.cow_consume_unique {
+            self.list_retain_i64(obj_i)?;
+        }
         let sym = Self::builtin_symbol(b)?;
         self.call_rt_ptr_as_i64(sym, &[obj.into(), n.into()], label)
     }
@@ -191,6 +248,9 @@ impl<'ctx> Codegen<'ctx> {
         let b_i = self.coerce_i64(self.local(args[1])?)?;
         let a = self.i64_as_ptr(a_i, "a")?;
         let bb = self.i64_as_ptr(b_i, "b")?;
+        if matches!(b, Builtin::ListConcat) && !self.frame.cow_consume_unique {
+            self.list_retain_i64(a_i)?;
+        }
         let sym = Self::builtin_symbol(b)?;
         self.call_rt_ptr_as_i64(sym, &[a.into(), bb.into()], label)
     }

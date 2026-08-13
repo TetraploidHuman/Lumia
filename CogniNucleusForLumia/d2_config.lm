@@ -1,0 +1,57 @@
+/// MiniEcoWorld + D2 agent constants — match Python
+/// `d0_env_config()` + `d2_agent_config()` (eval_behaviors smoke path).
+///
+/// @exports OBS_DIM, MAX_STEPS, N_FOODS, N_THREATS, MOVE_SPEED, TURN_ANGLE, FOV, FOOD_R, THREAT_R, NEST_R, HUNGER_RATE, HUNGER_EAT, PAIN_DECAY, PAIN_THREAT, ENERGY_COST, PAIN_W, ARENA, TRAIN_EP, EVAL_EP, VIS, PFC, MOT, AMY, HYP, STATE_LR, CONN_LR, GEN_LR, PI, MU_CLIP, W_CLIP, W_DECAY, EPS, EFE_MIX, REL, THREAT_IDX, CELL, PREF, EPI, WALL, GOAL_B, THREAT_G, COMPLEXITY, HORIZON, AMY_GAIN, HYP_GAIN, HUNGER_EXPLORE
+module d2_config
+
+val OBS_DIM = 64
+val MAX_STEPS = 400
+val N_FOODS = 4
+val N_THREATS = 2
+val MOVE_SPEED = 0.04
+val TURN_ANGLE = 0.35
+val FOV = 0.45
+val FOOD_R = 0.07
+val THREAT_R = 0.07
+val NEST_R = 0.07
+val HUNGER_RATE = 0.004
+val HUNGER_EAT = 0.35
+val PAIN_DECAY = 0.06
+val PAIN_THREAT = 0.25
+val ENERGY_COST = 0.006
+val PAIN_W = 0.5
+val ARENA = 1.0
+
+val TRAIN_EP = 50
+val EVAL_EP = 15
+
+val VIS = 64
+val PFC = 32
+val MOT = 4
+val AMY = 8
+val HYP = 4
+
+val STATE_LR = 0.05
+val CONN_LR = 0.014
+val GEN_LR = 0.003
+val PI = 1.0
+val MU_CLIP = 5.0
+val W_CLIP = 2.0
+val W_DECAY = 0.0001
+val EPS = 0.001
+
+// d2_agent_config (Python); efe_horizon default remains 1
+val EFE_MIX = 0.60
+val REL = 10
+val THREAT_IDX = 14
+val CELL = 0.04
+val PREF = 1.65
+val EPI = 0.30
+val WALL = 2.5
+val GOAL_B = 0.8
+val THREAT_G = 2.15
+val COMPLEXITY = 0.0
+val HORIZON = 1
+val AMY_GAIN = 0.95
+val HYP_GAIN = 0.90
+val HUNGER_EXPLORE = 1.45

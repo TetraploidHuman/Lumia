@@ -125,6 +125,10 @@ fn fun_body_has_io(body: &Expr, fun_types: &HashMap<String, Type>) -> bool {
             Expr::Alt { scrutinee, alt, .. } => {
                 walk(scrutinee, fun_types, locals) || walk(alt, fun_types, locals)
             }
+            Expr::With { base, fields, .. } => {
+                walk(base, fun_types, locals)
+                    || fields.iter().any(|(_, e)| walk(e, fun_types, locals))
+            }
             Expr::AdtNew { args, .. } => args.iter().any(|a| walk(a, fun_types, locals)),
             _ => false,
         }
@@ -239,6 +243,13 @@ pub(crate) fn assert_no_effects_in_pure(
         Expr::Alt { scrutinee, alt, .. } => {
             assert_no_effects_in_pure(scrutinee, fun_types, locals)?;
             assert_no_effects_in_pure(alt, fun_types, locals)
+        }
+        Expr::With { base, fields, .. } => {
+            assert_no_effects_in_pure(base, fun_types, locals)?;
+            for (_, e) in fields {
+                assert_no_effects_in_pure(e, fun_types, locals)?;
+            }
+            Ok(())
         }
         Expr::AdtNew { args, .. } => {
             for a in args {
@@ -365,6 +376,13 @@ pub(crate) fn check_expr_effects(
         Expr::Alt { scrutinee, alt, .. } => {
             check_expr_effects(scrutinee, in_effect_ctx, fun_types, locals)?;
             check_expr_effects(alt, in_effect_ctx, fun_types, locals)
+        }
+        Expr::With { base, fields, .. } => {
+            check_expr_effects(base, in_effect_ctx, fun_types, locals)?;
+            for (_, e) in fields {
+                check_expr_effects(e, in_effect_ctx, fun_types, locals)?;
+            }
+            Ok(())
         }
         Expr::AdtNew { args, .. } => {
             for a in args {

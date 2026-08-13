@@ -39,7 +39,7 @@ pub fn float_roles(tid: u32) -> FloatRoles {
 /// because it holds unboxed Float bits.
 ///
 /// For ADT, `float_mask` is the header `_pad` bitset (bit `i` ⇒ field `i` is Float).
-pub fn gc_skip_float_slot(tid: u32, index: usize, adt_float_mask: u32) -> bool {
+pub fn gc_skip_float_slot(tid: u32, index: usize, adt_float_mask: u64) -> bool {
     match tid_base(tid) {
         TYPE_LIST => list_elem_is_float(tid),
         TYPE_SET => set_elem_is_float(tid),
@@ -51,7 +51,8 @@ pub fn gc_skip_float_slot(tid: u32, index: usize, adt_float_mask: u32) -> bool {
                 map_val_is_float(tid)
             }
         }
-        TYPE_ADT => (adt_float_mask >> index) & 1 != 0,
+        // Mask covers at most 64 fields; wider products leave trailing slots as pointers.
+        TYPE_ADT => index < 64 && (adt_float_mask >> index) & 1 != 0,
         _ => false,
     }
 }
@@ -108,8 +109,10 @@ mod tests {
         assert!(gc_skip_float_slot(tid, 1, 0)); // val
         assert!(!gc_skip_float_slot(TYPE_LIST_F64, 0, 0) || list_elem_is_float(TYPE_LIST_F64));
         assert!(gc_skip_float_slot(TYPE_LIST_F64, 3, 0));
-        assert!(gc_skip_float_slot(TYPE_ADT, 1, 0b0010));
-        assert!(!gc_skip_float_slot(TYPE_ADT, 0, 0b0010));
+        assert!(gc_skip_float_slot(TYPE_ADT, 1, 0b0010u64));
+        assert!(!gc_skip_float_slot(TYPE_ADT, 0, 0b0010u64));
+        assert!(gc_skip_float_slot(TYPE_ADT, 37, 1u64 << 37));
+        assert!(!gc_skip_float_slot(TYPE_ADT, 37, 0));
     }
 
     #[test]

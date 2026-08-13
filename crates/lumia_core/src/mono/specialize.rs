@@ -1,5 +1,5 @@
 use super::fun_index::FunIndex;
-use super::key::{args_mono_key, MonoKey, MonoKind};
+use super::key::{args_mono_key, materialize_mono_param_tys, MonoKey, MonoKind};
 use super::ret_ty::{block_result_fixed_ty, param_ty_map, refine_mono_container_ret};
 use super::traits::directize_block;
 use crate::ir::{Block, CoreFun, CoreModule, Local, Op, Value};
@@ -27,6 +27,9 @@ pub(crate) fn specialize_mono_calls(module: &mut CoreModule) {
     // After all clones exist, upgrade erased Int rets on HOF wrappers whose
     // bodies now `Call(dbl$Float, …)` (directize order within a round varies).
     refresh_erased_mono_return_types(module);
+    // Toehold: thin FunRef wrappers that only forward to a concrete Call share
+    // that target at call sites (avoid an extra frame / duplicate body emit).
+    elide_trivial_mono_forwarders(module);
 }
 
 /// Fixed-point: scan all bodies for needed `(generic, MonoKey)` clones, append
@@ -165,7 +168,11 @@ fn specialize_mono_round(
             renames.insert((name, key), new_name);
             continue;
         }
-        let param_tys = key.param_tys(index.funs());
+        // Call-site ABI often types heap products/lists as `Int`. Prefer the
+        // generic's structural formals when materializing clone `param_tys` so
+        // `AdtField` keeps Float/List params (otherwise float arith `sitofp`s
+        // IEEE bit patterns — D2 `learnSteps`).
+        let param_tys = materialize_mono_param_tys(&key, &orig.param_tys, index.funs());
         let inferred = key.ret_ty(index.funs());
         let binds = key.funref_param_binds(&orig.params);
         let mut clone = orig.clone();
@@ -299,20 +306,20 @@ fn note_mono_call(
     if args.is_empty() || callee_is_mono_clone(fun, index) {
         return;
     }
-    let Some(key) = args_mono_key(args, local_tys, funref_of) else {
+    let Some(f) = index.get(fun) else {
+        return;
+    };
+    let Some(key) = args_mono_key(args, local_tys, funref_of, Some(f.param_tys.as_slice())) else {
         return;
     };
     if !key.worth_cloning() {
         return;
     }
-    let Some(f) = index.get(fun) else {
-        return;
-    };
     if f.params.len() != key.0.len() {
         return;
     }
     let funs = index.funs();
-    let param_tys = key.param_tys(funs);
+    let param_tys = materialize_mono_param_tys(&key, &f.param_tys, funs);
     let ret = key.ret_ty(funs);
     if f.param_tys == param_tys && f.ret_ty == ret && key.funref_param_binds(&f.params).is_empty() {
         return;
@@ -332,7 +339,7 @@ pub(crate) fn mono_value_ty(
         }
         // Clone not yet indexed this round — recover ret from the call-site key.
         if callee_is_mono_clone(fun, index) {
-            if let Some(key) = args_mono_key(args, local_tys, &HashMap::default()) {
+            if let Some(key) = args_mono_key(args, local_tys, &HashMap::default(), None) {
                 return Some(key.ret_ty(funs));
             }
         }
@@ -390,7 +397,8 @@ fn rewrite_mono_value(
             if args.is_empty() || callee_is_mono_clone(fun, index) {
                 return;
             }
-            if let Some(key) = args_mono_key(args, local_tys, funref_of) {
+            let formals = index.get(fun).map(|f| f.param_tys.as_slice());
+            if let Some(key) = args_mono_key(args, local_tys, funref_of, formals) {
                 if let Some(new) = renames.get(&(fun.clone(), key)) {
                     *fun = new.clone();
                 }
@@ -417,7 +425,8 @@ fn mono_value_ty_rewrite(
             if let Some(((_, mk), _)) = renames.iter().find(|(_, n)| *n == fun) {
                 return mk.ret_ty(funs);
             }
-            if let Some(key) = args_mono_key(args, local_tys, funref_of) {
+            let formals = index.get(fun).map(|f| f.param_tys.as_slice());
+            if let Some(key) = args_mono_key(args, local_tys, funref_of, formals) {
                 if let Some(new) = renames.get(&(fun.clone(), key.clone())) {
                     if let Some(((_, mk), _)) = renames.iter().find(|(_, n)| *n == new) {
                         return mk.ret_ty(funs);
@@ -433,5 +442,107 @@ fn mono_value_ty_rewrite(
             Type::Int
         }
         other => mono_value_ty(other, local_tys, index),
+    }
+}
+
+/// Mono FunRef toehold: if a clone's result is `Call(target, params)` (pure
+/// forwarder), rewrite call sites to `target` so bodies are shared in practice.
+fn elide_trivial_mono_forwarders(module: &mut CoreModule) {
+    let mut forward: HashMap<String, String> = HashMap::default();
+    for f in &module.functions {
+        if let Some(target) = trivial_param_forward_target(f) {
+            if target != f.name {
+                forward.insert(f.name.clone(), target);
+            }
+        }
+    }
+    if forward.is_empty() {
+        return;
+    }
+    // Collapse chains A→B→C.
+    let keys: Vec<String> = forward.keys().cloned().collect();
+    for k in keys {
+        let mut cur = forward.get(&k).cloned();
+        let mut guard = 0;
+        while let Some(ref t) = cur {
+            if let Some(next) = forward.get(t) {
+                cur = Some(next.clone());
+                guard += 1;
+                if guard > 8 {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        if let Some(t) = cur {
+            forward.insert(k, t);
+        }
+    }
+    for fun in &mut module.functions {
+        rewrite_forward_calls(&mut fun.body, &forward);
+    }
+}
+
+fn trivial_param_forward_target(fun: &CoreFun) -> Option<String> {
+    fun.mono_of.as_ref()?;
+    let result = fun.body.result?;
+    for op in &fun.body.ops {
+        let Op::Let {
+            local,
+            value: Value::Call { fun: target, args },
+            ..
+        } = op
+        else {
+            continue;
+        };
+        if *local != result {
+            continue;
+        }
+        // Exact forward of all formals (identity-shaped mono clone).
+        if args.len() == fun.params.len() && args.iter().eq(fun.params.iter()) {
+            return Some(target.clone());
+        }
+    }
+    None
+}
+
+fn rewrite_forward_calls(block: &mut Block, forward: &HashMap<String, String>) {
+    for op in &mut block.ops {
+        match op {
+            Op::Let { value, .. } | Op::Effect { value } => {
+                rewrite_forward_value(value, forward);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn rewrite_forward_value(value: &mut Value, forward: &HashMap<String, String>) {
+    match value {
+        Value::Call { fun, .. } => {
+            if let Some(t) = forward.get(fun) {
+                *fun = t.clone();
+            }
+        }
+        Value::If {
+            then_block,
+            else_block,
+            ..
+        } => {
+            rewrite_forward_calls(then_block, forward);
+            rewrite_forward_calls(else_block, forward);
+        }
+        Value::Loop {
+            header,
+            body,
+            latch,
+        } => {
+            rewrite_forward_calls(header, forward);
+            rewrite_forward_calls(body, forward);
+            rewrite_forward_calls(latch, forward);
+        }
+        Value::Lambda { body, .. } => rewrite_forward_calls(body, forward),
+        _ => {}
     }
 }

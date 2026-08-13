@@ -18,6 +18,36 @@ mod tests {
     use crate::ir::{Block, CoreFun, Local};
     use lumia_ty::{Effect, Type};
     #[test]
+    fn args_mono_key_prefers_formal_adt_over_abi_int() {
+        use super::key::args_mono_key;
+        use rustc_hash::FxHashMap as HashMap;
+        let mut local_tys = HashMap::default();
+        local_tys.insert(0, Type::Int); // ABI-erased product
+        local_tys.insert(1, Type::Float);
+        let formals = [
+            Type::Adt {
+                name: "Parts".into(),
+                params: vec![Type::Int, Type::Float],
+            },
+            Type::Float,
+        ];
+        let key = args_mono_key(
+            &[Local(0), Local(1)],
+            &local_tys,
+            &HashMap::default(),
+            Some(&formals),
+        )
+        .expect("key");
+        assert_eq!(key.suffix(), "$Parts_Float");
+        let tys = super::key::materialize_mono_param_tys(&key, &formals, &[]);
+        assert!(matches!(
+            &tys[0],
+            Type::Adt { name, params } if name == "Parts" && params.len() == 2
+        ));
+        assert!(matches!(tys[1], Type::Float));
+    }
+
+    #[test]
     fn mono_key_suffix_homogeneous_scalars() {
         assert_eq!(
             MonoKey(vec![MonoKind::Float, MonoKind::Float]).suffix(),
@@ -308,5 +338,168 @@ val main = {
             "FunRef should directize to Call(dbl$Float); body={:?}",
             apply_clone.body
         );
+    }
+
+    /// Heap products typed as Int at call sites must not poison mono: either no
+    /// Int-erased clone, or any clone keeps structural `Parts` params so
+    /// `steps + 1.0` bitcasts IEEE bits (not sitofp).
+    #[test]
+    fn mono_preserves_adt_param_when_call_site_erases_to_int() {
+        let core = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+type Parts {
+    val a
+    val b
+    val c
+    val d
+    val e
+    val f
+    val g
+    val h
+    val i
+    val j
+    val k
+    val l
+    val m
+    val n
+    val o
+    val p
+    val q
+    val r
+    val s
+    val t
+    val u
+    val v
+    val w
+    val x
+    val y
+    val z
+    val aa
+    val ab
+    val ac
+    val ad
+    val ae
+    val af
+    val ag
+    val ah
+    val ai
+    val aj
+    val steps
+}
+val bump = { p0, reward ->
+    Parts {
+        a = p0.a, b = p0.b, c = p0.c, d = p0.d, e = p0.e, f = p0.f, g = p0.g, h = p0.h,
+        i = p0.i, j = p0.j, k = p0.k, l = p0.l, m = p0.m, n = p0.n, o = p0.o, p = p0.p,
+        q = p0.q, r = p0.r, s = p0.s, t = p0.t, u = p0.u, v = p0.v, w = p0.w, x = p0.x,
+        y = p0.y, z = p0.z, aa = p0.aa, ab = p0.ab, ac = p0.ac, ad = p0.ad, ae = p0.ae,
+        af = p0.af, ag = p0.ag, ah = p0.ah, ai = p0.ai, aj = p0.aj,
+        steps = p0.steps + 1.0 + reward
+    }
+}
+val main = {
+    var p = Parts {
+        a = 0, b = 0, c = 0, d = 0, e = 0, f = 0, g = 0, h = 0,
+        i = 0, j = 0, k = 0, l = 0, m = 0, n = 0, o = 0, p = 0,
+        q = 0, r = 0, s = 0, t = 0, u = 0, v = 0, w = 0, x = 0,
+        y = 0, z = 0, aa = 0, ab = 0, ac = 0, ad = 0, ae = 0,
+        af = 0, ag = 0, ah = 0, ai = 0, aj = 0,
+        steps = 0.0
+    }
+    p = bump(p, 0.0 - 0.01)
+    p = bump(p, 0.0 - 0.01)
+    println(p.steps)
+}
+"#,
+        )
+        .expect("core");
+        for f in &core.functions {
+            if let Some(rest) = f.name.strip_prefix("bump$") {
+                assert!(
+                    !rest.starts_with("Int"),
+                    "must not mono-key ABI-erased product as Int: {}",
+                    f.name
+                );
+                let p0 = f.param_tys.first().expect("p0");
+                assert!(
+                    matches!(p0, Type::Adt { name, params } if name == "Parts" && !params.is_empty()),
+                    "mono clone {} must keep Parts field params, got {:?}",
+                    f.name,
+                    p0
+                );
+            }
+        }
+    }
+
+    /// Shared denom `n` across product float fields must not sticky-`seen` to Int.
+    #[test]
+    fn product_shared_float_div_fields_keep_float_params() {
+        let core = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+type Eco { val ecoX }
+type Parts { val pX }
+type Roll {
+    val rollEco
+    val rollParts
+    val meanFood
+    val meanThreat
+    val meanDisp
+}
+val rollout = { eco0, parts0, nEp ->
+    var eco = eco0
+    var parts = parts0
+    var sumFood = 0.0
+    var sumThreat = 0.0
+    var sumDisp = 0.0
+    var ep = 0
+    for ep < nEp {
+        sumFood = sumFood + 1.0
+        sumThreat = sumThreat + 15.2
+        sumDisp = sumDisp + 3.5
+        ep = ep + 1
+    }
+    val n = 0.0 + nEp
+    Roll {
+        rollEco = eco,
+        rollParts = parts,
+        meanFood = sumFood / n,
+        meanThreat = sumThreat / n,
+        meanDisp = sumDisp / n
+    }
+}
+val main = {
+    val eco = Eco { ecoX = 1 }
+    val parts = Parts { pX = 2 }
+    val r = rollout(eco, parts, 2)
+    println(r.meanFood)
+    println(r.meanThreat)
+    println(r.meanDisp)
+}
+"#,
+        )
+        .expect("core");
+        let rollout = core
+            .functions
+            .iter()
+            .find(|f| f.name.starts_with("rollout$"))
+            .or_else(|| core.functions.iter().find(|f| f.name == "rollout"))
+            .expect("rollout");
+        match &rollout.ret_ty {
+            Type::Adt { name, params } => {
+                assert_eq!(name, "Roll");
+                assert_eq!(params.len(), 5, "Roll params arity, got {:?}", params);
+                assert!(
+                    matches!(params[2], Type::Float)
+                        && matches!(params[3], Type::Float)
+                        && matches!(params[4], Type::Float),
+                    "mean* fields must be Float, got {:?}",
+                    params
+                );
+            }
+            other => panic!("expected Roll Adt ret_ty, got {other:?}"),
+        }
     }
 }

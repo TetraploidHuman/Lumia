@@ -6,13 +6,14 @@ use crate::common::{
 };
 use crate::gc::{list_payload_bytes, lumia_alloc};
 use crate::list::{
-    force_heap_list, is_list_tid, list_len_of, lumia_list_concat, lumia_list_get, lumia_list_set,
+    force_heap_list, list_len_of, lumia_list_concat, lumia_list_get, lumia_list_set,
 };
 use crate::map_set::{
-    is_map_tid, is_set_tid, lumia_map_contains, lumia_map_get, lumia_map_keys, lumia_map_remove,
-    lumia_map_set, lumia_set_contains, lumia_set_remove, map_count, set_elem_at,
+    lumia_map_contains, lumia_map_get, lumia_map_keys, lumia_map_remove, lumia_map_set,
+    lumia_set_contains, lumia_set_remove, map_count, set_elem_at,
 };
 use crate::string_io::{lumia_str_concat, lumia_str_contains};
+use lumia_abi::{is_list_tid, is_map_tid, is_set_tid};
 
 #[no_mangle]
 pub extern "C" fn lumia_len(obj: *mut u8) -> i64 {

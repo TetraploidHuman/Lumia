@@ -2,7 +2,8 @@ module ListSetAlias
 
 import std.io.{println}
 
-/// Regression: unique-list `set` must not mutate a live SSA binding.
+/// Regression: `val ys = xs.set(…)` must keep `xs` (codegen retains; set copies).
+/// Contrast with `xs = xs.set(…)`, which may write in place when RC is unique.
 val main = {
     var xs = listOf(1)
     xs = xs.append(2)

@@ -6,13 +6,12 @@ use crate::common::{
     TYPE_CHAR, TYPE_STRING,
 };
 use crate::gc::lumia_alloc;
-use crate::list::{is_list_tid, list_float_elems, list_get_of, list_len_of};
+use crate::list::{list_float_elems, list_get_of, list_len_of};
 use crate::map_set::{
-    is_map_tid, is_set_tid, map_count, map_float_keys, map_float_vals, map_pair_at, set_elem_at,
-    set_float_elems,
+    map_count, map_float_keys, map_float_vals, map_pair_at, set_elem_at, set_float_elems,
 };
 use crate::string_io::{lumia_alloc_string, with_str_bytes};
-use lumia_abi::adt_show_kind;
+use lumia_abi::{adt_show_kind, is_list_tid, is_map_tid, is_set_tid};
 
 #[no_mangle]
 pub extern "C" fn lumia_alloc_char(codepoint: i64) -> *mut u8 {
@@ -70,7 +69,7 @@ pub extern "C" fn lumia_show(x: i64) -> *mut u8 {
 pub(crate) unsafe fn show_adt(payload: *mut u8) -> *mut u8 {
     let h = header_from_payload(payload);
     let tid = (*h).type_id;
-    let mask = (*h)._pad as u64;
+    let mask = (*h)._pad;
     let kind = adt_show_kind(tid);
     let ptrs = adt_show_name_ptrs(kind);
     if !ptrs.is_empty() {
@@ -211,7 +210,7 @@ pub extern "C" fn lumia_show_adt(x: i64, float_mask: i64) -> *mut u8 {
         if tid_base((*h).type_id) != TYPE_ADT {
             return lumia_show(x);
         }
-        let mask = (float_mask as u64) | ((*h)._pad as u64);
+        let mask = (float_mask as u64) | (*h)._pad;
         show_adt_masked(p, mask)
     }
 }
@@ -233,22 +232,40 @@ pub extern "C" fn lumia_show_adt_named(
         if tid_base((*h).type_id) != TYPE_ADT {
             return lumia_show(x);
         }
-        let mask = (float_mask as u64) | ((*h)._pad as u64);
+        let mask = (float_mask as u64) | (*h)._pad;
         show_adt_masked_named(p, mask, names, n_names)
     }
 }
 
 /// Store per-field Float layout mask in ADT header `_pad` (bit `i` ⇒ field `i` is unboxed Float).
+///
+/// Call **after** field slots are written. Any mask bit whose slot currently holds a
+/// live heap pointer is cleared — product mono sometimes types List fields as Float,
+/// which would otherwise make GC skip those edges (UAF).
 #[no_mangle]
-pub extern "C" fn lumia_adt_set_float_mask(obj: *mut u8, float_mask: u32) {
-    if obj.is_null() || !is_heap_payload(obj) {
+pub extern "C" fn lumia_adt_set_float_mask(obj: *mut u8, float_mask: u64) {
+    if obj.is_null() {
         return;
     }
     unsafe {
         let h = header_from_payload(obj);
-        if tid_base((*h).type_id) == TYPE_ADT {
-            (*h)._pad = float_mask;
+        if tid_base((*h).type_id) != TYPE_ADT {
+            return;
         }
+        let mut mask = float_mask;
+        let words = ((*h).size as usize) / 8;
+        let nfields = words.saturating_sub(1).min(64);
+        let base = obj as *const i64;
+        for i in 0..nfields {
+            if (mask >> i) & 1 == 0 {
+                continue;
+            }
+            let v = *base.add(i + 1);
+            if is_heap_payload(v as *mut u8) {
+                mask &= !(1u64 << i);
+            }
+        }
+        (*h)._pad = mask;
     }
 }
 

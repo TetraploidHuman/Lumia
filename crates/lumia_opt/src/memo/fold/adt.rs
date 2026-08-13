@@ -14,12 +14,11 @@ pub(super) fn fold(
 ) -> bool {
     match (name, args) {
         (Builtin::AdtField, [adt, idx, ..]) => {
-            if let (Some(fields), Some(&i)) = (env.known_adt.get(&adt.0), env.known_int.get(&idx.0))
-            {
+            if let (Some(fields), Some(i)) = (env.known_adt.get(&adt.0), env.known_int.get(idx.0)) {
                 if i >= 0 && (i as usize) < fields.len() {
                     let el = fields[i as usize];
                     *value = Value::Local(el);
-                    if let Some(&n) = env.known_int.get(&el.0) {
+                    if let Some(n) = env.known_int.get(el.0) {
                         env.known_int.insert(local, n);
                     }
                     if let Some(inner) = env.known_list.get(&el.0).cloned() {

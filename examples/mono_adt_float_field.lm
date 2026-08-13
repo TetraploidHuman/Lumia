@@ -1,0 +1,71 @@
+/// Regression: mono must not sitofp IEEE bits from product float fields when
+/// call sites erase the product to ABI Int (`learnSteps`-class bug).
+module mono_adt_float_field
+import std.io.{println}
+
+type Wide {
+    val f0
+    val f1
+    val f2
+    val f3
+    val f4
+    val f5
+    val f6
+    val f7
+    val f8
+    val f9
+    val f10
+    val f11
+    val f12
+    val f13
+    val f14
+    val f15
+    val f16
+    val f17
+    val f18
+    val f19
+    val f20
+    val f21
+    val f22
+    val f23
+    val f24
+    val f25
+    val f26
+    val f27
+    val f28
+    val f29
+    val f30
+    val f31
+    val f32
+    val f33
+    val f34
+    val f35
+    val steps
+}
+
+val bump = { w, reward ->
+    Wide {
+        f0 = w.f0, f1 = w.f1, f2 = w.f2, f3 = w.f3, f4 = w.f4, f5 = w.f5, f6 = w.f6, f7 = w.f7,
+        f8 = w.f8, f9 = w.f9, f10 = w.f10, f11 = w.f11, f12 = w.f12, f13 = w.f13, f14 = w.f14, f15 = w.f15,
+        f16 = w.f16, f17 = w.f17, f18 = w.f18, f19 = w.f19, f20 = w.f20, f21 = w.f21, f22 = w.f22, f23 = w.f23,
+        f24 = w.f24, f25 = w.f25, f26 = w.f26, f27 = w.f27, f28 = w.f28, f29 = w.f29, f30 = w.f30, f31 = w.f31,
+        f32 = w.f32, f33 = w.f33, f34 = w.f34, f35 = w.f35,
+        steps = w.steps + 1.0 + reward
+    }
+}
+
+val main = {
+    var w = Wide {
+        f0 = 0, f1 = 0, f2 = 0, f3 = 0, f4 = 0, f5 = 0, f6 = 0, f7 = 0,
+        f8 = 0, f9 = 0, f10 = 0, f11 = 0, f12 = 0, f13 = 0, f14 = 0, f15 = 0,
+        f16 = 0, f17 = 0, f18 = 0, f19 = 0, f20 = 0, f21 = 0, f22 = 0, f23 = 0,
+        f24 = 0, f25 = 0, f26 = 0, f27 = 0, f28 = 0, f29 = 0, f30 = 0, f31 = 0,
+        f32 = 0, f33 = 0, f34 = 0, f35 = 0,
+        steps = 0.0
+    }
+    w = bump(w, 0.0)
+    w = bump(w, 0.0)
+    w = bump(w, 0.0)
+    // Must print 3.0 (bitcast path). sitofp of 1.0 bits yields ~4.6e18.
+    println(w.steps)
+}

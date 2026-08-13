@@ -116,6 +116,12 @@ fn desugar_in_expr(expr: &mut Expr, kinds: &HashMap<Span, AltKind>, tags: &Succe
                 desugar_in_expr(s, kinds, tags);
             }
         }
+        Expr::With { base, fields, .. } => {
+            desugar_in_expr(base, kinds, tags);
+            for (_, e) in fields {
+                desugar_in_expr(e, kinds, tags);
+            }
+        }
         Expr::Var(_, _)
         | Expr::Int(_, _)
         | Expr::Float(_, _)

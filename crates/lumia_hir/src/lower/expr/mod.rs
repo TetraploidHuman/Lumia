@@ -3,7 +3,7 @@
 mod block;
 mod call;
 mod interp;
-mod product;
+pub(crate) mod product;
 
 use block::lower_block;
 use call::{lower_call, lower_call_from_parts};
@@ -197,11 +197,16 @@ pub(crate) fn lower_expr(ctx: &LowerCtx, e: &lumia_syntax::Expr) -> Expr {
                     span: *span,
                 }
             } else if ctx.is_ambiguous_product_field(field) {
-                ctx.set_err(
-                    format!("cannot resolve field `{field}` (ambiguous across product types)"),
-                    *span,
-                );
-                Expr::Unit(*span)
+                // Defer index resolution until ty knows the receiver product.
+                Expr::BuiltinCall {
+                    name: Builtin::AdtField,
+                    args: vec![
+                        lower_expr(ctx, base),
+                        Expr::Int(-1, *span),
+                        Expr::String(field.clone(), *span),
+                    ],
+                    span: *span,
+                }
             } else if let Some((adt_name, idx)) = ctx.lookup_product_field(field) {
                 // Carry expected product name so ty can reject wrong receivers
                 // (global name→index alone is unsound across distinct products).

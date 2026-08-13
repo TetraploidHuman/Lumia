@@ -1,0 +1,102 @@
+/// Nucleus state + predictive-coding step (`cogninucleus.nucleus`).
+///
+/// @exports Nucleus, newNucleus, openLoopTd, sensoryStep, pcStep, stepWithTopDown, learnGen
+module nucleus
+
+import std.linalg.{zeros, gemv}
+import std.cn.{nucleusStep, clusterRates, learnGenerative, ptrEq}
+import vec.{eye}
+
+type Nucleus {
+    val size
+    val mu
+    val enc
+    val predW
+    val err
+    val pred
+    val pot
+    val rates
+    val tdOpen
+}
+
+val newNucleus = { size ->
+    Nucleus {
+        size = size,
+        mu = zeros(size),
+        enc = eye(size),
+        predW = eye(size),
+        err = zeros(size),
+        pred = zeros(size),
+        pot = zeros(size),
+        rates = zeros(size),
+        tdOpen = zeros(size)
+    }
+}
+
+val openLoopTd = { n ->
+    gemv(n.size, n.size, n.predW, n.mu, n.tdOpen)
+}
+
+/// PC step with cluster rate coding (strict_pe + enable_cluster_rates).
+val sensoryStep = { n, bottomUp, topDown, stateLr, pi, muClip, nClusters, cDecay, cThr ->
+    var pot = n.pot
+    var rates = n.rates
+    val rates0 = rates
+    rates = clusterRates(pot, bottomUp, rates, n.size, nClusters, cDecay, cThr)
+    var mu = n.mu
+    var err = n.err
+    var pred = n.pred
+    val mu0 = mu
+    mu = nucleusStep(mu, n.enc, n.predW, rates, topDown, err, pred, n.size, stateLr, pi, muClip)
+    match {
+        ptrEq(mu0, mu) != 0 -> {
+            match {
+                ptrEq(rates0, rates) != 0 -> n
+                _ -> n with {
+                    mu = mu,
+                    err = err,
+                    pred = pred,
+                    pot = pot,
+                    rates = rates
+                }
+            }
+        }
+        _ -> n with {
+            mu = mu,
+            err = err,
+            pred = pred,
+            pot = pot,
+            rates = rates
+        }
+    }
+}
+
+/// PC step without cluster rates; caller supplies lr/π/clip (D2 uses different defaults).
+val pcStep = { n, bottomUp, topDown, stateLr, pi, muClip ->
+    var mu = n.mu
+    var err = n.err
+    var pred = n.pred
+    val mu0 = mu
+    mu = nucleusStep(mu, n.enc, n.predW, bottomUp, topDown, err, pred, n.size, stateLr, pi, muClip)
+    match {
+        ptrEq(mu0, mu) != 0 -> n
+        _ -> n with {
+            mu = mu,
+            err = err,
+            pred = pred
+        }
+    }
+}
+
+val stepWithTopDown = { n, bottomUp, topDown, stateLr, pi, muClip, nClusters, cDecay, cThr ->
+    sensoryStep(n, bottomUp, topDown, stateLr, pi, muClip, nClusters, cDecay, cThr)
+}
+
+val learnGen = { n, pe, lr, wClip, wDecay, pi ->
+    val enc0 = n.enc
+    val enc1 = learnGenerative(enc0, n.predW, n.mu, pe, n.size, lr, wClip, wDecay, pi)
+    match {
+        ptrEq(enc0, enc1) != 0 -> n
+        _ -> n with { enc = enc1 }
+    }
+}

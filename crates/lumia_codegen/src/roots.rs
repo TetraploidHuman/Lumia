@@ -2,7 +2,7 @@
 
 use super::Codegen;
 use anyhow::{Context as AnyhowContext, Result};
-use inkwell::types::IntType;
+use inkwell::types::{BasicTypeEnum, IntType};
 use inkwell::values::{IntValue, PointerValue};
 use inkwell::AddressSpace;
 use lumia_core::{Block, Op, Value};
@@ -99,10 +99,48 @@ impl<'ctx> Codegen<'ctx> {
         self.call_rt_void("lumia_list_release", &[p.into()], "list_release")
     }
 
+    /// Bump List **or** ADT COW refcount (`val a = p`, nested `AdtField`).
+    pub(crate) fn adt_retain_i64(&self, bits: IntValue<'ctx>) -> Result<()> {
+        let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
+        let p = self
+            .llvm
+            .builder
+            .build_int_to_ptr(bits, ptr_ty, "adt_rc_ptr")
+            .map_err(|e| anyhow::anyhow!("int_to_ptr adt_retain: {e}"))?;
+        self.call_rt_void("lumia_adt_retain", &[p.into()], "adt_retain")
+    }
+
+    /// Drop List **or** ADT alias (mut-slot overwrite).
+    pub(crate) fn adt_release_i64(&self, bits: IntValue<'ctx>) -> Result<()> {
+        let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
+        let p = self
+            .llvm
+            .builder
+            .build_int_to_ptr(bits, ptr_ty, "adt_rc_rel")
+            .map_err(|e| anyhow::anyhow!("int_to_ptr adt_release: {e}"))?;
+        self.call_rt_void("lumia_adt_release", &[p.into()], "adt_release")
+    }
+
+    /// Heap COW types that need retain on alias / extract.
+    pub(crate) fn type_needs_cow_retain(ty: &Type) -> bool {
+        matches!(
+            ty,
+            Type::List(_) | Type::Map(_, _) | Type::Set(_) | Type::Adt { .. }
+        )
+    }
+
     /// `alloca` at function entry so loops do not grow the native stack.
     pub(crate) fn alloca_in_entry(
         &mut self,
         ty: IntType<'ctx>,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>> {
+        self.alloca_in_entry_ty(ty.into(), name)
+    }
+
+    pub(crate) fn alloca_in_entry_ty(
+        &mut self,
+        ty: BasicTypeEnum<'ctx>,
         name: &str,
     ) -> Result<PointerValue<'ctx>> {
         let entry = self
@@ -119,7 +157,15 @@ impl<'ctx> Codegen<'ctx> {
             Some(first) => self.llvm.builder.position_before(&first),
             None => self.llvm.builder.position_at_end(entry),
         }
-        let slot = crate::error::llvm(self.llvm.builder.build_alloca(ty, name))?;
+        let slot = crate::error::llvm(match ty {
+            BasicTypeEnum::IntType(t) => self.llvm.builder.build_alloca(t, name),
+            BasicTypeEnum::FloatType(t) => self.llvm.builder.build_alloca(t, name),
+            BasicTypeEnum::PointerType(t) => self.llvm.builder.build_alloca(t, name),
+            BasicTypeEnum::ArrayType(t) => self.llvm.builder.build_alloca(t, name),
+            BasicTypeEnum::StructType(t) => self.llvm.builder.build_alloca(t, name),
+            BasicTypeEnum::VectorType(t) => self.llvm.builder.build_alloca(t, name),
+            BasicTypeEnum::ScalableVectorType(t) => self.llvm.builder.build_alloca(t, name),
+        })?;
         self.llvm.builder.position_at_end(cur);
         Ok(slot)
     }
@@ -161,6 +207,11 @@ impl<'ctx> Codegen<'ctx> {
     }
 
     pub(crate) fn emit_frame_push(&mut self, name: &str) -> Result<()> {
+        // Release: omit backtrace frames — traps still abort; hot leaves (fib / isPrime)
+        // no longer pay TLS Vec push/pop on every call.
+        if self.release {
+            return Ok(());
+        }
         let push = self.runtime_fn("lumia_frame_push")?;
         let s = self
             .llvm
@@ -176,6 +227,9 @@ impl<'ctx> Codegen<'ctx> {
     }
 
     pub(crate) fn emit_frame_pop(&mut self) -> Result<()> {
+        if self.release {
+            return Ok(());
+        }
         let pop = self.runtime_fn("lumia_frame_pop")?;
         crate::error::llvm(self.llvm.builder.build_call(pop, &[], ""))?;
         Ok(())

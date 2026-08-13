@@ -77,7 +77,7 @@ fn structural_int_self_recursion(f: &CoreFun) -> bool {
         fun: &f.name,
         is_param,
         smaller: HashSet::default(),
-        known_int: HashMap::default(),
+        known_int: crate::ir_util::KnownScalars::new(),
         self_calls: 0,
         bad_self: false,
     };
@@ -89,7 +89,7 @@ struct StructRec<'a> {
     fun: &'a str,
     is_param: HashSet<u32>,
     smaller: HashSet<u32>,
-    known_int: HashMap<u32, i64>,
+    known_int: crate::ir_util::KnownScalars,
     self_calls: usize,
     bad_self: bool,
 }
@@ -98,8 +98,8 @@ fn walk_struct_rec(block: &Block, st: &mut StructRec<'_>) {
     for op in &block.ops {
         match op {
             Op::Let { local, value, .. } => match value {
-                Value::Int(n) => {
-                    st.known_int.insert(local.0, *n);
+                Value::Int(_) | Value::Bool(_) | Value::Char(_) => {
+                    st.known_int.track(local.0, value);
                 }
                 Value::Local(Local(src)) => {
                     if st.is_param.contains(src) {
@@ -108,9 +108,7 @@ fn walk_struct_rec(block: &Block, st: &mut StructRec<'_>) {
                     if st.smaller.contains(src) {
                         st.smaller.insert(local.0);
                     }
-                    if let Some(&n) = st.known_int.get(src) {
-                        st.known_int.insert(local.0, n);
-                    }
+                    st.known_int.track(local.0, value);
                 }
                 Value::Binary {
                     op: BinOp::Sub,
@@ -118,7 +116,7 @@ fn walk_struct_rec(block: &Block, st: &mut StructRec<'_>) {
                     right,
                 } => {
                     let left_ok = st.is_param.contains(&left.0) || st.smaller.contains(&left.0);
-                    let k = st.known_int.get(&right.0).copied();
+                    let k = st.known_int.get(right.0);
                     if left_ok && matches!(k, Some(n) if n > 0) {
                         st.smaller.insert(local.0);
                     }
@@ -245,8 +243,8 @@ fn collect_const_calls(
     for op in &block.ops {
         match op {
             Op::Let { local, value, .. } => match value {
-                Value::Int(n) => {
-                    known.insert(local.0, *n);
+                Value::Int(_) | Value::Bool(_) | Value::Char(_) | Value::Local(_) => {
+                    known.track(local.0, value);
                 }
                 Value::Call { fun: callee, args } if callee == fun => {
                     if let Some(key) = known.resolve_all(args) {

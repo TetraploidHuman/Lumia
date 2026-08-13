@@ -1,7 +1,7 @@
 //! Parallel list map / fold (C ABI workers; GC inhibited).
 
 use super::core::{list_len_of, lumia_list_empty};
-use super::tid::{ensure_list_f64, list_tid};
+use super::tid::list_tid;
 use crate::common::{list_elem_is_float, trap_abort, GcInhibitGuard, PAR_WORKER, TYPE_LIST_IOTA};
 use crate::gc::{list_payload_bytes, lumia_alloc};
 use lumia_abi::list_type_id;
@@ -42,7 +42,10 @@ pub extern "C" fn lumia_list_par_map(
     unsafe {
         if n <= 0 {
             return if list_elem_is_float(result_tid) {
-                ensure_list_f64(lumia_list_empty())
+                // Fresh empty F64 list — avoid ensure_list_f64(empty) double-path.
+                let dest = lumia_alloc(8, list_type_id(true));
+                *(dest as *mut i64) = 0;
+                dest
             } else {
                 lumia_list_empty()
             };
@@ -67,7 +70,6 @@ pub extern "C" fn lumia_list_par_map(
             }
             return dest;
         }
-        let _gc = GcInhibitGuard::enter();
         let workers = std::thread::available_parallelism()
             .map(|p| p.get())
             .unwrap_or(4)
@@ -159,7 +161,6 @@ pub extern "C" fn lumia_list_par_fold(
             }
             return acc;
         }
-        let _gc = GcInhibitGuard::enter();
         let workers = std::thread::available_parallelism()
             .map(|p| p.get())
             .unwrap_or(4)

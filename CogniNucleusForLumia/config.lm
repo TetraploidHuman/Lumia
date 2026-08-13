@@ -1,0 +1,41 @@
+/// Agent / env defaults aligned with CogniNucleus `AgentConfig` triad
+/// (`strict_pe`, cluster rates; hip/amy/hyp off in this Lumia port).
+///
+/// @exports VIS, PFC, MOT, N_CLUSTERS, STATE_LR, CONN_LR, GEN_LR, PI, MU_CLIP, W_CLIP, W_DECAY, EPS, C_DECAY, C_THR, EFE_MIX, REL, THREAT, CELL, PREF, EPI, WALL, GOAL_B, THREAT_G, COMPLEXITY, HORIZON, GRID, MAX_STEPS, STEP_PENALTY, GOAL_REWARD, SHAPING, OBS_PAD
+module config
+
+val VIS = 16
+val PFC = 32
+val MOT = 4
+val N_CLUSTERS = 4
+
+val STATE_LR = 0.1
+val CONN_LR = 0.05
+val GEN_LR = 0.002
+val PI = 1.0
+val MU_CLIP = 10.0
+val W_CLIP = 5.0
+val W_DECAY = 0.0001
+val EPS = 0.001
+
+val C_DECAY = 0.9
+val C_THR = 0.5
+
+val EFE_MIX = 0.35
+val REL = 4
+val THREAT = 11
+val CELL = 0.25
+val PREF = 1.2
+val EPI = 0.28
+val WALL = 3.2
+val GOAL_B = 0.8
+val THREAT_G = 2.0
+val COMPLEXITY = 0.1
+val HORIZON = 2
+
+val GRID = 5
+val MAX_STEPS = 50
+val STEP_PENALTY = 0.0 - 0.01
+val GOAL_REWARD = 1.0
+val SHAPING = 0.05
+val OBS_PAD = 16
