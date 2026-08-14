@@ -1,6 +1,12 @@
 e2e_reject!(e2e_bad_alt_int_rejected, "examples/bad_alt_int.lm", "alt");
 
 e2e_reject!(
+    e2e_bad_ascription_rejected,
+    "examples/bad_ascription.lm",
+    "mismatch"
+);
+
+e2e_reject!(
     e2e_bad_return_toplevel_rejected,
     "examples/bad_return_toplevel.lm",
     "`return` is only allowed"

@@ -103,7 +103,10 @@ pub struct ForeignItem {
 #[derive(Debug, Clone)]
 pub struct ValItem {
     pub name: String,
-    pub params: Option<Vec<String>>,
+    /// Optional ascription on the binding (`val x: Int = …`).
+    pub ty: Option<String>,
+    /// Optional paren params; each may carry `name: Type`.
+    pub params: Option<Vec<(String, Option<String>)>>,
     pub body: Expr,
     pub span: Span,
     /// `priv val` — not re-exported via import.
@@ -158,9 +161,11 @@ pub enum Expr {
         tail: Option<Box<Expr>>,
         span: Span,
     },
-    /// `{ a, b -> body }` or `{ body }`
+    /// `{ a, b -> body }` or `{ a: Int, b: Int -> body }` or `{ body }`
     Lambda {
         params: Vec<String>,
+        /// Parallel to `params`; `None` = infer. Empty vec means all inferred.
+        param_tys: Vec<Option<String>>,
         body: Box<Expr>,
         span: Span,
     },
@@ -298,15 +303,18 @@ pub enum Pattern {
 
 #[derive(Debug, Clone)]
 pub enum Stmt {
-    /// `val x = e` or irrefutable destructure `val (a, b) = e` / `val Point { x, y } = e`.
+    /// `val x = e` / `val x: Int = e` or irrefutable destructure.
     Val {
         pat: Pattern,
+        /// Ascription only valid for simple `Ident` binders.
+        ty: Option<String>,
         expr: Expr,
         span: Span,
     },
-    /// `var x = e` (name binding only; destructure not allowed on `var`).
+    /// `var x = e` / `var x: Int = e` (name binding only; destructure not allowed on `var`).
     Var {
         name: String,
+        ty: Option<String>,
         expr: Expr,
         span: Span,
     },

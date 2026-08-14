@@ -160,6 +160,7 @@ fn desugar_alt(scrutinee: Expr, alt: Expr, span: Span, kind: AltKind, success_ta
             value: Box::new(payload.clone()),
             body: Box::new(alt),
             mutable: false,
+            ty: None,
         },
     };
     Expr::Let {
@@ -172,5 +173,6 @@ fn desugar_alt(scrutinee: Expr, alt: Expr, span: Span, kind: AltKind, success_ta
             span,
         }),
         mutable: false,
+            ty: None,
     }
 }

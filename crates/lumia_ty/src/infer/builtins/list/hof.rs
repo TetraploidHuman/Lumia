@@ -65,6 +65,7 @@ impl Infer {
                         params,
                         body,
                         span: lsp,
+                        ..
                     } if params.len() == 2 => {
                         self.push();
                         self.bind(params[0].clone(), acc.clone());

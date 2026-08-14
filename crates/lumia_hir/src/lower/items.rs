@@ -255,7 +255,7 @@ fn collect_fold_assoc(m: &lumia_syntax::Module) -> HashSet<String> {
             if let Some(params) = &v.params {
                 if params.len() == 2
                     && crate::list_hof::syntax_fold_body_is_associative(
-                        &v.body, &params[0], &params[1],
+                        &v.body, &params[0].0, &params[1].0,
                     )
                 {
                     toplevel_fold_assoc.insert(v.name.clone());
@@ -412,6 +412,8 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
                 items.push(Item::Fun(Fun {
                     name: f.name.clone(),
                     params,
+                    param_ann: vec![],
+                    ret_ann: None,
                     body: Expr::Unit(f.span),
                     is_main: false,
                     external: Some(f.name.clone()),

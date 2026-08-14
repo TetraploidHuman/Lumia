@@ -241,7 +241,7 @@ pub(super) fn collect_toplevel_hints(
                 }
                 collect_expr_hints(&f.body, src, type_at, out, range);
             }
-            Item::Val { name, body } => {
+            Item::Val { name, body, ty: _ } => {
                 let body_sp = expr_span(body);
                 if body_sp.file != 0 {
                     continue;

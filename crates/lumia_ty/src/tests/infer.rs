@@ -80,6 +80,41 @@ val main = {
 }
 
 #[test]
+fn type_ascription_val_and_lambda() {
+    let src = r#"
+module Ann
+import std.io.{println}
+val k: Int = 42
+val add = { a: Int, b: Int -> a + b }
+val main = {
+    println(k)
+    println(add(1, 2))
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let typed = infer_module(&hir).expect("ascription");
+    check_effect_boundaries(&typed).unwrap();
+}
+
+#[test]
+fn type_ascription_mismatch_rejected() {
+    let src = r#"
+module Bad
+val k: Int = 1.5
+val main = { 0 }
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let err = infer_module(&hir).expect_err("Float vs Int");
+    assert!(
+        err.message().contains("mismatch") || err.message().contains("Float"),
+        "unexpected: {}",
+        err.message()
+    );
+}
+
+#[test]
 fn sum_mixed_arity_shared_params() {
     let src = r#"
 module ShapeMix
@@ -155,6 +190,8 @@ fn builtin_arity_from_info_rejects_get() {
         items: vec![Item::Fun(Fun {
             name: "main".into(),
             params: vec![],
+                    param_ann: vec![],
+                    ret_ann: None,
             body: Expr::BuiltinCall {
                 name: Builtin::ListGet,
                 args: vec![Expr::Int(1, span)], // missing index

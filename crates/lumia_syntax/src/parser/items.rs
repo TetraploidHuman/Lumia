@@ -145,13 +145,13 @@ impl<'a> Parser<'a> {
     ) -> Result<ValItem, ParseError> {
         let start = self.bump().span; // val
         let (name, _) = self.expect_ident()?;
+        let ty = self.parse_optional_type_ann()?;
         let params = if self.at(&TokenKind::LParen) {
             self.bump();
             let mut ps = vec![];
             if !self.at(&TokenKind::RParen) {
                 loop {
-                    let (p, _) = self.expect_ident()?;
-                    ps.push(p);
+                    ps.push(self.parse_annotated_binder()?);
                     if self.at(&TokenKind::Comma) {
                         self.bump();
                         continue;
@@ -170,6 +170,7 @@ impl<'a> Parser<'a> {
                 let span = start.merge(body.span());
                 Ok(ValItem {
                     name,
+                    ty,
                     params,
                     body,
                     span,
@@ -182,17 +183,24 @@ impl<'a> Parser<'a> {
                 let span = start.merge(self.cur.span);
                 // Stub keeps the name in scope. Prefer a small lambda so common
                 // `val f = { a, b -> … }` holes still type-check call sites.
-                let lam_params = params
-                    .clone()
+                let lam_params: Vec<String> = params
+                    .as_ref()
+                    .map(|ps| ps.iter().map(|(n, _)| n.clone()).collect())
                     .unwrap_or_else(|| vec!["_1".into(), "_2".into()]);
+                let lam_tys: Vec<Option<String>> = params
+                    .as_ref()
+                    .map(|ps| ps.iter().map(|(_, t)| t.clone()).collect())
+                    .unwrap_or_else(|| vec![None, None]);
                 let ret_name = lam_params[0].clone();
                 let body = Expr::Lambda {
                     params: lam_params,
+                    param_tys: lam_tys,
                     body: Box::new(Expr::Ident(ret_name, span)),
                     span,
                 };
                 Ok(ValItem {
                     name,
+                    ty,
                     params,
                     body,
                     span,
@@ -377,13 +385,13 @@ impl<'a> Parser<'a> {
     pub(super) fn parse_val_item(&mut self) -> Result<ValItem, ParseError> {
         let start = self.bump().span; // val
         let (name, _) = self.expect_ident()?;
+        let ty = self.parse_optional_type_ann()?;
         let params = if self.at(&TokenKind::LParen) {
             self.bump();
             let mut ps = vec![];
             if !self.at(&TokenKind::RParen) {
                 loop {
-                    let (p, _) = self.expect_ident()?;
-                    ps.push(p);
+                    ps.push(self.parse_annotated_binder()?);
                     if self.at(&TokenKind::Comma) {
                         self.bump();
                         continue;
@@ -401,6 +409,7 @@ impl<'a> Parser<'a> {
         let span = start.merge(body.span());
         Ok(ValItem {
             name,
+            ty,
             params,
             body,
             span,

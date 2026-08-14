@@ -138,7 +138,10 @@ fn render_module(src: &str, module: &Module, path: &Path) -> String {
         out.push_str("## Values\n\n");
         for v in vals {
             let sig = match &v.params {
-                Some(ps) if !ps.is_empty() => format!("{}({})", v.name, ps.join(", ")),
+                Some(ps) if !ps.is_empty() => {
+                    let names: Vec<&str> = ps.iter().map(|(n, _)| n.as_str()).collect();
+                    format!("{}({})", v.name, names.join(", "))
+                }
                 _ => v.name.clone(),
             };
             out.push_str(&format!("### `{sig}`\n\n"));

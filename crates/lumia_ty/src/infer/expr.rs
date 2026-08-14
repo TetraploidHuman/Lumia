@@ -1,5 +1,6 @@
 //! Expression inference.
 
+use super::module::parse_type_name;
 use super::Infer;
 use crate::types::{at, expr_span, Effect, Type, TypeError};
 use lumia_hir::Expr;
@@ -32,10 +33,15 @@ impl Infer {
                 value,
                 body,
                 mutable,
-                ..
-            } => self.infer_let(name, value, body, *mutable),
+                ty,
+            } => self.infer_let(name, value, body, *mutable, ty.as_deref()),
             Expr::Assign { name, value, span } => self.infer_assign(name, value, *span),
-            Expr::Lambda { params, body, span } => self.infer_lambda(params, body, *span),
+            Expr::Lambda {
+                params,
+                param_ann,
+                body,
+                span,
+            } => self.infer_lambda(params, param_ann, body, *span),
             Expr::Call { callee, args, span } => self.infer_call(callee, args, *span),
             Expr::BuiltinCall { name, args, span } => self.infer_builtin_call(name, args, *span),
             Expr::Binary {
@@ -135,8 +141,21 @@ impl Infer {
         value: &Expr,
         body: &Expr,
         mutable: bool,
+        ann: Option<&str>,
     ) -> Result<(Type, Effect), TypeError> {
         let (vt, ve) = self.infer_expr(value)?;
+        let vt = if let Some(ann) = ann {
+            let expect = parse_type_name(ann).map_err(|e| {
+                at(
+                    expr_span(value),
+                    format!("in type ascription for `{name}`: {}", e.message()),
+                )
+            })?;
+            self.unify_at(expr_span(value), vt, expect.clone())?;
+            expect
+        } else {
+            vt
+        };
         self.push();
         // Immutable lets generalize (HM let-poly); `var` stays monomorphic.
         if mutable {
@@ -177,13 +196,20 @@ impl Infer {
     fn infer_lambda(
         &mut self,
         params: &[String],
+        param_ann: &[Option<String>],
         body: &Expr,
         span: lumia_syntax::Span,
     ) -> Result<(Type, Effect), TypeError> {
         self.push();
         let mut pts = vec![];
-        for p in params {
-            let tv = self.fresh();
+        for (i, p) in params.iter().enumerate() {
+            let tv = if let Some(Some(ann)) = param_ann.get(i) {
+                parse_type_name(ann).map_err(|e| {
+                    at(span, format!("in type ascription for `{p}`: {}", e.message()))
+                })?
+            } else {
+                self.fresh()
+            };
             pts.push(tv.clone());
             self.bind(p.clone(), tv);
         }

@@ -113,3 +113,11 @@ fn e2e_eq_hash_consistent() {
         ],
     );
 }
+
+#[test]
+fn e2e_syntax_ascription() {
+    run_example(
+        "examples/syntax_ascription.lm",
+        &["42", "7", "10", "11", "1.5"],
+    );
+}

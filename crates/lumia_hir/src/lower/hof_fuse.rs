@@ -70,11 +70,17 @@ fn peel_hof_maps_filters(
 
 fn apply_hof_fn(ctx: &LowerCtx, f: &lumia_syntax::Expr, arg: Expr, span: Span) -> Expr {
     match f {
-        lumia_syntax::Expr::Lambda { params, body, .. } if params.len() == 1 => Expr::Let {
+        lumia_syntax::Expr::Lambda {
+            params,
+            param_tys,
+            body,
+            ..
+        } if params.len() == 1 => Expr::Let {
             name: params[0].clone(),
             value: Box::new(arg),
             body: Box::new(lower_expr(ctx, body)),
             mutable: false,
+            ty: param_tys.first().cloned().flatten(),
         },
         _ => Expr::Call {
             callee: Box::new(lower_expr(ctx, f)),
@@ -86,7 +92,12 @@ fn apply_hof_fn(ctx: &LowerCtx, f: &lumia_syntax::Expr, arg: Expr, span: Span) -
 
 fn apply_fold_fn(ctx: &LowerCtx, f: &lumia_syntax::Expr, acc: Expr, x: Expr, span: Span) -> Expr {
     match f {
-        lumia_syntax::Expr::Lambda { params, body, .. } if params.len() == 2 => Expr::Let {
+        lumia_syntax::Expr::Lambda {
+            params,
+            param_tys,
+            body,
+            ..
+        } if params.len() == 2 => Expr::Let {
             name: params[0].clone(),
             value: Box::new(acc),
             body: Box::new(Expr::Let {
@@ -94,8 +105,10 @@ fn apply_fold_fn(ctx: &LowerCtx, f: &lumia_syntax::Expr, acc: Expr, x: Expr, spa
                 value: Box::new(x),
                 body: Box::new(lower_expr(ctx, body)),
                 mutable: false,
+                ty: param_tys.get(1).cloned().flatten(),
             }),
             mutable: false,
+            ty: param_tys.first().cloned().flatten(),
         },
         _ => Expr::Call {
             callee: Box::new(lower_expr(ctx, f)),
@@ -153,6 +166,7 @@ pub(crate) fn try_fuse_hof_fold(
         value: Box::new(cur),
         body: Box::new(body),
         mutable: false,
+        ty: None,
     };
     let source_e = lower_expr(ctx, source);
     Some(Expr::Let {
@@ -166,5 +180,6 @@ pub(crate) fn try_fuse_hof_fold(
             span,
         }),
         mutable: true,
+        ty: None,
     })
 }

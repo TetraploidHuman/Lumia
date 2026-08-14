@@ -308,6 +308,7 @@ val main = {
                     args: vec![Expr::Bool(false, assert_span)],
                     span: assert_span,
                 },
+                ty: None,
             }],
             adts: Vec::new(),
             products: Vec::new(),

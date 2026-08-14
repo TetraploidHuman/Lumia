@@ -27,11 +27,15 @@ pub(super) fn lower_block(
         }
         let (first, rest) = stmts.split_first().unwrap();
         match first {
-            lumia_syntax::Stmt::Val { pat, expr, span: s } => {
-                lower_val_pat(ctx, pat, expr, *s, fold(ctx, rest, tail, span))
-            }
+            lumia_syntax::Stmt::Val {
+                pat,
+                ty,
+                expr,
+                span: s,
+            } => lower_val_pat(ctx, pat, ty.as_deref(), expr, *s, fold(ctx, rest, tail, span)),
             lumia_syntax::Stmt::Var {
                 name,
+                ty,
                 expr,
                 span: s,
             } => {
@@ -41,6 +45,7 @@ pub(super) fn lower_block(
                     value: Box::new(lower_expr(ctx, expr)),
                     body: Box::new(fold(ctx, rest, tail, span)),
                     mutable: true,
+                    ty: ty.clone(),
                 }
             }
             lumia_syntax::Stmt::Assign {
@@ -120,11 +125,12 @@ pub(super) fn lower_block(
 pub(super) fn lower_val_pat(
     ctx: &LowerCtx,
     pat: &lumia_syntax::Pattern,
+    ty: Option<&str>,
     expr: &lumia_syntax::Expr,
     span: Span,
     body: Expr,
 ) -> Expr {
-    // Fast path: `val x = e`
+    // Fast path: `val x = e` / `val x: T = e`
     if let lumia_syntax::Pattern::Ident(name, _) = pat {
         if ctx.lookup_ctor(name).is_none_or(|c| c.arity != 0) {
             return Expr::Let {
@@ -132,8 +138,15 @@ pub(super) fn lower_val_pat(
                 value: Box::new(lower_expr(ctx, expr)),
                 body: Box::new(body),
                 mutable: false,
+                ty: ty.map(|s| s.to_string()),
             };
         }
+    }
+    if ty.is_some() {
+        ctx.set_err(
+            "type ascription is only allowed on simple `val` binders".into(),
+            span,
+        );
     }
     if !pattern_irrefutable(ctx, pat) {
         ctx.set_err(
@@ -153,6 +166,7 @@ pub(super) fn lower_val_pat(
             value: Box::new(val),
             body: Box::new(nested),
             mutable: false,
+            ty: None,
         };
     }
     Expr::Let {
@@ -160,5 +174,6 @@ pub(super) fn lower_val_pat(
         value: Box::new(lower_expr(ctx, expr)),
         body: Box::new(nested),
         mutable: false,
+        ty: None,
     }
 }

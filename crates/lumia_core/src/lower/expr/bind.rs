@@ -17,8 +17,7 @@ pub(super) fn lower_bind(
             value,
             body,
             mutable,
-            ..
-        } => {
+            .. } => {
             let v = lower_expr(ctx, value, ops, pure_region);
             let saved = ctx.save_bindings();
             if let Some(l) = v {

@@ -170,14 +170,19 @@ fn collect_val(a: &Analysis, v: &ValItem, src: &str, out: &mut Vec<AbsToken>) {
     }
     if let Some(params) = &v.params {
         let mut cursor = start;
-        for p in params {
+        for (p, _) in params {
             if let Some((s, e)) = find_word(src, p, cursor, name_end) {
                 push(out, s, e, TY_PARAMETER, MOD_DECL);
                 cursor = e;
             }
         }
     }
-    let mut params = params_set(v.params.as_deref().unwrap_or(&[]));
+    let bare: Vec<String> = v
+        .params
+        .as_ref()
+        .map(|ps| ps.iter().map(|(n, _)| n.clone()).collect())
+        .unwrap_or_default();
+    let mut params = params_set(&bare);
     if let Expr::Lambda {
         params: lp, body, ..
     } = &v.body
@@ -239,6 +244,7 @@ fn collect_expr(
             params: lp,
             body,
             span,
+            ..
         } => {
             paint_lambda_params(src, span.start.0 as usize, lp, out);
             let mut nested = params.clone();
@@ -394,7 +400,7 @@ fn collect_stmt(
             collect_pattern(a, pat, src, out);
             collect_expr(a, expr, src, params, out);
         }
-        Stmt::Var { name, expr, span } => {
+        Stmt::Var { name, expr, span, .. } => {
             let start = span.start.0 as usize;
             let before = expr.span().start.0 as usize;
             if let Some((s, e)) = find_word(src, name, start, before) {

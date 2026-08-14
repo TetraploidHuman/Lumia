@@ -12,12 +12,30 @@ impl Infer {
     pub(crate) fn infer_fun(&mut self, fun: &Fun) -> Result<(Type, Effect), TypeError> {
         self.push();
         let mut pts = vec![];
-        for p in &fun.params {
-            let tv = self.fresh();
+        for (i, p) in fun.params.iter().enumerate() {
+            let tv = if let Some(Some(ann)) = fun.param_ann.get(i) {
+                parse_type_name(ann).map_err(|e| {
+                    at(
+                        expr_span(&fun.body),
+                        format!("in type ascription for `{p}`: {}", e.message()),
+                    )
+                })?
+            } else {
+                self.fresh()
+            };
             pts.push(tv.clone());
             self.bind(p.clone(), tv);
         }
-        let ret_tv = self.fresh();
+        let ret_tv = if let Some(ann) = &fun.ret_ann {
+            parse_type_name(ann).map_err(|e| {
+                at(
+                    expr_span(&fun.body),
+                    format!("in return type ascription: {}", e.message()),
+                )
+            })?
+        } else {
+            self.fresh()
+        };
         self.ctrl.return_stack.push(ret_tv.clone());
         let (rt, re) = self.infer_expr(&fun.body)?;
         self.unify_at(expr_span(&fun.body), rt, ret_tv.clone())?;
@@ -34,7 +52,8 @@ impl Infer {
     }
 }
 
-pub(crate) fn parse_foreign_type(name: &str) -> Result<Type, TypeError> {
+/// Resolve a surface type name used in ascriptions / foreign signatures.
+pub fn parse_type_name(name: &str) -> Result<Type, TypeError> {
     match name {
         "Int" => Ok(Type::Int),
         "Bool" => Ok(Type::Bool),
@@ -46,9 +65,14 @@ pub(crate) fn parse_foreign_type(name: &str) -> Result<Type, TypeError> {
         "ListString" => Ok(Type::List(Box::new(Type::String))),
         "ListFloat" => Ok(Type::List(Box::new(Type::Float))),
         other => Err(TypeError::Message(format!(
-            "unsupported foreign type `{other}` (supported: Int, Bool, Float, Unit, String, Char, ListString, ListFloat)"
+            "unsupported type name `{other}` (supported: Int, Bool, Float, Unit, String, Char, ListString, ListFloat)"
         ))),
     }
+}
+
+/// Alias for FFI signatures (same surface names).
+pub(crate) fn parse_foreign_type(name: &str) -> Result<Type, TypeError> {
+    parse_type_name(name)
 }
 
 /// Options for module inference (FFI trust, etc.).
@@ -238,9 +262,13 @@ fn infer_module_inner(
                     }
                 }
             }
-            Item::Val { name, body } => {
+            Item::Val {
+                name,
+                body,
+                ty: ann,
+            } => {
                 inf.current_file = expr_span(body).file;
-                let (ty, eff) = match inf.infer_expr(body) {
+                let (mut ty, eff) = match inf.infer_expr(body) {
                     Ok(v) => v,
                     Err(e) => {
                         errors.push(e);
@@ -250,6 +278,34 @@ fn infer_module_inner(
                         continue;
                     }
                 };
+                if let Some(ann) = ann {
+                    match parse_type_name(ann) {
+                        Ok(expect) => {
+                            if let Err(e) = inf.unify_at(expr_span(body), ty.clone(), expect.clone())
+                            {
+                                errors.push(e);
+                                if !opts.recovering {
+                                    return (None, errors);
+                                }
+                                continue;
+                            }
+                            ty = expect;
+                        }
+                        Err(e) => {
+                            errors.push(at(
+                                expr_span(body),
+                                format!(
+                                    "in type ascription for `{name}`: {}",
+                                    e.message()
+                                ),
+                            ));
+                            if !opts.recovering {
+                                return (None, errors);
+                            }
+                            continue;
+                        }
+                    }
+                }
                 if inf.prune_eff(eff).has_io() {
                     let e = at(
                         expr_span(body),

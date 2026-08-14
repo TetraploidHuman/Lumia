@@ -100,7 +100,7 @@ pub fn lower_hir_with_schemes(
                     mono_of: None,
                 });
             }
-            Item::Val { name, body } => {
+            Item::Val { name, body, ty: _ } => {
                 // Module-level `val` → zero-arg getter `__val_<name>` (pure).
                 // Ret type must match inference so codegen roots heap returns.
                 let getter = format!("__val_{name}");

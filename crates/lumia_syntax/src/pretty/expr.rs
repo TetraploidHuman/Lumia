@@ -49,10 +49,24 @@ pub(crate) fn format_expr(out: &mut String, e: &Expr, indent: usize) {
             pad(out, indent);
             out.push('}');
         }
-        Expr::Lambda { params, body, .. } => {
+        Expr::Lambda {
+            params,
+            param_tys,
+            body,
+            ..
+        } => {
             out.push_str("{ ");
             if !params.is_empty() {
-                out.push_str(&params.join(", "));
+                for (i, n) in params.iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(", ");
+                    }
+                    out.push_str(n);
+                    if let Some(Some(t)) = param_tys.get(i) {
+                        out.push_str(": ");
+                        out.push_str(t);
+                    }
+                }
                 out.push_str(" -> ");
             }
             match body.as_ref() {

@@ -1,0 +1,23 @@
+module syntax_ascription
+import std.io.{println}
+
+/// Optional type ascription (DESIGN §3.1 escape hatch).
+val k: Int = 42
+
+val add = { a: Int, b: Int ->
+    a + b
+}
+
+val double(x: Int) = x * 2
+
+val main = {
+    println(k)
+    println(add(3, 4))
+    println(double(5))
+    val n: Int = 10
+    var m: Int = 1
+    m = m + n
+    println(m)
+    val f: Float = 1.5
+    println(f)
+}
