@@ -21,6 +21,7 @@
 - [x] **进程共享堆（§7.7）**：A 盘点 + B 进程 `Heap` + C mutator/memo 根注册 + **D worker/io OS 池**（延迟协程、进程就绪队列）。cargo `lumia_rt` 测例仍 `RUST_TEST_THREADS=1`。
 - [x] **Task/Channel 压测入口**：RT `task::stress::*`；e2e `task_pingpong` / `join_tree` / `stress_wide` + multi-worker；`scripts/bench_task.sh`（并入 `bench_all`）。
 - [~] **Task/Channel 债务**：ready_home 忙谓词、handoff、sweep 回收等已落地。仍欠（更大设计）— **非 RT `Drop`（C-unwind ABI）**；堆 Mutex 下增量 mark 非真并行。
+- [x] **dense-f64 SR bench**：`--no-dense-f64-sr`；mono 泛型形参从 Float clone 升级（避免漏改写时对 IEEE 位做 `smul`）；`cn_hot`/`cn_step` 对标量基线约 100×。
 - [x] **有限 `return` + `alt`**：最近函数/闭包早退；`expr alt rhs` 恢复 Option/Result（Result 绑定 `err`）；传播写 `alt return Err(err)`（无自动包装、无裸 `alt return`、`?` 仍搁置）。
 - [x] **Float 作 Map/Set 键与 `lumia_eq`**：`TYPE_MAP_F64` / `TYPE_SET_F64` + IEEE `float_key_eq`/`float_key_hash`（±0 碰撞、NaN 永不命中）；codegen 在 Float 键/`set` 时 `lumia_ensure_*_f64`；e2e `float_map_keys`。
 - [x] **Float 结构相等（List / ADT / Map 值）**：`TYPE_LIST_F64`、`TYPE_MAP_VF64` / `TYPE_MAP_F64V`；ADT 经 `lumia_adt_eq(float_mask)`（按**对象实际 size**，非 type-param 元数）；e2e `float_struct_eq` / `adt_float_eq`。

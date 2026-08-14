@@ -75,6 +75,8 @@ pub struct CodegenOptions {
     pub option_none_tag: i64,
     /// Auto-parallel pure list maps (DESIGN §11.1).
     pub parallel: bool,
+    /// Emit `lumia_f64_*` for recognized dense float nests (default on).
+    pub dense_f64_sr: bool,
     /// Extra linker args, e.g. `["-lm", "-L/opt/lib", "-lfoo"]`.
     pub link_args: Vec<String>,
 }
@@ -99,6 +101,7 @@ fn emit_llvm_module<'ctx>(
         opts.option_some_tag,
         opts.option_none_tag,
         opts.release,
+        opts.dense_f64_sr,
     );
     declare_runtime(context, &cg.llvm.module);
     cg.funs.tco_sccs = compute_tco_sccs(core);
@@ -399,6 +402,8 @@ pub(crate) struct Codegen<'ctx> {
     pub(crate) option_none_tag: i64,
     /// Release builds omit trap backtrace frames (hot-path call overhead).
     pub(crate) release: bool,
+    /// Match [`CodegenOptions::dense_f64_sr`].
+    pub(crate) dense_f64_sr: bool,
 }
 
 impl<'ctx> Codegen<'ctx> {
@@ -408,6 +413,7 @@ impl<'ctx> Codegen<'ctx> {
         option_some_tag: i64,
         option_none_tag: i64,
         release: bool,
+        dense_f64_sr: bool,
     ) -> Self {
         Self {
             llvm: LlvmTypes {
@@ -422,6 +428,7 @@ impl<'ctx> Codegen<'ctx> {
             option_some_tag,
             option_none_tag,
             release,
+            dense_f64_sr,
         }
     }
 
@@ -508,6 +515,7 @@ mod tests {
             option_some_tag: 0,
             option_none_tag: 1,
             parallel: true,
+            dense_f64_sr: true,
             link_args: vec![],
         }
     }

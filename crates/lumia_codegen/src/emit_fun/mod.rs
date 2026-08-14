@@ -68,7 +68,7 @@ impl<'ctx> Codegen<'ctx> {
                     self.frame.locals.insert(p.0, av);
                 }
             }
-            if self.try_emit_dense_f64_fun(fun, fv)?.is_some() {
+            if self.dense_f64_sr && self.try_emit_dense_f64_fun(fun, fv)?.is_some() {
                 return Ok(());
             }
             // Fall through: clear param bindings; normal path re-binds with roots.

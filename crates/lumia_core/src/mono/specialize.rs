@@ -25,12 +25,79 @@ pub(crate) fn specialize_mono_calls(module: &mut CoreModule) {
         return;
     }
     rewrite_all_mono_call_sites(module, &renames);
+    // Residual `Call(generic, …)` (missed rewrite) must not emit Int `*` on IEEE
+    // bits — upgrade erased formals from Float/List[Float] clones.
+    upgrade_generic_param_tys_from_clones(module);
     // After all clones exist, upgrade erased Int rets on HOF wrappers whose
     // bodies now `Call(dbl$Float, …)` (directize order within a round varies).
     refresh_erased_mono_return_types(module);
     // Toehold: thin FunRef wrappers that only forward to a concrete Call share
     // that target at call sites (avoid an extra frame / duplicate body emit).
     elide_trivial_mono_forwarders(module);
+}
+
+/// When a mono clone has Float / List[Float] / … formals but the generic still
+/// carries ABI `Int` / `List[Int]`, copy the clone's ground types onto the
+/// generic. Missed call-site rewrites then still get correct float arith in
+/// codegen (instead of `smul` on IEEE bits → `lumia_trap_overflow`).
+fn upgrade_generic_param_tys_from_clones(module: &mut CoreModule) {
+    let upgrades: Vec<(String, Vec<Type>, Type)> = {
+        let mut best: HashMap<String, (Vec<Type>, Type)> = HashMap::default();
+        for f in &module.functions {
+            let Some(orig) = f.mono_of.as_ref() else {
+                continue;
+            };
+            let entry = best.entry(orig.clone()).or_insert_with(|| (f.param_tys.clone(), f.ret_ty.clone()));
+            for (i, ty) in f.param_tys.iter().enumerate() {
+                if i >= entry.0.len() {
+                    entry.0.resize(i + 1, Type::Int);
+                }
+                if mono_ty_more_precise(ty, &entry.0[i]) {
+                    entry.0[i] = ty.clone();
+                }
+            }
+            if mono_ty_more_precise(&f.ret_ty, &entry.1) {
+                entry.1 = f.ret_ty.clone();
+            }
+        }
+        best.into_iter()
+            .map(|(name, (ps, ret))| (name, ps, ret))
+            .collect()
+    };
+    for fun in &mut module.functions {
+        if fun.mono_of.is_some() || fun.external.is_some() {
+            continue;
+        }
+        let Some((_, ps, ret)) = upgrades.iter().find(|(n, _, _)| n == &fun.name) else {
+            continue;
+        };
+        for (i, ty) in ps.iter().enumerate() {
+            if i >= fun.param_tys.len() {
+                fun.param_tys.resize(i + 1, Type::Int);
+            }
+            if mono_ty_more_precise(ty, &fun.param_tys[i]) {
+                fun.param_tys[i] = ty.clone();
+            }
+        }
+        if mono_ty_more_precise(ret, &fun.ret_ty) {
+            fun.ret_ty = ret.clone();
+        }
+    }
+}
+
+fn mono_ty_more_precise(new: &Type, old: &Type) -> bool {
+    match (new, old) {
+        (Type::Float, Type::Int | Type::Var(_)) => true,
+        (Type::Bool | Type::String | Type::Char, Type::Int | Type::Var(_)) => true,
+        (Type::List(n), Type::List(o)) => {
+            mono_ty_more_precise(n, o) || matches!(o.as_ref(), Type::Int | Type::Var(_))
+        }
+        (Type::List(_), Type::Int | Type::Var(_)) => true,
+        (Type::Map(_, _), Type::Int | Type::Var(_)) => true,
+        (Type::Set(_), Type::Int | Type::Var(_)) => true,
+        (Type::Adt { .. }, Type::Int | Type::Var(_)) => true,
+        _ => false,
+    }
 }
 
 /// Fixed-point: scan all bodies for needed `(generic, MonoKey)` clones, append

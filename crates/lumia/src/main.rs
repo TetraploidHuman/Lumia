@@ -54,6 +54,9 @@ enum Commands {
         /// Disable auto-parallel `List.map` (default: on when safe; DESIGN §11.1).
         #[arg(long = "no-parallel")]
         no_parallel: bool,
+        /// Disable dense `List[Float]` → `lumia_f64_*` strength reduction (bench baseline).
+        #[arg(long = "no-dense-f64-sr")]
+        no_dense_f64_sr: bool,
         /// Trust `foreign "C" pure` (FFI purity is not verified).
         #[arg(long = "trust-foreign-pure")]
         trust_foreign_pure: bool,
@@ -132,6 +135,7 @@ fn main() -> Result<()> {
             release,
             no_memo,
             no_parallel,
+            no_dense_f64_sr,
             trust_foreign_pure,
             link,
             show_ir,
@@ -145,6 +149,7 @@ fn main() -> Result<()> {
                     release,
                     no_memo,
                     no_parallel,
+                    no_dense_f64_sr,
                     trust_foreign_pure,
                     link,
                     show_ir,
@@ -173,6 +178,7 @@ fn main() -> Result<()> {
                     release,
                     !no_memo,
                     !no_parallel,
+                    !no_dense_f64_sr,
                     trust_foreign_pure,
                     validated_link,
                     show_ir,
@@ -243,6 +249,7 @@ fn build_file(
     release: bool,
     memo_tf: bool,
     auto_parallel: bool,
+    dense_f64_sr: bool,
     trust_foreign_pure: bool,
     link_args: Vec<String>,
     show_ir: bool,
@@ -257,6 +264,7 @@ fn build_file(
         &OptOptions {
             release,
             memo_tf: release && memo_tf,
+            dense_f64_sr,
         },
     );
     if show_ir {
@@ -284,6 +292,7 @@ fn build_file(
             option_some_tag: option_tags.0,
             option_none_tag: option_tags.1,
             parallel: auto_parallel,
+            dense_f64_sr,
             link_args: link,
         },
     )?;

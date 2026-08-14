@@ -30,11 +30,22 @@ use lumia_core::{CoreModule, ListRepr, MapRepr};
 use memo::cse_module;
 use repr_select::ReprSelect;
 
-#[derive(Default)]
 pub struct OptOptions {
     pub release: bool,
     /// Transparent Memo `T_f` (DESIGN §7.5). Defaults to `release`.
     pub memo_tf: bool,
+    /// Rewrite dense `List[Float]` nests to `lumia_f64_*` (default on).
+    pub dense_f64_sr: bool,
+}
+
+impl Default for OptOptions {
+    fn default() -> Self {
+        Self {
+            release: false,
+            memo_tf: false,
+            dense_f64_sr: true,
+        }
+    }
 }
 
 impl OptOptions {
@@ -42,6 +53,7 @@ impl OptOptions {
         Self {
             release,
             memo_tf: release,
+            dense_f64_sr: true,
         }
     }
 }
@@ -188,6 +200,9 @@ pub fn optimize(module: &mut CoreModule, opts: &OptOptions) {
         DEBUG_PASSES
     };
     for p in passes {
+        if matches!(p, PipelinePass::DenseF64Sr) && !opts.dense_f64_sr {
+            continue;
+        }
         p.run(module);
     }
 }

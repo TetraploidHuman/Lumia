@@ -2,7 +2,7 @@
 # Full CogniNucleus-ish step microbench (Release).
 #
 # Extends the hot GEMV/Hebbian path with sensory fill/scale/add, gate mul, and
-# weight decay — patterns that should auto-SR to lumia_f64_{fill,scale,mul,add}.
+# weight decay. Compares `std.linalg` vs nested loops under `--no-dense-f64-sr`.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck disable=SC1091
@@ -19,14 +19,14 @@ RUNS="${RUNS:-5}"
 
 echo "== build =="
 "$LUMIA" build --release examples/bench_cn_step_kernel.lm -o "$OUT_DIR/kernel"
-"$LUMIA" build --release examples/bench_cn_step_naive.lm -o "$OUT_DIR/naive"
+"$LUMIA" build --release --no-dense-f64-sr examples/bench_cn_step_naive.lm -o "$OUT_DIR/naive"
 
 echo "== checksum parity =="
 k_out="$("$OUT_DIR/kernel")"
 n_out="$("$OUT_DIR/naive")"
 echo "kernel:"
 echo "$k_out"
-echo "naive:"
+echo "naive (--no-dense-f64-sr):"
 echo "$n_out"
 if [[ "$k_out" != "$n_out" ]]; then
   echo "ERROR: checksum mismatch" >&2
@@ -46,14 +46,14 @@ echo "== wall time + peak RSS  RUNS=$RUNS  STEPS=100000 =="
 k_stats="$(measure_bin "$OUT_DIR/kernel")"
 n_stats="$(measure_bin "$OUT_DIR/naive")"
 bench_print_stats "kernel" "$k_stats"
-bench_print_stats "naive" "$n_stats"
+bench_print_stats "naive_nosr" "$n_stats"
 python3 - "$k_stats" "$n_stats" <<'PY'
 import sys
 k = sys.argv[1].split()
 n = sys.argv[2].split()
 kt, nt = float(k[1]), float(n[1])
 kr, nr = float(k[4]), float(n[4])
-print(f"speedup  {nt/kt:.2f}x  (naive_med_time / kernel_med_time)")
-print(f"rss_ratio {nr/kr:.2f}x  (naive_med_rss / kernel_med_rss)")
+print(f"speedup  {nt/kt:.2f}x  (naive_nosr_med_time / kernel_med_time)")
+print(f"rss_ratio {nr/kr:.2f}x  (naive_nosr_med_rss / kernel_med_rss)")
 PY
 echo "OK"
