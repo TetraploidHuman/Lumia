@@ -1,6 +1,6 @@
 //! Import path resolution and recursive module loading.
 
-use super::std_mod::{is_std, std_module, validate_std_import, workspace_std_dir};
+use super::std_mod::{is_std, std_exports, std_module, validate_std_import, workspace_std_dir};
 use super::{append_items_unique, check_no_duplicate_toplevel, SourceFile};
 use crate::vis::{
     apply_import_aliases, extend_visibility, import_visible_names, item_is_priv, item_name,
@@ -210,7 +210,18 @@ pub(super) fn load_module_file_uncached(
                 visibility,
                 false,
             )?;
-            let visible = import_visible_names(&dep.items, &imp.names);
+            // `import std.foo.*` must still honor `@exports` (hide raw FFI like
+            // `lumia_list_f64_zeros`). Selective/single already validated above.
+            let visible = match &imp.names {
+                ImportNames::All => {
+                    let exports: HashSet<String> = std_exports(&imp.path)?.into_iter().collect();
+                    import_visible_names(&dep.items, &imp.names)
+                        .into_iter()
+                        .filter(|n| exports.contains(n))
+                        .collect()
+                }
+                _ => import_visible_names(&dep.items, &imp.names),
+            };
             let filtered = filter_items(dep.items, &imp.names)?;
             if is_entry {
                 extend_visibility(visibility, &filtered, &visible);

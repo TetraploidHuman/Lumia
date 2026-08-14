@@ -1,0 +1,7 @@
+module BadTuplePrefixShort
+val use = { t ->
+    val a = t.0
+    val b = t.1
+    a + b
+}
+val main = { println(use((10,))) }

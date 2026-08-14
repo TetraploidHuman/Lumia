@@ -75,6 +75,8 @@ pub(super) fn validate_std_import(imp: &Import) -> Result<()> {
     let exports = std_exports(&imp.path)?;
     let export_set: HashSet<&str> = exports.iter().map(|s| s.as_str()).collect();
     match &imp.names {
+        // Visibility for `*` is filtered to `@exports` in `resolve` (FFI stays
+        // inlined for wrapper callees but is not entry-visible).
         ImportNames::All => Ok(()),
         ImportNames::Single(n) => {
             if export_set.contains(n.name.as_str()) {

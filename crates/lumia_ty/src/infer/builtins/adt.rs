@@ -1,5 +1,6 @@
 //! BuiltinCall typing — adt family.
 
+use super::super::unify::occurs;
 use super::super::Infer;
 use crate::types::{at, Effect, Type, TypeError};
 use lumia_hir::{Builtin, Expr};
@@ -232,7 +233,19 @@ impl Infer {
             prefix.push(self.fresh());
         }
         let field_ty = prefix[idx].clone();
-        self.unify_at(span, recv_ty, Type::TuplePrefix(prefix))?;
+        let extended = Type::TuplePrefix(prefix);
+        // `unify(Var→Prefix[α], Prefix[α,β])` prunes the var to the short prefix
+        // first, then TuplePrefix↔TuplePrefix cannot rebind — write through the
+        // root var when we still have it.
+        match recv_ty {
+            Type::Var(v) => {
+                if occurs(v, &extended) {
+                    return Err(at(span, "infinite type"));
+                }
+                self.uni.subst.insert(v, extended);
+            }
+            other => self.unify_at(span, other, extended)?,
+        }
         Ok(field_ty)
     }
 

@@ -87,12 +87,55 @@ impl Infer {
         fields: &[(String, Expr)],
         span: lumia_syntax::Span,
     ) -> Result<(Type, Effect), TypeError> {
+        let mut seen_fields = rustc_hash::FxHashSet::default();
+        for (fname, _) in fields {
+            if !seen_fields.insert(fname.clone()) {
+                return Err(at(
+                    span,
+                    format!("duplicate field `{fname}` in product `with`"),
+                ));
+            }
+        }
         let (base_ty, mut eff) = self.infer_expr(base)?;
-        let Type::Adt { name, params } = self.prune(base_ty) else {
-            return Err(at(
-                span,
-                "product `with` requires a concrete product-typed base",
-            ));
+        let base_ty = self.prune(base_ty);
+        let (name, params) = match base_ty {
+            Type::Adt { name, params } => (name, params),
+            Type::Var(_) => {
+                // Open receiver: fields must uniquely identify a product, then
+                // constrain the var (e.g. `{ p -> p with { x = 10 } }` with only
+                // `Point` in scope). Never override a *concrete* other product —
+                // that case is handled by the Adt arm above.
+                let names: Vec<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
+                let Some(name) = self.unique_product_for_fields(&names) else {
+                    return Err(at(
+                        span,
+                        "product `with` on an open receiver needs fields that uniquely \
+                         identify one product type",
+                    ));
+                };
+                let order = self
+                    .products
+                    .products
+                    .get(&name)
+                    .cloned()
+                    .ok_or_else(|| at(span, format!("unknown product type `{name}` in `with`")))?;
+                let params: Vec<Type> = (0..order.len()).map(|_| self.fresh()).collect();
+                self.unify_at(
+                    span,
+                    base_ty,
+                    Type::Adt {
+                        name: name.clone(),
+                        params: params.clone(),
+                    },
+                )?;
+                (name, params)
+            }
+            _ => {
+                return Err(at(
+                    span,
+                    "product `with` requires a concrete product-typed base",
+                ));
+            }
         };
         let order = self
             .products
@@ -133,6 +176,38 @@ impl Infer {
             },
             eff,
         ))
+    }
+
+    /// Product whose field set is the unique owner of every name in `fields`.
+    fn unique_product_for_fields(&self, fields: &[&str]) -> Option<String> {
+        let mut names = fields.iter().copied();
+        let first = names.next()?;
+        let mut set: rustc_hash::FxHashSet<String> = self
+            .products
+            .products
+            .iter()
+            .filter(|(_, fs)| fs.iter().any(|f| f == first))
+            .map(|(n, _)| n.clone())
+            .collect();
+        if set.is_empty() {
+            return None;
+        }
+        for f in names {
+            set.retain(|prod| {
+                self.products
+                    .products
+                    .get(prod)
+                    .is_some_and(|fs| fs.iter().any(|x| x == f))
+            });
+            if set.is_empty() {
+                return None;
+            }
+        }
+        if set.len() == 1 {
+            set.into_iter().next()
+        } else {
+            None
+        }
     }
 
     fn infer_let(
@@ -284,14 +359,25 @@ impl Infer {
                 }
             }
             BinOp::Eq | BinOp::Ne => {
-                self.unify_at(span, lt, rt)?;
-                Ok((Type::Bool, eff))
+                // DESIGN: structural Eq only — not function / reference equality.
+                self.unify_at(span, lt.clone(), rt)?;
+                let t = self.prune(lt);
+                if self.is_eq(&t) {
+                    self.mark_eq(&t);
+                    Ok((Type::Bool, eff))
+                } else {
+                    Err(at(
+                        span,
+                        format!("`==`/`!=` need structural Eq; functions are not comparable, got {t}"),
+                    ))
+                }
             }
             BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                 // DESIGN Ord: scalars always; ADT/product when `instance Ord for T`.
                 self.unify_at(span, lt.clone(), rt)?;
                 let t = self.prune(lt);
                 if self.is_ord(&t) {
+                    self.mark_ord(&t);
                     Ok((Type::Bool, eff))
                 } else {
                     Err(at(

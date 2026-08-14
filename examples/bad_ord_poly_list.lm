@@ -1,0 +1,3 @@
+module BadOrdPolyList
+val cmp = { a, b -> a < b }
+val main = { println(cmp(listOf(1), listOf(2))) }

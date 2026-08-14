@@ -1,0 +1,4 @@
+module BadEqListFun
+val main = {
+    println(listOf({ x -> x }) == listOf({ x -> x }))
+}

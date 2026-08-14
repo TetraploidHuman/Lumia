@@ -50,4 +50,5 @@ mod effects;
 mod infer;
 mod parallel;
 mod products;
+mod soundness;
 mod traits;

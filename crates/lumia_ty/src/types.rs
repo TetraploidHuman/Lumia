@@ -205,6 +205,10 @@ pub struct Scheme {
     pub ty: Type,
     /// Quantified vars that appeared in arithmetic (Num MVP: Int|Float only).
     pub num_vars: Vec<u32>,
+    /// Quantified vars used in ordering ops (Ord: scalars or `instance Ord`).
+    pub ord_vars: Vec<u32>,
+    /// Quantified vars used in `==`/`!=` (must not become Fun).
+    pub eq_vars: Vec<u32>,
     /// Quantified vars that require `instance Trait` (deferred UFCS on poly params).
     /// Entries: (var, trait_name, method_name).
     pub trait_preds: Vec<(u32, String, String)>,
@@ -217,12 +221,18 @@ impl Scheme {
             eff_vars: Vec::new(),
             ty,
             num_vars: Vec::new(),
+            ord_vars: Vec::new(),
+            eq_vars: Vec::new(),
             trait_preds: Vec::new(),
         }
     }
 
     /// Whether Core should clone this binder at ground call sites.
     pub fn needs_mono(&self) -> bool {
-        !self.vars.is_empty() || !self.num_vars.is_empty() || !self.trait_preds.is_empty()
+        !self.vars.is_empty()
+            || !self.num_vars.is_empty()
+            || !self.ord_vars.is_empty()
+            || !self.eq_vars.is_empty()
+            || !self.trait_preds.is_empty()
     }
 }

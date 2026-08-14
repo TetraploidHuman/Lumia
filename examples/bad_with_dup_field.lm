@@ -1,0 +1,10 @@
+module BadWithDupField
+type Point {
+    val x
+    val y
+}
+val main = {
+    val p = Point { x = 1, y = 2 }
+    val q = p with { x = 7, x = 9 }
+    println(q.x)
+}

@@ -292,3 +292,74 @@ fn e2e_bad_par_map_io_demoted() {
     // IO List.map must type-check after auto-parallel demotion to sequential.
     run_check("examples/bad_par_map_io.lm", false, &[], &[]);
 }
+
+e2e_reject!(
+    e2e_bad_with_cross_product_rejected,
+    "examples/bad_with_cross_product.lm",
+    "unknown field"
+);
+
+e2e_reject!(
+    e2e_bad_tuple_prefix_short_rejected,
+    "examples/bad_tuple_prefix_short.lm",
+    "tuple"
+);
+
+e2e_reject!(
+    e2e_bad_ord_poly_list_rejected,
+    "examples/bad_ord_poly_list.lm",
+    "Ord"
+);
+
+#[test]
+fn e2e_bad_std_star_ffi_rejected() {
+    run_check(
+        "examples/bad_std_star_ffi.lm",
+        true,
+        &[],
+        &["lumia_list_f64_zeros", "private or not imported"],
+    );
+}
+
+e2e_reject!(
+    e2e_bad_eq_fun_rejected,
+    "examples/bad_eq_fun.lm",
+    "Eq",
+    "function"
+);
+
+e2e_reject!(
+    e2e_bad_eq_poly_fun_rejected,
+    "examples/bad_eq_poly_fun.lm",
+    "function"
+);
+
+e2e_reject!(
+    e2e_bad_with_dup_field_rejected,
+    "examples/bad_with_dup_field.lm",
+    "duplicate"
+);
+
+e2e_reject!(
+    e2e_bad_ord_poly_set_rejected,
+    "examples/bad_ord_poly_set.lm",
+    "Ord"
+);
+
+e2e_reject!(
+    e2e_bad_with_open_ambiguous_rejected,
+    "examples/bad_with_open_ambiguous.lm",
+    "uniquely"
+);
+
+e2e_reject!(
+    e2e_bad_eq_adt_fun_rejected,
+    "examples/bad_eq_adt_fun.lm",
+    "function"
+);
+
+e2e_reject!(
+    e2e_bad_eq_list_fun_rejected,
+    "examples/bad_eq_list_fun.lm",
+    "function"
+);

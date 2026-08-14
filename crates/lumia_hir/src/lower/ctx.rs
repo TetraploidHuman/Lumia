@@ -12,6 +12,7 @@ pub type LowerError = LocatedError;
 pub struct LowerCtx {
     pub(crate) ctors: HashMap<String, CtorInfo>,
     pub(crate) product_fields: HashMap<String, (String, usize)>,
+    #[allow(dead_code)] // retained for ambiguous-field diagnostics / future lower
     pub(crate) product_field_owners: HashMap<String, Vec<(String, usize)>>,
     pub(crate) ambiguous_product_fields: HashSet<String>,
     pub(crate) products: HashMap<String, Vec<String>>,
@@ -78,44 +79,6 @@ impl LowerCtx {
 
     pub(crate) fn is_ambiguous_product_field(&self, name: &str) -> bool {
         self.ambiguous_product_fields.contains(name)
-    }
-
-    /// Products that declare `name` (unique or ambiguous).
-    pub(crate) fn product_field_owners(&self, name: &str) -> &[(String, usize)] {
-        self.product_field_owners
-            .get(name)
-            .map(|v| v.as_slice())
-            .unwrap_or(&[])
-    }
-
-    /// Unique product that contains every field in `names`, if any.
-    pub(crate) fn unique_product_for_fields(&self, names: &[&str]) -> Option<String> {
-        let mut names = names.iter().copied();
-        let first = names.next()?;
-        let mut set: HashSet<String> = self
-            .product_field_owners(first)
-            .iter()
-            .map(|(t, _)| t.clone())
-            .collect();
-        if set.is_empty() {
-            return None;
-        }
-        for f in names {
-            let owners: HashSet<String> = self
-                .product_field_owners(f)
-                .iter()
-                .map(|(t, _)| t.clone())
-                .collect();
-            set.retain(|t| owners.contains(t));
-            if set.is_empty() {
-                return None;
-            }
-        }
-        if set.len() == 1 {
-            set.into_iter().next()
-        } else {
-            None
-        }
     }
 
     pub(crate) fn lookup_product(&self, name: &str) -> Option<Vec<String>> {

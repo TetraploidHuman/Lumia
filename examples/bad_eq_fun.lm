@@ -1,0 +1,4 @@
+module BadEqFun
+val main = {
+    println({ x -> x } == { y -> y })
+}

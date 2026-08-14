@@ -13,6 +13,10 @@ pub(crate) struct SubstState {
     pub(crate) eff_subst: HashMap<u32, Effect>,
     /// Type vars used in arithmetic — may only resolve to Int/Float (Num MVP).
     pub(crate) num_vars: HashSet<u32>,
+    /// Type vars used in `<`/`<=`/`>`/`>=` — may only resolve to Ord scalars/ADTs.
+    pub(crate) ord_vars: HashSet<u32>,
+    /// Type vars used in `==`/`!=` — must not resolve to Fun (DESIGN: no ref eq).
+    pub(crate) eq_vars: HashSet<u32>,
 }
 
 /// Lexical environment and mutability.

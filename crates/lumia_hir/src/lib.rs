@@ -402,19 +402,56 @@ val main = {
 "#;
         let ast = parse_module(src).unwrap();
         let hir = lower_module(&ast).expect("ambiguous `with` should lower (resolve in ty)");
-        let mut found = false;
+        let mut found_with = false;
         for it in &hir.items {
             let body = match it {
                 Item::Fun(f) => &f.body,
                 Item::Val { body, .. } => body,
             };
             for_each_expr(body, &mut |e| {
-                if matches!(e, Expr::With { .. } | Expr::AdtNew { .. }) {
-                    found = true;
+                if matches!(e, Expr::With { .. }) {
+                    found_with = true;
                 }
             });
         }
-        assert!(found, "expected With or expanded AdtNew in module");
+        assert!(found_with, "expected deferred HIR With");
+    }
+
+    #[test]
+    fn with_unique_field_set_still_defers() {
+        // Field set {x,w} uniquely matches Rect — must NOT early-expand, or
+        // `Point with { x, w }` would become Rect before ty sees the base.
+        let src = r#"
+module M
+type Point { val x val y }
+type Rect { val x val w }
+val main = {
+    val p = Point { x = 1, y = 2 }
+    p with { x = 7, w = 9 }
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let hir = lower_module(&ast).expect("lower");
+        let mut found_with = false;
+        let mut found_rect_new = false;
+        for it in &hir.items {
+            let body = match it {
+                Item::Fun(f) => &f.body,
+                Item::Val { body, .. } => body,
+            };
+            for_each_expr(body, &mut |e| {
+                if matches!(e, Expr::With { .. }) {
+                    found_with = true;
+                }
+                if let Expr::AdtNew { adt_name, .. } = e {
+                    if adt_name == "Rect" {
+                        found_rect_new = true;
+                    }
+                }
+            });
+        }
+        assert!(found_with, "expected deferred With");
+        assert!(!found_rect_new, "must not early-expand to Rect AdtNew");
     }
 
     #[test]

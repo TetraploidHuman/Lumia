@@ -8,15 +8,85 @@ use rustc_hash::FxHashMap as HashMap;
 impl Infer {
     pub(crate) fn is_ord(&self, t: &Type) -> bool {
         match t {
-            Type::Int | Type::Float | Type::Bool | Type::String | Type::Char | Type::Var(_) => true,
+            Type::Int | Type::Float | Type::Bool | Type::String | Type::Char => true,
+            // Open vars are provisionally Ord; `mark_ord` + `check_ord_bind` reject
+            // List/Map/Fun/… when the var is later grounded.
+            Type::Var(_) => true,
             Type::Adt { name, .. } => self.traits.ord_instances.contains(name),
             _ => false,
+        }
+    }
+
+    /// DESIGN: `==` is structural; functions have no structural Eq (and the
+    /// language does not expose reference equality). Containers/ADTs are Eq
+    /// only when every element/field type is Eq.
+    pub(crate) fn is_eq(&mut self, t: &Type) -> bool {
+        match self.prune(t.clone()) {
+            Type::Fun(_, _, _) => false,
+            Type::Var(_) => true,
+            Type::List(e) | Type::Set(e) => self.is_eq(&e),
+            Type::Map(k, v) => {
+                let ek = self.is_eq(&k);
+                let ev = self.is_eq(&v);
+                ek && ev
+            }
+            Type::Adt { params, .. } => {
+                for p in params {
+                    if !self.is_eq(&p) {
+                        return false;
+                    }
+                }
+                true
+            }
+            Type::Tuple(ts) | Type::TuplePrefix(ts) => {
+                for p in ts {
+                    if !self.is_eq(&p) {
+                        return false;
+                    }
+                }
+                true
+            }
+            Type::Int
+            | Type::Float
+            | Type::Bool
+            | Type::String
+            | Type::Char
+            | Type::Unit => true,
+        }
+    }
+
+    pub(crate) fn type_mentions_fun(t: &Type) -> bool {
+        match t {
+            Type::Fun(_, _, _) => true,
+            Type::List(e) | Type::Set(e) => Self::type_mentions_fun(e),
+            Type::Map(k, v) => Self::type_mentions_fun(k) || Self::type_mentions_fun(v),
+            Type::Adt { params, .. } => params.iter().any(Self::type_mentions_fun),
+            Type::Tuple(ts) | Type::TuplePrefix(ts) => ts.iter().any(Self::type_mentions_fun),
+            Type::Var(_)
+            | Type::Int
+            | Type::Float
+            | Type::Bool
+            | Type::String
+            | Type::Char
+            | Type::Unit => false,
         }
     }
 
     pub(crate) fn mark_num(&mut self, t: &Type) {
         if let Type::Var(v) = self.prune(t.clone()) {
             self.uni.num_vars.insert(v);
+        }
+    }
+
+    pub(crate) fn mark_ord(&mut self, t: &Type) {
+        if let Type::Var(v) = self.prune(t.clone()) {
+            self.uni.ord_vars.insert(v);
+        }
+    }
+
+    pub(crate) fn mark_eq(&mut self, t: &Type) {
+        if let Type::Var(v) = self.prune(t.clone()) {
+            self.uni.eq_vars.insert(v);
         }
     }
 
@@ -142,6 +212,32 @@ impl Infer {
                 "numeric type required for arithmetic, got {other}"
             ))),
         }
+    }
+
+    pub(crate) fn check_ord_bind(&mut self, v: u32, t: &Type) -> Result<(), TypeError> {
+        if !self.uni.ord_vars.contains(&v) {
+            return Ok(());
+        }
+        match self.prune(t.clone()) {
+            Type::Int | Type::Float | Type::Bool | Type::String | Type::Char | Type::Var(_) => Ok(()),
+            Type::Adt { name, .. } if self.traits.ord_instances.contains(&name) => Ok(()),
+            other => Err(TypeError::Message(format!(
+                "`<`/`<=`/`>`/`>=` need Ord (scalars or `instance Ord for T`), got {other}"
+            ))),
+        }
+    }
+
+    pub(crate) fn check_eq_bind(&mut self, v: u32, t: &Type) -> Result<(), TypeError> {
+        if !self.uni.eq_vars.contains(&v) {
+            return Ok(());
+        }
+        let t = self.prune(t.clone());
+        if matches!(t, Type::Fun(_, _, _)) || Self::type_mentions_fun(&t) {
+            return Err(TypeError::Message(
+                "`==`/`!=` need structural Eq; functions are not comparable".into(),
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) fn check_trait_bind(&mut self, v: u32, t: &Type) -> Result<(), TypeError> {

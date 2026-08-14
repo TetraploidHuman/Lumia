@@ -1,0 +1,7 @@
+module BadEqAdtFun
+type Box {
+    Box(f)
+}
+val main = {
+    println(Box({ x -> x }) == Box({ x -> x }))
+}

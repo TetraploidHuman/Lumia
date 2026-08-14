@@ -84,6 +84,18 @@ impl Infer {
             .filter(|v| self.uni.num_vars.contains(v))
             .collect();
         num_vars.sort_unstable();
+        let mut ord_vars: Vec<u32> = vars
+            .iter()
+            .copied()
+            .filter(|v| self.uni.ord_vars.contains(v))
+            .collect();
+        ord_vars.sort_unstable();
+        let mut eq_vars: Vec<u32> = vars
+            .iter()
+            .copied()
+            .filter(|v| self.uni.eq_vars.contains(v))
+            .collect();
+        eq_vars.sort_unstable();
         let mut trait_preds: Vec<(u32, String, String)> = Vec::new();
         for &v in &vars {
             if let Some(preds) = self.traits.trait_vars.get(&v) {
@@ -98,6 +110,8 @@ impl Infer {
             eff_vars: Vec::new(),
             ty,
             num_vars,
+            ord_vars,
+            eq_vars,
             trait_preds,
         }
     }
@@ -107,6 +121,16 @@ impl Infer {
         for &old in &scheme.num_vars {
             if let Some(Type::Var(n)) = ty_map.get(&old) {
                 self.uni.num_vars.insert(*n);
+            }
+        }
+        for &old in &scheme.ord_vars {
+            if let Some(Type::Var(n)) = ty_map.get(&old) {
+                self.uni.ord_vars.insert(*n);
+            }
+        }
+        for &old in &scheme.eq_vars {
+            if let Some(Type::Var(n)) = ty_map.get(&old) {
+                self.uni.eq_vars.insert(*n);
             }
         }
         for (old, tr, method) in &scheme.trait_preds {
@@ -132,10 +156,13 @@ impl Infer {
         ty_map: &HashMap<u32, Type>,
         eff_map: &HashMap<u32, Effect>,
     ) -> Type {
-        match self.prune(ty.clone()) {
-            Type::Var(v) => ty_map.get(&v).cloned().unwrap_or(Type::Var(v)),
+        // Do not prune `Var` roots: params stay as `Var(v)` so later constraints
+        // (TuplePrefix extension, Num/Ord binds) can rebind `v`. Callers prune
+        // when they need the concrete shape.
+        match ty {
+            Type::Var(v) => ty_map.get(v).cloned().unwrap_or(Type::Var(*v)),
             Type::Fun(ps, r, e) => {
-                let e = match self.prune_eff(e) {
+                let e = match self.prune_eff(*e) {
                     Effect::Var(v) => eff_map.get(&v).copied().unwrap_or(Effect::Var(v)),
                     other => other,
                 };
@@ -143,18 +170,18 @@ impl Infer {
                     ps.iter()
                         .map(|p| self.apply_scheme_subst(p, ty_map, eff_map))
                         .collect(),
-                    Box::new(self.apply_scheme_subst(&r, ty_map, eff_map)),
+                    Box::new(self.apply_scheme_subst(r, ty_map, eff_map)),
                     e,
                 )
             }
-            Type::List(t) => Type::List(Box::new(self.apply_scheme_subst(&t, ty_map, eff_map))),
-            Type::Set(t) => Type::Set(Box::new(self.apply_scheme_subst(&t, ty_map, eff_map))),
+            Type::List(t) => Type::List(Box::new(self.apply_scheme_subst(t, ty_map, eff_map))),
+            Type::Set(t) => Type::Set(Box::new(self.apply_scheme_subst(t, ty_map, eff_map))),
             Type::Map(k, v) => Type::Map(
-                Box::new(self.apply_scheme_subst(&k, ty_map, eff_map)),
-                Box::new(self.apply_scheme_subst(&v, ty_map, eff_map)),
+                Box::new(self.apply_scheme_subst(k, ty_map, eff_map)),
+                Box::new(self.apply_scheme_subst(v, ty_map, eff_map)),
             ),
             Type::Adt { name, params } => Type::Adt {
-                name,
+                name: name.clone(),
                 params: params
                     .iter()
                     .map(|p| self.apply_scheme_subst(p, ty_map, eff_map))
@@ -170,7 +197,12 @@ impl Infer {
                     .map(|t| self.apply_scheme_subst(t, ty_map, eff_map))
                     .collect(),
             ),
-            other => other,
+            Type::Int => Type::Int,
+            Type::Float => Type::Float,
+            Type::Bool => Type::Bool,
+            Type::String => Type::String,
+            Type::Char => Type::Char,
+            Type::Unit => Type::Unit,
         }
     }
 
@@ -193,6 +225,14 @@ impl Infer {
             Type::List(t) => Type::List(Box::new(self.prune(*t))),
             Type::Map(k, v) => Type::Map(Box::new(self.prune(*k)), Box::new(self.prune(*v))),
             Type::Set(t) => Type::Set(Box::new(self.prune(*t))),
+            Type::Adt { name, params } => Type::Adt {
+                name,
+                params: params.into_iter().map(|p| self.prune(p)).collect(),
+            },
+            Type::Tuple(ts) => Type::Tuple(ts.into_iter().map(|t| self.prune(t)).collect()),
+            Type::TuplePrefix(ts) => {
+                Type::TuplePrefix(ts.into_iter().map(|t| self.prune(t)).collect())
+            }
             other => other,
         }
     }
@@ -391,6 +431,8 @@ impl Infer {
                     return Err(TypeError::Message("infinite type".into()));
                 }
                 self.check_num_bind(v, &t)?;
+                self.check_ord_bind(v, &t)?;
+                self.check_eq_bind(v, &t)?;
                 self.check_trait_bind(v, &t)?;
                 if let Type::Var(u) = &t {
                     if self.uni.num_vars.contains(&v) {
@@ -398,6 +440,18 @@ impl Infer {
                     }
                     if self.uni.num_vars.contains(u) {
                         self.uni.num_vars.insert(v);
+                    }
+                    if self.uni.ord_vars.contains(&v) {
+                        self.uni.ord_vars.insert(*u);
+                    }
+                    if self.uni.ord_vars.contains(u) {
+                        self.uni.ord_vars.insert(v);
+                    }
+                    if self.uni.eq_vars.contains(&v) {
+                        self.uni.eq_vars.insert(*u);
+                    }
+                    if self.uni.eq_vars.contains(u) {
+                        self.uni.eq_vars.insert(v);
                     }
                 }
                 self.uni.subst.insert(v, t);
@@ -458,9 +512,14 @@ impl Infer {
                 Ok(())
             }
             (Type::TuplePrefix(a), Type::TuplePrefix(b)) => {
-                let n = a.len().min(b.len());
+                // Keep the longer prefix (at-least-N); min would drop `.1` after `.0`.
+                let n = a.len().max(b.len());
                 for i in 0..n {
-                    self.unify(a[i].clone(), b[i].clone())?;
+                    match (a.get(i), b.get(i)) {
+                        (Some(x), Some(y)) => self.unify(x.clone(), y.clone())?,
+                        (Some(_), None) | (None, Some(_)) => {}
+                        (None, None) => unreachable!(),
+                    }
                 }
                 Ok(())
             }
