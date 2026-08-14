@@ -429,7 +429,6 @@ fn builtin_value_ty(name: Builtin, args: &[Local], ctx: InferValueCtx<'_>) -> Ty
         Builtin::ListSlice
         | Builtin::ListTake
         | Builtin::ListReverse
-        | Builtin::ListConcat
         | Builtin::ListParMap
         | Builtin::ListSort
         | Builtin::ListSortByKeys => args
@@ -450,6 +449,23 @@ fn builtin_value_ty(name: Builtin, args: &[Local], ctx: InferValueCtx<'_>) -> Ty
             ) {
                 (Type::List(_), Some(Type::Float)) => Type::List(Box::new(Type::Float)),
                 _ => list_ty,
+            }
+        }
+        Builtin::ListConcat => {
+            let a = args
+                .first()
+                .and_then(|a| local_tys.get(&a.0).cloned())
+                .unwrap_or(Type::List(Box::new(Type::Int)));
+            let b = args.get(1).and_then(|a| local_tys.get(&a.0));
+            // flatMap: empty Int acc `concat` Float chunk → result List[Float]
+            // (runtime tid already ORs float flags from either side).
+            match (&a, b) {
+                (Type::List(e), _) | (_, Some(Type::List(e)))
+                    if matches!(e.as_ref(), Type::Float) =>
+                {
+                    Type::List(Box::new(Type::Float))
+                }
+                _ => a,
             }
         }
         Builtin::Elems => match args.first().and_then(|a| local_tys.get(&a.0)) {

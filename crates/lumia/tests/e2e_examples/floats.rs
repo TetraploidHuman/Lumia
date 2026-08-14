@@ -9,6 +9,7 @@ e2e_ok!(
     "examples/float_list_map.lm",
     "3",
     "true",
+    "true",
     "true"
 );
 

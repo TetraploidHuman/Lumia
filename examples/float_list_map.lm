@@ -8,4 +8,6 @@ val main = {
     println(xs.get(0) == 3.0)
     val s = listOf(1.5, 2.5).fold(0.0, { a, b -> a + b })
     println(s == 4.0)
+    val ys = listOf(1.5).flatMap({ x -> listOf(x, x + x) })
+    println(ys.get(1) == 3.0)
 }

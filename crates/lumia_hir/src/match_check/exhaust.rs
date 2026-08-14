@@ -182,6 +182,24 @@ pub(crate) fn check_pats_cover(
                 let Some(rows) = ctor_args.get(&v.name) else {
                     continue;
                 };
+                if v.arity >= 2 {
+                    let row_refs: Vec<Vec<&Pattern>> = rows
+                        .iter()
+                        .filter(|r| r.len() == v.arity)
+                        .map(|r| r.iter().copied().collect())
+                        .collect();
+                    if product_rows_diagonal_gap(&row_refs, ctors) {
+                        let where_ = if path.is_empty() {
+                            format!("`{}` payload", v.name)
+                        } else {
+                            format!("`{}` payload (in {path})", v.name)
+                        };
+                        return Err(LowerError::message_only(format!(
+                            "non-exhaustive match on {where_}: add a catch-all payload \
+                             (partial slots do not combine across arms)"
+                        )));
+                    }
+                }
                 for slot in 0..v.arity {
                     let col: Vec<&Pattern> =
                         rows.iter().filter_map(|r| r.get(slot).copied()).collect();
@@ -217,6 +235,17 @@ pub(crate) fn check_pats_cover(
         if !tuple_rows.is_empty() {
             let arity = tuple_rows[0].len();
             if tuple_rows.iter().all(|r| r.len() == arity) {
+                if arity >= 2 && product_rows_diagonal_gap(&tuple_rows, ctors) {
+                    let where_ = if path.is_empty() {
+                        "tuple".into()
+                    } else {
+                        format!("tuple (in {path})")
+                    };
+                    return Err(LowerError::message_only(format!(
+                        "non-exhaustive match on {where_}: add a `_` / binder arm \
+                         (partial field patterns do not combine across arms)"
+                    )));
+                }
                 for slot in 0..arity {
                     let col: Vec<&Pattern> = tuple_rows
                         .iter()
@@ -229,6 +258,45 @@ pub(crate) fn check_pats_cover(
                     };
                     check_pats_cover(&col, ctors, adts, products, &nested)?;
                 }
+            }
+        }
+        // Named products with ≥2 fields: same diagonal gap (e.g. `{x=0,y=_}|{x=_,y=0}`).
+        for (pname, fields) in &product_fields {
+            let order = products.get(pname).cloned().unwrap_or_default();
+            if order.len() < 2 {
+                continue;
+            }
+            let rows: Vec<Vec<&Pattern>> = {
+                // Rebuild rows from parallel field lists — only when every field
+                // list has the same length (one subpat per arm that mentioned the product).
+                let lens: Vec<usize> = order
+                    .iter()
+                    .filter_map(|f| fields.get(f).map(|v| v.len()))
+                    .collect();
+                if lens.len() != order.len() || lens.iter().any(|&n| n != lens[0]) {
+                    continue;
+                }
+                let n = lens[0];
+                (0..n)
+                    .map(|i| {
+                        order
+                            .iter()
+                            .filter_map(|f| fields.get(f).and_then(|v| v.get(i).copied()))
+                            .collect()
+                    })
+                    .filter(|r: &Vec<&Pattern>| r.len() == order.len())
+                    .collect()
+            };
+            if product_rows_diagonal_gap(&rows, ctors) {
+                let where_ = if path.is_empty() {
+                    format!("`{pname}`")
+                } else {
+                    format!("`{pname}` (in {path})")
+                };
+                return Err(LowerError::message_only(format!(
+                    "non-exhaustive match on {where_}: add a `_` / binder arm \
+                     (partial field patterns do not combine across arms)"
+                )));
             }
         }
     }
@@ -327,6 +395,42 @@ pub(crate) fn check_pats_cover(
     }
 
     Ok(())
+}
+
+/// True when two columns are specialized on different arms with wildcards in
+/// the other column — column-wise coverage would accept but leave a gap
+/// (e.g. `(0, _) | (_, 0)` misses `(1, 1)`).
+fn product_rows_diagonal_gap(
+    rows: &[Vec<&Pattern>],
+    ctors: &HashMap<String, CtorInfo>,
+) -> bool {
+    if rows.is_empty() {
+        return false;
+    }
+    let arity = rows[0].len();
+    if arity < 2 || rows.iter().any(|r| r.len() != arity) {
+        return false;
+    }
+    for i in 0..arity {
+        for j in (i + 1)..arity {
+            let mut constrains_i_wild_j = false;
+            let mut wild_i_constrains_j = false;
+            for r in rows {
+                let ci = coverage_catch_all(r[i], ctors);
+                let cj = coverage_catch_all(r[j], ctors);
+                if !ci && cj {
+                    constrains_i_wild_j = true;
+                }
+                if ci && !cj {
+                    wild_i_constrains_j = true;
+                }
+            }
+            if constrains_i_wild_j && wild_i_constrains_j {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// `[]` covers length 0; `[e0,…,ek-1, ..rest]` covers all lengths `>= k`.

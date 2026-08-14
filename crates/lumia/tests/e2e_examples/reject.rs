@@ -369,3 +369,9 @@ e2e_reject!(
     "examples/bad_list_rest_nested.lm",
     "non-exhaustive"
 );
+
+e2e_reject!(
+    e2e_bad_tuple_diag_rejected,
+    "examples/bad_tuple_diag.lm",
+    "non-exhaustive"
+);
