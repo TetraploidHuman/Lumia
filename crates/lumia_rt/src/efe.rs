@@ -267,6 +267,17 @@ fn imagine_embodied_into(
         out[base] = fx * ca - fy * sa;
         out[base + 1] = fx * sa + fy * ca;
     };
+    // Intensity high when close: dist = (1 - inten) * fov (Python imagine_embodied).
+    let step_intensity = |out: &mut [f64], base: usize| {
+        if out.len() <= base + 2 {
+            return;
+        }
+        let fx = out[base];
+        let inten = out[base + 2];
+        let dist = (1.0 - inten) * fov_range;
+        let new_dist = (dist - cell_step * fx).max(0.0);
+        out[base + 2] = (1.0 - new_dist / fov_range.max(1e-3)).clamp(0.0, 1.0);
+    };
     let mut bumped = false;
     match a {
         0 => {
@@ -281,20 +292,8 @@ fn imagine_embodied_into(
                     out[2] = (out[2] + cell_step * cos_h).clamp(0.0, 1.0);
                     out[3] = (out[3] + cell_step * sin_h).clamp(0.0, 1.0);
                 }
-                if out.len() > rel + 2 {
-                    let fi = out[rel + 2];
-                    let dist = fi * fov_range;
-                    let align = (cos_h * out[rel] + sin_h * out[rel + 1]).max(0.0);
-                    let new_dist = (dist - cell_step * align.max(0.15)).max(0.0);
-                    out[rel + 2] = (new_dist / fov_range.max(1e-3)).min(1.0);
-                }
-                if out.len() > trel + 2 {
-                    let ti = out[trel + 2];
-                    let dist_t = ti * fov_range;
-                    let align_t = (cos_h * out[trel] + sin_h * out[trel + 1]).max(0.0);
-                    let new_dist_t = (dist_t - cell_step * align_t.max(0.15)).max(0.0);
-                    out[trel + 2] = (new_dist_t / fov_range.max(1e-3)).min(1.0);
-                }
+                step_intensity(out, rel);
+                step_intensity(out, trel);
             }
             if out.len() >= 10 {
                 let margin = 0.08;
@@ -307,19 +306,20 @@ fn imagine_embodied_into(
             }
         }
         1 => {
+            // Heading += turn; bearings rotate opposite (Python).
             out[0] = cos_h * ca_pos - sin_h * sa_pos;
             out[1] = sin_h * ca_pos + cos_h * sa_pos;
-            rotate_bearing(out, rel, ca_pos, sa_pos);
-            rotate_bearing(out, trel, ca_pos, sa_pos);
+            rotate_bearing(out, rel, ca_pos, -sa_pos);
+            rotate_bearing(out, trel, ca_pos, -sa_pos);
         }
         2 => {
-            // −turn_angle: cos even, sin odd
+            // Heading -= turn; bearings rotate opposite.
             let ca = ca_pos;
             let sa = -sa_pos;
             out[0] = cos_h * ca - sin_h * sa;
             out[1] = sin_h * ca + cos_h * sa;
-            rotate_bearing(out, rel, ca, sa);
-            rotate_bearing(out, trel, ca, sa);
+            rotate_bearing(out, rel, ca, -sa);
+            rotate_bearing(out, trel, ca, -sa);
         }
         _ => {}
     }
@@ -381,6 +381,7 @@ fn expected_free_energy(
     hunger_explore_gain: f64,
     action: Option<usize>,
 ) -> f64 {
+    // Port of cogninucleus.efe.expected_free_energy (D2: nest_navigation=false, cue_gain=0).
     let idx = relative_obs_index as usize;
     let dx = if imagined.len() > idx {
         imagined[idx]
@@ -397,50 +398,312 @@ fn expected_free_energy(
     } else {
         0.0
     };
-    let dist = if embodied && imagined.len() > idx + 2 {
-        (0.0_f64).max(1.0 - intensity)
+    let mut pref = if embodied && imagined.len() > idx + 2 {
+        let facing = dx.max(0.0);
+        let dist = (1.0 - intensity).max(0.0);
+        dist - goal_bonus * intensity * (0.35 + 0.65 * facing)
     } else {
-        dx.abs() + dy.abs()
+        let dist = dx.abs() + dy.abs();
+        dist - goal_bonus * (1.0 - 8.0 * dist).max(0.0)
     };
-    let pref = dist - goal_bonus * (0.0_f64).max(1.0 - 8.0 * dist);
+    let hunger = if imagined.len() > 4 { imagined[4] } else { 0.0 };
+    let pain = if imagined.len() > 5 { imagined[5] } else { 0.0 };
+    let tidx = threat_rel_index as usize;
+    let (tdx, tdy, threat_local) = if imagined.len() > tidx + 2 {
+        (imagined[tidx], imagined[tidx + 1], imagined[tidx + 2])
+    } else {
+        (0.0, 0.0, 0.0)
+    };
+    let sees_goal = intensity > 0.05;
+    let on_threat = threat_local > 0.82 || (pain > 0.20 && threat_local > 0.40);
+    let threat_ahead = (threat_local > 0.16 && tdx > 0.18) || on_threat;
+    let threat_salient = threat_local > 0.28 || pain > 0.12 || on_threat;
+
+    let mut threat_scale = 1.0_f64;
+    if embodied && hunger >= 0.35 {
+        if sees_goal {
+            pref -= hunger * (0.90 * intensity + 0.55 * dx.max(0.0));
+        } else {
+            pref -= hunger * 0.38 * dx.max(0.0);
+        }
+        if threat_salient {
+            threat_scale = 1.0;
+        } else if threat_local > 0.12 {
+            threat_scale = (1.0 - 0.18 * hunger).max(0.88);
+        } else {
+            threat_scale = (1.0 - 0.38 * hunger).max(0.78);
+        }
+        if threat_local > 0.22 {
+            let food_pull = (1.0 - 1.8 * (threat_local - 0.18)).max(0.0);
+            pref *= 0.50 + 0.50 * food_pull;
+        }
+    } else if embodied && hunger <= 0.30 {
+        pref *= 0.15;
+    }
+
     let n = imagined.len().min(pred.len());
     let mut s = 0.0_f64;
     for i in 0..n {
         let d = imagined[i] - pred[i];
         s += d * d;
     }
-    let epi = s.sqrt();
+    let mut epi = s.sqrt();
+    if embodied && hunger <= 0.30 {
+        epi *= 0.35;
+    }
     let wall = if bumped { 1.0 } else { 0.0 };
     let mut threat = 0.0_f64;
-    let tidx = threat_rel_index as usize;
     if threat_gain != 0.0 && imagined.len() > tidx + 2 {
-        let tdx = imagined[tidx];
-        let tdy = imagined[tidx + 1];
-        let local = imagined[tidx + 2];
-        threat = local + 0.35 * (0.0_f64).max(0.35 - (tdx.abs() + tdy.abs()));
+        threat = threat_local + 0.35 * (0.35 - (tdx.abs() + tdy.abs())).max(0.0);
+        if embodied {
+            threat += 0.85 * pain;
+            if threat_local > 0.18 {
+                threat *= 1.0 + 0.85 * (threat_local - 0.15);
+            }
+            threat *= threat_scale;
+        }
     }
     let mut homeo = 0.0_f64;
     if embodied && hunger_explore_gain != 0.0 && imagined.len() > 4 {
         if let Some(a) = action {
-            let hunger = imagined[4];
             if hunger >= 0.35 {
-                let drive = hunger_explore_gain * hunger;
-                if a == 0 {
-                    homeo = -drive;
-                } else if a == 3 {
-                    homeo = 0.85 * drive;
+                let mut drive = hunger_explore_gain * hunger;
+                if threat_salient {
+                    drive *= (1.0 - 1.6 * threat_local - 1.2 * pain).max(0.40);
+                } else if threat_ahead {
+                    drive *= 0.60;
                 }
-            } else if hunger <= 0.25 {
-                let rest = hunger_explore_gain * (0.25 - hunger);
-                if a == 0 {
-                    homeo = 0.55 * rest;
+                let raw_drive = hunger_explore_gain * hunger;
+                if on_threat || threat_ahead {
+                    if a == 0 {
+                        homeo = 1.15 * raw_drive;
+                    } else if a == 3 {
+                        homeo = if on_threat {
+                            0.90 * raw_drive
+                        } else {
+                            0.55 * raw_drive
+                        };
+                    } else if a == 1 {
+                        homeo = -0.75
+                            * raw_drive
+                            * if tdy <= 0.05 { 1.0 } else { 0.40 };
+                    } else if a == 2 {
+                        homeo = -0.75
+                            * raw_drive
+                            * if tdy >= -0.05 { 1.0 } else { 0.40 };
+                    }
+                } else if a == 0 {
+                    let align = if sees_goal {
+                        dx.max(0.0)
+                    } else if hunger >= 0.72 && !threat_salient {
+                        0.78
+                    } else {
+                        0.55
+                    };
+                    homeo = -drive * (0.35 + 0.65 * align);
+                } else if a == 1 && sees_goal {
+                    homeo = -0.90 * drive * dy.max(0.0);
+                } else if a == 2 && sees_goal {
+                    homeo = -0.90 * drive * (-dy).max(0.0);
                 } else if a == 3 {
-                    homeo = -0.70 * rest;
+                    homeo = 1.05 * drive;
+                }
+            } else if hunger <= 0.30 {
+                let rest = hunger_explore_gain * (0.35 - hunger) * 2.8;
+                if a == 0 {
+                    homeo = 1.35 * rest;
+                } else if a == 3 {
+                    homeo = -1.60 * rest;
+                } else {
+                    homeo = 0.35 * rest;
                 }
             }
         }
     }
     pref_gain * pref + epi_gain * epi + wall_gain * wall + threat_gain * threat + complexity + homeo
+}
+
+/// Late innate reflexes after EFE mix (`FreeEnergyAgent._apply_embodied_reflexes`).
+///
+/// Threat + hunger + pain paths for embodied MiniEcoWorld (B2/B3). Cue/memory
+/// steering (B6) is omitted until hippocampal goal memory is ported.
+///
+/// Mutates `logits` (len ≥ 4). Returns `logits`.
+#[no_mangle]
+pub extern "C" fn lumia_efe_apply_embodied_reflexes(
+    logits: *mut u8,
+    plan_obs: *mut u8,
+    obs: *mut u8,
+    relative_obs_index: i64,
+    threat_rel_index: i64,
+    amy_threat_gain: f64,
+) -> *mut u8 {
+    let _gc = GcInhibitGuard::enter();
+    let logits = ensure_unique_f64(logits);
+    let plan = force_f64(plan_obs);
+    let obs = force_f64(obs);
+    require_len(logits, 4, "efe reflex logits");
+    let n_plan = list_len_of(plan) as usize;
+    let n_obs = list_len_of(obs) as usize;
+    let tidx = threat_rel_index as usize;
+    let rel = relative_obs_index as usize;
+    unsafe {
+        let (lp, _) = f64_elems_mut(logits);
+        let (pp, _) = f64_elems(plan);
+        let (op, _) = f64_elems(obs);
+        let get = |base: *const f64, n: usize, i: usize| -> f64 {
+            if i < n {
+                *base.add(i)
+            } else {
+                0.0
+            }
+        };
+        let pain = get(pp, n_plan, 5);
+        let hunger = get(pp, n_plan, 4);
+        let tdx = get(pp, n_plan, tidx);
+        let tdy = get(pp, n_plan, tidx + 1);
+        let tloc = get(pp, n_plan, tidx + 2);
+        let on_threat = tloc > 0.82 || (pain > 0.20 && tloc > 0.40);
+        let threat_near = tloc > 0.16 || pain > 0.10 || on_threat;
+        let threat_block = tloc > 0.22 || pain > 0.14 || on_threat;
+        if threat_block {
+            let reflex_gain = amy_threat_gain.max(0.55);
+            let mut avoid = [0.0_f64; 4];
+            fill_threat_avoid(&mut avoid, tdx, tdy, tloc, op, n_obs);
+            for i in 0..4 {
+                *lp.add(i) += 1.12 * reflex_gain * avoid[i];
+            }
+            let mut food = [0.0_f64; 4];
+            fill_goal_approach(&mut food, get(pp, n_plan, rel), get(pp, n_plan, rel + 1), op, n_obs);
+            let sub = if on_threat || tloc > 0.40 || pain > 0.18 {
+                0.75
+            } else {
+                0.28
+            };
+            for i in 0..4 {
+                *lp.add(i) -= sub * food[i];
+            }
+        }
+        if on_threat {
+            let tg = amy_threat_gain.max(0.55);
+            if tdy > 0.0 {
+                *lp.add(2) += 0.85 * tg;
+                *lp.add(1) -= 0.30 * tg;
+            } else {
+                *lp.add(1) += 0.85 * tg;
+                *lp.add(2) -= 0.30 * tg;
+            }
+            if tdx <= 0.05 {
+                *lp.add(3) -= 0.85 * tg;
+                *lp.add(0) += 0.55 * tg;
+            } else {
+                *lp.add(0) -= 0.65 * tg;
+                *lp.add(3) += 0.20 * tg;
+            }
+        } else if tloc > 0.18 && tdx > 0.16 {
+            let tg = amy_threat_gain.max(0.50);
+            *lp.add(0) -= 0.80 * tg;
+            if tdy > 0.0 {
+                *lp.add(2) += 0.60 * tg;
+            } else {
+                *lp.add(1) += 0.60 * tg;
+            }
+        }
+        if pain > 0.14 {
+            *lp.add(0) -= 0.55 * pain;
+            *lp.add(3) -= 0.10 * pain;
+        }
+        // Nest mode when relative_obs_index == nest (not used on D2 food-relative).
+        let nest_mode = false;
+        if !nest_mode && !threat_near && hunger >= 0.52 {
+            let drive = hunger - 0.32;
+            let dx = get(pp, n_plan, rel);
+            let dy = get(pp, n_plan, rel + 1);
+            let intensity = get(pp, n_plan, rel + 2);
+            let facing_goal = dx > 0.10 && dy.abs() < 0.60;
+            let sees_goal = intensity > 0.05 && dx > 0.05;
+            // No goal memory yet ⇒ treat as `not _goal_mem_valid` (always allow).
+            let _ = (facing_goal, sees_goal);
+            *lp.add(0) += 0.58 * drive;
+            *lp.add(3) -= 0.50 * drive;
+        } else if !nest_mode && hunger <= 0.22 {
+            let rest = 0.22 - hunger;
+            *lp.add(0) -= 0.55 * rest;
+            *lp.add(3) += 0.80 * rest;
+        }
+    }
+    logits
+}
+
+fn fill_embodied_steer(buf: &mut [f64; 4], dx: f64, dy: f64, flee: bool) {
+    if flee {
+        buf[0] = (-dx).max(0.0);
+        buf[1] = (-dy).max(0.0);
+        buf[2] = dy.max(0.0);
+        buf[3] = dx.max(0.0);
+    } else {
+        buf[0] = dx.max(0.0);
+        buf[1] = dy.max(0.0);
+        buf[2] = (-dy).max(0.0);
+        buf[3] = (-dx).max(0.0);
+    }
+}
+
+fn fill_threat_avoid(buf: &mut [f64; 4], tdx: f64, tdy: f64, intensity: f64, obs: *const f64, n_obs: usize) {
+    *buf = [0.0; 4];
+    if intensity <= 1e-6 && tdx.abs() + tdy.abs() < 1e-6 {
+        return;
+    }
+    let scale = intensity.max(0.35);
+    let near = intensity >= 0.82;
+    fill_embodied_steer(buf, tdx, tdy, true);
+    if near {
+        if tdy > 0.0 {
+            buf[2] = buf[2].max(0.95);
+            buf[1] = 0.0;
+        } else {
+            buf[1] = buf[1].max(0.95);
+            buf[2] = 0.0;
+        }
+        if tdx <= 0.05 {
+            buf[3] = 0.0;
+            buf[0] = buf[0].max(0.85);
+        } else {
+            buf[0] = 0.0;
+            buf[3] = buf[3].max(0.35);
+        }
+    } else if tdx > 0.18 && tdy.abs() < 0.22 {
+        buf[0] = 0.0;
+        buf[3] = buf[3].max(0.45);
+        if tdy > 0.0 {
+            buf[2] = buf[2].max(0.70);
+        } else {
+            buf[1] = buf[1].max(0.70);
+        }
+    }
+    for v in buf.iter_mut() {
+        *v *= scale;
+    }
+    if n_obs >= 10 {
+        unsafe {
+            for i in 0..4 {
+                let blocked = (*obs.add(6 + i)).clamp(0.0, 1.0);
+                buf[i] *= 1.0 - blocked;
+            }
+        }
+    }
+}
+
+fn fill_goal_approach(buf: &mut [f64; 4], dx: f64, dy: f64, obs: *const f64, n_obs: usize) {
+    fill_embodied_steer(buf, dx, dy, false);
+    if n_obs >= 10 {
+        unsafe {
+            for i in 0..4 {
+                let blocked = (*obs.add(6 + i)).clamp(0.0, 1.0);
+                buf[i] *= 1.0 - blocked;
+            }
+        }
+    }
 }
 
 fn force_f64(list: *mut u8) -> *mut u8 {

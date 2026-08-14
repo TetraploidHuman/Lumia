@@ -1,0 +1,72 @@
+module syntax_extras
+import std.io.{println}
+
+/// Gaps beyond syntax_surface: else-if, when-match, or-patterns, interpolation,
+/// `it`, effect block, block arms, comments, mixed-arity user sum.
+type Opt {
+    Yes(v)
+    No
+}
+
+val classify = { n ->
+    match {
+        n < 0 -> 0 - 1
+        n == 0 -> 0
+        _ -> 1
+    }
+}
+
+val main = {
+    // else if chain
+    val x = 2
+    println(if x == 0 {
+        0
+    } else if x == 1 {
+        1
+    } else if x == 2 {
+        2
+    } else {
+        9
+    })
+
+    // Subjectless match (when)
+    println(classify(0 - 3))
+    println(classify(0))
+    println(classify(4))
+
+    // Or-patterns + block arm
+    println(3 match {
+        0, 1, 2 -> 0
+        n if n < 10 -> {
+            val t = n + 1
+            t
+        }
+        _ -> 99
+    })
+
+    // String interpolation ($x and ${...})
+    val name = "Lumia"
+    val n = 7
+    println("$name")
+    println("n=${n}")
+    println("sum=${n + 1}")
+
+    // Trailing `it` closure
+    println(listOf(1, 2, 3).map { it * 10 }.get(1))
+
+    // effect { } is a normal block
+    val z = effect {
+        val a = 10
+        a + 2
+    }
+    println(z)
+
+    // Mixed-arity user sum
+    println(Yes(5) match {
+        No -> 0
+        Yes(v) -> v
+    })
+
+    /* block comment */
+    println(1)
+}

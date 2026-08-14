@@ -20,6 +20,8 @@ pub struct CoreModule {
     pub trait_methods: HashMap<(String, String), Vec<String>>,
     /// Variant / product display names by type, indexed by tag (print/`Show` only).
     pub adt_variant_names: HashMap<String, Vec<String>>,
+    /// Sum ADT name → max variant payload arity (shared `Type::Adt` params slots).
+    pub sum_max_arity: HashMap<String, usize>,
 }
 
 impl CoreModule {
@@ -31,6 +33,7 @@ impl CoreModule {
             hash_adts: HashSet::default(),
             trait_methods: HashMap::default(),
             adt_variant_names: HashMap::default(),
+            sum_max_arity: HashMap::default(),
         }
     }
 

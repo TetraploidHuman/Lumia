@@ -128,6 +128,7 @@ pub fn expand_with_known(
             span,
         }),
         mutable: false,
+        ty: None,
     }
 }
 
@@ -178,5 +179,6 @@ fn expand_with(
             span,
         }),
         mutable: false,
+        ty: None,
     }
 }

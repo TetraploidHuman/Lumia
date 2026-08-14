@@ -14,9 +14,15 @@ pub(crate) fn lower_list_fold(ctx: &LowerCtx, list: Expr, init: Expr, f: Expr, s
             let start = args[0].clone();
             let end = args[1].clone();
             return match resolve_binary_callback(f, span, "fold") {
-                BinaryCallback::Inline { acc, x, body } => {
-                    range_fold_inline(ctx, start, end, inclusive, init, acc, x, body, span)
-                }
+                BinaryCallback::Inline {
+                    acc,
+                    acc_ty,
+                    x,
+                    x_ty,
+                    body,
+                } => range_fold_inline(
+                    ctx, start, end, inclusive, init, acc, acc_ty, x, x_ty, body, span,
+                ),
                 BinaryCallback::Bound { f, f_name, acc, x } => {
                     range_fold_call(ctx, start, end, inclusive, init, f, f_name, acc, x, span)
                 }
@@ -43,9 +49,13 @@ pub fn desugar_list_fold_sequential(
     span: Span,
 ) -> Expr {
     match resolve_binary_callback(f, span, "fold") {
-        BinaryCallback::Inline { acc, x, body } => {
-            lower_list_fold_inline(ctx, list, init, acc, x, body, span)
-        }
+        BinaryCallback::Inline {
+            acc,
+            acc_ty,
+            x,
+            x_ty,
+            body,
+        } => lower_list_fold_inline(ctx, list, init, acc, acc_ty, x, x_ty, body, span),
         BinaryCallback::Bound { f, f_name, acc, x } => {
             lower_list_fold_call(ctx, list, init, f, f_name, acc, x, span)
         }
@@ -157,16 +167,35 @@ fn range_fold_inline(
     inclusive: bool,
     init: Expr,
     acc: String,
+    acc_ty: Option<String>,
     x: String,
+    x_ty: Option<String>,
     body: Expr,
     span: Span,
 ) -> Expr {
+    let el = format!("__fold_x_{}", span.start.0);
+    let mut body = Expr::Let {
+        name: x,
+        value: Box::new(Expr::Var(el.clone(), span)),
+        body: Box::new(body),
+        mutable: false,
+        ty: x_ty,
+    };
+    if let Some(ty) = acc_ty {
+        body = Expr::Let {
+            name: format!("__fold_acc_ann_{}", span.start.0),
+            value: Box::new(Expr::Var(acc.clone(), span)),
+            body: Box::new(body),
+            mutable: false,
+            ty: Some(ty),
+        };
+    }
     let step = Expr::Assign {
         name: acc.clone(),
         value: Box::new(body),
         span,
     };
-    range_accum(ctx, acc, init, &x, start, end, inclusive, step, span)
+    range_accum(ctx, acc, init, &el, start, end, inclusive, step, span)
 }
 
 fn range_fold_call(
@@ -202,16 +231,35 @@ fn lower_list_fold_inline(
     list: Expr,
     init: Expr,
     acc: String,
+    acc_ty: Option<String>,
     x: String,
+    x_ty: Option<String>,
     body: Expr,
     span: Span,
 ) -> Expr {
+    let el = format!("__fold_x_{}", span.start.0);
+    let mut body = Expr::Let {
+        name: x,
+        value: Box::new(Expr::Var(el.clone(), span)),
+        body: Box::new(body),
+        mutable: false,
+        ty: x_ty,
+    };
+    if let Some(ty) = acc_ty {
+        body = Expr::Let {
+            name: format!("__fold_acc_ann_{}", span.start.0),
+            value: Box::new(Expr::Var(acc.clone(), span)),
+            body: Box::new(body),
+            mutable: false,
+            ty: Some(ty),
+        };
+    }
     let step = Expr::Assign {
         name: acc.clone(),
         value: Box::new(body),
         span,
     };
-    list_accum(ctx, acc, init, &x, list, step, span)
+    list_accum(ctx, acc, init, &el, list, step, span)
 }
 
 fn lower_list_fold_call(

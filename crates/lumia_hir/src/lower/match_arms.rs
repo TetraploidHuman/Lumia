@@ -50,6 +50,7 @@ pub(crate) fn lower_match(
         value: Box::new(lower_expr(ctx, scrutinee)),
         body: Box::new(body),
         mutable: false,
+        ty: None,
     }
 }
 
@@ -99,6 +100,7 @@ fn fold_match_arms(
                 value: Box::new(val.clone()),
                 body: Box::new(guard_e),
                 mutable: false,
+                ty: None,
             };
         }
         // Short-circuit: do not evaluate guard (or its field loads) if pat fails.
@@ -113,6 +115,7 @@ fn fold_match_arms(
             value: Box::new(val),
             body: Box::new(then_body),
             mutable: false,
+            ty: None,
         };
     }
     // Always test the pattern — including the last arm (unless irrefutable).

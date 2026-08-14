@@ -65,6 +65,8 @@ pub enum Item {
     Val {
         name: String,
         body: Expr,
+        /// Optional `val x: Int = …` ascription.
+        ty: Option<String>,
     },
 }
 
@@ -72,6 +74,10 @@ pub enum Item {
 pub struct Fun {
     pub name: String,
     pub params: Vec<String>,
+    /// Parallel to `params`; empty = all inferred.
+    pub param_ann: Vec<Option<String>>,
+    /// Optional return ascription from `val f: Ret = { … }` / `val f: Ret (x) = …`.
+    pub ret_ann: Option<String>,
     pub body: Expr,
     /// True if this is the program entry `main`
     pub is_main: bool,
@@ -97,6 +103,8 @@ pub enum Expr {
         value: Box<Expr>,
         body: Box<Expr>,
         mutable: bool,
+        /// Optional ascription from `val x: T = …` / `var x: T = …`.
+        ty: Option<String>,
     },
     Assign {
         name: String,
@@ -105,6 +113,8 @@ pub enum Expr {
     },
     Lambda {
         params: Vec<String>,
+        /// Parallel to `params`; empty = all inferred.
+        param_ann: Vec<Option<String>>,
         body: Box<Expr>,
         span: Span,
     },

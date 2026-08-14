@@ -200,17 +200,20 @@ pub(crate) fn cow_rc_release(payload: *mut u8, adt_ok: bool) {
 
 #[inline]
 pub(crate) fn cow_rc_is_unique(payload: *mut u8, adt_ok: bool) -> bool {
-    if payload.is_null() {
+    if payload.is_null() || !is_heap_payload(payload) {
         return false;
     }
     unsafe {
         let h = header_from_payload(payload);
-        // Fast reject shared / wrong-type before `HEAP_SET` (hot in f64 kernels).
-        if !cow_tid_ok((*h).type_id, adt_ok) || (*h).rc != 1 {
-            return false;
-        }
-        is_heap_payload(payload)
+        // Fast reject shared / wrong-type after membership (avoid UB on immediates).
+        cow_tid_ok((*h).type_id, adt_ok) && (*h).rc == 1
     }
+}
+
+/// Bit `i` of an ADT float mask — only fields `0..64` are representable.
+#[inline]
+pub(crate) fn adt_float_slot(mask: u64, field_index: usize) -> bool {
+    field_index < 64 && (mask & (1u64 << field_index)) != 0
 }
 
 /// Drop one alias retain when `rc > 1` (no-op if unique or immortal).
@@ -263,7 +266,7 @@ pub(crate) fn value_rc_release_bits(bits: i64) {
 
 /// After shallow-copying an ADT, bump RC on nested List/ADT fields (shared).
 ///
-/// `float_mask` bit `i` ⇒ field `i` is unboxed Float (not a pointer).
+/// Prefer heap-membership over `_pad` float bits (mistag-safe), matching ADT mark.
 pub(crate) unsafe fn adt_retain_nested_fields(obj: *mut u8) {
     if obj.is_null() {
         return;
@@ -272,14 +275,10 @@ pub(crate) unsafe fn adt_retain_nested_fields(obj: *mut u8) {
     if tid_base((*h).type_id) != TYPE_ADT {
         return;
     }
-    let mask = (*h)._pad;
     let words = ((*h).size as usize) / 8;
     let nfields = words.saturating_sub(1);
     let base = obj as *const i64;
     for i in 0..nfields {
-        if mask & (1u64 << i) != 0 {
-            continue;
-        }
         value_rc_retain_bits(*base.add(1 + i));
     }
 }

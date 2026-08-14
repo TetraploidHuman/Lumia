@@ -24,8 +24,11 @@ pub(crate) fn push_lowered_val(
 ) {
     let body = lower_expr(ctx, &v.body);
     let body = if let Some(params) = &v.params {
+        let names: Vec<String> = params.iter().map(|(n, _)| n.clone()).collect();
+        let param_ann: Vec<Option<String>> = params.iter().map(|(_, t)| t.clone()).collect();
         Expr::Lambda {
-            params: params.clone(),
+            params: names,
+            param_ann,
             body: Box::new(body),
             span: v.span,
         }
@@ -38,12 +41,15 @@ pub(crate) fn push_lowered_val(
     match body {
         Expr::Lambda {
             params,
+            param_ann,
             body,
             span: _,
         } => {
             items.push(Item::Fun(Fun {
                 name: name.to_string(),
                 params,
+                param_ann,
+                ret_ann: v.ty.clone(),
                 body: *body,
                 is_main: name == "main",
                 external: None,
@@ -57,6 +63,8 @@ pub(crate) fn push_lowered_val(
                 items.push(Item::Fun(Fun {
                     name: name.to_string(),
                     params: vec![],
+                    param_ann: vec![],
+                    ret_ann: v.ty.clone(),
                     body: other,
                     is_main: name == "main",
                     external: None,
@@ -67,6 +75,7 @@ pub(crate) fn push_lowered_val(
                 items.push(Item::Val {
                     name: name.to_string(),
                     body: other,
+                    ty: v.ty.clone(),
                 });
             }
         }
@@ -97,8 +106,14 @@ pub(crate) fn lower_expr(ctx: &LowerCtx, e: &lumia_syntax::Expr) -> Expr {
         lumia_syntax::Expr::Block { stmts, tail, span } => {
             lower_block(ctx, stmts, tail.as_deref(), *span)
         }
-        lumia_syntax::Expr::Lambda { params, body, span } => Expr::Lambda {
+        lumia_syntax::Expr::Lambda {
+            params,
+            param_tys,
+            body,
+            span,
+        } => Expr::Lambda {
             params: params.clone(),
+            param_ann: param_tys.clone(),
             body: Box::new(lower_expr(ctx, body)),
             span: *span,
         },

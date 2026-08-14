@@ -158,8 +158,7 @@ fn collect_free_vars(expr: &Expr, bound: &mut Vec<String>, out: &mut Vec<String>
             }
         }
         Expr::Let {
-            name, value, body, ..
-        } => {
+            name, value, body, .. } => {
             collect_free_vars(value, bound, out);
             bound.push(name.clone());
             collect_free_vars(body, bound, out);
@@ -251,6 +250,7 @@ mod tests {
     fn free_vars_respects_lambda_binders() {
         let e = Expr::Lambda {
             params: vec!["x".into()],
+            param_ann: vec![],
             body: Box::new(Expr::Var("y".into(), Span::dummy())),
             span: Span::dummy(),
         };

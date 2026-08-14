@@ -6,9 +6,33 @@ use inkwell::values::{BasicValueEnum, PointerValue};
 use lumia_ty::Type;
 
 impl<'ctx> Codegen<'ctx> {
+    fn slot_may_heap(&self, name: &str) -> bool {
+        self.frame
+            .slot_tys
+            .get(name)
+            .map(Self::type_may_heap)
+            .unwrap_or(true)
+    }
+
+    /// Re-push a heap mut slot if a scoped `root_pop_to` unwound its prior root.
+    pub(crate) fn ensure_slot_rooted(&mut self, name: &str) -> Result<()> {
+        if self.frame.float_slots.contains(name) || !self.slot_may_heap(name) {
+            return Ok(());
+        }
+        if self.frame.rooted_slots.contains_key(name) {
+            return Ok(());
+        }
+        let Some(alloca) = self.frame.slots.get(name).copied() else {
+            return Ok(());
+        };
+        self.root_register_slot(alloca, name)
+    }
+
     pub(crate) fn ensure_slot(&mut self, name: &str) -> Result<PointerValue<'ctx>> {
-        if let Some(p) = self.frame.slots.get(name) {
-            return Ok(*p);
+        if let Some(p) = self.frame.slots.get(name).copied() {
+            // Scoped if/loop may have popped this slot's root while leaving the alloca.
+            self.ensure_slot_rooted(name)?;
+            return Ok(p);
         }
         // Must be entry alloca — loop-body alloca grows the native stack each iteration.
         let alloca = self.alloca_in_entry(self.llvm.i64_ty, &format!("mut_{name}"))?;
@@ -20,16 +44,10 @@ impl<'ctx> Codegen<'ctx> {
         self.frame.slot_i64_const.insert(name.to_string(), Some(0));
         // Int/Bool vars are not GC roots (same as Float). Unknown / heap-capable
         // slots stay rooted. Assign sets `slot_tys` before the first store.
-        let may_heap = self
-            .frame
-            .slot_tys
-            .get(name)
-            .map(Self::type_may_heap)
-            .unwrap_or(true);
-        if may_heap {
+        self.frame.slots.insert(name.to_string(), alloca);
+        if self.slot_may_heap(name) {
             self.root_register_slot(alloca, name)?;
         }
-        self.frame.slots.insert(name.to_string(), alloca);
         Ok(alloca)
     }
 
@@ -111,7 +129,8 @@ impl<'ctx> Codegen<'ctx> {
         Ok(())
     }
 
-    pub(crate) fn load_slot(&self, name: &str) -> Result<BasicValueEnum<'ctx>> {
+    pub(crate) fn load_slot(&mut self, name: &str) -> Result<BasicValueEnum<'ctx>> {
+        self.ensure_slot_rooted(name)?;
         let slot = self
             .frame
             .slots

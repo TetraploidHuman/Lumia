@@ -254,7 +254,7 @@ impl<'ctx> Codegen<'ctx> {
             .into_int_value())
     }
 
-    pub(crate) fn load_slot_i64(&self, name: &str) -> Result<IntValue<'ctx>> {
+    pub(crate) fn load_slot_i64(&mut self, name: &str) -> Result<IntValue<'ctx>> {
         let v = self.load_slot(name)?;
         self.as_i64(v)
     }

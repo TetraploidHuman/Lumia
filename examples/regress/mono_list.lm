@@ -1,0 +1,15 @@
+module mono_list
+import std.io.{println}
+import std.linalg.{zeros}
+
+val head = { xs ->
+    xs.get(0)
+}
+
+val main = {
+    var xs = zeros(2)
+    xs = xs.set(0, 1.25)
+    xs = xs.set(1, 2.5)
+    println(xs.get(0))
+    println(head(xs))
+}

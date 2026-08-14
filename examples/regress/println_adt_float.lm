@@ -1,0 +1,23 @@
+module println_adt_float
+import std.io.{println}
+type Eco {
+    val ecoX
+    val ecoY
+    val ecoTheta
+    val ecoHunger
+    val ecoRng
+}
+val main = {
+    val eco = Eco {
+        ecoX = 0.20000000307336452,
+        ecoY = 0.20014835745103116,
+        ecoTheta = 0.0 - 0.14010811325053796,
+        ecoHunger = 0.43020336673604487,
+        ecoRng = 2106498180.0
+    }
+    println(eco.ecoX)
+    println(eco.ecoY)
+    println(eco.ecoTheta)
+    println(eco.ecoHunger)
+    println(eco.ecoRng)
+}

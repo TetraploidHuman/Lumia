@@ -36,6 +36,7 @@ impl<'ctx> Codegen<'ctx> {
         self.frame.local_int_consts.clear();
         self.frame.slot_tys.clear();
         self.frame.emit_dest = None;
+        self.frame.expect_alloc_ty = None;
         self.frame.nsw_binop_locals = crate::nsw_iv::collect_nsw_binop_locals(&fun.body);
         self.frame.safe_divisor_locals = crate::nsw_iv::collect_safe_divisor_locals(&fun.body);
         self.frame.nonneg_iv_load_locals = crate::nsw_iv::collect_nonneg_iv_load_locals(&fun.body);
@@ -152,6 +153,36 @@ impl<'ctx> Codegen<'ctx> {
         lumia_core::infer_value_ty_ctx(value, self.infer_ctx(), None)
     }
 
+    /// Best-effort expected type for empty container literals (Float tags).
+    fn peek_expected_alloc_ty(
+        &self,
+        block: &Block,
+        idx: usize,
+        local: Local,
+        value: &Value,
+    ) -> Option<Type> {
+        let empty = match value {
+            Value::AllocList { elems, .. } => elems.is_empty(),
+            Value::AllocSet { elems, .. } => elems.is_empty(),
+            Value::AllocMap { flat_pairs, .. } => flat_pairs.is_empty(),
+            _ => return None,
+        };
+        if !empty {
+            return None;
+        }
+        if let Some(Op::Assign { name, value: v }) = block.ops.get(idx + 1) {
+            if *v == local {
+                if let Some(ty) = self.frame.slot_tys.get(name) {
+                    return Some(ty.clone());
+                }
+            }
+        }
+        if block.result == Some(local) {
+            return self.funs.fun_ret_tys.get(&self.funs.current_fun).cloned();
+        }
+        None
+    }
+
     /// Pure self/mutual recursion in tail position → musttail (DESIGN §4.4).
     /// Returns `Ok(true)` if the block was terminated by a musttail call.
     fn try_emit_tco_let(&mut self, block: &Block, local: Local, value: &Value) -> Result<bool> {
@@ -166,24 +197,29 @@ impl<'ctx> Codegen<'ctx> {
         match value {
             Value::Call { fun, args } => {
                 if self.funs.tco_peers.contains(fun) {
+                    // Only drop roots/frame once the callee is known to exist;
+                    // otherwise fall through to a normal call with roots intact.
+                    if !self.funs.functions.contains_key(fun) {
+                        return Ok(false);
+                    }
                     self.root_pop_to(0)?;
                     self.emit_frame_pop()?;
-                    if self.emit_musttail_call(fun, args)? {
-                        return Ok(true);
-                    }
-                    // musttail failed — restore frame for normal call path.
-                    self.emit_frame_push(&self.funs.current_fun.clone())?;
+                    let ok = self.emit_musttail_call(fun, args)?;
+                    debug_assert!(ok, "musttail callee was declared");
+                    return Ok(ok);
                 }
             }
             Value::IndirectCall { callee, args } => {
                 if let Some(fun) = self.funs.funref_locals.get(&callee.0).cloned() {
                     if self.funs.tco_peers.contains(&fun) {
+                        if !self.funs.functions.contains_key(&fun) {
+                            return Ok(false);
+                        }
                         self.root_pop_to(0)?;
                         self.emit_frame_pop()?;
-                        if self.emit_musttail_call(&fun, args)? {
-                            return Ok(true);
-                        }
-                        self.emit_frame_push(&self.funs.current_fun.clone())?;
+                        let ok = self.emit_musttail_call(&fun, args)?;
+                        debug_assert!(ok, "musttail callee was declared");
+                        return Ok(ok);
                     }
                 }
             }
@@ -432,10 +468,14 @@ impl<'ctx> Codegen<'ctx> {
         uses >= 1 && only_recv
     }
 
-    /// `Let t = Name/Local/AdtField` used only as a `Call`/`IndirectCall` argument.
+    /// `Let t = Name/Local` used only as a `Call`/`IndirectCall` argument.
     ///
     /// The source is already live/rooted; a temporary retain would bump COW RC and
     /// force `ensure_unique` clones inside `lumia_cn_*` / `lumia_f64_*` kernels.
+    ///
+    /// **Not** applied to `AdtField`: extracting a List/heap field without retain
+    /// lets the parent ADT drop while the callee still holds the unreained
+    /// pointer (`makeObs` → `nearest(eco, eco.ecoThreats, n)` zeroed threat obs).
     fn let_is_ephemeral_call_arg(
         &self,
         block: &Block,
@@ -443,15 +483,7 @@ impl<'ctx> Codegen<'ctx> {
         local: Local,
         value: &Value,
     ) -> bool {
-        let is_alias = matches!(
-            value,
-            Value::Name(_)
-                | Value::Local(_)
-                | Value::Builtin {
-                    name: Builtin::AdtField,
-                    ..
-                }
-        );
+        let is_alias = matches!(value, Value::Name(_) | Value::Local(_));
         if !is_alias {
             return false;
         }
@@ -648,7 +680,10 @@ impl<'ctx> Codegen<'ctx> {
                     self.frame.adt_with_inplace =
                         self.match_adt_with_reassign(block, idx, *local, value);
                     self.frame.emit_dest = Some(local.0);
+                    self.frame.expect_alloc_ty =
+                        self.peek_expected_alloc_ty(block, idx, *local, value);
                     let v = self.emit_value(value, fv)?;
+                    self.frame.expect_alloc_ty = None;
                     self.frame.emit_dest = None;
                     self.frame.cow_consume_unique = false;
                     self.frame.adt_with_inplace = None;
@@ -674,11 +709,19 @@ impl<'ctx> Codegen<'ctx> {
                 }
                 Op::Assign { name, value } => {
                     let v = self.local(*value)?;
-                    if let Some(ty) = self.frame.local_tys.get(&value.0).cloned() {
-                        if !matches!(ty, Type::Float) {
+                    // Float ADT fields / lets travel as i64 IEEE bits. Storing them
+                    // into a mut slot via coerce_i64 + Int typing makes later float
+                    // arith `sitofp` the bit pattern (eco `var s = eco.ecoRng` bug).
+                    // Promote to a native f64 slot whenever the RHS is Float-typed.
+                    let v = if matches!(self.frame.local_tys.get(&value.0), Some(Type::Float)) {
+                        self.frame.slot_tys.insert(name.clone(), Type::Float);
+                        self.promote_f64(v)?.into()
+                    } else {
+                        if let Some(ty) = self.frame.local_tys.get(&value.0).cloned() {
                             self.frame.slot_tys.insert(name.clone(), ty);
                         }
-                    }
+                        v
+                    };
                     self.store_slot(name, v)?;
                 }
                 Op::Break => {

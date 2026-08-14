@@ -35,6 +35,8 @@ pub(crate) struct FunTables<'ctx> {
     pub hash_adts: HashSet<String>,
     /// Variant labels by ADT/product type name (tag → display name) for Show.
     pub adt_variant_names: HashMap<String, Vec<String>>,
+    /// Sum ADT name → max variant payload arity (shared typed params slots).
+    pub sum_max_arity: HashMap<String, usize>,
     /// Stable Show-kind ids (`≥ 1`) packed into ADT `type_id` for recursive `lumia_show`.
     pub adt_show_kinds: HashMap<String, u16>,
 }
@@ -51,7 +53,11 @@ pub(crate) struct FrameState<'ctx> {
     /// Locals bound to `Value::Int(n)` — used to type `AdtField` as `params[n]`.
     pub local_int_consts: HashMap<u32, i64>,
     pub root_depth: u32,
-    pub rooted_slots: HashSet<String>,
+    /// Mut-slot names currently on the shadow stack → `root_depth` right after their push.
+    /// Evicted by [`crate::Codegen::root_pop_to`] when that depth is unwound so a later
+    /// `ensure_slot` / `load_slot` can re-push (scoped if/loop must not leave stale
+    /// "already rooted" compile-time state).
+    pub rooted_slots: HashMap<String, u32>,
     pub entry_bb: Option<BasicBlock<'ctx>>,
     /// Dest local of the `Let` currently being emitted (for NSW lookup).
     pub emit_dest: Option<u32>,
@@ -70,6 +76,9 @@ pub(crate) struct FrameState<'ctx> {
     /// Last known const for i64 mut slots (`None` = non-const / unknown).
     /// Used to refuse SR when accumulators/IVs are not at the expected start.
     pub slot_i64_const: HashMap<String, Option<i64>>,
+    /// Expected type for the `Let` currently being emitted (from ret / typed slot).
+    /// Used so empty `listOf()` / `mapOf()` / `setOf()` keep Float container tags.
+    pub expect_alloc_ty: Option<Type>,
 }
 
 /// Memo transform emission scratch for the current function.

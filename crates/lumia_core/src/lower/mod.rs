@@ -100,7 +100,7 @@ pub fn lower_hir_with_schemes(
                     mono_of: None,
                 });
             }
-            Item::Val { name, body } => {
+            Item::Val { name, body, ty: _ } => {
                 // Module-level `val` → zero-arg getter `__val_<name>` (pure).
                 // Ret type must match inference so codegen roots heap returns.
                 let getter = format!("__val_{name}");
@@ -160,12 +160,21 @@ pub fn lower_hir_with_schemes(
         // Products are tag-0 payloads; print the type name.
         adt_variant_names.insert(prod.name.clone(), vec![prod.name.clone()]);
     }
+    let sum_max_arity: HashMap<String, usize> = module
+        .adts
+        .iter()
+        .map(|a| {
+            let max = a.variants.iter().map(|v| v.arity).max().unwrap_or(0);
+            (a.name.clone(), max)
+        })
+        .collect();
     let mut core = CoreModule {
         name: module.name.clone(),
         functions,
         hash_adts,
         trait_methods: module.trait_methods.clone(),
         adt_variant_names,
+        sum_max_arity,
     };
     lift_lambdas(&mut core);
     directize_funref_calls(&mut core);

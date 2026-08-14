@@ -46,8 +46,11 @@ pub extern "C" fn lumia_cn_nucleus_step(
     let bottom_up = force_f64(bottom_up);
     let top_down = force_f64(top_down);
     let mu = ensure_unique_f64(mu);
-    let err = ensure_unique_f64(err);
-    let pred = ensure_unique_f64(pred);
+    // Side buffers are not returned — must already be uniquely owned (else
+    // COW would orphan updates). Callers extract `var err = n.err` without
+    // retaining when the Let only feeds the kernel.
+    let err = require_unique_f64(err, "cn nucleus err");
+    let pred = require_unique_f64(pred, "cn nucleus pred");
 
     require_len(enc_w, size * size, "cn enc");
     require_len(pred_w, size * size, "cn pred_w");
@@ -349,7 +352,8 @@ pub extern "C" fn lumia_cn_learn_generative(
     let mu = force_f64(mu);
     let err = force_f64(err);
     let enc_w = ensure_unique_f64(enc_w);
-    let pred_w = ensure_unique_f64(pred_w);
+    // `pred_w` is mutated but not returned — require unique ownership.
+    let pred_w = require_unique_f64(pred_w, "cn learn pred_w");
     require_len(mu, size, "cn learn mu");
     require_len(err, size, "cn learn err");
     require_len(enc_w, size * size, "cn learn enc");
@@ -472,6 +476,17 @@ fn ensure_unique_f64(list: *mut u8) -> *mut u8 {
         ptr::copy_nonoverlapping(list as *const i64, dest as *mut i64, (n as usize) + 1);
         dest
     }
+}
+
+/// Side-effect buffers that the kernel does not return must already be unique.
+fn require_unique_f64(list: *mut u8, what: &str) -> *mut u8 {
+    let list = force_f64(list);
+    if list_rc_is_unique(list) {
+        return list;
+    }
+    trap_abort(&format!(
+        "lumia: {what} must be uniquely owned (multi-buffer COW would drop updates)"
+    ));
 }
 
 fn require_len(list: *mut u8, expect: i64, what: &str) {

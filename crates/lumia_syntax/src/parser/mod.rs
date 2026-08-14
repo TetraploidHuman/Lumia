@@ -145,6 +145,25 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Optional `: TypeName` ascription (single ident, like foreign).
+    pub(super) fn parse_optional_type_ann(&mut self) -> Result<Option<String>, ParseError> {
+        if !self.at(&TokenKind::Colon) {
+            return Ok(None);
+        }
+        self.bump();
+        let (name, _) = self.expect_ident()?;
+        Ok(Some(name))
+    }
+
+    /// `name` or `name: Type` binder (lambda / val paren params).
+    pub(super) fn parse_annotated_binder(
+        &mut self,
+    ) -> Result<(String, Option<String>), ParseError> {
+        let (name, _) = self.expect_ident()?;
+        let ty = self.parse_optional_type_ann()?;
+        Ok((name, ty))
+    }
+
     /// Top-level declaration / import starters used as sync points.
     pub(super) fn is_item_start(&self) -> bool {
         matches!(

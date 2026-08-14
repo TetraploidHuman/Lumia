@@ -23,7 +23,7 @@ pub(crate) fn resolve_trait_method_calls(module: &mut CoreModule) {
         .map(|f| std::mem::replace(&mut f.body, empty.clone()))
         .collect();
     {
-        let index = FunIndex::new(&functions);
+        let index = FunIndex::new(&functions, &module.sum_max_arity);
         for i in 0..functions.len() {
             let mut local_tys: HashMap<u32, Type> = HashMap::default();
             for (j, p) in functions[i].params.iter().enumerate() {
@@ -32,9 +32,13 @@ pub(crate) fn resolve_trait_method_calls(module: &mut CoreModule) {
                     functions[i].param_tys.get(j).cloned().unwrap_or(Type::Int),
                 );
             }
+            let mut slot_tys: HashMap<String, Type> = HashMap::default();
+            let mut int_consts: HashMap<u32, i64> = HashMap::default();
             resolve_trait_block(
                 &mut bodies[i],
                 &mut local_tys,
+                &mut slot_tys,
+                &mut int_consts,
                 &trait_methods,
                 &method_names,
                 &index,
@@ -50,6 +54,8 @@ pub(crate) fn resolve_trait_method_calls(module: &mut CoreModule) {
 fn resolve_trait_block(
     block: &mut Block,
     local_tys: &mut HashMap<u32, Type>,
+    slot_tys: &mut HashMap<String, Type>,
+    int_consts: &mut HashMap<u32, i64>,
     trait_methods: &HashMap<(String, String), Vec<String>>,
     method_names: &FxHashSet<String>,
     index: &FunIndex<'_>,
@@ -57,12 +63,38 @@ fn resolve_trait_block(
     for op in &mut block.ops {
         match op {
             Op::Let { local, value, .. } => {
-                resolve_trait_value(value, local_tys, trait_methods, method_names, index);
-                let ty = mono_value_ty(value, local_tys, index);
+                resolve_trait_value(
+                    value,
+                    local_tys,
+                    slot_tys,
+                    int_consts,
+                    trait_methods,
+                    method_names,
+                    index,
+                );
+                let ty = mono_value_ty(value, local_tys, slot_tys, int_consts, index);
                 local_tys.insert(local.0, ty);
+                if let Value::Int(n) = value {
+                    int_consts.insert(local.0, *n);
+                } else {
+                    int_consts.remove(&local.0);
+                }
+            }
+            Op::Assign { name, value } => {
+                if let Some(ty) = local_tys.get(&value.0).cloned() {
+                    slot_tys.insert(name.clone(), ty);
+                }
             }
             Op::Effect { value } => {
-                resolve_trait_value(value, local_tys, trait_methods, method_names, index);
+                resolve_trait_value(
+                    value,
+                    local_tys,
+                    slot_tys,
+                    int_consts,
+                    trait_methods,
+                    method_names,
+                    index,
+                );
             }
             _ => {}
         }
@@ -72,6 +104,8 @@ fn resolve_trait_block(
 fn resolve_trait_value(
     value: &mut Value,
     local_tys: &mut HashMap<u32, Type>,
+    slot_tys: &mut HashMap<String, Type>,
+    int_consts: &mut HashMap<u32, i64>,
     trait_methods: &HashMap<(String, String), Vec<String>>,
     method_names: &FxHashSet<String>,
     index: &FunIndex<'_>,
@@ -95,17 +129,57 @@ fn resolve_trait_value(
             else_block,
             ..
         } => {
-            resolve_trait_block(then_block, local_tys, trait_methods, method_names, index);
-            resolve_trait_block(else_block, local_tys, trait_methods, method_names, index);
+            resolve_trait_block(
+                then_block,
+                local_tys,
+                slot_tys,
+                int_consts,
+                trait_methods,
+                method_names,
+                index,
+            );
+            resolve_trait_block(
+                else_block,
+                local_tys,
+                slot_tys,
+                int_consts,
+                trait_methods,
+                method_names,
+                index,
+            );
         }
         Value::Loop {
             header,
             body,
             latch,
         } => {
-            resolve_trait_block(header, local_tys, trait_methods, method_names, index);
-            resolve_trait_block(body, local_tys, trait_methods, method_names, index);
-            resolve_trait_block(latch, local_tys, trait_methods, method_names, index);
+            resolve_trait_block(
+                header,
+                local_tys,
+                slot_tys,
+                int_consts,
+                trait_methods,
+                method_names,
+                index,
+            );
+            resolve_trait_block(
+                body,
+                local_tys,
+                slot_tys,
+                int_consts,
+                trait_methods,
+                method_names,
+                index,
+            );
+            resolve_trait_block(
+                latch,
+                local_tys,
+                slot_tys,
+                int_consts,
+                trait_methods,
+                method_names,
+                index,
+            );
         }
         _ => {}
     }
@@ -126,7 +200,7 @@ pub(crate) fn ensure_trait_method_stubs(module: &mut CoreModule) {
     for fun in &module.functions {
         collect_trait_method_refs(&fun.body, &method_names, &mut referenced);
     }
-    let index = FunIndex::new(&module.functions);
+    let index = FunIndex::new(&module.functions, &module.sum_max_arity);
     let mut stubs = Vec::new();
     for name in referenced {
         if index.contains(&name) {

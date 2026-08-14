@@ -22,9 +22,11 @@ pub(crate) fn lower_list_map(ctx: &LowerCtx, list: Expr, f: Expr, span: Span) ->
 /// Sequential `map` loop (also used when auto-parallel demotes `ListParMap`).
 pub fn desugar_list_map_sequential(ctx: &LowerCtx, list: Expr, f: Expr, span: Span) -> Expr {
     match resolve_unary_callback(f, span, "map") {
-        UnaryCallback::Inline { param, body } => {
-            lower_list_map_inline(ctx, list, param, body, span)
-        }
+        UnaryCallback::Inline {
+            param,
+            param_ty,
+            body,
+        } => lower_list_map_inline(ctx, list, param, param_ty, body, span),
         UnaryCallback::Bound { f, f_name, x } => lower_list_map_call(ctx, list, f, f_name, x, span),
     }
 }
@@ -59,14 +61,31 @@ pub(crate) fn lower_list_sort_by(ctx: &LowerCtx, list: Expr, f: Expr, span: Span
                 span,
             }),
             mutable: false,
+            ty: None,
         }),
         mutable: false,
+        ty: None,
     }
 }
 
-fn lower_list_map_inline(ctx: &LowerCtx, list: Expr, x: String, body: Expr, span: Span) -> Expr {
+fn lower_list_map_inline(
+    ctx: &LowerCtx,
+    list: Expr,
+    param: String,
+    param_ty: Option<String>,
+    body: Expr,
+    span: Span,
+) -> Expr {
     let acc = format!("__map_acc_{}", span.start.0);
-    let step = append_assign(&acc, body, span);
+    let x = format!("__map_x_{}", span.start.0);
+    let mapped = Expr::Let {
+        name: param,
+        value: Box::new(Expr::Var(x.clone(), span)),
+        body: Box::new(body),
+        mutable: false,
+        ty: param_ty,
+    };
+    let step = append_assign(&acc, mapped, span);
     list_accum(ctx, acc, empty_list(span), &x, list, step, span)
 }
 

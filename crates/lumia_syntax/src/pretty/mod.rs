@@ -170,11 +170,24 @@ fn format_val(out: &mut String, v: &ValItem, indent: usize) {
     }
     out.push_str("val ");
     out.push_str(&v.name);
+    if let Some(ty) = &v.ty {
+        out.push_str(": ");
+        out.push_str(ty);
+    }
     if let Some(ps) = &v.params {
         // Lambda braces belong to the val sugar; unwrap a Block body so we do not
         // emit `val f = { x -> { ... } }`.
         out.push_str(" = { ");
-        out.push_str(&ps.join(", "));
+        for (i, (n, ty)) in ps.iter().enumerate() {
+            if i > 0 {
+                out.push_str(", ");
+            }
+            out.push_str(n);
+            if let Some(t) = ty {
+                out.push_str(": ");
+                out.push_str(t);
+            }
+        }
         out.push_str(" ->\n");
         format_block_contents(out, &v.body, indent + 1);
         out.push('\n');

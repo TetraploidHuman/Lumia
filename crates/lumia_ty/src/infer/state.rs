@@ -47,6 +47,10 @@ pub(crate) struct TraitState {
 #[derive(Default)]
 pub(crate) struct ProductState {
     pub(crate) products: HashMap<String, Vec<String>>,
+    /// Sum ADT name → max variant payload arity (shared `Type::Adt` params slots).
+    pub(crate) sum_max_arity: HashMap<String, usize>,
+    /// Sum variant name → (ADT name, that variant's arity).
+    pub(crate) sum_ctors: HashMap<String, (String, usize)>,
 }
 
 /// `return` / `alt` desugar bookkeeping.

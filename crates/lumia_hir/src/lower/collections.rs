@@ -28,6 +28,7 @@ pub(crate) fn lower_to_set(ctx: &LowerCtx, list: Expr, span: Span) -> Expr {
             span,
         }),
         mutable: true,
+        ty: None,
     }
 }
 
@@ -54,6 +55,7 @@ pub(crate) fn lower_to_list(ctx: &LowerCtx, col: Expr, span: Span) -> Expr {
             span,
         }),
         mutable: true,
+        ty: None,
     }
 }
 
@@ -91,6 +93,7 @@ pub(crate) fn lower_to_map(ctx: &LowerCtx, pairs: Expr, span: Span) -> Expr {
             span,
         }),
         mutable: true,
+        ty: None,
     }
 }
 
@@ -114,6 +117,7 @@ pub(crate) fn lower_set_union(ctx: &LowerCtx, a: Expr, b: Expr, span: Span) -> E
             span,
         }),
         mutable: true,
+        ty: None,
     }
 }
 
@@ -151,8 +155,10 @@ pub(crate) fn lower_set_intersect(ctx: &LowerCtx, a: Expr, b: Expr, span: Span) 
                 span,
             }),
             mutable: true,
+            ty: None,
         }),
         mutable: false,
+        ty: None,
     }
 }
 
@@ -176,5 +182,6 @@ pub(crate) fn lower_set_diff(ctx: &LowerCtx, a: Expr, b: Expr, span: Span) -> Ex
             span,
         }),
         mutable: true,
+        ty: None,
     }
 }

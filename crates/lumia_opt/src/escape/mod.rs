@@ -70,6 +70,7 @@ fn compute_param_escape_summaries(module: &CoreModule) -> HashMap<String, ParamE
         }
     }
     // Gauss–Seidel fixed-point: update in place (no full-table clone each round).
+    let mut converged = false;
     for _ in 0..32 {
         let mut changed = false;
         for f in &module.functions {
@@ -87,7 +88,18 @@ fn compute_param_escape_summaries(module: &CoreModule) -> HashMap<String, ParamE
             }
         }
         if !changed {
+            converged = true;
             break;
+        }
+    }
+    // Unsound to under-approximate escape after a capped iteration count: treat all
+    // params of still-open SCC members as escaping so stack Lit* cannot dangle.
+    if !converged {
+        for f in &module.functions {
+            if f.external.is_some() {
+                continue;
+            }
+            summaries.insert(f.name.clone(), vec![true; f.params.len()]);
         }
     }
     summaries

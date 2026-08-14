@@ -19,6 +19,29 @@ fn e2e_float_map_keys() {
 }
 
 #[test]
+fn e2e_float_map_overlay_keys() {
+    // Overlay on HashOrdered Float map: ±0 same key; last write wins.
+    run_example("examples/float_map_overlay_keys.lm", &["200", "200", "10"]);
+}
+
+#[test]
+fn e2e_var_scoped_gc() {
+    // Heap `var` first rooted inside `for` must survive GC across iterations.
+    // sum_i (1+i)+2 for i in 0..50 = sum (3+i) = 50*3 + 49*50/2 = 150+1225 = 1375
+    run_example("examples/var_scoped_gc.lm", &["1375"]);
+}
+
+#[test]
+fn e2e_cow_nested_list() {
+    run_example("examples/cow_nested_list.lm", &["2", "1", "2", "3"]);
+}
+
+#[test]
+fn e2e_empty_float_list() {
+    run_example("examples/empty_float_list.lm", &["1", "0"]);
+}
+
+#[test]
 fn e2e_float_struct_eq() {
     // List/Option/Map Float payloads + ListParMap: ±0 equal; NaN ≠ NaN.
     run_example(
@@ -55,6 +78,34 @@ fn e2e_wide_float_adt_gc() {
 fn e2e_mono_adt_float_field() {
     // Call-site ABI Int must not make mono clones sitofp product float fields.
     run_example("examples/mono_adt_float_field.lm", &["3"]);
+}
+
+#[test]
+fn e2e_var_adt_float_mut() {
+    // `var s = adt.floatField` must bitcast IEEE bits into an f64 mut slot (not sitofp).
+    run_example(
+        "examples/var_adt_float_mut.lm",
+        &["0.48052464447939985", "0.48052464447939985"],
+    );
+}
+
+#[test]
+fn e2e_poly_list_float_get() {
+    // Poly `{ pts -> pts.get(0) }` called with `var` List[Float] must not println
+    // IEEE bit patterns.
+    run_example(
+        "examples/poly_list_float_get.lm",
+        &["0.668", "0.668", "1.1280000000000001"],
+    );
+}
+
+#[test]
+fn e2e_adt_field_call_arg() {
+    // `nearest(eco, eco.ecoThreats, n)` must keep the field list live across the call.
+    run_example(
+        "examples/adt_field_call_arg.lm",
+        &["0.668", "0.46", "0.535372767331324"],
+    );
 }
 
 #[test]

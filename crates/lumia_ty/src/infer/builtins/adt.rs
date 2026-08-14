@@ -161,10 +161,26 @@ impl Infer {
                     .ok_or_else(|| at(span, "Option::Some payload missing"));
             }
             if name != want {
-                return Err(at(
-                    span,
-                    format!("field projection expects type `{want}`, got `{name}`"),
-                ));
+                // Sum variant patterns pass the ctor name (`Circle`), not the ADT.
+                if let Some((adt, arity)) = self.products.sum_ctors.get(want) {
+                    if adt != name {
+                        return Err(at(
+                            span,
+                            format!("field projection expects type `{adt}`, got `{name}`"),
+                        ));
+                    }
+                    if idx >= *arity {
+                        return Err(at(
+                            span,
+                            format!("variant `{want}` has {arity} field(s); index {idx} out of range"),
+                        ));
+                    }
+                } else {
+                    return Err(at(
+                        span,
+                        format!("field projection expects type `{want}`, got `{name}`"),
+                    ));
+                }
             }
         }
         params.get(idx).cloned().ok_or_else(|| {
@@ -255,6 +271,32 @@ impl Infer {
                     },
                 )?;
                 return Ok(t);
+            }
+            if let Some((adt, var_arity)) = self.products.sum_ctors.get(want).cloned() {
+                if idx >= var_arity {
+                    return Err(at(
+                        span,
+                        format!("variant `{want}` has {var_arity} field(s); index {idx} out of range"),
+                    ));
+                }
+                let max = self
+                    .products
+                    .sum_max_arity
+                    .get(&adt)
+                    .copied()
+                    .unwrap_or(var_arity)
+                    .max(idx + 1);
+                let params: Vec<Type> = (0..max).map(|_| self.fresh()).collect();
+                let field_ty = params[idx].clone();
+                self.unify_at(
+                    span,
+                    recv_ty,
+                    Type::Adt {
+                        name: adt,
+                        params,
+                    },
+                )?;
+                return Ok(field_ty);
             }
             let arity = self
                 .products

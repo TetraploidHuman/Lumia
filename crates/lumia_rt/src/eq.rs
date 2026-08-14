@@ -113,8 +113,9 @@ pub extern "C" fn lumia_adt_eq(a: i64, b: i64, float_mask: i64) -> i64 {
         if tid_base((*ha).type_id) != TYPE_ADT || tid_base((*hb).type_id) != TYPE_ADT {
             return lumia_eq(a, b);
         }
-        // Prefer call-site mask; also honour layout stored in header `_pad` (nested eq).
-        let mask = (float_mask as u64) | (*ha)._pad | (*hb)._pad;
+        // Prefer call-site mask; for headers require **both** sides to tag a field as
+        // Float so eq agrees with per-object `hash_value` (which reads only one `_pad`).
+        let mask = (float_mask as u64) | ((*ha)._pad & (*hb)._pad);
         adt_eq_payload(pa, pb, mask)
     }
 }
@@ -137,7 +138,7 @@ pub(crate) fn adt_eq_payload(pa: *mut u8, pb: *mut u8, float_mask: u64) -> i64 {
         for i in 1..words_a {
             let fa = *ba.add(i);
             let fb = *bb.add(i);
-            let ok = if float_mask & (1u64 << (i - 1)) != 0 {
+            let ok = if crate::common::adt_float_slot(float_mask, i - 1) {
                 float_key_eq(fa, fb)
             } else {
                 lumia_eq(fa, fb) != 0

@@ -185,7 +185,7 @@ pub(crate) unsafe fn show_adt_masked_named(
             s.push_str(", ");
         }
         let bits = *base.add(i);
-        let field = if float_mask & (1u64 << (i - 1)) != 0 {
+        let field = if crate::common::adt_float_slot(float_mask, i - 1) {
             lumia_show_float(f64::from_bits(bits as u64))
         } else {
             lumia_show(bits)

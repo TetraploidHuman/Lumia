@@ -2,7 +2,7 @@
 
 use super::core::{force_heap_list, list_len_of, lumia_list_empty, lumia_list_promote};
 use super::tid::{heap_list_tid, list_float_elems, list_tid};
-use crate::common::{list_rc_is_unique, trap_abort, GcInhibitGuard, TYPE_LIST, TYPE_LIST_IOTA};
+use crate::common::{list_rc_is_unique, trap_abort, GcInhibitGuard, TYPE_LIST_IOTA};
 use crate::gc::{list_payload_bytes, lumia_alloc};
 use crate::hash_ord::lumia_ord_cmp;
 use crate::string_io::{lumia_alloc_string, with_str_bytes};
@@ -89,18 +89,25 @@ pub extern "C" fn lumia_list_reverse(list: *mut u8) -> *mut u8 {
 }
 
 /// Sort `List[Int]` ascending (stable via slice::sort).
+/// Float-elem lists are rejected (IEEE bit order ≠ numeric / key order).
 #[no_mangle]
 pub extern "C" fn lumia_list_sort(list: *mut u8) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
     let list = force_heap_list(list);
+    if !list.is_null() && list_float_elems(list) {
+        trap_abort("lumia: list.sort is not defined for List[Float]");
+    }
     unsafe {
         let len = if list.is_null() {
             0i64
         } else {
             *(list as *const i64)
         };
+        if len < 0 {
+            trap_abort("lumia: list sort negative length");
+        }
         let n = len as usize;
-        let dest = lumia_alloc(list_payload_bytes(len), TYPE_LIST);
+        let dest = lumia_alloc(list_payload_bytes(len), heap_list_tid(list));
         if dest.is_null() {
             trap_abort("lumia: list sort OOM");
         }

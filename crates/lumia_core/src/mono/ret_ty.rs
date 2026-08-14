@@ -95,7 +95,8 @@ pub(crate) fn block_result_fixed_ty(
     trait_methods: &HashMap<(String, String), Vec<String>>,
     param_tys: &HashMap<u32, Type>,
 ) -> Option<Type> {
-    let index = FunIndex::new(functions);
+    let empty = HashMap::default();
+    let index = FunIndex::new(functions, &empty);
     let Local(r) = block.result?;
     let mut seen = HashSet::default();
     local_fixed_ty(block, r, &index, trait_methods, param_tys, &mut seen)
@@ -152,6 +153,21 @@ fn value_fixed_ty(
             ..
         } => Some(Type::String),
         Value::Builtin {
+            name: Builtin::ListGet,
+            args,
+        } => {
+            let list_ty =
+                local_fixed_ty(block, args.first()?.0, index, trait_methods, param_tys, seen)?;
+            match list_ty {
+                Type::List(e) | Type::Set(e) => Some(*e),
+                Type::Map(_, v) => Some(Type::Adt {
+                    name: "Option".into(),
+                    params: vec![*v],
+                }),
+                other => Some(other),
+            }
+        }
+        Value::Builtin {
             name: Builtin::AdtField,
             args,
         } => adt_field_fixed_ty(block, args, index, trait_methods, param_tys, seen),
@@ -178,13 +194,11 @@ fn value_fixed_ty(
             if let Some(f) = index.get(fun) {
                 return Some(f.ret_ty.clone());
             }
-            // Unresolved short trait method — sample any mangled impl's ret_ty.
-            let sample = trait_methods
-                .iter()
-                .find(|((_, m), _)| m == fun)
-                .and_then(|(_, mangled)| mangled.first())
-                .and_then(|m| index.get(m));
-            sample.map(|f| f.ret_ty.clone())
+            // Unresolved short trait method: do **not** sample an arbitrary
+            // mangled impl (Float vs Int / heap vs scalar can disagree). Leave
+            // open until `resolve_trait_method_calls` rewrites the Call.
+            let _ = trait_methods;
+            None
         }
         Value::AllocAdt {
             adt_name,
@@ -211,7 +225,13 @@ fn value_fixed_ty(
             } else if adt_name == "Option" && field_tys.is_empty() {
                 vec![Type::Int]
             } else {
-                field_tys
+                let mut params = field_tys;
+                if let Some(max) = index.sum_max_arity.get(adt_name).copied() {
+                    while params.len() < max {
+                        params.push(Type::Int);
+                    }
+                }
+                params
             };
             Some(Type::Adt {
                 name: adt_name.clone(),
@@ -501,7 +521,27 @@ fn join_fixed_ty(a: &Type, b: &Type) -> Option<Type> {
                     params: vec![p],
                 })
             } else {
-                None
+                // User sums / products: pad to max width (Circle vs Rect).
+                let merge = |x: &Type, y: &Type| -> Type {
+                    match (x, y) {
+                        (Type::Int, other) | (Type::Var(_), other) => other.clone(),
+                        (other, Type::Int) | (other, Type::Var(_)) => other.clone(),
+                        (l, r) if l == r => l.clone(),
+                        (l, _) => l.clone(),
+                    }
+                };
+                let n = p1.len().max(p2.len());
+                let mut params = Vec::with_capacity(n);
+                for i in 0..n {
+                    params.push(merge(
+                        p1.get(i).unwrap_or(&Type::Int),
+                        p2.get(i).unwrap_or(&Type::Int),
+                    ));
+                }
+                Some(Type::Adt {
+                    name: n1.clone(),
+                    params,
+                })
             }
         }
         _ => None,

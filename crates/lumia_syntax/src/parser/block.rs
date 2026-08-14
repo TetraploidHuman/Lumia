@@ -33,7 +33,7 @@ impl<'a> Parser<'a> {
         self.restore(checkpoint);
 
         if is_lambda {
-            let params = self.try_parse_lambda_params()?;
+            let (params, param_tys) = self.try_parse_lambda_params()?;
             self.expect(TokenKind::Arrow)?;
             // Lambda bodies: stop before a column-0 top-level item so a missing
             // `}` cannot swallow the next `val`/`type`/… declaration.
@@ -42,6 +42,7 @@ impl<'a> Parser<'a> {
             let span = start.merge(end);
             return Ok(Expr::Lambda {
                 params,
+                param_tys,
                 body: Box::new(Expr::Block { stmts, tail, span }),
                 span,
             });
@@ -54,6 +55,7 @@ impl<'a> Parser<'a> {
         if stmts.is_empty() && uses_it {
             Ok(Expr::Lambda {
                 params: vec!["it".into()],
+                param_tys: vec![None],
                 body: Box::new(Expr::Block {
                     stmts: vec![],
                     tail,
@@ -79,20 +81,25 @@ impl<'a> Parser<'a> {
         )))
     }
 
-    pub(super) fn try_parse_lambda_params(&mut self) -> Result<Vec<String>, ParseError> {
+    pub(super) fn try_parse_lambda_params(
+        &mut self,
+    ) -> Result<(Vec<String>, Vec<Option<String>>), ParseError> {
         if self.at(&TokenKind::Arrow) {
-            return Ok(vec![]);
+            return Ok((vec![], vec![]));
         }
         let mut params = vec![];
-        let (p, _) = self.expect_ident()?;
+        let mut param_tys = vec![];
+        let (p, ty) = self.parse_annotated_binder()?;
         params.push(p);
+        param_tys.push(ty);
         while self.at(&TokenKind::Comma) {
             self.bump();
-            let (p, _) = self.expect_ident()?;
+            let (p, ty) = self.parse_annotated_binder()?;
             params.push(p);
+            param_tys.push(ty);
         }
         if self.at(&TokenKind::Arrow) {
-            Ok(params)
+            Ok((params, param_tys))
         } else {
             Err(self.error("not lambda params"))
         }
@@ -112,10 +119,20 @@ impl<'a> Parser<'a> {
             if self.at(&TokenKind::Val) {
                 let start = self.bump().span;
                 let pat = self.parse_pattern()?;
+                let ty = if matches!(pat, Pattern::Ident(_, _)) {
+                    self.parse_optional_type_ann()?
+                } else if self.at(&TokenKind::Colon) {
+                    return Err(self.error(
+                        "type ascription is only allowed on simple `val` binders",
+                    ));
+                } else {
+                    None
+                };
                 self.expect(TokenKind::Eq)?;
                 let expr = self.parse_expr()?;
                 stmts.push(Stmt::Val {
                     pat,
+                    ty,
                     span: start.merge(expr.span()),
                     expr,
                 });
@@ -123,10 +140,12 @@ impl<'a> Parser<'a> {
                 let start = self.bump().span;
                 // `var` stays a single name (mutable slots are not patterns).
                 let (name, _) = self.expect_ident()?;
+                let ty = self.parse_optional_type_ann()?;
                 self.expect(TokenKind::Eq)?;
                 let expr = self.parse_expr()?;
                 stmts.push(Stmt::Var {
                     name,
+                    ty,
                     span: start.merge(expr.span()),
                     expr,
                 });

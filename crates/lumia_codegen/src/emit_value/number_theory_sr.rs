@@ -391,8 +391,8 @@ fn parse_acc_div_const(
     else {
         return None;
     };
-    let ok = (const_of(*dl, defs) == Some(n) && name_of(*dr, defs).as_deref() == Some(i))
-        || (const_of(*dr, defs) == Some(n) && name_of(*dl, defs).as_deref() == Some(i));
+    // Only `N / i` (floor-divisor sum). `i / N` is a different series.
+    let ok = const_of(*dl, defs) == Some(n) && name_of(*dr, defs).as_deref() == Some(i);
     if ok {
         Some(s_name.to_string())
     } else {

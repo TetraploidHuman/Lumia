@@ -19,7 +19,13 @@ impl<'ctx> Codegen<'ctx> {
         let float_elems = elems
             .first()
             .and_then(|e| self.frame.local_tys.get(&e.0).cloned())
-            .is_some_and(|t| matches!(t, Type::Float));
+            .map(|t| matches!(t, Type::Float))
+            .unwrap_or_else(|| {
+                matches!(
+                    &self.frame.expect_alloc_ty,
+                    Some(Type::List(e)) if matches!(e.as_ref(), Type::Float)
+                )
+            });
         let list_tid = list_type_id(float_elems);
         if elems.is_empty() {
             if float_elems {
@@ -80,6 +86,10 @@ impl<'ctx> Codegen<'ctx> {
         let elem_ty = elems
             .first()
             .and_then(|e| self.frame.local_tys.get(&e.0).cloned())
+            .or_else(|| match &self.frame.expect_alloc_ty {
+                Some(Type::Set(e)) => Some(e.as_ref().clone()),
+                _ => None,
+            })
             .unwrap_or(Type::Int);
         let float_elems = matches!(elem_ty, Type::Float);
         let no_hash = !self.key_type_has_hash(&elem_ty);
@@ -123,14 +133,23 @@ impl<'ctx> Codegen<'ctx> {
             bail!("mapOf expects even number of key/value args");
         }
         let n_pairs = (flat_pairs.len() / 2) as u64;
-        let key_ty = flat_pairs
-            .first()
-            .and_then(|k| self.frame.local_tys.get(&k.0).cloned())
-            .unwrap_or(Type::Int);
-        let val_ty = flat_pairs
-            .get(1)
-            .and_then(|v| self.frame.local_tys.get(&v.0).cloned())
-            .unwrap_or(Type::Int);
+        let (key_ty, val_ty) = if flat_pairs.len() >= 2 {
+            (
+                flat_pairs
+                    .first()
+                    .and_then(|k| self.frame.local_tys.get(&k.0).cloned())
+                    .unwrap_or(Type::Int),
+                flat_pairs
+                    .get(1)
+                    .and_then(|v| self.frame.local_tys.get(&v.0).cloned())
+                    .unwrap_or(Type::Int),
+            )
+        } else {
+            match &self.frame.expect_alloc_ty {
+                Some(Type::Map(k, v)) => (k.as_ref().clone(), v.as_ref().clone()),
+                _ => (Type::Int, Type::Int),
+            }
+        };
         let float_keys = matches!(key_ty, Type::Float);
         let float_vals = matches!(val_ty, Type::Float);
         let no_hash =
@@ -183,6 +202,12 @@ impl<'ctx> Codegen<'ctx> {
                 ))?
             };
             crate::error::llvm(self.llvm.builder.build_store(slot, v))?;
+            // Map holds a COW alias of nested List/Map/Set/ADT keys/values.
+            if let Some(ty) = self.frame.local_tys.get(&e.0) {
+                if Self::type_needs_cow_retain(ty) {
+                    self.adt_retain_i64(v)?;
+                }
+            }
             // Young alloc: init stores need no write barrier.
         }
         let ptr = if !no_hash && (n_pairs > 8 || matches!(repr, lumia_core::MapRepr::HashOrdered)) {
@@ -298,7 +323,8 @@ impl<'ctx> Codegen<'ctx> {
         slot: &str,
         updates: &[(u32, Local)],
     ) -> Result<BasicValueEnum<'ctx>> {
-        let raw = self.coerce_i64(self.load_slot(slot)?)?;
+        let loaded = self.load_slot(slot)?;
+        let raw = self.coerce_i64(loaded)?;
         let ptr0 = self.i64_as_ptr(raw, "adt_with_base")?;
         // Drop the with-temp `Name(slot)` retain from bind_let, then unique-check.
         // Extra aliases (`val snap = p`) keep RC ≥ 2 → clone.
@@ -382,6 +408,12 @@ impl<'ctx> Codegen<'ctx> {
                 ))?
             };
             crate::error::llvm(self.llvm.builder.build_store(slot, v))?;
+            // List/Set holds a COW alias of nested List/Map/Set/ADT elems.
+            if let Some(ty) = self.frame.local_tys.get(&e.0) {
+                if Self::type_needs_cow_retain(ty) {
+                    self.adt_retain_i64(v)?;
+                }
+            }
             // Young alloc: init stores need no write barrier (Float elems are
             // non-pointers anyway; see float_contract).
         }

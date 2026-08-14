@@ -44,8 +44,10 @@ pub(crate) fn lower_for_in(
                     }),
                     body: Box::new(body_e),
                     mutable: false,
+                    ty: None,
                 }),
                 mutable: false,
+                ty: None,
             };
             list_for_in(ctx, &pair, items, bind_k, span)
         }
@@ -117,6 +119,7 @@ pub(crate) fn counter_for_in(
         value: Box::new(Expr::Var(i.clone(), span)),
         body: Box::new(body),
         mutable: false,
+        ty: None,
     };
     Expr::Let {
         name: i,
@@ -128,6 +131,7 @@ pub(crate) fn counter_for_in(
             span,
         }),
         mutable: true,
+        ty: None,
     }
 }
 
@@ -173,6 +177,7 @@ pub(crate) fn list_for_in(
         value: Box::new(get),
         body: Box::new(body),
         mutable: false,
+        ty: None,
     };
     let loop_e = Expr::Loop {
         cond: Box::new(cond),
@@ -195,10 +200,13 @@ pub(crate) fn list_for_in(
                 value: Box::new(Expr::Int(0, span)),
                 body: Box::new(loop_e),
                 mutable: true,
+                ty: None,
             }),
             mutable: false,
+            ty: None,
         }),
         mutable: false,
+        ty: None,
     }
 }
 

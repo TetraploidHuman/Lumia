@@ -104,6 +104,7 @@ fn emit_llvm_module<'ctx>(
     cg.funs.tco_sccs = compute_tco_sccs(core);
     cg.funs.hash_adts = core.hash_adts.clone();
     cg.funs.adt_variant_names = core.adt_variant_names.clone();
+    cg.funs.sum_max_arity = core.sum_max_arity.clone();
     cg.funs.adt_show_kinds = assign_adt_show_kinds(&cg.funs.adt_variant_names);
 
     for f in &core.functions {

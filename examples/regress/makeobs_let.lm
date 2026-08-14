@@ -1,0 +1,55 @@
+module makeobs_let
+import std.io.{println}
+import std.linalg.{zeros, hypotF}
+
+type Eco {
+    val ecoX
+    val ecoY
+    val ecoThreats
+    val ecoObs
+}
+
+type Bearing { val bearX, val bearY, val bearI }
+
+val nearest = { eco, pts, n ->
+    var bestBx = 0.0
+    var bestBy = 0.0
+    var bestI = 0.0
+    var bestD = 1000000.0
+    var i = 0
+    for i < n {
+        val px = pts.get(i * 2)
+        val py = pts.get(i * 2 + 1)
+        val d = hypotF(px - eco.ecoX, py - eco.ecoY)
+        match {
+            d < bestD -> {
+                bestD = d
+                bestBx = px
+                bestBy = py
+                bestI = d
+            }
+            _ -> {}
+        }
+        i = i + 1
+    }
+    Bearing { bearX = bestBx, bearY = bestBy, bearI = bestI }
+}
+
+val main = {
+    var pts0 = zeros(4)
+    pts0 = pts0.set(0, 0.668)
+    pts0 = pts0.set(1, 0.460)
+    pts0 = pts0.set(2, 0.764)
+    pts0 = pts0.set(3, 0.684)
+    val eco = Eco { ecoX = 0.2, ecoY = 0.2, ecoThreats = pts0, ecoObs = zeros(64) }
+    // A: direct local list
+    val a = nearest(eco, pts0, 2)
+    println(a.bearX)
+    // B: let alias of field
+    val pts1 = eco.ecoThreats
+    val b = nearest(eco, pts1, 2)
+    println(b.bearX)
+    // C: field as arg
+    val c = nearest(eco, eco.ecoThreats, 2)
+    println(c.bearX)
+}

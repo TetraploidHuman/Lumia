@@ -69,7 +69,9 @@ pub use dict::{
     TRAIT_ORD, TRAIT_SHOW,
 };
 pub use dispatch::*;
-pub use efe::{lumia_efe_action_scores, lumia_efe_embodied_action_scores};
+pub use efe::{
+    lumia_efe_action_scores, lumia_efe_apply_embodied_reflexes, lumia_efe_embodied_action_scores,
+};
 pub use eq::*;
 pub use float_kernels::lumia_mandelbrot_checksum;
 pub use hash_ord::*;

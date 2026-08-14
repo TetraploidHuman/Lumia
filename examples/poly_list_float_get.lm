@@ -1,0 +1,15 @@
+module poly_list_float_get
+import std.io.{println}
+
+/// Poly callee must monomorphize on `List[Float]` from a `var` slot so
+/// `get` stays Float (not IEEE bits printed as Int).
+val nearest = { pts, n ->
+    println(pts.get(0))
+    pts.get(0) + pts.get(1)
+}
+
+val main = {
+    var xs = listOf(0.668, 0.460)
+    println(xs.get(0))
+    println(nearest(xs, 2))
+}

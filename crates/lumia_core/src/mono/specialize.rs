@@ -3,7 +3,7 @@ use super::key::{args_mono_key, materialize_mono_param_tys, MonoKey, MonoKind};
 use super::ret_ty::{block_result_fixed_ty, param_ty_map, refine_mono_container_ret};
 use super::traits::directize_block;
 use crate::ir::{Block, CoreFun, CoreModule, Local, Op, Value};
-use crate::value_ty::infer_value_ty;
+use crate::value_ty::{infer_value_ty_ctx, InferValueCtx};
 use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet};
 
@@ -63,7 +63,7 @@ fn rewrite_all_mono_call_sites(
         .map(|f| std::mem::replace(&mut f.body, empty.clone()))
         .collect();
     {
-        let index = FunIndex::new(&functions);
+        let index = FunIndex::new(&functions, &module.sum_max_arity);
         let no_funrefs = HashMap::default();
         for i in 0..functions.len() {
             let mut local_tys: HashMap<u32, Type> = HashMap::default();
@@ -73,7 +73,17 @@ fn rewrite_all_mono_call_sites(
                     functions[i].param_tys.get(j).cloned().unwrap_or(Type::Int),
                 );
             }
-            rewrite_mono_block(&mut bodies[i], &mut local_tys, renames, &no_funrefs, &index);
+            let mut slot_tys: HashMap<String, Type> = HashMap::default();
+            let mut int_consts: HashMap<u32, i64> = HashMap::default();
+            rewrite_mono_block(
+                &mut bodies[i],
+                &mut local_tys,
+                &mut slot_tys,
+                &mut int_consts,
+                renames,
+                &no_funrefs,
+                &index,
+            );
         }
     }
     for (fun, body) in functions.iter_mut().zip(bodies) {
@@ -120,16 +130,20 @@ fn specialize_mono_round(
     module: &mut CoreModule,
     renames: &mut HashMap<(String, MonoKey), String>,
 ) -> bool {
-    let index = FunIndex::new(&module.functions);
+    let index = FunIndex::new(&module.functions, &module.sum_max_arity);
     let mut needed: FxHashSet<(String, MonoKey)> = FxHashSet::default();
     for fun in &module.functions {
         let mut local_tys: HashMap<u32, Type> = HashMap::default();
         for (i, p) in fun.params.iter().enumerate() {
             local_tys.insert(p.0, fun.param_tys.get(i).cloned().unwrap_or(Type::Int));
         }
+        let mut slot_tys: HashMap<String, Type> = HashMap::default();
+        let mut int_consts: HashMap<u32, i64> = HashMap::default();
         scan_mono_block(
             &fun.body,
             &mut local_tys,
+            &mut slot_tys,
+            &mut int_consts,
             &index,
             &mut needed,
             &HashMap::default(),
@@ -239,6 +253,8 @@ fn mono_clone_ret_ty(
 fn scan_mono_block(
     block: &Block,
     local_tys: &mut HashMap<u32, Type>,
+    slot_tys: &mut HashMap<String, Type>,
+    int_consts: &mut HashMap<u32, i64>,
     index: &FunIndex<'_>,
     needed: &mut FxHashSet<(String, MonoKey)>,
     parent_funrefs: &HashMap<u32, String>,
@@ -248,8 +264,13 @@ fn scan_mono_block(
         match op {
             Op::Let { local, value, .. } => {
                 note_mono_call(value, local_tys, index, needed, &funref_of);
-                let ty = mono_value_ty(value, local_tys, index);
+                let ty = mono_value_ty(value, local_tys, slot_tys, int_consts, index);
                 local_tys.insert(local.0, ty);
+                if let Value::Int(n) = value {
+                    int_consts.insert(local.0, *n);
+                } else {
+                    int_consts.remove(&local.0);
+                }
                 match value {
                     Value::FunRef(name) => {
                         funref_of.insert(local.0, name.clone());
@@ -265,11 +286,36 @@ fn scan_mono_block(
                         funref_of.remove(&local.0);
                     }
                 }
-                walk_mono_nested_scan(value, local_tys, index, needed, &funref_of);
+                walk_mono_nested_scan(
+                    value,
+                    local_tys,
+                    slot_tys,
+                    int_consts,
+                    index,
+                    needed,
+                    &funref_of,
+                );
+            }
+            Op::Assign { name, value } => {
+                // `var xs = listOf(…)` / `xs = xs.set(…)`: loads are `Name(xs)`.
+                // Without slot types those load as ABI `Int`, so `List[Float]`
+                // call sites never form a mono key (`List(Var)` after formal
+                // restore → `type_to_mono` fails).
+                if let Some(ty) = local_tys.get(&value.0).cloned() {
+                    slot_tys.insert(name.clone(), ty);
+                }
             }
             Op::Effect { value } => {
                 note_mono_call(value, local_tys, index, needed, &funref_of);
-                walk_mono_nested_scan(value, local_tys, index, needed, &funref_of);
+                walk_mono_nested_scan(
+                    value,
+                    local_tys,
+                    slot_tys,
+                    int_consts,
+                    index,
+                    needed,
+                    &funref_of,
+                );
             }
             _ => {}
         }
@@ -279,12 +325,22 @@ fn scan_mono_block(
 fn walk_mono_nested_scan(
     value: &Value,
     local_tys: &mut HashMap<u32, Type>,
+    slot_tys: &mut HashMap<String, Type>,
+    int_consts: &mut HashMap<u32, i64>,
     index: &FunIndex<'_>,
     needed: &mut FxHashSet<(String, MonoKey)>,
     funref_of: &HashMap<u32, String>,
 ) {
     crate::for_each_nested_block(value, &mut |b| {
-        scan_mono_block(b, local_tys, index, needed, funref_of);
+        scan_mono_block(
+            b,
+            local_tys,
+            slot_tys,
+            int_consts,
+            index,
+            needed,
+            funref_of,
+        );
     });
 }
 
@@ -330,10 +386,12 @@ fn note_mono_call(
 pub(crate) fn mono_value_ty(
     value: &Value,
     local_tys: &HashMap<u32, Type>,
+    slot_tys: &HashMap<String, Type>,
+    int_consts: &HashMap<u32, i64>,
     index: &FunIndex<'_>,
 ) -> Type {
     let funs = index.funs();
-    infer_value_ty(value, local_tys, |fun, args| {
+    let mut call_ret = |fun: &str, args: &[Local]| -> Option<Type> {
         if let Some(f) = index.get(fun) {
             return Some(f.ret_ty.clone());
         }
@@ -344,12 +402,28 @@ pub(crate) fn mono_value_ty(
             }
         }
         None
-    })
+    };
+    infer_value_ty_ctx(
+        value,
+        InferValueCtx {
+            local_tys,
+            slot_tys: Some(slot_tys),
+            fun_ret_tys: None,
+            fun_param_tys: None,
+            fun_param0_identity: None,
+            funref_locals: None,
+            local_int_consts: Some(int_consts),
+            sum_max_arity: Some(index.sum_max_arity),
+        },
+        Some(&mut call_ret),
+    )
 }
 
 fn rewrite_mono_block(
     block: &mut Block,
     local_tys: &mut HashMap<u32, Type>,
+    slot_tys: &mut HashMap<String, Type>,
+    int_consts: &mut HashMap<u32, i64>,
     renames: &HashMap<(String, MonoKey), String>,
     parent_funrefs: &HashMap<u32, String>,
     index: &FunIndex<'_>,
@@ -358,9 +432,23 @@ fn rewrite_mono_block(
     for op in &mut block.ops {
         match op {
             Op::Let { local, value, .. } => {
-                rewrite_mono_value(value, local_tys, renames, &funref_of, index);
-                let ty = mono_value_ty_rewrite(value, local_tys, renames, &funref_of, index);
+                rewrite_mono_value(
+                    value,
+                    local_tys,
+                    slot_tys,
+                    int_consts,
+                    renames,
+                    &funref_of,
+                    index,
+                );
+                let ty =
+                    mono_value_ty_rewrite(value, local_tys, slot_tys, int_consts, renames, &funref_of, index);
                 local_tys.insert(local.0, ty);
+                if let Value::Int(n) = value {
+                    int_consts.insert(local.0, *n);
+                } else {
+                    int_consts.remove(&local.0);
+                }
                 match value {
                     Value::FunRef(name) => {
                         funref_of.insert(local.0, name.clone());
@@ -377,9 +465,20 @@ fn rewrite_mono_block(
                     }
                 }
             }
-            Op::Effect { value } => {
-                rewrite_mono_value(value, local_tys, renames, &funref_of, index)
+            Op::Assign { name, value } => {
+                if let Some(ty) = local_tys.get(&value.0).cloned() {
+                    slot_tys.insert(name.clone(), ty);
+                }
             }
+            Op::Effect { value } => rewrite_mono_value(
+                value,
+                local_tys,
+                slot_tys,
+                int_consts,
+                renames,
+                &funref_of,
+                index,
+            ),
             _ => {}
         }
     }
@@ -388,6 +487,8 @@ fn rewrite_mono_block(
 fn rewrite_mono_value(
     value: &mut Value,
     local_tys: &mut HashMap<u32, Type>,
+    slot_tys: &mut HashMap<String, Type>,
+    int_consts: &mut HashMap<u32, i64>,
     renames: &HashMap<(String, MonoKey), String>,
     funref_of: &HashMap<u32, String>,
     index: &FunIndex<'_>,
@@ -406,7 +507,15 @@ fn rewrite_mono_value(
         }
         _ => {
             crate::for_each_nested_block_mut(value, &mut |b| {
-                rewrite_mono_block(b, local_tys, renames, funref_of, index);
+                rewrite_mono_block(
+                    b,
+                    local_tys,
+                    slot_tys,
+                    int_consts,
+                    renames,
+                    funref_of,
+                    index,
+                );
             });
         }
     }
@@ -415,6 +524,8 @@ fn rewrite_mono_value(
 fn mono_value_ty_rewrite(
     value: &Value,
     local_tys: &HashMap<u32, Type>,
+    slot_tys: &HashMap<String, Type>,
+    int_consts: &HashMap<u32, i64>,
     renames: &HashMap<(String, MonoKey), String>,
     funref_of: &HashMap<u32, String>,
     index: &FunIndex<'_>,
@@ -441,7 +552,7 @@ fn mono_value_ty_rewrite(
             }
             Type::Int
         }
-        other => mono_value_ty(other, local_tys, index),
+        other => mono_value_ty(other, local_tys, slot_tys, int_consts, index),
     }
 }
 

@@ -36,6 +36,7 @@ pub(crate) fn list_accum(
             span,
         }),
         mutable: true,
+        ty: None,
     }
 }
 
@@ -62,6 +63,7 @@ pub(crate) fn range_accum(
             span,
         }),
         mutable: true,
+        ty: None,
     }
 }
 
@@ -73,6 +75,7 @@ pub(crate) fn with_fun_bind(f_bind: Option<(String, Expr)>, body: Expr) -> Expr 
             value: Box::new(val),
             body: Box::new(body),
             mutable: false,
+            ty: None,
         },
         None => body,
     }
@@ -80,14 +83,24 @@ pub(crate) fn with_fun_bind(f_bind: Option<(String, Expr)>, body: Expr) -> Expr 
 
 /// Unary callback: inline lambda body vs bound function call.
 pub(crate) enum UnaryCallback {
-    Inline { param: String, body: Expr },
+    Inline {
+        param: String,
+        param_ty: Option<String>,
+        body: Expr,
+    },
     Bound { f: Expr, f_name: String, x: String },
 }
 
 pub(crate) fn resolve_unary_callback(f: Expr, span: Span, prefix: &str) -> UnaryCallback {
     match f {
-        Expr::Lambda { params, body, .. } if params.len() == 1 => UnaryCallback::Inline {
+        Expr::Lambda {
+            params,
+            param_ann,
+            body,
+            ..
+        } if params.len() == 1 => UnaryCallback::Inline {
             param: params[0].clone(),
+            param_ty: param_ann.first().cloned().flatten(),
             body: *body,
         },
         f => {
@@ -102,7 +115,9 @@ pub(crate) fn resolve_unary_callback(f: Expr, span: Span, prefix: &str) -> Unary
 pub(crate) enum BinaryCallback {
     Inline {
         acc: String,
+        acc_ty: Option<String>,
         x: String,
+        x_ty: Option<String>,
         body: Expr,
     },
     Bound {
@@ -115,9 +130,16 @@ pub(crate) enum BinaryCallback {
 
 pub(crate) fn resolve_binary_callback(f: Expr, span: Span, prefix: &str) -> BinaryCallback {
     match f {
-        Expr::Lambda { params, body, .. } if params.len() == 2 => BinaryCallback::Inline {
+        Expr::Lambda {
+            params,
+            param_ann,
+            body,
+            ..
+        } if params.len() == 2 => BinaryCallback::Inline {
             acc: params[0].clone(),
+            acc_ty: param_ann.first().cloned().flatten(),
             x: params[1].clone(),
+            x_ty: param_ann.get(1).cloned().flatten(),
             body: *body,
         },
         f => {

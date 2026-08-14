@@ -1,0 +1,27 @@
+module list_get_int
+import std.io.{println}
+import std.linalg.{zeros}
+
+val nearest = { pts, n ->
+    println(pts.get(0))
+    pts.get(0) + pts.get(1)
+}
+
+val headSum = { xs, n ->
+    var s = 0.0
+    var i = 0
+    for i < n {
+        s = s + xs.get(i)
+        i = i + 1
+    }
+    s
+}
+
+val main = {
+    var xs = zeros(2)
+    xs = xs.set(0, 0.668)
+    xs = xs.set(1, 0.460)
+    println(xs.get(0))
+    println(nearest(xs, 2))
+    println(headSum(xs, 2))
+}

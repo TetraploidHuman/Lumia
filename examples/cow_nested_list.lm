@@ -1,0 +1,15 @@
+module cow_nested_list
+import std.io.{println}
+
+/// Nested List in a List must retain so outer alias does not see in-place append.
+val main = {
+    var inner = listOf(1, 2)
+    val outer = listOf(inner)
+    inner = inner.append(3)
+    // outer[0] must still be [1, 2]
+    val snap = outer.get(0)
+    println(snap.len())
+    println(snap.get(0))
+    println(snap.get(1))
+    println(inner.len())
+}

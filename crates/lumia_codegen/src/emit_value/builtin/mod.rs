@@ -79,6 +79,14 @@ impl<'ctx> Codegen<'ctx> {
                 if matches!(b, Builtin::MapSet) && !self.frame.cow_consume_unique {
                     self.list_retain_i64(obj_i)?;
                 }
+                // Retained value/elem so container alias does not leave nested COW at rc==1.
+                if matches!(b, Builtin::MapSet) {
+                    if let Some(ty) = self.frame.local_tys.get(&args[2].0) {
+                        if Self::type_needs_cow_retain(ty) {
+                            self.adt_retain_i64(b_i)?;
+                        }
+                    }
+                }
                 // Known `List` → skip polymorphic `lumia_set` dispatch.
                 let sym = if matches!(b, Builtin::MapSet)
                     && matches!(self.frame.local_tys.get(&args[0].0), Some(Type::List(_)))
@@ -232,6 +240,13 @@ impl<'ctx> Codegen<'ctx> {
         // Skipped for proven `xs = xs.append(…)` so unique RC can write in place.
         if matches!(b, Builtin::ListAppend) && !self.frame.cow_consume_unique {
             self.list_retain_i64(obj_i)?;
+        }
+        if matches!(b, Builtin::ListAppend) {
+            if let Some(ty) = self.frame.local_tys.get(&args[1].0) {
+                if Self::type_needs_cow_retain(ty) {
+                    self.adt_retain_i64(n)?;
+                }
+            }
         }
         let sym = Self::builtin_symbol(b)?;
         self.call_rt_ptr_as_i64(sym, &[obj.into(), n.into()], label)
