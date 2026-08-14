@@ -5,16 +5,16 @@ fun main() effect.io=true memo=None {
   acc := %0
   %1 = i64 1  // pure
   __i_74 := %1
-  %11 = loop ...  // effect
-  %12 = load acc  // pure
-  %13 = builtin Println(%12)  // effect
-  %14 = %0  // pure
+  %15 = loop ...  // effect
+  %16 = load acc  // pure
+  %17 = builtin Println(%16)  // effect
+  %18 = %0  // pure
   j := %0
-  %15 = %0  // pure
+  %19 = %0  // pure
   sum := %0
-  %23 = i64 1  // pure
-  %25 = loop ...  // effect
-  %26 = load sum  // pure
-  %27 = builtin Println(%26)  // effect
-  return %27
+  %27 = i64 1  // pure
+  %29 = loop ...  // effect
+  %30 = load sum  // pure
+  %31 = builtin Println(%30)  // effect
+  return %31
 }

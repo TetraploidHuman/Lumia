@@ -21,13 +21,13 @@ fun main() effect.io=true memo=None {
   %14 = builtin ListGet(%7, %13)  // pure
   %15 = builtin Println(%14)  // effect
   %16 = alloc_list[LitList](n=0)  // pure
-  __flt_acc_274 := %16
+  __flt_acc_273 := %16
   %17 = %10  // pure
-  __i_274 := %10
+  __i_273 := %10
   %22 = i64 2  // pure
   %24 = i64 1  // pure
   %32 = loop ...  // effect
-  %33 = load __flt_acc_274  // pure
+  %33 = load __flt_acc_273  // pure
   %34 = builtin ListLen(%33)  // pure
   %35 = builtin Println(%34)  // effect
   %36 = %10  // pure

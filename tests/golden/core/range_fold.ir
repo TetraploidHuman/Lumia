@@ -12,9 +12,9 @@ fun main() effect.io=true memo=None {
   %14 = %1  // pure
   acc2 := %1
   %15 = i64 1  // pure
-  __i_219 := %15
-  %25 = loop ...  // effect
-  %26 = load acc2  // pure
-  %27 = builtin Println(%26)  // effect
-  return %27
+  __i_220 := %15
+  %29 = loop ...  // effect
+  %30 = load acc2  // pure
+  %31 = builtin Println(%30)  // effect
+  return %31
 }

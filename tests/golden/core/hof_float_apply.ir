@@ -1,12 +1,12 @@
 module HofFloatApply
 
 fun apply(f, x) effect.io=false memo=None {
-  %2 = icall %0(%1)  // pure
+  %2 = icall %0(%1)  // effect
   return %2
 }
 
 fun apply$Fn_dbl_Float(f, x) effect.io=false memo=None {
-  %2 = call dbl$Float(%1)  // pure
+  %2 = call dbl$Float(%1)  // effect
   return %2
 }
 

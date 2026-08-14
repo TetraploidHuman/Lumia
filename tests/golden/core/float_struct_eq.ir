@@ -4,6 +4,10 @@ fun __lam_0(p0) effect.io=false memo=None {
   return %59
 }
 
+fun __lam_0$Float(p0) effect.io=false memo=None {
+  return %59
+}
+
 fun main() effect.io=true memo=None {
   %0 = f64 0  // pure
   %1 = alloc_list[HeapList](n=1)  // pure
@@ -52,7 +56,7 @@ fun main() effect.io=true memo=None {
   %56 = if ...  // pure
   %57 = builtin Println(%56)  // effect
   %58 = alloc_list[HeapList](n=1)  // pure
-  %60 = funref __lam_0  // pure
+  %60 = funref __lam_0$Float  // pure
   %61 = builtin ListParMap(%58, %60)  // pure
   %62 = %61 == %61  // pure
   %65 = if ...  // pure

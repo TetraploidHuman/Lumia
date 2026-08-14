@@ -17,12 +17,12 @@ fun __lam_0(p0) effect.io=false memo=None {
   return %1
 }
 
-fun __lam_0$Box(p0) effect.io=false memo=None {
+fun __lam_0$Box_Int(p0) effect.io=false memo=None {
   %1 = call __ToInt_Box_toInt(%0)  // pure
   return %1
 }
 
-fun __lam_0$Point(p0) effect.io=false memo=None {
+fun __lam_0$Point_Int_Int(p0) effect.io=false memo=None {
   %1 = call __ToInt_Point_toInt(%0)  // pure
   return %1
 }
@@ -32,11 +32,11 @@ fun main() effect.io=true memo=None {
   %3 = i64 7  // pure
   %4 = i64 0  // pure
   %5 = alloc_adt(Point, tag=0, n=2)  // pure
-  %6 = call __ToInt_Point_toInt(%5)  // pure
+  %6 = call __ToInt_Point_toInt(%5)  // effect
   %7 = builtin Println(%6)  // effect
   %8 = i64 4  // pure
   %9 = alloc_adt(Box, tag=0, n=1)  // pure
-  %10 = call __ToInt_Box_toInt(%9)  // pure
+  %10 = call __ToInt_Box_toInt(%9)  // effect
   %11 = builtin Println(%10)  // effect
   return %11
 }
