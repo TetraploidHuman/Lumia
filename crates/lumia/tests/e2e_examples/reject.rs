@@ -363,3 +363,9 @@ e2e_reject!(
     "examples/bad_eq_list_fun.lm",
     "function"
 );
+
+e2e_reject!(
+    e2e_bad_list_rest_nested_rejected,
+    "examples/bad_list_rest_nested.lm",
+    "non-exhaustive"
+);

@@ -1,9 +1,10 @@
 use super::fun_index::FunIndex;
-use super::key::{args_mono_key, materialize_mono_param_tys, MonoKey, MonoKind};
+use super::key::{args_mono_key, materialize_mono_param_tys, types_mono_key, MonoKey, MonoKind};
 use super::ret_ty::{block_result_fixed_ty, param_ty_map, refine_mono_container_ret};
 use super::traits::directize_block;
 use crate::ir::{Block, CoreFun, CoreModule, Local, Op, Value};
 use crate::value_ty::{infer_value_ty_ctx, InferValueCtx};
+use lumia_hir::Builtin;
 use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet};
 
@@ -356,18 +357,73 @@ fn note_mono_call(
     needed: &mut FxHashSet<(String, MonoKey)>,
     funref_of: &HashMap<u32, String>,
 ) {
-    let Value::Call { fun, args } = value else {
-        return;
-    };
-    if args.is_empty() || callee_is_mono_clone(fun, index) {
-        return;
+    match value {
+        Value::Call { fun, args } => {
+            if args.is_empty() || callee_is_mono_clone(fun, index) {
+                return;
+            }
+            let Some(f) = index.get(fun) else {
+                return;
+            };
+            let Some(key) =
+                args_mono_key(args, local_tys, funref_of, Some(f.param_tys.as_slice()))
+            else {
+                return;
+            };
+            note_needed_clone(fun, key, f, index, needed);
+        }
+        // Parallel list HOFs pass FunRef callbacks as i64 ABI workers. Without
+        // specializing `__lam_*` to Float, codegen emits Int `+` on IEEE bits.
+        Value::Builtin {
+            name: Builtin::ListParMap,
+            args,
+        } if args.len() == 2 => {
+            let Some(cb) = funref_of.get(&args[1].0) else {
+                return;
+            };
+            let Some(Type::List(elem)) = local_tys.get(&args[0].0) else {
+                return;
+            };
+            let Some(key) = types_mono_key(&[elem.as_ref().clone()]) else {
+                return;
+            };
+            let Some(f) = index.get(cb) else {
+                return;
+            };
+            note_needed_clone(cb, key, f, index, needed);
+        }
+        Value::Builtin {
+            name: Builtin::ListParFold,
+            args,
+        } if args.len() == 3 => {
+            let Some(cb) = funref_of.get(&args[2].0) else {
+                return;
+            };
+            let Some(Type::List(elem)) = local_tys.get(&args[0].0) else {
+                return;
+            };
+            let Some(init_ty) = local_tys.get(&args[1].0) else {
+                return;
+            };
+            let Some(key) = types_mono_key(&[init_ty.clone(), elem.as_ref().clone()]) else {
+                return;
+            };
+            let Some(f) = index.get(cb) else {
+                return;
+            };
+            note_needed_clone(cb, key, f, index, needed);
+        }
+        _ => {}
     }
-    let Some(f) = index.get(fun) else {
-        return;
-    };
-    let Some(key) = args_mono_key(args, local_tys, funref_of, Some(f.param_tys.as_slice())) else {
-        return;
-    };
+}
+
+fn note_needed_clone(
+    fun: &str,
+    key: MonoKey,
+    f: &CoreFun,
+    index: &FunIndex<'_>,
+    needed: &mut FxHashSet<(String, MonoKey)>,
+) {
     if !key.worth_cloning() {
         return;
     }
@@ -377,10 +433,11 @@ fn note_mono_call(
     let funs = index.funs();
     let param_tys = materialize_mono_param_tys(&key, &f.param_tys, funs);
     let ret = key.ret_ty(funs);
-    if f.param_tys == param_tys && f.ret_ty == ret && key.funref_param_binds(&f.params).is_empty() {
+    if f.param_tys == param_tys && f.ret_ty == ret && key.funref_param_binds(&f.params).is_empty()
+    {
         return;
     }
-    needed.insert((fun.clone(), key));
+    needed.insert((fun.to_string(), key));
 }
 
 pub(crate) fn mono_value_ty(
@@ -429,9 +486,12 @@ fn rewrite_mono_block(
     index: &FunIndex<'_>,
 ) {
     let mut funref_of = parent_funrefs.clone();
-    for op in &mut block.ops {
+    for i in 0..block.ops.len() {
+        let (before, rest) = block.ops.split_at_mut(i);
+        let op = &mut rest[0];
         match op {
             Op::Let { local, value, .. } => {
+                let patch = par_hof_funref_patch(value, local_tys, renames, &funref_of);
                 rewrite_mono_value(
                     value,
                     local_tys,
@@ -441,8 +501,19 @@ fn rewrite_mono_block(
                     &funref_of,
                     index,
                 );
-                let ty =
-                    mono_value_ty_rewrite(value, local_tys, slot_tys, int_consts, renames, &funref_of, index);
+                if let Some((cb_local, new_name)) = patch {
+                    patch_funref_let(before, cb_local, &new_name);
+                    funref_of.insert(cb_local, new_name);
+                }
+                let ty = mono_value_ty_rewrite(
+                    value,
+                    local_tys,
+                    slot_tys,
+                    int_consts,
+                    renames,
+                    &funref_of,
+                    index,
+                );
                 local_tys.insert(local.0, ty);
                 if let Value::Int(n) = value {
                     int_consts.insert(local.0, *n);
@@ -470,16 +541,72 @@ fn rewrite_mono_block(
                     slot_tys.insert(name.clone(), ty);
                 }
             }
-            Op::Effect { value } => rewrite_mono_value(
-                value,
-                local_tys,
-                slot_tys,
-                int_consts,
-                renames,
-                &funref_of,
-                index,
-            ),
+            Op::Effect { value } => {
+                let patch = par_hof_funref_patch(value, local_tys, renames, &funref_of);
+                rewrite_mono_value(
+                    value,
+                    local_tys,
+                    slot_tys,
+                    int_consts,
+                    renames,
+                    &funref_of,
+                    index,
+                );
+                if let Some((cb_local, new_name)) = patch {
+                    patch_funref_let(before, cb_local, &new_name);
+                    funref_of.insert(cb_local, new_name);
+                }
+            }
             _ => {}
+        }
+    }
+}
+
+fn par_hof_funref_patch(
+    value: &Value,
+    local_tys: &HashMap<u32, Type>,
+    renames: &HashMap<(String, MonoKey), String>,
+    funref_of: &HashMap<u32, String>,
+) -> Option<(u32, String)> {
+    match value {
+        Value::Builtin {
+            name: Builtin::ListParMap,
+            args,
+        } if args.len() == 2 => rewrite_par_hof_funref(
+            args[1].0,
+            &list_elem_ty(local_tys, args[0].0),
+            renames,
+            funref_of,
+        ),
+        Value::Builtin {
+            name: Builtin::ListParFold,
+            args,
+        } if args.len() == 3 => {
+            let mut tys = Vec::new();
+            if let Some(t) = local_tys.get(&args[1].0) {
+                tys.push(t.clone());
+            }
+            if let Some(Type::List(e)) = local_tys.get(&args[0].0) {
+                tys.push(e.as_ref().clone());
+            }
+            rewrite_par_hof_funref(args[2].0, &tys, renames, funref_of)
+        }
+        _ => None,
+    }
+}
+
+fn patch_funref_let(ops: &mut [Op], local: u32, new_name: &str) {
+    for op in ops {
+        if let Op::Let {
+            local: l,
+            value: Value::FunRef(n),
+            ..
+        } = op
+        {
+            if l.0 == local {
+                *n = new_name.to_string();
+                return;
+            }
         }
     }
 }
@@ -519,6 +646,25 @@ fn rewrite_mono_value(
             });
         }
     }
+}
+
+fn list_elem_ty(local_tys: &HashMap<u32, Type>, list: u32) -> Vec<Type> {
+    match local_tys.get(&list) {
+        Some(Type::List(e)) => vec![e.as_ref().clone()],
+        _ => vec![],
+    }
+}
+
+fn rewrite_par_hof_funref(
+    cb_local: u32,
+    cb_param_tys: &[Type],
+    renames: &HashMap<(String, MonoKey), String>,
+    funref_of: &HashMap<u32, String>,
+) -> Option<(u32, String)> {
+    let cb = funref_of.get(&cb_local)?;
+    let key = types_mono_key(cb_param_tys)?;
+    let new = renames.get(&(cb.clone(), key))?;
+    Some((cb_local, new.clone()))
 }
 
 fn mono_value_ty_rewrite(

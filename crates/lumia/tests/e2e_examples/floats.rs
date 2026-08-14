@@ -4,6 +4,14 @@ e2e_ok!(
     "Vec2(1.5, 2.25)"
 );
 
+e2e_ok!(
+    e2e_float_list_map,
+    "examples/float_list_map.lm",
+    "3",
+    "true",
+    "true"
+);
+
 #[test]
 fn e2e_float_ops() {
     run_example("examples/float_ops.lm", &["3.75", "6", "1", "-1.5", "4"]);

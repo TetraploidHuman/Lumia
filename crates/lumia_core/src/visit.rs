@@ -346,6 +346,56 @@ pub fn has_early_return(block: &Block) -> bool {
     found
 }
 
+/// Eager IO in `block` (not deferred nested-lambda bodies).
+///
+/// Used to mark lifted `__lam_*` [`crate::ir::CoreFun::effect`] so opt passes that
+/// trust `effect.is_pure()` (inline / CSE / const-specialize) do not treat IO
+/// thunks as pure. `io_callees` are known effectful top-level names.
+pub fn block_has_io(block: &Block, io_callees: &HashSet<String>) -> bool {
+    for op in &block.ops {
+        match op {
+            Op::Effect { .. } => return true,
+            Op::Let {
+                pure_region: false,
+                ..
+            } => return true,
+            Op::Let { value, .. } => {
+                if value_has_eager_io(value, io_callees) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+fn value_has_eager_io(value: &Value, io_callees: &HashSet<String>) -> bool {
+    match value {
+        Value::Call { fun, .. } if io_callees.contains(fun) => true,
+        Value::Builtin { name, .. } if name.is_io() => true,
+        // Indirect call may invoke an IO Fun; opt must not treat it as pure.
+        Value::IndirectCall { .. } => true,
+        Value::If {
+            then_block,
+            else_block,
+            ..
+        } => block_has_io(then_block, io_callees) || block_has_io(else_block, io_callees),
+        Value::Loop {
+            header,
+            body,
+            latch,
+        } => {
+            block_has_io(header, io_callees)
+                || block_has_io(body, io_callees)
+                || block_has_io(latch, io_callees)
+        }
+        // Constructing a nested IO thunk is pure; that body is analyzed when lifted.
+        Value::Lambda { .. } => false,
+        _ => false,
+    }
+}
+
 /// Whether `block` or a nested region has `Op::Assign` or a `Value::Name` load.
 pub fn has_assign_or_name(block: &Block) -> bool {
     for op in &block.ops {

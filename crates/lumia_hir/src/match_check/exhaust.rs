@@ -270,7 +270,11 @@ pub(crate) fn check_pats_cover(
                     "non-exhaustive match on List (in {where_}): add `[]` / `[..rest]` arms or `_`"
                 )));
             }
-            // Nested element columns (fixed prefix positions).
+            // Nested element columns (fixed prefix + rest wildcards).
+            // Arms that do not constrain a slot (shorter fixed `[]`, or rest
+            // covering longer lengths) contribute `_` so we still check nested
+            // coverage — skipping when `col.len() != list_pats.len()` missed
+            // `[None, ..r]` vs `Some(_)` after a `[]` arm.
             let max_fixed = list_pats
                 .iter()
                 .filter_map(|p| match p {
@@ -280,21 +284,32 @@ pub(crate) fn check_pats_cover(
                 .max()
                 .unwrap_or(0);
             for slot in 0..max_fixed {
-                let col: Vec<&Pattern> = list_pats
-                    .iter()
-                    .filter_map(|p| match p {
-                        Pattern::List { elems, .. } => elems.get(slot),
-                        _ => None,
-                    })
-                    .collect();
-                if col.len() == list_pats.len() {
-                    let nested = if path.is_empty() {
-                        format!("[{slot}]")
-                    } else {
-                        format!("{path}[{slot}]")
-                    };
-                    check_pats_cover(&col, ctors, adts, products, &nested)?;
+                let mut owned: Vec<Pattern> = Vec::new();
+                let mut from_arm: Vec<&Pattern> = Vec::new();
+                for p in &list_pats {
+                    match p {
+                        Pattern::List { elems, rest, span } => {
+                            if let Some(e) = elems.get(slot) {
+                                from_arm.push(e);
+                            } else if rest.is_some() {
+                                owned.push(Pattern::Wildcard(*span));
+                            }
+                            // else: fixed shorter list — does not match len > slot
+                        }
+                        _ => {}
+                    }
                 }
+                let mut col: Vec<&Pattern> = from_arm;
+                col.extend(owned.iter());
+                if col.is_empty() {
+                    continue;
+                }
+                let nested = if path.is_empty() {
+                    format!("[{slot}]")
+                } else {
+                    format!("{path}[{slot}]")
+                };
+                check_pats_cover(&col, ctors, adts, products, &nested)?;
             }
         } else if saw_int {
             return Err(LowerError::message_only(format!(

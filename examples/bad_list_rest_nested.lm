@@ -1,0 +1,14 @@
+module BadListRestNested
+
+type Option { Some(value) None }
+
+val f(xs) = {
+    xs match {
+        [] -> 0
+        [None, ..r] -> 1
+    }
+}
+
+val main = {
+    f(listOf(Some(1)))
+}

@@ -11,6 +11,8 @@ pub(super) struct CoreLowerCtx {
     pub(super) toplevel_vals: HashSet<String>,
     /// Short trait-method names left unresolved until post-mono resolve.
     pub(super) trait_method_names: HashSet<String>,
+    /// Top-level functions whose Fun type carries IO (named Call purity).
+    pub(super) io_funs: HashSet<String>,
 }
 
 impl CoreLowerCtx {
@@ -18,6 +20,7 @@ impl CoreLowerCtx {
         toplevel_funs: HashSet<String>,
         toplevel_vals: HashSet<String>,
         trait_method_names: HashSet<String>,
+        io_funs: HashSet<String>,
     ) -> Self {
         Self {
             next: 0,
@@ -26,6 +29,7 @@ impl CoreLowerCtx {
             toplevel_funs,
             toplevel_vals,
             trait_method_names,
+            io_funs,
         }
     }
 

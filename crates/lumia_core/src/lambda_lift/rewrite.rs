@@ -8,7 +8,7 @@ use super::heap::block_result_may_heap_with_params;
 use crate::ir::{
     max_local_in_module, rewrite_block_locals, Block, CoreFun, CoreModule, Local, Op, Value,
 };
-use crate::visit::for_each_op_value_mut;
+use crate::visit::{block_has_io, for_each_op_value_mut};
 use lumia_ty::{Effect, Type};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
@@ -37,12 +37,26 @@ fn lambda_param_ret_tys(params: &[Local], body: &Block) -> (Vec<Type>, Type) {
     (param_tys, ret_ty)
 }
 
+fn lifted_effect(body: &Block, io_funs: &HashSet<String>) -> Effect {
+    if block_has_io(body, io_funs) {
+        Effect::io()
+    } else {
+        Effect::pure()
+    }
+}
+
 /// Lift nested `Value::Lambda` to top-level `__lam_N` functions.
 /// Captures (free locals / outer `var` loads) become a heap closure env.
 pub(crate) fn lift_lambdas(module: &mut CoreModule) {
     let mut extras = Vec::new();
     let mut id = 0u32;
     let mut next_local = max_local_in_module(module).saturating_add(1);
+    let mut io_funs: HashSet<String> = module
+        .functions
+        .iter()
+        .filter(|f| f.effect.has_io())
+        .map(|f| f.name.clone())
+        .collect();
     for fun in &mut module.functions {
         let mut float_locals = compute_float_locals_in_block(&fun.body);
         for (i, ty) in fun.param_tys.iter().enumerate() {
@@ -58,6 +72,7 @@ pub(crate) fn lift_lambdas(module: &mut CoreModule) {
             &mut id,
             &mut next_local,
             &mut float_locals,
+            &mut io_funs,
         );
     }
     module.functions.append(&mut extras);
@@ -69,6 +84,7 @@ fn lift_block(
     id: &mut u32,
     next_local: &mut u32,
     float_locals: &mut HashSet<u32>,
+    io_funs: &mut HashSet<String>,
 ) {
     let mut new_ops = Vec::with_capacity(block.ops.len());
     for mut op in std::mem::take(&mut block.ops) {
@@ -85,6 +101,7 @@ fn lift_block(
                     &mut prelude,
                     *pure_region,
                     float_locals,
+                    io_funs,
                 );
                 new_ops.append(&mut prelude);
             }
@@ -98,6 +115,7 @@ fn lift_block(
                     &mut prelude,
                     true,
                     float_locals,
+                    io_funs,
                 );
                 new_ops.append(&mut prelude);
             }
@@ -116,10 +134,11 @@ fn lift_value(
     prelude: &mut Vec<Op>,
     pure_region: bool,
     float_locals: &mut HashSet<u32>,
+    io_funs: &mut HashSet<String>,
 ) {
     match value {
         Value::Lambda { params, body } => {
-            lift_block(body, extras, id, next_local, float_locals);
+            lift_block(body, extras, id, next_local, float_locals, io_funs);
             let (free_locals, free_names) = analyze_captures(body, params);
             let name = format!("__lam_{id}");
             *id += 1;
@@ -146,6 +165,10 @@ fn lift_value(
             if captures.is_empty() {
                 let param_names: Vec<String> = (0..params.len()).map(|i| format!("p{i}")).collect();
                 let (param_tys, ret_ty) = lambda_param_ret_tys(params, body);
+                let effect = lifted_effect(body, io_funs);
+                if effect.has_io() {
+                    io_funs.insert(name.clone());
+                }
                 extras.push(CoreFun {
                     name: name.clone(),
                     params: params.clone(),
@@ -153,7 +176,7 @@ fn lift_value(
                     param_tys,
                     body: *body.clone(),
                     ret_ty,
-                    effect: Effect::pure(),
+                    effect,
                     is_main: false,
                     memo: None,
                     external: None,
@@ -210,6 +233,10 @@ fn lift_value(
             param_names.extend((0..params.len()).map(|i| format!("p{i}")));
 
             let (user_param_tys, ret_ty) = lambda_param_ret_tys(params, &new_body);
+            let effect = lifted_effect(&new_body, io_funs);
+            if effect.has_io() {
+                io_funs.insert(name.clone());
+            }
             extras.push(CoreFun {
                 name: name.clone(),
                 params: fun_params,
@@ -221,7 +248,7 @@ fn lift_value(
                 },
                 body: new_body,
                 ret_ty,
-                effect: Effect::pure(),
+                effect,
                 is_main: false,
                 memo: None,
                 external: None,
@@ -239,17 +266,17 @@ fn lift_value(
             else_block,
             ..
         } => {
-            lift_block(then_block, extras, id, next_local, float_locals);
-            lift_block(else_block, extras, id, next_local, float_locals);
+            lift_block(then_block, extras, id, next_local, float_locals, io_funs);
+            lift_block(else_block, extras, id, next_local, float_locals, io_funs);
         }
         Value::Loop {
             header,
             body,
             latch,
         } => {
-            lift_block(header, extras, id, next_local, float_locals);
-            lift_block(body, extras, id, next_local, float_locals);
-            lift_block(latch, extras, id, next_local, float_locals);
+            lift_block(header, extras, id, next_local, float_locals, io_funs);
+            lift_block(body, extras, id, next_local, float_locals, io_funs);
+            lift_block(latch, extras, id, next_local, float_locals, io_funs);
         }
         _ => {}
     }

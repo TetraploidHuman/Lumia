@@ -326,8 +326,11 @@ impl<'a> Parser<'a> {
     pub(super) fn parse_postfix(&mut self) -> Result<Expr, ParseError> {
         let mut expr = self.parse_primary()?;
         loop {
-            if self.at(&TokenKind::LParen) {
-                // call
+            if self.at(&TokenKind::LParen)
+                && !self.newline_between(expr.span().end, self.cur.span.start)
+            {
+                // call — same-line only so `x\n(2, y) ->` is the next match arm,
+                // not a call `x(2, y)`.
                 self.bump();
                 let mut args = vec![];
                 if !self.at(&TokenKind::RParen) {

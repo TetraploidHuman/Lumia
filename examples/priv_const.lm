@@ -1,0 +1,5 @@
+module PrivConst
+
+/// Private module-level constant used by a public export (sibling visibility).
+priv val secret = 41
+val exposed = secret + 1

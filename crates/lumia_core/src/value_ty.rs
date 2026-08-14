@@ -429,7 +429,6 @@ fn builtin_value_ty(name: Builtin, args: &[Local], ctx: InferValueCtx<'_>) -> Ty
         Builtin::ListSlice
         | Builtin::ListTake
         | Builtin::ListReverse
-        | Builtin::ListAppend
         | Builtin::ListConcat
         | Builtin::ListParMap
         | Builtin::ListSort
@@ -437,6 +436,22 @@ fn builtin_value_ty(name: Builtin, args: &[Local], ctx: InferValueCtx<'_>) -> Ty
             .first()
             .and_then(|a| local_tys.get(&a.0).cloned())
             .unwrap_or(Type::List(Box::new(Type::Int))),
+        Builtin::ListAppend => {
+            let list_ty = args
+                .first()
+                .and_then(|a| local_tys.get(&a.0).cloned())
+                .unwrap_or(Type::List(Box::new(Type::Int)));
+            // Empty `listOf()` starts as List[Int]; appending a Float must
+            // upgrade so later ListGet / println / == see Float ABI (and
+            // `ensure_list_f64` already retags the runtime object).
+            match (
+                &list_ty,
+                args.get(1).and_then(|a| local_tys.get(&a.0)),
+            ) {
+                (Type::List(_), Some(Type::Float)) => Type::List(Box::new(Type::Float)),
+                _ => list_ty,
+            }
+        }
         Builtin::Elems => match args.first().and_then(|a| local_tys.get(&a.0)) {
             Some(Type::List(e) | Type::Set(e)) => Type::List(e.clone()),
             Some(Type::Map(k, _)) => Type::List(k.clone()),

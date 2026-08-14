@@ -15,7 +15,7 @@ pub(crate) use traits::{
 mod tests {
     use super::key::{MonoKey, MonoKind};
     use crate::compile_source_to_core;
-    use crate::ir::{Block, CoreFun, Local};
+    use crate::ir::{Block, CoreFun, Local, Op, Value};
     use lumia_ty::{Effect, Type};
     #[test]
     fn args_mono_key_prefers_formal_adt_over_abi_int() {
@@ -548,5 +548,50 @@ val main = {
             }
             other => panic!("expected Roll Adt ret_ty, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn specialize_list_par_map_float_callback() {
+        let core = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+val main = {
+    val xs = listOf(1.5, 2.5).map({ x -> x + x })
+    println(xs.get(0))
+}
+"#,
+        )
+        .expect("core");
+        let float_lam = core.functions.iter().find(|f| {
+            f.name.starts_with("__lam_")
+                && f.name.contains("$Float")
+                && f.param_tys.first().is_some_and(|t| matches!(t, Type::Float))
+        });
+        assert!(
+            float_lam.is_some(),
+            "expected __lam_*$Float with Float param, funs={:?}",
+            core.functions
+                .iter()
+                .map(|f| (&f.name, &f.param_tys, &f.ret_ty))
+                .collect::<Vec<_>>()
+        );
+        // Call site FunRef must point at the Float clone (not the Int ABI stub).
+        let main = core.functions.iter().find(|f| f.name == "main").unwrap();
+        let mut saw = false;
+        crate::for_each_block_dfs(&main.body, &mut |b| {
+            for op in &b.ops {
+                if let Op::Let {
+                    value: Value::FunRef(n),
+                    ..
+                } = op
+                {
+                    if n.contains("__lam_") && n.contains("$Float") {
+                        saw = true;
+                    }
+                }
+            }
+        });
+        assert!(saw, "main should FunRef the Float mono clone");
     }
 }

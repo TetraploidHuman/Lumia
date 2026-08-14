@@ -57,24 +57,37 @@ pub(super) fn lower_call_like(
                 HirExpr::Var(n, _) => Some(n.as_str()),
                 _ => None,
             };
-            let value = match fun_name {
-                Some("listOf") => Value::AllocList {
-                    elems: arg_locals,
-                    repr: ListRepr::HeapList,
-                },
-                Some("setOf") => Value::AllocSet {
-                    elems: arg_locals,
-                    repr: SetRepr::HeapSet,
-                },
-                Some("mapOf") => Value::AllocMap {
-                    flat_pairs: arg_locals,
-                    repr: MapRepr::HashOrdered,
-                },
+            let (value, call_pure) = match fun_name {
+                Some("listOf") => (
+                    Value::AllocList {
+                        elems: arg_locals,
+                        repr: ListRepr::HeapList,
+                    },
+                    pure_region,
+                ),
+                Some("setOf") => (
+                    Value::AllocSet {
+                        elems: arg_locals,
+                        repr: SetRepr::HeapSet,
+                    },
+                    pure_region,
+                ),
+                Some("mapOf") => (
+                    Value::AllocMap {
+                        flat_pairs: arg_locals,
+                        repr: MapRepr::HashOrdered,
+                    },
+                    pure_region,
+                ),
                 Some(n) if ctx.toplevel_funs.contains(n) || ctx.trait_method_names.contains(n) => {
-                    Value::Call {
-                        fun: n.to_string(),
-                        args: arg_locals,
-                    }
+                    let io = ctx.io_funs.contains(n);
+                    (
+                        Value::Call {
+                            fun: n.to_string(),
+                            args: arg_locals,
+                        },
+                        pure_region && !io,
+                    )
                 }
                 _ => {
                     // Local / expression callee → indirect call (first-class fn).
@@ -87,16 +100,20 @@ pub(super) fn lower_call_like(
                         });
                         l
                     });
-                    Value::IndirectCall {
-                        callee: cal,
-                        args: arg_locals,
-                    }
+                    (
+                        Value::IndirectCall {
+                            callee: cal,
+                            args: arg_locals,
+                        },
+                        // May invoke an IO Fun; region marker must not claim purity.
+                        false,
+                    )
                 }
             };
             ops.push(Op::Let {
                 local: dest,
                 value,
-                pure_region,
+                pure_region: call_pure,
             });
             Some(dest)
         }

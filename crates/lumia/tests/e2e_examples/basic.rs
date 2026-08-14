@@ -172,6 +172,8 @@ e2e_ok!(
 
 e2e_ok!(e2e_use_priv, "examples/use_priv.lm", "42", "42");
 
+e2e_ok!(e2e_priv_sibling_val, "examples/priv_sibling_val.lm", "42");
+
 e2e_ok!(e2e_use_pkg, "examples/use_pkg.lm", "42", "42");
 
 e2e_ok!(e2e_list_hof, "examples/list_hof.lm", "5", "2", "3", "24");

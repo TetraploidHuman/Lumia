@@ -78,6 +78,7 @@ pub(super) fn lower_bind(
                 toplevel_funs: ctx.toplevel_funs.clone(),
                 toplevel_vals: ctx.toplevel_vals.clone(),
                 trait_method_names: ctx.trait_method_names.clone(),
+                io_funs: ctx.io_funs.clone(),
             };
             let mut pls = vec![];
             for p in params {

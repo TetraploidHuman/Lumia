@@ -46,6 +46,13 @@ pub fn lower_hir_with_schemes(
         .keys()
         .map(|(_, m)| m.clone())
         .collect();
+    let io_funs: HashSet<String> = fun_types
+        .iter()
+        .filter_map(|(n, ty)| match ty {
+            Type::Fun(_, _, e) if e.has_io() => Some(n.clone()),
+            _ => None,
+        })
+        .collect();
     let mut functions = vec![];
     for item in &module.items {
         match item {
@@ -54,6 +61,7 @@ pub fn lower_hir_with_schemes(
                     toplevel_funs.clone(),
                     toplevel_vals.clone(),
                     trait_method_names.clone(),
+                    io_funs.clone(),
                 );
                 let mut params = vec![];
                 for p in &f.params {
@@ -113,6 +121,7 @@ pub fn lower_hir_with_schemes(
                     toplevel_funs.clone(),
                     toplevel_vals.clone(),
                     trait_method_names.clone(),
+                    io_funs.clone(),
                 );
                 let (body, _) = lower_expr_block(&mut ctx, body);
                 // Getters are nullary; poly lives on the value's Fun scheme / lifted body.

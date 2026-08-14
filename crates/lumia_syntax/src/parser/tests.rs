@@ -98,6 +98,35 @@ n match {
 }
 
 #[test]
+fn parse_match_tuple_arms_newline_paren() {
+    // Bare arm body then newline `(…)` must start the next arm, not a call.
+    let src = r#"
+module M
+val f = { t ->
+t match {
+    (1, x) -> x
+    (2, y) -> y
+    _ -> 0
+}
+}
+"#;
+    let m = parse_module(src).expect("parse");
+    let Item::Val(v) = &m.items[0] else {
+        panic!("expected val");
+    };
+    let Expr::Lambda { body, .. } = &v.body else {
+        panic!("expected lambda");
+    };
+    let Expr::Block { tail, .. } = body.as_ref() else {
+        panic!("expected block body");
+    };
+    let Expr::Match { arms, .. } = tail.as_deref().expect("match tail") else {
+        panic!("expected match");
+    };
+    assert_eq!(arms.len(), 3);
+}
+
+#[test]
 fn parse_map_set_literal_sugars() {
     let m = parse_module(
         r#"

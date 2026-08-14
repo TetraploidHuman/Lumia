@@ -96,6 +96,15 @@ fn type_is_heap_structure(t: &Type) -> bool {
     )
 }
 
+/// Build a [`MonoKey`] from concrete types (e.g. ListParMap callback ABI).
+pub(crate) fn types_mono_key(tys: &[Type]) -> Option<MonoKey> {
+    let mut kinds = Vec::with_capacity(tys.len());
+    for t in tys {
+        kinds.push(type_to_mono(t)?);
+    }
+    Some(MonoKey(kinds))
+}
+
 fn type_to_mono(t: &Type) -> Option<MonoKind> {
     match t {
         Type::Int => Some(MonoKind::Int),

@@ -78,44 +78,42 @@ pub(super) fn resolve_import_file(
 }
 
 pub(super) fn filter_items(items: Vec<Item>, names: &ImportNames) -> Result<Vec<Item>> {
-    let (privs, pubs): (Vec<_>, Vec<_>) = items.into_iter().partition(item_is_priv);
+    // Preserve source order: partitioning pubs-then-privs broke sequential
+    // binding of `priv val` constants used by later public vals (Fun names
+    // are pre-bound in ty, so that case still worked).
     match names {
-        ImportNames::All => {
-            let mut out = pubs;
-            out.extend(privs);
-            Ok(out)
-        }
+        ImportNames::All => Ok(items),
         ImportNames::Single(n) => {
-            if privs
+            if items
                 .iter()
-                .any(|it| item_name(it) == Some(n.name.as_str()))
+                .any(|it| item_is_priv(it) && item_name(it) == Some(n.name.as_str()))
             {
                 bail!("cannot import private `{}`", n.name);
             }
-            if !pubs.iter().any(|it| item_name(it) == Some(n.name.as_str())) {
+            if !items.iter().any(|it| {
+                !item_is_priv(it) && item_name(it) == Some(n.name.as_str())
+            }) {
                 bail!("module has no public `{}`", n.name);
             }
             // Keep whole module for private callees of public APIs; visibility
             // is enforced separately via NameVisibility.
-            let mut out = pubs;
-            out.extend(privs);
-            Ok(apply_import_aliases(out, names))
+            Ok(apply_import_aliases(items, names))
         }
         ImportNames::Selective(ns) => {
             for n in ns {
-                if privs
+                if items
                     .iter()
-                    .any(|it| item_name(it) == Some(n.name.as_str()))
+                    .any(|it| item_is_priv(it) && item_name(it) == Some(n.name.as_str()))
                 {
                     bail!("cannot import private `{}`", n.name);
                 }
-                if !pubs.iter().any(|it| item_name(it) == Some(n.name.as_str())) {
+                if !items.iter().any(|it| {
+                    !item_is_priv(it) && item_name(it) == Some(n.name.as_str())
+                }) {
                     bail!("module has no public `{}`", n.name);
                 }
             }
-            let mut out = pubs;
-            out.extend(privs);
-            Ok(apply_import_aliases(out, names))
+            Ok(apply_import_aliases(items, names))
         }
     }
 }
