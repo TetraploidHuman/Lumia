@@ -34,6 +34,10 @@ pub const TYPE_CHAR: u32 = 7;
 pub const TYPE_CLOSURE: u32 = 8;
 /// Virtual Int range list: payload `[start:i64][end_exclusive:i64]` (DESIGN §3.5 Iota).
 pub const TYPE_LIST_IOTA: u32 = 9;
+/// Task handle (effect concurrency; payload opaque to GC — sidecar in `lumia_rt`).
+pub const TYPE_TASK: u32 = 10;
+/// Channel handle (effect concurrency; buffer rooted via runtime sidecar).
+pub const TYPE_CHANNEL: u32 = 11;
 
 /// Mask / flags for packed container `type_id`s.
 pub const TID_BASE_MASK: u32 = 0xFF;
@@ -223,6 +227,8 @@ mod tests {
             TYPE_CHAR,
             TYPE_CLOSURE,
             TYPE_LIST_IOTA,
+            TYPE_TASK,
+            TYPE_CHANNEL,
         ];
         let mut sorted = ids;
         sorted.sort_unstable();
@@ -230,7 +236,7 @@ mod tests {
             assert_ne!(w[0], w[1], "duplicate type base");
         }
         assert_eq!(sorted[0], 1);
-        assert_eq!(*sorted.last().unwrap(), TYPE_LIST_IOTA);
+        assert_eq!(*sorted.last().unwrap(), TYPE_CHANNEL);
         assert_eq!(TID_F_KEY & TID_BASE_MASK, 0);
         assert_eq!(TID_F_VAL & TID_BASE_MASK, 0);
         assert_eq!(TID_ASSOC & TID_BASE_MASK, 0);

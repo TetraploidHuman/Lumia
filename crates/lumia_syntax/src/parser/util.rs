@@ -50,6 +50,15 @@ pub(super) fn expr_uses_ident(expr: &Expr, name: &str) -> bool {
             expr_uses_ident(base, name) || fields.iter().any(|(_, e)| expr_uses_ident(e, name))
         }
         Expr::TupleLit { elems, .. } => elems.iter().any(|e| expr_uses_ident(e, name)),
+        Expr::Scope {
+            scheduler, body, ..
+        } => {
+            scheduler
+                .as_ref()
+                .is_some_and(|s| expr_uses_ident(s, name))
+                || expr_uses_ident(body, name)
+        }
+        Expr::Spawn { body, .. } => expr_uses_ident(body, name),
         Expr::Interp { parts, .. } => parts.iter().any(|p| match p {
             crate::InterpPart::Lit(_) => false,
             crate::InterpPart::Expr(e) => expr_uses_ident(e, name),

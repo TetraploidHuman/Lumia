@@ -194,7 +194,8 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumia_rt` 内�
 - Dense float（热路径）：`scripts/bench_cn_hot.sh`（naive 循环 vs `std.linalg`；checksum 对齐 + 时间/RSS）。
 - Dense float（整步）：`scripts/bench_cn_step.sh`（sensory fill/scale/add + gate mul + decay + PC/Hebbian；扩展 SR 面）。
 - EFE action scores：`scripts/bench_cn_efe.sh`（imagine+G(a) naive vs fused `lumia_efe_action_scores`）。
-- **聚合回归**：`scripts/bench_all.sh` 依次跑 cpu / memo / cn_hot / cn_step / cn_efe（改 dense-float 等优化时应用此入口，避免单项过关、旧核回归）。
+- **聚合回归**：`scripts/bench_all.sh` 依次跑 cpu / memo / cn_* / **task**（改调度/GC 时应用此入口）。
+- Task/Channel：`scripts/bench_task.sh`（`bench_task.lm` checksum + WORKERS=0/1/2 时间/RSS + RT `task::stress`）。
 - **峰值 RSS**：`scripts/bench_measure.sh` 经小型 C 父进程 `wait4`（`scripts/peak_rss.c`）取样；勿用大 RSS 的 Python `subprocess` fork——COW 会把解释器常驻内存算进子进程 `ru_maxrss`。Release 链接加 `--gc-sections`（macOS：`-dead_strip`）丢掉未引用的 `lumia_rt`/Rust-std 目标文件，降低基线 RSS。
 - **纪律（DESIGN §7.1.1）**：分析能证明 → 特化；不能证明 → **默认稳定路径**：
   - `List` → `HeapList` / `COWList`
@@ -211,7 +212,7 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumia_rt` 内�
 | **已完成骨架**       | parse 子集 → 推断 + 效应 → Core → LLVM → 链 `lumia_rt` → `main` + `println` + `Int`；`listOf`→`AllocList`；CSE + ReprSelect 默认路径                       |
 | **已完成下一步（部分）**  | …；**sortBy / assert+行号**；**定位诊断（多文件）**；**Map Overlay**；**WordCount**；**lumia fmt**；…                                                          |
 | **已完成（相对原「下一里程碑」）** | Trait / instance + 运行时字典；非逃逸小对象栈分配（Lit* / LitAdt + 晋升）；`std.option` / `std.result` / `std.string` / `std.io` 源文件正文；逃逸分析 / 融合 / TCO SCC / 自动并行 / 透明 Memo；local `Map.get` PE (§7.5.1-A) + Release 二次 `const_fold`；**Int/Bool/Char call-site specialization**（`SpecializeConstPass`）+ 字面 `ListTake`/`ListSlice`/`ListReverse`/`AdtTag`/`Map.set`/`Set.insert` PE |
-| **仍待** | 更强并发（多线程共享堆 / 真并行 mark）；`--mm=arc`（分代 + remembered set + **增量并发 full mark** 已落地） |
+| **仍待** | 池细化（工作窃取策略、取消栈真回收、`--mm=arc`）；分代 + remembered set + **增量并发 full mark** 已落地 |
 | **工具链已落地** | **自动并行**（默认 `ListParMap` + 不安全回退；`--no-parallel`）；**包管理**（`Lumia.toml` / `lumia pkg`）；**LSP**（`lumia lsp`）；**FFI**（`foreign "C" fn`）；`priv` 跨文件可见性；`effect { }` 块；Map/Set `finish` 晋升；`lumia fmt` / `lumia doc` |
 
 
@@ -273,8 +274,52 @@ cargo run -p lumia -- build examples/memo_local.lm -o /tmp/memo_local && /tmp/me
 # Dense-float CN hot path + full perf gate (time + peak RSS):
 #   ./scripts/bench_cn_hot.sh
 #   ./scripts/bench_all.sh
+# Task/Channel (WORKERS=0/1/2 + RT stress):
+#   ./scripts/bench_task.sh
 cargo run -p lumia -- build examples/mapset.lm -o /tmp/ms && /tmp/ms
 ```
+
+### 7.6 Task / Channel 运行时（效应并发）
+
+表面与语义见 DESIGN §11.2。实现要点：
+
+| 项 | v1 状态 |
+| --- | --- |
+| 调度 | OS 池 + **`ready_home`**；`kind_pending` / `sched_busy` 覆盖 home 队列（`park_until`/`drain` 不致假死锁）；异 home resume → 重新 `enqueue`；resume 入口清本线程 `abi_handoff` |
+| 堆 | 增量 mark 波前空再 shade 根；sweep 时 `TYPE_TASK`/`TYPE_CHANNEL` 回调清 handle / 收孤儿 channel |
+| Scope / 取消 | 进程 `scopes` + park；`reclaim_home`；`force_reset` 仅 RT suspend |
+| Task/Channel GC | result unpin；spawn/`channel_new` 写 `abi_handoff`；`try_reap_task`；handle 写回前校验仍为堆指针 |
+| e2e | `task_*` + `task_pingpong`（req/resp） / `task_join_tree` / `task_stress_wide`；coop/multi-worker；`bench_task.lm` checksum |
+| 压测 | RT `task::stress::*`；`./scripts/bench_task.sh`（WORKERS=0/1/2 时间+RSS；并入 `bench_all`） |
+
+**真线程池**：§7.7-D 已落地。取消已启动纤程：在 RT `suspend` 点用 corosensei `force_reset` 回收栈（不变式：yield 路径无 Rust `Drop` 局部）。
+
+### 7.7 进程共享堆 → 真 `Scheduler` 池（分期）
+
+TLS 分代 GC 与 `ListParMap` worker 互斥；在 TLS 上硬开 OS 池会跨线程 UAF。目标路径：
+
+| 阶段 | 内容 | 状态 |
+| --- | --- | --- |
+| A | **盘点** TLS（下表） | **done** |
+| B | **进程堆骨架**：`Heap` + `Mutex` + 可重入 `with_heap`；分配/barrier/collect 走进程堆；`gc_inhibit` 在 `Heap`（进程级）；`ROOTS`/`CALL_STACK`/`PAR_WORKER` 仍 TLS；**单 mutator**（`RUST_TEST_THREADS=1` for `lumia_rt`） | **done** |
+| C | **多 mutator 根**：`mutator` 注册表 + `root_push/pop` 与堆锁同步；GC `for_each_mutator_root`；memo TLS 同样注册供 mark；单测 `gc_sees_other_thread_roots`。cargo 测例仍共享一堆 → 保持 `RUST_TEST_THREADS=1` | **done** |
+| D | **真池**：进程共享就绪队列 + `worker`/`io` OS 线程；延迟创建协程（钉在首次 resume 线程）；`LUMIA_SCHED_WORKERS`/`IO`（默认 1，`0`=纯协作） | **done** |
+
+**阶段 A — TLS 分类**
+
+| 类 | 位置 | 共享堆迁移 |
+| --- | --- | --- |
+| 堆元数据 | `heap::Heap`：`young`/`old`/sets/`perm`/bytes/limits/mark 状态 | **阶段 B：进程 Mutex** |
+| 根 | `mutator::ROOTS` + 进程注册表；task `parked_roots` / `host_roots`（进程 `SchedCore`） | **阶段 C/D：GC 枚举全部 mutator + snapshot 调度根** |
+| GC 控制 | 已并入 `Heap`（`mark_*` / `full_marking` / `gc_inhibit`） | 阶段 B 完成 |
+| 调用栈 | `CALL_STACK` | 每线程（trap 追踪） |
+| Memo | `memo` TLS + 进程注册表；lookup/store/`Drop` 持 `with_heap`；store 在 `full_marking` 时 shade | 阶段 C |
+| 空列表单例 | `Heap.empty_list` + `perm` | 进程级 |
+| 调度 | `task/sched_core`：READY/FIBERS/TASKS/CHANNELS/**scopes** 进程 Mutex；TLS 仅 `ScopeId` 栈（park 随纤程）；OS 池见阶段 D | **阶段 D** |
+| 纤程当前 | `CURRENT_FIBER` / `YIELDER` / `PAR_WORKER` | **保持 TLS** |
+| 陷阱钩子 | `BEFORE_TRAP` | 每线程或进程一次 |
+
+备选（不优先）：每 worker **隔离堆**，跨线程只传标量/深拷贝——适合纯 map，不适合共享 `channel`/堆对象 Task。
 
 ---
 

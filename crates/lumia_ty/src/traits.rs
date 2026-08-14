@@ -24,7 +24,7 @@ impl Infer {
         match self.prune(t.clone()) {
             Type::Fun(_, _, _) => false,
             Type::Var(_) => true,
-            Type::List(e) | Type::Set(e) => self.is_eq(&e),
+            Type::List(e) | Type::Set(e) | Type::Task(e) | Type::Channel(e) => self.is_eq(&e),
             Type::Map(k, v) => {
                 let ek = self.is_eq(&k);
                 let ev = self.is_eq(&v);
@@ -53,7 +53,9 @@ impl Infer {
     pub(crate) fn type_mentions_fun(t: &Type) -> bool {
         match t {
             Type::Fun(_, _, _) => true,
-            Type::List(e) | Type::Set(e) => Self::type_mentions_fun(e),
+            Type::List(e) | Type::Set(e) | Type::Task(e) | Type::Channel(e) => {
+                Self::type_mentions_fun(e)
+            }
             Type::Map(k, v) => Self::type_mentions_fun(k) || Self::type_mentions_fun(v),
             Type::Adt { params, .. } => params.iter().any(Self::type_mentions_fun),
             Type::Tuple(ts) | Type::TuplePrefix(ts) => ts.iter().any(Self::type_mentions_fun),

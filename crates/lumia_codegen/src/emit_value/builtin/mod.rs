@@ -3,6 +3,7 @@
 mod io;
 mod list;
 mod show;
+mod task;
 
 use super::super::Codegen;
 use anyhow::{Context as AnyhowContext, Result};
@@ -25,6 +26,7 @@ impl<'ctx> Codegen<'ctx> {
         match name.family() {
             BuiltinFamily::Io => self.emit_io_builtin(name, args),
             BuiltinFamily::List => self.emit_list_builtin(name, args),
+            BuiltinFamily::Task => self.emit_task_builtin(name, args),
             BuiltinFamily::MapSet | BuiltinFamily::String | BuiltinFamily::Adt => unreachable!(
                 "builtin `{}` marked Custom but family has no hand-written emit",
                 name.display_name()

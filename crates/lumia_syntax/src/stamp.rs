@@ -174,6 +174,21 @@ fn stamp_expr(e: &mut Expr, file: u32) {
                 stamp_expr(el, file);
             }
         }
+        Expr::Scope {
+            scheduler,
+            body,
+            span,
+        } => {
+            *span = span.with_file(file);
+            if let Some(s) = scheduler {
+                stamp_expr(s, file);
+            }
+            stamp_expr(body, file);
+        }
+        Expr::Spawn { body, span } => {
+            *span = span.with_file(file);
+            stamp_expr(body, file);
+        }
     }
 }
 

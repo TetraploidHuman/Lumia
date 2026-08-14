@@ -524,6 +524,35 @@ impl<'a> Parser<'a> {
                 self.bump();
                 self.parse_lambda_or_block()
             }
+            // `spawn { … }` — task body (DESIGN §11.2).
+            TokenKind::Spawn => {
+                let start = self.bump().span;
+                let body = self.parse_lambda_or_block()?;
+                let span = start.merge(body.span());
+                Ok(Expr::Spawn {
+                    body: Box::new(body),
+                    span,
+                })
+            }
+            // `scope { … }` / `scope(sched) { … }` — structured concurrency (DESIGN §11.2).
+            TokenKind::Scope => {
+                let start = self.bump().span;
+                let scheduler = if self.at(&TokenKind::LParen) {
+                    self.bump();
+                    let e = self.parse_expr()?;
+                    self.expect(TokenKind::RParen)?;
+                    Some(Box::new(e))
+                } else {
+                    None
+                };
+                let body = self.parse_lambda_or_block()?;
+                let span = start.merge(body.span());
+                Ok(Expr::Scope {
+                    scheduler,
+                    body: Box::new(body),
+                    span,
+                })
+            }
             TokenKind::Trait | TokenKind::Instance | TokenKind::Requires => Err(self.error(
                 "expected expression (`trait` / `instance` / `requires` are item-level only)",
             )),

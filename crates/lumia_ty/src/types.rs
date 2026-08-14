@@ -47,6 +47,10 @@ pub enum Type {
     Map(Box<Type>, Box<Type>),
     /// Set[T]
     Set(Box<Type>),
+    /// Task[T] — fiber handle (Io concurrency).
+    Task(Box<Type>),
+    /// Channel[T] — bounded message channel.
+    Channel(Box<Type>),
     /// Nominal sum type, e.g. Option[T] → Adt("Option", [T]).
     Adt {
         name: String,

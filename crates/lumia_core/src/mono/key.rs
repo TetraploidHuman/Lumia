@@ -91,6 +91,8 @@ fn type_is_heap_structure(t: &Type) -> bool {
             | Type::List(_)
             | Type::Map(_, _)
             | Type::Set(_)
+            | Type::Task(_)
+            | Type::Channel(_)
             | Type::Tuple(_)
             | Type::TuplePrefix(_)
     )

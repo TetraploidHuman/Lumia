@@ -148,5 +148,49 @@
       "}"
     ],
     "description": "Hello-style main module"
+  },
+  "scope": {
+    "prefix": "scope",
+    "body": [
+      "scope {",
+      "    $0",
+      "}"
+    ],
+    "description": "Structured concurrency scope"
+  },
+  "scope-scheduler": {
+    "prefix": "scopeSched",
+    "body": [
+      "scope(Scheduler.${1|worker,io|}) {",
+      "    $0",
+      "}"
+    ],
+    "description": "Scope with Scheduler.worker / .io kind"
+  },
+  "spawn": {
+    "prefix": "spawn",
+    "body": [
+      "val ${1:t} = spawn {",
+      "    $0",
+      "}"
+    ],
+    "description": "Spawn a Task"
+  },
+  "joinOpt": {
+    "prefix": "joinOpt",
+    "body": [
+      "${1:t}.joinOpt() match {",
+      "    None -> $2",
+      "    Some(${3:v}) -> $0",
+      "}"
+    ],
+    "description": "Soft join (None if cancelled)"
+  },
+  "cancelScope": {
+    "prefix": "cancelScope",
+    "body": [
+      "cancelScope()"
+    ],
+    "description": "Cancel current scope children / siblings"
   }
 }

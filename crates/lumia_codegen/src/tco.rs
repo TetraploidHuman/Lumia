@@ -42,6 +42,8 @@ fn tco_eligible_ty(t: &Type) -> bool {
         Type::List(_)
         | Type::Set(_)
         | Type::Map(_, _)
+        | Type::Task(_)
+        | Type::Channel(_)
         | Type::Adt { .. }
         | Type::Tuple(_)
         | Type::TuplePrefix(_) => true,

@@ -1,12 +1,9 @@
 //! List length/get, promote, COW append, and empty singleton.
 
-use std::cell::Cell;
-use std::ptr;
-
 use super::tid::{heap_list_tid, list_tid};
 use crate::common::{
     header_from_payload, is_heap_payload, list_rc_is_unique, tid_base, trap_abort, GcInhibitGuard,
-    PERM_OBJECTS, RC_SHARED, TYPE_LIST, TYPE_LIST_IOTA,
+    TYPE_LIST, TYPE_LIST_IOTA,
 };
 use crate::gc::{list_payload_bytes, lumia_alloc};
 
@@ -213,7 +210,7 @@ pub extern "C" fn lumia_list_append(list: *mut u8, elem: i64) -> *mut u8 {
         *dst = n1;
         if !list.is_null() {
             let src = list as *const i64;
-            ptr::copy_nonoverlapping(src.add(1), dst.add(1), n as usize);
+            std::ptr::copy_nonoverlapping(src.add(1), dst.add(1), n as usize);
         }
         *dst.add(n1 as usize) = elem;
         dest
@@ -254,23 +251,35 @@ pub extern "C" fn lumia_adt_release(obj: *mut u8) {
 /// Shared empty `List` (`LitList` / `listOf()`). Immortal — survives GC.
 #[no_mangle]
 pub extern "C" fn lumia_list_empty() -> *mut u8 {
-    thread_local! {
-        static EMPTY: Cell<*mut u8> = const { Cell::new(ptr::null_mut()) };
-    }
-    EMPTY.with(|c| {
-        let cur = c.get();
-        if !cur.is_null() {
-            return cur;
+    use crate::common::{header_from_payload, header_layout, trap_abort, RC_SHARED};
+    use crate::gc::finish_alloc;
+    use crate::heap::with_heap;
+    use std::alloc::alloc;
+
+    with_heap(|h| {
+        if !h.empty_list.is_null() {
+            return h.empty_list;
         }
-        let dest = lumia_alloc(8, TYPE_LIST);
+        // Alloc + publish under one heap lock so GC cannot miss the singleton.
+        let dest = unsafe {
+            let layout = header_layout(8);
+            let mem = alloc(layout);
+            if mem.is_null() {
+                trap_abort("lumia: out of memory");
+            }
+            finish_alloc(mem, 8, TYPE_LIST)
+        };
         unsafe {
             *(dest as *mut i64) = 0;
-            // Immortal shared empty list — never COW in-place.
             (*header_from_payload(dest)).rc = RC_SHARED;
             (*header_from_payload(dest))._pad = 0;
         }
-        PERM_OBJECTS.with(|p| p.borrow_mut().push(dest));
-        c.set(dest);
-        dest
+        if h.empty_list.is_null() {
+            h.perm.push(dest);
+            h.empty_list = dest;
+            dest
+        } else {
+            h.empty_list
+        }
     })
 }

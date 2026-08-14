@@ -198,7 +198,7 @@ fn type_is_open(t: &Type) -> bool {
     match t {
         Type::Var(_) => true,
         Type::Fun(ps, r, _) => ps.iter().any(type_is_open) || type_is_open(r),
-        Type::List(e) | Type::Set(e) => type_is_open(e),
+        Type::List(e) | Type::Set(e) | Type::Task(e) | Type::Channel(e) => type_is_open(e),
         Type::Map(k, v) => type_is_open(k) || type_is_open(v),
         Type::Tuple(ts) | Type::TuplePrefix(ts) | Type::Adt { params: ts, .. } => {
             ts.iter().any(type_is_open)

@@ -7,6 +7,7 @@ mod io;
 mod list;
 mod map_set;
 mod string;
+mod task;
 
 #[cfg(test)]
 mod tests;
@@ -16,6 +17,7 @@ pub(crate) use io::info_io;
 pub(crate) use list::info_list;
 pub(crate) use map_set::info_map_set;
 pub(crate) use string::info_string;
+pub(crate) use task::info_task;
 
 /// Default effect for a builtin (actual call effect also unions argument effects).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,6 +147,8 @@ impl Builtin {
             StrTrim | StrSplit | StrSubstring | StrToLower | StrToUpper | StrStartsWith
             | StrEndsWith => info_string(self),
             AdtTag | AdtField => info_adt(self),
+            ChannelNew | ChannelSend | ChannelRecv | ChannelRecvOpt | ChannelClose | TaskJoin
+            | TaskJoinOpt | TaskSpawn | ScopeEnter | ScopeLeave | ScopeCancel => info_task(self),
         }
     }
 
@@ -216,5 +220,16 @@ impl Builtin {
         Builtin::ListJoin,
         Builtin::AdtTag,
         Builtin::AdtField,
+        Builtin::ChannelNew,
+        Builtin::ChannelSend,
+        Builtin::ChannelRecv,
+        Builtin::ChannelRecvOpt,
+        Builtin::ChannelClose,
+        Builtin::TaskJoin,
+        Builtin::TaskJoinOpt,
+        Builtin::TaskSpawn,
+        Builtin::ScopeEnter,
+        Builtin::ScopeLeave,
+        Builtin::ScopeCancel,
     ];
 }

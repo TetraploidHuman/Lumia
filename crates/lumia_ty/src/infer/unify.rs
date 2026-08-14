@@ -28,7 +28,9 @@ impl Infer {
                 }
                 self.collect_ty_vars(r, acc);
             }
-            Type::List(t) | Type::Set(t) => self.collect_ty_vars(t, acc),
+            Type::List(t) | Type::Set(t) | Type::Task(t) | Type::Channel(t) => {
+                self.collect_ty_vars(t, acc)
+            }
             Type::Map(k, v) => {
                 self.collect_ty_vars(k, acc);
                 self.collect_ty_vars(v, acc);
@@ -176,6 +178,10 @@ impl Infer {
             }
             Type::List(t) => Type::List(Box::new(self.apply_scheme_subst(t, ty_map, eff_map))),
             Type::Set(t) => Type::Set(Box::new(self.apply_scheme_subst(t, ty_map, eff_map))),
+            Type::Task(t) => Type::Task(Box::new(self.apply_scheme_subst(t, ty_map, eff_map))),
+            Type::Channel(t) => {
+                Type::Channel(Box::new(self.apply_scheme_subst(t, ty_map, eff_map)))
+            }
             Type::Map(k, v) => Type::Map(
                 Box::new(self.apply_scheme_subst(k, ty_map, eff_map)),
                 Box::new(self.apply_scheme_subst(v, ty_map, eff_map)),
@@ -225,6 +231,8 @@ impl Infer {
             Type::List(t) => Type::List(Box::new(self.prune(*t))),
             Type::Map(k, v) => Type::Map(Box::new(self.prune(*k)), Box::new(self.prune(*v))),
             Type::Set(t) => Type::Set(Box::new(self.prune(*t))),
+            Type::Task(t) => Type::Task(Box::new(self.prune(*t))),
+            Type::Channel(t) => Type::Channel(Box::new(self.prune(*t))),
             Type::Adt { name, params } => Type::Adt {
                 name,
                 params: params.into_iter().map(|p| self.prune(p)).collect(),
@@ -272,6 +280,8 @@ impl Infer {
                 Type::Map(Box::new(self.zonk_type(*k)), Box::new(self.zonk_type(*v)))
             }
             Type::Set(t) => Type::Set(Box::new(self.zonk_type(*t))),
+            Type::Task(t) => Type::Task(Box::new(self.zonk_type(*t))),
+            Type::Channel(t) => Type::Channel(Box::new(self.zonk_type(*t))),
             Type::Adt { name, params } => Type::Adt {
                 name,
                 params: params.into_iter().map(|p| self.zonk_type(p)).collect(),
@@ -363,6 +373,12 @@ impl Infer {
                 Ok(Type::List(Box::new(self.join_types(*a, *b, span)?)))
             }
             (Type::Set(a), Type::Set(b)) => Ok(Type::Set(Box::new(self.join_types(*a, *b, span)?))),
+            (Type::Task(a), Type::Task(b)) => {
+                Ok(Type::Task(Box::new(self.join_types(*a, *b, span)?)))
+            }
+            (Type::Channel(a), Type::Channel(b)) => {
+                Ok(Type::Channel(Box::new(self.join_types(*a, *b, span)?)))
+            }
             (Type::Map(ak, av), Type::Map(bk, bv)) => Ok(Type::Map(
                 Box::new(self.join_types(*ak, *bk, span)?),
                 Box::new(self.join_types(*av, *bv, span)?),
@@ -465,6 +481,8 @@ impl Infer {
             | (Type::Unit, Type::Unit) => Ok(()),
             (Type::List(a), Type::List(b)) => self.unify(*a, *b),
             (Type::Set(a), Type::Set(b)) => self.unify(*a, *b),
+            (Type::Task(a), Type::Task(b)) => self.unify(*a, *b),
+            (Type::Channel(a), Type::Channel(b)) => self.unify(*a, *b),
             (Type::Map(ak, av), Type::Map(bk, bv)) => {
                 self.unify(*ak, *bk)?;
                 self.unify(*av, *bv)
@@ -551,8 +569,7 @@ pub(crate) fn occurs(v: u32, ty: &Type) -> bool {
     match ty {
         Type::Var(u) => *u == v,
         Type::Fun(ps, r, _) => ps.iter().any(|p| occurs(v, p)) || occurs(v, r),
-        Type::List(t) => occurs(v, t),
-        Type::Set(t) => occurs(v, t),
+        Type::List(t) | Type::Set(t) | Type::Task(t) | Type::Channel(t) => occurs(v, t),
         Type::Map(k, t) => occurs(v, k) || occurs(v, t),
         Type::Adt { params, .. } => params.iter().any(|p| occurs(v, p)),
         Type::Tuple(ts) | Type::TuplePrefix(ts) => ts.iter().any(|p| occurs(v, p)),

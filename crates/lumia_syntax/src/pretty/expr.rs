@@ -214,6 +214,22 @@ pub(crate) fn format_expr(out: &mut String, e: &Expr, indent: usize) {
             }
             out.push_str(" }");
         }
+        Expr::Scope {
+            scheduler, body, ..
+        } => {
+            out.push_str("scope");
+            if let Some(s) = scheduler {
+                out.push('(');
+                format_expr(out, s, indent);
+                out.push(')');
+            }
+            out.push(' ');
+            format_expr(out, body, indent);
+        }
+        Expr::Spawn { body, .. } => {
+            out.push_str("spawn ");
+            format_expr(out, body, indent);
+        }
     }
 }
 

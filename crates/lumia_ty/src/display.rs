@@ -6,7 +6,7 @@ use rustc_hash::FxHashMap as HashMap;
 fn collect_vars(ty: &Type, out: &mut Vec<u32>) {
     match ty {
         Type::Var(v) => out.push(*v),
-        Type::List(t) | Type::Set(t) => collect_vars(t, out),
+        Type::List(t) | Type::Set(t) | Type::Task(t) | Type::Channel(t) => collect_vars(t, out),
         Type::Map(k, v) => {
             collect_vars(k, out);
             collect_vars(v, out);
@@ -38,6 +38,8 @@ pub fn subst_num_vars(ty: &Type, num_vars: &[u32]) -> Type {
         Type::Var(v) => Type::Var(*v),
         Type::List(t) => Type::List(Box::new(subst_num_vars(t, num_vars))),
         Type::Set(t) => Type::Set(Box::new(subst_num_vars(t, num_vars))),
+        Type::Task(t) => Type::Task(Box::new(subst_num_vars(t, num_vars))),
+        Type::Channel(t) => Type::Channel(Box::new(subst_num_vars(t, num_vars))),
         Type::Map(k, v) => Type::Map(
             Box::new(subst_num_vars(k, num_vars)),
             Box::new(subst_num_vars(v, num_vars)),
@@ -91,6 +93,8 @@ pub fn pretty_type_with(ty: &Type, names: &HashMap<u32, String>) -> String {
         Type::Unit => "Unit".into(),
         Type::List(t) => format!("List[{}]", pretty_type_with(t, names)),
         Type::Set(t) => format!("Set[{}]", pretty_type_with(t, names)),
+        Type::Task(t) => format!("Task[{}]", pretty_type_with(t, names)),
+        Type::Channel(t) => format!("Channel[{}]", pretty_type_with(t, names)),
         Type::Map(k, v) => format!(
             "Map[{}, {}]",
             pretty_type_with(k, names),

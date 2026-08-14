@@ -21,6 +21,8 @@ mod cn_kernels;
 mod collatz;
 mod common;
 mod dense_f64;
+mod heap;
+mod mutator;
 mod dict;
 mod dispatch;
 mod efe;
@@ -37,15 +39,16 @@ mod number_theory;
 mod primes;
 mod show;
 mod string_io;
+mod task;
 
 pub use adt_show::lumia_adt_register_show;
 pub use common::{
     tid_base, MarkSweep, MmBackend, ObjectHeader, MEMO_IDX_CAP, MEMO_IDX_MAX_FUNS,
     MEMO_IDX_TABLE_BYTES, MEMO_PROCESS_BYTE_CAP, MEMO_TF_MAX_ARGS, MEMO_TF_MAX_FUNS, MEMO_TF_SLOTS,
-    TYPE_ADT, TYPE_BYTES, TYPE_CHAR, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_F64, TYPE_LIST_IOTA,
-    TYPE_MAP, TYPE_MAP_ASSOC, TYPE_MAP_ASSOC_F64, TYPE_MAP_ASSOC_F64V, TYPE_MAP_ASSOC_VF64,
-    TYPE_MAP_F64, TYPE_MAP_F64V, TYPE_MAP_VF64, TYPE_SET, TYPE_SET_ASSOC, TYPE_SET_F64,
-    TYPE_STRING,
+    TYPE_ADT, TYPE_BYTES, TYPE_CHAR, TYPE_CHANNEL, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_F64,
+    TYPE_LIST_IOTA, TYPE_MAP, TYPE_MAP_ASSOC, TYPE_MAP_ASSOC_F64, TYPE_MAP_ASSOC_F64V,
+    TYPE_MAP_ASSOC_VF64, TYPE_MAP_F64, TYPE_MAP_F64V, TYPE_MAP_VF64, TYPE_SET, TYPE_SET_ASSOC,
+    TYPE_SET_F64, TYPE_STRING, TYPE_TASK,
 };
 
 pub use gc::{lumia_alloc, lumia_gc_collect, lumia_root_pop, lumia_root_push, lumia_write_barrier};
@@ -85,6 +88,12 @@ pub use number_theory::{
 pub use primes::lumia_count_primes;
 pub use show::*;
 pub use string_io::*;
+pub use task::{
+    lumia_abi_handoff_set, lumia_channel_close, lumia_channel_new, lumia_channel_recv,
+    lumia_channel_recv_opt, lumia_channel_send, lumia_scheduler_drain, lumia_scheduler_kind,
+    lumia_scope_cancel, lumia_scope_enter, lumia_scope_leave, lumia_task_join, lumia_task_join_opt,
+    lumia_task_spawn, lumia_task_spawn_nullary, SCHEDULER_IO, SCHEDULER_WORKER,
+};
 
 /// Push a Lumia frame name (nul-terminated) for trap backtraces.
 #[no_mangle]

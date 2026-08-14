@@ -337,6 +337,15 @@ fn collect_expr(
                 collect_expr(a, fexpr, src, params, out);
             }
         }
+        Expr::Scope {
+            scheduler, body, ..
+        } => {
+            if let Some(s) = scheduler {
+                collect_expr(a, s, src, params, out);
+            }
+            collect_expr(a, body, src, params, out);
+        }
+        Expr::Spawn { body, .. } => collect_expr(a, body, src, params, out),
         Expr::Int(..) | Expr::Float(..) | Expr::Bool(..) | Expr::String(..) | Expr::Char(..) => {}
     }
 }

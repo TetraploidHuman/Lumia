@@ -30,6 +30,8 @@ mod tests {
         assert_eq!(Builtin::Elems.family(), BuiltinFamily::List);
         assert_eq!(Builtin::ListLen.family(), BuiltinFamily::List);
         assert_eq!(Builtin::Show.family(), BuiltinFamily::Io);
+        assert_eq!(Builtin::ChannelNew.family(), BuiltinFamily::Task);
+        assert_eq!(Builtin::TaskJoin.family(), BuiltinFamily::Task);
     }
 
     #[test]

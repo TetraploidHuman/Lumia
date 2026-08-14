@@ -4,7 +4,14 @@ use super::core::{list_len_of, lumia_list_empty};
 use super::tid::list_tid;
 use crate::common::{list_elem_is_float, trap_abort, GcInhibitGuard, PAR_WORKER, TYPE_LIST_IOTA};
 use crate::gc::{list_payload_bytes, lumia_alloc};
+use crate::task::task_runtime_active;
 use lumia_abi::list_type_id;
+
+fn assert_par_allowed() {
+    if task_runtime_active() {
+        trap_abort("lumia: parallel map/fold while task runtime active");
+    }
+}
 
 /// Parallel map over List[scalar] with a C ABI `fn(i64) -> i64`.
 /// `result_tid` is a list type_id (codegen: result element sort).
@@ -19,6 +26,7 @@ pub extern "C" fn lumia_list_par_map(
     f: Option<extern "C" fn(i64) -> i64>,
     result_tid: u32,
 ) -> *mut u8 {
+    assert_par_allowed();
     let Some(f) = f else {
         trap_abort("lumia: list_par_map null function");
     };
@@ -119,6 +127,7 @@ pub extern "C" fn lumia_list_par_fold(
     init: i64,
     f: Option<extern "C" fn(i64, i64) -> i64>,
 ) -> i64 {
+    assert_par_allowed();
     let Some(f) = f else {
         trap_abort("lumia: list_par_fold null function");
     };

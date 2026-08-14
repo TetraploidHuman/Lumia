@@ -240,6 +240,8 @@ fn mono_clone_ret_ty(
             | Type::List(_)
             | Type::Map(_, _)
             | Type::Set(_)
+            | Type::Task(_)
+            | Type::Channel(_)
             | Type::String
             | Type::Bool => fun.ret_ty.clone(),
             _ => inferred.clone(),
@@ -248,6 +250,8 @@ fn mono_clone_ret_ty(
         | Type::List(_)
         | Type::Map(_, _)
         | Type::Set(_)
+        | Type::Task(_)
+        | Type::Channel(_)
         | Type::Tuple(_)
         | Type::TuplePrefix(_) => refine_mono_container_ret(&fun.ret_ty, inferred),
         _ => inferred.clone(),
@@ -268,6 +272,8 @@ fn call_site_mono_ret(fun: &CoreFun, inferred: &Type) -> Type {
             | Type::List(_)
             | Type::Map(_, _)
             | Type::Set(_)
+            | Type::Task(_)
+            | Type::Channel(_)
             | Type::String
             | Type::Bool => fun.ret_ty.clone(),
             _ => inferred.clone(),
@@ -276,6 +282,8 @@ fn call_site_mono_ret(fun: &CoreFun, inferred: &Type) -> Type {
         | Type::List(_)
         | Type::Map(_, _)
         | Type::Set(_)
+        | Type::Task(_)
+        | Type::Channel(_)
         | Type::Tuple(_)
         | Type::TuplePrefix(_) => refine_mono_container_ret(&fun.ret_ty, inferred),
         _ => inferred.clone(),

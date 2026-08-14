@@ -1,6 +1,16 @@
 e2e_reject!(e2e_bad_alt_int_rejected, "examples/bad_alt_int.lm", "alt");
 
 e2e_reject!(
+    e2e_bad_spawn_in_pure_rejected,
+    "examples/bad_spawn_in_pure.lm",
+    "pure"
+);
+e2e_reject!(
+    e2e_bad_spawn_capture_var_rejected,
+    "examples/bad_spawn_capture_var.lm",
+    "mutable"
+);
+e2e_reject!(
     e2e_bad_ascription_rejected,
     "examples/bad_ascription.lm",
     "mismatch"

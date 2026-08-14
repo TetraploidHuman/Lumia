@@ -30,7 +30,7 @@ pub(crate) fn refine_mono_container_ret(orig: &Type, inferred: &Type) -> Type {
                         }
                     }
                 }
-                Type::List(_) | Type::Map(_, _) | Type::Set(_) => {
+                Type::List(_) | Type::Map(_, _) | Type::Set(_) | Type::Task(_) | Type::Channel(_) => {
                     if let Some(p) = ps.first_mut() {
                         if matches!(p, Type::Var(_)) {
                             *p = inferred.clone();
@@ -59,6 +59,24 @@ pub(crate) fn refine_mono_container_ret(orig: &Type, inferred: &Type) -> Type {
                 if matches!(e.as_ref(), Type::Var(_)) =>
             {
                 Type::Set(Box::new(inferred.clone()))
+            }
+            _ => orig.clone(),
+        },
+        Type::Task(e) => match inferred {
+            Type::Task(_) => inferred.clone(),
+            Type::Float | Type::Bool | Type::Int | Type::String | Type::Char
+                if matches!(e.as_ref(), Type::Var(_)) =>
+            {
+                Type::Task(Box::new(inferred.clone()))
+            }
+            _ => orig.clone(),
+        },
+        Type::Channel(e) => match inferred {
+            Type::Channel(_) => inferred.clone(),
+            Type::Float | Type::Bool | Type::Int | Type::String | Type::Char
+                if matches!(e.as_ref(), Type::Var(_)) =>
+            {
+                Type::Channel(Box::new(inferred.clone()))
             }
             _ => orig.clone(),
         },
@@ -361,6 +379,8 @@ fn is_ref_ty(t: &Type) -> bool {
         Type::List(_)
             | Type::Map(_, _)
             | Type::Set(_)
+            | Type::Task(_)
+            | Type::Channel(_)
             | Type::Adt { .. }
             | Type::String
             | Type::Fun(_, _, _)

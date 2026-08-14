@@ -181,6 +181,11 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         args: &[RtTy::Ptr],
     },
     RtDecl {
+        name: "lumia_abi_handoff_set",
+        ret: RtTy::Void,
+        args: &[RtTy::I64],
+    },
+    RtDecl {
         name: "lumia_root_push",
         ret: RtTy::Void,
         args: &[RtTy::Ptr],
@@ -858,6 +863,77 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         name: "lumia_memo_idx_store",
         ret: RtTy::Void,
         args: &[RtTy::I64, RtTy::I64, RtTy::I64],
+    },
+    // Task / Channel concurrency (lumia_rt::task).
+    RtDecl {
+        name: "lumia_channel_new",
+        ret: RtTy::Ptr,
+        args: &[RtTy::I64],
+    },
+    RtDecl {
+        name: "lumia_channel_send",
+        ret: RtTy::Void,
+        args: &[RtTy::Ptr, RtTy::I64],
+    },
+    RtDecl {
+        name: "lumia_channel_recv",
+        ret: RtTy::I64,
+        args: &[RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_channel_recv_opt",
+        ret: RtTy::I64,
+        args: &[RtTy::Ptr, RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_channel_close",
+        ret: RtTy::Void,
+        args: &[RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_task_spawn",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr, RtTy::I64],
+    },
+    RtDecl {
+        name: "lumia_task_spawn_nullary",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_task_join",
+        ret: RtTy::I64,
+        args: &[RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_task_join_opt",
+        ret: RtTy::I64,
+        args: &[RtTy::Ptr, RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_scope_enter",
+        ret: RtTy::Void,
+        args: &[RtTy::I64],
+    },
+    RtDecl {
+        name: "lumia_scope_leave",
+        ret: RtTy::Void,
+        args: &[],
+    },
+    RtDecl {
+        name: "lumia_scope_cancel",
+        ret: RtTy::Void,
+        args: &[],
+    },
+    RtDecl {
+        name: "lumia_scheduler_drain",
+        ret: RtTy::Void,
+        args: &[],
+    },
+    RtDecl {
+        name: "lumia_scheduler_kind",
+        ret: RtTy::I64,
+        args: &[RtTy::I64],
     },
 ];
 

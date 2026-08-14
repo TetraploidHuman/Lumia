@@ -14,8 +14,9 @@ cargo fmt --all -- --check
 echo "== cargo clippy --workspace --exclude lumia --lib -- -D warnings =="
 cargo clippy --workspace --exclude lumia --lib -- -D warnings
 
-echo "== cargo test --workspace --exclude lumia --lib =="
-cargo test --workspace --exclude lumia --lib
+echo "== cargo test --workspace --exclude lumia --lib (RUST_TEST_THREADS=1: shared process heap) =="
+# Process heap is shared across test cases; parallel lib tests would UAF.
+RUST_TEST_THREADS=1 cargo test --workspace --exclude lumia --lib
 
 # Integration tests that live outside --lib (Core IR goldens, etc.)
 echo "== cargo test -p lumia_opt --tests =="

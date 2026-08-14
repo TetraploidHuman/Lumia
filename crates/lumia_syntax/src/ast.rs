@@ -244,6 +244,17 @@ pub enum Expr {
         fields: Vec<(String, Expr)>,
         span: Span,
     },
+    /// `scope { body }` / `scope(schedulerExpr) { body }` — structured concurrency.
+    Scope {
+        scheduler: Option<Box<Expr>>,
+        body: Box<Expr>,
+        span: Span,
+    },
+    /// `spawn { body }` — start a task; block tail is the task result.
+    Spawn {
+        body: Box<Expr>,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -394,7 +405,9 @@ impl Expr {
             | Expr::Pipeline { span, .. }
             | Expr::StructLit { span, .. }
             | Expr::With { span, .. }
-            | Expr::TupleLit { span, .. } => *span,
+            | Expr::TupleLit { span, .. }
+            | Expr::Scope { span, .. }
+            | Expr::Spawn { span, .. } => *span,
         }
     }
 }

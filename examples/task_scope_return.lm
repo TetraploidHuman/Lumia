@@ -1,0 +1,22 @@
+module task_scope_return
+import std.io.{println}
+
+/// Early `return` inside `scope` must still leave (join children) after evaluating
+/// the return value — so a producer sibling can finish `recv` before leave.
+val early = {
+    val ch = channel(1)
+    scope {
+        spawn {
+            ch.send(9)
+            0
+        }
+        if true {
+            return ch.recv()
+        }
+        0
+    }
+}
+
+val main = {
+    println(early())
+}

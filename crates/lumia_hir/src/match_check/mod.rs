@@ -168,6 +168,17 @@ pub(crate) fn check_expr_matches(
                 }
             }
         }
+        S::Scope {
+            scheduler, body, ..
+        } => {
+            if let Some(s) = scheduler {
+                check_expr_matches(s, ctors, adts, products)?;
+            }
+            check_expr_matches(body, ctors, adts, products)?;
+        }
+        S::Spawn { body, .. } => {
+            check_expr_matches(body, ctors, adts, products)?;
+        }
     }
     Ok(())
 }

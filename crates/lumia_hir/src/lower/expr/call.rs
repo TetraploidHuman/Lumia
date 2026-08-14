@@ -27,6 +27,20 @@ pub(super) fn lower_call(
                 span,
             };
         }
+        if name == "channel" && args.len() == 1 {
+            return Expr::BuiltinCall {
+                name: Builtin::ChannelNew,
+                args: args.iter().map(|e| lower_expr(ctx, e)).collect(),
+                span,
+            };
+        }
+        if name == "cancelScope" && args.is_empty() {
+            return Expr::BuiltinCall {
+                name: Builtin::ScopeCancel,
+                args: vec![],
+                span,
+            };
+        }
         if name == "assert" {
             return Expr::BuiltinCall {
                 name: Builtin::Assert,

@@ -1,0 +1,26 @@
+module task_channel
+import std.io.{println}
+
+val main = {
+    val ch = channel(8)
+    scope {
+        spawn {
+            ch.send(10)
+            ch.send(20)
+            ch.close()
+        }
+        var sum = 0
+        var done = false
+        for not done {
+            ch.recvOpt() match {
+                None -> {
+                    done = true
+                }
+                Some(x) -> {
+                    sum = sum + x
+                }
+            }
+        }
+        println(sum)
+    }
+}

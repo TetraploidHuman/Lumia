@@ -196,6 +196,7 @@ pub enum BuiltinFamily {
     MapSet,
     String,
     Adt,
+    Task,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -255,6 +256,28 @@ pub enum Builtin {
     /// ADT tag / payload access (match desugar).
     AdtTag,
     AdtField,
+    /// `channel(cap)` → Channel[α].
+    ChannelNew,
+    /// `ch.send(v)`.
+    ChannelSend,
+    /// `ch.recv()`.
+    ChannelRecv,
+    /// `ch.recvOpt()` → Option[T].
+    ChannelRecvOpt,
+    /// `ch.close()`.
+    ChannelClose,
+    /// `t.join()`.
+    TaskJoin,
+    /// `t.joinOpt()` → Option[T] (None if cancelled).
+    TaskJoinOpt,
+    /// Spawn fiber (fnptr + env) — syntax desugar later.
+    TaskSpawn,
+    /// Enter structured-concurrency scope (scheduler kind).
+    ScopeEnter,
+    /// Leave current scope (join children).
+    ScopeLeave,
+    /// Cancel children of the current scope (recoverable; leave soft-awaits).
+    ScopeCancel,
 }
 
 // [`Builtin::family`] / [`Builtin::info`] live in `builtin_info.rs`.

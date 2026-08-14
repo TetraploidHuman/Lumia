@@ -20,10 +20,7 @@ struct GcLimitGuard {
 }
 impl GcLimitGuard {
     fn set(young: usize, old: usize) -> Self {
-        let (y, o) = (
-            crate::common::YOUNG_LIMIT.with(|c| c.get()),
-            crate::common::HEAP_LIMIT.with(|c| c.get()),
-        );
+        let (y, o) = crate::heap::with_heap(|h| (h.young_limit, h.old_limit));
         set_gc_limits_for_test(young, old);
         Self { young: y, old: o }
     }

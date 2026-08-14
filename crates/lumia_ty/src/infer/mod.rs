@@ -3,6 +3,7 @@
 mod builtins;
 mod calls;
 mod expr;
+mod free_vars;
 mod module;
 mod prelude_ctors;
 mod state;

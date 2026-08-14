@@ -1,0 +1,14 @@
+module task_join_tree
+import std.io.{println}
+
+/// Fan-out joins: each child returns its index; parent sums them.
+val main = {
+    scope {
+        var sum = 0
+        for i in 1..32 {
+            val t = spawn { i }
+            sum = sum + t.join()
+        }
+        println(sum)
+    }
+}

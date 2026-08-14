@@ -50,6 +50,18 @@ pub(crate) fn run_example_build(
     release: bool,
     extra_args: &[&str],
 ) {
+    run_example_build_env(rel, stdin, expected_lines, release, extra_args, &[]);
+}
+
+/// Like [`run_example_build`], but sets env vars on the **compiled program** (not the builder).
+pub(crate) fn run_example_build_env(
+    rel: &str,
+    stdin: Option<&str>,
+    expected_lines: &[&str],
+    release: bool,
+    extra_args: &[&str],
+    run_env: &[(&str, &str)],
+) {
     let root = workspace_root();
     let src = root.join(rel);
     assert!(src.is_file(), "missing example {}", src.display());
@@ -81,6 +93,9 @@ pub(crate) fn run_example_build(
     assert!(status.success(), "lumia build failed for {rel}: {status}");
 
     let mut cmd = Command::new(&exe);
+    for (k, v) in run_env {
+        cmd.env(k, v);
+    }
     let output = if let Some(input) = stdin {
         use std::io::Write;
         use std::process::Stdio;
@@ -110,6 +125,10 @@ pub(crate) fn run_example_build(
     let stdout = String::from_utf8_lossy(&output.stdout);
     let got: Vec<&str> = stdout.lines().collect();
     assert_stdout_lines(rel, &got, expected_lines);
+}
+
+pub(crate) fn run_example_env(rel: &str, run_env: &[(&str, &str)], expected_lines: &[&str]) {
+    run_example_build_env(rel, None, expected_lines, false, &[], run_env);
 }
 
 /// Exact match for non-floats; f64 lines allow tiny platform Display differences

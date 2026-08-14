@@ -422,7 +422,64 @@ fn builtin_value_ty(name: Builtin, args: &[Local], ctx: InferValueCtx<'_>) -> Ty
         | Builtin::ListJoin => Type::String,
         Builtin::ListLen | Builtin::AdtTag => Type::Int,
         Builtin::Contains | Builtin::StrStartsWith | Builtin::StrEndsWith => Type::Bool,
-        Builtin::Println | Builtin::MatchFail | Builtin::Assert => Type::Unit,
+        Builtin::Println | Builtin::MatchFail | Builtin::Assert
+        | Builtin::ChannelSend
+        | Builtin::ChannelClose
+        | Builtin::ScopeEnter
+        | Builtin::ScopeLeave
+        | Builtin::ScopeCancel => Type::Unit,
+        Builtin::ChannelNew => Type::Channel(Box::new(Type::Int)),
+        Builtin::ChannelRecv | Builtin::TaskJoin => args
+            .first()
+            .and_then(|a| local_tys.get(&a.0))
+            .map(|t| match t {
+                Type::Channel(e) | Type::Task(e) => (**e).clone(),
+                _ => Type::Int,
+            })
+            .unwrap_or(Type::Int),
+        Builtin::ChannelRecvOpt => args
+            .first()
+            .and_then(|a| local_tys.get(&a.0))
+            .map(|t| match t {
+                Type::Channel(e) => Type::Adt {
+                    name: "Option".into(),
+                    params: vec![(**e).clone()],
+                },
+                _ => Type::Adt {
+                    name: "Option".into(),
+                    params: vec![Type::Int],
+                },
+            })
+            .unwrap_or(Type::Adt {
+                name: "Option".into(),
+                params: vec![Type::Int],
+            }),
+        Builtin::TaskJoinOpt => args
+            .first()
+            .and_then(|a| local_tys.get(&a.0))
+            .map(|t| match t {
+                Type::Task(e) => Type::Adt {
+                    name: "Option".into(),
+                    params: vec![(**e).clone()],
+                },
+                _ => Type::Adt {
+                    name: "Option".into(),
+                    params: vec![Type::Int],
+                },
+            })
+            .unwrap_or(Type::Adt {
+                name: "Option".into(),
+                params: vec![Type::Int],
+            }),
+        Builtin::TaskSpawn => Type::Task(Box::new(
+            args.first()
+                .and_then(|a| local_tys.get(&a.0))
+                .and_then(|t| match t {
+                    Type::Fun(_, r, _) => Some((**r).clone()),
+                    _ => None,
+                })
+                .unwrap_or(Type::Int),
+        )),
         Builtin::ListGet => args
             .first()
             .and_then(|a| local_tys.get(&a.0))

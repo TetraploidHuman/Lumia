@@ -5,8 +5,8 @@ use super::token::{push, AbsToken, MOD_DEFAULT_LIB, TY_FUNCTION, TY_KEYWORD};
 /// Surface keywords shared with TextMate (also painted by semantic overlay).
 pub(super) const KEYWORDS: &[&str] = &[
     "if", "else", "match", "for", "in", "break", "continue", "return", "alt", "module", "import",
-    "val", "var", "type", "trait", "instance", "requires", "with", "effect", "foreign", "priv",
-    "as", "pure", "fn", "and", "or", "not", "true", "false",
+    "val", "var", "type", "trait", "instance", "requires", "with", "effect", "scope", "spawn",
+    "foreign", "priv", "as", "pure", "fn", "and", "or", "not", "true", "false",
 ];
 
 pub(super) fn is_ident_byte(b: u8) -> bool {

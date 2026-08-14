@@ -58,6 +58,14 @@ fn may_capture_matches_escape_projection_set() {
         Builtin::StrSplit,
         Builtin::StrStartsWith,
         Builtin::StrEndsWith,
+        Builtin::ChannelRecv,
+        Builtin::ChannelRecvOpt,
+        Builtin::ChannelClose,
+        Builtin::TaskJoin,
+        Builtin::TaskJoinOpt,
+        Builtin::ScopeEnter,
+        Builtin::ScopeLeave,
+        Builtin::ScopeCancel,
     ];
     assert_eq!(
         no_capture.len(),
@@ -174,6 +182,11 @@ fn surface_from_method_roundtrips_display_name() {
         Builtin::ListConcat,
         Builtin::Range,
         Builtin::RangeInclusive,
+        Builtin::TaskJoin,
+        Builtin::ChannelSend,
+        Builtin::ChannelRecv,
+        Builtin::ChannelRecvOpt,
+        Builtin::ChannelClose,
     ];
     for b in surface {
         let name = b.display_name();
@@ -198,6 +211,10 @@ fn surface_from_method_roundtrips_display_name() {
         Builtin::Elems,
         Builtin::AdtTag,
         Builtin::AdtField,
+        Builtin::ChannelNew,
+        Builtin::TaskSpawn,
+        Builtin::ScopeEnter,
+        Builtin::ScopeLeave,
     ] {
         assert_eq!(
             Builtin::from_method(b.display_name(), b.info().min_arity as usize),
@@ -224,7 +241,21 @@ fn result_heap_projections_are_typed_not_capture() {
 #[test]
 fn surface_names_cover_prelude_and_common_methods() {
     let names: Vec<&str> = crate::surface_names().map(|s| s.name).collect();
-    for n in ["listOf", "setOf", "mapOf", "println", "len", "map", "drop"] {
+    for n in [
+        "listOf",
+        "setOf",
+        "mapOf",
+        "println",
+        "channel",
+        "len",
+        "map",
+        "drop",
+        "send",
+        "recv",
+        "join",
+        "joinOpt",
+        "cancelScope",
+    ] {
         assert!(names.contains(&n), "missing surface name {n}");
     }
     assert!(!names.contains(&"adtTag"));

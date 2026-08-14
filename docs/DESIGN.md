@@ -2043,19 +2043,52 @@ import a.{b as bee, c}  // 多选中的别名
 
 ---
 
-## 11. 并发与并行（预留）
+## 11. 并发与并行
 
 ### 11.1 纯并行
 
 - 编译器 / 运行时对 **证明无数据竞争的纯 `map`/`fold`** 自动并行。
 - 用户不写 `parMap`。
 
-### 11.2 效应并发
+### 11.2 效应并发（Task / Channel）
 
-- 后期引入 `Task`、`Channel`、`Async` effect。
-- **无共享可变**；跨任务状态只通过 message passing。
+有栈纤程协程：每个 `Task` 独立栈；在 `send` / `recv` / `join` 等运行时点挂起。跨任务 **无共享可变**；只通过消息传递。并发操作在效应系统中归入 **Io**（用户不写注解）。
 
-（0.1 可不实现；设计位保留。）
+**表面语法：**
+
+```lumia
+scope { … }
+scope(Scheduler.worker) { … }
+scope(Scheduler.io) { … }
+
+spawn { … }          // → Task[T]，块尾值为结果
+t.join()             // 挂起直到完成；取消则 trap
+t.joinOpt()          // 取消 → None
+cancelScope()        // 取消当前 scope 子任务（可恢复）
+
+val ch = channel(8)
+ch.send(x)           // 自挂起
+val x = ch.recv()    // 自挂起；关闭且空 → trap
+ch.recvOpt()         // 关闭且空 → None
+ch.close()
+```
+
+| 规则 | 说明 |
+| --- | --- |
+| `scope` | 结构化并发；离开前 await 子任务；`cancelScope()` 取消当前 scope 子任务（可恢复） |
+| `spawn` | 立即返回 `Task[T]`；调度器继承当前 `scope` |
+| `Scheduler` | 默认省略；`worker` / `io` 标签继承到子 `Task`；**OS 池**（BUILD §7.7-D；`LUMIA_SCHED_WORKERS`/`IO`） |
+| Channel | 有界，`capacity >= 1`；元素为普通值 |
+| 效应顺序 | 同一 Task 内按源码顺序；跨 Task 仅经 Channel / `join` 建立因果 |
+| `Task.join` / `joinOpt` | `join` 遇取消或 **join 自身** trap；`joinOpt` → `Option`（可恢复） |
+| `Task.join` vs `List.join` | 靠接收者类型与元数区分 |
+| `spawn` 与 `scope` | `spawn` 必须在开着的 `scope` 内；离开前 await 子任务（已取消的跳过） |
+| `spawn` 捕获 | 禁止捕获外层 `var`（无共享可变）；先 `val` 快照再 spawn |
+| 与 `ListParMap` | 禁止混用：par worker 上不可调 Task/Channel；有活跃 scope/纤程时不可 `parMap`/`parFold` |
+
+运行时：进程级堆与调度表（§7.7）+ 每纤程/线程 shadow-stack 根；`Scheduler.worker`/`.io` 由 OS 池线程首次 resume 并钉住有栈纤程。取消时：未 resume → `Drop`；已在 RT `suspend` 挂起 → `force_reset` 回收栈（不可 `force_unwind` 穿 `extern "C"` TaskFn）。
+
+**线程池**：见 BUILD §7.7-D。Default kind 仍本机协作；`LUMIA_SCHED_WORKERS=0` 且 `LUMIA_SCHED_IO=0` 时退回单线程偷取全部队列。
 
 ---
 

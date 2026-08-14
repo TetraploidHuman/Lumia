@@ -113,6 +113,17 @@ if [[ "${SKIP_CN_STRICT:-0}" != "1" ]]; then
   echo
 fi
 
+if [[ "${SKIP_TASK:-0}" != "1" ]]; then
+  echo "######## bench_task ########"
+  if RUNS="$CN_RUNS" bash "$ROOT/scripts/bench_task.sh"; then
+    echo "OK bench_task"
+  else
+    echo "FAIL bench_task" >&2
+    fail=1
+  fi
+  echo
+fi
+
 if [[ "$fail" -ne 0 ]]; then
   echo "bench_all: FAILED" >&2
   exit 1

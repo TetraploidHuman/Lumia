@@ -9,6 +9,7 @@ crate-type = ["staticlib", "rlib"]
 [dependencies]
 lumia_abi.workspace = true
 rustc-hash.workspace = true
+corosensei = "0.3"
 
 [lints]
 workspace = true

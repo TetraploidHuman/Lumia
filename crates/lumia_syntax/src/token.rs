@@ -55,6 +55,8 @@ pub enum TokenKind {
     Requires,
     With,
     Effect,
+    Scope,
+    Spawn,
     Foreign,
 
     // Punctuation
@@ -128,6 +130,8 @@ impl TokenKind {
             "requires" => TokenKind::Requires,
             "with" => TokenKind::With,
             "effect" => TokenKind::Effect,
+            "scope" => TokenKind::Scope,
+            "spawn" => TokenKind::Spawn,
             "foreign" => TokenKind::Foreign,
             _ => return None,
         })

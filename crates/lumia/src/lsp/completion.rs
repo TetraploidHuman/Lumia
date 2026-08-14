@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 /// True keywords (lexer / grammar) — not scanned from builtins.
 const KEYWORDS: &[&str] = &[
     "val", "var", "match", "if", "else", "for", "in", "type", "import", "foreign", "pure", "trait",
-    "instance", "alt", "module",
+    "instance", "alt", "module", "scope", "spawn", "effect",
 ];
 
 pub(super) fn completion_items(analysis: Option<&Analysis>) -> Vec<Value> {

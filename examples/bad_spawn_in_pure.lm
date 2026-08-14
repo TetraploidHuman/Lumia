@@ -1,0 +1,8 @@
+module bad_spawn_in_pure
+
+/// Top-level `val` init must be pure — `spawn` is effectful (DESIGN §2.2 / §11.2).
+val leaked = spawn { 1 }
+
+val main = {
+    leaked
+}

@@ -1,0 +1,29 @@
+module task_stress_wide
+import std.io.{println}
+import std.concurrent.{Scheduler}
+
+/// Wider fan-in than task_stress (128 producers); sum 1..128 = 8256.
+val main = {
+    val ch = channel(64)
+    scope(Scheduler.worker) {
+        for i in 1..64 {
+            spawn {
+                ch.send(i)
+                0
+            }
+        }
+        scope(Scheduler.io) {
+            for i in 65..128 {
+                spawn {
+                    ch.send(i)
+                    0
+                }
+            }
+            var sum = 0
+            for n in 1..128 {
+                sum = sum + ch.recv()
+            }
+            println(sum)
+        }
+    }
+}

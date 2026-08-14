@@ -16,6 +16,8 @@ impl<'ctx> Codegen<'ctx> {
             | Type::List(_)
             | Type::Map(_, _)
             | Type::Set(_)
+            | Type::Task(_)
+            | Type::Channel(_)
             | Type::Adt { .. }
             | Type::Fun(_, _, _) => true,
             Type::Tuple(ts) | Type::TuplePrefix(ts) => ts.iter().any(Self::type_may_heap),
@@ -241,6 +243,14 @@ impl<'ctx> Codegen<'ctx> {
     }
 
     pub(crate) fn emit_return_i64(&mut self, ret: IntValue<'ctx>) -> Result<()> {
+        // Pin the return word in SchedCore before clearing shadow roots so Task
+        // bodies (and any multi-mutator callee) stay GC-safe across `ret`.
+        let handoff = self.runtime_fn("lumia_abi_handoff_set")?;
+        crate::error::llvm(
+            self.llvm
+                .builder
+                .build_call(handoff, &[ret.into()], "abi_handoff"),
+        )?;
         self.emit_root_epilogue()?;
         self.emit_frame_pop()?;
         crate::error::llvm(self.llvm.builder.build_return(Some(&ret)))?;
