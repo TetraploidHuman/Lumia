@@ -129,14 +129,23 @@ fn type_to_mono(t: &Type) -> Option<MonoKind> {
                 params: ps,
             })
         }
-        Type::Adt { name, .. } => {
-            // User products/sums: key by type name only. Field layouts are taken
-            // from the generic's `param_tys` when materializing a clone — call
-            // sites often erase these values to ABI `Int`, which must not become
-            // the clone's structural type (AdtField Float → sitofp of IEEE bits).
+        Type::Adt { name, params } => {
+            // Keep call-site field kinds when present (`getx(Pt{x=1.5})` → Float
+            // AdtField). Empty params: name-only key; `materialize_mono_param_tys`
+            // restores the generic's structural formals (ABI-Int products).
+            if params.is_empty() {
+                return Some(MonoKind::Adt {
+                    name: name.clone(),
+                    params: vec![],
+                });
+            }
+            let mut ps = Vec::with_capacity(params.len());
+            for p in params {
+                ps.push(type_to_mono(p)?);
+            }
             Some(MonoKind::Adt {
                 name: name.clone(),
-                params: vec![],
+                params: ps,
             })
         }
         // Unit / Fun / Var: FunRef args use `MonoKind::FunRef` via funref map.
@@ -269,6 +278,11 @@ impl MonoKey {
         let data = self.0.iter().find(|k| !matches!(k, MonoKind::FunRef(_)))?;
         match data {
             MonoKind::Adt { name, params } if name == "Option" => {
+                // `andThen` / `flatMap`: callback already returns `Option[U]`.
+                // `map`: callback returns `U` → wrap as `Option[U]`.
+                if matches!(&fun_ret, Type::Adt { name: n, .. } if n == "Option") {
+                    return Some(fun_ret);
+                }
                 let inner = payload.or_else(|| params.first().map(MonoKind::to_type))?;
                 Some(Type::Adt {
                     name: "Option".into(),
@@ -276,6 +290,9 @@ impl MonoKey {
                 })
             }
             MonoKind::Adt { name, params } if name == "Result" => {
+                if matches!(&fun_ret, Type::Adt { name: n, .. } if n == "Result") {
+                    return Some(fun_ret);
+                }
                 let ok = payload.or_else(|| params.first().map(MonoKind::to_type))?;
                 let err = params.get(1).map(MonoKind::to_type).unwrap_or(Type::Int);
                 Some(Type::Adt {
@@ -328,7 +345,20 @@ pub(crate) fn args_mono_key(
         if matches!(ty, Type::Int) {
             if let Some(formal) = formals.and_then(|f| f.get(i)) {
                 if type_is_heap_structure(formal) {
-                    ty = formal.clone();
+                    // ABI-erased product: key by ADT name only so Int field
+                    // guesses never enter the clone layout; materialize restores
+                    // the generic formals. Call-site Adt{…, [Float,…]} keeps params.
+                    ty = match formal {
+                        Type::Adt { name, .. }
+                            if name != "Option" && name != "Result" =>
+                        {
+                            Type::Adt {
+                                name: name.clone(),
+                                params: vec![],
+                            }
+                        }
+                        other => other.clone(),
+                    };
                 }
             }
         }

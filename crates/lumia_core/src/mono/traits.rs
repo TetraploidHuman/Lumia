@@ -303,19 +303,34 @@ pub(crate) fn directize_funref_calls(module: &mut CoreModule) {
 }
 
 pub(crate) fn directize_block(block: &mut Block, parent_funrefs: &HashMap<u32, String>) {
+    directize_block_with_slots(block, parent_funrefs, &HashMap::default());
+}
+
+fn directize_block_with_slots(
+    block: &mut Block,
+    parent_funrefs: &HashMap<u32, String>,
+    parent_slot_funrefs: &HashMap<String, String>,
+) {
     // Inherit FunRef bindings from the enclosing block so `val f = g; if … { f(x) }`
     // inside nested If/Loop still becomes a direct `Call`.
     let mut funref_of = parent_funrefs.clone();
+    let mut slot_funrefs = parent_slot_funrefs.clone();
     for op in &mut block.ops {
         match op {
             Op::Let { local, value, .. } => {
                 directize_value(value, &funref_of);
-                walk_nested_blocks_directize(value, &funref_of);
+                walk_nested_blocks_directize(value, &funref_of, &slot_funrefs);
                 if let Value::FunRef(name) = value {
                     funref_of.insert(local.0, name.clone());
                 } else if let Value::Local(Local(src)) = value {
                     if let Some(n) = funref_of.get(src).cloned() {
                         funref_of.insert(local.0, n);
+                    } else {
+                        funref_of.remove(&local.0);
+                    }
+                } else if let Value::Name(n) = value {
+                    if let Some(fr) = slot_funrefs.get(n).cloned() {
+                        funref_of.insert(local.0, fr);
                     } else {
                         funref_of.remove(&local.0);
                     }
@@ -325,22 +340,33 @@ pub(crate) fn directize_block(block: &mut Block, parent_funrefs: &HashMap<u32, S
             }
             Op::Effect { value } => {
                 directize_value(value, &funref_of);
-                walk_nested_blocks_directize(value, &funref_of);
+                walk_nested_blocks_directize(value, &funref_of, &slot_funrefs);
             }
-            Op::Assign { .. } | Op::Break | Op::Continue | Op::Return { .. } => {}
+            Op::Assign { name, value } => {
+                if let Some(fr) = funref_of.get(&value.0).cloned() {
+                    slot_funrefs.insert(name.clone(), fr);
+                } else {
+                    slot_funrefs.remove(name);
+                }
+            }
+            Op::Break | Op::Continue | Op::Return { .. } => {}
         }
     }
 }
 
-fn walk_nested_blocks_directize(value: &mut Value, funref_of: &HashMap<u32, String>) {
+fn walk_nested_blocks_directize(
+    value: &mut Value,
+    funref_of: &HashMap<u32, String>,
+    slot_funrefs: &HashMap<String, String>,
+) {
     match value {
         Value::If {
             then_block,
             else_block,
             ..
         } => {
-            directize_block(then_block, funref_of);
-            directize_block(else_block, funref_of);
+            directize_block_with_slots(then_block, funref_of, slot_funrefs);
+            directize_block_with_slots(else_block, funref_of, slot_funrefs);
         }
         Value::Loop {
             header,
@@ -348,12 +374,14 @@ fn walk_nested_blocks_directize(value: &mut Value, funref_of: &HashMap<u32, Stri
             latch,
             ..
         } => {
-            directize_block(header, funref_of);
-            directize_block(body, funref_of);
-            directize_block(latch, funref_of);
+            directize_block_with_slots(header, funref_of, slot_funrefs);
+            directize_block_with_slots(body, funref_of, slot_funrefs);
+            directize_block_with_slots(latch, funref_of, slot_funrefs);
         }
         // Fresh scope: lifted lambda body should not see outer SSA FunRef locals.
-        Value::Lambda { body, .. } => directize_block(body, &HashMap::default()),
+        Value::Lambda { body, .. } => {
+            directize_block_with_slots(body, &HashMap::default(), &HashMap::default())
+        }
         _ => {}
     }
 }

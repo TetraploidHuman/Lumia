@@ -170,7 +170,9 @@ listOf(1, 2, 3)
 []                          // 糖 → listOf()
 [1, 2, 3]                   // 糖 → listOf(1, 2, 3)
 range(1, 100)               // 半开区间 [1, 100)（正规）
-1..100                      // 糖 → range(1, 100)
+rangeInclusive(1, 100)      // 闭区间 [1, 100]（正规）
+1..<100                     // 糖 → range(1, 100)
+1..100                      // 糖 → rangeInclusive(1, 100)
 xs.concat(ys)               // 连接（无 ++ 运算符）
 xs[i]                       // 糖 → xs.get(i)；越界 trap（与既有 List 语义一致）
 xs.len()
@@ -255,7 +257,7 @@ for x in s { ... }
 | 糖（日常） | 正规形式 |
 |------------|----------|
 | `[]` / `[a, b, c]` | `listOf()` / `listOf(a, b, c)` |
-| `1..n` / `1..=n` | `range(1, n)` / `rangeInclusive(1, n)`（名实现可微调） |
+| `1..<n` / `1..n` | `range(1, n)` / `rangeInclusive(1, n)`（Kotlin 对齐） |
 | `[:]` / `[k : v, ...]` | `mapOf()` / `mapOf(k to v, ...)` |
 | `#{}` / `#{a, b}` | `setOf()` / `setOf(a, b)` |
 | `xs[i]`（List） | `xs.get(i)` |
@@ -1183,12 +1185,12 @@ for x in xs {
 }
 
 var acc = 0
-for i in 1..=n {
+for i in 1..n {
     acc = acc + i
 }
 ```
 
-- `in` 右侧必须是可迭代值（`List`、`Map`、`Set`、范围 `1..n` 等）。
+- `in` 右侧必须是可迭代值（`List`、`Map`、`Set`、范围 `1..n` / `1..<n` 等）。
   - `Map` 迭代元素类型为 `(K, V)`；`Set` 为元素本身；顺序见 §3.5.1（插入序）。
 - 循环变量 `**i` / `x` 只读**（每轮一个新绑定；不在循环体内赋值 `i`）。
 - 需要累加时用外层 `var`。
@@ -1223,7 +1225,7 @@ for i <= n {
 
 ```lumia
 // 推荐
-for i in 1..=n { acc = acc + i }   // 若不需要手动步进
+for i in 1..n { acc = acc + i }   // 若不需要手动步进
 
 // 条件循环：步进不规则、等待外部状态时
 for connected == false {
@@ -1504,7 +1506,7 @@ b match {
 ```lumia
 val sum_to(n) = {
     var acc = 0
-    for i in 1..=n {
+    for i in 1..n {
         acc = acc + i
     }
     acc
@@ -1534,8 +1536,8 @@ val main = {
 ### 4.11 范围语法
 
 ```lumia
-1..10      // 包含 1，不包含 10  [1, 10)
-1..=10     // 包含两端          [1, 10]
+1..10      // 包含两端          [1, 10]   （Kotlin 同形）
+1..<10     // 包含 1，不包含 10  [1, 10)
 10..1 step -1
 ```
 

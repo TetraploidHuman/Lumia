@@ -202,12 +202,15 @@ pub fn infer_value_ty_ctx(
             }
         }
         Value::Call { fun, args } => {
-            let ret = if let Some(m) = ctx.fun_ret_tys {
-                m.get(fun).cloned().unwrap_or(Type::Int)
-            } else if let Some(f) = call_ret.as_mut() {
-                f(fun, args).unwrap_or(Type::Int)
-            } else {
-                Type::Int
+            let ret = match (
+                ctx.fun_ret_tys.and_then(|m| m.get(fun).cloned()),
+                call_ret.as_mut(),
+            ) {
+                // Prefer an explicit table entry when present (mono clones / FunRefs).
+                (Some(t), _) => t,
+                // Otherwise ask the call-site mono / index callback.
+                (None, Some(f)) => f(fun, args).unwrap_or(Type::Int),
+                (None, None) => Type::Int,
             };
             identity_float_call_ret(ret, fun, args, ctx)
         }
@@ -216,8 +219,18 @@ pub fn infer_value_ty_ctx(
             args,
         } => Type::List(Box::new(list_par_map_result_elem(args, ctx))),
         Value::Builtin { name, args } => builtin_value_ty(*name, args, ctx),
-        Value::AllocClosure { .. } | Value::FunRef(_) | Value::ClosureCap { .. } => {
-            Type::Fun(vec![], Box::new(Type::Int), Effect::pure())
+        Value::ClosureCap { as_float: true, .. } => Type::Float,
+        Value::ClosureCap { .. } => Type::Int,
+        Value::FunRef(name) | Value::AllocClosure { fun: name, .. } => {
+            let ret = ctx
+                .fun_ret_tys
+                .and_then(|m| m.get(name).cloned())
+                .unwrap_or(Type::Int);
+            let params = ctx
+                .fun_param_tys
+                .and_then(|m| m.get(name).cloned())
+                .unwrap_or_default();
+            Type::Fun(params, Box::new(ret), Effect::pure())
         }
         Value::If {
             then_block,
@@ -315,7 +328,13 @@ fn list_par_map_result_elem(args: &[Local], ctx: InferValueCtx<'_>) -> Type {
             }
             match &ret {
                 Type::Float => return Type::Float,
+                // Polymorphic FunRefs keep Int/Var ABI until mono; float source
+                // lists must stay List[Float] so fold/map specialize.
+                Type::Int | Type::Var(_) if matches!(list_elem, Type::Float) => {
+                    return Type::Float;
+                }
                 Type::Int => return Type::Int,
+                Type::Var(_) => return list_elem,
                 _ => return ret,
             }
         }

@@ -5,11 +5,11 @@ import std.io.{println}
 val main = {
     // Counter fold: no million-element HeapList.
     val n = 1_000_000
-    val sum = (0..n).fold(0, { acc, x -> acc + x })
+    val sum = (0..<n).fold(0, { acc, x -> acc + x })
     println(sum)
 
     var acc2 = 0
-    for i in 1..=100 {
+    for i in 1..100 {
         acc2 = acc2 + i
     }
     println(acc2)

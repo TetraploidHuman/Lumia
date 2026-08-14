@@ -66,6 +66,7 @@ fn rewrite_all_mono_call_sites(
     {
         let index = FunIndex::new(&functions, &module.sum_max_arity);
         let no_funrefs = HashMap::default();
+        let no_slot_funrefs = HashMap::default();
         for i in 0..functions.len() {
             let mut local_tys: HashMap<u32, Type> = HashMap::default();
             for (j, p) in functions[i].params.iter().enumerate() {
@@ -83,6 +84,7 @@ fn rewrite_all_mono_call_sites(
                 &mut int_consts,
                 renames,
                 &no_funrefs,
+                &no_slot_funrefs,
                 &index,
             );
         }
@@ -147,6 +149,7 @@ fn specialize_mono_round(
             &mut int_consts,
             &index,
             &mut needed,
+            &HashMap::default(),
             &HashMap::default(),
         );
     }
@@ -251,6 +254,34 @@ fn mono_clone_ret_ty(
     }
 }
 
+/// Call-site ret while scanning: like [`mono_clone_ret_ty`] without walking the
+/// body. Avoids `bump(Parts, Float)` → MonoKey last-arg `Float` poisoning the
+/// `var p` slot (next call would mono as `$Float`).
+fn call_site_mono_ret(fun: &CoreFun, inferred: &Type) -> Type {
+    match &fun.ret_ty {
+        Type::String => Type::String,
+        Type::Bool => Type::Bool,
+        Type::List(e) if matches!(e.as_ref(), Type::Int) => inferred.clone(),
+        Type::Var(_) => inferred.clone(),
+        Type::Int | Type::Float | Type::Char | Type::Unit => match inferred {
+            Type::Adt { .. }
+            | Type::List(_)
+            | Type::Map(_, _)
+            | Type::Set(_)
+            | Type::String
+            | Type::Bool => fun.ret_ty.clone(),
+            _ => inferred.clone(),
+        },
+        Type::Adt { .. }
+        | Type::List(_)
+        | Type::Map(_, _)
+        | Type::Set(_)
+        | Type::Tuple(_)
+        | Type::TuplePrefix(_) => refine_mono_container_ret(&fun.ret_ty, inferred),
+        _ => inferred.clone(),
+    }
+}
+
 fn scan_mono_block(
     block: &Block,
     local_tys: &mut HashMap<u32, Type>,
@@ -259,13 +290,22 @@ fn scan_mono_block(
     index: &FunIndex<'_>,
     needed: &mut FxHashSet<(String, MonoKey)>,
     parent_funrefs: &HashMap<u32, String>,
+    parent_slot_funrefs: &HashMap<String, String>,
 ) {
     let mut funref_of = parent_funrefs.clone();
+    let mut slot_funrefs = parent_slot_funrefs.clone();
     for op in &block.ops {
         match op {
             Op::Let { local, value, .. } => {
                 note_mono_call(value, local_tys, index, needed, &funref_of);
-                let ty = mono_value_ty(value, local_tys, slot_tys, int_consts, index);
+                let ty = mono_value_ty_with_funrefs(
+                    value,
+                    local_tys,
+                    slot_tys,
+                    int_consts,
+                    index,
+                    &funref_of,
+                );
                 local_tys.insert(local.0, ty);
                 if let Value::Int(n) = value {
                     int_consts.insert(local.0, *n);
@@ -283,6 +323,13 @@ fn scan_mono_block(
                             funref_of.remove(&local.0);
                         }
                     }
+                    Value::Name(n) => {
+                        if let Some(fr) = slot_funrefs.get(n).cloned() {
+                            funref_of.insert(local.0, fr);
+                        } else {
+                            funref_of.remove(&local.0);
+                        }
+                    }
                     _ => {
                         funref_of.remove(&local.0);
                     }
@@ -295,15 +342,17 @@ fn scan_mono_block(
                     index,
                     needed,
                     &funref_of,
+                    &slot_funrefs,
                 );
             }
             Op::Assign { name, value } => {
-                // `var xs = listOf(…)` / `xs = xs.set(…)`: loads are `Name(xs)`.
-                // Without slot types those load as ABI `Int`, so `List[Float]`
-                // call sites never form a mono key (`List(Var)` after formal
-                // restore → `type_to_mono` fails).
                 if let Some(ty) = local_tys.get(&value.0).cloned() {
                     slot_tys.insert(name.clone(), ty);
+                }
+                if let Some(fr) = funref_of.get(&value.0).cloned() {
+                    slot_funrefs.insert(name.clone(), fr);
+                } else {
+                    slot_funrefs.remove(name);
                 }
             }
             Op::Effect { value } => {
@@ -316,6 +365,7 @@ fn scan_mono_block(
                     index,
                     needed,
                     &funref_of,
+                    &slot_funrefs,
                 );
             }
             _ => {}
@@ -331,6 +381,7 @@ fn walk_mono_nested_scan(
     index: &FunIndex<'_>,
     needed: &mut FxHashSet<(String, MonoKey)>,
     funref_of: &HashMap<u32, String>,
+    slot_funrefs: &HashMap<String, String>,
 ) {
     crate::for_each_nested_block(value, &mut |b| {
         scan_mono_block(
@@ -341,6 +392,7 @@ fn walk_mono_nested_scan(
             index,
             needed,
             funref_of,
+            slot_funrefs,
         );
     });
 }
@@ -447,28 +499,62 @@ pub(crate) fn mono_value_ty(
     int_consts: &HashMap<u32, i64>,
     index: &FunIndex<'_>,
 ) -> Type {
+    mono_value_ty_with_funrefs(value, local_tys, slot_tys, int_consts, index, &HashMap::default())
+}
+
+fn mono_value_ty_with_funrefs(
+    value: &Value,
+    local_tys: &HashMap<u32, Type>,
+    slot_tys: &HashMap<String, Type>,
+    int_consts: &HashMap<u32, i64>,
+    index: &FunIndex<'_>,
+    funref_of: &HashMap<u32, String>,
+) -> Type {
     let funs = index.funs();
     let mut call_ret = |fun: &str, args: &[Local]| -> Option<Type> {
+        let formals = index.get(fun).map(|f| f.param_tys.as_slice());
+        // Prefer call-site mono key so `dbl(1.5)` types as Float before the
+        // `dbl$Float` clone exists (ListAppend / fold otherwise keep List[Int]).
+        if let Some(key) = args_mono_key(args, local_tys, funref_of, formals) {
+            if key.worth_cloning() || callee_is_mono_clone(fun, index) {
+                let inferred = key.ret_ty(funs);
+                if let Some(f) = index.get(fun) {
+                    return Some(call_site_mono_ret(f, &inferred));
+                }
+                return Some(inferred);
+            }
+        }
         if let Some(f) = index.get(fun) {
             return Some(f.ret_ty.clone());
         }
-        // Clone not yet indexed this round — recover ret from the call-site key.
         if callee_is_mono_clone(fun, index) {
-            if let Some(key) = args_mono_key(args, local_tys, &HashMap::default(), None) {
+            if let Some(key) = args_mono_key(args, local_tys, funref_of, None) {
                 return Some(key.ret_ty(funs));
             }
         }
         None
     };
+    // Thread FunRef names so ListParMap can read callback ret via funref_locals.
+    let mut fun_ret_tys: HashMap<String, Type> = HashMap::default();
+    let mut funref_locals: HashMap<u32, String> = HashMap::default();
+    for (loc, name) in funref_of {
+        funref_locals.insert(*loc, name.clone());
+        if let Some(f) = index.get(name) {
+            // If a mono key would upgrade ret (e.g. pending Float clone), prefer that
+            // once the clone exists; until then use generic ret — list_elem fallback
+            // still keeps List[Float] for float source lists.
+            fun_ret_tys.insert(name.clone(), f.ret_ty.clone());
+        }
+    }
     infer_value_ty_ctx(
         value,
         InferValueCtx {
             local_tys,
             slot_tys: Some(slot_tys),
-            fun_ret_tys: None,
+            fun_ret_tys: Some(&fun_ret_tys),
             fun_param_tys: None,
             fun_param0_identity: None,
-            funref_locals: None,
+            funref_locals: Some(&funref_locals),
             local_int_consts: Some(int_consts),
             sum_max_arity: Some(index.sum_max_arity),
         },
@@ -483,9 +569,11 @@ fn rewrite_mono_block(
     int_consts: &mut HashMap<u32, i64>,
     renames: &HashMap<(String, MonoKey), String>,
     parent_funrefs: &HashMap<u32, String>,
+    parent_slot_funrefs: &HashMap<String, String>,
     index: &FunIndex<'_>,
 ) {
     let mut funref_of = parent_funrefs.clone();
+    let mut slot_funrefs = parent_slot_funrefs.clone();
     for i in 0..block.ops.len() {
         let (before, rest) = block.ops.split_at_mut(i);
         let op = &mut rest[0];
@@ -499,6 +587,7 @@ fn rewrite_mono_block(
                     int_consts,
                     renames,
                     &funref_of,
+                    &slot_funrefs,
                     index,
                 );
                 if let Some((cb_local, new_name)) = patch {
@@ -531,6 +620,13 @@ fn rewrite_mono_block(
                             funref_of.remove(&local.0);
                         }
                     }
+                    Value::Name(n) => {
+                        if let Some(fr) = slot_funrefs.get(n).cloned() {
+                            funref_of.insert(local.0, fr);
+                        } else {
+                            funref_of.remove(&local.0);
+                        }
+                    }
                     _ => {
                         funref_of.remove(&local.0);
                     }
@@ -539,6 +635,11 @@ fn rewrite_mono_block(
             Op::Assign { name, value } => {
                 if let Some(ty) = local_tys.get(&value.0).cloned() {
                     slot_tys.insert(name.clone(), ty);
+                }
+                if let Some(fr) = funref_of.get(&value.0).cloned() {
+                    slot_funrefs.insert(name.clone(), fr);
+                } else {
+                    slot_funrefs.remove(name);
                 }
             }
             Op::Effect { value } => {
@@ -550,6 +651,7 @@ fn rewrite_mono_block(
                     int_consts,
                     renames,
                     &funref_of,
+                    &slot_funrefs,
                     index,
                 );
                 if let Some((cb_local, new_name)) = patch {
@@ -618,6 +720,7 @@ fn rewrite_mono_value(
     int_consts: &mut HashMap<u32, i64>,
     renames: &HashMap<(String, MonoKey), String>,
     funref_of: &HashMap<u32, String>,
+    slot_funrefs: &HashMap<String, String>,
     index: &FunIndex<'_>,
 ) {
     match value {
@@ -641,6 +744,7 @@ fn rewrite_mono_value(
                     int_consts,
                     renames,
                     funref_of,
+                    slot_funrefs,
                     index,
                 );
             });

@@ -2,7 +2,7 @@
 
 use super::core::{force_heap_list, list_len_of, lumia_list_empty, lumia_list_promote};
 use super::tid::{heap_list_tid, list_float_elems, list_tid};
-use crate::common::{list_rc_is_unique, trap_abort, GcInhibitGuard, TYPE_LIST_IOTA};
+use crate::common::{list_rc_is_unique, trap_abort, GcInhibitGuard, TYPE_LIST, TYPE_LIST_IOTA};
 use crate::gc::{list_payload_bytes, lumia_alloc};
 use crate::hash_ord::lumia_ord_cmp;
 use crate::string_io::{lumia_alloc_string, with_str_bytes};
@@ -344,6 +344,21 @@ pub extern "C" fn lumia_range_inclusive(start: i64, end: i64) -> *mut u8 {
     }
     match end.checked_add(1) {
         Some(excl) => lumia_range(start, excl),
-        None => trap_abort("lumia: rangeInclusive overflow"),
+        None => {
+            // `end == i64::MAX`: exclusive end would overflow. Represent as a
+            // one-element heap list when `start == MAX`; otherwise the range is
+            // enormous and cannot be an iota.
+            if start == i64::MAX {
+                let dest = lumia_alloc(16, TYPE_LIST);
+                unsafe {
+                    let base = dest as *mut i64;
+                    *base = 1;
+                    *base.add(1) = i64::MAX;
+                }
+                dest
+            } else {
+                trap_abort("lumia: rangeInclusive overflow")
+            }
+        }
     }
 }

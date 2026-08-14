@@ -101,18 +101,43 @@ pub(crate) fn counter_for_in(
     let cond = Expr::Binary {
         op: cmp,
         left: Box::new(Expr::Var(i.clone(), span)),
-        right: Box::new(end),
+        right: Box::new(end.clone()),
         span,
     };
-    let step = Expr::Assign {
-        name: i.clone(),
-        value: Box::new(Expr::Binary {
-            op: BinOp::Add,
-            left: Box::new(Expr::Var(i.clone(), span)),
-            right: Box::new(Expr::Int(1, span)),
+    // Inclusive `i64::MAX..i64::MAX`: do not `i = i + 1` after the last
+    // iteration (wrapping/overflow abort). Break when `i == end` instead.
+    let step = if inclusive {
+        Expr::If {
+            cond: Box::new(Expr::Binary {
+                op: BinOp::Eq,
+                left: Box::new(Expr::Var(i.clone(), span)),
+                right: Box::new(end),
+                span,
+            }),
+            then_branch: Box::new(Expr::Break(span)),
+            else_branch: Box::new(Expr::Assign {
+                name: i.clone(),
+                value: Box::new(Expr::Binary {
+                    op: BinOp::Add,
+                    left: Box::new(Expr::Var(i.clone(), span)),
+                    right: Box::new(Expr::Int(1, span)),
+                    span,
+                }),
+                span,
+            }),
             span,
-        }),
-        span,
+        }
+    } else {
+        Expr::Assign {
+            name: i.clone(),
+            value: Box::new(Expr::Binary {
+                op: BinOp::Add,
+                left: Box::new(Expr::Var(i.clone(), span)),
+                right: Box::new(Expr::Int(1, span)),
+                span,
+            }),
+            span,
+        }
     };
     let body = Expr::Let {
         name: binding.into(),

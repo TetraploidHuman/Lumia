@@ -7,7 +7,7 @@ val main = {
     val s = xs >> map { it * 2 } >> filter { it > 4 } >> fold(0, { acc, x -> acc + x })
     println(s)
 
-    val t = (0..1000)
+    val t = (0..<1000)
         .map({ x -> x + 1 })
         .filter({ x -> x % 2 == 0 })
         .fold(0, { acc, x -> acc + x })

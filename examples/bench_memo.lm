@@ -6,7 +6,7 @@ import std.io.{println}
 /// Static duplicate const calls give the cost model reuse evidence (§7.5.2);
 /// the loop then keeps 4 keys hot.
 val heavy(n) = {
-    (0..n).fold(0, { a, i -> a + i * i })
+    (0..<n).fold(0, { a, i -> a + i * i })
 }
 
 val main = {

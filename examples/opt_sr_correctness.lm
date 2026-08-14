@@ -12,7 +12,7 @@ import std.io.{println}
 ///   1. trial-division primes — classic `d+=1` loop (SR may odd-step / sieve RT)
 ///   2. dense integer matmul — nested IV / NSW pressure
 ///   3. Mandelbrot escape-time — float + early break
-///   4. Collatz dense total `1..=N` — may hit total-memo recognition
+///   4. Collatz dense total `1..N` — may hit total-memo recognition
 ///   5. Collatz strided sum — same inner steps, outer stride ≠ 1 (no total memo)
 ///   6. naive recursive fib — call-tree / memo
 ///   7. nested affine rem accumulate — may hit affine2 period RT

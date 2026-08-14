@@ -67,6 +67,9 @@ pub enum TokenKind {
     Comma,
     Dot,
     DotDot,
+    /// Half-open range `a..<b` (Kotlin-style; desugars to `range`).
+    DotDotLt,
+    /// Legacy `a..=b` — rejected by the parser (use `a..b`).
     DotDotEq,
     Colon,
     ColonColon,

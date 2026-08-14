@@ -8,7 +8,7 @@ use super::heap::block_result_may_heap_with_params;
 use crate::ir::{
     max_local_in_module, rewrite_block_locals, Block, CoreFun, CoreModule, Local, Op, Value,
 };
-use crate::visit::{block_has_io, for_each_op_value_mut};
+use crate::visit::{block_has_io, for_each_nested_block, for_each_op_value_mut};
 use lumia_ty::{Effect, Type};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
@@ -66,16 +66,45 @@ pub(crate) fn lift_lambdas(module: &mut CoreModule) {
                 }
             }
         }
+        let mut float_slots = compute_float_slots(&fun.body, &float_locals);
         lift_block(
             &mut fun.body,
             &mut extras,
             &mut id,
             &mut next_local,
             &mut float_locals,
+            &mut float_slots,
             &mut io_funs,
         );
     }
     module.functions.append(&mut extras);
+}
+
+/// Mutable / immutable slots that currently hold Float (`Assign` from a float local).
+fn compute_float_slots(block: &Block, float_locals: &HashSet<u32>) -> HashSet<String> {
+    let mut slots = HashSet::default();
+    collect_float_slots(block, float_locals, &mut slots);
+    slots
+}
+
+fn collect_float_slots(block: &Block, float_locals: &HashSet<u32>, slots: &mut HashSet<String>) {
+    for op in &block.ops {
+        match op {
+            Op::Assign { name, value } => {
+                if float_locals.contains(&value.0) {
+                    slots.insert(name.clone());
+                } else {
+                    slots.remove(name);
+                }
+            }
+            Op::Let { value, .. } | Op::Effect { value } => {
+                crate::for_each_nested_block(value, &mut |b| {
+                    collect_float_slots(b, float_locals, slots);
+                });
+            }
+            Op::Break | Op::Continue | Op::Return { .. } => {}
+        }
+    }
 }
 
 fn lift_block(
@@ -84,13 +113,17 @@ fn lift_block(
     id: &mut u32,
     next_local: &mut u32,
     float_locals: &mut HashSet<u32>,
+    float_slots: &mut HashSet<String>,
     io_funs: &mut HashSet<String>,
 ) {
     let mut new_ops = Vec::with_capacity(block.ops.len());
     for mut op in std::mem::take(&mut block.ops) {
         match &mut op {
             Op::Let {
-                value, pure_region, ..
+                local,
+                value,
+                pure_region,
+                ..
             } => {
                 let mut prelude = Vec::new();
                 lift_value(
@@ -101,9 +134,16 @@ fn lift_block(
                     &mut prelude,
                     *pure_region,
                     float_locals,
+                    float_slots,
                     io_funs,
                 );
                 new_ops.append(&mut prelude);
+                // Keep float_locals fresh for later captures in this block.
+                if matches!(value, Value::Name(n) if float_slots.contains(n))
+                    || super::float_abi::value_is_float_producing(value, float_locals)
+                {
+                    float_locals.insert(local.0);
+                }
             }
             Op::Effect { value, .. } => {
                 let mut prelude = Vec::new();
@@ -115,11 +155,19 @@ fn lift_block(
                     &mut prelude,
                     true,
                     float_locals,
+                    float_slots,
                     io_funs,
                 );
                 new_ops.append(&mut prelude);
             }
-            Op::Assign { .. } | Op::Break | Op::Continue | Op::Return { .. } => {}
+            Op::Assign { name, value } => {
+                if float_locals.contains(&value.0) {
+                    float_slots.insert(name.clone());
+                } else {
+                    float_slots.remove(name);
+                }
+            }
+            Op::Break | Op::Continue | Op::Return { .. } => {}
         }
         new_ops.push(op);
     }
@@ -134,12 +182,22 @@ fn lift_value(
     prelude: &mut Vec<Op>,
     pure_region: bool,
     float_locals: &mut HashSet<u32>,
+    float_slots: &mut HashSet<String>,
     io_funs: &mut HashSet<String>,
 ) {
     match value {
         Value::Lambda { params, body } => {
-            lift_block(body, extras, id, next_local, float_locals, io_funs);
+            lift_block(
+                body,
+                extras,
+                id,
+                next_local,
+                float_locals,
+                float_slots,
+                io_funs,
+            );
             let (free_locals, free_names) = analyze_captures(body, params);
+            let assigned_names = collect_assigned_names(body);
             let name = format!("__lam_{id}");
             *id += 1;
 
@@ -158,6 +216,9 @@ fn lift_value(
                     value: Value::Name(n.clone()),
                     pure_region,
                 });
+                if float_slots.contains(n) {
+                    float_locals.insert(tmp.0);
+                }
                 captures.push(tmp);
                 name_remap.insert(n.clone(), tmp);
             }
@@ -197,7 +258,14 @@ fn lift_value(
             for (i, cap_src) in captures.iter().enumerate() {
                 let loaded = Local(*next_local);
                 *next_local += 1;
-                let as_float = float_locals.contains(&cap_src.0);
+                let name_hit = name_remap
+                    .iter()
+                    .find(|(_, l)| l.0 == cap_src.0)
+                    .map(|(n, _)| n.clone());
+                let as_float = float_locals.contains(&cap_src.0)
+                    || name_hit
+                        .as_ref()
+                        .is_some_and(|n| float_slots.contains(n));
                 if as_float {
                     float_locals.insert(loaded.0);
                 }
@@ -210,12 +278,21 @@ fn lift_value(
                     },
                     pure_region: true,
                 });
-                let name_hit = name_remap
-                    .iter()
-                    .find(|(_, l)| l.0 == cap_src.0)
-                    .map(|(n, _)| n.clone());
                 if let Some(name) = name_hit {
-                    name_remap.insert(name, loaded);
+                    if assigned_names.contains(&name) {
+                        // Capture-by-value: seed a local slot from the env, then
+                        // keep `Name`/`Assign` on that slot so `n = n+1; n` works.
+                        load_ops.push(Op::Assign {
+                            name: name.clone(),
+                            value: loaded,
+                        });
+                        if as_float {
+                            float_slots.insert(name.clone());
+                        }
+                        name_remap.remove(&name);
+                    } else {
+                        name_remap.insert(name, loaded);
+                    }
                 } else {
                     remap.insert(cap_src.0, loaded.0);
                 }
@@ -266,17 +343,57 @@ fn lift_value(
             else_block,
             ..
         } => {
-            lift_block(then_block, extras, id, next_local, float_locals, io_funs);
-            lift_block(else_block, extras, id, next_local, float_locals, io_funs);
+            lift_block(
+                then_block,
+                extras,
+                id,
+                next_local,
+                float_locals,
+                float_slots,
+                io_funs,
+            );
+            lift_block(
+                else_block,
+                extras,
+                id,
+                next_local,
+                float_locals,
+                float_slots,
+                io_funs,
+            );
         }
         Value::Loop {
             header,
             body,
             latch,
         } => {
-            lift_block(header, extras, id, next_local, float_locals, io_funs);
-            lift_block(body, extras, id, next_local, float_locals, io_funs);
-            lift_block(latch, extras, id, next_local, float_locals, io_funs);
+            lift_block(
+                header,
+                extras,
+                id,
+                next_local,
+                float_locals,
+                float_slots,
+                io_funs,
+            );
+            lift_block(
+                body,
+                extras,
+                id,
+                next_local,
+                float_locals,
+                float_slots,
+                io_funs,
+            );
+            lift_block(
+                latch,
+                extras,
+                id,
+                next_local,
+                float_locals,
+                float_slots,
+                io_funs,
+            );
         }
         _ => {}
     }
@@ -293,4 +410,26 @@ fn rewrite_block_names(block: &mut Block, name_remap: &HashMap<String, Local>) {
             }
         }
     });
+}
+
+/// Free names that are written with `Assign` inside `block` (capture-by-value
+/// still needs a local slot for `n = n + 1; n`).
+fn collect_assigned_names(block: &Block) -> HashSet<String> {
+    let mut out = HashSet::default();
+    collect_assigned_names_in_block(block, &mut out);
+    out
+}
+
+fn collect_assigned_names_in_block(block: &Block, out: &mut HashSet<String>) {
+    for op in &block.ops {
+        match op {
+            Op::Assign { name, .. } => {
+                out.insert(name.clone());
+            }
+            Op::Let { value, .. } | Op::Effect { value } => {
+                for_each_nested_block(value, &mut |b| collect_assigned_names_in_block(b, out));
+            }
+            Op::Break | Op::Continue | Op::Return { .. } => {}
+        }
+    }
 }

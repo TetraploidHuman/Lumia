@@ -4,7 +4,7 @@ import std.io.{println}
 
 val main = {
     var acc = 0
-    for i in 1..=5 {
+    for i in 1..5 {
         acc = acc + i
     }
     println(acc)

@@ -594,4 +594,149 @@ val main = {
         });
         assert!(saw, "main should FunRef the Float mono clone");
     }
+
+    #[test]
+    fn specialize_fused_map_fold_float_add() {
+        let core = compile_source_to_core(
+            r#"
+module MapFold
+import std.io.{println}
+val dbl = { x -> x + x }
+val add = { a, b -> a + b }
+val main = {
+    val s = listOf(1.5, 2.5).map(dbl).fold(0.0, add)
+    println(s == 8.0)
+}
+"#,
+        )
+        .expect("core");
+        let names: Vec<_> = core.functions.iter().map(|f| f.name.as_str()).collect();
+        assert!(
+            names.iter().any(|n| *n == "add$Float" || *n == "add$Float_Float"),
+            "expected add$Float(_Float), funs={names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.contains("add$Float_Int")),
+            "must not create add$Float_Int, funs={names:?}"
+        );
+    }
+
+    #[test]
+    fn specialize_list_par_fold_float_add() {
+        let core = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+val dbl = { x -> x + x }
+val add = { a, b -> a + b }
+val main = {
+    val xs = listOf(1.5, 2.5).map(dbl)
+    val s = xs.fold(0.0, add)
+    println(s)
+}
+"#,
+        )
+        .expect("core");
+        let names: Vec<_> = core.functions.iter().map(|f| f.name.as_str()).collect();
+        assert!(
+            names.iter().any(|n| n.contains("add") && n.contains("Float")),
+            "expected add$Float_* clone, funs={names:?}"
+        );
+        let main = core.functions.iter().find(|f| f.name == "main").unwrap();
+        let mut fold_funref = None;
+        crate::for_each_block_dfs(&main.body, &mut |b| {
+            for op in &b.ops {
+                if let Op::Let {
+                    value:
+                        Value::Builtin {
+                            name: lumia_hir::Builtin::ListParFold,
+                            args,
+                        },
+                    ..
+                } = op
+                {
+                    if let Some(cb) = args.get(2) {
+                        for op2 in &b.ops {
+                            if let Op::Let {
+                                local,
+                                value: Value::FunRef(n),
+                                ..
+                            } = op2
+                            {
+                                if local.0 == cb.0 {
+                                    fold_funref = Some(n.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        let fr = fold_funref.expect("ListParFold funref");
+        assert!(
+            fr.contains("Float"),
+            "ListParFold should use add$Float_*, got {fr}"
+        );
+    }
+
+    #[test]
+    fn andthen_float_payload_ret_tys() {
+        let core = compile_source_to_core(
+            r#"
+module M
+type Option { Some(v) None }
+val andThen = { o, f ->
+    o match {
+        None -> None
+        Some(x) -> f(x)
+    }
+}
+val times2 = { x -> Some(x * 2.0) }
+val main = {
+    andThen(Some(1.5), times2) match {
+        Some(v) -> v
+        None -> 0.0
+    }
+}
+"#,
+        )
+        .expect("core");
+        let times2 = core
+            .functions
+            .iter()
+            .find(|f| f.name == "times2")
+            .expect("times2");
+        assert!(
+            matches!(
+                &times2.ret_ty,
+                Type::Adt { name, params } if name == "Option"
+                    && params.first().is_some_and(|p| matches!(p, Type::Float))
+            ),
+            "times2 ret should be Option[Float], got {:?}",
+            times2.ret_ty
+        );
+        let and_then = core
+            .functions
+            .iter()
+            .find(|f| f.name.starts_with("andThen$"))
+            .expect("andThen mono clone");
+        assert!(
+            matches!(
+                &and_then.ret_ty,
+                Type::Adt { name, params } if name == "Option"
+                    && params.first().is_some_and(|p| matches!(p, Type::Float))
+            ),
+            "andThen$ clone ret should be Option[Float], got {:?}",
+            and_then.ret_ty
+        );
+        assert!(
+            matches!(
+                and_then.param_tys.first(),
+                Some(Type::Adt { name, params }) if name == "Option"
+                    && params.first().is_some_and(|p| matches!(p, Type::Float))
+            ),
+            "andThen$ param0 should be Option[Float], got {:?}",
+            and_then.param_tys
+        );
+    }
 }

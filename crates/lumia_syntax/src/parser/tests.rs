@@ -292,3 +292,29 @@ val main = {
         out.errors
     );
 }
+
+#[test]
+fn parse_kotlin_style_ranges() {
+    let incl = parse_expr_str("1..5").expect("inclusive");
+    match incl {
+        Expr::Call { callee, .. } => match callee.as_ref() {
+            Expr::Ident(n, _) => assert_eq!(n, "rangeInclusive"),
+            other => panic!("expected Ident, got {other:?}"),
+        },
+        other => panic!("expected Call, got {other:?}"),
+    }
+    let excl = parse_expr_str("1..<5").expect("half-open");
+    match excl {
+        Expr::Call { callee, .. } => match callee.as_ref() {
+            Expr::Ident(n, _) => assert_eq!(n, "range"),
+            other => panic!("expected Ident, got {other:?}"),
+        },
+        other => panic!("expected Call, got {other:?}"),
+    }
+    let err = parse_expr_str("1..=5").expect_err("legacy ..=");
+    assert!(
+        err.message.contains("`..=`"),
+        "expected helpful ..= error, got {}",
+        err.message
+    );
+}

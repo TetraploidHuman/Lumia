@@ -158,7 +158,10 @@ impl<'a> Lexer<'a> {
                 self.pos += 1;
                 if self.peek() == Some(b'.') {
                     self.pos += 1;
-                    if self.peek() == Some(b'=') {
+                    if self.peek() == Some(b'<') {
+                        self.pos += 1;
+                        TokenKind::DotDotLt
+                    } else if self.peek() == Some(b'=') {
                         self.pos += 1;
                         TokenKind::DotDotEq
                     } else {
@@ -518,5 +521,34 @@ mod tests {
         let mut lx = Lexer::new("$");
         let t = lx.next_token();
         assert!(matches!(t.kind, TokenKind::Error(_)), "got {:?}", t.kind);
+    }
+
+    #[test]
+    fn lex_kotlin_style_ranges() {
+        let mut lx = Lexer::new("1..5 1..<5 1..=5");
+        let mut kinds = vec![];
+        loop {
+            let t = lx.next_token();
+            let done = t.kind == TokenKind::Eof;
+            kinds.push(t.kind);
+            if done {
+                break;
+            }
+        }
+        assert!(
+            matches!(kinds[1], TokenKind::DotDot),
+            "inclusive .., got {:?}",
+            kinds[1]
+        );
+        assert!(
+            matches!(kinds[4], TokenKind::DotDotLt),
+            "half-open ..<, got {:?}",
+            kinds[4]
+        );
+        assert!(
+            matches!(kinds[7], TokenKind::DotDotEq),
+            "legacy ..= still lexed, got {:?}",
+            kinds[7]
+        );
     }
 }

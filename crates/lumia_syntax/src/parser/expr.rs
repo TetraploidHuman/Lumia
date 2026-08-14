@@ -221,12 +221,17 @@ impl<'a> Parser<'a> {
         Ok(left)
     }
 
-    /// `a..b` → `range(a, b)`; `a..=b` → `rangeInclusive(a, b)` (DESIGN §3.5.2).
+    /// Kotlin-style ranges (DESIGN §4.11): `a..b` → `rangeInclusive`; `a..<b` → `range`.
     pub(super) fn parse_range(&mut self) -> Result<Expr, ParseError> {
         let left = self.parse_add()?;
         let inclusive = if self.at(&TokenKind::DotDotEq) {
-            true
+            self.bump();
+            return Err(self.error(
+                "`..=` was removed; use `a..b` for inclusive or `a..<b` for half-open (Kotlin-style)",
+            ));
         } else if self.at(&TokenKind::DotDot) {
+            true
+        } else if self.at(&TokenKind::DotDotLt) {
             false
         } else {
             return Ok(left);
