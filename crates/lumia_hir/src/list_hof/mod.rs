@@ -88,7 +88,11 @@ pub(crate) enum UnaryCallback {
         param_ty: Option<String>,
         body: Expr,
     },
-    Bound { f: Expr, f_name: String, x: String },
+    Bound {
+        f: Expr,
+        f_name: String,
+        x: String,
+    },
 }
 
 pub(crate) fn resolve_unary_callback(f: Expr, span: Span, prefix: &str) -> UnaryCallback {

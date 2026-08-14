@@ -173,7 +173,9 @@ impl Infer {
                     if idx >= *arity {
                         return Err(at(
                             span,
-                            format!("variant `{want}` has {arity} field(s); index {idx} out of range"),
+                            format!(
+                                "variant `{want}` has {arity} field(s); index {idx} out of range"
+                            ),
                         ));
                     }
                 } else {
@@ -289,7 +291,9 @@ impl Infer {
                 if idx >= var_arity {
                     return Err(at(
                         span,
-                        format!("variant `{want}` has {var_arity} field(s); index {idx} out of range"),
+                        format!(
+                            "variant `{want}` has {var_arity} field(s); index {idx} out of range"
+                        ),
                     ));
                 }
                 let max = self
@@ -301,14 +305,7 @@ impl Infer {
                     .max(idx + 1);
                 let params: Vec<Type> = (0..max).map(|_| self.fresh()).collect();
                 let field_ty = params[idx].clone();
-                self.unify_at(
-                    span,
-                    recv_ty,
-                    Type::Adt {
-                        name: adt,
-                        params,
-                    },
-                )?;
+                self.unify_at(span, recv_ty, Type::Adt { name: adt, params })?;
                 return Ok(field_ty);
             }
             let arity = self

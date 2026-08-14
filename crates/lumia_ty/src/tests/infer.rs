@@ -190,8 +190,8 @@ fn builtin_arity_from_info_rejects_get() {
         items: vec![Item::Fun(Fun {
             name: "main".into(),
             params: vec![],
-                    param_ann: vec![],
-                    ret_ann: None,
+            param_ann: vec![],
+            ret_ann: None,
             body: Expr::BuiltinCall {
                 name: Builtin::ListGet,
                 args: vec![Expr::Int(1, span)], // missing index

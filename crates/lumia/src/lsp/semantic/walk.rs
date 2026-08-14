@@ -400,7 +400,9 @@ fn collect_stmt(
             collect_pattern(a, pat, src, out);
             collect_expr(a, expr, src, params, out);
         }
-        Stmt::Var { name, expr, span, .. } => {
+        Stmt::Var {
+            name, expr, span, ..
+        } => {
             let start = span.start.0 as usize;
             let before = expr.span().start.0 as usize;
             if let Some((s, e)) = find_word(src, name, start, before) {

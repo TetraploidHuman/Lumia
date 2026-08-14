@@ -100,7 +100,10 @@ val cmp = { a, b -> a < b }
 val main = { cmp(setOf(1), setOf(2)) }
 "#,
     );
-    assert!(err.contains("Ord") || err.contains("Set"), "unexpected: {err}");
+    assert!(
+        err.contains("Ord") || err.contains("Set"),
+        "unexpected: {err}"
+    );
 }
 
 #[test]
@@ -115,7 +118,10 @@ val main = {
 }
 "#,
     );
-    assert!(err.contains("duplicate") && err.contains('x'), "unexpected: {err}");
+    assert!(
+        err.contains("duplicate") && err.contains('x'),
+        "unexpected: {err}"
+    );
 }
 
 #[test]
@@ -166,7 +172,10 @@ val main = {
 }
 "#,
     );
-    assert!(err.contains("unknown field") && err.contains('w'), "unexpected: {err}");
+    assert!(
+        err.contains("unknown field") && err.contains('w'),
+        "unexpected: {err}"
+    );
 }
 
 #[test]
@@ -196,7 +205,10 @@ val f = { x -> x alt 0 }
 val main = { f(Some(1)) }
 "#,
     );
-    assert!(err.contains("alt") || err.contains("Option"), "unexpected: {err}");
+    assert!(
+        err.contains("alt") || err.contains("Option"),
+        "unexpected: {err}"
+    );
 }
 
 #[test]
@@ -222,12 +234,8 @@ fn occurs_adt_and_tuple_unit() {
     use crate::infer::Infer;
     use crate::types::Type;
     let mut inf = Infer::new(crate::types::NameVisibility::default());
-    let Type::Var(a) = inf.fresh() else {
-        panic!()
-    };
-    let Type::Var(b) = inf.fresh() else {
-        panic!()
-    };
+    let Type::Var(a) = inf.fresh() else { panic!() };
+    let Type::Var(b) = inf.fresh() else { panic!() };
     inf.unify(
         Type::Var(a),
         Type::Adt {
@@ -247,12 +255,8 @@ fn occurs_adt_and_tuple_unit() {
         .is_err());
 
     let mut inf = Infer::new(crate::types::NameVisibility::default());
-    let Type::Var(a) = inf.fresh() else {
-        panic!()
-    };
-    let Type::Var(b) = inf.fresh() else {
-        panic!()
-    };
+    let Type::Var(a) = inf.fresh() else { panic!() };
+    let Type::Var(b) = inf.fresh() else { panic!() };
     inf.unify(Type::Var(a), Type::Tuple(vec![Type::Var(b)]))
         .unwrap();
     assert!(inf

@@ -603,8 +603,11 @@ fn mark_bounded_arith_tree(
             // pull arbitrary mut slots into the NSW seed.
             let acc_add = allow_acc
                 && matches!(op, BinOp::Add | BinOp::Sub)
-                && ((l && name_of_local(*right, all_defs).is_some_and(|n| seed_names.contains(&n)))
-                    || (r && name_of_local(*left, all_defs).is_some_and(|n| seed_names.contains(&n))));
+                && ((l
+                    && name_of_local(*right, all_defs).is_some_and(|n| seed_names.contains(&n)))
+                    || (r
+                        && name_of_local(*left, all_defs)
+                            .is_some_and(|n| seed_names.contains(&n))));
             let rem_ok =
                 matches!(op, BinOp::Rem) && l && const_i64(*right, all_defs).is_some_and(|c| c > 1);
             if both || acc_add || rem_ok {

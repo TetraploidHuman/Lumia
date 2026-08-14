@@ -349,9 +349,7 @@ pub(crate) fn args_mono_key(
                     // guesses never enter the clone layout; materialize restores
                     // the generic formals. Call-site Adt{…, [Float,…]} keeps params.
                     ty = match formal {
-                        Type::Adt { name, .. }
-                            if name != "Option" && name != "Result" =>
-                        {
+                        Type::Adt { name, .. } if name != "Option" && name != "Result" => {
                             Type::Adt {
                                 name: name.clone(),
                                 params: vec![],

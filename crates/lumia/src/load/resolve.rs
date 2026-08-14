@@ -90,9 +90,10 @@ pub(super) fn filter_items(items: Vec<Item>, names: &ImportNames) -> Result<Vec<
             {
                 bail!("cannot import private `{}`", n.name);
             }
-            if !items.iter().any(|it| {
-                !item_is_priv(it) && item_name(it) == Some(n.name.as_str())
-            }) {
+            if !items
+                .iter()
+                .any(|it| !item_is_priv(it) && item_name(it) == Some(n.name.as_str()))
+            {
                 bail!("module has no public `{}`", n.name);
             }
             // Keep whole module for private callees of public APIs; visibility
@@ -107,9 +108,10 @@ pub(super) fn filter_items(items: Vec<Item>, names: &ImportNames) -> Result<Vec<
                 {
                     bail!("cannot import private `{}`", n.name);
                 }
-                if !items.iter().any(|it| {
-                    !item_is_priv(it) && item_name(it) == Some(n.name.as_str())
-                }) {
+                if !items
+                    .iter()
+                    .any(|it| !item_is_priv(it) && item_name(it) == Some(n.name.as_str()))
+                {
                     bail!("module has no public `{}`", n.name);
                 }
             }

@@ -95,14 +95,8 @@ fn refresh_alloc_closure_fun_rets(module: &mut CoreModule) {
     for fun in &mut module.functions {
         if let Some(lam) = result_alloc_closure_fun(&fun.body) {
             if let Some((params, ret)) = lam_sig.get(&lam) {
-                if matches!(ret, Type::Float)
-                    || params.iter().any(|t| matches!(t, Type::Float))
-                {
-                    fun.ret_ty = Type::Fun(
-                        params.clone(),
-                        Box::new(ret.clone()),
-                        fun.effect,
-                    );
+                if matches!(ret, Type::Float) || params.iter().any(|t| matches!(t, Type::Float)) {
+                    fun.ret_ty = Type::Fun(params.clone(), Box::new(ret.clone()), fun.effect);
                 }
             }
         }

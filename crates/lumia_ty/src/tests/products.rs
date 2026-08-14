@@ -99,7 +99,9 @@ val main = { use((10,)) }
     assert!(
         r.is_err(),
         "1-tuple must not satisfy body that projects `.1`; got Ok(use={:?})",
-        r.as_ref().ok().and_then(|t| t.fun_types.get("use").cloned())
+        r.as_ref()
+            .ok()
+            .and_then(|t| t.fun_types.get("use").cloned())
     );
 }
 
@@ -129,12 +131,8 @@ fn occurs_check_follows_subst_through_adt() {
     use crate::infer::Infer;
     use crate::types::Type;
     let mut inf = Infer::new(crate::types::NameVisibility::default());
-    let Type::Var(a) = inf.fresh() else {
-        panic!()
-    };
-    let Type::Var(b) = inf.fresh() else {
-        panic!()
-    };
+    let Type::Var(a) = inf.fresh() else { panic!() };
+    let Type::Var(b) = inf.fresh() else { panic!() };
     inf.unify(
         Type::Var(a),
         Type::Adt {
@@ -158,12 +156,8 @@ fn occurs_check_follows_subst_through_tuple() {
     use crate::infer::Infer;
     use crate::types::Type;
     let mut inf = Infer::new(crate::types::NameVisibility::default());
-    let Type::Var(a) = inf.fresh() else {
-        panic!()
-    };
-    let Type::Var(b) = inf.fresh() else {
-        panic!()
-    };
+    let Type::Var(a) = inf.fresh() else { panic!() };
+    let Type::Var(b) = inf.fresh() else { panic!() };
     inf.unify(Type::Var(a), Type::Tuple(vec![Type::Var(b)]))
         .expect("first");
     let r = inf.unify(Type::Var(b), Type::Tuple(vec![Type::Var(a)]));
@@ -175,12 +169,8 @@ fn occurs_check_must_follow_substitution_list() {
     use crate::infer::Infer;
     use crate::types::Type;
     let mut inf = Infer::new(crate::types::NameVisibility::default());
-    let Type::Var(a) = inf.fresh() else {
-        panic!()
-    };
-    let Type::Var(b) = inf.fresh() else {
-        panic!()
-    };
+    let Type::Var(a) = inf.fresh() else { panic!() };
+    let Type::Var(b) = inf.fresh() else { panic!() };
     inf.unify(Type::Var(a), Type::List(Box::new(Type::Var(b))))
         .expect("first bind");
     let r = inf.unify(Type::Var(b), Type::List(Box::new(Type::Var(a))));

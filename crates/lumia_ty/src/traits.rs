@@ -46,12 +46,7 @@ impl Infer {
                 }
                 true
             }
-            Type::Int
-            | Type::Float
-            | Type::Bool
-            | Type::String
-            | Type::Char
-            | Type::Unit => true,
+            Type::Int | Type::Float | Type::Bool | Type::String | Type::Char | Type::Unit => true,
         }
     }
 
@@ -219,7 +214,9 @@ impl Infer {
             return Ok(());
         }
         match self.prune(t.clone()) {
-            Type::Int | Type::Float | Type::Bool | Type::String | Type::Char | Type::Var(_) => Ok(()),
+            Type::Int | Type::Float | Type::Bool | Type::String | Type::Char | Type::Var(_) => {
+                Ok(())
+            }
             Type::Adt { name, .. } if self.traits.ord_instances.contains(&name) => Ok(()),
             other => Err(TypeError::Message(format!(
                 "`<`/`<=`/`>`/`>=` need Ord (scalars or `instance Ord for T`), got {other}"

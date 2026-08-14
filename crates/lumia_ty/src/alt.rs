@@ -173,6 +173,6 @@ fn desugar_alt(scrutinee: Expr, alt: Expr, span: Span, kind: AltKind, success_ta
             span,
         }),
         mutable: false,
-            ty: None,
+        ty: None,
     }
 }

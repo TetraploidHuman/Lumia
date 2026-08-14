@@ -356,8 +356,7 @@ pub fn block_has_io(block: &Block, io_callees: &HashSet<String>) -> bool {
         match op {
             Op::Effect { .. } => return true,
             Op::Let {
-                pure_region: false,
-                ..
+                pure_region: false, ..
             } => return true,
             Op::Let { value, .. } => {
                 if value_has_eager_io(value, io_callees) {

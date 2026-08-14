@@ -188,10 +188,7 @@ pub fn infer_value_ty_ctx(
                 .iter()
                 .map(|f| ctx.local_tys.get(&f.0).cloned().unwrap_or(Type::Int))
                 .collect();
-            if let Some(max) = ctx
-                .sum_max_arity
-                .and_then(|m| m.get(adt_name).copied())
-            {
+            if let Some(max) = ctx.sum_max_arity.and_then(|m| m.get(adt_name).copied()) {
                 while params.len() < max {
                     params.push(Type::Int);
                 }
@@ -462,10 +459,7 @@ fn builtin_value_ty(name: Builtin, args: &[Local], ctx: InferValueCtx<'_>) -> Ty
             // Empty `listOf()` starts as List[Int]; appending a Float must
             // upgrade so later ListGet / println / == see Float ABI (and
             // `ensure_list_f64` already retags the runtime object).
-            match (
-                &list_ty,
-                args.get(1).and_then(|a| local_tys.get(&a.0)),
-            ) {
+            match (&list_ty, args.get(1).and_then(|a| local_tys.get(&a.0))) {
                 (Type::List(_), Some(Type::Float)) => Type::List(Box::new(Type::Float)),
                 _ => list_ty,
             }

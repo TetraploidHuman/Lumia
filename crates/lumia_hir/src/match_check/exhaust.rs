@@ -400,10 +400,7 @@ pub(crate) fn check_pats_cover(
 /// True when two columns are specialized on different arms with wildcards in
 /// the other column — column-wise coverage would accept but leave a gap
 /// (e.g. `(0, _) | (_, 0)` misses `(1, 1)`).
-fn product_rows_diagonal_gap(
-    rows: &[Vec<&Pattern>],
-    ctors: &HashMap<String, CtorInfo>,
-) -> bool {
+fn product_rows_diagonal_gap(rows: &[Vec<&Pattern>], ctors: &HashMap<String, CtorInfo>) -> bool {
     if rows.is_empty() {
         return false;
     }

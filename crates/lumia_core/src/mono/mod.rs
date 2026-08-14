@@ -110,7 +110,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn specialize_clones_poly_list_float_from_var_slot() {
         // Call-site `var xs = listOf(floats)` loads as `Name(xs)`. Mono must
@@ -566,7 +565,9 @@ val main = {
         let float_lam = core.functions.iter().find(|f| {
             f.name.starts_with("__lam_")
                 && f.name.contains("$Float")
-                && f.param_tys.first().is_some_and(|t| matches!(t, Type::Float))
+                && f.param_tys
+                    .first()
+                    .is_some_and(|t| matches!(t, Type::Float))
         });
         assert!(
             float_lam.is_some(),
@@ -612,7 +613,9 @@ val main = {
         .expect("core");
         let names: Vec<_> = core.functions.iter().map(|f| f.name.as_str()).collect();
         assert!(
-            names.iter().any(|n| *n == "add$Float" || *n == "add$Float_Float"),
+            names
+                .iter()
+                .any(|n| *n == "add$Float" || *n == "add$Float_Float"),
             "expected add$Float(_Float), funs={names:?}"
         );
         assert!(
@@ -639,7 +642,9 @@ val main = {
         .expect("core");
         let names: Vec<_> = core.functions.iter().map(|f| f.name.as_str()).collect();
         assert!(
-            names.iter().any(|n| n.contains("add") && n.contains("Float")),
+            names
+                .iter()
+                .any(|n| n.contains("add") && n.contains("Float")),
             "expected add$Float_* clone, funs={names:?}"
         );
         let main = core.functions.iter().find(|f| f.name == "main").unwrap();

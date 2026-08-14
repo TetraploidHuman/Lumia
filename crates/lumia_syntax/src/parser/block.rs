@@ -122,9 +122,9 @@ impl<'a> Parser<'a> {
                 let ty = if matches!(pat, Pattern::Ident(_, _)) {
                     self.parse_optional_type_ann()?
                 } else if self.at(&TokenKind::Colon) {
-                    return Err(self.error(
-                        "type ascription is only allowed on simple `val` binders",
-                    ));
+                    return Err(
+                        self.error("type ascription is only allowed on simple `val` binders")
+                    );
                 } else {
                     None
                 };

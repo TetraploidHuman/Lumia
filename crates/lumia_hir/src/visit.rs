@@ -158,7 +158,8 @@ fn collect_free_vars(expr: &Expr, bound: &mut Vec<String>, out: &mut Vec<String>
             }
         }
         Expr::Let {
-            name, value, body, .. } => {
+            name, value, body, ..
+        } => {
             collect_free_vars(value, bound, out);
             bound.push(name.clone());
             collect_free_vars(body, bound, out);

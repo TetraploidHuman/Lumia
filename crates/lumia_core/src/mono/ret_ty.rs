@@ -156,8 +156,14 @@ fn value_fixed_ty(
             name: Builtin::ListGet,
             args,
         } => {
-            let list_ty =
-                local_fixed_ty(block, args.first()?.0, index, trait_methods, param_tys, seen)?;
+            let list_ty = local_fixed_ty(
+                block,
+                args.first()?.0,
+                index,
+                trait_methods,
+                param_tys,
+                seen,
+            )?;
             match list_ty {
                 Type::List(e) | Type::Set(e) => Some(*e),
                 Type::Map(_, v) => Some(Type::Adt {

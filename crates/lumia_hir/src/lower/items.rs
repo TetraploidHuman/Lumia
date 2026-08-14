@@ -255,7 +255,9 @@ fn collect_fold_assoc(m: &lumia_syntax::Module) -> HashSet<String> {
             if let Some(params) = &v.params {
                 if params.len() == 2
                     && crate::list_hof::syntax_fold_body_is_associative(
-                        &v.body, &params[0].0, &params[1].0,
+                        &v.body,
+                        &params[0].0,
+                        &params[1].0,
                     )
                 {
                     toplevel_fold_assoc.insert(v.name.clone());

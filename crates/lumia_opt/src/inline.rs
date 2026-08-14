@@ -95,13 +95,7 @@ fn inline_block(
             } => {
                 let mut value = value;
                 inline_value(
-                    &mut value,
-                    inlineable,
-                    caller,
-                    next,
-                    name_tag,
-                    expanding,
-                    depth,
+                    &mut value, inlineable, caller, next, name_tag, expanding, depth,
                 );
                 if let Value::Call { fun, args } = &value {
                     // Refuse self-recursion, re-entry on the expand stack (mutual
@@ -153,13 +147,7 @@ fn inline_block(
             }
             Op::Effect { mut value } => {
                 inline_value(
-                    &mut value,
-                    inlineable,
-                    caller,
-                    next,
-                    name_tag,
-                    expanding,
-                    depth,
+                    &mut value, inlineable, caller, next, name_tag, expanding, depth,
                 );
                 out.push(Op::Effect { value });
             }
@@ -185,22 +173,10 @@ fn inline_value(
             ..
         } => {
             inline_block(
-                then_block,
-                inlineable,
-                caller,
-                next,
-                name_tag,
-                expanding,
-                depth,
+                then_block, inlineable, caller, next, name_tag, expanding, depth,
             );
             inline_block(
-                else_block,
-                inlineable,
-                caller,
-                next,
-                name_tag,
-                expanding,
-                depth,
+                else_block, inlineable, caller, next, name_tag, expanding, depth,
             );
         }
         Value::Loop {

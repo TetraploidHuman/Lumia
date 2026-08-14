@@ -68,7 +68,8 @@ fn fun_body_has_io(body: &Expr, fun_types: &HashMap<String, Type>) -> bool {
                 walk(callee, fun_types, locals) || args.iter().any(|a| walk(a, fun_types, locals))
             }
             Expr::Let {
-                name, value, body, .. } => {
+                name, value, body, ..
+            } => {
                 if walk(value, fun_types, locals) {
                     return true;
                 }
@@ -174,7 +175,8 @@ pub(crate) fn assert_no_effects_in_pure(
             Ok(())
         }
         Expr::Let {
-            name, value, body, .. } => {
+            name, value, body, ..
+        } => {
             assert_no_effects_in_pure(value, fun_types, locals)?;
             let io = match value.as_ref() {
                 Expr::Lambda { body: lam_body, .. } => fun_body_has_io(lam_body, fun_types),
@@ -306,7 +308,8 @@ pub(crate) fn check_expr_effects(
             Ok(())
         }
         Expr::Let {
-            name, value, body, .. } => {
+            name, value, body, ..
+        } => {
             check_expr_effects(value, in_effect_ctx, fun_types, locals)?;
             let io = match value.as_ref() {
                 Expr::Lambda { body: lam_body, .. } => fun_body_has_io(lam_body, fun_types),

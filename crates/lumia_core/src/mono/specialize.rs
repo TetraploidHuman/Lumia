@@ -299,12 +299,7 @@ fn scan_mono_block(
             Op::Let { local, value, .. } => {
                 note_mono_call(value, local_tys, index, needed, &funref_of);
                 let ty = mono_value_ty_with_funrefs(
-                    value,
-                    local_tys,
-                    slot_tys,
-                    int_consts,
-                    index,
-                    &funref_of,
+                    value, local_tys, slot_tys, int_consts, index, &funref_of,
                 );
                 local_tys.insert(local.0, ty);
                 if let Value::Int(n) = value {
@@ -417,8 +412,7 @@ fn note_mono_call(
             let Some(f) = index.get(fun) else {
                 return;
             };
-            let Some(key) =
-                args_mono_key(args, local_tys, funref_of, Some(f.param_tys.as_slice()))
+            let Some(key) = args_mono_key(args, local_tys, funref_of, Some(f.param_tys.as_slice()))
             else {
                 return;
             };
@@ -485,8 +479,7 @@ fn note_needed_clone(
     let funs = index.funs();
     let param_tys = materialize_mono_param_tys(&key, &f.param_tys, funs);
     let ret = key.ret_ty(funs);
-    if f.param_tys == param_tys && f.ret_ty == ret && key.funref_param_binds(&f.params).is_empty()
-    {
+    if f.param_tys == param_tys && f.ret_ty == ret && key.funref_param_binds(&f.params).is_empty() {
         return;
     }
     needed.insert((fun.to_string(), key));
@@ -499,7 +492,14 @@ pub(crate) fn mono_value_ty(
     int_consts: &HashMap<u32, i64>,
     index: &FunIndex<'_>,
 ) -> Type {
-    mono_value_ty_with_funrefs(value, local_tys, slot_tys, int_consts, index, &HashMap::default())
+    mono_value_ty_with_funrefs(
+        value,
+        local_tys,
+        slot_tys,
+        int_consts,
+        index,
+        &HashMap::default(),
+    )
 }
 
 fn mono_value_ty_with_funrefs(
@@ -595,13 +595,7 @@ fn rewrite_mono_block(
                     funref_of.insert(cb_local, new_name);
                 }
                 let ty = mono_value_ty_rewrite(
-                    value,
-                    local_tys,
-                    slot_tys,
-                    int_consts,
-                    renames,
-                    &funref_of,
-                    index,
+                    value, local_tys, slot_tys, int_consts, renames, &funref_of, index,
                 );
                 local_tys.insert(local.0, ty);
                 if let Value::Int(n) = value {

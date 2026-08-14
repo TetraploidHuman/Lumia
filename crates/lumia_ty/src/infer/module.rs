@@ -167,12 +167,9 @@ fn infer_module_inner(
         .adts
         .iter()
         .flat_map(|a| {
-            a.variants.iter().map(|v| {
-                (
-                    v.name.clone(),
-                    (a.name.clone(), v.arity),
-                )
-            })
+            a.variants
+                .iter()
+                .map(|v| (v.name.clone(), (a.name.clone(), v.arity)))
         })
         .collect();
     let mut fun_types = HashMap::default();
@@ -281,7 +278,8 @@ fn infer_module_inner(
                 if let Some(ann) = ann {
                     match parse_type_name(ann) {
                         Ok(expect) => {
-                            if let Err(e) = inf.unify_at(expr_span(body), ty.clone(), expect.clone())
+                            if let Err(e) =
+                                inf.unify_at(expr_span(body), ty.clone(), expect.clone())
                             {
                                 errors.push(e);
                                 if !opts.recovering {
@@ -294,10 +292,7 @@ fn infer_module_inner(
                         Err(e) => {
                             errors.push(at(
                                 expr_span(body),
-                                format!(
-                                    "in type ascription for `{name}`: {}",
-                                    e.message()
-                                ),
+                                format!("in type ascription for `{name}`: {}", e.message()),
                             ));
                             if !opts.recovering {
                                 return (None, errors);

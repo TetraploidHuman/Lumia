@@ -484,13 +484,9 @@ fn expected_free_energy(
                             0.55 * raw_drive
                         };
                     } else if a == 1 {
-                        homeo = -0.75
-                            * raw_drive
-                            * if tdy <= 0.05 { 1.0 } else { 0.40 };
+                        homeo = -0.75 * raw_drive * if tdy <= 0.05 { 1.0 } else { 0.40 };
                     } else if a == 2 {
-                        homeo = -0.75
-                            * raw_drive
-                            * if tdy >= -0.05 { 1.0 } else { 0.40 };
+                        homeo = -0.75 * raw_drive * if tdy >= -0.05 { 1.0 } else { 0.40 };
                     }
                 } else if a == 0 {
                     let align = if sees_goal {
@@ -574,7 +570,13 @@ pub extern "C" fn lumia_efe_apply_embodied_reflexes(
                 *lp.add(i) += 1.12 * reflex_gain * avoid[i];
             }
             let mut food = [0.0_f64; 4];
-            fill_goal_approach(&mut food, get(pp, n_plan, rel), get(pp, n_plan, rel + 1), op, n_obs);
+            fill_goal_approach(
+                &mut food,
+                get(pp, n_plan, rel),
+                get(pp, n_plan, rel + 1),
+                op,
+                n_obs,
+            );
             let sub = if on_threat || tloc > 0.40 || pain > 0.18 {
                 0.75
             } else {
@@ -649,7 +651,14 @@ fn fill_embodied_steer(buf: &mut [f64; 4], dx: f64, dy: f64, flee: bool) {
     }
 }
 
-fn fill_threat_avoid(buf: &mut [f64; 4], tdx: f64, tdy: f64, intensity: f64, obs: *const f64, n_obs: usize) {
+fn fill_threat_avoid(
+    buf: &mut [f64; 4],
+    tdx: f64,
+    tdy: f64,
+    intensity: f64,
+    obs: *const f64,
+    n_obs: usize,
+) {
     *buf = [0.0; 4];
     if intensity <= 1e-6 && tdx.abs() + tdy.abs() < 1e-6 {
         return;

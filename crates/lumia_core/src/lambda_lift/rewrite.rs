@@ -263,9 +263,7 @@ fn lift_value(
                     .find(|(_, l)| l.0 == cap_src.0)
                     .map(|(n, _)| n.clone());
                 let as_float = float_locals.contains(&cap_src.0)
-                    || name_hit
-                        .as_ref()
-                        .is_some_and(|n| float_slots.contains(n));
+                    || name_hit.as_ref().is_some_and(|n| float_slots.contains(n));
                 if as_float {
                     float_locals.insert(loaded.0);
                 }

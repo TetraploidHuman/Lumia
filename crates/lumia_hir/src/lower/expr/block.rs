@@ -32,7 +32,14 @@ pub(super) fn lower_block(
                 ty,
                 expr,
                 span: s,
-            } => lower_val_pat(ctx, pat, ty.as_deref(), expr, *s, fold(ctx, rest, tail, span)),
+            } => lower_val_pat(
+                ctx,
+                pat,
+                ty.as_deref(),
+                expr,
+                *s,
+                fold(ctx, rest, tail, span),
+            ),
             lumia_syntax::Stmt::Var {
                 name,
                 ty,

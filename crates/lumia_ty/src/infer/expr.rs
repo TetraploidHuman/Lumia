@@ -113,12 +113,10 @@ impl Infer {
                          identify one product type",
                     ));
                 };
-                let order = self
-                    .products
-                    .products
-                    .get(&name)
-                    .cloned()
-                    .ok_or_else(|| at(span, format!("unknown product type `{name}` in `with`")))?;
+                let order =
+                    self.products.products.get(&name).cloned().ok_or_else(|| {
+                        at(span, format!("unknown product type `{name}` in `with`"))
+                    })?;
                 let params: Vec<Type> = (0..order.len()).map(|_| self.fresh()).collect();
                 self.unify_at(
                     span,
@@ -280,7 +278,10 @@ impl Infer {
         for (i, p) in params.iter().enumerate() {
             let tv = if let Some(Some(ann)) = param_ann.get(i) {
                 parse_type_name(ann).map_err(|e| {
-                    at(span, format!("in type ascription for `{p}`: {}", e.message()))
+                    at(
+                        span,
+                        format!("in type ascription for `{p}`: {}", e.message()),
+                    )
                 })?
             } else {
                 self.fresh()
@@ -368,7 +369,9 @@ impl Infer {
                 } else {
                     Err(at(
                         span,
-                        format!("`==`/`!=` need structural Eq; functions are not comparable, got {t}"),
+                        format!(
+                            "`==`/`!=` need structural Eq; functions are not comparable, got {t}"
+                        ),
                     ))
                 }
             }
