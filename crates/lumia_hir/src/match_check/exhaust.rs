@@ -186,7 +186,7 @@ pub(crate) fn check_pats_cover(
                     let row_refs: Vec<Vec<&Pattern>> = rows
                         .iter()
                         .filter(|r| r.len() == v.arity)
-                        .map(|r| r.iter().copied().collect())
+                        .map(|r| r.to_vec())
                         .collect();
                     if product_rows_diagonal_gap(&row_refs, ctors) {
                         let where_ = if path.is_empty() {
@@ -355,16 +355,13 @@ pub(crate) fn check_pats_cover(
                 let mut owned: Vec<Pattern> = Vec::new();
                 let mut from_arm: Vec<&Pattern> = Vec::new();
                 for p in &list_pats {
-                    match p {
-                        Pattern::List { elems, rest, span } => {
-                            if let Some(e) = elems.get(slot) {
-                                from_arm.push(e);
-                            } else if rest.is_some() {
-                                owned.push(Pattern::Wildcard(*span));
-                            }
-                            // else: fixed shorter list — does not match len > slot
+                    if let Pattern::List { elems, rest, span } = p {
+                        if let Some(e) = elems.get(slot) {
+                            from_arm.push(e);
+                        } else if rest.is_some() {
+                            owned.push(Pattern::Wildcard(*span));
                         }
-                        _ => {}
+                        // else: fixed shorter list — does not match len > slot
                     }
                 }
                 let mut col: Vec<&Pattern> = from_arm;

@@ -566,8 +566,8 @@ pub extern "C" fn lumia_efe_apply_embodied_reflexes(
             let reflex_gain = amy_threat_gain.max(0.55);
             let mut avoid = [0.0_f64; 4];
             fill_threat_avoid(&mut avoid, tdx, tdy, tloc, op, n_obs);
-            for i in 0..4 {
-                *lp.add(i) += 1.12 * reflex_gain * avoid[i];
+            for (i, a) in avoid.iter().enumerate() {
+                *lp.add(i) += 1.12 * reflex_gain * *a;
             }
             let mut food = [0.0_f64; 4];
             fill_goal_approach(
@@ -582,8 +582,8 @@ pub extern "C" fn lumia_efe_apply_embodied_reflexes(
             } else {
                 0.28
             };
-            for i in 0..4 {
-                *lp.add(i) -= sub * food[i];
+            for (i, f) in food.iter().enumerate() {
+                *lp.add(i) -= sub * *f;
             }
         }
         if on_threat {
@@ -695,9 +695,9 @@ fn fill_threat_avoid(
     }
     if n_obs >= 10 {
         unsafe {
-            for i in 0..4 {
+            for (i, slot) in buf.iter_mut().enumerate() {
                 let blocked = (*obs.add(6 + i)).clamp(0.0, 1.0);
-                buf[i] *= 1.0 - blocked;
+                *slot *= 1.0 - blocked;
             }
         }
     }
@@ -707,9 +707,9 @@ fn fill_goal_approach(buf: &mut [f64; 4], dx: f64, dy: f64, obs: *const f64, n_o
     fill_embodied_steer(buf, dx, dy, false);
     if n_obs >= 10 {
         unsafe {
-            for i in 0..4 {
+            for (i, slot) in buf.iter_mut().enumerate() {
                 let blocked = (*obs.add(6 + i)).clamp(0.0, 1.0);
-                buf[i] *= 1.0 - blocked;
+                *slot *= 1.0 - blocked;
             }
         }
     }
