@@ -109,10 +109,32 @@ pub(crate) fn run_example_build(
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let got: Vec<&str> = stdout.lines().collect();
-    assert_eq!(
-        got, expected_lines,
-        "{rel}: stdout mismatch\n got: {got:?}\n want: {expected_lines:?}"
-    );
+    assert_stdout_lines(rel, &got, expected_lines);
+}
+
+/// Exact match for non-floats; f64 lines allow tiny platform Display differences
+/// (MSVC vs glibc often disagree on the last decimal digit).
+fn assert_stdout_lines(rel: &str, got: &[&str], want: &[&str]) {
+    if got.len() != want.len() {
+        panic!("{rel}: stdout mismatch\n got: {got:?}\n want: {want:?}");
+    }
+    for (i, (g, w)) in got.iter().zip(want.iter()).enumerate() {
+        if g == w {
+            continue;
+        }
+        match (g.parse::<f64>(), w.parse::<f64>()) {
+            (Ok(a), Ok(b)) if float_lines_close(a, b) => continue,
+            _ => panic!("{rel}: stdout mismatch at line {i}\n got: {got:?}\n want: {want:?}"),
+        }
+    }
+}
+
+fn float_lines_close(a: f64, b: f64) -> bool {
+    if a == b || (a.is_nan() && b.is_nan()) {
+        return true;
+    }
+    let scale = a.abs().max(b.abs()).max(1.0);
+    (a - b).abs() <= scale * 1e-12
 }
 
 /// Run `lumia check` and assert failure + required diagnostic substrings.
