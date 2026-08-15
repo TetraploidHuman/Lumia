@@ -966,6 +966,57 @@ val main = {
 
 
     #[test]
+    fn audit_r5_remove_and_filter_tomap() {
+        let rem = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+val main = {
+  scope {
+    val m = spawn { mapOf(1 to 1.5, 2 to 2.5).remove(1) }.join()
+    println(m.get(2) alt 0.0)
+  }
+}
+"#,
+        )
+        .expect("rem");
+        let filter = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+val main = {
+  scope {
+    val m = spawn {
+      listOf((1, 1.5), (2, 2.5), (3, 3.5))
+        .filter({ p -> p.0 > 1 })
+        .toMap()
+    }.join()
+    println(m.get(2))
+  }
+}
+"#,
+        )
+        .expect("filter");
+        let ret = |c: &crate::ir::CoreModule| -> Type {
+            c.functions
+                .iter()
+                .find(|f| f.name.starts_with("__lam_"))
+                .map(|f| f.ret_ty.clone())
+                .unwrap_or(Type::Int)
+        };
+        assert!(
+            matches!(ret(&rem), Type::Map(_, ref v) if matches!(v.as_ref(), Type::Float)),
+            "remove {:?}",
+            ret(&rem)
+        );
+        assert!(
+            matches!(ret(&filter), Type::Map(_, ref v) if matches!(v.as_ref(), Type::Float)),
+            "filter {:?}",
+            ret(&filter)
+        );
+    }
+
+    #[test]
     fn audit_r4_tomap_and_mapset_float() {
         let tomap = compile_source_to_core(
             r#"

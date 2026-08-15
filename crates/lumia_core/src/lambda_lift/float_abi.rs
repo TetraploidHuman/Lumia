@@ -487,6 +487,23 @@ fn adt_field_is_float(
                     adt_local_field_is_float(e.0, idx, float_locals, defs, &mut HashSet::default())
                 });
             }
+            // `filter`/`map` acc then `toMap`: `p.1` where `p = acc.get(i)` and
+            // `acc` is a Name-load of a list built from float-field tuples still
+            // present as `AllocList` in the same function.
+            Some(Value::Name(_)) => {
+                return defs.values().any(|v| match v {
+                    Value::AllocList { elems, .. } => elems.iter().any(|e| {
+                        adt_local_field_is_float(
+                            e.0,
+                            idx,
+                            float_locals,
+                            defs,
+                            &mut HashSet::default(),
+                        )
+                    }),
+                    _ => false,
+                });
+            }
             _ => return false,
         }
     }
@@ -1574,6 +1591,43 @@ fn local_heap_ty(
                 // Do **not** mirror value_ty's Int-key→List guess: empty/`mapOf`
                 // receivers that still look open become Map once `.set` is seen.
                 _ => Some(Type::Map(Box::new(key_ty), Box::new(val_ty))),
+            }
+        }
+        Value::Builtin {
+            name: lumia_hir::Builtin::MapRemove,
+            args,
+        } if args.len() >= 2 => {
+            let key_ty = if float_locals.contains(&args[1].0) {
+                Type::Float
+            } else {
+                local_heap_ty(
+                    block,
+                    args[1].0,
+                    float_locals,
+                    fun_ret_tys,
+                    fun_param_tys,
+                    cap_tys,
+                    seen,
+                    seen_slots,
+                )
+                .unwrap_or(Type::Int)
+            };
+            match local_heap_ty(
+                block,
+                args[0].0,
+                float_locals,
+                fun_ret_tys,
+                fun_param_tys,
+                cap_tys,
+                seen,
+                seen_slots,
+            ) {
+                Some(Type::List(e)) => Some(Type::List(e)),
+                Some(Type::Map(k, v)) => Some(Type::Map(
+                    Box::new(prefer_concrete_heap_ty(k.as_ref().clone(), key_ty)),
+                    v,
+                )),
+                _ => Some(Type::Map(Box::new(key_ty), Box::new(Type::Int))),
             }
         }
         Value::Builtin {
