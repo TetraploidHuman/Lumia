@@ -49,6 +49,8 @@
 - [x] **spawn `Map.values` / `take→toMap` / `filter.reverse` Float ABI**：`MapValues`/`MapKeys`/`ListTake`/`Reverse` 进 heap 定型；`list_elem_is_float` 认 Name 累加器；`adt_field_is_float` 穿过 Take/Slice/Reverse。
 - [x] **spawn String `.len()` ABI**：抬升把堆 `String`/`concat` 误标成占位 `List[Int]`，codegen 走 `lumia_list_len` 读出 payload 前 8 字节；`local_heap_ty` 认 String/Char/Show/…，`ListConcat` 保 String，`List(Int)` 占位让位给 String。
 - [x] **闭包捕获 String 再 `.concat` 的 ret ABI**：`refresh_lifted_lambda_rets` 接受 String/Char；`AllocClosure` Fun ret 同步（否则 `prefix.concat(s)` / spawn 返回闭包后 `.len()` 仍走 list_len）。
+- [x] **spawn `Option`/`Result` Float 再 `optionMap`/`resultMap`**：mono 在 FunRef let 时未查 `__lam` ret，`TaskJoin` 被当成 Int，不特化；FunRef/AllocClosure 直读 index，且 fixup 先于 mono。
+- [x] **spawn bool `fold`/`and` ABI**：`and`/`or` 脱糖为 `if`；fold 里 `ListGet` 臂未标 Bool 时累加器被清成 Int；识别 `else false` / `then true` 短路形。
 - [x] **`with` 捕获 ADT / TaskJoin 管道 / flatMap Float ABI**：`ClosureCap` 定型 + `AdtField`/`ListGet`/`Elems`/`ListConcat`/`Binary`；slot 定型用 defs_root；If 臂经外层根解析外局部。
 - [x] **`var f = …; f = …` Fun 重绑定**：mut slot COW release 跳过 FunRef（低位 tag），仅释放堆闭包；e2e `var_fun_reassign`。
 - [x] **有限 `return` + `alt`**：最近函数/闭包早退；`expr alt rhs` 恢复 Option/Result（Result 绑定 `err`）；传播写 `alt return Err(err)`（无自动包装、无裸 `alt return`、`?` 仍搁置）。

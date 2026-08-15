@@ -1720,4 +1720,110 @@ val main = {
         );
         assert!(matches!(core.channel_elem_hint.as_ref(), Some(Type::Float)));
     }
+
+    #[test]
+    fn audit_r9_spawn_option_float_optionmap() {
+        let core = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+val optionMap = { opt, f ->
+  opt match {
+    None -> None
+    Some(x) -> Some(f(x))
+  }
+}
+val main = {
+  scope {
+    val o = spawn { Some(1.5) }.join()
+    val o2 = optionMap(o, { x -> x * 2.0 })
+    o2 match {
+      Some(v) -> println(v)
+      None -> println(0.0)
+    }
+  }
+}
+"#,
+        )
+        .expect("core");
+        let spawn = core
+            .functions
+            .iter()
+            .find(|f| {
+                f.name.starts_with("__lam_")
+                    && f.body.ops.iter().any(|op| {
+                        matches!(
+                            op,
+                            crate::Op::Let {
+                                value: crate::Value::AllocAdt { adt_name, .. },
+                                ..
+                            } if adt_name == "Option"
+                        )
+                    })
+            })
+            .expect("spawn Some");
+        eprintln!("spawn ret {:?}", spawn.ret_ty);
+        let calls: Vec<_> = core
+            .functions
+            .iter()
+            .filter(|f| f.name == "main")
+            .flat_map(|f| f.body.ops.iter())
+            .filter_map(|op| match op {
+                crate::Op::Let {
+                    value: crate::Value::Call { fun, .. },
+                    ..
+                } => Some(fun.clone()),
+                _ => None,
+            })
+            .collect();
+        eprintln!("main calls {:?}", calls);
+        assert!(
+            matches!(
+                &spawn.ret_ty,
+                Type::Adt { name, params }
+                    if name == "Option"
+                        && params.first().is_some_and(|p| matches!(p, Type::Float))
+            ),
+            "spawn Some(1.5) ret {:?}",
+            spawn.ret_ty
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.contains("optionMap") && c.contains("Float")),
+            "expected specialized optionMap, got {:?}",
+            calls
+        );
+    }
+
+    #[test]
+    fn audit_r9b_spawn_bool_fold_ret() {
+        let core = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+val main = {
+  scope {
+    println(spawn { listOf(true, false).fold(true, { a, x -> a and x }) }.join())
+  }
+}
+"#,
+        )
+        .expect("core");
+        let spawn = core
+            .functions
+            .iter()
+            .find(|f| {
+                f.name.starts_with("__lam_")
+                    && f.body.ops.iter().any(|op| {
+                        matches!(op, crate::Op::Let { value: crate::Value::Loop { .. }, .. })
+                    })
+            })
+            .expect("fold spawn");
+        assert!(
+            matches!(spawn.ret_ty, Type::Bool),
+            "spawn bool fold ret {:?}",
+            spawn.ret_ty
+        );
+    }
 }

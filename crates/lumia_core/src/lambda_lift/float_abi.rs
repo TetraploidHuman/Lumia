@@ -251,6 +251,7 @@ fn compute_bool_locals_from(
                     }
                 }
                 if let Value::If {
+                    cond,
                     then_block,
                     else_block,
                     ..
@@ -270,7 +271,13 @@ fn compute_bool_locals_from(
                         .is_some_and(|Local(r)| ef.contains(&r));
                     let then_ok = then_b || block_result_is_bottom(then_block);
                     let else_ok = else_b || block_result_is_bottom(else_block);
-                    if then_ok && else_ok && (then_b || else_b) {
+                    // `and`/`or` desugar to `if c then x else false` / `if c then true else x`.
+                    // The open arm may be `ListGet` of a Bool list (fold) and is not yet
+                    // in `bool_locals` — still a Bool result when `c` is Bool.
+                    let short_circuit = bool_locals.contains(&cond.0)
+                        && (block_result_is_bool_lit(else_block, false)
+                            || block_result_is_bool_lit(then_block, true));
+                    if (then_ok && else_ok && (then_b || else_b)) || short_circuit {
                         bool_locals.insert(local.0);
                     }
                     bool_slots.extend(then_slots);
@@ -343,6 +350,25 @@ fn block_result_is_bottom(block: &Block) -> bool {
                 name: lumia_hir::Builtin::MatchFail,
                 ..
             }) => return true,
+            _ => return false,
+        }
+    }
+}
+
+/// `if` arm that is the Bool literal from `and`/`or` desugaring.
+fn block_result_is_bool_lit(block: &Block, expect: bool) -> bool {
+    let Some(Local(r)) = block.result else {
+        return false;
+    };
+    let mut seen = HashSet::default();
+    let mut cur = r;
+    loop {
+        if !seen.insert(cur) {
+            return false;
+        }
+        match let_value(block, cur) {
+            Some(Value::Local(Local(src))) => cur = *src,
+            Some(Value::Bool(b)) => return *b == expect,
             _ => return false,
         }
     }

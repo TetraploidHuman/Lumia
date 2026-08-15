@@ -5,7 +5,7 @@ use super::traits::directize_block;
 use crate::ir::{Block, CoreFun, CoreModule, Local, Op, Value};
 use crate::value_ty::{infer_value_ty_ctx, InferValueCtx};
 use lumia_hir::Builtin;
-use lumia_ty::Type;
+use lumia_ty::{Effect, Type};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet};
 
 /// Max clone-discovery iterations.
@@ -660,6 +660,24 @@ fn mono_value_ty_with_funrefs(
         }
         None
     };
+    // FunRef / AllocClosure must see `__lam_*` rets even on the first let
+    // (`spawn { Some(1.5) }` → Option[Float]). Do not seed all funs into
+    // `fun_ret_tys` — Call prefers the table over call-site mono keys and
+    // would erase List[Float]/Map rets (eps / idMap / fold tests).
+    if let Value::FunRef(name) | Value::AllocClosure { fun: name, .. } = value {
+        let f = index.get(name);
+        let mut params = f.map(|f| f.param_tys.clone()).unwrap_or_default();
+        let ret = f.map(|f| f.ret_ty.clone()).unwrap_or(Type::Int);
+        if name.starts_with("__lam_")
+            && params
+                .first()
+                .is_some_and(|p| matches!(p, Type::Int | Type::Var(_)))
+            && params.len() > 1
+        {
+            params.remove(0);
+        }
+        return Type::Fun(params, Box::new(ret), Effect::pure());
+    }
     // Thread FunRef names so ListParMap can read callback ret via funref_locals.
     let mut fun_ret_tys: HashMap<String, Type> = HashMap::default();
     let mut funref_locals: HashMap<u32, String> = HashMap::default();

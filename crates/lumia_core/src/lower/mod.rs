@@ -191,7 +191,12 @@ pub fn lower_hir_with_schemes(
     lift_lambdas(&mut core);
     refine_channel_elem_hint(&mut core);
     directize_funref_calls(&mut core);
+    // Refresh lifted `__lam_*` heap/Float/Bool/String rets before mono so
+    // `spawn { Some(1.5) }.join()` is `Option[Float]` at optionMap call sites
+    // (otherwise mono keeps the generic body and println sees IEEE-as-Int).
+    fixup_closure_float_caps(&mut core);
     specialize_mono_calls(&mut core);
+    // Again after mono: patch `closure_cap_f` once `$Float` clones exist.
     fixup_closure_float_caps(&mut core);
     resolve_trait_method_calls(&mut core);
     ensure_trait_method_stubs(&mut core);
