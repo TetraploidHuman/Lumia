@@ -37,6 +37,7 @@
 - [x] **`fixup_closure_float_caps` 无 cap 也 refresh ret**：directize 后的 `Call`（如 `var f = {…}; f(1.5)`）不再因 early-return 留在 `List(Int)`。
 - [x] **channel Bool / Fun / Task hint**：比较/`Bool`、`Fun(Float)→Float`、`Task[Float]` send 保留 elem；`var` Bool 经 Assign/`Name` 保持 Bool ret。
 - [x] **同 channel 混型 payload**：检测冲突并在编译期拒绝（`Float` 与 `List[…]` 等同 channel 混发）；异 channel 仍可用 per-local hint。
+- [x] **同 channel `Int`+`Float`/`String`**：`note_send` 不再跳过 `Int`，否则只留下非 Int hint，`recv` 把整数当 IEEE 打印。
 - [x] **per-channel elem hint**：`channel_elem_by_local` 按 `ChannelNew` 局部跟踪 send；异类型多 channel（Float vs `List[Float]`）各自保留 ABI。
 - [x] **map spawn join / list-of-Fun / channel-in-closure Float ABI**：空 `List[Int]` acc `ListAppend` 升级为 `Task`/`Fun`/…；codegen `closure_cap_tys` 预扫描 + `ClosureCap` 继承 AllocClosure 端类型（`spawn { ch.recv() }` 不再对 Float channel `sitofp`）。
 - [x] **局部 `{ -> }` thunk channel recv Float**：channel hint 先登记 `ChannelNew` 再传播 ClosureCap（spawn 先于 AllocClosure 列出时也能归到 send）；`ChannelSend`→`Unit`、`ChannelRecv` 经 `by_local` 定 ret；不再把 send/recv 误标成 `List[Int]`。

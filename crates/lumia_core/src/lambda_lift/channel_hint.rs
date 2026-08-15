@@ -322,9 +322,8 @@ fn note_send(
     let Some(ty) = local_tys.get(&payload.0).cloned() else {
         return;
     };
-    if matches!(ty, Type::Int | Type::Var(_)) {
-        return;
-    }
+    // Record Int too: skipping it let `send(1); send(1.5)` / `send(1); send("x")`
+    // keep only the concrete hint, so recv printed IEEE bits / wrong ABI.
     let Some(root) = root_of.get(&ch.0).copied() else {
         return;
     };
@@ -935,6 +934,49 @@ val main = {
             ),
             "channel task-float hint {:?}",
             hint
+        );
+    }
+
+    #[test]
+    fn mixed_channel_int_float_or_string_conflict() {
+        let err_f = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+val main = {
+  scope {
+    val ch = channel(2)
+    spawn { ch.send(1) }
+    spawn { ch.send(1.5) }
+    println(ch.recv())
+  }
+}
+"#,
+        )
+        .expect_err("int+float channel");
+        assert!(
+            err_f.contains("mixed payloads") || err_f.contains("channel"),
+            "unexpected: {err_f}"
+        );
+
+        let err_s = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+val main = {
+  scope {
+    val ch = channel(2)
+    spawn { ch.send(1) }
+    spawn { ch.send("x") }
+    println(ch.recv())
+  }
+}
+"#,
+        )
+        .expect_err("int+string channel");
+        assert!(
+            err_s.contains("mixed payloads") || err_s.contains("channel"),
+            "unexpected: {err_s}"
         );
     }
 
