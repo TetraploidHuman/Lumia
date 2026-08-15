@@ -966,6 +966,58 @@ val main = {
 
 
     #[test]
+    fn audit_r7_spawn_string_len() {
+        let lit = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+val main = {
+  scope {
+    val s = spawn { "hello" }.join()
+    println(s.len())
+  }
+}
+"#,
+        )
+        .expect("lit");
+        let lit_spawn = lit
+            .functions
+            .iter()
+            .find(|f| f.name.starts_with("__lam_") && f.params.is_empty())
+            .expect("spawn string lit");
+        assert!(
+            matches!(lit_spawn.ret_ty, Type::String),
+            "spawn {{ \"hello\" }} ret {:?}",
+            lit_spawn.ret_ty
+        );
+
+        let concat = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+val main = {
+  scope {
+    val s = spawn { "hello".concat(" ").concat("world") }.join()
+    println(s)
+    println(s.len())
+  }
+}
+"#,
+        )
+        .expect("concat");
+        let concat_spawn = concat
+            .functions
+            .iter()
+            .find(|f| f.name.starts_with("__lam_") && f.params.is_empty())
+            .expect("spawn string concat");
+        assert!(
+            matches!(concat_spawn.ret_ty, Type::String),
+            "spawn string concat ret {:?}",
+            concat_spawn.ret_ty
+        );
+    }
+
+    #[test]
     fn audit_r6_map_values_take_reverse_float() {
         let values = compile_source_to_core(
             r#"

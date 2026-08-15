@@ -1255,6 +1255,8 @@ fn local_heap_ty(
         Value::FunRef(name) | Value::AllocClosure { fun: name, .. } => {
             fun_ty_from_tables(name, fun_ret_tys, fun_param_tys)
         }
+        Value::String(_) => Some(Type::String),
+        Value::Char(_) => Some(Type::Char),
         Value::ClosureCap {
             index,
             as_float,
@@ -1542,6 +1544,9 @@ fn local_heap_ty(
                 seen_slots,
             );
             match (a, b) {
+                // `.concat` is shared by List and String; do not fall through to the
+                // lift `List[Int]` placeholder (spawn { s.concat(…) }.join().len()).
+                (Some(Type::String), _) | (_, Some(Type::String)) => Some(Type::String),
                 (Some(Type::List(e1)), Some(Type::List(e2))) => Some(Type::List(Box::new(
                     prefer_concrete_heap_ty(*e1, *e2),
                 ))),
@@ -1551,6 +1556,17 @@ fn local_heap_ty(
                 _ => None,
             }
         }
+        Value::Builtin {
+            name: lumia_hir::Builtin::Show
+                | lumia_hir::Builtin::ReadStdin
+                | lumia_hir::Builtin::StrTrim
+                | lumia_hir::Builtin::StrSplit
+                | lumia_hir::Builtin::StrSubstring
+                | lumia_hir::Builtin::StrToLower
+                | lumia_hir::Builtin::StrToUpper
+                | lumia_hir::Builtin::ListJoin,
+            ..
+        } => Some(Type::String),
         Value::Builtin {
             name: lumia_hir::Builtin::AdtField,
             args,
@@ -1935,22 +1951,27 @@ pub(crate) fn prefer_concrete_heap_ty(x: Type, y: Type) -> Type {
         }
         (Type::Fun(_, _, _), _) => x.clone(),
         (_, Type::Fun(_, _, _)) => y.clone(),
-        // Lift may-heap placeholder `List(Int)` must yield to Map/Set/Task/…
-        // (`mapOf(…).set` was stuck as List → `.get` used list indexing).
+        // Lift may-heap placeholder `List(Int)` must yield to Map/Set/Task/String/…
+        // (`mapOf(…).set` was stuck as List → `.get` used list indexing;
+        // spawn String was stuck as List → `.len()` used `lumia_list_len`).
         (
             Type::List(e),
             other @ (Type::Map(_, _)
             | Type::Set(_)
             | Type::Task(_)
             | Type::Channel(_)
-            | Type::Adt { .. }),
+            | Type::Adt { .. }
+            | Type::String
+            | Type::Char),
         ) if matches!(e.as_ref(), Type::Int | Type::Var(_)) => other.clone(),
         (
             other @ (Type::Map(_, _)
             | Type::Set(_)
             | Type::Task(_)
             | Type::Channel(_)
-            | Type::Adt { .. }),
+            | Type::Adt { .. }
+            | Type::String
+            | Type::Char),
             Type::List(e),
         ) if matches!(e.as_ref(), Type::Int | Type::Var(_)) => other.clone(),
         (Type::Float, _) | (_, Type::Float) => Type::Float,
@@ -2205,6 +2226,8 @@ fn ret_ty_from_callee_table(t: &Type) -> Option<Type> {
         // `List[Int]` is the lift may-heap placeholder — not a real payload type.
         Type::List(e) if matches!(e.as_ref(), Type::Int) => None,
         Type::Float
+        | Type::String
+        | Type::Char
         | Type::List(_)
         | Type::Map(_, _)
         | Type::Set(_)

@@ -561,7 +561,9 @@ fn builtin_value_ty(name: Builtin, args: &[Local], ctx: InferValueCtx<'_>) -> Ty
             let b = args.get(1).and_then(|a| local_tys.get(&a.0));
             // flatMap: empty Int acc `concat` Float chunk → result List[Float]
             // (runtime tid already ORs float flags from either side).
+            // String `.concat` shares this builtin — keep String, not List.
             match (&a, b) {
+                (Type::String, _) | (_, Some(Type::String)) => Type::String,
                 (Type::List(e), _) | (_, Some(Type::List(e)))
                     if matches!(e.as_ref(), Type::Float) =>
                 {
