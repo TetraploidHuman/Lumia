@@ -1008,6 +1008,77 @@ val main = {
 
 
     #[test]
+    fn audit_r8_closure_cap_string_concat_len() {
+        let core = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+val main = {
+  val prefix = "pre"
+  val f = { s -> prefix.concat(s) }
+  val out = f("fix")
+  println(out)
+  println(out.len())
+}
+"#,
+        )
+        .expect("cap string");
+        let lam = core
+            .functions
+            .iter()
+            .find(|f| f.name.starts_with("__lam_"))
+            .expect("lam");
+        assert!(
+            matches!(lam.ret_ty, Type::String),
+            "closure cap string concat ret {:?}",
+            lam.ret_ty
+        );
+
+        let spawn = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+val main = {
+  scope {
+    val f = spawn {
+      val prefix = "pre"
+      { s -> prefix.concat(s) }
+    }.join()
+    val out = f("fix")
+    println(out.len())
+  }
+}
+"#,
+        )
+        .expect("spawn cap string");
+        let inner = spawn
+            .functions
+            .iter()
+            .find(|f| {
+                f.name.starts_with("__lam_")
+                    && f.params.len() > 1
+                    && f.body.ops.iter().any(|op| {
+                        matches!(
+                            op,
+                            crate::Op::Let {
+                                value: crate::Value::Builtin {
+                                    name: lumia_hir::Builtin::ListConcat,
+                                    ..
+                                },
+                                ..
+                            }
+                        )
+                    })
+            })
+            .expect("inner concat lam");
+        assert!(
+            matches!(inner.ret_ty, Type::String),
+            "spawn closure string concat ret {:?}",
+            inner.ret_ty
+        );
+    }
+
+    #[test]
     fn audit_r7_spawn_string_len() {
         let lit = compile_source_to_core(
             r#"

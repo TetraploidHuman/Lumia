@@ -117,9 +117,12 @@ fn refresh_lifted_lambda_rets(module: &mut CoreModule) {
             if !fun.name.starts_with("__lam_") {
                 continue;
             }
-            // Float/Bool/Unit are final. Fun rets still refine (e.g. Fun([Int],List(Int))
-            // → Fun([Float],Float) after curried-compose caps resolve).
-            if matches!(fun.ret_ty, Type::Float | Type::Bool | Type::Unit) {
+            // Float/Bool/Unit/String/Char are final. Fun rets still refine (e.g.
+            // Fun([Int],List(Int)) → Fun([Float],Float) after curried-compose caps).
+            if matches!(
+                fun.ret_ty,
+                Type::Float | Type::Bool | Type::Unit | Type::String | Type::Char
+            ) {
                 continue;
             }
             let this_caps = fun_cap_tys.get(&fun.name).unwrap_or(&empty_caps);
@@ -146,7 +149,12 @@ fn refresh_lifted_lambda_rets(module: &mut CoreModule) {
                     this_caps,
                 ) {
                     match &t {
-                        Type::Float | Type::Bool | Type::Unit | Type::Fun(_, _, _) => {
+                        Type::Float
+                        | Type::Bool
+                        | Type::Unit
+                        | Type::Fun(_, _, _)
+                        | Type::String
+                        | Type::Char => {
                             new_ty = Some(t);
                         }
                         Type::List(_)
@@ -197,7 +205,10 @@ fn refresh_lifted_lambda_rets(module: &mut CoreModule) {
                     );
                     if let Some(t) = from_call.or(from_apply).or(from_icall).or(from_fun) {
                         match &t {
-                            Type::Float | Type::Fun(_, _, _) => new_ty = Some(t),
+                            Type::Float
+                            | Type::Fun(_, _, _)
+                            | Type::String
+                            | Type::Char => new_ty = Some(t),
                             Type::List(_)
                             | Type::Map(_, _)
                             | Type::Set(_)
@@ -340,10 +351,20 @@ fn refresh_alloc_closure_fun_rets_round(
                 // Concrete body ret / float params — or already-Fun ret that can refine.
                 let interesting = matches!(
                     ret,
-                    Type::Float | Type::Bool | Type::Fun(_, _, _) | Type::Unit
+                    Type::Float
+                        | Type::Bool
+                        | Type::Fun(_, _, _)
+                        | Type::Unit
+                        | Type::String
+                        | Type::Char
                 ) || params
                     .iter()
-                    .any(|t| matches!(t, Type::Float | Type::Fun(_, _, _) | Type::Bool))
+                    .any(|t| {
+                        matches!(
+                            t,
+                            Type::Float | Type::Fun(_, _, _) | Type::Bool | Type::String | Type::Char
+                        )
+                    })
                     || matches!(fun.ret_ty, Type::Fun(_, _, _));
                 if !interesting {
                     continue;
