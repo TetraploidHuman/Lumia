@@ -482,6 +482,14 @@ fn adt_field_is_float(
             }) if !la.is_empty() => {
                 cur = la[0].0;
             }
+            Some(Value::Builtin {
+                name: lumia_hir::Builtin::ListTake
+                    | lumia_hir::Builtin::ListSlice
+                    | lumia_hir::Builtin::ListReverse,
+                args: la,
+            }) if !la.is_empty() => {
+                cur = la[0].0;
+            }
             Some(Value::AllocList { elems, .. }) => {
                 return elems.iter().any(|e| {
                     adt_local_field_is_float(e.0, idx, float_locals, defs, &mut HashSet::default())
@@ -644,6 +652,39 @@ fn list_elem_is_float(
             args,
         }) if !args.is_empty() => {
             list_elem_is_float(block, args[0].0, float_locals, fun_ret_tys, seen)
+        }
+        Some(Value::Builtin {
+            name: lumia_hir::Builtin::MapValues,
+            args,
+        }) if !args.is_empty() => match let_value(block, args[0].0) {
+            // Prefer heap typing when available; float map literals still in-block.
+            _ => local_map_values_are_float(block, args[0].0, float_locals, seen),
+        },
+        Some(Value::Name(_)) => {
+            // filter/map acc of floats: source AllocList still in the function.
+            block_has_float_alloc_list(block, float_locals)
+        }
+        _ => false,
+    }
+}
+
+fn local_map_values_are_float(
+    block: &Block,
+    id: u32,
+    float_locals: &HashSet<u32>,
+    seen: &mut HashSet<u32>,
+) -> bool {
+    if !seen.insert(id) {
+        return false;
+    }
+    match let_value(block, id) {
+        Some(Value::Local(Local(src))) => local_map_values_are_float(block, *src, float_locals, seen),
+        Some(Value::AllocMap { flat_pairs, .. }) => {
+            // flat: k0,v0,k1,v1,… — values at odd indices.
+            flat_pairs
+                .iter()
+                .enumerate()
+                .any(|(i, p)| i % 2 == 1 && float_locals.contains(&p.0))
         }
         _ => false,
     }
@@ -1418,6 +1459,62 @@ fn local_heap_ty(
                 Some(Type::List(e) | Type::Set(e)) => Some(Type::List(e)),
                 Some(Type::Map(k, _)) => Some(Type::List(k)),
                 _ => None,
+            }
+        }
+        Value::Builtin {
+            name: lumia_hir::Builtin::MapValues,
+            args,
+        } if !args.is_empty() => {
+            match local_heap_ty(
+                block,
+                args[0].0,
+                float_locals,
+                fun_ret_tys,
+                fun_param_tys,
+                cap_tys,
+                seen,
+                seen_slots,
+            ) {
+                Some(Type::Map(_, v)) => Some(Type::List(v)),
+                _ => None,
+            }
+        }
+        Value::Builtin {
+            name: lumia_hir::Builtin::MapKeys,
+            args,
+        } if !args.is_empty() => {
+            match local_heap_ty(
+                block,
+                args[0].0,
+                float_locals,
+                fun_ret_tys,
+                fun_param_tys,
+                cap_tys,
+                seen,
+                seen_slots,
+            ) {
+                Some(Type::Map(k, _)) => Some(Type::List(k)),
+                _ => None,
+            }
+        }
+        Value::Builtin {
+            name: lumia_hir::Builtin::ListTake
+                | lumia_hir::Builtin::ListSlice
+                | lumia_hir::Builtin::ListReverse,
+            args,
+        } if !args.is_empty() => {
+            match local_heap_ty(
+                block,
+                args[0].0,
+                float_locals,
+                fun_ret_tys,
+                fun_param_tys,
+                cap_tys,
+                seen,
+                seen_slots,
+            ) {
+                Some(Type::List(e)) => Some(Type::List(e)),
+                other => other,
             }
         }
         Value::Builtin {

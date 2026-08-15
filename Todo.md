@@ -45,6 +45,7 @@
 - [x] **curried `compose(f,g)(x)` Float ABI**：`collect_fun_cap_tys` 纳入形参类型；Fun ret 可再细化；`prefer_concrete` 不再让 Float 压掉 Fun；`refresh_alloc_closure_fun_rets` 进 fixpoint。
 - [x] **spawn `toMap` / `map.set` Float ABI**：`MapSet` 进 `local_heap_ty`；`List(Int)` 占位让位给 Map；`adt_field_is_float` 穿过 `ListGet`/`Elems`（`toMap` 循环 `p.1`）。
 - [x] **spawn `map.remove` / `filter→toMap` Float ABI**：`MapRemove` 定型；`adt_field_is_float` 在 Name 累加器上回退到同函数内 float 字段 `AllocList`。
+- [x] **spawn `Map.values` / `take→toMap` / `filter.reverse` Float ABI**：`MapValues`/`MapKeys`/`ListTake`/`Reverse` 进 heap 定型；`list_elem_is_float` 认 Name 累加器；`adt_field_is_float` 穿过 Take/Slice/Reverse。
 - [x] **`with` 捕获 ADT / TaskJoin 管道 / flatMap Float ABI**：`ClosureCap` 定型 + `AdtField`/`ListGet`/`Elems`/`ListConcat`/`Binary`；slot 定型用 defs_root；If 臂经外层根解析外局部。
 - [x] **`var f = …; f = …` Fun 重绑定**：mut slot COW release 跳过 FunRef（低位 tag），仅释放堆闭包；e2e `var_fun_reassign`。
 - [x] **有限 `return` + `alt`**：最近函数/闭包早退；`expr alt rhs` 恢复 Option/Result（Result 绑定 `err`）；传播写 `alt return Err(err)`（无自动包装、无裸 `alt return`、`?` 仍搁置）。

@@ -966,6 +966,77 @@ val main = {
 
 
     #[test]
+    fn audit_r6_map_values_take_reverse_float() {
+        let values = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+val main = {
+  scope {
+    val vs = spawn { mapOf(1 to 1.5, 2 to 2.5).values() }.join()
+    println(vs.get(0) + vs.get(1))
+  }
+}
+"#,
+        )
+        .expect("values");
+        let take = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+val main = {
+  scope {
+    val m = spawn {
+      listOf((1, 1.5), (2, 2.5), (3, 3.5), (4, 4.5))
+        .filter({ p -> p.0 > 1 })
+        .take(2)
+        .toMap()
+    }.join()
+    println(m.get(2))
+  }
+}
+"#,
+        )
+        .expect("take");
+        let rev = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+val main = {
+  scope {
+    println(spawn {
+      listOf(1.0, 2.0, 3.0, 4.0).filter({ x -> x > 2.0 }).reverse().get(0)
+    }.join())
+  }
+}
+"#,
+        )
+        .expect("rev");
+        let ret = |c: &crate::ir::CoreModule| -> Type {
+            c.functions
+                .iter()
+                .find(|f| f.name.starts_with("__lam_"))
+                .map(|f| f.ret_ty.clone())
+                .unwrap_or(Type::Int)
+        };
+        assert!(
+            matches!(ret(&values), Type::List(ref e) if matches!(e.as_ref(), Type::Float)),
+            "values {:?}",
+            ret(&values)
+        );
+        assert!(
+            matches!(ret(&take), Type::Map(_, ref v) if matches!(v.as_ref(), Type::Float)),
+            "take {:?}",
+            ret(&take)
+        );
+        assert!(
+            matches!(ret(&rev), Type::Float),
+            "rev {:?}",
+            ret(&rev)
+        );
+    }
+
+    #[test]
     fn audit_r5_remove_and_filter_tomap() {
         let rem = compile_source_to_core(
             r#"
