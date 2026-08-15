@@ -117,12 +117,10 @@ fn refresh_lifted_lambda_rets(module: &mut CoreModule) {
             if !fun.name.starts_with("__lam_") {
                 continue;
             }
-            // Float/Bool/Unit/String/Char are final. Fun rets still refine (e.g.
-            // Fun([Int],List(Int)) → Fun([Float],Float) after curried-compose caps).
-            if matches!(
-                fun.ret_ty,
-                Type::Float | Type::Bool | Type::Unit | Type::String | Type::Char
-            ) {
+            // Float/Bool/Unit are final. String/Char may still upgrade to Float
+            // (`Err("e") alt 9.5`: then=AdtField(String), else=Float).
+            // Fun rets still refine (e.g. Fun([Int],List(Int)) → Fun([Float],Float)).
+            if matches!(fun.ret_ty, Type::Float | Type::Bool | Type::Unit) {
                 continue;
             }
             let this_caps = fun_cap_tys.get(&fun.name).unwrap_or(&empty_caps);

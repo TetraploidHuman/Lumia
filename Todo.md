@@ -54,6 +54,8 @@
 - [x] **嵌套 `spawn { join().map(float) }`**：`ListParMap` 进 `local_heap_ty`（回调 Float ret），避免 List[Int] 占位后整数加 IEEE 溢出。
 - [x] **`None alt Some(x)`**：DESIGN 要求 rhs 为载荷 T；禁止 Option/Result 作 rhs（曾把 Var 收成 Option，desugar 混 ADT/载荷，Float 打印乱码）。
 - [x] **`opt alt float` If 合流**：then=`AdtField` 常为 Int、else=Float 时 `join_value_tys` 曾偏 Int；Int/Var 让位给 Float。
+- [x] **`Err(String) alt float` If 合流**：`Err("e")` 的 AllocAdt params 仅有 String，then=`AdtField` 为 String 时曾 `unwrap_or` 成 String，println 把 IEEE 当 Int；`join_value_tys`/`join_heap_tys` 对标量让 Float 赢过 String；`local_heap_ty` 认 `Value::Float`；String ret 可再升为 Float（spawn join）。
+- [x] **`channel` 元素泛化破坏 `recv().alt`**：`val ch = channel(1)` 曾 `∀α. Channel[α]`，send/recv 各实例化 α；match 靠模式收紧，alt 见 Var 拒绝。泛化时不量化 `Channel` 下自由变量（value restriction）。
 - [x] **`with` 捕获 ADT / TaskJoin 管道 / flatMap Float ABI**：`ClosureCap` 定型 + `AdtField`/`ListGet`/`Elems`/`ListConcat`/`Binary`；slot 定型用 defs_root；If 臂经外层根解析外局部。
 - [x] **`var f = …; f = …` Fun 重绑定**：mut slot COW release 跳过 FunRef（低位 tag），仅释放堆闭包；e2e `var_fun_reassign`。
 - [x] **有限 `return` + `alt`**：最近函数/闭包早退；`expr alt rhs` 恢复 Option/Result（Result 绑定 `err`）；传播写 `alt return Err(err)`（无自动包装、无裸 `alt return`、`?` 仍搁置）。

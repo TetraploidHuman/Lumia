@@ -939,6 +939,8 @@ val main = {
 
     #[test]
     fn mixed_channel_int_float_or_string_conflict() {
+        // Channel elem is monomorphic: mixed sends fail at typecheck (not only
+        // Core hint conflict after poly Channel[α] per use).
         let err_f = compile_source_to_core(
             r#"
 module M
@@ -955,7 +957,11 @@ val main = {
         )
         .expect_err("int+float channel");
         assert!(
-            err_f.contains("mixed payloads") || err_f.contains("channel"),
+            err_f.contains("mixed payloads")
+                || err_f.contains("channel")
+                || err_f.contains("type mismatch")
+                || err_f.contains("Float")
+                || err_f.contains("Int"),
             "unexpected: {err_f}"
         );
 
@@ -975,7 +981,11 @@ val main = {
         )
         .expect_err("int+string channel");
         assert!(
-            err_s.contains("mixed payloads") || err_s.contains("channel"),
+            err_s.contains("mixed payloads")
+                || err_s.contains("channel")
+                || err_s.contains("type mismatch")
+                || err_s.contains("String")
+                || err_s.contains("Int"),
             "unexpected: {err_s}"
         );
     }
@@ -1000,7 +1010,11 @@ val main = {
         )
         .expect_err("mixed channel payloads should fail");
         assert!(
-            err.contains("mixed payloads") || err.contains("channel"),
+            err.contains("mixed payloads")
+                || err.contains("channel")
+                || err.contains("type mismatch")
+                || err.contains("List")
+                || err.contains("Float"),
             "unexpected error: {err}"
         );
     }
@@ -1823,6 +1837,32 @@ val main = {
         assert!(
             matches!(spawn.ret_ty, Type::Bool),
             "spawn bool fold ret {:?}",
+            spawn.ret_ty
+        );
+    }
+
+    #[test]
+    fn audit_r11_result_err_string_alt_float() {
+        let core = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+val main = {
+  scope {
+    println(spawn { Err("e") alt 9.5 }.join())
+  }
+}
+"#,
+        )
+        .expect("core");
+        let spawn = core
+            .functions
+            .iter()
+            .find(|f| f.name.starts_with("__lam_"))
+            .expect("alt spawn");
+        assert!(
+            matches!(spawn.ret_ty, Type::Float),
+            "Err(String) alt Float spawn ret {:?}",
             spawn.ret_ty
         );
     }

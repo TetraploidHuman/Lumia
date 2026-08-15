@@ -1283,6 +1283,7 @@ fn local_heap_ty(
         }
         Value::String(_) => Some(Type::String),
         Value::Char(_) => Some(Type::Char),
+        Value::Float(_) => Some(Type::Float),
         Value::ClosureCap {
             index,
             as_float,
@@ -1943,6 +1944,24 @@ fn join_heap_tys(a: &Type, b: &Type) -> Option<Type> {
         return Some(a.clone());
     }
     match (a, b) {
+        // `Err("e") alt 9.5`: then=AdtField(String) from Err-only AllocAdt params,
+        // else=Float — prefer Float (same as `join_value_tys` for println ABI).
+        (Type::Float, other) | (other, Type::Float)
+            if matches!(
+                other,
+                Type::Int
+                    | Type::Var(_)
+                    | Type::Bool
+                    | Type::String
+                    | Type::Char
+                    | Type::Unit
+                    | Type::Float
+            ) =>
+        {
+            Some(Type::Float)
+        }
+        (Type::Int | Type::Var(_), other) => Some(other.clone()),
+        (other, Type::Int | Type::Var(_)) => Some(other.clone()),
         (
             Type::Adt {
                 name: n1,

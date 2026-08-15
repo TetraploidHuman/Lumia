@@ -229,6 +229,23 @@ val main = {
 }
 
 #[test]
+fn channel_recv_alt_shares_elem_ty() {
+    // Channel elem must not be generalized: send(Some) and recv().alt share α.
+    let src = r#"
+module M
+import std.io.{println}
+val main = {
+  scope {
+    val ch = channel(1)
+    spawn { ch.send(Some(1.5)) }
+    println(ch.recv() alt 0.0)
+  }
+}
+"#;
+    infer_ok(src);
+}
+
+#[test]
 fn num_poly_rejects_string_after_float() {
     let err = infer_err(
         r#"

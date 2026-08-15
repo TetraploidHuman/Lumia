@@ -381,9 +381,21 @@ fn join_value_tys(a: &Type, b: &Type) -> Option<Type> {
         return Some(a.clone());
     }
     match (a, b) {
-        // `opt alt float_default`: then=AdtField (often Int until Option params
-        // refine) else=Float — prefer Float so println does not print IEEE bits.
-        (Type::Int | Type::Var(_), Type::Float) | (Type::Float, Type::Int | Type::Var(_)) => {
+        // `Result/Option alt float`: then=`AdtField` may see only the Err/None
+        // construction params (e.g. String from `Err("e")`) while else is Float.
+        // Prefer Float so println does not treat IEEE bits as Int/String.
+        (Type::Float, other) | (other, Type::Float)
+            if matches!(
+                other,
+                Type::Int
+                    | Type::Var(_)
+                    | Type::Bool
+                    | Type::String
+                    | Type::Char
+                    | Type::Unit
+                    | Type::Float
+            ) =>
+        {
             Some(Type::Float)
         }
         (Type::Int | Type::Var(_), other) => Some(other.clone()),
@@ -403,18 +415,7 @@ fn join_value_tys(a: &Type, b: &Type) -> Option<Type> {
             for i in 0..n {
                 let x = p1.get(i).cloned().unwrap_or(Type::Int);
                 let y = p2.get(i).cloned().unwrap_or(Type::Int);
-                params.push(if x == y {
-                    x
-                } else if matches!(x, Type::Int | Type::Var(_)) {
-                    y
-                } else if matches!(y, Type::Int | Type::Var(_)) {
-                    x
-                } else if matches!(x, Type::Float) || matches!(y, Type::Float) {
-                    Type::Float
-                } else {
-                    // Prefer left when both are concrete.
-                    x
-                });
+                params.push(join_value_tys(&x, &y).unwrap_or(x));
             }
             Some(Type::Adt {
                 name: n1.clone(),

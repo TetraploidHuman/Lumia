@@ -49,6 +49,52 @@ impl Infer {
         }
     }
 
+    /// Vars under `Channel[…]` must stay monomorphic (value restriction).
+    /// Otherwise `val ch = channel(1)` generalizes to `∀α. Channel[α]`, so
+    /// `send(Some(x))` and `recv() alt …` see different α and alt rejects Var.
+    pub(crate) fn channel_escaping_ty_vars(&mut self, ty: Type) -> HashSet<u32> {
+        let ty = self.prune(ty);
+        let mut acc = HashSet::default();
+        self.collect_channel_escaping_ty_vars(&ty, &mut acc);
+        acc
+    }
+
+    fn collect_channel_escaping_ty_vars(&mut self, ty: &Type, acc: &mut HashSet<u32>) {
+        match ty {
+            Type::Var(v) => {
+                if let Some(t) = self.uni.subst.get(v).cloned() {
+                    let t = self.prune(t);
+                    self.collect_channel_escaping_ty_vars(&t, acc);
+                }
+            }
+            Type::Channel(t) => self.collect_ty_vars(t, acc),
+            Type::Fun(ps, r, _) => {
+                for p in ps {
+                    self.collect_channel_escaping_ty_vars(p, acc);
+                }
+                self.collect_channel_escaping_ty_vars(r, acc);
+            }
+            Type::List(t) | Type::Set(t) | Type::Task(t) => {
+                self.collect_channel_escaping_ty_vars(t, acc)
+            }
+            Type::Map(k, v) => {
+                self.collect_channel_escaping_ty_vars(k, acc);
+                self.collect_channel_escaping_ty_vars(v, acc);
+            }
+            Type::Adt { params, .. } => {
+                for p in params {
+                    self.collect_channel_escaping_ty_vars(p, acc);
+                }
+            }
+            Type::Tuple(ts) | Type::TuplePrefix(ts) => {
+                for t in ts {
+                    self.collect_channel_escaping_ty_vars(t, acc);
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub(crate) fn env_free_ty_vars(&mut self) -> HashSet<u32> {
         let schemes: Vec<Scheme> = self
             .scopes
@@ -71,10 +117,11 @@ impl Infer {
     pub(crate) fn generalize(&mut self, ty: Type) -> Scheme {
         let ty = self.prune(ty);
         let env_fvs = self.env_free_ty_vars();
+        let channel_fvs = self.channel_escaping_ty_vars(ty.clone());
         let mut vars: Vec<u32> = self
             .free_ty_vars(ty.clone())
             .into_iter()
-            .filter(|v| !env_fvs.contains(v))
+            .filter(|v| !env_fvs.contains(v) && !channel_fvs.contains(v))
             .collect();
         vars.sort_unstable();
         // Leave effect vars free (not quantified): module-level HOF use can still
