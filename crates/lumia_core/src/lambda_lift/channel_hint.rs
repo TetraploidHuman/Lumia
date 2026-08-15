@@ -2001,4 +2001,74 @@ val main = {
             spawn.ret_ty
         );
     }
+
+    #[test]
+    fn audit_r14_spawn_return_float_fun_capturing_float() {
+        let core = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+val main = {
+  scope {
+    val a = { x -> x * 2.0 }
+    val b = spawn { { x -> a(x) + 1.0 } }.join()
+    println(b(1.5))
+  }
+}
+"#,
+        )
+        .expect("core");
+        let inner = core
+            .functions
+            .iter()
+            .find(|f| {
+                f.name.starts_with("__lam_")
+                    && f.body.ops.iter().any(|op| {
+                        matches!(
+                            op,
+                            crate::Op::Let {
+                                value: crate::Value::IndirectCall { .. },
+                                ..
+                            }
+                        ) && f.body.ops.iter().any(|op| {
+                            matches!(
+                                op,
+                                crate::Op::Let {
+                                    value: crate::Value::Binary {
+                                        op: lumia_syntax::BinOp::Add,
+                                        ..
+                                    },
+                                    ..
+                                }
+                            )
+                        })
+                    })
+            })
+            .expect("inner a(x)+1 lam");
+        assert!(
+            inner
+                .param_tys
+                .iter()
+                .any(|p| matches!(p, Type::Float)),
+            "user param should be Float, got {:?}",
+            inner.param_tys
+        );
+        let spawn = core
+            .functions
+            .iter()
+            .find(|f| {
+                matches!(
+                    &f.ret_ty,
+                    Type::Fun(ps, r, _)
+                        if ps.first().is_some_and(|p| matches!(p, Type::Float))
+                            && matches!(r.as_ref(), Type::Float)
+                )
+            })
+            .expect("spawn Fun[Float]->Float ret");
+        assert!(
+            matches!(&spawn.ret_ty, Type::Fun(ps, r, _) if matches!(ps.first(), Some(Type::Float)) && matches!(r.as_ref(), Type::Float)),
+            "spawn ret {:?}",
+            spawn.ret_ty
+        );
+    }
 }

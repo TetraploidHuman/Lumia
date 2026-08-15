@@ -58,6 +58,7 @@
 - [x] **`channel` 元素泛化破坏 `recv().alt`**：`val ch = channel(1)` 曾 `∀α. Channel[α]`，send/recv 各实例化 α；match 靠模式收紧，alt 见 Var 拒绝。泛化时不量化 `Channel` 下自由变量（value restriction）。
 - [x] **`opt alt list` 再 `ListParFold`**：mono 先定 If 再扫臂，If 成 Int，fold 回调停在 Int/Int；先扫嵌套再定型，且 Float init 可回退特化。
 - [x] **spawn 调用捕获闭包**：`directize` 把 `ClosureCap→AllocClosure(有 env)` 收成无 env 的 `Call`，LLVM arity 错；仅对无 capture 的 FunRef 目标 directize。
+- [x] **spawn 返回捕获 Float 的闭包**：`{ x -> a(x) + 1.0 }` 未把 `x` 标成 Float（只 touch 了 icall 临时）；float Binary 沿 Call/IndirectCall 回溯标参。嵌套 `AllocClosure` 曾把 `ClosureCap` 记成 Int → `sitofp` IEEE；`closure_cap_tys` 多轮合并 Fun。
 - [x] **`with` 捕获 ADT / TaskJoin 管道 / flatMap Float ABI**：`ClosureCap` 定型 + `AdtField`/`ListGet`/`Elems`/`ListConcat`/`Binary`；slot 定型用 defs_root；If 臂经外层根解析外局部。
 - [x] **`var f = …; f = …` Fun 重绑定**：mut slot COW release 跳过 FunRef（低位 tag），仅释放堆闭包；e2e `var_fun_reassign`。
 - [x] **有限 `return` + `alt`**：最近函数/闭包早退；`expr alt rhs` 恢复 Option/Result（Result 绑定 `err`）；传播写 `alt return Err(err)`（无自动包装、无裸 `alt return`、`?` 仍搁置）。

@@ -619,7 +619,7 @@ mod tests {
     #[test]
     fn runtime_fn_missing_returns_err_not_panic() {
         let context = Context::create();
-        let cg = Codegen::new(&context, "empty", 0, 1, false);
+        let cg = Codegen::new(&context, "empty", 0, 1, false, true);
         let err = cg
             .runtime_fn("lumia_definitely_missing_symbol_zz")
             .expect_err("missing runtime symbol");

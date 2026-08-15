@@ -23,37 +23,58 @@ pub(crate) fn collect_closure_cap_tys(
         .collect();
     let fun_param0_identity: HashSet<String> = HashSet::default();
     let mut out: HashMap<String, HashMap<u32, Type>> = HashMap::default();
-    for fun in &core.functions {
-        let mut local_tys: HashMap<u32, Type> = HashMap::default();
-        let mut slot_tys: HashMap<String, Type> = HashMap::default();
-        let mut funref_locals: HashMap<u32, String> = HashMap::default();
-        let local_int_consts: HashMap<u32, i64> = HashMap::default();
-        let sum_max_arity: HashMap<String, usize> = HashMap::default();
-        for (i, ty) in fun.param_tys.iter().enumerate() {
-            if let Some(p) = fun.params.get(i) {
-                local_tys.insert(p.0, ty.clone());
+    // Multiple rounds: an outer `AllocClosure` may be walked after an inner
+    // body that re-captures a `ClosureCap` (spawn thunk → returned closure).
+    for _ in 0..8 {
+        let before = out.clone();
+        for fun in &core.functions {
+            let mut local_tys: HashMap<u32, Type> = HashMap::default();
+            let mut slot_tys: HashMap<String, Type> = HashMap::default();
+            let mut funref_locals: HashMap<u32, String> = HashMap::default();
+            let local_int_consts: HashMap<u32, i64> = HashMap::default();
+            let sum_max_arity: HashMap<String, usize> = HashMap::default();
+            for (i, ty) in fun.param_tys.iter().enumerate() {
+                if let Some(p) = fun.params.get(i) {
+                    local_tys.insert(p.0, ty.clone());
+                }
             }
+            walk_block(
+                &fun.body,
+                &fun.name,
+                &mut local_tys,
+                &mut slot_tys,
+                &mut funref_locals,
+                &fun_ret_tys,
+                &fun_param_tys,
+                &fun_param0_identity,
+                &local_int_consts,
+                &sum_max_arity,
+                core.channel_elem_hint.as_ref(),
+                &core.channel_elem_by_local,
+                &mut out,
+            );
         }
-        walk_block(
-            &fun.body,
-            &mut local_tys,
-            &mut slot_tys,
-            &mut funref_locals,
-            &fun_ret_tys,
-            &fun_param_tys,
-            &fun_param0_identity,
-            &local_int_consts,
-            &sum_max_arity,
-            core.channel_elem_hint.as_ref(),
-            &core.channel_elem_by_local,
-            &mut out,
-        );
+        if out == before {
+            break;
+        }
     }
     out
 }
 
+fn prefer_cap_ty(old: Type, new: Type) -> Type {
+    match (&old, &new) {
+        (Type::Fun(_, _, _), _) => old,
+        (_, Type::Fun(_, _, _)) => new,
+        (Type::Float, _) | (_, Type::Float) => Type::Float,
+        (Type::Int | Type::Var(_), other) => other.clone(),
+        (other, Type::Int | Type::Var(_)) => other.clone(),
+        _ => new,
+    }
+}
+
 fn walk_block(
     block: &Block,
+    current_fun: &str,
     local_tys: &mut HashMap<u32, Type>,
     slot_tys: &mut HashMap<String, Type>,
     funref_locals: &mut HashMap<u32, String>,
@@ -71,6 +92,7 @@ fn walk_block(
             Op::Let { local, value, .. } => {
                 walk_value_nested(
                     value,
+                    current_fun,
                     local_tys,
                     slot_tys,
                     funref_locals,
@@ -111,15 +133,26 @@ fn walk_block(
                         ty = Type::Channel(Box::new(elem.clone()));
                     }
                 }
+                // `ClosureCap` defaults to Int in value_ty; prefer the type recorded
+                // when this lam was allocated (Fun / Float / …). Otherwise nested
+                // `AllocClosure` re-captures Int and `a(x)+1.0` sitofps IEEE bits.
+                if let Value::ClosureCap {
+                    index, as_float, ..
+                } = value
+                {
+                    if *as_float {
+                        ty = Type::Float;
+                    } else if let Some(t) = out.get(current_fun).and_then(|m| m.get(index)) {
+                        ty = t.clone();
+                    }
+                }
                 if let Value::AllocClosure { fun, captures } = value {
-                    let mut cap_tys = HashMap::default();
+                    let entry = out.entry(fun.clone()).or_default();
                     for (i, e) in captures.iter().enumerate() {
                         if let Some(t) = local_tys.get(&e.0).cloned() {
-                            cap_tys.insert(i as u32, t);
+                            let slot = entry.entry(i as u32).or_insert_with(|| t.clone());
+                            *slot = prefer_cap_ty(slot.clone(), t);
                         }
-                    }
-                    if !cap_tys.is_empty() {
-                        out.insert(fun.clone(), cap_tys);
                     }
                 }
                 local_tys.insert(local.0, ty);
@@ -145,6 +178,7 @@ fn walk_block(
             Op::Effect { value } => {
                 walk_value_nested(
                     value,
+                    current_fun,
                     local_tys,
                     slot_tys,
                     funref_locals,
@@ -170,6 +204,7 @@ fn walk_block(
 
 fn walk_value_nested(
     value: &Value,
+    current_fun: &str,
     local_tys: &mut HashMap<u32, Type>,
     slot_tys: &mut HashMap<String, Type>,
     funref_locals: &mut HashMap<u32, String>,
@@ -185,6 +220,7 @@ fn walk_value_nested(
     lumia_core::for_each_nested_block(value, &mut |b| {
         walk_block(
             b,
+            current_fun,
             local_tys,
             slot_tys,
             funref_locals,

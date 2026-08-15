@@ -65,16 +65,18 @@ fn mark_float_uses(
     used: &mut HashSet<u32>,
     float_cap_idxs: &HashMap<String, HashSet<u32>>,
 ) {
+    let mut defs: HashMap<u32, &Value> = HashMap::default();
     for op in &block.ops {
         match op {
             Op::Let { local, value, .. } => {
-                mark_float_in_value(value, params, float_locals, used, float_cap_idxs);
+                defs.insert(local.0, value);
+                mark_float_in_value(value, params, float_locals, used, float_cap_idxs, &defs);
                 if value_is_float_producing(value, float_locals) {
                     float_locals.insert(local.0);
                 }
             }
             Op::Effect { value } => {
-                mark_float_in_value(value, params, float_locals, used, float_cap_idxs)
+                mark_float_in_value(value, params, float_locals, used, float_cap_idxs, &defs)
             }
             _ => {}
         }
@@ -87,6 +89,7 @@ fn mark_float_in_value(
     float_locals: &mut HashSet<u32>,
     used: &mut HashSet<u32>,
     float_cap_idxs: &HashMap<String, HashSet<u32>>,
+    defs: &HashMap<u32, &Value>,
 ) {
     match v {
         Value::Binary { left, right, .. } => {
@@ -95,11 +98,15 @@ fn mark_float_in_value(
             if lf || rf {
                 touch_param(left.0, params, used);
                 touch_param(right.0, params, used);
+                // `a(x) + 1.0`: chase IndirectCall/Call args so `x` becomes Float ABI.
+                mark_float_through_def(left.0, params, used, defs, &mut HashSet::default());
+                mark_float_through_def(right.0, params, used, defs, &mut HashSet::default());
             }
         }
         Value::Unary { operand, .. } => {
             if float_locals.contains(&operand.0) {
                 touch_param(operand.0, params, used);
+                mark_float_through_def(operand.0, params, used, defs, &mut HashSet::default());
             }
         }
         Value::AllocClosure { fun, captures } => {
@@ -128,6 +135,30 @@ fn mark_float_in_value(
             mark_float_uses(header, params, float_locals, used, float_cap_idxs);
             mark_float_uses(body, params, float_locals, used, float_cap_idxs);
             mark_float_uses(latch, params, float_locals, used, float_cap_idxs);
+        }
+        _ => {}
+    }
+}
+
+fn mark_float_through_def(
+    id: u32,
+    params: &HashSet<u32>,
+    used: &mut HashSet<u32>,
+    defs: &HashMap<u32, &Value>,
+    seen: &mut HashSet<u32>,
+) {
+    if !seen.insert(id) {
+        return;
+    }
+    touch_param(id, params, used);
+    match defs.get(&id) {
+        Some(Value::Local(Local(src))) => {
+            mark_float_through_def(*src, params, used, defs, seen);
+        }
+        Some(Value::Call { args, .. } | Value::IndirectCall { args, .. }) => {
+            for a in args {
+                mark_float_through_def(a.0, params, used, defs, seen);
+            }
         }
         _ => {}
     }
