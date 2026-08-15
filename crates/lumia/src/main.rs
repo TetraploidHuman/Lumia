@@ -259,6 +259,8 @@ fn build_file(
     annotate_assert_messages(&mut typed.module, &loaded);
     let option_tags = option_ctor_tags(&typed.module.adts);
     let mut core = lower_hir_with_schemes(&typed.module, &typed.fun_types, &typed.fun_schemes);
+    core.check_channel_elem_conflicts()
+        .map_err(|e| anyhow::anyhow!("channel: {e}"))?;
     optimize(
         &mut core,
         &OptOptions {

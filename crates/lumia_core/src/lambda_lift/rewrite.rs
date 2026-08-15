@@ -2,7 +2,10 @@
 
 use super::captures::analyze_captures;
 use super::float_abi::{
-    block_result_is_float, compute_float_locals_in_block, params_used_as_float,
+    block_result_callee_ty, block_result_fun_ty, block_result_heap_ty,
+    block_result_icall_cap_ty, block_result_is_float, block_result_known_hof_ty,
+    compute_float_locals_in_block, float_closure_cap_indices, HofSets,
+    params_used_as_float_with_caps,
 };
 use super::heap::block_result_may_heap_with_params;
 use crate::ir::{
@@ -14,8 +17,17 @@ use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// Infer per-parameter / return ABI for lifted lambdas.
 /// Avoids the old bug: “body mentions any float ⇒ every param is Float”.
-fn lambda_param_ret_tys(params: &[Local], body: &Block) -> (Vec<Type>, Type) {
-    let float_params = params_used_as_float(body, params);
+fn lambda_param_ret_tys(
+    params: &[Local],
+    body: &Block,
+    fun_ret_tys: &HashMap<String, Type>,
+    fun_param_tys: &HashMap<String, Vec<Type>>,
+    hof: &HofSets,
+    cap_srcs: &[Local],
+    funref_locals: &HashMap<u32, String>,
+    float_cap_idxs: &HashMap<String, HashSet<u32>>,
+) -> (Vec<Type>, Type) {
+    let float_params = params_used_as_float_with_caps(body, params, float_cap_idxs);
     let param_tys = params
         .iter()
         .map(|p| {
@@ -26,8 +38,31 @@ fn lambda_param_ret_tys(params: &[Local], body: &Block) -> (Vec<Type>, Type) {
             }
         })
         .collect();
-    let ret_ty = if block_result_is_float(body) {
+    let cap_funs: HashMap<u32, String> = cap_srcs
+        .iter()
+        .enumerate()
+        .filter_map(|(i, src)| funref_locals.get(&src.0).cloned().map(|n| (i as u32, n)))
+        .collect();
+    let ret_ty = if block_result_is_float(body, fun_ret_tys) {
         Type::Float
+    } else if super::float_abi::block_result_is_bool(body) {
+        Type::Bool
+    } else if super::float_abi::block_result_is_unit(body) {
+        Type::Unit
+    } else if let Some(t) = block_result_heap_ty(body, fun_ret_tys, fun_param_tys) {
+        t
+    } else if let Some(t) = block_result_callee_ty(body, fun_ret_tys) {
+        t
+    } else if let Some(t) =
+        block_result_known_hof_ty(body, hof, fun_ret_tys, Some(&cap_funs))
+    {
+        t
+    } else if let Some(t) =
+        block_result_icall_cap_ty(body, cap_srcs, funref_locals, fun_ret_tys)
+    {
+        t
+    } else if let Some(t) = block_result_fun_ty(body, fun_ret_tys, fun_param_tys) {
+        t
     } else if block_result_may_heap_with_params(body, params) {
         // Conservative heap marker so codegen roots the Call result (§GC).
         Type::List(Box::new(Type::Int))
@@ -57,6 +92,28 @@ pub(crate) fn lift_lambdas(module: &mut CoreModule) {
         .filter(|f| f.effect.has_io())
         .map(|f| f.name.clone())
         .collect();
+    let mut fun_ret_tys: HashMap<String, Type> = module
+        .functions
+        .iter()
+        .map(|f| (f.name.clone(), f.ret_ty.clone()))
+        .collect();
+    let mut fun_param_tys: HashMap<String, Vec<Type>> = module
+        .functions
+        .iter()
+        .map(|f| (f.name.clone(), f.param_tys.clone()))
+        .collect();
+    let mut hof = HofSets::from_module_funs(
+        module
+            .functions
+            .iter()
+            .map(|f| (f.name.as_str(), f.params.as_slice(), &f.body)),
+    );
+    let mut float_cap_idxs: HashMap<String, HashSet<u32>> = module
+        .functions
+        .iter()
+        .map(|f| (f.name.clone(), float_closure_cap_indices(&f.body)))
+        .collect();
+    let mut funref_locals: HashMap<u32, String> = HashMap::default();
     for fun in &mut module.functions {
         let mut float_locals = compute_float_locals_in_block(&fun.body);
         for (i, ty) in fun.param_tys.iter().enumerate() {
@@ -75,6 +132,11 @@ pub(crate) fn lift_lambdas(module: &mut CoreModule) {
             &mut float_locals,
             &mut float_slots,
             &mut io_funs,
+            &mut fun_ret_tys,
+            &mut fun_param_tys,
+            &mut hof,
+            &mut funref_locals,
+            &mut float_cap_idxs,
         );
     }
     module.functions.append(&mut extras);
@@ -115,6 +177,11 @@ fn lift_block(
     float_locals: &mut HashSet<u32>,
     float_slots: &mut HashSet<String>,
     io_funs: &mut HashSet<String>,
+    fun_ret_tys: &mut HashMap<String, Type>,
+    fun_param_tys: &mut HashMap<String, Vec<Type>>,
+    hof: &mut HofSets,
+    funref_locals: &mut HashMap<u32, String>,
+    float_cap_idxs: &mut HashMap<String, HashSet<u32>>,
 ) {
     let mut new_ops = Vec::with_capacity(block.ops.len());
     for mut op in std::mem::take(&mut block.ops) {
@@ -136,6 +203,11 @@ fn lift_block(
                     float_locals,
                     float_slots,
                     io_funs,
+                    fun_ret_tys,
+                    fun_param_tys,
+                    hof,
+                    funref_locals,
+                    float_cap_idxs,
                 );
                 new_ops.append(&mut prelude);
                 // Keep float_locals fresh for later captures in this block.
@@ -143,6 +215,24 @@ fn lift_block(
                     || super::float_abi::value_is_float_producing(value, float_locals)
                 {
                     float_locals.insert(local.0);
+                }
+                match value {
+                    Value::FunRef(name) => {
+                        funref_locals.insert(local.0, name.clone());
+                    }
+                    Value::AllocClosure { fun, .. } => {
+                        funref_locals.insert(local.0, fun.clone());
+                    }
+                    Value::Local(Local(src)) => {
+                        if let Some(n) = funref_locals.get(src).cloned() {
+                            funref_locals.insert(local.0, n);
+                        } else {
+                            funref_locals.remove(&local.0);
+                        }
+                    }
+                    _ => {
+                        funref_locals.remove(&local.0);
+                    }
                 }
             }
             Op::Effect { value, .. } => {
@@ -157,6 +247,11 @@ fn lift_block(
                     float_locals,
                     float_slots,
                     io_funs,
+                    fun_ret_tys,
+                    fun_param_tys,
+                    hof,
+                    funref_locals,
+                    float_cap_idxs,
                 );
                 new_ops.append(&mut prelude);
             }
@@ -184,6 +279,11 @@ fn lift_value(
     float_locals: &mut HashSet<u32>,
     float_slots: &mut HashSet<String>,
     io_funs: &mut HashSet<String>,
+    fun_ret_tys: &mut HashMap<String, Type>,
+    fun_param_tys: &mut HashMap<String, Vec<Type>>,
+    hof: &mut HofSets,
+    funref_locals: &mut HashMap<u32, String>,
+    float_cap_idxs: &mut HashMap<String, HashSet<u32>>,
 ) {
     match value {
         Value::Lambda { params, body } => {
@@ -195,6 +295,11 @@ fn lift_value(
                 float_locals,
                 float_slots,
                 io_funs,
+                fun_ret_tys,
+                fun_param_tys,
+                hof,
+                funref_locals,
+                float_cap_idxs,
             );
             let (free_locals, free_names) = analyze_captures(body, params);
             let assigned_names = collect_assigned_names(body);
@@ -225,11 +330,16 @@ fn lift_value(
 
             if captures.is_empty() {
                 let param_names: Vec<String> = (0..params.len()).map(|i| format!("p{i}")).collect();
-                let (param_tys, ret_ty) = lambda_param_ret_tys(params, body);
+                let (param_tys, ret_ty) =
+                    lambda_param_ret_tys(params, body, fun_ret_tys, fun_param_tys, hof, &[], funref_locals, float_cap_idxs);
                 let effect = lifted_effect(body, io_funs);
                 if effect.has_io() {
                     io_funs.insert(name.clone());
                 }
+                fun_ret_tys.insert(name.clone(), ret_ty.clone());
+                fun_param_tys.insert(name.clone(), param_tys.clone());
+                float_cap_idxs.insert(name.clone(), float_closure_cap_indices(body));
+                hof.note(&name, params, body);
                 extras.push(CoreFun {
                     name: name.clone(),
                     params: params.clone(),
@@ -307,20 +417,31 @@ fn lift_value(
             let mut param_names = vec!["env".into()];
             param_names.extend((0..params.len()).map(|i| format!("p{i}")));
 
-            let (user_param_tys, ret_ty) = lambda_param_ret_tys(params, &new_body);
+            let (user_param_tys, ret_ty) = lambda_param_ret_tys(
+                params,
+                &new_body,
+                fun_ret_tys,
+                fun_param_tys,
+                hof,
+                &captures,
+                funref_locals,
+                float_cap_idxs,
+            );
             let effect = lifted_effect(&new_body, io_funs);
             if effect.has_io() {
                 io_funs.insert(name.clone());
             }
+            let mut full_param_tys = vec![Type::Int]; // env pointer bits
+            full_param_tys.extend(user_param_tys);
+            fun_ret_tys.insert(name.clone(), ret_ty.clone());
+            fun_param_tys.insert(name.clone(), full_param_tys.clone());
+            float_cap_idxs.insert(name.clone(), float_closure_cap_indices(&new_body));
+            hof.note(&name, &fun_params, &new_body);
             extras.push(CoreFun {
                 name: name.clone(),
                 params: fun_params,
                 param_names,
-                param_tys: {
-                    let mut tys = vec![Type::Int]; // env pointer bits
-                    tys.extend(user_param_tys);
-                    tys
-                },
+                param_tys: full_param_tys,
                 body: new_body,
                 ret_ty,
                 effect,
@@ -349,6 +470,11 @@ fn lift_value(
                 float_locals,
                 float_slots,
                 io_funs,
+                fun_ret_tys,
+                fun_param_tys,
+                hof,
+                funref_locals,
+                float_cap_idxs,
             );
             lift_block(
                 else_block,
@@ -358,6 +484,11 @@ fn lift_value(
                 float_locals,
                 float_slots,
                 io_funs,
+                fun_ret_tys,
+                fun_param_tys,
+                hof,
+                funref_locals,
+                float_cap_idxs,
             );
         }
         Value::Loop {
@@ -373,6 +504,11 @@ fn lift_value(
                 float_locals,
                 float_slots,
                 io_funs,
+                fun_ret_tys,
+                fun_param_tys,
+                hof,
+                funref_locals,
+                float_cap_idxs,
             );
             lift_block(
                 body,
@@ -382,6 +518,11 @@ fn lift_value(
                 float_locals,
                 float_slots,
                 io_funs,
+                fun_ret_tys,
+                fun_param_tys,
+                hof,
+                funref_locals,
+                float_cap_idxs,
             );
             lift_block(
                 latch,
@@ -391,6 +532,11 @@ fn lift_value(
                 float_locals,
                 float_slots,
                 io_funs,
+                fun_ret_tys,
+                fun_param_tys,
+                hof,
+                funref_locals,
+                float_cap_idxs,
             );
         }
         _ => {}

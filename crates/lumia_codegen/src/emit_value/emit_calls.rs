@@ -8,6 +8,7 @@ use inkwell::{AddressSpace, IntPredicate};
 use lumia_abi::TYPE_CLOSURE;
 use lumia_core::Local;
 use lumia_ty::Type;
+use rustc_hash::FxHashMap as HashMap;
 
 impl<'ctx> Codegen<'ctx> {
     pub(crate) fn emit_value_call(
@@ -331,6 +332,17 @@ impl<'ctx> Codegen<'ctx> {
             ))?
         };
         crate::error::llvm(self.llvm.builder.build_store(fn_slot, fn_as_i))?;
+        {
+            let mut cap_tys = HashMap::default();
+            for (i, e) in captures.iter().enumerate() {
+                if let Some(ty) = self.frame.local_tys.get(&e.0).cloned() {
+                    cap_tys.insert(i as u32, ty);
+                }
+            }
+            if !cap_tys.is_empty() {
+                self.funs.closure_cap_tys.insert(fun.to_string(), cap_tys);
+            }
+        }
         for (i, e) in captures.iter().enumerate() {
             let v = self.coerce_i64(self.local(*e)?)?;
             let slot = unsafe {

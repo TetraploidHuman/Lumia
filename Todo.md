@@ -22,6 +22,30 @@
 - [x] **Task/Channel 压测入口**：RT `task::stress::*`；e2e `task_pingpong` / `join_tree` / `stress_wide` + multi-worker；`scripts/bench_task.sh`（并入 `bench_all`）。
 - [~] **Task/Channel 债务**：ready_home 忙谓词、handoff、sweep 回收等已落地。仍欠（更大设计）— **非 RT `Drop`（C-unwind ABI）**；堆 Mutex 下增量 mark 非真并行。
 - [x] **dense-f64 SR bench**：`--no-dense-f64-sr`；mono 泛型形参从 Float clone 升级（避免漏改写时对 IEEE 位做 `smul`）；`cn_hot`/`cn_step` 对标量基线约 100×。
+- [x] **mono 漏改写（List/Adt + eps）**：`MonoKey::ret_ty` 优先容器；`call_site_mono_ret` 按 call-site 形参走 `block_result_fixed_ty`（`touch`/`keep`/`l2Normalize` 后 `nAddmm`/`addx` 特化）。
+- [x] **mono `id` 包装擦除**：`value_fixed_ty(Call)` 对 Int/Var 返回按实参走 callee 体（`id(b)` 后仍特化）。
+- [x] **mono scheme_poly 不升级 ABI**：`upgrade_generic_param_tys_from_clones` 跳过 `scheme_poly`，避免把 `$Float`/`$Bool` 拷回泛型体导致 `dbl(1)`/`id(1)` 误用 Float/Bool println。
+- [x] **`block_result_fixed_ty` 自递归**：Call 体展开用 `expanding` 集合防环（`tco_list_sum` 等自调用不再在 core 编译期栈溢出）。
+- [x] **channel 热路径**：`full_marking` AtomicBool 镜像；send/recv 空闲时跳过堆 Mutex（join/handoff 仍持锁以保持与 worker 的锁序）。
+- [x] **TaskJoin / ChannelRecv Float ABI**：抬升 lambda `List[Float]`/`Adt`/`Map`/`Set`/`Fun` 返回；顶层 `Call`、本地闭包 `icall`+`ClosureCap`、apply/compose/id 形 HOF、`ListParMap`+`ListGet` Float、以及 `spawn { { x -> … } }.join()(…)`；`channel_elem_hint` 从 send 统一 payload。
+- [x] **纤程内 ListParMap/ParFold**：活跃 Task 调度时 RT 回退顺序执行（不再 `trap_abort`），避免 spawn 体内自动并行崩溃。
+- [x] **`joinOpt`/`recvOpt` Float**：`emit_option_adt_into` 仅对堆 payload `retain`；Float 写 float_mask，避免 COW 把 IEEE 位当指针。
+- [x] **COW retain/release/is_unique/drop_alias**：信任 List/ADT 指针 ABI，热路径不再 `is_heap_payload` 抢堆 Mutex。
+- [x] **spawn/`match` Float ABI**：`MatchFail` 作 bottom；嵌套 `If` 继承外层 defs；`AdtField` 识别 Float payload；`If`/`match` 返回 `Option`/`Result` 等 ADT 时 `block_result_heap_ty` 合并臂类型；`listOf(Some(1.5))` 等嵌套堆元素保留 elem ADT。
+- [x] **spawn `var`/`for`/`while` Float 累加**：`Op::Assign` + `Value::Name` 跟踪 float slot，循环后 `load` 保持 Float ret。
+- [x] **spawn 比较/`Task` 嵌套 ABI**：Float 比较/`||`/`!` 标 `Bool`（非 Float/Int）；`TaskSpawn` 保留 `Task[Float]`（`spawn { spawn { … } }.join().join()`）。
+- [x] **`fixup_closure_float_caps` 无 cap 也 refresh ret**：directize 后的 `Call`（如 `var f = {…}; f(1.5)`）不再因 early-return 留在 `List(Int)`。
+- [x] **channel Bool / Fun / Task hint**：比较/`Bool`、`Fun(Float)→Float`、`Task[Float]` send 保留 elem；`var` Bool 经 Assign/`Name` 保持 Bool ret。
+- [x] **同 channel 混型 payload**：检测冲突并在编译期拒绝（`Float` 与 `List[…]` 等同 channel 混发）；异 channel 仍可用 per-local hint。
+- [x] **per-channel elem hint**：`channel_elem_by_local` 按 `ChannelNew` 局部跟踪 send；异类型多 channel（Float vs `List[Float]`）各自保留 ABI。
+- [x] **map spawn join / list-of-Fun / channel-in-closure Float ABI**：空 `List[Int]` acc `ListAppend` 升级为 `Task`/`Fun`/…；codegen `closure_cap_tys` 预扫描 + `ClosureCap` 继承 AllocClosure 端类型（`spawn { ch.recv() }` 不再对 Float channel `sitofp`）。
+- [x] **局部 `{ -> }` thunk channel recv Float**：channel hint 先登记 `ChannelNew` 再传播 ClosureCap（spawn 先于 AllocClosure 列出时也能归到 send）；`ChannelSend`→`Unit`、`ChannelRecv` 经 `by_local` 定 ret；不再把 send/recv 误标成 `List[Int]`。
+- [x] **嵌套 `spawn.join` / spawn 捕获 FunRef 的 Float ABI**：`TaskJoin` 从 `Task[T]` 取 T；`ClosureCap`→FunRef 可 directize 成 `Call` 以便 mono；`block_result_heap_ty` 覆盖 `Call`/`IndirectCall`；fixup 接受 Float ret。
+- [x] **`spawn { go() }` / map→`List[Fun]` Float ABI**：`refresh_lifted_lambda_rets` fixpoint + 同步 `fun_ret_tys`；`Name`/`Assign`/`ListAppend` 进 `block_result_heap_ty`（含嵌套 Loop）；`prefer_concrete` 细化 `Fun`/`List(Fun)`。
+- [x] **curried `compose(f,g)(x)` Float ABI**：`collect_fun_cap_tys` 纳入形参类型；Fun ret 可再细化；`prefer_concrete` 不再让 Float 压掉 Fun；`refresh_alloc_closure_fun_rets` 进 fixpoint。
+- [x] **spawn `toMap` / `map.set` Float ABI**：`MapSet` 进 `local_heap_ty`；`List(Int)` 占位让位给 Map；`adt_field_is_float` 穿过 `ListGet`/`Elems`（`toMap` 循环 `p.1`）。
+- [x] **`with` 捕获 ADT / TaskJoin 管道 / flatMap Float ABI**：`ClosureCap` 定型 + `AdtField`/`ListGet`/`Elems`/`ListConcat`/`Binary`；slot 定型用 defs_root；If 臂经外层根解析外局部。
+- [x] **`var f = …; f = …` Fun 重绑定**：mut slot COW release 跳过 FunRef（低位 tag），仅释放堆闭包；e2e `var_fun_reassign`。
 - [x] **有限 `return` + `alt`**：最近函数/闭包早退；`expr alt rhs` 恢复 Option/Result（Result 绑定 `err`）；传播写 `alt return Err(err)`（无自动包装、无裸 `alt return`、`?` 仍搁置）。
 - [x] **Float 作 Map/Set 键与 `lumia_eq`**：`TYPE_MAP_F64` / `TYPE_SET_F64` + IEEE `float_key_eq`/`float_key_hash`（±0 碰撞、NaN 永不命中）；codegen 在 Float 键/`set` 时 `lumia_ensure_*_f64`；e2e `float_map_keys`。
 - [x] **Float 结构相等（List / ADT / Map 值）**：`TYPE_LIST_F64`、`TYPE_MAP_VF64` / `TYPE_MAP_F64V`；ADT 经 `lumia_adt_eq(float_mask)`（按**对象实际 size**，非 type-param 元数）；e2e `float_struct_eq` / `adt_float_eq`。

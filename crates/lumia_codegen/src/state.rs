@@ -37,6 +37,12 @@ pub(crate) struct FunTables<'ctx> {
     pub adt_variant_names: HashMap<String, Vec<String>>,
     /// Sum ADT name → max variant payload arity (shared typed params slots).
     pub sum_max_arity: HashMap<String, usize>,
+    /// When set, `ChannelNew`/`ChannelRecv` use this elem type (from Core sends).
+    pub channel_elem_hint: Option<Type>,
+    /// Per-`ChannelNew` local → payload (preferred over module hint when set).
+    pub channel_elem_by_local: HashMap<u32, Type>,
+    /// `(lifted_fun, capture_index) →` type of the captured local at AllocClosure sites.
+    pub closure_cap_tys: HashMap<String, HashMap<u32, Type>>,
     /// Stable Show-kind ids (`≥ 1`) packed into ADT `type_id` for recursive `lumia_show`.
     pub adt_show_kinds: HashMap<String, u16>,
 }

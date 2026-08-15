@@ -48,11 +48,14 @@ pub fn compile_source_to_core_with_options(
         "typecheck",
         typecheck_hir(&hir, NameVisibility::default(), opts),
     )?;
-    Ok(lower_hir_with_schemes(
-        &typed.module,
-        &typed.fun_types,
-        &typed.fun_schemes,
-    ))
+    Ok({
+        let core = lower_hir_with_schemes(
+            &typed.module,
+            &typed.fun_types,
+            &typed.fun_schemes,
+        );
+        stage("channel", core.check_channel_elem_conflicts().map(|()| core))?
+    })
 }
 
 /// Read a `.lm` file and compile through to Core.

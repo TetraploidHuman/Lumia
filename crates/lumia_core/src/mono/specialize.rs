@@ -65,7 +65,11 @@ fn upgrade_generic_param_tys_from_clones(module: &mut CoreModule) {
             .collect()
     };
     for fun in &mut module.functions {
-        if fun.mono_of.is_some() || fun.external.is_some() {
+        // Scheme-poly generics keep erased Int/Var ABI on purpose: Int call
+        // sites share the generic while Float/Bool sites use `$Float` / `$Bool`
+        // clones. Copying clone ground types onto the generic makes `dbl(1)` /
+        // `id(1)` use Float/Bool println (or float arith) on Int bits.
+        if fun.mono_of.is_some() || fun.external.is_some() || fun.scheme_poly {
             continue;
         }
         let Some((_, ps, ret)) = upgrades.iter().find(|(n, _, _)| n == &fun.name) else {
@@ -93,8 +97,27 @@ fn mono_ty_more_precise(new: &Type, old: &Type) -> bool {
             mono_ty_more_precise(n, o) || matches!(o.as_ref(), Type::Int | Type::Var(_))
         }
         (Type::List(_), Type::Int | Type::Var(_)) => true,
-        (Type::Map(_, _), Type::Int | Type::Var(_)) => true,
+        (Type::Set(n), Type::Set(o)) => {
+            mono_ty_more_precise(n, o) || matches!(o.as_ref(), Type::Int | Type::Var(_))
+        }
         (Type::Set(_), Type::Int | Type::Var(_)) => true,
+        (Type::Map(nk, nv), Type::Map(ok, ov)) => {
+            mono_ty_more_precise(nk, ok) || mono_ty_more_precise(nv, ov)
+        }
+        (Type::Map(_, _), Type::Int | Type::Var(_)) => true,
+        (
+            Type::Adt {
+                name: n,
+                params: np,
+            },
+            Type::Adt {
+                name: o,
+                params: op,
+            },
+        ) if n == o => np
+            .iter()
+            .zip(op.iter())
+            .any(|(a, b)| mono_ty_more_precise(a, b)),
         (Type::Adt { .. }, Type::Int | Type::Var(_)) => true,
         _ => false,
     }
@@ -131,7 +154,7 @@ fn rewrite_all_mono_call_sites(
         .map(|f| std::mem::replace(&mut f.body, empty.clone()))
         .collect();
     {
-        let index = FunIndex::new(&functions, &module.sum_max_arity);
+        let index = FunIndex::new(&functions, &module.sum_max_arity, &module.trait_methods, module.channel_elem_hint.as_ref());
         let no_funrefs = HashMap::default();
         let no_slot_funrefs = HashMap::default();
         for i in 0..functions.len() {
@@ -200,7 +223,12 @@ fn specialize_mono_round(
     module: &mut CoreModule,
     renames: &mut HashMap<(String, MonoKey), String>,
 ) -> bool {
-    let index = FunIndex::new(&module.functions, &module.sum_max_arity);
+    let index = FunIndex::new(
+        &module.functions,
+        &module.sum_max_arity,
+        &module.trait_methods,
+        module.channel_elem_hint.as_ref(),
+    );
     let mut needed: FxHashSet<(String, MonoKey)> = FxHashSet::default();
     for fun in &module.functions {
         let mut local_tys: HashMap<u32, Type> = HashMap::default();
@@ -325,10 +353,32 @@ fn mono_clone_ret_ty(
     }
 }
 
-/// Call-site ret while scanning: like [`mono_clone_ret_ty`] without walking the
-/// body. Avoids `bump(Parts, Float)` → MonoKey last-arg `Float` poisoning the
-/// `var p` slot (next call would mono as `$Float`).
-fn call_site_mono_ret(fun: &CoreFun, inferred: &Type) -> Type {
+/// Call-site ret while scanning/rewriting: same body-first strategy as
+/// [`mono_clone_ret_ty`]. With call-site formals, `touch(b, eps)` resolves to
+/// the product (not MonoKey's trailing `Float`), so later `addx` keys match.
+fn call_site_mono_ret(
+    fun: &CoreFun,
+    inferred: &Type,
+    call_param_tys: &[Type],
+    index: &FunIndex<'_>,
+) -> Type {
+    let mut param_map: HashMap<u32, Type> = HashMap::default();
+    for (i, p) in fun.params.iter().enumerate() {
+        let ty = call_param_tys
+            .get(i)
+            .cloned()
+            .or_else(|| fun.param_tys.get(i).cloned())
+            .unwrap_or(Type::Int);
+        param_map.insert(p.0, ty);
+    }
+    if let Some(t) = block_result_fixed_ty(
+        &fun.body,
+        index.funs(),
+        index.trait_methods,
+        &param_map,
+    ) {
+        return t;
+    }
     match &fun.ret_ty {
         Type::String => Type::String,
         Type::Bool => Type::Bool,
@@ -594,7 +644,8 @@ fn mono_value_ty_with_funrefs(
             if key.worth_cloning() || callee_is_mono_clone(fun, index) {
                 let inferred = key.ret_ty(funs);
                 if let Some(f) = index.get(fun) {
-                    return Some(call_site_mono_ret(f, &inferred));
+                    let ptys = materialize_mono_param_tys(&key, &f.param_tys, funs);
+                    return Some(call_site_mono_ret(f, &inferred, &ptys, index));
                 }
                 return Some(inferred);
             }
@@ -632,6 +683,7 @@ fn mono_value_ty_with_funrefs(
             funref_locals: Some(&funref_locals),
             local_int_consts: Some(int_consts),
             sum_max_arity: Some(index.sum_max_arity),
+            channel_elem_hint: index.channel_elem_hint,
         },
         Some(&mut call_ret),
     )
@@ -852,19 +904,30 @@ fn mono_value_ty_rewrite(
     let funs = index.funs();
     match value {
         Value::Call { fun, args } => {
-            if let Some(((_, mk), _)) = renames.iter().find(|(_, n)| *n == fun) {
-                return mk.ret_ty(funs);
-            }
+            // Must match scan's `call_site_mono_ret`: bare `MonoKey::ret_ty` uses
+            // "last data arg", so `l2Normalize(list, eps)` becomes `Float` and
+            // poisons `var u` → later `nAddmm` keys miss `List_Float` clones.
             let formals = index.get(fun).map(|f| f.param_tys.as_slice());
             if let Some(key) = args_mono_key(args, local_tys, funref_of, formals) {
-                if let Some(new) = renames.get(&(fun.clone(), key.clone())) {
-                    if let Some(((_, mk), _)) = renames.iter().find(|(_, n)| *n == new) {
-                        return mk.ret_ty(funs);
+                let inferred = key.ret_ty(funs);
+                let renamed = renames.get(&(fun.clone(), key.clone()));
+                let already_clone =
+                    renames.iter().any(|(_, n)| n == fun) || callee_is_mono_clone(fun, index);
+                if renamed.is_some() || already_clone || key.worth_cloning() {
+                    let callee = renamed.map(|s| s.as_str()).unwrap_or(fun.as_str());
+                    if let Some(f) = index.get(callee).or_else(|| index.get(fun)) {
+                        let ptys = materialize_mono_param_tys(&key, &f.param_tys, funs);
+                        return call_site_mono_ret(f, &inferred, &ptys, index);
                     }
+                    return inferred;
                 }
-                if callee_is_mono_clone(fun, index) || key.worth_cloning() {
-                    return key.ret_ty(funs);
+            } else if let Some(((_, mk), _)) = renames.iter().find(|(_, n)| *n == fun) {
+                let inferred = mk.ret_ty(funs);
+                if let Some(f) = index.get(fun) {
+                    let ptys = materialize_mono_param_tys(mk, &f.param_tys, funs);
+                    return call_site_mono_ret(f, &inferred, &ptys, index);
                 }
+                return inferred;
             }
             if let Some(f) = index.get(fun) {
                 return f.ret_ty.clone();

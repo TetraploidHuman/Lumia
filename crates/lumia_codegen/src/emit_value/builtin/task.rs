@@ -7,6 +7,7 @@ use inkwell::IntPredicate;
 use lumia_abi::adt_type_id;
 use lumia_core::Local;
 use lumia_hir::Builtin;
+use lumia_ty::Type;
 
 impl<'ctx> Codegen<'ctx> {
     pub(crate) fn emit_task_builtin(
@@ -66,7 +67,11 @@ impl<'ctx> Codegen<'ctx> {
             .into_int_value();
         let ok = crate::error::llvm(self.llvm.builder.build_load(self.llvm.i64_ty, out_ok, "ok"))?
             .into_int_value();
-        self.emit_option_from_ok_val(ok, val, "join")
+        let field_ty = match self.frame.local_tys.get(&args[0].0) {
+            Some(Type::Task(e)) => e.as_ref().clone(),
+            _ => Type::Int,
+        };
+        self.emit_option_from_ok_val(ok, val, "join", &field_ty)
     }
 
     /// FunRef: `spawn_nullary(untagged_fn)`. Heap closure: `spawn(fn_from_clos, clos_bits)`.
@@ -176,7 +181,25 @@ impl<'ctx> Codegen<'ctx> {
             .into_int_value();
         let ok = crate::error::llvm(self.llvm.builder.build_load(self.llvm.i64_ty, out_ok, "ok"))?
             .into_int_value();
-        self.emit_option_from_ok_val(ok, val, "recv")
+        let field_ty = match self.frame.local_tys.get(&args[0].0) {
+            Some(Type::Channel(e)) => {
+                let elem = e.as_ref().clone();
+                if matches!(elem, Type::Int | Type::Var(_)) {
+                    self.funs
+                        .channel_elem_hint
+                        .clone()
+                        .unwrap_or(elem)
+                } else {
+                    elem
+                }
+            }
+            _ => self
+                .funs
+                .channel_elem_hint
+                .clone()
+                .unwrap_or(Type::Int),
+        };
+        self.emit_option_from_ok_val(ok, val, "recv", &field_ty)
     }
 
     /// Build `Option` from RT `(ok, val)` with **one** shared GC root (both CFG arms).
@@ -185,6 +208,7 @@ impl<'ctx> Codegen<'ctx> {
         ok: IntValue<'ctx>,
         val: IntValue<'ctx>,
         prefix: &str,
+        field_ty: &Type,
     ) -> Result<BasicValueEnum<'ctx>> {
         let is_some = crate::error::llvm(self.llvm.builder.build_int_compare(
             IntPredicate::NE,
@@ -232,7 +256,7 @@ impl<'ctx> Codegen<'ctx> {
 
         self.llvm.builder.position_at_end(some_bb);
         let some =
-            self.emit_option_adt_into(root_slot, self.option_some_tag, Some(val))?;
+            self.emit_option_adt_into(root_slot, self.option_some_tag, Some(val), field_ty)?;
         crate::error::llvm(self.llvm.builder.build_unconditional_branch(merge_bb))?;
         let some_bb_end = self
             .llvm
@@ -241,7 +265,8 @@ impl<'ctx> Codegen<'ctx> {
             .context("opt some end")?;
 
         self.llvm.builder.position_at_end(none_bb);
-        let none = self.emit_option_adt_into(root_slot, self.option_none_tag, None)?;
+        let none =
+            self.emit_option_adt_into(root_slot, self.option_none_tag, None, field_ty)?;
         crate::error::llvm(self.llvm.builder.build_unconditional_branch(merge_bb))?;
         let none_bb_end = self
             .llvm
@@ -265,6 +290,7 @@ impl<'ctx> Codegen<'ctx> {
         root_slot: inkwell::values::PointerValue<'ctx>,
         tag: i64,
         field: Option<IntValue<'ctx>>,
+        field_ty: &Type,
     ) -> Result<IntValue<'ctx>> {
         let n_fields = if field.is_some() { 1u64 } else { 0 };
         let nbytes = self.llvm.i64_ty.const_int((1 + n_fields) * 8, false);
@@ -299,8 +325,11 @@ impl<'ctx> Codegen<'ctx> {
                 .build_store(tag_slot, self.llvm.i64_ty.const_int(tag as u64, false)),
         )?;
         if let Some(v) = field {
-            // COW alias into Option field (List/Map/Set/ADT); no-op for scalars.
-            self.adt_retain_i64(v)?;
+            // COW only for heap payloads — Float IEEE bits must not be retained
+            // (post-`is_heap_payload` remove, mistagged bits SEGV).
+            if Self::type_needs_cow_retain(field_ty) {
+                self.adt_retain_i64(v)?;
+            }
             let slot = unsafe {
                 crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
                     self.llvm.i64_ty,
@@ -310,6 +339,19 @@ impl<'ctx> Codegen<'ctx> {
                 ))?
             };
             crate::error::llvm(self.llvm.builder.build_store(slot, v))?;
+            if matches!(field_ty, Type::Float) {
+                let set_mask = self
+                    .llvm
+                    .module
+                    .get_function("lumia_adt_set_float_mask")
+                    .context("lumia_adt_set_float_mask")?;
+                let m = self.llvm.i64_ty.const_int(1, false);
+                crate::error::llvm(self.llvm.builder.build_call(
+                    set_mask,
+                    &[ptr.into(), m.into()],
+                    "opt_fmask",
+                ))?;
+            }
         }
         crate::error::llvm(
             self.llvm

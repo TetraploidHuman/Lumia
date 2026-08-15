@@ -1,5 +1,6 @@
 //! Bounded channel with fiber-aware send/recv.
 
+use super::sched_core::SchedCore;
 use super::scheduler::{
     alloc_id, assert_task_api_allowed, check_current_not_cancelled, current_fiber_cancelled_locked,
     current_waiter, park_until, push_waiter_unique, suspend_current, wake, wake_many, with_sched,
@@ -7,7 +8,7 @@ use super::scheduler::{
 };
 use crate::common::trap_abort;
 use crate::gc::{lumia_alloc, lumia_root_pop, lumia_root_push};
-use crate::heap::with_heap;
+use crate::heap::{full_marking_fast, with_heap};
 use lumia_abi::TYPE_CHANNEL;
 use std::collections::VecDeque;
 
@@ -16,6 +17,17 @@ fn channel_id(handle: *mut u8) -> u64 {
         trap_abort("lumia: null channel");
     }
     unsafe { *(handle as *const i64) as u64 }
+}
+
+/// Sched mutation + optional Dijkstra shade. Skip the heap Mutex when full mark
+/// is idle (flag mirrored in [`full_marking_fast`]); terminal root remark still
+/// covers channel buffers if a publish races the flag raise.
+fn with_channel_gc<R>(f: impl FnOnce(bool, &mut SchedCore) -> R) -> R {
+    if full_marking_fast() {
+        with_heap(|_| with_sched(|s| f(true, s)))
+    } else {
+        with_sched(|s| f(false, s))
+    }
 }
 
 /// Create a bounded channel (`capacity >= 1`). Returns TYPE_CHANNEL handle.
@@ -97,9 +109,7 @@ pub extern "C" fn lumia_channel_send(handle: *mut u8, value: i64) {
             FailClosed,
             Cancelled,
         }
-        let (step, to_wake) = with_heap(|h| {
-            let full = h.full_marking;
-            with_sched(|s| {
+        let (step, to_wake) = with_channel_gc(|full, s| {
                 if current_fiber_cancelled_locked(s) {
                     return (Step::Cancelled, None);
                 }
@@ -121,7 +131,6 @@ pub extern "C" fn lumia_channel_send(handle: *mut u8, value: i64) {
                 }
                 push_waiter_unique(&mut ch.send_waiters, current_waiter());
                 (Step::Wait, None)
-            })
         });
         if let Some(w) = to_wake {
             wake(w);
@@ -164,9 +173,7 @@ pub extern "C" fn lumia_channel_recv(handle: *mut u8) -> i64 {
             ClosedEmpty,
             Cancelled,
         }
-        let (step, to_wake) = with_heap(|h| {
-            let full = h.full_marking;
-            with_sched(|s| {
+        let (step, to_wake) = with_channel_gc(|full, s| {
                 if current_fiber_cancelled_locked(s) {
                     return (Step::Cancelled, None);
                 }
@@ -188,7 +195,6 @@ pub extern "C" fn lumia_channel_recv(handle: *mut u8) -> i64 {
                 }
                 push_waiter_unique(&mut ch.recv_waiters, current_waiter());
                 (Step::Wait, None)
-            })
         });
         if let Some(w) = to_wake {
             wake(w);
@@ -237,9 +243,7 @@ pub extern "C" fn lumia_channel_recv_opt(handle: *mut u8, out_ok: *mut i64) -> i
             Wait,
             Cancelled,
         }
-        let (step, to_wake) = with_heap(|h| {
-            let full = h.full_marking;
-            with_sched(|s| {
+        let (step, to_wake) = with_channel_gc(|full, s| {
                 if current_fiber_cancelled_locked(s) {
                     return (Step::Cancelled, None);
                 }
@@ -262,7 +266,6 @@ pub extern "C" fn lumia_channel_recv_opt(handle: *mut u8, out_ok: *mut i64) -> i
                 }
                 push_waiter_unique(&mut ch.recv_waiters, current_waiter());
                 (Step::Wait, None)
-            })
         });
         if let Some(w) = to_wake {
             wake(w);

@@ -114,10 +114,19 @@ pub(crate) fn block_result_fixed_ty(
     param_tys: &HashMap<u32, Type>,
 ) -> Option<Type> {
     let empty = HashMap::default();
-    let index = FunIndex::new(functions, &empty);
+    let index = FunIndex::new(functions, &empty, trait_methods, None);
     let Local(r) = block.result?;
     let mut seen = HashSet::default();
-    local_fixed_ty(block, r, &index, trait_methods, param_tys, &mut seen)
+    let mut expanding = HashSet::default();
+    local_fixed_ty(
+        block,
+        r,
+        &index,
+        trait_methods,
+        param_tys,
+        &mut seen,
+        &mut expanding,
+    )
 }
 
 fn local_fixed_ty(
@@ -127,6 +136,7 @@ fn local_fixed_ty(
     trait_methods: &HashMap<(String, String), Vec<String>>,
     param_tys: &HashMap<u32, Type>,
     seen: &mut HashSet<u32>,
+    expanding: &mut HashSet<String>,
 ) -> Option<Type> {
     // `seen` is an in-progress stack (cycle guard), not a permanent memo.
     // Shared locals (e.g. one `n` used by meanFood/meanThreat/meanDisp) must
@@ -142,7 +152,15 @@ fn local_fixed_ty(
         for op in &block.ops {
             if let Op::Let { local, value, .. } = op {
                 if local.0 == id {
-                    found = value_fixed_ty(block, value, index, trait_methods, param_tys, seen);
+                    found = value_fixed_ty(
+                        block,
+                        value,
+                        index,
+                        trait_methods,
+                        param_tys,
+                        seen,
+                        expanding,
+                    );
                     break;
                 }
             }
@@ -153,6 +171,23 @@ fn local_fixed_ty(
     result
 }
 
+fn ret_ty_needs_call_site_fix(ret: &Type) -> bool {
+    match ret {
+        Type::Int | Type::Var(_) => true,
+        Type::List(e) | Type::Set(e) | Type::Task(e) | Type::Channel(e) => {
+            matches!(e.as_ref(), Type::Int | Type::Var(_))
+        }
+        Type::Map(k, v) => {
+            matches!(k.as_ref(), Type::Int | Type::Var(_))
+                || matches!(v.as_ref(), Type::Int | Type::Var(_))
+        }
+        Type::Adt { params, .. } => params
+            .iter()
+            .any(|p| matches!(p, Type::Int | Type::Var(_))),
+        _ => false,
+    }
+}
+
 fn value_fixed_ty(
     block: &Block,
     value: &Value,
@@ -160,12 +195,15 @@ fn value_fixed_ty(
     trait_methods: &HashMap<(String, String), Vec<String>>,
     param_tys: &HashMap<u32, Type>,
     seen: &mut HashSet<u32>,
+    expanding: &mut HashSet<String>,
 ) -> Option<Type> {
     match value {
         Value::Local(Local(id)) => {
-            local_fixed_ty(block, *id, index, trait_methods, param_tys, seen)
+            local_fixed_ty(block, *id, index, trait_methods, param_tys, seen, expanding)
         }
-        Value::Name(name) => slot_fixed_ty(block, name, index, trait_methods, param_tys, seen),
+        Value::Name(name) => {
+            slot_fixed_ty(block, name, index, trait_methods, param_tys, seen, expanding)
+        }
         Value::Builtin {
             name: Builtin::Show,
             ..
@@ -181,6 +219,7 @@ fn value_fixed_ty(
                 trait_methods,
                 param_tys,
                 seen,
+                expanding,
             )?;
             match list_ty {
                 Type::List(e) | Type::Set(e) => Some(*e),
@@ -194,7 +233,7 @@ fn value_fixed_ty(
         Value::Builtin {
             name: Builtin::AdtField,
             args,
-        } => adt_field_fixed_ty(block, args, index, trait_methods, param_tys, seen),
+        } => adt_field_fixed_ty(block, args, index, trait_methods, param_tys, seen, expanding),
         Value::String(_) => Some(Type::String),
         Value::Bool(_) => Some(Type::Bool),
         Value::Int(_) => Some(Type::Int),
@@ -209,20 +248,65 @@ fn value_fixed_ty(
             trait_methods,
             param_tys,
             seen,
+            expanding,
         ),
         Value::Unary { op, operand } => match op {
             UnOp::Not => Some(Type::Bool),
-            UnOp::Neg => local_fixed_ty(block, operand.0, index, trait_methods, param_tys, seen),
-        },
-        Value::Call { fun, .. } => {
-            if let Some(f) = index.get(fun) {
-                return Some(f.ret_ty.clone());
+            UnOp::Neg => {
+                local_fixed_ty(block, operand.0, index, trait_methods, param_tys, seen, expanding)
             }
-            // Unresolved short trait method: do **not** sample an arbitrary
-            // mangled impl (Float vs Int / heap vs scalar can disagree). Leave
-            // open until `resolve_trait_method_calls` rewrites the Call.
-            let _ = trait_methods;
-            None
+        },
+        Value::Call { fun, args } => {
+            let Some(f) = index.get(fun) else {
+                // Unresolved short trait method: do **not** sample an arbitrary
+                // mangled impl (Float vs Int / heap vs scalar can disagree). Leave
+                // open until `resolve_trait_method_calls` rewrites the Call.
+                let _ = trait_methods;
+                return None;
+            };
+            // ABI-erased / open ret (`id`, poly wrappers): walk the callee body
+            // with call-site arg types so `touch`→`id(b)` still yields `Box`,
+            // not Int (else later `addx` misses `$Box_*` clones).
+            if ret_ty_needs_call_site_fix(&f.ret_ty) {
+                // Self-/mutual recursion: entering the callee body re-hits this Call.
+                if !expanding.insert(fun.clone()) {
+                    return Some(f.ret_ty.clone());
+                }
+                let mut call_params: HashMap<u32, Type> = HashMap::default();
+                for (i, p) in f.params.iter().enumerate() {
+                    let ty = args
+                        .get(i)
+                        .and_then(|a| {
+                            local_fixed_ty(
+                                block, a.0, index, trait_methods, param_tys, seen, expanding,
+                            )
+                        })
+                        .or_else(|| f.param_tys.get(i).cloned())
+                        .unwrap_or(Type::Int);
+                    call_params.insert(p.0, ty);
+                }
+                let refined = block_result_fixed_ty_indexed(
+                    &f.body,
+                    index,
+                    trait_methods,
+                    &call_params,
+                    expanding,
+                );
+                expanding.remove(fun);
+                if let Some(t) = refined {
+                    return Some(t);
+                }
+                for a in args {
+                    if let Some(t) = local_fixed_ty(
+                        block, a.0, index, trait_methods, param_tys, seen, expanding,
+                    ) {
+                        if !matches!(t, Type::Int | Type::Var(_)) {
+                            return Some(t);
+                        }
+                    }
+                }
+            }
+            Some(f.ret_ty.clone())
         }
         Value::AllocAdt {
             adt_name,
@@ -233,7 +317,7 @@ fn value_fixed_ty(
             let field_tys: Vec<Type> = fields
                 .iter()
                 .map(|Local(id)| {
-                    local_fixed_ty(block, *id, index, trait_methods, param_tys, seen)
+                    local_fixed_ty(block, *id, index, trait_methods, param_tys, seen, expanding)
                         .unwrap_or(Type::Int)
                 })
                 .collect();
@@ -267,8 +351,12 @@ fn value_fixed_ty(
             else_block,
             ..
         } => {
-            let t = block_result_fixed_ty_indexed(then_block, index, trait_methods, param_tys)?;
-            let e = block_result_fixed_ty_indexed(else_block, index, trait_methods, param_tys)?;
+            let t = block_result_fixed_ty_indexed(
+                then_block, index, trait_methods, param_tys, expanding,
+            )?;
+            let e = block_result_fixed_ty_indexed(
+                else_block, index, trait_methods, param_tys, expanding,
+            )?;
             join_fixed_ty(&t, &e)
         }
         _ => None,
@@ -285,6 +373,7 @@ fn slot_fixed_ty(
     trait_methods: &HashMap<(String, String), Vec<String>>,
     param_tys: &HashMap<u32, Type>,
     seen: &mut HashSet<u32>,
+    expanding: &mut HashSet<String>,
 ) -> Option<Type> {
     let mut found: Option<Type> = None;
     scan_slot_ty(
@@ -294,6 +383,7 @@ fn slot_fixed_ty(
         trait_methods,
         param_tys,
         seen,
+        expanding,
         &mut found,
     );
     found
@@ -306,6 +396,7 @@ fn scan_slot_ty(
     trait_methods: &HashMap<(String, String), Vec<String>>,
     param_tys: &HashMap<u32, Type>,
     seen: &mut HashSet<u32>,
+    expanding: &mut HashSet<String>,
     found: &mut Option<Type>,
 ) {
     for op in &block.ops {
@@ -314,12 +405,16 @@ fn scan_slot_ty(
                 name: n,
                 value: Local(id),
             } if n == name => {
-                if let Some(t) = local_fixed_ty(block, *id, index, trait_methods, param_tys, seen) {
+                if let Some(t) =
+                    local_fixed_ty(block, *id, index, trait_methods, param_tys, seen, expanding)
+                {
                     *found = Some(merge_slot_ty(found.take(), t));
                 }
             }
             Op::Let { value, .. } => {
-                scan_value_slots(value, name, index, trait_methods, param_tys, seen, found);
+                scan_value_slots(
+                    value, name, index, trait_methods, param_tys, seen, expanding, found,
+                );
             }
             _ => {}
         }
@@ -333,6 +428,7 @@ fn scan_value_slots(
     trait_methods: &HashMap<(String, String), Vec<String>>,
     param_tys: &HashMap<u32, Type>,
     seen: &mut HashSet<u32>,
+    expanding: &mut HashSet<String>,
     found: &mut Option<Type>,
 ) {
     match value {
@@ -348,6 +444,7 @@ fn scan_value_slots(
                 trait_methods,
                 param_tys,
                 seen,
+                expanding,
                 found,
             );
             scan_slot_ty(
@@ -357,6 +454,7 @@ fn scan_value_slots(
                 trait_methods,
                 param_tys,
                 seen,
+                expanding,
                 found,
             );
         }
@@ -365,9 +463,15 @@ fn scan_value_slots(
             body,
             latch,
         } => {
-            scan_slot_ty(header, name, index, trait_methods, param_tys, seen, found);
-            scan_slot_ty(body, name, index, trait_methods, param_tys, seen, found);
-            scan_slot_ty(latch, name, index, trait_methods, param_tys, seen, found);
+            scan_slot_ty(
+                header, name, index, trait_methods, param_tys, seen, expanding, found,
+            );
+            scan_slot_ty(
+                body, name, index, trait_methods, param_tys, seen, expanding, found,
+            );
+            scan_slot_ty(
+                latch, name, index, trait_methods, param_tys, seen, expanding, found,
+            );
         }
         _ => {}
     }
@@ -411,6 +515,7 @@ fn binary_fixed_ty(
     trait_methods: &HashMap<(String, String), Vec<String>>,
     param_tys: &HashMap<u32, Type>,
     seen: &mut HashSet<u32>,
+    expanding: &mut HashSet<String>,
 ) -> Option<Type> {
     match op {
         BinOp::Eq
@@ -422,8 +527,10 @@ fn binary_fixed_ty(
         | BinOp::And
         | BinOp::Or => Some(Type::Bool),
         BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => {
-            let l = local_fixed_ty(block, left, index, trait_methods, param_tys, seen)?;
-            let r = local_fixed_ty(block, right, index, trait_methods, param_tys, seen)?;
+            let l =
+                local_fixed_ty(block, left, index, trait_methods, param_tys, seen, expanding)?;
+            let r =
+                local_fixed_ty(block, right, index, trait_methods, param_tys, seen, expanding)?;
             match (&l, &r) {
                 (Type::Float, _) | (_, Type::Float) => Some(Type::Float),
                 (Type::Int, Type::Int) => Some(Type::Int),
@@ -440,10 +547,12 @@ fn adt_field_fixed_ty(
     trait_methods: &HashMap<(String, String), Vec<String>>,
     param_tys: &HashMap<u32, Type>,
     seen: &mut HashSet<u32>,
+    expanding: &mut HashSet<String>,
 ) -> Option<Type> {
     let recv = args.first()?;
     let idx_local = args.get(1)?;
-    let recv_ty = local_fixed_ty(block, recv.0, index, trait_methods, param_tys, seen)?;
+    let recv_ty =
+        local_fixed_ty(block, recv.0, index, trait_methods, param_tys, seen, expanding)?;
     let idx = int_const_in_block(block, idx_local.0)?;
     if idx < 0 {
         return None;
@@ -487,10 +596,11 @@ fn block_result_fixed_ty_indexed(
     index: &FunIndex<'_>,
     trait_methods: &HashMap<(String, String), Vec<String>>,
     param_tys: &HashMap<u32, Type>,
+    expanding: &mut HashSet<String>,
 ) -> Option<Type> {
     let Local(r) = block.result?;
     let mut seen = HashSet::default();
-    local_fixed_ty(block, r, index, trait_methods, param_tys, &mut seen)
+    local_fixed_ty(block, r, index, trait_methods, param_tys, &mut seen, expanding)
 }
 
 fn join_fixed_ty(a: &Type, b: &Type) -> Option<Type> {

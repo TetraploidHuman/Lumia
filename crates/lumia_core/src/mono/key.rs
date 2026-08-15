@@ -241,7 +241,8 @@ impl MonoKey {
             .collect()
     }
 
-    /// Return type: HOF Option/Result map·andThen; else all-same / last-arg.
+    /// Return type: HOF Option/Result map·andThen; else all-same / container /
+    /// last-arg.
     pub(crate) fn ret_ty(&self, functions: &[CoreFun]) -> Type {
         if let Some(t) = self.hof_ret_ty(functions) {
             return t;
@@ -252,6 +253,17 @@ impl MonoKey {
         }
         if kinds.iter().all(|k| k == &kinds[0]) {
             return kinds[0].to_type();
+        }
+        // `l2Normalize(xs, eps)` / `keep(xs, eps)`: first List/Map/Set is the
+        // value being transformed; last-arg would wrongly yield the scalar eps
+        // and poison `var u` so later `nAddmm` misses `List_Float` clones.
+        if let Some(k) = kinds.iter().find(|k| {
+            matches!(
+                k,
+                MonoKind::List(_) | MonoKind::Map(_, _) | MonoKind::Set(_)
+            )
+        }) {
+            return k.to_type();
         }
         // Skip FunRef when taking "last data arg" (unwrap_or / defaults).
         kinds

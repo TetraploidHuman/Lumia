@@ -48,7 +48,21 @@ fn value_may_heap(
         Value::Local(Local(id)) => local_may_heap(block, *id, params, seen),
         Value::Builtin { name, .. } => !matches!(
             name,
-            Builtin::ListLen | Builtin::Contains | Builtin::Println | Builtin::Assert
+            Builtin::ListLen
+                | Builtin::Contains
+                | Builtin::Println
+                | Builtin::Assert
+                | Builtin::ChannelSend
+                | Builtin::ChannelClose
+                | Builtin::ScopeEnter
+                | Builtin::ScopeLeave
+                | Builtin::ScopeCancel
+                | Builtin::MatchFail
+                // Scalar payloads stay non-heap; unknown List/ADT recv is
+                // refined later via channel_elem hints in fixup.
+                | Builtin::ChannelRecv
+                // Elem type comes from TaskSpawn / fun_ret tables (heap_ty).
+                | Builtin::TaskJoin
         ),
         Value::Call { .. } | Value::IndirectCall { .. } => true,
         Value::If {

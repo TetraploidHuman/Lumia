@@ -149,7 +149,9 @@ fn cow_tid_ok(tid: u32, adt_ok: bool) -> bool {
 
 #[inline]
 pub(crate) fn cow_rc_retain(payload: *mut u8, adt_ok: bool) {
-    if payload.is_null() || !is_heap_payload(payload) {
+    // Trust typed List/ADT pointers (same as `list_len_of`); skip process-heap
+    // membership. Stack Lit* keep rc==0 / wrong tid and no-op via cow_tid_ok.
+    if payload.is_null() {
         return;
     }
     unsafe {
@@ -166,7 +168,7 @@ pub(crate) fn cow_rc_retain(payload: *mut u8, adt_ok: bool) {
 
 #[inline]
 pub(crate) fn cow_rc_release(payload: *mut u8, adt_ok: bool) {
-    if payload.is_null() || !is_heap_payload(payload) {
+    if payload.is_null() {
         return;
     }
     unsafe {
@@ -183,12 +185,12 @@ pub(crate) fn cow_rc_release(payload: *mut u8, adt_ok: bool) {
 
 #[inline]
 pub(crate) fn cow_rc_is_unique(payload: *mut u8, adt_ok: bool) -> bool {
-    if payload.is_null() || !is_heap_payload(payload) {
+    // Trust typed List/ADT pointers (same as retain/release).
+    if payload.is_null() {
         return false;
     }
     unsafe {
         let h = header_from_payload(payload);
-        // Fast reject shared / wrong-type after membership (avoid UB on immediates).
         cow_tid_ok((*h).type_id, adt_ok) && (*h).rc == 1
     }
 }
@@ -204,7 +206,7 @@ pub(crate) fn adt_float_slot(mask: u64, field_index: usize) -> bool {
 /// `Let tmp = Name(p)` which retains, while the mut slot does not.
 #[inline]
 pub(crate) fn cow_rc_drop_alias(payload: *mut u8, adt_ok: bool) {
-    if payload.is_null() || !is_heap_payload(payload) {
+    if payload.is_null() {
         return;
     }
     unsafe {

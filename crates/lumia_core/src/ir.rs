@@ -22,6 +22,13 @@ pub struct CoreModule {
     pub adt_variant_names: HashMap<String, Vec<String>>,
     /// Sum ADT name → max variant payload arity (shared `Type::Adt` params slots).
     pub sum_max_arity: HashMap<String, usize>,
+    /// When every `ChannelSend` in the module agrees on a ground payload, Core
+    /// `ChannelNew` still lowers as `Channel(Int)`; recv/join typing uses this hint.
+    pub channel_elem_hint: Option<Type>,
+    /// Per-`ChannelNew` local id → agreed send payload (locals unique after lift).
+    pub channel_elem_by_local: HashMap<u32, Type>,
+    /// Same-channel sends that disagreed on payload type `(prev, next)`.
+    pub channel_elem_conflicts: Vec<(Type, Type)>,
 }
 
 impl CoreModule {
@@ -34,6 +41,9 @@ impl CoreModule {
             trait_methods: HashMap::default(),
             adt_variant_names: HashMap::default(),
             sum_max_arity: HashMap::default(),
+            channel_elem_hint: None,
+            channel_elem_by_local: HashMap::default(),
+            channel_elem_conflicts: Vec::new(),
         }
     }
 
@@ -43,6 +53,16 @@ impl CoreModule {
             functions,
             ..Self::empty(name)
         }
+    }
+
+    /// Reject same-channel mixed payloads (hints cannot recover ABI).
+    pub fn check_channel_elem_conflicts(&self) -> Result<(), String> {
+        let Some((a, b)) = self.channel_elem_conflicts.first() else {
+            return Ok(());
+        };
+        Err(format!(
+            "mixed payloads on one channel ({a} then {b}); use separate channels or a uniform element type"
+        ))
     }
 }
 

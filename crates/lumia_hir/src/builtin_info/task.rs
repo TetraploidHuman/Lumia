@@ -39,6 +39,7 @@ pub(crate) fn info_task(b: Builtin) -> BuiltinInfo {
             NO_F,
             UnaryObjScalar,
             false,
+            // Elem refined via `CoreModule.channel_elem_hint` when sends agree.
             Typed,
         ),
         ChannelRecvOpt => bi(f, 1, 1, io, Some("lumia_channel_recv_opt"), NO_F, Custom, false, Always),

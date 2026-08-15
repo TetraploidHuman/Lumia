@@ -212,6 +212,7 @@ impl MarkSweep {
             Self::clear_marks(&h.old);
             h.mark_work.clear();
             h.full_marking = true;
+            crate::heap::set_full_marking_fast(true);
             h.mark_minor = false;
             true
         });
@@ -232,6 +233,7 @@ impl MarkSweep {
             h.mark_work.clear();
             h.mark_minor = false;
             h.full_marking = false;
+            crate::heap::set_full_marking_fast(false);
             Self::shade_all_roots_locked(h);
             let (freed_y, _, _) = Self::sweep_vec(
                 &mut h.young,
@@ -298,6 +300,7 @@ impl MarkSweep {
                 return true;
             }
             h.full_marking = false;
+            crate::heap::set_full_marking_fast(false);
             h.mark_minor = false;
             h.mark_work.clear();
             Self::shade_all_roots_locked(h);

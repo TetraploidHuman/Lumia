@@ -4,7 +4,7 @@ mod ctx;
 mod expr;
 
 use crate::ir::{CoreFun, CoreModule};
-use crate::lambda_lift::{fixup_closure_float_caps, lift_lambdas};
+use crate::lambda_lift::{fixup_closure_float_caps, lift_lambdas, refine_channel_elem_hint};
 use crate::mono::{
     directize_funref_calls, ensure_trait_method_stubs, resolve_trait_method_calls,
     specialize_mono_calls,
@@ -184,8 +184,12 @@ pub fn lower_hir_with_schemes(
         trait_methods: module.trait_methods.clone(),
         adt_variant_names,
         sum_max_arity,
+        channel_elem_hint: None,
+        channel_elem_by_local: Default::default(),
+        channel_elem_conflicts: Vec::new(),
     };
     lift_lambdas(&mut core);
+    refine_channel_elem_hint(&mut core);
     directize_funref_calls(&mut core);
     specialize_mono_calls(&mut core);
     fixup_closure_float_caps(&mut core);

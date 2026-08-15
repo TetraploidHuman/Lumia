@@ -7,6 +7,7 @@
 use rustc_hash::FxHashSet;
 use std::cell::Cell;
 use std::ptr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use crate::common::ObjectHeader;
@@ -80,6 +81,21 @@ impl Heap {
 }
 
 static PROCESS_HEAP: OnceLock<Mutex<Heap>> = OnceLock::new();
+
+/// Mirrors [`Heap::full_marking`] for channel/join hot paths that otherwise
+/// take the heap Mutex only to read the flag. Updated under the heap lock
+/// whenever `Heap::full_marking` changes (Release/Acquire).
+static FULL_MARKING_FAST: AtomicBool = AtomicBool::new(false);
+
+#[inline]
+pub(crate) fn full_marking_fast() -> bool {
+    FULL_MARKING_FAST.load(Ordering::Acquire)
+}
+
+#[inline]
+pub(crate) fn set_full_marking_fast(v: bool) {
+    FULL_MARKING_FAST.store(v, Ordering::Release);
+}
 
 fn process_heap() -> &'static Mutex<Heap> {
     PROCESS_HEAP.get_or_init(|| Mutex::new(Heap::new()))

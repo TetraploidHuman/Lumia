@@ -1,6 +1,7 @@
 //! LLVM codegen via inkwell (LLVM 21). Links against `lumia_rt`.
 
 mod attrs;
+mod closure_cap_tys;
 mod emit_eq;
 mod emit_fun;
 mod emit_memo;
@@ -108,6 +109,9 @@ fn emit_llvm_module<'ctx>(
     cg.funs.hash_adts = core.hash_adts.clone();
     cg.funs.adt_variant_names = core.adt_variant_names.clone();
     cg.funs.sum_max_arity = core.sum_max_arity.clone();
+    cg.funs.channel_elem_hint = core.channel_elem_hint.clone();
+    cg.funs.channel_elem_by_local = core.channel_elem_by_local.clone();
+    cg.funs.closure_cap_tys = closure_cap_tys::collect_closure_cap_tys(core);
     cg.funs.adt_show_kinds = assign_adt_show_kinds(&cg.funs.adt_variant_names);
 
     for f in &core.functions {

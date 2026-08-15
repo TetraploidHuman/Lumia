@@ -220,6 +220,15 @@ e2e_ok!(
     "99"
 );
 
+e2e_ok!(
+    e2e_var_fun_reassign,
+    "examples/var_fun_reassign.lm",
+    "6",
+    "6",
+    "11",
+    "3"
+);
+
 e2e_ok!(e2e_with_open_recv, "examples/with_open_recv.lm", "10", "4", "3");
 
 e2e_ok!(

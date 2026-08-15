@@ -28,6 +28,8 @@ pub struct InferValueCtx<'a> {
     pub local_int_consts: Option<&'a HashMap<u32, i64>>,
     /// Sum ADT name → max variant payload arity (pad `AllocAdt` params).
     pub sum_max_arity: Option<&'a HashMap<String, usize>>,
+    /// Module-wide `ChannelSend` payload when all sends agree (else erased Int).
+    pub channel_elem_hint: Option<&'a Type>,
 }
 
 /// Grouped codegen tables so [`InferValueCtx::full`] stays a short call site.
@@ -40,6 +42,7 @@ pub struct CodegenTypeTables<'a> {
     pub funref_locals: &'a HashMap<u32, String>,
     pub local_int_consts: &'a HashMap<u32, i64>,
     pub sum_max_arity: &'a HashMap<String, usize>,
+    pub channel_elem_hint: Option<&'a Type>,
 }
 
 impl<'a> InferValueCtx<'a> {
@@ -53,6 +56,7 @@ impl<'a> InferValueCtx<'a> {
             funref_locals: None,
             local_int_consts: None,
             sum_max_arity: None,
+            channel_elem_hint: None,
         }
     }
 
@@ -67,6 +71,7 @@ impl<'a> InferValueCtx<'a> {
             funref_locals: Some(tables.funref_locals),
             local_int_consts: Some(tables.local_int_consts),
             sum_max_arity: Some(tables.sum_max_arity),
+            channel_elem_hint: tables.channel_elem_hint,
         }
     }
 }
@@ -428,31 +433,54 @@ fn builtin_value_ty(name: Builtin, args: &[Local], ctx: InferValueCtx<'_>) -> Ty
         | Builtin::ScopeEnter
         | Builtin::ScopeLeave
         | Builtin::ScopeCancel => Type::Unit,
-        Builtin::ChannelNew => Type::Channel(Box::new(Type::Int)),
+        Builtin::ChannelNew => Type::Channel(Box::new(
+            ctx.channel_elem_hint.cloned().unwrap_or(Type::Int),
+        )),
         Builtin::ChannelRecv | Builtin::TaskJoin => args
             .first()
             .and_then(|a| local_tys.get(&a.0))
             .map(|t| match t {
-                Type::Channel(e) | Type::Task(e) => (**e).clone(),
+                Type::Channel(e) | Type::Task(e) => {
+                    let elem = (**e).clone();
+                    if matches!(elem, Type::Int | Type::Var(_)) {
+                        if let Some(hint) = ctx.channel_elem_hint {
+                            if matches!(t, Type::Channel(_)) {
+                                return hint.clone();
+                            }
+                        }
+                    }
+                    elem
+                }
                 _ => Type::Int,
             })
-            .unwrap_or(Type::Int),
+            .unwrap_or_else(|| {
+                ctx.channel_elem_hint
+                    .cloned()
+                    .unwrap_or(Type::Int)
+            }),
         Builtin::ChannelRecvOpt => args
             .first()
             .and_then(|a| local_tys.get(&a.0))
             .map(|t| match t {
-                Type::Channel(e) => Type::Adt {
-                    name: "Option".into(),
-                    params: vec![(**e).clone()],
-                },
+                Type::Channel(e) => {
+                    let elem = if matches!(e.as_ref(), Type::Int | Type::Var(_)) {
+                        ctx.channel_elem_hint.cloned().unwrap_or_else(|| (**e).clone())
+                    } else {
+                        (**e).clone()
+                    };
+                    Type::Adt {
+                        name: "Option".into(),
+                        params: vec![elem],
+                    }
+                }
                 _ => Type::Adt {
                     name: "Option".into(),
-                    params: vec![Type::Int],
+                    params: vec![ctx.channel_elem_hint.cloned().unwrap_or(Type::Int)],
                 },
             })
             .unwrap_or(Type::Adt {
                 name: "Option".into(),
-                params: vec![Type::Int],
+                params: vec![ctx.channel_elem_hint.cloned().unwrap_or(Type::Int)],
             }),
         Builtin::TaskJoinOpt => args
             .first()
@@ -512,11 +540,16 @@ fn builtin_value_ty(name: Builtin, args: &[Local], ctx: InferValueCtx<'_>) -> Ty
                 .first()
                 .and_then(|a| local_tys.get(&a.0).cloned())
                 .unwrap_or(Type::List(Box::new(Type::Int)));
-            // Empty `listOf()` starts as List[Int]; appending a Float must
-            // upgrade so later ListGet / println / == see Float ABI (and
-            // `ensure_list_f64` already retags the runtime object).
+            // Empty `listOf()` starts as List[Int]; appending a concrete elem
+            // (Float / Task[…] / Fun / …) must upgrade so later ListGet /
+            // join / println see the real ABI (`map { spawn {…} }` etc.).
             match (&list_ty, args.get(1).and_then(|a| local_tys.get(&a.0))) {
-                (Type::List(_), Some(Type::Float)) => Type::List(Box::new(Type::Float)),
+                (Type::List(e), Some(elem))
+                    if matches!(e.as_ref(), Type::Int | Type::Var(_))
+                        && !matches!(elem, Type::Int | Type::Var(_)) =>
+                {
+                    Type::List(Box::new(elem.clone()))
+                }
                 _ => list_ty,
             }
         }
@@ -657,20 +690,19 @@ mod tests {
     }
 
     #[test]
-    fn float_binary_promotes() {
+    fn list_append_upgrades_int_elem_to_task() {
         let mut tys = HashMap::default();
-        tys.insert(0, Type::Float);
-        tys.insert(1, Type::Int);
+        tys.insert(0, Type::List(Box::new(Type::Int)));
+        tys.insert(1, Type::Task(Box::new(Type::Float)));
         let t = infer_value_ty(
-            &Value::Binary {
-                op: BinOp::Add,
-                left: Local(0),
-                right: Local(1),
+            &Value::Builtin {
+                name: lumia_hir::Builtin::ListAppend,
+                args: vec![Local(0), Local(1)],
             },
             &tys,
             |_, _| None,
         );
-        assert_eq!(t, Type::Float);
+        assert_eq!(t, Type::List(Box::new(Type::Task(Box::new(Type::Float)))));
     }
 
     #[test]
@@ -694,6 +726,7 @@ mod tests {
             funref_locals: Some(&funref),
             local_int_consts: None,
             sum_max_arity: None,
+            channel_elem_hint: None,
         };
         assert_eq!(
             list_par_map_elem_ty(&[Local(0), Local(1)], ctx),
@@ -723,6 +756,7 @@ mod tests {
             funref_locals: None,
             local_int_consts: Some(&consts),
             sum_max_arity: None,
+            channel_elem_hint: None,
         };
         let t = infer_value_ty_ctx(
             &Value::Builtin {

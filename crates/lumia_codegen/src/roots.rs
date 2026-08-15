@@ -123,6 +123,45 @@ impl<'ctx> Codegen<'ctx> {
         self.call_rt_void("lumia_adt_release", &[p.into()], "adt_release")
     }
 
+    /// Release a `Fun` mut-slot value: skip FunRef (low bit tagged code ptr);
+    /// heap `AllocClosure` env pointers are released like other COW objects.
+    pub(crate) fn fun_release_i64(&mut self, bits: IntValue<'ctx>) -> Result<()> {
+        let zero = self.llvm.i64_ty.const_int(0, false);
+        let one = self.llvm.i64_ty.const_int(1, false);
+        let is_null = crate::error::llvm(self.llvm.builder.build_int_compare(
+            inkwell::IntPredicate::EQ,
+            bits,
+            zero,
+            "fun_rel_null",
+        ))?;
+        let tag = crate::error::llvm(self.llvm.builder.build_and(bits, one, "fun_rel_tag"))?;
+        let is_funref = crate::error::llvm(self.llvm.builder.build_int_compare(
+            inkwell::IntPredicate::EQ,
+            tag,
+            one,
+            "fun_rel_is_ref",
+        ))?;
+        let skip = crate::error::llvm(self.llvm.builder.build_or(is_null, is_funref, "fun_rel_skip"))?;
+        let cur = self
+            .llvm
+            .builder
+            .get_insert_block()
+            .context("fun_release insert")?;
+        let parent = cur.get_parent().context("fun_release parent")?;
+        let rel_bb = self.llvm.context.append_basic_block(parent, "fun_rel_heap");
+        let cont_bb = self.llvm.context.append_basic_block(parent, "fun_rel_cont");
+        crate::error::llvm(
+            self.llvm
+                .builder
+                .build_conditional_branch(skip, cont_bb, rel_bb),
+        )?;
+        self.llvm.builder.position_at_end(rel_bb);
+        self.adt_release_i64(bits)?;
+        crate::error::llvm(self.llvm.builder.build_unconditional_branch(cont_bb))?;
+        self.llvm.builder.position_at_end(cont_bb);
+        Ok(())
+    }
+
     /// Heap COW types that need retain on alias / extract.
     pub(crate) fn type_needs_cow_retain(ty: &Type) -> bool {
         matches!(
@@ -243,14 +282,22 @@ impl<'ctx> Codegen<'ctx> {
     }
 
     pub(crate) fn emit_return_i64(&mut self, ret: IntValue<'ctx>) -> Result<()> {
-        // Pin the return word in SchedCore before clearing shadow roots so Task
-        // bodies (and any multi-mutator callee) stay GC-safe across `ret`.
-        let handoff = self.runtime_fn("lumia_abi_handoff_set")?;
-        crate::error::llvm(
-            self.llvm
-                .builder
-                .build_call(handoff, &[ret.into()], "abi_handoff"),
-        )?;
+        // Pin heap-capable returns in SchedCore before clearing shadow roots.
+        // Scalar Int/Float/Bool/Unit leaves skip the heap+sched Mutex pair.
+        let may_heap = self
+            .funs
+            .fun_ret_tys
+            .get(&self.funs.current_fun)
+            .map(Self::type_may_heap)
+            .unwrap_or(true);
+        if may_heap {
+            let handoff = self.runtime_fn("lumia_abi_handoff_set")?;
+            crate::error::llvm(
+                self.llvm
+                    .builder
+                    .build_call(handoff, &[ret.into()], "abi_handoff"),
+            )?;
+        }
         self.emit_root_epilogue()?;
         self.emit_frame_pop()?;
         crate::error::llvm(self.llvm.builder.build_return(Some(&ret)))?;

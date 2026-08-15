@@ -7,10 +7,11 @@ use crate::gc::{list_payload_bytes, lumia_alloc};
 use crate::task::task_runtime_active;
 use lumia_abi::list_type_id;
 
-fn assert_par_allowed() {
-    if task_runtime_active() {
-        trap_abort("lumia: parallel map/fold while task runtime active");
-    }
+/// Parallel workers must not run under an active Task/Channel scheduler
+/// (DESIGN: no mix). Fall back to sequential instead of aborting — spawn
+/// bodies may still lower `ListParMap` before demotion.
+fn force_sequential_par() -> bool {
+    task_runtime_active()
 }
 
 /// Parallel map over List[scalar] with a C ABI `fn(i64) -> i64`.
@@ -26,7 +27,6 @@ pub extern "C" fn lumia_list_par_map(
     f: Option<extern "C" fn(i64) -> i64>,
     result_tid: u32,
 ) -> *mut u8 {
-    assert_par_allowed();
     let Some(f) = f else {
         trap_abort("lumia: list_par_map null function");
     };
@@ -62,8 +62,8 @@ pub extern "C" fn lumia_list_par_map(
         let dst = dest as *mut i64;
         *dst = n;
         let n_usize = n as usize;
-        // Sequential for tiny lists.
-        if n < 64 {
+        // Sequential for tiny lists, or under Task/Channel (no OS workers).
+        if force_sequential_par() || n < 64 {
             if iota {
                 for i in 0..n_usize {
                     let x = iota_start
@@ -127,7 +127,6 @@ pub extern "C" fn lumia_list_par_fold(
     init: i64,
     f: Option<extern "C" fn(i64, i64) -> i64>,
 ) -> i64 {
-    assert_par_allowed();
     let Some(f) = f else {
         trap_abort("lumia: list_par_fold null function");
     };
@@ -150,7 +149,7 @@ pub extern "C" fn lumia_list_par_fold(
         return init;
     }
     let n_usize = n as usize;
-    if n < 64 {
+    if force_sequential_par() || n < 64 {
         let mut acc = init;
         unsafe {
             if iota {

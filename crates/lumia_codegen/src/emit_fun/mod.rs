@@ -234,7 +234,33 @@ impl<'ctx> Codegen<'ctx> {
         value: &Value,
         v: BasicValueEnum<'ctx>,
     ) -> Result<()> {
-        let ty = self.infer_value_ty(value);
+        let mut ty = self.infer_value_ty(value);
+        // Per-channel send agreement: override `Channel(Int)` placeholder.
+        if matches!(
+            value,
+            Value::Builtin {
+                name: lumia_hir::Builtin::ChannelNew,
+                ..
+            }
+        ) {
+            if let Some(elem) = self.funs.channel_elem_by_local.get(&local.0) {
+                ty = Type::Channel(Box::new(elem.clone()));
+            }
+        }
+        // Captures keep the AllocClosure-site type (Channel[Float], Fun, …).
+        if let Value::ClosureCap { index, as_float, .. } = value {
+            if *as_float {
+                ty = Type::Float;
+            } else if let Some(cap_ty) = self
+                .funs
+                .closure_cap_tys
+                .get(&self.funs.current_fun)
+                .and_then(|m| m.get(index))
+                .cloned()
+            {
+                ty = cap_ty;
+            }
+        }
         if let Ok(bits) = self.coerce_i64(v) {
             // `Name`/`Local` are not `value_alloc_may_heap`, but aliases of List/ADT
             // still need COW retain + GC roots (`val snap = p`).
