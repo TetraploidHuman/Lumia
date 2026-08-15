@@ -17,6 +17,10 @@
 
 ## 语义与运行时
 
+- [ ] **spawn 返回捕获外层 String 的闭包再 `.concat`**：`spawn { { s -> prefix.concat(s) } }.join()` 结果串错误（常只剩 `prefix`），`.len()` 读出垃圾（似 list_len）；`val f = {…}; spawn { f }` 或体内字面 `"pre".concat` 则正常。与已勾「闭包捕获 String concat」不同：经 spawn 返回的捕获串闭包仍坏。
+- [ ] **spawn 体内 `contains` / `startsWith` Bool ABI**：`spawn { 1.5 > 1.0 }` 打印 `true`；`spawn { set/map.contains(…) }` / `spawn { s.startsWith(…) }` 打印 `1`（Int 路径）。
+- [ ] **spawn 体内 `map.values().fold(0.0, +)`**：`values().get(0)` 在 spawn 内正确；同体 `values().fold` 把 Float 当 Int 累加（天文数字）；`values` 提到 spawn 外再 fold 正常。
+- [ ] **spawn 体内 `flatMap` 再 `fold(0.0, +)`**：`flatMap` 后 `get` / 外层 fold 正常；spawn 内链式 `flatMap(…).fold(0.0,…)` 累加错误（IEEE 当 Int）。
 - [x] **效应并发 Task/Channel（有栈纤程）**：`scope`/`spawn`/`join`/`joinOpt`/`cancelScope`/`channel`/…；Scheduler 标签；Io；e2e `task_*` / `bad_spawn_*`。
 - [x] **进程共享堆（§7.7）**：A 盘点 + B 进程 `Heap` + C mutator/memo 根注册 + **D worker/io OS 池**（延迟协程、进程就绪队列）。cargo `lumia_rt` 测例仍 `RUST_TEST_THREADS=1`。
 - [x] **Task/Channel 压测入口**：RT `task::stress::*`；e2e `task_pingpong` / `join_tree` / `stress_wide` + multi-worker；`scripts/bench_task.sh`（并入 `bench_all`）。
