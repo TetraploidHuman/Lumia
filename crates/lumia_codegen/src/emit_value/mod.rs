@@ -69,7 +69,7 @@ impl<'ctx> Codegen<'ctx> {
             Value::Call { fun, args } => self.emit_value_call(fun, args),
             Value::IndirectCall { callee, args } => self.emit_value_indirect_call(callee, args),
             Value::FunRef(name) => self.emit_value_funref(name),
-            Value::Builtin { name, args } => self.emit_value_builtin(name, args),
+            Value::Builtin { name, args, .. } => self.emit_value_builtin(name, args),
             Value::If {
                 cond,
                 then_block,

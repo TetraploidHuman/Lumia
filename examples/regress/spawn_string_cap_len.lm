@@ -1,0 +1,11 @@
+/// spawn-returned closure capturing String: concat + .len() String ABI.
+module main
+
+val main = {
+    scope {
+        val prefix = "pre"
+        val f = spawn { { s -> prefix.concat(s) } }.join()
+        println(f("x"))
+        println(f("x").len())
+    }
+}

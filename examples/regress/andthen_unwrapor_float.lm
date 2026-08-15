@@ -1,0 +1,8 @@
+/// result.andThen Float payload then unwrapOr (no spawn).
+module main
+import std.result.{andThen, unwrapOr}
+
+val main = {
+    val r = andThen(Ok(1.5), { x -> Ok(x * 2.0) })
+    println(unwrapOr(r, 0.0))
+}

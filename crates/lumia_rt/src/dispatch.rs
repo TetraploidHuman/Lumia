@@ -23,7 +23,7 @@ pub extern "C" fn lumia_len(obj: *mut u8) -> i64 {
     unsafe {
         let h = header_from_payload(obj);
         match (*h).type_id {
-            TYPE_STRING => (*h).size as i64,
+            TYPE_STRING => crate::string_io::lumia_str_len(obj),
             tid if is_list_tid(tid) => list_len_of(obj),
             tid if is_set_tid(tid) => *(obj as *const i64),
             tid if is_map_tid(tid) => map_count(obj),

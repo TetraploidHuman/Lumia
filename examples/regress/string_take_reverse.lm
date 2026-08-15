@@ -1,0 +1,9 @@
+/// String `.take` / `.drop` / `.reverse` use Unicode scalars (like `.len`).
+module main
+
+val main = {
+    println("你好世界".take(2))
+    println("你好世界".drop(2))
+    println("ab好".reverse())
+    println("abc".take(2).len())
+}

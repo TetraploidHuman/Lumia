@@ -21,11 +21,8 @@ const MAX_OPS: usize = 256;
 
 pub struct SpecializeConstPass;
 
-impl crate::Pass for SpecializeConstPass {
-    fn name(&self) -> &str {
-        "specialize_const"
-    }
-    fn run(&self, module: &mut CoreModule) {
+impl SpecializeConstPass {
+    pub(crate) fn run(self, module: &mut CoreModule) {
         specialize_const_calls(module);
     }
 }
@@ -191,6 +188,7 @@ fn build_const_clone(orig: &CoreFun, args: &[i64], name: String) -> CoreFun {
         is_main: false,
         memo: None,
         external: None,
+        foreign_abi: lumia_core::ForeignAbi::C,
         escaping: HashSet::default(),
         scheme_poly: false,
         mono_of: Some(orig.name.clone()),
@@ -331,7 +329,7 @@ fn walk_nested_rewrite(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{compile_source_to_optimized, OptOptions, Pass};
+    use crate::{compile_source_to_optimized, OptOptions};
 
     #[test]
     fn specialize_const_clones_pure_int_call() {

@@ -5,7 +5,10 @@
 //! Escape analysis + small pure inlining live in [`escape`] / [`inline`].
 
 mod copy_elim;
+mod dce;
 mod dense_f64_sr;
+#[cfg(test)]
+mod dump_fold_diag;
 mod escape;
 mod fusion;
 mod inline;
@@ -25,6 +28,7 @@ pub use memo::{
 pub use specialize_const::SpecializeConstPass;
 
 use copy_elim::CopyElimPass;
+use dce::DcePass;
 use dense_f64_sr::DenseF64SrPass;
 use lumia_core::{CoreModule, ListRepr, MapRepr};
 use memo::cse_module;
@@ -58,11 +62,6 @@ impl OptOptions {
     }
 }
 
-pub trait Pass {
-    fn name(&self) -> &str;
-    fn run(&self, module: &mut CoreModule);
-}
-
 /// Fixed pipeline stages — no `Box<dyn Pass>` allocation on the hot path.
 #[derive(Clone, Copy)]
 enum PipelinePass {
@@ -76,6 +75,7 @@ enum PipelinePass {
     ConcatIdent,
     ReprSelect,
     CopyElim,
+    Dce,
 }
 
 impl PipelinePass {
@@ -91,6 +91,7 @@ impl PipelinePass {
             Self::ConcatIdent => "concat_ident",
             Self::ReprSelect => "repr_select",
             Self::CopyElim => "copy_elim",
+            Self::Dce => "dce",
         }
     }
 
@@ -106,16 +107,14 @@ impl PipelinePass {
             Self::ConcatIdent => ConcatIdentPass.run(module),
             Self::ReprSelect => ReprSelect.run(module),
             Self::CopyElim => CopyElimPass.run(module),
+            Self::Dce => DcePass.run(module),
         }
     }
 }
 
 struct CsePass;
-impl Pass for CsePass {
-    fn name(&self) -> &str {
-        "cse"
-    }
-    fn run(&self, module: &mut CoreModule) {
+impl CsePass {
+    pub(crate) fn run(self, module: &mut CoreModule) {
         cse_module(module);
     }
 }
@@ -131,6 +130,8 @@ const DEBUG_PASSES: &[PipelinePass] = &[
     PipelinePass::DenseF64Sr,
     PipelinePass::Escape,
     PipelinePass::ReprSelect,
+    PipelinePass::CopyElim,
+    PipelinePass::Dce,
 ];
 const RELEASE_PASSES: &[PipelinePass] = &[
     PipelinePass::Cse,
@@ -143,15 +144,18 @@ const RELEASE_PASSES: &[PipelinePass] = &[
     PipelinePass::Inline,
     // Inlined nests / composed helpers — second SR before fold/specialize.
     PipelinePass::DenseF64Sr,
-    // Inline exposes fresh literals / builtins — fold, specialize, then escape.
+    // Inline exposes fresh pure exprs / literals — CSE then fold/specialize.
+    PipelinePass::Cse,
     PipelinePass::ConstFold,
     PipelinePass::SpecializeConst,
     PipelinePass::ConstFold,
+    PipelinePass::Licm,
     PipelinePass::Escape,
     PipelinePass::ConcatIdent,
     PipelinePass::ConstFold,
     PipelinePass::ReprSelect,
     PipelinePass::CopyElim,
+    PipelinePass::Dce,
 ];
 
 /// Frontend → Core → optimize (for tests and tooling).
@@ -210,7 +214,7 @@ pub fn optimize(module: &mut CoreModule, opts: &OptOptions) {
 /// Named passes for tooling / diagnostics.
 ///
 /// `"memo_tf"` is listed for Release even though planning runs via [`plan_memo_tf`]
-/// *before* CSE (not as a `Pass::run`); the plan is applied immediately so later
+/// *before* CSE (not as a pipeline stage `run`); the plan is applied immediately so later
 /// inline/specialize see `memo` and leave T_f callees intact. Re-planning after
 /// CSE would drop const-reuse evidence (§7.5.2).
 pub fn pass_names(release: bool) -> Vec<&'static str> {
@@ -255,6 +259,7 @@ mod tests {
         assert!(pass_names(true).contains(&"inline"));
         assert!(pass_names(true).contains(&"escape"));
         assert!(pass_names(true).contains(&"copy_elim"));
+        assert!(pass_names(true).contains(&"dce"));
         assert!(pass_names(true).contains(&"const_fold"));
         assert!(pass_names(true).contains(&"specialize_const"));
         assert!(pass_names(true).contains(&"licm"));
@@ -262,6 +267,7 @@ mod tests {
         assert!(pass_names(true).contains(&"memo_tf"));
         assert!(!pass_names(false).contains(&"inline"));
         assert!(pass_names(false).contains(&"specialize_const"));
+        assert!(pass_names(false).contains(&"dce"));
         assert!(!pass_names(false).contains(&"memo_tf"));
     }
 
@@ -279,7 +285,9 @@ mod tests {
                 "licm",
                 "dense_f64_sr",
                 "escape",
-                "repr_select"
+                "repr_select",
+                "copy_elim",
+                "dce",
             ]
         );
         // Release interleaves specialize/fold/inline; Escape must immediately
@@ -295,14 +303,17 @@ mod tests {
                 "dense_f64_sr",
                 "inline",
                 "dense_f64_sr",
+                "cse",
                 "const_fold",
                 "specialize_const",
                 "const_fold",
+                "licm",
                 "escape",
                 "concat_ident",
                 "const_fold",
                 "repr_select",
                 "copy_elim",
+                "dce",
             ]
         );
         let release = pass_names(true);
@@ -349,6 +360,7 @@ mod tests {
                 is_main: false,
                 memo: None,
                 external: None,
+                foreign_abi: lumia_core::ForeignAbi::C,
                 escaping: HashSet::default(),
                 scheme_poly: false,
                 mono_of: None,
@@ -399,6 +411,7 @@ mod tests {
                 is_main: false,
                 memo: None,
                 external: None,
+                foreign_abi: lumia_core::ForeignAbi::C,
                 escaping: HashSet::default(),
                 scheme_poly: false,
                 mono_of: None,
@@ -448,6 +461,7 @@ mod tests {
                 is_main: false,
                 memo: None,
                 external: None,
+                foreign_abi: lumia_core::ForeignAbi::C,
                 escaping: HashSet::default(),
                 scheme_poly: false,
                 mono_of: None,
@@ -479,8 +493,12 @@ val main = {
         let ast = parse_module(src).unwrap();
         let hir = lower_module(&ast).expect("lower");
         let typed = infer_module(&hir).expect("infer");
-        let mut core =
-            lumia_core::lower_hir_with_schemes(&typed.module, &typed.fun_types, &typed.fun_schemes);
+        let mut core = lumia_core::lower_hir_with_schemes(
+            &typed.module,
+            &typed.fun_types,
+            &typed.fun_schemes,
+            &typed.type_at,
+        );
         optimize(&mut core, &OptOptions::default());
         let main = core.functions.iter().find(|f| f.is_main).expect("main");
         let alloc = main.body.ops.iter().find_map(|op| match op {
@@ -530,8 +548,12 @@ val main = {
         let ast = parse_module(src).unwrap();
         let hir = lower_module(&ast).expect("lower");
         let typed = infer_module(&hir).expect("infer");
-        let mut core =
-            lumia_core::lower_hir_with_schemes(&typed.module, &typed.fun_types, &typed.fun_schemes);
+        let mut core = lumia_core::lower_hir_with_schemes(
+            &typed.module,
+            &typed.fun_types,
+            &typed.fun_schemes,
+            &typed.type_at,
+        );
         optimize(&mut core, &OptOptions::default());
         let main = core.functions.iter().find(|f| f.is_main).expect("main");
         let list_repr = main.body.ops.iter().find_map(|op| match op {
@@ -575,6 +597,7 @@ val main = {
                 is_main: false,
                 memo: None,
                 external: None,
+                foreign_abi: lumia_core::ForeignAbi::C,
                 escaping: HashSet::default(),
                 scheme_poly: false,
                 mono_of: None,

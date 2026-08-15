@@ -1,5 +1,8 @@
 //! Rewrite dense `List[Float]` helpers to `lumia_f64_*` foreign calls (before Inline).
 //!
+//! **Sole owner of nest pattern matching.** Codegen only recognizes the rewritten
+//! single-`Call` body and emits a frameless RT trampoline.
+//!
 //! Whole-function patterns become a single `Call` so Release inlining places the
 //! RT kernel at the call site (same shape as `std.linalg` wrappers).
 //!
@@ -17,11 +20,8 @@ use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 pub struct DenseF64SrPass;
 
-impl crate::Pass for DenseF64SrPass {
-    fn name(&self) -> &str {
-        "dense_f64_sr"
-    }
-    fn run(&self, module: &mut CoreModule) {
+impl DenseF64SrPass {
+    pub(crate) fn run(self, module: &mut CoreModule) {
         dense_f64_sr_module(module);
     }
 }
@@ -92,6 +92,10 @@ fn dense_f64_sr_module(module: &mut CoreModule) {
 }
 
 fn ensure_external(module: &mut CoreModule, sym: &str) {
+    debug_assert!(
+        lumia_abi::is_dense_f64_trampoline(sym),
+        "dense_f64_sr may only inject trampoline kernels (lumia_abi::DENSE_F64_TRAMPOLINE_SYMS); got {sym}"
+    );
     if module
         .functions
         .iter()
@@ -118,6 +122,7 @@ fn ensure_external(module: &mut CoreModule, sym: &str) {
         is_main: false,
         memo: None,
         external: Some(sym.to_string()),
+        foreign_abi: lumia_core::ForeignAbi::from_symbol(sym),
         escaping: HashSet::default(),
         scheme_poly: false,
         mono_of: None,
@@ -174,7 +179,12 @@ fn rewrite_body_to_call(fun: &mut CoreFun, sym: &str) {
         }],
         result: Some(r),
     };
-    // Keep typed as list/float so codegen roots / ABI stay correct.
+    // Stamp RT signature so codegen trampoline sees List/Float (not leftover Int).
+    let (param_tys, ret_ty) = external_sig(sym);
+    if fun.params.len() == param_tys.len() {
+        fun.param_tys = param_tys;
+    }
+    fun.ret_ty = ret_ty;
     fun.effect = Effect::pure();
 }
 
@@ -200,8 +210,35 @@ fn collect_leaf_defs(body: &Block) -> HashMap<u32, Value> {
     all_defs
 }
 
+fn is_list_f64(t: &Type) -> bool {
+    matches!(t, Type::List(e) if matches!(e.as_ref(), Type::Float))
+}
+
+fn param_list_f64(fun: &CoreFun, i: usize) -> bool {
+    fun.param_tys.get(i).is_some_and(is_list_f64)
+}
+
+fn param_float(fun: &CoreFun, i: usize) -> bool {
+    matches!(fun.param_tys.get(i), Some(Type::Float))
+}
+
+fn param_int(fun: &CoreFun, i: usize) -> bool {
+    matches!(fun.param_tys.get(i), Some(Type::Int))
+}
+
+fn ret_list_f64(fun: &CoreFun) -> bool {
+    is_list_f64(&fun.ret_ty)
+}
+
 fn match_gemv_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<()> {
-    if fun.params.len() != 5 {
+    if fun.params.len() != 5
+        || !param_int(fun, 0)
+        || !param_int(fun, 1)
+        || !param_list_f64(fun, 2)
+        || !param_list_f64(fun, 3)
+        || !param_list_f64(fun, 4)
+        || !ret_list_f64(fun)
+    {
         return None;
     }
     let (m, n, a, x, y) = (
@@ -228,7 +265,14 @@ fn match_gemv_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Opti
 }
 
 fn match_gemv_t_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<()> {
-    if fun.params.len() != 5 {
+    if fun.params.len() != 5
+        || !param_int(fun, 0)
+        || !param_int(fun, 1)
+        || !param_list_f64(fun, 2)
+        || !param_list_f64(fun, 3)
+        || !param_list_f64(fun, 4)
+        || !ret_list_f64(fun)
+    {
         return None;
     }
     let (m, n, a, x, y) = (
@@ -247,7 +291,15 @@ fn match_gemv_t_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Op
 }
 
 fn match_addmm_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<()> {
-    if fun.params.len() != 6 {
+    if fun.params.len() != 6
+        || !param_int(fun, 0)
+        || !param_int(fun, 1)
+        || !param_list_f64(fun, 2)
+        || !param_list_f64(fun, 3)
+        || !param_list_f64(fun, 4)
+        || !param_float(fun, 5)
+        || !ret_list_f64(fun)
+    {
         return None;
     }
     let (m, n, w, u, v, alpha) = (
@@ -267,7 +319,12 @@ fn match_addmm_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Opt
 }
 
 fn match_axpy_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<()> {
-    if fun.params.len() != 3 {
+    if fun.params.len() != 3
+        || !param_list_f64(fun, 0)
+        || !param_float(fun, 1)
+        || !param_list_f64(fun, 2)
+        || !ret_list_f64(fun)
+    {
         return None;
     }
     let (y, alpha, x) = (fun.params[0], fun.params[1], fun.params[2]);
@@ -280,7 +337,12 @@ fn match_axpy_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Opti
 }
 
 fn match_sub_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<()> {
-    if fun.params.len() != 3 {
+    if fun.params.len() != 3
+        || !param_list_f64(fun, 0)
+        || !param_list_f64(fun, 1)
+        || !param_list_f64(fun, 2)
+        || !ret_list_f64(fun)
+    {
         return None;
     }
     let (out, a, b) = (fun.params[0], fun.params[1], fun.params[2]);
@@ -293,7 +355,12 @@ fn match_sub_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Optio
 }
 
 fn match_add_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<()> {
-    if fun.params.len() != 3 {
+    if fun.params.len() != 3
+        || !param_list_f64(fun, 0)
+        || !param_list_f64(fun, 1)
+        || !param_list_f64(fun, 2)
+        || !ret_list_f64(fun)
+    {
         return None;
     }
     let (out, a, b) = (fun.params[0], fun.params[1], fun.params[2]);
@@ -306,7 +373,12 @@ fn match_add_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Optio
 }
 
 fn match_mul_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<()> {
-    if fun.params.len() != 3 {
+    if fun.params.len() != 3
+        || !param_list_f64(fun, 0)
+        || !param_list_f64(fun, 1)
+        || !param_list_f64(fun, 2)
+        || !ret_list_f64(fun)
+    {
         return None;
     }
     let (out, a, b) = (fun.params[0], fun.params[1], fun.params[2]);
@@ -319,7 +391,14 @@ fn match_mul_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Optio
 }
 
 fn match_clamp_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<()> {
-    if fun.params.len() != 3 {
+    // Require List[Float] + Float bounds — bare arity/shape matched Int loops
+    // (e.g. `collatzStrided`) and rewrote them to `lumia_f64_clamp`.
+    if fun.params.len() != 3
+        || !param_list_f64(fun, 0)
+        || !param_float(fun, 1)
+        || !param_float(fun, 2)
+        || !ret_list_f64(fun)
+    {
         return None;
     }
     let (xs, lo, hi) = (fun.params[0], fun.params[1], fun.params[2]);
@@ -332,7 +411,11 @@ fn match_clamp_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Opt
 }
 
 fn match_scale_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<()> {
-    if fun.params.len() != 2 {
+    if fun.params.len() != 2
+        || !param_list_f64(fun, 0)
+        || !param_float(fun, 1)
+        || !ret_list_f64(fun)
+    {
         return None;
     }
     let (xs, alpha) = (fun.params[0], fun.params[1]);
@@ -345,7 +428,11 @@ fn match_scale_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Opt
 }
 
 fn match_fill_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<()> {
-    if fun.params.len() != 2 {
+    if fun.params.len() != 2
+        || !param_list_f64(fun, 0)
+        || !param_float(fun, 1)
+        || !ret_list_f64(fun)
+    {
         return None;
     }
     let (xs, v) = (fun.params[0], fun.params[1]);
@@ -358,7 +445,11 @@ fn match_fill_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Opti
 }
 
 fn match_copy_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<()> {
-    if fun.params.len() != 2 {
+    if fun.params.len() != 2
+        || !param_list_f64(fun, 0)
+        || !param_list_f64(fun, 1)
+        || !ret_list_f64(fun)
+    {
         return None;
     }
     let (dst, src) = (fun.params[0], fun.params[1]);
@@ -372,7 +463,10 @@ fn match_copy_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Opti
 
 /// `∑ xᵢ²` — get + self-mul + add, no set/div/sqrt.
 fn match_sum_sq_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<()> {
-    if fun.params.len() != 1 || !matches!(fun.ret_ty, Type::Float) {
+    if fun.params.len() != 1
+        || !param_list_f64(fun, 0)
+        || !matches!(fun.ret_ty, Type::Float)
+    {
         return None;
     }
     let xs = fun.params[0];
@@ -387,7 +481,10 @@ fn match_sum_sq_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Op
 
 /// Arithmetic mean — get + add + div, no set/mul.
 fn match_mean_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<()> {
-    if fun.params.len() != 1 || !matches!(fun.ret_ty, Type::Float) {
+    if fun.params.len() != 1
+        || !param_list_f64(fun, 0)
+        || !matches!(fun.ret_ty, Type::Float)
+    {
         return None;
     }
     let xs = fun.params[0];
@@ -399,7 +496,10 @@ fn match_mean_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Opti
 
 /// `√(∑ xᵢ²)` via scalar `lumia_f64_sqrt` / `sqrt`.
 fn match_l2_norm_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<()> {
-    if fun.params.len() != 1 || !matches!(fun.ret_ty, Type::Float) {
+    if fun.params.len() != 1
+        || !param_list_f64(fun, 0)
+        || !matches!(fun.ret_ty, Type::Float)
+    {
         return None;
     }
     let xs = fun.params[0];
@@ -414,7 +514,10 @@ fn match_l2_norm_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> O
 
 /// Population std: variance loop + sqrt (has nontrivial sub).
 fn match_std_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<()> {
-    if fun.params.len() != 1 || !matches!(fun.ret_ty, Type::Float) {
+    if fun.params.len() != 1
+        || !param_list_f64(fun, 0)
+        || !matches!(fun.ret_ty, Type::Float)
+    {
         return None;
     }
     let xs = fun.params[0];
@@ -426,7 +529,11 @@ fn match_std_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Optio
 
 /// In-place L2 normalize with `eps` (set + sqrt + mentions eps).
 fn match_l2_normalize_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<()> {
-    if fun.params.len() != 2 {
+    if fun.params.len() != 2
+        || !param_list_f64(fun, 0)
+        || !param_float(fun, 1)
+        || !ret_list_f64(fun)
+    {
         return None;
     }
     let (xs, eps) = (fun.params[0], fun.params[1]);
@@ -440,7 +547,7 @@ fn match_l2_normalize_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>)
 
 /// Softmax: max pass + exp + normalize (set + exp call + Gt).
 fn match_softmax_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<()> {
-    if fun.params.len() != 1 {
+    if fun.params.len() != 1 || !param_list_f64(fun, 0) || !ret_list_f64(fun) {
         return None;
     }
     let xs = fun.params[0];
@@ -454,7 +561,7 @@ fn match_softmax_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> O
 
 /// `zeros(n)` via `listOf(0.0)` + `append(0.0)` loop (or empty + append from 0).
 fn match_zeros_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<()> {
-    if fun.params.len() != 1 {
+    if fun.params.len() != 1 || !param_int(fun, 0) || !ret_list_f64(fun) {
         return None;
     }
     let n = fun.params[0];
@@ -475,8 +582,7 @@ fn match_zeros_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Opt
         }
         if let Value::Builtin {
             name: Builtin::ListAppend,
-            args,
-        } = v
+            args, .. } = v
         {
             if args.len() == 2 && matches!(defs.get(&args[1].0), Some(Value::Float(f)) if *f == 0.0)
             {
@@ -506,8 +612,7 @@ fn match_zeros_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Opt
         }
         if let Value::Builtin {
             name: Builtin::ListAppend,
-            args,
-        } = val
+            args, .. } = val
         {
             if args.len() == 2 && matches!(defs.get(&args[1].0), Some(Value::Float(f)) if *f == 0.0)
             {
@@ -613,8 +718,7 @@ fn is_list_get(v: &Value) -> Option<(Local, Local)> {
     match v {
         Value::Builtin {
             name: Builtin::ListGet,
-            args,
-        } if args.len() == 2 => Some((args[0], args[1])),
+            args, .. } if args.len() == 2 => Some((args[0], args[1])),
         _ => None,
     }
 }
@@ -623,8 +727,7 @@ fn is_list_set(v: &Value) -> Option<(Local, Local, Local)> {
     match v {
         Value::Builtin {
             name: Builtin::MapSet,
-            args,
-        } if args.len() == 3 => Some((args[0], args[1], args[2])),
+            args, .. } if args.len() == 3 => Some((args[0], args[1], args[2])),
         _ => None,
     }
 }
@@ -1758,6 +1861,58 @@ val main = {
         assert!(
             ext.contains(&"lumia_f64_softmax"),
             "softmax missing in {ext:?}"
+        );
+    }
+
+    #[test]
+    fn int_strided_loop_is_not_rewritten_to_clamp() {
+        // Regression: bare arity/shape once matched Int loops (bench_cpu
+        // `collatzStrided`) and rewrote them to `lumia_f64_clamp`.
+        let src = r#"
+module M
+val steps(n) = {
+  var x = n
+  var c = 0
+  for x > 1 {
+    if x % 2 == 0 {
+      x = x / 2
+    } else {
+      x = 3 * x + 1
+    }
+    c = c + 1
+  }
+  c
+}
+val strided(start, limit, stride) = {
+  var n = start
+  var total = 0
+  for n <= limit {
+    total = total + steps(n)
+    n = n + stride
+  }
+  total
+}
+val main = {
+  strided(1, 20, 3)
+}
+"#;
+        let mut core = lumia_core::compile_source_to_core(src).unwrap();
+        optimize(&mut core, &OptOptions::for_build(true));
+        assert!(
+            core.functions
+                .iter()
+                .all(|f| f.external.as_deref() != Some("lumia_f64_clamp")),
+            "Int strided loop must not inject lumia_f64_clamp"
+        );
+        let strided = core
+            .functions
+            .iter()
+            .find(|f| f.name == "strided")
+            .expect("strided");
+        let body = format!("{:?}", strided.body);
+        assert!(
+            !body.contains("lumia_f64_clamp"),
+            "strided body must not call lumia_f64_clamp: {body}"
         );
     }
 }

@@ -5,11 +5,11 @@ module BenchCnForwardKernel
 /// Dense skeleton aligned with CogniNucleus FreeEnergyAgent defaults (hip/amy/hyp off).
 import std.io.{println}
 import std.linalg.{zeros, copy, sub, scale, add, gemv, checksum}
-import std.cn.{
+import extras.cn.{
     nucleusStep, hebbian, projectClamp, projectError, argMax,
     clusterRates, learnGenerative, updateState
 }
-import std.efe.{actionScores}
+import extras.efe.{actionScores}
 
 val VIS = 16
 val PFC = 32

@@ -163,7 +163,7 @@ impl Infer {
             }
             if name != want {
                 // Sum variant patterns pass the ctor name (`Circle`), not the ADT.
-                if let Some((adt, arity)) = self.products.sum_ctors.get(want) {
+                if let Some((adt, arity, offset)) = self.products.sum_ctors.get(want) {
                     if adt != name {
                         return Err(at(
                             span,
@@ -178,6 +178,39 @@ impl Infer {
                             ),
                         ));
                     }
+                    // Recursive spines are the ADT itself; parametric fields use
+                    // concatenated slots (skipping recursive indices).
+                    let rec = self
+                        .products
+                        .sum_field_recursive
+                        .get(want)
+                        .and_then(|v| v.get(idx).copied())
+                        .unwrap_or(false);
+                    if rec {
+                        return Ok(Type::Adt {
+                            name: name.into(),
+                            params: params.to_vec(),
+                        });
+                    }
+                    let local = (0..idx)
+                        .filter(|&i| {
+                            !self
+                                .products
+                                .sum_field_recursive
+                                .get(want)
+                                .and_then(|v| v.get(i).copied())
+                                .unwrap_or(false)
+                        })
+                        .count();
+                    return params.get(offset + local).cloned().ok_or_else(|| {
+                        at(
+                            span,
+                            format!(
+                                "field index {idx} out of range for `{name}` (arity {})",
+                                params.len()
+                            ),
+                        )
+                    });
                 } else {
                     return Err(at(
                         span,
@@ -287,7 +320,7 @@ impl Infer {
                 )?;
                 return Ok(t);
             }
-            if let Some((adt, var_arity)) = self.products.sum_ctors.get(want).cloned() {
+            if let Some((adt, var_arity, offset)) = self.products.sum_ctors.get(want).cloned() {
                 if idx >= var_arity {
                     return Err(at(
                         span,
@@ -296,16 +329,47 @@ impl Infer {
                         ),
                     ));
                 }
-                let max = self
+                let rec = self
+                    .products
+                    .sum_field_recursive
+                    .get(want)
+                    .and_then(|v| v.get(idx).copied())
+                    .unwrap_or(false);
+                let total = self
                     .products
                     .sum_max_arity
                     .get(&adt)
                     .copied()
-                    .unwrap_or(var_arity)
-                    .max(idx + 1);
-                let params: Vec<Type> = (0..max).map(|_| self.fresh()).collect();
-                let field_ty = params[idx].clone();
-                self.unify_at(span, recv_ty, Type::Adt { name: adt, params })?;
+                    .unwrap_or(0);
+                let params: Vec<Type> = (0..total).map(|_| self.fresh()).collect();
+                let adt_ty = Type::Adt {
+                    name: adt.clone(),
+                    params: params.clone(),
+                };
+                if rec {
+                    self.unify_at(span, recv_ty, adt_ty.clone())?;
+                    return Ok(adt_ty);
+                }
+                let local = (0..idx)
+                    .filter(|&i| {
+                        !self
+                            .products
+                            .sum_field_recursive
+                            .get(want)
+                            .and_then(|v| v.get(i).copied())
+                            .unwrap_or(false)
+                    })
+                    .count();
+                let slot = offset + local;
+                let field_ty = params.get(slot).cloned().ok_or_else(|| {
+                    at(
+                        span,
+                        format!(
+                            "variant `{want}` field #{idx} has no type parameter slot on `{adt}`"
+                        ),
+                    )
+                })?;
+                self.unify_at(span, recv_ty, adt_ty)?;
                 return Ok(field_ty);
             }
             let arity = self

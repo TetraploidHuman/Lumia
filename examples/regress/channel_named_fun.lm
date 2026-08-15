@@ -1,0 +1,11 @@
+module main
+
+val main = {
+    scope {
+        val ch = channel(1)
+        val f = { x -> x * 2.0 }
+        spawn { ch.send(f) }
+        val g = ch.recv()
+        println(g(1.5))
+    }
+}

@@ -157,11 +157,24 @@ jobs:
           & "$root\bin\llvm-config.exe" --version
           & "$root\bin\clang.exe" --version
 
+      - name: Check editor shared↔vscode assets
+        if: runner.os == 'Linux'
+        run: ./scripts/check_editor_assets.sh
+
       - name: Cargo clippy (library crates)
         run: cargo clippy --workspace --exclude lumia --lib ${{ matrix.cargo_features }} -- -D warnings
 
       - name: Cargo test (library crates)
-        run: cargo test --workspace --exclude lumia --lib ${{ matrix.cargo_features }}
+        # Process-shared heap: parallel RT tests can UAF (see scripts/check.sh).
+        run: RUST_TEST_THREADS=1 cargo test --workspace --exclude lumia --lib ${{ matrix.cargo_features }}
+        if: runner.os == 'Linux'
+
+      - name: Cargo test (library crates)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:RUST_TEST_THREADS = "1"
+          cargo test --workspace --exclude lumia --lib ${{ matrix.cargo_features }}
 
       # lumia_opt has no codegen dep; do not pass llvm-dynamic (Cargo rejects unknown package features).
       - name: Cargo test (opt goldens + other integration)

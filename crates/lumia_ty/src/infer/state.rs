@@ -17,6 +17,18 @@ pub(crate) struct SubstState {
     pub(crate) ord_vars: HashSet<u32>,
     /// Type vars used in `==`/`!=` — must not resolve to Fun (DESIGN: no ref eq).
     pub(crate) eq_vars: HashSet<u32>,
+    /// Type vars used with `.len()` — List/Set/Map/String only (not default List).
+    pub(crate) len_vars: HashSet<u32>,
+    /// Type vars used with `.concat` when both sides open — List or String.
+    pub(crate) concat_vars: HashSet<u32>,
+    /// Type vars used with `.contains` — Map/Set/String only (not List).
+    pub(crate) contains_vars: HashSet<u32>,
+    /// Type vars used with open `.set` — List or Map.
+    pub(crate) set_vars: HashSet<u32>,
+    /// Type vars used with `Elems` / open `.toList` — List/Set/Map.
+    pub(crate) elems_vars: HashSet<u32>,
+    /// Type vars used with open `.take` / `.drop` / `.reverse` — List or String.
+    pub(crate) take_vars: HashSet<u32>,
 }
 
 /// Lexical environment and mutability.
@@ -51,10 +63,13 @@ pub(crate) struct TraitState {
 #[derive(Default)]
 pub(crate) struct ProductState {
     pub(crate) products: HashMap<String, Vec<String>>,
-    /// Sum ADT name → max variant payload arity (shared `Type::Adt` params slots).
+    /// Sum ADT name → number of **parametric** payload slots (recursive spines
+    /// like `S(n)` / `Cons(_, t)` do not allocate a param).
     pub(crate) sum_max_arity: HashMap<String, usize>,
-    /// Sum variant name → (ADT name, that variant's arity).
-    pub(crate) sum_ctors: HashMap<String, (String, usize)>,
+    /// Sum variant name → (ADT name, arity, parametric-slot base offset).
+    pub(crate) sum_ctors: HashMap<String, (String, usize, usize)>,
+    /// Sum variant name → per-field kind (`true` = recursive self type).
+    pub(crate) sum_field_recursive: HashMap<String, Vec<bool>>,
 }
 
 /// `return` / `alt` desugar bookkeeping.

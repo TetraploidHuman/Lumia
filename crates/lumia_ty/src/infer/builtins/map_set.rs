@@ -42,8 +42,10 @@ impl Infer {
                     Type::Map(k, _) => self.unify_at(span, kt, *k)?,
                     Type::Set(e) => self.unify_at(span, kt, *e)?,
                     Type::String => self.unify_at(span, kt, Type::String)?,
-                    Type::Var(_) => {
-                        // Leave open so later use can unify with Set/Map/String.
+                    Type::Var(v) => {
+                        // Leave open so later use can unify with Set/Map/String
+                        // (not List — RT has no list contains).
+                        self.uni.contains_vars.insert(v);
                     }
                     other => {
                         return Err(at(
@@ -69,24 +71,11 @@ impl Infer {
                         self.unify_at(span, vt, *elem.clone())?;
                         Ok((Type::List(elem), self.union3_eff(me, ke, ve)))
                     }
-                    Type::Var(_) => {
-                        let kt_p = self.prune(kt.clone());
-                        // Int key ⇒ list index update; otherwise map upsert.
-                        // Concrete `Map[Int,_]` receivers already hit the Map arm.
-                        if matches!(kt_p, Type::Int) {
-                            self.unify_at(span, mt, Type::List(Box::new(vt.clone())))?;
-                            Ok((Type::List(Box::new(vt)), self.union3_eff(me, ke, ve)))
-                        } else {
-                            self.unify_at(
-                                span,
-                                mt,
-                                Type::Map(Box::new(kt.clone()), Box::new(vt.clone())),
-                            )?;
-                            Ok((
-                                Type::Map(Box::new(kt), Box::new(vt)),
-                                self.union3_eff(me, ke, ve),
-                            ))
-                        }
+                    Type::Var(v) => {
+                        // Keep open — Int-key List update vs Map upsert is decided
+                        // when the receiver is bound (see set_vars).
+                        self.uni.set_vars.insert(v);
+                        Ok((mt, self.union3_eff(me, ke, ve)))
                     }
                     other => Err(at(
                         span,

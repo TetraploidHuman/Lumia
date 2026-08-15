@@ -296,6 +296,7 @@ mod tests {
             is_main: false,
             memo: None,
             external: None,
+            foreign_abi: lumia_core::ForeignAbi::C,
             escaping: HashSet::default(),
             scheme_poly: false,
             mono_of: None,
@@ -363,6 +364,7 @@ mod tests {
             Some("sum"),
         );
         f.external = Some("c_sum".into());
+        f.foreign_abi = lumia_core::ForeignAbi::C;
         let core = CoreModule::with_functions("M", vec![f]);
         let sccs = compute_tco_sccs(&core);
         assert!(

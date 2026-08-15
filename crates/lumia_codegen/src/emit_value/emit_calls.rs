@@ -105,7 +105,22 @@ impl<'ctx> Codegen<'ctx> {
         // Float return ABI must come from the callee's Fun type — never
         // from "any arg is float" (that breaks Float→Int HOFs).
         let float_ret = match self.frame.local_tys.get(&callee.0) {
-            Some(Type::Fun(_, ret, _)) => matches!(ret.as_ref(), Type::Float),
+            Some(Type::Fun(ps, ret, _)) => {
+                let open_id_ret = match ret.as_ref() {
+                    Type::Int | Type::Var(_) => true,
+                    Type::List(e) if matches!(e.as_ref(), Type::Int) => true,
+                    _ => false,
+                };
+                matches!(ret.as_ref(), Type::Float)
+                    || (open_id_ret
+                        && ps.len() == 1
+                        && matches!(ps[0], Type::Int | Type::Var(_))
+                        && args.len() == 1
+                        && matches!(
+                            self.frame.local_tys.get(&args[0].0),
+                            Some(Type::Float)
+                        ))
+            }
             _ => self
                 .funs
                 .funref_locals

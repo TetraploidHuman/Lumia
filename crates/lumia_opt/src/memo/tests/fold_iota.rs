@@ -25,7 +25,8 @@ fn const_fold_iota_len_get() {
                         value: Value::Builtin {
                             name: Builtin::Range,
                             args: vec![Local(0), Local(1)],
-                        },
+                    result_ty: None,
+                },
                         pure_region: true,
                     },
                     Op::Let {
@@ -33,7 +34,8 @@ fn const_fold_iota_len_get() {
                         value: Value::Builtin {
                             name: Builtin::ListLen,
                             args: vec![Local(2)],
-                        },
+                    result_ty: None,
+                },
                         pure_region: true,
                     },
                     Op::Let {
@@ -46,7 +48,8 @@ fn const_fold_iota_len_get() {
                         value: Value::Builtin {
                             name: Builtin::ListGet,
                             args: vec![Local(2), Local(4)],
-                        },
+                    result_ty: None,
+                },
                         pure_region: true,
                     },
                 ],

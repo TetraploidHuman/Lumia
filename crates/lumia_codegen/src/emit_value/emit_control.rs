@@ -14,6 +14,10 @@ impl<'ctx> Codegen<'ctx> {
         else_block: &lumia_core::Block,
         fv: FunctionValue<'ctx>,
     ) -> Result<BasicValueEnum<'ctx>> {
+        // Nested musttail may `root_pop_to(0)` on one arm; restore compile-time
+        // root state so the merge / outer scoped block still see entry depth.
+        let entry_depth = self.frame.root_depth;
+        let entry_slots = self.frame.rooted_slots.clone();
         let c = self.as_i64(self.local(*cond)?)?;
         let zero = self.llvm.i64_ty.const_int(0, false);
         let cond_i1 = crate::error::llvm(self.llvm.builder.build_int_compare(
@@ -78,6 +82,11 @@ impl<'ctx> Codegen<'ctx> {
             crate::error::llvm(self.llvm.builder.build_unconditional_branch(merge_bb))?;
         }
         let float_merge = then_is_float || matches!(else_raw, BasicValueEnum::FloatValue(_));
+
+        // Musttail on one arm cleared `root_depth`; merge is only reached from
+        // non-tail arms which left roots at `entry_depth`.
+        self.frame.root_depth = entry_depth;
+        self.frame.rooted_slots = entry_slots;
 
         self.llvm.builder.position_at_end(merge_bb);
         if float_merge {

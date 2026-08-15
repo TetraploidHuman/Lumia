@@ -3,15 +3,10 @@
 use super::state::{state_lock, Analysis};
 use anyhow::Result;
 use lumia_hir::{surface_names, SurfaceRole};
+use lumia_syntax::TokenKind;
 use lumia_ty::display_type;
 use rustc_hash::FxHashSet as HashSet;
 use serde_json::{json, Value};
-
-/// True keywords (lexer / grammar) — not scanned from builtins.
-const KEYWORDS: &[&str] = &[
-    "val", "var", "match", "if", "else", "for", "in", "type", "import", "foreign", "pure", "trait",
-    "instance", "alt", "module", "scope", "spawn", "effect",
-];
 
 pub(super) fn completion_items(analysis: Option<&Analysis>) -> Vec<Value> {
     let mut items = Vec::new();
@@ -28,6 +23,13 @@ pub(super) fn completion_items(analysis: Option<&Analysis>) -> Vec<Value> {
         items.push(v);
     };
 
+    // Completion offers real keywords + foreign surface soft (`pure`/`fn`).
+    for kw in TokenKind::KEYWORDS
+        .iter()
+        .chain(TokenKind::SURFACE_SOFT.iter())
+    {
+        push(kw, 14, None); // CompletionItemKind.Keyword
+    }
     // Scan the shared language surface (prelude ctors + Builtin + HOF desugars).
     for sn in surface_names() {
         let kind = match sn.role {
@@ -72,9 +74,6 @@ pub(super) fn completion_items(analysis: Option<&Analysis>) -> Vec<Value> {
         }
     }
 
-    for kw in KEYWORDS {
-        push(kw, 14, None); // Keyword
-    }
     items
 }
 

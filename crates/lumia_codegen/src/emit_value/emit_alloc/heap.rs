@@ -81,7 +81,7 @@ impl<'ctx> Codegen<'ctx> {
     pub(crate) fn emit_value_alloc_set(
         &mut self,
         elems: &[Local],
-        repr: lumia_core::SetRepr,
+        _repr: lumia_core::SetRepr,
     ) -> Result<BasicValueEnum<'ctx>> {
         let elem_ty = elems
             .first()
@@ -94,11 +94,11 @@ impl<'ctx> Codegen<'ctx> {
         let float_elems = matches!(elem_ty, Type::Float);
         let no_hash = !self.key_type_has_hash(&elem_ty);
         let tid = set_type_id(float_elems, no_hash);
-        if !elems.is_empty() && matches!(repr, lumia_core::SetRepr::LitSet) {
-            return self.emit_stack_array(elems, tid as u64);
-        }
+        // LitSet on the stack skips `lumia_set_finish` and keeps duplicate
+        // Int/String/Bool/ADT elems. Always heap+finish so finish can compact
+        // via `key_eq` (Float ±0 already required this path).
         let v = self.emit_heap_array(elems, tid as u64)?;
-        if elems.len() > 8 && !no_hash {
+        if !elems.is_empty() {
             let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
             let bits = self.coerce_i64(v)?;
             let p =
@@ -158,9 +158,9 @@ impl<'ctx> Codegen<'ctx> {
         // key Hash absence (linear forever) when values are not Float.
         // AssocList (+ Float tags) stays linear forever; Hash maps use 4/10/15/16.
         let tid = map_type_id(float_keys, float_vals, no_hash);
-        if n_pairs > 0 && matches!(repr, lumia_core::MapRepr::LitMap) {
-            return self.emit_stack_map(flat_pairs, tid as u64);
-        }
+        // LitMap on the stack skips finish and keeps duplicate Int/String/… keys.
+        // Always allocate on the heap and finish so `lumia_map_finish` can compact
+        // (Float ±0 already required this path).
         let nbytes = self
             .llvm
             .i64_ty
@@ -210,7 +210,7 @@ impl<'ctx> Codegen<'ctx> {
             }
             // Young alloc: init stores need no write barrier.
         }
-        let ptr = if !no_hash && (n_pairs > 8 || matches!(repr, lumia_core::MapRepr::HashOrdered)) {
+        let ptr = if n_pairs > 0 {
             let f = self.runtime_fn("lumia_map_finish")?;
             crate::error::llvm(self.llvm.builder.build_call(f, &[ptr.into()], "map_fin"))?
                 .try_as_basic_value()
@@ -296,19 +296,7 @@ impl<'ctx> Codegen<'ctx> {
         }
         // After fields are live: set mask, clearing bits that actually hold heap ptrs.
         let float_mask = self.adt_float_mask_from_fields(fields);
-        if float_mask != 0 {
-            let setm = self
-                .llvm
-                .module
-                .get_function("lumia_adt_set_float_mask")
-                .context("module function")?;
-            let m = self.llvm.i64_ty.const_int(float_mask, false);
-            crate::error::llvm(self.llvm.builder.build_call(
-                setm,
-                &[ptr.into(), m.into()],
-                "adt_fmask",
-            ))?;
-        }
+        self.emit_adt_set_float_mask(ptr, float_mask)?;
         Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
             ptr,
             self.llvm.i64_ty,

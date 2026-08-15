@@ -1,7 +1,8 @@
 use super::fun_index::FunIndex;
 use super::specialize::mono_value_ty;
-use crate::ir::{Block, CoreFun, CoreModule, Local, Op, Value};
+use crate::ir::{Block, CoreFun, CoreModule, Local, Op, Value, ForeignAbi};
 use lumia_hir::Builtin;
+use lumia_syntax::BinOp;
 use lumia_ty::{Effect, Type};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet};
 
@@ -124,6 +125,32 @@ fn resolve_trait_value(
                 }
             }
         }
+        // `a + b` / `a * b` on ADTs with `instance Num` stay as Binary through
+        // lower; rewrite to `__Num_T_add`/`mul` Call so mono can specialize
+        // Float fields (codegen override alone hits the unspecialized body).
+        Value::Binary { op, left, right }
+            if matches!(op, BinOp::Add | BinOp::Mul) =>
+        {
+            let method = if matches!(op, BinOp::Add) {
+                "add"
+            } else {
+                "mul"
+            };
+            if let (Some(Type::Adt { name: n1, .. }), Some(Type::Adt { name: n2, .. })) =
+                (local_tys.get(&left.0), local_tys.get(&right.0))
+            {
+                if n1 == n2 {
+                    if let Some(cands) = trait_methods.get(&(n1.clone(), method.to_string())) {
+                        if let [mangled] = cands.as_slice() {
+                            *value = Value::Call {
+                                fun: mangled.clone(),
+                                args: vec![*left, *right],
+                            };
+                        }
+                    }
+                }
+            }
+        }
         Value::If {
             then_block,
             else_block,
@@ -238,7 +265,8 @@ pub(crate) fn ensure_trait_method_stubs(module: &mut CoreModule) {
                     value: Value::Builtin {
                         name: Builtin::MatchFail,
                         args: vec![],
-                    },
+                    result_ty: None,
+                },
                     pure_region: false,
                 }],
                 result: Some(fail_local),
@@ -248,6 +276,7 @@ pub(crate) fn ensure_trait_method_stubs(module: &mut CoreModule) {
             is_main: false,
             memo: None,
             external: None,
+            foreign_abi: ForeignAbi::C,
             escaping: Default::default(),
             scheme_poly: false,
             mono_of: None,

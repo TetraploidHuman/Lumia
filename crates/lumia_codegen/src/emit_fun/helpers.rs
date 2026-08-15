@@ -203,31 +203,8 @@ impl<'ctx> Codegen<'ctx> {
         Ok(())
     }
 
-    /// Record a possible old→young edge after storing a pointer-sized field.
-    /// No-op at runtime when `obj` is young / `new` is not a young heap ptr.
-    /// Remembered-set barrier for old→young pointer stores.
-    ///
-    /// List/Map/Set mutations emit barriers inside the RT. Direct field stores
-    /// from codegen (if added) should call this; alloc-init stores skip it
-    /// because `lumia_alloc` returns a young object.
-    #[allow(dead_code)]
-    pub(crate) fn emit_write_barrier(
-        &self,
-        obj: inkwell::values::PointerValue<'ctx>,
-        field: u32,
-        new_i64: inkwell::values::IntValue<'ctx>,
-    ) -> Result<()> {
-        let field_v = self.llvm.context.i32_type().const_int(field as u64, false);
-        let ptr_ty = self.llvm.context.ptr_type(inkwell::AddressSpace::default());
-        let new_ptr = crate::error::llvm(
-            self.llvm
-                .builder
-                .build_int_to_ptr(new_i64, ptr_ty, "wb_new"),
-        )?;
-        self.call_rt_void(
-            "lumia_write_barrier",
-            &[obj.into(), field_v.into(), new_ptr.into()],
-            "wb",
-        )
-    }
+    // Write barriers: List/Map/Set mutations call `lumia_write_barrier` inside
+    // the RT. Codegen does not emit barriers for alloc-init stores (`lumia_alloc`
+    // returns young objects). Any future direct pointer-field stores must call
+    // `lumia_write_barrier` explicitly.
 }

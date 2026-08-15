@@ -53,6 +53,7 @@ pub fn compile_source_to_core_with_options(
             &typed.module,
             &typed.fun_types,
             &typed.fun_schemes,
+            &typed.type_at,
         );
         stage("channel", core.check_channel_elem_conflicts().map(|()| core))?
     })

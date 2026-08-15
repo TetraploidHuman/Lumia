@@ -1,0 +1,16 @@
+/// Recursive Nat ADT + recursive function (Self-typed spine, not α ~ Nat[α]).
+module main
+type Nat { Z S(n) }
+
+val toInt = { n ->
+    n match {
+        Z -> 0
+        S(m) -> 1 + toInt(m)
+    }
+}
+
+val main = {
+    println(toInt(Z))
+    println(toInt(S(Z)))
+    println(toInt(S(S(S(Z)))))
+}

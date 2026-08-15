@@ -230,9 +230,12 @@ class LumiaLexer : LexerBase() {
 
     companion object {
         private val KEYWORDS = setOf(
+            // Must stay aligned with `lumia_syntax::TokenKind::KEYWORDS` (+ SURFACE_SOFT).
             "module", "import", "val", "var", "type", "if", "else", "match", "for", "in",
             "break", "continue", "return", "alt", "and", "or", "not", "true", "false",
-            "priv", "as", "trait", "instance", "requires", "with", "effect", "foreign",
+            "priv", "as", "trait", "instance", "requires", "with", "effect", "scope", "spawn",
+            "foreign",
+            // Surface soft (not lexer keywords): foreign decls.
             "pure", "fn",
         )
         private val BUILTIN_TYPES = setOf(

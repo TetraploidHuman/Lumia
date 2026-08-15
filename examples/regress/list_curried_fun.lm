@@ -1,0 +1,5 @@
+module main
+val main = {
+    val xs = listOf({ a -> { b -> a + b } })
+    println(xs.get(0)(1.5)(2.5))
+}

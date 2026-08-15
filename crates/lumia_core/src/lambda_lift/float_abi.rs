@@ -119,6 +119,18 @@ fn mark_float_in_value(
                 }
             }
         }
+        Value::Builtin {
+            name: lumia_hir::Builtin::ListParFold,
+            args, .. } if args.len() >= 2 => {
+            // `{ y -> xs.fold(y, +) }` with Float xs / init: mark init param Float.
+            if float_locals.contains(&args[1].0)
+                || list_local_elems_float(args[0].0, float_locals, defs)
+            {
+                touch_param(args[1].0, params, used);
+                mark_float_through_def(args[1].0, params, used, defs, &mut HashSet::default());
+                float_locals.insert(args[1].0);
+            }
+        }
         Value::If {
             then_block,
             else_block,
@@ -192,7 +204,19 @@ fn value_is_float_producing_with_defs(
         Value::Builtin {
             name: lumia_hir::Builtin::AdtField,
             args,
-        } => adt_field_is_float(args, float_locals, defs),
+            result_ty,
+        } => match result_ty {
+            Some(Type::Float) => true,
+            Some(_) => false,
+            None => adt_field_is_float(args, float_locals, defs),
+        },
+        Value::Builtin {
+            name: lumia_hir::Builtin::ListParFold,
+            args, .. } if args.len() >= 2 => {
+            // `xs.fold(init, +)` — Float init, or list elems already float-tracked.
+            float_locals.contains(&args[1].0)
+                || (args.len() >= 1 && list_local_elems_float(args[0].0, float_locals, defs))
+        }
         Value::If {
             then_block,
             else_block,
@@ -226,6 +250,32 @@ fn binary_produces_float(
         op,
         BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem
     ) && (float_locals.contains(&left.0) || float_locals.contains(&right.0))
+}
+
+/// Chase `Local` / `Name` / `AllocList` to see whether list elems are Float.
+fn list_local_elems_float(
+    id: u32,
+    float_locals: &HashSet<u32>,
+    defs: &HashMap<u32, &Value>,
+) -> bool {
+    let mut cur = id;
+    let mut seen = HashSet::default();
+    for _ in 0..32 {
+        if !seen.insert(cur) {
+            return false;
+        }
+        if float_locals.contains(&cur) {
+            // List locals are not themselves in float_locals; elems are.
+        }
+        match defs.get(&cur) {
+            Some(Value::Local(Local(src))) => cur = *src,
+            Some(Value::AllocList { elems, .. }) => {
+                return !elems.is_empty() && elems.iter().all(|e| float_locals.contains(&e.0));
+            }
+            _ => return false,
+        }
+    }
+    false
 }
 
 fn binary_produces_bool(op: BinOp) -> bool {
@@ -354,6 +404,12 @@ fn value_is_bool_producing(
             op: UnOp::Not,
             operand,
         } => bool_locals.contains(&operand.0),
+        Value::Builtin { name, .. } => matches!(
+            name,
+            lumia_hir::Builtin::Contains
+                | lumia_hir::Builtin::StrStartsWith
+                | lumia_hir::Builtin::StrEndsWith
+        ),
         _ => false,
     }
 }
@@ -447,6 +503,16 @@ pub(super) fn block_result_channel_recv_ty(
     channel_recv_elem_ty(block, r, by_local, module_hint, caps, &mut HashSet::default())
 }
 
+pub(super) fn local_channel_recv_elem_ty(
+    block: &Block,
+    id: u32,
+    by_local: &HashMap<u32, Type>,
+    module_hint: Option<&Type>,
+    caps: Option<&[Local]>,
+) -> Option<Type> {
+    channel_recv_elem_ty(block, id, by_local, module_hint, caps, &mut HashSet::default())
+}
+
 fn channel_recv_elem_ty(
     block: &Block,
     id: u32,
@@ -464,8 +530,7 @@ fn channel_recv_elem_ty(
         }
         Value::Builtin {
             name: lumia_hir::Builtin::ChannelRecv,
-            args,
-        } if !args.is_empty() => {
+            args, .. } if !args.is_empty() => {
             let root = channel_root_local(block, args[0].0, caps, &mut HashSet::default())?;
             by_local
                 .get(&root)
@@ -529,22 +594,19 @@ fn adt_field_is_float(
             // `toMap` / for-in: `p.1` where `p = xs.get(i)` and xs holds tuples.
             Some(Value::Builtin {
                 name: lumia_hir::Builtin::ListGet,
-                args: la,
-            }) if !la.is_empty() => {
+                args: la, .. }) if !la.is_empty() => {
                 cur = la[0].0;
             }
             Some(Value::Builtin {
                 name: lumia_hir::Builtin::Elems,
-                args: la,
-            }) if !la.is_empty() => {
+                args: la, .. }) if !la.is_empty() => {
                 cur = la[0].0;
             }
             Some(Value::Builtin {
                 name: lumia_hir::Builtin::ListTake
                     | lumia_hir::Builtin::ListSlice
                     | lumia_hir::Builtin::ListReverse,
-                args: la,
-            }) if !la.is_empty() => {
+                args: la, .. }) if !la.is_empty() => {
                 cur = la[0].0;
             }
             Some(Value::AllocList { elems, .. }) => {
@@ -627,8 +689,7 @@ fn list_get_float_result(
         }
         Some(Value::Builtin {
             name: lumia_hir::Builtin::ListGet,
-            args,
-        }) if !args.is_empty() => {
+            args, .. }) if !args.is_empty() => {
             if list_elem_is_float(block, args[0].0, float_locals, fun_ret_tys, seen) {
                 return true;
             }
@@ -686,19 +747,16 @@ fn list_elem_is_float(
         }
         Some(Value::Builtin {
             name: lumia_hir::Builtin::ListParMap,
-            args,
-        }) if args.len() >= 2 => funref_ret_is_float(block, args[1].0, fun_ret_tys, seen),
+            args, .. }) if args.len() >= 2 => funref_ret_is_float(block, args[1].0, fun_ret_tys, seen),
         Some(Value::Builtin {
             name: lumia_hir::Builtin::ListAppend,
-            args,
-        }) if args.len() >= 2 => {
+            args, .. }) if args.len() >= 2 => {
             list_elem_is_float(block, args[0].0, float_locals, fun_ret_tys, seen)
                 || float_locals.contains(&args[1].0)
         }
         Some(Value::Builtin {
             name: lumia_hir::Builtin::ListConcat,
-            args,
-        }) if args.len() >= 2 => {
+            args, .. }) if args.len() >= 2 => {
             list_elem_is_float(block, args[0].0, float_locals, fun_ret_tys, seen)
                 || list_elem_is_float(block, args[1].0, float_locals, fun_ret_tys, seen)
         }
@@ -706,14 +764,12 @@ fn list_elem_is_float(
             name: lumia_hir::Builtin::ListTake
                 | lumia_hir::Builtin::ListSlice
                 | lumia_hir::Builtin::ListReverse,
-            args,
-        }) if !args.is_empty() => {
+            args, .. }) if !args.is_empty() => {
             list_elem_is_float(block, args[0].0, float_locals, fun_ret_tys, seen)
         }
         Some(Value::Builtin {
             name: lumia_hir::Builtin::MapValues,
-            args,
-        }) if !args.is_empty() => match let_value(block, args[0].0) {
+            args, .. }) if !args.is_empty() => match let_value(block, args[0].0) {
             // Prefer heap typing when available; float map literals still in-block.
             _ => local_map_values_are_float(block, args[0].0, float_locals, seen),
         },
@@ -763,8 +819,7 @@ fn list_fold_float_result(
         }
         Some(Value::Builtin {
             name: lumia_hir::Builtin::ListParFold,
-            args,
-        }) if args.len() >= 3 => {
+            args, .. }) if args.len() >= 3 => {
             float_locals.contains(&args[1].0)
                 || funref_ret_is_float(block, args[2].0, fun_ret_tys, seen)
         }
@@ -852,9 +907,15 @@ fn compute_float_locals_from<'a>(
                 if let Value::Builtin {
                     name: lumia_hir::Builtin::AdtField,
                     args,
+                    result_ty,
                 } = value
                 {
-                    if adt_field_is_float(args, &float_locals, &defs) {
+                    let is_f = match result_ty {
+                        Some(Type::Float) => true,
+                        Some(_) => false,
+                        None => adt_field_is_float(args, &float_locals, &defs),
+                    };
+                    if is_f {
                         float_locals.insert(local.0);
                     }
                 }
@@ -899,30 +960,47 @@ fn compute_float_locals_from<'a>(
 }
 
 /// Collect `ClosureCap` types from every `AllocClosure` site (capture SSA → heap ty).
+///
+/// Nested closures (`spawn { { s -> prefix.concat(s) } }`) allocate the inner
+/// lambda inside an outer `__lam_*`; that site's captures are `ClosureCap`s of
+/// the outer env. A single pass with empty outer caps misses those String/Float
+/// types — iterate so outer AllocClosure sites populate `out` before (or for)
+/// nested ones.
 pub(crate) fn collect_fun_cap_tys(
     module: &crate::ir::CoreModule,
     fun_ret_tys: &HashMap<String, Type>,
     fun_param_tys: &HashMap<String, Vec<Type>>,
 ) -> HashMap<String, HashMap<u32, Type>> {
+    let by_local = &module.channel_elem_by_local;
+    let module_hint = module.channel_elem_hint.as_ref();
     let mut out: HashMap<String, HashMap<u32, Type>> = HashMap::default();
-    let empty_caps = HashMap::default();
-    for fun in &module.functions {
-        let float_locals = compute_float_locals_in_block(&fun.body);
-        // Params are not `Let`s — seed them so `AllocClosure` captures of
-        // formals (e.g. curried `compose(f,g)` → inner caps) keep Fun/Float ABI.
-        let mut param_locals: HashMap<u32, Type> = HashMap::default();
-        for (p, ty) in fun.params.iter().zip(fun.param_tys.iter()) {
-            param_locals.insert(p.0, ty.clone());
+    for _ in 0..16 {
+        let before: usize = out.values().map(|m| m.len()).sum();
+        for fun in &module.functions {
+            let float_locals = compute_float_locals_in_block(&fun.body);
+            let mut param_locals: HashMap<u32, Type> = HashMap::default();
+            for (p, ty) in fun.params.iter().zip(fun.param_tys.iter()) {
+                param_locals.insert(p.0, ty.clone());
+            }
+            // Caps already known for this fun (from outer AllocClosure sites).
+            let outer = out.get(&fun.name).cloned().unwrap_or_default();
+            collect_fun_cap_tys_in_block(
+                &fun.body,
+                &float_locals,
+                fun_ret_tys,
+                fun_param_tys,
+                &outer,
+                &param_locals,
+                by_local,
+                module_hint,
+                None,
+                &mut out,
+            );
         }
-        collect_fun_cap_tys_in_block(
-            &fun.body,
-            &float_locals,
-            fun_ret_tys,
-            fun_param_tys,
-            &empty_caps,
-            &param_locals,
-            &mut out,
-        );
+        let after: usize = out.values().map(|m| m.len()).sum();
+        if after == before {
+            break;
+        }
     }
     out
 }
@@ -934,6 +1012,9 @@ fn collect_fun_cap_tys_in_block(
     fun_param_tys: &HashMap<String, Vec<Type>>,
     outer_caps: &HashMap<u32, Type>,
     param_locals: &HashMap<u32, Type>,
+    channel_by_local: &HashMap<u32, Type>,
+    channel_module_hint: Option<&Type>,
+    outer_lam_caps: Option<&[crate::Local]>,
     out: &mut HashMap<String, HashMap<u32, Type>>,
 ) {
     for op in &block.ops {
@@ -944,6 +1025,15 @@ fn collect_fun_cap_tys_in_block(
                     for (i, c) in captures.iter().enumerate() {
                         let t = if float_locals.contains(&c.0) {
                             Some(Type::Float)
+                        } else if let Some(t) = channel_recv_elem_ty(
+                            block,
+                            c.0,
+                            channel_by_local,
+                            channel_module_hint,
+                            outer_lam_caps,
+                            &mut HashSet::default(),
+                        ) {
+                            Some(t)
                         } else if let Some(t) = param_locals.get(&c.0) {
                             Some(t.clone())
                         } else {
@@ -977,6 +1067,9 @@ fn collect_fun_cap_tys_in_block(
                             fun_param_tys,
                             outer_caps,
                             param_locals,
+                            channel_by_local,
+                            channel_module_hint,
+                            outer_lam_caps,
                             out,
                         );
                         collect_fun_cap_tys_in_block(
@@ -986,6 +1079,9 @@ fn collect_fun_cap_tys_in_block(
                             fun_param_tys,
                             outer_caps,
                             param_locals,
+                            channel_by_local,
+                            channel_module_hint,
+                            outer_lam_caps,
                             out,
                         );
                     }
@@ -1001,6 +1097,9 @@ fn collect_fun_cap_tys_in_block(
                             fun_param_tys,
                             outer_caps,
                             param_locals,
+                            channel_by_local,
+                            channel_module_hint,
+                            outer_lam_caps,
                             out,
                         );
                         collect_fun_cap_tys_in_block(
@@ -1010,6 +1109,9 @@ fn collect_fun_cap_tys_in_block(
                             fun_param_tys,
                             outer_caps,
                             param_locals,
+                            channel_by_local,
+                            channel_module_hint,
+                            outer_lam_caps,
                             out,
                         );
                         collect_fun_cap_tys_in_block(
@@ -1019,6 +1121,9 @@ fn collect_fun_cap_tys_in_block(
                             fun_param_tys,
                             outer_caps,
                             param_locals,
+                            channel_by_local,
+                            channel_module_hint,
+                            outer_lam_caps,
                             out,
                         );
                     }
@@ -1030,6 +1135,9 @@ fn collect_fun_cap_tys_in_block(
                             fun_param_tys,
                             outer_caps,
                             param_locals,
+                            channel_by_local,
+                            channel_module_hint,
+                            outer_lam_caps,
                             out,
                         );
                     }
@@ -1315,6 +1423,7 @@ fn local_heap_ty(
         Value::String(_) => Some(Type::String),
         Value::Char(_) => Some(Type::Char),
         Value::Float(_) => Some(Type::Float),
+        Value::Bool(_) => Some(Type::Bool),
         Value::ClosureCap {
             index,
             as_float,
@@ -1482,8 +1591,7 @@ fn local_heap_ty(
         }
         Value::Builtin {
             name: lumia_hir::Builtin::ListGet,
-            args,
-        } if !args.is_empty() => {
+            args, .. } if !args.is_empty() => {
             match local_heap_ty(
                 block,
                 args[0].0,
@@ -1504,8 +1612,7 @@ fn local_heap_ty(
         }
         Value::Builtin {
             name: lumia_hir::Builtin::Elems,
-            args,
-        } if !args.is_empty() => {
+            args, .. } if !args.is_empty() => {
             match local_heap_ty(
                 block,
                 args[0].0,
@@ -1523,8 +1630,7 @@ fn local_heap_ty(
         }
         Value::Builtin {
             name: lumia_hir::Builtin::MapValues,
-            args,
-        } if !args.is_empty() => {
+            args, .. } if !args.is_empty() => {
             match local_heap_ty(
                 block,
                 args[0].0,
@@ -1541,8 +1647,7 @@ fn local_heap_ty(
         }
         Value::Builtin {
             name: lumia_hir::Builtin::MapKeys,
-            args,
-        } if !args.is_empty() => {
+            args, .. } if !args.is_empty() => {
             match local_heap_ty(
                 block,
                 args[0].0,
@@ -1561,8 +1666,7 @@ fn local_heap_ty(
             name: lumia_hir::Builtin::ListTake
                 | lumia_hir::Builtin::ListSlice
                 | lumia_hir::Builtin::ListReverse,
-            args,
-        } if !args.is_empty() => {
+            args, .. } if !args.is_empty() => {
             match local_heap_ty(
                 block,
                 args[0].0,
@@ -1579,8 +1683,7 @@ fn local_heap_ty(
         }
         Value::Builtin {
             name: lumia_hir::Builtin::ListConcat,
-            args,
-        } if args.len() >= 2 => {
+            args, .. } if args.len() >= 2 => {
             let a = local_heap_ty(
                 block,
                 args[0].0,
@@ -1627,8 +1730,7 @@ fn local_heap_ty(
         } => Some(Type::String),
         Value::Builtin {
             name: lumia_hir::Builtin::AdtField,
-            args,
-        } if args.len() >= 2 => {
+            args, .. } if args.len() >= 2 => {
             let idx = match let_value_dfs(block, args[1].0) {
                 Some(Value::Int(i)) if *i >= 0 => *i as usize,
                 _ => {
@@ -1660,8 +1762,7 @@ fn local_heap_ty(
         }
         Value::Builtin {
             name: lumia_hir::Builtin::ListAppend,
-            args,
-        } if args.len() >= 2 => {
+            args, .. } if args.len() >= 2 => {
             let elem = if float_locals.contains(&args[1].0) {
                 Type::Float
             } else {
@@ -1707,8 +1808,7 @@ fn local_heap_ty(
         }
         Value::Builtin {
             name: lumia_hir::Builtin::MapSet,
-            args,
-        } if args.len() >= 3 => {
+            args, .. } if args.len() >= 3 => {
             // `m.set(k,v)` / `xs.set(i,v)` — float values must upgrade Map/List ABI
             // (`toMap` acc loop, `mapOf(…).set(…)`).
             let key_ty = if float_locals.contains(&args[1].0) {
@@ -1766,8 +1866,7 @@ fn local_heap_ty(
         }
         Value::Builtin {
             name: lumia_hir::Builtin::MapRemove,
-            args,
-        } if args.len() >= 2 => {
+            args, .. } if args.len() >= 2 => {
             let key_ty = if float_locals.contains(&args[1].0) {
                 Type::Float
             } else {
@@ -1803,15 +1902,50 @@ fn local_heap_ty(
         }
         Value::Builtin {
             name: lumia_hir::Builtin::TaskSpawn,
-            args,
-        } if !args.is_empty() => {
+            args, .. } if !args.is_empty() => {
             let elem = fun_ret_of_local(block, args[0].0, fun_ret_tys, seen).unwrap_or(Type::Int);
             Some(Type::Task(Box::new(elem)))
         }
         Value::Builtin {
+            name: lumia_hir::Builtin::ListParFold,
+            args, .. } if args.len() >= 2 => {
+            // Acc type: Float init / Float callback / List[Float] elems → Float.
+            if float_locals.contains(&args[1].0) {
+                return Some(Type::Float);
+            }
+            if let Some(Type::List(e)) = local_heap_ty(
+                block,
+                args[0].0,
+                float_locals,
+                fun_ret_tys,
+                fun_param_tys,
+                cap_tys,
+                seen,
+                seen_slots,
+            ) {
+                if matches!(e.as_ref(), Type::Float) {
+                    return Some(Type::Float);
+                }
+            }
+            local_heap_ty(
+                block,
+                args[1].0,
+                float_locals,
+                fun_ret_tys,
+                fun_param_tys,
+                cap_tys,
+                seen,
+                seen_slots,
+            )
+            .or_else(|| {
+                fun_ret_of_local(block, args[2].0, fun_ret_tys, seen).filter(|t| {
+                    matches!(t, Type::Float | Type::Bool | Type::String | Type::Char)
+                })
+            })
+        }
+        Value::Builtin {
             name: lumia_hir::Builtin::ListParMap,
-            args,
-        } if args.len() >= 2 => {
+            args, .. } if args.len() >= 2 => {
             // Result elem follows the callback Fun ret (`map { x -> x + 1.0 }`).
             // Without this, `spawn { join().map(…) }` falls through to List[Int]
             // and later `+` does integer add on IEEE bits (overflow).
@@ -1856,8 +1990,7 @@ fn local_heap_ty(
         }
         Value::Builtin {
             name: lumia_hir::Builtin::TaskJoin,
-            args,
-        } if !args.is_empty() => {
+            args, .. } if !args.is_empty() => {
             match local_heap_ty(
                 block,
                 args[0].0,
@@ -1869,6 +2002,27 @@ fn local_heap_ty(
                 seen_slots,
             ) {
                 Some(Type::Task(e)) => Some(*e),
+                _ => None,
+            }
+        }
+        Value::Builtin {
+            name: lumia_hir::Builtin::TaskJoinOpt,
+            args, .. } if !args.is_empty() => {
+            // `joinOpt()` → Option[T] from Task[T] (needed for `alt listOf()` cap typing).
+            match local_heap_ty(
+                block,
+                args[0].0,
+                float_locals,
+                fun_ret_tys,
+                fun_param_tys,
+                cap_tys,
+                seen,
+                seen_slots,
+            ) {
+                Some(Type::Task(e)) => Some(Type::Adt {
+                    name: "Option".into(),
+                    params: vec![*e],
+                }),
                 _ => None,
             }
         }
@@ -1975,6 +2129,8 @@ fn join_heap_tys(a: &Type, b: &Type) -> Option<Type> {
         return Some(a.clone());
     }
     match (a, b) {
+        // MatchFail / empty arm: Unit is bottom.
+        (Type::Unit, other) | (other, Type::Unit) => Some(other.clone()),
         // `Err("e") alt 9.5`: then=AdtField(String) from Err-only AllocAdt params,
         // else=Float — prefer Float (same as `join_value_tys` for println ABI).
         (Type::Float, other) | (other, Type::Float)
@@ -1985,7 +2141,6 @@ fn join_heap_tys(a: &Type, b: &Type) -> Option<Type> {
                     | Type::Bool
                     | Type::String
                     | Type::Char
-                    | Type::Unit
                     | Type::Float
             ) =>
         {
@@ -2612,6 +2767,91 @@ fn closure_cap_index(block: &Block, id: u32, seen: &mut HashSet<u32>) -> Option<
 mod tests {
     use super::is_apply_hof;
     use crate::compile_source_to_core;
+
+    #[test]
+    fn spawn_string_cap_closure_ret_is_string() {
+        let str2 = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+val main = {
+    scope {
+        val prefix = "pre"
+        val f = spawn { { s -> prefix.concat(s) } }.join()
+        println(f("x").len())
+    }
+}
+"#,
+        )
+        .expect("str2");
+        let lam0 = str2
+            .functions
+            .iter()
+            .find(|f| f.name == "__lam_0")
+            .expect("__lam_0");
+        assert!(
+            matches!(lam0.ret_ty, lumia_ty::Type::String),
+            "spawned concat lam ret should be String, got {:?}",
+            lam0.ret_ty
+        );
+    }
+
+
+    #[test]
+    fn spawn_some_true_option_bool() {
+        let core = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+val main = {
+    scope {
+        val o = spawn { Some(true) }.join()
+        println(o)
+    }
+}
+"#,
+        )
+        .expect("core");
+        let lam = core
+            .functions
+            .iter()
+            .find(|f| f.name.starts_with("__lam_") && f.params.is_empty())
+            .expect("spawn lam");
+        assert!(
+            matches!(
+                &lam.ret_ty,
+                lumia_ty::Type::Adt { name, params }
+                    if name == "Option" && params.first().is_some_and(|p| matches!(p, lumia_ty::Type::Bool))
+            ),
+            "spawn Some(true) ret should be Option[Bool], got {:?}",
+            lam.ret_ty
+        );
+    }
+
+    #[test]
+    fn spawn_two_float_folds_sum_ret() {
+        let core = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+val main = {
+    scope {
+        val xs = listOf(1.0, 2.0, 3.0)
+        val ys = listOf(1.0, 2.0)
+        val s = spawn { xs.fold(0.0, { a, b -> a + b }) + ys.fold(0.0, { a, b -> a + b }) }.join()
+        println(s)
+    }
+}
+"#,
+        )
+        .expect("core");
+        assert!(
+            core.functions.iter().any(|f| f.name.starts_with("__lam_")
+                && matches!(f.ret_ty, lumia_ty::Type::Float)
+                && f.params.len() <= 1),
+            "spawn body should return Float"
+        );
+    }
 
     #[test]
     fn detect_apply_hof_shape() {
@@ -3276,6 +3516,42 @@ val main = {
     }
 
     #[test]
+    fn flatmap_list_fun_println_ty() {
+        let core = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+val main = {
+    val xs = listOf(1.0, 2.0)
+    val fs = xs.flatMap({ x -> listOf({ y -> x + y }) })
+    println(fs.get(0)(1.0))
+}
+"#,
+        )
+        .expect("core");
+        for f in &core.functions {
+            if f.name == "main" || f.name.starts_with("__lam") {
+                eprintln!("{} ret={:?} params={:?}", f.name, f.ret_ty, f.param_tys);
+            }
+        }
+        // Check main has Call to $Float or Float println path via funref
+        let main = core.functions.iter().find(|f| f.name == "main").unwrap();
+        for op in &main.body.ops {
+            if let crate::Op::Let { local, value, .. } = op {
+                match value {
+                    crate::Value::Call { fun, args } => eprintln!("  %{} Call {} {:?}", local.0, fun, args),
+                    crate::Value::IndirectCall { callee, args } => eprintln!("  %{} ICall %{} {:?}", local.0, callee.0, args),
+                    crate::Value::Builtin { name: lumia_hir::Builtin::ListGet, args, .. } => eprintln!("  %{} ListGet {:?}", local.0, args),
+                    crate::Value::Builtin { name: lumia_hir::Builtin::ListConcat, args, .. } => eprintln!("  %{} ListConcat {:?}", local.0, args),
+                    crate::Value::FunRef(n) => eprintln!("  %{} FunRef {}", local.0, n),
+                    crate::Value::AllocClosure { fun, .. } => eprintln!("  %{} AllocClosure {}", local.0, fun),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    #[test]
     fn spawn_list_of_float_fun_ret() {
         let core = compile_source_to_core(
             r#"
@@ -3294,7 +3570,7 @@ val main = {
             .functions
             .iter()
             .find(|f| f.name.starts_with("__lam_") && f.params.is_empty())
-            .expect("spawn lam");
+            .expect("spawn_lam");
         assert!(
             matches!(
                 &spawn.ret_ty,

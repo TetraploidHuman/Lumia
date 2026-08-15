@@ -10,6 +10,32 @@ use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Local(pub u32);
 
+/// Calling convention for [`CoreFun::external`] imports.
+///
+/// Resolved once at HIR→Core lower (or when synthesizing a foreign stub). Mid/backend
+/// must use this field — do not re-derive ABI from the symbol name string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ForeignAbi {
+    /// Platform C ABI (`foreign "C"` without a runtime symbol).
+    #[default]
+    C,
+    /// Lumia runtime ABI (i64 / ptr layout matching `lumia_rt`).
+    Runtime,
+}
+
+impl ForeignAbi {
+    /// Convention used when introducing a new external by symbol name at the
+    /// lower / synth boundary only.
+    #[inline]
+    pub fn from_symbol(sym: &str) -> Self {
+        if sym.starts_with("lumia_") {
+            Self::Runtime
+        } else {
+            Self::C
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CoreModule {
     pub name: String,
@@ -22,8 +48,8 @@ pub struct CoreModule {
     pub adt_variant_names: HashMap<String, Vec<String>>,
     /// Sum ADT name → max variant payload arity (shared `Type::Adt` params slots).
     pub sum_max_arity: HashMap<String, usize>,
-    /// When every `ChannelSend` in the module agrees on a ground payload, Core
-    /// `ChannelNew` still lowers as `Channel(Int)`; recv/join typing uses this hint.
+    /// When every channel agrees on a ground payload (typed stamp and/or sends),
+    /// module-wide hint for recv/join typing; else per-local map only.
     pub channel_elem_hint: Option<Type>,
     /// Per-`ChannelNew` local id → agreed send payload (locals unique after lift).
     pub channel_elem_by_local: HashMap<u32, Type>,
@@ -81,6 +107,8 @@ pub struct CoreFun {
     pub memo: Option<MemoTf>,
     /// When set, this is a C ABI import (`foreign`); no body emitted.
     pub external: Option<String>,
+    /// ABI for [`Self::external`]. Ignored when `external` is `None`.
+    pub foreign_abi: ForeignAbi,
     /// Locals that may escape (always filled by EscapePass before ReprSelect).
     pub escaping: HashSet<Local>,
     /// HM scheme needs call-site clones (`∀` / Num / trait preds), or signature still open.
@@ -170,6 +198,8 @@ pub enum Value {
     Builtin {
         name: Builtin,
         args: Vec<Local>,
+        /// Optional result type stamped from HIR `type_at` (e.g. ground `Channel[T]`).
+        result_ty: Option<Type>,
     },
     If {
         cond: Local,
@@ -408,7 +438,7 @@ fn format_value(v: &Value) -> String {
             let a: Vec<_> = args.iter().map(|l| format!("%{}", l.0)).collect();
             format!("icall %{}({})", callee.0, a.join(", "))
         }
-        Value::Builtin { name, args } => {
+        Value::Builtin { name, args, .. } => {
             let a: Vec<_> = args.iter().map(|l| format!("%{}", l.0)).collect();
             format!("builtin {name:?}({})", a.join(", "))
         }

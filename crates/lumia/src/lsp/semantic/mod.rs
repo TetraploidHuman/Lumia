@@ -10,7 +10,7 @@ use super::state::{state_lock, Analysis};
 use anyhow::Result;
 use lumia_hir::{surface_names, SurfaceRole};
 use lumia_syntax::parse_module_recovering;
-use overlay::{push_free_builtin_spans, push_keyword_spans, KEYWORDS};
+use overlay::{highlight_keywords, push_free_builtin_spans, push_keyword_spans};
 use serde_json::{json, Value};
 use token::encode_deltas;
 use walk::collect_module;
@@ -19,7 +19,7 @@ pub(super) fn tokens_for_analysis(a: &Analysis) -> Vec<u32> {
     let mut abs = Vec::new();
     let parsed = parse_module_recovering(&a.src);
     collect_module(a, &parsed.module, &a.src, &mut abs);
-    for kw in KEYWORDS {
+    for kw in highlight_keywords() {
         push_keyword_spans(&a.src, kw, &mut abs);
     }
     for sn in surface_names() {

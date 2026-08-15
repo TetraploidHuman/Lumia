@@ -167,6 +167,20 @@ impl<'ctx> Codegen<'ctx> {
         mask
     }
 
+    /// Bit `i` set ⇒ field `i` prints / compares as Bool.
+    pub(crate) fn adt_bool_field_mask(lp: &[Type], rp: &[Type]) -> u64 {
+        let n = lp.len().max(rp.len()).min(64);
+        let mut mask = 0u64;
+        for i in 0..n {
+            let lb = matches!(lp.get(i), Some(Type::Bool));
+            let rb = matches!(rp.get(i), Some(Type::Bool));
+            if lb || rb {
+                mask |= 1u64 << i;
+            }
+        }
+        mask
+    }
+
     /// Layout mask from concrete field SSA types at an `AllocAdt` site.
     /// Bits beyond 63 are dropped (runtime header stores a `u64` mask).
     pub(crate) fn adt_float_mask_from_fields(&self, fields: &[Local]) -> u64 {
@@ -177,6 +191,24 @@ impl<'ctx> Codegen<'ctx> {
             }
         }
         mask
+    }
+
+    /// Call [`lumia_abi::ADT_SET_FLOAT_MASK`] when `mask != 0` (no-op otherwise).
+    /// Sole emit site for ADT float masks (heap AllocAdt, stack LitAdt, Option).
+    pub(crate) fn emit_adt_set_float_mask(
+        &self,
+        payload: inkwell::values::PointerValue<'ctx>,
+        mask: u64,
+    ) -> Result<()> {
+        if mask == 0 {
+            return Ok(());
+        }
+        let m = self.llvm.i64_ty.const_int(mask, false);
+        self.call_rt_void(
+            lumia_abi::ADT_SET_FLOAT_MASK,
+            &[payload.into(), m.into()],
+            "adt_fmask",
+        )
     }
 
     /// Structural ADT `==` via runtime size (safe for sum None/Ok arity ≠ type params).
@@ -212,15 +244,24 @@ impl<'ctx> Codegen<'ctx> {
         params: &[Type],
     ) -> Result<PointerValue<'ctx>> {
         let i = self.coerce_i64(arg)?;
-        let mask = Self::adt_float_field_mask(params, &[]);
-        let mask_v = self.llvm.i64_ty.const_int(mask, false);
+        // Option/Result: type-param index ≠ constructor field index (Err field0
+        // is params[1]). Rely on per-object `_pad` from AllocAdt field types for
+        // Float; keep param bool_mask for Option[Bool] / Result Ok(Bool).
+        let fmask = if matches!(adt_name, "Option" | "Result") {
+            0
+        } else {
+            Self::adt_float_field_mask(params, &[])
+        };
+        let bmask = Self::adt_bool_field_mask(params, &[]);
+        let fmask_v = self.llvm.i64_ty.const_int(fmask, false);
+        let bmask_v = self.llvm.i64_ty.const_int(bmask, false);
         if let Some(names) = self.funs.adt_variant_names.get(adt_name).cloned() {
-            return self.emit_show_adt_named(i, mask_v, &names);
+            return self.emit_show_adt_named(i, fmask_v, bmask_v, &names);
         }
         let f = self.runtime_fn("lumia_show_adt")?;
         let call = crate::error::llvm(self.llvm.builder.build_call(
             f,
-            &[i.into(), mask_v.into()],
+            &[i.into(), fmask_v.into(), bmask_v.into()],
             "show_adt",
         ))?;
         Ok(call
@@ -230,11 +271,12 @@ impl<'ctx> Codegen<'ctx> {
             .into_pointer_value())
     }
 
-    /// `lumia_show_adt_named(obj, mask, names_ptr, n)`.
+    /// `lumia_show_adt_named(obj, float_mask, bool_mask, names_ptr, n)`.
     pub(crate) fn emit_show_adt_named(
         &mut self,
         obj: IntValue<'ctx>,
-        mask: IntValue<'ctx>,
+        float_mask: IntValue<'ctx>,
+        bool_mask: IntValue<'ctx>,
         names: &[String],
     ) -> Result<PointerValue<'ctx>> {
         use inkwell::AddressSpace;
@@ -267,7 +309,13 @@ impl<'ctx> Codegen<'ctx> {
         let f = self.runtime_fn("lumia_show_adt_named")?;
         let call = crate::error::llvm(self.llvm.builder.build_call(
             f,
-            &[obj.into(), mask.into(), names_ptr.into(), n.into()],
+            &[
+                obj.into(),
+                float_mask.into(),
+                bool_mask.into(),
+                names_ptr.into(),
+                n.into(),
+            ],
             "show_adt_named",
         ))?;
         Ok(call

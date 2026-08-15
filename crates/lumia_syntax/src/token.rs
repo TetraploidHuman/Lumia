@@ -102,6 +102,19 @@ pub enum TokenKind {
 }
 
 impl TokenKind {
+    /// Lexer keyword spellings — single source of truth for editors / LSP.
+    ///
+    /// `pure` / `fn` are **not** keywords (`foreign` decls parse them as idents);
+    /// editors may still highlight them as surface soft keywords.
+    pub const KEYWORDS: &[&str] = &[
+        "module", "import", "val", "var", "type", "if", "else", "match", "for", "in", "break",
+        "continue", "return", "alt", "and", "or", "not", "true", "false", "priv", "as", "trait",
+        "instance", "requires", "with", "effect", "scope", "spawn", "foreign",
+    ];
+
+    /// Highlight-only spellings used in `foreign … fn` / `pure fn` surface syntax.
+    pub const SURFACE_SOFT: &[&str] = &["pure", "fn"];
+
     pub fn keyword(s: &str) -> Option<TokenKind> {
         Some(match s {
             "module" => TokenKind::Module,
@@ -135,5 +148,26 @@ impl TokenKind {
             "foreign" => TokenKind::Foreign,
             _ => return None,
         })
+    }
+}
+
+#[cfg(test)]
+mod keyword_truth_tests {
+    use super::TokenKind;
+
+    #[test]
+    fn keywords_const_matches_keyword_fn() {
+        for &s in TokenKind::KEYWORDS {
+            assert!(
+                TokenKind::keyword(s).is_some(),
+                "KEYWORDS entry `{s}` missing from keyword()"
+            );
+        }
+        for &s in TokenKind::SURFACE_SOFT {
+            assert!(
+                TokenKind::keyword(s).is_none(),
+                "SURFACE_SOFT `{s}` must not be a real keyword"
+            );
+        }
     }
 }

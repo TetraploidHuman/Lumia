@@ -1,6 +1,6 @@
 //! Shared program typecheck + assert annotation for CLI and LSP.
 
-use crate::load::{load_program, load_program_with_overlays, LoadedProgram, SourceFile};
+use crate::load::{load_program, load_program_with_overlays, path_label, LoadedProgram, SourceFile};
 use anyhow::Result;
 use lumia_hir::lower_module;
 use lumia_syntax::{parse_module_recovering, stamp_module, Span};
@@ -218,13 +218,6 @@ fn annotate_assert_expr(e: &mut lumia_hir::Expr, loaded: &LoadedProgram) {
         | Expr::Break(_)
         | Expr::Continue(_) => {}
     }
-}
-
-fn path_label(path: &Path) -> String {
-    path.file_name()
-        .and_then(|s| s.to_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| path.display().to_string())
 }
 
 fn diag_err(loaded: &LoadedProgram, span: Span, kind: &str, message: &str) -> anyhow::Error {

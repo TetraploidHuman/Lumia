@@ -10,7 +10,7 @@ mod visit;
 
 pub use ir::{
     format_module, max_local_in_block, max_local_in_fun, rewrite_block_locals, AdtRepr, Block,
-    CoreFun, CoreModule, ListRepr, Local, MapRepr, MemoTf, Op, SetRepr, Value,
+    CoreFun, CoreModule, ForeignAbi, ListRepr, Local, MapRepr, MemoTf, Op, SetRepr, Value,
 };
 pub use lower::{lower_hir, lower_hir_with_schemes};
 pub use pipeline::{

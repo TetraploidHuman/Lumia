@@ -1,23 +1,26 @@
 //! Fixed-point propagation of escaping locals through aliases and containers.
 
+use lumia_abi::SMALL_CONTAINER_MAX;
 use lumia_core::{Block, Local, MapRepr, Op, Value};
 use lumia_hir::Builtin;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
-/// Must match [`crate::repr_select`] heap thresholds: large / always-heap
-/// containers store field pointers on the GC heap even when the container
-/// local itself does not "escape". Stack `Lit*` fields in those slots are
-/// invisible to the collector (and dangle after the frame returns).
+/// Must match [`crate::repr_select`] and RT `MAP_SMALL_MAX` / `SET_SMALL_MAX`
+/// ([`lumia_abi::SMALL_CONTAINER_MAX`]): large / always-heap containers store
+/// field pointers on the GC heap even when the container local itself does not
+/// "escape". Stack `Lit*` fields in those slots are invisible to the collector
+/// (and dangle after the frame returns).
 fn alloc_forces_heap(value: &Value) -> bool {
+    let max = SMALL_CONTAINER_MAX;
     match value {
-        Value::AllocAdt { fields, .. } => fields.len() > 8,
-        Value::AllocList { elems, .. } => elems.len() > 8,
-        Value::AllocSet { elems, .. } => elems.is_empty() || elems.len() > 8,
+        Value::AllocAdt { fields, .. } => fields.len() > max,
+        Value::AllocList { elems, .. } => elems.len() > max,
+        Value::AllocSet { elems, .. } => elems.is_empty() || elems.len() > max,
         Value::AllocMap {
             flat_pairs, repr, ..
         } => {
             let n = flat_pairs.len() / 2;
-            matches!(repr, MapRepr::AssocList) || n == 0 || n > 8
+            matches!(repr, MapRepr::AssocList) || n == 0 || n > max
         }
         Value::AllocClosure { .. } => true,
         _ => false,
@@ -125,7 +128,7 @@ fn mark_inputs_escaping(
             mark(*right);
         }
         Value::Unary { operand, .. } => mark(*operand),
-        Value::Builtin { name, args } => {
+        Value::Builtin { name, args, .. } => {
             if name.may_capture() {
                 for a in args {
                     mark(*a);

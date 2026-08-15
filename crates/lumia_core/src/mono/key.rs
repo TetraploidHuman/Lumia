@@ -19,6 +19,11 @@ pub(crate) enum MonoKind {
     },
     /// Named FunRef HOF argument (specialized + directized inside the clone).
     FunRef(String),
+    /// Structural Fun (e.g. `Option[Fun(Float)→Float]` for unwrapOr).
+    Fun {
+        params: Vec<MonoKind>,
+        ret: Box<MonoKind>,
+    },
 }
 
 impl MonoKind {
@@ -61,6 +66,10 @@ impl MonoKind {
                     .collect();
                 format!("Fn_{safe}")
             }
+            MonoKind::Fun { params, ret } => {
+                let ps: Vec<_> = params.iter().map(MonoKind::encode).collect();
+                format!("Fun_{}_{}", ps.join("_"), ret.encode())
+            }
         }
     }
 
@@ -80,6 +89,11 @@ impl MonoKind {
             },
             // Opaque Fun slot — clone body directizes to a named Call.
             MonoKind::FunRef(_) => Type::Fun(vec![], Box::new(Type::Int), Effect::pure()),
+            MonoKind::Fun { params, ret } => Type::Fun(
+                params.iter().map(MonoKind::to_type).collect(),
+                Box::new(ret.to_type()),
+                Effect::pure(),
+            ),
         }
     }
 }
@@ -122,8 +136,14 @@ fn type_to_mono(t: &Type) -> Option<MonoKind> {
         Type::Set(e) => type_to_mono(e).map(|k| MonoKind::Set(Box::new(k))),
         Type::Adt { name, params } if name == "Option" || name == "Result" => {
             // Polymorphic payloads must appear in the key (map/andThen/…).
+            // Open Vars are not ground — returning `Int` here created premature
+            // `unwrapOr$Option_Int_Float` clones that blocked a later Float key
+            // (call already rewritten to the Int clone).
             let mut ps = Vec::with_capacity(params.len());
             for p in params {
+                if matches!(p, Type::Var(_)) {
+                    return None;
+                }
                 ps.push(type_to_mono(p)?);
             }
             Some(MonoKind::Adt {
@@ -150,8 +170,76 @@ fn type_to_mono(t: &Type) -> Option<MonoKind> {
                 params: ps,
             })
         }
-        // Unit / Fun / Var: FunRef args use `MonoKind::FunRef` via funref map.
+        // Coarse Fun shape so `unwrapOr(Some(floatFun), …)` can specialize.
+        Type::Fun(ps, r, _) => {
+            let mut pks = Vec::with_capacity(ps.len());
+            for p in ps {
+                pks.push(type_to_mono(p).unwrap_or(MonoKind::Int));
+            }
+            let rk = type_to_mono(r).unwrap_or(MonoKind::Int);
+            Some(MonoKind::Fun {
+                params: pks,
+                ret: Box::new(rk),
+            })
+        }
+        // Unit / Var: FunRef args use `MonoKind::FunRef` via funref map.
         _ => None,
+    }
+}
+
+/// May-heap placeholder or open scalar — not a ground Option/Result payload.
+fn is_erased_abi_ty(t: &Type) -> bool {
+    match t {
+        Type::Int | Type::Var(_) => true,
+        Type::List(e) if matches!(e.as_ref(), Type::Int) => true,
+        _ => false,
+    }
+}
+
+fn is_erased_option_ret(t: &Type) -> bool {
+    matches!(
+        t,
+        Type::Adt { name, params }
+            if name == "Option" && params.first().is_some_and(is_erased_abi_ty)
+    )
+}
+
+fn is_erased_result_ret(t: &Type) -> bool {
+    matches!(
+        t,
+        Type::Adt { name, params }
+            if name == "Result" && params.first().is_some_and(is_erased_abi_ty)
+    )
+}
+
+fn strip_mono_suffix(name: &str) -> &str {
+    name.split('$').next().unwrap_or(name)
+}
+
+/// Clone rets must be re-keyable (`type_to_mono`); open Vars block `unwrapOr` etc.
+pub(crate) fn ground_open_vars(t: Type) -> Type {
+    match t {
+        Type::Var(_) => Type::Int,
+        Type::List(e) => Type::List(Box::new(ground_open_vars(*e))),
+        Type::Set(e) => Type::Set(Box::new(ground_open_vars(*e))),
+        Type::Task(e) => Type::Task(Box::new(ground_open_vars(*e))),
+        Type::Channel(e) => Type::Channel(Box::new(ground_open_vars(*e))),
+        Type::Map(k, v) => Type::Map(
+            Box::new(ground_open_vars(*k)),
+            Box::new(ground_open_vars(*v)),
+        ),
+        Type::Tuple(ts) => Type::Tuple(ts.into_iter().map(ground_open_vars).collect()),
+        Type::TuplePrefix(ts) => Type::TuplePrefix(ts.into_iter().map(ground_open_vars).collect()),
+        Type::Adt { name, params } => Type::Adt {
+            name,
+            params: params.into_iter().map(ground_open_vars).collect(),
+        },
+        Type::Fun(ps, r, e) => Type::Fun(
+            ps.into_iter().map(ground_open_vars).collect(),
+            Box::new(ground_open_vars(*r)),
+            e,
+        ),
+        other => other,
     }
 }
 
@@ -243,39 +331,144 @@ impl MonoKey {
 
     /// Return type: HOF Option/Result map·andThen; else all-same / container /
     /// last-arg.
-    pub(crate) fn ret_ty(&self, functions: &[CoreFun]) -> Type {
-        if let Some(t) = self.hof_ret_ty(functions) {
-            return t;
+    ///
+    /// `callee` (base name before `$…` suffix) distinguishes `mapErr` from
+    /// `resultMap` — both are `Result + FunRef` keys with different Ok/Err flow.
+    pub(crate) fn ret_ty(&self, functions: &[CoreFun], callee: Option<&str>) -> Type {
+        if let Some(t) = self.hof_ret_ty(functions, callee) {
+            return ground_open_vars(t);
         }
         let kinds = &self.0;
         if kinds.is_empty() {
             return Type::Int;
         }
+        let base = callee.map(strip_mono_suffix).unwrap_or("");
+        // `unwrapOr(opt, default)` returns the payload / default type — never the
+        // Option/Result wrapper. When `default` is a FunRef, "last data arg" is
+        // only the ADT and would wrongly keep `Option[Fun…]` (icall then uses
+        // Int ABI on a Fun value).
+        if base == "unwrapOr" {
+            if let Some(MonoKind::Adt { name, params }) = kinds.first() {
+                if (name == "Option" || name == "Result") && !params.is_empty() {
+                    let payload = ground_open_vars(params[0].to_type());
+                    // FunRef default is the real ABI for `unwrapOr(None/Err, {…})`
+                    // and must not be filtered out (that left Option_Int → Int icall).
+                    let default_ty = match kinds.get(1) {
+                        Some(MonoKind::FunRef(n)) => functions.iter().find(|f| f.name == *n).map(
+                            |f| {
+                                let mut params = f.param_tys.clone();
+                                if n.starts_with("__lam_")
+                                    && params
+                                        .first()
+                                        .is_some_and(|p| matches!(p, Type::Int | Type::Var(_)))
+                                    && params.len() > 1
+                                {
+                                    params.remove(0);
+                                }
+                                Type::Fun(
+                                    params,
+                                    Box::new(f.ret_ty.clone()),
+                                    f.effect,
+                                )
+                            },
+                        ),
+                        Some(k) => Some(ground_open_vars(k.to_type())),
+                        None => None,
+                    };
+                    // Bare `None` / `Err("e")` often mistag the Ok/Some slot as
+                    // Int or the Err String; the default carries the real ABI.
+                    if let Some(def_ty) = default_ty {
+                        let mistagged_payload = matches!(
+                            payload,
+                            Type::Int | Type::Var(_) | Type::String
+                        );
+                        let concrete_default = matches!(
+                            def_ty,
+                            Type::Float
+                                | Type::Bool
+                                | Type::Fun(_, _, _)
+                                | Type::List(_)
+                                | Type::Map(_, _)
+                                | Type::Set(_)
+                                | Type::Adt { .. }
+                                | Type::Char
+                        );
+                        if mistagged_payload && concrete_default {
+                            return def_ty;
+                        }
+                        if matches!(payload, Type::Int | Type::Var(_))
+                            && !matches!(def_ty, Type::Int | Type::Var(_))
+                        {
+                            return def_ty;
+                        }
+                        // `unwrapOr(Some(fun), defaultFun)` — prefer Fun payload.
+                        if matches!(payload, Type::Fun(_, _, _)) {
+                            return payload;
+                        }
+                        if matches!(def_ty, Type::Fun(_, _, _))
+                            && matches!(payload, Type::Int | Type::Var(_) | Type::String)
+                        {
+                            return def_ty;
+                        }
+                    }
+                    return payload;
+                }
+            }
+        }
         if kinds.iter().all(|k| k == &kinds[0]) {
-            return kinds[0].to_type();
+            return ground_open_vars(kinds[0].to_type());
         }
         // `l2Normalize(xs, eps)` / `keep(xs, eps)`: first List/Map/Set is the
-        // value being transformed; last-arg would wrongly yield the scalar eps
-        // and poison `var u` so later `nAddmm` misses `List_Float` clones.
-        if let Some(k) = kinds.iter().find(|k| {
-            matches!(
-                k,
-                MonoKind::List(_) | MonoKind::Map(_, _) | MonoKind::Set(_)
-            )
-        }) {
-            return k.to_type();
+        // value being transformed; last-arg would wrongly yield the scalar eps.
+        // Only for the 2-arg shape — `sumAt(xs, i, acc)` is List+Int+Float and
+        // must keep last-arg Float (fold/acc), not the list.
+        let n_containers = kinds
+            .iter()
+            .filter(|k| {
+                matches!(
+                    k,
+                    MonoKind::List(_) | MonoKind::Map(_, _) | MonoKind::Set(_)
+                )
+            })
+            .count();
+        if n_containers == 1 && kinds.len() == 2 {
+            if let Some(k) = kinds.iter().find(|k| {
+                matches!(
+                    k,
+                    MonoKind::List(_) | MonoKind::Map(_, _) | MonoKind::Set(_)
+                )
+            }) {
+                return ground_open_vars(k.to_type());
+            }
         }
         // Skip FunRef when taking "last data arg" (unwrap_or / defaults).
-        kinds
-            .iter()
-            .rev()
-            .find(|k| !matches!(k, MonoKind::FunRef(_)))
-            .map(MonoKind::to_type)
-            .unwrap_or(Type::Int)
+        ground_open_vars(
+            kinds
+                .iter()
+                .rev()
+                .find(|k| !matches!(k, MonoKind::FunRef(_)))
+                .map(MonoKind::to_type)
+                .unwrap_or(Type::Int),
+        )
     }
 
-    /// `map` / `andThen` / `apply` shaped keys with a FunRef callback.
-    pub(crate) fn hof_ret_ty(&self, functions: &[CoreFun]) -> Option<Type> {
+    /// `map` / `andThen` / `mapErr` shaped keys with a FunRef callback.
+    pub(crate) fn hof_ret_ty(&self, functions: &[CoreFun], callee: Option<&str>) -> Option<Type> {
+        let base = callee.map(strip_mono_suffix).unwrap_or("");
+        // `unwrapOr(opt, defaultFun)` also has Option+FunRef but FunRef is the
+        // default value, not a mapper — must not wrap as `Option[…]`.
+        if !matches!(
+            base,
+            "optionMap"
+                | "resultMap"
+                | "andThen"
+                | "mapErr"
+                | "map"
+                | "flatMap"
+                | "filterMap"
+        ) {
+            return None;
+        }
         let fun_ret = self.0.iter().find_map(|k| match k {
             MonoKind::FunRef(n) => functions
                 .iter()
@@ -283,10 +476,12 @@ impl MonoKey {
                 .map(|f| f.ret_ty.clone()),
             _ => None,
         })?;
-        // Shared Fun bodies often keep erased `Int` / heap-marker ret; for
-        // Option/Result map, the payload kind is the best U when ret is erased.
+        // Shared Fun bodies often keep erased `Int` / may-heap `List(Int)` ret;
+        // for Option/Result map, the data-arg payload is the best U then.
+        // Also treat erased `Option[Var]` / `Result[Var,_]` as non-payload so
+        // andThen does not wrap them into `Option[Option[Int]]`.
         let payload = match &fun_ret {
-            Type::Int | Type::Var(_) => None,
+            t if is_erased_abi_ty(t) || is_erased_option_ret(t) || is_erased_result_ret(t) => None,
             other => Some(other.clone()),
         };
         let data = self.0.iter().find(|k| !matches!(k, MonoKind::FunRef(_)))?;
@@ -294,24 +489,61 @@ impl MonoKey {
             MonoKind::Adt { name, params } if name == "Option" => {
                 // `andThen` / `flatMap`: callback already returns `Option[U]`.
                 // `map`: callback returns `U` → wrap as `Option[U]`.
-                if matches!(&fun_ret, Type::Adt { name: n, .. } if n == "Option") {
-                    return Some(fun_ret);
+                if matches!(&fun_ret, Type::Adt { name: n, .. } if n == "Option")
+                    && !is_erased_option_ret(&fun_ret)
+                {
+                    return Some(ground_open_vars(fun_ret));
                 }
-                let inner = payload.or_else(|| params.first().map(MonoKind::to_type))?;
+                let inner = payload
+                    .filter(|t| !is_erased_abi_ty(t))
+                    .or_else(|| params.first().map(MonoKind::to_type))?;
                 Some(Type::Adt {
                     name: "Option".into(),
-                    params: vec![inner],
+                    params: vec![ground_open_vars(inner)],
                 })
             }
             MonoKind::Adt { name, params } if name == "Result" => {
-                if matches!(&fun_ret, Type::Adt { name: n, .. } if n == "Result") {
-                    return Some(fun_ret);
+                // Always emit Result[Ok, Err] (two params). Callback rets often
+                // carry only the Ok slot (`Result[Float]`); leaving an open Err
+                // Var after refine blocks `type_to_mono` → no `unwrapOr$` clone.
+                let data_err = params.get(1).map(MonoKind::to_type).unwrap_or(Type::Int);
+                // `mapErr`: Ok stays data Ok; callback ret is the new Err.
+                if base == "mapErr" {
+                    let ok = params
+                        .first()
+                        .map(MonoKind::to_type)
+                        .unwrap_or(Type::Int);
+                    let err = payload
+                        .filter(|t| !is_erased_abi_ty(t))
+                        .or_else(|| params.get(1).map(MonoKind::to_type))
+                        .unwrap_or(Type::Int);
+                    return Some(Type::Adt {
+                        name: "Result".into(),
+                        params: vec![ground_open_vars(ok), ground_open_vars(err)],
+                    });
                 }
-                let ok = payload.or_else(|| params.first().map(MonoKind::to_type))?;
-                let err = params.get(1).map(MonoKind::to_type).unwrap_or(Type::Int);
+                if matches!(&fun_ret, Type::Adt { name: n, .. } if n == "Result")
+                    && !is_erased_result_ret(&fun_ret)
+                {
+                    let Type::Adt {
+                        params: fun_ps, ..
+                    } = &fun_ret
+                    else {
+                        unreachable!()
+                    };
+                    let ok = fun_ps.first().cloned().unwrap_or(Type::Int);
+                    let err = fun_ps.get(1).cloned().unwrap_or(data_err);
+                    return Some(Type::Adt {
+                        name: "Result".into(),
+                        params: vec![ground_open_vars(ok), ground_open_vars(err)],
+                    });
+                }
+                let ok = payload
+                    .filter(|t| !is_erased_abi_ty(t))
+                    .or_else(|| params.first().map(MonoKind::to_type))?;
                 Some(Type::Adt {
                     name: "Result".into(),
-                    params: vec![ok, err],
+                    params: vec![ground_open_vars(ok), ground_open_vars(data_err)],
                 })
             }
             _ => None,
@@ -320,9 +552,10 @@ impl MonoKey {
 
     /// Clone when any arg is non-Int or a FunRef (HOF).
     pub(crate) fn worth_cloning(&self) -> bool {
-        self.0
-            .iter()
-            .any(|k| matches!(k, MonoKind::FunRef(_)) || !matches!(k, MonoKind::Int))
+        self.0.iter().any(|k| {
+            matches!(k, MonoKind::FunRef(_) | MonoKind::Fun { .. })
+                || !matches!(k, MonoKind::Int)
+        })
     }
 
     pub(crate) fn funref_param_binds(&self, params: &[Local]) -> HashMap<u32, String> {

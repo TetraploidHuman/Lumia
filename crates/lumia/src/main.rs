@@ -3,6 +3,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use lumia::check::check_program;
+use lumia::load::path_label;
 use lumia::pkg;
 use lumia::{doc, lsp};
 use lumia_syntax::{format_diagnostic, parse_module, stamp_module};
@@ -258,7 +259,12 @@ fn build_file(
     let (mut typed, loaded) = check_program(file, auto_parallel, trust_foreign_pure)?;
     annotate_assert_messages(&mut typed.module, &loaded);
     let option_tags = option_ctor_tags(&typed.module.adts);
-    let mut core = lower_hir_with_schemes(&typed.module, &typed.fun_types, &typed.fun_schemes);
+    let mut core = lower_hir_with_schemes(
+        &typed.module,
+        &typed.fun_types,
+        &typed.fun_schemes,
+        &typed.type_at,
+    );
     core.check_channel_elem_conflicts()
         .map_err(|e| anyhow::anyhow!("channel: {e}"))?;
     optimize(
@@ -293,7 +299,6 @@ fn build_file(
             emit_ir: emit_llvm,
             option_some_tag: option_tags.0,
             option_none_tag: option_tags.1,
-            parallel: auto_parallel,
             dense_f64_sr,
             link_args: link,
         },
@@ -352,13 +357,6 @@ fn ensure_runtime_built(release: bool) -> Result<()> {
         anyhow::bail!("failed to build lumia_rt");
     }
     Ok(())
-}
-
-fn path_label(path: &Path) -> String {
-    path.file_name()
-        .and_then(|s| s.to_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| path.display().to_string())
 }
 
 fn fmt_file(path: &Path, check: bool) -> Result<()> {

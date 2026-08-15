@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # CogniNucleus strict-PE microbench (cluster rates + projectError + learnGenerative).
 #
-# Compares composed Lumia loops vs `std.cn.{clusterRates,projectError,learnGenerative}`.
+# Compares composed Lumia loops vs `extras.cn.{clusterRates,projectError,learnGenerative}`.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck disable=SC1091

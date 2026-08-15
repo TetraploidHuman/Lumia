@@ -327,6 +327,15 @@ pub(crate) fn is_heap_payload(payload: *mut u8) -> bool {
     heap_gen(payload).is_some()
 }
 
+/// Cheap filter before [`is_heap_payload`]: managed payloads are non-null and
+/// 8-byte aligned (header + payload from `alloc`). FunRef low-bit tags and most
+/// small Int/Bool immediates fail this without taking the heap Mutex.
+#[inline]
+pub(crate) fn may_be_heap_payload_bits(bits: i64) -> bool {
+    let u = bits as usize;
+    u != 0 && u % 8 == 0
+}
+
 pub(crate) fn is_old_header(h: *mut ObjectHeader) -> bool {
     with_heap(|heap| heap.is_old_header(h))
 }

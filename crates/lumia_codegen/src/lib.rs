@@ -74,8 +74,6 @@ pub struct CodegenOptions {
     /// Tags for `Option::{Some, None}` from the source module (defaults 0/1).
     pub option_some_tag: i64,
     pub option_none_tag: i64,
-    /// Auto-parallel pure list maps (DESIGN §11.1).
-    pub parallel: bool,
     /// Emit `lumia_f64_*` for recognized dense float nests (default on).
     pub dense_f64_sr: bool,
     /// Extra linker args, e.g. `["-lm", "-L/opt/lib", "-lfoo"]`.
@@ -123,7 +121,7 @@ fn emit_llvm_module<'ctx>(
             f.name.clone()
         };
         let fv = if let Some(sym) = &f.external {
-            let runtime_abi = sym.starts_with("lumia_");
+            let runtime_abi = matches!(f.foreign_abi, lumia_core::ForeignAbi::Runtime);
             // Prefer the declaration from `declare_runtime` when present so
             // LLVM types match `lumia_rt` (e.g. Bool as i64, List as ptr).
             let fv = if let Some(existing) = cg.llvm.module.get_function(sym) {
@@ -518,7 +516,6 @@ mod tests {
             runtime_lib: PathBuf::from("/tmp/unused_rt"),
             option_some_tag: 0,
             option_none_tag: 1,
-            parallel: true,
             dense_f64_sr: true,
             link_args: vec![],
         }

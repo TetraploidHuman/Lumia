@@ -1,0 +1,31 @@
+/// instance Num + on Float-field product (operator path).
+module main
+
+import std.io.{println}
+
+type Vec2 {
+    val x
+    val y
+}
+
+trait Num {
+    val add = { self, other -> self }
+    val mul = { self, other -> self }
+}
+
+instance Num for Vec2 {
+    val add = { self, other ->
+        Vec2 { x = self.x + other.x, y = self.y + other.y }
+    }
+    val mul = { self, other ->
+        Vec2 { x = self.x * other.x, y = self.y * other.y }
+    }
+}
+
+val main = {
+    val a = Vec2 { x = 1.5, y = 2.0 }
+    val b = Vec2 { x = 0.5, y = 1.0 }
+    val s = a + b
+    println(s.x)
+    println(s.y)
+}

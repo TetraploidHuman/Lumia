@@ -141,6 +141,28 @@ val main = {
 }
 
 #[test]
+fn recursive_nat_to_int() {
+    let src = r#"
+module NatRec
+import std.io.{println}
+type Nat { Z S(n) }
+val toInt = { n ->
+    n match {
+        Z -> 0
+        S(m) -> 1 + toInt(m)
+    }
+}
+val main = {
+    println(toInt(S(S(Z))))
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let typed = infer_module(&hir).expect("recursive Nat ADT");
+    check_effect_boundaries(&typed).unwrap();
+}
+
+#[test]
 fn match_int_arms() {
     let src = r#"
 module MatchDemo

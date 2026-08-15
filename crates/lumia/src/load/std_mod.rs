@@ -1,4 +1,4 @@
-//! `std.*` module loading and `@exports` validation.
+//! `std.*` and optional `extras.*` module loading + `@exports` validation.
 
 use anyhow::{bail, Context, Result};
 use lumia_syntax::{Import, ImportNames};
@@ -10,6 +10,11 @@ pub(super) fn is_std(path: &[String]) -> bool {
     path.first().map(|s| s.as_str() == "std").unwrap_or(false)
 }
 
+/// Optional domain modules under workspace `extras/` (not language std).
+pub(super) fn is_extras(path: &[String]) -> bool {
+    path.first().map(|s| s.as_str() == "extras").unwrap_or(false)
+}
+
 /// Resolve `std.<name>` → relative path under workspace `std/`.
 pub(super) fn std_module(path: &[String]) -> Result<&'static str> {
     let key: Vec<&str> = path.iter().map(|s| s.as_str()).collect();
@@ -19,23 +24,40 @@ pub(super) fn std_module(path: &[String]) -> Result<&'static str> {
         ["std", "option"] => Ok("option.lm"),
         ["std", "result"] => Ok("result.lm"),
         ["std", "linalg"] => Ok("linalg.lm"),
-        ["std", "efe"] => Ok("efe.lm"),
-        ["std", "cn"] => Ok("cn.lm"),
         ["std", "concurrent"] => Ok("concurrent.lm"),
         _ => bail!(
-            "unknown standard module `{}` (known: std.io, std.string, std.option, std.result, std.linalg, std.efe, std.cn, std.concurrent)",
+            "unknown standard module `{}` (known: std.io, std.string, std.option, std.result, std.linalg, std.concurrent)",
             path.join(".")
         ),
     }
 }
 
-/// Export sets are read from `std/<mod>.lm` `@exports` lines — no hardcoded dual list.
-pub(super) fn std_exports(path: &[String]) -> Result<Vec<String>> {
-    let rel = std_module(path)?;
-    let file = workspace_std_dir().join(rel);
+/// Resolve `extras.<name>` → relative path under workspace `extras/`.
+pub(super) fn extras_module(path: &[String]) -> Result<&'static str> {
+    let key: Vec<&str> = path.iter().map(|s| s.as_str()).collect();
+    match key.as_slice() {
+        ["extras", "cn"] => Ok("cn.lm"),
+        ["extras", "efe"] => Ok("efe.lm"),
+        _ => bail!(
+            "unknown extras module `{}` (known: extras.cn, extras.efe)",
+            path.join(".")
+        ),
+    }
+}
+
+/// Export sets are read from module `@exports` lines — no hardcoded dual list.
+pub(super) fn bundled_exports(path: &[String]) -> Result<Vec<String>> {
+    let (dir, rel) = if is_std(path) {
+        (workspace_std_dir(), std_module(path)?)
+    } else if is_extras(path) {
+        (workspace_extras_dir(), extras_module(path)?)
+    } else {
+        bail!("not a bundled module `{}`", path.join("."));
+    };
+    let file = dir.join(rel);
     let src = fs::read_to_string(&file).with_context(|| {
         format!(
-            "read standard module {} (expected at {})",
+            "read bundled module {} (expected at {})",
             path.join("."),
             file.display()
         )
@@ -46,6 +68,10 @@ pub(super) fn std_exports(path: &[String]) -> Result<Vec<String>> {
 pub(super) fn workspace_std_dir() -> PathBuf {
     // crates/lumia -> workspace root
     lumia_abi::workspace_root(env!("CARGO_MANIFEST_DIR")).join("std")
+}
+
+pub(super) fn workspace_extras_dir() -> PathBuf {
+    lumia_abi::workspace_root(env!("CARGO_MANIFEST_DIR")).join("extras")
 }
 
 pub(super) fn parse_std_exports(src: &str) -> Result<Vec<String>> {
@@ -69,11 +95,11 @@ pub(super) fn parse_std_exports(src: &str) -> Result<Vec<String>> {
         }
         return Ok(names);
     }
-    bail!("missing `/// @exports …` line in standard module source")
+    bail!("missing `/// @exports …` line in bundled module source")
 }
 
-pub(super) fn validate_std_import(imp: &Import) -> Result<()> {
-    let exports = std_exports(&imp.path)?;
+pub(super) fn validate_bundled_import(imp: &Import) -> Result<()> {
+    let exports = bundled_exports(&imp.path)?;
     let export_set: HashSet<&str> = exports.iter().map(|s| s.as_str()).collect();
     match &imp.names {
         // Visibility for `*` is filtered to `@exports` in `resolve` (FFI stays

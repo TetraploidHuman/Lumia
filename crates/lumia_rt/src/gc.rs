@@ -451,9 +451,17 @@ fn scan_fields(obj: *mut ObjectHeader) {
                 );
             }
             TYPE_ADT => {
+                // Payload: [tag][field0]… — `_pad` bit `i` ⇒ field `i` is unboxed Float
+                // (sanitized by `lumia_adt_set_float_mask`). Skip those without
+                // membership probes; mistagged masks that bypass sanitize are UB.
                 let words = ((*obj).size as usize) / 8;
                 let base = payload as *const i64;
+                let mask = (*obj)._pad;
                 for i in 1..words {
+                    let field_i = i - 1;
+                    if crate::common::adt_float_slot(mask, field_i) {
+                        continue;
+                    }
                     mark_value(*base.add(i));
                 }
             }

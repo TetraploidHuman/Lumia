@@ -52,9 +52,7 @@ pub extern "C" fn lumia_list_take(list: *mut u8, n: i64) -> *mut u8 {
         *dst = take;
         if !list.is_null() && take > 0 {
             let src = list as *const i64;
-            for i in 0..take as usize {
-                *dst.add(1 + i) = *src.add(1 + i);
-            }
+            ptr::copy_nonoverlapping(src.add(1), dst.add(1), take as usize);
         }
         dest
     }
@@ -271,14 +269,10 @@ pub extern "C" fn lumia_list_concat(a: *mut u8, b: *mut u8) -> *mut u8 {
         }
         let dst = dest as *mut i64;
         *dst = n;
-        let src = a as *const i64;
-        for i in 0..na as usize {
-            *dst.add(1 + i) = *src.add(1 + i);
-        }
-        let src = b as *const i64;
-        for i in 0..nb as usize {
-            *dst.add(1 + na as usize + i) = *src.add(1 + i);
-        }
+        let src_a = a as *const i64;
+        ptr::copy_nonoverlapping(src_a.add(1), dst.add(1), na as usize);
+        let src_b = b as *const i64;
+        ptr::copy_nonoverlapping(src_b.add(1), dst.add(1 + na as usize), nb as usize);
         dest
     }
 }

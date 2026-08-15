@@ -9,7 +9,8 @@ use super::float_abi::{
 };
 use super::heap::block_result_may_heap_with_params;
 use crate::ir::{
-    max_local_in_module, rewrite_block_locals, Block, CoreFun, CoreModule, Local, Op, Value,
+    max_local_in_module, rewrite_block_locals, Block, CoreFun, CoreModule, ForeignAbi, Local, Op,
+    Value,
 };
 use crate::visit::{block_has_io, for_each_nested_block, for_each_op_value_mut};
 use lumia_ty::{Effect, Type};
@@ -351,6 +352,7 @@ fn lift_value(
                     is_main: false,
                     memo: None,
                     external: None,
+                    foreign_abi: ForeignAbi::C,
                     escaping: HashSet::default(),
                     // Local let-poly / nested lambdas: specialize at ground call sites.
                     scheme_poly: true,
@@ -448,6 +450,7 @@ fn lift_value(
                 is_main: false,
                 memo: None,
                 external: None,
+                foreign_abi: ForeignAbi::C,
                 escaping: HashSet::default(),
                 scheme_poly: true,
                 mono_of: None,

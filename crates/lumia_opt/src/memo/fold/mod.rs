@@ -15,6 +15,10 @@ mod map_set;
 
 pub(crate) struct FoldEnv {
     known_int: crate::ir_util::KnownScalars,
+    /// IEEE bits for known Float locals (so ±0 map/set keys can be compacted).
+    known_float: HashMap<u32, u64>,
+    /// Known String literal contents (for setOf/mapOf key compact).
+    known_string: HashMap<u32, String>,
     known_list: HashMap<u32, Vec<Local>>,
     known_adt: HashMap<u32, Vec<Local>>,
     known_adt_tag: HashMap<u32, i64>,
@@ -27,6 +31,8 @@ impl FoldEnv {
     fn new() -> Self {
         Self {
             known_int: crate::ir_util::KnownScalars::new(),
+            known_float: HashMap::default(),
+            known_string: HashMap::default(),
             known_list: HashMap::default(),
             known_adt: HashMap::default(),
             known_adt_tag: HashMap::default(),
@@ -39,6 +45,12 @@ impl FoldEnv {
     fn propagate_alias(&mut self, dst: u32, src: u32) {
         if let Some(n) = self.known_int.get(src) {
             self.known_int.insert(dst, n);
+        }
+        if let Some(&bits) = self.known_float.get(&src) {
+            self.known_float.insert(dst, bits);
+        }
+        if let Some(s) = self.known_string.get(&src).cloned() {
+            self.known_string.insert(dst, s);
         }
         if let Some(elems) = self.known_list.get(&src).cloned() {
             self.known_list.insert(dst, elems);
@@ -81,6 +93,12 @@ pub(crate) fn const_fold_block(block: &mut Block) {
                     Value::Int(_) | Value::Bool(_) | Value::Char(_) => {
                         env.known_int.track(local.0, value);
                     }
+                    Value::Float(f) => {
+                        env.known_float.insert(local.0, f.to_bits());
+                    }
+                    Value::String(s) => {
+                        env.known_string.insert(local.0, s.clone());
+                    }
                     Value::Local(Local(src)) => {
                         // Track constants through aliases; keep Local for CSE sharing.
                         env.propagate_alias(local.0, *src);
@@ -89,9 +107,11 @@ pub(crate) fn const_fold_block(block: &mut Block) {
                         env.known_list.insert(local.0, elems.clone());
                     }
                     Value::AllocMap { flat_pairs, .. } => {
+                        helpers::compact_map_pairs(flat_pairs, &env);
                         env.known_map.insert(local.0, flat_pairs.clone());
                     }
                     Value::AllocSet { elems, .. } => {
+                        helpers::compact_set_elems(elems, &env);
                         env.known_set.insert(local.0, elems.clone());
                     }
                     Value::AllocAdt { tag, fields, .. } => {
@@ -102,7 +122,10 @@ pub(crate) fn const_fold_block(block: &mut Block) {
                         op: UnOp::Neg,
                         operand,
                     } => {
-                        if let Some(n) = env.known_int.get(operand.0) {
+                        if let Some(&bits) = env.known_float.get(&operand.0) {
+                            let neg = (-f64::from_bits(bits)).to_bits();
+                            env.known_float.insert(local.0, neg);
+                        } else if let Some(n) = env.known_int.get(operand.0) {
                             if let Some(r) = n.checked_neg() {
                                 *value = Value::Int(r);
                                 env.known_int.insert(local.0, r);
@@ -145,7 +168,7 @@ pub(crate) fn const_fold_block(block: &mut Block) {
                             }
                         }
                     }
-                    Value::Builtin { name, args } => {
+                    Value::Builtin { name, args, .. } => {
                         let name = *name;
                         let args = args.clone();
                         let local_id = local.0;

@@ -1,6 +1,9 @@
 //! Import path resolution and recursive module loading.
 
-use super::std_mod::{is_std, std_exports, std_module, validate_std_import, workspace_std_dir};
+use super::std_mod::{
+    bundled_exports, extras_module, is_extras, is_std, std_module, validate_bundled_import,
+    workspace_extras_dir, workspace_std_dir,
+};
 use super::{append_items_unique, check_no_duplicate_toplevel, SourceFile};
 use crate::vis::{
     apply_import_aliases, extend_visibility, import_visible_names, item_is_priv, item_name,
@@ -195,10 +198,14 @@ pub(super) fn load_module_file_uncached(
 
     let mut imported_items = Vec::new();
     for imp in &m.imports {
-        if is_std(&imp.path) {
-            validate_std_import(imp)?;
-            let rel = std_module(&imp.path)?;
-            let file = workspace_std_dir().join(rel);
+        if is_std(&imp.path) || is_extras(&imp.path) {
+            validate_bundled_import(imp)?;
+            let (dir, rel) = if is_std(&imp.path) {
+                (workspace_std_dir(), std_module(&imp.path)?)
+            } else {
+                (workspace_extras_dir(), extras_module(&imp.path)?)
+            };
+            let file = dir.join(rel);
             let file = file.canonicalize().unwrap_or(file);
             let dep = load_module_file(
                 &file,
@@ -210,11 +217,12 @@ pub(super) fn load_module_file_uncached(
                 visibility,
                 false,
             )?;
-            // `import std.foo.*` must still honor `@exports` (hide raw FFI like
-            // `lumia_list_f64_zeros`). Selective/single already validated above.
+            // `import std.foo.*` / `extras.foo.*` must still honor `@exports`
+            // (hide raw FFI). Selective/single already validated above.
             let visible = match &imp.names {
                 ImportNames::All => {
-                    let exports: HashSet<String> = std_exports(&imp.path)?.into_iter().collect();
+                    let exports: HashSet<String> =
+                        bundled_exports(&imp.path)?.into_iter().collect();
                     import_visible_names(&dep.items, &imp.names)
                         .into_iter()
                         .filter(|n| exports.contains(n))
@@ -268,7 +276,7 @@ pub(super) fn load_module_file_uncached(
     }
 
     // Std modules are inlined; drop their import nodes from the entry AST.
-    m.imports.retain(|i| !is_std(&i.path));
+    m.imports.retain(|i| !is_std(&i.path) && !is_extras(&i.path));
     // Record this file's declarations (entry or dep). Entry names are visible
     // via same-file origin; deps rely on import_visible_names above.
     let local_visible: HashSet<String> = if is_entry {
@@ -289,7 +297,7 @@ pub(super) fn load_module_file_uncached(
     Ok(m)
 }
 
-pub(super) fn path_label(path: &Path) -> String {
+pub fn path_label(path: &Path) -> String {
     path.file_name()
         .and_then(|s| s.to_str())
         .map(|s| s.to_string())

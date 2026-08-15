@@ -2,6 +2,7 @@
 ///
 /// Thin wrappers over `lumia_rt` (`foreign "C"` + `lumia_*` symbols use the
 /// runtime object ABI — String/List as heap pointers, not C `cstr`).
+/// `substring` indices are Unicode scalars (codepoints), matching `.len()`.
 ///
 /// @exports trim, split, substring, toLower, toUpper, startsWith, endsWith, join
 module string

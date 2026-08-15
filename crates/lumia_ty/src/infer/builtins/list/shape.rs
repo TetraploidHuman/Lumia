@@ -16,20 +16,50 @@ impl Infer {
                 let (lt, le) = self.infer_expr(&args[0])?;
                 let (it, ie) = self.infer_expr(&args[1])?;
                 self.unify_at(span, it, Type::Int)?;
-                let elem = self.expect_list_elem(lt, span, "slice/drop")?;
-                Ok((Type::List(Box::new(elem)), self.union_eff(le, ie)))
+                match self.prune(lt.clone()) {
+                    Type::String => Ok((Type::String, self.union_eff(le, ie))),
+                    Type::List(t) => Ok((Type::List(t), self.union_eff(le, ie))),
+                    Type::Var(v) => {
+                        self.uni.take_vars.insert(v);
+                        Ok((lt, self.union_eff(le, ie)))
+                    }
+                    other => Err(at(
+                        span,
+                        format!("slice/drop: expected List or String, got {other:?}"),
+                    )),
+                }
             }
             Builtin::ListTake => {
                 let (lt, le) = self.infer_expr(&args[0])?;
                 let (it, ie) = self.infer_expr(&args[1])?;
                 self.unify_at(span, it, Type::Int)?;
-                let elem = self.expect_list_elem(lt, span, "take")?;
-                Ok((Type::List(Box::new(elem)), self.union_eff(le, ie)))
+                match self.prune(lt.clone()) {
+                    Type::String => Ok((Type::String, self.union_eff(le, ie))),
+                    Type::List(t) => Ok((Type::List(t), self.union_eff(le, ie))),
+                    Type::Var(v) => {
+                        self.uni.take_vars.insert(v);
+                        Ok((lt, self.union_eff(le, ie)))
+                    }
+                    other => Err(at(
+                        span,
+                        format!("take: expected List or String, got {other:?}"),
+                    )),
+                }
             }
             Builtin::ListReverse => {
                 let (lt, le) = self.infer_expr(&args[0])?;
-                let elem = self.expect_list_elem(lt, span, "reverse")?;
-                Ok((Type::List(Box::new(elem)), le))
+                match self.prune(lt.clone()) {
+                    Type::String => Ok((Type::String, le)),
+                    Type::List(t) => Ok((Type::List(t), le)),
+                    Type::Var(v) => {
+                        self.uni.take_vars.insert(v);
+                        Ok((lt, le))
+                    }
+                    other => Err(at(
+                        span,
+                        format!("reverse: expected List or String, got {other:?}"),
+                    )),
+                }
             }
             Builtin::ListSort => {
                 let (lt, le) = self.infer_expr(&args[0])?;

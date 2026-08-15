@@ -111,19 +111,7 @@ impl<'ctx> Codegen<'ctx> {
             }
         }
         let float_mask = self.adt_float_mask_from_fields(fields);
-        if float_mask != 0 {
-            let setm = self
-                .llvm
-                .module
-                .get_function("lumia_adt_set_float_mask")
-                .context("module function")?;
-            let m = self.llvm.i64_ty.const_int(float_mask, false);
-            crate::error::llvm(self.llvm.builder.build_call(
-                setm,
-                &[payload.into(), m.into()],
-                "adt_fmask_stack",
-            ))?;
-        }
+        self.emit_adt_set_float_mask(payload, float_mask)?;
         Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
             payload,
             self.llvm.i64_ty,
@@ -232,111 +220,6 @@ impl<'ctx> Codegen<'ctx> {
             payload,
             self.llvm.i64_ty,
             "sa_i64",
-        ))?
-        .into())
-    }
-
-    /// Stack Map: ObjectHeader + `[n_pairs][k0][v0]…`.
-    pub(crate) fn emit_stack_map(
-        &mut self,
-        flat_pairs: &[Local],
-        type_id: u64,
-    ) -> Result<BasicValueEnum<'ctx>> {
-        let n_words = flat_pairs.len() as u64;
-        let n_pairs = n_words / 2;
-        let payload_bytes = (1 + n_words) * 8;
-        let words = (3 + 1 + n_words) as u32;
-        let arr_ty = self.llvm.i64_ty.array_type(words);
-        let entry = self
-            .frame
-            .entry_bb
-            .context("emit_stack_map before emit_function")?;
-        let cur = self
-            .llvm
-            .builder
-            .get_insert_block()
-            .context("no insert block")?;
-        match entry.get_first_instruction() {
-            Some(first) => self.llvm.builder.position_before(&first),
-            None => self.llvm.builder.position_at_end(entry),
-        }
-        let storage = crate::error::llvm(self.llvm.builder.build_alloca(arr_ty, "stack_map"))?;
-        self.llvm.builder.position_at_end(cur);
-
-        let hdr0 = self
-            .llvm
-            .i64_ty
-            .const_int(type_id | (payload_bytes << 32), false);
-        let hdr0_slot = unsafe {
-            crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
-                self.llvm.i64_ty,
-                storage,
-                &[self.llvm.i64_ty.const_int(0, false)],
-                "sm_hdr0",
-            ))?
-        };
-        crate::error::llvm(self.llvm.builder.build_store(hdr0_slot, hdr0))?;
-        let hdr1_slot = unsafe {
-            crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
-                self.llvm.i64_ty,
-                storage,
-                &[self.llvm.i64_ty.const_int(1, false)],
-                "sm_hdr1",
-            ))?
-        };
-        crate::error::llvm(
-            self.llvm
-                .builder
-                .build_store(hdr1_slot, self.llvm.i64_ty.const_int(1, false)),
-        )?;
-        let hdr2_slot = unsafe {
-            crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
-                self.llvm.i64_ty,
-                storage,
-                &[self.llvm.i64_ty.const_int(2, false)],
-                "sm_hdr2",
-            ))?
-        };
-        crate::error::llvm(
-            self.llvm
-                .builder
-                .build_store(hdr2_slot, self.llvm.i64_ty.const_int(0, false)),
-        )?;
-
-        let payload = unsafe {
-            crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
-                self.llvm.i64_ty,
-                storage,
-                &[self.llvm.i64_ty.const_int(3, false)],
-                "sm_payload",
-            ))?
-        };
-        crate::error::llvm(
-            self.llvm
-                .builder
-                .build_store(payload, self.llvm.i64_ty.const_int(n_pairs, false)),
-        )?;
-        for (i, e) in flat_pairs.iter().enumerate() {
-            let v = self.coerce_i64(self.local(*e)?)?;
-            let slot = unsafe {
-                crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
-                    self.llvm.i64_ty,
-                    storage,
-                    &[self.llvm.i64_ty.const_int((4 + i) as u64, false)],
-                    "sm_kv",
-                ))?
-            };
-            crate::error::llvm(self.llvm.builder.build_store(slot, v))?;
-            if let Some(ty) = self.frame.local_tys.get(&e.0) {
-                if Self::type_needs_cow_retain(ty) {
-                    self.adt_retain_i64(v)?;
-                }
-            }
-        }
-        Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
-            payload,
-            self.llvm.i64_ty,
-            "sm_i64",
         ))?
         .into())
     }

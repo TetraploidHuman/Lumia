@@ -1,7 +1,11 @@
 //! Core lowering context (name → local bindings).
 
-use crate::ir::Local;
+use lumia_syntax::Span;
+use lumia_ty::{type_at_span, Type};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use std::rc::Rc;
+
+use crate::ir::Local;
 
 pub(super) struct CoreLowerCtx {
     pub(super) next: u32,
@@ -13,6 +17,8 @@ pub(super) struct CoreLowerCtx {
     pub(super) trait_method_names: HashSet<String>,
     /// Top-level functions whose Fun type carries IO (named Call purity).
     pub(super) io_funs: HashSet<String>,
+    /// Zonked expression types from [`lumia_ty::TypedModule::type_at`].
+    pub(super) type_at: Rc<[(Span, Type)]>,
 }
 
 impl CoreLowerCtx {
@@ -21,6 +27,7 @@ impl CoreLowerCtx {
         toplevel_vals: HashSet<String>,
         trait_method_names: HashSet<String>,
         io_funs: HashSet<String>,
+        type_at: Rc<[(Span, Type)]>,
     ) -> Self {
         Self {
             next: 0,
@@ -30,6 +37,7 @@ impl CoreLowerCtx {
             toplevel_vals,
             trait_method_names,
             io_funs,
+            type_at,
         }
     }
 
@@ -56,5 +64,9 @@ impl CoreLowerCtx {
     pub(super) fn restore_bindings(&mut self, saved: (HashMap<String, Local>, HashSet<String>)) {
         self.name_to_local = saved.0;
         self.mutables = saved.1;
+    }
+
+    pub(super) fn type_of_span(&self, span: Span) -> Option<Type> {
+        type_at_span(&self.type_at, span)
     }
 }

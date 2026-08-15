@@ -6,6 +6,7 @@
 
 use crate::ir::{Block, CoreModule, Op, Value};
 use crate::value_ty::{infer_value_ty_ctx, InferValueCtx};
+use lumia_hir::Builtin;
 use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
@@ -73,6 +74,715 @@ pub(crate) fn fixup_closure_float_caps(module: &mut CoreModule) {
     // ClosureCap patches ran (`var f = {…}; f(1.5)` has no float env caps).
     refresh_alloc_closure_fun_rets(module);
     refresh_lifted_lambda_rets(module);
+    upgrade_captured_list_fold_float(module);
+}
+
+/// `{ y -> xs.fold(y, { a, x -> a + x }) }` with captured `List[Float]`: lift left
+/// init/callback as Int; upgrade in place so codegen uses `fadd` (no mono clone
+/// for env+icall arity mismatch).
+fn upgrade_captured_list_fold_float(module: &mut CoreModule) {
+    // `icall` of capturing wrappers never mono-specializes list params — refine
+    // `List(Int)` params from float-list call-site args before cap collection.
+    upgrade_list_params_from_float_call_sites(module);
+
+    let fun_ret_tys: HashMap<String, Type> = module
+        .functions
+        .iter()
+        .map(|f| (f.name.clone(), f.ret_ty.clone()))
+        .collect();
+    let fun_param_tys: HashMap<String, Vec<Type>> = module
+        .functions
+        .iter()
+        .map(|f| (f.name.clone(), f.param_tys.clone()))
+        .collect();
+    let fun_cap_tys =
+        super::float_abi::collect_fun_cap_tys(module, &fun_ret_tys, &fun_param_tys);
+    let empty = HashMap::default();
+    let by_local = &module.channel_elem_by_local;
+    let module_hint = module.channel_elem_hint.as_ref();
+
+    let mut float_cbs: HashSet<String> = HashSet::default();
+    let mut float_outers: HashSet<String> = HashSet::default();
+    for fun in &module.functions {
+        if !fun.name.starts_with("__lam_") {
+            continue;
+        }
+        let caps = fun_cap_tys.get(&fun.name).unwrap_or(&empty);
+        let fold_acc_ret = block_result_is_scalar_fold_acc(&fun.body);
+        collect_list_fold_float_upgrade(
+            &fun.body,
+            caps,
+            &fun_ret_tys,
+            &fun_param_tys,
+            by_local,
+            module_hint,
+            &fun.name,
+            fold_acc_ret,
+            &mut float_cbs,
+            &mut float_outers,
+        );
+    }
+
+    for fun in &mut module.functions {
+        if float_cbs.contains(&fun.name) {
+            for ty in &mut fun.param_tys {
+                if matches!(ty, Type::Int | Type::Var(_)) {
+                    *ty = Type::Float;
+                }
+            }
+            fun.ret_ty = Type::Float;
+        }
+        if float_outers.contains(&fun.name) {
+            // Env (params[0]) stays; user params (fold init) → Float.
+            for i in 1..fun.param_tys.len() {
+                if matches!(fun.param_tys[i], Type::Int | Type::Var(_)) {
+                    fun.param_tys[i] = Type::Float;
+                }
+            }
+            if matches!(fun.ret_ty, Type::Int | Type::Var(_) | Type::List(_)) {
+                fun.ret_ty = Type::Float;
+            }
+        }
+    }
+}
+
+/// When `f(listOf(1.0))` is an `icall` (capturing wrapper), `f`'s list param may
+/// stay `List(Int)`. Lift those params so nested `AllocClosure` caps see `List[Float]`.
+fn upgrade_list_params_from_float_call_sites(module: &mut CoreModule) {
+    let fun_ret_tys: HashMap<String, Type> = module
+        .functions
+        .iter()
+        .map(|f| (f.name.clone(), f.ret_ty.clone()))
+        .collect();
+    let fun_param_tys: HashMap<String, Vec<Type>> = module
+        .functions
+        .iter()
+        .map(|f| (f.name.clone(), f.param_tys.clone()))
+        .collect();
+    let fun_cap_tys =
+        super::float_abi::collect_fun_cap_tys(module, &fun_ret_tys, &fun_param_tys);
+    let empty = HashMap::default();
+
+    let mut need: HashMap<String, HashSet<usize>> = HashMap::default();
+    for fun in &module.functions {
+        let caps = fun_cap_tys.get(&fun.name).unwrap_or(&empty);
+        collect_float_list_call_args(
+            &fun.body,
+            caps,
+            &fun_ret_tys,
+            &fun_param_tys,
+            &mut need,
+        );
+    }
+
+    for fun in &mut module.functions {
+        let Some(idxs) = need.get(&fun.name) else {
+            continue;
+        };
+        for &i in idxs {
+            match fun.param_tys.get_mut(i) {
+                Some(Type::List(e)) if matches!(e.as_ref(), Type::Int | Type::Var(_)) => {
+                    *e = Box::new(Type::Float);
+                }
+                // Capturing wrappers often type list params as bare `Int` (heap ptr).
+                Some(ty @ (Type::Int | Type::Var(_))) => {
+                    *ty = Type::List(Box::new(Type::Float));
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn collect_float_list_call_args(
+    block: &Block,
+    caps: &HashMap<u32, Type>,
+    fun_ret_tys: &HashMap<String, Type>,
+    fun_param_tys: &HashMap<String, Vec<Type>>,
+    need: &mut HashMap<String, HashSet<usize>>,
+) {
+    for op in &block.ops {
+        match op {
+            Op::Let { value, .. } | Op::Effect { value } => {
+                match value {
+                    Value::Call { fun, args } => {
+                        note_float_list_args(
+                            block,
+                            fun,
+                            args,
+                            caps,
+                            fun_ret_tys,
+                            fun_param_tys,
+                            need,
+                        );
+                    }
+                    Value::IndirectCall { callee, args } => {
+                        if let Some(fun) = funref_name_of_local(block, callee.0) {
+                            note_float_list_args(
+                                block,
+                                &fun,
+                                args,
+                                caps,
+                                fun_ret_tys,
+                                fun_param_tys,
+                                need,
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+                crate::for_each_nested_block(value, &mut |b| {
+                    collect_float_list_call_args(b, caps, fun_ret_tys, fun_param_tys, need);
+                });
+            }
+            _ => {}
+        }
+    }
+}
+
+fn note_float_list_args(
+    block: &Block,
+    fun: &str,
+    args: &[crate::Local],
+    caps: &HashMap<u32, Type>,
+    fun_ret_tys: &HashMap<String, Type>,
+    fun_param_tys: &HashMap<String, Vec<Type>>,
+    need: &mut HashMap<String, HashSet<usize>>,
+) {
+    let params = fun_param_tys.get(fun).map(|p| p.as_slice()).unwrap_or(&[]);
+    // Closure env is params[0]; user args align to params[1..] when present.
+    let offset = if fun.starts_with("__lam_") && params.len() == args.len() + 1 {
+        1
+    } else {
+        0
+    };
+    for (i, a) in args.iter().enumerate() {
+        if arg_is_float_list(block, a.0, caps, fun_ret_tys, fun_param_tys) {
+            need.entry(fun.to_string())
+                .or_default()
+                .insert(i + offset);
+        }
+    }
+}
+
+fn arg_is_float_list(
+    block: &Block,
+    id: u32,
+    caps: &HashMap<u32, Type>,
+    fun_ret_tys: &HashMap<String, Type>,
+    fun_param_tys: &HashMap<String, Vec<Type>>,
+) -> bool {
+    fold_list_arg_is_float_list(
+        block,
+        id,
+        caps,
+        fun_ret_tys,
+        fun_param_tys,
+        &HashMap::default(),
+        None,
+    )
+}
+
+fn collect_list_fold_float_upgrade(
+    block: &Block,
+    caps: &HashMap<u32, Type>,
+    fun_ret_tys: &HashMap<String, Type>,
+    fun_param_tys: &HashMap<String, Vec<Type>>,
+    channel_by_local: &HashMap<u32, Type>,
+    channel_module_hint: Option<&Type>,
+    outer_name: &str,
+    fold_acc_ret: bool,
+    float_cbs: &mut HashSet<String>,
+    float_outers: &mut HashSet<String>,
+) {
+    for op in &block.ops {
+        match op {
+            Op::Let { value, .. } | Op::Effect { value } => {
+                match value {
+                    Value::Builtin {
+                        name: Builtin::ListParFold,
+                        args,
+                        ..
+                    } if args.len() >= 3
+                        && (fold_list_arg_is_float_list(
+                            block,
+                            args[0].0,
+                            caps,
+                            fun_ret_tys,
+                            fun_param_tys,
+                            channel_by_local,
+                            channel_module_hint,
+                        ) || (matches!(local_def(block, args[0].0), Some(Value::Name(_)))
+                            && block_has_elems_of_float_list(
+                                block,
+                                caps,
+                                fun_ret_tys,
+                                fun_param_tys,
+                                channel_by_local,
+                                channel_module_hint,
+                            ))) =>
+                    {
+                        float_outers.insert(outer_name.to_string());
+                        if let Some(cb) = funref_name_of_local(block, args[2].0) {
+                            float_cbs.insert(cb);
+                        }
+                    }
+                    // Sequential / fused `filter….fold`: `Elems(list)` + mutable acc.
+                    Value::Builtin {
+                        name: Builtin::Elems,
+                        args,
+                        ..
+                    } if !args.is_empty()
+                        && fold_acc_ret
+                        && fold_list_arg_is_float_list(
+                            block,
+                            args[0].0,
+                            caps,
+                            fun_ret_tys,
+                            fun_param_tys,
+                            channel_by_local,
+                            channel_module_hint,
+                        ) =>
+                    {
+                        float_outers.insert(outer_name.to_string());
+                    }
+                    _ => {}
+                }
+                crate::for_each_nested_block(value, &mut |b| {
+                    collect_list_fold_float_upgrade(
+                        b,
+                        caps,
+                        fun_ret_tys,
+                        fun_param_tys,
+                        channel_by_local,
+                        channel_module_hint,
+                        outer_name,
+                        fold_acc_ret,
+                        float_cbs,
+                        float_outers,
+                    );
+                });
+            }
+            _ => {}
+        }
+    }
+}
+
+fn block_result_is_scalar_fold_acc(block: &Block) -> bool {
+    let Some(r) = block.result else {
+        return false;
+    };
+    match local_def(block, r.0) {
+        Some(Value::Name(n)) => is_scalar_fold_acc_slot(n),
+        _ => false,
+    }
+}
+
+/// Sequential / fused fold slots (`a`, `__fuse_acc_*`). Exclude list builders
+/// (`__map_acc`, `__fmap_acc`, `__tolist_acc`, …) so map→List[Fun] rets stay lists.
+fn is_scalar_fold_acc_slot(name: &str) -> bool {
+    if name.starts_with("__fuse_acc") {
+        return true;
+    }
+    !(name.starts_with("__map_acc")
+        || name.starts_with("__fmap_acc")
+        || name.starts_with("__tolist_acc")
+        || name.starts_with("__filter_acc")
+        || name.starts_with("__i_"))
+}
+
+/// `flatMap` builds a mut list acc then `ListParFold(acc, …)` — the acc is a
+/// `Name` load, but elems come from `Elems(captured List[Float])`.
+fn block_has_elems_of_float_list(
+    block: &Block,
+    caps: &HashMap<u32, Type>,
+    fun_ret_tys: &HashMap<String, Type>,
+    fun_param_tys: &HashMap<String, Vec<Type>>,
+    channel_by_local: &HashMap<u32, Type>,
+    channel_module_hint: Option<&Type>,
+) -> bool {
+    for op in &block.ops {
+        match op {
+            Op::Let { value, .. } | Op::Effect { value } => {
+                if let Value::Builtin {
+                    name: Builtin::Elems,
+                    args,
+                    ..
+                } = value
+                {
+                    if !args.is_empty()
+                        && fold_list_arg_is_float_list(
+                            block,
+                            args[0].0,
+                            caps,
+                            fun_ret_tys,
+                            fun_param_tys,
+                            channel_by_local,
+                            channel_module_hint,
+                        )
+                    {
+                        return true;
+                    }
+                }
+                let mut found = false;
+                crate::for_each_nested_block(value, &mut |b| {
+                    if !found
+                        && block_has_elems_of_float_list(
+                            b,
+                            caps,
+                            fun_ret_tys,
+                            fun_param_tys,
+                            channel_by_local,
+                            channel_module_hint,
+                        )
+                    {
+                        found = true;
+                    }
+                });
+                if found {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+fn fold_list_arg_is_float_list(
+    block: &Block,
+    id: u32,
+    caps: &HashMap<u32, Type>,
+    fun_ret_tys: &HashMap<String, Type>,
+    fun_param_tys: &HashMap<String, Vec<Type>>,
+    channel_by_local: &HashMap<u32, Type>,
+    channel_module_hint: Option<&Type>,
+) -> bool {
+    let mut cur = id;
+    let mut seen = HashSet::default();
+    for _ in 0..24 {
+        if !seen.insert(cur) {
+            return false;
+        }
+        match local_def(block, cur) {
+            Some(Value::Local(crate::Local(src))) => cur = *src,
+            Some(Value::ClosureCap { index, .. }) => {
+                return matches!(
+                    caps.get(index),
+                    Some(Type::List(e) | Type::Set(e)) if matches!(e.as_ref(), Type::Float)
+                );
+            }
+            Some(Value::AllocList { elems, .. }) => {
+                let fl = super::float_abi::compute_float_locals_in_block(block);
+                return !elems.is_empty() && elems.iter().all(|e| fl.contains(&e.0));
+            }
+            Some(Value::Call { fun, args }) => {
+                if matches!(
+                    fun_ret_tys.get(fun),
+                    Some(Type::List(e)) if matches!(e.as_ref(), Type::Float)
+                ) {
+                    return true;
+                }
+                // `id(xs)` / poly wrap: chase the list argument.
+                if let Some(a) = args.first() {
+                    cur = a.0;
+                    continue;
+                }
+                return false;
+            }
+            Some(Value::IndirectCall { callee, args }) => {
+                if let Some(Type::Fun(_, ret, _)) =
+                    infer_local_fun_ty(block, callee.0, caps, fun_ret_tys, fun_param_tys)
+                {
+                    if matches!(ret.as_ref(), Type::List(e) if matches!(e.as_ref(), Type::Float)) {
+                        return true;
+                    }
+                }
+                if let Some(a) = args.first() {
+                    cur = a.0;
+                    continue;
+                }
+                return false;
+            }
+            Some(Value::Builtin {
+                name:
+                    Builtin::ListTake
+                    | Builtin::ListSlice
+                    | Builtin::ListReverse
+                    | Builtin::ListConcat
+                    | Builtin::ListAppend
+                    | Builtin::Elems
+                    | Builtin::MapKeys
+                    | Builtin::ListParMap,
+                args,
+                ..
+            }) if !args.is_empty() => {
+                cur = args[0].0;
+                continue;
+            }
+            Some(Value::Builtin {
+                name: Builtin::MapValues,
+                args,
+                ..
+            }) if !args.is_empty() => {
+                return map_values_are_float_list(
+                    block,
+                    args[0].0,
+                    caps,
+                    fun_ret_tys,
+                    fun_param_tys,
+                    channel_by_local,
+                    channel_module_hint,
+                );
+            }
+            Some(Value::Builtin {
+                name: Builtin::ChannelRecv,
+                args,
+                ..
+            }) if !args.is_empty() => {
+                return matches!(
+                    channel_recv_list_ty(block, cur, channel_by_local, channel_module_hint),
+                    Some(Type::List(e)) if matches!(e.as_ref(), Type::Float)
+                );
+            }
+            Some(Value::Builtin {
+                name: Builtin::AdtField,
+                args,
+                ..
+            }) if !args.is_empty() => {
+                // Unwrap `Some`/`Ok` only helps when the ADT itself is the list
+                // carrier; field payload typing is handled via cap collection.
+                // Fall through: not a list root.
+                return false;
+            }
+            Some(Value::If {
+                then_block,
+                else_block,
+                ..
+            }) => {
+                let then_ok = then_block.result.is_some_and(|r| {
+                    fold_list_arg_is_float_list(
+                        then_block,
+                        r.0,
+                        caps,
+                        fun_ret_tys,
+                        fun_param_tys,
+                        channel_by_local,
+                        channel_module_hint,
+                    ) || fold_list_arg_is_float_list(
+                        block,
+                        r.0,
+                        caps,
+                        fun_ret_tys,
+                        fun_param_tys,
+                        channel_by_local,
+                        channel_module_hint,
+                    )
+                });
+                let else_ok = else_block.result.is_some_and(|r| {
+                    fold_list_arg_is_float_list(
+                        else_block,
+                        r.0,
+                        caps,
+                        fun_ret_tys,
+                        fun_param_tys,
+                        channel_by_local,
+                        channel_module_hint,
+                    ) || fold_list_arg_is_float_list(
+                        block,
+                        r.0,
+                        caps,
+                        fun_ret_tys,
+                        fun_param_tys,
+                        channel_by_local,
+                        channel_module_hint,
+                    )
+                });
+                return then_ok || else_ok;
+            }
+            Some(Value::Name(_)) => {
+                return false;
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
+fn channel_recv_list_ty(
+    block: &Block,
+    id: u32,
+    channel_by_local: &HashMap<u32, Type>,
+    channel_module_hint: Option<&Type>,
+) -> Option<Type> {
+    super::float_abi::local_channel_recv_elem_ty(
+        block,
+        id,
+        channel_by_local,
+        channel_module_hint,
+        None,
+    )
+}
+
+fn map_values_are_float_list(
+    block: &Block,
+    id: u32,
+    caps: &HashMap<u32, Type>,
+    fun_ret_tys: &HashMap<String, Type>,
+    fun_param_tys: &HashMap<String, Vec<Type>>,
+    channel_by_local: &HashMap<u32, Type>,
+    channel_module_hint: Option<&Type>,
+) -> bool {
+    let mut cur = id;
+    let mut seen = HashSet::default();
+    for _ in 0..16 {
+        if !seen.insert(cur) {
+            return false;
+        }
+        match local_def(block, cur) {
+            Some(Value::Local(crate::Local(src))) => cur = *src,
+            Some(Value::ClosureCap { index, .. }) => {
+                return matches!(
+                    caps.get(index),
+                    Some(Type::Map(_, v)) if matches!(v.as_ref(), Type::Float)
+                );
+            }
+            Some(Value::AllocMap { flat_pairs, .. }) => {
+                let fl = super::float_abi::compute_float_locals_in_block(block);
+                // flat: k0,v0,k1,v1,… — values at odd indices.
+                return flat_pairs
+                    .iter()
+                    .enumerate()
+                    .any(|(i, p)| i % 2 == 1 && fl.contains(&p.0));
+            }
+            Some(Value::Call { fun, args }) => {
+                if matches!(
+                    fun_ret_tys.get(fun),
+                    Some(Type::Map(_, v)) if matches!(v.as_ref(), Type::Float)
+                ) {
+                    return true;
+                }
+                if let Some(a) = args.first() {
+                    cur = a.0;
+                    continue;
+                }
+                return false;
+            }
+            Some(Value::IndirectCall { callee, args }) => {
+                if let Some(Type::Fun(_, ret, _)) =
+                    infer_local_fun_ty(block, callee.0, caps, fun_ret_tys, fun_param_tys)
+                {
+                    if matches!(ret.as_ref(), Type::Map(_, v) if matches!(v.as_ref(), Type::Float))
+                    {
+                        return true;
+                    }
+                }
+                if let Some(a) = args.first() {
+                    cur = a.0;
+                    continue;
+                }
+                return false;
+            }
+            Some(Value::Builtin {
+                name: Builtin::ChannelRecv,
+                ..
+            }) => {
+                return matches!(
+                    channel_recv_list_ty(block, cur, channel_by_local, channel_module_hint),
+                    Some(Type::Map(_, v)) if matches!(v.as_ref(), Type::Float)
+                );
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
+fn infer_local_fun_ty(
+    block: &Block,
+    id: u32,
+    caps: &HashMap<u32, Type>,
+    fun_ret_tys: &HashMap<String, Type>,
+    fun_param_tys: &HashMap<String, Vec<Type>>,
+) -> Option<Type> {
+    let mut cur = id;
+    let mut seen = HashSet::default();
+    for _ in 0..16 {
+        if !seen.insert(cur) {
+            return None;
+        }
+        match local_def(block, cur)? {
+            Value::Local(crate::Local(src)) => cur = *src,
+            Value::ClosureCap { index, .. } => return caps.get(index).cloned(),
+            Value::FunRef(n) | Value::AllocClosure { fun: n, .. } => {
+                let ret = fun_ret_tys.get(n)?.clone();
+                let mut params = fun_param_tys.get(n).cloned().unwrap_or_default();
+                if n.starts_with("__lam_") && params.len() > 1 {
+                    params.remove(0);
+                }
+                return Some(Type::Fun(params, Box::new(ret), lumia_ty::Effect::pure()));
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn local_def<'a>(block: &'a Block, id: u32) -> Option<&'a Value> {
+    for op in &block.ops {
+        match op {
+            Op::Let { local, value, .. } => {
+                if local.0 == id {
+                    return Some(value);
+                }
+                if let Some(v) = local_def_in_value(value, id) {
+                    return Some(v);
+                }
+            }
+            Op::Effect { value } => {
+                if let Some(v) = local_def_in_value(value, id) {
+                    return Some(v);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn local_def_in_value<'a>(value: &'a Value, id: u32) -> Option<&'a Value> {
+    match value {
+        Value::If {
+            then_block,
+            else_block,
+            ..
+        } => local_def(then_block, id).or_else(|| local_def(else_block, id)),
+        Value::Loop {
+            header,
+            body,
+            latch,
+        } => local_def(header, id)
+            .or_else(|| local_def(body, id))
+            .or_else(|| local_def(latch, id)),
+        Value::Lambda { body, .. } => local_def(body, id),
+        _ => None,
+    }
+}
+
+fn funref_name_of_local(block: &Block, id: u32) -> Option<String> {
+    let mut cur = id;
+    let mut seen = HashSet::default();
+    for _ in 0..16 {
+        if !seen.insert(cur) {
+            return None;
+        }
+        match local_def(block, cur)? {
+            Value::Local(crate::Local(src)) => cur = *src,
+            Value::FunRef(n) | Value::AllocClosure { fun: n, .. } => return Some(n.clone()),
+            _ => return None,
+        }
+    }
+    None
 }
 
 /// Upgrade `__lam_*` return types from callee tables / float locals after mono.

@@ -340,17 +340,7 @@ impl<'ctx> Codegen<'ctx> {
             };
             crate::error::llvm(self.llvm.builder.build_store(slot, v))?;
             if matches!(field_ty, Type::Float) {
-                let set_mask = self
-                    .llvm
-                    .module
-                    .get_function("lumia_adt_set_float_mask")
-                    .context("lumia_adt_set_float_mask")?;
-                let m = self.llvm.i64_ty.const_int(1, false);
-                crate::error::llvm(self.llvm.builder.build_call(
-                    set_mask,
-                    &[ptr.into(), m.into()],
-                    "opt_fmask",
-                ))?;
+                self.emit_adt_set_float_mask(ptr, 1)?;
             }
         }
         crate::error::llvm(

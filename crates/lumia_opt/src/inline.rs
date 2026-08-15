@@ -20,11 +20,8 @@ const INLINE_MAX_EXPAND_DEPTH: usize = 8;
 
 pub struct InlinePass;
 
-impl crate::Pass for InlinePass {
-    fn name(&self) -> &str {
-        "inline"
-    }
-    fn run(&self, module: &mut CoreModule) {
+impl InlinePass {
+    pub(crate) fn run(self, module: &mut CoreModule) {
         inline_module(module);
     }
 }
@@ -387,6 +384,7 @@ mod tests {
             is_main: false,
             memo: None,
             external: None,
+            foreign_abi: lumia_core::ForeignAbi::C,
             escaping: HashSet::default(),
             scheme_poly: false,
             mono_of: None,
@@ -433,6 +431,7 @@ mod tests {
                     is_main: true,
                     memo: None,
                     external: None,
+                    foreign_abi: lumia_core::ForeignAbi::C,
                     escaping: HashSet::default(),
                     scheme_poly: false,
                     mono_of: None,
@@ -514,6 +513,7 @@ mod tests {
             is_main: false,
             memo: None,
             external: None,
+            foreign_abi: lumia_core::ForeignAbi::C,
             escaping: HashSet::default(),
             scheme_poly: false,
             mono_of: None,
@@ -563,6 +563,7 @@ mod tests {
                     is_main: true,
                     memo: None,
                     external: None,
+                    foreign_abi: lumia_core::ForeignAbi::C,
                     escaping: HashSet::default(),
                     scheme_poly: false,
                     mono_of: None,
@@ -622,6 +623,7 @@ mod tests {
             is_main: false,
             memo: None,
             external: None,
+            foreign_abi: lumia_core::ForeignAbi::C,
             escaping: HashSet::default(),
             scheme_poly: false,
             mono_of: None,
@@ -654,6 +656,7 @@ mod tests {
             is_main: false,
             memo: None,
             external: None,
+            foreign_abi: lumia_core::ForeignAbi::C,
             escaping: HashSet::default(),
             scheme_poly: false,
             mono_of: None,
@@ -680,6 +683,7 @@ mod tests {
             is_main: false,
             memo: None,
             external: None,
+            foreign_abi: lumia_core::ForeignAbi::C,
             escaping: HashSet::default(),
             scheme_poly: false,
             mono_of: None,
@@ -718,6 +722,7 @@ mod tests {
                     is_main: true,
                     memo: None,
                     external: None,
+                    foreign_abi: lumia_core::ForeignAbi::C,
                     escaping: HashSet::default(),
                     scheme_poly: false,
                     mono_of: None,

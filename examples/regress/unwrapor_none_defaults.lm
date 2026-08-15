@@ -1,0 +1,8 @@
+/// unwrapOr(None/Err, Float|Bool default) ABI.
+module main
+import std.option.{unwrapOr}
+
+val main = {
+    println(unwrapOr(None, 1.5))
+    println(unwrapOr(None, true))
+}

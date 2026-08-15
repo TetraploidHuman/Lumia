@@ -191,6 +191,7 @@ pub extern "C" fn lumia_map_remove(map: *mut u8, key: i64) -> *mut u8 {
 }
 
 /// If `map` is a linear table larger than [`MAP_SMALL_MAX`], promote to HashOrdered.
+/// Also compact duplicate keys in-place via [`key_eq`] (Float ±0 and Int/String/…).
 #[no_mangle]
 pub extern "C" fn lumia_map_finish(map: *mut u8) -> *mut u8 {
     // Literal build may call finish before the linear table is rooted; inhibit
@@ -203,6 +204,8 @@ pub extern "C" fn lumia_map_finish(map: *mut u8) -> *mut u8 {
         if map_is_overlay(map) || map_is_hash(map) || map_is_assoc(map) {
             return map;
         }
+        let float_keys = map_float_keys(map);
+        compact_linear_map_keys(map, float_keys);
         let n = *(map as *const i64);
         if n > MAP_SMALL_MAX {
             map_from_linear_to_hash(map, None)
@@ -210,6 +213,35 @@ pub extern "C" fn lumia_map_finish(map: *mut u8) -> *mut u8 {
             map
         }
     }
+}
+
+/// In-place dedupe of a linear map (last value wins).
+unsafe fn compact_linear_map_keys(map: *mut u8, float_keys: bool) {
+    let n = *(map as *const i64);
+    if n <= 1 {
+        return;
+    }
+    let base = map as *mut i64;
+    let mut w = 0i64;
+    for i in 0..n as usize {
+        let k = *base.add(1 + i * 2);
+        let v = *base.add(2 + i * 2);
+        let mut replaced = false;
+        for j in 0..w as usize {
+            let pk = *base.add(1 + j * 2);
+            if key_eq(pk, k, float_keys) {
+                *base.add(2 + j * 2) = v;
+                replaced = true;
+                break;
+            }
+        }
+        if !replaced {
+            *base.add(1 + w as usize * 2) = k;
+            *base.add(2 + w as usize * 2) = v;
+            w += 1;
+        }
+    }
+    *base = w;
 }
 
 /// Keys in insertion order as HeapList.

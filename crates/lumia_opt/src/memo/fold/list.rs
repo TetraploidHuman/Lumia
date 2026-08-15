@@ -36,6 +36,12 @@ pub(super) fn fold(
                 env.known_int.insert(local, n);
                 return true;
             }
+            if let Some(s) = env.known_string.get(&xs.0) {
+                let n = s.chars().count() as i64;
+                *value = Value::Int(n);
+                env.known_int.insert(local, n);
+                return true;
+            }
             true
         }
         (Builtin::ListGet, [xs, idx]) => {
@@ -106,6 +112,14 @@ pub(super) fn fold(
                     return true;
                 }
             }
+            if let (Some(s), Some(k)) = (env.known_string.get(&xs.0), env.known_int.get(n.0)) {
+                if k >= 0 {
+                    let taken: String = s.chars().take(k as usize).collect();
+                    *value = Value::String(taken.clone());
+                    env.known_string.insert(local, taken);
+                    return true;
+                }
+            }
             let _ = iota::track_iota_take(env, local, *xs, *n);
             true
         }
@@ -119,6 +133,14 @@ pub(super) fn fold(
                     return true;
                 }
             }
+            if let (Some(s), Some(k)) = (env.known_string.get(&xs.0), env.known_int.get(n.0)) {
+                if k >= 0 {
+                    let rest: String = s.chars().skip(k as usize).collect();
+                    *value = Value::String(rest.clone());
+                    env.known_string.insert(local, rest);
+                    return true;
+                }
+            }
             let _ = iota::track_iota_slice(env, local, *xs, *n);
             true
         }
@@ -127,6 +149,12 @@ pub(super) fn fold(
                 let mut rev = elems.clone();
                 rev.reverse();
                 rewrite_lit_list(env, local, rev, value);
+                return true;
+            }
+            if let Some(s) = env.known_string.get(&xs.0) {
+                let rev: String = s.chars().rev().collect();
+                *value = Value::String(rev.clone());
+                env.known_string.insert(local, rev);
             }
             true
         }

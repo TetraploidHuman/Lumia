@@ -1,0 +1,6 @@
+module main
+val main = {
+    val xs = listOf(1.0, 2.0)
+    val fs = xs.flatMap({ x -> listOf({ y -> x + y }) })
+    println(fs.get(0)(1.0))
+}

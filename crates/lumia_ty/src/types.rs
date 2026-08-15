@@ -213,6 +213,18 @@ pub struct Scheme {
     pub ord_vars: Vec<u32>,
     /// Quantified vars used in `==`/`!=` (must not become Fun).
     pub eq_vars: Vec<u32>,
+    /// Quantified vars used with `.len()` (List/Set/Map/String).
+    pub len_vars: Vec<u32>,
+    /// Quantified vars used with open `.concat` (List or String).
+    pub concat_vars: Vec<u32>,
+    /// Quantified vars used with `.contains` (Map/Set/String).
+    pub contains_vars: Vec<u32>,
+    /// Quantified vars used with open `.set` (List or Map).
+    pub set_vars: Vec<u32>,
+    /// Quantified vars used with `Elems` / `.toList` (List/Set/Map).
+    pub elems_vars: Vec<u32>,
+    /// Quantified vars used with open `.take` / `.drop` / `.reverse` (List or String).
+    pub take_vars: Vec<u32>,
     /// Quantified vars that require `instance Trait` (deferred UFCS on poly params).
     /// Entries: (var, trait_name, method_name).
     pub trait_preds: Vec<(u32, String, String)>,
@@ -227,6 +239,12 @@ impl Scheme {
             num_vars: Vec::new(),
             ord_vars: Vec::new(),
             eq_vars: Vec::new(),
+            len_vars: Vec::new(),
+            concat_vars: Vec::new(),
+            contains_vars: Vec::new(),
+            set_vars: Vec::new(),
+            elems_vars: Vec::new(),
+            take_vars: Vec::new(),
             trait_preds: Vec::new(),
         }
     }
@@ -237,6 +255,12 @@ impl Scheme {
             || !self.num_vars.is_empty()
             || !self.ord_vars.is_empty()
             || !self.eq_vars.is_empty()
+            || !self.len_vars.is_empty()
+            || !self.concat_vars.is_empty()
+            || !self.contains_vars.is_empty()
+            || !self.set_vars.is_empty()
+            || !self.elems_vars.is_empty()
+            || !self.take_vars.is_empty()
             || !self.trait_preds.is_empty()
     }
 }

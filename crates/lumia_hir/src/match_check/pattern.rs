@@ -176,6 +176,29 @@ fn pattern_cond_list(
         span,
     };
     let min = elems.len() as i64;
+    // Open `ListGet` defaults to Map (UFCS `getOr`); list patterns must pin the
+    // scrutinee to `List` first. Prefer `concat` with `listOf()` over `take`
+    // (open take uses `take_vars` and no longer forces List).
+    let empty = Expr::Call {
+        callee: Box::new(Expr::Var("listOf".into(), span)),
+        args: vec![],
+        span,
+    };
+    let force_list = Expr::BuiltinCall {
+        name: Builtin::ListConcat,
+        args: vec![scrut.clone(), empty],
+        span,
+    };
+    let force_ok = Expr::Binary {
+        op: BinOp::Ge,
+        left: Box::new(Expr::BuiltinCall {
+            name: Builtin::ListLen,
+            args: vec![force_list],
+            span,
+        }),
+        right: Box::new(Expr::Int(0, span)),
+        span,
+    };
     let mut cond = if rest.is_some() {
         Expr::Binary {
             op: BinOp::Ge,
@@ -191,15 +214,14 @@ fn pattern_cond_list(
             span,
         }
     };
+    cond = Expr::Binary {
+        op: BinOp::And,
+        left: Box::new(force_ok),
+        right: Box::new(cond),
+        span,
+    };
     let mut binds = vec![];
-    for (i, ep) in elems.iter().enumerate() {
-        let get = Expr::BuiltinCall {
-            name: Builtin::ListGet,
-            args: vec![scrut.clone(), Expr::Int(i as i64, span)],
-            span,
-        };
-        bind_or_nest(ctx, ep, get, span, &mut cond, &mut binds);
-    }
+    // Rest slice before element gets so typing sees List before open Get.
     if let Some(rname) = rest {
         let slice = Expr::BuiltinCall {
             name: Builtin::ListSlice,
@@ -207,6 +229,14 @@ fn pattern_cond_list(
             span,
         };
         binds.push((rname.clone(), slice));
+    }
+    for (i, ep) in elems.iter().enumerate() {
+        let get = Expr::BuiltinCall {
+            name: Builtin::ListGet,
+            args: vec![scrut.clone(), Expr::Int(i as i64, span)],
+            span,
+        };
+        bind_or_nest(ctx, ep, get, span, &mut cond, &mut binds);
     }
     (cond, binds)
 }

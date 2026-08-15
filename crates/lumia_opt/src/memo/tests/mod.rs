@@ -1,5 +1,4 @@
 use super::*;
-use crate::Pass;
 use lumia_core::{Block, CoreFun, CoreModule, Local, MemoTf, Op, Value};
 use lumia_hir::Builtin;
 use lumia_syntax::{BinOp, UnOp};
@@ -19,6 +18,7 @@ fn bare_fun(name: &str, params: Vec<Local>, body: Block) -> CoreFun {
         is_main: false,
         memo: None,
         external: None,
+        foreign_abi: lumia_core::ForeignAbi::C,
         escaping: HashSet::default(),
         scheme_poly: false,
         mono_of: None,

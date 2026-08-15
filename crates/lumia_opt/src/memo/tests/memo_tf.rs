@@ -132,6 +132,7 @@ fn memo_tf_marks_slots() {
         is_main: true,
         memo: None,
         external: None,
+        foreign_abi: lumia_core::ForeignAbi::C,
         escaping: HashSet::default(),
         scheme_poly: false,
         mono_of: None,

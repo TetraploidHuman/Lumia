@@ -1,0 +1,8 @@
+/// resultMap identity Fun on Int then unwrapOr.
+module main
+import std.result.{resultMap, unwrapOr}
+
+val main = {
+    val r = resultMap(Ok(7), { x -> x })
+    println(unwrapOr(r, -1))
+}

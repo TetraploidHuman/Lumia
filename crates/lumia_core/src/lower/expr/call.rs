@@ -4,6 +4,7 @@ use super::super::ctx::CoreLowerCtx;
 use super::lower_expr;
 use crate::ir::{AdtRepr, ListRepr, Local, MapRepr, Op, SetRepr, Value};
 use lumia_hir::{Builtin, Expr as HirExpr};
+use lumia_ty::{expr_span, Type};
 
 pub(super) fn lower_call_like(
     ctx: &mut CoreLowerCtx,
@@ -133,11 +134,13 @@ pub(super) fn lower_call_like(
             }
             let is_io = name.is_io();
             let dest = ctx.fresh();
+            let result_ty = stamp_builtin_result_ty(ctx, *name, expr);
             ops.push(Op::Let {
                 local: dest,
                 value: Value::Builtin {
                     name: *name,
                     args: arg_locals,
+                    result_ty,
                 },
                 pure_region: !is_io,
             });
@@ -169,5 +172,141 @@ pub(super) fn lower_call_like(
             Some(dest)
         }
         _ => unreachable!("lower_call_like: unexpected expr"),
+    }
+}
+
+/// Stamp ground builtin results from HIR typecheck (`type_at`).
+fn stamp_builtin_result_ty(
+    ctx: &CoreLowerCtx,
+    name: Builtin,
+    expr: &HirExpr,
+) -> Option<Type> {
+    match name {
+        // Channel[T] from send/recv typing — avoid erased Int elem.
+        Builtin::ChannelNew => {
+            let ty = ctx.type_of_span(expr_span(expr))?;
+            match ty {
+                Type::Channel(ref e) if type_is_ground(e) => Some(ty),
+                _ => None,
+            }
+        }
+        // Match `Ok`/`Err`/`Some`: derive from receiver + ctor hint (not the
+        // AdtField expr's type_at — those spans collide with arm bodies).
+        Builtin::AdtField => stamp_adt_field_result_ty(ctx, expr),
+        _ => None,
+    }
+}
+
+fn stamp_adt_field_result_ty(ctx: &CoreLowerCtx, expr: &HirExpr) -> Option<Type> {
+    let HirExpr::BuiltinCall {
+        name: Builtin::AdtField,
+        args,
+        ..
+    } = expr
+    else {
+        return None;
+    };
+    if args.len() != 3 {
+        return None;
+    }
+    let HirExpr::Int(idx, _) = &args[1] else {
+        return None;
+    };
+    if *idx < 0 {
+        return None;
+    }
+    let idx = *idx as usize;
+    let HirExpr::String(ctor, _) = &args[2] else {
+        return None;
+    };
+    let recv = ctx.type_of_span(expr_span(&args[0]))?;
+    let Type::Adt { name, params } = &recv else {
+        return None;
+    };
+    let ty = if name == "Result" && (ctor == "Ok" || ctor == "Err") {
+        if idx != 0 {
+            return None;
+        }
+        let pi = if ctor == "Ok" { 0 } else { 1 };
+        params.get(pi).cloned()?
+    } else if name == "Option" && ctor == "Some" {
+        if idx != 0 {
+            return None;
+        }
+        params.first().cloned()?
+    } else if name.as_str() == ctor.as_str() {
+        params.get(idx).cloned()?
+    } else {
+        params.get(idx).cloned()?
+    };
+    match &ty {
+        Type::Unit | Type::Var(_) => None,
+        t if type_is_ground(t) => Some(ty),
+        _ => None,
+    }
+}
+
+fn type_is_ground(t: &Type) -> bool {
+    match t {
+        Type::Var(_) => false,
+        Type::Fun(ps, r, _) => ps.iter().all(type_is_ground) && type_is_ground(r),
+        Type::List(e) | Type::Set(e) | Type::Task(e) | Type::Channel(e) => type_is_ground(e),
+        Type::Map(k, v) => type_is_ground(k) && type_is_ground(v),
+        Type::Tuple(ts) | Type::TuplePrefix(ts) | Type::Adt { params: ts, .. } => {
+            ts.iter().all(type_is_ground)
+        }
+        _ => true,
+    }
+}
+
+#[cfg(test)]
+mod stamp_tests {
+    use crate::compile_source_to_core;
+    use crate::ir::{Op, Value};
+    use crate::visit::for_each_block_dfs;
+    use lumia_hir::Builtin;
+    use lumia_ty::Type;
+
+    #[test]
+    fn adt_field_err_string_stamped_when_ok_is_float() {
+        let core = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+val main = {
+  val r = if false { Ok(1.5) } else { Err("e") }
+  r match {
+    Ok(x) -> println(x)
+    Err(s) -> println(s)
+  }
+}
+"#,
+        )
+        .expect("core");
+        let mut found_string = false;
+        let mut found_float = false;
+        for fun in &core.functions {
+            for_each_block_dfs(&fun.body, &mut |b| {
+                for op in &b.ops {
+                    if let Op::Let {
+                        value:
+                            Value::Builtin {
+                                name: Builtin::AdtField,
+                                result_ty: Some(ty),
+                                ..
+                            },
+                        ..
+                    } = op
+                    {
+                        found_string |= matches!(ty, Type::String);
+                        found_float |= matches!(ty, Type::Float);
+                    }
+                }
+            });
+        }
+        assert!(
+            found_string && found_float,
+            "expected Ok→Float and Err→String AdtField stamps"
+        );
     }
 }

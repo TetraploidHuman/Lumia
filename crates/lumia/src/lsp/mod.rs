@@ -87,7 +87,7 @@ fn handle_message(msg: Value) -> Result<Option<Value>> {
                         "range": false
                     }
                 },
-                "serverInfo": { "name": "lumia-lsp", "version": "0.3.1" }
+                "serverInfo": { "name": "lumia-lsp", "version": env!("CARGO_PKG_VERSION") }
             }
         }))),
         Some("initialized") | Some("shutdown") => {

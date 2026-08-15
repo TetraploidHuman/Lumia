@@ -17,9 +17,10 @@ impl Infer {
                 let t = self.prune(t);
                 match t {
                     Type::List(_) | Type::Set(_) | Type::Map(_, _) | Type::String => {}
-                    Type::Var(_) => {
-                        let elem = self.fresh();
-                        self.unify_at(span, t, Type::List(Box::new(elem)))?;
+                    Type::Var(v) => {
+                        // Do not default open receivers to List — String/Set/Map
+                        // also support `.len()` (see Scheme::len_vars).
+                        self.uni.len_vars.insert(v);
                     }
                     other => {
                         return Err(at(
@@ -33,7 +34,7 @@ impl Infer {
             Builtin::ListGet => {
                 let (lt, le) = self.infer_expr(&args[0])?;
                 let (it, ie) = self.infer_expr(&args[1])?;
-                let lt_p = self.prune(lt);
+                let lt_p = self.prune(lt.clone());
                 let elem = match lt_p {
                     Type::List(t) => {
                         self.unify_at(span, it, Type::Int)?;
@@ -50,11 +51,22 @@ impl Infer {
                             params: vec![*v],
                         }
                     }
-                    Type::Var(v) => {
-                        self.unify_at(span, it, Type::Int)?;
-                        let elem = self.fresh();
-                        self.unify_at(span, Type::Var(v), Type::List(Box::new(elem.clone())))?;
-                        elem
+                    Type::Var(_) => {
+                        // Open `.get` is Map-shaped (`Option` payload) so
+                        // `getOr(m,k,d) = m.get(k) alt d` works; concrete List
+                        // receivers still hit the List arm above.
+                        let k = self.fresh();
+                        let v = self.fresh();
+                        self.unify_at(
+                            span,
+                            lt,
+                            Type::Map(Box::new(k.clone()), Box::new(v.clone())),
+                        )?;
+                        self.unify_at(span, it, k)?;
+                        Type::Adt {
+                            name: "Option".into(),
+                            params: vec![v],
+                        }
                     }
                     other => {
                         return Err(at(
@@ -71,9 +83,11 @@ impl Infer {
                     Type::List(e) => Type::List(e),
                     Type::Set(e) => Type::List(e),
                     Type::Map(k, _) => Type::List(k),
-                    Type::Var(_) => {
+                    Type::Var(v) => {
+                        // Do not default open receivers to List — Set/Map
+                        // `.toList()` / for-in use Elems too.
+                        self.uni.elems_vars.insert(v);
                         let e = self.fresh();
-                        self.unify_at(span, ct, Type::List(Box::new(e.clone())))?;
                         Type::List(Box::new(e))
                     }
                     other => {

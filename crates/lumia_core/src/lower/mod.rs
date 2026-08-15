@@ -3,7 +3,7 @@
 mod ctx;
 mod expr;
 
-use crate::ir::{CoreFun, CoreModule};
+use crate::ir::{CoreFun, CoreModule, ForeignAbi};
 use crate::lambda_lift::{fixup_closure_float_caps, lift_lambdas, refine_channel_elem_hint};
 use crate::mono::{
     directize_funref_calls, ensure_trait_method_stubs, resolve_trait_method_calls,
@@ -16,15 +16,20 @@ use lumia_ty::{Effect, Type};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 pub fn lower_hir(module: &HirModule, fun_types: &HashMap<String, Type>) -> CoreModule {
-    lower_hir_with_schemes(module, fun_types, &HashMap::default())
+    lower_hir_with_schemes(module, fun_types, &HashMap::default(), &[])
 }
 
 /// Lower HIR using inferred types and HM schemes (scheme-driven monomorphization).
+///
+/// `type_at` is the zonked expression-type table from typecheck; used to stamp
+/// ground builtin results (e.g. `Channel[T]`) onto Core values.
 pub fn lower_hir_with_schemes(
     module: &HirModule,
     fun_types: &HashMap<String, Type>,
     fun_schemes: &HashMap<String, lumia_ty::Scheme>,
+    type_at: &[(lumia_syntax::Span, Type)],
 ) -> CoreModule {
+    let type_at: std::rc::Rc<[(lumia_syntax::Span, Type)]> = std::rc::Rc::from(type_at);
     let toplevel_funs: HashSet<String> = module
         .items
         .iter()
@@ -62,6 +67,7 @@ pub fn lower_hir_with_schemes(
                     toplevel_vals.clone(),
                     trait_method_names.clone(),
                     io_funs.clone(),
+                    type_at.clone(),
                 );
                 let mut params = vec![];
                 for p in &f.params {
@@ -103,6 +109,11 @@ pub fn lower_hir_with_schemes(
                     is_main: f.is_main,
                     memo: None,
                     external: f.external.clone(),
+                    foreign_abi: f
+                        .external
+                        .as_deref()
+                        .map(ForeignAbi::from_symbol)
+                        .unwrap_or_default(),
                     escaping: HashSet::default(),
                     scheme_poly,
                     mono_of: None,
@@ -122,6 +133,7 @@ pub fn lower_hir_with_schemes(
                     toplevel_vals.clone(),
                     trait_method_names.clone(),
                     io_funs.clone(),
+                    type_at.clone(),
                 );
                 let (body, _) = lower_expr_block(&mut ctx, body);
                 // Getters are nullary; poly lives on the value's Fun scheme / lifted body.
@@ -140,6 +152,7 @@ pub fn lower_hir_with_schemes(
                     is_main: false,
                     memo: None,
                     external: None,
+                    foreign_abi: ForeignAbi::C,
                     escaping: HashSet::default(),
                     scheme_poly,
                     mono_of: None,
@@ -173,8 +186,9 @@ pub fn lower_hir_with_schemes(
         .adts
         .iter()
         .map(|a| {
-            let max = a.variants.iter().map(|v| v.arity).max().unwrap_or(0);
-            (a.name.clone(), max)
+            // Match ty: parametric slots only (recursive spines are `Self`).
+            let total = sum_parametric_arity(a);
+            (a.name.clone(), total)
         })
         .collect();
     let mut core = CoreModule {
@@ -191,14 +205,20 @@ pub fn lower_hir_with_schemes(
     lift_lambdas(&mut core);
     refine_channel_elem_hint(&mut core);
     directize_funref_calls(&mut core);
-    // Refresh lifted `__lam_*` heap/Float/Bool/String rets before mono so
-    // `spawn { Some(1.5) }.join()` is `Option[Float]` at optionMap call sites
-    // (otherwise mono keeps the generic body and println sees IEEE-as-Int).
-    fixup_closure_float_caps(&mut core);
-    specialize_mono_calls(&mut core);
-    // Again after mono: patch `closure_cap_f` once `$Float` clones exist.
-    fixup_closure_float_caps(&mut core);
+    // Num `a + b` is still Binary until here — rewrite to `__Num_T_add` Call
+    // before mono so Float field products get `$…Float…` clones (codegen
+    // override alone hits the unspecialized Int-body instance).
     resolve_trait_method_calls(&mut core);
+    // Fixpoint: fixup lifts Float/Bool/String/Fun ABI on `__lam_*`; mono clones
+    // HOF consumers (`unwrapOr` after `optionMap`, spawn join, …). One more
+    // fixup after the last mono pass patches caps once `$Float` clones exist.
+    for _ in 0..6 {
+        fixup_closure_float_caps(&mut core);
+        if !specialize_mono_calls(&mut core) {
+            break;
+        }
+    }
+    fixup_closure_float_caps(&mut core);
     ensure_trait_method_stubs(&mut core);
     core
 }
@@ -214,4 +234,30 @@ fn type_is_open(t: &Type) -> bool {
         }
         _ => false,
     }
+}
+
+/// Count type parameters for a sum ADT: payload fields that are not recursive
+/// spines (`Nat.S`, `UList.Cons` tail). Must stay aligned with
+/// `lumia_ty::infer::module` classification.
+fn sum_parametric_arity(adt: &lumia_hir::AdtDef) -> usize {
+    if adt.name == "Option" || adt.name == "Result" {
+        return adt.variants.iter().map(|v| v.arity).sum();
+    }
+    let arities: Vec<usize> = adt.variants.iter().map(|v| v.arity).collect();
+    let has_nullary = arities.iter().any(|&a| a == 0);
+    let only_nullary_unary = arities.iter().all(|&a| a <= 1);
+    adt.variants
+        .iter()
+        .map(|v| {
+            if v.arity == 0 {
+                0
+            } else if only_nullary_unary && has_nullary {
+                0 // unary recursive spine
+            } else if has_nullary && v.arity >= 2 {
+                v.arity.saturating_sub(1) // last field recursive
+            } else {
+                v.arity
+            }
+        })
+        .sum()
 }

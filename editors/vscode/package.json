@@ -12,10 +12,7 @@
   ],
   "activationEvents": [
     "onLanguage:lumia",
-    "workspaceContains:Cargo.toml",
     "workspaceContains:Lumia.toml",
-    "workspaceContains:std/*.lm",
-    "workspaceContains:examples/*.lm",
     "onCommand:lumia.run",
     "onCommand:lumia.buildRun",
     "onCommand:lumia.checkFile",

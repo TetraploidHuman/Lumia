@@ -1,8 +1,8 @@
 //! Structural equality for scalars and heap objects.
 
 use crate::common::{
-    float_key_eq, header_from_payload, is_heap_payload, list_elem_is_float, tid_base, tid_f_key,
-    tid_f_val, TYPE_ADT, TYPE_CHAR, TYPE_MAP, TYPE_SET, TYPE_STRING,
+    float_key_eq, header_from_payload, is_heap_payload, list_elem_is_float, may_be_heap_payload_bits,
+    tid_base, tid_f_key, tid_f_val, TYPE_ADT, TYPE_CHAR, TYPE_MAP, TYPE_SET, TYPE_STRING,
 };
 use crate::list::{list_get_of, list_len_of};
 use crate::map_set::{map_eq, set_eq};
@@ -14,6 +14,10 @@ pub extern "C" fn lumia_eq(a: i64, b: i64) -> i64 {
     // Same pointer/bits is usually equal, but Float-tagged containers hold
     // IEEE elems/keys: NaN ≠ NaN, so reflexivity fails and we must compare.
     if a == b {
+        // Immediates / FunRef-tagged bits cannot be heap payloads — skip Mutex.
+        if !may_be_heap_payload_bits(a) {
+            return 1;
+        }
         let p = a as *mut u8;
         if is_heap_payload(p) {
             let tid = unsafe { (*header_from_payload(p)).type_id };
@@ -25,6 +29,9 @@ pub extern "C" fn lumia_eq(a: i64, b: i64) -> i64 {
         } else {
             return 1;
         }
+    } else if !may_be_heap_payload_bits(a) || !may_be_heap_payload_bits(b) {
+        // Unequal and at least one side cannot be a managed object.
+        return 0;
     }
     let pa = a as *mut u8;
     let pb = b as *mut u8;

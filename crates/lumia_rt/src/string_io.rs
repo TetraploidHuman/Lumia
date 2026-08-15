@@ -225,13 +225,40 @@ pub extern "C" fn lumia_assert(cond: i64, msg: *const u8, msg_len: i64) {
         std::process::abort();
     }
 }
+pub(crate) fn with_str_bytes<R>(s: *mut u8, f: impl FnOnce(&[u8]) -> R) -> R {
+    if s.is_null() {
+        return f(&[]);
+    }
+    unsafe {
+        let n = (*header_from_payload(s)).size as usize;
+        f(std::slice::from_raw_parts(s, n))
+    }
+}
+
+/// Unicode scalar count (DESIGN: `String` is UTF-8 text). Invalid UTF-8 is
+/// counted via lossy decoding (U+FFFD per bad sequence).
+fn utf8_char_count(bytes: &[u8]) -> i64 {
+    match std::str::from_utf8(bytes) {
+        Ok(s) => s.chars().count() as i64,
+        Err(_) => String::from_utf8_lossy(bytes).chars().count() as i64,
+    }
+}
+
+/// Byte length of the heap string payload (for C/`println` marshalling).
 #[no_mangle]
-pub extern "C" fn lumia_str_len(s: *mut u8) -> i64 {
+pub extern "C" fn lumia_str_byte_len(s: *mut u8) -> i64 {
     if s.is_null() {
         return 0;
     }
     unsafe { (*header_from_payload(s)).size as i64 }
 }
+
+/// Codepoint length — user-facing `.len()` on `String`.
+#[no_mangle]
+pub extern "C" fn lumia_str_len(s: *mut u8) -> i64 {
+    with_str_bytes(s, utf8_char_count)
+}
+
 #[no_mangle]
 pub extern "C" fn lumia_str_concat(a: *mut u8, b: *mut u8) -> *mut u8 {
     // Keep `a`/`b` alive across the destination allocation.
@@ -262,15 +289,6 @@ pub extern "C" fn lumia_str_concat(a: *mut u8, b: *mut u8) -> *mut u8 {
             ptr::copy_nonoverlapping(b, dest.add(na as usize), nb as usize);
         }
         dest
-    }
-}
-pub(crate) fn with_str_bytes<R>(s: *mut u8, f: impl FnOnce(&[u8]) -> R) -> R {
-    if s.is_null() {
-        return f(&[]);
-    }
-    unsafe {
-        let n = (*header_from_payload(s)).size as usize;
-        f(std::slice::from_raw_parts(s, n))
     }
 }
 
@@ -305,15 +323,69 @@ pub extern "C" fn lumia_str_trim(s: *mut u8) -> *mut u8 {
     })
 }
 
-/// Substring `[start, end)` in byte offsets (clamped).
+/// Substring `[start, end)` in **Unicode scalar** offsets (clamped).
+/// Never splits a multi-byte UTF-8 sequence.
 #[no_mangle]
 pub extern "C" fn lumia_str_substring(s: *mut u8, start: i64, end: i64) -> *mut u8 {
     with_str_bytes(s, |bytes| {
-        let n = bytes.len() as i64;
-        let a = start.clamp(0, n) as usize;
-        let b = end.clamp(0, n) as usize;
-        let b = b.max(a);
-        let owned = bytes[a..b].to_vec();
+        let owned = str_substring_bytes(bytes, start, end);
+        lumia_alloc_string(owned.as_ptr(), owned.len() as u64)
+    })
+}
+
+fn str_substring_bytes(bytes: &[u8], start: i64, end: i64) -> Vec<u8> {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => {
+            let n = text.chars().count() as i64;
+            let a = start.clamp(0, n) as usize;
+            let b = end.clamp(0, n) as usize;
+            let b = b.max(a);
+            text.chars().skip(a).take(b - a).collect::<String>().into_bytes()
+        }
+        Err(_) => {
+            let cow = String::from_utf8_lossy(bytes);
+            let n = cow.chars().count() as i64;
+            let a = start.clamp(0, n) as usize;
+            let b = end.clamp(0, n) as usize;
+            let b = b.max(a);
+            cow.chars().skip(a).take(b - a).collect::<String>().into_bytes()
+        }
+    }
+}
+
+/// Prefix of `n` Unicode scalars (clamped), like List `.take`.
+#[no_mangle]
+pub extern "C" fn lumia_str_take(s: *mut u8, n: i64) -> *mut u8 {
+    with_str_bytes(s, |bytes| {
+        let end = if n < 0 { 0 } else { n };
+        let owned = str_substring_bytes(bytes, 0, end);
+        lumia_alloc_string(owned.as_ptr(), owned.len() as u64)
+    })
+}
+
+/// Drop first `n` Unicode scalars (clamped), like List `.drop` / `slice`.
+#[no_mangle]
+pub extern "C" fn lumia_str_slice(s: *mut u8, n: i64) -> *mut u8 {
+    with_str_bytes(s, |bytes| {
+        let start = if n < 0 { 0 } else { n };
+        let end = utf8_char_count(bytes);
+        let owned = str_substring_bytes(bytes, start, end);
+        lumia_alloc_string(owned.as_ptr(), owned.len() as u64)
+    })
+}
+
+/// Reverse Unicode scalars.
+#[no_mangle]
+pub extern "C" fn lumia_str_reverse(s: *mut u8) -> *mut u8 {
+    with_str_bytes(s, |bytes| {
+        let owned = match std::str::from_utf8(bytes) {
+            Ok(text) => text.chars().rev().collect::<String>().into_bytes(),
+            Err(_) => String::from_utf8_lossy(bytes)
+                .chars()
+                .rev()
+                .collect::<String>()
+                .into_bytes(),
+        };
         lumia_alloc_string(owned.as_ptr(), owned.len() as u64)
     })
 }
@@ -321,7 +393,10 @@ pub extern "C" fn lumia_str_substring(s: *mut u8, start: i64, end: i64) -> *mut 
 #[no_mangle]
 pub extern "C" fn lumia_str_to_lower(s: *mut u8) -> *mut u8 {
     with_str_bytes(s, |bytes| {
-        let lower: Vec<u8> = bytes.iter().map(|b| b.to_ascii_lowercase()).collect();
+        let lower = match std::str::from_utf8(bytes) {
+            Ok(text) => text.to_lowercase(),
+            Err(_) => String::from_utf8_lossy(bytes).to_lowercase(),
+        };
         lumia_alloc_string(lower.as_ptr(), lower.len() as u64)
     })
 }
@@ -329,7 +404,10 @@ pub extern "C" fn lumia_str_to_lower(s: *mut u8) -> *mut u8 {
 #[no_mangle]
 pub extern "C" fn lumia_str_to_upper(s: *mut u8) -> *mut u8 {
     with_str_bytes(s, |bytes| {
-        let upper: Vec<u8> = bytes.iter().map(|b| b.to_ascii_uppercase()).collect();
+        let upper = match std::str::from_utf8(bytes) {
+            Ok(text) => text.to_uppercase(),
+            Err(_) => String::from_utf8_lossy(bytes).to_uppercase(),
+        };
         lumia_alloc_string(upper.as_ptr(), upper.len() as u64)
     })
 }
@@ -384,4 +462,37 @@ pub extern "C" fn lumia_trap_div0() {
 #[no_mangle]
 pub extern "C" fn lumia_trap_overflow() {
     trap_abort("lumia: integer overflow");
+}
+
+#[cfg(test)]
+mod utf8_api_tests {
+    use super::{
+        lumia_alloc_string, lumia_str_byte_len, lumia_str_len, lumia_str_reverse, lumia_str_slice,
+        lumia_str_substring, lumia_str_take, lumia_str_to_lower, lumia_str_to_upper, with_str_bytes,
+    };
+
+    #[test]
+    fn len_and_substring_use_codepoints() {
+        let s = lumia_alloc_string("你好".as_ptr(), "你好".len() as u64);
+        assert_eq!(lumia_str_len(s), 2);
+        assert_eq!(lumia_str_byte_len(s), 6);
+        let one = lumia_str_substring(s, 0, 1);
+        with_str_bytes(one, |b| assert_eq!(b, "你".as_bytes()));
+        let both = lumia_str_substring(s, 0, 2);
+        with_str_bytes(both, |b| assert_eq!(b, "你好".as_bytes()));
+        let emoji = lumia_alloc_string("a😀b".as_ptr(), "a😀b".len() as u64);
+        assert_eq!(lumia_str_len(emoji), 3);
+        let mid = lumia_str_substring(emoji, 1, 2);
+        with_str_bytes(mid, |b| assert_eq!(b, "😀".as_bytes()));
+        let take = lumia_str_take(s, 1);
+        with_str_bytes(take, |b| assert_eq!(b, "你".as_bytes()));
+        let drop = lumia_str_slice(s, 1);
+        with_str_bytes(drop, |b| assert_eq!(b, "好".as_bytes()));
+        let rev = lumia_str_reverse(s);
+        with_str_bytes(rev, |b| assert_eq!(b, "好你".as_bytes()));
+        let low = lumia_str_to_lower(lumia_alloc_string("ÄBC".as_ptr(), "ÄBC".len() as u64));
+        with_str_bytes(low, |b| assert_eq!(b, "äbc".as_bytes()));
+        let up = lumia_str_to_upper(lumia_alloc_string("café".as_ptr(), "café".len() as u64));
+        with_str_bytes(up, |b| assert_eq!(b, "CAFÉ".as_bytes()));
+    }
 }

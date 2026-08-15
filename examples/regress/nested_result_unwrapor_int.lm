@@ -1,0 +1,14 @@
+/// Nested Result → scalar via unwrapOr(flatten(Ok(Ok(…)))).
+module main
+import std.result.{unwrapOr}
+
+val flattenR = { r ->
+    r match {
+        Err(e) -> Err(e)
+        Ok(inner) -> inner
+    }
+}
+
+val main = {
+    println(unwrapOr(flattenR(Ok(Ok(3))), 0))
+}

@@ -19,4 +19,4 @@ pub use parser::{parse_expr_str, parse_module, parse_module_recovering, ParseErr
 pub use pretty::format_module_src;
 pub use span::{BytePos, Span};
 pub use stamp::stamp_module;
-pub use token::{StringPart, Token};
+pub use token::{StringPart, Token, TokenKind};

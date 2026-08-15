@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fail if VS Code copies of shared editor assets drift.
+# Fail if VS Code copies of shared editor assets drift; sanity-check keyword lists.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 fail=0
@@ -30,6 +30,33 @@ if len(keys) != len(set(keys)):
     print(f"duplicate snippet keys in {path}: {dup}", file=sys.stderr)
     sys.exit(1)
 json.loads(raw)
+PY
+# Keyword surface: TextMate + IDEA must include lexer keywords (scope/spawn) and
+# may include surface soft pure/fn. Truth source: lumia_syntax TokenKind::KEYWORDS.
+python3 - "$root" <<'PY'
+import pathlib, re, sys
+root = pathlib.Path(sys.argv[1])
+# Pull KEYWORDS array from token.rs (between KEYWORDS: … ]; before SURFACE_SOFT).
+token = (root / "crates/lumia_syntax/src/token.rs").read_text(encoding="utf-8")
+m = re.search(r"pub const KEYWORDS: &\[&str\] = &\[(.*?)\];", token, re.S)
+if not m:
+    print("could not parse TokenKind::KEYWORDS", file=sys.stderr)
+    sys.exit(1)
+kws = re.findall(r'"([^"]+)"', m.group(1))
+must = set(kws)
+tm = (root / "editors/shared/syntaxes/lumia.tmLanguage.json").read_text(encoding="utf-8")
+idea = (root / "editors/idea/src/main/kotlin/org/lumia/idea/LumiaLexer.kt").read_text(
+    encoding="utf-8"
+)
+fail = 0
+for name, blob in (("tmLanguage", tm), ("IDEA LumiaLexer", idea)):
+    missing = sorted(k for k in must if not re.search(rf"\b{re.escape(k)}\b", blob))
+    if missing:
+        print(f"{name} missing lexer keywords: {missing}", file=sys.stderr)
+        fail = 1
+if fail:
+    sys.exit(1)
+print("keyword surface: tmLanguage + IDEA cover TokenKind::KEYWORDS")
 PY
 if [[ "$fail" -ne 0 ]]; then
   exit 1

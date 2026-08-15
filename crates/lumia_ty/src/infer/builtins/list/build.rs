@@ -58,11 +58,14 @@ impl Infer {
                                 Type::List(b)
                             }
                             (Type::Var(_), Type::Var(_)) => {
-                                let elem = self.fresh();
-                                let list = Type::List(Box::new(elem));
-                                self.unify_at(span, lt, list.clone())?;
-                                self.unify_at(span, rt, list.clone())?;
-                                list
+                                // Keep both sides the same open type (List or String);
+                                // do not bias to List (breaks `cat` on List[String]).
+                                self.unify_at(span, lt.clone(), rt.clone())?;
+                                let joined = self.prune(lt);
+                                if let Type::Var(v) = &joined {
+                                    self.uni.concat_vars.insert(*v);
+                                }
+                                joined
                             }
                             (other, _) => {
                                 return Err(at(

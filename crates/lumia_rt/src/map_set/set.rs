@@ -9,7 +9,7 @@ use super::tid::{key_eq, key_hash, set_float_elems, set_is_assoc, set_tid};
 
 /// Set: small stays linear `[n][e0]…`; larger HashOrdered
 /// `[n][cap][order×cap][elem,state × cap]`.
-pub(crate) const SET_SMALL_MAX: i64 = 8;
+pub(crate) const SET_SMALL_MAX: i64 = lumia_abi::SMALL_CONTAINER_MAX as i64;
 pub(crate) const SET_ST_EMPTY: i64 = 0;
 pub(crate) const SET_ST_FULL: i64 = 1;
 pub(crate) const SET_ST_TOMB: i64 = 2;
@@ -149,6 +149,7 @@ pub(crate) unsafe fn set_hash_find_slot(set: *mut u8, elem: i64) -> Option<usize
 }
 
 /// If `set` is a linear table larger than [`SET_SMALL_MAX`], promote to HashOrdered.
+/// Also compact duplicate elems in-place via [`key_eq`] (Float ±0 and Int/String/…).
 #[no_mangle]
 pub extern "C" fn lumia_set_finish(set: *mut u8) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
@@ -159,6 +160,8 @@ pub extern "C" fn lumia_set_finish(set: *mut u8) -> *mut u8 {
         if set_is_hash(set) || set_is_assoc(set) {
             return set;
         }
+        let float_elems = set_float_elems(set);
+        compact_linear_set_elems(set, float_elems);
         let n = *(set as *const i64);
         if n > SET_SMALL_MAX {
             set_from_linear_to_hash(set, None)
@@ -166,6 +169,30 @@ pub extern "C" fn lumia_set_finish(set: *mut u8) -> *mut u8 {
             set
         }
     }
+}
+
+unsafe fn compact_linear_set_elems(set: *mut u8, float_elems: bool) {
+    let n = *(set as *const i64);
+    if n <= 1 {
+        return;
+    }
+    let base = set as *mut i64;
+    let mut w = 0i64;
+    for i in 0..n as usize {
+        let e = *base.add(1 + i);
+        let mut seen = false;
+        for j in 0..w as usize {
+            if key_eq(*base.add(1 + j), e, float_elems) {
+                seen = true;
+                break;
+            }
+        }
+        if !seen {
+            *base.add(1 + w as usize) = e;
+            w += 1;
+        }
+    }
+    *base = w;
 }
 
 #[no_mangle]

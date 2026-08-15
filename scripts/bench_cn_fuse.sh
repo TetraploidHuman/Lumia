@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # CogniNucleus fused nucleus+Hebbian microbench (Release).
 #
-# Compares composed Lumia loops vs `std.cn.{nucleusStep,hebbian}`.
+# Compares composed Lumia loops vs `extras.cn.{nucleusStep,hebbian}`.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck disable=SC1091

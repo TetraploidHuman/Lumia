@@ -13,11 +13,8 @@ use rustc_hash::FxHashSet as HashSet;
 /// Peel empty-list concat identities left after HIR deforestation.
 pub struct ConcatIdentPass;
 
-impl crate::Pass for ConcatIdentPass {
-    fn name(&self) -> &str {
-        "concat_ident"
-    }
-    fn run(&self, module: &mut CoreModule) {
+impl ConcatIdentPass {
+    pub(crate) fn run(self, module: &mut CoreModule) {
         for f in &mut module.functions {
             fuse_fun(f);
         }
@@ -54,8 +51,7 @@ fn rewrite_block(block: &mut Block, empty: &HashSet<u32>) {
     for_each_op_value_mut(block, &mut |value| {
         if let Value::Builtin {
             name: Builtin::ListConcat,
-            args,
-        } = value
+            args, .. } = value
         {
             if args.len() == 2 {
                 let a = args[0].0;
@@ -73,8 +69,7 @@ fn rewrite_block(block: &mut Block, empty: &HashSet<u32>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Pass;
-    use lumia_core::{Block, CoreFun, CoreModule, ListRepr, Op, Value};
+        use lumia_core::{Block, CoreFun, CoreModule, ListRepr, Op, Value};
     use lumia_ty::{Effect, Type};
     use rustc_hash::FxHashSet as HashSet;
 
@@ -116,7 +111,8 @@ mod tests {
                             value: Value::Builtin {
                                 name: Builtin::ListConcat,
                                 args: vec![Local(0), Local(2)],
-                            },
+                    result_ty: None,
+                },
                             pure_region: true,
                         },
                     ],
@@ -127,6 +123,7 @@ mod tests {
                 is_main: false,
                 memo: None,
                 external: None,
+                foreign_abi: lumia_core::ForeignAbi::C,
                 escaping: HashSet::default(),
                 scheme_poly: false,
                 mono_of: None,

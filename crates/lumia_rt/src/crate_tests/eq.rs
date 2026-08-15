@@ -165,8 +165,10 @@ fn adt_float_mask_sanitizes_heap_pointer_slots() {
 }
 
 #[test]
-fn adt_mistagged_float_mask_still_marks_list() {
-    // Even if `_pad` wrongly tags a List field as Float, hybrid GC must keep it.
+fn adt_mistagged_float_mask_skips_mark_trust_sanitize() {
+    // `lumia_adt_set_float_mask` sanitizes heap-pointer slots. Bypass sanitize
+    // (force `_pad`) is undefined for GC: Float-tagged words are not marked.
+    // Production paths must not mistag; this locks the skip-without-probe contract.
     let list = lumia_alloc(8, TYPE_LIST);
     unsafe {
         *(list as *mut i64) = 0;
@@ -176,14 +178,13 @@ fn adt_mistagged_float_mask_still_marks_list() {
     unsafe {
         *(adt as *mut i64) = 0;
         *((adt as *mut i64).add(1)) = list_bits;
-        // Bypass sanitize: force a bad mask.
         (*header_from_payload(adt))._pad = 0b1;
     }
     lumia_root_push(&mut adt as *mut *mut u8);
     lumia_gc_collect();
     assert!(
-        crate::common::is_heap_payload(list_bits as *mut u8),
-        "List behind mistagged Float mask must survive GC"
+        !crate::common::is_heap_payload(list_bits as *mut u8),
+        "mistagged Float slot is not marked (trust sanitize; do not bypass _pad)"
     );
     lumia_root_pop();
 }

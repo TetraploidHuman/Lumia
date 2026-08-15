@@ -9,7 +9,7 @@ pub(crate) fn is_par_scalar(t: &Type) -> bool {
     matches!(t, Type::Int | Type::Bool | Type::Float)
 }
 
-pub(crate) fn type_at_span(
+pub fn type_at_span(
     type_at: &[(lumia_syntax::Span, Type)],
     span: lumia_syntax::Span,
 ) -> Option<Type> {

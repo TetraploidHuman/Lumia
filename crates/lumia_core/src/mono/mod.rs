@@ -15,7 +15,7 @@ pub(crate) use traits::{
 mod tests {
     use super::key::{MonoKey, MonoKind};
     use crate::compile_source_to_core;
-    use crate::ir::{Block, CoreFun, Local, Op, Value};
+    use crate::ir::{Block, CoreFun, Local, Op, Value, ForeignAbi};
     use lumia_ty::{Effect, Type};
     #[test]
     fn args_mono_key_prefers_formal_adt_over_abi_int() {
@@ -53,7 +53,7 @@ mod tests {
             MonoKind::List(Box::new(MonoKind::Float)),
             MonoKind::Float,
         ]);
-        assert_eq!(key.ret_ty(&[]), Type::List(Box::new(Type::Float)));
+        assert_eq!(key.ret_ty(&[], None), Type::List(Box::new(Type::Float)));
     }
 
     #[test]
@@ -97,6 +97,7 @@ mod tests {
             },
             is_main: false,
             external: None,
+            foreign_abi: ForeignAbi::C,
             memo: None,
             escaping: Default::default(),
             scheme_poly: false,
@@ -109,7 +110,9 @@ mod tests {
             },
             MonoKind::FunRef("dbl".into()),
         ]);
-        let ret = key.hof_ret_ty(std::slice::from_ref(&dbl)).expect("hof ret");
+        let ret = key
+            .hof_ret_ty(std::slice::from_ref(&dbl), Some("optionMap"))
+            .expect("hof ret");
         assert_eq!(
             ret,
             Type::Adt {
@@ -558,6 +561,7 @@ val main = {
         }
     }
 
+
     #[test]
     fn specialize_list_par_map_float_callback() {
         let core = compile_source_to_core(
@@ -664,8 +668,7 @@ val main = {
                     value:
                         Value::Builtin {
                             name: lumia_hir::Builtin::ListParFold,
-                            args,
-                        },
+                            args, .. },
                     ..
                 } = op
                 {
@@ -690,6 +693,407 @@ val main = {
         assert!(
             fr.contains("Float"),
             "ListParFold should use add$Float_*, got {fr}"
+        );
+    }
+
+
+
+    #[test]
+    fn num_vec2_float_add_rewrites_to_call() {
+        let core = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+type Vec2 { val x val y }
+trait Num {
+    val add = { self, other -> self }
+}
+instance Num for Vec2 {
+    val add = { self, other ->
+        Vec2 { x = self.x + other.x, y = self.y + other.y }
+    }
+}
+val main = {
+    val a = Vec2 { x = 1.5, y = 2.0 }
+    val b = Vec2 { x = 0.5, y = 1.0 }
+    val s = a + b
+    println(s.x)
+    println(s.y)
+}
+"#,
+        )
+        .expect("core");
+        assert!(
+            core.functions.iter().any(|f| {
+                f.name.starts_with("__Num_Vec2_add$") && f.name.contains("Float")
+            }),
+            "expected Float Num add clone, funs={:?}",
+            core.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+        );
+        let main = core.functions.iter().find(|f| f.name == "main").unwrap();
+        let mut saw = false;
+        for op in &main.body.ops {
+            if let crate::Op::Let {
+                value: Value::Call { fun, .. },
+                ..
+            } = op
+            {
+                if fun.contains("__Num_Vec2_add$") && fun.contains("Float") {
+                    saw = true;
+                }
+            }
+        }
+        assert!(saw, "main should Call Float Num add clone");
+    }
+
+    #[test]
+    fn unwrapor_err_float_default_ret() {
+        let core = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+type Result { Ok(v) Err(e) }
+val unwrapOr = { r, default ->
+    r match {
+        Ok(x) -> x
+        Err(_) -> default
+    }
+}
+val main = {
+    println(unwrapOr(Err("e"), 1.5))
+}
+"#,
+        )
+        .expect("core");
+        assert!(
+            core.functions.iter().any(|f| f.name.starts_with("unwrapOr$")
+                && matches!(f.ret_ty, lumia_ty::Type::Float)),
+            "need Float unwrapOr$ for Err+1.5, got {:?}",
+            core.functions
+                .iter()
+                .filter(|f| f.name.contains("unwrapOr"))
+                .map(|f| (&f.name, &f.ret_ty))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn unwrapor_none_float_default_ret() {
+        let core = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+val unwrapOr = { opt, default ->
+    opt match {
+        Some(x) -> x
+        None -> default
+    }
+}
+val main = {
+    println(unwrapOr(None, 1.5))
+    println(unwrapOr(None, true))
+}
+"#,
+        )
+        .expect("core");
+        assert!(
+            core.functions.iter().any(|f| f.name.starts_with("unwrapOr$")
+                && matches!(f.ret_ty, lumia_ty::Type::Float)),
+            "need Float unwrapOr$ for None+1.5, got {:?}",
+            core.functions
+                .iter()
+                .filter(|f| f.name.contains("unwrapOr"))
+                .map(|f| (&f.name, &f.ret_ty))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            core.functions.iter().any(|f| f.name.starts_with("unwrapOr$")
+                && matches!(f.ret_ty, lumia_ty::Type::Bool)),
+            "need Bool unwrapOr$ for None+true"
+        );
+    }
+
+    #[test]
+    fn unwrapor_some_float_fun_ret() {
+        let core = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+type Option { Some(v) None }
+val unwrapOr = { opt, default ->
+    opt match {
+        Some(x) -> x
+        None -> default
+    }
+}
+val main = {
+    val f = unwrapOr(Some({ x -> x + 1.0 }), { x -> x })
+    println(f(1.5))
+}
+"#,
+        )
+        .expect("core");
+        let u = core.functions.iter().find(|f| f.name.starts_with("unwrapOr$")).expect("clone");
+        assert!(
+            matches!(&u.ret_ty, Type::Fun(ps, r, _) if ps.first().is_some_and(|p| matches!(p, Type::Float)) && matches!(r.as_ref(), Type::Float)),
+            "unwrapOr$ should return Fun(Float)->Float, got {:?}",
+            u.ret_ty
+        );
+    }
+
+
+    #[test]
+    fn spawn_identity_float_icall_rewritten() {
+        let core = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+val main = {
+    scope {
+        val f = spawn { { x -> x } }.join()
+        println(f(1.5))
+    }
+}
+"#,
+        )
+        .expect("core");
+        assert!(
+            core.functions.iter().any(|f| f.name == "__lam_0$Float" || f.name.ends_with("$Float") && f.name.contains("__lam_0")),
+            "expected __lam_0$Float, got {:?}",
+            core.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+        );
+        let main = core.functions.iter().find(|f| f.name == "main").unwrap();
+        let mut calls = vec![];
+        let mut icalls = 0u32;
+        fn walk(b: &crate::ir::Block, calls: &mut Vec<String>, icalls: &mut u32) {
+            for op in &b.ops {
+                let v = match op {
+                    crate::ir::Op::Let { value, .. } | crate::ir::Op::Effect { value } => value,
+                    _ => continue,
+                };
+                match v {
+                    crate::ir::Value::Call { fun, .. } => calls.push(fun.clone()),
+                    crate::ir::Value::IndirectCall { .. } => *icalls += 1,
+                    crate::ir::Value::If { then_block, else_block, .. } => {
+                        walk(then_block, calls, icalls);
+                        walk(else_block, calls, icalls);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        walk(&main.body, &mut calls, &mut icalls);
+        assert!(
+            calls.iter().any(|c| c.contains("$Float")),
+            "expected Call(__lam_$Float), calls={calls:?} icalls={icalls}"
+        );
+        assert_eq!(icalls, 0, "identity apply should be direct Call, icalls={icalls}");
+    }
+
+    #[test]
+    fn spawn_option_map_unwrapor_float_key() {
+        let core = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+type Option { Some(v) None }
+val unwrapOr = { opt, default ->
+    opt match {
+        Some(x) -> x
+        None -> default
+    }
+}
+val optionMap = { opt, f ->
+    opt match {
+        None -> None
+        Some(x) -> Some(f(x))
+    }
+}
+val main = {
+    scope {
+        val o = spawn { optionMap(Some(1.5), { x -> x * 3.0 }) }.join()
+        println(unwrapOr(o, 0.0))
+    }
+}
+"#,
+        )
+        .expect("core");
+        let u = core
+            .functions
+            .iter()
+            .find(|f| f.name.starts_with("unwrapOr$"))
+            .unwrap_or_else(|| panic!("no unwrapOr$ in {:?}", core.functions.iter().map(|f| &f.name).collect::<Vec<_>>()));
+        assert!(
+            u.name.contains("Float") && !u.name.contains("Option_Int"),
+            "unwrapOr should specialize Option[Float], got {}",
+            u.name
+        );
+    }
+
+
+    #[test]
+    fn flatten_nested_option_unwrapor_int() {
+        let core = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+type Option { Some(v) None }
+val flatten = { o ->
+    o match {
+        Some(inner) -> inner
+        None -> None
+    }
+}
+val unwrapOr = { opt, default ->
+    opt match {
+        Some(x) -> x
+        None -> default
+    }
+}
+val main = {
+    println(unwrapOr(flatten(Some(Some(3))), 0))
+}
+"#,
+        )
+        .expect("core");
+        let flat = core
+            .functions
+            .iter()
+            .find(|f| f.name.starts_with("flatten$"))
+            .expect("flatten$");
+        let pmap = super::ret_ty::param_ty_map(flat);
+        let body_ty = super::ret_ty::block_result_fixed_ty(
+            &flat.body,
+            &core.functions,
+            &Default::default(),
+            &pmap,
+        );
+        assert!(
+            matches!(
+                &body_ty,
+                Some(lumia_ty::Type::Adt { name, params })
+                    if name == "Option"
+                        && params.first().is_some_and(|p| matches!(p, lumia_ty::Type::Int))
+            ),
+            "block_result_fixed_ty should be Option[Int], got {body_ty:?}"
+        );
+        assert!(
+            matches!(
+                &flat.ret_ty,
+                lumia_ty::Type::Adt { name, params }
+                    if name == "Option"
+                        && params.first().is_some_and(|p| matches!(p, lumia_ty::Type::Int))
+            ),
+            "flatten should return Option[Int], got {:?}",
+            flat.ret_ty
+        );
+        let u = core
+            .functions
+            .iter()
+            .find(|f| f.name.starts_with("unwrapOr$"))
+            .expect("unwrapOr$");
+        assert!(
+            !u.name.contains("Option_Option"),
+            "flatten should yield Option[Int]; unwrapOr got {}",
+            u.name
+        );
+        assert!(
+            u.name.contains("Option_Int"),
+            "expected unwrapOr$Option_Int_*, got {}",
+            u.name
+        );
+    }
+
+    #[test]
+    fn nested_andthen_unwrapor_float() {
+        let core = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+type Option { Some(v) None }
+val unwrapOr = { opt, default ->
+    opt match {
+        Some(x) -> x
+        None -> default
+    }
+}
+val andThen = { o, f ->
+    o match {
+        None -> None
+        Some(x) -> f(x)
+    }
+}
+val main = {
+    val o = andThen(Some(1.5), { x -> andThen(Some(x * 2.0), { y -> Some(y + 1.0) }) })
+    println(unwrapOr(o, 0.0))
+}
+"#,
+        )
+        .expect("core");
+        let u = core
+            .functions
+            .iter()
+            .find(|f| f.name.starts_with("unwrapOr$"))
+            .expect("unwrapOr$");
+        assert!(
+            !u.name.contains("Option_Option"),
+            "nested andThen should yield Option[Float] not Option[Option[_]], got {}",
+            u.name
+        );
+        assert!(
+            u.name.contains("Float"),
+            "expected Float unwrapOr clone, got {}",
+            u.name
+        );
+    }
+
+    #[test]
+    fn result_andthen_then_unwrapor_float_clone() {
+        let core = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+type Result { Ok(v) Err(e) }
+val unwrapOr = { r, default ->
+    r match {
+        Ok(x) -> x
+        Err(_) -> default
+    }
+}
+val andThen = { r, f ->
+    r match {
+        Ok(x) -> f(x)
+        Err(e) -> Err(e)
+    }
+}
+val main = {
+    val r = andThen(Ok(1.5), { x -> Ok(x * 2.0) })
+    println(unwrapOr(r, 0.0))
+}
+"#,
+        )
+        .expect("core");
+        let and_then = core
+            .functions
+            .iter()
+            .find(|f| f.name.starts_with("andThen$"))
+            .expect("andThen$");
+        assert!(
+            matches!(
+                &and_then.ret_ty,
+                Type::Adt { name, params }
+                    if name == "Result"
+                        && params.first().is_some_and(|p| matches!(p, Type::Float))
+                        && !params.iter().any(|p| matches!(p, Type::Var(_)))
+            ),
+            "andThen$ ret must be ground Result[Float,…], got {:?}",
+            and_then.ret_ty
+        );
+        assert!(
+            core.functions
+                .iter()
+                .any(|f| f.name.starts_with("unwrapOr$")),
+            "unwrapOr$ clone required after andThen Float payload"
         );
     }
 
@@ -967,6 +1371,115 @@ val main = {
             "main must Call specialized addx$Box_* after id(touch), funs={:?} body={:?}",
             core.functions.iter().map(|f| &f.name).collect::<Vec<_>>(),
             main.body
+        );
+    }
+
+    #[test]
+    fn option_id_alt_directizes_or_keeps_fun_icall() {
+        let core = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+val main = {
+    val o = Some({ x -> x })
+    val f = o alt { x -> x }
+    println(f(2.5))
+}
+"#,
+        )
+        .expect("core");
+        let main = core.functions.iter().find(|f| f.name == "main").unwrap();
+        let mut icall = 0usize;
+        let mut call_float = 0usize;
+        let mut alloc_fields: Vec<usize> = vec![];
+        crate::for_each_block_dfs(&main.body, &mut |b| {
+            for op in &b.ops {
+                match op {
+                    Op::Let {
+                        value: Value::IndirectCall { .. },
+                        ..
+                    } => icall += 1,
+                    Op::Let {
+                        value: Value::Call { fun, .. },
+                        ..
+                    } if fun.contains("$Float") || fun.starts_with("__lam_") => {
+                        call_float += 1;
+                    }
+                    Op::Let {
+                        value: Value::AllocAdt { fields, .. },
+                        ..
+                    } => alloc_fields.push(fields.len()),
+                    _ => {}
+                }
+            }
+        });
+        assert!(
+            call_float >= 1 || icall == 0,
+            "expected Call(__lam*$Float) for Some(id) alt id; icall={icall} call_float={call_float} alloc_fields={alloc_fields:?} body={:?}",
+            main.body
+        );
+    }
+
+    #[test]
+    fn option_map_list_len_clone_ret_is_int_not_list() {
+        // `{ xs -> xs.len() }` must keep Int ret on `$List_Int` clones; merging
+        // MonoKey List over body Int made optionMap→unwrapOr retain on `3`.
+        let core = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+type Option { Some(v) None }
+val unwrapOr = { opt, default ->
+    opt match {
+        Some(x) -> x
+        None -> default
+    }
+}
+val optionMap = { opt, f ->
+    opt match {
+        None -> None
+        Some(x) -> Some(f(x))
+    }
+}
+val main = {
+  println(unwrapOr(optionMap(Some(listOf(1, 2, 3)), { xs -> xs.len() }), 0))
+}
+"#,
+        )
+        .expect("core");
+        let lam = core
+            .functions
+            .iter()
+            .find(|f| f.name == "__lam_0$List_Int")
+            .expect("__lam_0$List_Int");
+        assert!(
+            matches!(lam.ret_ty, Type::Int),
+            "ListLen clone ret must be Int, got {:?}",
+            lam.ret_ty
+        );
+        let om = core
+            .functions
+            .iter()
+            .find(|f| f.name.starts_with("optionMap$"))
+            .expect("optionMap$");
+        assert!(
+            matches!(
+                &om.ret_ty,
+                Type::Adt { name, params }
+                    if name == "Option" && matches!(params.first(), Some(Type::Int))
+            ),
+            "optionMap ret must be Option[Int], got {:?}",
+            om.ret_ty
+        );
+        let u = core
+            .functions
+            .iter()
+            .find(|f| f.name.starts_with("unwrapOr$"))
+            .expect("unwrapOr$");
+        assert!(
+            u.name.contains("Option_Int") && !u.name.contains("List"),
+            "unwrapOr should be Option[Int], got {}",
+            u.name
         );
     }
 }

@@ -31,13 +31,13 @@ pub(crate) fn link_executable(
             .arg("-lm")
             .arg("-lrt")
             .arg("-lutil");
-        // Drop unused `lumia_rt` / Rust-std objects. Cuts Release text ~3× and
-        // peak RSS ~0.7MiB on Linux hello; no effect on hot-path code that stays live.
-        if release {
-            if cfg!(target_os = "macos") {
-                cmd.arg("-Wl,-dead_strip");
-            } else {
-                cmd.arg("-Wl,--gc-sections");
+        // Drop unused `lumia_rt` / Rust-std objects on all profiles (not only
+        // Release). Cuts Debug binary size when domain kernels are unused.
+        if cfg!(target_os = "macos") {
+            cmd.arg("-Wl,-dead_strip");
+        } else {
+            cmd.arg("-Wl,--gc-sections");
+            if release {
                 cmd.arg("-Wl,-s");
             }
         }
@@ -82,14 +82,22 @@ pub fn find_runtime_lib_prefer(target_dir: &Path, release: bool) -> Result<PathB
         }
     }
     if let Some(c) = found_fallback {
-        eprintln!(
-            "warning: linking {} lumia_rt into a {} build ({}); run `cargo build -p lumia_rt{}` for a matching runtime",
-            fallback,
-            preferred,
+        if std::env::var_os("LUMIA_ALLOW_CROSS_PROFILE_RT").is_some() {
+            eprintln!(
+                "warning: linking {} lumia_rt into a {} build ({}); set only when intentional",
+                fallback,
+                preferred,
+                c.display(),
+            );
+            return Ok(c);
+        }
+        bail!(
+            "liblumia_rt for profile `{preferred}` not found under {} (found {fallback} at {}); \
+             run `cargo build -p lumia_rt{}` or set LUMIA_ALLOW_CROSS_PROFILE_RT=1 to override",
+            target_dir.display(),
             c.display(),
             if release { " --release" } else { "" },
         );
-        return Ok(c);
     }
     bail!(
         "liblumia_rt.a / lumia_rt.lib not found under {} — run `cargo build -p lumia_rt` first",

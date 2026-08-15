@@ -1,7 +1,8 @@
 //! Shared IR helpers for opt passes.
 
-use lumia_core::{Local, Value};
-use rustc_hash::FxHashMap as HashMap;
+use lumia_core::{for_each_block_dfs, Block, Local, Op, Value};
+use lumia_syntax::{BinOp, UnOp};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// Known Int/Bool/Char/Float locals as i64 bit patterns (for call-site matching).
 #[derive(Clone, Default)]
@@ -60,5 +61,41 @@ impl KnownScalars {
             out.push(self.get(a.0)?);
         }
         Some(out)
+    }
+}
+
+/// Fixed-point: locals that hold unboxed Float (for DCE / LICM keep/hoist rules).
+pub(crate) fn collect_float_locals(block: &Block, float_locals: &mut HashSet<u32>) {
+    loop {
+        let before = float_locals.len();
+        for_each_block_dfs(block, &mut |b| {
+            for op in &b.ops {
+                if let Op::Let { local, value, .. } = op {
+                    if value_produces_float(value, float_locals) {
+                        float_locals.insert(local.0);
+                    }
+                }
+            }
+        });
+        if float_locals.len() == before {
+            break;
+        }
+    }
+}
+
+fn value_produces_float(value: &Value, float_locals: &HashSet<u32>) -> bool {
+    match value {
+        Value::Float(_) => true,
+        Value::Local(Local(src)) => float_locals.contains(src),
+        Value::Unary {
+            op: UnOp::Neg,
+            operand,
+        } => float_locals.contains(&operand.0),
+        Value::Binary {
+            op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem,
+            left,
+            right,
+        } => float_locals.contains(&left.0) && float_locals.contains(&right.0),
+        _ => false,
     }
 }

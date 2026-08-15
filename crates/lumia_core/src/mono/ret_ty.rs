@@ -208,10 +208,26 @@ fn value_fixed_ty(
             name: Builtin::Show,
             ..
         } => Some(Type::String),
+        // Exhaustiveness hole: bottom for If-join (same as value_ty Unit).
+        Value::Builtin {
+            name: Builtin::MatchFail,
+            ..
+        } => Some(Type::Unit),
+        // Without this, Call-expansion of `{ xs -> xs.len() }` falls back to the
+        // List arg type and `optionMap` keeps `Option[List[_]]` (unwrapOr ABI abort).
+        Value::Builtin {
+            name: Builtin::ListLen | Builtin::AdtTag,
+            ..
+        } => Some(Type::Int),
+        Value::Builtin {
+            name: Builtin::Contains
+            | Builtin::StrStartsWith
+            | Builtin::StrEndsWith,
+            ..
+        } => Some(Type::Bool),
         Value::Builtin {
             name: Builtin::ListGet,
-            args,
-        } => {
+            args, .. } => {
             let list_ty = local_fixed_ty(
                 block,
                 args.first()?.0,
@@ -232,8 +248,7 @@ fn value_fixed_ty(
         }
         Value::Builtin {
             name: Builtin::AdtField,
-            args,
-        } => adt_field_fixed_ty(block, args, index, trait_methods, param_tys, seen, expanding),
+            args, .. } => adt_field_fixed_ty(block, args, index, trait_methods, param_tys, seen, expanding),
         Value::String(_) => Some(Type::String),
         Value::Bool(_) => Some(Type::Bool),
         Value::Int(_) => Some(Type::Int),
@@ -270,6 +285,18 @@ fn value_fixed_ty(
             if ret_ty_needs_call_site_fix(&f.ret_ty) {
                 // Self-/mutual recursion: entering the callee body re-hits this Call.
                 if !expanding.insert(fun.clone()) {
+                    // Cycle: open generic `ret` is useless. Prefer a concrete
+                    // call-site arg ABI (fold/acc Float) so `sumAt(xs,i,acc)`
+                    // clones keep `ret=Float` instead of key's first-List.
+                    for a in args.iter().rev() {
+                        if let Some(t) = local_fixed_ty(
+                            block, a.0, index, trait_methods, param_tys, seen, expanding,
+                        ) {
+                            if !matches!(t, Type::Int | Type::Var(_)) {
+                                return Some(t);
+                            }
+                        }
+                    }
                     return Some(f.ret_ty.clone());
                 }
                 let mut call_params: HashMap<u32, Type> = HashMap::default();
@@ -608,6 +635,14 @@ fn join_fixed_ty(a: &Type, b: &Type) -> Option<Type> {
         return Some(a.clone());
     }
     match (a, b) {
+        // Open generic ret vs concrete arm (self-rec `acc` Float | Call→Var).
+        (Type::Float, Type::Int | Type::Var(_))
+        | (Type::Int | Type::Var(_), Type::Float) => Some(Type::Float),
+        (Type::Bool, Type::Int | Type::Var(_))
+        | (Type::Int | Type::Var(_), Type::Bool) => Some(Type::Bool),
+        (Type::String, Type::Int | Type::Var(_))
+        | (Type::Int | Type::Var(_), Type::String) => Some(Type::String),
+        (Type::Unit, other) | (other, Type::Unit) => Some(other.clone()),
         (
             Type::Adt {
                 name: n1,

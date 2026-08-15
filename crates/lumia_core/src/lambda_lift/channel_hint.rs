@@ -1,14 +1,14 @@
 //! Infer channel payload hints from `ChannelSend` sites.
 //!
-//! `ChannelNew` still lowers without an elem type (`Channel(Int)` placeholder).
-//! When sends to a given channel allocation agree on a ground payload, recv
-//! typing can use that payload (Float / lists / ADTs) instead of erased Int.
+//! Prefer ground `Channel[T]` stamped onto `ChannelNew` from HIR `type_at`.
+//! When a stamp is missing, recover payload from agreeing `ChannelSend` sites
+//! (Float / lists / ADTs) instead of erased Int.
 //!
 //! Per-channel map: locals are unique after lift (`max_local` monotonic), so
 //! `ChannelNew` local ids key [`CoreModule::channel_elem_by_local`]. The module
 //! hint is set only when every channel agrees on the same payload.
 
-use super::float_abi::compute_float_locals_in_block;
+use super::float_abi::{collect_fun_cap_tys, compute_float_locals_in_block};
 use crate::ir::{Block, CoreModule, Local, Op, Value};
 use crate::visit::for_each_nested_block;
 use lumia_hir::Builtin;
@@ -31,6 +31,10 @@ pub(crate) fn refine_channel_elem_hint(module: &mut CoreModule) {
         .iter()
         .map(|f| (f.name.clone(), f.param_tys.clone()))
         .collect();
+    // Spawn thunks may be scanned before their AllocClosure site; cap tys are
+    // collected with a fixpoint so `ch.send(f)` via ClosureCap keeps Fun ABI
+    // instead of falling back to Int (mixed-payload reject).
+    let fun_cap_tys = collect_fun_cap_tys(module, &fun_ret_tys, &fun_param_tys);
 
     let mut root_of: HashMap<u32, u32> = HashMap::default();
     let mut by_ch: HashMap<u32, Option<Type>> = HashMap::default();
@@ -63,6 +67,7 @@ pub(crate) fn refine_channel_elem_hint(module: &mut CoreModule) {
         }
         scan_block(
             &fun.body,
+            &fun.name,
             &mut local_tys,
             &mut root_of,
             &mut by_ch,
@@ -71,6 +76,7 @@ pub(crate) fn refine_channel_elem_hint(module: &mut CoreModule) {
             caps.as_deref(),
             &fun_ret_tys,
             &fun_param_tys,
+            &fun_cap_tys,
         );
     }
 
@@ -104,15 +110,15 @@ fn register_channel_news(
     for op in &block.ops {
         match op {
             Op::Let { local, value, .. } => {
-                if matches!(
-                    value,
-                    Value::Builtin {
-                        name: Builtin::ChannelNew,
-                        ..
-                    }
-                ) {
+                if let Value::Builtin {
+                    name: Builtin::ChannelNew,
+                    result_ty,
+                    ..
+                } = value
+                {
                     root_of.insert(local.0, local.0);
-                    by_ch.entry(local.0).or_insert(None);
+                    let seed = channel_new_elem_ty(result_ty);
+                    by_ch.entry(local.0).or_insert(seed);
                 }
                 for_each_nested_block(value, &mut |b| {
                     register_channel_news(b, root_of, by_ch);
@@ -125,6 +131,13 @@ fn register_channel_news(
             }
             _ => {}
         }
+    }
+}
+
+fn channel_new_elem_ty(result_ty: &Option<Type>) -> Option<Type> {
+    match result_ty {
+        Some(Type::Channel(e)) => Some((**e).clone()),
+        _ => None,
     }
 }
 
@@ -196,6 +209,7 @@ fn collect_alloc_closure_caps(block: &Block, lam_caps: &mut HashMap<String, Vec<
 
 fn scan_block(
     block: &Block,
+    fun_name: &str,
     local_tys: &mut HashMap<u32, Type>,
     root_of: &mut HashMap<u32, u32>,
     by_ch: &mut HashMap<u32, Option<Type>>,
@@ -204,6 +218,7 @@ fn scan_block(
     caps: Option<&[Local]>,
     fun_ret_tys: &HashMap<String, Type>,
     fun_param_tys: &HashMap<String, Vec<Type>>,
+    fun_cap_tys: &HashMap<String, HashMap<u32, Type>>,
 ) {
     let float_locals = compute_float_locals_in_block(block);
     for op in &block.ops {
@@ -222,15 +237,18 @@ fn scan_block(
                     local.0,
                     guess_local_ty(
                         value,
+                        fun_name,
                         local_tys,
                         &float_locals,
                         fun_ret_tys,
                         fun_param_tys,
+                        fun_cap_tys,
                     ),
                 );
                 for_each_nested_block(value, &mut |b| {
                     scan_block(
                         b,
+                        fun_name,
                         local_tys,
                         root_of,
                         by_ch,
@@ -239,6 +257,7 @@ fn scan_block(
                         caps,
                         fun_ret_tys,
                         fun_param_tys,
+                        fun_cap_tys,
                     );
                 });
             }
@@ -254,6 +273,7 @@ fn scan_block(
                 for_each_nested_block(value, &mut |b| {
                     scan_block(
                         b,
+                        fun_name,
                         local_tys,
                         root_of,
                         by_ch,
@@ -262,6 +282,7 @@ fn scan_block(
                         caps,
                         fun_ret_tys,
                         fun_param_tys,
+                        fun_cap_tys,
                     );
                 });
             }
@@ -280,10 +301,12 @@ fn note_channel_root(
     match value {
         Value::Builtin {
             name: Builtin::ChannelNew,
+            result_ty,
             ..
         } => {
             root_of.insert(local, local);
-            by_ch.entry(local).or_insert(None);
+            let seed = channel_new_elem_ty(result_ty);
+            by_ch.entry(local).or_insert(seed);
         }
         Value::Local(Local(src)) => {
             if let Some(r) = root_of.get(src).copied() {
@@ -311,8 +334,7 @@ fn note_send(
 ) {
     let Value::Builtin {
         name: Builtin::ChannelSend,
-        args,
-    } = value
+        args, .. } = value
     else {
         return;
     };
@@ -332,21 +354,25 @@ fn note_send(
     }
     match by_ch.entry(root).or_insert(None) {
         slot @ None => *slot = Some(ty),
-        Some(prev) if *prev == ty => {}
-        Some(prev) => {
-            conflicts.push((prev.clone(), ty));
-            poisoned_ch.insert(root);
-            by_ch.insert(root, None);
-        }
+        Some(prev) => match join_channel_payload(prev, &ty) {
+            Some(joined) => *prev = joined,
+            None => {
+                conflicts.push((prev.clone(), ty));
+                poisoned_ch.insert(root);
+                by_ch.insert(root, None);
+            }
+        },
     }
 }
 
 fn guess_local_ty(
     value: &Value,
+    fun_name: &str,
     local_tys: &HashMap<u32, Type>,
     float_locals: &HashSet<u32>,
     fun_ret_tys: &HashMap<String, Type>,
     fun_param_tys: &HashMap<String, Vec<Type>>,
+    fun_cap_tys: &HashMap<String, HashMap<u32, Type>>,
 ) -> Type {
     match value {
         Value::Float(_) => Type::Float,
@@ -355,14 +381,21 @@ fn guess_local_ty(
         Value::String(_) => Type::String,
         Value::Char(_) => Type::Char,
         Value::Local(Local(id)) => local_tys.get(id).cloned().unwrap_or(Type::Int),
+        Value::ClosureCap {
+            as_float: true,
+            ..
+        } => Type::Float,
+        Value::ClosureCap { index, .. } => fun_cap_tys
+            .get(fun_name)
+            .and_then(|m| m.get(index).cloned())
+            .unwrap_or(Type::Int),
         Value::FunRef(name) | Value::AllocClosure { fun: name, .. } => {
             fun_ty_from_tables(name, fun_ret_tys, fun_param_tys)
                 .unwrap_or(Type::Int)
         }
         Value::Builtin {
             name: Builtin::TaskSpawn,
-            args,
-        } if !args.is_empty() => {
+            args, .. } if !args.is_empty() => {
             let elem = match local_tys.get(&args[0].0) {
                 Some(Type::Fun(_, r, _)) => (**r).clone(),
                 _ => Type::Int,
@@ -443,25 +476,140 @@ fn guess_local_ty(
             Type::Map(Box::new(k), Box::new(v))
         }
         Value::AllocAdt {
-            adt_name, fields, ..
-        } => Type::Adt {
-            name: adt_name.clone(),
-            params: fields
-                .iter()
-                .map(|f| {
-                    if float_locals.contains(&f.0) {
-                        Type::Float
-                    } else {
-                        local_tys.get(&f.0).cloned().unwrap_or(Type::Int)
-                    }
-                })
-                .collect(),
-        },
+            adt_name, tag, fields, ..
+        } => adt_payload_ty(adt_name, *tag, fields, local_tys, float_locals),
         Value::Builtin {
             name: Builtin::ChannelNew,
+            result_ty,
             ..
-        } => Type::Channel(Box::new(Type::Int)),
+        } => match result_ty {
+            Some(Type::Channel(e)) => Type::Channel(e.clone()),
+            Some(other) => other.clone(),
+            None => Type::Channel(Box::new(Type::Int)),
+        },
         _ => Type::Int,
+    }
+}
+
+/// Constructor fields are not type params — rebuild Option[T] / Result[A,B] shape.
+fn adt_payload_ty(
+    adt_name: &str,
+    tag: i64,
+    fields: &[Local],
+    local_tys: &HashMap<u32, Type>,
+    float_locals: &HashSet<u32>,
+) -> Type {
+    let field_ty = |f: &Local| -> Type {
+        if float_locals.contains(&f.0) {
+            Type::Float
+        } else {
+            local_tys.get(&f.0).cloned().unwrap_or(Type::Int)
+        }
+    };
+    // Prelude tags: Some=0 None=1; Ok=0 Err=1 (`ensure_prelude_adt`).
+    if adt_name == "Option" {
+        let param = if tag == 1 || fields.is_empty() {
+            // None — flexible param joined with Some(T) later.
+            Type::Var(u32::MAX)
+        } else {
+            field_ty(&fields[0])
+        };
+        return Type::Adt {
+            name: adt_name.into(),
+            params: vec![param],
+        };
+    }
+    if adt_name == "Result" {
+        let payload = fields.first().map(field_ty).unwrap_or(Type::Int);
+        let (ok, err) = if tag == 0 {
+            (payload, Type::Var(u32::MAX))
+        } else {
+            (Type::Var(u32::MAX), payload)
+        };
+        return Type::Adt {
+            name: adt_name.into(),
+            params: vec![ok, err],
+        };
+    }
+    Type::Adt {
+        name: adt_name.into(),
+        params: fields.iter().map(field_ty).collect(),
+    }
+}
+
+/// Merge two channel payload types; `None` = hard conflict.
+fn join_channel_payload(prev: &Type, new: &Type) -> Option<Type> {
+    if prev == new {
+        return Some(prev.clone());
+    }
+    match (prev, new) {
+        (
+            Type::Adt {
+                name: n1,
+                params: p1,
+            },
+            Type::Adt {
+                name: n2,
+                params: p2,
+            },
+        ) if n1 == n2 && (n1 == "Option" || n1 == "Result") => {
+            let want = if n1.as_str() == "Option" { 1 } else { 2 };
+            let mut params = Vec::with_capacity(want);
+            for i in 0..want {
+                let a = p1.get(i);
+                let b = p2.get(i);
+                match join_option_param(a, b) {
+                    Some(t) => params.push(t),
+                    None => return None,
+                }
+            }
+            Some(Type::Adt {
+                name: n1.clone(),
+                params,
+            })
+        }
+        _ => {
+            // Soft scalar refine (Int/Var → concrete).
+            let joined = prefer_payload_ty(prev.clone(), new.clone());
+            if &joined == prev || &joined == new || joined == prefer_payload_ty(new.clone(), prev.clone())
+            {
+                // Only accept if prefer actually picked one side without hard mismatch.
+                if is_flexible_ty(prev) || is_flexible_ty(new) || prev == new {
+                    return Some(joined);
+                }
+            }
+            None
+        }
+    }
+}
+
+fn is_flexible_ty(t: &Type) -> bool {
+    matches!(t, Type::Var(_) | Type::Int)
+}
+
+fn join_option_param(a: Option<&Type>, b: Option<&Type>) -> Option<Type> {
+    match (a, b) {
+        (None, None) => Some(Type::Var(u32::MAX)),
+        (Some(t), None) | (None, Some(t)) => Some(t.clone()),
+        (Some(x), Some(y)) if x == y => Some(x.clone()),
+        (Some(x), Some(y)) if is_flexible_ty(x) => Some(y.clone()),
+        (Some(x), Some(y)) if is_flexible_ty(y) => Some(x.clone()),
+        (Some(Type::Float), Some(Type::Int)) | (Some(Type::Int), Some(Type::Float)) => {
+            Some(Type::Float)
+        }
+        _ => None,
+    }
+}
+
+fn prefer_payload_ty(a: Type, b: Type) -> Type {
+    if a == b {
+        return a;
+    }
+    match (&a, &b) {
+        (Type::Float, _) | (_, Type::Float) => Type::Float,
+        (Type::Int | Type::Var(_), other) => other.clone(),
+        (other, Type::Int | Type::Var(_)) => other.clone(),
+        _ => a,
     }
 }
 
@@ -476,18 +624,6 @@ fn guess_elems_ty(elems: &[Local], local_tys: &HashMap<u32, Type>) -> Type {
         });
     }
     acc.unwrap_or(Type::Int)
-}
-
-fn prefer_payload_ty(a: Type, b: Type) -> Type {
-    if a == b {
-        return a;
-    }
-    match (&a, &b) {
-        (Type::Float, _) | (_, Type::Float) => Type::Float,
-        (Type::Int | Type::Var(_), other) => other.clone(),
-        (other, Type::Int | Type::Var(_)) => other.clone(),
-        _ => a,
-    }
 }
 
 fn fun_ty_from_tables(
@@ -538,6 +674,94 @@ val main = {
             matches!(&lam.ret_ty, Type::List(e) if matches!(e.as_ref(), Type::Float)),
             "spawn lambda ret should be List[Float], got {:?}",
             lam.ret_ty
+        );
+    }
+
+    #[test]
+    fn named_fun_send_via_spawn_keeps_fun_hint() {
+        let mut core = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+val main = {
+    scope {
+        val ch = channel(1)
+        val f = { x -> x * 2.0 }
+        spawn { ch.send(f) }
+        val g = ch.recv()
+        println(g(1.5))
+    }
+}
+"#,
+        )
+        .expect("core");
+        refine_channel_elem_hint(&mut core);
+        assert!(
+            core.channel_elem_conflicts.is_empty(),
+            "named Fun send should not conflict: {:?}",
+            core.channel_elem_conflicts
+        );
+        let hint = core
+            .channel_elem_by_local
+            .values()
+            .next()
+            .cloned()
+            .or(core.channel_elem_hint.clone());
+        assert!(
+            matches!(&hint, Some(Type::Fun(_, ret, _)) if matches!(ret.as_ref(), Type::Float)),
+            "expected Channel[Fun→Float] hint, got {hint:?}"
+        );
+    }
+
+    #[test]
+    fn channel_new_stamps_ground_elem_from_type_at() {
+        use crate::visit::for_each_block_dfs;
+        use crate::{Op, Value};
+        use lumia_hir::Builtin;
+
+        let core = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+val main = {
+    scope {
+        val ch = channel(1)
+        spawn { ch.send(1.5) }
+        println(ch.recv() * 2.0)
+    }
+}
+"#,
+        )
+        .expect("core");
+        let mut found = false;
+        for fun in &core.functions {
+            for_each_block_dfs(&fun.body, &mut |block| {
+                for op in &block.ops {
+                    if let Op::Let {
+                        value:
+                            Value::Builtin {
+                                name: Builtin::ChannelNew,
+                                result_ty: Some(Type::Channel(e)),
+                                ..
+                            },
+                        ..
+                    } = op
+                    {
+                        assert!(
+                            matches!(e.as_ref(), Type::Float),
+                            "ChannelNew stamp should be Channel[Float], got {:?}",
+                            e
+                        );
+                        found = true;
+                    }
+                }
+            });
+        }
+        assert!(found, "expected stamped ChannelNew from type_at");
+        assert!(
+            matches!(&core.channel_elem_hint, Some(Type::Float)),
+            "module hint should seed from stamp, got {:?}",
+            core.channel_elem_hint
         );
     }
 
@@ -866,6 +1090,62 @@ val main = {
             matches!(hint, Some(Type::Bool)),
             "channel bool hint {:?}",
             hint
+        );
+    }
+
+    #[test]
+    fn channel_option_some_none_and_result_ok_err_join() {
+        let mut core = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+val main = {
+    scope {
+        val ch = channel(2)
+        spawn {
+            ch.send(Some(1.5))
+            ch.send(None)
+        }
+        println(ch.recv() alt 0.0)
+        val ch2 = channel(2)
+        spawn {
+            ch2.send(Ok(1.5))
+            ch2.send(Err("e"))
+        }
+        println(ch2.recv())
+    }
+}
+"#,
+        )
+        .expect("core");
+        refine_channel_elem_hint(&mut core);
+        assert!(
+            core.channel_elem_conflicts.is_empty(),
+            "Option/Result variants must not conflict: {:?}",
+            core.channel_elem_conflicts
+        );
+        let mut tys: Vec<_> = core.channel_elem_by_local.values().cloned().collect();
+        tys.sort_by_key(|t| format!("{t:?}"));
+        assert_eq!(tys.len(), 2, "expected two channels, got {tys:?}");
+        assert!(
+            tys.iter().any(|t| matches!(
+                t,
+                Type::Adt { name, params }
+                    if name == "Option"
+                        && params.first().is_some_and(|p| matches!(p, Type::Float))
+            )),
+            "expected Option[Float], got {tys:?}"
+        );
+        assert!(
+            tys.iter().any(|t| matches!(
+                t,
+                Type::Adt { name, params }
+                    if name == "Result"
+                        && params.len() == 2
+                        && matches!(params[0], Type::Float)
+                        && matches!(params[1], Type::String)
+            )),
+            "expected Result[Float, String], got {tys:?}"
         );
     }
 

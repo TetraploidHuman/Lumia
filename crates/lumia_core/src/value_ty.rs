@@ -214,13 +214,22 @@ pub fn infer_value_ty_ctx(
                 (None, Some(f)) => f(fun, args).unwrap_or(Type::Int),
                 (None, None) => Type::Int,
             };
-            identity_float_call_ret(ret, fun, args, ctx)
+            identity_passthrough_call_ret(ret, fun, args, ctx)
         }
         Value::Builtin {
             name: Builtin::ListParMap,
+            args, .. } => Type::List(Box::new(list_par_map_result_elem(args, ctx))),
+        Value::Builtin {
+            name,
             args,
-        } => Type::List(Box::new(list_par_map_result_elem(args, ctx))),
-        Value::Builtin { name, args } => builtin_value_ty(*name, args, ctx),
+            result_ty,
+        } => {
+            if let Some(ty) = result_ty {
+                ty.clone()
+            } else {
+                builtin_value_ty(*name, args, ctx)
+            }
+        }
         Value::ClosureCap { as_float: true, .. } => Type::Float,
         Value::ClosureCap { .. } => Type::Int,
         Value::FunRef(name) | Value::AllocClosure { fun: name, .. } => {
@@ -252,7 +261,8 @@ pub fn infer_value_ty_ctx(
             }
         }
         Value::IndirectCall { callee, args } => {
-            let ret = match ctx.local_tys.get(&callee.0) {
+            let fun_ty = ctx.local_tys.get(&callee.0);
+            let ret = match fun_ty {
                 Some(Type::Fun(_, ret, _)) => (**ret).clone(),
                 _ => ctx
                     .funref_locals
@@ -260,42 +270,121 @@ pub fn infer_value_ty_ctx(
                     .and_then(|name| ctx.fun_ret_tys.and_then(|m| m.get(name).cloned()))
                     .unwrap_or(Type::Int),
             };
-            if matches!(&ret, Type::List(e) if matches!(e.as_ref(), Type::Int)) {
-                if let Some(name) = ctx.funref_locals.and_then(|m| m.get(&callee.0)) {
-                    let ptys = ctx
-                        .fun_param_tys
-                        .and_then(|m| m.get(name).cloned())
-                        .unwrap_or_default();
-                    if args.len() == 1
-                        && ptys.len() == 1
-                        && matches!(ptys[0], Type::Int)
-                        && matches!(ctx.local_tys.get(&args[0].0), Some(Type::Float))
-                    {
-                        return Type::Float;
-                    }
-                }
+            if let Some(name) = ctx.funref_locals.and_then(|m| m.get(&callee.0)) {
+                identity_passthrough_call_ret(ret, name, args, ctx)
+            } else if let Some(t) = identity_shaped_fun_arg_passthrough(fun_ty, args, ctx.local_tys)
+            {
+                // `id` captured as ClosureCap: no funref_locals name, but Fun is
+                // still Int→Int / List[Int] placeholder — adopt the arg ABI
+                // (`id(listOf(1.0)).fold` must keep List[Float] elems).
+                t
+            } else {
+                ret
             }
-            ret
         }
         Value::Loop { .. } | Value::Lambda { .. } => Type::Int,
     }
 }
 
-fn identity_float_call_ret(ret: Type, fun: &str, args: &[Local], ctx: InferValueCtx<'_>) -> Type {
-    if matches!(&ret, Type::List(e) if matches!(e.as_ref(), Type::Int)) {
-        let ptys = ctx
-            .fun_param_tys
-            .and_then(|m| m.get(fun).cloned())
-            .unwrap_or_default();
+/// Open/identity Fun ret placeholders erased before mono Float clones exist.
+fn identity_placeholder_ret(ret: &Type) -> bool {
+    match ret {
+        Type::Int | Type::Var(_) => true,
+        Type::List(e) if matches!(e.as_ref(), Type::Int) => true,
+        _ => false,
+    }
+}
+
+/// Identity / open Fun with lift placeholder `Int`/`List[Int]` ret: adopt the
+/// argument's concrete ABI so `m.get(k) alt id` / `id(xs).fold` ICall keep ABI.
+fn identity_shaped_fun_arg_passthrough(
+    fun_ty: Option<&Type>,
+    args: &[Local],
+    local_tys: &HashMap<u32, Type>,
+) -> Option<Type> {
+    let Type::Fun(ps, ret, _) = fun_ty? else {
+        return None;
+    };
+    if ps.len() != 1 || args.len() != 1 {
+        return None;
+    }
+    if !matches!(ps[0], Type::Int | Type::Var(_)) {
+        return None;
+    }
+    if !identity_placeholder_ret(ret) {
+        return None;
+    }
+    let arg_ty = local_tys.get(&args[0].0)?;
+    match arg_ty {
+        Type::Float
+        | Type::List(_)
+        | Type::Map(_, _)
+        | Type::Set(_)
+        | Type::Adt { .. }
+        | Type::Fun(_, _, _)
+        | Type::Task(_)
+        | Type::Channel(_)
+        | Type::String
+        | Type::Char
+        | Type::Bool => Some(arg_ty.clone()),
+        _ => None,
+    }
+}
+
+fn identity_passthrough_call_ret(
+    ret: Type,
+    fun: &str,
+    args: &[Local],
+    ctx: InferValueCtx<'_>,
+) -> Type {
+    let Some(arg0) = args.first() else {
+        return ret;
+    };
+    let Some(arg_ty) = ctx.local_tys.get(&arg0.0) else {
+        return ret;
+    };
+    let is_id = ctx
+        .fun_param0_identity
+        .is_some_and(|s| s.contains(fun));
+    let ptys = ctx
+        .fun_param_tys
+        .and_then(|m| m.get(fun).cloned())
+        .unwrap_or_default();
+    // Legacy: Int-param + Float arg before identity set is wired.
+    if !is_id {
         if args.len() == 1
             && ptys.len() == 1
             && matches!(ptys[0], Type::Int)
-            && matches!(ctx.local_tys.get(&args[0].0), Some(Type::Float))
+            && matches!(arg_ty, Type::Float)
         {
             return Type::Float;
         }
+        // Open List[Int] ret still adopts a concrete list arg (mono-less icall).
+        if matches!(&ret, Type::List(e) if matches!(e.as_ref(), Type::Int))
+            && matches!(arg_ty, Type::List(_))
+        {
+            return arg_ty.clone();
+        }
+        return ret;
     }
-    ret
+    if !identity_placeholder_ret(&ret) {
+        return ret;
+    }
+    match arg_ty {
+        Type::Float
+        | Type::Int
+        | Type::Bool
+        | Type::String
+        | Type::Char
+        | Type::Adt { .. }
+        | Type::List(_)
+        | Type::Map(_, _)
+        | Type::Set(_)
+        | Type::Fun(_, _, _)
+        | Type::Task(_)
+        | Type::Channel(_) => arg_ty.clone(),
+        _ => ret,
+    }
 }
 
 fn list_elem_preserved(args: &[Local], local_tys: &HashMap<u32, Type>) -> Type {
@@ -381,6 +470,8 @@ fn join_value_tys(a: &Type, b: &Type) -> Option<Type> {
         return Some(a.clone());
     }
     match (a, b) {
+        // MatchFail / empty arm: Unit is bottom, not a real payload.
+        (Type::Unit, other) | (other, Type::Unit) => Some(other.clone()),
         // `Result/Option alt float`: then=`AdtField` may see only the Err/None
         // construction params (e.g. String from `Err("e")`) while else is Float.
         // Prefer Float so println does not treat IEEE bits as Int/String.
@@ -392,11 +483,27 @@ fn join_value_tys(a: &Type, b: &Type) -> Option<Type> {
                     | Type::Bool
                     | Type::String
                     | Type::Char
-                    | Type::Unit
                     | Type::Float
             ) =>
         {
             Some(Type::Float)
+        }
+        // `Err("e") alt { x -> … }` / `None alt fun`: String vs Fun — keep Fun.
+        (Type::Fun(_, _, _), other) | (other, Type::Fun(_, _, _))
+            if matches!(
+                other,
+                Type::Int
+                    | Type::Var(_)
+                    | Type::Bool
+                    | Type::String
+                    | Type::Char
+                    | Type::Float
+            ) =>
+        {
+            match (a, b) {
+                (Type::Fun(_, _, _), _) => Some(a.clone()),
+                _ => Some(b.clone()),
+            }
         }
         (Type::Int | Type::Var(_), other) => Some(other.clone()),
         (other, Type::Int | Type::Var(_)) => Some(other.clone()),
@@ -421,6 +528,18 @@ fn join_value_tys(a: &Type, b: &Type) -> Option<Type> {
                 name: n1.clone(),
                 params,
             })
+        }
+        // Prefer Fun when joining two Fun shapes (alt arms / unwrapOr).
+        (Type::Fun(p1, r1, e1), Type::Fun(p2, r2, e2)) => {
+            let n = p1.len().max(p2.len());
+            let mut params = Vec::with_capacity(n);
+            for i in 0..n {
+                let x = p1.get(i).cloned().unwrap_or(Type::Int);
+                let y = p2.get(i).cloned().unwrap_or(Type::Int);
+                params.push(join_value_tys(&x, &y).unwrap_or(x));
+            }
+            let ret = join_value_tys(r1, r2).unwrap_or_else(|| (**r1).clone());
+            Some(Type::Fun(params, Box::new(ret), e1.union(*e2)))
         }
         _ => None,
     }
@@ -571,11 +690,26 @@ fn builtin_value_ty(name: Builtin, args: &[Local], ctx: InferValueCtx<'_>) -> Ty
                 .and_then(|a| local_tys.get(&a.0).cloned())
                 .unwrap_or(Type::List(Box::new(Type::Int)));
             let b = args.get(1).and_then(|a| local_tys.get(&a.0));
-            // flatMap: empty Int acc `concat` Float chunk → result List[Float]
-            // (runtime tid already ORs float flags from either side).
+            // flatMap: empty `listOf()` acc is List[Int]; concat a concrete chunk
+            // (Float / Fun / …) must upgrade so later ListGet + icall / println
+            // see the real ABI (same idea as ListAppend).
             // String `.concat` shares this builtin — keep String, not List.
             match (&a, b) {
                 (Type::String, _) | (_, Some(Type::String)) => Type::String,
+                (Type::List(e1), Some(Type::List(e2))) => {
+                    let erased = |t: &Type| matches!(t, Type::Int | Type::Var(_));
+                    if erased(e1.as_ref()) && !erased(e2.as_ref()) {
+                        Type::List(e2.clone())
+                    } else if !erased(e1.as_ref()) && erased(e2.as_ref()) {
+                        Type::List(e1.clone())
+                    } else if matches!(e1.as_ref(), Type::Float)
+                        || matches!(e2.as_ref(), Type::Float)
+                    {
+                        Type::List(Box::new(Type::Float))
+                    } else {
+                        a
+                    }
+                }
                 (Type::List(e), _) | (_, Some(Type::List(e)))
                     if matches!(e.as_ref(), Type::Float) =>
                 {
@@ -712,11 +846,46 @@ mod tests {
             &Value::Builtin {
                 name: lumia_hir::Builtin::ListAppend,
                 args: vec![Local(0), Local(1)],
-            },
+                    result_ty: None,
+                },
             &tys,
             |_, _| None,
         );
         assert_eq!(t, Type::List(Box::new(Type::Task(Box::new(Type::Float)))));
+    }
+
+    #[test]
+    fn list_concat_upgrades_int_acc_to_fun_elem() {
+        // flatMap empty acc is List[Int]; chunk listOf({…}) is List[Fun].
+        let mut tys = HashMap::default();
+        tys.insert(0, Type::List(Box::new(Type::Int)));
+        tys.insert(
+            1,
+            Type::List(Box::new(Type::Fun(
+                vec![Type::Float],
+                Box::new(Type::Float),
+                Effect::pure(),
+            ))),
+        );
+        let t = infer_value_ty(
+            &Value::Builtin {
+                name: lumia_hir::Builtin::ListConcat,
+                args: vec![Local(0), Local(1)],
+                result_ty: None,
+            },
+            &tys,
+            |_, _| None,
+        );
+        assert!(
+            matches!(
+                &t,
+                Type::List(e) if matches!(
+                    e.as_ref(),
+                    Type::Fun(_, ret, _) if matches!(ret.as_ref(), Type::Float)
+                )
+            ),
+            "expected List[Fun(_, Float)], got {t:?}"
+        );
     }
 
     #[test]
@@ -776,7 +945,8 @@ mod tests {
             &Value::Builtin {
                 name: Builtin::AdtField,
                 args: vec![Local(0), Local(1)],
-            },
+                    result_ty: None,
+                },
             ctx,
             None,
         );

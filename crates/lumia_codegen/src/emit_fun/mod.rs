@@ -329,7 +329,7 @@ impl<'ctx> Codegen<'ctx> {
         dest: Local,
         value: &Value,
     ) -> bool {
-        let Value::Builtin { name, args } = value else {
+        let Value::Builtin { name, args, .. } = value else {
             return false;
         };
         let list_arg = match name {
@@ -397,8 +397,7 @@ impl<'ctx> Codegen<'ctx> {
     fn adt_field_from_slot(&self, field: &Local, slot: &str) -> Option<i64> {
         let Value::Builtin {
             name: Builtin::AdtField,
-            args,
-        } = self.frame.leaf_defs.get(&field.0)?
+            args, .. } = self.frame.leaf_defs.get(&field.0)?
         else {
             return None;
         };
@@ -467,7 +466,7 @@ impl<'ctx> Codegen<'ctx> {
             uses += 1;
             let ok = match op {
                 Op::Let {
-                    value: Value::Builtin { name, args },
+                    value: Value::Builtin { name, args, .. },
                     ..
                 } => {
                     let recv = matches!(
@@ -583,8 +582,7 @@ impl<'ctx> Codegen<'ctx> {
                 Op::Let { value, .. } | Op::Effect { value } => match value {
                     Value::Builtin {
                         name: Builtin::AdtField,
-                        args,
-                    } => args.first() == Some(&local) && args[1..].iter().all(|a| *a != local),
+                        args, .. } => args.first() == Some(&local) && args[1..].iter().all(|a| *a != local),
                     _ => false,
                 },
                 _ => false,

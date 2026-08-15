@@ -1,0 +1,13 @@
+/// Self-recursive List[Bool].get must not ICE in codegen roots (TCO / root_depth).
+module main
+
+val any = { xs, i ->
+    if i >= xs.len() { false }
+    else if xs.get(i) { true }
+    else { any(xs, i + 1) }
+}
+
+val main = {
+    println(any(listOf(false, true, false), 0))
+    println(any(listOf(false, false), 0))
+}

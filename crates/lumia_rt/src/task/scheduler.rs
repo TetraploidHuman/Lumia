@@ -12,6 +12,7 @@ use corosensei::{Coroutine, CoroutineResult};
 use rustc_hash::FxHashSet;
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, Once};
 use std::time::Duration;
 
@@ -20,6 +21,14 @@ pub use super::sched_core::{
     PendingSpawn, SchedCore, SchedulerKind, ScopeFrame, ScopeId, TaskId, TaskState, Waiter,
     SCHEDULER_IO, SCHEDULER_WORKER,
 };
+
+/// Latched when Task/Channel APIs run; avoids fiber-table scans on every `par_map`
+/// in programs that never use the scheduler.
+static TASK_RUNTIME_USED: AtomicBool = AtomicBool::new(false);
+
+pub(super) fn note_task_runtime_used() {
+    TASK_RUNTIME_USED.store(true, Ordering::Release);
+}
 
 thread_local! {
     pub(super) static CURRENT_FIBER: Cell<Option<FiberId>> = const { Cell::new(None) };
@@ -87,6 +96,7 @@ pub(super) fn assert_task_api_allowed() {
     if PAR_WORKER.get() {
         trap_abort("lumia: task/channel API on parallel map worker");
     }
+    note_task_runtime_used();
 }
 
 pub fn task_runtime_active() -> bool {
@@ -95,6 +105,9 @@ pub fn task_runtime_active() -> bool {
     }
     if SCOPE_STACK.with(|s| !s.borrow().is_empty()) {
         return true;
+    }
+    if !TASK_RUNTIME_USED.load(Ordering::Acquire) {
+        return false;
     }
     with_sched(|s| {
         s.ready_nonempty()

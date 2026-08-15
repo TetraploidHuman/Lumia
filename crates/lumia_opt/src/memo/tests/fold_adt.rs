@@ -26,7 +26,8 @@ fn const_fold_adt_tag() {
                         value: Value::Builtin {
                             name: Builtin::AdtTag,
                             args: vec![Local(0)],
-                        },
+                    result_ty: None,
+                },
                         pure_region: true,
                     },
                 ],

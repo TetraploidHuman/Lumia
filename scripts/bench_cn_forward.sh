@@ -2,7 +2,7 @@
 # CogniNucleus strict-PE triad forward microbench (Release).
 #
 # Vis→pfc→mot with clusterRates, projectError, updateState lateral,
-# learnGenerative, Hebbian μ⊗ε, EFE + argmax. Kernel uses std.cn fused ops;
+# learnGenerative, Hebbian μ⊗ε, EFE + argmax. Kernel uses extras.cn fused ops;
 # naive composes the new pieces via std.linalg.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

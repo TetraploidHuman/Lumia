@@ -107,7 +107,7 @@ fn seed_value(
                 escaping.insert(*a);
             }
         }
-        Value::Builtin { name, args } => {
+        Value::Builtin { name, args, .. } => {
             if name.may_capture() || matches!(*name, Builtin::Show) {
                 for a in args {
                     escaping.insert(*a);

@@ -652,8 +652,7 @@ fn parse_acc_get_affine_rem(
     // get_l must be ListGet(range(0,n), i)
     let Value::Builtin {
         name: Builtin::ListGet,
-        args,
-    } = defs.get(&get_l.0)?
+        args, .. } = defs.get(&get_l.0)?
     else {
         return None;
     };
@@ -665,8 +664,7 @@ fn parse_acc_get_affine_rem(
     }
     let Value::Builtin {
         name: Builtin::Range,
-        args: rargs,
-    } = defs.get(&args[0].0)?
+        args: rargs, .. } = defs.get(&args[0].0)?
     else {
         return None;
     };

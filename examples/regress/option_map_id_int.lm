@@ -1,0 +1,8 @@
+/// optionMap identity Fun on Int then unwrapOr.
+module main
+import std.option.{optionMap, unwrapOr}
+
+val main = {
+    val o = optionMap(Some(42), { x -> x })
+    println(unwrapOr(o, -1))
+}

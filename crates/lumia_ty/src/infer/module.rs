@@ -155,23 +155,29 @@ fn infer_module_inner(
         .iter()
         .map(|p| (p.name.clone(), p.fields.clone()))
         .collect();
-    inf.products.sum_max_arity = module
-        .adts
-        .iter()
-        .map(|a| {
-            let max = a.variants.iter().map(|v| v.arity).max().unwrap_or(0);
-            (a.name.clone(), max)
-        })
-        .collect();
-    inf.products.sum_ctors = module
-        .adts
-        .iter()
-        .flat_map(|a| {
-            a.variants
-                .iter()
-                .map(|v| (v.name.clone(), (a.name.clone(), v.arity)))
-        })
-        .collect();
+    inf.products.sum_field_recursive = HashMap::default();
+    inf.products.sum_max_arity = HashMap::default();
+    inf.products.sum_ctors = HashMap::default();
+    for a in &module.adts {
+        let kinds = classify_sum_field_recursive(a);
+        let mut param_offset = 0usize;
+        let mut total_params = 0usize;
+        for v in &a.variants {
+            let rec = kinds.get(v.name.as_str()).cloned().unwrap_or_default();
+            let parametric = rec.iter().filter(|r| !**r).count();
+            inf.products
+                .sum_ctors
+                .insert(v.name.clone(), (a.name.clone(), v.arity, param_offset));
+            inf.products
+                .sum_field_recursive
+                .insert(v.name.clone(), rec);
+            param_offset += parametric;
+            total_params += parametric;
+        }
+        inf.products
+            .sum_max_arity
+            .insert(a.name.clone(), total_params);
+    }
     let mut fun_types = HashMap::default();
     let mut fun_schemes = HashMap::default();
     let mut main_effect = Effect::pure();
@@ -370,4 +376,46 @@ fn infer_module_inner(
         }),
         errors,
     )
+}
+
+/// Mark which sum-variant fields are recursive spines (`Nat.S`, `UList.Cons` tail)
+/// vs parametric payloads (`UList` head, `Expr.Lit`/`Add`, `Either`, `Shape`).
+///
+/// Without a nullary base, arity alone cannot tell `Expr.Add` from `Shape.Rect`,
+/// so non-nullary sums keep every field parametric; recursive values still type
+/// as `Adt[…]` when nested as payloads.
+fn classify_sum_field_recursive(adt: &lumia_hir::AdtDef) -> HashMap<String, Vec<bool>> {
+    // Prelude Option/Result keep parametric payloads (Result is also special-cased
+    // in `infer_adt_new`). Treating `Some` like `Nat.S` would require `Some(3): Option`.
+    if adt.name == "Option" || adt.name == "Result" {
+        return adt
+            .variants
+            .iter()
+            .map(|v| (v.name.clone(), vec![false; v.arity]))
+            .collect();
+    }
+    let arities: Vec<usize> = adt.variants.iter().map(|v| v.arity).collect();
+    let has_nullary = arities.iter().any(|&a| a == 0);
+    let only_nullary_unary = arities.iter().all(|&a| a <= 1);
+    let mut out = HashMap::default();
+    for v in &adt.variants {
+        let rec = if v.arity == 0 {
+            vec![]
+        } else if only_nullary_unary && has_nullary {
+            // `Nat { Z S(n) }`: the unary payload is `Nat` itself.
+            vec![true; v.arity]
+        } else if has_nullary && v.arity >= 2 {
+            // `UList { Nil Cons(h, t) }`: last field recursive, earlier parametric.
+            let mut k = vec![false; v.arity];
+            if let Some(last) = k.last_mut() {
+                *last = true;
+            }
+            k
+        } else {
+            // `Either` / `Shape` / `Expr`: all parametric (concatenated slots).
+            vec![false; v.arity]
+        };
+        out.insert(v.name.clone(), rec);
+    }
+    out
 }

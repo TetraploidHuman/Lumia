@@ -43,6 +43,29 @@ impl<'ctx> Codegen<'ctx> {
                     .map_err(|e| anyhow::anyhow!("truncate bool8: {e}"))?;
                 self.call_rt_void("lumia_println_bool", &[b.into()], "println_bool")?;
             }
+            Type::List(elem) if matches!(elem.as_ref(), Type::Bool) => {
+                let i = self.coerce_i64(arg)?;
+                let ptr = {
+                    let fun = self.runtime_fn("lumia_show_list_bool")?;
+                    crate::error::llvm(self.llvm.builder.build_call(
+                        fun,
+                        &[i.into()],
+                        "show_list_bool",
+                    ))?
+                    .try_as_basic_value()
+                    .basic()
+                    .context("call return value")?
+                    .into_pointer_value()
+                };
+                let len = self
+                    .call_rt_basic("lumia_str_byte_len", &[ptr.into()], "show_len")?
+                    .into_int_value();
+                self.call_rt_void(
+                    "lumia_println_str",
+                    &[ptr.into(), len.into()],
+                    "println_show",
+                )?;
+            }
             Type::Adt { name, params } => {
                 let ptr = if let Some(ptr) = self.emit_show_override(name, arg)? {
                     Some(ptr)
@@ -55,7 +78,7 @@ impl<'ctx> Codegen<'ctx> {
                 };
                 if let Some(ptr) = ptr {
                     let len = self
-                        .call_rt_basic("lumia_str_len", &[ptr.into()], "show_len")?
+                        .call_rt_basic("lumia_str_byte_len", &[ptr.into()], "show_len")?
                         .into_int_value();
                     self.call_rt_void(
                         "lumia_println_str",
@@ -131,6 +154,21 @@ impl<'ctx> Codegen<'ctx> {
                         fun,
                         &[b.into()],
                         "show_bool",
+                    ))?
+                    .try_as_basic_value()
+                    .basic()
+                    .context("call return value")?
+                    .into_pointer_value(),
+                )
+            }
+            Type::List(elem) if matches!(elem.as_ref(), Type::Bool) => {
+                let i = self.coerce_i64(arg)?;
+                let fun = self.runtime_fn("lumia_show_list_bool")?;
+                Ok(
+                    crate::error::llvm(self.llvm.builder.build_call(
+                        fun,
+                        &[i.into()],
+                        "show_list_bool",
                     ))?
                     .try_as_basic_value()
                     .basic()

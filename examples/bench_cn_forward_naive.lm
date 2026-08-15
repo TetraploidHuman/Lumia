@@ -6,8 +6,8 @@ import std.io.{println}
 import std.linalg.{
     zeros, copy, sub, scale, add, gemv, gemvT, axpy, clamp, addmm, checksum
 }
-import std.cn.{nucleusStep, hebbian, argMax}
-import std.efe.{actionScores}
+import extras.cn.{nucleusStep, hebbian, argMax}
+import extras.efe.{actionScores}
 
 val VIS = 16
 val PFC = 32

@@ -77,6 +77,46 @@ pub const MEMO_IDX_CAP: usize = 4096;
 pub const MEMO_IDX_TABLE_BYTES: usize = MEMO_IDX_CAP * (1 + 8);
 pub const MEMO_SLOTS_TABLE_BYTES: usize = MEMO_TF_SLOTS * (1 + MEMO_TF_MAX_ARGS * 8 + 8);
 
+/// Max elems / key–value pairs for Lit\* / Small\* stack layouts and linear
+/// Map·Set before hash promote. Escape analysis, ReprSelect, and RT must share
+/// this threshold (DESIGN §7 representation selection).
+pub const SMALL_CONTAINER_MAX: usize = 8;
+
+/// RT: write per-field Float mask into ADT header `_pad` (after fields are live).
+pub const ADT_SET_FLOAT_MASK: &str = "lumia_adt_set_float_mask";
+
+/// Dense `List[Float]` kernels that opt may rewrite whole helpers into and that
+/// codegen may emit as frameless trampolines.
+///
+/// Must stay ⊆ `runtime_decls` / `lumia_rt` exports. Scalar helpers (`sqrt` /
+/// `exp` / …) and `checksum` are declared separately and are **not** trampoline
+/// eligible.
+pub const DENSE_F64_TRAMPOLINE_SYMS: &[&str] = &[
+    "lumia_f64_gemv",
+    "lumia_f64_gemv_t",
+    "lumia_f64_addmm",
+    "lumia_f64_axpy",
+    "lumia_f64_sub",
+    "lumia_f64_add",
+    "lumia_f64_mul",
+    "lumia_f64_clamp",
+    "lumia_f64_scale",
+    "lumia_f64_fill",
+    "lumia_f64_copy",
+    "lumia_list_f64_zeros",
+    "lumia_f64_sum_sq",
+    "lumia_f64_mean",
+    "lumia_f64_std",
+    "lumia_f64_l2_norm",
+    "lumia_f64_softmax",
+    "lumia_f64_l2_normalize",
+];
+
+#[inline]
+pub fn is_dense_f64_trampoline(sym: &str) -> bool {
+    DENSE_F64_TRAMPOLINE_SYMS.iter().any(|&s| s == sym)
+}
+
 /// Repo root given a workspace crate's `CARGO_MANIFEST_DIR` (`crates/<name>` → `…/Lumia`).
 #[inline]
 pub fn workspace_root(manifest_dir: impl AsRef<Path>) -> PathBuf {

@@ -31,7 +31,6 @@ pub extern "C" fn lumia_list_par_map(
         trap_abort("lumia: list_par_map null function");
     };
     let result_tid = list_type_id(list_elem_is_float(result_tid));
-    let _gc = GcInhibitGuard::enter();
     let iota = !list.is_null() && list_tid(list) == TYPE_LIST_IOTA;
     let (n, iota_start, src_addr) = unsafe {
         if list.is_null() {
@@ -79,6 +78,8 @@ pub extern "C" fn lumia_list_par_map(
             }
             return dest;
         }
+        // Inhibit GC only while OS workers hold list pointers.
+        let _gc = GcInhibitGuard::enter();
         let workers = std::thread::available_parallelism()
             .map(|p| p.get())
             .unwrap_or(4)
@@ -130,7 +131,6 @@ pub extern "C" fn lumia_list_par_fold(
     let Some(f) = f else {
         trap_abort("lumia: list_par_fold null function");
     };
-    let _gc = GcInhibitGuard::enter();
     let iota = !list.is_null() && list_tid(list) == TYPE_LIST_IOTA;
     let (n, iota_start, src_addr) = unsafe {
         if list.is_null() {
@@ -168,6 +168,7 @@ pub extern "C" fn lumia_list_par_fold(
         }
         return acc;
     }
+    let _gc = GcInhibitGuard::enter();
     let workers = std::thread::available_parallelism()
         .map(|p| p.get())
         .unwrap_or(4)

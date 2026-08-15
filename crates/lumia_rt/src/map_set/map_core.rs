@@ -12,10 +12,10 @@ use super::tid::{key_eq, key_hash, map_float_keys, map_float_vals, map_is_assoc,
 
 /// Map: small maps stay linear `[n][k0][v0]…`; larger use HashOrdered
 /// `[n][cap][order×cap][key,val,state × cap]` (DESIGN default path).
-/// Hash writes may produce Overlay: `[-1][parent][dn][k0][v0]…` (delta ≤ 8).
-pub(crate) const MAP_SMALL_MAX: i64 = 8;
+/// Hash writes may produce Overlay: `[-1][parent][dn][k0][v0]…` (delta ≤ [`SMALL_CONTAINER_MAX`]).
+pub(crate) const MAP_SMALL_MAX: i64 = lumia_abi::SMALL_CONTAINER_MAX as i64;
 pub(crate) const MAP_OVERLAY_MARK: i64 = -1;
-pub(crate) const MAP_OVERLAY_MAX: i64 = 8;
+pub(crate) const MAP_OVERLAY_MAX: i64 = lumia_abi::SMALL_CONTAINER_MAX as i64;
 pub(crate) const MAP_ST_EMPTY: i64 = 0;
 pub(crate) const MAP_ST_FULL: i64 = 1;
 pub(crate) const MAP_ST_TOMB: i64 = 2;
@@ -418,13 +418,13 @@ pub(crate) unsafe fn map_find(map: *mut u8, key: i64) -> Option<usize> {
     let float_keys = map_float_keys(map);
     let n = *(map as *const i64);
     let base = map as *const i64;
-    let mut found = None;
+    // First hit wins (linear maps do not store duplicates after set).
     for i in 0..n as usize {
         if key_eq(*base.add(1 + i * 2), key, float_keys) {
-            found = Some(i);
+            return Some(i);
         }
     }
-    found
+    None
 }
 
 pub(crate) fn alloc_adt(tag: i64, fields: &[i64]) -> *mut u8 {

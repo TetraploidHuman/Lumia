@@ -9,7 +9,13 @@ use lumia_syntax::{BinOp, UnOp};
 impl Infer {
     pub(crate) fn infer_expr(&mut self, expr: &Expr) -> Result<(Type, Effect), TypeError> {
         let (t, e) = self.infer_expr_inner(expr)?;
-        self.type_at.push((expr_span(expr), t.clone()));
+        // `Let` has no own span; `expr_span` falls through to the value. Pushing
+        // the body's type there would clobber the value's entry (e.g. `channel(1)`
+        // becoming `Unit` after `val ch = channel(1); …`). Value and body already
+        // record their own spans when inferred.
+        if !matches!(expr, Expr::Let { .. }) {
+            self.type_at.push((expr_span(expr), t.clone()));
+        }
         Ok((t, e))
     }
 
@@ -564,20 +570,40 @@ impl Infer {
                 _ if arg_tys.is_empty() => vec![self.fresh(), self.fresh()],
                 _ => arg_tys,
             }
-        } else {
-            // Product / sum: payload types as params. Sum variants pad to the
-            // ADT's max arity so `Circle(r)` and `Rect(w, h)` share Shape[_, _].
-            let max = self
+        } else if self.products.sum_max_arity.contains_key(adt_name) {
+            // User/prelude sums: parametric slots only; recursive spines are `Self`.
+            let nparams = self.products.sum_max_arity[adt_name];
+            let rec = self
                 .products
-                .sum_max_arity
-                .get(adt_name)
-                .copied()
-                .unwrap_or(arg_tys.len());
-            let mut params = arg_tys;
-            while params.len() < max {
-                params.push(self.fresh());
+                .sum_field_recursive
+                .get(variant)
+                .cloned()
+                .unwrap_or_else(|| vec![false; arg_tys.len()]);
+            let base = self
+                .products
+                .sum_ctors
+                .get(variant)
+                .map(|(_, _, off)| *off)
+                .unwrap_or(0);
+            let mut params: Vec<Type> = (0..nparams).map(|_| self.fresh()).collect();
+            let self_ty = Type::Adt {
+                name: adt_name.into(),
+                params: params.clone(),
+            };
+            let mut pslot = base;
+            for (i, t) in arg_tys.into_iter().enumerate() {
+                if rec.get(i).copied().unwrap_or(false) {
+                    self.unify(t, self_ty.clone())?;
+                } else if pslot < params.len() {
+                    self.unify(t, params[pslot].clone())?;
+                    pslot += 1;
+                }
             }
+            params = params.into_iter().map(|p| self.prune(p)).collect();
             params
+        } else {
+            // Products: payload types are the params.
+            arg_tys
         };
         Ok((
             Type::Adt {

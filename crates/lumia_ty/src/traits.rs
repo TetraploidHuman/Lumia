@@ -239,6 +239,78 @@ impl Infer {
         Ok(())
     }
 
+    pub(crate) fn check_len_bind(&mut self, v: u32, t: &Type) -> Result<(), TypeError> {
+        if !self.uni.len_vars.contains(&v) {
+            return Ok(());
+        }
+        match self.prune(t.clone()) {
+            Type::List(_) | Type::Set(_) | Type::Map(_, _) | Type::String | Type::Var(_) => Ok(()),
+            other => Err(TypeError::Message(format!(
+                "len: expected List/Set/Map/String, got {other:?}"
+            ))),
+        }
+    }
+
+    pub(crate) fn check_concat_bind(&mut self, v: u32, t: &Type) -> Result<(), TypeError> {
+        if !self.uni.concat_vars.contains(&v) {
+            return Ok(());
+        }
+        match self.prune(t.clone()) {
+            Type::List(_) | Type::String | Type::Var(_) => Ok(()),
+            other => Err(TypeError::Message(format!(
+                "concat: expected List or String, got {other:?}"
+            ))),
+        }
+    }
+
+    pub(crate) fn check_contains_bind(&mut self, v: u32, t: &Type) -> Result<(), TypeError> {
+        if !self.uni.contains_vars.contains(&v) {
+            return Ok(());
+        }
+        match self.prune(t.clone()) {
+            Type::Map(_, _) | Type::Set(_) | Type::String | Type::Var(_) => Ok(()),
+            other => Err(TypeError::Message(format!(
+                "contains: expected Map, Set, or String, got {other:?}"
+            ))),
+        }
+    }
+
+    pub(crate) fn check_set_bind(&mut self, v: u32, t: &Type) -> Result<(), TypeError> {
+        if !self.uni.set_vars.contains(&v) {
+            return Ok(());
+        }
+        match self.prune(t.clone()) {
+            Type::List(_) | Type::Map(_, _) | Type::Var(_) => Ok(()),
+            other => Err(TypeError::Message(format!(
+                "set: expected Map or List, got {other:?}"
+            ))),
+        }
+    }
+
+    pub(crate) fn check_elems_bind(&mut self, v: u32, t: &Type) -> Result<(), TypeError> {
+        if !self.uni.elems_vars.contains(&v) {
+            return Ok(());
+        }
+        match self.prune(t.clone()) {
+            Type::List(_) | Type::Set(_) | Type::Map(_, _) | Type::Var(_) => Ok(()),
+            other => Err(TypeError::Message(format!(
+                "elems/toList: expected List, Set, or Map, got {other:?}"
+            ))),
+        }
+    }
+
+    pub(crate) fn check_take_bind(&mut self, v: u32, t: &Type) -> Result<(), TypeError> {
+        if !self.uni.take_vars.contains(&v) {
+            return Ok(());
+        }
+        match self.prune(t.clone()) {
+            Type::List(_) | Type::String | Type::Var(_) => Ok(()),
+            other => Err(TypeError::Message(format!(
+                "take/drop/reverse: expected List or String, got {other:?}"
+            ))),
+        }
+    }
+
     pub(crate) fn check_trait_bind(&mut self, v: u32, t: &Type) -> Result<(), TypeError> {
         let Some(preds) = self.traits.trait_vars.get(&v).cloned() else {
             return Ok(());

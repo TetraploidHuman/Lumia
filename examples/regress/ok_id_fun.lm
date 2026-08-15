@@ -1,0 +1,7 @@
+module main
+
+val main = {
+    val r = Ok({ x -> x })
+    val f = r alt { x -> x }
+    println(f(2.5))
+}

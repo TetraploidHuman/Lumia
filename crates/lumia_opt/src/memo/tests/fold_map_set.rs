@@ -49,7 +49,8 @@ fn const_fold_map_get_to_option() {
                         value: Value::Builtin {
                             name: Builtin::ListGet,
                             args: vec![Local(4), Local(5)],
-                        },
+                    result_ty: None,
+                },
                         pure_region: true,
                     },
                     Op::Let {
@@ -62,7 +63,8 @@ fn const_fold_map_get_to_option() {
                         value: Value::Builtin {
                             name: Builtin::ListGet,
                             args: vec![Local(4), Local(7)],
-                        },
+                    result_ty: None,
+                },
                         pure_region: true,
                     },
                 ],
@@ -140,7 +142,8 @@ fn const_fold_contains_skips_nonconst_keys() {
                         value: Value::Builtin {
                             name: Builtin::Contains,
                             args: vec![Local(2), Local(3)],
-                        },
+                    result_ty: None,
+                },
                         pure_region: true,
                     },
                 ],
@@ -204,7 +207,8 @@ fn const_fold_map_set_and_set_insert() {
                         value: Value::Builtin {
                             name: Builtin::MapSet,
                             args: vec![Local(3), Local(0), Local(2)],
-                        },
+                    result_ty: None,
+                },
                         pure_region: true,
                     },
                     Op::Let {
@@ -225,7 +229,8 @@ fn const_fold_map_set_and_set_insert() {
                         value: Value::Builtin {
                             name: Builtin::SetInsert,
                             args: vec![Local(5), Local(6)],
-                        },
+                    result_ty: None,
+                },
                         pure_region: true,
                     },
                     Op::Let {
@@ -251,7 +256,8 @@ fn const_fold_map_set_and_set_insert() {
                         value: Value::Builtin {
                             name: Builtin::MapSet,
                             args: vec![Local(8), Local(9), Local(10)],
-                        },
+                    result_ty: None,
+                },
                         pure_region: true,
                     },
                 ],
@@ -292,5 +298,125 @@ fn const_fold_map_set_and_set_insert() {
         ),
         "List.set via MapSet should PE, got {:?}",
         module.functions[0].body.ops[11]
+    );
+}
+
+#[test]
+fn const_fold_compacts_pm0_float_map_set_keys() {
+    use lumia_core::{MapRepr, SetRepr};
+    let mut module = CoreModule::with_functions(
+        "C",
+        vec![bare_fun(
+            "f",
+            vec![],
+            Block {
+                params: vec![],
+                ops: vec![
+                    Op::Let {
+                        local: Local(0),
+                        value: Value::Float(0.0),
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(1),
+                        value: Value::Int(1),
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(2),
+                        value: Value::Unary {
+                            op: UnOp::Neg,
+                            operand: Local(0),
+                        },
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(3),
+                        value: Value::Int(2),
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(4),
+                        value: Value::AllocMap {
+                            flat_pairs: vec![Local(0), Local(1), Local(2), Local(3)],
+                            repr: MapRepr::LitMap,
+                        },
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(5),
+                        value: Value::AllocSet {
+                            elems: vec![Local(0), Local(2)],
+                            repr: SetRepr::LitSet,
+                        },
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(6),
+                        value: Value::Builtin {
+                            name: Builtin::ListLen,
+                            args: vec![Local(4)],
+                            result_ty: None,
+                        },
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(7),
+                        value: Value::Builtin {
+                            name: Builtin::ListLen,
+                            args: vec![Local(5)],
+                            result_ty: None,
+                        },
+                        pure_region: true,
+                    },
+                ],
+                result: Some(Local(6)),
+            },
+        )],
+    );
+    ConstFoldPass.run(&mut module);
+    assert!(
+        matches!(
+            &module.functions[0].body.ops[4],
+            Op::Let {
+                value: Value::AllocMap { flat_pairs, .. },
+                ..
+            } if flat_pairs.len() == 2 && flat_pairs[1] == Local(3)
+        ),
+        "±0 map keys should compact to last value, got {:?}",
+        module.functions[0].body.ops[4]
+    );
+    assert!(
+        matches!(
+            &module.functions[0].body.ops[5],
+            Op::Let {
+                value: Value::AllocSet { elems, .. },
+                ..
+            } if elems.len() == 1
+        ),
+        "±0 set elems should compact, got {:?}",
+        module.functions[0].body.ops[5]
+    );
+    assert!(
+        matches!(
+            &module.functions[0].body.ops[6],
+            Op::Let {
+                value: Value::Int(1),
+                ..
+            }
+        ),
+        "map.len after ±0 compact should be 1, got {:?}",
+        module.functions[0].body.ops[6]
+    );
+    assert!(
+        matches!(
+            &module.functions[0].body.ops[7],
+            Op::Let {
+                value: Value::Int(1),
+                ..
+            }
+        ),
+        "set.len after ±0 compact should be 1, got {:?}",
+        module.functions[0].body.ops[7]
     );
 }

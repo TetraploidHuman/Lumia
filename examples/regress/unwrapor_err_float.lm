@@ -1,0 +1,7 @@
+/// result unwrapOr(Err, Float default) ABI.
+module main
+import std.result.{unwrapOr}
+
+val main = {
+    println(unwrapOr(Err("e"), 1.5))
+}

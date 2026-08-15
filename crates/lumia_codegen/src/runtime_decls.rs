@@ -51,7 +51,7 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         args: &[RtTy::I64, RtTy::I64, RtTy::I64],
     },
     RtDecl {
-        name: "lumia_adt_set_float_mask",
+        name: lumia_abi::ADT_SET_FLOAT_MASK,
         ret: RtTy::Void,
         args: &[RtTy::Ptr, RtTy::I64],
     },
@@ -83,12 +83,17 @@ const RUNTIME_DECLS: &[RtDecl] = &[
     RtDecl {
         name: "lumia_show_adt",
         ret: RtTy::Ptr,
-        args: &[RtTy::I64, RtTy::I64],
+        args: &[RtTy::I64, RtTy::I64, RtTy::I64],
     },
     RtDecl {
         name: "lumia_show_adt_named",
         ret: RtTy::Ptr,
-        args: &[RtTy::I64, RtTy::I64, RtTy::Ptr, RtTy::I64],
+        args: &[RtTy::I64, RtTy::I64, RtTy::I64, RtTy::Ptr, RtTy::I64],
+    },
+    RtDecl {
+        name: "lumia_show_list_bool",
+        ret: RtTy::Ptr,
+        args: &[RtTy::I64],
     },
     RtDecl {
         name: "lumia_adt_register_show",
@@ -384,6 +389,26 @@ const RUNTIME_DECLS: &[RtDecl] = &[
     RtDecl {
         name: "lumia_str_len",
         ret: RtTy::I64,
+        args: &[RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_str_byte_len",
+        ret: RtTy::I64,
+        args: &[RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_str_take",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr, RtTy::I64],
+    },
+    RtDecl {
+        name: "lumia_str_slice",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr, RtTy::I64],
+    },
+    RtDecl {
+        name: "lumia_str_reverse",
+        ret: RtTy::Ptr,
         args: &[RtTy::Ptr],
     },
     RtDecl {
@@ -994,6 +1019,26 @@ mod tests {
                 d.name
             );
         }
+    }
+
+    #[test]
+    fn every_dense_f64_trampoline_is_declared() {
+        let names: HashSet<&str> = RUNTIME_DECLS.iter().map(|d| d.name).collect();
+        let mut missing = Vec::new();
+        for sym in lumia_abi::DENSE_F64_TRAMPOLINE_SYMS {
+            if !names.contains(sym) {
+                missing.push(*sym);
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "DENSE_F64_TRAMPOLINE_SYMS missing from declare_runtime:\n  {}",
+            missing.join("\n  ")
+        );
+        assert!(
+            names.contains(lumia_abi::ADT_SET_FLOAT_MASK),
+            "ADT_SET_FLOAT_MASK must be in RUNTIME_DECLS"
+        );
     }
 
     #[test]

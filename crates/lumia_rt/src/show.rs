@@ -73,14 +73,22 @@ pub(crate) unsafe fn show_adt(payload: *mut u8) -> *mut u8 {
     let kind = adt_show_kind(tid);
     let ptrs = adt_show_name_ptrs(kind);
     if !ptrs.is_empty() {
-        return show_adt_masked_named(payload, mask, ptrs.as_ptr(), ptrs.len() as i64);
+        return show_adt_masked_named(payload, mask, 0, ptrs.as_ptr(), ptrs.len() as i64);
     }
-    show_adt_masked(payload, mask)
+    show_adt_masked(payload, mask, 0)
 }
 
 pub(crate) fn show_value_bits(bits: i64, as_float: bool) -> String {
+    show_value_bits_mode(bits, as_float, false)
+}
+
+fn show_value_bits_mode(bits: i64, as_float: bool, as_bool: bool) -> String {
     if as_float {
         let s = lumia_show_float(f64::from_bits(bits as u64));
+        return with_str_bytes(s, |b| String::from_utf8_lossy(b).into_owned());
+    }
+    if as_bool {
+        let s = lumia_show_bool(if bits != 0 { 1 } else { 0 });
         return with_str_bytes(s, |b| String::from_utf8_lossy(b).into_owned());
     }
     let s = lumia_show(bits);
@@ -88,17 +96,40 @@ pub(crate) fn show_value_bits(bits: i64, as_float: bool) -> String {
 }
 
 pub(crate) unsafe fn show_list(list: *mut u8) -> *mut u8 {
+    show_list_mode(list, list_float_elems(list), false)
+}
+
+unsafe fn show_list_mode(list: *mut u8, float_elems: bool, bool_elems: bool) -> *mut u8 {
     let n = list_len_of(list);
-    let float_elems = list_float_elems(list);
     let mut s = String::from("[");
     for i in 0..n {
         if i > 0 {
             s.push_str(", ");
         }
-        s.push_str(&show_value_bits(list_get_of(list, i), float_elems));
+        s.push_str(&show_value_bits_mode(
+            list_get_of(list, i),
+            float_elems,
+            bool_elems,
+        ));
     }
     s.push(']');
     lumia_alloc_string(s.as_ptr(), s.len() as u64)
+}
+
+/// Show a list whose elements are Bool (typed print sites; no list TID flag yet).
+#[no_mangle]
+pub extern "C" fn lumia_show_list_bool(list: i64) -> *mut u8 {
+    let p = list as *mut u8;
+    if !is_heap_payload(p) {
+        return lumia_show(list);
+    }
+    unsafe {
+        let h = header_from_payload(p);
+        if !is_list_tid((*h).type_id) {
+            return lumia_show(list);
+        }
+        show_list_mode(p, false, true)
+    }
 }
 
 pub(crate) unsafe fn show_map(map: *mut u8) -> *mut u8 {
@@ -136,14 +167,19 @@ pub(crate) unsafe fn show_set(set: *mut u8) -> *mut u8 {
     lumia_alloc_string(s.as_ptr(), s.len() as u64)
 }
 
-pub(crate) unsafe fn show_adt_masked(payload: *mut u8, float_mask: u64) -> *mut u8 {
-    show_adt_masked_named(payload, float_mask, std::ptr::null(), 0)
+pub(crate) unsafe fn show_adt_masked(
+    payload: *mut u8,
+    float_mask: u64,
+    bool_mask: u64,
+) -> *mut u8 {
+    show_adt_masked_named(payload, float_mask, bool_mask, std::ptr::null(), 0)
 }
 
 /// Like [`show_adt_masked`], but `names[tag]` (NUL-terminated) replaces `#tag` when present.
 pub(crate) unsafe fn show_adt_masked_named(
     payload: *mut u8,
     float_mask: u64,
+    bool_mask: u64,
     names: *const *const u8,
     n_names: i64,
 ) -> *mut u8 {
@@ -187,6 +223,8 @@ pub(crate) unsafe fn show_adt_masked_named(
         let bits = *base.add(i);
         let field = if crate::common::adt_float_slot(float_mask, i - 1) {
             lumia_show_float(f64::from_bits(bits as u64))
+        } else if crate::common::adt_float_slot(bool_mask, i - 1) {
+            lumia_show_bool(if bits != 0 { 1 } else { 0 })
         } else {
             lumia_show(bits)
         };
@@ -198,9 +236,9 @@ pub(crate) unsafe fn show_adt_masked_named(
     lumia_alloc_string(s.as_ptr(), s.len() as u64)
 }
 
-/// Show ADT with IEEE formatting for mask-selected fields.
+/// Show ADT with IEEE / Bool formatting for mask-selected fields.
 #[no_mangle]
-pub extern "C" fn lumia_show_adt(x: i64, float_mask: i64) -> *mut u8 {
+pub extern "C" fn lumia_show_adt(x: i64, float_mask: i64, bool_mask: i64) -> *mut u8 {
     let p = x as *mut u8;
     if !is_heap_payload(p) {
         return lumia_show(x);
@@ -211,7 +249,7 @@ pub extern "C" fn lumia_show_adt(x: i64, float_mask: i64) -> *mut u8 {
             return lumia_show(x);
         }
         let mask = (float_mask as u64) | (*h)._pad;
-        show_adt_masked(p, mask)
+        show_adt_masked(p, mask, bool_mask as u64)
     }
 }
 
@@ -220,6 +258,7 @@ pub extern "C" fn lumia_show_adt(x: i64, float_mask: i64) -> *mut u8 {
 pub extern "C" fn lumia_show_adt_named(
     x: i64,
     float_mask: i64,
+    bool_mask: i64,
     names: *const *const u8,
     n_names: i64,
 ) -> *mut u8 {
@@ -233,7 +272,7 @@ pub extern "C" fn lumia_show_adt_named(
             return lumia_show(x);
         }
         let mask = (float_mask as u64) | (*h)._pad;
-        show_adt_masked_named(p, mask, names, n_names)
+        show_adt_masked_named(p, mask, bool_mask as u64, names, n_names)
     }
 }
 

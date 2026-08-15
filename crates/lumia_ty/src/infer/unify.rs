@@ -145,6 +145,42 @@ impl Infer {
             .filter(|v| self.uni.eq_vars.contains(v))
             .collect();
         eq_vars.sort_unstable();
+        let mut len_vars: Vec<u32> = vars
+            .iter()
+            .copied()
+            .filter(|v| self.uni.len_vars.contains(v))
+            .collect();
+        len_vars.sort_unstable();
+        let mut concat_vars: Vec<u32> = vars
+            .iter()
+            .copied()
+            .filter(|v| self.uni.concat_vars.contains(v))
+            .collect();
+        concat_vars.sort_unstable();
+        let mut contains_vars: Vec<u32> = vars
+            .iter()
+            .copied()
+            .filter(|v| self.uni.contains_vars.contains(v))
+            .collect();
+        contains_vars.sort_unstable();
+        let mut set_vars: Vec<u32> = vars
+            .iter()
+            .copied()
+            .filter(|v| self.uni.set_vars.contains(v))
+            .collect();
+        set_vars.sort_unstable();
+        let mut elems_vars: Vec<u32> = vars
+            .iter()
+            .copied()
+            .filter(|v| self.uni.elems_vars.contains(v))
+            .collect();
+        elems_vars.sort_unstable();
+        let mut take_vars: Vec<u32> = vars
+            .iter()
+            .copied()
+            .filter(|v| self.uni.take_vars.contains(v))
+            .collect();
+        take_vars.sort_unstable();
         let mut trait_preds: Vec<(u32, String, String)> = Vec::new();
         for &v in &vars {
             if let Some(preds) = self.traits.trait_vars.get(&v) {
@@ -161,6 +197,12 @@ impl Infer {
             num_vars,
             ord_vars,
             eq_vars,
+            len_vars,
+            concat_vars,
+            contains_vars,
+            set_vars,
+            elems_vars,
+            take_vars,
             trait_preds,
         }
     }
@@ -180,6 +222,36 @@ impl Infer {
         for &old in &scheme.eq_vars {
             if let Some(Type::Var(n)) = ty_map.get(&old) {
                 self.uni.eq_vars.insert(*n);
+            }
+        }
+        for &old in &scheme.len_vars {
+            if let Some(Type::Var(n)) = ty_map.get(&old) {
+                self.uni.len_vars.insert(*n);
+            }
+        }
+        for &old in &scheme.concat_vars {
+            if let Some(Type::Var(n)) = ty_map.get(&old) {
+                self.uni.concat_vars.insert(*n);
+            }
+        }
+        for &old in &scheme.contains_vars {
+            if let Some(Type::Var(n)) = ty_map.get(&old) {
+                self.uni.contains_vars.insert(*n);
+            }
+        }
+        for &old in &scheme.set_vars {
+            if let Some(Type::Var(n)) = ty_map.get(&old) {
+                self.uni.set_vars.insert(*n);
+            }
+        }
+        for &old in &scheme.elems_vars {
+            if let Some(Type::Var(n)) = ty_map.get(&old) {
+                self.uni.elems_vars.insert(*n);
+            }
+        }
+        for &old in &scheme.take_vars {
+            if let Some(Type::Var(n)) = ty_map.get(&old) {
+                self.uni.take_vars.insert(*n);
             }
         }
         for (old, tr, method) in &scheme.trait_preds {
@@ -496,6 +568,12 @@ impl Infer {
                 self.check_num_bind(v, &t)?;
                 self.check_ord_bind(v, &t)?;
                 self.check_eq_bind(v, &t)?;
+                self.check_len_bind(v, &t)?;
+                self.check_concat_bind(v, &t)?;
+                self.check_contains_bind(v, &t)?;
+                self.check_set_bind(v, &t)?;
+                self.check_elems_bind(v, &t)?;
+                self.check_take_bind(v, &t)?;
                 self.check_trait_bind(v, &t)?;
                 if let Type::Var(u) = &t {
                     if self.uni.num_vars.contains(&v) {
@@ -515,6 +593,42 @@ impl Infer {
                     }
                     if self.uni.eq_vars.contains(u) {
                         self.uni.eq_vars.insert(v);
+                    }
+                    if self.uni.len_vars.contains(&v) {
+                        self.uni.len_vars.insert(*u);
+                    }
+                    if self.uni.len_vars.contains(u) {
+                        self.uni.len_vars.insert(v);
+                    }
+                    if self.uni.concat_vars.contains(&v) {
+                        self.uni.concat_vars.insert(*u);
+                    }
+                    if self.uni.concat_vars.contains(u) {
+                        self.uni.concat_vars.insert(v);
+                    }
+                    if self.uni.contains_vars.contains(&v) {
+                        self.uni.contains_vars.insert(*u);
+                    }
+                    if self.uni.contains_vars.contains(u) {
+                        self.uni.contains_vars.insert(v);
+                    }
+                    if self.uni.set_vars.contains(&v) {
+                        self.uni.set_vars.insert(*u);
+                    }
+                    if self.uni.set_vars.contains(u) {
+                        self.uni.set_vars.insert(v);
+                    }
+                    if self.uni.elems_vars.contains(&v) {
+                        self.uni.elems_vars.insert(*u);
+                    }
+                    if self.uni.elems_vars.contains(u) {
+                        self.uni.elems_vars.insert(v);
+                    }
+                    if self.uni.take_vars.contains(&v) {
+                        self.uni.take_vars.insert(*u);
+                    }
+                    if self.uni.take_vars.contains(u) {
+                        self.uni.take_vars.insert(v);
                     }
                 }
                 self.uni.subst.insert(v, t);

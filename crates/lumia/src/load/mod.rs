@@ -14,7 +14,9 @@ use lumia_ty::NameVisibility;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::path::{Path, PathBuf};
 
-use resolve::{load_module_file, path_label};
+use resolve::load_module_file;
+
+pub use resolve::path_label;
 
 pub(super) fn item_file_id(it: &Item) -> u32 {
     match it {

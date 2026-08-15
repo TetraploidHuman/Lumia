@@ -1,5 +1,4 @@
 use super::*;
-use crate::Pass;
 use lumia_core::{Block, CoreFun, Local, Op, Value};
 use lumia_hir::Builtin;
 use lumia_ty::{Effect, Type};
@@ -17,6 +16,7 @@ fn fun_with_body(body: Block) -> CoreFun {
         is_main: false,
         memo: None,
         external: None,
+        foreign_abi: lumia_core::ForeignAbi::C,
         escaping: HashSet::default(),
         scheme_poly: false,
         mono_of: None,
@@ -123,6 +123,7 @@ fn known_pure_len_callee_does_not_escape_arg() {
                 value: Value::Builtin {
                     name: Builtin::ListLen,
                     args: vec![Local(0)],
+                    result_ty: None,
                 },
                 pure_region: true,
             }],
@@ -133,6 +134,7 @@ fn known_pure_len_callee_does_not_escape_arg() {
         is_main: false,
         memo: None,
         external: None,
+        foreign_abi: lumia_core::ForeignAbi::C,
         escaping: HashSet::default(),
         scheme_poly: false,
         mono_of: None,
@@ -174,6 +176,7 @@ fn known_pure_len_callee_does_not_escape_arg() {
         is_main: true,
         memo: None,
         external: None,
+        foreign_abi: lumia_core::ForeignAbi::C,
         escaping: HashSet::default(),
         scheme_poly: false,
         mono_of: None,
@@ -242,6 +245,7 @@ fn short_lived_var_assign_does_not_escape() {
                 value: Value::Builtin {
                     name: lumia_hir::Builtin::ListLen,
                     args: vec![Local(1)],
+                    result_ty: None,
                 },
                 pure_region: true,
             },
@@ -316,6 +320,7 @@ fn returned_take_escapes_source_list() {
                 value: Value::Builtin {
                     name: Builtin::ListTake,
                     args: vec![Local(1), Local(2)],
+                    result_ty: None,
                 },
                 pure_region: true,
             },
@@ -360,6 +365,7 @@ fn dead_take_does_not_force_source_escape() {
                 value: Value::Builtin {
                     name: Builtin::ListTake,
                     args: vec![Local(1), Local(2)],
+                    result_ty: None,
                 },
                 pure_region: true,
             },
@@ -368,6 +374,7 @@ fn dead_take_does_not_force_source_escape() {
                 value: Value::Builtin {
                     name: Builtin::ListLen,
                     args: vec![Local(3)],
+                    result_ty: None,
                 },
                 pure_region: true,
             },
@@ -418,6 +425,7 @@ fn returned_list_get_escapes_source_list() {
                 value: Value::Builtin {
                     name: Builtin::ListGet,
                     args: vec![Local(1), Local(2)],
+                    result_ty: None,
                 },
                 pure_region: true,
             },

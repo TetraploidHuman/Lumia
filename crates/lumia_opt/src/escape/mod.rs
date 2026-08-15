@@ -44,11 +44,8 @@ fn escaping_locals_with(fun: &CoreFun, summaries: &HashMap<String, ParamEscape>)
 /// Escape analysis: write results onto each [`CoreFun::escaping`] for later passes.
 pub struct EscapePass;
 
-impl crate::Pass for EscapePass {
-    fn name(&self) -> &str {
-        "escape"
-    }
-    fn run(&self, module: &mut CoreModule) {
+impl EscapePass {
+    pub(crate) fn run(self, module: &mut CoreModule) {
         let summaries = compute_param_escape_summaries(module);
         for f in &mut module.functions {
             f.escaping = escaping_locals_with(f, &summaries).into_iter().collect();

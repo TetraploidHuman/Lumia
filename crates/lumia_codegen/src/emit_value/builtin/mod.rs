@@ -223,7 +223,13 @@ impl<'ctx> Codegen<'ctx> {
     ) -> Result<BasicValueEnum<'ctx>> {
         let obj_i = self.coerce_i64(self.local(args[0])?)?;
         let obj = self.i64_as_ptr(obj_i, "obj")?;
-        let sym = Self::builtin_symbol(b)?;
+        let sym = if matches!(b, Builtin::ListReverse)
+            && matches!(self.frame.local_tys.get(&args[0].0), Some(Type::String))
+        {
+            "lumia_str_reverse"
+        } else {
+            Self::builtin_symbol(b)?
+        };
         self.call_rt_ptr_as_i64(sym, &[obj.into()], label)
     }
 
@@ -250,7 +256,16 @@ impl<'ctx> Codegen<'ctx> {
                 }
             }
         }
-        let sym = Self::builtin_symbol(b)?;
+        let is_string = matches!(self.frame.local_tys.get(&args[0].0), Some(Type::String));
+        let sym = if is_string {
+            match b {
+                Builtin::ListTake => "lumia_str_take",
+                Builtin::ListSlice => "lumia_str_slice",
+                _ => Self::builtin_symbol(b)?,
+            }
+        } else {
+            Self::builtin_symbol(b)?
+        };
         self.call_rt_ptr_as_i64(sym, &[obj.into(), n.into()], label)
     }
 

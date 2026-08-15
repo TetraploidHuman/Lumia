@@ -1,6 +1,5 @@
 //! Copy elimination: collapse `let x = y` aliases (SSA copy-prop).
 
-use crate::Pass;
 use lumia_core::{
     for_each_block_dfs, for_each_nested_block_mut, Block, CoreFun, CoreModule, Local, Op, Value,
 };
@@ -8,11 +7,8 @@ use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// Copy elimination: collapse `let x = y` aliases (SSA copy-prop).
 pub(crate) struct CopyElimPass;
-impl Pass for CopyElimPass {
-    fn name(&self) -> &str {
-        "copy_elim"
-    }
-    fn run(&self, module: &mut CoreModule) {
+impl CopyElimPass {
+    pub(crate) fn run(self, module: &mut CoreModule) {
         for f in &mut module.functions {
             elim_copies_in_fun(f);
         }

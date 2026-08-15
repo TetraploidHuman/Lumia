@@ -152,12 +152,12 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumia_rt` 内�
 
 | 难度  | 场景                                     |
 | --- | -------------------------------------- |
-| 易   | 同属 tracing：mark-sweep ↔ semispace ↔ 分代 |
-| 中   | tracing ↔ ARC（需 codegen 模式开关）          |
+| 愿景  | 同属 tracing：mark-sweep ↔ semispace ↔ 分代（当前仅 MarkSweep；`--mm` 未接线） |
+| 中   | tracing ↔ ARC（需 codegen 模式开关；未落地）          |
 | 难   | 无对象头 / 无根约定的裸 malloc 与精确 GC 混用         |
 
 
-`List`/`Map`/`Set` 更新默认走新分配 / overlay；`List.append` 在 **retain 证明唯一** 且有余量时可原地扩容（COW）。`List.set` 始终新分配，避免 SSA 别名被原地改写。`--mm=arc` 仍可作为另路径。
+`List`/`Map`/`Set` 更新默认走新分配 / overlay；`List.append` 在 **retain 证明唯一** 且有余量时可原地扩容（COW）。`List.set` 始终新分配，避免 SSA 别名被原地改写。可插拔 GC / ARC 仍为规划，非运行时策略开关。
 
 ---
 
@@ -173,10 +173,10 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumia_rt` 内�
   - **concat_ident**：Core 消 `concat([])` 恒等（`map`/`filter`/`fold` 主融合在 HIR）；空 `listOf()` → `lumia_list_empty` 永生单例。
   - **稳健性**：foreign `String` 临时 cstr 在调用期间入根（防 GC UAF）；Iota 物化 / 取下标用 checked 算术并对过大物化 trap；跨 product 同名字段的 `with` 报歧义。
   - **List Iota**：`range` / `rangeInclusive` → `TYPE_LIST_IOTA`（`[start,end)`，O(1)）；`len`/`get`/eq/hash/`take`/`slice` 虚拟；修改类 API `force` 成 HeapList（见 `examples/range_iota.lm`）；PE 跟踪虚拟 iota；`par_map`/`concat` 空恒等不强制物化。
-- GC：分代 mark-sweep（young 默认 1MiB → minor STW：只标记 nursery + remembered/rooted old；old 默认 8MiB → **增量并发 full mark**，或 `lumia_gc_collect` 排空）+ **`lumia_write_barrier`**（remembered set + Dijkstra 着色）+ **shadow-stack 根**；`is_heap_payload` O(1)；见 `examples/gc_roots.lm`。
+- GC：分代 mark-sweep（young 默认 1MiB → minor STW：只标记 nursery + remembered/rooted old；old 默认 8MiB → **增量并发 full mark**，或 `lumia_gc_collect` 排空）+ **`lumia_write_barrier`**（remembered set + Dijkstra 着色）+ **shadow-stack 根**；`is_heap_payload` 当前为堆 Mutex + `heap_set` 查找（热路径税；非 O(1)）；见 `examples/gc_roots.lm`。
   - **Escape**：短生命周期 `var` 不再一律逃逸；经 `Name`/返回逃逸的赋值仍会标记，便于 `ReprSelect` 选栈 `Lit*`。
-- Map：小表线性 Assoc；超过 8 对晋升 **HashOrdered**；大表 `set` 走 **Overlay** 差分（满 8 条再压实）；见 `examples/map_hash.lm`。
-- Set：同哲学 — ≤8 线性，更大 **HashOrdered**（开址 + 插入序）；见 `examples/set_hash.lm`。
+- Map：小表线性 Assoc；超过 `lumia_abi::SMALL_CONTAINER_MAX`（8）对晋升 **HashOrdered**；大表 `set` 走 **Overlay** 差分（满同阈值再压实）；见 `examples/map_hash.lm`。
+- Set：同哲学 — ≤`SMALL_CONTAINER_MAX` 线性，更大 **HashOrdered**（开址 + 插入序）；见 `examples/set_hash.lm`。
 - 元组投影：`p.0` / `p.1`（`examples/tuple_fields.lm`）；Fun 效应变量 + HOF 拾取 IO（`examples/effect_hof.lm`）。
 - 集合字面量糖：`[:]` / `[k : v]` → `mapOf`；`#{}` / `#{a,b}` → `setOf`（`examples/coll_lit.lm`）。
 - `sortBy`：键为 `Int` / `String` / `Char`（稳定）；`assert(cond)` 失败即中止，并打印 `path:line`（`examples/assert_ok.lm`）。
