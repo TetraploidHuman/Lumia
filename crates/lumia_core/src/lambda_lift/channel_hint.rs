@@ -1842,6 +1842,39 @@ val main = {
     }
 
     #[test]
+    fn audit_r12_option_list_float_alt_par_fold() {
+        let core = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+val main = {
+  scope {
+    val o = Some(listOf(1.5, 2.5))
+    val xs = o alt listOf(0.0)
+    println(xs.fold(0.0, { a, x -> a + x }))
+  }
+}
+"#,
+        )
+        .expect("core");
+        let fold_lam = core
+            .functions
+            .iter()
+            .find(|f| {
+                f.name.contains("Float")
+                    || (f.name.starts_with("__lam_")
+                        && matches!(f.ret_ty, Type::Float)
+                        && f.param_tys.iter().any(|p| matches!(p, Type::Float)))
+            })
+            .expect("Float fold callback");
+        assert!(
+            matches!(fold_lam.ret_ty, Type::Float),
+            "par fold lam ret {:?}",
+            fold_lam.ret_ty
+        );
+    }
+
+    #[test]
     fn audit_r11_result_err_string_alt_float() {
         let core = compile_source_to_core(
             r#"
@@ -1913,6 +1946,59 @@ val main = {
             matches!(&outer.ret_ty, Type::List(e) if matches!(e.as_ref(), Type::Float)),
             "outer spawn map ret {:?}",
             outer.ret_ty
+        );
+    }
+
+    #[test]
+    fn audit_r13_spawn_nested_float_closure_keeps_icall() {
+        let core = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+val main = {
+  scope {
+    val g = { x -> x * 2.0 }
+    val h = { x -> g(x) }
+    println(spawn { h(1.5) }.join())
+  }
+}
+"#,
+        )
+        .expect("core");
+        let spawn = core
+            .functions
+            .iter()
+            .find(|f| {
+                f.name.starts_with("__lam_")
+                    && f.body.ops.iter().any(|op| {
+                        matches!(
+                            op,
+                            crate::Op::Let {
+                                value: crate::Value::Float(v),
+                                ..
+                            } if (*v - 1.5).abs() < 1e-9
+                        )
+                    })
+            })
+            .expect("spawn thunk");
+        let has_bad_direct = spawn.body.ops.iter().any(|op| {
+            matches!(
+                op,
+                crate::Op::Let {
+                    value: crate::Value::Call { fun, args },
+                    ..
+                } if fun.starts_with("__lam_") && args.len() == 1
+            )
+        });
+        assert!(
+            !has_bad_direct,
+            "spawn must not Call env-closure with only the user arg: {:?}",
+            spawn.body.ops
+        );
+        assert!(
+            matches!(spawn.ret_ty, Type::Float),
+            "spawn ret {:?}",
+            spawn.ret_ty
         );
     }
 }

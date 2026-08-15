@@ -422,7 +422,19 @@ fn scan_mono_block(
     for op in &block.ops {
         match op {
             Op::Let { local, value, .. } => {
-                note_mono_call(value, local_tys, index, needed, &funref_of);
+                // Nested If/Loop arms first so `If` result can join arm locals
+                // (`opt alt listOf(0.0)` → List[Float]). Typing before the walk
+                // left If as Int and skipped ListParFold Float mono clones.
+                walk_mono_nested_scan(
+                    value,
+                    local_tys,
+                    slot_tys,
+                    int_consts,
+                    index,
+                    needed,
+                    &funref_of,
+                    &slot_funrefs,
+                );
                 let ty = mono_value_ty_with_funrefs(
                     value, local_tys, slot_tys, int_consts, index, &funref_of,
                 );
@@ -454,16 +466,8 @@ fn scan_mono_block(
                         funref_of.remove(&local.0);
                     }
                 }
-                walk_mono_nested_scan(
-                    value,
-                    local_tys,
-                    slot_tys,
-                    int_consts,
-                    index,
-                    needed,
-                    &funref_of,
-                    &slot_funrefs,
-                );
+                // After nested + this let: ListParFold sees List[Float] list arg.
+                note_mono_call(value, local_tys, index, needed, &funref_of);
             }
             Op::Assign { name, value } => {
                 if let Some(ty) = local_tys.get(&value.0).cloned() {
@@ -476,7 +480,6 @@ fn scan_mono_block(
                 }
             }
             Op::Effect { value } => {
-                note_mono_call(value, local_tys, index, needed, &funref_of);
                 walk_mono_nested_scan(
                     value,
                     local_tys,
@@ -487,6 +490,7 @@ fn scan_mono_block(
                     &funref_of,
                     &slot_funrefs,
                 );
+                note_mono_call(value, local_tys, index, needed, &funref_of);
             }
             _ => {}
         }
@@ -570,13 +574,17 @@ fn note_mono_call(
             let Some(cb) = funref_of.get(&args[2].0) else {
                 return;
             };
-            let Some(Type::List(elem)) = local_tys.get(&args[0].0) else {
-                return;
-            };
             let Some(init_ty) = local_tys.get(&args[1].0) else {
                 return;
             };
-            let Some(key) = types_mono_key(&[init_ty.clone(), elem.as_ref().clone()]) else {
+            // Prefer list elem; if list is still Int (If typed before arms),
+            // Float init still forces Float/Float fold ABI.
+            let elem = match local_tys.get(&args[0].0) {
+                Some(Type::List(e)) => e.as_ref().clone(),
+                _ if matches!(init_ty, Type::Float) => Type::Float,
+                _ => return,
+            };
+            let Some(key) = types_mono_key(&[init_ty.clone(), elem]) else {
                 return;
             };
             let Some(f) = index.get(cb) else {
@@ -827,8 +835,12 @@ fn par_hof_funref_patch(
             if let Some(t) = local_tys.get(&args[1].0) {
                 tys.push(t.clone());
             }
-            if let Some(Type::List(e)) = local_tys.get(&args[0].0) {
-                tys.push(e.as_ref().clone());
+            match local_tys.get(&args[0].0) {
+                Some(Type::List(e)) => tys.push(e.as_ref().clone()),
+                _ if tys.first().is_some_and(|t| matches!(t, Type::Float)) => {
+                    tys.push(Type::Float);
+                }
+                _ => {}
             }
             rewrite_par_hof_funref(args[2].0, &tys, renames, funref_of)
         }

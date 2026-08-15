@@ -303,16 +303,49 @@ fn collect_trait_method_refs_value(
 pub(crate) fn directize_funref_calls(module: &mut CoreModule) {
     // AllocClosure capture index → FunRef name, so spawn thunks that capture
     // a FunRef still directize `icall` → `Call` (mono can specialize Float).
+    // Do **not** directize when the captured value is itself a closure with an
+    // env (`{ x -> g(x) }` under spawn): `Call(__lam_env, [x])` drops the env.
     let mut cap_funs: HashMap<String, HashMap<u32, String>> = HashMap::default();
     for fun in &module.functions {
         let mut funref_locals: HashMap<u32, String> = HashMap::default();
         collect_closure_cap_funrefs(&fun.body, &mut funref_locals, &mut cap_funs);
     }
+    let with_env = funs_with_closure_env(module);
     let empty_funrefs = HashMap::default();
     let empty_slots = HashMap::default();
     for fun in &mut module.functions {
         let caps = cap_funs.get(&fun.name).cloned().unwrap_or_default();
+        let caps: HashMap<u32, String> = caps
+            .into_iter()
+            .filter(|(_, name)| !with_env.contains(name))
+            .collect();
         directize_block_with_slots(&mut fun.body, &empty_funrefs, &empty_slots, &caps);
+    }
+}
+
+/// Names of `__lam_*` / funs that are allocated with a non-empty capture list
+/// (first param is the env pointer; must stay `IndirectCall`).
+fn funs_with_closure_env(module: &CoreModule) -> FxHashSet<String> {
+    let mut out = FxHashSet::default();
+    for fun in &module.functions {
+        mark_env_funs_in_block(&fun.body, &mut out);
+    }
+    out
+}
+
+fn mark_env_funs_in_block(block: &Block, out: &mut FxHashSet<String>) {
+    for op in &block.ops {
+        match op {
+            Op::Let { value, .. } | Op::Effect { value } => {
+                if let Value::AllocClosure { fun, captures } = value {
+                    if !captures.is_empty() {
+                        out.insert(fun.clone());
+                    }
+                }
+                crate::for_each_nested_block(value, &mut |b| mark_env_funs_in_block(b, out));
+            }
+            _ => {}
+        }
     }
 }
 
