@@ -381,6 +381,13 @@ fn join_value_tys(a: &Type, b: &Type) -> Option<Type> {
         return Some(a.clone());
     }
     match (a, b) {
+        // `opt alt float_default`: then=AdtField (often Int until Option params
+        // refine) else=Float — prefer Float so println does not print IEEE bits.
+        (Type::Int | Type::Var(_), Type::Float) | (Type::Float, Type::Int | Type::Var(_)) => {
+            Some(Type::Float)
+        }
+        (Type::Int | Type::Var(_), other) => Some(other.clone()),
+        (other, Type::Int | Type::Var(_)) => Some(other.clone()),
         (
             Type::Adt {
                 name: n1,
@@ -400,8 +407,12 @@ fn join_value_tys(a: &Type, b: &Type) -> Option<Type> {
                     x
                 } else if matches!(x, Type::Int | Type::Var(_)) {
                     y
+                } else if matches!(y, Type::Int | Type::Var(_)) {
+                    x
+                } else if matches!(x, Type::Float) || matches!(y, Type::Float) {
+                    Type::Float
                 } else {
-                    // Prefer left when both are concrete, or when y is erased.
+                    // Prefer left when both are concrete.
                     x
                 });
             }

@@ -491,8 +491,22 @@ impl Infer {
             Type::Adt { name, params } if name == "Option" && params.len() == 1 => {
                 self.ctrl.alt_kinds.insert(span, AltKind::Option);
                 let payload = params[0].clone();
-                let (at, ae) = self.infer_expr(alt)?;
-                self.unify_at(span, at, payload.clone())?;
+                let (rhs_ty, ae) = self.infer_expr(alt)?;
+                let rhs_p = self.prune(rhs_ty.clone());
+                // DESIGN §8.1: rhs is the success payload `T`, not another Option.
+                // `None alt Some(x)` used to unify Option into an open payload Var,
+                // so the desugar else-arm returned an ADT while the type said `T`
+                // (Float → println IEEE bits; Int → accidental Show of Some).
+                if matches!(&rhs_p, Type::Adt { name, .. } if name == "Option") {
+                    return Err(at(
+                        span,
+                        format!(
+                            "`alt` rhs must be the Option payload type, got {}",
+                            self.zonk_type(rhs_p)
+                        ),
+                    ));
+                }
+                self.unify_at(span, rhs_ty, payload.clone())?;
                 Ok((payload, self.union_eff(se, ae)))
             }
             Type::Adt { name, params } if name == "Result" && params.len() == 2 => {
@@ -501,9 +515,19 @@ impl Infer {
                 let err_ty = params[1].clone();
                 self.push();
                 self.bind("err".into(), err_ty);
-                let (at, ae) = self.infer_expr(alt)?;
+                let (rhs_ty, ae) = self.infer_expr(alt)?;
                 self.pop();
-                self.unify_at(span, at, ok_ty.clone())?;
+                let rhs_p = self.prune(rhs_ty.clone());
+                if matches!(&rhs_p, Type::Adt { name, .. } if name == "Result") {
+                    return Err(at(
+                        span,
+                        format!(
+                            "`alt` rhs must be the Result Ok payload type, got {}",
+                            self.zonk_type(rhs_p)
+                        ),
+                    ));
+                }
+                self.unify_at(span, rhs_ty, ok_ty.clone())?;
                 Ok((ok_ty, self.union_eff(se, ae)))
             }
             other => Err(at(

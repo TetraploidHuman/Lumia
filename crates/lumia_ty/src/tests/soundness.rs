@@ -212,6 +212,23 @@ val main = { f(Some(1)) }
 }
 
 #[test]
+fn alt_option_rhs_must_be_payload() {
+    let err = infer_err(
+        r#"
+module M
+type Option { Some(v) None }
+val main = {
+    println(None alt Some(7.5))
+}
+"#,
+    );
+    assert!(
+        err.contains("payload") || err.contains("alt"),
+        "unexpected: {err}"
+    );
+}
+
+#[test]
 fn num_poly_rejects_string_after_float() {
     let err = infer_err(
         r#"

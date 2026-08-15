@@ -1826,4 +1826,53 @@ val main = {
             spawn.ret_ty
         );
     }
+
+    #[test]
+    fn audit_r10_nested_spawn_map_float() {
+        let core = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+val main = {
+  scope {
+    val xs = spawn {
+      val inner = spawn { listOf(1.0, 2.0) }.join()
+      inner.map({ x -> x + 1.0 })
+    }.join()
+    println(xs.get(0) + xs.get(1))
+  }
+}
+"#,
+        )
+        .expect("core");
+        for f in &core.functions {
+            if f.name.starts_with("__lam_") {
+                eprintln!("{} ret {:?}", f.name, f.ret_ty);
+            }
+        }
+        let outer = core
+            .functions
+            .iter()
+            .find(|f| {
+                f.name.starts_with("__lam_")
+                    && f.body.ops.iter().any(|op| {
+                        matches!(
+                            op,
+                            crate::Op::Let {
+                                value: crate::Value::Builtin {
+                                    name: lumia_hir::Builtin::ListParMap,
+                                    ..
+                                },
+                                ..
+                            }
+                        )
+                    })
+            })
+            .expect("outer map spawn");
+        assert!(
+            matches!(&outer.ret_ty, Type::List(e) if matches!(e.as_ref(), Type::Float)),
+            "outer spawn map ret {:?}",
+            outer.ret_ty
+        );
+    }
 }

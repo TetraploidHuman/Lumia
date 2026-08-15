@@ -1777,6 +1777,52 @@ fn local_heap_ty(
             Some(Type::Task(Box::new(elem)))
         }
         Value::Builtin {
+            name: lumia_hir::Builtin::ListParMap,
+            args,
+        } if args.len() >= 2 => {
+            // Result elem follows the callback Fun ret (`map { x -> x + 1.0 }`).
+            // Without this, `spawn { join().map(…) }` falls through to List[Int]
+            // and later `+` does integer add on IEEE bits (overflow).
+            let from_cb = fun_ret_of_local(block, args[1].0, fun_ret_tys, seen).or_else(|| {
+                match local_heap_ty(
+                    block,
+                    args[1].0,
+                    float_locals,
+                    fun_ret_tys,
+                    fun_param_tys,
+                    cap_tys,
+                    seen,
+                    seen_slots,
+                ) {
+                    Some(Type::Fun(_, r, _)) => Some(*r),
+                    _ => None,
+                }
+            });
+            let from_list = match local_heap_ty(
+                block,
+                args[0].0,
+                float_locals,
+                fun_ret_tys,
+                fun_param_tys,
+                cap_tys,
+                seen,
+                seen_slots,
+            ) {
+                Some(Type::List(e)) => Some(*e),
+                _ => None,
+            };
+            let elem = match (from_cb, from_list) {
+                (Some(Type::Float), _) => Type::Float,
+                (Some(Type::Int | Type::Var(_)), Some(Type::Float)) | (None, Some(Type::Float)) => {
+                    Type::Float
+                }
+                (Some(e), _) => e,
+                (None, Some(e)) => e,
+                (None, None) => Type::Int,
+            };
+            Some(Type::List(Box::new(elem)))
+        }
+        Value::Builtin {
             name: lumia_hir::Builtin::TaskJoin,
             args,
         } if !args.is_empty() => {
