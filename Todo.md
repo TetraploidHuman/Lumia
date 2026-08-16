@@ -21,7 +21,7 @@
 - [ ] **分配路径多次加锁**：热路径已合并 inhibit+压力为一次 peek，仅在确需时进 `maybe_collect_on_alloc`；`finish_alloc` 仍单独持锁。宜继续单次 `with_heap` 覆盖插入；nursery bump 延迟入 set。
 
 ### 分配与慢路径
-- [ ] **`lumia_show` / 嵌套 show 多段 `String` 分配**：容器插值/`println_auto` 锁+分配密集。宜单缓冲写入。
+- [x] **`lumia_show` / 嵌套 show 多段 `String` 分配**：容器/ADT 经 `append_show_*` 写入单一 Rust 缓冲后再 `alloc_string`；嵌套不再每元素 `lumia_show` 堆分配。
 - [x] **`map_get` 总堆分配 Option ADT**：miss 路径改为按 `none_tag` 永生单例（`RC_SHARED` + `Heap.option_none`）；hit 仍堆分配 `Some`。
 
 ### 并行与调度
