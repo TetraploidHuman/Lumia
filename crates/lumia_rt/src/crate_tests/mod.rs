@@ -11,7 +11,6 @@ use crate::map_set::{
     map_count, map_is_assoc, map_is_hash, map_is_overlay, map_overlay_dn, set_elem_at, set_is_hash,
 };
 use crate::string_io::with_str_bytes;
-use crate::MmBackend;
 use std::ptr;
 
 struct GcLimitGuard {

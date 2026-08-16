@@ -55,7 +55,7 @@ mod task;
 
 pub use adt_show::lumia_adt_register_show;
 pub use common::{
-    tid_base, MarkSweep, MmBackend, ObjectHeader, MEMO_IDX_CAP, MEMO_IDX_MAX_FUNS,
+    tid_base, MarkSweep, ObjectHeader, MEMO_IDX_CAP, MEMO_IDX_MAX_FUNS,
     MEMO_IDX_TABLE_BYTES, MEMO_PROCESS_BYTE_CAP, MEMO_TF_MAX_ARGS, MEMO_TF_MAX_FUNS, MEMO_TF_SLOTS,
     TYPE_ADT, TYPE_BYTES, TYPE_CHAR, TYPE_CHANNEL, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_F64,
     TYPE_LIST_IOTA, TYPE_MAP, TYPE_MAP_ASSOC, TYPE_MAP_ASSOC_F64, TYPE_MAP_ASSOC_F64V,

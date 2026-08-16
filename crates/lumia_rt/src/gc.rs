@@ -10,13 +10,12 @@
 //! sweep. `lumia_gc_collect` drains the mark to completion. Minor GC stays STW.
 
 use std::alloc::{alloc, dealloc};
-use std::cell::RefCell;
 
 use crate::common::{
     header_from_payload, header_layout, is_heap_payload, is_young_payload,
-    may_be_heap_payload_bits, payload_ptr, trap_abort, MarkSweep, MmBackend, ObjectHeader,
-    PAR_WORKER, TYPE_ADT, TYPE_CHANNEL, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_IOTA, TYPE_MAP,
-    TYPE_SET, TYPE_TASK,
+    may_be_heap_payload_bits, payload_ptr, trap_abort, MarkSweep, ObjectHeader, PAR_WORKER,
+    TYPE_ADT, TYPE_CHANNEL, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_IOTA, TYPE_MAP, TYPE_SET,
+    TYPE_TASK,
 };
 use crate::heap::{with_heap, Heap};
 use crate::mutator::for_each_mutator_root;
@@ -556,8 +555,9 @@ fn scan_old_for_young(obj: *mut ObjectHeader) {
     with_heap(|h| scan_old_for_young_on(h, obj));
 }
 
-impl MmBackend for MarkSweep {
-    fn alloc(&mut self, nbytes: usize, type_id: u32) -> *mut u8 {
+impl MarkSweep {
+    /// Allocate `nbytes` of payload (plus header) into the young generation.
+    pub fn alloc(&mut self, nbytes: usize, type_id: u32) -> *mut u8 {
         if PAR_WORKER.get() {
             trap_abort(
                 "lumia: heap allocation inside parallel map worker \
@@ -585,7 +585,7 @@ impl MmBackend for MarkSweep {
         }
     }
 
-    fn collect(&mut self) {
+    pub fn collect(&mut self) {
         // Start collect only while `gc_inhibit == 0` (checked inside begin/STW).
         for _ in 0..1_000_000 {
             if Self::full_collect() {
@@ -596,7 +596,7 @@ impl MmBackend for MarkSweep {
         trap_abort("lumia: gc_collect blocked by gc_inhibit");
     }
 
-    fn write_barrier(&mut self, obj: *mut u8, _field: u32, new_ptr: *mut u8) {
+    pub fn write_barrier(&mut self, obj: *mut u8, _field: u32, new_ptr: *mut u8) {
         if obj.is_null()
             || !may_be_heap_payload_bits(obj as i64)
             || !is_heap_payload(obj)
@@ -669,13 +669,9 @@ pub(crate) unsafe fn finish_alloc(mem: *mut u8, nbytes: usize, type_id: u32) -> 
     payload_ptr(header)
 }
 
-thread_local! {
-    pub(crate) static BACKEND: RefCell<MarkSweep> = const { RefCell::new(MarkSweep) };
-}
-
 #[no_mangle]
 pub extern "C" fn lumia_alloc(nbytes: u64, type_id: u32) -> *mut u8 {
-    BACKEND.with(|b| b.borrow_mut().alloc(nbytes as usize, type_id))
+    MarkSweep.alloc(nbytes as usize, type_id)
 }
 
 #[no_mangle]
@@ -698,12 +694,12 @@ pub extern "C" fn lumia_root_pop() {
 
 #[no_mangle]
 pub extern "C" fn lumia_write_barrier(obj: *mut u8, field: u32, new_ptr: *mut u8) {
-    BACKEND.with(|b| b.borrow_mut().write_barrier(obj, field, new_ptr));
+    MarkSweep.write_barrier(obj, field, new_ptr);
 }
 
 #[no_mangle]
 pub extern "C" fn lumia_gc_collect() {
-    BACKEND.with(|b| b.borrow_mut().collect());
+    MarkSweep.collect();
 }
 
 #[cfg(test)]

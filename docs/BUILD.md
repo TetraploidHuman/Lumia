@@ -141,7 +141,7 @@ cargo test --workspace
 
 ## 5. GC ABI（稳定合同）
 
-Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumia_rt` 内实现。
+Codegen 与当前 `MarkSweep`（进程堆）共用；换收集器时优先只改 `lumia_rt` 内实现。
 
 
 | 符号                                                   | 作用                                |

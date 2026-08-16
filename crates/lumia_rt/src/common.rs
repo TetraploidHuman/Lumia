@@ -284,16 +284,10 @@ pub(crate) fn header_from_payload(payload: *mut u8) -> *mut ObjectHeader {
     unsafe { payload.sub(std::mem::size_of::<ObjectHeader>()) as *mut ObjectHeader }
 }
 
-/// MmBackend trait — swap mark-sweep for semispace etc. behind same ABI.
-pub trait MmBackend {
-    fn alloc(&mut self, nbytes: usize, type_id: u32) -> *mut u8;
-    fn collect(&mut self);
-    fn write_barrier(&mut self, obj: *mut u8, _field: u32, new_ptr: *mut u8) {
-        remember_old_to_young(obj, new_ptr as i64);
-    }
-}
-
-/// Non-moving generational mark-sweep (young list + old tenure; no bump nursery).
+/// Generational mark-sweep (young list + old tenure; process-global `Heap`).
+/// ZST facade: all mutable state lives under `with_heap`. Pluggable ARC/`--mm`
+/// backends remain a future option (see Todo); do not reintroduce a TLS
+/// "backend" cell that only forwards to the process heap.
 pub struct MarkSweep;
 
 /// Heap generation of a live payload (absent ⇒ not a managed heap object).
@@ -346,26 +340,6 @@ pub(crate) fn is_old_header(h: *mut ObjectHeader) -> bool {
 
 pub(crate) fn is_young_payload(payload: *mut u8) -> bool {
     matches!(heap_gen(payload), Some(HeapGen::Young))
-}
-
-/// Record a possible old→young edge (remembered set).
-pub(crate) fn remember_old_to_young(obj_payload: *mut u8, new_bits: i64) {
-    if obj_payload.is_null() || !may_be_heap_payload_bits(new_bits) {
-        return;
-    }
-    let new_p = new_bits as *mut u8;
-    let obj_h = header_from_payload(obj_payload);
-    let new_h = header_from_payload(new_p);
-    with_heap(|heap| {
-        if !heap.is_old_header(obj_h) {
-            return;
-        }
-        // Young = in heap and not old.
-        if !heap.contains_header(new_h) || heap.is_old_header(new_h) {
-            return;
-        }
-        heap.remembered.insert(obj_h);
-    });
 }
 
 #[cfg(test)]

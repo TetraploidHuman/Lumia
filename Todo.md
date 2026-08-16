@@ -92,7 +92,7 @@
 - [ ] **C vs Runtime marshalling 表仍双份**：用户函数仍统一 i64；foreign 已由 `ForeignAbi` 驱动 declare。宜继续收成描述表。
 - [ ] **`emit_fun` 函数发射上帝模块（≈833 行）**：帧/根/COW/memo/`dense_f64` 早退/NSW/TCO/`Op` 分发挤在 `emit_function`。宜按生命周期拆（prologue / body / epilogue / 特化出口）。
 - [ ] **`Value::Loop` 开放 SR try 链**：`emit_value/mod.rs` 在通用 loop 前串 ≈12 个 `try_emit_*`（与已列 `*_sr` 文件同病，但缺注册表/插件面）。顺序与 fallthrough 隐式膨胀。宜 matcher 注册表或迁出 opt。
-- [ ] **TLS `BACKEND` 空壳罩进程 `Heap`**：`gc.rs` `thread_local! BACKEND` 调 `MmBackend`，真状态在进程 `Heap` Mutex；方法再入 `with_heap`。看似可插拔/每线程，实为进程全局 + TLS 门面（与「写死 MarkSweep」正交）。宜去掉伪装或真做每线程 nursery。
+- [x] **TLS `BACKEND` 空壳罩进程 `Heap`**：已去掉 TLS `BACKEND`/`MmBackend`；`MarkSweep` 为 ZST，FFI 直接调 inherent 方法，状态只在进程 `Heap` Mutex。真每线程 nursery / `--mm=arc` 仍欠。
 - [ ] **Task ↔ GC ↔ list-par 硬耦合**：GC shade 拉 `task::snapshot_sched_gc_roots`；fiber/channel 调 alloc/root；`list/par` 看 `task_runtime_active()`。三子系统无法独立演化；锁序是跨模块不变量。宜窄接口（根枚举 / 「禁并行」谓词）+ 文档化锁序。**第七轮**：全仓仅两处行内 `heap → sched` 注释，见续「锁序几乎无文档」。
 - [ ] **`lumia_opt` 第三前端入口**：`compile_source_to_optimized*` 再调 `compile_source_to_core*`（仍跳 loader/std）。在已列双管线外再添「像完整编译」的捷径。宜只测 Core IR fixture，或强制经 `check_program`。
 
