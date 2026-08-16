@@ -5,7 +5,7 @@ use super::for_loops::{empty_list, empty_map, empty_set, for_each_elem, list_for
 use crate::ast::{Builtin, Expr};
 use lumia_syntax::Span;
 
-pub(crate) fn lower_to_set(ctx: &LowerCtx, list: Expr, span: Span) -> Expr {
+pub(crate) fn lower_to_set(_ctx: &LowerCtx, list: Expr, span: Span) -> Expr {
     let acc = format!("__toset_acc_{}", span.start.0);
     let x = format!("__toset_x_{}", span.start.0);
     let step = Expr::Assign {
@@ -22,7 +22,7 @@ pub(crate) fn lower_to_set(ctx: &LowerCtx, list: Expr, span: Span) -> Expr {
         value: Box::new(empty_set(span)),
         body: Box::new(Expr::Seq {
             stmts: vec![
-                for_each_elem(ctx, &x, list, step, span),
+                for_each_elem(&x, list, step, span),
                 Expr::Var(acc, span),
             ],
             span,
@@ -32,7 +32,7 @@ pub(crate) fn lower_to_set(ctx: &LowerCtx, list: Expr, span: Span) -> Expr {
     }
 }
 
-pub(crate) fn lower_to_list(ctx: &LowerCtx, col: Expr, span: Span) -> Expr {
+pub(crate) fn lower_to_list(_ctx: &LowerCtx, col: Expr, span: Span) -> Expr {
     let acc = format!("__tolist_acc_{}", span.start.0);
     let x = format!("__tolist_x_{}", span.start.0);
     let step = Expr::Assign {
@@ -49,7 +49,7 @@ pub(crate) fn lower_to_list(ctx: &LowerCtx, col: Expr, span: Span) -> Expr {
         value: Box::new(empty_list(span)),
         body: Box::new(Expr::Seq {
             stmts: vec![
-                for_each_elem(ctx, &x, col, step, span),
+                for_each_elem(&x, col, step, span),
                 Expr::Var(acc, span),
             ],
             span,
@@ -60,7 +60,7 @@ pub(crate) fn lower_to_list(ctx: &LowerCtx, col: Expr, span: Span) -> Expr {
 }
 
 /// `pairs.toMap()` — each element is a 2-tuple `(k, v)`.
-pub(crate) fn lower_to_map(ctx: &LowerCtx, pairs: Expr, span: Span) -> Expr {
+pub(crate) fn lower_to_map(_ctx: &LowerCtx, pairs: Expr, span: Span) -> Expr {
     let acc = format!("__tomap_acc_{}", span.start.0);
     let p = format!("__tomap_p_{}", span.start.0);
     let k = Expr::BuiltinCall {
@@ -87,7 +87,7 @@ pub(crate) fn lower_to_map(ctx: &LowerCtx, pairs: Expr, span: Span) -> Expr {
         value: Box::new(empty_map(span)),
         body: Box::new(Expr::Seq {
             stmts: vec![
-                list_for_in(ctx, &p, pairs, step, span),
+                list_for_in(&p, pairs, step, span),
                 Expr::Var(acc, span),
             ],
             span,
@@ -97,7 +97,7 @@ pub(crate) fn lower_to_map(ctx: &LowerCtx, pairs: Expr, span: Span) -> Expr {
     }
 }
 
-pub(crate) fn lower_set_union(ctx: &LowerCtx, a: Expr, b: Expr, span: Span) -> Expr {
+pub(crate) fn lower_set_union(_ctx: &LowerCtx, a: Expr, b: Expr, span: Span) -> Expr {
     let acc = format!("__union_acc_{}", span.start.0);
     let x = format!("__union_x_{}", span.start.0);
     let step = Expr::Assign {
@@ -113,7 +113,7 @@ pub(crate) fn lower_set_union(ctx: &LowerCtx, a: Expr, b: Expr, span: Span) -> E
         name: acc.clone(),
         value: Box::new(a),
         body: Box::new(Expr::Seq {
-            stmts: vec![list_for_in(ctx, &x, b, step, span), Expr::Var(acc, span)],
+            stmts: vec![list_for_in(&x, b, step, span), Expr::Var(acc, span)],
             span,
         }),
         mutable: true,
@@ -121,7 +121,7 @@ pub(crate) fn lower_set_union(ctx: &LowerCtx, a: Expr, b: Expr, span: Span) -> E
     }
 }
 
-pub(crate) fn lower_set_intersect(ctx: &LowerCtx, a: Expr, b: Expr, span: Span) -> Expr {
+pub(crate) fn lower_set_intersect(_ctx: &LowerCtx, a: Expr, b: Expr, span: Span) -> Expr {
     let acc = format!("__isect_acc_{}", span.start.0);
     let other = format!("__isect_b_{}", span.start.0);
     let x = format!("__isect_x_{}", span.start.0);
@@ -151,7 +151,7 @@ pub(crate) fn lower_set_intersect(ctx: &LowerCtx, a: Expr, b: Expr, span: Span) 
             name: acc.clone(),
             value: Box::new(empty_set(span)),
             body: Box::new(Expr::Seq {
-                stmts: vec![list_for_in(ctx, &x, a, step, span), Expr::Var(acc, span)],
+                stmts: vec![list_for_in(&x, a, step, span), Expr::Var(acc, span)],
                 span,
             }),
             mutable: true,
@@ -162,7 +162,7 @@ pub(crate) fn lower_set_intersect(ctx: &LowerCtx, a: Expr, b: Expr, span: Span) 
     }
 }
 
-pub(crate) fn lower_set_diff(ctx: &LowerCtx, a: Expr, b: Expr, span: Span) -> Expr {
+pub(crate) fn lower_set_diff(_ctx: &LowerCtx, a: Expr, b: Expr, span: Span) -> Expr {
     let acc = format!("__diff_acc_{}", span.start.0);
     let x = format!("__diff_x_{}", span.start.0);
     let step = Expr::Assign {
@@ -178,7 +178,7 @@ pub(crate) fn lower_set_diff(ctx: &LowerCtx, a: Expr, b: Expr, span: Span) -> Ex
         name: acc.clone(),
         value: Box::new(a),
         body: Box::new(Expr::Seq {
-            stmts: vec![list_for_in(ctx, &x, b, step, span), Expr::Var(acc, span)],
+            stmts: vec![list_for_in(&x, b, step, span), Expr::Var(acc, span)],
             span,
         }),
         mutable: true,

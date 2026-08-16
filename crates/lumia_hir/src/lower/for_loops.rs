@@ -49,7 +49,7 @@ pub(crate) fn lower_for_in(
                 mutable: false,
                 ty: None,
             };
-            list_for_in(ctx, &pair, items, bind_k, span)
+            list_for_in(&pair, items, bind_k, span)
         }
         lumia_syntax::ForBinding::Name(name) => {
             let lowered_iter = lower_expr(ctx, iter);
@@ -57,7 +57,6 @@ pub(crate) fn lower_for_in(
                 if matches!(b, Builtin::Range | Builtin::RangeInclusive) && args.len() == 2 {
                     let inclusive = matches!(b, Builtin::RangeInclusive);
                     return counter_for_in(
-                        ctx,
                         name,
                         args[0].clone(),
                         args[1].clone(),
@@ -67,7 +66,7 @@ pub(crate) fn lower_for_in(
                     );
                 }
             }
-            list_for_in(ctx, name, lowered_iter, body_e, span)
+            list_for_in(name, lowered_iter, body_e, span)
         }
     }
 }
@@ -88,7 +87,6 @@ fn expr_already_pair_list(e: &Expr) -> bool {
 }
 
 pub(crate) fn counter_for_in(
-    _ctx: &LowerCtx,
     binding: &str,
     start: Expr,
     end: Expr,
@@ -160,13 +158,7 @@ pub(crate) fn counter_for_in(
     }
 }
 
-pub(crate) fn list_for_in(
-    _ctx: &LowerCtx,
-    binding: &str,
-    list: Expr,
-    body: Expr,
-    span: Span,
-) -> Expr {
+pub(crate) fn list_for_in(binding: &str, list: Expr, body: Expr, span: Span) -> Expr {
     let xs = format!("__xs_{}", span.start.0);
     let i = format!("__i_{}", span.start.0);
     let n = format!("__n_{}", span.start.0);
@@ -236,12 +228,11 @@ pub(crate) fn list_for_in(
 }
 
 /// Iterate with a custom per-element step, using either a counter (range) or indexed get.
-pub(crate) fn for_each_elem(ctx: &LowerCtx, x: &str, list: Expr, step: Expr, span: Span) -> Expr {
+pub(crate) fn for_each_elem(x: &str, list: Expr, step: Expr, span: Span) -> Expr {
     if let Expr::BuiltinCall { name, args, .. } = &list {
         if matches!(name, Builtin::Range | Builtin::RangeInclusive) && args.len() == 2 {
             let inclusive = matches!(name, Builtin::RangeInclusive);
             return counter_for_in(
-                ctx,
                 x,
                 args[0].clone(),
                 args[1].clone(),
@@ -251,7 +242,7 @@ pub(crate) fn for_each_elem(ctx: &LowerCtx, x: &str, list: Expr, step: Expr, spa
             );
         }
     }
-    list_for_in(ctx, x, list, step, span)
+    list_for_in(x, list, step, span)
 }
 
 pub(crate) fn empty_list(span: Span) -> Expr {

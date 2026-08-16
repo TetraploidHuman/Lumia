@@ -21,10 +21,10 @@ pub(crate) fn lower_list_fold(ctx: &LowerCtx, list: Expr, init: Expr, f: Expr, s
                     x_ty,
                     body,
                 } => range_fold_inline(
-                    ctx, start, end, inclusive, init, acc, acc_ty, x, x_ty, body, span,
+                    start, end, inclusive, init, acc, acc_ty, x, x_ty, body, span,
                 ),
                 BinaryCallback::Bound { f, f_name, acc, x } => {
-                    range_fold_call(ctx, start, end, inclusive, init, f, f_name, acc, x, span)
+                    range_fold_call(start, end, inclusive, init, f, f_name, acc, x, span)
                 }
             };
         }
@@ -37,12 +37,11 @@ pub(crate) fn lower_list_fold(ctx: &LowerCtx, list: Expr, init: Expr, f: Expr, s
             span,
         };
     }
-    desugar_list_fold_sequential(ctx, list, init, f, span)
+    desugar_list_fold_sequential(list, init, f, span)
 }
 
 /// Sequential `fold` loop (also used when auto-parallel demotes `ListParFold`).
 pub fn desugar_list_fold_sequential(
-    ctx: &LowerCtx,
     list: Expr,
     init: Expr,
     f: Expr,
@@ -55,9 +54,9 @@ pub fn desugar_list_fold_sequential(
             x,
             x_ty,
             body,
-        } => lower_list_fold_inline(ctx, list, init, acc, acc_ty, x, x_ty, body, span),
+        } => lower_list_fold_inline(list, init, acc, acc_ty, x, x_ty, body, span),
         BinaryCallback::Bound { f, f_name, acc, x } => {
-            lower_list_fold_call(ctx, list, init, f, f_name, acc, x, span)
+            lower_list_fold_call(list, init, f, f_name, acc, x, span)
         }
     }
 }
@@ -161,7 +160,6 @@ pub(crate) fn syntax_fold_body_is_associative(body: &lumia_syntax::Expr, a: &str
 }
 
 fn range_fold_inline(
-    ctx: &LowerCtx,
     start: Expr,
     end: Expr,
     inclusive: bool,
@@ -195,11 +193,10 @@ fn range_fold_inline(
         value: Box::new(body),
         span,
     };
-    range_accum(ctx, acc, init, &el, start, end, inclusive, step, span)
+    range_accum(acc, init, &el, start, end, inclusive, step, span)
 }
 
 fn range_fold_call(
-    ctx: &LowerCtx,
     start: Expr,
     end: Expr,
     inclusive: bool,
@@ -222,12 +219,11 @@ fn range_fold_call(
     };
     with_fun_bind(
         Some((f_name, f)),
-        range_accum(ctx, acc, init, &x, start, end, inclusive, step, span),
+        range_accum(acc, init, &x, start, end, inclusive, step, span),
     )
 }
 
 fn lower_list_fold_inline(
-    ctx: &LowerCtx,
     list: Expr,
     init: Expr,
     acc: String,
@@ -259,11 +255,10 @@ fn lower_list_fold_inline(
         value: Box::new(body),
         span,
     };
-    list_accum(ctx, acc, init, &el, list, step, span)
+    list_accum(acc, init, &el, list, step, span)
 }
 
 fn lower_list_fold_call(
-    ctx: &LowerCtx,
     list: Expr,
     init: Expr,
     f: Expr,
@@ -284,6 +279,6 @@ fn lower_list_fold_call(
     };
     with_fun_bind(
         Some((f_name, f)),
-        list_accum(ctx, acc, init, &x, list, step, span),
+        list_accum(acc, init, &x, list, step, span),
     )
 }

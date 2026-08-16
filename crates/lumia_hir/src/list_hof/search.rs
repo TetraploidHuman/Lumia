@@ -73,7 +73,7 @@ fn list_search(ctx: &LowerCtx, list: Expr, f: Expr, span: Span, kind: ListSearch
             span,
         },
     };
-    with_fun_bind(f_bind, list_accum(ctx, acc, init, &x, list, step, span))
+    with_fun_bind(f_bind, list_accum(acc, init, &x, list, step, span))
 }
 
 pub(crate) fn lower_list_any(ctx: &LowerCtx, list: Expr, f: Expr, span: Span) -> Expr {

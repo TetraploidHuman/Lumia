@@ -66,7 +66,7 @@
 - [ ] **SSA `Local` + 字符串 `Name`/`Assign` 双寻址**：`Value::Name(String)` + `Op::Assign { name }` 与 SSA 并存；ABI/`slot_tys` 必须双轨跟踪。槽位应统一 `Local`/`SlotId`，名字仅调试打印。
 - [ ] **`InferValueCtx` 可选表蔓延 / `FunIndex` 仅 mono**：`value_ty` 上下文堆 ≈8 个 `Option<&HashMap<…>>`；`fun_index` 仅 mono 用，而 float_abi/fixup/channel_hint/codegen 反复手拼 `fun_ret_tys`。缺共享 `ModuleTables` → 表装配拷贝。`CodegenTypeTables` 已存在但几乎只服务 codegen（半收口见第五轮）。
 - [x] **Builtin→RT 符号在 `BuiltinInfo` 外覆盖**：`list_receiver_rt_override`（`ListLen`/`MapSet`/`ListGet`→`lumia_list_*`）与既有 `string_receiver_rt_override` 并列；仍非 BuiltinInfo 表内字段，但是唯一 emit 覆盖面。
-- [x] **HIR `visit` 未被 `lumia_ty` 使用**：`free_vars` 已改走 `lumia_hir::all_free_vars`（并修 Assign LHS）；`effects`/`alt`/`parallel`/`product_resolve`/`traits` 仍手写 walker。
+- [x] **HIR `visit` 未被 `lumia_ty` 使用**：`free_vars` / `parallel` / `product_resolve` 已走 `all_free_vars` / `for_each_expr_mut`；`effects`/`alt`/`traits` 仍手写 walker。
 - [ ] **RT FFI 边界 crate 级放行「看似 safe」**：`lumia_rt` `#![allow(clippy::not_unsafe_ptr_arg_deref)]`，大量 `extern "C"` 不以 `unsafe fn` 标出。指针契约在类型系统外；UB 审计难。宜收窄 allow、ABI 边用 `unsafe fn` + 薄安全包装。
 - [ ] **CI/check 仍 exclude lumia + install slim 未测**：`check.sh` 已对齐 `llvm-dynamic`；双方仍 `clippy --exclude lumia`；`install.sh` slim-LSP 产物 CI 未测。
 - [ ] **编辑器版本与 LSP 生命周期仍欠**：LSP `serverInfo.version` 已用 `CARGO_PKG_VERSION`；vscode/IDEA 版本漂移与 shutdown/`exit` 契约仍欠（对账脚本仍开放）。
@@ -214,7 +214,7 @@
 
 - [x] **双份 free_vars，`Assign` 语义分裂**：`hir/collect_free_vars` 现将 Assign LHS 记为 use；`ty/free_var_names` 直接委托 `all_free_vars`（spawn 捕获与 list_hof 并行检查同源；并行侧更保守）。
 - [x] **`break`/`continue` 定型无循环嵌套校验**：`AltReturnState::loop_depth`；`infer_loop` 增减；lambda/`infer_fun` 清零；拒测覆盖裸 `break`/`continue` 与跨闭包。
-- [ ] **ty demote 公开啃 HIR desugar + `LowerCtx::empty()`**：`parallel.rs` 调 `desugar_list_*(&LowerCtx::empty(), …)`。宜纯 desugar 函数或不依赖 LowerCtx 的 typed pass。
+- [x] **ty demote 公开啃 HIR desugar + `LowerCtx::empty()`**：顺序 `desugar_list_{map,fold}_sequential` 不再吃 `LowerCtx`；`for_each_elem`/`list_accum` 等循环骨架去 ctx；已删 `LowerCtx::empty`。
 
 #### codegen / abi
 

@@ -2,7 +2,8 @@
 
 use crate::types::{expr_span, Type, TypedModule};
 use lumia_hir::{
-    desugar_list_fold_sequential, desugar_list_map_sequential, Builtin, Expr, Item, LowerCtx,
+    desugar_list_fold_sequential, desugar_list_map_sequential, for_each_expr_mut, Builtin, Expr,
+    Item,
 };
 
 pub(crate) fn is_par_scalar(t: &Type) -> bool {
@@ -80,105 +81,41 @@ pub(crate) fn finalize_par_maps_in_expr(
     type_at: &[(lumia_syntax::Span, Type)],
     enabled: bool,
 ) {
-    match expr {
-        Expr::BuiltinCall { name, args, span } => {
-            for a in args.iter_mut() {
-                finalize_par_maps_in_expr(a, type_at, enabled);
-            }
-            if matches!(name, Builtin::ListParMap) && args.len() == 2 {
-                let keep = enabled
-                    && type_at_span(type_at, expr_span(&args[0]))
-                        .zip(type_at_span(type_at, expr_span(&args[1])))
-                        .is_some_and(|(lt, ft)| list_par_map_eligible(&lt, &ft));
-                if !keep {
-                    let list = args[0].clone();
-                    let f = args[1].clone();
-                    let sp = *span;
-                    *expr = desugar_list_map_sequential(&LowerCtx::empty(), list, f, sp);
-                    finalize_par_maps_in_expr(expr, type_at, enabled);
-                }
-            } else if matches!(name, Builtin::ListParFold) && args.len() == 3 {
-                let keep = enabled
-                    && type_at_span(type_at, expr_span(&args[0]))
-                        .zip(type_at_span(type_at, expr_span(&args[1])))
-                        .zip(type_at_span(type_at, expr_span(&args[2])))
-                        .is_some_and(|((lt, it), ft)| list_par_fold_eligible(&lt, &it, &ft));
-                if !keep {
-                    let list = args[0].clone();
-                    let init = args[1].clone();
-                    let f = args[2].clone();
-                    let sp = *span;
-                    *expr = desugar_list_fold_sequential(&LowerCtx::empty(), list, init, f, sp);
-                    finalize_par_maps_in_expr(expr, type_at, enabled);
-                }
+    // Post-order: children first. Sequential desugar never reintroduces ListPar*.
+    for_each_expr_mut(expr, &mut |e| demote_par_call(e, type_at, enabled));
+}
+
+fn demote_par_call(expr: &mut Expr, type_at: &[(lumia_syntax::Span, Type)], enabled: bool) {
+    let Expr::BuiltinCall { name, args, span } = expr else {
+        return;
+    };
+    match name {
+        Builtin::ListParMap if args.len() == 2 => {
+            let keep = enabled
+                && type_at_span(type_at, expr_span(&args[0]))
+                    .zip(type_at_span(type_at, expr_span(&args[1])))
+                    .is_some_and(|(lt, ft)| list_par_map_eligible(&lt, &ft));
+            if !keep {
+                let list = args[0].clone();
+                let f = args[1].clone();
+                let sp = *span;
+                *expr = desugar_list_map_sequential(list, f, sp);
             }
         }
-        Expr::AdtNew { args, .. } => {
-            for a in args {
-                finalize_par_maps_in_expr(a, type_at, enabled);
+        Builtin::ListParFold if args.len() == 3 => {
+            let keep = enabled
+                && type_at_span(type_at, expr_span(&args[0]))
+                    .zip(type_at_span(type_at, expr_span(&args[1])))
+                    .zip(type_at_span(type_at, expr_span(&args[2])))
+                    .is_some_and(|((lt, it), ft)| list_par_fold_eligible(&lt, &it, &ft));
+            if !keep {
+                let list = args[0].clone();
+                let init = args[1].clone();
+                let f = args[2].clone();
+                let sp = *span;
+                *expr = desugar_list_fold_sequential(list, init, f, sp);
             }
         }
-        Expr::Let { value, body, .. } => {
-            finalize_par_maps_in_expr(value, type_at, enabled);
-            finalize_par_maps_in_expr(body, type_at, enabled);
-        }
-        Expr::Assign { value, .. } | Expr::Unary { expr: value, .. } => {
-            finalize_par_maps_in_expr(value, type_at, enabled);
-        }
-        Expr::Lambda { body, .. } => finalize_par_maps_in_expr(body, type_at, enabled),
-        Expr::Call { callee, args, .. } => {
-            finalize_par_maps_in_expr(callee, type_at, enabled);
-            for a in args {
-                finalize_par_maps_in_expr(a, type_at, enabled);
-            }
-        }
-        Expr::Binary { left, right, .. } => {
-            finalize_par_maps_in_expr(left, type_at, enabled);
-            finalize_par_maps_in_expr(right, type_at, enabled);
-        }
-        Expr::If {
-            cond,
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            finalize_par_maps_in_expr(cond, type_at, enabled);
-            finalize_par_maps_in_expr(then_branch, type_at, enabled);
-            finalize_par_maps_in_expr(else_branch, type_at, enabled);
-        }
-        Expr::Loop {
-            cond, body, step, ..
-        } => {
-            finalize_par_maps_in_expr(cond, type_at, enabled);
-            finalize_par_maps_in_expr(body, type_at, enabled);
-            if let Some(s) = step {
-                finalize_par_maps_in_expr(s, type_at, enabled);
-            }
-        }
-        Expr::Seq { stmts, .. } => {
-            for s in stmts {
-                finalize_par_maps_in_expr(s, type_at, enabled);
-            }
-        }
-        Expr::Return { value, .. } => finalize_par_maps_in_expr(value, type_at, enabled),
-        Expr::Alt { scrutinee, alt, .. } => {
-            finalize_par_maps_in_expr(scrutinee, type_at, enabled);
-            finalize_par_maps_in_expr(alt, type_at, enabled);
-        }
-        Expr::With { base, fields, .. } => {
-            finalize_par_maps_in_expr(base, type_at, enabled);
-            for (_, e) in fields {
-                finalize_par_maps_in_expr(e, type_at, enabled);
-            }
-        }
-        Expr::Int(..)
-        | Expr::Float(..)
-        | Expr::Bool(..)
-        | Expr::String(..)
-        | Expr::Char(..)
-        | Expr::Unit(..)
-        | Expr::Var(..)
-        | Expr::Break(_)
-        | Expr::Continue(_) => {}
+        _ => {}
     }
 }

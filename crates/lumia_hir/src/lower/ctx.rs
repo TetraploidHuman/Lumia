@@ -20,20 +20,6 @@ pub struct LowerCtx {
 }
 
 impl LowerCtx {
-    /// Empty context for post-lower desugars (e.g. demoting `ListParMap` in ty).
-    /// Loop skeletons do not consult ctor/product tables.
-    pub fn empty() -> Self {
-        Self {
-            ctors: HashMap::default(),
-            products: HashMap::default(),
-            product_fields: HashMap::default(),
-            ambiguous_product_fields: HashSet::default(),
-            err: RefCell::new(None),
-            toplevel_funs: HashSet::default(),
-            toplevel_fold_assoc: HashSet::default(),
-        }
-    }
-
     pub(crate) fn new(
         ctors: HashMap<String, CtorInfo>,
         products: HashMap<String, Vec<String>>,

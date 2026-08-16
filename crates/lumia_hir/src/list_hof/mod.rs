@@ -17,7 +17,6 @@ pub(crate) use map::{lower_list_map, lower_list_sort_by};
 pub(crate) use search::{lower_list_all, lower_list_any, lower_list_find};
 
 pub(crate) fn list_accum(
-    ctx: &LowerCtx,
     acc: String,
     init: Expr,
     x: &str,
@@ -30,7 +29,7 @@ pub(crate) fn list_accum(
         value: Box::new(init),
         body: Box::new(Expr::Seq {
             stmts: vec![
-                for_each_elem(ctx, x, list, step, span),
+                for_each_elem(x, list, step, span),
                 Expr::Var(acc, span),
             ],
             span,
@@ -42,7 +41,6 @@ pub(crate) fn list_accum(
 
 /// Shared accumulate-over-range skeleton: `let mut acc = init; for x in start..end { step }; acc`.
 pub(crate) fn range_accum(
-    ctx: &LowerCtx,
     acc: String,
     init: Expr,
     x: &str,
@@ -57,7 +55,7 @@ pub(crate) fn range_accum(
         value: Box::new(init),
         body: Box::new(Expr::Seq {
             stmts: vec![
-                counter_for_in(ctx, x, start, end, inclusive, step, span),
+                counter_for_in(x, start, end, inclusive, step, span),
                 Expr::Var(acc, span),
             ],
             span,

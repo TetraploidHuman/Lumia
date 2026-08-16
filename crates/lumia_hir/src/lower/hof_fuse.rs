@@ -202,7 +202,7 @@ pub(crate) fn try_fuse_hof_fold(
         value: Box::new(lower_expr(ctx, init)),
         body: Box::new(Expr::Seq {
             stmts: vec![
-                for_each_elem(ctx, &x0, source_e, step, span),
+                for_each_elem(&x0, source_e, step, span),
                 Expr::Var(acc, span),
             ],
             span,
