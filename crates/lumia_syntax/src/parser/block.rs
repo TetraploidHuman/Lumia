@@ -75,7 +75,7 @@ impl<'a> Parser<'a> {
             return Ok(self.bump().span);
         }
         Err(self.error(format!(
-            "expected {:?}, found {:?}",
+            "expected {}, found {}",
             TokenKind::RBrace,
             self.cur.kind
         )))

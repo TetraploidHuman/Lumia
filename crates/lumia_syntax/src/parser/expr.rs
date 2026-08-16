@@ -667,7 +667,7 @@ impl<'a> Parser<'a> {
             }
             TokenKind::For => self.parse_for_as_expr(),
             _ => Err(self.error(format!(
-                "unexpected token in expression: {:?}",
+                "unexpected token in expression: {}",
                 self.cur.kind
             ))),
         }

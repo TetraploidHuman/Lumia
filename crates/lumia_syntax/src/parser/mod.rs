@@ -129,7 +129,7 @@ impl<'a> Parser<'a> {
         if std::mem::discriminant(&self.cur.kind) == std::mem::discriminant(&kind) {
             Ok(self.bump())
         } else {
-            Err(self.error(format!("expected {kind:?}, found {:?}", self.cur.kind)))
+            Err(self.error(format!("expected {kind}, found {}", self.cur.kind)))
         }
     }
 

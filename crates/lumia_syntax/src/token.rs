@@ -1,4 +1,5 @@
 use crate::span::Span;
+use std::fmt;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Token {
@@ -104,6 +105,82 @@ pub enum TokenKind {
     Eof,
 }
 
+impl fmt::Display for TokenKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TokenKind::Int(n) => write!(f, "integer `{n}`"),
+            TokenKind::Float(n) => write!(f, "float `{n}`"),
+            TokenKind::String(_) => write!(f, "string literal"),
+            TokenKind::InterpString(_) => write!(f, "interpolated string"),
+            TokenKind::Ident(s) => write!(f, "identifier `{s}`"),
+            TokenKind::Char(c) => write!(f, "character `{c}`"),
+            TokenKind::Module => write!(f, "`module`"),
+            TokenKind::Import => write!(f, "`import`"),
+            TokenKind::Val => write!(f, "`val`"),
+            TokenKind::Var => write!(f, "`var`"),
+            TokenKind::Type => write!(f, "`type`"),
+            TokenKind::If => write!(f, "`if`"),
+            TokenKind::Else => write!(f, "`else`"),
+            TokenKind::Match => write!(f, "`match`"),
+            TokenKind::For => write!(f, "`for`"),
+            TokenKind::In => write!(f, "`in`"),
+            TokenKind::Break => write!(f, "`break`"),
+            TokenKind::Continue => write!(f, "`continue`"),
+            TokenKind::Return => write!(f, "`return`"),
+            TokenKind::Alt => write!(f, "`alt`"),
+            TokenKind::And => write!(f, "`and`"),
+            TokenKind::Or => write!(f, "`or`"),
+            TokenKind::Not => write!(f, "`not`"),
+            TokenKind::To => write!(f, "`to`"),
+            TokenKind::True => write!(f, "`true`"),
+            TokenKind::False => write!(f, "`false`"),
+            TokenKind::Priv => write!(f, "`priv`"),
+            TokenKind::As => write!(f, "`as`"),
+            TokenKind::Trait => write!(f, "`trait`"),
+            TokenKind::Instance => write!(f, "`instance`"),
+            TokenKind::Requires => write!(f, "`requires`"),
+            TokenKind::With => write!(f, "`with`"),
+            TokenKind::Effect => write!(f, "`effect`"),
+            TokenKind::Scope => write!(f, "`scope`"),
+            TokenKind::Spawn => write!(f, "`spawn`"),
+            TokenKind::Foreign => write!(f, "`foreign`"),
+            TokenKind::LParen => write!(f, "`(`"),
+            TokenKind::RParen => write!(f, "`)`"),
+            TokenKind::LBrace => write!(f, "`{{`"),
+            TokenKind::RBrace => write!(f, "`}}`"),
+            TokenKind::LBracket => write!(f, "`[`"),
+            TokenKind::RBracket => write!(f, "`]`"),
+            TokenKind::Comma => write!(f, "`,`"),
+            TokenKind::Dot => write!(f, "`.`"),
+            TokenKind::DotDot => write!(f, "`..`"),
+            TokenKind::DotDotLt => write!(f, "`..<`"),
+            TokenKind::DotDotEq => write!(f, "`..=`"),
+            TokenKind::Colon => write!(f, "`:`"),
+            TokenKind::ColonColon => write!(f, "`::`"),
+            TokenKind::Semi => write!(f, "`;`"),
+            TokenKind::Arrow => write!(f, "`->`"),
+            TokenKind::PipePipe => write!(f, "`>>`"),
+            TokenKind::Eq => write!(f, "`=`"),
+            TokenKind::EqEq => write!(f, "`==`"),
+            TokenKind::Ne => write!(f, "`!=`"),
+            TokenKind::Lt => write!(f, "`<`"),
+            TokenKind::Le => write!(f, "`<=`"),
+            TokenKind::Gt => write!(f, "`>`"),
+            TokenKind::Ge => write!(f, "`>=`"),
+            TokenKind::Plus => write!(f, "`+`"),
+            TokenKind::Minus => write!(f, "`-`"),
+            TokenKind::Star => write!(f, "`*`"),
+            TokenKind::Slash => write!(f, "`/`"),
+            TokenKind::Percent => write!(f, "`%`"),
+            TokenKind::Hash => write!(f, "`#`"),
+            TokenKind::Underscore => write!(f, "`_`"),
+            TokenKind::Ellipsis => write!(f, "`...`"),
+            TokenKind::Error(msg) => write!(f, "invalid token ({msg})"),
+            TokenKind::Eof => write!(f, "end of file"),
+        }
+    }
+}
+
 impl TokenKind {
     /// Lexer keyword spellings — single source of truth for editors / LSP.
     ///
@@ -173,5 +250,12 @@ mod keyword_truth_tests {
                 "SURFACE_SOFT `{s}` must not be a real keyword"
             );
         }
+    }
+
+    #[test]
+    fn display_is_user_facing() {
+        assert_eq!(TokenKind::RBrace.to_string(), "`}`");
+        assert_eq!(TokenKind::Ident("foo".into()).to_string(), "identifier `foo`");
+        assert_eq!(TokenKind::Eof.to_string(), "end of file");
     }
 }
