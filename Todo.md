@@ -93,7 +93,7 @@
 - [ ] **`emit_fun` 函数发射上帝模块（≈833 行）**：帧/根/COW/memo/`dense_f64` 早退/NSW/TCO/`Op` 分发挤在 `emit_function`。宜按生命周期拆（prologue / body / epilogue / 特化出口）。
 - [ ] **`Value::Loop` 开放 SR try 链**：`emit_value/mod.rs` 在通用 loop 前串 ≈12 个 `try_emit_*`（与已列 `*_sr` 文件同病，但缺注册表/插件面）。顺序与 fallthrough 隐式膨胀。宜 matcher 注册表或迁出 opt。
 - [x] **TLS `BACKEND` 空壳罩进程 `Heap`**：已去掉 TLS `BACKEND`/`MmBackend`；`MarkSweep` 为 ZST，FFI 直接调 inherent 方法，状态只在进程 `Heap` Mutex。真每线程 nursery / `--mm=arc` 仍欠。
-- [ ] **Task ↔ GC ↔ list-par 硬耦合**：GC shade 拉 `task::snapshot_sched_gc_roots`；fiber/channel 调 alloc/root；`list/par` 看 `task_runtime_active()`。三子系统无法独立演化；锁序是跨模块不变量。宜窄接口（根枚举 / 「禁并行」谓词）+ 文档化锁序。**第七轮**：全仓仅两处行内 `heap → sched` 注释，见续「锁序几乎无文档」。
+- [ ] **Task ↔ GC ↔ list-par 硬耦合**：GC shade 拉 `task::snapshot_sched_gc_roots`；fiber/channel 调 alloc/root；`list/par` 看 `task_runtime_active()`。三子系统无法独立演化。宜窄接口（根枚举 / 「禁并行」谓词）。锁序已在 crate 文档展开（CI 禁令仍欠）。
 - [ ] **`lumia_opt` 第三前端入口**：`compile_source_to_optimized*` 再调 `compile_source_to_core*`（仍跳 loader/std）。在已列双管线外再添「像完整编译」的捷径。宜只测 Core IR fixture，或强制经 `check_program`。
 
 #### 工具链 / 文档 / 测试
@@ -169,7 +169,8 @@
 #### 测试结构 / 死 API / 过宽 pub
 - [ ] **mono 上帝模块近距测仍空**：`mono/mod.rs` 测已外置 `mono/tests.rs`；`specialize`/`float_cap_fixup`/`ret_ty`/`key`/`traits`/`rewrite` 同文件测仍为 0。宜按子模块外置测 + 行数预算。
 - [ ] **Core lower 残留 `.expect`**：Alt/With 已 `note_ice`+`Err`；`control.rs`/`call.rs` 等仍有 `.expect("ICE: …")`。宜一律 `Err(Ice)`。
-- [ ] **锁序缺 CI 禁令**：`lumia_rt` crate 文档已有 Lock order（heap→sched）；memo/dict/mutator/channel 未入表；CI 禁令仍欠。
+- [ ] **锁序缺 CI 禁令**：`lumia_rt` crate 文档已扩全表（heap→sched→roots/memo；channel/memo shade；DICTS/ADT_SHOW 独立）。CI 禁令仍欠。
+- [x] **锁序文档未覆盖 memo/dict/mutator/channel**：已写入 `lumia_rt` crate `# Lock order`（见上条 CI 欠项）。
 
 #### 前端 / RT / 包装 / 文档
 - [ ] **`std.linalg` 仍占语言标准库**：`cn`/`efe` 已迁 `extras/`，`linalg.lm` 仍几乎全是 `foreign`→`lumia_f64_*`，且在 `std_mod` 白名单。域模块迁出不完整。宜迁 `extras.linalg`（或等价），RT 域核走 feature。
@@ -203,7 +204,7 @@
 
 - [ ] **LSP 列按字节，协议默认 UTF-16**：`cursor::pos_to_byte` 把 `character` 当 byte 加；`initialize` 不协商 `positionEncoding`；测例全 ASCII。非 ASCII 源上 hover/补全/诊断/着色全偏。宜协商 UTF-8 或统一 UTF-16↔byte；加多字节金样。
 - [ ] **CLI caret 列亦为字节，与「标量」叙事分裂**：`byte_to_line_col` 注释写 byte；DESIGN 用户面按 Unicode 标量。宜用户面列用标量（或文档钉死 byte）并与 LSP 共用一表。
-- [ ] **Parser 用户错误用 `TokenKind` 的 `Debug`**：`expected {kind:?}, found {:?}`（`parser/mod`/`block`/`expr`）。宜 `display()` / 期望集合文案。
+- [x] **Parser 用户错误用 `TokenKind` 的 `Debug`**：`Display for TokenKind`；`expect` / `expect_rbrace` / expr 意外 token 改用 `{}`。期望集合文案仍可再润色。
 - [ ] **恢复路径注入恒等毒桩 lambda**：`parse_val_item_resilient` 失败体换成 `{ _1,_2 -> _1 }` 类 stub 仍进符号表/定型。宜 `Hole`/`Error` 类型，或恢复项不绑定 scheme。
 - [ ] **`peek_kinds` 旁路重词法 + Ident 再分配**：临时 `Lexer` 调 `next_token`；与已列 `bump` clone 正交。宜无分配 peek 或 Ident intern。
 - [ ] **`${…}` 嵌套串跳过按字节 `+2` 吃转义**：主字面量按 UTF-8 scalar，插值内跳过可落非法边界。宜与 `lex_string` 共用安全扫描。

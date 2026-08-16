@@ -19,9 +19,9 @@ fn channel_id(handle: *mut u8) -> u64 {
     unsafe { *(handle as *const i64) as u64 }
 }
 
-/// Sched mutation + optional Dijkstra shade. Skip the heap Mutex when full mark
-/// is idle (flag mirrored in [`full_marking_fast`]); terminal root remark still
-/// covers channel buffers if a publish races the flag raise.
+/// Sched mutation + optional Dijkstra shade.
+/// Lock order: when marking, **heap → sched** (`with_heap` then `with_sched`);
+/// otherwise sched alone (see crate `# Lock order`).
 fn with_channel_gc<R>(f: impl FnOnce(bool, &mut SchedCore) -> R) -> R {
     if full_marking_fast() {
         with_heap(|_| with_sched(|s| f(true, s)))

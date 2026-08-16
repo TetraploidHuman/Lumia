@@ -13,14 +13,29 @@
 //!
 //! # Lock order
 //!
-//! Cross-subsystem mutex nesting (never invert):
+//! Cross-subsystem mutex nesting (**never invert**). Ranked coarse → fine:
 //!
-//! 1. **heap** (`with_heap`) — process `Heap` / GC
-//! 2. **sched** (`with_sched`) — Task/Channel/fiber tables
+//! 1. **heap** (`with_heap`) — process `Heap` / GC metadata
+//! 2. **sched** (`with_sched`) — Task / Channel / fiber tables
+//! 3. **per-mutator roots** (TLS `ROOTS` Mutex) — shadow-stack slots
+//! 4. **per-mutator memo** (TLS `MEMO_TF` / `MEMO_IDX` Mutex) — memo tables
 //!
-//! Call sites that touch both must take **heap → sched** (see `gc.rs` shade of
-//! sched roots; `scheduler.rs` publish under heap). Memo/dict/mutator take heap
-//! alone or nest sched only after heap when required.
+//! Process-global helpers that nest under heap when GC registers/walks:
+//!
+//! - **mutator registry** / **memo registry** — take only while holding heap
+//!   (registration and GC root enumeration: **heap → registry → per-mutator**)
+//! - **channel hot path** — `with_channel_gc`: when `full_marking_fast`,
+//!   **heap → sched**; otherwise sched alone (shade deferred to root remark)
+//! - **memo store shade** — release memo Mutex **before** any heap shade
+//!   (never **memo → heap**)
+//!
+//! Independent (must not nest with heap/sched, or only after releasing them):
+//!
+//! - **`DICTS`** / **`ADT_SHOW`** — process `Mutex`; do not hold while taking
+//!   heap or sched
+//!
+//! Call sites that touch heap + sched must take **heap → sched** (see `gc.rs`
+//! shade of sched roots; `scheduler.rs` publish under heap).
 //!
 //! C ABI entry points take raw pointers by design; they are not Rust `unsafe fn`
 //! because the LLVM-emitted caller already treats the boundary as unchecked.
