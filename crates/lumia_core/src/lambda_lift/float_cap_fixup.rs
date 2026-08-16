@@ -11,6 +11,11 @@ use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 pub(crate) fn fixup_closure_float_caps(module: &mut CoreModule) {
+    let lifted = super::lifted_lambda_names(module);
+    super::with_lifted_lambda_names(lifted, || fixup_closure_float_caps_inner(module));
+}
+
+fn fixup_closure_float_caps_inner(module: &mut CoreModule) {
     let fun_ret_tys: HashMap<String, Type> = module
         .functions
         .iter()
@@ -721,13 +726,7 @@ fn infer_local_fun_ty(
             Value::Local(crate::Local(src)) => cur = *src,
             Value::ClosureCap { index, .. } => return caps.get(index).cloned(),
             Value::FunRef(n) | Value::AllocClosure { fun: n, .. } => {
-                let lifted: HashSet<String> = fun_ret_tys
-                    .keys()
-                    .chain(fun_param_tys.keys())
-                    .filter(|k| k.starts_with("__lam_"))
-                    .cloned()
-                    .collect();
-                return super::fun_ty_from_tables(n, fun_ret_tys, fun_param_tys, &lifted);
+                return super::fun_ty_from_tables_tls(n, fun_ret_tys, fun_param_tys);
             }
             _ => return None,
         }

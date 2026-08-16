@@ -264,22 +264,26 @@ fn sum_parametric_arity(adt: &lumia_hir::AdtDef) -> usize {
 }
 
 fn option_ctor_tags(adts: &[lumia_hir::AdtDef]) -> (i64, i64) {
+    let opt = lumia_hir::OPTION;
+    let (mut some, mut none) = (
+        opt.default_tag("Some").unwrap_or(0),
+        opt.default_tag("None").unwrap_or(1),
+    );
     for a in adts {
-        if a.name == "Option" {
-            let mut some = 0i64;
-            let mut none = 1i64;
-            for v in &a.variants {
-                if v.name == "Some" {
-                    some = v.tag;
-                }
-                if v.name == "None" {
-                    none = v.tag;
-                }
-            }
-            return (some, none);
+        if a.name != opt.name {
+            continue;
         }
+        for v in &a.variants {
+            if v.name == "Some" {
+                some = v.tag;
+            }
+            if v.name == "None" {
+                none = v.tag;
+            }
+        }
+        return (some, none);
     }
-    (0, 1)
+    (some, none)
 }
 
 /// Nullary empty-container stubs for first-class `listOf` / `mapOf` / `setOf`.

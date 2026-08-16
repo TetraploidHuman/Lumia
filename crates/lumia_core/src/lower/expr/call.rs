@@ -244,13 +244,13 @@ fn stamp_adt_field_result_ty(ctx: &CoreLowerCtx, expr: &HirExpr) -> Option<Type>
     let Type::Adt { name, params } = &recv else {
         return None;
     };
-    let ty = if name == "Result" && (ctor == "Ok" || ctor == "Err") {
+    let ty = if name == lumia_hir::RESULT.name && (ctor == "Ok" || ctor == "Err") {
         if idx != 0 {
             return None;
         }
         let pi = if ctor == "Ok" { 0 } else { 1 };
         params.get(pi).cloned()?
-    } else if name == "Option" && ctor == "Some" {
+    } else if name == lumia_hir::OPTION.name && ctor == "Some" {
         if idx != 0 {
             return None;
         }

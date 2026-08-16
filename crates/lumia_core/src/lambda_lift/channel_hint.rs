@@ -16,6 +16,11 @@ use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 pub(crate) fn refine_channel_elem_hint(module: &mut CoreModule) {
+    let lifted = super::lifted_lambda_names(module);
+    super::with_lifted_lambda_names(lifted, || refine_channel_elem_hint_inner(module));
+}
+
+fn refine_channel_elem_hint_inner(module: &mut CoreModule) {
     let mut lam_caps: HashMap<String, Vec<Local>> = HashMap::default();
     for fun in &module.functions {
         collect_alloc_closure_caps(&fun.body, &mut lam_caps);
@@ -473,9 +478,10 @@ fn adt_payload_ty(
             local_tys.get(&f.0).cloned().unwrap_or(Type::Int)
         }
     };
-    // Prelude tags: Some=0 None=1; Ok=0 Err=1 (`ensure_prelude_adt`).
-    if adt_name == "Option" {
-        let param = if tag == 1 || fields.is_empty() {
+    // Prelude tags from [`lumia_hir::OPTION`] / [`lumia_hir::RESULT`] injection order.
+    if adt_name == lumia_hir::OPTION.name {
+        let none_tag = lumia_hir::OPTION.default_tag("None").unwrap_or(1);
+        let param = if tag == none_tag || fields.is_empty() {
             // None — flexible param joined with Some(T) later.
             Type::Var(u32::MAX)
         } else {
@@ -486,9 +492,10 @@ fn adt_payload_ty(
             params: vec![param],
         };
     }
-    if adt_name == "Result" {
+    if adt_name == lumia_hir::RESULT.name {
+        let ok_tag = lumia_hir::RESULT.default_tag("Ok").unwrap_or(0);
         let payload = fields.first().map(field_ty).unwrap_or(Type::Int);
-        let (ok, err) = if tag == 0 {
+        let (ok, err) = if tag == ok_tag {
             (payload, Type::Var(u32::MAX))
         } else {
             (Type::Var(u32::MAX), payload)
@@ -519,8 +526,14 @@ fn join_channel_payload(prev: &Type, new: &Type) -> Option<Type> {
                 name: n2,
                 params: p2,
             },
-        ) if n1 == n2 && (n1 == "Option" || n1 == "Result") => {
-            let want = if n1.as_str() == "Option" { 1 } else { 2 };
+        ) if n1 == n2
+            && (n1 == lumia_hir::OPTION.name || n1 == lumia_hir::RESULT.name) =>
+        {
+            let want = if n1.as_str() == lumia_hir::OPTION.name {
+                1
+            } else {
+                2
+            };
             let mut params = Vec::with_capacity(want);
             for i in 0..want {
                 let a = p1.get(i);
@@ -598,14 +611,7 @@ fn fun_ty_from_tables(
     fun_ret_tys: &HashMap<String, Type>,
     fun_param_tys: &HashMap<String, Vec<Type>>,
 ) -> Option<Type> {
-    // Same table-only recovery as float_abi (FunKind lives on CoreFun, not these maps).
-    let lifted: HashSet<String> = fun_ret_tys
-        .keys()
-        .chain(fun_param_tys.keys())
-        .filter(|k| k.starts_with("__lam_"))
-        .cloned()
-        .collect();
-    super::fun_ty_from_tables(name, fun_ret_tys, fun_param_tys, &lifted)
+    super::fun_ty_from_tables_tls(name, fun_ret_tys, fun_param_tys)
 }
 
 #[cfg(test)]

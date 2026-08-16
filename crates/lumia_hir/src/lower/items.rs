@@ -125,8 +125,10 @@ fn scan_type_decls(m: &lumia_syntax::Module) -> TypeScan {
         }
     }
     // Prelude ADTs: inject Option / Result when the module does not declare them.
-    ensure_prelude_adt(&mut adts, &mut ctors, "Option", &[("Some", 1), ("None", 0)]);
-    ensure_prelude_adt(&mut adts, &mut ctors, "Result", &[("Ok", 1), ("Err", 1)]);
+    for adt in crate::langitem::PRELUDE_ADTS {
+        let variants = adt.variant_arities();
+        ensure_prelude_adt(&mut adts, &mut ctors, adt.name, &variants);
+    }
     TypeScan {
         adts,
         products,

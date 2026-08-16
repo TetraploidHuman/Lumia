@@ -62,7 +62,7 @@
 - [ ] **`mono/specialize.rs` 上帝模块**：≈2135 行集 clone 发现、改写、ret refresh、forwarder 消除、FunRef HOF、Option/Result 载荷规则于一身；几乎每个 mono ABI 修复都落这里。宜按 collect / rewrite / ret_refresh / forwarders 拆分，并与 `ret_ty` 共享 lattice。
 - [ ] **codegen `nsw_iv` 第二块基准形岛屿**：`nsw_iv.rs` ≈1071 行（Collatz/`3*x`、fib、matmul 形 peep），经 `emit_fun` 焊进每个函数 emit。与已列 `*_sr` 同病但未收录——通用 NSW 被热核形状绑架。宜迁 opt / feature-gate，codegen 只发 NSW 标记。
 - [x] **Core IR 嵌 `lumia_syntax::{BinOp,UnOp}`**：已收成 `CoreBinOp`/`CoreUnOp`（`ops.rs`）；lower 边界 `Into`；opt/codegen 改匹配 Core 枚举。中后端仍可能因其它表面依赖 `lumia_syntax`。
-- [ ] **Prelude `Option`/`Result` 靠字符串魔改**：`mono/key.rs`、`ret_ty`/`specialize`、`ty/alt`、`ty/infer/expr`、`hir/lower/items` 等处硬编码 `"Option"`/`"Result"` 特判（载荷/擦除/mono）。stdlib ADT 成编译器魔法，非 langitem。宜 prelude 注册表（tag、载荷元数、mono 规则）供 ty/core 消费。
+- [ ] **Prelude `Option`/`Result` 靠字符串魔改**：`mono/key.rs`、`ret_ty`/`specialize`、`ty/alt`、`ty/infer/expr` 等处仍硬编码 `"Option"`/`"Result"`。HIR `langitem` 已定名/变体/默认 tag（lower 注入 + Core option_*_tag）；宜继续把 ty/mono 载荷规则迁到同一注册表。
 - [ ] **SSA `Local` + 字符串 `Name`/`Assign` 双寻址**：`Value::Name(String)` + `Op::Assign { name }` 与 SSA 并存；ABI/`slot_tys` 必须双轨跟踪。槽位应统一 `Local`/`SlotId`，名字仅调试打印。
 - [ ] **`InferValueCtx` 可选表蔓延 / `FunIndex` 仅 mono**：`value_ty` 上下文堆 ≈8 个 `Option<&HashMap<…>>`；`fun_index` 仅 mono 用，而 float_abi/fixup/channel_hint/codegen 反复手拼 `fun_ret_tys`。缺共享 `ModuleTables` → 表装配拷贝。`CodegenTypeTables` 已存在但几乎只服务 codegen（半收口见第五轮）。
 - [ ] **Builtin→RT 符号在 `BuiltinInfo` 外覆盖**：codegen `builtin/mod.rs` 按 `Type::List` 把 `ListLen`/`MapSet`/`ListGet` 改道 `lumia_list_len`/`lumia_list_set`/`lumia_list_get`（绕开 info 表里的多态符号）。表驱动 emit 被字符串特判挖空；宜把单态分发收进 `BuiltinInfo` 或 Core opcode。
@@ -245,9 +245,9 @@
 
 #### IR 身份 / 选项 / 黑板旁路
 
-- [x] **`FunKind` / `mono_of` 半迁移，字符串协议仍权威**：`is_lifted_lambda`/`is_val_getter`/`base_name` 改走 `kind`/`mono_of`；表路径 `fun_ty_from_tables` 仍从 `__lam_*` 键恢复 lifted 集合（待 FunTypeTables）。`split('$')` 仍见于 mono 纯字符串 key。
+- [x] **`FunKind` / `mono_of` 半迁移，字符串协议仍权威**：`is_lifted_lambda`/`is_val_getter`/`base_name` 改走 `kind`/`mono_of`；表路径经 `with_lifted_lambda_names`（FunKind TLS）+ `fun_ty_from_tables_tls`，不再从 `__lam_*` 键恢复。`split('$')` 仍见于 mono 纯字符串 key。
 - [x] **编译选项仍四散（DenseF64 Debug 项勾掉后遗留）**：`OptOptions::for_build` 已让 `dense_f64_sr`/`memo_tf` 跟 `release`；CLI 仍可单独覆盖。单一 `CompileOptions` 仍欠。
-- [ ] **`CoreModule.option_{some,none}_tag` 又一条 Option 旁路**：lower 扫 `"Option"` 变体写入黑板 → codegen 构造/匹配消费。与已列字符串 `"Option"`/`"Result"` 魔改并列——tag 也未进 prelude 注册表。宜 langitem 一次注册（名、tag、载荷元数、mono 规则）。
+- [x] **`CoreModule.option_{some,none}_tag` 又一条 Option 旁路**：`lumia_hir::langitem::{OPTION,RESULT}` 定名/变体/默认 tag；lower 注入与 `option_ctor_tags` 消费。ty/mono 里其余 `"Option"`/`"Result"` 字符串特判仍欠全量迁入。
 - [x] **`ForeignAbi::from_symbol("lumia_")` 仍靠前缀猜 ABI**：删 `from_symbol`；`foreign "C"`→`C`，dense_f64 合成 stub→`Runtime`。
 
 #### 前端 / 管线阶段

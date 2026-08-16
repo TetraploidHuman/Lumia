@@ -84,6 +84,11 @@ fn lifted_effect(body: &Block, io_funs: &HashSet<String>) -> Effect {
 /// Lift nested `Value::Lambda` to top-level `__lam_N` functions.
 /// Captures (free locals / outer `var` loads) become a heap closure env.
 pub(crate) fn lift_lambdas(module: &mut CoreModule) {
+    let lifted = super::lifted_lambda_names(module);
+    super::with_lifted_lambda_names(lifted, || lift_lambdas_inner(module));
+}
+
+fn lift_lambdas_inner(module: &mut CoreModule) {
     let mut extras = Vec::new();
     let mut id = 0u32;
     let mut next_local = max_local_in_module(module).saturating_add(1);
@@ -321,6 +326,7 @@ fn lift_value(
                 fun_param_tys.insert(name.clone(), param_tys.clone());
                 float_cap_idxs.insert(name.clone(), float_closure_cap_indices(body));
                 hof.note(&name, params, body);
+                super::note_lifted_lambda_name(name.clone());
                 extras.push(CoreFun {
                     name: name.clone(),
                     params: params.clone(),
@@ -420,6 +426,7 @@ fn lift_value(
             fun_param_tys.insert(name.clone(), full_param_tys.clone());
             float_cap_idxs.insert(name.clone(), float_closure_cap_indices(&new_body));
             hof.note(&name, &fun_params, &new_body);
+            super::note_lifted_lambda_name(name.clone());
             extras.push(CoreFun {
                 name: name.clone(),
                 params: fun_params,

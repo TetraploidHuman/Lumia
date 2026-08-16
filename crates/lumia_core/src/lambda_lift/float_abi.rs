@@ -965,6 +965,16 @@ pub(crate) fn collect_fun_cap_tys(
     fun_ret_tys: &HashMap<String, Type>,
     fun_param_tys: &HashMap<String, Vec<Type>>,
 ) -> HashMap<String, HashMap<u32, Type>> {
+    super::with_lifted_lambda_names(super::lifted_lambda_names(module), || {
+        collect_fun_cap_tys_inner(module, fun_ret_tys, fun_param_tys)
+    })
+}
+
+fn collect_fun_cap_tys_inner(
+    module: &crate::ir::CoreModule,
+    fun_ret_tys: &HashMap<String, Type>,
+    fun_param_tys: &HashMap<String, Vec<Type>>,
+) -> HashMap<String, HashMap<u32, Type>> {
     let by_local = &module.channel_elem_by_local;
     let module_hint = module.channel_elem_hint.as_ref();
     let mut out: HashMap<String, HashMap<u32, Type>> = HashMap::default();
@@ -1158,6 +1168,9 @@ pub(crate) fn block_result_heap_ty(
 }
 
 /// Like [`block_result_heap_ty`], with known `ClosureCap` types from AllocClosure sites.
+///
+/// Callers must install FunKind lifted names via [`super::with_lifted_lambda_names`]
+/// (or go through [`collect_fun_cap_tys`] / lift / fixup entry points).
 pub(crate) fn block_result_heap_ty_caps(
     block: &Block,
     fun_ret_tys: &HashMap<String, Type>,
@@ -2071,16 +2084,7 @@ fn fun_ty_from_tables(
     fun_ret_tys: &HashMap<String, Type>,
     fun_param_tys: &HashMap<String, Vec<Type>>,
 ) -> Option<Type> {
-    // Table-only path: recover lifted names from FunKind via name keys that were
-    // registered as `__lam_*` at lift time. Prefer threading [`lifted_lambda_names`]
-    // when a `CoreModule` is in hand (see channel_hint / float_cap_fixup).
-    let lifted: HashSet<String> = fun_ret_tys
-        .keys()
-        .chain(fun_param_tys.keys())
-        .filter(|k| k.starts_with("__lam_"))
-        .cloned()
-        .collect();
-    super::fun_ty_from_tables(name, fun_ret_tys, fun_param_tys, &lifted)
+    super::fun_ty_from_tables_tls(name, fun_ret_tys, fun_param_tys)
 }
 
 fn fun_ret_of_local(
