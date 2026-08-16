@@ -226,7 +226,7 @@
 - [x] **`emit_stack_*` 头布局近拷贝 + 模块注释仍写 Map**：`emit_stack_header` 共用三字头；模块注释改为 List/ADT（Map/Set 不走栈）。
 - [x] **`emit_rt_*` 再挖 String/List 符号特判**：`string_receiver_rt_override` 单表覆盖 reverse/take/slice/concat；emit_rt_* 共用。
 - [x] **`emit_value_if` 每臂克隆整表 `rooted_slots`**：入口仍 snapshot 一次（musttail 会清空 map）；两臂之间与 merge 前 `restore_root_checkpoint`/`clone_from`，避免 then musttail 污染 else 的编译期根状态。真栈式 length 回滚仍欠。
-- [ ] **`lumia_abi` 成「tid + opt 阈值 + 域核符号」杂仓**：`SPECIALIZE_CONST_*` / `DENSE_F64_TRAMPOLINE_SYMS` / `SCHEDULER_*` 与 `TYPE_*` 同文件。Cargo `description` 与 crate 文档已写明厨房池；**拆模块**仍欠。
+- [x] **`lumia_abi` 成「tid + opt 阈值 + 域核符号」杂仓**：拆为 `type_id` / `memo` / `opt_caps` / `dense_f64` / `scheduler`；`lib` 再导出。
 
 #### LSP / pkg / 工具链假绿
 
@@ -234,7 +234,7 @@
 - [x] **LSP format 解析失败返回空编辑（假绿）**：parse 失败改为 `Err` → JSON-RPC `-32603`；加拒测。
 - [x] **分析成功只清空当前 URI，跨文件诊断可陈旧**：成功时清 load 图全部文件 URI；`last_diag_uris` 合并清上次 import；close 顺带清。
 - [x] **`pkg` lock 缺版本写死 `"0.0.0"`**：无 version / 无 dep `Lumia.toml` 时 `bail`，不再假绿。
-- [ ] **`codegen` feature 半切：slim 仍硬链 `lumia_core`；Build clap 永在**：无 feature 时 Build 体内才 `bail`；LSP 仍拖 Core。宜 core 仅 `codegen` 依赖；隐藏/拆 Build 子命令。
+- [x] **`codegen` feature 半切：slim 仍硬链 `lumia_core`；Build clap 永在**：`lumia_core` 仅 `codegen`；无 feature 时隐藏 `Build` 子命令。
 - [x] **VS Code README 设置/vsix 号漂移 + 对账脚本不管配置键**：README→`0.3.9` + `autoParallel`；`check_editor_assets` 对账 version/vsix/settings 键。
 - [x] **`scripts/e2e.sh` 游离：名义 e2e 但不进 CI/`check.sh`**：标明非正式冒烟；BUILD/`check.sh` 写明门禁是 `cargo test -p lumia --tests`。
 - [x] **位置/着色测例全 ASCII + `lumia_core` crate 文档仍写「SSA-ish」**：`diag` 多字节字节列金样；core 文档改为「树形 ANF / 伪 SSA」。
@@ -248,7 +248,7 @@
 - [ ] **`FunKind` / `mono_of` 半迁移，字符串协议仍权威**：已有 `FunKind::{LiftedLambda,ValGetter}` 与 `mono_of`，但 `is_lifted_lambda` / `is_val_getter` 仍 `|| starts_with("__lam_"|"__val_")`；仓内 `__lam_` 提及远多于 `FunKind` 引用；`base_name` / `mono/key` 仍 `split('$')`。结构化身份未收口——与已列 `__map_acc` 命名协议同病、但是**已引入枚举后仍双轨**。宜删前缀回退，clone/lift 强制写 `kind`/`mono_of`，禁止中端解析 `$`/`__lam_`。
 - [ ] **编译选项仍四散（DenseF64 Debug 项勾掉后遗留）**：`TypecheckOptions` / `InferOptions` / `OptOptions` / `CodegenOptions` + CLI/`for_build`（`for_build` 恒 `dense_f64_sr=true` 与 `release` 脱钩）。无单一 `CompileOptions`；测例/check/build/LSP 易各拼一套。
 - [ ] **`CoreModule.option_{some,none}_tag` 又一条 Option 旁路**：lower 扫 `"Option"` 变体写入黑板 → codegen 构造/匹配消费。与已列字符串 `"Option"`/`"Result"` 魔改并列——tag 也未进 prelude 注册表。宜 langitem 一次注册（名、tag、载荷元数、mono 规则）。
-- [ ] **`ForeignAbi::from_symbol("lumia_")` 仍靠前缀猜 ABI**：lower / dense SR 合成 external 时字符串启发式；与「`ForeignAbi` 驱动 declare」叙事不完全一致。宜声明处显式 ABI，禁止符号名推断。
+- [x] **`ForeignAbi::from_symbol("lumia_")` 仍靠前缀猜 ABI**：删 `from_symbol`；`foreign "C"`→`C`，dense_f64 合成 stub→`Runtime`。
 
 #### 前端 / 管线阶段
 

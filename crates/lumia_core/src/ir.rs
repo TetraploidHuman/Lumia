@@ -12,8 +12,8 @@ pub struct Local(pub u32);
 
 /// Calling convention for [`CoreFun::external`] imports.
 ///
-/// Resolved once at HIR→Core lower (or when synthesizing a foreign stub). Mid/backend
-/// must use this field — do not re-derive ABI from the symbol name string.
+/// Set explicitly at the declare / synth site. Mid/backend must use this field —
+/// do not re-derive ABI from the symbol name string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ForeignAbi {
     /// Platform C ABI (`foreign "C"` without a runtime symbol).
@@ -21,19 +21,6 @@ pub enum ForeignAbi {
     C,
     /// Lumia runtime ABI (i64 / ptr layout matching `lumia_rt`).
     Runtime,
-}
-
-impl ForeignAbi {
-    /// Convention used when introducing a new external by symbol name at the
-    /// lower / synth boundary only.
-    #[inline]
-    pub fn from_symbol(sym: &str) -> Self {
-        if sym.starts_with("lumia_") {
-            Self::Runtime
-        } else {
-            Self::C
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

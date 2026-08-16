@@ -120,7 +120,7 @@ fn ensure_external(module: &mut CoreModule, sym: &str) {
         is_main: false,
         memo: None,
         external: Some(sym.to_string()),
-        foreign_abi: lumia_core::ForeignAbi::from_symbol(sym),
+        foreign_abi: lumia_core::ForeignAbi::Runtime,
         escaping: HashSet::default(),
         scheme_poly: false,
         mono_of: None,

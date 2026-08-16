@@ -108,11 +108,13 @@ pub fn lower_hir_with_schemes(
                     is_main: f.is_main,
                     memo: None,
                     external: f.external.clone(),
-                    foreign_abi: f
-                        .external
-                        .as_deref()
-                        .map(ForeignAbi::from_symbol)
-                        .unwrap_or_default(),
+                    // Surface `foreign "C"` is always the platform C ABI, even if
+                    // the symbol happens to look like `lumia_*`.
+                    foreign_abi: if f.external.is_some() {
+                        ForeignAbi::C
+                    } else {
+                        ForeignAbi::default()
+                    },
                     escaping: HashSet::default(),
                     scheme_poly,
                     mono_of: None,

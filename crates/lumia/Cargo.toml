@@ -14,15 +14,14 @@ path = "src/main.rs"
 [features]
 default = ["codegen"]
 # Pulls inkwell/LLVM (~100MB+). LSP / check / fmt do not need this.
-codegen = ["dep:lumia_codegen", "dep:lumia_opt"]
+codegen = ["dep:lumia_codegen", "dep:lumia_opt", "dep:lumia_core"]
 llvm-dynamic = ["codegen", "lumia_codegen/llvm-dynamic"]
 
 [dependencies]
 lumia_syntax.workspace = true
 lumia_hir.workspace = true
 lumia_ty.workspace = true
-lumia_core.workspace = true
-lumia_abi.workspace = true
+lumia_core = { workspace = true, optional = true }
 lumia_opt = { workspace = true, optional = true }
 lumia_codegen = { workspace = true, optional = true }
 anyhow.workspace = true

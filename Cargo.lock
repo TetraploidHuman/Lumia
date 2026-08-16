@@ -247,7 +247,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "lumia_abi",
  "lumia_codegen",
  "lumia_core",
  "lumia_hir",

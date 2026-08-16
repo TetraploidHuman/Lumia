@@ -10,9 +10,6 @@ use lumia_syntax::{format_diagnostic, parse_module, stamp_module};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[cfg(not(feature = "codegen"))]
-use anyhow::bail;
-
 #[derive(Parser, Debug)]
 #[command(name = "lumia", version, about = "Lumia compiler")]
 struct Cli {
@@ -55,7 +52,8 @@ enum Commands {
         #[command(flatten)]
         shared: SharedCheckArgs,
     },
-    /// Compile to a native executable
+    /// Compile to a native executable (requires a codegen-enabled binary)
+    #[cfg(feature = "codegen")]
     Build {
         file: PathBuf,
         #[arg(short, long)]
@@ -139,6 +137,7 @@ fn main() -> Result<()> {
             println!("ok");
             Ok(())
         }
+        #[cfg(feature = "codegen")]
         Commands::Build {
             file,
             output,
@@ -150,51 +149,30 @@ fn main() -> Result<()> {
             show_ir,
             emit_llvm,
         } => {
-            #[cfg(not(feature = "codegen"))]
-            {
-                let _ = (
-                    file,
-                    output,
-                    release,
-                    no_memo,
-                    shared,
-                    no_dense_f64_sr,
-                    link,
-                    show_ir,
-                    emit_llvm,
-                );
-                bail!(
-                    "`lumia build` needs a codegen-enabled binary \
-                     (install via ./scripts/install.sh, or cargo build -p lumia)"
-                );
+            let out = output.unwrap_or_else(|| {
+                file.file_stem()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from("a.out"))
+            });
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let mut validated_link = Vec::with_capacity(link.len());
+            for a in &link {
+                validated_link.push(pkg::validate_cli_link_arg(&cwd, a)?);
             }
-            #[cfg(feature = "codegen")]
-            {
-                let out = output.unwrap_or_else(|| {
-                    file.file_stem()
-                        .map(PathBuf::from)
-                        .unwrap_or_else(|| PathBuf::from("a.out"))
-                });
-                let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-                let mut validated_link = Vec::with_capacity(link.len());
-                for a in &link {
-                    validated_link.push(pkg::validate_cli_link_arg(&cwd, a)?);
-                }
-                lumia::build::build_file(
-                    &file,
-                    &out,
-                    release,
-                    !no_memo,
-                    !shared.no_parallel,
-                    !no_dense_f64_sr,
-                    shared.trust_foreign_pure_override(),
-                    validated_link,
-                    show_ir,
-                    emit_llvm,
-                )?;
-                println!("wrote {}", out.display());
-                Ok(())
-            }
+            lumia::build::build_file(
+                &file,
+                &out,
+                release,
+                !no_memo,
+                !shared.no_parallel,
+                !no_dense_f64_sr,
+                shared.trust_foreign_pure_override(),
+                validated_link,
+                show_ir,
+                emit_llvm,
+            )?;
+            println!("wrote {}", out.display());
+            Ok(())
         }
         Commands::Fmt { files, check } => {
             if files.is_empty() {
