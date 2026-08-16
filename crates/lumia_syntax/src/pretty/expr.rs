@@ -16,7 +16,14 @@ pub(crate) fn format_expr(out: &mut String, e: &Expr, indent: usize) {
         }
         Expr::Char(c, _) => {
             out.push('\'');
-            out.push(*c);
+            match *c {
+                '\\' => out.push_str("\\\\"),
+                '\'' => out.push_str("\\'"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                other => out.push(other),
+            }
             out.push('\'');
         }
         Expr::Ident(n, _) => out.push_str(n),
