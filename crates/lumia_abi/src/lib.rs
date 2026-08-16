@@ -7,6 +7,7 @@
 //! - [`type_id`] — object `TYPE_*` / tid packing / classifiers
 //! - [`memo`] — `MEMO_TF_*` / `SMALL_CONTAINER_MAX`
 //! - [`opt_caps`] — specialize / inline thresholds
+//! - [`fixpoint`] — shared change-flag / mono / closure-cap round caps
 //! - [`dense_f64`] — trampoline symbol table
 //! - [`scheduler`] — `scope` scheduler kind ints
 //! - [`float_contract`] — float / container tagging rules
@@ -24,6 +25,7 @@
 //! - bit 11 `TID_HASH` — Map/Set: open-addressing hash table (vs linear payload)
 
 mod dense_f64;
+mod fixpoint;
 mod float_contract;
 mod memo;
 mod opt_caps;
@@ -31,6 +33,9 @@ mod scheduler;
 mod type_id;
 
 pub use dense_f64::{is_dense_f64_trampoline, DENSE_F64_TRAMPOLINE_SYMS};
+pub use fixpoint::{
+    FixpointCaps, CHANGE_FLAG_ROUNDS, CLOSURE_CAP_TY_ROUNDS, FLOAT_MONO_ROUNDS, MONO_CLONE_ROUNDS,
+};
 pub use float_contract::{
     float_roles, gc_skip_float_slot, is_float_capable_container, FloatRoles, ENSURE_LIST_F64,
     ENSURE_MAP_F64, ENSURE_MAP_VF64, ENSURE_SET_F64,

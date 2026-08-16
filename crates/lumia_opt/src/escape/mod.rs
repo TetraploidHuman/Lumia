@@ -69,7 +69,7 @@ fn compute_param_escape_summaries(module: &CoreModule) -> HashMap<String, ParamE
     }
     // Gauss–Seidel fixed-point: update in place (no full-table clone each round).
     let mut converged = false;
-    for _ in 0..32 {
+    for _ in 0..lumia_abi::CHANGE_FLAG_ROUNDS {
         let mut changed = false;
         for f in &module.functions {
             if f.external.is_some() {

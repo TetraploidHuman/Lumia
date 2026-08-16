@@ -721,7 +721,13 @@ fn infer_local_fun_ty(
             Value::Local(crate::Local(src)) => cur = *src,
             Value::ClosureCap { index, .. } => return caps.get(index).cloned(),
             Value::FunRef(n) | Value::AllocClosure { fun: n, .. } => {
-                return super::fun_ty_from_tables(n, fun_ret_tys, fun_param_tys, &HashSet::default());
+                let lifted: HashSet<String> = fun_ret_tys
+                    .keys()
+                    .chain(fun_param_tys.keys())
+                    .filter(|k| k.starts_with("__lam_"))
+                    .cloned()
+                    .collect();
+                return super::fun_ty_from_tables(n, fun_ret_tys, fun_param_tys, &lifted);
             }
             _ => return None,
         }

@@ -245,7 +245,7 @@
 
 #### IR 身份 / 选项 / 黑板旁路
 
-- [ ] **`FunKind` / `mono_of` 半迁移，字符串协议仍权威**：已有 `FunKind::{LiftedLambda,ValGetter}` 与 `mono_of`，但 `is_lifted_lambda` / `is_val_getter` 仍 `|| starts_with("__lam_"|"__val_")`；仓内 `__lam_` 提及远多于 `FunKind` 引用；`base_name` / `mono/key` 仍 `split('$')`。结构化身份未收口——与已列 `__map_acc` 命名协议同病、但是**已引入枚举后仍双轨**。宜删前缀回退，clone/lift 强制写 `kind`/`mono_of`，禁止中端解析 `$`/`__lam_`。
+- [x] **`FunKind` / `mono_of` 半迁移，字符串协议仍权威**：`is_lifted_lambda`/`is_val_getter`/`base_name` 改走 `kind`/`mono_of`；表路径 `fun_ty_from_tables` 仍从 `__lam_*` 键恢复 lifted 集合（待 FunTypeTables）。`split('$')` 仍见于 mono 纯字符串 key。
 - [ ] **编译选项仍四散（DenseF64 Debug 项勾掉后遗留）**：`TypecheckOptions` / `InferOptions` / `OptOptions` / `CodegenOptions` + CLI/`for_build`（`for_build` 恒 `dense_f64_sr=true` 与 `release` 脱钩）。无单一 `CompileOptions`；测例/check/build/LSP 易各拼一套。
 - [ ] **`CoreModule.option_{some,none}_tag` 又一条 Option 旁路**：lower 扫 `"Option"` 变体写入黑板 → codegen 构造/匹配消费。与已列字符串 `"Option"`/`"Result"` 魔改并列——tag 也未进 prelude 注册表。宜 langitem 一次注册（名、tag、载荷元数、mono 规则）。
 - [x] **`ForeignAbi::from_symbol("lumia_")` 仍靠前缀猜 ABI**：删 `from_symbol`；`foreign "C"`→`C`，dense_f64 合成 stub→`Runtime`。
@@ -257,7 +257,7 @@
 
 #### 中端不动点 / codegen 状态 / RT 词汇
 
-- [ ] **不动点上界汤锅无政策表**：`MAX_FLOAT_MONO_ROUNDS=8`、`MAX_MONO_CLONE_ROUNDS=8`、float_abi/`escape` `0..32`、codegen `closure_cap_tys` `8`。触顶是静默停还是 ICE 无统一约定；与已列 lower 编排/escape 32 轮正交——是**散落魔法常数**债。宜 `abi_refine::FIXPOINT_CAPS` + 触顶诊断。
+- [x] **不动点上界汤锅无政策表**：`lumia_abi::fixpoint`（`FLOAT_MONO`/`MONO_CLONE`/`CHANGE_FLAG`/`CLOSURE_CAP_TY`）；触顶仍为静默停。
 - [ ] **`FrameState` 塞进 nsw_iv 分析缓存**：每函数 emit 开头填 `nsw_binop_locals` / `safe_divisor_locals` / `nonneg_iv_load_locals` / `leaf_defs` / `slot_i64_const`。帧状态成 peep 旁表，与已列 `nsw_iv` 岛屿 / `emit_fun` 上帝模块叠加。宜分析结果一次性 `NswFacts`，帧只留 SSA/根/槽。
 - [ ] **`funref_locals` 双份传播**：`emit_fun` 与 `closure_cap_tys` 各自维护 FunRef 别名图；新 `Let`/`Local` 臂需改两处。宜单一 FunRef 分析或只读 `AnalysisFacts`。
 - [x] **Memo C ABI `lumia_memo_l2_*` vs Rust `MEMO_TF_*` 词汇分裂**：`lumia_abi` / rt / codegen 钉死「L2=历史冻结符号、Rust 用 `MEMO_TF_*`/`T_f`」；已有 memo_tf IR 对账测。

@@ -223,8 +223,7 @@ pub fn lower_hir_with_schemes(
     // HOF consumers (`unwrapOr` after `optionMap`, spawn join, …). Change-flag
     // until specialize reports no new clones (capped). One more fixup after the
     // last mono pass patches caps once `$Float` clones exist.
-    const MAX_FLOAT_MONO_ROUNDS: usize = 8;
-    for _ in 0..MAX_FLOAT_MONO_ROUNDS {
+    for _ in 0..lumia_abi::FLOAT_MONO_ROUNDS {
         fixup_closure_float_caps(&mut core);
         if !specialize_mono_calls(&mut core) {
             break;

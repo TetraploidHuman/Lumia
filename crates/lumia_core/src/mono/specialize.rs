@@ -99,7 +99,7 @@ fn homogeneous_funref_elem(slots: &FunrefSlots) -> Option<FunrefElem> {
 /// Transitive FunRef HOF chains (`optMap` → `apply` → `dbl`) typically need 2–3
 /// rounds. This cap is a safety fuse against non-termination bugs; the loop
 /// converges early when a round adds no clones.
-const MAX_MONO_CLONE_ROUNDS: usize = 8;
+const MAX_MONO_CLONE_ROUNDS: usize = lumia_abi::MONO_CLONE_ROUNDS;
 
 /// Scheme-driven monomorphization:
 /// 1. **Collect clones** until fixed point (scan → clone worklist).

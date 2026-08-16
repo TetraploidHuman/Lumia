@@ -30,8 +30,7 @@ pub(crate) fn collect_closure_cap_tys(
     let mut out: HashMap<String, HashMap<u32, Type>> = HashMap::default();
     // Change-flag fixpoint (capped): outer AllocClosure may depend on inner
     // ClosureCap typing from a prior round.
-    const MAX_ROUNDS: usize = 8;
-    for _ in 0..MAX_ROUNDS {
+    for _ in 0..lumia_abi::CLOSURE_CAP_TY_ROUNDS {
         let before = out.clone();
         for fun in &core.functions {
             let mut local_tys: HashMap<u32, Type> = HashMap::default();

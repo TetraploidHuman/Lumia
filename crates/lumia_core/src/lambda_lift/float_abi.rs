@@ -257,7 +257,7 @@ fn list_local_elems_float(
 ) -> bool {
     let mut cur = id;
     let mut seen = HashSet::default();
-    for _ in 0..32 {
+    for _ in 0..lumia_abi::CHANGE_FLAG_ROUNDS {
         if !seen.insert(cur) {
             return false;
         }
@@ -2071,8 +2071,16 @@ fn fun_ty_from_tables(
     fun_ret_tys: &HashMap<String, Type>,
     fun_param_tys: &HashMap<String, Vec<Type>>,
 ) -> Option<Type> {
-    use rustc_hash::FxHashSet as HashSet;
-    super::fun_ty_from_tables(name, fun_ret_tys, fun_param_tys, &HashSet::default())
+    // Table-only path: recover lifted names from FunKind via name keys that were
+    // registered as `__lam_*` at lift time. Prefer threading [`lifted_lambda_names`]
+    // when a `CoreModule` is in hand (see channel_hint / float_cap_fixup).
+    let lifted: HashSet<String> = fun_ret_tys
+        .keys()
+        .chain(fun_param_tys.keys())
+        .filter(|k| k.starts_with("__lam_"))
+        .cloned()
+        .collect();
+    super::fun_ty_from_tables(name, fun_ret_tys, fun_param_tys, &lifted)
 }
 
 fn fun_ret_of_local(

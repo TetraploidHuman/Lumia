@@ -130,25 +130,25 @@ impl CoreFun {
         self.mono_of.is_some()
     }
 
-    /// Lifted nested lambda (env-bearing or FunRef). Prefers [`FunKind`];
-    /// name prefix is a transitional fallback for older fixtures.
+    /// Lifted nested lambda (env-bearing or FunRef).
+    ///
+    /// Relies on [`FunKind::LiftedLambda`] set at lift time — do not parse
+    /// `__lam_` prefixes in mid/backend.
     #[inline]
     pub fn is_lifted_lambda(&self) -> bool {
-        matches!(self.kind, FunKind::LiftedLambda) || self.name.starts_with("__lam_")
+        matches!(self.kind, FunKind::LiftedLambda)
     }
 
-    /// Module-level `val` getter. Prefers [`FunKind`]; name prefix fallback.
+    /// Module-level `val` getter ([`FunKind::ValGetter`] set at lower).
     #[inline]
     pub fn is_val_getter(&self) -> bool {
-        matches!(self.kind, FunKind::ValGetter) || self.name.starts_with("__val_")
+        matches!(self.kind, FunKind::ValGetter)
     }
 
-    /// Original name before mono/`$c_` suffix when [`Self::mono_of`] is set.
+    /// Original name before mono clone when [`Self::mono_of`] is set.
     #[inline]
     pub fn base_name(&self) -> &str {
-        self.mono_of
-            .as_deref()
-            .unwrap_or_else(|| self.name.split('$').next().unwrap_or(self.name.as_str()))
+        self.mono_of.as_deref().unwrap_or(self.name.as_str())
     }
 }
 

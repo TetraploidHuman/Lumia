@@ -55,16 +55,20 @@ val main = {
         let lam = core
             .functions
             .iter()
-            .find(|f| f.name.starts_with("__lam_"))
+            .find(|f| f.is_lifted_lambda())
             .unwrap_or_else(|| {
                 panic!(
                     "expected lifted lambda, funs={:?}",
                     core.functions
                         .iter()
-                        .map(|f| (&f.name, &f.ret_ty))
+                        .map(|f| (&f.name, f.kind, &f.ret_ty))
                         .collect::<Vec<_>>()
                 )
             });
+        assert!(
+            lam.name.starts_with("__lam_"),
+            "historical name prefix still used for lifted lambdas"
+        );
         assert!(
             !matches!(
                 lam.ret_ty,
@@ -163,7 +167,7 @@ val main = {
         let lam = core
             .functions
             .iter()
-            .find(|f| f.name.starts_with("__lam_"))
+            .find(|f| f.is_lifted_lambda())
             .expect("lifted lambda");
         assert!(
             lam.effect.has_io(),

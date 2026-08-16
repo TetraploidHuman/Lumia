@@ -598,7 +598,14 @@ fn fun_ty_from_tables(
     fun_ret_tys: &HashMap<String, Type>,
     fun_param_tys: &HashMap<String, Vec<Type>>,
 ) -> Option<Type> {
-    super::fun_ty_from_tables(name, fun_ret_tys, fun_param_tys, &HashSet::default())
+    // Same table-only recovery as float_abi (FunKind lives on CoreFun, not these maps).
+    let lifted: HashSet<String> = fun_ret_tys
+        .keys()
+        .chain(fun_param_tys.keys())
+        .filter(|k| k.starts_with("__lam_"))
+        .cloned()
+        .collect();
+    super::fun_ty_from_tables(name, fun_ret_tys, fun_param_tys, &lifted)
 }
 
 #[cfg(test)]

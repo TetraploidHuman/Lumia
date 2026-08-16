@@ -28,8 +28,7 @@ pub(crate) fn lifted_lambda_names(module: &CoreModule) -> HashSet<String> {
 /// Build a user-facing `Fun` type from tables, dropping a leading env Int for
 /// lifted closures ([`crate::FunKind::LiftedLambda`]).
 ///
-/// Prefer passing [`lifted_lambda_names`]; when the set is empty, the
-/// transitional `__lam_` name prefix still applies for table-only call sites.
+/// `lifted` must come from [`lifted_lambda_names`] (FunKind), not name prefixes.
 pub(crate) fn fun_ty_from_tables(
     name: &str,
     fun_ret_tys: &HashMap<String, Type>,
@@ -38,7 +37,7 @@ pub(crate) fn fun_ty_from_tables(
 ) -> Option<Type> {
     let ret = fun_ret_tys.get(name)?.clone();
     let mut params = fun_param_tys.get(name).cloned().unwrap_or_default();
-    let is_lifted = lifted.contains(name) || name.starts_with("__lam_");
+    let is_lifted = lifted.contains(name);
     if is_lifted
         && params
             .first()
