@@ -176,7 +176,7 @@
 2026-08-15 对照源码核实；同日晚间第二轮、2026-08-16 第三/四/五轮深挖补充下方「续」条目。crate DAG 无环、`lumia_abi` 集中契约、vscode↔shared 资产脚本、golden Core、以及下方「Core ABI 收口（第 1 期）」仍健康。下列为**结构/一致性**债务（不重复上方未关的 spawn 语义 bug；也不重复已落地项）。
 
 - [ ] **Core 堆/Float ABI 定型上帝模块**：`lambda_lift/float_abi.rs` ≈3583 行（生产+同文件测试；持续膨胀）；`local_heap_ty` 单函数超长穷举。同层并行 `value_ty::join_value_tys` / `float_abi::join_heap_tys` / `mono/ret_ty::join_fixed_ty` 三套合流近拷贝（Float 优先臂注释互相引用）；**codegen 再有第四套** `closure_cap_tys::prefer_cap_ty`（闭包捕获定型，逻辑同族）。`List(Int)` 作「可能堆」软占位再靠 `prefer_concrete_*` 让位。是反复打 Float/channel ABI 补丁的结构根因——应收成单一 lattice / 表驱动 walker，占位用显式未知类型而非 `List[Int]`。
-- [x] **`channel_hint` 测试淹没生产**：测试已外置 `channel_hint_tests.rs`（≈1700 行）；生产文件 ≈600 行。`mono/mod.rs` / `hir/lib.rs` 同模式仍开放。
+- [x] **`channel_hint` 测试淹没生产**：测试已外置 `channel_hint_tests.rs`（≈1700 行）；生产文件 ≈600 行。`mono/mod.rs`→`tests.rs`、`hir/lib.rs`→`lib_tests.rs` 同模式已落地。
 - [ ] **领域/基准 SR 侵入 codegen + RT**：`emit_value/{collatz,number_theory,trial_div,affine2,float}_sr.rs` 合计 ≈4000+ 行；RT `cn_kernels`/`efe`/`collatz`/`number_theory`/… 再挂一批特化 `#[no_mangle]`（crate 内合计 ≈174）。`name_of`/`is_unit_inc`/`const_of`/`header_lt_*` 等在多份 `*_sr` 复制且签名不完全一致。通用管道被基准形状绑架；应抽共享 pattern 原语，领域内核与语言运行时分层（或标为 optional/bench feature）。
 - [x] **`std.cn` / `std.efe` 进入语言标准库**：已迁出为 `extras.cn` / `extras.efe`（`extras/` + `load/std_mod` 白名单；bench 改 `import extras.*`）。根 `.gitignore` 已补 `!/extras/`；BUILD §3 注明发现路径与克隆前提。
 - [ ] **`lumia_opt` `dense_f64_sr` 巨型单文件**：≈1918 行整函数 shape 匹配（codegen 双份匹配已消，见下「第 1 期」）。仍缺与其它 `*_sr` 共用的匹配原语；`"lumia_f64_*"` 字符串表继续膨胀时易再漂移。
@@ -249,7 +249,7 @@
 - [ ] **积/和双声明、单一 `Type::Adt`**：HIR `adts`+`products`；ty 只有 `Adt` + `ProductState` 旁表。字段/`with`/Show 永特判。宜一种 ADT 模型（或积为无 tag 特化但仍统一）。
 - [x] **`Value::Lambda` 抬升后僵尸臂**：`value_ty`/`float_abi` 遇残留 `debug_assert` ICE；codegen 已 bail。
 - [ ] **`CoreModule` 是分析黑板**：`hash_adts`/`trait_methods`/`channel_elem_*` 等在 lower 填充、lambda_lift 再改。元数据所有权与「何时权威」不清。宜不可变 `CoreModule` + 旁路 `AnalysisFacts`。
-- [ ] **Infer 环境用 Int 占位播种**：`Println: Fun([Int],…)`、`listOf→List(Int)`、`mapOf→Map(Int,Int)`（`infer/mod.rs`）。一等/别名用法从错误 scheme 起步，与后期开放定型打架。宜多态 scheme / 未特化 ctor。（注意：∀ 量化 id 不可与 `fresh()` 撞车；`Println` 全多态会让开放 `.get` 接受 Map/`Option` 再毒化算术。）
+- [x] **Infer 环境用 Int 占位播种**：`listOf`/`mapOf`/`setOf` 已改 ∀ scheme（量化 id 预留 `next_var`）；**`Println` 仍保持 `Int→Unit`**（全多态会让开放 `.get` 接受 Map/`Option` 再毒化算术）。
 - [x] **HIR lower API 死字段**：`LowerCtx.ambiguous_product_fields` 已经 `is_ambiguous_product_field` → deferred `AdtField(..., -1, name)` 接线；字段上残留 `#[allow(dead_code)]` 注释过时（可清）。`product_field_owners` 仍死，见第四轮 / 第五轮。
 
 #### 中端 / codegen / RT
@@ -411,7 +411,7 @@
 
 #### 测试结构 / 死 API / 过宽 pub
 
-- [ ] **上帝生产模块零同文件测试（mono 溺测的镜像）**：`specialize`/`float_cap_fixup`/`ret_ty`/`key`/`traits`/`rewrite` 等大文件 0 近距测；几乎全塞进 `mono/mod.rs` 巨型 `#[cfg(test)]`。与 channel_hint「测试淹没生产」相反。宜按子模块外置测 + 行数预算。
+- [~] **上帝生产模块零同文件测试（mono 溺测的镜像）**：`mono/mod.rs` 巨型同文件测已外置 `mono/tests.rs`；`specialize`/`float_cap_fixup`/`ret_ty`/`key`/`traits`/`rewrite` 等仍 0 近距测。宜继续按子模块外置 + 行数预算。
 - [x] **死双轨 API：`lower_hir` / `default_list_repr`**：生产皆 `lower_hir_with_schemes`；`lower_hir` 仅定义+re-export。`default_list_repr` 仅自测，ReprSelect 直接写 `HeapList`。宜删或 `#[deprecated]`。
   - **收口**：已删二者。
 - [x] **opt 公开 Pass 类型 + 再导出 abi `MEMO_*`**：`pub use EscapePass/InlinePass/…` 可绕开 `PipelinePass` 手跑；MEMO 常量经 opt 成第二入口。宜 `pub(crate)`；MEMO 只从 abi 取。

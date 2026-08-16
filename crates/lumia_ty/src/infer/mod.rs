@@ -35,7 +35,8 @@ pub(crate) struct Infer {
 impl Infer {
     pub(crate) fn new(vis: NameVisibility) -> Self {
         let mut builtins = HashMap::default();
-        // Free IO builtin kept as a Var for first-class / import-alias use.
+        // Keep `Println` monomorphic (`Int→Unit`). Fully polymorphic println lets
+        // open `.get` under `alt` pick Map/`Option` and poison arithmetic.
         builtins.insert(
             Builtin::Println.display_name().into(),
             Scheme::mono(Type::Fun(
@@ -44,31 +45,64 @@ impl Infer {
                 Effect::io(),
             )),
         );
-        // Collection ctors: [`lumia_hir::PRELUDE_CTORS`]; arity specialized in
-        // `prelude_ctors` (not Builtin / BuiltinInfo — lower to Core Alloc*).
+        // Collection ctors: [`lumia_hir::PRELUDE_CTORS`]; call sites specialize in
+        // `prelude_ctors`. First-class / alias use needs ∀ schemes (not Int stubs).
+        // Quantified ids must stay below `next_var` so they never collide with `fresh()`.
+        let mut next_var = 0u32;
+        let poly = |vars: Vec<u32>, ty: Type| -> Scheme {
+            let mut sch = Scheme::mono(ty);
+            sch.vars = vars;
+            sch
+        };
         for sn in lumia_hir::PRELUDE_CTORS {
-            let ty = match sn.name {
-                "listOf" => Type::Fun(
-                    vec![],
-                    Box::new(Type::List(Box::new(Type::Int))),
-                    Effect::pure(),
-                ),
-                "mapOf" => Type::Fun(
-                    vec![],
-                    Box::new(Type::Map(Box::new(Type::Int), Box::new(Type::Int))),
-                    Effect::pure(),
-                ),
-                "setOf" => Type::Fun(
-                    vec![],
-                    Box::new(Type::Set(Box::new(Type::Int))),
-                    Effect::pure(),
-                ),
+            let sch = match sn.name {
+                "listOf" => {
+                    let a = next_var;
+                    next_var += 1;
+                    poly(
+                        vec![a],
+                        Type::Fun(
+                            vec![],
+                            Box::new(Type::List(Box::new(Type::Var(a)))),
+                            Effect::pure(),
+                        ),
+                    )
+                }
+                "mapOf" => {
+                    let k = next_var;
+                    next_var += 1;
+                    let v = next_var;
+                    next_var += 1;
+                    poly(
+                        vec![k, v],
+                        Type::Fun(
+                            vec![],
+                            Box::new(Type::Map(Box::new(Type::Var(k)), Box::new(Type::Var(v)))),
+                            Effect::pure(),
+                        ),
+                    )
+                }
+                "setOf" => {
+                    let a = next_var;
+                    next_var += 1;
+                    poly(
+                        vec![a],
+                        Type::Fun(
+                            vec![],
+                            Box::new(Type::Set(Box::new(Type::Var(a)))),
+                            Effect::pure(),
+                        ),
+                    )
+                }
                 other => panic!("lumia: unhandled PRELUDE_CTOR `{other}`"),
             };
-            builtins.insert(sn.name.into(), Scheme::mono(ty));
+            builtins.insert(sn.name.into(), sch);
         }
         Self {
-            uni: SubstState::default(),
+            uni: SubstState {
+                next_var,
+                ..SubstState::default()
+            },
             scopes: EnvState {
                 env: vec![builtins],
                 mutables: vec![HashSet::default()],

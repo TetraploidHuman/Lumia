@@ -303,3 +303,27 @@ val main = { 0 }
         err.message()
     );
 }
+
+#[test]
+fn prelude_ctor_first_class_poly() {
+    // First-class / alias use must not start from `List[Int]`/`Map[Int,Int]` stubs.
+    let src = r#"
+module CtorPoly
+import std.io.{println}
+val main = {
+    val lo = listOf
+    val so = setOf
+    val mo = mapOf
+    val xs = lo().concat(listOf(1.5))
+    val s = so().insert(2.5)
+    val m = mo().set(3.5, 4.5)
+    println(xs.get(0))
+    println(s.contains(2.5))
+    println(m.get(3.5) alt 0.0)
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let typed = infer_module(&hir).expect("poly ctor alias");
+    check_effect_boundaries(&typed).unwrap();
+}
