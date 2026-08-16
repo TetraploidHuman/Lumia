@@ -25,7 +25,7 @@ pub(super) fn diag_json(
             "start": { "line": line.saturating_sub(1), "character": col.saturating_sub(1) },
             "end": { "line": eline.saturating_sub(1), "character": ecol.saturating_sub(1) }
         },
-        "severity": 1, // Error
+        "severity": kind.lsp_severity(),
         "source": "lumia",
         "message": message
     });

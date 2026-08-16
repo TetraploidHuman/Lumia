@@ -1614,7 +1614,7 @@ fn local_heap_ty(
             ) {
                 Some(Type::List(e) | Type::Set(e)) => Some(*e),
                 Some(Type::Map(_, v)) => Some(Type::Adt {
-                    name: "Option".into(),
+                    name: lumia_hir::OPTION.name.into(),
                     params: vec![*v],
                 }),
                 _ => None,
@@ -2030,7 +2030,7 @@ fn local_heap_ty(
                 seen_slots,
             ) {
                 Some(Type::Task(e)) => Some(Type::Adt {
-                    name: "Option".into(),
+                    name: lumia_hir::OPTION.name.into(),
                     params: vec![*e],
                 }),
                 _ => None,
@@ -2821,7 +2821,7 @@ val main = {
             matches!(
                 &lam.ret_ty,
                 lumia_ty::Type::Adt { name, params }
-                    if name == "Option" && params.first().is_some_and(|p| matches!(p, lumia_ty::Type::Bool))
+                    if lumia_hir::is_option(name) && params.first().is_some_and(|p| matches!(p, lumia_ty::Type::Bool))
             ),
             "spawn Some(true) ret should be Option[Bool], got {:?}",
             lam.ret_ty
@@ -3185,7 +3185,7 @@ val main = {
             matches!(
                 &spawn.ret_ty,
                 lumia_ty::Type::Adt { name, params }
-                    if name == "Option"
+                    if lumia_hir::is_option(name)
                         && params.first().is_some_and(|p| matches!(p, lumia_ty::Type::Float))
             ),
             "match-option-float spawn ret {:?}",
@@ -3223,7 +3223,7 @@ val main = {
                     if matches!(
                         e.as_ref(),
                         lumia_ty::Type::Adt { name, params }
-                            if name == "Option"
+                            if lumia_hir::is_option(name)
                                 && params.first().is_some_and(|p| matches!(p, lumia_ty::Type::Float))
                     )
             ),

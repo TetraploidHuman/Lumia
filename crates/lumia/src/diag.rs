@@ -22,6 +22,15 @@ impl DiagnosticKind {
         }
     }
 
+    /// LSP `Diagnostic.severity` (Error=1, Warning=2, Information=3, Hint=4).
+    ///
+    /// All current kinds are hard failures; wire new soft kinds here when added.
+    pub fn lsp_severity(self) -> u8 {
+        match self {
+            Self::Parse | Self::Lower | Self::Type | Self::Other => 1,
+        }
+    }
+
     /// LSP `Diagnostic.code` (omit for [`Self::Other`]).
     pub fn lsp_code(self) -> Option<&'static str> {
         match self {

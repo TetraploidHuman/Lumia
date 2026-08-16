@@ -43,7 +43,7 @@
 
 下列为**仍欠**的结构/一致性债务。已确认落地的收口项已删除。
 
-- [ ] **Core 堆/Float ABI 定型上帝模块**：`lambda_lift/float_abi.rs` ≈3583 行（生产+同文件测试；持续膨胀）；`local_heap_ty` 单函数超长穷举。同层并行 `value_ty::join_value_tys` / `float_abi::join_heap_tys` / `mono/ret_ty::join_fixed_ty` 三套合流近拷贝（Float 优先臂注释互相引用）；**codegen 再有第四套** `closure_cap_tys::prefer_cap_ty`（闭包捕获定型，逻辑同族）。`List(Int)` 作「可能堆」软占位再靠 `prefer_concrete_*` 让位。是反复打 Float/channel ABI 补丁的结构根因——应收成单一 lattice / 表驱动 walker，占位用显式未知类型而非 `List[Int]`。
+- [ ] **Core 堆/Float ABI 定型上帝模块**：`lambda_lift/float_abi.rs` ≈3583 行（生产+同文件测试；持续膨胀）；`local_heap_ty` 单函数超长穷举。同层并行 `value_ty::join_value_tys` / `float_abi::join_heap_tys` / `mono/ret_ty::join_fixed_ty` 三套合流近拷贝（Float 优先臂注释互相引用）；**codegen `prefer_cap_ty` 已改走公开 `prefer_concrete_heap_ty`**（第四套并入）。`List(Int)` 作「可能堆」软占位再靠 `prefer_concrete_*` 让位。宜继续收成单一 lattice / 表驱动 walker。
 - [ ] **领域/基准 SR 侵入 codegen + RT**：`emit_value/{collatz,number_theory,trial_div,affine2,float}_sr.rs` 合计 ≈4000+ 行；RT `cn_kernels`/`efe`/`collatz`/`number_theory`/… 再挂一批特化 `#[no_mangle]`（crate 内合计 ≈174）。`name_of`/`is_unit_inc`/`const_of`/`header_lt_*` 等在多份 `*_sr` 复制且签名不完全一致。通用管道被基准形状绑架；应抽共享 pattern 原语，领域内核与语言运行时分层（或标为 optional/bench feature）。
 - [ ] **`lumia_opt` `dense_f64_sr` 巨型单文件**：≈1918 行整函数 shape 匹配（codegen 双份匹配已消，见下「第 1 期」）。仍缺与其它 `*_sr` 共用的匹配原语；`"lumia_f64_*"` 字符串表继续膨胀时易再漂移。
 - [ ] **Core IR 穿透携带 `lumia_hir::Builtin`**：`Value::Builtin` 仍嵌 HIR 枚举（即便已有 `result_ty` stamp）→ `lumia_opt`/`lumia_codegen` 必须依赖 `lumia_hir`+`lumia_syntax`。前端改 builtin 强制中后端重匹配；中后端应只吃 Core 自有 opcode/元数据。
@@ -62,11 +62,11 @@
 - [ ] **`mono/specialize.rs` 上帝模块**：≈2135 行集 clone 发现、改写、ret refresh、forwarder 消除、FunRef HOF、Option/Result 载荷规则于一身；几乎每个 mono ABI 修复都落这里。宜按 collect / rewrite / ret_refresh / forwarders 拆分，并与 `ret_ty` 共享 lattice。
 - [ ] **codegen `nsw_iv` 第二块基准形岛屿**：`nsw_iv.rs` ≈1071 行（Collatz/`3*x`、fib、matmul 形 peep），经 `emit_fun` 焊进每个函数 emit。与已列 `*_sr` 同病但未收录——通用 NSW 被热核形状绑架。宜迁 opt / feature-gate，codegen 只发 NSW 标记。
 - [x] **Core IR 嵌 `lumia_syntax::{BinOp,UnOp}`**：已收成 `CoreBinOp`/`CoreUnOp`（`ops.rs`）；lower 边界 `Into`；opt/codegen 改匹配 Core 枚举。中后端仍可能因其它表面依赖 `lumia_syntax`。
-- [x] **Prelude `Option`/`Result` 靠字符串魔改**：`lumia_hir::langitem` 助手（`is_option`/`is_result`/`OPTION.name`）已迁入 mono key/ret_ty/specialize、ty alt/infer、value_ty、emit_eq；float_abi 测试/残余字面量与其它旁路仍可再扫。
+- [x] **Prelude `Option`/`Result` 靠字符串魔改**：`lumia_hir::langitem` 助手已迁入 mono/ty/value_ty/emit_eq 与 float_abi 生产路径；测例/opt memo 等处字面量仍可再扫。
 - [ ] **SSA `Local` + 字符串 `Name`/`Assign` 双寻址**：`Value::Name(String)` + `Op::Assign { name }` 与 SSA 并存；ABI/`slot_tys` 必须双轨跟踪。槽位应统一 `Local`/`SlotId`，名字仅调试打印。
 - [ ] **`InferValueCtx` 可选表蔓延 / `FunIndex` 仅 mono**：`value_ty` 上下文堆 ≈8 个 `Option<&HashMap<…>>`；`fun_index` 仅 mono 用，而 float_abi/fixup/channel_hint/codegen 反复手拼 `fun_ret_tys`。缺共享 `ModuleTables` → 表装配拷贝。`CodegenTypeTables` 已存在但几乎只服务 codegen（半收口见第五轮）。
 - [x] **Builtin→RT 符号在 `BuiltinInfo` 外覆盖**：`list_receiver_rt_override`（`ListLen`/`MapSet`/`ListGet`→`lumia_list_*`）与既有 `string_receiver_rt_override` 并列；仍非 BuiltinInfo 表内字段，但是唯一 emit 覆盖面。
-- [ ] **HIR `visit` 未被 `lumia_ty` 使用**：`hir/visit.rs` 已有 `for_each_expr`，但 ty 的 `effects`/`alt`/`parallel`/`product_resolve`/`traits`/`free_vars` 全手写 walker（与已列 Core `visit` 欠债同型、前端侧）。新 `Expr` 臂易漏；ty 应变默认走 hir visit。
+- [x] **HIR `visit` 未被 `lumia_ty` 使用**：`free_vars` 已改走 `lumia_hir::all_free_vars`（并修 Assign LHS）；`effects`/`alt`/`parallel`/`product_resolve`/`traits` 仍手写 walker。
 - [ ] **RT FFI 边界 crate 级放行「看似 safe」**：`lumia_rt` `#![allow(clippy::not_unsafe_ptr_arg_deref)]`，大量 `extern "C"` 不以 `unsafe fn` 标出。指针契约在类型系统外；UB 审计难。宜收窄 allow、ABI 边用 `unsafe fn` + 薄安全包装。
 - [ ] **CI/check 仍 exclude lumia + install slim 未测**：`check.sh` 已对齐 `llvm-dynamic`；双方仍 `clippy --exclude lumia`；`install.sh` slim-LSP 产物 CI 未测。
 - [ ] **编辑器版本与 LSP 生命周期仍欠**：LSP `serverInfo.version` 已用 `CARGO_PKG_VERSION`；vscode/IDEA 版本漂移与 shutdown/`exit` 契约仍欠（对账脚本仍开放）。
@@ -142,7 +142,7 @@
 #### LSP / 包 / 编辑器 / CLI
 - [ ] **按 URI「当入口」改变可见性**：单独打开库文件 → `entry_file`=它；作为 import 则否。同文件诊断/hover ≠ 真入口包检查。
 - [ ] **overlay 键经 canonicalize，loader `get` 路径身份脆弱**：符号链接/未规范化入口/未保存路径可 miss overlay。
-- [ ] **LSP 诊断仍恒 Error，缺 relatedInformation/tags**：消息前缀可填 `code`；severity 仍恒 1；relatedInformation/tags 仍缺。
+- [ ] **LSP 诊断仍恒 Error，缺 relatedInformation/tags**：`severity` 已经 `DiagnosticKind::lsp_severity`（当前种类皆 Error=1）；`code` 已有。relatedInformation/tags 与 Warning 类诊断仍欠。
 - [ ] **多文件 fail-fast 单诊断 vs 恢复路径多诊断**：CLI/LSP 多文件 `typecheck_hir`；缓冲恢复 `typecheck_hir_recovering`。体验分裂。
 - [ ] **LSP 能力面缺口大**：无 references/rename/signatureHelp/codeAction/highlight/workspace symbol/call hierarchy/folding/cancel；不支持方法直接 `-32601`。`initialize` 忽略 client capabilities。
 - [ ] **无 `lumia run`；`pkg` 仅 init/lock/add**：BUILD 能力表与 CLI 表面仍不齐（`fmt` 零文件已改为报错退出）。
@@ -212,7 +212,7 @@
 
 #### HIR ↔ ty / 控制流
 
-- [ ] **双份 free_vars，`Assign` 语义分裂**：`ty/free_var_names` 把 LHS 记 free（spawn 捕获）；`hir/collect_free_vars` 只走 RHS（`list_hof` 并行安全）。宜单一 API。
+- [x] **双份 free_vars，`Assign` 语义分裂**：`hir/collect_free_vars` 现将 Assign LHS 记为 use；`ty/free_var_names` 直接委托 `all_free_vars`（spawn 捕获与 list_hof 并行检查同源；并行侧更保守）。
 - [ ] **`break`/`continue` 定型无循环嵌套校验**：直接 `(Unit, Pure)`；无 `loop_depth`；无拒测。宜 typing 跟踪循环深度。
 - [ ] **ty demote 公开啃 HIR desugar + `LowerCtx::empty()`**：`parallel.rs` 调 `desugar_list_*(&LowerCtx::empty(), …)`。宜纯 desugar 函数或不依赖 LowerCtx 的 typed pass。
 
@@ -245,7 +245,7 @@
 
 #### IR 身份 / 选项 / 黑板旁路
 
-- [x] **`FunKind` / `mono_of` 半迁移，字符串协议仍权威**：`is_lifted_lambda`/`is_val_getter`/`base_name` 改走 `kind`/`mono_of`；表路径经 `with_lifted_lambda_names`（FunKind TLS）+ `fun_ty_from_tables_tls`，不再从 `__lam_*` 键恢复。`split('$')` 仍见于 mono 纯字符串 key。
+- [x] **`FunKind` / `mono_of` 半迁移，字符串协议仍权威**：`is_lifted_lambda`/`is_val_getter`/`base_name` 改走 `kind`/`mono_of`；表路径经 `with_lifted_lambda_names`（FunKind TLS）+ `fun_ty_from_tables_tls`；mono 回退用共享 `strip_mono_suffix`（仅无 index 时）。
 - [x] **编译选项仍四散（DenseF64 Debug 项勾掉后遗留）**：`OptOptions::for_build` 已让 `dense_f64_sr`/`memo_tf` 跟 `release`；CLI 仍可单独覆盖。单一 `CompileOptions` 仍欠。
 - [x] **`CoreModule.option_{some,none}_tag` 又一条 Option 旁路**：`lumia_hir::langitem::{OPTION,RESULT}` 定名/变体/默认 tag；lower 注入与 `option_ctor_tags` 消费；ty/mono/codegen 主路径已改走 `is_option*` 助手。
 - [x] **`ForeignAbi::from_symbol("lumia_")` 仍靠前缀猜 ABI**：删 `from_symbol`；`foreign "C"`→`C`，dense_f64 合成 stub→`Runtime`。

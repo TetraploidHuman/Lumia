@@ -245,7 +245,14 @@ fn collect_free_vars(expr: &Expr, bound: &mut Vec<String>, out: &mut Vec<String>
             collect_free_vars(body, bound, out);
             bound.truncate(n);
         }
-        Expr::Assign { value, .. } | Expr::Unary { expr: value, .. } => {
+        Expr::Assign { name, value, .. } => {
+            // LHS is a use of the slot (spawn must see outer `var` writes).
+            if !bound.iter().any(|b| b == name) && !out.iter().any(|x| x == name) {
+                out.push(name.clone());
+            }
+            collect_free_vars(value, bound, out);
+        }
+        Expr::Unary { expr: value, .. } => {
             collect_free_vars(value, bound, out);
         }
         Expr::Call { callee, args, .. } => {
@@ -329,6 +336,17 @@ mod tests {
         };
         assert_eq!(free_vars_expr(&e, &[]), vec!["y".to_string()]);
         assert!(free_vars_expr(&e, &["y".into()]).is_empty());
+    }
+
+    #[test]
+    fn free_vars_counts_assign_target() {
+        let e = Expr::Assign {
+            name: "acc".into(),
+            value: Box::new(Expr::Int(1, Span::dummy())),
+            span: Span::dummy(),
+        };
+        assert_eq!(free_vars_expr(&e, &[]), vec!["acc".to_string()]);
+        assert!(free_vars_expr(&e, &["acc".into()]).is_empty());
     }
 
     #[test]
