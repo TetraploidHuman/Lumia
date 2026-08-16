@@ -362,11 +362,13 @@ pub extern "C" fn lumia_adt_set_field(obj: *mut u8, index: i64, value: i64) {
         }
         let slot = (obj as *mut i64).add(1 + index as usize);
         let float_field = crate::common::adt_float_slot((*h)._pad, index as usize);
-        let value_heap = is_heap_payload(value as *mut u8);
+        let value_heap = crate::common::is_heap_payload_bits(value);
         // Mistag-safe: always RC/barrier when the new word is a live heap ptr,
         // even if `_pad` claims Float (matches ADT mark policy).
         let old = *slot;
-        if (!float_field || value_heap || is_heap_payload(old as *mut u8)) && old != value {
+        if (!float_field || value_heap || crate::common::is_heap_payload_bits(old))
+            && old != value
+        {
             value_rc_release_bits(old);
             value_rc_retain_bits(value);
         }

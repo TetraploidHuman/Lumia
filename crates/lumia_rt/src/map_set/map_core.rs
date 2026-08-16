@@ -3,7 +3,7 @@
 use std::ptr;
 
 use crate::common::{
-    float_key_eq, header_from_payload, is_heap_payload, trap_abort, GcInhibitGuard, TYPE_ADT,
+    float_key_eq, header_from_payload, is_heap_payload_bits, trap_abort, GcInhibitGuard, TYPE_ADT,
 };
 use crate::eq::lumia_eq;
 use crate::gc::{list_payload_bytes, lumia_alloc, mark, mark_value};
@@ -247,7 +247,8 @@ pub(crate) fn map_mark_payload(payload: *mut u8, size: usize, float_keys: bool, 
         let n0 = *base;
         if n0 == MAP_OVERLAY_MARK {
             let parent = map_overlay_parent(payload);
-            if is_heap_payload(parent) {
+            // Parent word is a payload ptr; filter immediates before mark lock.
+            if is_heap_payload_bits(parent as i64) {
                 mark(header_from_payload(parent));
             }
             let dn0 = map_overlay_dn(payload);

@@ -235,17 +235,15 @@ pub(crate) fn value_rc_release(payload: *mut u8) {
 /// Retain a field word if it points at a heap List/ADT (skip floats / immediates).
 #[inline]
 pub(crate) fn value_rc_retain_bits(bits: i64) {
-    let p = bits as *mut u8;
-    if is_heap_payload(p) {
-        value_rc_retain(p);
+    if is_heap_payload_bits(bits) {
+        value_rc_retain(bits as *mut u8);
     }
 }
 
 #[inline]
 pub(crate) fn value_rc_release_bits(bits: i64) {
-    let p = bits as *mut u8;
-    if is_heap_payload(p) {
-        value_rc_release(p);
+    if is_heap_payload_bits(bits) {
+        value_rc_release(bits as *mut u8);
     }
 }
 
@@ -336,6 +334,12 @@ pub(crate) fn may_be_heap_payload_bits(bits: i64) -> bool {
     u != 0 && u % 8 == 0
 }
 
+/// [`may_be_heap_payload_bits`] then [`is_heap_payload`] — prefer for i64 field words.
+#[inline]
+pub(crate) fn is_heap_payload_bits(bits: i64) -> bool {
+    may_be_heap_payload_bits(bits) && is_heap_payload(bits as *mut u8)
+}
+
 pub(crate) fn is_old_header(h: *mut ObjectHeader) -> bool {
     with_heap(|heap| heap.is_old_header(h))
 }
@@ -346,13 +350,10 @@ pub(crate) fn is_young_payload(payload: *mut u8) -> bool {
 
 /// Record a possible old→young edge (remembered set).
 pub(crate) fn remember_old_to_young(obj_payload: *mut u8, new_bits: i64) {
-    if obj_payload.is_null() {
+    if obj_payload.is_null() || !may_be_heap_payload_bits(new_bits) {
         return;
     }
     let new_p = new_bits as *mut u8;
-    if new_p.is_null() {
-        return;
-    }
     let obj_h = header_from_payload(obj_payload);
     let new_h = header_from_payload(new_p);
     with_heap(|heap| {

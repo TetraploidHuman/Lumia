@@ -14,8 +14,8 @@
 仍欠的运行时/中后端性能（不重复架构卫生中的结构债）。
 
 ### 运行时热路径锁与探堆
-- [ ] **`is_heap_payload` = 进程堆 Mutex + `heap_set` 查找**：`common.rs` `heap_gen`/`is_heap_payload`。COW 已对 List/ADT 信任 tid；**`eq` / `show` / `println_auto` / `hash` / `ord`（双标量）**已用 `may_be_heap_payload_bits` 跳过 Int/Bool/FunRef 探堆。**写屏障 / Map 非 Float 键 / 未过滤热点**仍每点探一次。最大单点税。
-- [ ] **GC `mark_value` 每边再抢锁**：大对象 mark 对每个子字仍 `with_heap`/`is_heap_payload`。宜整波持锁 + 信任已消毒 mask。
+- [ ] **`is_heap_payload` = 进程堆 Mutex + `heap_set` 查找**：`common.rs` `heap_gen`/`is_heap_payload`。COW 已对 List/ADT 信任 tid；**`eq` / `show` / `println_auto` / `hash` / `ord`（双标量）**与 **`value_rc_*_bits` / `remember_old_to_young` / `write_barrier` / `mark_value` / ADT `set_field` / Map overlay parent** 已用 `may_be_heap_payload_bits`（及 `is_heap_payload_bits`）跳过 Int/Bool/FunRef。真堆指针边仍每点探一次。
+- [ ] **GC `mark_value` 每边再抢锁**：即时量已跳过 Mutex；大对象 mark 对每个**真堆**子字仍 `with_heap`/`is_heap_payload`。宜整波持锁 + 信任已消毒 mask。
 - [ ] **shadow-stack `root_push/pop` 每临时都抢堆锁**：`mutator.rs`；热路径大量 List/ADT Let 付 Mutex。宜 TLS 根栈 + 仅 full-mark 时 shade。
 - [ ] **Memo lookup 整段 `with_heap`**：`memo.rs` 热命中与堆争用。宜世代/epoch，仅 store×full-mark 持锁。
 - [ ] **分配路径多次加锁**：inhibit 检查 → maybe_collect → `finish_alloc` 再插 young/`heap_set`。宜单次 `with_heap` 覆盖；nursery bump 延迟入 set。

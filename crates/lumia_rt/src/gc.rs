@@ -14,8 +14,9 @@ use std::cell::RefCell;
 
 use crate::common::{
     header_from_payload, header_layout, is_heap_payload, is_old_header, is_young_payload,
-    payload_ptr, trap_abort, MarkSweep, MmBackend, ObjectHeader, PAR_WORKER, TYPE_ADT,
-    TYPE_CHANNEL, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_IOTA, TYPE_MAP, TYPE_SET, TYPE_TASK,
+    may_be_heap_payload_bits, payload_ptr, trap_abort, MarkSweep, MmBackend, ObjectHeader,
+    PAR_WORKER, TYPE_ADT, TYPE_CHANNEL, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_IOTA, TYPE_MAP,
+    TYPE_SET, TYPE_TASK,
 };
 use crate::heap::with_heap;
 use crate::mutator::for_each_mutator_root;
@@ -487,6 +488,10 @@ fn scan_fields(obj: *mut ObjectHeader) {
 
 /// Used by `map_set` mark helpers; respects heap `mark_minor` / `full_marking`.
 pub(crate) fn mark_value(x: i64) {
+    // Int/Bool/FunRef immediates cannot be managed payloads — skip heap Mutex.
+    if !may_be_heap_payload_bits(x) {
+        return;
+    }
     let p = x as *mut u8;
     let minor = with_heap(|h| h.mark_minor);
     if minor {
@@ -559,11 +564,16 @@ impl MmBackend for MarkSweep {
     }
 
     fn write_barrier(&mut self, obj: *mut u8, _field: u32, new_ptr: *mut u8) {
-        if obj.is_null() || !is_heap_payload(obj) {
+        if obj.is_null()
+            || !may_be_heap_payload_bits(obj as i64)
+            || !is_heap_payload(obj)
+        {
             return;
         }
         let obj_h = header_from_payload(obj);
-        let new_h = if new_ptr.is_null() || !is_heap_payload(new_ptr) {
+        // Int/Bool/FunRef / null cannot be young targets — skip second probe.
+        let new_h = if !may_be_heap_payload_bits(new_ptr as i64) || !is_heap_payload(new_ptr)
+        {
             None
         } else {
             Some(header_from_payload(new_ptr))
