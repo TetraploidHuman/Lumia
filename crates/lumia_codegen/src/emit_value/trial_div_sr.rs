@@ -13,7 +13,7 @@
 use inkwell::values::{BasicValueEnum, FunctionValue};
 use inkwell::IntPredicate;
 use lumia_core::{for_each_block_dfs, Block, Local, Op, Value};
-use lumia_syntax::BinOp;
+use lumia_core::CoreBinOp as BinOp;
 use rustc_hash::FxHashMap as HashMap;
 
 use super::super::Codegen;

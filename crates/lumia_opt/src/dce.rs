@@ -12,7 +12,7 @@ use lumia_core::{
     for_each_local, for_each_nested_block, for_each_nested_block_mut, Block, CoreFun, CoreModule,
     Op, Value,
 };
-use lumia_syntax::{BinOp, UnOp};
+use lumia_core::{CoreBinOp as BinOp, CoreUnOp as UnOp};
 use rustc_hash::FxHashSet as HashSet;
 
 pub(crate) struct DcePass;
@@ -138,7 +138,7 @@ fn must_keep(value: &Value, float_locals: &HashSet<u32>) -> bool {
 mod tests {
     use super::*;
     use lumia_core::{Block, CoreFun, CoreModule, Local, Op, Value, FunKind};
-    use lumia_syntax::BinOp;
+    use lumia_core::CoreBinOp as BinOp;
     use lumia_ty::Effect;
 
     fn bare_fun(name: &str, ops: Vec<Op>, result: Option<Local>) -> CoreFun {

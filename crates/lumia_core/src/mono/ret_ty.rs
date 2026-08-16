@@ -1,7 +1,7 @@
 use super::fun_index::FunIndex;
 use crate::ir::{Block, CoreFun, Local, Op, Value};
 use lumia_hir::Builtin;
-use lumia_syntax::{BinOp, UnOp};
+use crate::{CoreBinOp as BinOp, CoreUnOp as UnOp};
 use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 

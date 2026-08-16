@@ -5,7 +5,7 @@ use anyhow::{bail, Context as AnyhowContext, Result};
 use inkwell::values::{BasicValueEnum, FunctionValue, IntValue};
 use inkwell::{FloatPredicate, IntPredicate};
 use lumia_core::{Local, Value};
-use lumia_syntax::{BinOp, UnOp};
+use lumia_core::{CoreBinOp as BinOp, CoreUnOp as UnOp};
 use lumia_ty::Type;
 
 impl<'ctx> Codegen<'ctx> {

@@ -2,7 +2,7 @@
 
 use lumia_core::{Block, Local, Op, Value};
 use lumia_hir::Builtin;
-use lumia_syntax::{BinOp, UnOp};
+use lumia_core::{CoreBinOp as BinOp, CoreUnOp as UnOp};
 use rustc_hash::FxHashMap as HashMap;
 
 use super::cse::rewrite_value;

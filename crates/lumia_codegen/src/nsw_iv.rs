@@ -18,7 +18,7 @@
 //!   in the residual arm (add of recursive results stays checked — fib(93)+ overflows)
 
 use lumia_core::{for_each_block_dfs, Block, Local, Op, Value};
-use lumia_syntax::BinOp;
+use lumia_core::CoreBinOp as BinOp;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// Max loop bound for IV×bound arith trees (products must fit i64 with margin).

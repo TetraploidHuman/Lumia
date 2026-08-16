@@ -2,7 +2,7 @@ use lumia_abi::{
     MEMO_IDX_TABLE_BYTES, MEMO_PROCESS_BYTE_CAP, MEMO_SLOTS_TABLE_BYTES, MEMO_TF_MAX_ARGS,
 };
 use lumia_core::{block_calls, Block, CoreFun, CoreModule, Local, MemoTf, Op, Value};
-use lumia_syntax::BinOp;
+use lumia_core::CoreBinOp as BinOp;
 use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 

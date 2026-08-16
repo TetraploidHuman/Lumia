@@ -2,7 +2,7 @@ use super::fun_index::FunIndex;
 use super::specialize::mono_value_ty;
 use crate::ir::{Block, CoreFun, CoreModule, ForeignAbi, FunKind, Local, Op, Value};
 use lumia_hir::Builtin;
-use lumia_syntax::BinOp;
+use crate::CoreBinOp as BinOp;
 use lumia_ty::{Effect, Type};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet};
 

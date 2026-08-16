@@ -785,7 +785,7 @@ fn note_scalar_consts(
             }
         }
         Value::Binary {
-            op: lumia_syntax::BinOp::Eq,
+            op: crate::CoreBinOp::Eq,
             left,
             right,
         } => match (
@@ -800,7 +800,7 @@ fn note_scalar_consts(
             }
         },
         Value::Binary {
-            op: lumia_syntax::BinOp::Ne,
+            op: crate::CoreBinOp::Ne,
             left,
             right,
         } => match (

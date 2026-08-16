@@ -2,8 +2,8 @@
 
 use crate::visit::max_local_in_value;
 use crate::visit::rewrite_value_locals;
+use crate::ops::{CoreBinOp, CoreUnOp};
 use lumia_hir::Builtin;
-use lumia_syntax::{BinOp, UnOp};
 use lumia_ty::{Effect, Type};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
@@ -213,12 +213,12 @@ pub enum Value {
     /// Named mutable/immutable binding load
     Name(String),
     Binary {
-        op: BinOp,
+        op: CoreBinOp,
         left: Local,
         right: Local,
     },
     Unary {
-        op: UnOp,
+        op: CoreUnOp,
         operand: Local,
     },
     Call {

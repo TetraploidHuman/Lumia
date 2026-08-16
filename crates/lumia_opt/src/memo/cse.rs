@@ -1,6 +1,6 @@
 use lumia_core::{Block, CoreModule, Local, Op, Value};
 use lumia_hir::Builtin;
-use lumia_syntax::{BinOp, UnOp};
+use lumia_core::{CoreBinOp as BinOp, CoreUnOp as UnOp};
 use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 

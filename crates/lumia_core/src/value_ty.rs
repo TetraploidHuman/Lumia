@@ -1,8 +1,7 @@
 //! Shared Core `Value` → [`Type`] / heap-root helpers for mono + codegen.
 
-use crate::{AdtRepr, ListRepr, Local, Value};
+use crate::{AdtRepr, CoreBinOp as BinOp, CoreUnOp as UnOp, ListRepr, Local, Value};
 use lumia_hir::Builtin;
-use lumia_syntax::{BinOp, UnOp};
 use lumia_ty::{Effect, Type};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 

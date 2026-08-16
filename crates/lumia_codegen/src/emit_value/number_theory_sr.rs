@@ -8,7 +8,7 @@
 use inkwell::values::{BasicValueEnum, FunctionValue};
 use lumia_core::{Block, Local, Op, Value};
 use lumia_hir::Builtin;
-use lumia_syntax::BinOp;
+use lumia_core::CoreBinOp as BinOp;
 use rustc_hash::FxHashMap as HashMap;
 
 use super::super::Codegen;

@@ -1,7 +1,7 @@
 //! Float ABI inference for lifted lambdas.
 
 use crate::ir::{Block, Local, Op, Value};
-use lumia_syntax::{BinOp, UnOp};
+use crate::{CoreBinOp as BinOp, CoreUnOp as UnOp};
 use lumia_ty::{Effect, Type};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 

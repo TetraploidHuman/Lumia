@@ -13,7 +13,7 @@
 use lumia_core::{
     for_each_block_dfs, max_local_in_fun, Block, CoreFun, CoreModule, Local, Op, Value, FunKind};
 use lumia_hir::Builtin;
-use lumia_syntax::BinOp;
+use lumia_core::CoreBinOp as BinOp;
 use lumia_ty::{Effect, Type};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 

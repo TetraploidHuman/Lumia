@@ -368,21 +368,21 @@ fn guess_local_ty(
             Type::Task(Box::new(elem))
         }
         Value::Binary { op, left, right } => match op {
-            lumia_syntax::BinOp::Eq
-            | lumia_syntax::BinOp::Ne
-            | lumia_syntax::BinOp::Lt
-            | lumia_syntax::BinOp::Le
-            | lumia_syntax::BinOp::Gt
-            | lumia_syntax::BinOp::Ge => Type::Bool,
-            lumia_syntax::BinOp::And | lumia_syntax::BinOp::Or => {
+            crate::CoreBinOp::Eq
+            | crate::CoreBinOp::Ne
+            | crate::CoreBinOp::Lt
+            | crate::CoreBinOp::Le
+            | crate::CoreBinOp::Gt
+            | crate::CoreBinOp::Ge => Type::Bool,
+            crate::CoreBinOp::And | crate::CoreBinOp::Or => {
                 debug_assert!(false, "ICE: BinOp::And|Or in Core; expected If desugar");
                 Type::Bool
             }
-            lumia_syntax::BinOp::Add
-            | lumia_syntax::BinOp::Sub
-            | lumia_syntax::BinOp::Mul
-            | lumia_syntax::BinOp::Div
-            | lumia_syntax::BinOp::Rem
+            crate::CoreBinOp::Add
+            | crate::CoreBinOp::Sub
+            | crate::CoreBinOp::Mul
+            | crate::CoreBinOp::Div
+            | crate::CoreBinOp::Rem
                 if float_locals.contains(&left.0) || float_locals.contains(&right.0) =>
             {
                 Type::Float
@@ -390,11 +390,11 @@ fn guess_local_ty(
             _ => Type::Int,
         },
         Value::Unary {
-            op: lumia_syntax::UnOp::Not,
+            op: crate::CoreUnOp::Not,
             ..
         } => Type::Bool,
         Value::Unary {
-            op: lumia_syntax::UnOp::Neg,
+            op: crate::CoreUnOp::Neg,
             operand,
         } => {
             if float_locals.contains(&operand.0) {

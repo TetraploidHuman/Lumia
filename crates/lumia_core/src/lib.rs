@@ -4,6 +4,7 @@ mod ir;
 mod lambda_lift;
 mod lower;
 mod mono;
+mod ops;
 mod pipeline;
 mod value_ty;
 mod visit;
@@ -13,6 +14,7 @@ pub use ir::{
     CoreFun, CoreModule, ForeignAbi, FunKind, ListRepr, Local, MapRepr, MemoTf, Op, SetRepr,
     Value,
 };
+pub use ops::{CoreBinOp, CoreUnOp};
 /// Mid-end may share ABI contract constants with rt/codegen via `lumia_abi`.
 pub use lumia_abi::SMALL_CONTAINER_MAX;
 pub use lower::lower_hir_with_schemes;

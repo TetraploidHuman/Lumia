@@ -1668,7 +1668,7 @@ val main = {
                                 op,
                                 crate::Op::Let {
                                     value: crate::Value::Binary {
-                                        op: lumia_syntax::BinOp::Add,
+                                        op: crate::CoreBinOp::Add,
                                         ..
                                     },
                                     ..

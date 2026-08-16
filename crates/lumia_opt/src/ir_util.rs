@@ -1,7 +1,7 @@
 //! Shared IR helpers for opt passes.
 
 use lumia_core::{for_each_block_dfs, Block, Local, Op, Value};
-use lumia_syntax::{BinOp, UnOp};
+use lumia_core::{CoreBinOp as BinOp, CoreUnOp as UnOp};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// Known Int/Bool/Char/Float locals as i64 bit patterns (for call-site matching).

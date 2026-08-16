@@ -24,7 +24,7 @@ pub(super) fn lower_call_like(
             ops.push(Op::Let {
                 local: dest,
                 value: Value::Binary {
-                    op: *op,
+                    op: (*op).into(),
                     left: l,
                     right: r,
                 },
@@ -39,7 +39,7 @@ pub(super) fn lower_call_like(
             ops.push(Op::Let {
                 local: dest,
                 value: Value::Unary {
-                    op: *op,
+                    op: (*op).into(),
                     operand: o,
                 },
                 pure_region,

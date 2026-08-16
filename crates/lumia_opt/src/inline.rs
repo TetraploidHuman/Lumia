@@ -343,7 +343,7 @@ fn rewrite_value_slot_names(value: &mut Value, remap: &HashMap<String, String>) 
 mod tests {
     use super::*;
     use lumia_core::{has_assign_or_name, Block, CoreFun, CoreModule, Op, Value, FunKind};
-    use lumia_syntax::BinOp;
+    use lumia_core::CoreBinOp as BinOp;
     use lumia_ty::{Effect, Type};
 
     fn pure_add() -> CoreFun {

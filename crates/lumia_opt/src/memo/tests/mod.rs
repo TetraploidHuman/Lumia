@@ -1,7 +1,7 @@
 use super::*;
 use lumia_core::{Block, CoreFun, CoreModule, Local, MemoTf, Op, Value, FunKind};
 use lumia_hir::Builtin;
-use lumia_syntax::{BinOp, UnOp};
+use lumia_core::{CoreBinOp as BinOp, CoreUnOp as UnOp};
 use lumia_ty::{Effect, Type};
 
 use rustc_hash::FxHashSet as HashSet;

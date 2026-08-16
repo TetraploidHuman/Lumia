@@ -1,7 +1,7 @@
 use crate::ir_util::collect_float_locals;
 use lumia_core::{Block, Op, Value};
 use lumia_hir::Builtin;
-use lumia_syntax::{BinOp, UnOp};
+use lumia_core::{CoreBinOp as BinOp, CoreUnOp as UnOp};
 use rustc_hash::FxHashSet as HashSet;
 
 pub(crate) fn licm_seeded(block: &mut Block, mut float_locals: HashSet<u32>) {
