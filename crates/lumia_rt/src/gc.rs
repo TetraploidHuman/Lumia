@@ -13,12 +13,12 @@ use std::alloc::{alloc, dealloc};
 use std::cell::RefCell;
 
 use crate::common::{
-    header_from_payload, header_layout, is_heap_payload, is_old_header, is_young_payload,
+    header_from_payload, header_layout, is_heap_payload, is_young_payload,
     may_be_heap_payload_bits, payload_ptr, trap_abort, MarkSweep, MmBackend, ObjectHeader,
     PAR_WORKER, TYPE_ADT, TYPE_CHANNEL, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_IOTA, TYPE_MAP,
     TYPE_SET, TYPE_TASK,
 };
-use crate::heap::with_heap;
+use crate::heap::{with_heap, Heap};
 use crate::mutator::for_each_mutator_root;
 use crate::map_set::{map_mark_payload, set_mark_payload};
 use crate::memo;
@@ -51,27 +51,28 @@ impl MarkSweep {
     }
 
     /// Re-seed mark work from mutator / sched / memo roots (caller holds heap).
-    fn shade_all_roots_locked(h: &mut crate::heap::Heap) {
+    fn shade_all_roots_locked(h: &mut Heap) {
         let (parked_vals, task_vals) = crate::task::snapshot_sched_gc_roots();
-        for &obj in &h.perm {
-            if is_heap_payload(obj) {
-                mark(header_from_payload(obj));
+        for i in 0..h.perm.len() {
+            let obj = h.perm[i];
+            if may_be_heap_payload_bits(obj as i64)
+                && h.contains_header(header_from_payload(obj))
+            {
+                mark_on(h, header_from_payload(obj));
             }
         }
         for_each_mutator_root(|root| unsafe {
             let p = *root;
+            // Nested with_heap (reentrant): root walk holds heap + roots mutex.
             if is_heap_payload(p) {
                 mark(header_from_payload(p));
             }
         });
         memo::for_each_memo_i64(|bits| {
-            let p = bits as *mut u8;
-            if is_heap_payload(p) {
-                mark(header_from_payload(p));
-            }
+            mark_value(bits);
         });
         for v in parked_vals.into_iter().chain(task_vals) {
-            mark_value(v);
+            mark_value_on(h, v);
         }
     }
 
@@ -155,11 +156,12 @@ impl MarkSweep {
                     scan_old_for_young(header_from_payload(p));
                 }
             });
-            for &obj in &h.perm {
+            for i in 0..h.perm.len() {
+                let obj = h.perm[i];
                 if is_young_payload(obj) {
-                    mark(header_from_payload(obj));
+                    mark_on(h, header_from_payload(obj));
                 } else if is_heap_payload(obj) {
-                    scan_old_for_young(header_from_payload(obj));
+                    scan_old_for_young_on(h, header_from_payload(obj));
                 }
             }
             memo::for_each_memo_i64(|bits| {
@@ -173,14 +175,14 @@ impl MarkSweep {
             for v in parked_vals.into_iter().chain(task_vals) {
                 let p = v as *mut u8;
                 if is_young_payload(p) {
-                    mark(header_from_payload(p));
+                    mark_on(h, header_from_payload(p));
                 } else if is_heap_payload(p) {
-                    scan_old_for_young(header_from_payload(p));
+                    scan_old_for_young_on(h, header_from_payload(p));
                 }
             }
             let remembered: Vec<*mut ObjectHeader> = h.remembered.iter().copied().collect();
             for obj in remembered {
-                scan_old_for_young(obj);
+                scan_old_for_young_on(h, obj);
             }
             h.mark_minor = false;
 
@@ -284,8 +286,8 @@ impl MarkSweep {
                 let Some(obj) = h.mark_work.pop() else {
                     break;
                 };
-                // Reentrant with_heap inside scan/shade (same Mutex).
-                scan_fields(obj);
+                // Scan under the same heap borrow (no per-edge Mutex).
+                scan_fields_on(h, obj);
                 n += 1;
             }
             if !h.mark_work.is_empty() {
@@ -312,7 +314,7 @@ impl MarkSweep {
             for obj in blacks {
                 unsafe {
                     if (*obj).marked != 0 {
-                        scan_fields(obj);
+                        scan_fields_on(h, obj);
                     }
                 }
             }
@@ -401,7 +403,7 @@ impl MarkSweep {
 }
 
 /// Shade a heap object grey for the incremental full mark (Dijkstra).
-fn shade(obj: *mut ObjectHeader) {
+fn shade_on(h: &mut Heap, obj: *mut ObjectHeader) {
     if obj.is_null() {
         return;
     }
@@ -410,8 +412,12 @@ fn shade(obj: *mut ObjectHeader) {
             return;
         }
         (*obj).marked = 1;
-        with_heap(|h| h.mark_work.push(obj));
+        h.mark_work.push(obj);
     }
+}
+
+fn shade(obj: *mut ObjectHeader) {
+    with_heap(|h| shade_on(h, obj));
 }
 
 fn shade_payload(payload: *mut u8) {
@@ -422,7 +428,8 @@ fn shade_payload(payload: *mut u8) {
 }
 
 /// Scan fields of an already-black object; shade (or recursively mark) children.
-fn scan_fields(obj: *mut ObjectHeader) {
+/// Caller must hold the process heap lock (`h`).
+fn scan_fields_on(h: &mut Heap, obj: *mut ObjectHeader) {
     unsafe {
         let payload = payload_ptr(obj);
         let tid = (*obj).type_id;
@@ -435,17 +442,18 @@ fn scan_fields(obj: *mut ObjectHeader) {
                     if n > 0 {
                         let n = (n as usize).min(max_elems);
                         for i in 0..n {
-                            mark_value(*base.add(1 + i));
+                            mark_value_on(h, *base.add(1 + i));
                         }
                     }
                 }
             }
             TYPE_LIST_IOTA => {}
             TYPE_SET => {
-                set_mark_payload(payload, (*obj).size as usize, set_elem_is_float(tid));
+                set_mark_payload(h, payload, (*obj).size as usize, set_elem_is_float(tid));
             }
             TYPE_MAP => {
                 map_mark_payload(
+                    h,
                     payload,
                     (*obj).size as usize,
                     map_key_is_float(tid),
@@ -464,21 +472,21 @@ fn scan_fields(obj: *mut ObjectHeader) {
                     if crate::common::adt_float_slot(mask, field_i) {
                         continue;
                     }
-                    mark_value(*base.add(i));
+                    mark_value_on(h, *base.add(i));
                 }
             }
             TYPE_CLOSURE => {
                 let words = ((*obj).size as usize) / 8;
                 let base = payload as *const i64;
                 for i in 1..words {
-                    mark_value(*base.add(i));
+                    mark_value_on(h, *base.add(i));
                 }
             }
             TYPE_TASK => {
                 // [task_id, result]
                 let words = ((*obj).size as usize) / 8;
                 if words >= 2 {
-                    mark_value(*(payload as *const i64).add(1));
+                    mark_value_on(h, *(payload as *const i64).add(1));
                 }
             }
             _ => {}
@@ -492,43 +500,57 @@ pub(crate) fn mark_value(x: i64) {
     if !may_be_heap_payload_bits(x) {
         return;
     }
-    let p = x as *mut u8;
-    let minor = with_heap(|h| h.mark_minor);
-    if minor {
-        if is_young_payload(p) {
-            mark(header_from_payload(p));
+    with_heap(|h| mark_value_on(h, x));
+}
+
+/// Mark one value word while the caller already holds the heap lock.
+pub(crate) fn mark_value_on(h: &mut Heap, x: i64) {
+    if !may_be_heap_payload_bits(x) {
+        return;
+    }
+    let hdr = header_from_payload(x as *mut u8);
+    if h.mark_minor {
+        if h.contains_header(hdr) && !h.is_old_header(hdr) {
+            mark_on(h, hdr);
         }
-    } else if is_heap_payload(p) {
-        mark(header_from_payload(p));
+    } else if h.contains_header(hdr) {
+        mark_on(h, hdr);
     }
 }
 
 pub(crate) fn mark(obj: *mut ObjectHeader) {
+    with_heap(|h| mark_on(h, obj));
+}
+
+pub(crate) fn mark_on(h: &mut Heap, obj: *mut ObjectHeader) {
     unsafe {
         if obj.is_null() || (*obj).marked != 0 {
             return;
         }
-        let (minor, full) = with_heap(|h| (h.mark_minor, h.full_marking));
-        if minor && is_old_header(obj) {
+        if h.mark_minor && h.is_old_header(obj) {
             return;
         }
-        if full {
-            shade(obj);
+        if h.full_marking {
+            shade_on(h, obj);
             return;
         }
         (*obj).marked = 1;
-        scan_fields(obj);
+        scan_fields_on(h, obj);
+    }
+}
+
+fn scan_old_for_young_on(h: &mut Heap, obj: *mut ObjectHeader) {
+    unsafe {
+        if obj.is_null() || (*obj).marked != 0 {
+            return;
+        }
+        (*obj).marked = 1;
+        scan_fields_on(h, obj);
     }
 }
 
 fn scan_old_for_young(obj: *mut ObjectHeader) {
-    unsafe {
-        if obj.is_null() || (*obj).marked != 0 {
-            return;
-        }
-        (*obj).marked = 1;
-        scan_fields(obj);
-    }
+    with_heap(|h| scan_old_for_young_on(h, obj));
 }
 
 impl MmBackend for MarkSweep {

@@ -3,7 +3,8 @@
 use std::ptr;
 
 use crate::common::{header_from_payload, trap_abort, GcInhibitGuard, TYPE_SET};
-use crate::gc::{list_payload_bytes, lumia_alloc, mark_value};
+use crate::gc::{list_payload_bytes, lumia_alloc, mark_value_on};
+use crate::heap::Heap;
 
 use super::tid::{key_eq, key_hash, set_float_elems, set_is_assoc, set_tid};
 
@@ -34,7 +35,7 @@ pub(crate) fn set_is_hash(set: *mut u8) -> bool {
     unsafe { lumia_abi::tid_hash((*header_from_payload(set)).type_id) }
 }
 
-pub(crate) fn set_mark_payload(payload: *mut u8, size: usize, float_elems: bool) {
+pub(crate) fn set_mark_payload(h: &mut Heap, payload: *mut u8, size: usize, float_elems: bool) {
     // Unboxed Float elems are never heap pointers (same as TYPE_LIST_F64).
     if float_elems {
         return;
@@ -47,7 +48,7 @@ pub(crate) fn set_mark_payload(payload: *mut u8, size: usize, float_elems: bool)
                 let max = size.saturating_sub(8) / 8;
                 let n = (n0 as usize).min(max);
                 for i in 0..n {
-                    mark_value(*base.add(1 + i));
+                    mark_value_on(h, *base.add(1 + i));
                 }
             }
             return;
@@ -79,7 +80,7 @@ pub(crate) fn set_mark_payload(payload: *mut u8, size: usize, float_elems: bool)
                 continue;
             }
             let cell = base.add(2 + cap + slot * 2);
-            mark_value(*cell);
+            mark_value_on(h, *cell);
         }
     }
 }

@@ -15,7 +15,7 @@
 
 ### 运行时热路径锁与探堆
 - [ ] **`is_heap_payload` = 进程堆 Mutex + `heap_set` 查找**：`common.rs` `heap_gen`/`is_heap_payload`。COW 已对 List/ADT 信任 tid；**`eq` / `show` / `println_auto` / `hash` / `ord`（双标量）**与 **`value_rc_*_bits` / `remember_old_to_young` / `write_barrier` / `mark_value` / ADT `set_field` / Map overlay parent** 已用 `may_be_heap_payload_bits`（及 `is_heap_payload_bits`）跳过 Int/Bool/FunRef。真堆指针边仍每点探一次。
-- [ ] **GC `mark_value` 每边再抢锁**：即时量已跳过 Mutex；大对象 mark 对每个**真堆**子字仍 `with_heap`/`is_heap_payload`。宜整波持锁 + 信任已消毒 mask。
+- [x] **GC `mark_value` 每边再抢锁**：`mark_value_on` / `mark_on` / `scan_fields_on` 在已持有的 `Heap` 上递归；`mark_quantum` 与 STW mark 波不再每子字 `with_heap`。根播种路径仍可走对外 `mark`/`mark_value`（可重入）。
 - [x] **shadow-stack `root_push/pop` 每临时都抢堆锁**：TLS 根向量改为每 mutator `Mutex`；`push`/`pop`/`take`/`set` 不再 `with_heap`。GC 仍持堆锁后按 **heap→roots** 锁各 mutator。`lumia_root_push` 仅在 `full_marking_fast` 时 shade。
 - [x] **Memo lookup 整段 `with_heap`**：`MEMO_TF`/`MEMO_IDX` 同为 TLS `Mutex`；lookup/store/stats 不抢堆锁；store 在释放 memo 锁后按 `full_marking_fast` shade（避免 heap↔memo 死锁）。GC walk：**heap→memo**。
 - [ ] **分配路径多次加锁**：热路径已合并 inhibit+压力为一次 peek，仅在确需时进 `maybe_collect_on_alloc`；`finish_alloc` 仍单独持锁。宜继续单次 `with_heap` 覆盖插入；nursery bump 延迟入 set。

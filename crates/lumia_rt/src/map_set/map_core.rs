@@ -6,7 +6,8 @@ use crate::common::{
     float_key_eq, header_from_payload, is_heap_payload_bits, trap_abort, GcInhibitGuard, TYPE_ADT,
 };
 use crate::eq::lumia_eq;
-use crate::gc::{list_payload_bytes, lumia_alloc, mark, mark_value};
+use crate::gc::{list_payload_bytes, lumia_alloc, mark_on, mark_value_on};
+use crate::heap::Heap;
 
 use super::tid::{key_eq, key_hash, map_float_keys, map_float_vals, map_is_assoc, map_tid};
 
@@ -241,7 +242,13 @@ pub(crate) unsafe fn map_alloc_overlay(parent: *mut u8, pairs: &[(i64, i64)]) ->
     }
     dest
 }
-pub(crate) fn map_mark_payload(payload: *mut u8, size: usize, float_keys: bool, float_vals: bool) {
+pub(crate) fn map_mark_payload(
+    h: &mut Heap,
+    payload: *mut u8,
+    size: usize,
+    float_keys: bool,
+    float_vals: bool,
+) {
     unsafe {
         let base = payload as *const i64;
         let n0 = *base;
@@ -249,7 +256,7 @@ pub(crate) fn map_mark_payload(payload: *mut u8, size: usize, float_keys: bool, 
             let parent = map_overlay_parent(payload);
             // Parent word is a payload ptr; filter immediates before mark lock.
             if is_heap_payload_bits(parent as i64) {
-                mark(header_from_payload(parent));
+                mark_on(h, header_from_payload(parent));
             }
             let dn0 = map_overlay_dn(payload);
             // Overlay pairs start at word 3; clamp to declared payload size.
@@ -261,10 +268,10 @@ pub(crate) fn map_mark_payload(payload: *mut u8, size: usize, float_keys: bool, 
             };
             for i in 0..dn {
                 if !float_keys {
-                    mark_value(*base.add(3 + i * 2));
+                    mark_value_on(h, *base.add(3 + i * 2));
                 }
                 if !float_vals {
-                    mark_value(*base.add(4 + i * 2));
+                    mark_value_on(h, *base.add(4 + i * 2));
                 }
             }
             return;
@@ -273,10 +280,10 @@ pub(crate) fn map_mark_payload(payload: *mut u8, size: usize, float_keys: bool, 
         if !lumia_abi::tid_hash((*header_from_payload(payload)).type_id) {
             for i in 0..n as usize {
                 if !float_keys {
-                    mark_value(*base.add(1 + i * 2));
+                    mark_value_on(h, *base.add(1 + i * 2));
                 }
                 if !float_vals {
-                    mark_value(*base.add(2 + i * 2));
+                    mark_value_on(h, *base.add(2 + i * 2));
                 }
             }
             return;
@@ -309,10 +316,10 @@ pub(crate) fn map_mark_payload(payload: *mut u8, size: usize, float_keys: bool, 
             }
             let cell = base.add(2 + cap + slot * 3);
             if !float_keys {
-                mark_value(*cell);
+                mark_value_on(h, *cell);
             }
             if !float_vals {
-                mark_value(*cell.add(1));
+                mark_value_on(h, *cell.add(1));
             }
         }
     }
