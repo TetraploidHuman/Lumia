@@ -168,6 +168,21 @@ fn reload_sched_env_for_test() {
     *SCHED_ENV.lock().unwrap_or_else(|p| p.into_inner()) = None;
 }
 
+/// Spin until no live fibers and pool runners are idle (test isolation).
+#[cfg(test)]
+pub(crate) fn await_sched_quiescent_for_test() {
+    for _ in 0..20_000 {
+        let idle = with_sched(|s| s.fibers.is_empty() && s.pool_runners == 0);
+        if idle {
+            return;
+        }
+        lumia_scheduler_drain();
+        std::thread::yield_now();
+    }
+    let (n, runners) = with_sched(|s| (s.fibers.len(), s.pool_runners));
+    panic!("lumia: sched not quiescent after wait (fibers={n}, pool_runners={runners})");
+}
+
 /// Pop a ready fiber that may run on this OS thread (`home` unset or matching).
 /// Claims `running` under the same lock so an enqueue in the pop→resume gap
 /// sets `wake_pending` instead of a stale ready-queue entry.
@@ -1282,10 +1297,22 @@ mod tests {
         std::env::set_var("LUMIA_SCHED_WORKERS", "0");
         std::env::set_var("LUMIA_SCHED_IO", "0");
         reload_sched_env_for_test();
+        assert_eq!(
+            sched_pool_counts(),
+            (0, 0),
+            "coop ordering test requires LUMIA_SCHED_*=0"
+        );
+        // Pin to this thread so a leftover OS pool cannot steal synthetic entries
+        // (pool Once starts workers for the process lifetime).
+        let home = std::thread::current().id();
+        // Drop any polluted scope stack from prior tests on this thread.
+        SCOPE_STACK.with(|s| s.borrow_mut().clear());
+        SCOPE_KIND_CACHE.with(|c| c.set(0));
         with_sched(|s| {
             s.ready_worker.clear();
             s.ready_io.clear();
             s.ready_default.clear();
+            s.ready_home.clear();
             s.ready_worker.push_back(101);
             s.ready_io.push_back(202);
             s.ready_default.push_back(303);
@@ -1298,11 +1325,11 @@ mod tests {
                         pending: None,
                         coro: None,
                         yielder: Cell::new(std::ptr::null()),
-                        home: None,
+                        home: Some(home),
                         running: false,
                         wake_pending: false,
                         on_ready: true,
-                    reclaim_home: false,
+                        reclaim_home: false,
                     },
                 );
             }

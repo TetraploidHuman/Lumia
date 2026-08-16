@@ -18,7 +18,7 @@
 - [ ] **GC `mark_value` 每边再抢锁**：即时量已跳过 Mutex；大对象 mark 对每个**真堆**子字仍 `with_heap`/`is_heap_payload`。宜整波持锁 + 信任已消毒 mask。
 - [x] **shadow-stack `root_push/pop` 每临时都抢堆锁**：TLS 根向量改为每 mutator `Mutex`；`push`/`pop`/`take`/`set` 不再 `with_heap`。GC 仍持堆锁后按 **heap→roots** 锁各 mutator。`lumia_root_push` 仅在 `full_marking_fast` 时 shade。
 - [x] **Memo lookup 整段 `with_heap`**：`MEMO_TF`/`MEMO_IDX` 同为 TLS `Mutex`；lookup/store/stats 不抢堆锁；store 在释放 memo 锁后按 `full_marking_fast` shade（避免 heap↔memo 死锁）。GC walk：**heap→memo**。
-- [ ] **分配路径多次加锁**：inhibit 检查 → maybe_collect → `finish_alloc` 再插 young/`heap_set`。宜单次 `with_heap` 覆盖；nursery bump 延迟入 set。
+- [ ] **分配路径多次加锁**：热路径已合并 inhibit+压力为一次 peek，仅在确需时进 `maybe_collect_on_alloc`；`finish_alloc` 仍单独持锁。宜继续单次 `with_heap` 覆盖插入；nursery bump 延迟入 set。
 
 ### 分配与慢路径
 - [ ] **`lumia_show` / 嵌套 show 多段 `String` 分配**：容器插值/`println_auto` 锁+分配密集。宜单缓冲写入。

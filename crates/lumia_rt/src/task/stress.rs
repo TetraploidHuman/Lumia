@@ -14,7 +14,8 @@ mod tests {
         task_spawn,
     };
     use crate::task::scheduler::{
-        cancel_scope_children, lumia_scheduler_drain, with_sched, SCHEDULER_WORKER,
+        await_sched_quiescent_for_test, cancel_scope_children, lumia_scheduler_drain, with_sched,
+        SCHEDULER_WORKER,
     };
     use lumia_abi::TYPE_LIST;
     use std::sync::atomic::{AtomicI64, Ordering};
@@ -84,9 +85,7 @@ mod tests {
             let _ = task_spawn(identity, i);
         }
         lumia_scope_leave();
-        with_sched(|s| {
-            assert!(s.fibers.is_empty());
-        });
+        await_sched_quiescent_for_test();
     }
 
     #[test]
@@ -142,7 +141,7 @@ mod tests {
         lumia_scheduler_drain();
         cancel_scope_children();
         lumia_scheduler_drain();
-        with_sched(|s| assert!(s.fibers.is_empty()));
+        await_sched_quiescent_for_test();
         lumia_scope_leave();
     }
 

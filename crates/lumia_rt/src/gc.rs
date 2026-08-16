@@ -539,7 +539,14 @@ impl MmBackend for MarkSweep {
                  (use scalar Int/Bool/Float callbacks only)",
             );
         }
-        if crate::heap::with_heap(|h| h.gc_inhibit == 0) {
+        // One peek: inhibit + pressure. Skip `maybe_collect` when clearly idle.
+        let try_gc = with_heap(|h| {
+            h.gc_inhibit == 0
+                && (h.full_marking
+                    || h.bytes_young >= h.young_limit
+                    || h.bytes_old >= h.old_limit)
+        });
+        if try_gc {
             Self::maybe_collect_on_alloc();
         }
         let layout = header_layout(nbytes);
