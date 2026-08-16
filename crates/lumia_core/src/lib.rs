@@ -1,4 +1,4 @@
-//! Core IR — ANF / SSA-ish form used by optimization and codegen.
+//! Core IR — 树形 ANF / 伪 SSA，供优化与 codegen 使用（非真 CFG）。
 
 mod ir;
 mod lambda_lift;

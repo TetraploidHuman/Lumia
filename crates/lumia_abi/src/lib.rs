@@ -88,7 +88,8 @@ pub const TYPE_MAP_ASSOC_F64V: u32 = TYPE_MAP | TID_ASSOC | TID_F_KEY | TID_F_VA
 
 /// Transparent memo (`T_f`) hard caps — must stay in sync across opt planner and rt.
 ///
-/// C ABI entry points remain `lumia_memo_l2_*` (frozen). Use `MEMO_TF_*` in Rust.
+/// Naming: DESIGN / Rust use `T_f` / `MEMO_TF_*`. Exported C symbols stay
+/// `lumia_memo_l2_*` — **`L2` is a historical ABI name, frozen; do not rename.**
 pub const MEMO_TF_MAX_FUNS: usize = 64;
 pub const MEMO_TF_SLOTS: usize = 4;
 pub const MEMO_TF_MAX_ARGS: usize = 4;

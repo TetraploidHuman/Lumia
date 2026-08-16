@@ -34,7 +34,7 @@ RUST_TEST_THREADS=1 cargo test --workspace --exclude lumia --lib "${LLVM_WS_FEAT
 echo "== cargo test -p lumia_opt --tests =="
 cargo test -p lumia_opt --tests
 
-echo "== cargo test -p lumia --tests (e2e + opt_correctness fingerprints) =="
+echo "== cargo test -p lumia --tests (e2e + opt_correctness fingerprints; gate vs informal scripts/e2e.sh) =="
 cargo test -p lumia --tests "${LUMIA_FEATURES[@]}"
 
 echo "OK: check passed"

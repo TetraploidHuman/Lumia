@@ -133,6 +133,35 @@ impl<'ctx> Codegen<'ctx> {
             .with_context(|| format!("builtin `{}` has no runtime_symbol", b.display_name()))
     }
 
+    /// List-family builtins that share the List emit convention but need a
+    /// dedicated String RT entry when the receiver is typed `String`.
+    ///
+    /// Kept outside [`BuiltinInfo::runtime_symbol`] because the default symbol
+    /// remains the polymorphic / list entry (`lumia_concat`, `lumia_list_*`);
+    /// this table is the only emit_rt override surface for that remapping.
+    pub(crate) fn string_receiver_rt_override(b: Builtin) -> Option<&'static str> {
+        match b {
+            Builtin::ListReverse => Some("lumia_str_reverse"),
+            Builtin::ListTake => Some("lumia_str_take"),
+            Builtin::ListSlice => Some("lumia_str_slice"),
+            Builtin::ListConcat => Some("lumia_str_concat"),
+            _ => None,
+        }
+    }
+
+    fn rt_symbol_for_receiver(
+        &self,
+        b: &Builtin,
+        recv: Local,
+    ) -> Result<&'static str> {
+        if matches!(self.frame.local_tys.get(&recv.0), Some(Type::String)) {
+            if let Some(sym) = Self::string_receiver_rt_override(*b) {
+                return Ok(sym);
+            }
+        }
+        Self::builtin_symbol(b)
+    }
+
     /// Apply [`BuiltinInfo::float_ensures`](lumia_hir::BuiltinInfo::float_ensures) to `obj`.
     ///
     /// `MapSet` is overloaded for `List.set` / `Map.set`. List destinations must
@@ -223,13 +252,7 @@ impl<'ctx> Codegen<'ctx> {
     ) -> Result<BasicValueEnum<'ctx>> {
         let obj_i = self.coerce_i64(self.local(args[0])?)?;
         let obj = self.i64_as_ptr(obj_i, "obj")?;
-        let sym = if matches!(b, Builtin::ListReverse)
-            && matches!(self.frame.local_tys.get(&args[0].0), Some(Type::String))
-        {
-            "lumia_str_reverse"
-        } else {
-            Self::builtin_symbol(b)?
-        };
+        let sym = self.rt_symbol_for_receiver(b, args[0])?;
         self.call_rt_ptr_as_i64(sym, &[obj.into()], label)
     }
 
@@ -256,16 +279,7 @@ impl<'ctx> Codegen<'ctx> {
                 }
             }
         }
-        let is_string = matches!(self.frame.local_tys.get(&args[0].0), Some(Type::String));
-        let sym = if is_string {
-            match b {
-                Builtin::ListTake => "lumia_str_take",
-                Builtin::ListSlice => "lumia_str_slice",
-                _ => Self::builtin_symbol(b)?,
-            }
-        } else {
-            Self::builtin_symbol(b)?
-        };
+        let sym = self.rt_symbol_for_receiver(b, args[0])?;
         self.call_rt_ptr_as_i64(sym, &[obj.into(), n.into()], label)
     }
 
@@ -283,7 +297,7 @@ impl<'ctx> Codegen<'ctx> {
         if matches!(b, Builtin::ListConcat) && !self.frame.cow_consume_unique {
             self.list_retain_i64(a_i)?;
         }
-        let sym = Self::builtin_symbol(b)?;
+        let sym = self.rt_symbol_for_receiver(b, args[0])?;
         self.call_rt_ptr_as_i64(sym, &[a.into(), bb.into()], label)
     }
 
@@ -327,5 +341,33 @@ impl<'ctx> Codegen<'ctx> {
         let bb = self.i64_as_ptr(b_i, "b")?;
         let sym = Self::builtin_symbol(b)?;
         self.call_rt_basic(sym, &[a.into(), bb.into()], label)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Codegen;
+    use lumia_hir::Builtin;
+
+    #[test]
+    fn string_receiver_overrides_are_complete() {
+        assert_eq!(
+            Codegen::string_receiver_rt_override(Builtin::ListReverse),
+            Some("lumia_str_reverse")
+        );
+        assert_eq!(
+            Codegen::string_receiver_rt_override(Builtin::ListTake),
+            Some("lumia_str_take")
+        );
+        assert_eq!(
+            Codegen::string_receiver_rt_override(Builtin::ListSlice),
+            Some("lumia_str_slice")
+        );
+        assert_eq!(
+            Codegen::string_receiver_rt_override(Builtin::ListConcat),
+            Some("lumia_str_concat")
+        );
+        assert_eq!(Codegen::string_receiver_rt_override(Builtin::ListAppend), None);
+        assert_eq!(Codegen::string_receiver_rt_override(Builtin::ListLen), None);
     }
 }

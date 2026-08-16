@@ -106,6 +106,30 @@ mod tests {
     }
 
     #[test]
+    fn line_col_multibyte_is_byte_based() {
+        // Columns are 1-based *byte* offsets in the line (not Unicode scalars /
+        // UTF-16). `你`/`好` are 3 bytes each in UTF-8.
+        let src = "val 你好 = x\n";
+        let starts = line_starts(src);
+        let x_byte = src.find('x').expect("x") as u32;
+        let (line, col) = byte_to_line_col(&starts, BytePos(x_byte));
+        assert_eq!(line, 1);
+        assert_eq!(col, x_byte + 1); // first line → col == byte index + 1
+        assert!(col > 10, "multibyte chars must push the byte column past ASCII width");
+        let s = format_diagnostic(
+            "中.lm",
+            src,
+            Span::new(x_byte, x_byte + 1),
+            "type",
+            "unbound",
+        );
+        assert!(
+            s.starts_with(&format!("中.lm:1:{col}:")),
+            "{s}"
+        );
+    }
+
+    #[test]
     fn format_includes_path_and_caret() {
         let src = "val x = 1\nval y = z\n";
         // point at `z`

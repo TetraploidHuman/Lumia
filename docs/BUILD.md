@@ -2,7 +2,8 @@
 
 > **状态**：最终形态技术栈已落地（骨架可跑）  
 > **配套**：语言语义见 [DESIGN.md](DESIGN.md)  
-> **最后更新**：2026-08-11
+> **最后更新**：2026-08-16  
+> **新鲜度**：架构细节以代码与 [Todo.md](../Todo.md) 为准；改管线时请同步戳日期。
 
 本文档记录 **怎么实现 / 怎么编译**，避免事后忘记选型与约定。语义不妥协版仍以 DESIGN 为准；实现分期可以瘦，**架构不能换**。
 
@@ -80,7 +81,7 @@ examples/        示例 .lm
 scripts/env.sh   NixOS：LLVM_SYS_211_PREFIX + 共享库 PATH（排除 *-static）
 scripts/env.ps1  Windows：最小 LLVM_SYS_211_PREFIX 提示 stub
 scripts/clean_probes.sh  清理仓库根目录探针 ELF/PE 与 *.o
-scripts/e2e.sh   薄包装 → cargo e2e_examples
+scripts/e2e.sh   非正式薄包装 → e2e_examples（门禁见 check.sh）
 scripts/check.sh 本地 CI 冒烟：`cargo test` workspace lib + lumia e2e
 ```
 
@@ -374,7 +375,7 @@ TLS 分代 GC 与 `ListParMap` worker 互斥；在 TLS 上硬开 OS 池会跨线
   1. 安装 LLVM 21 开发前缀 + `clang`（Linux：`install-llvm-action`；Windows：`vovkos/llvm-package-windows` 完整 SDK，因官方 Windows 安装包不含 `llvm-config`/C++ libs）
   2. 设置 `LLVM_SYS_211_PREFIX`（路径不含空格）
   3. `cargo test --workspace --exclude lumia` 与 `cargo test -p lumia --tests`（含 e2e examples）
-- 本地 Linux：`source scripts/env.sh && ./scripts/check.sh`（或 `./scripts/e2e.sh`）
+- 本地 Linux：`source scripts/env.sh && ./scripts/check.sh`（正式门禁）。`./scripts/e2e.sh` 仅快速冒烟，**不**替代 check/CI。
 - 本地亦可：`cargo test -p lumia --test e2e_examples`
 
 ---
@@ -399,7 +400,7 @@ TLS 分代 GC 与 `ListParMap` worker 互斥；在 TLS 上硬开 OS 池会跨线
 | ------------------------------------ | --------------------------- |
 | [DESIGN.md](DESIGN.md)               | 语言设计（语义合同）                  |
 | `scripts/env.sh`                     | 本机构建环境                      |
-| `scripts/e2e.sh`                     | 薄包装：`cargo build` + `cargo test -p lumia --test e2e_examples` |
+| `scripts/e2e.sh`                     | **非正式**冒烟：`cargo build` + `e2e_examples`；门禁是 `check.sh` / CI 的 `cargo test -p lumia --tests` |
 | `crates/lumia/tests/e2e_examples/`   | 跨平台 examples e2e（主路径）        |
 | `.github/workflows/ci.yml`           | Linux / Windows CI          |
 | `crates/lumia_rt/src/lib.rs`         | GC + Task/Channel + 容器 + memo + 域核 |

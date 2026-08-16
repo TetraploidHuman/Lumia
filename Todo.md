@@ -224,7 +224,7 @@
 - [x] **ADT float/bool field mask 静默 `.min(64)` 截断**：`emit_eq` / AllocAdt / with-update 超 64 字段改为 emit 期 `bail!` ICE；加 mask 单测。
 - [x] **musttail 无返回值时静默 `i64 0`**：`emit_musttail_call` 对 void LLVM 结果 `context` ICE（Lumia ABI 恒 i64）。
 - [x] **`emit_stack_*` 头布局近拷贝 + 模块注释仍写 Map**：`emit_stack_header` 共用三字头；模块注释改为 List/ADT（Map/Set 不走栈）。
-- [ ] **`emit_rt_*` 再挖 String/List 符号特判**：`ListReverse`→`lumia_str_reverse` 等。坐实 BuiltinInfo 外覆盖的 emit_rt 近拷贝面。
+- [x] **`emit_rt_*` 再挖 String/List 符号特判**：`string_receiver_rt_override` 单表覆盖 reverse/take/slice/concat；emit_rt_* 共用。
 - [x] **`emit_value_if` 每臂克隆整表 `rooted_slots`**：入口仍 snapshot 一次（musttail 会清空 map）；两臂之间与 merge 前 `restore_root_checkpoint`/`clone_from`，避免 then musttail 污染 else 的编译期根状态。真栈式 length 回滚仍欠。
 - [ ] **`lumia_abi` 成「tid + opt 阈值 + 域核符号」杂仓**：`SPECIALIZE_CONST_*` / `DENSE_F64_TRAMPOLINE_SYMS` / `SCHEDULER_*` 与 `TYPE_*` 同文件。Cargo `description` 与 crate 文档已写明厨房池；**拆模块**仍欠。
 
@@ -235,9 +235,9 @@
 - [x] **分析成功只清空当前 URI，跨文件诊断可陈旧**：成功时清 load 图全部文件 URI；`last_diag_uris` 合并清上次 import；close 顺带清。
 - [x] **`pkg` lock 缺版本写死 `"0.0.0"`**：无 version / 无 dep `Lumia.toml` 时 `bail`，不再假绿。
 - [ ] **`codegen` feature 半切：slim 仍硬链 `lumia_core`；Build clap 永在**：无 feature 时 Build 体内才 `bail`；LSP 仍拖 Core。宜 core 仅 `codegen` 依赖；隐藏/拆 Build 子命令。
-- [ ] **VS Code README 设置/vsix 号漂移 + 对账脚本不管配置键**：README 仍 `0.3.5.vsix`、Settings 漏 `autoParallel`；`check_editor_assets` 不对账 settings/README/版本。
-- [ ] **`scripts/e2e.sh` 游离：名义 e2e 但不进 CI/`check.sh`**：实际门禁走更宽的 `cargo test -p lumia --tests`。宜删、改名，或明确「非正式入口」。
-- [ ] **位置/着色测例全 ASCII + `lumia_core` crate 文档仍写「SSA-ish」**：BUILD/DESIGN 已改「树形 ANF / 伪 SSA」；`core/lib.rs` 残留。宜多字节位置金样；对齐 crate 文档。
+- [x] **VS Code README 设置/vsix 号漂移 + 对账脚本不管配置键**：README→`0.3.9` + `autoParallel`；`check_editor_assets` 对账 version/vsix/settings 键。
+- [x] **`scripts/e2e.sh` 游离：名义 e2e 但不进 CI/`check.sh`**：标明非正式冒烟；BUILD/`check.sh` 写明门禁是 `cargo test -p lumia --tests`。
+- [x] **位置/着色测例全 ASCII + `lumia_core` crate 文档仍写「SSA-ish」**：`diag` 多字节字节列金样；core 文档改为「树形 ANF / 伪 SSA」。
 
 ### 续（2026-08-16 第九轮；不重复上方条目）
 
@@ -260,12 +260,12 @@
 - [ ] **不动点上界汤锅无政策表**：`MAX_FLOAT_MONO_ROUNDS=8`、`MAX_MONO_CLONE_ROUNDS=8`、float_abi/`escape` `0..32`、codegen `closure_cap_tys` `8`。触顶是静默停还是 ICE 无统一约定；与已列 lower 编排/escape 32 轮正交——是**散落魔法常数**债。宜 `abi_refine::FIXPOINT_CAPS` + 触顶诊断。
 - [ ] **`FrameState` 塞进 nsw_iv 分析缓存**：每函数 emit 开头填 `nsw_binop_locals` / `safe_divisor_locals` / `nonneg_iv_load_locals` / `leaf_defs` / `slot_i64_const`。帧状态成 peep 旁表，与已列 `nsw_iv` 岛屿 / `emit_fun` 上帝模块叠加。宜分析结果一次性 `NswFacts`，帧只留 SSA/根/槽。
 - [ ] **`funref_locals` 双份传播**：`emit_fun` 与 `closure_cap_tys` 各自维护 FunRef 别名图；新 `Let`/`Local` 臂需改两处。宜单一 FunRef 分析或只读 `AnalysisFacts`。
-- [ ] **Memo C ABI `lumia_memo_l2_*` vs Rust `MEMO_TF_*` 词汇分裂**：注释承认 DESIGN 是 `T_f`、C 符号为 ABI 冻结；审计/文档/新贡献者仍双名。宜文档钉死「L2=历史符号」或薄 `memo_tf_*` 别名 + 对账测（不必立刻破 ABI）。
+- [x] **Memo C ABI `lumia_memo_l2_*` vs Rust `MEMO_TF_*` 词汇分裂**：`lumia_abi` / rt / codegen 钉死「L2=历史冻结符号、Rust 用 `MEMO_TF_*`/`T_f`」；已有 memo_tf IR 对账测。
 - [ ] **`LitMap`/`LitSet` 与物理布局同枚举**：codegen 已注明 never stack、仅 PE/hint；`repr_select` 对 Map 改走 `SmallMap`。与已列 `SmallMap` 弱语义同根——IR `*Repr` 混「优化提示」与「发射布局」。宜拆 `PeHint` vs `EmitRepr`，或删僵尸变体。
 
 #### 文档新鲜度
 
-- [ ] **DESIGN/BUILD「最后更新」远落后于代码**：DESIGN 标 2026-08-07、BUILD 标 2026-08-11；Core/ABI/编辑器持续改。架构叙事易漂。宜改文档时戳日期，或改为「以 Todo/代码为准」并链到本文件。
+- [x] **DESIGN/BUILD「最后更新」远落后于代码**：戳 2026-08-16；注明以 Todo/代码为准。
 
 ## 已落地记录
 

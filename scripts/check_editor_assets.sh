@@ -58,6 +58,28 @@ if fail:
     sys.exit(1)
 print("keyword surface: tmLanguage + IDEA cover TokenKind::KEYWORDS")
 PY
+# package.json version ↔ README vsix name; configuration keys documented in README.
+python3 - "$root" <<'PY'
+import json, pathlib, re, sys
+root = pathlib.Path(sys.argv[1])
+pkg = json.loads((root / "editors/vscode/package.json").read_text(encoding="utf-8"))
+readme = (root / "editors/vscode/README.md").read_text(encoding="utf-8")
+ver = pkg["version"]
+vsix = f"lumia-{ver}.vsix"
+if vsix not in readme:
+    print(f"README missing packaged vsix name `{vsix}` (package.json version={ver})", file=sys.stderr)
+    sys.exit(1)
+props = pkg.get("contributes", {}).get("configuration", {}).get("properties", {})
+missing_keys = sorted(k for k in props if f"`{k}`" not in readme and k not in readme)
+if missing_keys:
+    print(f"README Settings missing package.json keys: {missing_keys}", file=sys.stderr)
+    sys.exit(1)
+# Must keep autoParallel wired (Todo / LSP initialize options).
+if "lumia.autoParallel" not in props:
+    print("package.json missing lumia.autoParallel setting", file=sys.stderr)
+    sys.exit(1)
+print(f"vscode package {ver}: README vsix + settings keys OK")
+PY
 if [[ "$fail" -ne 0 ]]; then
   exit 1
 fi
