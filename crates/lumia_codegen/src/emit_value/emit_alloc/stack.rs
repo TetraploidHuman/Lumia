@@ -1,29 +1,34 @@
-//! Stack (non-escaping) List / Map / ADT layouts.
+//! Stack (non-escaping) List and ADT layouts.
 //!
-//! ObjectHeader is [`lumia_abi::OBJECT_HEADER_BYTES`] ⇒
-//! [`lumia_abi::OBJECT_HEADER_WORDS`] `i64` words before payload.
+//! Map/Set never use this path (always heap / null empty). ObjectHeader is
+//! [`lumia_abi::OBJECT_HEADER_BYTES`] ⇒ [`lumia_abi::OBJECT_HEADER_WORDS`] `i64`
+//! words before payload.
 
 use super::super::super::Codegen;
 use anyhow::{Context as AnyhowContext, Result};
-use inkwell::values::BasicValueEnum;
+use inkwell::values::{BasicValueEnum, PointerValue};
 use lumia_abi::adt_type_id;
 use lumia_core::Local;
 
 impl<'ctx> Codegen<'ctx> {
-    pub(crate) fn emit_stack_adt(
+    /// Entry-block alloca + three header words; returns `(storage, payload)`.
+    ///
+    /// Header layout: word0 = `type_id | (payload_bytes << 32)`, word1 = marked=1
+    /// (stack), word2 = `_pad` (0 until ADT float-mask sanitize).
+    fn emit_stack_header(
         &mut self,
-        adt_name: &str,
-        tag: i64,
-        fields: &[Local],
-    ) -> Result<BasicValueEnum<'ctx>> {
-        let n = fields.len() as u64;
-        let payload_bytes = (1 + n) * 8;
-        let words = (lumia_abi::OBJECT_HEADER_WORDS as u64 + 1 + n) as u32; // header + tag + fields
+        type_id: u64,
+        payload_i64s: u64,
+        alloca_name: &str,
+    ) -> Result<(PointerValue<'ctx>, PointerValue<'ctx>)> {
+        const _: () = assert!(lumia_abi::OBJECT_HEADER_WORDS == 3);
+        let payload_bytes = payload_i64s * 8;
+        let words = (lumia_abi::OBJECT_HEADER_WORDS as u64 + payload_i64s) as u32;
         let arr_ty = self.llvm.i64_ty.array_type(words);
         let entry = self
             .frame
             .entry_bb
-            .context("emit_stack_adt before emit_function")?;
+            .context("emit_stack_header before emit_function")?;
         let cur = self
             .llvm
             .builder
@@ -33,53 +38,27 @@ impl<'ctx> Codegen<'ctx> {
             Some(first) => self.llvm.builder.position_before(&first),
             None => self.llvm.builder.position_at_end(entry),
         }
-        let storage = crate::error::llvm(self.llvm.builder.build_alloca(arr_ty, "stack_adt"))?;
+        let storage = crate::error::llvm(self.llvm.builder.build_alloca(arr_ty, alloca_name))?;
         self.llvm.builder.position_at_end(cur);
 
-        let kind = self.funs.adt_show_kinds.get(adt_name).copied().unwrap_or(0);
-        let type_id = adt_type_id(kind) as u64;
         let hdr0 = self
             .llvm
             .i64_ty
             .const_int(type_id | (payload_bytes << 32), false);
-        let hdr0_slot = unsafe {
-            crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
-                self.llvm.i64_ty,
-                storage,
-                &[self.llvm.i64_ty.const_int(0, false)],
-                "adt_hdr0",
-            ))?
-        };
-        crate::error::llvm(self.llvm.builder.build_store(hdr0_slot, hdr0))?;
-        // word1: marked=1 (stack); high 32 unused (align pad before `_pad`)
-        let hdr1_slot = unsafe {
-            crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
-                self.llvm.i64_ty,
-                storage,
-                &[self.llvm.i64_ty.const_int(1, false)],
-                "adt_hdr1",
-            ))?
-        };
-        crate::error::llvm(
-            self.llvm
-                .builder
-                .build_store(hdr1_slot, self.llvm.i64_ty.const_int(1, false)),
-        )?;
-        // word2: `_pad` filled after fields via `lumia_adt_set_float_mask` (sanitizes).
-        let hdr2_slot = unsafe {
-            crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
-                self.llvm.i64_ty,
-                storage,
-                &[self.llvm.i64_ty.const_int(2, false)],
-                "adt_hdr2",
-            ))?
-        };
-        crate::error::llvm(
-            self.llvm
-                .builder
-                .build_store(hdr2_slot, self.llvm.i64_ty.const_int(0, false)),
-        )?;
-
+        for (i, val) in [hdr0, self.llvm.i64_ty.const_int(1, false), self.llvm.i64_ty.const_int(0, false)]
+            .into_iter()
+            .enumerate()
+        {
+            let slot = unsafe {
+                crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
+                    self.llvm.i64_ty,
+                    storage,
+                    &[self.llvm.i64_ty.const_int(i as u64, false)],
+                    &format!("stk_hdr{i}"),
+                ))?
+            };
+            crate::error::llvm(self.llvm.builder.build_store(slot, val))?;
+        }
         let payload = unsafe {
             crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
                 self.llvm.i64_ty,
@@ -88,9 +67,22 @@ impl<'ctx> Codegen<'ctx> {
                     .llvm
                     .i64_ty
                     .const_int(lumia_abi::OBJECT_HEADER_WORDS as u64, false)],
-                "adt_payload",
+                "stk_payload",
             ))?
         };
+        Ok((storage, payload))
+    }
+
+    pub(crate) fn emit_stack_adt(
+        &mut self,
+        adt_name: &str,
+        tag: i64,
+        fields: &[Local],
+    ) -> Result<BasicValueEnum<'ctx>> {
+        let n = fields.len() as u64;
+        let kind = self.funs.adt_show_kinds.get(adt_name).copied().unwrap_or(0);
+        let type_id = adt_type_id(kind) as u64;
+        let (storage, payload) = self.emit_stack_header(type_id, 1 + n, "stack_adt")?;
         crate::error::llvm(
             self.llvm
                 .builder
@@ -127,83 +119,15 @@ impl<'ctx> Codegen<'ctx> {
         .into())
     }
 
-    /// Stack Set/List-shaped array: ObjectHeader + `[len][elems…]`.
+    /// Stack List-shaped array: ObjectHeader + `[len][elems…]` (also used for
+    /// non-escaping Set payloads that share the same shape).
     pub(crate) fn emit_stack_array(
         &mut self,
         elems: &[Local],
         type_id: u64,
     ) -> Result<BasicValueEnum<'ctx>> {
         let n = elems.len() as u64;
-        let payload_bytes = (1 + n) * 8;
-        let words = (lumia_abi::OBJECT_HEADER_WORDS as u64 + 1 + n) as u32; // header + len + elems
-        let arr_ty = self.llvm.i64_ty.array_type(words);
-        let entry = self
-            .frame
-            .entry_bb
-            .context("emit_stack_array before emit_function")?;
-        let cur = self
-            .llvm
-            .builder
-            .get_insert_block()
-            .context("no insert block")?;
-        match entry.get_first_instruction() {
-            Some(first) => self.llvm.builder.position_before(&first),
-            None => self.llvm.builder.position_at_end(entry),
-        }
-        let storage = crate::error::llvm(self.llvm.builder.build_alloca(arr_ty, "stack_arr"))?;
-        self.llvm.builder.position_at_end(cur);
-
-        let hdr0 = self
-            .llvm
-            .i64_ty
-            .const_int(type_id | (payload_bytes << 32), false);
-        let hdr0_slot = unsafe {
-            crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
-                self.llvm.i64_ty,
-                storage,
-                &[self.llvm.i64_ty.const_int(0, false)],
-                "sa_hdr0",
-            ))?
-        };
-        crate::error::llvm(self.llvm.builder.build_store(hdr0_slot, hdr0))?;
-        let hdr1_slot = unsafe {
-            crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
-                self.llvm.i64_ty,
-                storage,
-                &[self.llvm.i64_ty.const_int(1, false)],
-                "sa_hdr1",
-            ))?
-        };
-        crate::error::llvm(
-            self.llvm
-                .builder
-                .build_store(hdr1_slot, self.llvm.i64_ty.const_int(1, false)),
-        )?;
-        let hdr2_slot = unsafe {
-            crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
-                self.llvm.i64_ty,
-                storage,
-                &[self.llvm.i64_ty.const_int(2, false)],
-                "sa_hdr2",
-            ))?
-        };
-        crate::error::llvm(
-            self.llvm
-                .builder
-                .build_store(hdr2_slot, self.llvm.i64_ty.const_int(0, false)),
-        )?;
-
-        let payload = unsafe {
-            crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
-                self.llvm.i64_ty,
-                storage,
-                &[self
-                    .llvm
-                    .i64_ty
-                    .const_int(lumia_abi::OBJECT_HEADER_WORDS as u64, false)],
-                "sa_payload",
-            ))?
-        };
+        let (storage, payload) = self.emit_stack_header(type_id, 1 + n, "stack_arr")?;
         crate::error::llvm(
             self.llvm
                 .builder

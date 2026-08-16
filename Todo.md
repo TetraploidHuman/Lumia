@@ -223,10 +223,10 @@
 - [x] **`emit_memo` 魔数 `4`，不读 `MEMO_TF_MAX_ARGS`**：已改用 `lumia_abi::MEMO_TF_MAX_ARGS`；`const _: () = assert!(… == 4)` 钉死与 C ABI 四槽一致。
 - [x] **ADT float/bool field mask 静默 `.min(64)` 截断**：`emit_eq` / AllocAdt / with-update 超 64 字段改为 emit 期 `bail!` ICE；加 mask 单测。
 - [x] **musttail 无返回值时静默 `i64 0`**：`emit_musttail_call` 对 void LLVM 结果 `context` ICE（Lumia ABI 恒 i64）。
-- [ ] **`emit_stack_*` 头布局近拷贝 + 模块注释仍写 Map**：`stack.rs`「List / Map / ADT」但 Map/Set 不走栈。宜共用 header helper；改正注释。
+- [x] **`emit_stack_*` 头布局近拷贝 + 模块注释仍写 Map**：`emit_stack_header` 共用三字头；模块注释改为 List/ADT（Map/Set 不走栈）。
 - [ ] **`emit_rt_*` 再挖 String/List 符号特判**：`ListReverse`→`lumia_str_reverse` 等。坐实 BuiltinInfo 外覆盖的 emit_rt 近拷贝面。
 - [ ] **`emit_value_if` 每臂克隆整表 `rooted_slots`**：嵌套 if/musttail 用深拷救根状态。宜 checkpoint / 长度回滚。
-- [ ] **`lumia_abi` 成「tid + opt 阈值 + 域核符号」杂仓**：`SPECIALIZE_CONST_*` / `DENSE_F64_TRAMPOLINE_SYMS` / `SCHEDULER_*` 与 `TYPE_*` 同文件；`Cargo.toml` description 仍写「type_ids, memo caps」。宜拆模块或改 description。
+- [ ] **`lumia_abi` 成「tid + opt 阈值 + 域核符号」杂仓**：`SPECIALIZE_CONST_*` / `DENSE_F64_TRAMPOLINE_SYMS` / `SCHEDULER_*` 与 `TYPE_*` 同文件。Cargo `description` 与 crate 文档已写明厨房池；**拆模块**仍欠。
 
 #### LSP / pkg / 工具链假绿
 

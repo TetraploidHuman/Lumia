@@ -3,6 +3,11 @@
 //! Codegen emits these `type_id` values into object headers; `lumia_rt` interprets
 //! them. Memo caps must match between the opt planner and the runtime tables.
 //!
+//! This crate is intentionally a **shared kitchen sink** until further splits:
+//! object `TYPE_*` / tid packing, memo + opt thresholds (`SPECIALIZE_CONST_*`,
+//! `INLINE_*`), scheduler kind ints, and dense_f64 trampoline symbol tables.
+//! Prefer adding a named section here over a third copy in codegen/opt.
+//!
 //! Float / container tagging rules: [`float_contract`].
 //!
 //! # Container `type_id` packing
