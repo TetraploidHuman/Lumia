@@ -161,6 +161,7 @@ fn upgrade_list_params_from_float_call_sites(module: &mut CoreModule) {
         .collect();
     let fun_cap_tys =
         super::float_abi::collect_fun_cap_tys(module, &fun_ret_tys, &fun_param_tys);
+    let lifted = super::lifted_lambda_names(module);
     let empty = HashMap::default();
 
     let mut need: HashMap<String, HashSet<usize>> = HashMap::default();
@@ -171,6 +172,7 @@ fn upgrade_list_params_from_float_call_sites(module: &mut CoreModule) {
             caps,
             &fun_ret_tys,
             &fun_param_tys,
+            &lifted,
             &mut need,
         );
     }
@@ -199,6 +201,7 @@ fn collect_float_list_call_args(
     caps: &HashMap<u32, Type>,
     fun_ret_tys: &HashMap<String, Type>,
     fun_param_tys: &HashMap<String, Vec<Type>>,
+    lifted: &HashSet<String>,
     need: &mut HashMap<String, HashSet<usize>>,
 ) {
     for op in &block.ops {
@@ -213,6 +216,7 @@ fn collect_float_list_call_args(
                             caps,
                             fun_ret_tys,
                             fun_param_tys,
+                            lifted,
                             need,
                         );
                     }
@@ -225,6 +229,7 @@ fn collect_float_list_call_args(
                                 caps,
                                 fun_ret_tys,
                                 fun_param_tys,
+                                lifted,
                                 need,
                             );
                         }
@@ -232,7 +237,7 @@ fn collect_float_list_call_args(
                     _ => {}
                 }
                 crate::for_each_nested_block(value, &mut |b| {
-                    collect_float_list_call_args(b, caps, fun_ret_tys, fun_param_tys, need);
+                    collect_float_list_call_args(b, caps, fun_ret_tys, fun_param_tys, lifted, need);
                 });
             }
             _ => {}
@@ -247,11 +252,12 @@ fn note_float_list_args(
     caps: &HashMap<u32, Type>,
     fun_ret_tys: &HashMap<String, Type>,
     fun_param_tys: &HashMap<String, Vec<Type>>,
+    lifted: &HashSet<String>,
     need: &mut HashMap<String, HashSet<usize>>,
 ) {
     let params = fun_param_tys.get(fun).map(|p| p.as_slice()).unwrap_or(&[]);
     // Closure env is params[0]; user args align to params[1..] when present.
-    let offset = if fun.starts_with("__lam_") && params.len() == args.len() + 1 {
+    let offset = if lifted.contains(fun) && params.len() == args.len() + 1 {
         1
     } else {
         0
@@ -715,7 +721,7 @@ fn infer_local_fun_ty(
             Value::Local(crate::Local(src)) => cur = *src,
             Value::ClosureCap { index, .. } => return caps.get(index).cloned(),
             Value::FunRef(n) | Value::AllocClosure { fun: n, .. } => {
-                return super::fun_ty_from_tables(n, fun_ret_tys, fun_param_tys);
+                return super::fun_ty_from_tables(n, fun_ret_tys, fun_param_tys, &HashSet::default());
             }
             _ => return None,
         }

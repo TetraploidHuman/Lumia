@@ -11,20 +11,35 @@ pub(crate) use channel_hint::refine_channel_elem_hint;
 pub(crate) use float_cap_fixup::fixup_closure_float_caps;
 pub(crate) use rewrite::lift_lambdas;
 
+use crate::ir::CoreModule;
 use lumia_ty::{Effect, Type};
-use rustc_hash::FxHashMap as HashMap;
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+
+/// Names of lifted lambdas ([`crate::CoreFun::is_lifted_lambda`]).
+pub(crate) fn lifted_lambda_names(module: &CoreModule) -> HashSet<String> {
+    module
+        .functions
+        .iter()
+        .filter(|f| f.is_lifted_lambda())
+        .map(|f| f.name.clone())
+        .collect()
+}
 
 /// Build a user-facing `Fun` type from tables, dropping a leading env Int for
-/// lifted closures (`__lam_*` / [`crate::FunKind::LiftedLambda`]).
+/// lifted closures ([`crate::FunKind::LiftedLambda`]).
+///
+/// Prefer passing [`lifted_lambda_names`]; when the set is empty, the
+/// transitional `__lam_` name prefix still applies for table-only call sites.
 pub(crate) fn fun_ty_from_tables(
     name: &str,
     fun_ret_tys: &HashMap<String, Type>,
     fun_param_tys: &HashMap<String, Vec<Type>>,
+    lifted: &HashSet<String>,
 ) -> Option<Type> {
     let ret = fun_ret_tys.get(name)?.clone();
     let mut params = fun_param_tys.get(name).cloned().unwrap_or_default();
-    // Name prefix covers mono clones (`__lam_3$Float`) and fixtures without FunKind.
-    if name.starts_with("__lam_")
+    let is_lifted = lifted.contains(name) || name.starts_with("__lam_");
+    if is_lifted
         && params
             .first()
             .is_some_and(|p| matches!(p, Type::Int | Type::Var(_)))

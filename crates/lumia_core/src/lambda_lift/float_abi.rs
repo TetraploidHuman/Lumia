@@ -2071,7 +2071,8 @@ fn fun_ty_from_tables(
     fun_ret_tys: &HashMap<String, Type>,
     fun_param_tys: &HashMap<String, Vec<Type>>,
 ) -> Option<Type> {
-    super::fun_ty_from_tables(name, fun_ret_tys, fun_param_tys)
+    use rustc_hash::FxHashSet as HashSet;
+    super::fun_ty_from_tables(name, fun_ret_tys, fun_param_tys, &HashSet::default())
 }
 
 fn fun_ret_of_local(
