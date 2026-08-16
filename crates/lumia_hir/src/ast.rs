@@ -13,10 +13,9 @@ pub struct Module {
     pub products: Vec<ProductDef>,
     /// `(trait, type)` pairs from `instance Trait for Type { }` (incl. auto-derived).
     pub instances: HashSet<(String, String)>,
-    /// Custom `Show.show` overrides: type name → mangled function name.
-    pub show_methods: HashMap<String, String>,
     /// Instance / default methods: `(type, method)` → mangled `__Trait_Type_method`.
     /// Used for UFCS `x.method(...)` resolution (compile-time; DESIGN §6.2).
+    /// Show overrides are looked up as `("T", "show")` (no separate Show side table).
     pub trait_methods: HashMap<(String, String), Vec<String>>,
     /// Short method name → declaring trait (from `trait` items; poly UFCS constraints).
     pub method_traits: HashMap<String, String>,

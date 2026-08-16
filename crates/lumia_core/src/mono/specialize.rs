@@ -1829,7 +1829,7 @@ fn track_funref_after_let(
             let base = index
                 .and_then(|ix| ix.get(fun))
                 .map(|f| f.base_name())
-                .unwrap_or_else(|| fun.split('$').next().unwrap_or(fun.as_str()));
+                .unwrap_or_else(|| super::key::strip_mono_suffix(fun));
             if base == "unwrapOr" && args.len() >= 2 {
                 let from_opt = adt_funrefs
                     .get(&args[0].0)

@@ -7,6 +7,7 @@ mod float_cap_fixup;
 mod heap;
 mod rewrite;
 
+pub use float_abi::prefer_concrete_heap_ty;
 pub(crate) use channel_hint::refine_channel_elem_hint;
 pub(crate) use float_cap_fixup::fixup_closure_float_caps;
 pub(crate) use rewrite::lift_lambdas;

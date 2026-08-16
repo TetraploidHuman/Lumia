@@ -215,7 +215,7 @@ fn is_erased_result_ret(t: &Type) -> bool {
     )
 }
 
-fn strip_mono_suffix(name: &str) -> &str {
+pub(crate) fn strip_mono_suffix(name: &str) -> &str {
     name.split('$').next().unwrap_or(name)
 }
 

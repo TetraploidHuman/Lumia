@@ -66,14 +66,8 @@ pub(crate) fn collect_closure_cap_tys(
 }
 
 fn prefer_cap_ty(old: Type, new: Type) -> Type {
-    match (&old, &new) {
-        (Type::Fun(_, _, _), _) => old,
-        (_, Type::Fun(_, _, _)) => new,
-        (Type::Float, _) | (_, Type::Float) => Type::Float,
-        (Type::Int | Type::Var(_), other) => other.clone(),
-        (other, Type::Int | Type::Var(_)) => other.clone(),
-        _ => new,
-    }
+    // Same Fun/Float/Int lattice as float_abi / If joins (Todo: single prefer_*).
+    lumia_core::prefer_concrete_heap_ty(old, new)
 }
 
 fn walk_block(

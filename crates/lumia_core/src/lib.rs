@@ -26,6 +26,8 @@ pub use value_ty::{
     infer_value_ty, infer_value_ty_ctx, list_par_map_elem_ty, value_alloc_may_heap,
     CodegenTypeTables, HeapPolicy, InferValueCtx,
 };
+/// Shared Float/Fun/Int lattice for ABI merges (float_abi + codegen cap tys).
+pub use lambda_lift::prefer_concrete_heap_ty;
 pub use visit::{
     block_calls, block_has_io, collect_uses_in_value, count_ops, for_each_block_dfs,
     for_each_local, for_each_local_mut, for_each_nested_block, for_each_nested_block_mut,

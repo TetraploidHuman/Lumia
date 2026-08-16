@@ -2202,7 +2202,7 @@ fn join_heap_tys(a: &Type, b: &Type) -> Option<Type> {
     }
 }
 
-pub(crate) fn prefer_concrete_heap_ty(x: Type, y: Type) -> Type {
+pub fn prefer_concrete_heap_ty(x: Type, y: Type) -> Type {
     if x == y {
         return x;
     }

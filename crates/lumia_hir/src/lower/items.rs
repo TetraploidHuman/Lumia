@@ -336,24 +336,18 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
     );
 
     let mut items = Vec::new();
-    let mut show_methods = HashMap::default();
     // (type, method) → mangled `__Trait_Type_method` (may be multi-trait).
     let mut trait_methods: HashMap<(String, String), Vec<String>> = HashMap::default();
     let mut lowered_methods: HashSet<String> = HashSet::default();
     let note_method =
-        |tr: &str,
-         ty: &str,
+        |ty: &str,
          method: &str,
          mangled: String,
-         show_methods: &mut HashMap<String, String>,
          trait_methods: &mut HashMap<(String, String), Vec<String>>| {
             trait_methods
                 .entry((ty.to_string(), method.to_string()))
                 .or_default()
-                .push(mangled.clone());
-            if tr == "Show" && method == "show" {
-                show_methods.insert(ty.to_string(), mangled);
-            }
+                .push(mangled);
         };
     for item in &m.items {
         match item {
@@ -367,14 +361,7 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
                         crate::mangle_trait_method(&i.trait_name, &i.type_name, &method.name);
                     push_lowered_val(&ctx, &mut items, method, &mangled);
                     lowered_methods.insert(mangled.clone());
-                    note_method(
-                        &i.trait_name,
-                        &i.type_name,
-                        &method.name,
-                        mangled,
-                        &mut show_methods,
-                        &mut trait_methods,
-                    );
+                    note_method(&i.type_name, &method.name, mangled, &mut trait_methods);
                 }
                 if let Some(defaults) = trait_defaults.get(&i.trait_name) {
                     for (method_name, default) in defaults {
@@ -385,14 +372,7 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
                         }
                         push_lowered_val(&ctx, &mut items, default, &mangled);
                         lowered_methods.insert(mangled.clone());
-                        note_method(
-                            &i.trait_name,
-                            &i.type_name,
-                            method_name,
-                            mangled,
-                            &mut show_methods,
-                            &mut trait_methods,
-                        );
+                        note_method(&i.type_name, method_name, mangled, &mut trait_methods);
                     }
                 }
             }
@@ -427,7 +407,6 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
         adts,
         products,
         instances,
-        show_methods,
         trait_methods,
         method_traits,
     };

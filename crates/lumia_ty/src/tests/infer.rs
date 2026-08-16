@@ -253,7 +253,6 @@ fn builtin_arity_from_info_rejects_get() {
         adts: Vec::new(),
         products: Vec::new(),
         instances: FxHashSet::default(),
-        show_methods: FxHashMap::default(),
         trait_methods: FxHashMap::default(),
         method_traits: FxHashMap::default(),
     };

@@ -122,7 +122,7 @@
 - [ ] **Lower 错误 `RefCell` 先错即终**：`set_err` 仅在空时写入；嵌套失败丢弃。无法多诊断 lower。
 - [ ] **双类型打印机 + unify 行话**：`Display for Type`→`?N`；IDE `display_type` 接地+字母名；unify 发 `infinite type` / `Debug` mismatch。违 DESIGN §3.2 用户面措辞。
 - [ ] **`join` 按元数重载 Task vs List**：`from_method` `(join,1)→TaskJoin`、`(join,2)→ListJoin`。同名两 builtin，易误解析。
-- [ ] **`show_methods` 仅 Show 旁路表**：在通用 `trait_methods` 外再特判 Show。其它 trait 无对称快路径——又一层魔法。
+- [x] **`show_methods` 仅 Show 旁路表**：已删；Show 仅经 `trait_methods[("T","show")]` / `mangle_trait_method`（codegen 本就如此）。
 - [ ] **一切积/和盲插 `Eq`/`Show` instance**：`collect_instances` 对所有 product/ADT（含 prelude）插入。派生策略非 langitem/注册表。
 
 #### RT / opt / codegen
