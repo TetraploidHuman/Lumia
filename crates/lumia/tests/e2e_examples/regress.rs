@@ -347,3 +347,11 @@ fn e2e_regress_channel_option_result() {
         &["1.5", "-1", "Ok(1.5)", "e"],
     );
 }
+
+#[test]
+fn e2e_regress_prelude_ctor_first_class() {
+    run_example(
+        "examples/regress/prelude_ctor_first_class.lm",
+        &["1.5", "2", "true"],
+    );
+}

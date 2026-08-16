@@ -68,6 +68,16 @@ pub(super) fn lower_lit(
                 Some(l)
             } else if let Some(l) = ctx.name_to_local.get(name) {
                 Some(*l)
+            } else if let Some(synth) = prelude_ctor_funref(name) {
+                // First-class / alias use: `val lo = listOf` → FunRef to a nullary
+                // empty-alloc stub (call sites `listOf(…)` stay special-cased).
+                let l = ctx.fresh();
+                ops.push(Op::Let {
+                    local: l,
+                    value: Value::FunRef(synth.to_string()),
+                    pure_region,
+                });
+                Some(l)
             } else if ctx.toplevel_funs.contains(name) {
                 let l = ctx.fresh();
                 ops.push(Op::Let {
@@ -98,5 +108,15 @@ pub(super) fn lower_lit(
             }
         }
         _ => unreachable!("lower_lit: non-literal"),
+    }
+}
+
+/// Synthetic Core names for first-class prelude collection constructors.
+pub(super) fn prelude_ctor_funref(name: &str) -> Option<&'static str> {
+    match name {
+        "listOf" => Some("__prelude_listOf"),
+        "mapOf" => Some("__prelude_mapOf"),
+        "setOf" => Some("__prelude_setOf"),
+        _ => None,
     }
 }

@@ -3,7 +3,7 @@
 mod ctx;
 mod expr;
 
-use crate::ir::{CoreFun, CoreModule, ForeignAbi, FunKind};
+use crate::ir::{CoreFun, CoreModule, ForeignAbi, FunKind, ListRepr, MapRepr, Op, SetRepr, Value};
 use crate::lambda_lift::{fixup_closure_float_caps, lift_lambdas, refine_channel_elem_hint};
 use crate::mono::{
     directize_funref_calls, ensure_trait_method_stubs, resolve_trait_method_calls,
@@ -209,6 +209,7 @@ pub fn lower_hir_with_schemes(
         option_some_tag,
         option_none_tag,
     };
+    ensure_prelude_ctor_stubs(&mut core);
     lift_lambdas(&mut core);
     refine_channel_elem_hint(&mut core);
     directize_funref_calls(&mut core);
@@ -267,4 +268,88 @@ fn option_ctor_tags(adts: &[lumia_hir::AdtDef]) -> (i64, i64) {
         }
     }
     (0, 1)
+}
+
+/// Nullary empty-container stubs for first-class `listOf` / `mapOf` / `setOf`.
+fn ensure_prelude_ctor_stubs(core: &mut CoreModule) {
+    let mut needed: HashSet<&'static str> = HashSet::default();
+    for f in &core.functions {
+        crate::visit::for_each_block_dfs(&f.body, &mut |b| {
+            for op in &b.ops {
+                if let Op::Let {
+                    value: Value::FunRef(n),
+                    ..
+                } = op
+                {
+                    match n.as_str() {
+                        "__prelude_listOf" => {
+                            needed.insert("__prelude_listOf");
+                        }
+                        "__prelude_mapOf" => {
+                            needed.insert("__prelude_mapOf");
+                        }
+                        "__prelude_setOf" => {
+                            needed.insert("__prelude_setOf");
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        });
+    }
+    let existing: HashSet<String> = core.functions.iter().map(|f| f.name.clone()).collect();
+    for name in needed {
+        if existing.contains(name) {
+            continue;
+        }
+        let (alloc, ret_ty) = match name {
+            "__prelude_listOf" => (
+                Value::AllocList {
+                    elems: vec![],
+                    repr: ListRepr::HeapList,
+                },
+                Type::List(Box::new(Type::Int)),
+            ),
+            "__prelude_mapOf" => (
+                Value::AllocMap {
+                    flat_pairs: vec![],
+                    repr: MapRepr::HashOrdered,
+                },
+                Type::Map(Box::new(Type::Int), Box::new(Type::Int)),
+            ),
+            "__prelude_setOf" => (
+                Value::AllocSet {
+                    elems: vec![],
+                    repr: SetRepr::HeapSet,
+                },
+                Type::Set(Box::new(Type::Int)),
+            ),
+            _ => continue,
+        };
+        let local = crate::ir::Local(0);
+        core.functions.push(CoreFun {
+            name: name.into(),
+            params: vec![],
+            param_names: vec![],
+            param_tys: vec![],
+            body: crate::ir::Block {
+                ops: vec![Op::Let {
+                    local,
+                    value: alloc,
+                    pure_region: true,
+                }],
+                result: Some(local),
+            },
+            ret_ty,
+            effect: Effect::pure(),
+            is_main: false,
+            memo: None,
+            external: None,
+            foreign_abi: ForeignAbi::C,
+            escaping: HashSet::default(),
+            scheme_poly: false,
+            mono_of: None,
+            kind: FunKind::Normal,
+        });
+    }
 }
