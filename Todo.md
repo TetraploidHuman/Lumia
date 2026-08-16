@@ -55,7 +55,7 @@
 - [ ] **双前端管线分叉**：`lumia_core::compile_source_to_core*`（单文件 parse→HIR→ty→Core，供单测）与 CLI/`check_program`（`load` 多文件 + `std.*` + visibility + assert 注解）并行。注释已承认差异；大量 core/opt 单测不经 loader，易漏 std/import/包路径回归。
 - [ ] **`visit.rs` 未成为分析默认入口**：已有 `for_each_local_mut` / `for_each_block_dfs` 等，但 `float_abi` / `channel_hint` / `closure_cap_tys` / 多份 `*_sr` / escape·memo 仍手写嵌套 walker。新 `Value` 臂易漏改；与上帝模块叠加放大维护面。
 - [ ] **Windows 工作流仍薄**：已有 `scripts/env.ps1` stub；README/BUILD 宣称 Linux+Windows，完整 `.ps1` 工作流与本地 LLVM 路径仍不对等。
-- [ ] **`lumia_rt` 公共 API 过宽**：`lib.rs` 大量 `pub use` 展开内部模块。对比 hir/ty/codegen 的 `pub(crate)` 更收敛——重构边界模糊。（`lumia_syntax` 已改为显式 `ast::{…}` 再导出。）
+- [x] **`lumia_rt` 公共 API 过宽**：`lib.rs` / `list` / `map_set` / `string_io` 已改为显式 `pub use {…}`（C ABI 符号表）；内部 `pub(crate)` 助手不再经 glob 漏出。
 ### 续（2026-08-15 第二轮；不重复上方条目）
 - [ ] **Value→Type 三套完整并行 walker**：除已列的 join/prefer 近拷贝外，`value_ty`（≈955，含 `infer_value_ty_ctx` + 拆出的 `builtin_value_ty`）、`float_abi::{local,block}_*_heap_ty`（`local_heap_ty` 单函数 ≈687）、`mono/ret_ty`（≈720）各自重匹配几乎全部 `Value`/`Builtin` 臂；ABI 补丁常需改三处。应收成单一 typed analysis API，heap/mono/codegen 作薄客户端。
 - [ ] **`ClosureCap.as_float` + `float_cap_fixup` 半吊子通道**：IR 上可变 `as_float` 旗标（`rewrite` 写入 → `float_cap_fixup` ≈1231 行事后补丁 → codegen `emit_calls` 消费），与 `param_tys`/`ret_ty`/闭包捕获表并行。Float 捕获 ABI 应只从 typed cap 表导出，删掉事后 mutation。体量/职责继续膨胀见第五轮。

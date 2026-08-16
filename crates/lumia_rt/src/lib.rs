@@ -83,23 +83,54 @@ pub use dict::{
     lumia_dict_lookup, lumia_dict_register, lumia_dict_show, TRAIT_EQ, TRAIT_HASH, TRAIT_NUM,
     TRAIT_ORD, TRAIT_SHOW,
 };
-pub use dispatch::*;
+pub use dispatch::{
+    lumia_concat, lumia_contains, lumia_elems, lumia_get, lumia_len, lumia_remove, lumia_set,
+};
 pub use efe::{
     lumia_efe_action_scores, lumia_efe_apply_embodied_reflexes, lumia_efe_embodied_action_scores,
 };
-pub use eq::*;
+pub use eq::{lumia_adt_eq, lumia_eq};
 pub use float_kernels::lumia_mandelbrot_checksum;
-pub use hash_ord::*;
-pub use list::*;
-pub use map_set::*;
-pub use memo::*;
+pub use hash_ord::{
+    lumia_adt_ensure_unique, lumia_adt_ensure_unique_consume, lumia_adt_ensure_unique_consume_mask,
+    lumia_adt_ensure_unique_mask, lumia_adt_field, lumia_adt_set_field, lumia_adt_tag, lumia_cmp,
+    lumia_hash,
+};
+pub use list::{
+    lumia_ensure_list_f64, lumia_list_append, lumia_list_concat, lumia_list_empty, lumia_list_get,
+    lumia_list_join, lumia_list_len, lumia_list_par_fold, lumia_list_par_map, lumia_list_promote,
+    lumia_list_release, lumia_list_retain, lumia_list_reverse, lumia_list_set, lumia_list_slice,
+    lumia_list_sort, lumia_list_sort_by_keys, lumia_list_take, lumia_ptr_eq, lumia_range,
+    lumia_range_inclusive,
+};
+pub use map_set::{
+    lumia_ensure_map_f64, lumia_ensure_map_vf64, lumia_ensure_set_f64, lumia_map_contains,
+    lumia_map_finish, lumia_map_get, lumia_map_items, lumia_map_keys, lumia_map_remove,
+    lumia_map_set, lumia_map_values, lumia_set_contains, lumia_set_finish, lumia_set_insert,
+    lumia_set_remove,
+};
+pub use memo::{
+    lumia_memo_idx_hits, lumia_memo_idx_lookup, lumia_memo_idx_misses, lumia_memo_idx_reset,
+    lumia_memo_idx_store, lumia_memo_l2_hits, lumia_memo_l2_lookup, lumia_memo_l2_misses,
+    lumia_memo_l2_reset, lumia_memo_l2_store,
+};
 pub use number_theory::{
     lumia_affine1_rem_sum, lumia_divisor_sum, lumia_gcd_sum, lumia_matmul_affine_checksum,
     lumia_product_rem_sum,
 };
 pub use primes::lumia_count_primes;
-pub use show::*;
-pub use string_io::*;
+pub use show::{
+    lumia_adt_set_float_mask, lumia_alloc_char, lumia_show, lumia_show_adt, lumia_show_adt_named,
+    lumia_show_bool, lumia_show_float, lumia_show_list_bool,
+};
+pub use string_io::{
+    lumia_alloc_string, lumia_assert, lumia_cstr_to_string, lumia_match_fail, lumia_println_auto,
+    lumia_println_bool, lumia_println_cstr, lumia_println_float, lumia_println_int,
+    lumia_println_str, lumia_read_stdin, lumia_str_byte_len, lumia_str_concat, lumia_str_contains,
+    lumia_str_ends_with, lumia_str_len, lumia_str_reverse, lumia_str_slice, lumia_str_split,
+    lumia_str_starts_with, lumia_str_substring, lumia_str_take, lumia_str_to_lower,
+    lumia_str_to_upper, lumia_str_trim, lumia_string_cstr, lumia_trap_div0, lumia_trap_overflow,
+};
 pub use task::{
     lumia_abi_handoff_set, lumia_channel_close, lumia_channel_new, lumia_channel_recv,
     lumia_channel_recv_opt, lumia_channel_send, lumia_scheduler_drain, lumia_scheduler_kind,
