@@ -127,7 +127,7 @@ pub(super) fn lower_call_like(
             });
             Some(dest)
         }
-        HirExpr::BuiltinCall { name, args, .. } => {
+        HirExpr::BuiltinCall { name, args, span } => {
             let mut arg_locals = vec![];
             // Product field checks carry an expected-ADT name as a 3rd HIR arg;
             // Core/runtime only need (obj, index).
@@ -139,6 +139,18 @@ pub(super) fn lower_call_like(
             for a in use_args {
                 if let Some(l) = lower_expr(ctx, a, ops, true) {
                     arg_locals.push(l);
+                }
+            }
+            // Bare `assert(cond)` → inject `path:line` message at Core (typed HIR stays 1-arg).
+            if matches!(name, Builtin::Assert) && arg_locals.len() == 1 {
+                if let Some(msg) = ctx.assert_fail_message(*span) {
+                    let msg_local = ctx.fresh();
+                    ops.push(Op::Let {
+                        local: msg_local,
+                        value: Value::String(msg),
+                        pure_region: true,
+                    });
+                    arg_locals.push(msg_local);
                 }
             }
             let is_io = name.is_io();

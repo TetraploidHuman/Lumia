@@ -91,7 +91,7 @@ scripts/check.sh 本地 CI 冒烟：`cargo test` workspace lib + lumia e2e
 
 根目录 `[workspace.dependencies]` 已钉 `inkwell` 的 `llvm21-1`。
 
-**前端共享 typecheck**：CLI / LSP / `lumia_core::pipeline` 共用 `lumia_ty::typecheck_hir` 与 `lumia_hir::annotate_assert_messages`。**完整程序管线**（多文件 load、`std.*`、visibility、包信任）仅 `lumia::check_program` / CLI build；`compile_source_to_core*` 是单文件测夹具，≠ 完整 CLI。
+**前端共享 typecheck**：CLI / LSP / `lumia_core::pipeline` 共用 `lumia_ty::typecheck_hir`。裸 `assert(cond)` 的默认失败文案在 **Core lower**（`assert_files`）注入，不改写 typed HIR。**完整程序管线**（多文件 load、`std.*`、visibility、包信任）仅 `lumia::check_program` / CLI build；`compile_source_to_core*` 是单文件测夹具，≠ 完整 CLI。
 
 **Typed HIR 权威**：`typecheck_hir` 之后，`TypedModule`（含 rewrite 后的 `module`、`fun_types`/`fun_schemes`、`type_at`）是语义真源；Core lower / IDE hover·inlay 只消费它。勿缓存 pre-infer 的 HIR 当作类型结果。
 

@@ -499,6 +499,7 @@ val main = {
             &typed.fun_types,
             &typed.fun_schemes,
             &typed.type_at,
+            &[],
         )
         .expect("core");
         optimize(&mut core, &OptOptions::default());
@@ -555,6 +556,7 @@ val main = {
             &typed.fun_types,
             &typed.fun_schemes,
             &typed.type_at,
+            &[],
         )
         .expect("core");
         optimize(&mut core, &OptOptions::default());

@@ -1,6 +1,7 @@
 //! Native build pipeline (`check` → lower → optimize → codegen → link).
 
-use crate::check::{annotate_assert_messages, check_program};
+use crate::check::check_program;
+use crate::load::path_label;
 use anyhow::{Context, Result};
 use lumia_codegen::{compile_module, find_runtime_lib_prefer, CodegenOptions};
 use lumia_core::{format_module, lower_hir_with_schemes};
@@ -21,13 +22,23 @@ pub fn build_file(
     show_ir: bool,
     emit_llvm: bool,
 ) -> Result<()> {
-    let (mut typed, loaded) = check_program(file, auto_parallel, trust_foreign_pure)?;
-    annotate_assert_messages(&mut typed.module, &loaded);
+    let (typed, loaded) = check_program(file, auto_parallel, trust_foreign_pure)?;
+    let labels: Vec<String> = loaded
+        .files
+        .iter()
+        .map(|f| path_label(&f.path))
+        .collect();
+    let assert_files: Vec<(&str, &str)> = labels
+        .iter()
+        .zip(loaded.files.iter())
+        .map(|(lab, f)| (lab.as_str(), f.src.as_str()))
+        .collect();
     let mut core = lower_hir_with_schemes(
         &typed.module,
         &typed.fun_types,
         &typed.fun_schemes,
         &typed.type_at,
+        &assert_files,
     )
     .map_err(|e| anyhow::anyhow!("core: {e}"))?;
     core.check_channel_elem_conflicts()

@@ -160,24 +160,12 @@ fn walk_block(
                     }
                 }
                 local_tys.insert(local.0, ty);
-                match value {
-                    Value::FunRef(name) => {
-                        funref_locals.insert(local.0, name.clone());
-                    }
-                    Value::AllocClosure { fun, .. } => {
-                        funref_locals.insert(local.0, fun.clone());
-                    }
-                    Value::Local(src) => {
-                        if let Some(n) = funref_locals.get(&src.0).cloned() {
-                            funref_locals.insert(local.0, n);
-                        } else {
-                            funref_locals.remove(&local.0);
-                        }
-                    }
-                    _ => {
-                        funref_locals.remove(&local.0);
-                    }
-                }
+                crate::funref::note_funref_local(
+                    funref_locals,
+                    local.0,
+                    value,
+                    crate::funref::AllocClosureFunref::Track,
+                );
             }
             Op::Assign { name, value } => {
                 if let Some(ty) = local_tys.get(&value.0).cloned() {

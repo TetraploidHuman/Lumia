@@ -19,13 +19,22 @@ use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 ///
 /// `type_at` is the zonked expression-type table from typecheck; used to stamp
 /// ground builtin results (e.g. `Channel[T]`) onto Core values.
+///
+/// `assert_files[span.file]` is `(path_label, source)` for injecting default
+/// messages on bare `assert(cond)` — HIR stays as typed (1 arg).
 pub fn lower_hir_with_schemes(
     module: &HirModule,
     fun_types: &HashMap<String, Type>,
     fun_schemes: &HashMap<String, lumia_ty::Scheme>,
     type_at: &[(lumia_syntax::Span, Type)],
+    assert_files: &[(&str, &str)],
 ) -> Result<CoreModule, String> {
     let type_at: std::rc::Rc<[(lumia_syntax::Span, Type)]> = std::rc::Rc::from(type_at);
+    let assert_files: std::rc::Rc<[(String, String)]> = assert_files
+        .iter()
+        .map(|(p, s)| ((*p).to_string(), (*s).to_string()))
+        .collect::<Vec<_>>()
+        .into();
     let toplevel_funs: HashSet<String> = module
         .items
         .iter()
@@ -64,6 +73,7 @@ pub fn lower_hir_with_schemes(
                     trait_method_names.clone(),
                     io_funs.clone(),
                     type_at.clone(),
+                    assert_files.clone(),
                 );
                 let mut params = vec![];
                 for p in &f.params {
@@ -136,6 +146,7 @@ pub fn lower_hir_with_schemes(
                     trait_method_names.clone(),
                     io_funs.clone(),
                     type_at.clone(),
+                    assert_files.clone(),
                 );
                 let (body, _) = lower_expr_block(&mut ctx, body);
                 if let Some(msg) = ctx.ice {

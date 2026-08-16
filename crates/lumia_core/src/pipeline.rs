@@ -1,12 +1,12 @@
 //! Shared frontend→Core pipeline for tests and tooling.
 //!
 //! Multi-file load and import visibility remain CLI-only ([`lumia`] crate).
-//! Assert-message annotation matches the CLI build path (single-file label
+//! Bare `assert(cond)` messages are injected at Core lower (single-file label
 //! `"<input>"`). Effect-boundary checks mirror the CLI via [`lumia_ty::typecheck_hir`].
 
 use crate::ir::CoreModule;
 use crate::lower::lower_hir_with_schemes;
-use lumia_hir::{annotate_assert_messages, lower_module};
+use lumia_hir::lower_module;
 use lumia_syntax::parse_module;
 use lumia_ty::{typecheck_hir, NameVisibility, TypecheckOptions};
 
@@ -44,11 +44,10 @@ pub fn compile_source_to_core_with_options(
 ) -> Result<CoreModule, String> {
     let ast = stage("parse", parse_module(src))?;
     let hir = stage("lower", lower_module(&ast))?;
-    let mut typed = stage(
+    let typed = stage(
         "typecheck",
         typecheck_hir(&hir, NameVisibility::default(), opts),
     )?;
-    annotate_assert_messages(&mut typed.module, &[("<input>", src)]);
     let core = stage(
         "core",
         lower_hir_with_schemes(
@@ -56,6 +55,7 @@ pub fn compile_source_to_core_with_options(
             &typed.fun_types,
             &typed.fun_schemes,
             &typed.type_at,
+            &[("<input>", src)],
         ),
     )?;
     stage("channel", core.check_channel_elem_conflicts().map(|()| core))
@@ -148,5 +148,39 @@ import std.io.{println}
 val main = { println(1) }
 "#;
         compile_source_to_core(ok).expect("main may perform IO");
+    }
+
+    #[test]
+    fn bare_assert_gets_file_line_message() {
+        let src = "module M\nval main = { assert(false) }\n";
+        let core = compile_source_to_core(src).expect("core");
+        let main = core.functions.iter().find(|f| f.is_main).expect("main");
+        let assert_args = main.body.ops.iter().find_map(|op| match op {
+            Op::Let {
+                value: Value::Builtin {
+                    name: Builtin::Assert,
+                    args,
+                    ..
+                },
+                ..
+            } => Some(args.as_slice()),
+            _ => None,
+        });
+        let args = assert_args.expect("Assert builtin");
+        assert_eq!(args.len(), 2, "cond + message");
+        let msg_local = args[1].0;
+        let msg = main.body.ops.iter().find_map(|op| match op {
+            Op::Let {
+                local,
+                value: Value::String(s),
+                ..
+            } if local.0 == msg_local => Some(s.as_str()),
+            _ => None,
+        });
+        let msg = msg.expect("assert message string");
+        assert!(
+            msg.contains("<input>:") && msg.contains("assert failed"),
+            "unexpected message: {msg}"
+        );
     }
 }

@@ -1,4 +1,4 @@
-//! Shared program typecheck + assert annotation for CLI and LSP.
+//! Shared program typecheck for CLI and LSP.
 
 use crate::diag::{Diagnostic, DiagnosticKind};
 use crate::load::{load_program, load_program_with_overlays, path_label, LoadedProgram, SourceFile};
@@ -162,21 +162,6 @@ pub fn check_source_recovering(text: &str, auto_parallel: bool) -> PartialCheck 
     PartialCheck { typed, diagnostics }
 }
 
-/// Inject `assert` failure messages (`file:line: assert failed`) before Core lower.
-pub fn annotate_assert_messages(module: &mut lumia_hir::Module, loaded: &LoadedProgram) {
-    let labels: Vec<String> = loaded
-        .files
-        .iter()
-        .map(|f| path_label(&f.path))
-        .collect();
-    let table: Vec<(&str, &str)> = labels
-        .iter()
-        .zip(loaded.files.iter())
-        .map(|(lab, f)| (lab.as_str(), f.src.as_str()))
-        .collect();
-    lumia_hir::annotate_assert_messages(module, &table);
-}
-
 fn diag_err(loaded: &LoadedProgram, span: Span, kind: &str, message: &str) -> anyhow::Error {
     let labels: Vec<String> = loaded
         .files
@@ -223,9 +208,6 @@ pub fn loaded_from_source(path: &str, src: &str) -> LoadedProgram {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lumia_hir::{Builtin, Expr, Item, Module as HirModule};
-    use lumia_syntax::Span;
-    use rustc_hash::{FxHashMap, FxHashSet};
 
     #[test]
     fn trust_foreign_pure_override_beats_package() {
@@ -253,51 +235,5 @@ val main = {
             "main should still be typed, keys={:?}",
             typed.fun_types.keys().collect::<Vec<_>>()
         );
-    }
-
-    #[test]
-    fn annotate_assert_adds_file_line_message() {
-        let src = "module M\nval main = { assert(false) }\n";
-        let loaded = loaded_from_source("t.lm", src);
-        let start = src.find("assert").expect("assert") as u32;
-        let end = (src.find(')').expect(")") as u32) + 1;
-        let assert_span = Span::new(start, end);
-        let mut module = HirModule {
-            name: "M".into(),
-            items: vec![Item::Val {
-                name: "main".into(),
-                body: Expr::BuiltinCall {
-                    name: Builtin::Assert,
-                    args: vec![Expr::Bool(false, assert_span)],
-                    span: assert_span,
-                },
-                ty: None,
-                span: assert_span,
-                is_priv: false,
-            }],
-            adts: Vec::new(),
-            products: Vec::new(),
-            instances: FxHashSet::default(),
-            show_methods: FxHashMap::default(),
-            trait_methods: FxHashMap::default(),
-            method_traits: FxHashMap::default(),
-        };
-        annotate_assert_messages(&mut module, &loaded);
-        let Item::Val { body, .. } = &module.items[0] else {
-            panic!("expected val");
-        };
-        let Expr::BuiltinCall { args, .. } = body else {
-            panic!("expected builtin");
-        };
-        assert_eq!(args.len(), 2);
-        match &args[1] {
-            Expr::String(msg, _) => {
-                assert!(
-                    msg.contains("t.lm:2: assert failed"),
-                    "unexpected message: {msg}"
-                );
-            }
-            other => panic!("expected string message, got {other:?}"),
-        }
     }
 }

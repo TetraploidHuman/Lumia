@@ -7,6 +7,7 @@ mod emit_fun;
 mod emit_memo;
 mod emit_value;
 mod error;
+mod funref;
 mod link;
 mod nsw_iv;
 mod roots;

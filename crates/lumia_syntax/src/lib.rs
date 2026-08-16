@@ -10,6 +10,7 @@ mod pretty;
 mod span;
 mod stamp;
 mod token;
+pub mod visit;
 
 pub use ast::{
     BinOp, Expr, ForBinding, ForeignItem, Import, ImportNames, ImportedName, InstanceItem,

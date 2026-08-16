@@ -2,7 +2,6 @@
 
 mod ast;
 mod adt_classify;
-mod assert_annotate;
 mod builtin_info;
 mod builtin_surface;
 mod list_hof;
@@ -12,7 +11,6 @@ mod match_check;
 mod visit;
 
 pub use adt_classify::{classify_sum_field_recursive, sum_parametric_arity};
-pub use assert_annotate::annotate_assert_messages;
 pub use ast::{
     AdtDef, AdtVariant, Builtin, BuiltinFamily, CtorInfo, Expr, Fun, Item, Module, ProductDef,
 };

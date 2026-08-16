@@ -252,14 +252,14 @@
 
 #### 前端 / 管线阶段
 
-- [ ] **`assert_annotate` 在 typecheck 后改写 HIR**：按源码字节插 `"path:line: assert failed"`；既非 ty 职责也非 Core lower。阶段所有权怪，且依赖 surface 源文本。宜 diag / codegen 诊断通道，或 typed 后纯数据注解，勿突变 HIR 表达式树。
-- [ ] **syntax 无 `visit`，`stamp.rs` 手写整树 span walker（≈284）**：与已列 hir/core visit 欠债同型、最前端；新 `Expr`/`Item` 臂易漏 stamp/offset。宜 `syntax::visit` 为默认，stamp/pretty/恢复共用。
+- [x] **`assert_annotate` 在 typecheck 后改写 HIR**：删 HIR 突变；Core lower 按 `assert_files` 为裸 `assert(cond)` 注入 `path:line` 文案（typed HIR 仍 1 参）。
+- [x] **syntax 无 `visit`，`stamp.rs` 手写整树 span walker**：`syntax::visit::{map_module_spans,map_expr_spans,…}`；stamp 只做 stamp/offset。
 
 #### 中端不动点 / codegen 状态 / RT 词汇
 
 - [x] **不动点上界汤锅无政策表**：`lumia_abi::fixpoint`（`FLOAT_MONO`/`MONO_CLONE`/`CHANGE_FLAG`/`CLOSURE_CAP_TY`）；触顶仍为静默停。
 - [x] **`FrameState` 塞进 nsw_iv 分析缓存**：`NswFacts` + `analyze_nsw` 一次填充；`FrameState::install_nsw`；`slot_i64_const` 仍为 emit 期状态。
-- [ ] **`funref_locals` 双份传播**：`emit_fun` 与 `closure_cap_tys` 各自维护 FunRef 别名图；新 `Let`/`Local` 臂需改两处。宜单一 FunRef 分析或只读 `AnalysisFacts`。
+- [x] **`funref_locals` 双份传播**：`funref::note_funref_local`（emit `Ignore` AllocClosure / cap-ty `Track`）；全量 FunRef `AnalysisFacts` 仍欠。
 - [x] **Memo C ABI `lumia_memo_l2_*` vs Rust `MEMO_TF_*` 词汇分裂**：`lumia_abi` / rt / codegen 钉死「L2=历史冻结符号、Rust 用 `MEMO_TF_*`/`T_f`」；已有 memo_tf IR 对账测。
 - [x] **`LitMap`/`LitSet` 与物理布局同枚举**：标注 PE hint + `is_pe_hint`；ReprSelect 显式降为 SmallMap/HeapSet；加测。
 #### 文档新鲜度

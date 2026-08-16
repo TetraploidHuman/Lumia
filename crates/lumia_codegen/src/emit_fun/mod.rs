@@ -271,17 +271,12 @@ impl<'ctx> Codegen<'ctx> {
         self.frame.locals.insert(local.0, v);
         self.frame.local_tys.insert(local.0, ty);
         self.note_int_const(local.0, value);
-        if let Value::FunRef(name) = value {
-            self.funs.funref_locals.insert(local.0, name.clone());
-        } else if let Value::Local(Local(src)) = value {
-            if let Some(n) = self.funs.funref_locals.get(src).cloned() {
-                self.funs.funref_locals.insert(local.0, n);
-            } else {
-                self.funs.funref_locals.remove(&local.0);
-            }
-        } else {
-            self.funs.funref_locals.remove(&local.0);
-        }
+        crate::funref::note_funref_local(
+            &mut self.funs.funref_locals,
+            local.0,
+            value,
+            crate::funref::AllocClosureFunref::Ignore,
+        );
         Ok(())
     }
 
