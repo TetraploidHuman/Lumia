@@ -5,8 +5,17 @@ use anyhow::{Context as AnyhowContext, Result};
 use inkwell::values::{BasicValueEnum, FunctionValue};
 use inkwell::IntPredicate;
 use lumia_core::Local;
+use rustc_hash::FxHashMap;
 
 impl<'ctx> Codegen<'ctx> {
+    /// Snapshot of compile-time shadow-stack bookkeeping at if-entry.
+    /// Musttail arms call `root_pop_to(0)` and clear `rooted_slots`; restore
+    /// before emitting the sibling arm and again before merge.
+    fn restore_root_checkpoint(&mut self, entry_depth: u32, entry_slots: &FxHashMap<String, u32>) {
+        self.frame.root_depth = entry_depth;
+        self.frame.rooted_slots.clone_from(entry_slots);
+    }
+
     pub(crate) fn emit_value_if(
         &mut self,
         cond: &Local,
@@ -14,8 +23,6 @@ impl<'ctx> Codegen<'ctx> {
         else_block: &lumia_core::Block,
         fv: FunctionValue<'ctx>,
     ) -> Result<BasicValueEnum<'ctx>> {
-        // Nested musttail may `root_pop_to(0)` on one arm; restore compile-time
-        // root state so the merge / outer scoped block still see entry depth.
         let entry_depth = self.frame.root_depth;
         let entry_slots = self.frame.rooted_slots.clone();
         let c = self.as_i64(self.local(*cond)?)?;
@@ -58,6 +65,8 @@ impl<'ctx> Codegen<'ctx> {
             crate::error::llvm(self.llvm.builder.build_unconditional_branch(merge_bb))?;
         }
         let then_is_float = matches!(then_raw, BasicValueEnum::FloatValue(_));
+        // Sibling arm must not see musttail / nested pops from `then`.
+        self.restore_root_checkpoint(entry_depth, &entry_slots);
 
         self.llvm.builder.position_at_end(else_bb);
         let else_raw = self
@@ -83,10 +92,8 @@ impl<'ctx> Codegen<'ctx> {
         }
         let float_merge = then_is_float || matches!(else_raw, BasicValueEnum::FloatValue(_));
 
-        // Musttail on one arm cleared `root_depth`; merge is only reached from
-        // non-tail arms which left roots at `entry_depth`.
-        self.frame.root_depth = entry_depth;
-        self.frame.rooted_slots = entry_slots;
+        // Merge is only reached from non-tail arms which left roots at entry.
+        self.restore_root_checkpoint(entry_depth, &entry_slots);
 
         self.llvm.builder.position_at_end(merge_bb);
         if float_merge {

@@ -225,13 +225,13 @@
 - [x] **musttail 无返回值时静默 `i64 0`**：`emit_musttail_call` 对 void LLVM 结果 `context` ICE（Lumia ABI 恒 i64）。
 - [x] **`emit_stack_*` 头布局近拷贝 + 模块注释仍写 Map**：`emit_stack_header` 共用三字头；模块注释改为 List/ADT（Map/Set 不走栈）。
 - [ ] **`emit_rt_*` 再挖 String/List 符号特判**：`ListReverse`→`lumia_str_reverse` 等。坐实 BuiltinInfo 外覆盖的 emit_rt 近拷贝面。
-- [ ] **`emit_value_if` 每臂克隆整表 `rooted_slots`**：嵌套 if/musttail 用深拷救根状态。宜 checkpoint / 长度回滚。
+- [x] **`emit_value_if` 每臂克隆整表 `rooted_slots`**：入口仍 snapshot 一次（musttail 会清空 map）；两臂之间与 merge 前 `restore_root_checkpoint`/`clone_from`，避免 then musttail 污染 else 的编译期根状态。真栈式 length 回滚仍欠。
 - [ ] **`lumia_abi` 成「tid + opt 阈值 + 域核符号」杂仓**：`SPECIALIZE_CONST_*` / `DENSE_F64_TRAMPOLINE_SYMS` / `SCHEDULER_*` 与 `TYPE_*` 同文件。Cargo `description` 与 crate 文档已写明厨房池；**拆模块**仍欠。
 
 #### LSP / pkg / 工具链假绿
 
 - [ ] **`severity_and_code` 靠 `type:` 前缀，生产 type 诊断常无 code**：多文件/分析路径发裸 `message()`；单测只喂已带前缀串。宜结构化 `DiagnosticKind`。
-- [ ] **LSP format 解析失败返回空编辑（假绿）**：`formatting.rs` `Err → vec![]`。宜返回 error / 不响应成功空集。
+- [x] **LSP format 解析失败返回空编辑（假绿）**：parse 失败改为 `Err` → JSON-RPC `-32603`；加拒测。
 - [ ] **分析成功只清空当前 URI，跨文件诊断可陈旧**：`Ok` 分支 `vec![(uri, [])]`；先前发到 import URI 的诊断不清理。
 - [ ] **`pkg` lock 缺版本写死 `"0.0.0"`**：锁「绿」但无信息。
 - [ ] **`codegen` feature 半切：slim 仍硬链 `lumia_core`；Build clap 永在**：无 feature 时 Build 体内才 `bail`；LSP 仍拖 Core。宜 core 仅 `codegen` 依赖；隐藏/拆 Build 子命令。

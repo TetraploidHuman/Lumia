@@ -209,12 +209,19 @@ fn handle_message(msg: Value) -> Result<Option<Value>> {
                 json!({ "jsonrpc": "2.0", "id": id, "result": result }),
             ))
         }
-        Some("textDocument/formatting") => {
-            let result = on_formatting(msg.get("params"))?;
-            Ok(Some(
+        Some("textDocument/formatting") => match on_formatting(msg.get("params")) {
+            Ok(result) => Ok(Some(
                 json!({ "jsonrpc": "2.0", "id": id, "result": result }),
-            ))
-        }
+            )),
+            Err(e) => Ok(Some(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {
+                    "code": -32603,
+                    "message": format!("{e:#}")
+                }
+            }))),
+        },
         Some(_) => {
             if id.is_some() {
                 Ok(Some(json!({
