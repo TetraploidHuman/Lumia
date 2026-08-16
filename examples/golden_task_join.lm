@@ -1,0 +1,8 @@
+module golden_task_join
+
+val main = {
+    scope {
+        val t = spawn { 1 + 2 }
+        println(t.join())
+    }
+}

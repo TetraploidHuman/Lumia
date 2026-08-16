@@ -220,7 +220,7 @@
 - [x] **堆头 / FunRef 标记 / `TRAIT_*` 未进 `lumia_abi`**：`OBJECT_HEADER_BYTES`/`WORDS`、`FUNREF_TAG`、`TRAIT_SHOW…NUM` 进 abi；rt `ObjectHeader` 编译期对账；codegen 栈布局与 dict 注册共用常量。
 - [x] **`runtime_decls` 与 rt `#[no_mangle]` 不对账**：补齐缺席导出（dict/map/set/str/memo 计数器等 13 个）；单测 `runtime_decls_cover_rt_no_mangle_exports` 扫 `lumia_rt` 源并对账 `RUNTIME_DECLS`（`RT_EXPORT_ALLOWLIST` 预留测试专用符号）。表仍手维巨文件，见下「手维百科」。
 - [ ] **RT FFI 边界 crate 级放行「看似 safe」**：`lumia_rt` `#![allow(clippy::not_unsafe_ptr_arg_deref)]`，大量 `extern "C"` 不以 `unsafe fn` 标出。指针契约在类型系统外；UB 审计难。宜收窄 allow、ABI 边用 `unsafe fn` + 薄安全包装。
-- [ ] **CI/check 纪律分叉（续）**：双方皆 `clippy --exclude lumia`（CLI/LSP/load 从不 `-D warnings`）；CI Linux 用 `llvm-dynamic`，`check.sh` 不用；`install.sh` 的 `--no-default-features` slim-LSP 产物 CI 未测。在已列 `RUST_TEST_THREADS`/editor assets 之外对齐 feature 与入口 crate。
+- [~] **CI/check 纪律分叉（续）**：`check.sh` 在 Linux 已对齐 `lumia_codegen/llvm-dynamic`（与 CI 同）；双方仍 `clippy --exclude lumia`；`install.sh` slim-LSP 产物 CI 仍未测。
 - [x] **产品版本 / LSP 生命周期无单一真源**（部分）：LSP `serverInfo.version` 已用 `CARGO_PKG_VERSION`；vscode/IDEA 版本漂移与 shutdown/`exit` 行为仍欠。
 - [x] **VS Code 对任意 `Cargo.toml` 工作区激活**：已收窄为 `onLanguage:lumia` + `Lumia.toml` + 命令（去掉 `Cargo.toml` / `std/*.lm` / `examples/*.lm`）。
 - [x] **根目录探针虽被 ignore 仍占盘**：≈115 个根级可执行文件/`.o`（合计 ≈644 MiB），gitignore 白名单已防误提交，但无 `clean_probes` / 强制写入 `target/` 的约定，`ls` 与误跑陈旧探针仍噪。宜脚本清理或构建只输出到 `target/out`。
@@ -489,8 +489,8 @@
 - [x] **`corosensei` 未进 `workspace.dependencies`**：见上方第六轮收口（`0.3.4`）。
 - [x] **BUILD §3 对 `lumia_rt` 描述过窄 + DESIGN/BUILD「SSA/基本块」措辞**：见上方第六轮收口。
 - [x] **`dump_fold_diag`：名为测试、实为 `eprintln` 转储**：见上方第六轮收口（已删）。
-- [ ] **opt pass 测试密度严重不对称**：`copy_elim`/`repr_select` **0** 同文件测；`escape` 较密；`mono/mod` 仍溺测。异于第六轮「上帝模块零近距测」——是 **opt 管线内组织不对称**。宜每 pass 最低 fixture。
-- [ ] **`golden_core` 对 Task/Channel 结构盲 + `crate_tests` 无 task**：≈39 个 golden 无并发 IR；`crate_tests` 仅 eq/gc/list/map_set/memo；e2e `basic.rs` ≈624 行宏海混装。坐实「四套正确性门」中 golden/RT 层缺口。宜最小 spawn/channel fixture；`crate_tests/task/`；e2e 拆 `task.rs`。
+- [~] **opt pass 测试密度严重不对称**：`copy_elim`/`repr_select` 已有最低同文件 fixture；`escape` 较密；其它 pass / mono 子模块仍偏薄。
+- [~] **`golden_core` 对 Task/Channel 结构盲 + `crate_tests` 无 task**：已加 `golden_task_join`/`golden_task_channel` + `crate_tests/task`（spawn/join、channel send/recv）。e2e `basic.rs` 拆 `task.rs` 仍欠。
 
 ## 架构清理（已落地，详见 git 历史）
 

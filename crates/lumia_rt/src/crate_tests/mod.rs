@@ -1,4 +1,4 @@
-//! Runtime integration tests (GC, map/set, memo, float eq).
+//! Runtime integration tests (GC, map/set, memo, float eq, task/channel).
 
 use super::*;
 use crate::common::{
@@ -36,3 +36,4 @@ mod gc;
 mod list;
 mod map_set;
 mod memo;
+mod task;

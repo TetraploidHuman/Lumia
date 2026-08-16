@@ -113,4 +113,6 @@ golden!(
 );
 golden!(golden_par_map_fn, "examples/par_map_fn.lm");
 golden!(golden_float_ops, "examples/float_ops.lm");
+golden!(golden_task_join, "examples/golden_task_join.lm");
+golden!(golden_task_channel, "examples/golden_task_channel.lm");
 // `import_as` needs multi-file load (CLI/`lumia::check_program`); not in Core pipeline.

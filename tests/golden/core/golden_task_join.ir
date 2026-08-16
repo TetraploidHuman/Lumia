@@ -1,0 +1,17 @@
+module golden_task_join
+
+fun __lam_0() effect.io=false memo=None {
+  %4 = i64 3  // pure
+  return %4
+}
+
+fun main() effect.io=true memo=None {
+  %0 = i64 0  // pure
+  %1 = builtin ScopeEnter(%0)  // effect
+  %5 = funref __lam_0  // pure
+  %6 = builtin TaskSpawn(%5)  // effect
+  %7 = builtin TaskJoin(%6)  // effect
+  %8 = builtin Println(%7)  // effect
+  %9 = builtin ScopeLeave()  // effect
+  return %8
+}
