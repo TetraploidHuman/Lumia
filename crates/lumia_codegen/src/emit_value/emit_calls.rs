@@ -129,7 +129,10 @@ impl<'ctx> Codegen<'ctx> {
                 .is_some_and(|ty| matches!(ty, Type::Float)),
         };
         let cal_i = self.coerce_i64(self.local(*callee)?)?;
-        let one = self.llvm.i64_ty.const_int(1, false);
+        let one = self
+            .llvm
+            .i64_ty
+            .const_int(lumia_abi::FUNREF_TAG as u64, false);
         let tagged = crate::error::llvm(self.llvm.builder.build_and(cal_i, one, "ic_tag"))?;
         let is_funref = crate::error::llvm(self.llvm.builder.build_int_compare(
             IntPredicate::EQ,
@@ -184,7 +187,10 @@ impl<'ctx> Codegen<'ctx> {
         inkwell::values::IntValue<'ctx>,
         inkwell::basic_block::BasicBlock<'ctx>,
     )> {
-        let one = self.llvm.i64_ty.const_int(1, false);
+        let one = self
+            .llvm
+            .i64_ty
+            .const_int(lumia_abi::FUNREF_TAG as u64, false);
         let not_one = crate::error::llvm(self.llvm.builder.build_not(one, "not1"))?;
         let fn_i = crate::error::llvm(self.llvm.builder.build_and(cal_i, not_one, "fn_clear"))?;
         let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
@@ -297,7 +303,9 @@ impl<'ctx> Codegen<'ctx> {
         // Tag low bit so IndirectCall can tell FunRef from heap closure.
         let tagged = crate::error::llvm(self.llvm.builder.build_or(
             as_i,
-            self.llvm.i64_ty.const_int(1, false),
+            self.llvm
+                .i64_ty
+                .const_int(lumia_abi::FUNREF_TAG as u64, false),
             "funref_tag",
         ))?;
         Ok(tagged.into())

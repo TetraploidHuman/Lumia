@@ -38,9 +38,6 @@ pub(super) fn propagate_block(
             Op::Let { local, value, .. } => {
                 changed |= propagate_let(*local, value, escaping, assigns);
             }
-            Op::Effect { value } => {
-                changed |= propagate_value_only(value, escaping, assigns);
-            }
             Op::Assign { name, value } => {
                 // If this named slot already has an escaping write, new RHS escapes.
                 if assigns

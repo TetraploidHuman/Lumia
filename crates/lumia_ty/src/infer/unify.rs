@@ -13,36 +13,45 @@ impl Infer {
     }
 
     pub(crate) fn collect_ty_vars(&mut self, ty: &Type, acc: &mut HashSet<u32>) {
+        self.collect_ty_vars_rec(ty, acc, &mut HashSet::default());
+    }
+
+    fn collect_ty_vars_rec(
+        &mut self,
+        ty: &Type,
+        acc: &mut HashSet<u32>,
+        seen: &mut HashSet<u32>,
+    ) {
         match ty {
             Type::Var(v) => {
                 if let Some(t) = self.uni.subst.get(v).cloned() {
-                    let t = self.prune(t);
-                    self.collect_ty_vars(&t, acc);
+                    if !seen.insert(*v) {
+                        return;
+                    }
+                    // Walk the binding directly (do not prune — cyclic prune
+                    // returns `Var(v)` and would stop collection too early).
+                    self.collect_ty_vars_rec(&t, acc, seen);
+                    seen.remove(v);
                 } else {
                     acc.insert(*v);
                 }
             }
             Type::Fun(ps, r, _) => {
                 for p in ps {
-                    self.collect_ty_vars(p, acc);
+                    self.collect_ty_vars_rec(p, acc, seen);
                 }
-                self.collect_ty_vars(r, acc);
+                self.collect_ty_vars_rec(r, acc, seen);
             }
             Type::List(t) | Type::Set(t) | Type::Task(t) | Type::Channel(t) => {
-                self.collect_ty_vars(t, acc)
+                self.collect_ty_vars_rec(t, acc, seen);
             }
             Type::Map(k, v) => {
-                self.collect_ty_vars(k, acc);
-                self.collect_ty_vars(v, acc);
+                self.collect_ty_vars_rec(k, acc, seen);
+                self.collect_ty_vars_rec(v, acc, seen);
             }
-            Type::Adt { params, .. } => {
+            Type::Adt { params, .. } | Type::Tuple(params) | Type::TuplePrefix(params) => {
                 for p in params {
-                    self.collect_ty_vars(p, acc);
-                }
-            }
-            Type::Tuple(ts) | Type::TuplePrefix(ts) => {
-                for t in ts {
-                    self.collect_ty_vars(t, acc);
+                    self.collect_ty_vars_rec(p, acc, seen);
                 }
             }
             _ => {}
@@ -55,40 +64,48 @@ impl Infer {
     pub(crate) fn channel_escaping_ty_vars(&mut self, ty: Type) -> HashSet<u32> {
         let ty = self.prune(ty);
         let mut acc = HashSet::default();
-        self.collect_channel_escaping_ty_vars(&ty, &mut acc);
+        self.collect_channel_escaping_ty_vars(&ty, &mut acc, &mut HashSet::default());
         acc
     }
 
-    fn collect_channel_escaping_ty_vars(&mut self, ty: &Type, acc: &mut HashSet<u32>) {
+    fn collect_channel_escaping_ty_vars(
+        &mut self,
+        ty: &Type,
+        acc: &mut HashSet<u32>,
+        seen: &mut HashSet<u32>,
+    ) {
         match ty {
             Type::Var(v) => {
                 if let Some(t) = self.uni.subst.get(v).cloned() {
-                    let t = self.prune(t);
-                    self.collect_channel_escaping_ty_vars(&t, acc);
+                    if !seen.insert(*v) {
+                        return;
+                    }
+                    self.collect_channel_escaping_ty_vars(&t, acc, seen);
+                    seen.remove(v);
                 }
             }
             Type::Channel(t) => self.collect_ty_vars(t, acc),
             Type::Fun(ps, r, _) => {
                 for p in ps {
-                    self.collect_channel_escaping_ty_vars(p, acc);
+                    self.collect_channel_escaping_ty_vars(p, acc, seen);
                 }
-                self.collect_channel_escaping_ty_vars(r, acc);
+                self.collect_channel_escaping_ty_vars(r, acc, seen);
             }
             Type::List(t) | Type::Set(t) | Type::Task(t) => {
-                self.collect_channel_escaping_ty_vars(t, acc)
+                self.collect_channel_escaping_ty_vars(t, acc, seen)
             }
             Type::Map(k, v) => {
-                self.collect_channel_escaping_ty_vars(k, acc);
-                self.collect_channel_escaping_ty_vars(v, acc);
+                self.collect_channel_escaping_ty_vars(k, acc, seen);
+                self.collect_channel_escaping_ty_vars(v, acc, seen);
             }
             Type::Adt { params, .. } => {
                 for p in params {
-                    self.collect_channel_escaping_ty_vars(p, acc);
+                    self.collect_channel_escaping_ty_vars(p, acc, seen);
                 }
             }
             Type::Tuple(ts) | Type::TuplePrefix(ts) => {
                 for t in ts {
-                    self.collect_channel_escaping_ty_vars(t, acc);
+                    self.collect_channel_escaping_ty_vars(t, acc, seen);
                 }
             }
             _ => {}
@@ -192,7 +209,6 @@ impl Infer {
         trait_preds.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
         Scheme {
             vars,
-            eff_vars: Vec::new(),
             ty,
             num_vars,
             ord_vars,
@@ -263,11 +279,7 @@ impl Infer {
                     .push((tr.clone(), method.clone()));
             }
         }
-        let eff_map: HashMap<u32, Effect> = scheme
-            .eff_vars
-            .iter()
-            .map(|&v| (v, self.fresh_eff()))
-            .collect();
+        let eff_map: HashMap<u32, Effect> = HashMap::default();
         self.apply_scheme_subst(&scheme.ty, &ty_map, &eff_map)
     }
 
@@ -332,33 +344,59 @@ impl Infer {
     }
 
     pub(crate) fn prune(&mut self, ty: Type) -> Type {
+        self.prune_rec(ty, &mut HashSet::default())
+    }
+
+    fn prune_rec(&mut self, ty: Type, seen: &mut HashSet<u32>) -> Type {
         match ty {
             Type::Var(v) => {
                 if let Some(t) = self.uni.subst.get(&v).cloned() {
-                    let t = self.prune(t);
-                    self.uni.subst.insert(v, t.clone());
-                    t
+                    if !seen.insert(v) {
+                        // Equi-recursive Adt binding: stop expanding the cycle.
+                        return Type::Var(v);
+                    }
+                    let t = self.prune_rec(t, seen);
+                    seen.remove(&v);
+                    if occurs(v, &t) {
+                        // Keep the μ-binder as `Var(v)`. Returning the unfolded
+                        // `Adt[…, Var(v), …]` here would re-expand on every prune
+                        // of a parent Adt and blow the stack (`Expr { Lit Add }`).
+                        Type::Var(v)
+                    } else {
+                        self.uni.subst.insert(v, t.clone());
+                        t
+                    }
                 } else {
                     Type::Var(v)
                 }
             }
             Type::Fun(ps, r, e) => Type::Fun(
-                ps.into_iter().map(|p| self.prune(p)).collect(),
-                Box::new(self.prune(*r)),
+                ps.into_iter()
+                    .map(|p| self.prune_rec(p, seen))
+                    .collect(),
+                Box::new(self.prune_rec(*r, seen)),
                 self.prune_eff(e),
             ),
-            Type::List(t) => Type::List(Box::new(self.prune(*t))),
-            Type::Map(k, v) => Type::Map(Box::new(self.prune(*k)), Box::new(self.prune(*v))),
-            Type::Set(t) => Type::Set(Box::new(self.prune(*t))),
-            Type::Task(t) => Type::Task(Box::new(self.prune(*t))),
-            Type::Channel(t) => Type::Channel(Box::new(self.prune(*t))),
+            Type::List(t) => Type::List(Box::new(self.prune_rec(*t, seen))),
+            Type::Map(k, v) => Type::Map(
+                Box::new(self.prune_rec(*k, seen)),
+                Box::new(self.prune_rec(*v, seen)),
+            ),
+            Type::Set(t) => Type::Set(Box::new(self.prune_rec(*t, seen))),
+            Type::Task(t) => Type::Task(Box::new(self.prune_rec(*t, seen))),
+            Type::Channel(t) => Type::Channel(Box::new(self.prune_rec(*t, seen))),
             Type::Adt { name, params } => Type::Adt {
                 name,
-                params: params.into_iter().map(|p| self.prune(p)).collect(),
+                params: params
+                    .into_iter()
+                    .map(|p| self.prune_rec(p, seen))
+                    .collect(),
             },
-            Type::Tuple(ts) => Type::Tuple(ts.into_iter().map(|t| self.prune(t)).collect()),
+            Type::Tuple(ts) => {
+                Type::Tuple(ts.into_iter().map(|t| self.prune_rec(t, seen)).collect())
+            }
             Type::TuplePrefix(ts) => {
-                Type::TuplePrefix(ts.into_iter().map(|t| self.prune(t)).collect())
+                Type::TuplePrefix(ts.into_iter().map(|t| self.prune_rec(t, seen)).collect())
             }
             other => other,
         }
@@ -388,27 +426,65 @@ impl Infer {
     }
 
     pub(crate) fn zonk_type(&mut self, ty: Type) -> Type {
-        match self.prune(ty) {
+        self.zonk_type_rec(ty, &mut HashSet::default())
+    }
+
+    fn zonk_type_rec(&mut self, ty: Type, seen: &mut HashSet<u32>) -> Type {
+        if let Type::Var(v) = ty {
+            if let Some(t) = self.uni.subst.get(&v).cloned() {
+                if !seen.insert(v) {
+                    // Cycle: leave a named knot; parent Adt arm rewrites these
+                    // into a finite `Adt { params: [] }` stub below.
+                    return Type::Var(v);
+                }
+                let t = self.zonk_type_rec(t, seen);
+                seen.remove(&v);
+                return t;
+            }
+            return Type::Var(v);
+        }
+        match ty {
             Type::Fun(ps, r, e) => Type::Fun(
-                ps.into_iter().map(|p| self.zonk_type(p)).collect(),
-                Box::new(self.zonk_type(*r)),
+                ps.into_iter()
+                    .map(|p| self.zonk_type_rec(p, seen))
+                    .collect(),
+                Box::new(self.zonk_type_rec(*r, seen)),
                 self.zonk_eff(e),
             ),
-            Type::List(t) => Type::List(Box::new(self.zonk_type(*t))),
-            Type::Map(k, v) => {
-                Type::Map(Box::new(self.zonk_type(*k)), Box::new(self.zonk_type(*v)))
-            }
-            Type::Set(t) => Type::Set(Box::new(self.zonk_type(*t))),
-            Type::Task(t) => Type::Task(Box::new(self.zonk_type(*t))),
-            Type::Channel(t) => Type::Channel(Box::new(self.zonk_type(*t))),
+            Type::List(t) => Type::List(Box::new(self.zonk_type_rec(*t, seen))),
+            Type::Map(k, v) => Type::Map(
+                Box::new(self.zonk_type_rec(*k, seen)),
+                Box::new(self.zonk_type_rec(*v, seen)),
+            ),
+            Type::Set(t) => Type::Set(Box::new(self.zonk_type_rec(*t, seen))),
+            Type::Task(t) => Type::Task(Box::new(self.zonk_type_rec(*t, seen))),
+            Type::Channel(t) => Type::Channel(Box::new(self.zonk_type_rec(*t, seen))),
             Type::Adt { name, params } => Type::Adt {
-                name,
-                params: params.into_iter().map(|p| self.zonk_type(p)).collect(),
+                name: name.clone(),
+                params: params
+                    .into_iter()
+                    .map(|p| match p {
+                        // Fold equi-recursive spines to a finite stub so schemes
+                        // do not export dangling cycle vars after subst drops.
+                        Type::Var(u) if seen.contains(&u) => Type::Adt {
+                            name: name.clone(),
+                            params: vec![],
+                        },
+                        other => self.zonk_type_rec(other, seen),
+                    })
+                    .collect(),
             },
-            Type::Tuple(ts) => Type::Tuple(ts.into_iter().map(|t| self.zonk_type(t)).collect()),
-            Type::TuplePrefix(ts) => {
-                Type::TuplePrefix(ts.into_iter().map(|t| self.zonk_type(t)).collect())
-            }
+            Type::Tuple(ts) => Type::Tuple(
+                ts.into_iter()
+                    .map(|t| self.zonk_type_rec(t, seen))
+                    .collect(),
+            ),
+            Type::TuplePrefix(ts) => Type::TuplePrefix(
+                ts.into_iter()
+                    .map(|t| self.zonk_type_rec(t, seen))
+                    .collect(),
+            ),
+            Type::Var(_) => unreachable!("handled above"),
             other => other,
         }
     }
@@ -562,7 +638,9 @@ impl Infer {
         match (a, b) {
             (Type::Var(v), Type::Var(u)) if v == u => Ok(()),
             (Type::Var(v), t) | (t, Type::Var(v)) => {
-                if occurs(v, &t) {
+                // Allow equi-recursive ADTs (`α ~ Expr[α]`); still reject
+                // cycles through List/Fun/Tuple/Map/etc.
+                if occurs_rigid(v, &t) {
                     return Err(TypeError::Message("infinite type".into()));
                 }
                 self.check_num_bind(v, &t)?;
@@ -735,5 +813,28 @@ pub(crate) fn occurs(v: u32, ty: &Type) -> bool {
         Type::Adt { params, .. } => params.iter().any(|p| occurs(v, p)),
         Type::Tuple(ts) | Type::TuplePrefix(ts) => ts.iter().any(|p| occurs(v, p)),
         _ => false,
+    }
+}
+
+/// Occurs check that still rejects infinite List/Fun/Tuple/… types, but allows
+/// a type variable to appear under `Adt` constructors (equi-recursive trees).
+fn occurs_rigid(v: u32, ty: &Type) -> bool {
+    match ty {
+        Type::Var(u) => *u == v,
+        Type::Adt { params, .. } => params.iter().any(|p| occurs_rigid_in_adt_arg(v, p)),
+        Type::Fun(ps, r, _) => ps.iter().any(|p| occurs(v, p)) || occurs(v, r),
+        Type::List(t) | Type::Set(t) | Type::Task(t) | Type::Channel(t) => occurs(v, t),
+        Type::Map(k, t) => occurs(v, k) || occurs(v, t),
+        Type::Tuple(ts) | Type::TuplePrefix(ts) => ts.iter().any(|p| occurs(v, p)),
+        _ => false,
+    }
+}
+
+fn occurs_rigid_in_adt_arg(v: u32, ty: &Type) -> bool {
+    match ty {
+        // `α` as an ADT type argument is the equi-recursive spine.
+        Type::Var(_) => false,
+        Type::Adt { params, .. } => params.iter().any(|p| occurs_rigid_in_adt_arg(v, p)),
+        other => occurs(v, other),
     }
 }

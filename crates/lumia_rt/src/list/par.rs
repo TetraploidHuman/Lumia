@@ -14,6 +14,19 @@ fn force_sequential_par() -> bool {
     task_runtime_active()
 }
 
+/// Lists shorter than this stay sequential (overhead dominates). Was 64; 16
+/// still avoids tiny-list thread spawn while helping medium batches.
+const PAR_SEQUENTIAL_MAX: i64 = 16;
+
+fn par_worker_count() -> usize {
+    static CACHED: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(4)
+    })
+}
+
 /// Parallel map over List[scalar] with a C ABI `fn(i64) -> i64`.
 /// `result_tid` is a list type_id (codegen: result element sort).
 /// Type checker requires concrete Int/Bool/Float elems; workers must not heap-allocate.
@@ -62,7 +75,7 @@ pub extern "C" fn lumia_list_par_map(
         *dst = n;
         let n_usize = n as usize;
         // Sequential for tiny lists, or under Task/Channel (no OS workers).
-        if force_sequential_par() || n < 64 {
+        if force_sequential_par() || n < PAR_SEQUENTIAL_MAX {
             if iota {
                 for i in 0..n_usize {
                     let x = iota_start
@@ -80,11 +93,7 @@ pub extern "C" fn lumia_list_par_map(
         }
         // Inhibit GC only while OS workers hold list pointers.
         let _gc = GcInhibitGuard::enter();
-        let workers = std::thread::available_parallelism()
-            .map(|p| p.get())
-            .unwrap_or(4)
-            .min(n_usize)
-            .max(1);
+        let workers = par_worker_count().min(n_usize).max(1);
         let chunk = n_usize.div_ceil(workers);
         // SAFETY: freshly allocated dest elems; exclusive `&mut` slices via chunks_mut.
         let out = std::slice::from_raw_parts_mut(dst.add(1), n_usize);
@@ -149,7 +158,7 @@ pub extern "C" fn lumia_list_par_fold(
         return init;
     }
     let n_usize = n as usize;
-    if force_sequential_par() || n < 64 {
+    if force_sequential_par() || n < PAR_SEQUENTIAL_MAX {
         let mut acc = init;
         unsafe {
             if iota {
@@ -169,11 +178,7 @@ pub extern "C" fn lumia_list_par_fold(
         return acc;
     }
     let _gc = GcInhibitGuard::enter();
-    let workers = std::thread::available_parallelism()
-        .map(|p| p.get())
-        .unwrap_or(4)
-        .min(n_usize)
-        .max(1);
+    let workers = par_worker_count().min(n_usize).max(1);
     let chunk = n_usize.div_ceil(workers);
     let mut partials = vec![0i64; workers];
     std::thread::scope(|scope| {

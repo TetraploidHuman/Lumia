@@ -4,7 +4,7 @@
 //! with optional two-step lookahead. All work stays in f64 buffers (no host sync).
 
 use crate::common::{trap_abort, GcInhibitGuard};
-use crate::list::list_len_of;
+use crate::list::{f64_elems, f64_elems_mut, list_len_of, require_len};
 use std::ptr;
 
 /// Match GridWorld.ACTIONS: up, down, left, right.
@@ -745,22 +745,7 @@ fn ensure_unique_f64(list: *mut u8) -> *mut u8 {
     }
 }
 
-fn require_len(list: *mut u8, expect: i64, what: &str) {
-    let n = list_len_of(list);
-    if n != expect {
-        trap_abort(&format!("lumia: {what} len {n} != {expect}"));
-    }
-}
 
-unsafe fn f64_elems(list: *mut u8) -> (*const f64, usize) {
-    let n = *(list as *const i64) as usize;
-    ((list as *const i64).add(1) as *const f64, n)
-}
-
-unsafe fn f64_elems_mut(list: *mut u8) -> (*mut f64, usize) {
-    let n = *(list as *const i64) as usize;
-    ((list as *mut i64).add(1) as *mut f64, n)
-}
 
 #[cfg(test)]
 mod tests {

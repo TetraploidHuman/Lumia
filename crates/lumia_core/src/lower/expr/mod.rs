@@ -14,7 +14,6 @@ pub(super) fn lower_expr_block(ctx: &mut CoreLowerCtx, expr: &HirExpr) -> (Block
     let result = lower_expr(ctx, expr, &mut ops, true);
     (
         Block {
-            params: vec![],
             ops,
             result,
         },

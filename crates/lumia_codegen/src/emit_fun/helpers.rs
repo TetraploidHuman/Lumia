@@ -104,7 +104,10 @@ impl<'ctx> Codegen<'ctx> {
     ) -> Result<inkwell::values::PointerValue<'ctx>> {
         use inkwell::{AddressSpace, IntPredicate};
         let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
-        let one = self.llvm.i64_ty.const_int(1, false);
+        let one = self
+            .llvm
+            .i64_ty
+            .const_int(lumia_abi::FUNREF_TAG as u64, false);
         let tagged = crate::error::llvm(self.llvm.builder.build_and(
             fun_i,
             one,

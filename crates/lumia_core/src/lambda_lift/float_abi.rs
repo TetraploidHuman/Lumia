@@ -40,7 +40,7 @@ pub(super) fn float_closure_cap_indices(block: &Block) -> HashSet<u32> {
 fn collect_float_cap_indices(block: &Block, idxs: &mut HashSet<u32>) {
     for op in &block.ops {
         match op {
-            Op::Let { value, .. } | Op::Effect { value } => {
+            Op::Let { value, .. } => {
                 if let Value::ClosureCap {
                     index,
                     as_float: true,
@@ -74,9 +74,6 @@ fn mark_float_uses(
                 if value_is_float_producing(value, float_locals) {
                     float_locals.insert(local.0);
                 }
-            }
-            Op::Effect { value } => {
-                mark_float_in_value(value, params, float_locals, used, float_cap_idxs, &defs)
             }
             _ => {}
         }
@@ -279,17 +276,14 @@ fn list_local_elems_float(
 }
 
 fn binary_produces_bool(op: BinOp) -> bool {
-    matches!(
-        op,
-        BinOp::Eq
-            | BinOp::Ne
-            | BinOp::Lt
-            | BinOp::Le
-            | BinOp::Gt
-            | BinOp::Ge
-            | BinOp::And
-            | BinOp::Or
-    )
+    match op {
+        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => true,
+        BinOp::And | BinOp::Or => {
+            debug_assert!(false, "ICE: BinOp::And|Or in Core; expected If desugar");
+            true
+        }
+        _ => false,
+    }
 }
 
 /// Body result is a Bool (comparison / `&&` / `||` / `!` / bool literal / mut bool).
@@ -1019,7 +1013,7 @@ fn collect_fun_cap_tys_in_block(
 ) {
     for op in &block.ops {
         match op {
-            Op::Let { value, .. } | Op::Effect { value } => {
+            Op::Let { value, .. } => {
                 if let Value::AllocClosure { fun, captures } = value {
                     let entry = out.entry(fun.clone()).or_default();
                     for (i, c) in captures.iter().enumerate() {
@@ -1128,6 +1122,10 @@ fn collect_fun_cap_tys_in_block(
                         );
                     }
                     Value::Lambda { body, .. } => {
+                        debug_assert!(
+                            false,
+                            "ICE: Value::Lambda after lift; expected FunRef/AllocClosure"
+                        );
                         collect_fun_cap_tys_in_block(
                             body,
                             float_locals,
@@ -1192,11 +1190,6 @@ fn let_value_dfs<'a>(block: &'a Block, id: u32) -> Option<&'a Value> {
                     return Some(v);
                 }
             }
-            Op::Effect { value } => {
-                if let Some(v) = let_value_in_nested(value, id) {
-                    return Some(v);
-                }
-            }
             _ => {}
         }
     }
@@ -1217,7 +1210,10 @@ fn let_value_in_nested<'a>(value: &'a Value, id: u32) -> Option<&'a Value> {
         } => let_value_dfs(header, id)
             .or_else(|| let_value_dfs(body, id))
             .or_else(|| let_value_dfs(latch, id)),
-        Value::Lambda { body, .. } => let_value_dfs(body, id),
+        Value::Lambda { body, .. } => {
+            debug_assert!(false, "ICE: Value::Lambda after lift");
+            let_value_dfs(body, id)
+        }
         _ => None,
     }
 }
@@ -1286,7 +1282,7 @@ fn collect_slot_assigns(
                     });
                 }
             }
-            Op::Let { value, .. } | Op::Effect { value } => {
+            Op::Let { value, .. } => {
                 match value {
                     Value::If {
                         then_block,
@@ -1361,6 +1357,7 @@ fn collect_slot_assigns(
                         );
                     }
                     Value::Lambda { body, .. } => {
+                        debug_assert!(false, "ICE: Value::Lambda after lift");
                         collect_slot_assigns(
                             body,
                             defs_root,
@@ -2074,17 +2071,7 @@ fn fun_ty_from_tables(
     fun_ret_tys: &HashMap<String, Type>,
     fun_param_tys: &HashMap<String, Vec<Type>>,
 ) -> Option<Type> {
-    let ret = fun_ret_tys.get(name)?.clone();
-    let mut params = fun_param_tys.get(name).cloned().unwrap_or_default();
-    if name.starts_with("__lam_")
-        && params
-            .first()
-            .is_some_and(|p| matches!(p, Type::Int | Type::Var(_)))
-        && params.len() > 1
-    {
-        params.remove(0);
-    }
-    Some(Type::Fun(params, Box::new(ret), Effect::pure()))
+    super::fun_ty_from_tables(name, fun_ret_tys, fun_param_tys)
 }
 
 fn fun_ret_of_local(

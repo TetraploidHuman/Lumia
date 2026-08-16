@@ -7,7 +7,6 @@ fn memo_tf_marks_dense_int() {
         "fib",
         vec![Local(0)],
         Block {
-            params: vec![],
             ops: vec![
                 Op::Let {
                     local: Local(1),
@@ -61,7 +60,6 @@ fn memo_tf_marks_slots() {
         "sq",
         vec![Local(0)],
         Block {
-            params: vec![],
             ops: vec![
                 Op::Let {
                     local: Local(1),
@@ -101,7 +99,6 @@ fn memo_tf_marks_slots() {
         param_names: vec![],
         param_tys: vec![],
         body: Block {
-            params: vec![],
             ops: vec![
                 Op::Let {
                     local: Local(0),
@@ -136,6 +133,7 @@ fn memo_tf_marks_slots() {
         escaping: HashSet::default(),
         scheme_poly: false,
         mono_of: None,
+        kind: FunKind::Normal,
     };
     let module = CoreModule::with_functions("M", vec![sq, main]);
     let plan = plan_memo_tf(&module);
@@ -153,7 +151,6 @@ fn memo_tf_increasing_recursion_not_dense() {
         "inc",
         vec![Local(0)],
         Block {
-            params: vec![],
             ops: vec![
                 Op::Let {
                     local: Local(1),

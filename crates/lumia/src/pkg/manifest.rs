@@ -7,6 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub package: PackageMeta,
     #[serde(default)]
@@ -14,6 +15,7 @@ pub struct Manifest {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct PackageMeta {
     pub name: String,
     #[serde(default = "default_version")]
@@ -22,6 +24,8 @@ pub struct PackageMeta {
     #[serde(default)]
     pub link: Vec<String>,
     /// Trust `foreign "C" pure` annotations (FFI purity is not verified).
+    /// Honor system: same trust surface as `--trust-foreign-pure` / `--link` for
+    /// untrusted trees — prefer leaving this false and passing the CLI flag when needed.
     #[serde(default)]
     pub trust_foreign_pure: bool,
 }
@@ -31,16 +35,21 @@ pub(super) fn default_version() -> String {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DepTable {
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum DepSpec {
-    /// `foo = "0.1"` — version req (path resolved under `./deps/foo` or vendor)
+    /// `foo = "0.1"` — **not** a semver constraint. Resolved only as a directory
+    /// under `./deps/<name>` or `./vendor/<name>` (no registry / version solve).
     Version(String),
-    Table {
-        #[serde(default)]
-        path: Option<String>,
-        #[serde(default)]
-        version: Option<String>,
-    },
+    Table(DepTable),
 }
 
 /// Walk parents from `start` looking for `Lumia.toml`.
@@ -74,7 +83,7 @@ pub fn write_manifest(path: &Path, m: &Manifest) -> Result<()> {
 
 pub(super) fn resolve_dep_path(root: &Path, name: &str, spec: &DepSpec) -> Result<PathBuf> {
     let path = match spec {
-        DepSpec::Table { path: Some(p), .. } => {
+        DepSpec::Table(DepTable { path: Some(p), .. }) => {
             if Path::new(p).is_absolute() {
                 bail!(
                     "dependency `{name}` path must be relative to the package root (got absolute `{p}`)"
@@ -85,12 +94,37 @@ pub(super) fn resolve_dep_path(root: &Path, name: &str, spec: &DepSpec) -> Resul
             }
             root.join(p)
         }
-        DepSpec::Version(_) | DepSpec::Table { path: None, .. } => {
-            let vendor = root.join("deps").join(name);
-            if vendor.is_dir() {
+        DepSpec::Version(ver) => {
+            let deps = root.join("deps").join(name);
+            let vendor = root.join("vendor").join(name);
+            if deps.is_dir() {
+                deps
+            } else if vendor.is_dir() {
                 vendor
             } else {
-                root.join("vendor").join(name)
+                bail!(
+                    "dependency `{name}` = \"{ver}\" is not a semver solve — looked for \
+                     `./deps/{name}` and `./vendor/{name}` (no registry/git); vendor the \
+                     package or use `{{ path = \"...\" }}`"
+                );
+            }
+        }
+        DepSpec::Table(DepTable { path: None, version, .. }) => {
+            let deps = root.join("deps").join(name);
+            let vendor = root.join("vendor").join(name);
+            if deps.is_dir() {
+                deps
+            } else if vendor.is_dir() {
+                vendor
+            } else {
+                let hint = version
+                    .as_deref()
+                    .map(|v| format!(" (version field `{v}` is ignored for resolution)"))
+                    .unwrap_or_default();
+                bail!(
+                    "dependency `{name}`{hint}: no `./deps/{name}` or `./vendor/{name}` \
+                     directory (path-only package layout; no registry)"
+                );
             }
         }
     };
@@ -190,10 +224,10 @@ pub fn add_path_dep(manifest_path: &Path, name: &str, dep_path: &str) -> Result<
     }
     let root = manifest_path.parent().unwrap_or(Path::new("."));
     // Validate before writing so a rejected path cannot corrupt Lumia.toml.
-    let spec = DepSpec::Table {
+    let spec = DepSpec::Table(DepTable {
         path: Some(dep_path.to_string()),
         version: None,
-    };
+    });
     let _ = resolve_dep_path(root, name, &spec)?;
     m.dependencies.insert(name.to_string(), spec);
     write_manifest(manifest_path, &m)?;

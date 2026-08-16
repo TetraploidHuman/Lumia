@@ -109,19 +109,17 @@ pub(crate) fn refine_mono_container_ret(orig: &Type, inferred: &Type) -> Type {
 
 pub(crate) fn block_result_fixed_ty(
     block: &Block,
-    functions: &[CoreFun],
+    index: &FunIndex<'_>,
     trait_methods: &HashMap<(String, String), Vec<String>>,
     param_tys: &HashMap<u32, Type>,
 ) -> Option<Type> {
-    let empty = HashMap::default();
-    let index = FunIndex::new(functions, &empty, trait_methods, None);
     let Local(r) = block.result?;
     let mut seen = HashSet::default();
     let mut expanding = HashSet::default();
     local_fixed_ty(
         block,
         r,
-        &index,
+        index,
         trait_methods,
         param_tys,
         &mut seen,
@@ -550,9 +548,11 @@ fn binary_fixed_ty(
         | BinOp::Lt
         | BinOp::Le
         | BinOp::Gt
-        | BinOp::Ge
-        | BinOp::And
-        | BinOp::Or => Some(Type::Bool),
+        | BinOp::Ge => Some(Type::Bool),
+        BinOp::And | BinOp::Or => {
+            debug_assert!(false, "ICE: BinOp::And|Or in Core; expected If desugar");
+            Some(Type::Bool)
+        }
         BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => {
             let l =
                 local_fixed_ty(block, left, index, trait_methods, param_tys, seen, expanding)?;

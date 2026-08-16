@@ -5,19 +5,15 @@
 //! call site. We clone `f` as `f$c_1_2`, bake constants into the body, and
 //! rewrite the call to `f$c_1_2()` so later `const_fold` / `inline` can PE it.
 
+use lumia_abi::{
+    SPECIALIZE_CONST_MAX_CLONES_PER_FUN, SPECIALIZE_CONST_MAX_OPS,
+    SPECIALIZE_CONST_MAX_TOTAL_CLONES,
+};
 use lumia_core::{
     block_calls, count_ops, has_early_return, rewrite_block_locals, Block, CoreFun, CoreModule,
     Local, Op, Value,
 };
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
-
-/// Cap clones per original function (avoid combinatorial blow-up).
-const MAX_CLONES_PER_FUN: usize = 16;
-/// Global safety fuse for one optimize run.
-const MAX_TOTAL_CLONES: usize = 64;
-/// Allow specializing mid-size pure leaves (e.g. matmulChecksum) so const
-/// bounds reach NSW / PE; still below pathological blow-up.
-const MAX_OPS: usize = 256;
 
 pub struct SpecializeConstPass;
 
@@ -47,7 +43,7 @@ fn specialize_const_calls(module: &mut CoreModule) {
     let mut needed: HashSet<ConstKey> = HashSet::default();
     for fun in &module.functions {
         collect_const_calls(&fun.body, &candidates, &mut needed);
-        if needed.len() >= MAX_TOTAL_CLONES {
+        if needed.len() >= SPECIALIZE_CONST_MAX_TOTAL_CLONES {
             break;
         }
     }
@@ -60,7 +56,7 @@ fn specialize_const_calls(module: &mut CoreModule) {
     let mut ordered: Vec<ConstKey> = Vec::new();
     for key in needed {
         let n = per_fun.entry(key.fun.clone()).or_insert(0);
-        if *n >= MAX_CLONES_PER_FUN || ordered.len() >= MAX_TOTAL_CLONES {
+        if *n >= SPECIALIZE_CONST_MAX_CLONES_PER_FUN || ordered.len() >= SPECIALIZE_CONST_MAX_TOTAL_CLONES {
             continue;
         }
         *n += 1;
@@ -101,7 +97,7 @@ fn is_specializeable(f: &CoreFun) -> bool {
     if !f.effect.is_pure() || f.params.is_empty() {
         return false;
     }
-    if count_ops(&f.body) > MAX_OPS {
+    if count_ops(&f.body) > SPECIALIZE_CONST_MAX_OPS {
         return false;
     }
     if block_calls(&f.body, &f.name) {
@@ -192,6 +188,7 @@ fn build_const_clone(orig: &CoreFun, args: &[i64], name: String) -> CoreFun {
         escaping: HashSet::default(),
         scheme_poly: false,
         mono_of: Some(orig.name.clone()),
+        kind: orig.kind,
     }
 }
 
@@ -223,12 +220,12 @@ fn collect_const_calls(
                 }
                 walk_nested_collect(value, candidates, needed);
             }
-            Op::Let { value, .. } | Op::Effect { value } => {
+            Op::Let { value, .. } => {
                 walk_nested_collect(value, candidates, needed);
             }
             _ => {}
         }
-        if needed.len() >= MAX_TOTAL_CLONES {
+        if needed.len() >= SPECIALIZE_CONST_MAX_TOTAL_CLONES {
             return;
         }
     }
@@ -290,7 +287,7 @@ fn rewrite_const_calls(
                 known.track(local.0, value);
                 walk_nested_rewrite(value, renames, candidates);
             }
-            Op::Let { value, .. } | Op::Effect { value } => {
+            Op::Let { value, .. } => {
                 walk_nested_rewrite(value, renames, candidates);
             }
             _ => {}

@@ -51,6 +51,7 @@ pub(crate) fn push_lowered_val(
                 param_ann,
                 ret_ann: v.ty.clone(),
                 body: *body,
+                span: v.span,
                 is_main: name == "main",
                 external: None,
                 foreign_sig: None,
@@ -66,6 +67,7 @@ pub(crate) fn push_lowered_val(
                     param_ann: vec![],
                     ret_ann: v.ty.clone(),
                     body: other,
+                    span: v.span,
                     is_main: name == "main",
                     external: None,
                     foreign_sig: None,
@@ -76,6 +78,7 @@ pub(crate) fn push_lowered_val(
                     name: name.to_string(),
                     body: other,
                     ty: v.ty.clone(),
+                    span: v.span,
                 });
             }
         }

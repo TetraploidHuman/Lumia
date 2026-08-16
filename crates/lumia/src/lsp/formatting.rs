@@ -2,7 +2,7 @@
 
 use super::state::state_lock;
 use anyhow::Result;
-use lumia_syntax::{format_module_src, line_starts, parse_module, stamp_module};
+use lumia_syntax::{byte_to_line_col, format_module_src, line_starts, parse_module, stamp_module, BytePos};
 use serde_json::{json, Value};
 
 pub(super) fn format_document(text: &str) -> Vec<Value> {
@@ -16,12 +16,15 @@ pub(super) fn format_document(text: &str) -> Vec<Value> {
         return vec![];
     }
     let starts = line_starts(text);
-    let last_line = starts.len().saturating_sub(1) as u32;
-    let last_col = text.lines().last().map(|l| l.len() as u32).unwrap_or(0);
+    // EOF position — do not use `str::lines().last()` (drops a trailing empty line).
+    let (eline, ecol) = byte_to_line_col(&starts, BytePos(text.len() as u32));
     vec![json!({
         "range": {
             "start": { "line": 0, "character": 0 },
-            "end": { "line": last_line, "character": last_col }
+            "end": {
+                "line": eline.saturating_sub(1),
+                "character": ecol.saturating_sub(1)
+            }
         },
         "newText": formatted
     })]
@@ -60,5 +63,16 @@ mod tests {
         let src = "module T\n\nval x = 1\n";
         let edits = format_document(src);
         assert!(edits.is_empty());
+    }
+
+    #[test]
+    fn format_range_end_accounts_for_trailing_newline() {
+        let messy = "module T\nval x=1\n";
+        let edits = format_document(messy);
+        assert_eq!(edits.len(), 1);
+        // Two content lines + trailing `\n` → EOF on empty line 2 (0-based), col 0.
+        // (`str::lines().last()` would wrongly report col = len("val x=1").)
+        assert_eq!(edits[0]["range"]["end"]["line"], 2);
+        assert_eq!(edits[0]["range"]["end"]["character"], 0);
     }
 }

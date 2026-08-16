@@ -1,5 +1,5 @@
 use super::*;
-use lumia_core::{Block, CoreFun, Local, Op, Value};
+use lumia_core::{Block, CoreFun, Local, Op, Value, FunKind};
 use lumia_hir::Builtin;
 use lumia_ty::{Effect, Type};
 use rustc_hash::FxHashSet as HashSet;
@@ -20,13 +20,13 @@ fn fun_with_body(body: Block) -> CoreFun {
         escaping: HashSet::default(),
         scheme_poly: false,
         mono_of: None,
+        kind: FunKind::Normal,
     }
 }
 
 #[test]
 fn result_escapes() {
     let body = Block {
-        params: vec![],
         ops: vec![Op::Let {
             local: Local(0),
             value: Value::Int(1),
@@ -41,7 +41,6 @@ fn result_escapes() {
 #[test]
 fn early_return_escapes() {
     let body = Block {
-        params: vec![],
         ops: vec![
             Op::Let {
                 local: Local(0),
@@ -62,7 +61,6 @@ fn early_return_escapes() {
 #[test]
 fn dead_temp_does_not_escape() {
     let body = Block {
-        params: vec![],
         ops: vec![
             Op::Let {
                 local: Local(0),
@@ -85,7 +83,6 @@ fn dead_temp_does_not_escape() {
 #[test]
 fn call_args_escape() {
     let body = Block {
-        params: vec![],
         ops: vec![
             Op::Let {
                 local: Local(0),
@@ -117,7 +114,6 @@ fn known_pure_len_callee_does_not_escape_arg() {
         param_names: vec!["xs".into()],
         param_tys: vec![Type::List(Box::new(Type::Int))],
         body: Block {
-            params: vec![],
             ops: vec![Op::Let {
                 local: Local(1),
                 value: Value::Builtin {
@@ -138,6 +134,7 @@ fn known_pure_len_callee_does_not_escape_arg() {
         escaping: HashSet::default(),
         scheme_poly: false,
         mono_of: None,
+        kind: FunKind::Normal,
     };
     let main_fun = CoreFun {
         name: "main".into(),
@@ -145,7 +142,6 @@ fn known_pure_len_callee_does_not_escape_arg() {
         param_names: vec![],
         param_tys: vec![],
         body: Block {
-            params: vec![],
             ops: vec![
                 Op::Let {
                     local: Local(0),
@@ -180,6 +176,7 @@ fn known_pure_len_callee_does_not_escape_arg() {
         escaping: HashSet::default(),
         scheme_poly: false,
         mono_of: None,
+        kind: FunKind::Normal,
     };
     let mut module = CoreModule::with_functions("M", vec![len_fun, main_fun]);
     EscapePass.run(&mut module);
@@ -194,7 +191,6 @@ fn known_pure_len_callee_does_not_escape_arg() {
 #[test]
 fn alloc_elems_escape_when_list_returned() {
     let body = Block {
-        params: vec![],
         ops: vec![
             Op::Let {
                 local: Local(0),
@@ -221,7 +217,6 @@ fn alloc_elems_escape_when_list_returned() {
 fn short_lived_var_assign_does_not_escape() {
     // `var xs = listOf(1)` used only for a pure projection must not escape.
     let body = Block {
-        params: vec![],
         ops: vec![
             Op::Let {
                 local: Local(0),
@@ -262,7 +257,6 @@ fn short_lived_var_assign_does_not_escape() {
 #[test]
 fn var_name_read_that_returns_escapes_assigns() {
     let body = Block {
-        params: vec![],
         ops: vec![
             Op::Let {
                 local: Local(0),
@@ -295,7 +289,6 @@ fn var_name_read_that_returns_escapes_assigns() {
 fn returned_take_escapes_source_list() {
     // Take copies element pointers — source must escape when take result does.
     let body = Block {
-        params: vec![],
         ops: vec![
             Op::Let {
                 local: Local(0),
@@ -340,7 +333,6 @@ fn dead_take_does_not_force_source_escape() {
     // Take/Slice are not may_capture: a non-escaping take result must not force
     // the source list onto the heap (GC mark_value no-ops non-heap elem bits).
     let body = Block {
-        params: vec![],
         ops: vec![
             Op::Let {
                 local: Local(0),
@@ -395,7 +387,6 @@ fn dead_take_does_not_force_source_escape() {
 #[test]
 fn returned_list_get_escapes_source_list() {
     let body = Block {
-        params: vec![],
         ops: vec![
             Op::Let {
                 local: Local(0),
@@ -483,7 +474,6 @@ fn wide_heap_adt_fields_escape_even_if_adt_local_does_not() {
         pure_region: true,
     });
     let body = Block {
-        params: vec![],
         ops,
         result: Some(Local(11)),
     };

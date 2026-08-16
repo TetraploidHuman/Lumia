@@ -1,5 +1,5 @@
 use super::*;
-use lumia_core::{Block, CoreFun, CoreModule, Local, MemoTf, Op, Value};
+use lumia_core::{Block, CoreFun, CoreModule, Local, MemoTf, Op, Value, FunKind};
 use lumia_hir::Builtin;
 use lumia_syntax::{BinOp, UnOp};
 use lumia_ty::{Effect, Type};
@@ -22,6 +22,7 @@ fn bare_fun(name: &str, params: Vec<Local>, body: Block) -> CoreFun {
         escaping: HashSet::default(),
         scheme_poly: false,
         mono_of: None,
+        kind: FunKind::Normal,
     }
 }
 

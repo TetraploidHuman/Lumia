@@ -92,15 +92,12 @@ pub(super) fn lower_call_like(
                 }
                 _ => {
                     // Local / expression callee → indirect call (first-class fn).
-                    let cal = lower_expr(ctx, callee, ops, pure_region).unwrap_or_else(|| {
-                        let l = ctx.fresh();
-                        ops.push(Op::Let {
-                            local: l,
-                            value: Value::Int(0),
-                            pure_region,
-                        });
-                        l
-                    });
+                    let Some(cal) = lower_expr(ctx, callee, ops, pure_region) else {
+                        ctx.note_ice(
+                            "ICE: failed to lower call callee (would have poisoned with Int(0))",
+                        );
+                        return None;
+                    };
                     (
                         Value::IndirectCall {
                             callee: cal,

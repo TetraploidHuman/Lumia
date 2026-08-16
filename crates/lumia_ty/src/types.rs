@@ -201,11 +201,13 @@ impl std::fmt::Display for Type {
     }
 }
 
-/// Hindley–Milner type scheme `∀ vars eff_vars. ty` (DESIGN §3.1 let-polymorphism).
+/// Hindley–Milner type scheme `∀ vars. ty` (DESIGN §3.1 let-polymorphism).
+///
+/// Effect polymorphism is not quantified here (effects stay monomorphic /
+/// fresh at use sites; see Todo «效应三套»).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scheme {
     pub vars: Vec<u32>,
-    pub eff_vars: Vec<u32>,
     pub ty: Type,
     /// Quantified vars that appeared in arithmetic (Num MVP: Int|Float only).
     pub num_vars: Vec<u32>,
@@ -234,7 +236,6 @@ impl Scheme {
     pub fn mono(ty: Type) -> Self {
         Self {
             vars: Vec::new(),
-            eff_vars: Vec::new(),
             ty,
             num_vars: Vec::new(),
             ord_vars: Vec::new(),

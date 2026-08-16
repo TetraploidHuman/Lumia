@@ -186,51 +186,8 @@ fn collect_calls_with_funrefs(
 ) {
     let mut funref_of = parent_funrefs.clone();
     for op in &block.ops {
-        let value = match op {
-            Op::Let { local, value, .. } => {
-                match value {
-                    Value::Call { fun, .. } => {
-                        out.insert(fun.clone());
-                    }
-                    Value::IndirectCall { callee, .. } => {
-                        if let Some(fun) = funref_of.get(&callee.0) {
-                            out.insert(fun.clone());
-                        }
-                    }
-                    Value::If {
-                        then_block,
-                        else_block,
-                        ..
-                    } => {
-                        collect_calls_with_funrefs(then_block, &funref_of, out);
-                        collect_calls_with_funrefs(else_block, &funref_of, out);
-                    }
-                    Value::Loop {
-                        header,
-                        body,
-                        latch,
-                    } => {
-                        collect_calls_with_funrefs(header, &funref_of, out);
-                        collect_calls_with_funrefs(body, &funref_of, out);
-                        collect_calls_with_funrefs(latch, &funref_of, out);
-                    }
-                    _ => {}
-                }
-                if let Value::FunRef(name) = value {
-                    funref_of.insert(local.0, name.clone());
-                } else if let Value::Local(Local(src)) = value {
-                    if let Some(n) = funref_of.get(src).cloned() {
-                        funref_of.insert(local.0, n);
-                    } else {
-                        funref_of.remove(&local.0);
-                    }
-                } else {
-                    funref_of.remove(&local.0);
-                }
-                continue;
-            }
-            Op::Effect { value } => value,
-            _ => continue,
+        let Op::Let { local, value, .. } = op else {
+            continue;
         };
         match value {
             Value::Call { fun, .. } => {
@@ -260,13 +217,24 @@ fn collect_calls_with_funrefs(
             }
             _ => {}
         }
+        if let Value::FunRef(name) = value {
+            funref_of.insert(local.0, name.clone());
+        } else if let Value::Local(Local(src)) = value {
+            if let Some(n) = funref_of.get(src).cloned() {
+                funref_of.insert(local.0, n);
+            } else {
+                funref_of.remove(&local.0);
+            }
+        } else {
+            funref_of.remove(&local.0);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lumia_core::{Block, CoreFun, CoreModule, Local, Op, Value};
+    use lumia_core::{Block, CoreFun, CoreModule, Local, Op, Value, FunKind};
     use lumia_ty::{Effect, Type};
 
     fn fun(name: &str, body: Block, self_call: Option<&str>) -> CoreFun {
@@ -287,7 +255,6 @@ mod tests {
             param_names: vec!["n".into()],
             param_tys: vec![Type::Int],
             body: Block {
-                params: vec![],
                 ops,
                 result: Some(Local(0)),
             },
@@ -300,6 +267,7 @@ mod tests {
             escaping: HashSet::default(),
             scheme_poly: false,
             mono_of: None,
+            kind: FunKind::Normal,
         }
     }
 
@@ -310,7 +278,6 @@ mod tests {
             vec![fun(
                 "sum",
                 Block {
-                    params: vec![],
                     ops: vec![],
                     result: None,
                 },
@@ -330,7 +297,6 @@ mod tests {
         let even = fun(
             "even",
             Block {
-                params: vec![],
                 ops: vec![],
                 result: None,
             },
@@ -339,7 +305,6 @@ mod tests {
         let odd = fun(
             "odd",
             Block {
-                params: vec![],
                 ops: vec![],
                 result: None,
             },
@@ -357,7 +322,6 @@ mod tests {
         let mut f = fun(
             "sum",
             Block {
-                params: vec![],
                 ops: vec![],
                 result: None,
             },

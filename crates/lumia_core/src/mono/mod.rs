@@ -15,8 +15,90 @@ pub(crate) use traits::{
 mod tests {
     use super::key::{MonoKey, MonoKind};
     use crate::compile_source_to_core;
-    use crate::ir::{Block, CoreFun, Local, Op, Value, ForeignAbi};
+    use crate::ir::{Block, CoreFun, ForeignAbi, FunKind, Local, Op, Value};
     use lumia_ty::{Effect, Type};
+    #[test]
+    fn args_mono_key_rejects_fun_with_open_param() {
+        use super::key::args_mono_key;
+        use rustc_hash::FxHashMap as HashMap;
+        let mut local_tys = HashMap::default();
+        // Open Fun param must not collapse to `Fun_Int_Float` via unwrap_or(Int).
+        local_tys.insert(
+            0,
+            Type::Fun(
+                vec![Type::Var(0)],
+                Box::new(Type::Float),
+                Effect::pure(),
+            ),
+        );
+        assert!(
+            args_mono_key(&[Local(0)], &local_tys, &HashMap::default(), None).is_none(),
+            "unkeyable Fun child must fail the whole mono key"
+        );
+    }
+
+    #[test]
+    fn args_mono_key_accepts_ground_fun() {
+        use super::key::args_mono_key;
+        use rustc_hash::FxHashMap as HashMap;
+        let mut local_tys = HashMap::default();
+        local_tys.insert(
+            0,
+            Type::Fun(
+                vec![Type::Float],
+                Box::new(Type::Float),
+                Effect::pure(),
+            ),
+        );
+        let key = args_mono_key(&[Local(0)], &local_tys, &HashMap::default(), None)
+            .expect("ground Fun");
+        assert_eq!(key.suffix(), "$Fun_Float_Float");
+    }
+
+    #[test]
+    fn funref_to_type_is_not_fake_zero_ary_fun() {
+        assert!(
+            !matches!(
+                MonoKind::FunRef("dbl".into()).to_type(),
+                Type::Fun(ps, _, _) if ps.is_empty()
+            ),
+            "FunRef::to_type must not look like Fun([], …)"
+        );
+        let funs = [CoreFun {
+            name: "dbl".into(),
+            params: vec![Local(0)],
+            param_names: vec!["x".into()],
+            param_tys: vec![Type::Float],
+            ret_ty: Type::Float,
+            effect: Effect::pure(),
+            body: Block {
+                ops: vec![],
+                result: None,
+            },
+            is_main: false,
+            external: None,
+            foreign_abi: ForeignAbi::C,
+            memo: None,
+            escaping: Default::default(),
+            scheme_poly: false,
+            mono_of: None,
+            kind: FunKind::Normal,
+        }];
+        let key = MonoKey(vec![MonoKind::FunRef("dbl".into())]);
+        let tys = key.param_tys(&funs);
+        assert!(
+            matches!(&tys[0], Type::Fun(ps, r, _) if ps.len() == 1 && matches!(r.as_ref(), Type::Float)),
+            "param_tys must resolve FunRef via CoreFun"
+        );
+        assert!(
+            matches!(
+                key.ret_ty(&funs, None),
+                Type::Fun(ps, r, _) if ps.len() == 1 && matches!(*r, Type::Float)
+            ),
+            "homogeneous FunRef key ret_ty must resolve via CoreFun"
+        );
+    }
+
     #[test]
     fn args_mono_key_prefers_formal_adt_over_abi_int() {
         use super::key::args_mono_key;
@@ -91,7 +173,6 @@ mod tests {
             ret_ty: Type::Float,
             effect: Effect::pure(),
             body: Block {
-                params: vec![],
                 ops: vec![],
                 result: None,
             },
@@ -102,6 +183,7 @@ mod tests {
             escaping: Default::default(),
             scheme_poly: false,
             mono_of: None,
+            kind: FunKind::Normal,
         };
         let key = MonoKey(vec![
             MonoKind::Adt {
@@ -868,7 +950,7 @@ val main = {
         fn walk(b: &crate::ir::Block, calls: &mut Vec<String>, icalls: &mut u32) {
             for op in &b.ops {
                 let v = match op {
-                    crate::ir::Op::Let { value, .. } | crate::ir::Op::Effect { value } => value,
+                    crate::ir::Op::Let { value, .. } => value,
                     _ => continue,
                 };
                 match v {
@@ -962,10 +1044,17 @@ val main = {
             .find(|f| f.name.starts_with("flatten$"))
             .expect("flatten$");
         let pmap = super::ret_ty::param_ty_map(flat);
+        let empty_traits = Default::default();
+        let index = super::fun_index::FunIndex::new(
+            &core.functions,
+            &core.sum_max_arity,
+            &empty_traits,
+            core.channel_elem_hint.as_ref(),
+        );
         let body_ty = super::ret_ty::block_result_fixed_ty(
             &flat.body,
-            &core.functions,
-            &Default::default(),
+            &index,
+            &empty_traits,
             &pmap,
         );
         assert!(

@@ -6,7 +6,7 @@
 
 use crate::common::{list_rc_is_unique, trap_abort, GcInhibitGuard, TYPE_LIST_F64};
 use crate::gc::{list_payload_bytes, lumia_alloc};
-use crate::list::{force_heap_list, list_float_elems, list_len_of};
+use crate::list::{f64_elems, f64_elems_mut, force_heap_list, list_float_elems, list_len_of, require_len};
 use std::ptr;
 
 /// Allocate a length-`n` `List[Float]` filled with `0.0`.
@@ -432,22 +432,7 @@ fn clone_f64_list(list: *mut u8) -> *mut u8 {
     }
 }
 
-fn require_len(list: *mut u8, expect: i64, what: &str) {
-    let n = list_len_of(list);
-    if n != expect {
-        trap_abort(&format!("lumia: {what} len {n} != {expect}"));
-    }
-}
 
-unsafe fn f64_elems(list: *mut u8) -> (*const f64, usize) {
-    let n = *(list as *const i64) as usize;
-    ((list as *const i64).add(1) as *const f64, n)
-}
-
-unsafe fn f64_elems_mut(list: *mut u8) -> (*mut f64, usize) {
-    let n = *(list as *const i64) as usize;
-    ((list as *mut i64).add(1) as *mut f64, n)
-}
 
 #[cfg(test)]
 mod tests {

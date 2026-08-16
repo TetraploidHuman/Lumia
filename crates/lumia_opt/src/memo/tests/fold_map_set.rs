@@ -9,7 +9,6 @@ fn const_fold_map_get_to_option() {
             "f",
             vec![],
             Block {
-                params: vec![],
                 ops: vec![
                     Op::Let {
                         local: Local(0),
@@ -117,7 +116,6 @@ fn const_fold_contains_skips_nonconst_keys() {
             "f",
             vec![Local(0)],
             Block {
-                params: vec![],
                 ops: vec![
                     Op::Let {
                         local: Local(1),
@@ -177,7 +175,6 @@ fn const_fold_map_set_and_set_insert() {
             "f",
             vec![],
             Block {
-                params: vec![],
                 ops: vec![
                     Op::Let {
                         local: Local(0),
@@ -310,7 +307,6 @@ fn const_fold_compacts_pm0_float_map_set_keys() {
             "f",
             vec![],
             Block {
-                params: vec![],
                 ops: vec![
                     Op::Let {
                         local: Local(0),

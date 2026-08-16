@@ -1,5 +1,6 @@
 //! textDocument/completion.
 
+use super::cursor::{pos_to_byte, prefix_at};
 use super::state::{state_lock, Analysis};
 use anyhow::Result;
 use lumia_hir::{surface_names, SurfaceRole};
@@ -8,11 +9,24 @@ use lumia_ty::display_type;
 use rustc_hash::FxHashSet as HashSet;
 use serde_json::{json, Value};
 
-pub(super) fn completion_items(analysis: Option<&Analysis>) -> Vec<Value> {
+fn matches_prefix(label: &str, prefix: &str) -> bool {
+    if prefix.is_empty() {
+        return true;
+    }
+    label.starts_with(prefix)
+        || label
+            .to_ascii_lowercase()
+            .starts_with(&prefix.to_ascii_lowercase())
+}
+
+pub(super) fn completion_items(analysis: Option<&Analysis>, prefix: &str) -> Vec<Value> {
     let mut items = Vec::new();
     let mut seen = HashSet::default();
 
     let mut push = |label: &str, kind: u8, detail: Option<&str>| {
+        if !matches_prefix(label, prefix) {
+            return;
+        }
         if !seen.insert(label.to_string()) {
             return;
         }
@@ -82,12 +96,26 @@ pub(super) fn on_completion(params: Option<&Value>) -> Result<Value> {
         return Ok(json!([]));
     };
     let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
+    let line = params["position"]["line"].as_u64().unwrap_or(0) as u32;
+    let character = params["position"]["character"].as_u64().unwrap_or(0) as u32;
     let st = state_lock();
     let Some(state) = st.as_ref() else {
         return Ok(json!([]));
     };
     let analysis = state.analysis.get(uri);
-    Ok(Value::Array(completion_items(analysis)))
+    let prefix = analysis
+        .map(|a| {
+            let byte = pos_to_byte(&a.src, line, character);
+            prefix_at(&a.src, byte)
+        })
+        .or_else(|| {
+            state.docs.get(uri).map(|src| {
+                let byte = pos_to_byte(src, line, character);
+                prefix_at(src, byte)
+            })
+        })
+        .unwrap_or_default();
+    Ok(Value::Array(completion_items(analysis, &prefix)))
 }
 
 #[cfg(test)]
@@ -96,7 +124,7 @@ mod tests {
 
     #[test]
     fn completion_includes_keywords_without_analysis() {
-        let items = completion_items(None);
+        let items = completion_items(None, "");
         let labels: Vec<&str> = items.iter().filter_map(|v| v["label"].as_str()).collect();
         assert!(labels.contains(&"val"));
         assert!(labels.contains(&"match"));
@@ -105,7 +133,7 @@ mod tests {
 
     #[test]
     fn completion_scans_surface_builtins() {
-        let items = completion_items(None);
+        let items = completion_items(None, "");
         let labels: Vec<&str> = items.iter().filter_map(|v| v["label"].as_str()).collect();
         assert!(labels.contains(&"listOf"), "{labels:?}");
         assert!(labels.contains(&"setOf"), "{labels:?}");
@@ -113,5 +141,14 @@ mod tests {
         assert!(labels.contains(&"println"), "{labels:?}");
         assert!(labels.contains(&"len"), "{labels:?}");
         assert!(!labels.contains(&"adtTag"), "{labels:?}");
+    }
+
+    #[test]
+    fn completion_filters_by_prefix() {
+        let items = completion_items(None, "print");
+        let labels: Vec<&str> = items.iter().filter_map(|v| v["label"].as_str()).collect();
+        assert!(labels.contains(&"println"), "{labels:?}");
+        assert!(!labels.contains(&"val"), "{labels:?}");
+        assert!(!labels.contains(&"map"), "{labels:?}");
     }
 }

@@ -37,7 +37,7 @@ use lumia_ty::Type;
 use rustc_hash::FxHashMap as HashMap;
 use std::path::PathBuf;
 
-fn core_fun_is_param0_identity(f: &CoreFun) -> bool {
+pub(crate) fn core_fun_is_param0_identity(f: &CoreFun) -> bool {
     let Some(p0) = f.params.first().map(|p| p.0) else {
         return false;
     };
@@ -59,7 +59,7 @@ fn core_fun_is_param0_identity(f: &CoreFun) -> bool {
                     return false;
                 }
             }
-            Op::Let { .. } | Op::Effect { .. } | Op::Assign { .. } => return false,
+            Op::Let { .. } | Op::Assign { .. } => return false,
             _ => {}
         }
     }
@@ -71,9 +71,6 @@ pub struct CodegenOptions {
     pub output: PathBuf,
     pub emit_ir: bool,
     pub runtime_lib: PathBuf,
-    /// Tags for `Option::{Some, None}` from the source module (defaults 0/1).
-    pub option_some_tag: i64,
-    pub option_none_tag: i64,
     /// Emit `lumia_f64_*` for recognized dense float nests (default on).
     pub dense_f64_sr: bool,
     /// Extra linker args, e.g. `["-lm", "-L/opt/lib", "-lfoo"]`.
@@ -97,8 +94,8 @@ fn emit_llvm_module<'ctx>(
     let mut cg = Codegen::new(
         context,
         &core.name,
-        opts.option_some_tag,
-        opts.option_none_tag,
+        core.option_some_tag,
+        core.option_none_tag,
         opts.release,
         opts.dense_f64_sr,
     );
@@ -351,14 +348,13 @@ fn emit_trait_dict_registration<'ctx>(
     let Some(reg) = module.get_function("lumia_dict_register") else {
         return Ok(());
     };
-    // (prefix, trait_id) — ids match lumia_rt::TRAIT_*; prefix is
-    // `mangle_trait_method(trait, …)` without the type/method suffix.
+    // (prefix, trait_id) — ids from `lumia_abi::TRAIT_*` (must match rt dict).
     let specs: &[(&str, i64)] = &[
-        ("__Show_", 1),
-        ("__Eq_", 2),
-        ("__Ord_", 3),
-        ("__Hash_", 4),
-        ("__Num_", 5),
+        ("__Show_", lumia_abi::TRAIT_SHOW as i64),
+        ("__Eq_", lumia_abi::TRAIT_EQ as i64),
+        ("__Ord_", lumia_abi::TRAIT_ORD as i64),
+        ("__Hash_", lumia_abi::TRAIT_HASH as i64),
+        ("__Num_", lumia_abi::TRAIT_NUM as i64),
     ];
     for f in &core.functions {
         let name = &f.name;
@@ -505,7 +501,10 @@ mod tests {
     use std::path::PathBuf;
 
     fn workspace_root() -> PathBuf {
-        lumia_abi::workspace_root_canonical(env!("CARGO_MANIFEST_DIR"))
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
     }
 
     fn test_opts() -> CodegenOptions {
@@ -514,8 +513,6 @@ mod tests {
             output: PathBuf::from("/tmp/lumia_codegen_test"),
             emit_ir: false,
             runtime_lib: PathBuf::from("/tmp/unused_rt"),
-            option_some_tag: 0,
-            option_none_tag: 1,
             dense_f64_sr: true,
             link_args: vec![],
         }

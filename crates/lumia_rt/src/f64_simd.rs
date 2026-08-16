@@ -4,8 +4,6 @@
 //! ops use 8-wide (2×YMM) FMA chunks plus a 4-wide tail. Association can differ
 //! slightly from pure scalar.
 
-#![allow(dead_code)]
-
 #[inline(always)]
 fn simd_f64() -> bool {
     #[cfg(target_arch = "x86_64")]

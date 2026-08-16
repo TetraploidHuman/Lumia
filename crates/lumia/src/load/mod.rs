@@ -7,7 +7,7 @@
 mod resolve;
 mod std_mod;
 
-use crate::vis::item_name;
+use crate::vis::{item_file, item_name};
 use anyhow::{bail, Context, Result};
 use lumia_syntax::{Item, Module};
 use lumia_ty::NameVisibility;
@@ -18,16 +18,6 @@ use resolve::load_module_file;
 
 pub use resolve::path_label;
 
-pub(super) fn item_file_id(it: &Item) -> u32 {
-    match it {
-        Item::Val(v) => v.span.file,
-        Item::Type(t) => t.span.file,
-        Item::Foreign(f) => f.span.file,
-        Item::Trait(t) => t.span.file,
-        Item::Instance(i) => i.span.file,
-    }
-}
-
 /// Reject silently-overwritten top-level names after import inlining.
 pub(super) fn check_no_duplicate_toplevel(items: &[Item], files: &[SourceFile]) -> Result<()> {
     let mut seen: HashMap<&str, u32> = HashMap::default();
@@ -35,7 +25,7 @@ pub(super) fn check_no_duplicate_toplevel(items: &[Item], files: &[SourceFile]) 
         let Some(name) = item_name(it) else {
             continue;
         };
-        let file = item_file_id(it);
+        let file = item_file(it);
         if let Some(&prev) = seen.get(name) {
             if prev == file {
                 bail!("duplicate top-level name `{name}`");
@@ -59,11 +49,11 @@ pub(super) fn check_no_duplicate_toplevel(items: &[Item], files: &[SourceFile]) 
 pub(super) fn append_items_unique(dst: &mut Vec<Item>, src: Vec<Item>) {
     let mut have: HashSet<(u32, String)> = dst
         .iter()
-        .filter_map(|it| item_name(it).map(|n| (item_file_id(it), n.to_string())))
+        .filter_map(|it| item_name(it).map(|n| (item_file(it), n.to_string())))
         .collect();
     for it in src {
         if let Some(name) = item_name(&it) {
-            let key = (item_file_id(&it), name.to_string());
+            let key = (item_file(&it), name.to_string());
             if !have.insert(key) {
                 continue;
             }
@@ -147,6 +137,12 @@ pub fn load_program_with_overlays(
         }
         link_args = crate::pkg::collect_link_args(&manifest_path, &m)?;
         trust_foreign_pure = m.package.trust_foreign_pure;
+        if trust_foreign_pure {
+            eprintln!(
+                "warning: package.trust_foreign_pure=true honors unverified `foreign \"C\" pure` \
+                 (same trust surface as --trust-foreign-pure; override with --no-trust-foreign-pure)"
+            );
+        }
         let roots = crate::pkg::dependency_roots(&manifest_path, &m)?;
         for r in roots {
             if !search_roots.iter().any(|x| x == &r) {

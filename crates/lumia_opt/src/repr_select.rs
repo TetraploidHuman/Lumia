@@ -43,24 +43,24 @@ fn select_value(v: &mut Value, bound: Local, escaping: &HashSet<Local>) {
         }
         Value::AllocMap { flat_pairs, repr } => {
             let n_pairs = flat_pairs.len() / 2;
-            // Preserve Eq-only AssocList; else stack LitMap when non-escaping ≤max.
+            // Preserve Eq-only AssocList. Codegen never stacks LitMap (finish+heap
+            // only); small maps use SmallMap, large → default HashOrdered.
             if matches!(*repr, MapRepr::AssocList) {
                 // keep
-            } else if local_ok && n_pairs > 0 && n_pairs <= max {
-                *repr = MapRepr::LitMap;
-            } else if n_pairs <= max {
+            } else if n_pairs > 0 && n_pairs <= max {
+                *repr = MapRepr::SmallMap;
+            } else if n_pairs == 0 {
+                // Empty → null at emit; SmallMap keeps the “tiny” hint.
                 *repr = MapRepr::SmallMap;
             } else {
                 *repr = default_map_repr();
             }
-            let _ = flat_pairs;
+            let _ = (flat_pairs, local_ok);
         }
         Value::AllocSet { elems, repr } => {
-            if local_ok && !elems.is_empty() && elems.len() <= max {
-                *repr = SetRepr::LitSet;
-            } else {
-                *repr = SetRepr::HeapSet;
-            }
+            // Empty → null at emit. Non-empty always HeapSet+finish (no LitSet stack).
+            let _ = (elems, local_ok, max);
+            *repr = SetRepr::HeapSet;
         }
         Value::AllocAdt { fields, repr, .. } => {
             if local_ok && fields.len() <= max {

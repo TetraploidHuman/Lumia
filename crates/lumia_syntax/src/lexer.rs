@@ -118,7 +118,9 @@ impl<'a> Lexer<'a> {
                     TokenKind::EqEq
                 } else if self.peek() == Some(b'>') {
                     self.pos += 1;
-                    TokenKind::FatArrow
+                    TokenKind::Error(
+                        "`=>` is not a Lumia token (use `{ … }` lambdas / `if` match arms)".into(),
+                    )
                 } else {
                     TokenKind::Eq
                 }
@@ -384,7 +386,10 @@ impl<'a> Lexer<'a> {
                     if self.pos < self.bytes.len() && self.bytes[self.pos] == b'}' {
                         self.pos += 1;
                     }
-                    parts.push(crate::token::StringPart::ExprSrc(inner));
+                    parts.push(crate::token::StringPart::ExprSrc {
+                        src: inner,
+                        abs_start: start as u32,
+                    });
                     continue;
                 }
                 if next.is_some_and(|b| b.is_ascii_alphabetic() || b == b'_') {
@@ -395,7 +400,10 @@ impl<'a> Lexer<'a> {
                         self.pos += 1;
                     }
                     let name = self.src[start..self.pos].to_string();
-                    parts.push(crate::token::StringPart::Ident(name));
+                    parts.push(crate::token::StringPart::Ident {
+                        name,
+                        abs_start: start as u32,
+                    });
                     continue;
                 }
             }
@@ -489,7 +497,7 @@ mod tests {
                 assert!(
                     parts.iter().any(|p| matches!(
                         p,
-                        crate::token::StringPart::ExprSrc(s) if s.contains('\'')
+                        crate::token::StringPart::ExprSrc { src, .. } if src.contains('\'')
                     )),
                     "char literal must stay inside ExprSrc, got {parts:?}"
                 );
@@ -514,6 +522,24 @@ mod tests {
             "got {:?}",
             t.kind
         );
+    }
+
+    #[test]
+    fn to_is_hard_keyword() {
+        let mut lx = Lexer::new("1 to 2");
+        let _ = lx.next_token(); // 1
+        let t = lx.next_token();
+        assert!(matches!(t.kind, TokenKind::To), "got {:?}", t.kind);
+    }
+
+    #[test]
+    fn fat_arrow_lexes_as_error() {
+        let mut lx = Lexer::new("=>");
+        let t = lx.next_token();
+        match t.kind {
+            TokenKind::Error(msg) => assert!(msg.contains("`=>`"), "got {msg}"),
+            other => panic!("expected Error, got {other:?}"),
+        }
     }
 
     #[test]

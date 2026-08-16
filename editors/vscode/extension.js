@@ -80,11 +80,19 @@ function startLsp(context) {
   };
 
   const clientOptions = {
-    documentSelector: [{ scheme: "file", language: "lumia" }],
+    documentSelector: [
+      { scheme: "file", language: "lumia" },
+      { scheme: "untitled", language: "lumia" },
+    ],
     synchronize: {
       fileEvents: workspace.createFileSystemWatcher("**/*.lm"),
     },
     outputChannelName: "Lumia Language Server",
+    initializationOptions: {
+      autoParallel: workspace
+        .getConfiguration("lumia")
+        .get("autoParallel", true),
+    },
   };
 
   client = new LanguageClient(
@@ -123,6 +131,20 @@ function startLsp(context) {
         `Lumia LSP failed to start (${command} lsp). Set lumia.lsp.path or add lumia to PATH. (${err})`
       );
     });
+
+  context.subscriptions.push(
+    workspace.onDidChangeConfiguration((e) => {
+      if (!e.affectsConfiguration("lumia.autoParallel") || !client) {
+        return;
+      }
+      const autoParallel = workspace
+        .getConfiguration("lumia")
+        .get("autoParallel", true);
+      client.sendNotification("workspace/didChangeConfiguration", {
+        settings: { lumia: { autoParallel } },
+      });
+    })
+  );
 }
 
 /**

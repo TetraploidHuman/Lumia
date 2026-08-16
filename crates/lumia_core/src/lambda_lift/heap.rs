@@ -6,13 +6,12 @@ use lumia_hir::Builtin;
 use rustc_hash::FxHashSet as HashSet;
 
 /// Whether the block result may be a heap pointer. `extra_params` covers lambda
-/// formals that live on `Value::Lambda.params` rather than `body.params`.
+/// formals on `Value::Lambda.params` / `CoreFun.params` (blocks have no params).
 pub(super) fn block_result_may_heap_with_params(block: &Block, extra_params: &[Local]) -> bool {
     let Some(Local(r)) = block.result else {
         return false;
     };
-    let mut params: HashSet<u32> = block.params.iter().map(|p| p.0).collect();
-    params.extend(extra_params.iter().map(|p| p.0));
+    let params: HashSet<u32> = extra_params.iter().map(|p| p.0).collect();
     local_may_heap(block, r, &params, &mut HashSet::default())
 }
 
@@ -82,7 +81,5 @@ fn result_may_heap_inherited(block: &Block, inherited: &HashSet<u32>) -> bool {
     let Some(Local(r)) = block.result else {
         return false;
     };
-    let mut params = inherited.clone();
-    params.extend(block.params.iter().map(|p| p.0));
-    local_may_heap(block, r, &params, &mut HashSet::default())
+    local_may_heap(block, r, inherited, &mut HashSet::default())
 }

@@ -9,12 +9,8 @@ use std::collections::HashMap;
 use std::ffi::CStr;
 use std::sync::Mutex;
 
-/// Trait ids for dictionary registration (stable ABI).
-pub const TRAIT_SHOW: i32 = 1;
-pub const TRAIT_EQ: i32 = 2;
-pub const TRAIT_ORD: i32 = 3;
-pub const TRAIT_HASH: i32 = 4;
-pub const TRAIT_NUM: i32 = 5;
+/// Trait ids for dictionary registration (stable ABI; shared with codegen via `lumia_abi`).
+pub use lumia_abi::{TRAIT_EQ, TRAIT_HASH, TRAIT_NUM, TRAIT_ORD, TRAIT_SHOW};
 
 type DictKey = (i32, String);
 

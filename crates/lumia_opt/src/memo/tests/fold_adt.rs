@@ -9,7 +9,6 @@ fn const_fold_adt_tag() {
             "f",
             vec![],
             Block {
-                params: vec![],
                 ops: vec![
                     Op::Let {
                         local: Local(0),

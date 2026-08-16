@@ -36,6 +36,7 @@ serde_json = "1"
 toml = "0.8"
 inkwell = { version = "0.10", default-features = false, features = ["llvm21-1", "target-x86"] }
 rustc-hash = "2"
+corosensei = "0.3.4"
 
 [workspace.lints.clippy]
 # Helpers shared across HOF / TCO analysis naturally take many parameters.

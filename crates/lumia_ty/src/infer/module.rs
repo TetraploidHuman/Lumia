@@ -193,7 +193,7 @@ fn infer_module_inner(
     for item in &module.items {
         match item {
             Item::Fun(f) => {
-                inf.current_file = expr_span(&f.body).file;
+                inf.current_file = f.span.file;
                 let inferred = (|| -> Result<(Type, Effect), TypeError> {
                     if let Some((ptys, ret)) = &f.foreign_sig {
                         let ps: Result<Vec<_>, _> =
@@ -256,8 +256,7 @@ fn infer_module_inner(
                 fun_schemes.insert(f.name.clone(), scheme.clone());
                 inf.bind_scheme(f.name.clone(), scheme, false);
                 fun_types.insert(f.name.clone(), ty);
-                // Decl span: use body span as stand-in for foreign/unit; funs lack item span in HIR.
-                inf.decls.insert(f.name.clone(), expr_span(&f.body));
+                inf.decls.insert(f.name.clone(), f.span);
                 if f.is_main {
                     main_effect = eff;
                     if !eff.has_io() {
@@ -269,8 +268,9 @@ fn infer_module_inner(
                 name,
                 body,
                 ty: ann,
+                span: val_span,
             } => {
-                inf.current_file = expr_span(body).file;
+                inf.current_file = val_span.file;
                 let (mut ty, eff) = match inf.infer_expr(body) {
                     Ok(v) => v,
                     Err(e) => {
@@ -322,7 +322,7 @@ fn infer_module_inner(
                 let scheme = inf.generalize(ty.clone());
                 fun_schemes.insert(name.clone(), scheme.clone());
                 inf.bind_scheme(name.clone(), scheme, false);
-                inf.decls.insert(name.clone(), expr_span(body));
+                inf.decls.insert(name.clone(), *val_span);
                 // Zero-arg getter used by Core lowering / codegen GC rooting.
                 fun_types.insert(
                     format!("__val_{name}"),
@@ -378,44 +378,8 @@ fn infer_module_inner(
     )
 }
 
-/// Mark which sum-variant fields are recursive spines (`Nat.S`, `UList.Cons` tail)
-/// vs parametric payloads (`UList` head, `Expr.Lit`/`Add`, `Either`, `Shape`).
-///
-/// Without a nullary base, arity alone cannot tell `Expr.Add` from `Shape.Rect`,
-/// so non-nullary sums keep every field parametric; recursive values still type
-/// as `Adt[…]` when nested as payloads.
+/// Mark which sum-variant fields are recursive spines vs parametric payloads.
+/// See [`lumia_hir::classify_sum_field_recursive`].
 fn classify_sum_field_recursive(adt: &lumia_hir::AdtDef) -> HashMap<String, Vec<bool>> {
-    // Prelude Option/Result keep parametric payloads (Result is also special-cased
-    // in `infer_adt_new`). Treating `Some` like `Nat.S` would require `Some(3): Option`.
-    if adt.name == "Option" || adt.name == "Result" {
-        return adt
-            .variants
-            .iter()
-            .map(|v| (v.name.clone(), vec![false; v.arity]))
-            .collect();
-    }
-    let arities: Vec<usize> = adt.variants.iter().map(|v| v.arity).collect();
-    let has_nullary = arities.iter().any(|&a| a == 0);
-    let only_nullary_unary = arities.iter().all(|&a| a <= 1);
-    let mut out = HashMap::default();
-    for v in &adt.variants {
-        let rec = if v.arity == 0 {
-            vec![]
-        } else if only_nullary_unary && has_nullary {
-            // `Nat { Z S(n) }`: the unary payload is `Nat` itself.
-            vec![true; v.arity]
-        } else if has_nullary && v.arity >= 2 {
-            // `UList { Nil Cons(h, t) }`: last field recursive, earlier parametric.
-            let mut k = vec![false; v.arity];
-            if let Some(last) = k.last_mut() {
-                *last = true;
-            }
-            k
-        } else {
-            // `Either` / `Shape` / `Expr`: all parametric (concatenated slots).
-            vec![false; v.arity]
-        };
-        out.insert(v.name.clone(), rec);
-    }
-    out
+    lumia_hir::classify_sum_field_recursive(adt)
 }

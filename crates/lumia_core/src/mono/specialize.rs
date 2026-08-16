@@ -237,7 +237,6 @@ fn rewrite_all_mono_call_sites(
     let join_adt_funrefs = constant_adt_funref_ret_map(&module.functions);
     let mut functions = std::mem::take(&mut module.functions);
     let empty = Block {
-        params: vec![],
         ops: vec![],
         result: None,
     };
@@ -295,13 +294,20 @@ fn rewrite_all_mono_call_sites(
 fn refresh_erased_mono_return_types(module: &mut CoreModule) {
     // Analyze immutably first so we need not clone the whole function table.
     let upgrades: Vec<(usize, Type)> = {
-        let snap = &module.functions;
+        let index = FunIndex::new(
+            &module.functions,
+            &module.sum_max_arity,
+            &module.trait_methods,
+            module.channel_elem_hint.as_ref(),
+        );
         let traits = &module.trait_methods;
-        snap.iter()
+        module
+            .functions
+            .iter()
             .enumerate()
             .filter_map(|(i, fun)| {
                 let params = param_ty_map(fun);
-                let t = block_result_fixed_ty(&fun.body, snap, traits, &params)?;
+                let t = block_result_fixed_ty(&fun.body, &index, traits, &params)?;
                 let upgrade = matches!(
                     (&fun.ret_ty, &t),
                     (
@@ -420,7 +426,7 @@ fn specialize_mono_round(
             // `Call(dbl$Float, …)` whose ret is Float, not the erased Int FunRef.
             directize_block(&mut clone.body, &binds);
         }
-        let ret_ty = mono_clone_ret_ty(&clone, &inferred, index.funs(), &module.trait_methods);
+        let ret_ty = mono_clone_ret_ty(&clone, &inferred, &index);
         if orig.param_tys == param_tys && orig.ret_ty == ret_ty && binds.is_empty() {
             continue;
         }
@@ -436,14 +442,10 @@ fn specialize_mono_round(
 
 /// Ret type for a mono clone: prefer body structure + formals; Num poly
 /// (`{ x -> x + x }`) falls back to MonoKey when the body has no fixed ret.
-fn mono_clone_ret_ty(
-    fun: &CoreFun,
-    inferred: &Type,
-    functions: &[CoreFun],
-    trait_methods: &HashMap<(String, String), Vec<String>>,
-) -> Type {
+fn mono_clone_ret_ty(fun: &CoreFun, inferred: &Type, index: &FunIndex<'_>) -> Type {
     let param_map = param_ty_map(fun);
-    let raw = if let Some(t) = block_result_fixed_ty(&fun.body, functions, trait_methods, &param_map)
+    let raw = if let Some(t) =
+        block_result_fixed_ty(&fun.body, index, index.trait_methods, &param_map)
     {
         // Nested `andThen` bodies often join to `Option[Option[Int]]` / `Option[Int]`
         // while the FunRef key already knows `Option[Float]` — prefer the key.
@@ -596,12 +598,9 @@ fn call_site_mono_ret(
             .unwrap_or(Type::Int);
         param_map.insert(p.0, ty);
     }
-    let raw = if let Some(t) = block_result_fixed_ty(
-        &fun.body,
-        index.funs(),
-        index.trait_methods,
-        &param_map,
-    ) {
+    let raw = if let Some(t) =
+        block_result_fixed_ty(&fun.body, index, index.trait_methods, &param_map)
+    {
         merge_mono_ret_with_inferred(t, inferred)
     } else {
         match &fun.ret_ty {
@@ -720,25 +719,6 @@ fn scan_mono_block(
                 } else {
                     slot_adt_funrefs.remove(name);
                 }
-            }
-            Op::Effect { value } => {
-                walk_mono_nested_scan(
-                    value,
-                    local_tys,
-                    slot_tys,
-                    int_consts,
-                    bool_consts,
-                    index,
-                    needed,
-                    &funref_of,
-                    &slot_funrefs,
-                    slot_list_funrefs,
-                    slot_adt_funrefs,
-                    list_funrefs,
-                    adt_funrefs,
-                    adt_tags,
-                );
-                note_mono_call(value, local_tys, index, needed, &funref_of);
             }
             _ => {}
         }
@@ -1223,7 +1203,7 @@ fn mono_icall_formals(f: &CoreFun, argc: usize) -> Option<&[Type]> {
     let ptys = f.param_tys.as_slice();
     if ptys.len() == argc {
         Some(ptys)
-    } else if ptys.len() == argc + 1 && f.name.starts_with("__lam_") {
+    } else if ptys.len() == argc + 1 && f.is_lifted_lambda() {
         Some(&ptys[1..])
     } else {
         Some(ptys)
@@ -1319,7 +1299,7 @@ fn mono_value_ty_with_funrefs(
         let f = index.get(name);
         let mut params = f.map(|f| f.param_tys.clone()).unwrap_or_default();
         let ret = f.map(|f| f.ret_ty.clone()).unwrap_or(Type::Int);
-        if name.starts_with("__lam_")
+        if f.is_some_and(|f| f.is_lifted_lambda())
             && params
                 .first()
                 .is_some_and(|p| matches!(p, Type::Int | Type::Var(_)))
@@ -1450,32 +1430,6 @@ fn rewrite_mono_block(
                     slot_adt_funrefs.insert(name.clone(), v);
                 } else {
                     slot_adt_funrefs.remove(name);
-                }
-            }
-            Op::Effect { value } => {
-                let patch = par_hof_funref_patch(value, local_tys, renames, &funref_of);
-                rewrite_mono_value(
-                    value,
-                    local_tys,
-                    slot_tys,
-                    int_consts,
-                    bool_consts,
-                    adt_tags,
-                    renames,
-                    &funref_of,
-                    &slot_funrefs,
-                    slot_list_funrefs,
-                    slot_adt_funrefs,
-                    list_funrefs,
-                    adt_funrefs,
-                    index,
-                    join_funrefs,
-                    join_list_funrefs,
-                    join_adt_funrefs,
-                );
-                if let Some((cb_local, new_name)) = patch {
-                    patch_funref_let(before, cb_local, &new_name);
-                    funref_of.insert(cb_local, new_name);
                 }
             }
             _ => {}
@@ -1872,7 +1826,10 @@ fn track_funref_after_let(
         }
         Value::Call { fun, args } => {
             // `unwrapOr(opt, default)`: propagate Fun from Some/Ok field0 or default.
-            let base = fun.split('$').next().unwrap_or(fun.as_str());
+            let base = index
+                .and_then(|ix| ix.get(fun))
+                .map(|f| f.base_name())
+                .unwrap_or_else(|| fun.split('$').next().unwrap_or(fun.as_str()));
             if base == "unwrapOr" && args.len() >= 2 {
                 let from_opt = adt_funrefs
                     .get(&args[0].0)
@@ -2097,7 +2054,7 @@ fn trivial_param_forward_target(fun: &CoreFun) -> Option<String> {
 fn rewrite_forward_calls(block: &mut Block, forward: &HashMap<String, String>) {
     for op in &mut block.ops {
         match op {
-            Op::Let { value, .. } | Op::Effect { value } => {
+            Op::Let { value, .. } => {
                 rewrite_forward_value(value, forward);
             }
             _ => {}

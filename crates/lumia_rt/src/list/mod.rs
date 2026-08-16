@@ -1,11 +1,13 @@
 //! List operations and ranges.
 
 mod core;
+mod f64_view;
 mod ops;
 mod par;
 mod tid;
 
 pub(crate) use core::{force_heap_list, list_get_of, list_len_of};
+pub(crate) use f64_view::{f64_elems, f64_elems_mut, require_len};
 pub use core::{
     lumia_list_append, lumia_list_empty, lumia_list_get, lumia_list_len, lumia_list_promote,
     lumia_list_release, lumia_list_retain, lumia_ptr_eq,

@@ -13,7 +13,7 @@ enum ExprKey {
     String(String),
     Unary(UnOp, u32),
     Binary(BinOp, u32, u32),
-    Builtin(String, Vec<u32>),
+    Builtin(Builtin, Vec<u32>),
     Call(String, Vec<u32>),
 }
 
@@ -124,7 +124,6 @@ fn cse_block(
                     cse_block(latch, pure_funs, float_rets, float_locals);
                 }
             }
-            Op::Effect { value } => rewrite_value(value, &rewrite),
             Op::Assign { value, .. } | Op::Return { value } => {
                 if let Some(&r) = rewrite.get(&value.0) {
                     *value = Local(r);
@@ -203,7 +202,7 @@ fn expr_key(
         }
         Value::Binary { op, left, right } => Some(ExprKey::Binary(*op, left.0, right.0)),
         Value::Builtin { name, args, .. } if builtin_is_pure(name) => Some(ExprKey::Builtin(
-            format!("{name:?}"),
+            *name,
             args.iter().map(|a| a.0).collect(),
         )),
         Value::Call { fun, args } if pure_funs.contains(fun) => Some(ExprKey::Call(

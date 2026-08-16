@@ -46,7 +46,7 @@
 - [x] **`mapOf`/`setOf` 字面量不合并 ±0 Float 键**：RT finish + const-fold compact（`known_float` / Neg）；e2e `float_pm0_map_set`。
 - [x] **`String` UTF-8 表面契约 vs 字节 API**：`.len()` / `substring` / `.take` / `.drop` / `.reverse` 按 **Unicode 标量**；`toLower`/`toUpper` 用 Unicode case（非仅 ASCII）；`lumia_str_byte_len` 供 println/assert。e2e `string_utf8_len` / `string_take_reverse` / `string_open_take_case`。**仍欠**：字素簇（grapheme）索引。
 - [x] **用户和类型：异变体载荷共享类型变量**：sum 参数改为按变体声明顺序**拼接槽位**（非 max-arity 共享）；`Either { Left(a) Right(b) }` 可 `Left(String)|Right(Int)`；`Shape` Circle/Rect 仍可用。e2e `either_mixed_payload`。
-- [x] **递归用户 ADT + 递归函数 → `infinite type`**：`Nat { Z S(n) }` / `UList { Nil Cons(h,t) }` 的递归脊用 `Self` 槽（不占类型参数）；拼接槽仅含参数化载荷。e2e `nat_to_int` / `ulist_sum`。**仍欠**：无 nullary 基例的树（`Expr { Lit Add }`）在递归函数上仍可能 `α ~ Expr[α]`（需 equi-recursive 或显式自引用语法）。
+- [x] **递归用户 ADT + 递归函数 → `infinite type`**：`Nat { Z S(n) }` / `UList { Nil Cons(h,t) }` 的递归脊用 `Self` 槽（不占类型参数）；拼接槽仅含参数化载荷。无 nullary 基例的树（`Expr { Lit Add }`）靠 **equi-recursive ADT**（`α ~ Expr[α]` 允许；`List`/`Fun`/`Tuple` 环仍拒）。e2e `nat_to_int` / `ulist_sum` / `expr_eval`。
 - [x] **`setOf`/`mapOf` 字面量对非 Float 键不去重**：const-fold 压缩 Int/Bool/String/ADT 键（及 RT `finish` 兜底）；e2e `set_map_literal_dedup`。Float ±0 仍见上项。
 - [x] **效应并发 Task/Channel（有栈纤程）**：`scope`/`spawn`/`join`/`joinOpt`/`cancelScope`/`channel`/…；Scheduler 标签；Io；e2e `task_*` / `bad_spawn_*`。
 - [x] **进程共享堆（§7.7）**：A 盘点 + B 进程 `Heap` + C mutator/memo 根注册 + **D worker/io OS 池**（延迟协程、进程就绪队列）。cargo `lumia_rt` 测例仍 `RUST_TEST_THREADS=1`。
@@ -139,24 +139,26 @@
 ### 分配与慢路径
 
 - [ ] **`lumia_show` / 嵌套 show 多段 `String` 分配**：容器插值/`println_auto` 锁+分配密集；dict lookup 每次 `String` 键（`dict.rs`）。宜单缓冲写入 + 名字驻留/`FxHashMap`。
-- [ ] **Map overlay `set` 每次建 `Vec` 对**：`map_ops`；小 δ≤8 可栈上写 payload。`map_get` 总堆分配 Option ADT。
+- [x] **Map overlay `set` 每次建 `Vec` 对**：`map_ops`；小 δ≤8 可栈上写 payload。`map_get` 总堆分配 Option ADT。
+  - **部分**：overlay `set` 已改栈上固定数组；`map_get` Option 堆分配仍在。
 - [x] **`map_find` 小表扫完全表**：`map_core.rs` 首命中即返回。
 - [x] **List take/concat 逐元素拷**：`list/ops.rs` 对齐 `copy_nonoverlapping`。
 
 ### 并行与调度
 
 - [x] **`task_runtime_active` 扫全 fiber 表**：`TASK_RUNTIME_USED` AtomicBool + `note_task_runtime_used()`（自 `assert_task_api_allowed`）；阈值/`available_parallelism` 另项。
-- [ ] **`par_map`/`par_fold` 阈值 `n<64` + 每次 `available_parallelism`**：中等列表常顺序。宜降阈值/缓存并行度。
-- [ ] **默认 `LUMIA_SCHED_WORKERS`/`IO` = 1**：未设 env 时 worker/io 池几乎不并行。宜默认 `available_parallelism`（测例可钉 0/1）。
-- [ ] **纤程默认栈 ~128KiB + spawn 克隆 scope**：细粒度 spawn 偏重。宜更小默认栈 / 栈 freelist。
+- [x] **`par_map`/`par_fold` 阈值 `n<64` + 每次 `available_parallelism`**：阈值改为 `n<16`；worker 数 `OnceLock` 缓存。
+- [x] **默认 `LUMIA_SCHED_WORKERS`/`IO` = 1**：未设 env 时默认 `available_parallelism`（测例仍钉 `0`/`1`）。
+- [x] **纤程默认栈 ~128KiB + spawn 克隆 scope**：默认栈改为 64KiB（`LUMIA_FIBER_STACK_KB` 可覆盖）；spawn 克隆 scope 仍在。
 
 ### 中端优化缺口（相对 DESIGN §7.2）
 
 - [x] **无 DCE pass**：`DcePass` 删未使用的非陷阱纯 let（保留 Int 算术/Neg、调用、分配、控制流）；接在 CopyElim 之后（Debug/Release）。
-- [ ] **融合仅 fold 汇合；缺 build 侧造林**：HIR 仅 `try_fuse_hof_fold`；`flatMap` 总 materialize；Core `ConcatIdent` 注释引用不存在的 `try_fuse_hof_build_method`；无 `Iota`/`Fused` 表示（DESIGN §7.3）。
+- [ ] **融合仅 fold 汇合；缺 build 侧造林**：HIR 仅 `try_fuse_hof_fold`；`flatMap` 总 materialize；无 `Iota`/`Fused` 表示（DESIGN §7.3）。（`ConcatIdent` 过时注释已改准。）
 - [x] **CSE/LICM 禁掉全部 `+−*/%`（含 Float）**：Float 操作数可 CSE/外提；Int 仍禁。Release 在 Inline 后再跑一轮 CSE + LICM。
 - [ ] **Inline 仅体积阈值（≤32 ops）且仅 Release**：无热度；`IndirectCall` 不内联；捕获闭包 **恒堆分配**（escape 强制 `AllocClosure`）。
-- [ ] **空 `setOf()` 不走 Lit**：`repr_select` 空 List→LitList（永生单例），空 Set→HeapSet；对齐需 RT `set_empty` 单例（本次不动 RT）。
+- [x] **空 `setOf()` 不走 Lit**：`repr_select` 空 List→LitList（永生单例），空 Set→HeapSet；对齐需 RT `set_empty` 单例（本次不动 RT）。
+  - **收口**：空 Map/Set 与 RT 合同一致，codegen 直接发 **null**（无堆对象）；不必另做 `set_empty` 单例。
 - [ ] **默认 Int `+/-/*` 走 `llvm.*.with.overflow`**：仅 `nsw_iv` 形标记免检；`nuw` 未用——一般循环付溢出分支，妨碍向量化。
 - [ ] **堆类型 Let 默认 `root_push`**：缺通用 last-use 消根；AdtField→call 仍保守 retain。
 - [ ] **通用 `List[Float]` 向量化靠 `dense_f64_sr` 整函数改写**：未匹配形状仍标量 SSA + RT list；SR 是特化逃生舱而非通用向量管线。
@@ -170,17 +172,17 @@
 
 ## 架构卫生（审计确认，未改代码）
 
-2026-08-15 对照源码核实；同日晚间第二轮、2026-08-16 第三/四轮深挖补充下方「续」条目。crate DAG 无环、`lumia_abi` 集中契约、vscode↔shared 资产脚本、golden Core、以及下方「Core ABI 收口（第 1 期）」仍健康。下列为**结构/一致性**债务（不重复上方未关的 spawn 语义 bug；也不重复已落地项）。
+2026-08-15 对照源码核实；同日晚间第二轮、2026-08-16 第三/四/五轮深挖补充下方「续」条目。crate DAG 无环、`lumia_abi` 集中契约、vscode↔shared 资产脚本、golden Core、以及下方「Core ABI 收口（第 1 期）」仍健康。下列为**结构/一致性**债务（不重复上方未关的 spawn 语义 bug；也不重复已落地项）。
 
 - [ ] **Core 堆/Float ABI 定型上帝模块**：`lambda_lift/float_abi.rs` ≈3583 行（生产+同文件测试；持续膨胀）；`local_heap_ty` 单函数超长穷举。同层并行 `value_ty::join_value_tys` / `float_abi::join_heap_tys` / `mono/ret_ty::join_fixed_ty` 三套合流近拷贝（Float 优先臂注释互相引用）；**codegen 再有第四套** `closure_cap_tys::prefer_cap_ty`（闭包捕获定型，逻辑同族）。`List(Int)` 作「可能堆」软占位再靠 `prefer_concrete_*` 让位。是反复打 Float/channel ABI 补丁的结构根因——应收成单一 lattice / 表驱动 walker，占位用显式未知类型而非 `List[Int]`。
-- [ ] **`channel_hint` 测试淹没生产**：同文件 ≈521 行生产 + ≈1564 行 `#[cfg(test)]`（stamp 种子已接线，体量/双入口问题仍在）。宜外置测试并与堆定型 API 合并。同模式还见：`lumia_rt/.../scheduler.rs`（≈142 生产 / ≈1425 测试）、`lumia_core/mono/mod.rs`（≈13 生产 re-export / ≈958 测试）、`lumia_hir/src/lib.rs`（crate 根 ≈21 行后几乎全是测试）。生产模块行数被扭曲，难以按层发现权威测例。
-- [ ] **领域/基准 SR 侵入 codegen + RT**：`emit_value/{collatz,number_theory,trial_div,affine2,float}_sr.rs` 合计数千行；RT `cn_kernels`/`efe`/`collatz`/`number_theory`/… 再挂一批特化 `#[no_mangle]`（crate 内合计 ≈169）。`name_of`/`is_unit_inc`/`const_of`/`header_lt_*` 等在多份 `*_sr` 复制且签名不完全一致。通用管道被基准形状绑架；应抽共享 pattern 原语，领域内核与语言运行时分层（或标为 optional/bench feature）。
-- [x] **`std.cn` / `std.efe` 进入语言标准库**：已迁出为 `extras.cn` / `extras.efe`（`extras/` + `load/std_mod` 白名单；bench 改 `import extras.*`）。
-- [ ] **`lumia_opt` `dense_f64_sr` 巨型单文件**：≈1916 行整函数 shape 匹配（codegen 双份匹配已消，见下「第 1 期」）。仍缺与其它 `*_sr` 共用的匹配原语；`"lumia_f64_*"` 字符串表继续膨胀时易再漂移。
+- [ ] **`channel_hint` 测试淹没生产**：同文件 ≈645 行生产 + ≈1709 行 `#[cfg(test)]`（stamp 种子已接线，体量/双入口问题仍在）。宜外置测试并与堆定型 API 合并。同模式还见：`lumia_core/mono/mod.rs`（≈13 生产 re-export / ≈1472 测试）、`lumia_hir/src/lib.rs`（crate 根 ≈21 行后几乎全是测试）。**注**：`scheduler.rs` 已变为 ≈1254 生产 / ≈326 测试（不再「测试淹没」；生产膨胀本身仍值得拆分）。
+- [ ] **领域/基准 SR 侵入 codegen + RT**：`emit_value/{collatz,number_theory,trial_div,affine2,float}_sr.rs` 合计 ≈4000+ 行；RT `cn_kernels`/`efe`/`collatz`/`number_theory`/… 再挂一批特化 `#[no_mangle]`（crate 内合计 ≈174）。`name_of`/`is_unit_inc`/`const_of`/`header_lt_*` 等在多份 `*_sr` 复制且签名不完全一致。通用管道被基准形状绑架；应抽共享 pattern 原语，领域内核与语言运行时分层（或标为 optional/bench feature）。
+- [x] **`std.cn` / `std.efe` 进入语言标准库**：已迁出为 `extras.cn` / `extras.efe`（`extras/` + `load/std_mod` 白名单；bench 改 `import extras.*`）。根 `.gitignore` 已补 `!/extras/`；BUILD §3 注明发现路径与克隆前提。
+- [ ] **`lumia_opt` `dense_f64_sr` 巨型单文件**：≈1918 行整函数 shape 匹配（codegen 双份匹配已消，见下「第 1 期」）。仍缺与其它 `*_sr` 共用的匹配原语；`"lumia_f64_*"` 字符串表继续膨胀时易再漂移。
 - [ ] **Core IR 穿透携带 `lumia_hir::Builtin`**：`Value::Builtin` 仍嵌 HIR 枚举（即便已有 `result_ty` stamp）→ `lumia_opt`/`lumia_codegen` 必须依赖 `lumia_hir`+`lumia_syntax`。前端改 builtin 强制中后端重匹配；中后端应只吃 Core 自有 opcode/元数据。
-- [ ] **抬升 lambda 靠 `__lam_` 字符串身份**：仅 `rewrite.rs` 生成 `format!("__lam_{id}")`，但 core 内 `starts_with("__lam_")` ≈116 处（hint/float_abi/fixup/mono…）。缺 `CoreFun` 结构化标志（`is_lifted` / `FunKind`）；改名前缀或同名用户函数会静默误判。同属命名债：单态 `$Float`/`$List_Int`（`MonoKey::suffix`）、常量特化 `$c_…`（`specialize_const::mangle_const_clone`）、trait `__Eq_T_eq`（已有 `mangle_trait_method`）共四套协议，无统一 `FunId`/注册表。
-- [ ] **foreign 类型面是扁平别名旁路**：`parse_type_name` 只认 `ListFloat`/`ListString` 等单标识符（`infer/module.rs`），无 `List[T]`/`Map[K,V]` 语法；`std/linalg|cn|efe` 依赖此旁路。与语言表面类型语法分裂，扩展 FFI 只能继续堆别名。
-- [ ] **`MonoKind` 无法键化 Task/Channel/Fun/Tuple**：`type_to_mono` 对上述（及 Unit/Var）走 `_ => None`；`args_mono_key` 失败则整站跳过克隆。Task/Channel 仅出现在 `type_is_heap_structure` 恢复路径。多态若以 `Task[T]`/`Channel[T]`/真 `Fun` 为实参，单态管线结构性盲区（与 Float ABI 补丁正交）。
+- [x] **抬升 lambda 靠 `__lam_` 字符串身份**：引入 `FunKind::{LiftedLambda,ValGetter}` + `CoreFun::is_lifted_lambda`/`is_val_getter`/`base_name`；lift/val lower 置 kind；生产路径优先 kind（名字前缀作过渡回退）。
+- [ ] **foreign 类型面是扁平别名旁路**：`parse_type_name` 只认 `ListFloat`/`ListString` 等单标识符（`infer/module.rs`），无 `List[T]`/`Map[K,V]` 语法；`std/linalg` 与 `extras.cn|efe` 依赖此旁路。与语言表面类型语法分裂，扩展 FFI 只能继续堆别名。
+- [ ] **`MonoKind` 无法键化 Task/Channel/Tuple**：`type_to_mono` 对上述（及 Unit/Var）走 `_ => None`；`args_mono_key` 失败则整站跳过克隆。**Fun 已可键化**（`MonoKind::Fun` / `FunRef`）；Task/Channel 仅出现在 `type_is_heap_structure` 恢复路径。多态若以 `Task[T]`/`Channel[T]`/Tuple 为实参，单态管线结构性盲区（与 Float ABI 补丁正交）。Fun 键化残留见第五轮 `unwrap_or(Int)` 污染。
 - [ ] **自动并行决策跨 HIR→ty 两阶段**：`list_hof` 在 lower 时先升为 `ListParMap`/`ListParFold`，`lumia_ty::finalize_auto_parallel` 再按 IO/非标量 demote 回顺序 desugar。并行策略散在前端两层，opt/codegen 只见结果；关并行或改安全条件需同时懂 HIR 启发式与 ty 回退。
 - [x] **Lit\* / 小容器阈值 `8` 多处硬编码**：已收成 `lumia_abi::SMALL_CONTAINER_MAX`；escape / ReprSelect / RT `MAP_*`/`SET_SMALL_MAX` 共用。
 - [ ] **跨层错误类型分裂**：syntax/hir `LocatedError`；ty `TypeError`；core/opt 管线大量 `Result<_, String>`；codegen 公开面以 `anyhow` 为主（另有未贯穿的 `CodegenError`）。诊断易丢 span、调用方无法统一处理。
@@ -191,35 +193,37 @@
 - [x] **codegen ADT float_mask 堆/栈近拷贝**：已收成 `emit_adt_set_float_mask`（经 `runtime_fn(ADT_SET_FLOAT_MASK)`）；heap/stack/Option 共用。
 - [ ] **`visit.rs` 未成为分析默认入口**：已有 `for_each_local_mut` / `for_each_block_dfs` 等，但 `float_abi` / `channel_hint` / `closure_cap_tys` / 多份 `*_sr` / escape·memo 仍手写嵌套 walker。新 `Value` 臂易漏改；与上帝模块叠加放大维护面。
 - [x] **关键字多源词表无单一真源**：真源收成 `TokenKind::KEYWORDS` / `SURFACE_SOFT`；LSP semantic+completion 引用之；IDEA 补 `scope`/`spawn`；`check_editor_assets.sh` 对账 tmLanguage+IDEA ⊇ KEYWORDS。TextMate 仍可高亮 `pure`/`fn`（非 lexer 关键字）。
-- [ ] **目标平台 Windows vs 工具脚本全 bash/NixOS**：README/BUILD 宣称 Linux+Windows；`scripts/*.sh`、`env.sh`/`install.sh` 钉死 `/nix/store` 与 bash，仓库无 `.ps1` 工作流。Windows 仅靠 CI 装 LLVM SDK，本地脚本路径与宣称平台不对称。
-- [ ] **安装态编译器绑死构建期源码树**：`std/` 经 `env!("CARGO_MANIFEST_DIR")` + `workspace_root`（`../..`）解析；`ensure_runtime_built` 亦在该根上跑 `cargo -p lumia_rt`。`scripts/install.sh` 只拷贝 `lumia`/`lumia-lsp` 二进制，**不安装 `std/`**，也无 `LUMIA_STD` 一类覆盖。离开原 checkout（或路径失效）后 `import std.*` / 链接 runtime 会断——与「装到 `~/.local` 即可用」叙事冲突。
-- [ ] **`pkg` 版本依赖是假 semver**：`DepSpec::Version("0.1")` 注释写 version req，实际只在 `./deps/<name>` 或 `./vendor/<name>` 找目录，**不解析版本约束**；无 registry/git。与「包管理已落地」观感不符，易误导用户以为有版本求解。
-- [ ] **DESIGN §3.3 与实现类型集漂移**：文档仍列 `Int8…`/`Float32`/`Float64` 与默认 `Float64`；`lumia_ty::Type` 仅有单一 `Int`/`Float`。应标成规划或改成与 MVP 一致。
-- [ ] **`.gitignore` 根白名单过严**：`/*` + 显式 `!` 白名单会导致根目录新增 `LICENSE`/`CHANGELOG`/`CONTRIBUTING` 等默认被忽略；`examples/` 下无扩展名临时二进制亦可能漏忽略。
+- [x] **目标平台 Windows vs 工具脚本全 bash/NixOS**：README/BUILD 宣称 Linux+Windows；`scripts/*.sh`、`env.sh`/`install.sh` 钉死 `/nix/store` 与 bash，仓库无 `.ps1` 工作流。Windows 仅靠 CI 装 LLVM SDK，本地脚本路径与宣称平台不对称。
+  - **部分**：已加 `scripts/env.ps1` 最小 stub；完整 Windows 工作流仍薄。
+- [x] **安装态编译器绑死构建期源码树**：支持 `LUMIA_STD` / `LUMIA_EXTRAS` / `LUMIA_RT_LIB` 覆盖；默认仍回退构建树路径（install 仍不打包 std，但可外置）。
+- [x] **`pkg` 版本依赖是假 semver**：`DepSpec::Version` 注释与缺失目录错误写明「非 semver 求解，仅 `./deps|vendor/<name>`」；无 registry/git（能力面仍窄，见 CLI 条）。
+- [x] **DESIGN §3.3 与实现类型集漂移**：文档改为 MVP `Int`/`Float`；尺寸变体标为规划。
+- [x] **`.gitignore` 根白名单过严**：已补 `!/extras/`（域模块可纳入 VCS）。根目录新增 `LICENSE`/`CHANGELOG` 等仍需显式 `!`；`examples/` 下无扩展名临时二进制仍可能漏忽略。
 - [ ] **`lumia_rt` / `lumia_syntax` 公共 API 过宽**：rt `lib.rs` 大量 `pub use` 展开内部模块；syntax `pub use ast::*`。对比 hir/ty/codegen 的 `pub(crate)` 更收敛——重构边界模糊。
 
 ### 续（2026-08-15 第二轮；不重复上方条目）
 
-- [ ] **Value→Type 三套完整并行 walker**：除已列的 join/prefer 近拷贝外，`value_ty::infer_value_ty_ctx`（≈820 行）、`float_abi::{local,block}_*_heap_ty`、`mono/ret_ty::{value,block}_*_fixed_ty`（≈683 行）各自重匹配几乎全部 `Value`/`Builtin` 臂；ABI 补丁常需改三处。应收成单一 typed analysis API，heap/mono/codegen 作薄客户端。
-- [ ] **lower/ABI 靠魔法迭代上界「收敛」**：`lower/mod.rs` `for _ in 0..6 { fixup_closure_float_caps; specialize_mono_calls }`；`float_abi::collect_fun_cap_tys` `for _ in 0..16`。正确性依赖轮数而非可证明不动点；顺序 bug 表现为静默 ABI 错。宜 worklist/change-flag 直至不动点，并文档化阶段依赖。
-- [ ] **`ClosureCap.as_float` + `float_cap_fixup` 半吊子通道**：IR 上可变 `as_float` 旗标（`rewrite` 写入 → `float_cap_fixup` ≈521 行事后补丁 → codegen `emit_calls` 消费），与 `param_tys`/`ret_ty`/闭包捕获表并行。Float 捕获 ABI 应只从 typed cap 表导出，删掉事后 mutation。
-- [ ] **`mono/specialize.rs` 上帝模块**：≈2125 行集 clone 发现、改写、ret refresh、forwarder 消除、FunRef HOF、Option/Result 载荷规则于一身；几乎每个 mono ABI 修复都落这里。宜按 collect / rewrite / ret_refresh / forwarders 拆分，并与 `ret_ty` 共享 lattice。
+- [ ] **Value→Type 三套完整并行 walker**：除已列的 join/prefer 近拷贝外，`value_ty`（≈955，含 `infer_value_ty_ctx` + 拆出的 `builtin_value_ty`）、`float_abi::{local,block}_*_heap_ty`（`local_heap_ty` 单函数 ≈687）、`mono/ret_ty`（≈720）各自重匹配几乎全部 `Value`/`Builtin` 臂；ABI 补丁常需改三处。应收成单一 typed analysis API，heap/mono/codegen 作薄客户端。
+- [x] **lower/ABI 靠魔法迭代上界「收敛」**：`lower` 的 fixup×mono 环改为 change-flag（`specialize` 无新克隆即停）+ `MAX_FLOAT_MONO_ROUNDS=8`；float_abi/fixup 内层上界仍开放。
+- [ ] **`ClosureCap.as_float` + `float_cap_fixup` 半吊子通道**：IR 上可变 `as_float` 旗标（`rewrite` 写入 → `float_cap_fixup` ≈1231 行事后补丁 → codegen `emit_calls` 消费），与 `param_tys`/`ret_ty`/闭包捕获表并行。Float 捕获 ABI 应只从 typed cap 表导出，删掉事后 mutation。体量/职责继续膨胀见第五轮。
+- [ ] **`mono/specialize.rs` 上帝模块**：≈2135 行集 clone 发现、改写、ret refresh、forwarder 消除、FunRef HOF、Option/Result 载荷规则于一身；几乎每个 mono ABI 修复都落这里。宜按 collect / rewrite / ret_refresh / forwarders 拆分，并与 `ret_ty` 共享 lattice。
 - [ ] **codegen `nsw_iv` 第二块基准形岛屿**：`nsw_iv.rs` ≈1071 行（Collatz/`3*x`、fib、matmul 形 peep），经 `emit_fun` 焊进每个函数 emit。与已列 `*_sr` 同病但未收录——通用 NSW 被热核形状绑架。宜迁 opt / feature-gate，codegen 只发 NSW 标记。
 - [ ] **Core IR 嵌 `lumia_syntax::{BinOp,UnOp}`**：`ir.rs` 算术节点直接用 syntax token 枚举 → opt/codegen 中后端继续依赖 `lumia_syntax`（与已列 HIR `Builtin` 穿透同族、另表面）。lower 边界应收成 `CoreBinOp`/`CoreUnOp`（或 opcode id）。
-- [ ] **第五套函数命名协议 `__val_`**：模块级 `val` → `format!("__val_{name}")`（`core/lower` + `ty/infer/module` + `lower/expr/lit` 镜像）。已列四套（`__lam_` / MonoKey / `$c_` / trait mangle）之外再增字符串身份；宜 `FunKind::ValGetter`（或统一 `FunId`）。
+- [x] **第五套函数命名协议 `__val_`**：`FunKind::ValGetter` 在 lower 置位；`is_val_getter` 优先于 `__val_` 前缀（前缀仍作过渡）。
 - [ ] **Prelude `Option`/`Result` 靠字符串魔改**：`mono/key.rs`、`ret_ty`/`specialize`、`ty/alt`、`ty/infer/expr`、`hir/lower/items` 等处硬编码 `"Option"`/`"Result"` 特判（载荷/擦除/mono）。stdlib ADT 成编译器魔法，非 langitem。宜 prelude 注册表（tag、载荷元数、mono 规则）供 ty/core 消费。
 - [ ] **SSA `Local` + 字符串 `Name`/`Assign` 双寻址**：`Value::Name(String)` + `Op::Assign { name }` 与 SSA 并存；ABI/`slot_tys` 必须双轨跟踪。槽位应统一 `Local`/`SlotId`，名字仅调试打印。
-- [ ] **`InferValueCtx` 可选表蔓延 / `FunIndex` 仅 mono**：`value_ty` 上下文堆 ≈8 个 `Option<&HashMap<…>>`；`fun_index` 仅 mono 用，而 float_abi/fixup/channel_hint/codegen 反复手拼 `fun_ret_tys`。缺共享 `ModuleTables` → 表装配拷贝。
+- [ ] **`InferValueCtx` 可选表蔓延 / `FunIndex` 仅 mono**：`value_ty` 上下文堆 ≈8 个 `Option<&HashMap<…>>`；`fun_index` 仅 mono 用，而 float_abi/fixup/channel_hint/codegen 反复手拼 `fun_ret_tys`。缺共享 `ModuleTables` → 表装配拷贝。`CodegenTypeTables` 已存在但几乎只服务 codegen（半收口见第五轮）。
 - [x] **opt `Pass`→`PipelinePass` 迁移未完 + Release 顺序脆弱**：已删 `trait Pass`；各 pass 为 inherent `run`，管线仅经 `PipelinePass`。Release 多轮顺序仍靠注释（阶段命名/不变量测例另项）。
 - [ ] **Builtin→RT 符号在 `BuiltinInfo` 外覆盖**：codegen `builtin/mod.rs` 按 `Type::List` 把 `ListLen`/`MapSet`/`ListGet` 改道 `lumia_list_len`/`lumia_list_set`/`lumia_list_get`（绕开 info 表里的多态符号）。表驱动 emit 被字符串特判挖空；宜把单态分发收进 `BuiltinInfo` 或 Core opcode。
 - [ ] **HIR `visit` 未被 `lumia_ty` 使用**：`hir/visit.rs` 已有 `for_each_expr`，但 ty 的 `effects`/`alt`/`parallel`/`product_resolve`/`traits`/`free_vars` 全手写 walker（与已列 Core `visit` 欠债同型、前端侧）。新 `Expr` 臂易漏；ty 应变默认走 hir visit。
-- [ ] **堆头 / FunRef 标记 / `TRAIT_*` 未进 `lumia_abi`**：`ObjectHeader`（24B）在 `rt/common.rs`，栈 codegen 硬编码 3×i64 头布局；FunRef 低位 tag 在多处 `const_int(1)`；`TRAIT_SHOW…NUM` 在 `rt/dict.rs`，codegen `emit_trait_dict_registration` 再硬编码同号「须匹配」。layout/trait id 漂移是静默 ABI 破。宜迁 abi + 编译期对账测。
+- [x] **堆头 / FunRef 标记 / `TRAIT_*` 未进 `lumia_abi`**：`OBJECT_HEADER_BYTES`/`WORDS`、`FUNREF_TAG`、`TRAIT_SHOW…NUM` 进 abi；rt `ObjectHeader` 编译期对账；codegen 栈布局与 dict 注册共用常量。
 - [ ] **`runtime_decls` 与 rt `#[no_mangle]` 不对账**：decls 测试只保证「名字唯一 + Builtin `runtime_symbol` 已声明」，不覆盖全量 C 导出（如部分 map/str/dict/memo 计数器可缺席）。非 builtin 直调符号易漏 declare。宜生成或 diff `no_mangle`↔`RUNTIME_DECLS`（测试专用符号白名单）。
 - [ ] **RT FFI 边界 crate 级放行「看似 safe」**：`lumia_rt` `#![allow(clippy::not_unsafe_ptr_arg_deref)]`，大量 `extern "C"` 不以 `unsafe fn` 标出。指针契约在类型系统外；UB 审计难。宜收窄 allow、ABI 边用 `unsafe fn` + 薄安全包装。
 - [ ] **CI/check 纪律分叉（续）**：双方皆 `clippy --exclude lumia`（CLI/LSP/load 从不 `-D warnings`）；CI Linux 用 `llvm-dynamic`，`check.sh` 不用；`install.sh` 的 `--no-default-features` slim-LSP 产物 CI 未测。在已列 `RUST_TEST_THREADS`/editor assets 之外对齐 feature 与入口 crate。
 - [x] **产品版本 / LSP 生命周期无单一真源**（部分）：LSP `serverInfo.version` 已用 `CARGO_PKG_VERSION`；vscode/IDEA 版本漂移与 shutdown/`exit` 行为仍欠。
 - [x] **VS Code 对任意 `Cargo.toml` 工作区激活**：已收窄为 `onLanguage:lumia` + `Lumia.toml` + 命令（去掉 `Cargo.toml` / `std/*.lm` / `examples/*.lm`）。
-- [ ] **根目录探针虽被 ignore 仍占盘**：≈数十～近百个根级可执行文件/`.o`（合计数百 MB），gitignore 白名单已防误提交，但无 `clean_probes` / 强制写入 `target/` 的约定，`ls` 与误跑陈旧探针仍噪。宜脚本清理或构建只输出到 `target/out`。
+- [x] **根目录探针虽被 ignore 仍占盘**：≈115 个根级可执行文件/`.o`（合计 ≈644 MiB），gitignore 白名单已防误提交，但无 `clean_probes` / 强制写入 `target/` 的约定，`ls` 与误跑陈旧探针仍噪。宜脚本清理或构建只输出到 `target/out`。
+  - **收口**：`scripts/clean_probes.sh` 清理根级 ELF/PE 与 `*.o`。
 - [x] **DESIGN「语言不提供 pure」与已落地 `foreign … pure` 矛盾**：§1.1 已注明 FFI 荣誉制例外。
 - [x] **README GC 表述过时**：已改为分代 STW minor + 增量并发 full mark。
 - [x] **Debug 链接不 `--gc-sections` + 跨 profile rt 回退**：Debug 亦 `--gc-sections`/`dead_strip`；跨 profile 默认 `bail`（`LUMIA_ALLOW_CROSS_PROFILE_RT` 可覆盖）。
@@ -232,8 +236,8 @@
 - [ ] **树形 Core 冒充 SSA，无 CFG**：`Value::{If,Loop,Lambda}` 嵌整块 `Block`；`Op` 仅 Let/Effect/Assign/Break/Continue/Return。无基本块图 → 每个中端 pass 自写嵌套 walker；控制与数据同 enum；`Break`/`Continue` 无 loop id，嵌套循环靠 codegen 约定。宜真 CFG（或明确「树 IR + 统一 visitor」并删伪 SSA 叙事）。
 - [ ] **中端仍吃开放 `lumia_ty::Type`，无封闭 Core ABI 类型**：`CoreFun::{param_tys,ret_ty}` / channel hint / float_abi 继续用 `Type::Var` 与哨兵 `Var(u32::MAX)`。与已列 `List(Int)` 软占位正交——整条 ABI 合同是 HM 残留而非闭集 ABI。宜 lower 后收成 `CoreTy` lattice，opt/codegen 只认它。
 - [ ] **效应三套真源**：`lumia_ty::Effect`（含 Var）、`BuiltinEffect`（Pure/Io）、`Op::Let.pure_region` 驱动 CSE/LICM/折叠；另有 `ty/effects.rs` 事后整树审计。opt 可按 `pure_region` CSE 而不机械绑定 `CoreFun.effect`/`BuiltinInfo`。宜单一效应 IR + 派生标记。
-- [ ] **`Scheme` 假类型类袋**：`num_vars`/`ord_vars`/`eq_vars`/`len_vars`/`concat_vars` 与真 `trait_preds` 并列；`unify` 每加一类开放方法就复制一套 HashSet 传播。宜统一谓词 IR（`Num(α)` / `HasLen(α)` …），删并行 `*_vars`。
-- [ ] **类型检查中改写 HIR**：`infer/module` 在检查后 `apply_ufcs_rewrites` / `apply_alt_desugars` / `apply_product_field_rewrites`，再加 `finalize_auto_parallel`。`TypedModule.module` ≠ lower 后 HIR；IDE/测例若缓存 pre-infer 树会静默偏离 Core。宜 ty 只产出 typed + rewrite 表，或明确「typed HIR 才是权威」。
+- [ ] **`Scheme` 假类型类袋**：已扩到 **9** 套平行 `*_vars`（`num`/`ord`/`eq`/`len`/`concat`/`contains`/`set`/`elems`/`take`）与真 `trait_preds` 并列；`unify`/`traits::check_*_bind` 每加一类开放方法就复制一套 HashSet 传播。宜统一谓词 IR（`Num(α)` / `HasLen(α)` …），删并行 `*_vars`。
+- [x] **类型检查中改写 HIR**：BUILD 明确 **Typed HIR 权威**（`TypedModule` 为语义真源）；rewrite 表仍内嵌于 typed module（未拆出独立 rewrite API）。
 - [ ] **`match` 在 typing 前擦成 If**：syntax 有 `Match`；HIR 无 Match 节点（`match_arms`→`If`+`AdtTag`/`MatchFail`）；穷尽性仍吃 `lumia_syntax::MatchArm`。ty 看不见模式；诊断无法挂在 typed Match 上。宜 HIR 保留 Pattern/Match，ty 后再降。
 - [ ] **trait/instance 塌成字符串旁表**：HIR `Item` 仅 Fun/Val；trait 数据在 `Module` 映射 → `CoreModule.trait_methods` → `mono/traits` 再解析短名。无结构化 TraitDef；UFCS 改写与 mono stub 易脱节。
 - [ ] **表面无类型 AST（注解/FFI 皆 `String`）**：syntax/HIR `ty: Option<String>` / `param_ann`；唯一解析在 `ty` 的 `parse_type_name`。比已列 foreign 扁平别名更广——`List[T]` 与 FFI 别名都只能在 ty 里发明解析。宜 syntax 产出 `TypeExpr`。
@@ -242,15 +246,15 @@
 - [ ] **结构化并发在 HIR lower 抹平**：`scope`/`spawn`→`ScopeEnter`/`TaskSpawn` 等 builtin；ty/opt 不见作用域括号，cancel 嵌套无法结构性校验。
 - [ ] **HOF/`for` 大量预类型脱糖**（广于已列 auto-parallel 两阶段）：`list_hof`/`for_loops`/`hof_fuse`/`collections` 在 ty 前冻成循环/builtin；融合形状不可经类型回收。宜保留 HOF 形至 typed 后再降，或把融合推迟到 Core/opt。
 - [ ] **积/和双声明、单一 `Type::Adt`**：HIR `adts`+`products`；ty 只有 `Adt` + `ProductState` 旁表。字段/`with`/Show 永特判。宜一种 ADT 模型（或积为无 tag 特化但仍统一）。
-- [ ] **`Value::Lambda` 抬升后僵尸臂**：lift 后仍遍布 float_abi/fixup/mono/visit；`value_ty` 将其映成 `Int`。宜 lift 不变量 + 删臂，或 ICE。
+- [x] **`Value::Lambda` 抬升后僵尸臂**：`value_ty`/`float_abi` 遇残留 `debug_assert` ICE；codegen 已 bail。
 - [ ] **`CoreModule` 是分析黑板**：`hash_adts`/`trait_methods`/`channel_elem_*` 等在 lower 填充、lambda_lift 再改。元数据所有权与「何时权威」不清。宜不可变 `CoreModule` + 旁路 `AnalysisFacts`。
-- [ ] **Infer 环境用 Int 占位播种**：`Println: Fun([Int],…)`、`listOf→List(Int)`、`mapOf→Map(Int,Int)`（`infer/mod.rs`）。一等/别名用法从错误 scheme 起步，与后期开放定型打架。宜多态 scheme / 未特化 ctor。
-- [ ] **HIR lower API 死字段**：`LowerCtx.ambiguous_product_fields` 仍填充却 `#[allow(dead_code)]`，注释许诺诊断。宜接线或删。
+- [ ] **Infer 环境用 Int 占位播种**：`Println: Fun([Int],…)`、`listOf→List(Int)`、`mapOf→Map(Int,Int)`（`infer/mod.rs`）。一等/别名用法从错误 scheme 起步，与后期开放定型打架。宜多态 scheme / 未特化 ctor。（注意：∀ 量化 id 不可与 `fresh()` 撞车；`Println` 全多态会让开放 `.get` 接受 Map/`Option` 再毒化算术。）
+- [x] **HIR lower API 死字段**：`LowerCtx.ambiguous_product_fields` 已经 `is_ambiguous_product_field` → deferred `AdtField(..., -1, name)` 接线；字段上残留 `#[allow(dead_code)]` 注释过时（可清）。`product_field_owners` 仍死，见第四轮 / 第五轮。
 
 #### 中端 / codegen / RT
 
 - [x] **opt 多处拷贝 `collect_float_locals`**：已收成 `ir_util::collect_float_locals`（DCE/LICM 共用）；CSE 仍自维护 `float_locals`（可后续并入）。
-- [ ] **CSE 用 `format!("{name:?}")` 键 Builtin**：`memo/cse.rs` `ExprKey::Builtin` 依赖 Debug 字符串。Debug 改格式会静默错。宜 `Builtin` 判别式 / 稳定 id。
+- [x] **CSE 用 `format!("{name:?}")` 键 Builtin**：`ExprKey::Builtin` 改为持有 `Builtin`（`Hash` derive）；不再依赖 Debug 字符串。
 - [x] **`CodegenOptions.parallel` 死字段**：已删除；并行仅由 HIR/ty `--no-parallel` 决定。
 - [x] **编译选项四散 + Debug 仍跑 `DenseF64Sr`**：`TypecheckOptions`/`InferOptions`/`OptOptions`/`CodegenOptions` + CLI/manifest；`OptOptions::Default` 与 Debug 管线仍开 dense SR。无单一 options 对象，测例/check/build 易脱节。
 - [~] **三套调用约定并存**：用户函数仍统一 i64；foreign 已由 `ForeignAbi` 驱动 declare（不再在 codegen 按名字猜）。C vs Runtime marshalling 表仍双份，宜继续收成描述表。
@@ -259,25 +263,26 @@
 - [x] **ADT float_mask 第三发射点**：已并入 `emit_adt_set_float_mask`（task Option 路径同用）。
 - [x] **`emit_write_barrier` 死代码**：已删除；注释标明屏障仅在 RT 突变路径，未来直写字段须显式调 `lumia_write_barrier`。
 - [ ] **TLS `BACKEND` 空壳罩进程 `Heap`**：`gc.rs` `thread_local! BACKEND` 调 `MmBackend`，真状态在进程 `Heap` Mutex；方法再入 `with_heap`。看似可插拔/每线程，实为进程全局 + TLS 门面（与「写死 MarkSweep」正交）。宜去掉伪装或真做每线程 nursery。
-- [ ] **Task ↔ GC ↔ list-par 硬耦合**：GC shade 拉 `task::snapshot_sched_gc_roots`；fiber/channel 调 alloc/root；`list/par` 看 `task_runtime_active()`。三子系统无法独立演化；锁序是跨模块不变量。宜窄接口（根枚举 / 「禁并行」谓词）+ 文档化锁序。
+- [ ] **Task ↔ GC ↔ list-par 硬耦合**：GC shade 拉 `task::snapshot_sched_gc_roots`；fiber/channel 调 alloc/root；`list/par` 看 `task_runtime_active()`。三子系统无法独立演化；锁序是跨模块不变量。宜窄接口（根枚举 / 「禁并行」谓词）+ 文档化锁序。**第七轮**：全仓仅两处行内 `heap → sched` 注释，见续「锁序几乎无文档」。
 - [ ] **`lumia_opt` 第三前端入口**：`compile_source_to_optimized*` 再调 `compile_source_to_core*`（仍跳 loader/std）。在已列双管线外再添「像完整编译」的捷径。宜只测 Core IR fixture，或强制经 `check_program`。
 
 #### 工具链 / 文档 / 测试
 
 - [ ] **import 整模块内联、无编译单元边界**：`filter_items` 为私有被调者保留整模块；load 合成扁平 `Module`。无增量编译、无库 ABI；菱形只靠 `(file,name)`。宜真正 CU / 导出摘要。
-- [ ] **`std.*` 发现是编译期 `match`**：`load/std_mod.rs` 白名单路径（不止 cn/efe 内容——**任何**新 std 模块都要改 CLI 重编）。宜目录/清单发现。
-- [ ] **每次 `lumia build` shell `cargo -p lumia_rt`**：`ensure_runtime_built` 绑死 Cargo workspace + PATH 上的 cargo（在「安装不带 std」之上）。已装二进制仍要源码树才能链 RT。宜预构建 rt 随安装分发，或 `LUMIA_RT_LIB`。
+- [x] **`std.*` 发现是编译期 `match`**：按 `std/`/`extras/` 目录发现 `*.lm`（`std.a.b`→`a/b.lm`）；错误列出已知模块；拒绝 `..` 段。
+- [x] **每次 `lumia build` shell `cargo -p lumia_rt`**：`LUMIA_RT_LIB` 指向已有静态库时跳过 cargo；否则仍 `cargo -p lumia_rt`（完整预构建随安装分发仍开放）。
 - [ ] **LSP 进程级 `Mutex<State>` + Full sync only**：无 multi-root / configuration；分析串在一把锁。IDE 扩展性差。
 - [ ] **LSP 功能测跳过 loader**：hover/inlay/semantic 等多走 `check_source`；import/`std`/overlay 回归只能靠真人多文件。宜 loader fixture 测。
-- [ ] **assert 文案改写仅 build 路径**：`annotate_assert_messages` 在 CLI build（及部分 check 测）；`compile_source_to_core*` / 多数 golden 不走 → assert `file:line` 跨入口不一致。
-- [ ] **编辑器 LSP 解析分叉**：vscode 优先 slim `~/.local/lib/lumia/lumia-lsp`；IDEA 总是 `lumia lsp`（胖二进制）。install 双产物按客户端分裂。宜统一解析策略。
+- [x] **assert 文案改写仅 build 路径**：`lumia_hir::annotate_assert_messages`；CLI build 与 `compile_source_to_core*` 共用（单文件标签 `"<input>"`）。
+- [x] **编辑器 LSP 解析分叉**：IDEA 亦优先 slim `~/.local/lib/lumia/lumia-lsp`（与 VS Code 对齐）；显式 settings 路径仍尊重。
 - [x] **VS Code 还对 `std/*.lm` / `examples/*.lm` 激活**（在已列 `Cargo.toml` 之外）：已与 Cargo.toml 一并去掉。
 - [ ] **IDE Run/Check 走 CLI shell，分析走进程内 `check_program`**：两套入口、两套 flag；无共享「工程构建」API。
 - [ ] **`install.sh` 双二进制靠 `/tmp` 拷贝舞**：先 slim 拷 `/tmp`，再编全量，wrapper 路由 `lsp`。竞态/脆弱（超出「CI 未测 slim」）。宜 cargo feature 两次 `--out-dir` 或 workspace 双 bin。
-- [ ] **链接器写死 `clang` + 固定宿主库**：`link.rs`；无 lld/cl 选择。CI/Nix/本机 SDK 漂移单点。宜可配置 linker driver。
+- [x] **链接器写死 `clang` + 固定宿主库**：`LUMIA_LINKER` 可选驱动（默认 `clang`）；宿主库仍按目标 OS 固定（lld/cl 全量适配开放）。
 - [ ] **正确性门四套并行**：e2e（全 CLI）、`opt_correctness`（近克隆 harness）、`golden_core`（无 loader）、RT `task::stress`。loader/std/import bug 易漏 golden；harness 逻辑重复。宜一条「程序管线」测 + 分层夹具。
 - [ ] **`bench_cn_*.sh` 近克隆骨架**：hot/step/efe/fuse/forward/strict 同构；维护随领域 bench 线性涨（结构债，不止「cn 进 std」）。宜共用 `bench_measure` 驱动。
-- [ ] **DESIGN 仍列未实现表示**：`Fused`/`COWList`/`SortedTree`/`BuildFused` 等（§3.5/§7）；Core `ListRepr` 仅 Heap/Lit，Map 无 Sorted/BuildFused。宜标「规划」或删表，避免读成已选型。
+- [x] **DESIGN 仍列未实现表示**：`Fused`/`COWList`/`SortedTree`/`BuildFused` 等（§3.5/§7）；Core `ListRepr` 仅 Heap/Lit，Map 无 Sorted/BuildFused。宜标「规划」或删表，避免读成已选型。
+  - **收口**：DESIGN §3.5/§7 已标注已落地 vs 规划。
 - [x] **BUILD 称 `is_heap_payload` O(1)**：已改为「堆 Mutex + `heap_set` 查找」。
 - [x] **BUILD「semispace 易换」**：见上（难度表愿景化）。
 
@@ -297,17 +302,17 @@
 #### 前端 / 类型 / 诊断
 
 - [ ] **`priv` 在 HIR 被抹掉**：syntax `ValItem.is_priv`；HIR **零** `priv`；`NameVisibility` 仅 loader→ty。单文件 `lower_module`/IDE 路径无法在 IR 上表达或显示隐私。宜 HIR 项带可见性，或明确「仅包图有 priv」。
-- [ ] **穷尽性跳过 trait/instance 方法体**：`check_module_matches` 只走 syntax `Item::Val`；instance 方法后 lower、不经该检查。默认/覆盖里的 `match` 可漏覆盖。
-- [ ] **`trait` 必须源码先于 `instance`（`type` 无此限）**：`collect_instances` 单遍要求 trait 已在表；`scan_type_decls` 与声明顺序无关。用户规则不对称。
+- [x] **穷尽性跳过 trait/instance 方法体**：`check_module_matches` 亦扫 `Trait`/`Instance` 方法体（与 `Val` 同）。
+- [x] **`trait` 必须源码先于 `instance`（`type` 无此限）**：`collect_instances` 两遍（先注册 trait 再校验 instance）；顺序无关。
 - [ ] **互递归多态随声明序**：`infer_module_inner` 先绑 mono 占位，再按 item 序 generalize/`bind_scheme`。靠前函数见 mono 占位、靠后见 scheme——经典 HM 债，无 SCC 不动点文档/实现。
-- [ ] **`Scheme.eff_vars` 死字段**：注释写 `∀ … eff_vars`；`generalize` 恒空 `Vec`；`instantiate` 仍遍历。效应量化有形无实（与已列「效应三套」互补——scheme 形空洞）。
-- [ ] **僵尸 `BinOp::And|Or` 定型臂**：HIR 已把 `and`/`or` 降成 `If`；ty 仍匹配 And/Or。不可达臂 → 算子契约漂移。
-- [ ] **FileId 事后 stamp；诊断格式化无视 `Span.file`**：`Span::new` 固定 `file: 0`；`stamp_module` 后写；`format_diagnostic` 另传 `path`。多文件靠调用方记得 stamp；span 内 file 非真源。
-- [ ] **`${…}` 插值 span 相对片段（定位错）**：嵌套 `parse_expr_str` 从 0 起算；错误常抬到整串 span。hover/caret 在插值内不可靠。
-- [ ] **HIR `Fun`/`Val` 无声明 span**：`decls` 用 `expr_span(body)`；go-to/inlay 指到体而非绑定名。
+- [x] **`Scheme.eff_vars` 死字段**：已从 `Scheme` 删除；效应仍单态/用点新鲜（与「效应三套」正交）。
+- [x] **僵尸 `BinOp::And|Or` 定型臂**：HIR 已把 `and`/`or` 降成 `If`；ty 遇残留臂报错（不再假装可定型）。
+- [x] **FileId 事后 stamp；诊断格式化无视 `Span.file`**：`format_diagnostic_files` 按 `span.file` 取 path/src；loader/`diag_err` 走文件表；单文件 API 仍要求调用方 stamp/`with_file`。
+- [x] **`${…}` 插值 span 相对片段（定位错）**：`StringPart` 带 `abs_start`；片段 parse 后 `offset_expr`/`shift` 回文件坐标；错误 span 亦绝对。
+- [x] **HIR `Fun`/`Val` 无声明 span**：`Fun.span` / `Item::Val.span` 取自 syntax `ValItem`/`Foreign`；`decls` 用声明 span。
 - [ ] **Span 键 rewrite/事实表会撞**：`ufcs_rewrites`/`alt_kinds`/字段/`with` 均 `HashMap<Span,_>`。同 span 静默覆盖；宜 `NodeId`。
 - [ ] **表面糖在 parser 抹平**：`a..b`/`a to b`/裸 `{ it }` 在 parse 成 Call/Lambda；syntax AST ≠ 书写面；fmt/IDE「原样」丢失。宜 typed/HIR 脱糖阶段。
-- [ ] **软关键字 `to`（Ident，非 TokenKind）**：不进 keyword 表；名为 `to` 的绑定可参与中缀糖。工具链无法当硬关键字对账。
+- [x] **软关键字 `to`（Ident，非 TokenKind）**：现为硬关键字 `TokenKind::To`（KEYWORDS/LSP 可对账）；中缀糖与 `to(…)` 主表达式仍产出 `Ident("to")`。
 - [ ] **仅 item 级恢复 + 列 0 同步启发**：`parse_module_recovering`/`synchronize_item`；无表达式级恢复。一处坏表达式可吞整项。
 - [ ] **`bump` 每步 clone 带 String 的 Token**：无 intern/arena。解析所有权模型偏重。
 - [ ] **Lower 错误 `RefCell` 先错即终**：`set_err` 仅在空时写入；嵌套失败丢弃。无法多诊断 lower。
@@ -315,26 +320,28 @@
 - [ ] **`join` 按元数重载 Task vs List**：`from_method` `(join,1)→TaskJoin`、`(join,2)→ListJoin`。同名两 builtin，易误解析。
 - [ ] **`show_methods` 仅 Show 旁路表**：在通用 `trait_methods` 外再特判 Show。其它 trait 无对称快路径——又一层魔法。
 - [ ] **一切积/和盲插 `Eq`/`Show` instance**：`collect_instances` 对所有 product/ADT（含 prelude）插入。派生策略非 langitem/注册表。
-- [ ] **`product_field_owners` 同属死诊断通道**（在已列 `ambiguous_product_fields` 外）：lower 仍填充、从不读。宜接线或删。
-- [ ] **词法接受再拒绝的 token**：`FatArrow`/`DotDotEq` 可 lex；parser 拒 `=>`/`..=`。编辑器可能高亮语言永不接受的记号。
+- [x] **`product_field_owners` 同属死诊断通道**：已删；歧义仍靠 `ambiguous_product_fields`（ty 解析）。
+- [x] **词法接受再拒绝的 `=>`**：`=>` 现为 `TokenKind::Error`（不再有 `FatArrow`）。`..=` 仍 lex 为 `DotDotEq` 以便 parser 给出定向移除提示。
 
 #### RT / opt / codegen
 
-- [ ] **Hash vs 线性靠 payload `size` 启发式，无表示 tag**：`map_is_hash`/`set_is_hash` 用「size ≠ linear nbytes」。布局碰巧同尺寸即误判。宜 `type_id`/显式判别。
+- [x] **Hash vs 线性靠 payload `size` 启发式，无表示 tag**：`TID_HASH`（bit 11）；`map_alloc_hash_tid`/`set_alloc_hash_tid` 打标；`map_is_hash`/`set_is_hash`（及 mark）读 flag；demote→线性时 `tid_without_hash`。
 - [ ] **三套互不兼容的「持久更新」模型**：List/ADT 头 `rc` COW；Map Overlay（`count==-1`、无 RC）；Set 总是整表拷（命中 contains 仍 memcpy）。无共享持久容器层。
-- [ ] **空值表示分叉**：空 List→永生单例；空 Map/Set→**null**。ensure/len/dispatch 永特判 null（与已列「空 setOf 不走 Lit」互补——是表示契约分裂）。
+- [x] **空值表示分叉**：空 List→永生单例；空 Map/Set→**null**。ensure/len/dispatch 永特判 null（与已列「空 setOf 不走 Lit」互补——是表示契约分裂）。
+  - **收口**：接受契约分裂；codegen 空 Map/Set 发 null（不再堆分配空对象）。统一单例若要做需另开。
 - [ ] **Map/Set 开哈希近克隆**：`MAP_ST_*`/`SET_ST_*`、`*_hash_find_slot`/`*_from_linear_to_hash`/`*_finish` 平行拷贝。宜参数化一张表实现。
-- [ ] **「nursery」名不副实**：文档写 nursery；实现是 `alloc` + `h.young.push`（无 bump 区、无延迟入 set）。与已列「分配多次加锁」愿望正交——当前根本不是 bump nursery。
-- [ ] **`HEAP_REBORROW` / `SCHED_REBORROW` 双份不安全重入**：heap 与 sched 同构 raw 指针「持锁再入」。宜单一原语。
+- [x] **「nursery」名不副实**：文档写 nursery；实现是 `alloc` + `h.young.push`（无 bump 区、无延迟入 set）。与已列「分配多次加锁」愿望正交——当前根本不是 bump nursery。
+  - **部分**：`gc`/`common`/`heap` 注释改为「young generation list / 非 bump nursery」；bump 实现仍欠。
+- [x] **`HEAP_REBORROW` / `SCHED_REBORROW` 双份不安全重入**：`rt/reentrant::with_mutex_reentrant` 统一 heap/sched。
 - [ ] **Memo 存 TLS、堆是进程全局**：`MEMO_TF` TLS + `MEMO_REGISTRY` 供 GC 扫；OS worker 间不共享命中。与 `PROCESS_HEAP` 不对称。
 - [ ] **Memo 规划无视 `IndirectCall`/FunRef**：`plan.rs` 只认 `Value::Call{fun:name}`。HOF 站点永不进 Slots——相对 FunRef ABI 栈结构性盲。
-- [ ] **Memo 坏 `fun_id` 软返回 0（像 miss）**：多数 RT 走 `trap_abort`。规划/ID bug 扮成冷 miss。宜统一陷阱策略。
+- [x] **Memo 坏 `fun_id` 软返回 0（像 miss）**：`lumia_memo_l2_*` / `lumia_memo_idx_*` 对越界 `fun_id`（及 null out / idx 越界 store key）`trap_abort`；稠密 key 域外 lookup 仍为 miss。
 - [ ] **Escape 摘要键为函数名字符串**：`HashMap<String, ParamEscape>`；mono/`$c_` 改名是静默摘要键风险（与已列 Fun 字符串协议互补）。
 - [ ] **目标三元组锁宿主；`.o` 留在产物旁**：`compile_module` 默认 triple+宿主 CPU，写出 `.o`/`.obj` 后 clang 链接且不删；无「只出对象不链」。根目录探针噪音的又一来源。
 - [ ] **workspace Inkwell 钉死 `target-x86`**：非 x86 宿主结构性出局（即便 `initialize_all`）。
-- [ ] **Option tag 挂在 `CodegenOptions` 而非 Core**：CLI 从 HIR 刮 tag；codegen 默认 0/1。非 CLI/`emit_verified_llvm_ir` 可与用户 Option 布局偏离。宜 stamp 进 `CoreModule`。
-- [ ] **调度器 kind 魔数未进 `lumia_abi`**：RT `SCHEDULER_WORKER=1`/`IO=2`；HIR `ScopeEnter` 吃任意 Int。与已列 TRAIT_*/FunRef 未进 abi 同族。
-- [ ] **`lumia_abi` 塞了 `workspace_root` 路径助手**：ABI crate 混 type_id 与仓库布局。路径策略非 ABI 合同——宜迁 `lumia`/build 辅助。
+- [x] **Option tag 挂在 `CodegenOptions` 而非 Core**：lower 写入 `CoreModule::{option_some_tag,option_none_tag}`；codegen 从 core 读取，已从 `CodegenOptions` 删除。
+- [x] **调度器 kind 魔数未进 `lumia_abi`**：`SCHEDULER_WORKER=1`/`IO=2` 在 `lumia_abi`；RT `sched_core` re-export。
+- [x] **`lumia_abi` 塞了 `workspace_root` 路径助手**：已迁 `lumia::paths`；测试/codegen 本地 `../..` 辅助。
 - [ ] **`lumia_rt`/`opt`/`core` 无 Cargo feature**：领域核/SIMD/stress 无法包级裁剪；静态库永远全量（与已列 SR 入侵互补——缺门闩）。
 - [ ] **RT 测例半迁**：已有 `crate_tests/{eq,gc,list,…}`，大量 `#[cfg(test)]` 仍嵌生产文件（同 channel_hint/scheduler 淹没模式，RT 内未完成拆分）。
 - [ ] **`env.sh` 版本钉死 Nix LLVM 21.1.8 store glob**：所有 check/e2e/install/bench source 它；非 Nix 仍扩 `/nix/store/*`；升 LLVM 必改钉（在「Windows vs bash」之上的版本耦合）。
@@ -342,28 +349,147 @@
 
 #### LSP / 包 / 编辑器 / CLI
 
-- [ ] **多文件失败被单缓冲恢复掩盖**：`analyze_buffer` 在 `check_program_with_overlays` 失败后，只要 `check_source_recovering` 有 typed/诊断就丢掉真 import/依赖错。可出现假「未导入」或空诊断。
-- [ ] **跨文件诊断发到错误 URI**：用 `loaded.files[span.file]` 算行列，却 `publishDiagnostics` 只发**当前编辑** URI。违 BUILD「多文件按 Span.file」在 LSP 路径的承诺。
-- [ ] **依赖变更不重分析**：`didChange` 只刷本 URI；其它打开且 import 它的缓冲陈旧。vscode 注册了 `**/*.lm` fileEvents，服务端**无** `workspace/didChangeWatchedFiles`。
+- [x] **多文件失败被单缓冲恢复掩盖**：`analyze_buffer` 在 load/typecheck 已有诊断时优先发布之，不再被 `check_source_recovering` 吞掉。
+- [x] **跨文件诊断发到错误 URI**：`analyze` 按 `Span.file` 对应 `path_to_uri` 分批 `publishDiagnostics`；编辑缓冲无本文件错时清空 stale。
+- [x] **依赖变更不重分析**：处理 `workspace/didChangeWatchedFiles`；任意 `.lm` 变更时重分析全部打开缓冲。
 - [ ] **按 URI「当入口」改变可见性**：单独打开库文件 → `entry_file`=它；作为 import 则否。同文件诊断/hover ≠ 真入口包检查。
 - [ ] **overlay 键经 canonicalize，loader `get` 路径身份脆弱**：符号链接/未规范化入口/未保存路径可 miss overlay。
-- [ ] **LSP 严重级别恒 Error；无 code/relatedInformation/tags**：`diagnostics.rs` `severity: 1`。
+- [x] **LSP 严重级别恒 Error；无 code/relatedInformation/tags**：按消息前缀填 `code`（`parse`/`lower`/`type`）；severity 仍为 Error（尚无 Warning 面）；relatedInformation/tags 仍缺。
 - [ ] **多文件 fail-fast 单诊断 vs 恢复路径多诊断**：CLI/LSP 多文件 `typecheck_hir`；缓冲恢复 `typecheck_hir_recovering`。体验分裂。
-- [ ] **`lumia doc` 把 byte offset 当「行」打印**：`doc.rs` 用 `span.start.0`。
-- [ ] **LSP format 末端列用 `lines().last()`**：尾随换行脚枪。
+- [x] **`lumia doc` 把 byte offset 当「行」打印**：`doc.rs` 经 `line_starts`/`byte_to_line_col` 输出 `file:line:col`。
+- [x] **LSP format 末端列用 `lines().last()`**：改为 `byte_to_line_col` 算 EOF（尾随换行正确）。
 - [ ] **LSP 能力面缺口大**：无 references/rename/signatureHelp/codeAction/highlight/workspace symbol/call hierarchy/folding/cancel；不支持方法直接 `-32601`。`initialize` 忽略 client capabilities。
-- [ ] **补全无视光标**：`completion_items` 无前缀/成员/import 上下文，整表倾倒。
-- [ ] **文档符号含内联 import 项且 range 相对 file-0**：inlay 会跳过非本文件 span；outline 不过滤 → 污染/错位大纲。
-- [ ] **Check/Build clap 旗标手写双份**：`--no-parallel`/`--trust-foreign-pure` 等易漂移。宜共享 args 类型。
-- [ ] **无 `lumia run`；`fmt` 零文件静默成功；`pkg` 仅 init/lock/add**：BUILD 能力表与 CLI 表面不齐。
-- [ ] **`Lumia.toml` 不 `deny_unknown_fields`**：拼错 trust/link 键静默吞掉。
-- [ ] **`verify_lockfile` 跳过根 `path=="."` 且忽略多余 lock 包**：根版本漂移与陈旧 lock 条目不失败。
-- [ ] **`trust_foreign_pure` 清单 OR 粘滞、无 CLI 关闭项**：无 flag 时若 `package.trust_foreign_pure=true` 仍信任；LSP 传 `false` 仍继承包 OR。恢复路径硬编码 false 且不读包——三路径信任不一致。BUILD 对 `--link` 有 RCE 警告，对包级 honor pure 未对等警示。
-- [ ] **IDEA「Build File」写 `$dir/$stem`，Run/VS Code 用 `target/lumia/$stem`**：同插件两套产物路径。
-- [ ] **VS Code client 仅 `file` scheme**：未保存/非 file 缓冲不挂 LSP。
-- [ ] **IDEA `resolveProjectEntry` 回退 `examples/hello.lm`**：非 examples 工程默认入口错。
+- [x] **补全无视光标**：按 `position` 取 `prefix_at` 前缀过滤（大小写不敏感前缀）；成员/import 上下文仍粗。
+- [x] **文档符号含内联 import 项且 range 相对 file-0**：outline 跳过非本文件 `Fun`/`Val`（按声明 `span.file`）；`decls` 用声明 span。
+- [x] **Check/Build clap 旗标手写双份**：`--no-parallel` / `--trust-foreign-pure` / `--no-trust-foreign-pure` 收进共享 `SharedCheckArgs`。
+- [ ] **无 `lumia run`；`pkg` 仅 init/lock/add**：BUILD 能力表与 CLI 表面仍不齐（`fmt` 零文件已改为报错退出）。
+- [x] **`Lumia.toml` 不 `deny_unknown_fields`**：`Manifest`/`PackageMeta`/`DepTable` 已 `deny_unknown_fields`；拼错 `trust`/`link` 键会解析失败。
+- [x] **`verify_lockfile` 跳过根 `path=="."` 且忽略多余 lock 包**：根版本亦校验；lock 中多余包名报错；单测 `verify_lockfile_checks_root_version_and_rejects_extras`。
+- [x] **`trust_foreign_pure` 清单 OR 粘滞、无 CLI 关闭项**：`Option` 覆盖（CLI flag / `--no-trust-foreign-pure`）；无 flag 用包设置；LSP 同默认；loader 对包级 trust 打 warning。
+- [x] **IDEA「Build File」写 `$dir/$stem`，Run/VS Code 用 `target/lumia/$stem`**：Build File 与 Run 对齐到 `target/lumia/$stem`。
+- [x] **VS Code client 仅 `file` scheme**：`documentSelector` 含 `untitled`（未保存缓冲可挂 LSP）。
+- [x] **IDEA `resolveProjectEntry` 回退 `examples/hello.lm`**：仅 `src/main.lm` / `main.lm`，否则聚焦 `.lm`；不再误用仓库 hello。
 - [ ] **IDEA liveTemplates 是第三套片段**（不经 shared→vscode 对账）。与已列关键字多源同病、片段面。
 - [ ] **bench 测量骨架在 `bench_cn_*` 外仍克隆**：`bench_cn_vs_torch`/`bench_memo`/`bench_cpu` 本地 `measure_*`/`stats_*`；`bench_memo` 用 `target/debug/lumia`、其它偏 release。宜一律走 `bench_measure.sh`。
+
+### 续（2026-08-16 第五轮；不重复上方条目）
+
+对照源码复核已勾选项、刷新过时度量，并补包装/半收口/mono 键化残留等**新发现**（不重复上帝 `float_abi`、三套 walker、SR/`nsw_iv`、双前端、假 semver、LSP overlay 等已列项）。
+
+- [x] **`extras/` 被根 `.gitignore` 白名单漏掉**：已补 `!/extras/`；`cn.lm`/`efe.lm`/`README.md` 纳入 VCS。BUILD §3 交代可选域模块与发现路径。
+- [x] **文档未交代 `extras` 包装契约**：BUILD §3 workspace 树已列 `extras/`（非语言 std、bench/`import extras.*`、须随 clone 检出）。
+- [ ] **`float_cap_fixup` 膨胀为第二 ABI 上帝模块（≈1231）**：远超原「`as_float` 半吊子通道」叙事——已吞 `refresh_lifted_lambda_rets` / `refresh_alloc_closure_fun_rets` / `upgrade_captured_list_fold_float` / call-site List 升级等；**零 `#[cfg(test)]`**。宜拆 `abi_refresh` 并入 typed cap 表，或外置测例并冻结行数。
+- [ ] **`CodegenTypeTables` 半收口、`ModuleTables` 仍不存在**：「架构清理」已记 `CodegenTypeTables`，但生产路径几乎只在 codegen `emit_fun/helpers` + `closure_cap_tys` 使用；`float_abi`/`float_cap_fixup`/`channel_hint` 仍每遍手拼 `fun_ret_tys`（fixup 内多次重建）。代码中无 `ModuleTables` 符号——是未完成迁移。宜共享模块表 API，或删掉仅语法糖的包装以免叙事超卖。
+- [x] **`MonoKind::Fun` 键化后开放子类型 `unwrap_or(Int)` 静默污染**：`type_to_mono` 对 Fun 形参/返回子键失败时整键 `None`（与 List/Map/Adt 一致）；单测 `args_mono_key_rejects_fun_with_open_param` / `args_mono_key_accepts_ground_fun`。
+- [x] **`MonoKind::FunRef::to_type` 仍映成空参 `Fun([], Int)`**：改为 `Unit` 哨兵；`param_tys`/`ret_ty` 经 `CoreFun` 表解析真 Fun；单测 `funref_to_type_is_not_fake_zero_ary_fun`。
+- [ ] **`lambda_lift/heap.rs` 第四套「是否堆」启发式**：lift 用 `block_result_may_heap_with_params`（Builtin 白名单跳过 `ChannelRecv`/`TaskJoin` 等），与已列 `value_ty` / `float_abi` heap_ty / mono `fixed_ty` 并行。新 Builtin 易漏。宜并入单一 heap lattice，lift 只读 `ret_ty`/policy。
+- [ ] **`runtime_decls.rs` 手维百科 ≈1064 行**：在已列「与 `no_mangle` 不对账」之外——表本身成巨型单文件，每加 RT 导出就手工追加。宜从 `lumia_rt` 导出生成/diff，或按子系统拆表并强制 CI 对账。
+- [ ] **`scheduler.rs` 生产面膨胀（≈1254）**：不再被测试淹没（≈326 测试），但调度/亲和/env/GC 根快照仍挤同一文件；与已列 Task↔GC↔par 耦合叠加。宜按 queue/affinity/pool/roots 拆模块。
+
+### 续（2026-08-16 第六轮；不重复上方条目）
+
+对照源码再审计（core/opt/codegen + ty/hir/syntax/rt/CLI/LSP）；下列为**新发现**或对已列项的明确扩展（不重复上帝 `float_abi`、三套 walker、SR/`nsw_iv`、双/三前端、假 semver、LSP overlay、`Scheme` 袋本身、`ModuleTables` 半收口总述等）。
+
+#### 命名协议 / 契约边界
+
+- [ ] **HIR 脱糖合成名成第六套（+）命名协议**：`list_hof`/`collections`/`hof_fuse`/`for_loops` 生成 `__map_acc_*` / `__fmap_acc_*` / `__tolist_acc_*` / `__fuse_acc_*` / `__fold_x_*` / `__i_*`；`float_cap_fixup` 用 `starts_with` 白/黑名单、`channel_hint` 用 `contains("__map_acc")` 消费。改脱糖前缀会静默改 ABI。与已列 `__lam_`/`__val_` 同族但未收录。宜 `LocalKind`/`SlotRole`，禁止中端解析 `__*_acc` 字符串。
+- [ ] **Inline 再引入 `$inl{tag}_` 槽名**：`opt/inline.rs` 重写可变槽为 `$inl…`；与 `$` mono / `$c_` 共用 `$` 命名空间。宜 inline 用 `Local` 重编号，勿改写字符串槽名。
+- [x] **`lumia_core` 完全不依赖 `lumia_abi`**：core → abi；再导出 `SMALL_CONTAINER_MAX`；`FunKind`/`base_name` 与契约层同仓演进。
+- [x] **`mono_of` 半迁移：查找仍 `split('$')`**：`CoreFun::base_name` + key/`unwrapOr` 跟踪优先 `mono_of`；`strip('$')` 仅作无表回退。
+
+#### 双轨 / 近拷贝 / 包边界撒谎
+
+- [x] **ADT「递归脊柱」分类算法双份**：`lumia_hir::{classify_sum_field_recursive,sum_parametric_arity}`；ty/core lower 共用。
+- [ ] **`mono/traits.rs` 名不副实**：同文件混 `resolve_trait_method_calls`、Binary→`__Num_*` 改写、`directize_funref_calls`。与已列 `lambda_lift` 厨房同病、落在 mono 子模块。宜拆 `directize.rs` / `trait_resolve.rs`。
+- [ ] **双轨函数特化：类型 mono（core）× 常量 specialize（opt）**：`mono/specialize`（`$Float`/`MonoKey`）与 `SpecializeConstPass`（`$c_`）两套 clone/改写 Call；Release 交错顺序靠注释。宜统一 Specialization 框架，或阶段不变量测例。
+- [ ] **Num 实例双路径**：`traits` 把 Add/Mul 改成 Call，`emit_arith::try_emit_num_override` 对残留 Binary 再调 `__Num_T_*`（注释承认「仅 codegen 会打到未特化体」）。半管线/fixture 易漏。宜 lower 边界即成 Call，删 codegen override。
+- [ ] **未知类型普遍 `unwrap_or(Type::Int)` / `ground_open_vars: Var→Int`**：与已列 `List(Int)`「可能堆」软占位 **正交**——这里是「未知→标量 Int」，错误方向相反。宜显式 `CoreTy::Unknown`，禁止 Int 作缺省。
+- [x] **`closure_cap_tys` 预扫填空表 + 魔法 `0..8`**：预扫注入 `core.sum_max_arity` + `fun_param0_identity`；`0..8` 标明为 change-flag 上界。
+- [ ] **`FunTables` 成 codegen 侧第二块 Core 黑板**：镜像 `hash_adts`/`sum_max_arity`/`channel_elem_*`/`adt_variant_names` 并自建 `fun_ret_tys`/`closure_cap_tys`。权威在 CoreModule vs FunTables 不清。宜只读 `AnalysisFacts`/`ModuleTables`，FunTables 仅 LLVM 句柄。
+- [x] **Core/codegen 仍留 `BinOp::And|Or` 僵尸臂**：ty 已拒残留；Core/`emit_arith` 遇残留 debug_assert / ICE（不再当 Binary 求值）。
+
+#### 测试结构 / 死 API / 过宽 pub
+
+- [ ] **上帝生产模块零同文件测试（mono 溺测的镜像）**：`specialize`/`float_cap_fixup`/`ret_ty`/`key`/`traits`/`rewrite` 等大文件 0 近距测；几乎全塞进 `mono/mod.rs` 巨型 `#[cfg(test)]`。与 channel_hint「测试淹没生产」相反。宜按子模块外置测 + 行数预算。
+- [x] **死双轨 API：`lower_hir` / `default_list_repr`**：生产皆 `lower_hir_with_schemes`；`lower_hir` 仅定义+re-export。`default_list_repr` 仅自测，ReprSelect 直接写 `HeapList`。宜删或 `#[deprecated]`。
+  - **收口**：已删二者。
+- [x] **opt 公开 Pass 类型 + 再导出 abi `MEMO_*`**：`pub use EscapePass/InlinePass/…` 可绕开 `PipelinePass` 手跑；MEMO 常量经 opt 成第二入口。宜 `pub(crate)`；MEMO 只从 abi 取。
+  - **收口**：Pass/`plan_memo_*` → `pub(crate)`；MEMO 常数不再经 opt 再导出。
+- [x] **`pass_names` 把 `memo_tf` 挂在末尾，实际最先跑**：`optimize` 在 CSE 前 `plan`/`apply`；`pass_names` 仍 `push` 到尾且测试只 `contains`。工具/诊断顺序撒谎。宜名字列表反映真实顺序。
+  - **收口**：`pass_names(true)` 以 `memo_tf` 为首；单测断言顺序。
+- [x] **间接调用 callee 降失败时静默 `Value::Int(0)`**：`lower/expr/call.rs` 在 `lower_expr(callee)=None` 时造假函数指针。异于「未知→Int」类型缺省——是 **lowering 毒化局部**。宜 ICE/`Err`。
+  - **收口**：记 ICE 并中止该 Call；`lower_hir_with_schemes` → `Result`。
+- [x] **Core lower `Alt`/`With`/`Unit` 用 `panic!`/`expect`**：`control.rs` 显式 panic；管线对外仍 `Result<String>`。坐实已列「panic vs Result」的 **Core lower 具体面**。宜一律 `Err(Ice)` 上抛带 span。
+  - **部分**：Alt/With → `note_ice` + `Err`（带 span）；部分 `expect` 仍留。
+- [x] **`check_program` ↔ `check_program_with_overlays` 近克隆**：同构 load→lower→typecheck，仅 overlays/错误包装不同。异于双前端——是 **CLI 库内重复**。宜共享 `typecheck_loaded`。
+- [x] **`corosensei` 未进 `workspace.dependencies`**：`lumia_rt` 单独 `"0.3"` 浮动。宜迁入 workspace 并钉小版本。
+  - **收口**：workspace `corosensei = "0.3.4"`。
+- [x] **BUILD §3 对 `lumia_rt` 描述过窄 + DESIGN/BUILD「SSA/基本块」措辞**：文档仍写「GC + println*」与「Core SSA / 基本块」；实现含 Task/Channel/memo/域核，IR 为树形嵌套 Block。宜改正 RT 能力表；文档改为「树形 ANF / 伪 SSA」或标规划 CFG（第三轮实现债的**文档面**）。
+- [x] **`dump_fold_diag`：名为测试、实为 `eprintln` 转储**：`#[test] dump_cases` 零 assert；污染 `cargo test -p lumia_opt`。宜删或 `#[ignore]` 诊断 bin。
+  - **收口**：已删该模块。
+- [x] **锁序几乎无文档（证据加细）**：全仓仅 `gc.rs`/`scheduler.rs` 两处行内 `heap → sched`；memo/dict/mutator/channel 未入表。坐实第三轮「Task↔GC↔par…宜文档化锁序」。宜 `LOCK_ORDER`（或 `rt` 模块文档）+ 可选 CI 禁令。
+  - **部分**：`lumia_rt` crate 文档增加 **Lock order**（heap → sched）；CI 禁令仍欠。
+
+#### 前端 / RT / 包装 / 文档
+
+- [ ] **`std.linalg` 仍占语言标准库**：`cn`/`efe` 已迁 `extras/`，`linalg.lm` 仍几乎全是 `foreign`→`lumia_f64_*`，且在 `std_mod` 白名单。域模块迁出不完整。宜迁 `extras.linalg`（或等价），RT 域核走 feature。
+- [ ] **RT `dispatch.rs` = 开放方法的运行时孪生**：`lumia_len`/`concat`/`set`/`elems`/… 按 `type_id` 分发，与 ty 的 `*_vars` 同族语义分属两处。宜单一能力表生成/对账。
+- [ ] **`string_io.rs` 混装 String / IO / stdin / trap**（≈498）：核心字符串表示与 I/O 策略、trap 耦在一起。宜拆 `string` / `io` / `trap`。
+- [ ] **前端巨型分发入口**：`infer_module_inner` / `hir/lower_expr` / `parse_primary` 各两百行级总 match（syntax `expr.rs` 整文件 ≈753）。新糖/项种类都挤同一臂。宜按族拆文件 + sugar 独立 pass。
+- [ ] **LSP semanticTokens（及 format）对已分析缓冲二次 `parse_module_*`**：`Analysis` 不缓存 syntax AST；着色走未 rewrite 表面树、靠 span 对 typed。与「typed HIR 权威」分裂叠加。宜缓存 AST 或明确「着色只认表面」。
+- [x] **hover 硬绑 `span.file == 0`**：`Analysis.buffer_file`；hover/outline 按该 id 过滤（不再假定 entry 恒 0）。
+- [x] **用户 import 三套路径约定无文档**：BUILD 写明 `a/b.lm` → `a/b/mod.lm` → `a.b.lm`；`std`/`extras` 走目录发现。
+- [x] **`item_file` / `item_file_id` 双份**：收拢为 `vis::item_file`；load 复用之。
+- [x] **BUILD「前端统一」叙事超卖 + Pass 列表过时**：§3 改为「共享 typecheck；完整管线仅 `check_program`」；Pass 列表对齐 DEBUG/RELEASE_PASSES。
+- [x] **`annotate_assert_messages` 手写全量 HIR walker**：经 `for_each_expr_mut`；实现迁 `lumia_hir::annotate_assert_messages`。
+- [x] **MIT 声明无 `LICENSE` 文件**：根 `LICENSE` + `.gitignore` `!/LICENSE`。
+- [x] **空 `codegen/src/bin/` + 工作区级 clippy 放行**：已删空 `bin/`；工作区级 clippy allow 收窄仍开放。
+- [ ] **`opt_correctness` 与 e2e harness 近克隆**：各自 `workspace_root`/`lumia_bin`/`build_and_run`。坐实已列「四套正确性门」的骨架分叉。宜抽 `tests/common`。
+
+### 续（2026-08-16 第七轮；不重复上方条目）
+
+对照源码再挖 IR 半废弃路径、mono/opt 内部结构、RT 并发惯例、CLI/编辑器/文档与测试组织；下列为**新发现**（不重复上帝模块、三套 walker、SR 总述、双/三前端、LSP overlay、命名协议总述、`Scheme` 袋、`ModuleTables` 半收口、第六轮已列项等）。
+
+#### IR / 表示半废弃
+
+- [x] **`Op::Effect` 生产路径永不构造**：已删枚举臂；walkers/inline 不再双轨匹配。
+- [x] **`Block.params` 恒为空壳**：已删除字段；形参只在 `CoreFun` / `Value::Lambda.params`。
+- [x] **`MapRepr::{LitMap,SmallMap}` / `SetRepr::LitSet` 名存实亡**：`repr_select` 会写出这些臂；codegen `emit_value_alloc_set` **忽略 `_repr`**，Map/Set 注释写「Always heap+finish」。与已列「空 setOf 不走 Lit」正交——是 **已选出的 Lit\* 被后端丢掉**。宜删死臂，或实现栈路径并对账。
+  - **收口**：`repr_select` 不再选 LitMap/LitSet；枚举保留为 PE 标签；codegen/IR 注释对齐；空容器发 null。
+- [x] **`value_ty` 仍按 LitSet/LitMap「在栈」定根，与发射分裂**：`HeapPolicy::StackLitOk` 对非空 LitSet/LitMap 当非堆；`stack.rs` 注释写 Map 但只有 List/ADT。根/逃逸启发式与真实分配不一致。宜 `may_heap` 与 codegen 共用 Lit 契约表；同步修正 `heap.rs`「栈路径」撒谎注释。
+  - **收口**：Map/Set `value_alloc_may_heap` 仅非空为 true（空=null）；与 heap 发射一致。
+
+#### 模块环 / mono·opt 内部
+
+- [ ] **`ir.rs` ↔ `visit.rs` 包内环依赖**：`ir` 调 `visit::{max_local_in_value,rewrite_value_locals}`，`visit` 再吃 `ir` 类型。难抽 `lumia_ir`。宜 remap/`max_local` 迁入 `ir` 或独立 `ir_ops`。
+- [ ] **`mono/traits` ↔ `mono/specialize` 子模块环**：`traits`←`mono_value_ty`，`specialize`←`directize_block`。与第六轮「traits 名不副实」互补——是 **Rust 模块环**。宜下沉类型助手、拆出 `directize`。
+- [x] **`ret_ty::block_result_fixed_ty` 用空 `sum_max_arity` 建 `FunIndex`**：改为注入调用方 `FunIndex`（含 `module.sum_max_arity` + channel hint）。
+- [x] **间接调用 callee 降失败时静默 `Value::Int(0)`**：见上方第六轮收口（`note_ice` + `Result`）。
+- [x] **Core lower `Alt`/`With` 用 `panic!`**：见上方第六轮收口（`note_ice` + `Err`；部分 `expect` 仍留）。
+- [x] **`specialize_const` 阈值三件套未收口**：见下方 RT 节收口（`lumia_abi::SPECIALIZE_CONST_*` / `INLINE_MAX_EXPAND_DEPTH`）。
+- [ ] **Inline / SpecializeConst 热路径整表 `CoreFun` 深拷**：候选表 `.map(|f| (name, f.clone()))`。异于 Memo O(n²)。宜索引借用，命中再克隆 body。
+- [ ] **`traits`/`specialize` 用空 `Block` `mem::replace` 抽体再改写**：为迁就 `FunIndex` 生命周期付 O(函数数) 双缓冲。宜签名切片索引或 `FunId`/arena。
+
+#### RT / CLI / 编辑器 / 文档 / 测试
+
+- [ ] **RT 全局初始化三轨 + 「一次缓存」双模式**：`OnceLock`（heap/sched/memo/mutator/par）vs `Once`（trap hook/pool）vs 裸 `Mutex::new`（`ADT_SHOW`/`DICTS`）；`par_worker_count` 用 `OnceLock`，`simd_f64` 用 `AtomicU8+Relaxed`。无统一 lazy/缓存惯例，亦无 Atomic Ordering 契约表。宜 `rt::globals` + 文档化 Ordering。
+- [x] **锁序几乎无文档（证据加细）**：见上方第六轮收口（`lumia_rt` Lock order 文档；CI 禁令仍欠）。
+- [x] **域核 `f64_elems`/`require_len` 三文件同文拷贝**：`dense_f64`/`cn_kernels`/`efe` 各一份。异于 SR `name_of` 总述——是 **RT 域 helper 未抽**。宜单一 `list::f64_view`。
+  - **收口**：`list/f64_view.rs`；三文件共用。
+- [x] **`f64_simd.rs` 文件级 `#![allow(dead_code)]`**：整文件放行掩盖真死码。宜按入口 `cfg`/`pub(crate)` 或 feature 门闩。
+  - **收口**：去掉文件级 allow（入口均为 `pub(crate)` 且被域核调用）。
+- [x] **`specialize_const` 阈值三件套未收口**：`MAX_CLONES_PER_FUN=16` / `MAX_TOTAL_CLONES=64` / `MAX_OPS=256`（另 inline `EXPAND_DEPTH`）。异于已列 `SMALL_CONTAINER` 与魔法 `0..N`。宜进 `OptOptions`/`lumia_abi` 并文档化。
+  - **收口**：`lumia_abi::{SPECIALIZE_CONST_*, INLINE_MAX_EXPAND_DEPTH}`；pass 引用之。
+- [x] **「nursery」名不副实**：见上方 RT/opt 节（注释已改准；bump 仍欠）。
+- [x] **`check_program` ↔ `check_program_with_overlays` 近克隆**：见上方第六轮收口（`typecheck_loaded`）。
+- [x] **声称「薄 CLI」，`build` 管线仍困在 `main.rs`**：已抽出 `lumia::build::{build_file,ensure_runtime_built}`（`codegen` feature）；bin 只做 CLI dispatch。
+- [x] **LSP 硬编码 `auto_parallel: true`，编辑器无编译旗标面**：`initialize` + State；vscode/IDEA 设置；另支持 `workspace/didChangeConfiguration` 热更新并重分析打开缓冲。
+- [ ] **编辑器门禁半边 + 版本三角分裂**：CI 仅 Linux 跑 `check_editor_assets`；脚本不管 IDEA 缩进/注释契约；vscode `0.3.9` / IDEA `0.3.0` / workspace `0.1.0` 无对账；IDEA `until-build="262.*"` 钉死单大版本。宜扩展对账脚本 + 文档「编辑器版本 ≠ 语言版本」+ 放宽/矩阵测 IDEA。
+- [x] **`corosensei` 未进 `workspace.dependencies`**：见上方第六轮收口（`0.3.4`）。
+- [x] **BUILD §3 对 `lumia_rt` 描述过窄 + DESIGN/BUILD「SSA/基本块」措辞**：见上方第六轮收口。
+- [x] **`dump_fold_diag`：名为测试、实为 `eprintln` 转储**：见上方第六轮收口（已删）。
+- [ ] **opt pass 测试密度严重不对称**：`copy_elim`/`repr_select` **0** 同文件测；`escape` 较密；`mono/mod` 仍溺测。异于第六轮「上帝模块零近距测」——是 **opt 管线内组织不对称**。宜每 pass 最低 fixture。
+- [ ] **`golden_core` 对 Task/Channel 结构盲 + `crate_tests` 无 task**：≈39 个 golden 无并发 IR；`crate_tests` 仅 eq/gc/list/map_set/memo；e2e `basic.rs` ≈624 行宏海混装。坐实「四套正确性门」中 golden/RT 层缺口。宜最小 spawn/channel fixture；`crate_tests/task/`；e2e 拆 `task.rs`。
 
 ## 架构清理（已落地，详见 git 历史）
 

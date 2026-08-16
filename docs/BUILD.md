@@ -10,7 +10,7 @@
 
 ## 1. 总原则
 
-- **目的地即路线**：Rust 编译器 → Core SSA IR → LLVM → 原生可执行文件 + 可插拔 GC 运行时。
+- **目的地即路线**：Rust 编译器 → Core IR（树形 ANF / 伪 SSA）→ LLVM → 原生可执行文件 + GC/Task 运行时。
 - **必须**：必须编写优雅、统一的代码，健康的项目架构，便于后期维护与发展。
 - **本编译器需要支持 Linux、Windows 平台**；在 GitHub（[TetraploidHuman/Lumia](https://github.com/TetraploidHuman/Lumia)）上维护仓库，并以 CI 跑相关测试用例（`cargo test` + examples e2e）。
 - **不做**：树遍历解释器、字节码 VM、Cranelift 并行后端、JVM / 自托管编译器作为主路径。
@@ -22,7 +22,7 @@ Source.lm
   → Parse (lumia_syntax)
   → HIR (lumia_hir)
   → HM + effect infer (lumia_ty)
-  → Core SSA (lumia_core)
+  → Core IR（树形 ANF / 伪 SSA；规划真 CFG）
   → Opt passes (lumia_opt)     §7.1.1：能证则特化，否则默认
   → LLVM codegen (lumia_codegen)
   → link lumia_rt
@@ -31,7 +31,7 @@ Source.lm
 
 一句话：
 
-> **Rust 编译器 + Core SSA + LLVM codegen + 可插拔 GC ABI（首发 mark-sweep）**；优化与表示选择是语言契约；执行物永远是原生代码；**目标平台：Linux 与 Windows**。
+> **Rust 编译器 + Core IR + LLVM codegen + 可插拔 GC ABI（首发 mark-sweep）**；优化与表示选择是语言契约；执行物永远是原生代码；**目标平台：Linux 与 Windows**。
 
 ---
 
@@ -44,7 +44,7 @@ Source.lm
 | LLVM  | **本机 LLVM 21**（inkwell feature `llvm21-1`）；`LLVM_SYS_211_PREFIX` 指向 `llvm-*-dev` |
 | 链接    | `clang` + 系统 lld；用户程序再链 `liblumia_rt.a`                                          |
 | 解析    | 手写 recursive descent（`lumia_syntax`）                                             |
-| 优化 IR | 唯一中端 **Core**（ANF / SSA-ish）                                                     |
+| 优化 IR | 唯一中端 **Core**（树形 ANF / 伪 SSA；非真 CFG） |
 | 后端    | **唯一 LLVM**（Debug / Release 都走 LLVM）                                             |
 | 泛型    | **单态化**（最终形态）                                                                    |
 | 运行时   | `lumia_rt`：Rust，对外 **C ABI**；GC 为可替换模块                                           |
@@ -69,22 +69,30 @@ crates/
   lumia_syntax   词法 + 递归下降解析，带 Span（AST 在 ast.rs）
   lumia_hir      语法糖降级后的具名 IR + Builtin::info
   lumia_ty       HM 推断 + 效应；共享 typecheck_hir（infer→parallel→effects）
-  lumia_core     Core SSA + HIR→Core；pipeline 走 typecheck_hir
-  lumia_opt      Pass 管道（§7.1.1）：CSE / Memo / Inline / Escape / ReprSelect / CopyElim
+  lumia_core     Core IR（树形 ANF）+ HIR→Core；pipeline 走 typecheck_hir
+  lumia_opt      Pass 管道：见 DEBUG/RELEASE_PASSES（CSE / ConstFold / SpecializeConst / LICM / DenseF64Sr / Escape / Inline / ConcatIdent / ReprSelect / CopyElim / Dce；Release 另有 memo_tf 规划）
   lumia_codegen  inkwell → .o → clang 链接（Codegen 子状态 + CodegenError）
-  lumia_rt       GC ABI + mark-sweep + println*
+  lumia_rt       GC + Task/Channel + List/Map/Set + memo + 域核（C ABI）
   lumia_abi      TYPE_*/MEMO_* + float_contract；packing / classifiers 唯一起源
+std/             语言标准库（`std.io` / `std.option` / …）
+extras/          可选域模块（`extras.cn` / `extras.efe`），**不是**语言 std；bench 用
 examples/        示例 .lm
 scripts/env.sh   NixOS：LLVM_SYS_211_PREFIX + 共享库 PATH（排除 *-static）
+scripts/env.ps1  Windows：最小 LLVM_SYS_211_PREFIX 提示 stub
+scripts/clean_probes.sh  清理仓库根目录探针 ELF/PE 与 *.o
 scripts/e2e.sh   薄包装 → cargo e2e_examples
 scripts/check.sh 本地 CI 冒烟：`cargo test` workspace lib + lumia e2e
 ```
+
+`extras/` 与 `std/` 一样经 workspace 根发现（`load/std_mod` 白名单）；裸 clone 必须能检出该目录（根 `.gitignore` 白名单含 `!/extras/`）。安装态可用 `LUMIA_STD` / `LUMIA_EXTRAS` / `LUMIA_RT_LIB` 覆盖路径（见 CLI 环境变量）。
 
 **abi vs rt（Float / `type_id`）**：`lumia_abi` 拥有 packed `type_id` 构造器、标志位、`ENSURE_*` 符号名与纯分类器；`lumia_rt` 只做指针→header 读取（`list_tid` / `map_tid` / `set_tid`）与 `ensure_*_f64` 语义。C 符号 `lumia_ensure_*_f64` 冻结。
 
 根目录 `[workspace.dependencies]` 已钉 `inkwell` 的 `llvm21-1`。
 
-**前端统一**：CLI、LSP 与 `lumia_core::pipeline` 共用 `lumia_ty::typecheck_hir`（多文件 load / assert 注解仍在 `lumia` lib）。
+**前端共享 typecheck**：CLI / LSP / `lumia_core::pipeline` 共用 `lumia_ty::typecheck_hir` 与 `lumia_hir::annotate_assert_messages`。**完整程序管线**（多文件 load、`std.*`、visibility、包信任）仅 `lumia::check_program` / CLI build；`compile_source_to_core*` 是单文件测夹具，≠ 完整 CLI。
+
+**Typed HIR 权威**：`typecheck_hir` 之后，`TypedModule`（含 rewrite 后的 `module`、`fun_types`/`fun_schemes`、`type_at`）是语义真源；Core lower / IDE hover·inlay 只消费它。勿缓存 pre-infer 的 HIR 当作类型结果。
 
 ---
 
@@ -185,8 +193,13 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumia_rt` 内�
 - `lumia fmt`：基础 pretty-print（4 空格）；`--check` 只校验。
 - 旗舰示例：`examples/word_count.lm`（DESIGN §14：stdin → 分词计数 → `items().sortBy` 打印）。
 - **包管理**：`Lumia.toml` path 依赖 + `lumia pkg init|lock|add`；有 deps 时**必须**有 `Lumia.lock`；`package.link` 自动并入链接参数（见 `examples/use_path_dep.lm`）。
+- **用户 `import` 路径解析**（相对导入目录与包 search roots，按序试第一个存在的文件）：
+  1. `a/b.lm`（`import a.b` → 段用 `/` 连接）
+  2. `a/b/mod.lm`（目录模块；仓库内几乎不用，保留兼容）
+  3. `a.b.lm`（单文件、点号作文件名）
+  `std.*` / `extras.*` 不走此表，改为 bundled 目录发现（`std/io.lm` 等）。
 - **LSP**：`lumia lsp`（stdio；未保存 buffer overlay；诊断；hover；跨文件定义；补全；formatting）。
-- **FFI**：`foreign "C" [pure] fn …`（`Int`/`Bool`/`Float`/`Unit`/`String↔cstr`）+ `--link` / `package.link`（`examples/ffi_abs.lm` / `ffi_strlen.lm` / `ffi_getenv.lm`）。默认效应为 IO；`pure` 需 `--trust-foreign-pure` 或 `package.trust_foreign_pure = true`（荣誉系统，未验证）。
+- **FFI**：`foreign "C" [pure] fn …`（`Int`/`Bool`/`Float`/`Unit`/`String↔cstr`）+ `--link` / `package.link`（`examples/ffi_abs.lm` / `ffi_strlen.lm` / `ffi_getenv.lm`）。默认效应为 IO；`pure` 需 `--trust-foreign-pure` 或 `package.trust_foreign_pure = true`（荣誉系统，未验证；包级开启时 loader 打 warning；可用 `--no-trust-foreign-pure` 强制关闭）。
 - **自动并行**（默认开）：无捕获 lambda 或顶层函数名的纯标量 `List.map` → `ListParMap`（`examples/par_map.lm` / `par_map_fn.lm`）；IO/堆类型/捕获闭包回退顺序（`par_map_capture.lm` / `bad_par_map_io.lm`）。`--no-parallel` 关闭。worker 内禁止堆分配（TLS 堆隔离）。
 - Memo 性能：`scripts/bench_memo.sh`（同参热命中，约 **20×** vs `--no-memo`；报时间 + 峰值 RSS）；`examples/memo_dense.lm` 的 `fib` 下标表约 **1000×+**。
   - `**bench_cpu` 整套**：收益几乎只来自 `fib`（其余核是单遍扫参，无跨调用复用 → 理论无命中）。曾有成本模型把「循环里调用一次」当成命中证据、误挂 4 槽表导致 Collatz **变慢**，已改为要求递归或静态同参复用；稠密表仅结构递减自递归。
@@ -303,7 +316,7 @@ TLS 分代 GC 与 `ListParMap` worker 互斥；在 TLS 上硬开 OS 池会跨线
 | A | **盘点** TLS（下表） | **done** |
 | B | **进程堆骨架**：`Heap` + `Mutex` + 可重入 `with_heap`；分配/barrier/collect 走进程堆；`gc_inhibit` 在 `Heap`（进程级）；`ROOTS`/`CALL_STACK`/`PAR_WORKER` 仍 TLS；**单 mutator**（`RUST_TEST_THREADS=1` for `lumia_rt`） | **done** |
 | C | **多 mutator 根**：`mutator` 注册表 + `root_push/pop` 与堆锁同步；GC `for_each_mutator_root`；memo TLS 同样注册供 mark；单测 `gc_sees_other_thread_roots`。cargo 测例仍共享一堆 → 保持 `RUST_TEST_THREADS=1` | **done** |
-| D | **真池**：进程共享就绪队列 + `worker`/`io` OS 线程；延迟创建协程（钉在首次 resume 线程）；`LUMIA_SCHED_WORKERS`/`IO`（默认 1，`0`=纯协作） | **done** |
+| D | **真池**：进程共享就绪队列 + `worker`/`io` OS 线程；延迟创建协程（钉在首次 resume 线程）；`LUMIA_SCHED_WORKERS`/`IO`（未设时默认 `available_parallelism`，`0`=纯协作） | **done** |
 
 **阶段 A — TLS 分类**
 
@@ -328,8 +341,8 @@ TLS 分代 GC 与 `ListParMap` worker 互斥；在 TLS 上硬开 OS 池会跨线
 
 | 命令                                                                                                         | 职责                                                                |
 | ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| `lumia check <file> [--no-parallel] [--trust-foreign-pure]`                                                | 解析 + 类型 / 效应                                                      |
-| `lumia build <file> [-o out] [--release] [--no-memo] [--no-parallel] [--trust-foreign-pure] [--link ARG]… [--show-ir] [--emit-llvm]` | 原生二进制；默认自动并行安全 `map`；`--no-parallel` 关闭；`--trust-foreign-pure` 信任 FFI `pure`；`--link` 见下；`--no-memo` 关 `T_f`  |
+| `lumia check <file> [--no-parallel] [--trust-foreign-pure|--no-trust-foreign-pure]`                                                | 解析 + 类型 / 效应                                                      |
+| `lumia build <file> [-o out] [--release] [--no-memo] [--no-parallel] [--trust-foreign-pure|--no-trust-foreign-pure] [--link ARG]… [--show-ir] [--emit-llvm]` | 原生二进制；默认自动并行安全 `map`；`--no-parallel` 关闭；`--trust-foreign-pure` 信任 FFI `pure`（覆盖包设置）；`--no-trust-foreign-pure` 强制不信任；`--link` 见下；`--no-memo` 关 `T_f`  |
 | `lumia fmt [files…] [--check]`                                                                             | 基础 pretty-print（4 空格）；`--check` 不写回                               |
 | `lumia doc <file> [-o out.md]`                                                                             | 从 `///` 与公开 API 生成 Markdown（DESIGN §13）                            |
 | `lumia lsp`                                                                                                | LSP（overlay 诊断 + hover + 跨文件定义 + 补全 + format）                     |
@@ -339,6 +352,15 @@ TLS 分代 GC 与 `ListParMap` worker 互斥；在 TLS 上硬开 OS 池会跨线
 包管理：`Lumia.toml` + lockfile 由 `lumia pkg` 管理；**不**把 Cargo 暴露给用户程序。
 
 **`--link` 信任模型**：CLI `--link` 允许绝对 `-L` / `.a`（本机显式意图）。`package.link` 路径限制在包根下。对不可信源码树，任意链接参数等同原生 RCE 面——不要对不可信输入开启宽 `--link`；沙箱需在宿主层做。
+
+**`trust_foreign_pure` 信任模型**：`package.trust_foreign_pure = true` 与 `--trust-foreign-pure` 同属荣誉系统（未验证 FFI 纯度）；loader 会 warning。无 CLI 旗标时用包设置；`--no-trust-foreign-pure` 可强制关闭。LSP 与 CLI 默认一致（`None` → 包设置）；单缓冲恢复路径无包，恒不信任。
+
+**路径覆盖（安装态）**：
+- `LUMIA_STD` — `std.*` 目录（默认 `<workspace>/std`）
+- `LUMIA_EXTRAS` — `extras.*` 目录（默认 `<workspace>/extras`）
+- `LUMIA_RT_LIB` — 预构建 `liblumia_rt.a` / `.lib`；设置后 `lumia build` 跳过 `cargo -p lumia_rt`
+- `LUMIA_LINKER` — 链接驱动（默认 `clang`；可设 `clang++`/`lld` 包装等）
+- `LUMIA_FIBER_STACK_KB` — 纤程栈 KiB（默认 64，下限 16）
 
 **`readStdin` 软上限**：`lumia_rt` 在约 64MiB 后 `trap_abort`（防恶意/巨型 stdin 拖垮主机）。流式读取或可恢复错误需语言层 `Result`/分块 API，当前为故意硬失败。
 
@@ -380,7 +402,7 @@ TLS 分代 GC 与 `ListParMap` worker 互斥；在 TLS 上硬开 OS 池会跨线
 | `scripts/e2e.sh`                     | 薄包装：`cargo build` + `cargo test -p lumia --test e2e_examples` |
 | `crates/lumia/tests/e2e_examples/`   | 跨平台 examples e2e（主路径）        |
 | `.github/workflows/ci.yml`           | Linux / Windows CI          |
-| `crates/lumia_rt/src/lib.rs`         | GC ABI + mark-sweep         |
+| `crates/lumia_rt/src/lib.rs`         | GC + Task/Channel + 容器 + memo + 域核 |
 | `crates/lumia_opt/src/lib.rs`        | Pass 管道                     |
 | `Cargo.toml`                         | workspace + inkwell LLVM 21 |
 

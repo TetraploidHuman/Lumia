@@ -53,9 +53,13 @@ class LumiaBuildFileAction : AnAction(), DumbAware {
     override fun actionPerformed(e: AnActionEvent) {
         val path = currentLmPath(e) ?: return
         val project = e.project ?: return
-        val out = File(File(path).parent, File(path).nameWithoutExtension).path
+        val workDir = project.basePath ?: File(path).parent ?: "."
+        val stem = File(path).nameWithoutExtension
+        val outDir = File(workDir, "target/lumia")
+        outDir.mkdirs()
+        val out = File(outDir, stem).path
         val cmd = GeneralCommandLine(LumiaPaths.resolveLumia(), "build", path, "-o", out)
-            .withWorkDirectory(File(path).parent)
+            .withWorkDirectory(workDir)
             .withCharset(Charsets.UTF_8)
             .withEnvironment("PATH", LumiaPaths.pathWithExtras())
         runInConsole(project, "Lumia Build", cmd)

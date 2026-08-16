@@ -1,7 +1,8 @@
 //! Generational mark-sweep GC backend and allocation ABI.
 //!
-//! Young allocations land in a nursery. Soft threshold → **minor** STW:
-//! mark only young objects; old→young edges come from the **remembered set**
+//! Young allocations are tracked in a **young generation list** (`Heap.young`) —
+//! not a bump-pointer nursery. Soft live-byte threshold → **minor** STW: mark
+//! only young objects; old→young edges come from the **remembered set**
 //! (`lumia_write_barrier`) plus rooted/permanent old objects. Survivors promote.
 //!
 //! Old-generation pressure → **incremental concurrent full mark** (Dijkstra-style

@@ -9,10 +9,13 @@ use std::path::Path;
 pub fn render_file(path: &Path) -> Result<String> {
     let src = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     let module = parse_module(&src).map_err(|e| {
+        let starts = lumia_syntax::line_starts(&src);
+        let (line, col) = lumia_syntax::byte_to_line_col(&starts, e.span.start);
         anyhow::anyhow!(
-            "{}:{}: parse: {}",
+            "{}:{}:{}: parse: {}",
             path.display(),
-            e.span.start.0,
+            line,
+            col,
             e.message
         )
     })?;

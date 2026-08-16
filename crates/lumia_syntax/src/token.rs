@@ -10,10 +10,11 @@ pub struct Token {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StringPart {
     Lit(String),
-    /// `$name`
-    Ident(String),
+    /// `$name` — `abs_start` is the byte offset of `name` in the enclosing file.
+    Ident { name: String, abs_start: u32 },
     /// `${…}` raw source (re-parsed as an expression).
-    ExprSrc(String),
+    /// `abs_start` is the byte offset of `src` (content after `${`) in the enclosing file.
+    ExprSrc { src: String, abs_start: u32 },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -46,6 +47,8 @@ pub enum TokenKind {
     And,
     Or,
     Not,
+    /// Infix map pair sugar `a to b` (DESIGN §3.5.2).
+    To,
     True,
     False,
     Priv,
@@ -71,13 +74,13 @@ pub enum TokenKind {
     DotDot,
     /// Half-open range `a..<b` (Kotlin-style; desugars to `range`).
     DotDotLt,
-    /// Legacy `a..=b` — rejected by the parser (use `a..b`).
+    /// Legacy `a..=b` — lexed so the parser can emit a targeted removal error.
     DotDotEq,
     Colon,
     ColonColon,
     Semi,
     Arrow,    // ->
-    FatArrow, // => (rejected by parser; reserved)
+    // (no FatArrow: `=>` lexes as Error)
     PipePipe, // >>
     Eq,
     EqEq,
@@ -108,8 +111,8 @@ impl TokenKind {
     /// editors may still highlight them as surface soft keywords.
     pub const KEYWORDS: &[&str] = &[
         "module", "import", "val", "var", "type", "if", "else", "match", "for", "in", "break",
-        "continue", "return", "alt", "and", "or", "not", "true", "false", "priv", "as", "trait",
-        "instance", "requires", "with", "effect", "scope", "spawn", "foreign",
+        "continue", "return", "alt", "and", "or", "not", "to", "true", "false", "priv", "as",
+        "trait", "instance", "requires", "with", "effect", "scope", "spawn", "foreign",
     ];
 
     /// Highlight-only spellings used in `foreign … fn` / `pure fn` surface syntax.
@@ -134,6 +137,7 @@ impl TokenKind {
             "and" => TokenKind::And,
             "or" => TokenKind::Or,
             "not" => TokenKind::Not,
+            "to" => TokenKind::To,
             "true" => TokenKind::True,
             "false" => TokenKind::False,
             "priv" => TokenKind::Priv,

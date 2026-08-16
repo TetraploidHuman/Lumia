@@ -5,6 +5,7 @@
 //! Callees that use `var` (Assign / Name) are allowed: slot names are renamed
 //! to `$inl{tag}_…` so they cannot clash with the caller's mutable slots.
 
+use lumia_abi::INLINE_MAX_EXPAND_DEPTH;
 use lumia_core::{
     block_calls, count_ops, for_each_block_dfs, has_early_return, max_local_in_fun,
     rewrite_block_locals, Block, CoreFun, CoreModule, Local, Op, Value,
@@ -14,9 +15,6 @@ use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 /// Max SSA ops in callee body (including nested) before we refuse to inline.
 /// Sized to cover small helpers with a loop + vars (e.g. `isPrime`, `collatzSteps`).
 const INLINE_MAX_OPS: usize = 32;
-
-/// Cap nested expand depth (mutual a↔b both inlineable must not recurse forever).
-const INLINE_MAX_EXPAND_DEPTH: usize = 8;
 
 pub struct InlinePass;
 
@@ -108,7 +106,6 @@ fn inline_block(
                                 // Callee snapshot may still contain calls to other
                                 // inlineable leaves — expand those against the same map.
                                 let mut nested = Block {
-                                    params: vec![],
                                     ops: prelude,
                                     result: Some(result),
                                 };
@@ -141,12 +138,6 @@ fn inline_block(
                     value,
                     pure_region,
                 });
-            }
-            Op::Effect { mut value } => {
-                inline_value(
-                    &mut value, inlineable, caller, next, name_tag, expanding, depth,
-                );
-                out.push(Op::Effect { value });
             }
             other => out.push(other),
         }
@@ -247,7 +238,6 @@ fn collect_defined(block: &Block, defined: &mut HashSet<u32>) {
                 defined.insert(local.0);
                 collect_defined_value(value, defined);
             }
-            Op::Effect { value } => collect_defined_value(value, defined),
             _ => {}
         }
     }
@@ -292,9 +282,6 @@ fn collect_slot_names(block: &Block, names: &mut HashSet<String>) {
                 Op::Let {
                     value: Value::Name(n),
                     ..
-                }
-                | Op::Effect {
-                    value: Value::Name(n),
                 } => {
                     names.insert(n.clone());
                 }
@@ -315,7 +302,7 @@ fn rewrite_block_slot_names(block: &mut Block, remap: &HashMap<String, String>) 
                     *name = n.clone();
                 }
             }
-            Op::Let { value, .. } | Op::Effect { value } => {
+            Op::Let { value, .. } => {
                 rewrite_value_slot_names(value, remap);
             }
             _ => {}
@@ -355,7 +342,7 @@ fn rewrite_value_slot_names(value: &mut Value, remap: &HashMap<String, String>) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lumia_core::{has_assign_or_name, Block, CoreFun, CoreModule, Op, Value};
+    use lumia_core::{has_assign_or_name, Block, CoreFun, CoreModule, Op, Value, FunKind};
     use lumia_syntax::BinOp;
     use lumia_ty::{Effect, Type};
 
@@ -367,7 +354,6 @@ mod tests {
             param_names: vec!["a".into(), "b".into()],
             param_tys: vec![Type::Int, Type::Int],
             body: Block {
-                params: vec![],
                 ops: vec![Op::Let {
                     local: Local(2),
                     value: Value::Binary {
@@ -388,6 +374,7 @@ mod tests {
             escaping: HashSet::default(),
             scheme_poly: false,
             mono_of: None,
+            kind: FunKind::Normal,
         }
     }
 
@@ -403,7 +390,6 @@ mod tests {
                     param_names: vec![],
                     param_tys: vec![],
                     body: Block {
-                        params: vec![],
                         ops: vec![
                             Op::Let {
                                 local: Local(0),
@@ -435,6 +421,7 @@ mod tests {
                     escaping: HashSet::default(),
                     scheme_poly: false,
                     mono_of: None,
+                    kind: FunKind::Normal,
                 },
             ],
         );
@@ -471,7 +458,6 @@ mod tests {
             param_names: vec!["n".into()],
             param_tys: vec![Type::Int],
             body: Block {
-                params: vec![],
                 ops: vec![
                     Op::Assign {
                         name: "x".into(),
@@ -517,6 +503,7 @@ mod tests {
             escaping: HashSet::default(),
             scheme_poly: false,
             mono_of: None,
+            kind: FunKind::Normal,
         };
         assert!(has_assign_or_name(&bump.body));
         assert!(is_inlineable(&bump));
@@ -531,7 +518,6 @@ mod tests {
                     param_names: vec![],
                     param_tys: vec![],
                     body: Block {
-                        params: vec![],
                         ops: vec![
                             Op::Let {
                                 local: Local(0),
@@ -567,6 +553,7 @@ mod tests {
                     escaping: HashSet::default(),
                     scheme_poly: false,
                     mono_of: None,
+                    kind: FunKind::Normal,
                 },
             ],
         );
@@ -614,7 +601,6 @@ mod tests {
             param_names: vec!["x".into()],
             param_tys: vec![Type::Int],
             body: Block {
-                params: vec![],
                 ops: vec![Op::Return { value: Local(0) }],
                 result: None,
             },
@@ -627,6 +613,7 @@ mod tests {
             escaping: HashSet::default(),
             scheme_poly: false,
             mono_of: None,
+            kind: FunKind::Normal,
         };
         assert!(!is_inlineable(&f));
     }
@@ -640,7 +627,6 @@ mod tests {
             param_names: vec!["x".into()],
             param_tys: vec![Type::Int],
             body: Block {
-                params: vec![],
                 ops: vec![Op::Let {
                     local: Local(1),
                     value: Value::Call {
@@ -660,6 +646,7 @@ mod tests {
             escaping: HashSet::default(),
             scheme_poly: false,
             mono_of: None,
+            kind: FunKind::Normal,
         };
         let b = CoreFun {
             name: "b".into(),
@@ -667,7 +654,6 @@ mod tests {
             param_names: vec!["x".into()],
             param_tys: vec![Type::Int],
             body: Block {
-                params: vec![],
                 ops: vec![Op::Let {
                     local: Local(1),
                     value: Value::Call {
@@ -687,6 +673,7 @@ mod tests {
             escaping: HashSet::default(),
             scheme_poly: false,
             mono_of: None,
+            kind: FunKind::Normal,
         };
         let mut module = CoreModule::with_functions(
             "M",
@@ -699,7 +686,6 @@ mod tests {
                     param_names: vec![],
                     param_tys: vec![],
                     body: Block {
-                        params: vec![],
                         ops: vec![
                             Op::Let {
                                 local: Local(0),
@@ -726,6 +712,7 @@ mod tests {
                     escaping: HashSet::default(),
                     scheme_poly: false,
                     mono_of: None,
+                    kind: FunKind::Normal,
                 },
             ],
         );

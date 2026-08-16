@@ -26,16 +26,12 @@ pub(super) fn analyze_captures(body: &Block, params: &[Local]) -> (Vec<Local>, V
 }
 
 fn collect_defined_locals(block: &Block, defined: &mut HashSet<u32>) {
-    for p in &block.params {
-        defined.insert(p.0);
-    }
     for op in &block.ops {
         match op {
             Op::Let { local, value, .. } => {
                 defined.insert(local.0);
                 collect_defined_in_value(value, defined);
             }
-            Op::Effect { value, .. } => collect_defined_in_value(value, defined),
             Op::Assign { .. } | Op::Break | Op::Continue | Op::Return { .. } => {}
         }
     }
@@ -60,7 +56,7 @@ fn collect_free(
 ) {
     for op in &block.ops {
         match op {
-            Op::Let { value, .. } | Op::Effect { value, .. } => {
+            Op::Let { value, .. } => {
                 collect_free_in_value(value, used_locals, bound_names, free_names);
             }
             Op::Assign { name, value } => {
@@ -137,7 +133,6 @@ mod tests {
 
     fn empty_block() -> Block {
         Block {
-            params: vec![],
             ops: vec![],
             result: None,
         }
@@ -147,7 +142,6 @@ mod tests {
     fn local_mut_loop_counter_is_not_captured() {
         // `__i := 1; loop { load __i; ... }` — classic `for` lowering.
         let body = Block {
-            params: vec![],
             ops: vec![
                 Op::Assign {
                     name: "__i".into(),
@@ -157,7 +151,6 @@ mod tests {
                     local: Local(1),
                     value: Value::Loop {
                         header: Box::new(Block {
-                            params: vec![],
                             ops: vec![Op::Let {
                                 local: Local(2),
                                 value: Value::Name("__i".into()),
@@ -167,7 +160,6 @@ mod tests {
                         }),
                         body: Box::new(empty_block()),
                         latch: Box::new(Block {
-                            params: vec![],
                             ops: vec![Op::Assign {
                                 name: "__i".into(),
                                 value: Local(3),
@@ -187,7 +179,6 @@ mod tests {
     #[test]
     fn outer_mut_load_is_captured() {
         let body = Block {
-            params: vec![Local(10)],
             ops: vec![
                 Op::Let {
                     local: Local(0),

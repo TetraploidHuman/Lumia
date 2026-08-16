@@ -8,16 +8,17 @@ use corosensei::{Coroutine, Yielder};
 use rustc_hash::FxHashMap;
 use std::cell::Cell;
 use std::collections::VecDeque;
-use std::sync::{Condvar, Mutex, MutexGuard, OnceLock};
+use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::Duration;
+
+use crate::reentrant::with_mutex_reentrant;
 
 pub type FiberId = u64;
 pub type TaskId = u64;
 pub type ChannelId = u64;
 pub type ScopeId = u64;
 
-pub const SCHEDULER_WORKER: i64 = 1;
-pub const SCHEDULER_IO: i64 = 2;
+pub use lumia_abi::{SCHEDULER_IO, SCHEDULER_WORKER};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SchedulerKind {
@@ -246,29 +247,7 @@ thread_local! {
 }
 
 pub fn with_sched<R>(f: impl FnOnce(&mut SchedCore) -> R) -> R {
-    SCHED_DEPTH.with(|depth| {
-        if depth.get() > 0 {
-            let p = SCHED_REBORROW.with(|c| c.get());
-            debug_assert!(!p.is_null());
-            return f(unsafe { &mut *p });
-        }
-        let mut guard: MutexGuard<'static, SchedCore> = sched_box()
-            .core
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let ptr = &mut *guard as *mut SchedCore;
-        SCHED_REBORROW.with(|c| c.set(ptr));
-        depth.set(1);
-        struct Clear;
-        impl Drop for Clear {
-            fn drop(&mut self) {
-                SCHED_DEPTH.with(|d| d.set(0));
-                SCHED_REBORROW.with(|c| c.set(std::ptr::null_mut()));
-            }
-        }
-        let _clear = Clear;
-        f(&mut *guard)
-    })
+    with_mutex_reentrant(&sched_box().core, &SCHED_DEPTH, &SCHED_REBORROW, f)
 }
 
 pub fn sched_notify() {

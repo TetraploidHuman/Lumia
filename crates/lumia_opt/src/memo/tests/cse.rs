@@ -9,7 +9,6 @@ fn cse_dedups_int_and_nontrapping_binary() {
             "main",
             vec![],
             Block {
-                params: vec![],
                 ops: vec![
                     Op::Let {
                         local: Local(0),
@@ -70,7 +69,6 @@ fn cse_preserves_distinct_external_calls() {
         "getpid",
         vec![],
         Block {
-            params: vec![],
             ops: vec![],
             result: None,
         },
@@ -86,7 +84,6 @@ fn cse_preserves_distinct_external_calls() {
                 "main",
                 vec![],
                 Block {
-                    params: vec![],
                     ops: vec![
                         Op::Let {
                             local: Local(0),
@@ -144,7 +141,6 @@ fn cse_dedups_float_arith() {
             "main",
             vec![],
             Block {
-                params: vec![],
                 ops: vec![
                     Op::Let {
                         local: Local(0),
@@ -203,7 +199,6 @@ fn cse_does_not_dedup_int_mul() {
             "main",
             vec![],
             Block {
-                params: vec![],
                 ops: vec![
                     Op::Let {
                         local: Local(0),

@@ -8,11 +8,13 @@ use rustc_hash::FxHashSet;
 use std::cell::Cell;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{Mutex, OnceLock};
 
 use crate::common::ObjectHeader;
+use crate::reentrant::with_mutex_reentrant;
 
 /// Soft young / old live-byte thresholds (defaults match historical TLS values).
+/// Young objects live in `Heap.young` (generation list — not a bump nursery).
 pub(crate) const DEFAULT_YOUNG_LIMIT: usize = 1024 * 1024;
 pub(crate) const DEFAULT_HEAP_LIMIT: usize = 8 * 1024 * 1024;
 
@@ -109,29 +111,7 @@ thread_local! {
 
 /// Run `f` with exclusive access to the process heap (reentrant on the same thread).
 pub(crate) fn with_heap<R>(f: impl FnOnce(&mut Heap) -> R) -> R {
-    HEAP_RECURSION.with(|depth| {
-        if depth.get() > 0 {
-            let p = HEAP_REBORROW.with(|c| c.get());
-            debug_assert!(!p.is_null());
-            // Safety: same thread still holds the MutexGuard that pinned this pointer.
-            return f(unsafe { &mut *p });
-        }
-        let mut guard: MutexGuard<'static, Heap> = process_heap()
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let ptr = &mut *guard as *mut Heap;
-        HEAP_REBORROW.with(|c| c.set(ptr));
-        depth.set(1);
-        struct Clear;
-        impl Drop for Clear {
-            fn drop(&mut self) {
-                HEAP_RECURSION.with(|d| d.set(0));
-                HEAP_REBORROW.with(|c| c.set(ptr::null_mut()));
-            }
-        }
-        let _clear = Clear;
-        f(&mut *guard)
-    })
+    with_mutex_reentrant(process_heap(), &HEAP_RECURSION, &HEAP_REBORROW, f)
 }
 
 #[cfg(test)]

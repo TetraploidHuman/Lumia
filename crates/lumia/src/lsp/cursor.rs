@@ -33,9 +33,23 @@ pub(super) fn ident_at(src: &str, byte: u32) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+/// Incomplete identifier prefix ending at `byte` (for completion filtering).
+/// Unlike [`ident_at`], does not extend past the cursor.
+pub(super) fn prefix_at(src: &str, byte: u32) -> String {
+    let bytes = src.as_bytes();
+    let end = (byte as usize).min(bytes.len());
+    let mut i = end;
+    while i > 0 && (bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_') {
+        i -= 1;
+    }
+    std::str::from_utf8(&bytes[i..end])
+        .unwrap_or("")
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ident_at, pos_to_byte};
+    use super::{ident_at, pos_to_byte, prefix_at};
 
     #[test]
     fn pos_to_byte_maps_line_and_character() {
@@ -54,5 +68,13 @@ mod tests {
         assert_eq!(ident_at(src, 22), Some("x".to_string()));
         assert_eq!(ident_at(src, 6), None); // on '='
         assert_eq!(ident_at(src, 0), Some("val".to_string()));
+    }
+
+    #[test]
+    fn prefix_at_stops_at_cursor() {
+        let src = "val print";
+        assert_eq!(prefix_at(src, src.len() as u32), "print");
+        assert_eq!(prefix_at(src, 5), "p"); // after "val p"
+        assert_eq!(prefix_at(src, 4), ""); // after "val "
     }
 }

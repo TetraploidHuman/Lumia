@@ -24,6 +24,15 @@ impl Span {
         Self { file, ..self }
     }
 
+    /// Shift byte range by `delta` (used when rebasing `${…}` fragment spans).
+    pub fn shift(self, delta: u32) -> Self {
+        Self {
+            file: self.file,
+            start: BytePos(self.start.0.saturating_add(delta)),
+            end: BytePos(self.end.0.saturating_add(delta)),
+        }
+    }
+
     pub fn merge(self, other: Span) -> Span {
         debug_assert_eq!(self.file, other.file, "merge spans from different files");
         Span {

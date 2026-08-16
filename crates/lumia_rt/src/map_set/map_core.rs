@@ -66,13 +66,7 @@ pub(crate) fn map_is_hash(map: *mut u8) -> bool {
     if map.is_null() || map_is_overlay(map) {
         return false;
     }
-    unsafe {
-        let n = *(map as *const i64);
-        if n < 0 {
-            return false;
-        }
-        (*header_from_payload(map)).size as usize != map_linear_nbytes(n)
-    }
+    unsafe { lumia_abi::tid_hash((*header_from_payload(map)).type_id) }
 }
 
 pub(crate) unsafe fn map_overlay_parent(map: *mut u8) -> *mut u8 {
@@ -275,7 +269,7 @@ pub(crate) fn map_mark_payload(payload: *mut u8, size: usize, float_keys: bool, 
             return;
         }
         let n = n0;
-        if size == map_linear_nbytes(n) {
+        if !lumia_abi::tid_hash((*header_from_payload(payload)).type_id) {
             for i in 0..n as usize {
                 if !float_keys {
                     mark_value(*base.add(1 + i * 2));
@@ -445,7 +439,7 @@ pub(crate) fn alloc_adt(tag: i64, fields: &[i64]) -> *mut u8 {
 
 pub(crate) unsafe fn map_alloc_hash_tid(cap: usize, count: i64, tid: u32) -> *mut u8 {
     let nbytes = map_hash_nbytes(cap) as u64;
-    let dest = lumia_alloc(nbytes, tid);
+    let dest = lumia_alloc(nbytes, lumia_abi::tid_with_hash(tid));
     if dest.is_null() {
         trap_abort("lumia: map hash OOM");
     }

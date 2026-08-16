@@ -10,7 +10,7 @@ use crate::vis::{
 };
 use anyhow::{bail, Context, Result};
 use lumia_syntax::{
-    format_diagnostic, parse_module, stamp_module, Import, ImportNames, Item, Module,
+    format_diagnostic_files, parse_module, stamp_module, Import, ImportNames, Item, Module,
 };
 use lumia_ty::NameVisibility;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
@@ -177,9 +177,14 @@ pub(super) fn load_module_file_uncached(
         src: src.clone(),
     });
     let mut m = parse_module(&src).map_err(|e| {
-        anyhow::anyhow!(format_diagnostic(
-            &path_label(path),
-            &src,
+        let labels: Vec<String> = files.iter().map(|f| path_label(&f.path)).collect();
+        let table: Vec<(&str, &str)> = labels
+            .iter()
+            .zip(files.iter())
+            .map(|(lab, f)| (lab.as_str(), f.src.as_str()))
+            .collect();
+        anyhow::anyhow!(format_diagnostic_files(
+            &table,
             e.span.with_file(file_id),
             "parse",
             &e.message,

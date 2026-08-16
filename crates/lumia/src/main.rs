@@ -1,7 +1,7 @@
 //! Lumia CLI — thin front-end over the `lumia` library.
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use lumia::check::check_program;
 use lumia::load::path_label;
 use lumia::pkg;
@@ -12,16 +12,6 @@ use std::path::{Path, PathBuf};
 
 #[cfg(not(feature = "codegen"))]
 use anyhow::bail;
-#[cfg(feature = "codegen")]
-use lumia::check::annotate_assert_messages;
-#[cfg(feature = "codegen")]
-use lumia_codegen::{compile_module, find_runtime_lib_prefer, CodegenOptions};
-#[cfg(feature = "codegen")]
-use lumia_core::{format_module, lower_hir_with_schemes};
-#[cfg(feature = "codegen")]
-use lumia_opt::{optimize, OptOptions};
-#[cfg(feature = "codegen")]
-use std::process::Command;
 
 #[derive(Parser, Debug)]
 #[command(name = "lumia", version, about = "Lumia compiler")]
@@ -30,17 +20,40 @@ struct Cli {
     cmd: Commands,
 }
 
+/// Flags shared by `check` and `build` (keep clap help / defaults in sync).
+#[derive(Args, Debug, Clone)]
+struct SharedCheckArgs {
+    /// Disable auto-parallel `List.map` (default: on when safe; DESIGN §11.1).
+    #[arg(long = "no-parallel")]
+    no_parallel: bool,
+    /// Trust `foreign "C" pure` (FFI purity is not verified). Overrides package.
+    #[arg(long = "trust-foreign-pure", conflicts_with = "no_trust_foreign_pure")]
+    trust_foreign_pure: bool,
+    /// Refuse `foreign "C" pure` even if `package.trust_foreign_pure` is set.
+    #[arg(long = "no-trust-foreign-pure", conflicts_with = "trust_foreign_pure")]
+    no_trust_foreign_pure: bool,
+}
+
+impl SharedCheckArgs {
+    /// `Some` = CLI override; `None` = honor `Lumia.toml` / default false.
+    fn trust_foreign_pure_override(&self) -> Option<bool> {
+        if self.no_trust_foreign_pure {
+            Some(false)
+        } else if self.trust_foreign_pure {
+            Some(true)
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Type- and effect-check only
     Check {
         file: PathBuf,
-        /// Disable auto-parallel `List.map` (default: on when safe).
-        #[arg(long = "no-parallel")]
-        no_parallel: bool,
-        /// Trust `foreign "C" pure` (FFI purity is not verified).
-        #[arg(long = "trust-foreign-pure")]
-        trust_foreign_pure: bool,
+        #[command(flatten)]
+        shared: SharedCheckArgs,
     },
     /// Compile to a native executable
     Build {
@@ -52,15 +65,11 @@ enum Commands {
         /// Disable transparent Memo `T_f` even in `--release` (for benchmarks).
         #[arg(long = "no-memo", alias = "no-memo-l2")]
         no_memo: bool,
-        /// Disable auto-parallel `List.map` (default: on when safe; DESIGN §11.1).
-        #[arg(long = "no-parallel")]
-        no_parallel: bool,
+        #[command(flatten)]
+        shared: SharedCheckArgs,
         /// Disable dense `List[Float]` → `lumia_f64_*` strength reduction (bench baseline).
         #[arg(long = "no-dense-f64-sr")]
         no_dense_f64_sr: bool,
-        /// Trust `foreign "C" pure` (FFI purity is not verified).
-        #[arg(long = "trust-foreign-pure")]
-        trust_foreign_pure: bool,
         /// Extra linker args (repeatable), e.g. `--link -lm --link -L/opt/lib`.
         #[arg(long = "link", value_name = "ARG")]
         link: Vec<String>,
@@ -121,12 +130,12 @@ enum PkgCmd {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
-        Commands::Check {
-            file,
-            no_parallel,
-            trust_foreign_pure,
-        } => {
-            let _ = check_program(&file, !no_parallel, trust_foreign_pure)?;
+        Commands::Check { file, shared } => {
+            let _ = check_program(
+                &file,
+                !shared.no_parallel,
+                shared.trust_foreign_pure_override(),
+            )?;
             println!("ok");
             Ok(())
         }
@@ -135,9 +144,8 @@ fn main() -> Result<()> {
             output,
             release,
             no_memo,
-            no_parallel,
+            shared,
             no_dense_f64_sr,
-            trust_foreign_pure,
             link,
             show_ir,
             emit_llvm,
@@ -149,9 +157,8 @@ fn main() -> Result<()> {
                     output,
                     release,
                     no_memo,
-                    no_parallel,
+                    shared,
                     no_dense_f64_sr,
-                    trust_foreign_pure,
                     link,
                     show_ir,
                     emit_llvm,
@@ -173,14 +180,14 @@ fn main() -> Result<()> {
                 for a in &link {
                     validated_link.push(pkg::validate_cli_link_arg(&cwd, a)?);
                 }
-                build_file(
+                lumia::build::build_file(
                     &file,
                     &out,
                     release,
                     !no_memo,
-                    !no_parallel,
+                    !shared.no_parallel,
                     !no_dense_f64_sr,
-                    trust_foreign_pure,
+                    shared.trust_foreign_pure_override(),
                     validated_link,
                     show_ir,
                     emit_llvm,
@@ -190,6 +197,9 @@ fn main() -> Result<()> {
             }
         }
         Commands::Fmt { files, check } => {
+            if files.is_empty() {
+                anyhow::bail!("lumia fmt: no files specified (pass one or more `.lm` paths)");
+            }
             for f in files {
                 fmt_file(&f, check)?;
             }
@@ -241,122 +251,6 @@ fn main() -> Result<()> {
             }
         },
     }
-}
-
-#[cfg(feature = "codegen")]
-fn build_file(
-    file: &Path,
-    output: &Path,
-    release: bool,
-    memo_tf: bool,
-    auto_parallel: bool,
-    dense_f64_sr: bool,
-    trust_foreign_pure: bool,
-    link_args: Vec<String>,
-    show_ir: bool,
-    emit_llvm: bool,
-) -> Result<()> {
-    let (mut typed, loaded) = check_program(file, auto_parallel, trust_foreign_pure)?;
-    annotate_assert_messages(&mut typed.module, &loaded);
-    let option_tags = option_ctor_tags(&typed.module.adts);
-    let mut core = lower_hir_with_schemes(
-        &typed.module,
-        &typed.fun_types,
-        &typed.fun_schemes,
-        &typed.type_at,
-    );
-    core.check_channel_elem_conflicts()
-        .map_err(|e| anyhow::anyhow!("channel: {e}"))?;
-    optimize(
-        &mut core,
-        &OptOptions {
-            release,
-            memo_tf: release && memo_tf,
-            dense_f64_sr,
-        },
-    );
-    if show_ir {
-        print!("{}", format_module(&core));
-    }
-
-    ensure_runtime_built(release)?;
-
-    let target_dir = workspace_target_dir();
-    let runtime_lib = find_runtime_lib_prefer(&target_dir, release)?;
-
-    let mut link = link_args;
-    for a in &loaded.link_args {
-        if !link.iter().any(|x| x == a) {
-            link.push(a.clone());
-        }
-    }
-    compile_module(
-        &core,
-        &CodegenOptions {
-            release,
-            output: output.to_path_buf(),
-            runtime_lib,
-            emit_ir: emit_llvm,
-            option_some_tag: option_tags.0,
-            option_none_tag: option_tags.1,
-            dense_f64_sr,
-            link_args: link,
-        },
-    )?;
-    Ok(())
-}
-
-#[cfg(feature = "codegen")]
-fn option_ctor_tags(adts: &[lumia_hir::AdtDef]) -> (i64, i64) {
-    for a in adts {
-        if a.name == "Option" {
-            let mut some = 0i64;
-            let mut none = 1i64;
-            for v in &a.variants {
-                if v.name == "Some" {
-                    some = v.tag;
-                }
-                if v.name == "None" {
-                    none = v.tag;
-                }
-            }
-            return (some, none);
-        }
-    }
-    (0, 1)
-}
-
-/// Workspace root that contains this compiler (`…/Lumia`), baked in at build time.
-/// Used so `lumia build` works outside the repo (e.g. `~/文档`) without hunting cwd.
-#[cfg(feature = "codegen")]
-fn compiler_workspace_root() -> PathBuf {
-    lumia_abi::workspace_root(env!("CARGO_MANIFEST_DIR"))
-}
-
-#[cfg(feature = "codegen")]
-fn workspace_target_dir() -> PathBuf {
-    if let Ok(t) = std::env::var("CARGO_TARGET_DIR") {
-        return PathBuf::from(t);
-    }
-    compiler_workspace_root().join("target")
-}
-
-#[cfg(feature = "codegen")]
-fn ensure_runtime_built(release: bool) -> Result<()> {
-    let root = compiler_workspace_root();
-    let mut cmd = Command::new("cargo");
-    cmd.current_dir(&root);
-    cmd.arg("build").arg("-p").arg("lumia_rt");
-    if release {
-        cmd.arg("--release");
-    }
-    let status = cmd
-        .status()
-        .with_context(|| format!("spawn cargo build -p lumia_rt in {}", root.display()))?;
-    if !status.success() {
-        anyhow::bail!("failed to build lumia_rt");
-    }
-    Ok(())
 }
 
 fn fmt_file(path: &Path, check: bool) -> Result<()> {

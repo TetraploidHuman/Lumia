@@ -67,6 +67,8 @@ pub enum Item {
         body: Expr,
         /// Optional `val x: Int = …` ascription.
         ty: Option<String>,
+        /// Declaration span (`val` …), not the body.
+        span: Span,
     },
 }
 
@@ -79,6 +81,8 @@ pub struct Fun {
     /// Optional return ascription from `val f: Ret = { … }` / `val f: Ret (x) = …`.
     pub ret_ann: Option<String>,
     pub body: Expr,
+    /// Declaration span (`val` / `foreign`), not the body.
+    pub span: Span,
     /// True if this is the program entry `main`
     pub is_main: bool,
     /// C ABI symbol when declared via `foreign "C" fn …`
@@ -199,7 +203,7 @@ pub enum BuiltinFamily {
     Task,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Builtin {
     Println,
     ListLen,

@@ -527,7 +527,7 @@ impl<'ctx> Codegen<'ctx> {
             }
             uses += 1;
             let ok = match op {
-                Op::Let { value, .. } | Op::Effect { value } => match value {
+                Op::Let { value, .. } => match value {
                     Value::Call { args, .. } | Value::IndirectCall { args, .. } => {
                         args.contains(&local)
                     }
@@ -579,7 +579,7 @@ impl<'ctx> Codegen<'ctx> {
             }
             uses += 1;
             let ok = match op {
-                Op::Let { value, .. } | Op::Effect { value } => match value {
+                Op::Let { value, .. } => match value {
                     Value::Builtin {
                         name: Builtin::AdtField,
                         args, .. } => args.first() == Some(&local) && args[1..].iter().all(|a| *a != local),
@@ -646,7 +646,7 @@ impl<'ctx> Codegen<'ctx> {
 
     fn op_uses_local(op: &Op, local: Local) -> bool {
         match op {
-            Op::Let { value, .. } | Op::Effect { value } => Self::value_uses_local(value, local),
+            Op::Let { value, .. } => Self::value_uses_local(value, local),
             Op::Assign { value, .. } | Op::Return { value } => *value == local,
             Op::Break | Op::Continue => false,
         }
@@ -727,9 +727,6 @@ impl<'ctx> Codegen<'ctx> {
                     } else {
                         self.bind_let_after_emit(*local, value, v)?;
                     }
-                }
-                Op::Effect { value } => {
-                    let _ = self.emit_value(value, fv)?;
                 }
                 Op::Assign { name, value } => {
                     let v = self.local(*value)?;

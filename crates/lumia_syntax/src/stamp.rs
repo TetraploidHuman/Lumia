@@ -1,101 +1,104 @@
-//! Stamp `Span.file` after parse (multi-file SourceMap).
+//! Stamp / shift spans after parse (multi-file SourceMap, `${…}` rebase).
 
+use crate::span::Span;
 use crate::{
-    Expr, Import, InterpPart, Item, MatchArm, MatchCondArm, Module, Pattern, Stmt, TypeItem,
-    ValItem,
+    Expr, InterpPart, Item, MatchArm, MatchCondArm, Module, Pattern, Stmt, ValItem,
 };
 
 pub fn stamp_module(m: &mut Module, file: u32) {
-    m.span = m.span.with_file(file);
+    map_module_spans(m, &mut |s| *s = s.with_file(file));
+}
+
+/// Shift every span in an expression by `delta` bytes (absolute rebase after
+/// parsing a `${…}` fragment that was lexed relative to offset 0).
+pub fn offset_expr(e: &mut Expr, delta: u32) {
+    if delta == 0 {
+        return;
+    }
+    map_expr_spans(e, &mut |s| *s = s.shift(delta));
+}
+
+fn map_module_spans(m: &mut Module, f: &mut dyn FnMut(&mut Span)) {
+    f(&mut m.span);
     for imp in &mut m.imports {
-        stamp_import(imp, file);
+        f(&mut imp.span);
     }
     for it in &mut m.items {
-        stamp_item(it, file);
+        map_item_spans(it, f);
     }
 }
 
-fn stamp_import(imp: &mut Import, file: u32) {
-    imp.span = imp.span.with_file(file);
-}
-
-fn stamp_item(it: &mut Item, file: u32) {
+fn map_item_spans(it: &mut Item, f: &mut dyn FnMut(&mut Span)) {
     match it {
-        Item::Val(v) => stamp_val(v, file),
-        Item::Type(t) => stamp_type(t, file),
-        Item::Foreign(f) => {
-            f.span = f.span.with_file(file);
-        }
+        Item::Val(v) => map_val_spans(v, f),
+        Item::Type(t) => f(&mut t.span),
+        Item::Foreign(foreign) => f(&mut foreign.span),
         Item::Trait(t) => {
-            t.span = t.span.with_file(file);
+            f(&mut t.span);
             for m in &mut t.methods {
-                stamp_val(m, file);
+                map_val_spans(m, f);
             }
         }
         Item::Instance(i) => {
-            i.span = i.span.with_file(file);
+            f(&mut i.span);
             for m in &mut i.methods {
-                stamp_val(m, file);
+                map_val_spans(m, f);
             }
         }
     }
 }
 
-fn stamp_val(v: &mut ValItem, file: u32) {
-    v.span = v.span.with_file(file);
-    stamp_expr(&mut v.body, file);
+fn map_val_spans(v: &mut ValItem, f: &mut dyn FnMut(&mut Span)) {
+    f(&mut v.span);
+    map_expr_spans(&mut v.body, f);
 }
 
-fn stamp_type(t: &mut TypeItem, file: u32) {
-    t.span = t.span.with_file(file);
-}
-
-fn stamp_expr(e: &mut Expr, file: u32) {
+fn map_expr_spans(e: &mut Expr, f: &mut dyn FnMut(&mut Span)) {
     match e {
         Expr::Int(_, s)
         | Expr::Float(_, s)
         | Expr::Bool(_, s)
         | Expr::String(_, s)
         | Expr::Char(_, s)
-        | Expr::Ident(_, s) => *s = s.with_file(file),
+        | Expr::Ident(_, s) => f(s),
         Expr::Interp { parts, span } => {
-            *span = span.with_file(file);
+            f(span);
             for p in parts {
                 if let InterpPart::Expr(ex) = p {
-                    stamp_expr(ex, file);
+                    map_expr_spans(ex, f);
                 }
             }
         }
         Expr::Block { stmts, tail, span } => {
-            *span = span.with_file(file);
+            f(span);
             for s in stmts {
-                stamp_stmt(s, file);
+                map_stmt_spans(s, f);
             }
             if let Some(t) = tail {
-                stamp_expr(t, file);
+                map_expr_spans(t, f);
             }
         }
         Expr::Lambda { body, span, .. } => {
-            *span = span.with_file(file);
-            stamp_expr(body, file);
+            f(span);
+            map_expr_spans(body, f);
         }
         Expr::Call { callee, args, span } => {
-            *span = span.with_file(file);
-            stamp_expr(callee, file);
+            f(span);
+            map_expr_spans(callee, f);
             for a in args {
-                stamp_expr(a, file);
+                map_expr_spans(a, f);
             }
         }
         Expr::Binary {
             left, right, span, ..
         } => {
-            *span = span.with_file(file);
-            stamp_expr(left, file);
-            stamp_expr(right, file);
+            f(span);
+            map_expr_spans(left, f);
+            map_expr_spans(right, f);
         }
         Expr::Unary { expr, span, .. } => {
-            *span = span.with_file(file);
-            stamp_expr(expr, file);
+            f(span);
+            map_expr_spans(expr, f);
         }
         Expr::If {
             cond,
@@ -103,11 +106,11 @@ fn stamp_expr(e: &mut Expr, file: u32) {
             else_branch,
             span,
         } => {
-            *span = span.with_file(file);
-            stamp_expr(cond, file);
-            stamp_expr(then_branch, file);
+            f(span);
+            map_expr_spans(cond, f);
+            map_expr_spans(then_branch, f);
             if let Some(e) = else_branch {
-                stamp_expr(e, file);
+                map_expr_spans(e, f);
             }
         }
         Expr::Match {
@@ -115,63 +118,63 @@ fn stamp_expr(e: &mut Expr, file: u32) {
             arms,
             span,
         } => {
-            *span = span.with_file(file);
-            stamp_expr(scrutinee, file);
+            f(span);
+            map_expr_spans(scrutinee, f);
             for a in arms {
-                stamp_arm(a, file);
+                map_arm_spans(a, f);
             }
         }
         Expr::MatchCond { arms, span } => {
-            *span = span.with_file(file);
+            f(span);
             for a in arms {
-                stamp_cond_arm(a, file);
+                map_cond_arm_spans(a, f);
             }
         }
         Expr::Return { value, span } => {
-            *span = span.with_file(file);
-            stamp_expr(value, file);
+            f(span);
+            map_expr_spans(value, f);
         }
         Expr::Alt {
             scrutinee,
             alt,
             span,
         } => {
-            *span = span.with_file(file);
-            stamp_expr(scrutinee, file);
-            stamp_expr(alt, file);
+            f(span);
+            map_expr_spans(scrutinee, f);
+            map_expr_spans(alt, f);
         }
         Expr::Field { base, span, .. } => {
-            *span = span.with_file(file);
-            stamp_expr(base, file);
+            f(span);
+            map_expr_spans(base, f);
         }
         Expr::ListLit { elems, span } => {
-            *span = span.with_file(file);
+            f(span);
             for el in elems {
-                stamp_expr(el, file);
+                map_expr_spans(el, f);
             }
         }
         Expr::Pipeline { left, right, span } => {
-            *span = span.with_file(file);
-            stamp_expr(left, file);
-            stamp_expr(right, file);
+            f(span);
+            map_expr_spans(left, f);
+            map_expr_spans(right, f);
         }
         Expr::StructLit { fields, span, .. } => {
-            *span = span.with_file(file);
+            f(span);
             for (_, ex) in fields {
-                stamp_expr(ex, file);
+                map_expr_spans(ex, f);
             }
         }
         Expr::With { base, fields, span } => {
-            *span = span.with_file(file);
-            stamp_expr(base, file);
+            f(span);
+            map_expr_spans(base, f);
             for (_, ex) in fields {
-                stamp_expr(ex, file);
+                map_expr_spans(ex, f);
             }
         }
         Expr::TupleLit { elems, span } => {
-            *span = span.with_file(file);
+            f(span);
             for el in elems {
-                stamp_expr(el, file);
+                map_expr_spans(el, f);
             }
         }
         Expr::Scope {
@@ -179,66 +182,66 @@ fn stamp_expr(e: &mut Expr, file: u32) {
             body,
             span,
         } => {
-            *span = span.with_file(file);
+            f(span);
             if let Some(s) = scheduler {
-                stamp_expr(s, file);
+                map_expr_spans(s, f);
             }
-            stamp_expr(body, file);
+            map_expr_spans(body, f);
         }
         Expr::Spawn { body, span } => {
-            *span = span.with_file(file);
-            stamp_expr(body, file);
+            f(span);
+            map_expr_spans(body, f);
         }
     }
 }
 
-fn stamp_stmt(s: &mut Stmt, file: u32) {
+fn map_stmt_spans(s: &mut Stmt, f: &mut dyn FnMut(&mut Span)) {
     match s {
         Stmt::Val { expr, span, .. } | Stmt::Var { expr, span, .. } => {
-            *span = span.with_file(file);
-            stamp_expr(expr, file);
+            f(span);
+            map_expr_spans(expr, f);
         }
         Stmt::Assign { expr, span, .. } => {
-            *span = span.with_file(file);
-            stamp_expr(expr, file);
+            f(span);
+            map_expr_spans(expr, f);
         }
-        Stmt::Expr(e) => stamp_expr(e, file),
+        Stmt::Expr(e) => map_expr_spans(e, f),
         Stmt::ForIn {
             iter, body, span, ..
         } => {
-            *span = span.with_file(file);
-            stamp_expr(iter, file);
-            stamp_expr(body, file);
+            f(span);
+            map_expr_spans(iter, f);
+            map_expr_spans(body, f);
         }
         Stmt::ForCond {
             cond, body, span, ..
         } => {
-            *span = span.with_file(file);
-            stamp_expr(cond, file);
-            stamp_expr(body, file);
+            f(span);
+            map_expr_spans(cond, f);
+            map_expr_spans(body, f);
         }
-        Stmt::Break(span) | Stmt::Continue(span) => *span = span.with_file(file),
+        Stmt::Break(span) | Stmt::Continue(span) => f(span),
     }
 }
 
-fn stamp_arm(a: &mut MatchArm, file: u32) {
-    a.span = a.span.with_file(file);
-    stamp_pat(&mut a.pattern, file);
+fn map_arm_spans(a: &mut MatchArm, f: &mut dyn FnMut(&mut Span)) {
+    f(&mut a.span);
+    map_pat_spans(&mut a.pattern, f);
     if let Some(g) = &mut a.guard {
-        stamp_expr(g, file);
+        map_expr_spans(g, f);
     }
-    stamp_expr(&mut a.body, file);
+    map_expr_spans(&mut a.body, f);
 }
 
-fn stamp_cond_arm(a: &mut MatchCondArm, file: u32) {
-    a.span = a.span.with_file(file);
+fn map_cond_arm_spans(a: &mut MatchCondArm, f: &mut dyn FnMut(&mut Span)) {
+    f(&mut a.span);
     if let Some(c) = &mut a.cond {
-        stamp_expr(c, file);
+        map_expr_spans(c, f);
     }
-    stamp_expr(&mut a.body, file);
+    map_expr_spans(&mut a.body, f);
 }
 
-fn stamp_pat(p: &mut Pattern, file: u32) {
+fn map_pat_spans(p: &mut Pattern, f: &mut dyn FnMut(&mut Span)) {
     match p {
         Pattern::Wildcard(s)
         | Pattern::Int(_, s)
@@ -246,37 +249,35 @@ fn stamp_pat(p: &mut Pattern, file: u32) {
         | Pattern::Bool(_, s)
         | Pattern::Char(_, s)
         | Pattern::String(_, s)
-        | Pattern::Ident(_, s) => {
-            *s = s.with_file(file);
-        }
+        | Pattern::Ident(_, s) => f(s),
         Pattern::Variant { args, span, .. } => {
-            *span = span.with_file(file);
+            f(span);
             for a in args {
-                stamp_pat(a, file);
+                map_pat_spans(a, f);
             }
         }
         Pattern::Tuple { elems, span } => {
-            *span = span.with_file(file);
+            f(span);
             for e in elems {
-                stamp_pat(e, file);
+                map_pat_spans(e, f);
             }
         }
         Pattern::List { elems, span, .. } => {
-            *span = span.with_file(file);
+            f(span);
             for e in elems {
-                stamp_pat(e, file);
+                map_pat_spans(e, f);
             }
         }
         Pattern::Struct { fields, span, .. } => {
-            *span = span.with_file(file);
+            f(span);
             for (_, p) in fields {
-                stamp_pat(p, file);
+                map_pat_spans(p, f);
             }
         }
         Pattern::Or(ps, span) => {
-            *span = span.with_file(file);
+            f(span);
             for p in ps {
-                stamp_pat(p, file);
+                map_pat_spans(p, f);
             }
         }
     }

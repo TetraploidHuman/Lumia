@@ -38,7 +38,7 @@ pub(super) fn hover_for_analysis(a: &Analysis, line: u32, character: u32) -> Val
     let mut best: Option<&(Span, Type)> = None;
     for entry in &a.typed.type_at {
         let (sp, _) = entry;
-        if sp.file == 0 && sp.start.0 <= byte && byte < sp.end.0.max(sp.start.0 + 1) {
+        if sp.file == a.buffer_file && sp.start.0 <= byte && byte < sp.end.0.max(sp.start.0 + 1) {
             match best {
                 None => best = Some(entry),
                 Some((bsp, _)) => {
@@ -109,6 +109,7 @@ val add = { x, y -> x + y }
             typed,
             src: src.to_string(),
             files: vec![],
+            buffer_file: 0,
         };
         let (line, character) = line_col_of(src, "add");
         let hover = hover_for_analysis(&a, line, character);

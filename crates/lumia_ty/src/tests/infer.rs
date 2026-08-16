@@ -140,6 +140,30 @@ val main = {
     check_effect_boundaries(&typed).unwrap();
 }
 
+
+#[test]
+fn recursive_expr_eval() {
+    let src = r#"
+module ExprRec
+import std.io.{println}
+type Expr { Lit(n) Add(l, r) }
+val eval = { e ->
+    e match {
+        Lit(n) -> n
+        Add(l, r) -> eval(l) + eval(r)
+    }
+}
+val main = {
+    println(eval(Lit(7)))
+    println(eval(Add(Lit(2), Lit(3))))
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let typed = infer_module(&hir).expect("recursive Expr ADT (equi-recursive)");
+    check_effect_boundaries(&typed).unwrap();
+}
+
 #[test]
 fn recursive_nat_to_int() {
     let src = r#"
@@ -219,6 +243,7 @@ fn builtin_arity_from_info_rejects_get() {
                 args: vec![Expr::Int(1, span)], // missing index
                 span,
             },
+            span,
             is_main: true,
             external: None,
             foreign_sig: None,

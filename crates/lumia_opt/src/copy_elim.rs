@@ -64,7 +64,7 @@ fn apply_local_remap(block: &mut Block, remap: &HashMap<u32, u32>) {
     }
     for op in &mut block.ops {
         match op {
-            Op::Let { value, .. } | Op::Effect { value, .. } => {
+            Op::Let { value, .. } => {
                 lumia_core::map_value_locals(
                     value,
                     &mut |l| {
@@ -90,7 +90,7 @@ fn strip_identity_lets(block: &mut Block, aliases: &HashMap<u32, u32>) {
     });
     for op in &mut block.ops {
         match op {
-            Op::Let { value, .. } | Op::Effect { value } => {
+            Op::Let { value, .. } => {
                 for_each_nested_block_mut(value, &mut |nested| {
                     strip_identity_lets(nested, aliases);
                 });

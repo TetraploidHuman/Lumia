@@ -11,7 +11,8 @@ pub(crate) fn link_executable(
     extra: &[String],
     release: bool,
 ) -> Result<()> {
-    let mut cmd = Command::new("clang");
+    let linker = std::env::var("LUMIA_LINKER").unwrap_or_else(|_| "clang".into());
+    let mut cmd = Command::new(&linker);
     cmd.arg(obj).arg(runtime).arg("-o").arg(output);
     // `lumia_rt` is a Rust staticlib: pull in the host libs Rust std needs.
     // (Matches `cargo rustc -p lumia_rt -- --print=native-static-libs`.)
@@ -45,9 +46,11 @@ pub(crate) fn link_executable(
     for a in extra {
         cmd.arg(a);
     }
-    let status = cmd.status().context("invoke clang linker")?;
+    let status = cmd
+        .status()
+        .with_context(|| format!("invoke linker `{linker}`"))?;
     if !status.success() {
-        bail!("link failed with {status}");
+        bail!("link failed with {status} (driver `{linker}`)");
     }
     Ok(())
 }

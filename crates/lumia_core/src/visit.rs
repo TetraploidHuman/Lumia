@@ -221,7 +221,7 @@ pub fn collect_uses_in_value(
 pub(crate) fn collect_uses(block: &Block, locals: &mut HashSet<u32>, names: &mut HashSet<String>) {
     for op in &block.ops {
         match op {
-            Op::Let { value, .. } | Op::Effect { value, .. } => {
+            Op::Let { value, .. } => {
                 collect_uses_in_value(value, locals, names);
             }
             Op::Assign { value, .. } | Op::Return { value } => {
@@ -289,7 +289,7 @@ pub fn for_each_block_dfs(block: &Block, f: &mut impl FnMut(&Block)) {
     f(block);
     for op in &block.ops {
         match op {
-            Op::Let { value, .. } | Op::Effect { value } => {
+            Op::Let { value, .. } => {
                 for_each_nested_block(value, &mut |nested| for_each_block_dfs(nested, f));
             }
             _ => {}
@@ -308,7 +308,7 @@ pub fn count_ops(block: &Block) -> usize {
 pub fn block_calls(block: &Block, fun: &str) -> bool {
     for op in &block.ops {
         match op {
-            Op::Let { value, .. } | Op::Effect { value } if value_calls(value, fun) => {
+            Op::Let { value, .. } if value_calls(value, fun) => {
                 return true;
             }
             _ => {}
@@ -354,7 +354,6 @@ pub fn has_early_return(block: &Block) -> bool {
 pub fn block_has_io(block: &Block, io_callees: &HashSet<String>) -> bool {
     for op in &block.ops {
         match op {
-            Op::Effect { .. } => return true,
             Op::Let {
                 pure_region: false, ..
             } => return true,
@@ -400,7 +399,7 @@ pub fn has_assign_or_name(block: &Block) -> bool {
     for op in &block.ops {
         match op {
             Op::Assign { .. } => return true,
-            Op::Let { value, .. } | Op::Effect { value } if value_has_assign_or_name(value) => {
+            Op::Let { value, .. } if value_has_assign_or_name(value) => {
                 return true;
             }
             _ => {}
@@ -434,7 +433,7 @@ fn value_has_assign_or_name(value: &Value) -> bool {
 pub fn for_each_op_value_mut(block: &mut Block, on_value: &mut dyn FnMut(&mut Value)) {
     for op in &mut block.ops {
         match op {
-            Op::Let { value, .. } | Op::Effect { value } => {
+            Op::Let { value, .. } => {
                 on_value(value);
                 for_each_nested_block_mut(value, &mut |nested| {
                     for_each_op_value_mut(nested, on_value);
@@ -455,7 +454,6 @@ mod tests {
         let mut v = Value::If {
             cond: Local(1),
             then_block: Box::new(Block {
-                params: vec![],
                 ops: vec![Op::Let {
                     local: Local(2),
                     value: Value::Call {
@@ -467,7 +465,6 @@ mod tests {
                 result: Some(Local(2)),
             }),
             else_block: Box::new(Block {
-                params: vec![],
                 ops: vec![],
                 result: Some(Local(4)),
             }),
@@ -510,7 +507,6 @@ mod tests {
     #[test]
     fn return_operand_is_use_and_remapped() {
         let mut block = Block {
-            params: vec![],
             ops: vec![Op::Return { value: Local(3) }],
             result: None,
         };
@@ -532,13 +528,11 @@ mod tests {
     #[test]
     fn count_ops_includes_nested_if() {
         let block = Block {
-            params: vec![],
             ops: vec![Op::Let {
                 local: Local(0),
                 value: Value::If {
                     cond: Local(1),
                     then_block: Box::new(Block {
-                        params: vec![],
                         ops: vec![Op::Let {
                             local: Local(2),
                             value: Value::Int(1),
@@ -547,7 +541,6 @@ mod tests {
                         result: Some(Local(2)),
                     }),
                     else_block: Box::new(Block {
-                        params: vec![],
                         ops: vec![],
                         result: Some(Local(3)),
                     }),
@@ -558,13 +551,11 @@ mod tests {
         };
         assert_eq!(count_ops(&block), 2);
         assert!(has_early_return(&Block {
-            params: vec![],
             ops: vec![Op::Return { value: Local(0) }],
             result: None,
         }));
         assert!(block_calls(
             &Block {
-                params: vec![],
                 ops: vec![Op::Let {
                     local: Local(0),
                     value: Value::Call {
@@ -578,7 +569,6 @@ mod tests {
             "f"
         ));
         assert!(has_assign_or_name(&Block {
-            params: vec![],
             ops: vec![Op::Assign {
                 name: "x".into(),
                 value: Local(0),

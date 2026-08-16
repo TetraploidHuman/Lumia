@@ -1,12 +1,12 @@
+use lumia_abi::{
+    MEMO_IDX_TABLE_BYTES, MEMO_PROCESS_BYTE_CAP, MEMO_SLOTS_TABLE_BYTES, MEMO_TF_MAX_ARGS,
+};
 use lumia_core::{block_calls, Block, CoreFun, CoreModule, Local, MemoTf, Op, Value};
 use lumia_syntax::BinOp;
 use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
-use super::{
-    MEMO_IDX_MAX_FUNS, MEMO_IDX_TABLE_BYTES, MEMO_PROCESS_BYTE_CAP, MEMO_SLOTS_TABLE_BYTES,
-    MEMO_TF_MAX_ARGS, MEMO_TF_MAX_FUNS_U32,
-};
+use super::{MEMO_IDX_MAX_FUNS, MEMO_TF_MAX_FUNS_U32};
 
 pub fn plan_memo_tf(module: &CoreModule) -> HashMap<String, MemoTf> {
     let mut next_slots = 0u32;
@@ -153,17 +153,6 @@ fn walk_struct_rec(block: &Block, st: &mut StructRec<'_>) {
                 }
                 _ => {}
             },
-            Op::Effect { value } => {
-                if let Value::Call { fun, args } = value {
-                    if fun == st.fun {
-                        st.self_calls += 1;
-                        let ok = args.len() == 1 && st.smaller.contains(&args[0].0);
-                        if !ok {
-                            st.bad_self = true;
-                        }
-                    }
-                }
-            }
             _ => {}
         }
     }
@@ -275,15 +264,6 @@ fn collect_const_calls(
                     known.remove(local.0);
                 }
             },
-            Op::Effect { value } => {
-                if let Value::Call { fun: callee, args } = value {
-                    if callee == fun {
-                        if let Some(key) = known.resolve_all(args) {
-                            *freq.entry(key).or_default() += 1;
-                        }
-                    }
-                }
-            }
             _ => {}
         }
     }

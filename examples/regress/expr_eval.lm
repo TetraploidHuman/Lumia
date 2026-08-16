@@ -1,0 +1,17 @@
+/// Tree ADT without a nullary base (`Expr { Lit Add }`) + recursive eval.
+/// Relies on equi-recursive ADT unification (`α ~ Expr[α]`).
+module main
+type Expr { Lit(n) Add(l, r) }
+
+val eval = { e ->
+    e match {
+        Lit(n) -> n
+        Add(l, r) -> eval(l) + eval(r)
+    }
+}
+
+val main = {
+    println(eval(Lit(7)))
+    println(eval(Add(Lit(2), Lit(3))))
+    println(eval(Add(Add(Lit(1), Lit(2)), Lit(4))))
+}

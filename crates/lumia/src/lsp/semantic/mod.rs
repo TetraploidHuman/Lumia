@@ -73,6 +73,7 @@ val main = {
             typed,
             src: src.to_string(),
             files: vec![],
+            buffer_file: 0,
         };
         let data = tokens_for_analysis(&a);
         assert!(
@@ -106,6 +107,7 @@ val main = { 1 }
             typed,
             src: src.to_string(),
             files: vec![],
+            buffer_file: 0,
         };
         let data = tokens_for_analysis(&a);
         assert!(!data.is_empty() && data.len().is_multiple_of(5));

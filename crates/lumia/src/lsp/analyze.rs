@@ -2,8 +2,8 @@
 
 use super::diagnostics::{diag_from_span, diag_json};
 use super::protocol::write_stdout;
-use super::state::{next_analyze_gen, state_lock, Analysis, AnalyzeReq};
-use super::uri::uri_to_path;
+use super::state::{next_analyze_gen, state_lock, Analysis, AnalyzeReq, auto_parallel};
+use super::uri::{path_to_uri, uri_to_path};
 use crate::check::{
     check_program_with_overlays, check_source_recovering, OverlayCheckError, PartialCheck,
 };
@@ -77,10 +77,56 @@ pub(super) fn on_did_close(params: &Value) -> Result<()> {
     }))
 }
 
+/// Disk change to a `.lm` file: re-analyze every open buffer (importers stay fresh).
+pub(super) fn on_did_change_watched_files(params: &Value) -> Result<()> {
+    let Some(changes) = params.get("changes").and_then(|c| c.as_array()) else {
+        return Ok(());
+    };
+    let mut touched_lm = false;
+    for ch in changes {
+        let uri = ch.get("uri").and_then(|u| u.as_str()).unwrap_or("");
+        if uri.ends_with(".lm") {
+            touched_lm = true;
+            break;
+        }
+        let path = uri_to_path(uri);
+        if path.extension().and_then(|e| e.to_str()) == Some("lm") {
+            touched_lm = true;
+            break;
+        }
+    }
+    if !touched_lm {
+        return Ok(());
+    }
+    let open: Vec<(String, String)> = {
+        let st = state_lock();
+        st.as_ref()
+            .map(|s| s.docs.iter().map(|(u, t)| (u.clone(), t.clone())).collect())
+            .unwrap_or_default()
+    };
+    for (uri, text) in open {
+        let gen = next_analyze_gen(&uri);
+        let tx = {
+            let st = state_lock();
+            st.as_ref().and_then(|s| s.analyze_tx.clone())
+        };
+        if let Some(tx) = tx {
+            let _ = tx.send(AnalyzeReq {
+                uri: uri.clone(),
+                text: text.clone(),
+                gen,
+            });
+        } else {
+            let _ = publish_diagnostics_for(&uri, &text);
+        }
+    }
+    Ok(())
+}
+
 /// Analyze and publish diagnostics (sync; also used by the debounce worker).
 pub(super) fn publish_diagnostics_for(uri: &str, text: &str) -> Result<()> {
     let overlays = current_overlays();
-    let (diags, analysis) = analyze_buffer(uri, text, &overlays);
+    let (batches, analysis) = analyze_buffer(uri, text, &overlays);
     // Only replace the cache on success. A local parse/type error must not wipe
     // hover / inlay / completion from the last good analysis.
     if let Some(a) = analysis {
@@ -89,11 +135,26 @@ pub(super) fn publish_diagnostics_for(uri: &str, text: &str) -> Result<()> {
             s.analysis.insert(uri.to_string(), a);
         }
     }
-    write_stdout(&json!({
-        "jsonrpc": "2.0",
-        "method": "textDocument/publishDiagnostics",
-        "params": { "uri": uri, "diagnostics": diags }
-    }))
+    let mut published = false;
+    for (diag_uri, diags) in &batches {
+        write_stdout(&json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": { "uri": diag_uri, "diagnostics": diags }
+        }))?;
+        if diag_uri == uri {
+            published = true;
+        }
+    }
+    // Clear stale underlines on the edited buffer when the only errors live elsewhere.
+    if !published {
+        write_stdout(&json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": { "uri": uri, "diagnostics": [] }
+        }))?;
+    }
+    Ok(())
 }
 
 fn current_overlays() -> HashMap<PathBuf, String> {
@@ -109,11 +170,14 @@ fn current_overlays() -> HashMap<PathBuf, String> {
 }
 
 /// Prefer multi-file load with overlays when the path exists; else buffer-only.
+///
+/// Returns `(uri → diagnostics)` batches so errors in imported files publish to
+/// the correct document URI (BUILD: multi-file diagnostics follow `Span.file`).
 fn analyze_buffer(
     uri: &str,
     text: &str,
     overlays: &HashMap<PathBuf, String>,
-) -> (Vec<Value>, Option<Analysis>) {
+) -> (Vec<(String, Vec<Value>)>, Option<Analysis>) {
     let path = uri_to_path(uri);
     if path.is_file() || overlays.contains_key(&path) {
         let mut ov = overlays.clone();
@@ -126,28 +190,38 @@ fn analyze_buffer(
                     .map(|f| f.src.clone())
                     .unwrap_or_else(|| text.to_string());
                 return (
-                    vec![],
+                    vec![(uri.to_string(), vec![])],
                     Some(Analysis {
                         typed,
                         src: entry_src,
+                        buffer_file: buffer_file_id(&loaded.files, &path),
                         files: loaded.files,
                     }),
                 );
             }
             Err(load_diags) => {
-                // Recovering buffer check: keep later items after a local parse error.
-                let partial = check_source_recovering(text, true);
-                if partial.typed.is_some() || !partial.diagnostics.is_empty() {
-                    return partial_to_lsp(text, &path, partial);
-                }
+                // Prefer real multi-file / load diagnostics. Recovering single-buffer
+                // analysis must not hide import/dependency failures (Todo).
                 if !load_diags.is_empty() {
-                    return (refine_load_diags(text, &path, load_diags), None);
+                    return (load_diags, None);
                 }
-                return (vec![diag_json(1, 1, 1, 2, "analysis failed")], None);
+                let partial = check_source_recovering(text, auto_parallel());
+                if partial.typed.is_some() || !partial.diagnostics.is_empty() {
+                    let (diags, analysis) = partial_to_lsp(text, &path, partial);
+                    return (vec![(uri.to_string(), diags)], analysis);
+                }
+                return (
+                    vec![(
+                        uri.to_string(),
+                        vec![diag_json(1, 1, 1, 2, "analysis failed")],
+                    )],
+                    None,
+                );
             }
         }
     }
-    partial_to_lsp(text, &path, check_source_recovering(text, true))
+    let (diags, analysis) = partial_to_lsp(text, &path, check_source_recovering(text, auto_parallel()));
+    (vec![(uri.to_string(), diags)], analysis)
 }
 
 fn partial_to_lsp(
@@ -163,6 +237,7 @@ fn partial_to_lsp(
     let analysis = partial.typed.map(|typed| Analysis {
         typed,
         src: text.to_string(),
+        buffer_file: 0,
         files: vec![SourceFile {
             path: path.to_path_buf(),
             src: text.to_string(),
@@ -171,26 +246,49 @@ fn partial_to_lsp(
     (diags, analysis)
 }
 
+/// Index of `path` in `files`, preferring exact then canonical match (entry is usually 0).
+fn buffer_file_id(files: &[SourceFile], path: &Path) -> u32 {
+    if let Some(i) = files.iter().position(|f| f.path == path) {
+        return i as u32;
+    }
+    let canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    files
+        .iter()
+        .position(|f| f.path == canon || f.path.canonicalize().ok().as_ref() == Some(&canon))
+        .unwrap_or(0) as u32
+}
+
 /// Load + typecheck via shared [`check_program_with_overlays`].
+///
+/// On failure, each diagnostic is tagged with the URI of `Span.file` (not the
+/// entry buffer), so `publishDiagnostics` lands on the correct document.
 fn load_and_typecheck(
     path: &Path,
     overlays: &HashMap<PathBuf, String>,
-) -> Result<(LoadedProgram, TypedModule), Vec<Value>> {
-    match check_program_with_overlays(path, overlays, true, false) {
+) -> Result<(LoadedProgram, TypedModule), Vec<(String, Vec<Value>)>> {
+    match check_program_with_overlays(path, overlays, auto_parallel(), None) {
         Ok(v) => Ok(v),
-        Err(OverlayCheckError::Load(msg)) => Err(vec![diag_from_load_message(
-            text_for_path(path, overlays),
-            &msg,
-        )]),
+        Err(OverlayCheckError::Load(msg)) => {
+            let entry_uri = path_to_uri(path);
+            Err(vec![(
+                entry_uri,
+                vec![diag_from_load_message(text_for_path(path, overlays), &msg)],
+            )])
+        }
         Err(OverlayCheckError::Analyze { loaded, err }) => {
             let span = err.span().unwrap_or_default();
-            let src = loaded
+            let file = loaded
                 .files
                 .get(span.file as usize)
-                .map(|f| f.src.as_str())
-                .or_else(|| loaded.files.first().map(|f| f.src.as_str()))
-                .unwrap_or("");
-            Err(vec![diag_from_span(src, span, err.message())])
+                .or_else(|| loaded.files.first());
+            let (diag_uri, src) = match file {
+                Some(f) => (path_to_uri(&f.path), f.src.as_str()),
+                None => (path_to_uri(path), ""),
+            };
+            Err(vec![(
+                diag_uri,
+                vec![diag_from_span(src, span, err.message())],
+            )])
         }
     }
 }
@@ -251,25 +349,6 @@ fn parse_line_col_prefix(line: &str) -> Option<(u32, u32, &str)> {
         i += 1;
     }
     None
-}
-
-fn refine_load_diags(src: &str, path: &Path, diags: Vec<Value>) -> Vec<Value> {
-    let _ = path;
-    diags
-        .into_iter()
-        .map(|d| {
-            let msg = d.get("message").and_then(|m| m.as_str()).unwrap_or("");
-            // Already has a non-trivial range? keep it.
-            let sl = d["range"]["start"]["line"].as_u64().unwrap_or(0);
-            let sc = d["range"]["start"]["character"].as_u64().unwrap_or(0);
-            let el = d["range"]["end"]["line"].as_u64().unwrap_or(0);
-            let ec = d["range"]["end"]["character"].as_u64().unwrap_or(0);
-            if sl != 0 || sc != 0 || el != 0 || ec > 1 {
-                return d;
-            }
-            diag_from_load_message(src, msg)
-        })
-        .collect()
 }
 
 #[cfg(test)]

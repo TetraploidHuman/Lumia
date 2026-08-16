@@ -1,8 +1,8 @@
 //! Residual `List.concat` identity elimination after HIR fusion (DESIGN §7.2).
 //!
-//! Primary fusion of `map`/`filter`/`fold` runs in HIR (`try_fuse_hof_fold` /
-//! `try_fuse_hof_build_method`). This Core pass only peels
-//! `xs.concat([])` / `[].concat(xs)` → `xs`.
+//! Primary fusion of `map`/`filter`/`fold` runs in HIR (`try_fuse_hof_fold`).
+//! This Core pass only peels `xs.concat([])` / `[].concat(xs)` → `xs`.
+//! Build-side deforestation (`flatMap` materialize, fused views) is not here.
 
 use lumia_core::{
     for_each_block_dfs, for_each_op_value_mut, Block, CoreFun, CoreModule, Local, Op, Value,
@@ -69,7 +69,7 @@ fn rewrite_block(block: &mut Block, empty: &HashSet<u32>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-        use lumia_core::{Block, CoreFun, CoreModule, ListRepr, Op, Value};
+        use lumia_core::{Block, CoreFun, CoreModule, ListRepr, Op, Value, FunKind};
     use lumia_ty::{Effect, Type};
     use rustc_hash::FxHashSet as HashSet;
 
@@ -83,7 +83,6 @@ mod tests {
                 param_names: vec![],
                 param_tys: vec![],
                 body: Block {
-                    params: vec![],
                     ops: vec![
                         Op::Let {
                             local: Local(0),
@@ -127,6 +126,7 @@ mod tests {
                 escaping: HashSet::default(),
                 scheme_poly: false,
                 mono_of: None,
+                kind: FunKind::Normal,
             }],
         );
         ConcatIdentPass.run(&mut module);

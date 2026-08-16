@@ -1,6 +1,6 @@
 use super::fun_index::FunIndex;
 use super::specialize::mono_value_ty;
-use crate::ir::{Block, CoreFun, CoreModule, Local, Op, Value, ForeignAbi};
+use crate::ir::{Block, CoreFun, CoreModule, ForeignAbi, FunKind, Local, Op, Value};
 use lumia_hir::Builtin;
 use lumia_syntax::BinOp;
 use lumia_ty::{Effect, Type};
@@ -15,7 +15,6 @@ pub(crate) fn resolve_trait_method_calls(module: &mut CoreModule) {
     // Take bodies out so FunIndex can borrow the signature table immutably.
     let mut functions = std::mem::take(&mut module.functions);
     let empty = Block {
-        params: Vec::new(),
         ops: Vec::new(),
         result: None,
     };
@@ -85,17 +84,6 @@ fn resolve_trait_block(
                 if let Some(ty) = local_tys.get(&value.0).cloned() {
                     slot_tys.insert(name.clone(), ty);
                 }
-            }
-            Op::Effect { value } => {
-                resolve_trait_value(
-                    value,
-                    local_tys,
-                    slot_tys,
-                    int_consts,
-                    trait_methods,
-                    method_names,
-                    index,
-                );
             }
             _ => {}
         }
@@ -259,7 +247,6 @@ pub(crate) fn ensure_trait_method_stubs(module: &mut CoreModule) {
             param_names,
             param_tys,
             body: Block {
-                params: vec![],
                 ops: vec![Op::Let {
                     local: fail_local,
                     value: Value::Builtin {
@@ -280,6 +267,7 @@ pub(crate) fn ensure_trait_method_stubs(module: &mut CoreModule) {
             escaping: Default::default(),
             scheme_poly: false,
             mono_of: None,
+            kind: FunKind::Normal,
         });
     }
     module.functions.append(&mut stubs);
@@ -292,7 +280,7 @@ fn collect_trait_method_refs(
 ) {
     for op in &block.ops {
         match op {
-            Op::Let { value, .. } | Op::Effect { value } => {
+            Op::Let { value, .. } => {
                 collect_trait_method_refs_value(value, methods, out);
             }
             _ => {}
@@ -365,7 +353,7 @@ fn funs_with_closure_env(module: &CoreModule) -> FxHashSet<String> {
 fn mark_env_funs_in_block(block: &Block, out: &mut FxHashSet<String>) {
     for op in &block.ops {
         match op {
-            Op::Let { value, .. } | Op::Effect { value } => {
+            Op::Let { value, .. } => {
                 if let Value::AllocClosure { fun, captures } = value {
                     if !captures.is_empty() {
                         out.insert(fun.clone());
@@ -418,11 +406,6 @@ fn collect_closure_cap_funrefs(
                     collect_closure_cap_funrefs(b, funref_locals, cap_funs);
                 });
             }
-            Op::Effect { value } => {
-                crate::for_each_nested_block(value, &mut |b| {
-                    collect_closure_cap_funrefs(b, funref_locals, cap_funs);
-                });
-            }
             _ => {}
         }
     }
@@ -466,10 +449,6 @@ fn directize_block_with_slots(
                 } else {
                     funref_of.remove(&local.0);
                 }
-            }
-            Op::Effect { value } => {
-                directize_value(value, &funref_of);
-                walk_nested_blocks_directize(value, &funref_of, &slot_funrefs, cap_funs);
             }
             Op::Assign { name, value } => {
                 if let Some(fr) = funref_of.get(&value.0).cloned() {

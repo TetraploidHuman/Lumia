@@ -296,7 +296,6 @@ pub(crate) fn copy_prop_block(block: &mut Block) {
                     copy_prop_block(latch);
                 }
             }
-            Op::Effect { value } => rewrite_value(value, &rewrite),
             Op::Assign { value, .. } | Op::Return { value } => {
                 if let Some(r) = rewrite.get(&value.0) {
                     *value = Local(*r);

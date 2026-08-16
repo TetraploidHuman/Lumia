@@ -67,6 +67,7 @@ mod tests {
         Analysis {
             typed,
             src: src.to_string(),
+            buffer_file: 0,
             files: vec![SourceFile {
                 path: PathBuf::new(),
                 src: src.to_string(),

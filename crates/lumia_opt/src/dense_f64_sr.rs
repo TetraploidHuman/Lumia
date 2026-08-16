@@ -11,8 +11,7 @@
 //! calls unlock the latter norms).
 
 use lumia_core::{
-    for_each_block_dfs, max_local_in_fun, Block, CoreFun, CoreModule, Local, Op, Value,
-};
+    for_each_block_dfs, max_local_in_fun, Block, CoreFun, CoreModule, Local, Op, Value, FunKind};
 use lumia_hir::Builtin;
 use lumia_syntax::BinOp;
 use lumia_ty::{Effect, Type};
@@ -113,7 +112,6 @@ fn ensure_external(module: &mut CoreModule, sym: &str) {
         param_names,
         param_tys,
         body: Block {
-            params: vec![],
             ops: vec![],
             result: None,
         },
@@ -126,6 +124,7 @@ fn ensure_external(module: &mut CoreModule, sym: &str) {
         escaping: HashSet::default(),
         scheme_poly: false,
         mono_of: None,
+        kind: FunKind::Normal,
     });
 }
 
@@ -168,7 +167,6 @@ fn external_sig(sym: &str) -> (Vec<Type>, Type) {
 fn rewrite_body_to_call(fun: &mut CoreFun, sym: &str) {
     let r = Local(max_local_in_fun(fun).saturating_add(1));
     fun.body = Block {
-        params: vec![],
         ops: vec![Op::Let {
             local: r,
             value: Value::Call {

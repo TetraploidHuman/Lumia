@@ -36,7 +36,7 @@ pub struct ObjectHeader {
     pub _pad: u64,
 }
 
-const _: () = assert!(std::mem::size_of::<ObjectHeader>() == 24);
+const _: () = assert!(std::mem::size_of::<ObjectHeader>() == lumia_abi::OBJECT_HEADER_BYTES);
 
 /// Max frames retained for trap backtraces (DESIGN §2 / error table).
 const CALL_STACK_CAP: usize = 256;
@@ -295,7 +295,7 @@ pub trait MmBackend {
     }
 }
 
-/// Non-moving generational mark-sweep (young nursery + old tenure).
+/// Non-moving generational mark-sweep (young list + old tenure; no bump nursery).
 pub struct MarkSweep;
 
 /// Heap generation of a live payload (absent ⇒ not a managed heap object).

@@ -65,6 +65,7 @@ val main = {
             typed,
             src: src.to_string(),
             files: vec![],
+            buffer_file: 0,
         };
         let hints = hints_for_analysis(&a, None);
         let labels: Vec<String> = hints
@@ -101,6 +102,7 @@ val fun(a, b) = {
             typed,
             src: src.to_string(),
             files: vec![],
+            buffer_file: 0,
         };
         let hints = hints_for_analysis(&a, None);
         let by_line: Vec<(u64, String)> = hints
@@ -141,6 +143,7 @@ val add = { x, y -> x + y }
             typed,
             src: src.to_string(),
             files: vec![],
+            buffer_file: 0,
         };
         // Simulate VS Code asking for a huge visible range past the last line.
         let starts = lumia_syntax::line_starts(src);
@@ -175,6 +178,7 @@ val main = {
             typed,
             src: src.to_string(),
             files: vec![],
+            buffer_file: 0,
         };
         let hints = hints_for_analysis(&a, None);
         let labels: Vec<_> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
@@ -206,6 +210,7 @@ val outer = { x ->
             typed,
             src: src.to_string(),
             files: vec![],
+            buffer_file: 0,
         };
         let hints = hints_for_analysis(&a, None);
         let labels: Vec<_> = hints
@@ -236,6 +241,7 @@ val main = {
             typed,
             src: src.to_string(),
             files: vec![],
+            buffer_file: 0,
         };
         let hints = hints_for_analysis(&a, None);
         let labels: Vec<_> = hints.iter().filter_map(|h| h["label"].as_str()).collect();

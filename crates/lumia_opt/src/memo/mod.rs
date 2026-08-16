@@ -15,18 +15,12 @@ mod fold;
 mod licm;
 mod plan;
 
-pub use cse::cse_module;
-pub use plan::{apply_memo_plan, plan_memo_tf};
+pub(crate) use cse::cse_module;
+pub(crate) use plan::{apply_memo_plan, plan_memo_tf};
 
 /// Planner-facing widths (IDs stored as `u32` on [`MemoTf`](lumia_core::MemoTf)).
-pub const MEMO_TF_MAX_FUNS_U32: u32 = lumia_abi::MEMO_TF_MAX_FUNS as u32;
-pub const MEMO_IDX_MAX_FUNS: u32 = lumia_abi::MEMO_IDX_MAX_FUNS as u32;
-/// Keys outside `0..MEMO_IDX_CAP` are never cached (DESIGN §7.5 hard bound).
-pub const MEMO_IDX_CAP: u32 = lumia_abi::MEMO_IDX_CAP as u32;
-pub use lumia_abi::{
-    MEMO_IDX_TABLE_BYTES, MEMO_PROCESS_BYTE_CAP, MEMO_SLOTS_TABLE_BYTES, MEMO_TF_MAX_ARGS,
-    MEMO_TF_MAX_FUNS, MEMO_TF_SLOTS,
-};
+pub(crate) const MEMO_TF_MAX_FUNS_U32: u32 = lumia_abi::MEMO_TF_MAX_FUNS as u32;
+pub(crate) const MEMO_IDX_MAX_FUNS: u32 = lumia_abi::MEMO_IDX_MAX_FUNS as u32;
 
 pub(crate) use fold::{const_fold_block, copy_prop_block};
 pub(crate) use licm::{builtin_may_trap_or_effect, licm_seeded};

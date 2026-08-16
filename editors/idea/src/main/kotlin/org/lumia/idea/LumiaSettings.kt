@@ -11,6 +11,9 @@ class LumiaSettings : PersistentStateComponent<LumiaSettings> {
     /** Path to the `lumia` binary. */
     var lspPath: String = "lumia"
 
+    /** Mirror CLI auto-parallel (false ≈ `--no-parallel`). */
+    var autoParallel: Boolean = true
+
     override fun getState(): LumiaSettings = this
 
     override fun loadState(state: LumiaSettings) {

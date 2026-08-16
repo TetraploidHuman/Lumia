@@ -12,7 +12,7 @@ mod stamp;
 mod token;
 
 pub use ast::*;
-pub use diag::{byte_to_line_col, format_diagnostic, line_starts};
+pub use diag::{byte_to_line_col, format_diagnostic, format_diagnostic_files, line_starts};
 pub use error::LocatedError;
 pub use lexer::Lexer;
 pub use parser::{parse_expr_str, parse_module, parse_module_recovering, ParseError, ParseOutcome};

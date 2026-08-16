@@ -344,16 +344,9 @@ impl<'ctx> Codegen<'ctx> {
             BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                 self.emit_ord_compare(op, &lt, &rt, l, r)?
             }
-            BinOp::And => self
-                .llvm
-                .builder
-                .build_and(l, r, "and")
-                .context("call return value")?,
-            BinOp::Or => self
-                .llvm
-                .builder
-                .build_or(l, r, "or")
-                .context("call return value")?,
+            BinOp::And | BinOp::Or => {
+                bail!("ICE: BinOp::And|Or reached codegen; expected If desugar")
+            }
         };
         Ok(v.into())
     }

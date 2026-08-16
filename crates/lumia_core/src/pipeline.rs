@@ -1,12 +1,12 @@
 //! Shared frontend→Core pipeline for tests and tooling.
 //!
-//! Multi-file load, import visibility, and assert-message annotation remain
-//! CLI-only ([`lumia`] crate). Effect-boundary checks mirror the CLI via
-//! [`lumia_ty::typecheck_hir`].
+//! Multi-file load and import visibility remain CLI-only ([`lumia`] crate).
+//! Assert-message annotation matches the CLI build path (single-file label
+//! `"<input>"`). Effect-boundary checks mirror the CLI via [`lumia_ty::typecheck_hir`].
 
 use crate::ir::CoreModule;
 use crate::lower::lower_hir_with_schemes;
-use lumia_hir::lower_module;
+use lumia_hir::{annotate_assert_messages, lower_module};
 use lumia_syntax::parse_module;
 use lumia_ty::{typecheck_hir, NameVisibility, TypecheckOptions};
 
@@ -21,7 +21,7 @@ fn stage<T, E: std::fmt::Display>(name: &str, r: Result<T, E>) -> Result<T, Stri
 /// Parse → HIR → [`typecheck_hir`] → Core (incl. mono).
 ///
 /// Mirrors the CLI path up to (but not including) `lumia_opt::optimize`,
-/// without multi-file load / visibility / assert annotation.
+/// without multi-file load / visibility.
 pub fn compile_source_to_core(src: &str) -> Result<CoreModule, String> {
     compile_source_to_core_with_options(src, &FrontendOptions::default())
 }
@@ -44,19 +44,21 @@ pub fn compile_source_to_core_with_options(
 ) -> Result<CoreModule, String> {
     let ast = stage("parse", parse_module(src))?;
     let hir = stage("lower", lower_module(&ast))?;
-    let typed = stage(
+    let mut typed = stage(
         "typecheck",
         typecheck_hir(&hir, NameVisibility::default(), opts),
     )?;
-    Ok({
-        let core = lower_hir_with_schemes(
+    annotate_assert_messages(&mut typed.module, &[("<input>", src)]);
+    let core = stage(
+        "core",
+        lower_hir_with_schemes(
             &typed.module,
             &typed.fun_types,
             &typed.fun_schemes,
             &typed.type_at,
-        );
-        stage("channel", core.check_channel_elem_conflicts().map(|()| core))?
-    })
+        ),
+    )?;
+    stage("channel", core.check_channel_elem_conflicts().map(|()| core))
 }
 
 /// Read a `.lm` file and compile through to Core.
@@ -74,7 +76,7 @@ mod tests {
     fn has_builtin(core: &CoreModule, b: Builtin) -> bool {
         core.functions.iter().any(|f| {
             f.body.ops.iter().any(|op| match op {
-                Op::Let { value, .. } | Op::Effect { value } => {
+                Op::Let { value, .. } => {
                     matches!(value, Value::Builtin { name, .. } if *name == b)
                 }
                 _ => false,

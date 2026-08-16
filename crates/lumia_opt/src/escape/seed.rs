@@ -11,7 +11,7 @@ pub(super) fn collect_assigns(block: &Block, assigns: &mut HashMap<String, Vec<L
             Op::Assign { name, value } => {
                 assigns.entry(name.clone()).or_default().push(*value);
             }
-            Op::Let { value, .. } | Op::Effect { value } => {
+            Op::Let { value, .. } => {
                 collect_assigns_value(value, assigns);
             }
             _ => {}
@@ -54,7 +54,7 @@ pub(super) fn seed_escaping(
     }
     for op in &block.ops {
         match op {
-            Op::Let { value, .. } | Op::Effect { value, .. } => {
+            Op::Let { value, .. } => {
                 seed_value(value, escaping, summaries, assigns)
             }
             Op::Assign { .. } => {

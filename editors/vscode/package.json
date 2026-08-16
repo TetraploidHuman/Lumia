@@ -137,6 +137,11 @@
           "type": "boolean",
           "default": true,
           "description": "Enable the Lumia language server."
+        },
+        "lumia.autoParallel": {
+          "type": "boolean",
+          "default": true,
+          "description": "Allow auto List.map / List.fold parallelization in the language server (mirrors CLI; set false like --no-parallel)."
         }
       }
     },

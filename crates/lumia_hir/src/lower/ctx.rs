@@ -12,8 +12,6 @@ pub type LowerError = LocatedError;
 pub struct LowerCtx {
     pub(crate) ctors: HashMap<String, CtorInfo>,
     pub(crate) product_fields: HashMap<String, (String, usize)>,
-    #[allow(dead_code)] // retained for ambiguous-field diagnostics / future lower
-    pub(crate) product_field_owners: HashMap<String, Vec<(String, usize)>>,
     pub(crate) ambiguous_product_fields: HashSet<String>,
     pub(crate) products: HashMap<String, Vec<String>>,
     err: RefCell<Option<LowerError>>,
@@ -29,7 +27,6 @@ impl LowerCtx {
             ctors: HashMap::default(),
             products: HashMap::default(),
             product_fields: HashMap::default(),
-            product_field_owners: HashMap::default(),
             ambiguous_product_fields: HashSet::default(),
             err: RefCell::new(None),
             toplevel_funs: HashSet::default(),
@@ -41,7 +38,6 @@ impl LowerCtx {
         ctors: HashMap<String, CtorInfo>,
         products: HashMap<String, Vec<String>>,
         product_fields: HashMap<String, (String, usize)>,
-        product_field_owners: HashMap<String, Vec<(String, usize)>>,
         ambiguous_product_fields: HashSet<String>,
         toplevel_funs: HashSet<String>,
         toplevel_fold_assoc: HashSet<String>,
@@ -50,7 +46,6 @@ impl LowerCtx {
             ctors,
             products,
             product_fields,
-            product_field_owners,
             ambiguous_product_fields,
             err: RefCell::new(None),
             toplevel_funs,

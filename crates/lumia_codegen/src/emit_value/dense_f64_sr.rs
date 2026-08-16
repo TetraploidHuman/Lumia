@@ -124,7 +124,7 @@ fn dense_f64_trampoline_symbol(fun: &lumia_core::CoreFun) -> Option<&'static str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lumia_core::{Block, CoreFun, Local};
+    use lumia_core::{Block, CoreFun, Local, FunKind};
     use lumia_opt::{compile_source_to_optimized, OptOptions};
     use lumia_ty::Effect;
 
@@ -144,7 +144,6 @@ mod tests {
             ret_ty: Type::List(Box::new(Type::Float)),
             effect: Effect::pure(),
             body: Block {
-                params: vec![],
                 ops: vec![Op::Let {
                     local: Local(5),
                     value: Value::Call {
@@ -162,6 +161,7 @@ mod tests {
             escaping: Default::default(),
             scheme_poly: false,
             mono_of: None,
+            kind: FunKind::Normal,
         };
         assert_eq!(dense_f64_trampoline_symbol(&fun), Some("lumia_f64_gemv"));
     }

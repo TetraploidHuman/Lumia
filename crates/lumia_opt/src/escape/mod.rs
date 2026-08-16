@@ -22,7 +22,8 @@ use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 pub(crate) type ParamEscape = Vec<bool>;
 
 /// Locals that may outlive their defining region / be observed from outside.
-pub fn escaping_locals(fun: &CoreFun) -> HashSet<Local> {
+#[cfg(test)]
+pub(crate) fn escaping_locals(fun: &CoreFun) -> HashSet<Local> {
     escaping_locals_with(fun, &HashMap::default())
         .into_iter()
         .collect()

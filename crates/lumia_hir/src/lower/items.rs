@@ -61,7 +61,6 @@ struct TypeScan {
     ctors: HashMap<String, CtorInfo>,
     product_map: HashMap<String, Vec<String>>,
     product_fields: HashMap<String, (String, usize)>,
-    product_field_owners: HashMap<String, Vec<(String, usize)>>,
     ambiguous_product_fields: HashSet<String>,
 }
 
@@ -71,7 +70,6 @@ fn scan_type_decls(m: &lumia_syntax::Module) -> TypeScan {
     let mut ctors = HashMap::default();
     let mut product_map = HashMap::default();
     let mut product_fields = HashMap::default();
-    let mut product_field_owners: HashMap<String, Vec<(String, usize)>> = HashMap::default();
     let mut ambiguous_product_fields: HashSet<String> = HashSet::default();
     for item in &m.items {
         if let lumia_syntax::Item::Type(t) = item {
@@ -105,10 +103,6 @@ fn scan_type_decls(m: &lumia_syntax::Module) -> TypeScan {
                 }
                 lumia_syntax::TypeKind::Product(fields) => {
                     for (i, f) in fields.iter().enumerate() {
-                        product_field_owners
-                            .entry(f.clone())
-                            .or_default()
-                            .push((t.name.clone(), i));
                         match product_fields.get(f) {
                             Some((prev, _)) if prev != &t.name => {
                                 // Same field name on two products → resolve via receiver/`with` base type.
@@ -139,7 +133,6 @@ fn scan_type_decls(m: &lumia_syntax::Module) -> TypeScan {
         ctors,
         product_map,
         product_fields,
-        product_field_owners,
         ambiguous_product_fields,
     }
 }
@@ -151,35 +144,36 @@ fn collect_instances(
     trait_requires: &mut HashMap<String, Vec<String>>,
 ) -> Result<HashSet<(String, String)>, LowerError> {
     let mut instances: HashSet<(String, String)> = HashSet::default();
+    // Pass 1: register all traits (order vs `instance` must not matter; `type` already is).
     for item in &m.items {
-        match item {
-            lumia_syntax::Item::Trait(t) => {
-                trait_requires.insert(t.name.clone(), t.requires.clone());
+        if let lumia_syntax::Item::Trait(t) = item {
+            trait_requires.insert(t.name.clone(), t.requires.clone());
+        }
+    }
+    // Pass 2: validate instances against known types + traits.
+    for item in &m.items {
+        if let lumia_syntax::Item::Instance(i) = item {
+            let known_type = product_map.contains_key(&i.type_name)
+                || adts.iter().any(|a| a.name == i.type_name);
+            if !known_type {
+                return Err(LowerError {
+                    message: format!(
+                        "instance {} for {}: unknown type `{}`",
+                        i.trait_name, i.type_name, i.type_name
+                    ),
+                    span: i.span,
+                });
             }
-            lumia_syntax::Item::Instance(i) => {
-                let known_type = product_map.contains_key(&i.type_name)
-                    || adts.iter().any(|a| a.name == i.type_name);
-                if !known_type {
-                    return Err(LowerError {
-                        message: format!(
-                            "instance {} for {}: unknown type `{}`",
-                            i.trait_name, i.type_name, i.type_name
-                        ),
-                        span: i.span,
-                    });
-                }
-                if !trait_requires.contains_key(&i.trait_name) {
-                    return Err(LowerError {
-                        message: format!(
-                            "instance for unknown trait `{}` (declare `trait {} {{ }}` first)",
-                            i.trait_name, i.trait_name
-                        ),
-                        span: i.span,
-                    });
-                }
-                instances.insert((i.trait_name.clone(), i.type_name.clone()));
+            if !trait_requires.contains_key(&i.trait_name) {
+                return Err(LowerError {
+                    message: format!(
+                        "instance for unknown trait `{}` (no `trait {}` in this module)",
+                        i.trait_name, i.trait_name
+                    ),
+                    span: i.span,
+                });
             }
-            _ => {}
+            instances.insert((i.trait_name.clone(), i.type_name.clone()));
         }
     }
     // Auto-derive Eq / Show for products and sums (DESIGN §3.6).
@@ -283,7 +277,6 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
         ctors,
         product_map,
         mut product_fields,
-        product_field_owners,
         ambiguous_product_fields,
     } = scan_type_decls(m);
 
@@ -335,7 +328,6 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
         ctors,
         product_map,
         product_fields,
-        product_field_owners,
         ambiguous_product_fields,
         toplevel_funs,
         toplevel_fold_assoc,
@@ -417,6 +409,7 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
                     param_ann: vec![],
                     ret_ann: None,
                     body: Expr::Unit(f.span),
+                    span: f.span,
                     is_main: false,
                     external: Some(f.name.clone()),
                     foreign_sig: Some((param_tys, f.ret.clone())),

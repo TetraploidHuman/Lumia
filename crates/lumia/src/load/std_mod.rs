@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 use lumia_syntax::{Import, ImportNames};
 use rustc_hash::FxHashSet as HashSet;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub(super) fn is_std(path: &[String]) -> bool {
     path.first().map(|s| s.as_str() == "std").unwrap_or(false)
@@ -15,33 +15,99 @@ pub(super) fn is_extras(path: &[String]) -> bool {
     path.first().map(|s| s.as_str() == "extras").unwrap_or(false)
 }
 
-/// Resolve `std.<name>` → relative path under workspace `std/`.
-pub(super) fn std_module(path: &[String]) -> Result<&'static str> {
-    let key: Vec<&str> = path.iter().map(|s| s.as_str()).collect();
-    match key.as_slice() {
-        ["std", "io"] => Ok("io.lm"),
-        ["std", "string"] => Ok("string.lm"),
-        ["std", "option"] => Ok("option.lm"),
-        ["std", "result"] => Ok("result.lm"),
-        ["std", "linalg"] => Ok("linalg.lm"),
-        ["std", "concurrent"] => Ok("concurrent.lm"),
-        _ => bail!(
-            "unknown standard module `{}` (known: std.io, std.string, std.option, std.result, std.linalg, std.concurrent)",
-            path.join(".")
-        ),
-    }
+/// Resolve `std.<a>.<b>` → relative path under workspace `std/` (`a/b.lm`).
+///
+/// Discovery is filesystem-based: any `*.lm` under the bundled dir is importable
+/// (no compile-time allowlist). Segment `..` / separators are rejected.
+pub(super) fn std_module(path: &[String]) -> Result<PathBuf> {
+    resolve_bundled_rel("std", path, &workspace_std_dir())
 }
 
 /// Resolve `extras.<name>` → relative path under workspace `extras/`.
-pub(super) fn extras_module(path: &[String]) -> Result<&'static str> {
-    let key: Vec<&str> = path.iter().map(|s| s.as_str()).collect();
-    match key.as_slice() {
-        ["extras", "cn"] => Ok("cn.lm"),
-        ["extras", "efe"] => Ok("efe.lm"),
-        _ => bail!(
-            "unknown extras module `{}` (known: extras.cn, extras.efe)",
+pub(super) fn extras_module(path: &[String]) -> Result<PathBuf> {
+    resolve_bundled_rel("extras", path, &workspace_extras_dir())
+}
+
+fn resolve_bundled_rel(kind: &str, path: &[String], dir: &Path) -> Result<PathBuf> {
+    if path.first().map(|s| s.as_str()) != Some(kind) || path.len() < 2 {
+        bail!("not a `{kind}.*` module path `{}`", path.join("."));
+    }
+    for seg in &path[1..] {
+        if seg.is_empty()
+            || *seg == "."
+            || *seg == ".."
+            || seg.contains('/')
+            || seg.contains('\\')
+            || seg.contains('\0')
+        {
+            bail!("invalid `{kind}` module path segment `{seg}`");
+        }
+    }
+    let mut rel = PathBuf::new();
+    let segs = &path[1..];
+    for s in &segs[..segs.len() - 1] {
+        rel.push(s);
+    }
+    rel.push(format!("{}.lm", segs.last().expect("len >= 2")));
+    let file = dir.join(&rel);
+    if !file.is_file() {
+        let known = list_known_modules(kind, dir);
+        bail!(
+            "unknown {kind} module `{}` (known: {known})",
             path.join(".")
-        ),
+        );
+    }
+    Ok(rel)
+}
+
+fn list_known_modules(kind: &str, dir: &Path) -> String {
+    let mut names = Vec::new();
+    collect_lm_modules(dir, dir, &mut names);
+    names.sort();
+    if names.is_empty() {
+        format!("(none under {})", dir.display())
+    } else {
+        names
+            .into_iter()
+            .map(|n| format!("{kind}.{n}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+fn collect_lm_modules(root: &Path, dir: &Path, out: &mut Vec<String>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for ent in entries.flatten() {
+        let path = ent.path();
+        if path.is_dir() {
+            collect_lm_modules(root, &path, out);
+            continue;
+        }
+        if path.extension().and_then(|e| e.to_str()) != Some("lm") {
+            continue;
+        }
+        let Ok(rel) = path.strip_prefix(root) else {
+            continue;
+        };
+        let mut parts = Vec::new();
+        for c in rel.components() {
+            let std::path::Component::Normal(os) = c else {
+                continue;
+            };
+            let Some(s) = os.to_str() else {
+                continue;
+            };
+            if let Some(stem) = s.strip_suffix(".lm") {
+                parts.push(stem.to_string());
+            } else {
+                parts.push(s.to_string());
+            }
+        }
+        if !parts.is_empty() {
+            out.push(parts.join("."));
+        }
     }
 }
 
@@ -66,12 +132,11 @@ pub(super) fn bundled_exports(path: &[String]) -> Result<Vec<String>> {
 }
 
 pub(super) fn workspace_std_dir() -> PathBuf {
-    // crates/lumia -> workspace root
-    lumia_abi::workspace_root(env!("CARGO_MANIFEST_DIR")).join("std")
+    crate::paths::std_dir(env!("CARGO_MANIFEST_DIR"))
 }
 
 pub(super) fn workspace_extras_dir() -> PathBuf {
-    lumia_abi::workspace_root(env!("CARGO_MANIFEST_DIR")).join("extras")
+    crate::paths::extras_dir(env!("CARGO_MANIFEST_DIR"))
 }
 
 pub(super) fn parse_std_exports(src: &str) -> Result<Vec<String>> {
@@ -130,5 +195,30 @@ pub(super) fn validate_bundled_import(imp: &Import) -> Result<()> {
             }
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn std_io_resolves_by_directory() {
+        let rel = std_module(&["std".into(), "io".into()]).expect("std.io");
+        assert_eq!(rel, PathBuf::from("io.lm"));
+    }
+
+    #[test]
+    fn unknown_std_lists_known() {
+        let err = std_module(&["std".into(), "nope".into()]).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("unknown std module"), "{msg}");
+        assert!(msg.contains("std.io"), "{msg}");
+    }
+
+    #[test]
+    fn rejects_path_traversal_segment() {
+        let err = std_module(&["std".into(), "..".into(), "io".into()]).unwrap_err();
+        assert!(format!("{err}").contains("invalid"), "{err}");
     }
 }

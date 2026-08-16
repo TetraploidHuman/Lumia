@@ -21,18 +21,23 @@ pub(crate) fn collect_closure_cap_tys(
         .iter()
         .map(|f| (f.name.clone(), f.param_tys.clone()))
         .collect();
-    let fun_param0_identity: HashSet<String> = HashSet::default();
+    let fun_param0_identity: HashSet<String> = core
+        .functions
+        .iter()
+        .filter(|f| crate::core_fun_is_param0_identity(f))
+        .map(|f| f.name.clone())
+        .collect();
     let mut out: HashMap<String, HashMap<u32, Type>> = HashMap::default();
-    // Multiple rounds: an outer `AllocClosure` may be walked after an inner
-    // body that re-captures a `ClosureCap` (spawn thunk → returned closure).
-    for _ in 0..8 {
+    // Change-flag fixpoint (capped): outer AllocClosure may depend on inner
+    // ClosureCap typing from a prior round.
+    const MAX_ROUNDS: usize = 8;
+    for _ in 0..MAX_ROUNDS {
         let before = out.clone();
         for fun in &core.functions {
             let mut local_tys: HashMap<u32, Type> = HashMap::default();
             let mut slot_tys: HashMap<String, Type> = HashMap::default();
             let mut funref_locals: HashMap<u32, String> = HashMap::default();
             let local_int_consts: HashMap<u32, i64> = HashMap::default();
-            let sum_max_arity: HashMap<String, usize> = HashMap::default();
             for (i, ty) in fun.param_tys.iter().enumerate() {
                 if let Some(p) = fun.params.get(i) {
                     local_tys.insert(p.0, ty.clone());
@@ -48,7 +53,7 @@ pub(crate) fn collect_closure_cap_tys(
                 &fun_param_tys,
                 &fun_param0_identity,
                 &local_int_consts,
-                &sum_max_arity,
+                &core.sum_max_arity,
                 core.channel_elem_hint.as_ref(),
                 &core.channel_elem_by_local,
                 &mut out,
@@ -174,23 +179,6 @@ fn walk_block(
                         funref_locals.remove(&local.0);
                     }
                 }
-            }
-            Op::Effect { value } => {
-                walk_value_nested(
-                    value,
-                    current_fun,
-                    local_tys,
-                    slot_tys,
-                    funref_locals,
-                    fun_ret_tys,
-                    fun_param_tys,
-                    fun_param0_identity,
-                    local_int_consts,
-                    sum_max_arity,
-                    channel_elem_hint,
-                    channel_elem_by_local,
-                    out,
-                );
             }
             Op::Assign { name, value } => {
                 if let Some(ty) = local_tys.get(&value.0).cloned() {

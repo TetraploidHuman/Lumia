@@ -43,7 +43,7 @@ fn dce_fun(f: &mut CoreFun) {
 fn dce_block(block: &mut Block, float_locals: &HashSet<u32>) {
     for op in &mut block.ops {
         match op {
-            Op::Let { value, .. } | Op::Effect { value } => {
+            Op::Let { value, .. } => {
                 for_each_nested_block_mut(value, &mut |nested| {
                     dce_block(nested, float_locals);
                 });
@@ -90,7 +90,7 @@ fn collect_references(block: &Block, live: &mut HashSet<u32>) {
     }
     for op in &block.ops {
         match op {
-            Op::Let { value, .. } | Op::Effect { value } => {
+            Op::Let { value, .. } => {
                 mark_uses_shallow(value, live);
                 for_each_nested_block(value, &mut |nested| {
                     collect_references(nested, live);
@@ -137,7 +137,7 @@ fn must_keep(value: &Value, float_locals: &HashSet<u32>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lumia_core::{Block, CoreFun, CoreModule, Local, Op, Value};
+    use lumia_core::{Block, CoreFun, CoreModule, Local, Op, Value, FunKind};
     use lumia_syntax::BinOp;
     use lumia_ty::Effect;
 
@@ -150,7 +150,6 @@ mod tests {
             ret_ty: lumia_ty::Type::Int,
             effect: Effect::pure(),
             body: Block {
-                params: vec![],
                 ops,
                 result,
             },
@@ -161,6 +160,7 @@ mod tests {
             escaping: Default::default(),
             scheme_poly: false,
             mono_of: None,
+            kind: FunKind::Normal,
         }
     }
 
@@ -253,7 +253,6 @@ mod tests {
     fn keeps_temp_only_used_inside_loop() {
         // `%0 = 0` assigned into a slot read only in the loop body.
         let loop_body = Block {
-            params: vec![],
             ops: vec![Op::Assign {
                 name: "acc".into(),
                 value: Local(0),
@@ -274,13 +273,11 @@ mod tests {
                         local: Local(1),
                         value: Value::Loop {
                             header: Box::new(Block {
-                                params: vec![],
                                 ops: vec![],
                                 result: Some(Local(0)),
                             }),
                             body: Box::new(loop_body),
                             latch: Box::new(Block {
-                                params: vec![],
                                 ops: vec![],
                                 result: None,
                             }),

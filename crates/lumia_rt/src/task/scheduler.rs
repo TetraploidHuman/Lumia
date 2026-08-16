@@ -40,21 +40,22 @@ thread_local! {
     static SCOPE_KIND_CACHE: Cell<u8> = const { Cell::new(0) };
 }
 
-/// Fiber coroutine stack size (bytes). Default 128KiB (corosensei default is 1MiB).
+/// Fiber coroutine stack size (bytes). Default 64KiB (override with `LUMIA_FIBER_STACK_KB`).
 fn fiber_stack_bytes() -> usize {
     static CACHED: Mutex<Option<usize>> = Mutex::new(None);
     let mut g = CACHED.lock().unwrap_or_else(|p| p.into_inner());
     if let Some(n) = *g {
         return n;
     }
+    let default = 64 * 1024;
     let n = match std::env::var("LUMIA_FIBER_STACK_KB") {
         Ok(v) => v
             .trim()
             .parse::<usize>()
             .ok()
             .map(|kb| kb.saturating_mul(1024).max(16 * 1024))
-            .unwrap_or(128 * 1024),
-        Err(_) => 128 * 1024,
+            .unwrap_or(default),
+        Err(_) => default,
     };
     *g = Some(n);
     n
@@ -130,9 +131,10 @@ fn sched_pool_counts() -> (usize, usize) {
     if let Some(c) = *g {
         return c;
     }
+    let default = default_pool_size();
     let c = (
-        parse_env_usize("LUMIA_SCHED_WORKERS", 1),
-        parse_env_usize("LUMIA_SCHED_IO", 1),
+        parse_env_usize("LUMIA_SCHED_WORKERS", default),
+        parse_env_usize("LUMIA_SCHED_IO", default),
     );
     *g = Some(c);
     c
@@ -144,6 +146,14 @@ fn worker_threads() -> usize {
 
 fn io_threads() -> usize {
     sched_pool_counts().1
+}
+
+/// Default OS-thread pool size when env is unset: host `available_parallelism`, else 1.
+/// Tests may pin with `LUMIA_SCHED_WORKERS=0|1` (0 = cooperative / no dedicated pool).
+fn default_pool_size() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
 }
 
 fn parse_env_usize(key: &str, default: usize) -> usize {

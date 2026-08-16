@@ -190,8 +190,10 @@ fn e2e_unknown_std_module_rejected() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        combined.contains("unknown standard module") || combined.contains("not exported"),
-        "expected std allowlist error, got: {combined}"
+        combined.contains("unknown std module")
+            || combined.contains("unknown standard module")
+            || combined.contains("not exported"),
+        "expected std discovery error, got: {combined}"
     );
 }
 

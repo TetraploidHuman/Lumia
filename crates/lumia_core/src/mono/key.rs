@@ -73,7 +73,7 @@ impl MonoKind {
         }
     }
 
-    fn to_type(&self) -> Type {
+    pub(crate) fn to_type(&self) -> Type {
         match self {
             MonoKind::Int => Type::Int,
             MonoKind::Float => Type::Float,
@@ -87,8 +87,9 @@ impl MonoKind {
                 name: name.clone(),
                 params: params.iter().map(MonoKind::to_type).collect(),
             },
-            // Opaque Fun slot — clone body directizes to a named Call.
-            MonoKind::FunRef(_) => Type::Fun(vec![], Box::new(Type::Int), Effect::pure()),
+            // Opaque FunRef — never a fake `Fun([], Int)`. Resolve the named
+            // function via `param_tys` / `ret_ty` (they take `&[CoreFun]`).
+            MonoKind::FunRef(_) => Type::Unit,
             MonoKind::Fun { params, ret } => Type::Fun(
                 params.iter().map(MonoKind::to_type).collect(),
                 Box::new(ret.to_type()),
@@ -170,13 +171,15 @@ fn type_to_mono(t: &Type) -> Option<MonoKind> {
                 params: ps,
             })
         }
-        // Coarse Fun shape so `unwrapOr(Some(floatFun), …)` can specialize.
+        // Structural Fun so `unwrapOr(Some(floatFun), …)` can specialize.
+        // Open / unkeyable params or ret → whole key fails (same as List/Map/Adt),
+        // never silently `unwrap_or(Int)` into a fake `$Fun_Int_…` clone.
         Type::Fun(ps, r, _) => {
             let mut pks = Vec::with_capacity(ps.len());
             for p in ps {
-                pks.push(type_to_mono(p).unwrap_or(MonoKind::Int));
+                pks.push(type_to_mono(p)?);
             }
-            let rk = type_to_mono(r).unwrap_or(MonoKind::Int);
+            let rk = type_to_mono(r)?;
             Some(MonoKind::Fun {
                 params: pks,
                 ret: Box::new(rk),
@@ -214,6 +217,15 @@ fn is_erased_result_ret(t: &Type) -> bool {
 
 fn strip_mono_suffix(name: &str) -> &str {
     name.split('$').next().unwrap_or(name)
+}
+
+/// Prefer [`CoreFun::mono_of`] / [`CoreFun::base_name`] when the callee is in `functions`.
+fn base_fun_name<'a>(name: &'a str, functions: &'a [CoreFun]) -> &'a str {
+    functions
+        .iter()
+        .find(|f| f.name == name)
+        .map(|f| f.base_name())
+        .unwrap_or_else(|| strip_mono_suffix(name))
 }
 
 /// Clone rets must be re-keyable (`type_to_mono`); open Vars block `unwrapOr` etc.
@@ -323,7 +335,8 @@ impl MonoKey {
                     .iter()
                     .find(|f| f.name == *n)
                     .map(|f| Type::Fun(f.param_tys.clone(), Box::new(f.ret_ty.clone()), f.effect))
-                    .unwrap_or_else(|| k.to_type()),
+                    // Missing name: Unit sentinel — not a fake 0-ary Fun.
+                    .unwrap_or(Type::Unit),
                 other => other.to_type(),
             })
             .collect()
@@ -342,7 +355,9 @@ impl MonoKey {
         if kinds.is_empty() {
             return Type::Int;
         }
-        let base = callee.map(strip_mono_suffix).unwrap_or("");
+        let base = callee
+            .map(|c| base_fun_name(c, functions))
+            .unwrap_or("");
         // `unwrapOr(opt, default)` returns the payload / default type — never the
         // Option/Result wrapper. When `default` is a FunRef, "last data arg" is
         // only the ADT and would wrongly keep `Option[Fun…]` (icall then uses
@@ -357,7 +372,7 @@ impl MonoKey {
                         Some(MonoKind::FunRef(n)) => functions.iter().find(|f| f.name == *n).map(
                             |f| {
                                 let mut params = f.param_tys.clone();
-                                if n.starts_with("__lam_")
+                                if f.is_lifted_lambda()
                                     && params
                                         .first()
                                         .is_some_and(|p| matches!(p, Type::Int | Type::Var(_)))
@@ -416,6 +431,19 @@ impl MonoKey {
             }
         }
         if kinds.iter().all(|k| k == &kinds[0]) {
+            if let MonoKind::FunRef(n) = &kinds[0] {
+                return functions
+                    .iter()
+                    .find(|f| f.name == *n)
+                    .map(|f| {
+                        ground_open_vars(Type::Fun(
+                            f.param_tys.clone(),
+                            Box::new(f.ret_ty.clone()),
+                            f.effect,
+                        ))
+                    })
+                    .unwrap_or(Type::Unit);
+            }
             return ground_open_vars(kinds[0].to_type());
         }
         // `l2Normalize(xs, eps)` / `keep(xs, eps)`: first List/Map/Set is the
@@ -454,7 +482,9 @@ impl MonoKey {
 
     /// `map` / `andThen` / `mapErr` shaped keys with a FunRef callback.
     pub(crate) fn hof_ret_ty(&self, functions: &[CoreFun], callee: Option<&str>) -> Option<Type> {
-        let base = callee.map(strip_mono_suffix).unwrap_or("");
+        let base = callee
+            .map(|c| base_fun_name(c, functions))
+            .unwrap_or("");
         // `unwrapOr(opt, defaultFun)` also has Option+FunRef but FunRef is the
         // default value, not a mapper — must not wrap as `Option[…]`.
         if !matches!(

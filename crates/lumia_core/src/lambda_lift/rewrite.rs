@@ -9,8 +9,8 @@ use super::float_abi::{
 };
 use super::heap::block_result_may_heap_with_params;
 use crate::ir::{
-    max_local_in_module, rewrite_block_locals, Block, CoreFun, CoreModule, ForeignAbi, Local, Op,
-    Value,
+    max_local_in_module, rewrite_block_locals, Block, CoreFun, CoreModule, ForeignAbi, FunKind,
+    Local, Op, Value,
 };
 use crate::visit::{block_has_io, for_each_nested_block, for_each_op_value_mut};
 use lumia_ty::{Effect, Type};
@@ -160,7 +160,7 @@ fn collect_float_slots(block: &Block, float_locals: &HashSet<u32>, slots: &mut H
                     slots.remove(name);
                 }
             }
-            Op::Let { value, .. } | Op::Effect { value } => {
+            Op::Let { value, .. } => {
                 crate::for_each_nested_block(value, &mut |b| {
                     collect_float_slots(b, float_locals, slots);
                 });
@@ -235,26 +235,6 @@ fn lift_block(
                         funref_locals.remove(&local.0);
                     }
                 }
-            }
-            Op::Effect { value, .. } => {
-                let mut prelude = Vec::new();
-                lift_value(
-                    value,
-                    extras,
-                    id,
-                    next_local,
-                    &mut prelude,
-                    true,
-                    float_locals,
-                    float_slots,
-                    io_funs,
-                    fun_ret_tys,
-                    fun_param_tys,
-                    hof,
-                    funref_locals,
-                    float_cap_idxs,
-                );
-                new_ops.append(&mut prelude);
             }
             Op::Assign { name, value } => {
                 if float_locals.contains(&value.0) {
@@ -357,6 +337,7 @@ fn lift_value(
                     // Local let-poly / nested lambdas: specialize at ground call sites.
                     scheme_poly: true,
                     mono_of: None,
+                    kind: FunKind::LiftedLambda,
                 });
                 *value = Value::FunRef(name);
                 return;
@@ -454,6 +435,7 @@ fn lift_value(
                 escaping: HashSet::default(),
                 scheme_poly: true,
                 mono_of: None,
+                kind: FunKind::LiftedLambda,
             });
             *value = Value::AllocClosure {
                 fun: name,
@@ -573,7 +555,7 @@ fn collect_assigned_names_in_block(block: &Block, out: &mut HashSet<String>) {
             Op::Assign { name, .. } => {
                 out.insert(name.clone());
             }
-            Op::Let { value, .. } | Op::Effect { value } => {
+            Op::Let { value, .. } => {
                 for_each_nested_block(value, &mut |b| collect_assigned_names_in_block(b, out));
             }
             Op::Break | Op::Continue | Op::Return { .. } => {}

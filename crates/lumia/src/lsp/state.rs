@@ -11,6 +11,9 @@ pub(super) struct Analysis {
     /// Primary document source (for hover/completion cursor).
     pub(super) src: String,
     pub(super) files: Vec<SourceFile>,
+    /// `Span.file` of the open buffer within [`Self::files`] (not always 0 if
+    /// the buffer is not the load entry — hover/inlay filter by this id).
+    pub(super) buffer_file: u32,
 }
 
 pub(super) struct State {
@@ -19,6 +22,8 @@ pub(super) struct State {
     pub(super) analysis: HashMap<String, Analysis>,
     /// Debounced re-analyze requests (didChange).
     pub(super) analyze_tx: Option<Sender<AnalyzeReq>>,
+    /// Mirror of CLI `--parallel` / `--no-parallel` (from `initialize` options).
+    pub(super) auto_parallel: bool,
 }
 
 #[derive(Clone)]
@@ -34,6 +39,14 @@ static ANALYZE_GEN: LazyLock<Mutex<HashMap<String, u64>>> =
 
 pub(super) fn state_lock() -> std::sync::MutexGuard<'static, Option<State>> {
     STATE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Current auto-parallel flag (default true when state is unset).
+pub(super) fn auto_parallel() -> bool {
+    state_lock()
+        .as_ref()
+        .map(|s| s.auto_parallel)
+        .unwrap_or(true)
 }
 
 /// Bump per-uri generation and return the new value (latest wins for debounce).

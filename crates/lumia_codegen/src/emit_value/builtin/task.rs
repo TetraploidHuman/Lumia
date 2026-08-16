@@ -79,7 +79,10 @@ impl<'ctx> Codegen<'ctx> {
         use inkwell::{AddressSpace, IntPredicate};
         let fun_i = self.coerce_i64(self.local(args[0])?)?;
         let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
-        let one = self.llvm.i64_ty.const_int(1, false);
+        let one = self
+            .llvm
+            .i64_ty
+            .const_int(lumia_abi::FUNREF_TAG as u64, false);
         let tagged = crate::error::llvm(self.llvm.builder.build_and(fun_i, one, "spawn_tag"))?;
         let is_funref = crate::error::llvm(self.llvm.builder.build_int_compare(
             IntPredicate::EQ,

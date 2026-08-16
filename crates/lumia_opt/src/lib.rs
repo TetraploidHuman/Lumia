@@ -7,8 +7,6 @@
 mod copy_elim;
 mod dce;
 mod dense_f64_sr;
-#[cfg(test)]
-mod dump_fold_diag;
 mod escape;
 mod fusion;
 mod inline;
@@ -17,20 +15,16 @@ mod memo;
 mod repr_select;
 mod specialize_const;
 
-pub use escape::{escaping_locals, EscapePass};
-pub use fusion::ConcatIdentPass;
-pub use inline::InlinePass;
-pub use memo::{
-    apply_memo_plan, plan_memo_tf, ConstFoldPass, LicmPass, MEMO_IDX_CAP, MEMO_IDX_MAX_FUNS,
-    MEMO_IDX_TABLE_BYTES, MEMO_PROCESS_BYTE_CAP, MEMO_SLOTS_TABLE_BYTES, MEMO_TF_MAX_ARGS,
-    MEMO_TF_MAX_FUNS, MEMO_TF_SLOTS,
-};
-pub use specialize_const::SpecializeConstPass;
+pub(crate) use escape::EscapePass;
+pub(crate) use fusion::ConcatIdentPass;
+pub(crate) use inline::InlinePass;
+pub(crate) use memo::{apply_memo_plan, plan_memo_tf, ConstFoldPass, LicmPass};
+pub(crate) use specialize_const::SpecializeConstPass;
 
 use copy_elim::CopyElimPass;
 use dce::DcePass;
 use dense_f64_sr::DenseF64SrPass;
-use lumia_core::{CoreModule, ListRepr, MapRepr};
+use lumia_core::{CoreModule, MapRepr};
 use memo::cse_module;
 use repr_select::ReprSelect;
 
@@ -211,21 +205,23 @@ pub fn optimize(module: &mut CoreModule, opts: &OptOptions) {
     }
 }
 
-/// Named passes for tooling / diagnostics.
+/// Named passes for tooling / diagnostics — order matches [`optimize`].
 ///
-/// `"memo_tf"` is listed for Release even though planning runs via [`plan_memo_tf`]
-/// *before* CSE (not as a pipeline stage `run`); the plan is applied immediately so later
-/// inline/specialize see `memo` and leave T_f callees intact. Re-planning after
-/// CSE would drop const-reuse evidence (§7.5.2).
+/// Release lists `"memo_tf"` **first**: planning/apply run via [`plan_memo_tf`]
+/// before CSE (not as a `PipelinePass::run`); later inline/specialize see `memo`
+/// and leave T_f callees intact. Re-planning after CSE would drop const-reuse
+/// evidence (§7.5.2).
 pub fn pass_names(release: bool) -> Vec<&'static str> {
-    let mut names: Vec<&'static str> = if release {
+    let mut names = Vec::new();
+    if release {
+        names.push("memo_tf");
+    }
+    let pipeline: Vec<&'static str> = if release {
         RELEASE_PASSES.iter().map(|p| p.name()).collect()
     } else {
         DEBUG_PASSES.iter().map(|p| p.name()).collect()
     };
-    if release {
-        names.push("memo_tf");
-    }
+    names.extend(pipeline);
     names
 }
 
@@ -234,23 +230,17 @@ pub fn default_map_repr() -> MapRepr {
     MapRepr::HashOrdered
 }
 
-/// Default List representation when analysis cannot prove a better choice.
-pub fn default_list_repr() -> ListRepr {
-    ListRepr::HeapList
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use copy_elim::CopyElimPass;
-    use lumia_core::{Block, CoreFun, CoreModule, Local, Op, Value};
+    use lumia_core::{Block, CoreFun, CoreModule, ListRepr, Local, Op, Value, FunKind};
     use lumia_ty::{Effect, Type};
     use repr_select::ReprSelect;
     use rustc_hash::FxHashSet as HashSet;
 
     #[test]
     fn defaults() {
-        assert_eq!(default_list_repr(), ListRepr::HeapList);
         assert_eq!(default_map_repr(), MapRepr::HashOrdered);
     }
 
@@ -264,7 +254,7 @@ mod tests {
         assert!(pass_names(true).contains(&"specialize_const"));
         assert!(pass_names(true).contains(&"licm"));
         assert!(pass_names(true).contains(&"concat_ident"));
-        assert!(pass_names(true).contains(&"memo_tf"));
+        assert_eq!(pass_names(true).first(), Some(&"memo_tf"));
         assert!(!pass_names(false).contains(&"inline"));
         assert!(pass_names(false).contains(&"specialize_const"));
         assert!(pass_names(false).contains(&"dce"));
@@ -340,7 +330,6 @@ mod tests {
                 param_names: vec![],
                 param_tys: vec![],
                 body: Block {
-                    params: vec![],
                     ops: vec![
                         Op::Let {
                             local: Local(0),
@@ -364,6 +353,7 @@ mod tests {
                 escaping: HashSet::default(),
                 scheme_poly: false,
                 mono_of: None,
+                kind: FunKind::Normal,
             }],
         );
         CopyElimPass.run(&mut module);
@@ -382,7 +372,6 @@ mod tests {
                 param_names: vec![],
                 param_tys: vec![],
                 body: Block {
-                    params: vec![],
                     ops: vec![
                         Op::Let {
                             local: Local(0),
@@ -415,6 +404,7 @@ mod tests {
                 escaping: HashSet::default(),
                 scheme_poly: false,
                 mono_of: None,
+                kind: FunKind::Normal,
             }],
         );
         EscapePass.run(&mut module);
@@ -438,7 +428,6 @@ mod tests {
                 param_names: vec![],
                 param_tys: vec![],
                 body: Block {
-                    params: vec![],
                     ops: vec![
                         Op::Let {
                             local: Local(0),
@@ -465,6 +454,7 @@ mod tests {
                 escaping: HashSet::default(),
                 scheme_poly: false,
                 mono_of: None,
+                kind: FunKind::Normal,
             }],
         );
         EscapePass.run(&mut module);
@@ -498,7 +488,8 @@ val main = {
             &typed.fun_types,
             &typed.fun_schemes,
             &typed.type_at,
-        );
+        )
+        .expect("core");
         optimize(&mut core, &OptOptions::default());
         let main = core.functions.iter().find(|f| f.is_main).expect("main");
         let alloc = main.body.ops.iter().find_map(|op| match op {
@@ -553,7 +544,8 @@ val main = {
             &typed.fun_types,
             &typed.fun_schemes,
             &typed.type_at,
-        );
+        )
+        .expect("core");
         optimize(&mut core, &OptOptions::default());
         let main = core.functions.iter().find(|f| f.is_main).expect("main");
         let list_repr = main.body.ops.iter().find_map(|op| match op {
@@ -581,7 +573,6 @@ val main = {
                 param_names: vec![],
                 param_tys: vec![],
                 body: Block {
-                    params: vec![],
                     ops: vec![Op::Let {
                         local: Local(0),
                         value: Value::AllocList {
@@ -601,6 +592,7 @@ val main = {
                 escaping: HashSet::default(),
                 scheme_poly: false,
                 mono_of: None,
+                kind: FunKind::Normal,
             }],
         );
         EscapePass.run(&mut module);

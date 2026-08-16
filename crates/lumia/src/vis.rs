@@ -26,7 +26,7 @@ pub fn item_is_priv(it: &Item) -> bool {
     }
 }
 
-fn item_file(it: &Item) -> u32 {
+pub fn item_file(it: &Item) -> u32 {
     match it {
         Item::Val(v) => v.span.file,
         Item::Type(t) => t.span.file,

@@ -127,7 +127,7 @@ val main = { f(true, (1,)) }
 }
 
 #[test]
-fn occurs_check_follows_subst_through_adt() {
+fn occurs_check_allows_equi_recursive_adt() {
     use crate::infer::Infer;
     use crate::types::Type;
     let mut inf = Infer::new(crate::types::NameVisibility::default());
@@ -141,14 +141,14 @@ fn occurs_check_follows_subst_through_adt() {
         },
     )
     .expect("first bind");
-    let r = inf.unify(
+    inf.unify(
         Type::Var(b),
         Type::Adt {
             name: "Option".into(),
             params: vec![Type::Var(a)],
         },
-    );
-    assert!(r.is_err(), "occurs through Adt must fail; got Ok(())");
+    )
+    .expect("equi-recursive Adt cycle should be allowed");
 }
 
 #[test]

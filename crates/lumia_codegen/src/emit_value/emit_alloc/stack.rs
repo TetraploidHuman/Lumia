@@ -1,6 +1,7 @@
 //! Stack (non-escaping) List / Map / ADT layouts.
 //!
-//! ObjectHeader is 24 bytes ⇒ **3** `i64` header words before payload.
+//! ObjectHeader is [`lumia_abi::OBJECT_HEADER_BYTES`] ⇒
+//! [`lumia_abi::OBJECT_HEADER_WORDS`] `i64` words before payload.
 
 use super::super::super::Codegen;
 use anyhow::{Context as AnyhowContext, Result};
@@ -17,7 +18,7 @@ impl<'ctx> Codegen<'ctx> {
     ) -> Result<BasicValueEnum<'ctx>> {
         let n = fields.len() as u64;
         let payload_bytes = (1 + n) * 8;
-        let words = (3 + 1 + n) as u32; // 3 header + tag + fields
+        let words = (lumia_abi::OBJECT_HEADER_WORDS as u64 + 1 + n) as u32; // header + tag + fields
         let arr_ty = self.llvm.i64_ty.array_type(words);
         let entry = self
             .frame
@@ -83,7 +84,10 @@ impl<'ctx> Codegen<'ctx> {
             crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
                 self.llvm.i64_ty,
                 storage,
-                &[self.llvm.i64_ty.const_int(3, false)],
+                &[self
+                    .llvm
+                    .i64_ty
+                    .const_int(lumia_abi::OBJECT_HEADER_WORDS as u64, false)],
                 "adt_payload",
             ))?
         };
@@ -98,7 +102,10 @@ impl<'ctx> Codegen<'ctx> {
                 crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
                     self.llvm.i64_ty,
                     storage,
-                    &[self.llvm.i64_ty.const_int((4 + i) as u64, false)],
+                    &[self
+                        .llvm
+                        .i64_ty
+                        .const_int((lumia_abi::OBJECT_HEADER_WORDS + 1 + i) as u64, false)],
                     "adt_f",
                 ))?
             };
@@ -128,7 +135,7 @@ impl<'ctx> Codegen<'ctx> {
     ) -> Result<BasicValueEnum<'ctx>> {
         let n = elems.len() as u64;
         let payload_bytes = (1 + n) * 8;
-        let words = (3 + 1 + n) as u32; // 3 header words + len + elems
+        let words = (lumia_abi::OBJECT_HEADER_WORDS as u64 + 1 + n) as u32; // header + len + elems
         let arr_ty = self.llvm.i64_ty.array_type(words);
         let entry = self
             .frame
@@ -190,7 +197,10 @@ impl<'ctx> Codegen<'ctx> {
             crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
                 self.llvm.i64_ty,
                 storage,
-                &[self.llvm.i64_ty.const_int(3, false)],
+                &[self
+                    .llvm
+                    .i64_ty
+                    .const_int(lumia_abi::OBJECT_HEADER_WORDS as u64, false)],
                 "sa_payload",
             ))?
         };
@@ -205,7 +215,10 @@ impl<'ctx> Codegen<'ctx> {
                 crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
                     self.llvm.i64_ty,
                     storage,
-                    &[self.llvm.i64_ty.const_int((4 + i) as u64, false)],
+                    &[self
+                        .llvm
+                        .i64_ty
+                        .const_int((lumia_abi::OBJECT_HEADER_WORDS + 1 + i) as u64, false)],
                     "sa_elem",
                 ))?
             };

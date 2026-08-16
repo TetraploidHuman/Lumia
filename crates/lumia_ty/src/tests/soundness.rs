@@ -264,7 +264,7 @@ val main = {
 }
 
 #[test]
-fn occurs_adt_and_tuple_unit() {
+fn occurs_adt_equi_recursive_tuple_still_rigid() {
     use crate::infer::Infer;
     use crate::types::Type;
     let mut inf = Infer::new(crate::types::NameVisibility::default());
@@ -278,15 +278,15 @@ fn occurs_adt_and_tuple_unit() {
         },
     )
     .unwrap();
-    assert!(inf
-        .unify(
-            Type::Var(b),
-            Type::Adt {
-                name: "Box".into(),
-                params: vec![Type::Var(a)],
-            },
-        )
-        .is_err());
+    // Equi-recursive ADT (`μX. Box[Box[X]]`) is allowed.
+    inf.unify(
+        Type::Var(b),
+        Type::Adt {
+            name: "Box".into(),
+            params: vec![Type::Var(a)],
+        },
+    )
+    .expect("Adt cycle should be equi-recursive");
 
     let mut inf = Infer::new(crate::types::NameVisibility::default());
     let Type::Var(a) = inf.fresh() else { panic!() };

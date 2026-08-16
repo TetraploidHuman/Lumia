@@ -285,6 +285,7 @@ dependencies = [
 name = "lumia_core"
 version = "0.1.0"
 dependencies = [
+ "lumia_abi",
  "lumia_hir",
  "lumia_syntax",
  "lumia_ty",

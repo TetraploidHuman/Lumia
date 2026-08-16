@@ -271,7 +271,7 @@ impl<'a> Parser<'a> {
     /// Infix `a to b` → `to(a, b)` (DESIGN §3.5.2 mapOf sugar).
     pub(super) fn parse_to(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.parse_mul()?;
-        while matches!(self.peek(), TokenKind::Ident(name) if name == "to") {
+        while self.at(&TokenKind::To) {
             let to_span = self.bump().span;
             let right = self.parse_mul()?;
             let span = left.span().merge(right.span());
@@ -508,6 +508,11 @@ impl<'a> Parser<'a> {
                 let s = self.bump().span;
                 Ok(Expr::Ident(name, s))
             }
+            // Hard keyword that still denotes the `to` pair constructor as a primary.
+            TokenKind::To => {
+                let s = self.bump().span;
+                Ok(Expr::Ident("to".into(), s))
+            }
             TokenKind::If => self.parse_if(),
             TokenKind::Match => self.parse_match_cond(),
             TokenKind::Return => {
@@ -687,21 +692,28 @@ impl<'a> Parser<'a> {
         for part in parts {
             match part {
                 StringPart::Lit(s) => out.push(InterpPart::Lit(s)),
-                StringPart::Ident(name) => {
-                    out.push(InterpPart::Expr(Expr::Ident(name, span)));
+                StringPart::Ident { name, abs_start } => {
+                    let end = abs_start + name.len() as u32;
+                    out.push(InterpPart::Expr(Expr::Ident(
+                        name,
+                        Span::new(abs_start, end),
+                    )));
                 }
-                StringPart::ExprSrc(src) => {
+                StringPart::ExprSrc { src, abs_start } => {
+                    let lead = src.len() - src.trim_start().len();
                     let trimmed = src.trim();
                     if trimmed.is_empty() {
                         return Err(ParseError {
                             message: "empty interpolation `${}`".into(),
-                            span,
+                            span: Span::new(abs_start.saturating_sub(2), abs_start.saturating_add(1)),
                         });
                     }
-                    let e = parse_expr_str(trimmed).map_err(|e| ParseError {
+                    let base = abs_start + lead as u32;
+                    let mut e = parse_expr_str(trimmed).map_err(|e| ParseError {
                         message: format!("interpolation expression: {}", e.message),
-                        span,
+                        span: e.span.shift(base),
                     })?;
+                    crate::stamp::offset_expr(&mut e, base);
                     out.push(InterpPart::Expr(e));
                 }
             }

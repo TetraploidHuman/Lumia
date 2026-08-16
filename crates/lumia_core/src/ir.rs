@@ -55,6 +55,10 @@ pub struct CoreModule {
     pub channel_elem_by_local: HashMap<u32, Type>,
     /// Same-channel sends that disagreed on payload type `(prev, next)`.
     pub channel_elem_conflicts: Vec<(Type, Type)>,
+    /// `Option::Some` ctor tag from the source module (default 0).
+    pub option_some_tag: i64,
+    /// `Option::None` ctor tag from the source module (default 1).
+    pub option_none_tag: i64,
 }
 
 impl CoreModule {
@@ -70,6 +74,8 @@ impl CoreModule {
             channel_elem_hint: None,
             channel_elem_by_local: HashMap::default(),
             channel_elem_conflicts: Vec::new(),
+            option_some_tag: 0,
+            option_none_tag: 1,
         }
     }
 
@@ -116,12 +122,46 @@ pub struct CoreFun {
     /// When set, this function is a monomorphization clone of the named original.
     /// Prefer this over parsing `$` out of [`Self::name`].
     pub mono_of: Option<String>,
+    /// Structured identity — prefer over `__lam_` / `__val_` name prefixes.
+    pub kind: FunKind,
+}
+
+/// How a [`CoreFun`] was introduced (avoids string-prefix protocols).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FunKind {
+    #[default]
+    Normal,
+    /// Lambda lifted by `lambda_lift` (`__lam_*` name is historical).
+    LiftedLambda,
+    /// Module-level `val` getter (`__val_*` name is historical).
+    ValGetter,
 }
 
 impl CoreFun {
     #[inline]
     pub fn is_mono_clone(&self) -> bool {
         self.mono_of.is_some()
+    }
+
+    /// Lifted nested lambda (env-bearing or FunRef). Prefers [`FunKind`];
+    /// name prefix is a transitional fallback for older fixtures.
+    #[inline]
+    pub fn is_lifted_lambda(&self) -> bool {
+        matches!(self.kind, FunKind::LiftedLambda) || self.name.starts_with("__lam_")
+    }
+
+    /// Module-level `val` getter. Prefers [`FunKind`]; name prefix fallback.
+    #[inline]
+    pub fn is_val_getter(&self) -> bool {
+        matches!(self.kind, FunKind::ValGetter) || self.name.starts_with("__val_")
+    }
+
+    /// Original name before mono/`$c_` suffix when [`Self::mono_of`] is set.
+    #[inline]
+    pub fn base_name(&self) -> &str {
+        self.mono_of
+            .as_deref()
+            .unwrap_or_else(|| self.name.split('$').next().unwrap_or(self.name.as_str()))
     }
 }
 
@@ -136,7 +176,6 @@ pub enum MemoTf {
 
 #[derive(Debug, Clone)]
 pub struct Block {
-    pub params: Vec<Local>,
     pub ops: Vec<Op>,
     /// Result local (or unit)
     pub result: Option<Local>,
@@ -149,10 +188,6 @@ pub enum Op {
         value: Value,
         /// Pure region marker for §7.4.1
         pure_region: bool,
-    },
-    /// Effectful statement (no bind)
-    Effect {
-        value: Value,
     },
     Assign {
         name: String,
@@ -272,7 +307,7 @@ pub enum MapRepr {
     SmallMap,
     /// Eq-only / no Hash — stay linear forever (DESIGN §3.5.1 AssocList).
     AssocList,
-    /// Small non-escaping literal → stack header+payload (like `ListRepr::LitList`).
+    /// PE / memo fold tag only — codegen always heap+finish (not a stack layout).
     LitMap,
 }
 
@@ -280,7 +315,7 @@ pub enum MapRepr {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SetRepr {
     HeapSet,
-    /// Small non-escaping literal → stack header+payload.
+    /// PE / memo fold tag only — codegen always heap+finish (not a stack layout).
     LitSet,
 }
 
@@ -312,16 +347,10 @@ pub fn max_local_in_fun(fun: &CoreFun) -> u32 {
 
 pub fn max_local_in_block(block: &Block) -> u32 {
     let mut max = 0u32;
-    for p in &block.params {
-        max = max.max(p.0);
-    }
     for op in &block.ops {
         match op {
             Op::Let { local, value, .. } => {
                 max = max.max(local.0);
-                max = max.max(max_local_in_value(value));
-            }
-            Op::Effect { value, .. } => {
                 max = max.max(max_local_in_value(value));
             }
             Op::Assign { value, .. } | Op::Return { value } => max = max.max(value.0),
@@ -343,9 +372,6 @@ pub fn rewrite_block_locals(block: &mut Block, remap: &HashMap<u32, u32>) {
             *l = Local(r);
         }
     };
-    for p in &mut block.params {
-        map_l(p);
-    }
     if let Some(r) = &mut block.result {
         map_l(r);
     }
@@ -355,7 +381,6 @@ pub fn rewrite_block_locals(block: &mut Block, remap: &HashMap<u32, u32>) {
                 map_l(local);
                 rewrite_value_locals(value, remap);
             }
-            Op::Effect { value, .. } => rewrite_value_locals(value, remap),
             Op::Assign { value, .. } | Op::Return { value } => map_l(value),
             Op::Break | Op::Continue => {}
         }
@@ -399,9 +424,6 @@ fn format_block(b: &Block, out: &mut String, indent: usize) {
                         "  // effect"
                     }
                 ));
-            }
-            Op::Effect { value } => {
-                out.push_str(&format!("{pad}effect {}\n", format_value(value)));
             }
             Op::Assign { name, value } => {
                 out.push_str(&format!("{pad}{name} := %{}\n", value.0));

@@ -1,6 +1,7 @@
 //! LSP over stdio (JSON-RPC + Content-Length).
 //!
 //! - textDocument/didOpen|didChange|didClose → publishDiagnostics (editor overlays)
+//! - workspace/didChangeWatchedFiles → re-analyze open buffers (import dependents)
 //! - textDocument/hover → type from TypedModule.type_at / fun_types
 //! - textDocument/definition → decls (cross-file via Span.file)
 //! - textDocument/completion → in-scope names + common methods
@@ -23,7 +24,7 @@ mod state;
 mod symbols;
 mod uri;
 
-use analyze::{on_did_change, on_did_close, on_did_open};
+use analyze::{on_did_change, on_did_change_watched_files, on_did_close, on_did_open};
 use anyhow::Result;
 use completion::on_completion;
 use definition::on_definition;
@@ -44,6 +45,7 @@ pub fn run_lsp() -> Result<()> {
         docs: HashMap::default(),
         analysis: HashMap::default(),
         analyze_tx: Some(analyze_tx),
+        auto_parallel: true,
     });
     let stdin = io::stdin();
     let mut stdin = stdin.lock();
@@ -63,7 +65,21 @@ fn handle_message(msg: Value) -> Result<Option<Value>> {
     let method = msg.get("method").and_then(|m| m.as_str());
     let id = msg.get("id").cloned();
     match method {
-        Some("initialize") => Ok(Some(json!({
+        Some("initialize") => {
+            let opts = msg
+                .get("params")
+                .and_then(|p| p.get("initializationOptions"));
+            let ap = opts
+                .and_then(|o| {
+                    o.get("autoParallel")
+                        .or_else(|| o.get("auto_parallel"))
+                        .and_then(|v| v.as_bool())
+                })
+                .unwrap_or(true);
+            if let Some(s) = state_lock().as_mut() {
+                s.auto_parallel = ap;
+            }
+            Ok(Some(json!({
             "jsonrpc": "2.0",
             "id": id,
             "result": {
@@ -89,7 +105,8 @@ fn handle_message(msg: Value) -> Result<Option<Value>> {
                 },
                 "serverInfo": { "name": "lumia-lsp", "version": env!("CARGO_PKG_VERSION") }
             }
-        }))),
+        })))
+        }
         Some("initialized") | Some("shutdown") => {
             if id.is_some() {
                 Ok(Some(json!({ "jsonrpc": "2.0", "id": id, "result": null })))
@@ -113,6 +130,41 @@ fn handle_message(msg: Value) -> Result<Option<Value>> {
         Some("textDocument/didClose") => {
             if let Some(params) = msg.get("params") {
                 on_did_close(params)?;
+            }
+            Ok(None)
+        }
+        Some("workspace/didChangeWatchedFiles") => {
+            if let Some(params) = msg.get("params") {
+                on_did_change_watched_files(params)?;
+            }
+            Ok(None)
+        }
+        Some("workspace/didChangeConfiguration") => {
+            let settings = msg.get("params").and_then(|p| p.get("settings"));
+            let ap = settings
+                .and_then(|s| {
+                    s.get("lumia")
+                        .and_then(|l| l.get("autoParallel"))
+                        .or_else(|| s.get("autoParallel"))
+                        .or_else(|| s.get("auto_parallel"))
+                })
+                .and_then(|v| v.as_bool());
+            if let Some(ap) = ap {
+                let docs: Vec<(String, String)> = {
+                    let mut st = state_lock();
+                    if let Some(s) = st.as_mut() {
+                        s.auto_parallel = ap;
+                        s.docs
+                            .iter()
+                            .map(|(u, t)| (u.clone(), t.clone()))
+                            .collect()
+                    } else {
+                        Vec::new()
+                    }
+                };
+                for (uri, text) in docs {
+                    let _ = analyze::publish_diagnostics_for(&uri, &text);
+                }
             }
             Ok(None)
         }

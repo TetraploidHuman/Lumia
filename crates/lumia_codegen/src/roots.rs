@@ -127,7 +127,10 @@ impl<'ctx> Codegen<'ctx> {
     /// heap `AllocClosure` env pointers are released like other COW objects.
     pub(crate) fn fun_release_i64(&mut self, bits: IntValue<'ctx>) -> Result<()> {
         let zero = self.llvm.i64_ty.const_int(0, false);
-        let one = self.llvm.i64_ty.const_int(1, false);
+        let one = self
+            .llvm
+            .i64_ty
+            .const_int(lumia_abi::FUNREF_TAG as u64, false);
         let is_null = crate::error::llvm(self.llvm.builder.build_int_compare(
             inkwell::IntPredicate::EQ,
             bits,

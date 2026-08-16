@@ -202,6 +202,11 @@ fn e2e_regress_ulist_sum() {
 }
 
 #[test]
+fn e2e_regress_expr_eval() {
+    run_example("examples/regress/expr_eval.lm", &["7", "5", "7"]);
+}
+
+#[test]
 fn e2e_regress_nested_result_andthen_unwrapor() {
     run_example("examples/regress/nested_result_andthen_unwrapor.lm", &["3"]);
 }

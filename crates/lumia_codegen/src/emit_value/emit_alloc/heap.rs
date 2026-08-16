@@ -83,6 +83,10 @@ impl<'ctx> Codegen<'ctx> {
         elems: &[Local],
         _repr: lumia_core::SetRepr,
     ) -> Result<BasicValueEnum<'ctx>> {
+        // Empty Set is the null pointer (RT contract); no heap object.
+        if elems.is_empty() {
+            return Ok(self.llvm.i64_ty.const_zero().into());
+        }
         let elem_ty = elems
             .first()
             .and_then(|e| self.frame.local_tys.get(&e.0).cloned())
@@ -94,33 +98,26 @@ impl<'ctx> Codegen<'ctx> {
         let float_elems = matches!(elem_ty, Type::Float);
         let no_hash = !self.key_type_has_hash(&elem_ty);
         let tid = set_type_id(float_elems, no_hash);
-        // LitSet on the stack skips `lumia_set_finish` and keeps duplicate
-        // Int/String/Bool/ADT elems. Always heap+finish so finish can compact
-        // via `key_eq` (Float ±0 already required this path).
+        // `SetRepr::LitSet` is a PE/hint tag only — never a stack layout. Always
+        // heap+finish so `lumia_set_finish` can compact via `key_eq`.
         let v = self.emit_heap_array(elems, tid as u64)?;
-        if !elems.is_empty() {
-            let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
-            let bits = self.coerce_i64(v)?;
-            let p =
-                crate::error::llvm(self.llvm.builder.build_int_to_ptr(bits, ptr_ty, "set_lin"))?;
-            let f = self.runtime_fn("lumia_set_finish")?;
-            let __call4 =
-                crate::error::llvm(self.llvm.builder.build_call(f, &[p.into()], "set_fin"))?;
+        let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
+        let bits = self.coerce_i64(v)?;
+        let p = crate::error::llvm(self.llvm.builder.build_int_to_ptr(bits, ptr_ty, "set_lin"))?;
+        let f = self.runtime_fn("lumia_set_finish")?;
+        let __call4 = crate::error::llvm(self.llvm.builder.build_call(f, &[p.into()], "set_fin"))?;
 
-            let out = __call4
-                .try_as_basic_value()
-                .basic()
-                .context("call return value")?
-                .into_pointer_value();
-            Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
-                out,
-                self.llvm.i64_ty,
-                "set_i64",
-            ))?
-            .into())
-        } else {
-            Ok(v)
-        }
+        let out = __call4
+            .try_as_basic_value()
+            .basic()
+            .context("call return value")?
+            .into_pointer_value();
+        Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
+            out,
+            self.llvm.i64_ty,
+            "set_i64",
+        ))?
+        .into())
     }
 
     pub(crate) fn emit_value_alloc_map(
@@ -158,9 +155,12 @@ impl<'ctx> Codegen<'ctx> {
         // key Hash absence (linear forever) when values are not Float.
         // AssocList (+ Float tags) stays linear forever; Hash maps use 4/10/15/16.
         let tid = map_type_id(float_keys, float_vals, no_hash);
-        // LitMap on the stack skips finish and keeps duplicate Int/String/… keys.
-        // Always allocate on the heap and finish so `lumia_map_finish` can compact
-        // (Float ±0 already required this path).
+        // Empty Map is null (RT contract); no heap object.
+        if flat_pairs.is_empty() {
+            return Ok(self.llvm.i64_ty.const_zero().into());
+        }
+        // `MapRepr::LitMap` is a PE/hint tag only — never a stack layout. Always
+        // heap+finish so `lumia_map_finish` can compact (Float ±0 included).
         let nbytes = self
             .llvm
             .i64_ty

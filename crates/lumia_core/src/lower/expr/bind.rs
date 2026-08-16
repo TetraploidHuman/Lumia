@@ -81,6 +81,7 @@ pub(super) fn lower_bind(
                 trait_method_names: ctx.trait_method_names.clone(),
                 io_funs: ctx.io_funs.clone(),
                 type_at: ctx.type_at.clone(),
+                ice: None,
             };
             let mut pls = vec![];
             for p in params {
@@ -89,6 +90,9 @@ pub(super) fn lower_bind(
                 pls.push(l);
             }
             let (block, _) = lower_expr_block(&mut inner, body);
+            if let Some(msg) = inner.ice.take() {
+                ctx.note_ice(msg);
+            }
             ctx.next = inner.next;
             let dest = ctx.fresh();
             ops.push(Op::Let {

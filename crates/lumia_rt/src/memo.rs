@@ -1,6 +1,7 @@
 //! Transparent Memo `T_f` tables (DESIGN §7.5).
 
 use crate::heap::with_heap;
+use crate::common::trap_abort;
 use crate::{MEMO_IDX_CAP, MEMO_IDX_MAX_FUNS, MEMO_TF_MAX_ARGS, MEMO_TF_MAX_FUNS, MEMO_TF_SLOTS};
 use std::cell::{Cell, RefCell};
 
@@ -59,8 +60,8 @@ fn pack_args(a0: i64, a1: i64, a2: i64, a3: i64) -> [i64; MEMO_TF_MAX_ARGS] {
 /// Lookup: returns 1 and writes `*out_result` on hit; else 0.
 ///
 /// Uses shared `borrow` (counters are `Cell`) so hot miss/hit paths avoid exclusive locks.
-#[no_mangle]
-pub extern "C" fn lumia_memo_l2_lookup(
+/// Rust path (not `extern "C"`) so `trap_abort` can unwind under `cfg(test)`.
+pub(crate) fn memo_l2_lookup(
     fun_id: i64,
     nargs: i64,
     a0: i64,
@@ -70,8 +71,13 @@ pub extern "C" fn lumia_memo_l2_lookup(
     out_result: *mut i64,
 ) -> i64 {
     ensure_memo_registered();
-    if fun_id < 0 || fun_id as usize >= MEMO_TF_MAX_FUNS || out_result.is_null() {
-        return 0;
+    if out_result.is_null() {
+        trap_abort("lumia: memo lookup with null out_result");
+    }
+    if fun_id < 0 || fun_id as usize >= MEMO_TF_MAX_FUNS {
+        trap_abort(&format!(
+            "lumia: memo lookup bad fun_id={fun_id} (max {MEMO_TF_MAX_FUNS})"
+        ));
     }
     let nargs = nargs.clamp(0, MEMO_TF_MAX_ARGS as i64) as u8;
     let args = pack_args(a0, a1, a2, a3);
@@ -95,6 +101,19 @@ pub extern "C" fn lumia_memo_l2_lookup(
     })
 }
 
+#[no_mangle]
+pub extern "C" fn lumia_memo_l2_lookup(
+    fun_id: i64,
+    nargs: i64,
+    a0: i64,
+    a1: i64,
+    a2: i64,
+    a3: i64,
+    out_result: *mut i64,
+) -> i64 {
+    memo_l2_lookup(fun_id, nargs, a0, a1, a2, a3, out_result)
+}
+
 /// Store result into a slot (round-robin eviction).
 #[no_mangle]
 pub extern "C" fn lumia_memo_l2_store(
@@ -108,7 +127,9 @@ pub extern "C" fn lumia_memo_l2_store(
 ) {
     ensure_memo_registered();
     if fun_id < 0 || fun_id as usize >= MEMO_TF_MAX_FUNS {
-        return;
+        trap_abort(&format!(
+            "lumia: memo store bad fun_id={fun_id} (max {MEMO_TF_MAX_FUNS})"
+        ));
     }
     let nargs = nargs.clamp(0, MEMO_TF_MAX_ARGS as i64) as u8;
     let args = pack_args(a0, a1, a2, a3);
@@ -300,15 +321,19 @@ fn memo_idx_table(
 /// Lookup by Int key in `0..MEMO_IDX_CAP`. Returns 1 + writes result on hit.
 ///
 /// Does not allocate on miss (table created on first store).
-#[no_mangle]
-pub extern "C" fn lumia_memo_idx_lookup(fun_id: i64, key: i64, out_result: *mut i64) -> i64 {
+/// Rust path (not `extern "C"`) so `trap_abort` can unwind under `cfg(test)`.
+pub(crate) fn memo_idx_lookup(fun_id: i64, key: i64, out_result: *mut i64) -> i64 {
     ensure_memo_registered();
-    if fun_id < 0
-        || fun_id as usize >= MEMO_IDX_MAX_FUNS
-        || out_result.is_null()
-        || key < 0
-        || key as usize >= MEMO_IDX_CAP
-    {
+    if out_result.is_null() {
+        trap_abort("lumia: memo idx lookup with null out_result");
+    }
+    if fun_id < 0 || fun_id as usize >= MEMO_IDX_MAX_FUNS {
+        trap_abort(&format!(
+            "lumia: memo idx lookup bad fun_id={fun_id} (max {MEMO_IDX_MAX_FUNS})"
+        ));
+    }
+    // Key outside the dense domain is a cold miss (not a planning bug).
+    if key < 0 || key as usize >= MEMO_IDX_CAP {
         return 0;
     }
     let k = key as usize;
@@ -333,11 +358,22 @@ pub extern "C" fn lumia_memo_idx_lookup(fun_id: i64, key: i64, out_result: *mut 
 }
 
 #[no_mangle]
+pub extern "C" fn lumia_memo_idx_lookup(fun_id: i64, key: i64, out_result: *mut i64) -> i64 {
+    memo_idx_lookup(fun_id, key, out_result)
+}
+
+#[no_mangle]
 pub extern "C" fn lumia_memo_idx_store(fun_id: i64, key: i64, result: i64) {
     ensure_memo_registered();
-    if fun_id < 0 || fun_id as usize >= MEMO_IDX_MAX_FUNS || key < 0 || key as usize >= MEMO_IDX_CAP
-    {
-        return;
+    if fun_id < 0 || fun_id as usize >= MEMO_IDX_MAX_FUNS {
+        trap_abort(&format!(
+            "lumia: memo idx store bad fun_id={fun_id} (max {MEMO_IDX_MAX_FUNS})"
+        ));
+    }
+    if key < 0 || key as usize >= MEMO_IDX_CAP {
+        trap_abort(&format!(
+            "lumia: memo idx store key={key} out of dense domain (cap {MEMO_IDX_CAP})"
+        ));
     }
     let k = key as usize;
     with_heap(|h| {

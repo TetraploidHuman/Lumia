@@ -45,16 +45,24 @@ fn span_for_name(a: &Analysis, name: &str) -> Span {
     if let Some(pos) = a.src.find(name) {
         let start = pos as u32;
         return Span {
-            file: 0,
+            file: primary_file_id(a),
             start: BytePos(start),
             end: BytePos(start + name.len() as u32),
         };
     }
     Span {
-        file: 0,
+        file: primary_file_id(a),
         start: BytePos(0),
         end: BytePos(0),
     }
+}
+
+fn primary_file_id(a: &Analysis) -> u32 {
+    a.buffer_file
+}
+
+fn span_in_primary(a: &Analysis, span: Span) -> bool {
+    span.file == primary_file_id(a)
 }
 
 pub(super) fn symbols_for_analysis(a: &Analysis) -> Vec<Value> {
@@ -70,6 +78,9 @@ pub(super) fn symbols_for_analysis(a: &Analysis) -> Vec<Value> {
     for item in &m.items {
         match item {
             Item::Fun(f) => {
+                if !span_in_primary(a, f.span) {
+                    continue;
+                }
                 out.push(symbol(
                     &f.name,
                     kind::FUNCTION,
@@ -77,7 +88,10 @@ pub(super) fn symbols_for_analysis(a: &Analysis) -> Vec<Value> {
                     span_for_name(a, &f.name),
                 ));
             }
-            Item::Val { name, .. } => {
+            Item::Val { name, span, .. } => {
+                if !span_in_primary(a, *span) {
+                    continue;
+                }
                 out.push(symbol(name, kind::VARIABLE, src, span_for_name(a, name)));
             }
         }
@@ -148,6 +162,7 @@ mod tests {
             typed,
             src: src.to_string(),
             files: vec![],
+            buffer_file: 0,
         };
         let syms = symbols_for_analysis(&a);
         let names: Vec<&str> = syms.iter().filter_map(|s| s["name"].as_str()).collect();

@@ -9,7 +9,6 @@ fn const_fold_folds_list_len_get() {
             "f",
             vec![],
             Block {
-                params: vec![],
                 ops: vec![
                     Op::Let {
                         local: Local(0),
@@ -83,7 +82,6 @@ fn const_fold_folds_list_concat() {
             "f",
             vec![],
             Block {
-                params: vec![],
                 ops: vec![
                     Op::Let {
                         local: Local(0),
@@ -167,7 +165,6 @@ fn const_fold_list_take_slice_reverse() {
             "f",
             vec![],
             Block {
-                params: vec![],
                 ops: vec![
                     Op::Let {
                         local: Local(0),

@@ -13,8 +13,7 @@
 //! - bit 8 `TID_F_KEY` — List: float elems; Set: float elems; Map: float keys
 //! - bit 9 `TID_F_VAL` — Map: float values
 //! - bit 10 `TID_ASSOC` — Map/Set: AssocList (never hash-promote)
-
-use std::path::{Path, PathBuf};
+//! - bit 11 `TID_HASH` — Map/Set: open-addressing hash table (vs linear payload)
 
 mod float_contract;
 pub use float_contract::{
@@ -39,6 +38,22 @@ pub const TYPE_TASK: u32 = 10;
 /// Channel handle (effect concurrency; buffer rooted via runtime sidecar).
 pub const TYPE_CHANNEL: u32 = 11;
 
+/// Object header byte size (`lumia_rt::ObjectHeader`); stack Lit* layouts use
+/// [`OBJECT_HEADER_WORDS`] × i64 before payload.
+pub const OBJECT_HEADER_BYTES: usize = 24;
+pub const OBJECT_HEADER_WORDS: usize = 3;
+
+/// Low bit set on FunRef i64 values so IndirectCall can distinguish them from
+/// heap closures (pointer-aligned ⇒ bit 0 clear).
+pub const FUNREF_TAG: i64 = 1;
+
+/// Runtime trait dictionary ids (`lumia_dict_register` / codegen registration).
+pub const TRAIT_SHOW: i32 = 1;
+pub const TRAIT_EQ: i32 = 2;
+pub const TRAIT_ORD: i32 = 3;
+pub const TRAIT_HASH: i32 = 4;
+pub const TRAIT_NUM: i32 = 5;
+
 /// Mask / flags for packed container `type_id`s.
 pub const TID_BASE_MASK: u32 = 0xFF;
 /// List elems / Set elems / Map keys are unboxed Float bits (IEEE eq/hash).
@@ -47,6 +62,8 @@ pub const TID_F_KEY: u32 = 1 << 8;
 pub const TID_F_VAL: u32 = 1 << 9;
 /// Map/Set without Hash — linear forever (DESIGN AssocList).
 pub const TID_ASSOC: u32 = 1 << 10;
+/// Map/Set open-addressing hash table (vs small linear payload).
+pub const TID_HASH: u32 = 1 << 11;
 
 /// ADT Show-kind occupies bits `[31:16]` (0 = anonymous / `#tag` fallback).
 pub const TID_ADT_KIND_SHIFT: u32 = 16;
@@ -81,6 +98,13 @@ pub const MEMO_SLOTS_TABLE_BYTES: usize = MEMO_TF_SLOTS * (1 + MEMO_TF_MAX_ARGS 
 /// Map·Set before hash promote. Escape analysis, ReprSelect, and RT must share
 /// this threshold (DESIGN §7 representation selection).
 pub const SMALL_CONTAINER_MAX: usize = 8;
+
+/// Call-site const specialization caps (`SpecializeConstPass`).
+pub const SPECIALIZE_CONST_MAX_CLONES_PER_FUN: usize = 16;
+pub const SPECIALIZE_CONST_MAX_TOTAL_CLONES: usize = 64;
+pub const SPECIALIZE_CONST_MAX_OPS: usize = 256;
+/// Max nested inline expansions (`InlinePass`).
+pub const INLINE_MAX_EXPAND_DEPTH: usize = 8;
 
 /// RT: write per-field Float mask into ADT header `_pad` (after fields are live).
 pub const ADT_SET_FLOAT_MASK: &str = "lumia_adt_set_float_mask";
@@ -117,18 +141,11 @@ pub fn is_dense_f64_trampoline(sym: &str) -> bool {
     DENSE_F64_TRAMPOLINE_SYMS.iter().any(|&s| s == sym)
 }
 
-/// Repo root given a workspace crate's `CARGO_MANIFEST_DIR` (`crates/<name>` → `…/Lumia`).
-#[inline]
-pub fn workspace_root(manifest_dir: impl AsRef<Path>) -> PathBuf {
-    manifest_dir.as_ref().join("../..")
-}
-
-/// Like [`workspace_root`], but `canonicalize`s when the path exists.
-#[inline]
-pub fn workspace_root_canonical(manifest_dir: impl AsRef<Path>) -> PathBuf {
-    let p = workspace_root(manifest_dir);
-    p.canonicalize().unwrap_or(p)
-}
+/// Scheduler kind ids for `scope` / `ScopeEnter` (HIR Int / RT ABI).
+///
+/// `0` (and any other value) means the default cooperative scheduler.
+pub const SCHEDULER_WORKER: i64 = 1;
+pub const SCHEDULER_IO: i64 = 2;
 
 /// Scalar classification for container element/key tagging.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -155,6 +172,23 @@ pub fn tid_f_val(tid: u32) -> bool {
 #[inline]
 pub fn tid_assoc(tid: u32) -> bool {
     tid & TID_ASSOC != 0
+}
+
+#[inline]
+pub fn tid_hash(tid: u32) -> bool {
+    tid & TID_HASH != 0
+}
+
+/// OR `TID_HASH` onto a packed Map/Set `type_id` (hash-table promote).
+#[inline]
+pub fn tid_with_hash(tid: u32) -> u32 {
+    tid | TID_HASH
+}
+
+/// Clear `TID_HASH` when demoting a hash table back to a linear payload.
+#[inline]
+pub fn tid_without_hash(tid: u32) -> u32 {
+    tid & !TID_HASH
 }
 
 /// OR `TID_F_KEY` onto an existing packed container `type_id` (empty-shell retag).
@@ -280,6 +314,14 @@ mod tests {
         assert_eq!(TID_F_KEY & TID_BASE_MASK, 0);
         assert_eq!(TID_F_VAL & TID_BASE_MASK, 0);
         assert_eq!(TID_ASSOC & TID_BASE_MASK, 0);
+        assert_eq!(TID_HASH & TID_BASE_MASK, 0);
+        assert_eq!(TID_HASH & (TID_F_KEY | TID_F_VAL | TID_ASSOC), 0);
+        assert_eq!(SCHEDULER_WORKER, 1);
+        assert_eq!(SCHEDULER_IO, 2);
+        assert!(tid_hash(tid_with_hash(TYPE_MAP)));
+        assert!(!tid_hash(TYPE_MAP));
+        assert!(!tid_hash(tid_without_hash(tid_with_hash(TYPE_SET))));
+        assert_eq!(tid_without_hash(tid_with_hash(TYPE_MAP)), TYPE_MAP);
         assert_eq!(adt_type_id(0), TYPE_ADT);
         assert_eq!(adt_show_kind(adt_type_id(0)), 0);
         assert_eq!(adt_show_kind(adt_type_id(42)), 42);

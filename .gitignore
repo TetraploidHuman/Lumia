@@ -17,6 +17,7 @@
 !/Cargo.lock
 !/Cargo.toml
 !/README.md
+!/LICENSE
 !/Todo.md
 !/clippy.toml
 !/rustfmt.toml
@@ -24,6 +25,7 @@
 !/docs/
 !/editors/
 !/examples/
+!/extras/
 !/scripts/
 !/std/
 !/tests/

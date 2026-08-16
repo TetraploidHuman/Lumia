@@ -104,7 +104,7 @@ fn upgrade_captured_list_fold_float(module: &mut CoreModule) {
     let mut float_cbs: HashSet<String> = HashSet::default();
     let mut float_outers: HashSet<String> = HashSet::default();
     for fun in &module.functions {
-        if !fun.name.starts_with("__lam_") {
+        if !fun.is_lifted_lambda() {
             continue;
         }
         let caps = fun_cap_tys.get(&fun.name).unwrap_or(&empty);
@@ -203,7 +203,7 @@ fn collect_float_list_call_args(
 ) {
     for op in &block.ops {
         match op {
-            Op::Let { value, .. } | Op::Effect { value } => {
+            Op::Let { value, .. } => {
                 match value {
                     Value::Call { fun, args } => {
                         note_float_list_args(
@@ -297,7 +297,7 @@ fn collect_list_fold_float_upgrade(
 ) {
     for op in &block.ops {
         match op {
-            Op::Let { value, .. } | Op::Effect { value } => {
+            Op::Let { value, .. } => {
                 match value {
                     Value::Builtin {
                         name: Builtin::ListParFold,
@@ -403,7 +403,7 @@ fn block_has_elems_of_float_list(
 ) -> bool {
     for op in &block.ops {
         match op {
-            Op::Let { value, .. } | Op::Effect { value } => {
+            Op::Let { value, .. } => {
                 if let Value::Builtin {
                     name: Builtin::Elems,
                     args,
@@ -715,12 +715,7 @@ fn infer_local_fun_ty(
             Value::Local(crate::Local(src)) => cur = *src,
             Value::ClosureCap { index, .. } => return caps.get(index).cloned(),
             Value::FunRef(n) | Value::AllocClosure { fun: n, .. } => {
-                let ret = fun_ret_tys.get(n)?.clone();
-                let mut params = fun_param_tys.get(n).cloned().unwrap_or_default();
-                if n.starts_with("__lam_") && params.len() > 1 {
-                    params.remove(0);
-                }
-                return Some(Type::Fun(params, Box::new(ret), lumia_ty::Effect::pure()));
+                return super::fun_ty_from_tables(n, fun_ret_tys, fun_param_tys);
             }
             _ => return None,
         }
@@ -735,11 +730,6 @@ fn local_def<'a>(block: &'a Block, id: u32) -> Option<&'a Value> {
                 if local.0 == id {
                     return Some(value);
                 }
-                if let Some(v) = local_def_in_value(value, id) {
-                    return Some(v);
-                }
-            }
-            Op::Effect { value } => {
                 if let Some(v) = local_def_in_value(value, id) {
                     return Some(v);
                 }
@@ -824,7 +814,7 @@ fn refresh_lifted_lambda_rets(module: &mut CoreModule) {
         let fun_cap_tys = super::float_abi::collect_fun_cap_tys(module, &fun_ret_tys, &fun_param_tys);
         let empty_caps = HashMap::default();
         for fun in &mut module.functions {
-            if !fun.name.starts_with("__lam_") {
+            if !fun.is_lifted_lambda() {
                 continue;
             }
             // Float/Bool/Unit are final. String/Char may still upgrade to Float
@@ -996,11 +986,6 @@ fn collect_alloc_closure_cap_funs(
                     collect_alloc_closure_cap_funs(b, funref_locals, cap_funs);
                 });
             }
-            Op::Effect { value } => {
-                crate::for_each_nested_block(value, &mut |b| {
-                    collect_alloc_closure_cap_funs(b, funref_locals, cap_funs);
-                });
-            }
             _ => {}
         }
     }
@@ -1009,7 +994,7 @@ fn collect_alloc_closure_cap_funs(
 fn collect_lam_caps(block: &Block, lam_caps: &mut HashMap<String, Vec<crate::Local>>) {
     for op in &block.ops {
         match op {
-            Op::Let { value, .. } | Op::Effect { value } => {
+            Op::Let { value, .. } => {
                 if let Value::AllocClosure { fun, captures } = value {
                     lam_caps.insert(fun.clone(), captures.clone());
                 }
@@ -1040,7 +1025,7 @@ fn refresh_alloc_closure_fun_rets_round(
     let lam_sig: HashMap<String, (Vec<Type>, Type)> = module
         .functions
         .iter()
-        .filter(|f| f.name.starts_with("__lam_"))
+        .filter(|f| f.is_lifted_lambda())
         .map(|f| {
             // Drop env param for the user-facing Fun type.
             let params = if f.params.len() > 1 {
@@ -1174,19 +1159,6 @@ fn scan_alloc_closure_caps(
                     slot_tys.insert(name.clone(), ty);
                 }
             }
-            Op::Effect { value } => {
-                note_alloc_caps(value, local_tys, need_float);
-                crate::for_each_nested_block(value, &mut |b| {
-                    scan_alloc_closure_caps(
-                        b,
-                        local_tys,
-                        slot_tys,
-                        fun_ret_tys,
-                        fun_param_tys,
-                        need_float,
-                    );
-                });
-            }
             Op::Break | Op::Continue | Op::Return { .. } => {}
         }
     }
@@ -1209,7 +1181,7 @@ fn note_alloc_caps(
 fn patch_caps_in_block(block: &mut Block, indices: &[u32], changed: &mut bool) {
     for op in &mut block.ops {
         match op {
-            Op::Let { value, .. } | Op::Effect { value } => {
+            Op::Let { value, .. } => {
                 patch_value_caps(value, indices, changed);
             }
             _ => {}

@@ -53,7 +53,6 @@ pub(super) fn lower_control(
                 b
             } else {
                 Block {
-                    params: vec![],
                     ops: vec![],
                     result: None,
                 }
@@ -85,11 +84,17 @@ pub(super) fn lower_control(
             }
             None
         }
-        HirExpr::Alt { .. } => {
-            panic!("lumia: Alt reached Core lower; expected typecheck desugar");
+        HirExpr::Alt { span, .. } => {
+            ctx.note_ice(format!(
+                "ICE: Alt reached Core lower at {span:?}; expected typecheck desugar"
+            ));
+            None
         }
-        HirExpr::With { .. } => {
-            panic!("lumia: With reached Core lower; expected typecheck rewrite");
+        HirExpr::With { span, .. } => {
+            ctx.note_ice(format!(
+                "ICE: With reached Core lower at {span:?}; expected typecheck rewrite"
+            ));
+            None
         }
         _ => unreachable!("lower_control: unexpected expr"),
     }

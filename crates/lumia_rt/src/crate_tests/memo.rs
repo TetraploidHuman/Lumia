@@ -20,6 +20,24 @@ fn memo_tf_hit_miss() {
 }
 
 #[test]
+#[should_panic(expected = "bad fun_id")]
+fn memo_tf_bad_fun_id_traps() {
+    lumia_memo_l2_reset();
+    let mut out = 0i64;
+    // Rust path (not `extern "C"`) so trap_abort can unwind for should_panic.
+    let _ = crate::memo::memo_l2_lookup(MEMO_TF_MAX_FUNS as i64, 1, 0, 0, 0, 0, &mut out);
+}
+
+#[test]
+#[should_panic(expected = "bad fun_id")]
+fn memo_idx_bad_fun_id_traps() {
+    lumia_memo_idx_reset();
+    let mut out = 0i64;
+    // Rust path (not `extern "C"`) so trap_abort can unwind for should_panic.
+    let _ = crate::memo::memo_idx_lookup(MEMO_IDX_MAX_FUNS as i64, 0, &mut out);
+}
+
+#[test]
 fn memo_idx_hit_miss() {
     lumia_memo_idx_reset();
     let mut out = 0i64;

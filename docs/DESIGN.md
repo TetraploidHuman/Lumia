@@ -136,17 +136,18 @@ val add = { a: Int, b: Int ->
 
 ### 3.3 基本类型（编译器内部；用户通常不写）
 
+MVP 实现面（`lumia_ty::Type`）为单一宽度：
+
 ```
-Int, Int8, Int16, Int32, Int64
-UInt, UInt8, ...
-Float32, Float64
+Int, Float
 Bool, Char, String, Unit
 ```
 
-- `Int` 为平台字长或有界语义（实现阶段定，文档层假设 64-bit）。
+- `Int` / `Float` 为平台字长浮点（当前实现按 64-bit 语义）。
+- 更细的尺寸变体（`Int8`…`Int64`、`UInt*`、`Float32`/`Float64`）为规划，尚未进入类型系统。
 - `String` 为 UTF-8 不可变文本；内部实现可变宽优化，对用户不可见。
 - 用户面 `.len()` / `substring` / `.take` / `.drop` / `.reverse` 按 **Unicode 标量（码点）** 计数与切片，不按字节；禁止切断多字节序列。`toLower` / `toUpper` 为 Unicode case fold（非仅 ASCII）。
-- 数字字面量默认推断为 `Int` / `Float64`；过载由类型类与使用上下文消歧。
+- 数字字面量默认推断为 `Int` / `Float`；过载由类型类与使用上下文消歧。
 
 ### 3.4 复合类型
 
@@ -190,12 +191,12 @@ xs match {
 编译器内部对 `List` 使用 **多重表示（multi-representation）**：
 
 ```
-LitList      // 常量折叠
-Iota         // start..end / range
-Fused        // map/filter 融合视图
-Slice        // 子视图
-HeapList     // 物化堆数组
-COWList      // 写时复制缓冲
+LitList      // 已落地：空→永生单例；小未逃逸→栈
+HeapList     // 已落地：默认堆数组 + COW
+Iota         // 规划：start..end / range 视图（运行时 TYPE_LIST_IOTA 另径）
+Fused        // 规划：map/filter 融合视图
+Slice        // 规划：子视图
+COWList      // 规划：独立表示枚举（当前 COW 行为挂在 HeapList 上）
 ```
 
 表示之间的转换由 **逃逸分析** 与 **使用模式分析** 自动插入，用户无感。  
@@ -300,14 +301,14 @@ for x in s { ... }
 #### 编译器多重表示（用户无感）
 
 ```
-EmptyMap / EmptySet     // 空
-LitMap / LitSet         // 常量折叠
-SmallMap / SmallSet     // 内联 ≤ N 对/元（线性；N 实现自定，典型 4～8）
-AssocList               // 未建索引的配对列表（构建中、或仅 Eq）
-Overlay                 // 父结构 + 小差分（COW 更新）
-HashOrdered             // 插入序哈希（默认大表路径）
-SortedTree              // 仅当 Ord 可用且分析认为更优（如大量按键有序扫描）
-BuildFused              // 从 List 管道 / fold 构建的延迟视图
+EmptyMap / EmptySet     // 已落地：空 → null
+SmallMap / SmallSet     // 已落地 / 部分：小表线性（Set 走 HeapSet+finish）
+AssocList               // 已落地：无 Hash 键，永不建哈希
+Overlay                 // 已落地：父结构 + 小差分（COW 更新）
+HashOrdered             // 已落地：插入序哈希（默认大表路径）
+LitMap / LitSet         // 规划/PE 标签：常量折叠提示；发射仍为堆+finish（非栈布局）
+SortedTree              // 规划：仅当 Ord 可用且分析认为更优
+BuildFused              // 规划：从 List 管道 / fold 构建的延迟视图
 ```
 
 `Set` 在实现上可共享 `Map[T, Unit]` 引擎，但 **用户类型仍是 `Set[T]`**（API 与错误信息更清楚）。
@@ -1665,7 +1666,7 @@ Lumia 取的是 Kotlin 的 `**val`/`var`、块、推断、集合管道**，不�
 ```
 Source
   → AST + 效应推断 + 类型检查
-  → Core IR（ANF / SSA）
+  → Core IR（树形 ANF / 伪 SSA；规划真 CFG）
   → 纯分析（逃逸、效应、别名、常量）
   → 优化 Pass 管道
   → Lowering（表示选择；纪律见 §7.1.1）
@@ -1694,7 +1695,7 @@ Source
 
 | 值 | 默认 |
 |----|------|
-| 逃逸或通用 `List` | `HeapList` / `COWList`（连续缓冲 + COW） |
+| 逃逸或通用 `List` | `HeapList`（连续缓冲 + COW；独立 `COWList` 枚举为规划） |
 | 通用 `Map` / `Set` | `HashOrdered` + COW / `Overlay` |
 | 透明 Memo | 默认 `T_f` 容量 0 或极小；有证据才增大；硬顶内择优表示（能下标则不下哈希）；见 §7.5 |
 
@@ -1706,7 +1707,7 @@ Source
 
 #### 特化路径（证明后才离开默认）
 
-`Lit*` / `Iota` / `Fused` / `Slice` / `AssocList` / `BuildFused` / `SortedTree` / 栈上 SROA 等：
+`Lit*`（List/ADT 栈路径已落地；Map/Set 的 Lit* 仅为 PE 标签）/ `Iota` / `Fused` / `Slice` / `AssocList` / `BuildFused` / `SortedTree` / 栈上 SROA 等（未标注已落地者多为**规划**）：
 
 - 仅当证明 **不劣于默认的可观测语义** 且 **预期资源更省或同样可预期**；  
 - Debug 可少做特化，但语义仍与 Release 一致；  
@@ -1727,8 +1728,8 @@ Source
 | **Transparent Memo**              | 对选中的纯函数挂有界 `T_f` 做跨调用结果复用（用户无语法；见 §7.5）  |
 | **DCE**                           | 删除不影响可观测结果的纯计算                 |
 | **Escape Analysis**               | 决定栈/堆、是否物化 `List`/`Map`/`Set`        |
-| **List Representation Selection** | Lit / Iota / Fused / Heap 自动选择      |
-| **Map/Set Representation Selection** | Empty / Lit / Small / Assoc / Overlay / HashOrdered / Sorted / BuildFused |
+| **List Representation Selection** | Lit / Heap 已落地；Iota / Fused 等为规划 |
+| **Map/Set Representation Selection** | Empty(null) / Small / Assoc / Overlay / HashOrdered 已落地；Sorted / BuildFused / 栈 Lit 为规划 |
 | **Deforestation / Fusion**        | `map`/`filter`/`fold` 管道融合；含 `toMap`/`toSet` 延迟建索引 |
 | **Partial Evaluation**            | 常量索引、常量范围折叠、常量键查找折叠                 |
 | **Copy Elimination**              | 未逃逸值避免物理复制                     |

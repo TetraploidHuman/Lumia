@@ -397,11 +397,10 @@ impl Infer {
                     ))
                 }
             }
-            BinOp::And | BinOp::Or => {
-                self.unify_at(span, lt, Type::Bool)?;
-                self.unify_at(span, rt, Type::Bool)?;
-                Ok((Type::Bool, eff))
-            }
+            BinOp::And | BinOp::Or => Err(at(
+                span,
+                "`and`/`or` should have been desugared to `if` before typing",
+            )),
         }
     }
 

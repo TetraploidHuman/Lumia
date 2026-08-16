@@ -1,6 +1,6 @@
 //! Lumia lockfile (`Lumia.lock`).
 
-use super::manifest::{load_manifest, resolve_dep_path, DepSpec, Manifest};
+use super::manifest::{load_manifest, resolve_dep_path, DepSpec, DepTable, Manifest};
 use anyhow::{bail, Context, Result};
 use rustc_hash::FxHashSet as HashSet;
 use serde::{Deserialize, Serialize};
@@ -65,7 +65,7 @@ fn lock_deps_recursive(
         let rel = pathdiff_rel(lock_root, &abs).unwrap_or_else(|| abs.display().to_string());
         let version = match spec {
             DepSpec::Version(v) => v.clone(),
-            DepSpec::Table { version, .. } => version
+            DepSpec::Table(DepTable { version, .. }) => version
                 .clone()
                 .or_else(|| read_package_version(&abs))
                 .unwrap_or_else(|| "0.0.0".into()),
@@ -109,16 +109,23 @@ fn read_package_version(dep_root: &Path) -> Option<String> {
     load_manifest(&cand).ok().map(|m| m.package.version)
 }
 
-/// Verify `Lumia.lock` against the manifest: every dep is present with matching path/version.
+/// Verify `Lumia.lock` against the manifest: every expected package is present
+/// with matching path/version, and the lock has no stale extra entries.
 pub fn verify_lockfile(manifest_path: &Path, m: &Manifest, lock: &Lockfile) -> Result<()> {
     let expected = lock_from_manifest(manifest_path, m)?;
-    for exp in &expected.package {
-        if exp.path == "." {
-            continue;
+    let expected_names: HashSet<String> = expected.package.iter().map(|p| p.name.clone()).collect();
+    for got in &lock.package {
+        if !expected_names.contains(&got.name) {
+            bail!(
+                "Lumia.lock has unexpected package `{}` (run `lumia pkg lock`)",
+                got.name
+            );
         }
+    }
+    for exp in &expected.package {
         let Some(got) = lock.package.iter().find(|p| p.name == exp.name) else {
             bail!(
-                "Lumia.lock missing dependency `{}` (run `lumia pkg lock`)",
+                "Lumia.lock missing package `{}` (run `lumia pkg lock`)",
                 exp.name
             );
         };
@@ -137,6 +144,9 @@ pub fn verify_lockfile(manifest_path: &Path, m: &Manifest, lock: &Lockfile) -> R
                 got.version,
                 exp.version
             );
+        }
+        if exp.path == "." {
+            continue;
         }
         let abs = manifest_path
             .parent()

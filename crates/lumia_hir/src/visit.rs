@@ -69,9 +69,81 @@ pub fn for_each_expr(expr: &Expr, f: &mut impl FnMut(&Expr)) {
     }
 }
 
+/// Mutable post-order walk: children first, then `f(expr)`.
+pub fn for_each_expr_mut(expr: &mut Expr, f: &mut impl FnMut(&mut Expr)) {
+    match expr {
+        Expr::Let { value, body, .. } => {
+            for_each_expr_mut(value, f);
+            for_each_expr_mut(body, f);
+        }
+        Expr::Assign { value, .. } | Expr::Unary { expr: value, .. } => {
+            for_each_expr_mut(value, f);
+        }
+        Expr::Lambda { body, .. } => for_each_expr_mut(body, f),
+        Expr::Call { callee, args, .. } => {
+            for_each_expr_mut(callee, f);
+            for_each_exprs_mut(args, f);
+        }
+        Expr::Binary { left, right, .. } => {
+            for_each_expr_mut(left, f);
+            for_each_expr_mut(right, f);
+        }
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            for_each_expr_mut(cond, f);
+            for_each_expr_mut(then_branch, f);
+            for_each_expr_mut(else_branch, f);
+        }
+        Expr::Loop {
+            cond, body, step, ..
+        } => {
+            for_each_expr_mut(cond, f);
+            for_each_expr_mut(body, f);
+            if let Some(s) = step {
+                for_each_expr_mut(s, f);
+            }
+        }
+        Expr::Seq { stmts, .. } => for_each_exprs_mut(stmts, f),
+        Expr::BuiltinCall { args, .. } | Expr::AdtNew { args, .. } => {
+            for_each_exprs_mut(args, f);
+        }
+        Expr::Return { value, .. } => for_each_expr_mut(value, f),
+        Expr::Alt { scrutinee, alt, .. } => {
+            for_each_expr_mut(scrutinee, f);
+            for_each_expr_mut(alt, f);
+        }
+        Expr::With { base, fields, .. } => {
+            for_each_expr_mut(base, f);
+            for (_, e) in fields {
+                for_each_expr_mut(e, f);
+            }
+        }
+        Expr::Int(..)
+        | Expr::Float(..)
+        | Expr::Bool(..)
+        | Expr::String(..)
+        | Expr::Char(..)
+        | Expr::Unit(_)
+        | Expr::Var(_, _)
+        | Expr::Break(_)
+        | Expr::Continue(_) => {}
+    }
+    f(expr);
+}
+
 fn for_each_exprs(exprs: &[Expr], f: &mut impl FnMut(&Expr)) {
     for e in exprs {
         for_each_expr(e, f);
+    }
+}
+
+fn for_each_exprs_mut(exprs: &mut [Expr], f: &mut impl FnMut(&mut Expr)) {
+    for e in exprs {
+        for_each_expr_mut(e, f);
     }
 }
 

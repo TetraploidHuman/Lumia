@@ -31,6 +31,10 @@ pub fn byte_to_line_col(starts: &[u32], pos: BytePos) -> (u32, u32) {
 }
 
 /// Format `path:line:col: kind: message` plus the source line and a caret underline.
+///
+/// `path` / `src` should match [`Span::file`] after [`crate::stamp_module`] (or an
+/// equivalent `with_file`). Prefer [`format_diagnostic_files`] when a file table
+/// is available so the span's file id is the path source of truth.
 pub fn format_diagnostic(path: &str, src: &str, span: Span, kind: &str, message: &str) -> String {
     let starts = line_starts(src);
     let (line, col) = byte_to_line_col(&starts, span.start);
@@ -71,6 +75,23 @@ pub fn format_diagnostic(path: &str, src: &str, span: Span, kind: &str, message:
     out
 }
 
+/// Multi-file diagnostic: path/src come from `files[span.file]` (stamp contract).
+///
+/// Out-of-range `span.file` falls back to file 0 when present, else `"<unknown>"`.
+pub fn format_diagnostic_files(
+    files: &[(&str, &str)],
+    span: Span,
+    kind: &str,
+    message: &str,
+) -> String {
+    let (path, src) = files
+        .get(span.file as usize)
+        .or_else(|| files.first())
+        .copied()
+        .unwrap_or(("<unknown>", ""));
+    format_diagnostic(path, src, span, kind, message)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,5 +114,20 @@ mod tests {
         assert!(s.contains("t.lm:2:7:"), "{s}");
         assert!(s.contains("unbound variable `z`"), "{s}");
         assert!(s.contains('^'), "{s}");
+    }
+
+    #[test]
+    fn format_diagnostic_files_uses_span_file() {
+        let a = "val x = 1\n";
+        let b = "val y = z\n";
+        let span = Span::new(8, 9).with_file(1); // `z` in file 1
+        let s = format_diagnostic_files(
+            &[("a.lm", a), ("b.lm", b)],
+            span,
+            "type",
+            "unbound variable `z`",
+        );
+        assert!(s.starts_with("b.lm:1:9:"), "{s}");
+        assert!(s.contains("unbound variable `z`"), "{s}");
     }
 }

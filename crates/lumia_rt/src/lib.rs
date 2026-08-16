@@ -1,4 +1,4 @@
-//! Lumia runtime: pluggable GC ABI + first MmBackend (generational mark-sweep).
+//! Lumia runtime: GC, Task/Channel scheduler, containers, memo, and domain kernels.
 //!
 //! C ABI contract used by codegen:
 //! - `lumia_alloc(nbytes, type_id) -> *mut u8`
@@ -10,6 +10,17 @@
 //! Env: `LUMIA_GC_INCREMENTAL=0|false|off|stw` forces classic STW full collect
 //! (default: incremental concurrent full mark).
 //! - `lumia_println_int(i64)` / `lumia_println_str(*const u8, len)`
+//!
+//! # Lock order
+//!
+//! Cross-subsystem mutex nesting (never invert):
+//!
+//! 1. **heap** (`with_heap`) — process `Heap` / GC
+//! 2. **sched** (`with_sched`) — Task/Channel/fiber tables
+//!
+//! Call sites that touch both must take **heap → sched** (see `gc.rs` shade of
+//! sched roots; `scheduler.rs` publish under heap). Memo/dict/mutator take heap
+//! alone or nest sched only after heap when required.
 //!
 //! C ABI entry points take raw pointers by design; they are not Rust `unsafe fn`
 //! because the LLVM-emitted caller already treats the boundary as unchecked.
@@ -37,6 +48,7 @@ mod map_set;
 mod memo;
 mod number_theory;
 mod primes;
+mod reentrant;
 mod show;
 mod string_io;
 mod task;

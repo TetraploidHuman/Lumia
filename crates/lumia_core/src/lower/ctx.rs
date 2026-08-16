@@ -19,6 +19,8 @@ pub(super) struct CoreLowerCtx {
     pub(super) io_funs: HashSet<String>,
     /// Zonked expression types from [`lumia_ty::TypedModule::type_at`].
     pub(super) type_at: Rc<[(Span, Type)]>,
+    /// First ICE message (Alt/With residual, failed callee lower, …).
+    pub(super) ice: Option<String>,
 }
 
 impl CoreLowerCtx {
@@ -38,6 +40,13 @@ impl CoreLowerCtx {
             trait_method_names,
             io_funs,
             type_at,
+            ice: None,
+        }
+    }
+
+    pub(super) fn note_ice(&mut self, msg: impl Into<String>) {
+        if self.ice.is_none() {
+            self.ice = Some(msg.into());
         }
     }
 

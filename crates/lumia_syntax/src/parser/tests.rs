@@ -318,3 +318,53 @@ fn parse_kotlin_style_ranges() {
         err.message
     );
 }
+
+#[test]
+fn interp_expr_spans_are_absolute() {
+    let src = r#""hi${1+2}""#;
+    let m = parse_module(&format!("module M\nval x = {src}\n")).expect("parse");
+    let crate::Item::Val(v) = &m.items[0] else {
+        panic!("expected val");
+    };
+    match &v.body {
+        Expr::Interp { parts, .. } => {
+            let e = match &parts[1] {
+                crate::InterpPart::Expr(e) => e,
+                other => panic!("expected expr part, got {other:?}"),
+            };
+            let Expr::Binary {
+                left, right, span, ..
+            } = e
+            else {
+                panic!("expected binary in interp, got {e:?}");
+            };
+            assert!(
+                span.start.0 > 0,
+                "interp binary span should be absolute, got {span:?}"
+            );
+            match (left.as_ref(), right.as_ref()) {
+                (Expr::Int(1, ls), Expr::Int(2, rs)) => {
+                    assert_eq!(rs.start.0, ls.start.0 + 2, "1+2 layout: {ls:?} {rs:?}");
+                }
+                other => panic!("expected 1+2, got {other:?}"),
+            }
+        }
+        other => panic!("expected Interp, got {other:?}"),
+    }
+}
+
+#[test]
+fn interp_parse_error_uses_absolute_span() {
+    let src = "module M\nval x = \"a${)}}\"\n";
+    let err = parse_module(src).expect_err("bad interp");
+    assert!(
+        err.message.contains("interpolation") || err.message.contains("expected"),
+        "{}",
+        err.message
+    );
+    assert!(
+        err.span.start.0 > 10,
+        "expected absolute span inside string, got {:?}",
+        err.span
+    );
+}

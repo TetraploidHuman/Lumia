@@ -12,7 +12,7 @@ use super::float_abi::{collect_fun_cap_tys, compute_float_locals_in_block};
 use crate::ir::{Block, CoreModule, Local, Op, Value};
 use crate::visit::for_each_nested_block;
 use lumia_hir::Builtin;
-use lumia_ty::{Effect, Type};
+use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 pub(crate) fn refine_channel_elem_hint(module: &mut CoreModule) {
@@ -124,11 +124,6 @@ fn register_channel_news(
                     register_channel_news(b, root_of, by_ch);
                 });
             }
-            Op::Effect { value } => {
-                for_each_nested_block(value, &mut |b| {
-                    register_channel_news(b, root_of, by_ch);
-                });
-            }
             _ => {}
         }
     }
@@ -151,11 +146,6 @@ fn propagate_channel_aliases(
         match op {
             Op::Let { local, value, .. } => {
                 changed |= note_channel_alias(local.0, value, root_of, caps);
-                for_each_nested_block(value, &mut |b| {
-                    changed |= propagate_channel_aliases(b, root_of, caps);
-                });
-            }
-            Op::Effect { value } => {
                 for_each_nested_block(value, &mut |b| {
                     changed |= propagate_channel_aliases(b, root_of, caps);
                 });
@@ -194,7 +184,7 @@ fn note_channel_alias(
 fn collect_alloc_closure_caps(block: &Block, lam_caps: &mut HashMap<String, Vec<Local>>) {
     for op in &block.ops {
         match op {
-            Op::Let { value, .. } | Op::Effect { value } => {
+            Op::Let { value, .. } => {
                 if let Value::AllocClosure { fun, captures } = value {
                     lam_caps.insert(fun.clone(), captures.clone());
                 }
@@ -244,31 +234,6 @@ fn scan_block(
                         fun_param_tys,
                         fun_cap_tys,
                     ),
-                );
-                for_each_nested_block(value, &mut |b| {
-                    scan_block(
-                        b,
-                        fun_name,
-                        local_tys,
-                        root_of,
-                        by_ch,
-                        poisoned_ch,
-                        conflicts,
-                        caps,
-                        fun_ret_tys,
-                        fun_param_tys,
-                        fun_cap_tys,
-                    );
-                });
-            }
-            Op::Effect { value } => {
-                note_send(
-                    value,
-                    local_tys,
-                    root_of,
-                    by_ch,
-                    poisoned_ch,
-                    conflicts,
                 );
                 for_each_nested_block(value, &mut |b| {
                     scan_block(
@@ -408,9 +373,11 @@ fn guess_local_ty(
             | lumia_syntax::BinOp::Lt
             | lumia_syntax::BinOp::Le
             | lumia_syntax::BinOp::Gt
-            | lumia_syntax::BinOp::Ge
-            | lumia_syntax::BinOp::And
-            | lumia_syntax::BinOp::Or => Type::Bool,
+            | lumia_syntax::BinOp::Ge => Type::Bool,
+            lumia_syntax::BinOp::And | lumia_syntax::BinOp::Or => {
+                debug_assert!(false, "ICE: BinOp::And|Or in Core; expected If desugar");
+                Type::Bool
+            }
             lumia_syntax::BinOp::Add
             | lumia_syntax::BinOp::Sub
             | lumia_syntax::BinOp::Mul
@@ -631,16 +598,7 @@ fn fun_ty_from_tables(
     fun_ret_tys: &HashMap<String, Type>,
     fun_param_tys: &HashMap<String, Vec<Type>>,
 ) -> Option<Type> {
-    let ret = fun_ret_tys.get(name)?.clone();
-    let mut params = fun_param_tys.get(name).cloned().unwrap_or_default();
-    // Lifted closures: drop leading env pointer (always Int bits).
-    if name.starts_with("__lam_")
-        && params.first().is_some_and(|p| matches!(p, Type::Int | Type::Var(_)))
-        && params.len() > 1
-    {
-        params.remove(0);
-    }
-    Some(Type::Fun(params, Box::new(ret), Effect::pure()))
+    super::fun_ty_from_tables(name, fun_ret_tys, fun_param_tys)
 }
 
 #[cfg(test)]

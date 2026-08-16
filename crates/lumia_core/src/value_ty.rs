@@ -1,6 +1,6 @@
 //! Shared Core `Value` → [`Type`] / heap-root helpers for mono + codegen.
 
-use crate::{AdtRepr, ListRepr, Local, MapRepr, SetRepr, Value};
+use crate::{AdtRepr, ListRepr, Local, Value};
 use lumia_hir::Builtin;
 use lumia_syntax::{BinOp, UnOp};
 use lumia_ty::{Effect, Type};
@@ -11,7 +11,8 @@ use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 pub enum HeapPolicy {
     /// Escape / lambda analysis: every `Alloc*` is treated as heap.
     Conservative,
-    /// Codegen roots: non-empty LitList/LitSet/LitMap/LitAdt live on the stack.
+    /// Codegen roots: non-empty LitList/LitAdt may live on the stack.
+    /// Map/Set never stack — empty is null; otherwise always heap+finish.
     StackLitOk,
 }
 
@@ -84,14 +85,9 @@ pub fn value_alloc_may_heap(v: &Value, policy: HeapPolicy) -> bool {
             HeapPolicy::Conservative => true,
             HeapPolicy::StackLitOk => !matches!(repr, ListRepr::LitList) || elems.is_empty(),
         },
-        Value::AllocSet { elems, repr } => match policy {
-            HeapPolicy::Conservative => true,
-            HeapPolicy::StackLitOk => !matches!(repr, SetRepr::LitSet) || elems.is_empty(),
-        },
-        Value::AllocMap { flat_pairs, repr } => match policy {
-            HeapPolicy::Conservative => true,
-            HeapPolicy::StackLitOk => !matches!(repr, MapRepr::LitMap) || flat_pairs.is_empty(),
-        },
+        // Empty Map/Set emit as null; LitSet/LitMap are PE tags, not stack layouts.
+        Value::AllocSet { elems, .. } => !elems.is_empty(),
+        Value::AllocMap { flat_pairs, .. } => !flat_pairs.is_empty(),
         Value::AllocAdt { repr, .. } => match policy {
             HeapPolicy::Conservative => true,
             HeapPolicy::StackLitOk => !matches!(repr, AdtRepr::LitAdt),
@@ -140,9 +136,12 @@ pub fn infer_value_ty_ctx(
             | BinOp::Lt
             | BinOp::Le
             | BinOp::Gt
-            | BinOp::Ge
-            | BinOp::And
-            | BinOp::Or => Type::Bool,
+            | BinOp::Ge => Type::Bool,
+            // HIR desugars `and`/`or` to `If`; residual Binary is an ICE.
+            BinOp::And | BinOp::Or => {
+                debug_assert!(false, "ICE: BinOp::And|Or in Core; expected If desugar");
+                Type::Bool
+            }
             _ => {
                 let lt = ctx.local_tys.get(&left.0).cloned().unwrap_or(Type::Int);
                 let rt = ctx.local_tys.get(&right.0).cloned().unwrap_or(Type::Int);
@@ -282,7 +281,13 @@ pub fn infer_value_ty_ctx(
                 ret
             }
         }
-        Value::Loop { .. } | Value::Lambda { .. } => Type::Int,
+        Value::Loop { .. } => Type::Int,
+        // After lambda_lift, residual `Lambda` is an ICE (maps to Int only so
+        // release builds still type-check walkers).
+        Value::Lambda { .. } => {
+            debug_assert!(false, "ICE: Value::Lambda after lift; expected FunRef/AllocClosure");
+            Type::Int
+        }
     }
 }
 

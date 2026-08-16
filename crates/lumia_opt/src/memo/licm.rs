@@ -104,7 +104,6 @@ fn collect_defs(block: &Block, defs: &mut HashSet<u32>) {
                 }
             }
             Op::Assign { .. }
-            | Op::Effect { .. }
             | Op::Break
             | Op::Continue
             | Op::Return { .. } => {}

@@ -31,13 +31,7 @@ pub(crate) fn set_is_hash(set: *mut u8) -> bool {
     if set.is_null() {
         return false;
     }
-    unsafe {
-        let n = *(set as *const i64);
-        if n < 0 {
-            return false;
-        }
-        (*header_from_payload(set)).size as usize != set_linear_nbytes(n)
-    }
+    unsafe { lumia_abi::tid_hash((*header_from_payload(set)).type_id) }
 }
 
 pub(crate) fn set_mark_payload(payload: *mut u8, size: usize, float_elems: bool) {
@@ -48,7 +42,7 @@ pub(crate) fn set_mark_payload(payload: *mut u8, size: usize, float_elems: bool)
     unsafe {
         let base = payload as *const i64;
         let n0 = *base;
-        if size == set_linear_nbytes(n0) {
+        if !lumia_abi::tid_hash((*header_from_payload(payload)).type_id) {
             if n0 > 0 {
                 let max = size.saturating_sub(8) / 8;
                 let n = (n0 as usize).min(max);
@@ -221,7 +215,7 @@ pub extern "C" fn lumia_set_contains(set: *mut u8, elem: i64) -> i64 {
 }
 
 pub(crate) unsafe fn set_alloc_hash_tid(cap: usize, count: i64, tid: u32) -> *mut u8 {
-    let dest = lumia_alloc(set_hash_nbytes(cap) as u64, tid);
+    let dest = lumia_alloc(set_hash_nbytes(cap) as u64, lumia_abi::tid_with_hash(tid));
     let dst = dest as *mut i64;
     *dst = count;
     *dst.add(1) = cap as i64;
@@ -369,7 +363,10 @@ pub extern "C" fn lumia_set_remove(set: *mut u8, elem: i64) -> *mut u8 {
             };
             let n2 = n - 1;
             if n2 <= SET_SMALL_MAX {
-                let dest = lumia_alloc(set_linear_nbytes(n2) as u64, tid);
+                let dest = lumia_alloc(
+                    set_linear_nbytes(n2) as u64,
+                    lumia_abi::tid_without_hash(tid),
+                );
                 let dst = dest as *mut i64;
                 *dst = n2;
                 let mut w = 0usize;

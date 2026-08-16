@@ -8,7 +8,6 @@ fn const_fold_iota_len_get() {
             "f",
             vec![],
             Block {
-                params: vec![],
                 ops: vec![
                     Op::Let {
                         local: Local(0),

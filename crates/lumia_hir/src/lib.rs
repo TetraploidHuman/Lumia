@@ -1,6 +1,8 @@
 //! High-level IR — named bindings after light desugaring from syntax AST.
 
 mod ast;
+mod adt_classify;
+mod assert_annotate;
 mod builtin_info;
 mod builtin_surface;
 mod list_hof;
@@ -9,6 +11,8 @@ mod mangle;
 mod match_check;
 mod visit;
 
+pub use adt_classify::{classify_sum_field_recursive, sum_parametric_arity};
+pub use assert_annotate::annotate_assert_messages;
 pub use ast::{
     AdtDef, AdtVariant, Builtin, BuiltinFamily, CtorInfo, Expr, Fun, Item, Module, ProductDef,
 };
@@ -17,7 +21,7 @@ pub use builtin_surface::{surface_names, SurfaceName, SurfaceRole, PRELUDE_CTORS
 pub use list_hof::{desugar_list_fold_sequential, desugar_list_map_sequential};
 pub use lower::{expand_with_known, lower_module, LowerCtx, LowerError};
 pub use mangle::mangle_trait_method;
-pub use visit::{all_free_vars, fold, for_each_expr, free_vars_expr};
+pub use visit::{all_free_vars, fold, for_each_expr, for_each_expr_mut, free_vars_expr};
 
 #[cfg(test)]
 mod tests {
@@ -529,6 +533,89 @@ val f = { o ->
         assert!(
             has_match_fail,
             "last-arm `None` must remain refutable with MatchFail"
+        );
+    }
+
+    #[test]
+    fn exhaustiveness_checks_instance_method_bodies() {
+        let src = r#"
+module M
+type Option { Some(value) None }
+trait Show {
+    val show = { self -> "" }
+}
+instance Show for Option {
+    val show = { self ->
+        self match {
+            None -> { "none" }
+        }
+    }
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let err = lower_module(&ast).unwrap_err().to_string();
+        assert!(err.contains("non-exhaustive"), "{err}");
+        assert!(err.contains("Some"), "{err}");
+    }
+
+    #[test]
+    fn exhaustiveness_checks_trait_default_method_bodies() {
+        let src = r#"
+module M
+type Option { Some(value) None }
+trait Show {
+    val show = { self ->
+        self match {
+            None -> { "none" }
+        }
+    }
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let err = lower_module(&ast).unwrap_err().to_string();
+        assert!(err.contains("non-exhaustive"), "{err}");
+    }
+
+    #[test]
+    fn instance_may_precede_trait_in_source_order() {
+        let src = r#"
+module M
+type Point { val x }
+instance Show for Point {
+    val show = { self -> "p" }
+}
+trait Show {
+    val show = { self -> "" }
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let hir = lower_module(&ast).expect("instance before trait should lower");
+        assert!(hir.instances.contains(&("Show".into(), "Point".into())));
+    }
+
+    #[test]
+    fn fun_and_val_carry_declaration_span() {
+        let src = "module M\nval answer = 42\nval main = { answer }\n";
+        let ast = parse_module(src).unwrap();
+        let hir = lower_module(&ast).expect("lower");
+        let answer = hir.items.iter().find_map(|it| match it {
+            Item::Val { name, span, .. } if name == "answer" => Some(*span),
+            _ => None,
+        });
+        let main = hir.items.iter().find_map(|it| match it {
+            Item::Fun(f) if f.name == "main" => Some(f.span),
+            _ => None,
+        });
+        let answer = answer.expect("val answer");
+        let main = main.expect("fun main");
+        // Decl spans should cover the `val` keyword region, not only the body literal/block.
+        assert!(
+            answer.start.0 < src.find("42").unwrap() as u32,
+            "answer decl span {answer:?} should start at `val`"
+        );
+        assert!(
+            main.start.0 < src.find('{').unwrap() as u32,
+            "main decl span {main:?} should start at `val`"
         );
     }
 }

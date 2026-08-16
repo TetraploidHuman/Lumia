@@ -44,26 +44,27 @@ pub extern "C" fn lumia_map_set(map: *mut u8, key: i64, val: i64) -> *mut u8 {
             let parent = map_overlay_parent(map);
             let dn = map_overlay_dn(map);
             let base = map as *const i64;
-            // Replace existing delta key in-place in a new overlay copy.
-            let float_keys = map_float_keys(parent) || map_float_keys(map);
-            for i in (0..dn as usize).rev() {
-                if key_eq(*base.add(3 + i * 2), key, float_keys) {
-                    let mut pairs = Vec::with_capacity(dn as usize);
-                    for j in 0..dn as usize {
-                        let k = *base.add(3 + j * 2);
-                        let v = if j == i { val } else { *base.add(4 + j * 2) };
-                        pairs.push((k, v));
-                    }
-                    return map_alloc_overlay(parent, &pairs);
+            if let Some(i) = {
+                let float_keys = map_float_keys(parent) || map_float_keys(map);
+                (0..dn as usize).rev().find(|&i| key_eq(*base.add(3 + i * 2), key, float_keys))
+            } {
+                // Replace existing delta key in a new overlay (stack pair buf).
+                let mut pairs = [(0i64, 0i64); MAP_OVERLAY_MAX as usize];
+                debug_assert!(dn as usize <= pairs.len());
+                for j in 0..dn as usize {
+                    let k = *base.add(3 + j * 2);
+                    let v = if j == i { val } else { *base.add(4 + j * 2) };
+                    pairs[j] = (k, v);
                 }
+                return map_alloc_overlay(parent, &pairs[..dn as usize]);
             }
             if dn < MAP_OVERLAY_MAX {
-                let mut pairs = Vec::with_capacity(dn as usize + 1);
+                let mut pairs = [(0i64, 0i64); (MAP_OVERLAY_MAX as usize) + 1];
                 for j in 0..dn as usize {
-                    pairs.push((*base.add(3 + j * 2), *base.add(4 + j * 2)));
+                    pairs[j] = (*base.add(3 + j * 2), *base.add(4 + j * 2));
                 }
-                pairs.push((key, val));
-                return map_alloc_overlay(parent, &pairs);
+                pairs[dn as usize] = (key, val);
+                return map_alloc_overlay(parent, &pairs[..=dn as usize]);
             }
             // Delta full → flatten then upsert.
             let flat = map_materialize(map);
@@ -134,7 +135,7 @@ pub extern "C" fn lumia_map_remove(map: *mut u8, key: i64) -> *mut u8 {
             if n2 <= MAP_SMALL_MAX {
                 // Demote to linear
                 let nbytes = map_linear_nbytes(n2) as u64;
-                let dest = lumia_alloc(nbytes, tid);
+                let dest = lumia_alloc(nbytes, lumia_abi::tid_without_hash(tid));
                 let dst = dest as *mut i64;
                 *dst = n2;
                 let mut w = 0usize;

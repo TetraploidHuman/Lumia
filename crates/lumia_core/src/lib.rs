@@ -10,9 +10,12 @@ mod visit;
 
 pub use ir::{
     format_module, max_local_in_block, max_local_in_fun, rewrite_block_locals, AdtRepr, Block,
-    CoreFun, CoreModule, ForeignAbi, ListRepr, Local, MapRepr, MemoTf, Op, SetRepr, Value,
+    CoreFun, CoreModule, ForeignAbi, FunKind, ListRepr, Local, MapRepr, MemoTf, Op, SetRepr,
+    Value,
 };
-pub use lower::{lower_hir, lower_hir_with_schemes};
+/// Mid-end may share ABI contract constants with rt/codegen via `lumia_abi`.
+pub use lumia_abi::SMALL_CONTAINER_MAX;
+pub use lower::lower_hir_with_schemes;
 pub use pipeline::{
     compile_file_to_core, compile_source_to_core, compile_source_to_core_with_options,
     compile_source_to_core_with_parallel, FrontendOptions,
