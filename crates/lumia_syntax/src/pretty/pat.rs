@@ -15,6 +15,7 @@ pub(crate) fn format_pat(out: &mut String, p: &Pattern) {
                 '\\' => out.push_str("\\\\"),
                 '\'' => out.push_str("\\'"),
                 '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
                 '\t' => out.push_str("\\t"),
                 other => out.push(other),
             }

@@ -207,7 +207,7 @@
 - [ ] **恢复路径注入恒等毒桩 lambda**：`parse_val_item_resilient` 失败体换成 `{ _1,_2 -> _1 }` 类 stub 仍进符号表/定型。宜 `Hole`/`Error` 类型，或恢复项不绑定 scheme。
 - [ ] **`peek_kinds` 旁路重词法 + Ident 再分配**：临时 `Lexer` 调 `next_token`；与已列 `bump` clone 正交。宜无分配 peek 或 Ident intern。
 - [ ] **`${…}` 嵌套串跳过按字节 `+2` 吃转义**：主字面量按 UTF-8 scalar，插值内跳过可落非法边界。宜与 `lex_string` 共用安全扫描。
-- [ ] **pretty `escape_str` 缺 `\r`，与 lexer 表漂移**：fmt→parse 含 CR 不保真。宜单一 escape 真源 + 对账测。
+- [x] **pretty `escape_str` 缺 `\r`，与 lexer 表漂移**：`escape_str` 与 char 模式 fmt 已补 `\r`；加 roundtrip 测。仍欠与 lexer 共用单一 escape 真源。
 
 #### HIR ↔ ty / 控制流
 

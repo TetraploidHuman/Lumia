@@ -239,6 +239,7 @@ pub(crate) fn escape_str(s: &str) -> String {
             '\\' => o.push_str("\\\\"),
             '"' => o.push_str("\\\""),
             '\n' => o.push_str("\\n"),
+            '\r' => o.push_str("\\r"),
             '\t' => o.push_str("\\t"),
             '$' => o.push_str("\\$"),
             c => o.push(c),
@@ -344,6 +345,19 @@ val main = {
 module T
 import foo.{bar as baz, qux}
 import math.add as plus
+val main = 0
+"#,
+        );
+    }
+
+    #[test]
+    fn fmt_string_and_char_cr_roundtrip() {
+        // Lexer accepts `\r`; pretty must emit it or fmt→parse loses CR.
+        roundtrip(
+            r#"
+module T
+val s = "a\rb"
+val c = '\r'
 val main = 0
 "#,
         );
