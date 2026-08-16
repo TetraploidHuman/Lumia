@@ -63,12 +63,25 @@ pub(super) fn on_did_close(params: &Value) -> Result<()> {
         .as_str()
         .unwrap_or("")
         .to_string();
-    {
+    let stale = {
         let mut st = state_lock();
         if let Some(s) = st.as_mut() {
             s.docs.remove(&uri);
             s.analysis.remove(&uri);
+            s.last_diag_uris.remove(&uri).unwrap_or_default()
+        } else {
+            Vec::new()
         }
+    };
+    for diag_uri in stale {
+        if diag_uri == uri {
+            continue;
+        }
+        write_stdout(&json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": { "uri": diag_uri, "diagnostics": [] }
+        }))?;
     }
     write_stdout(&json!({
         "jsonrpc": "2.0",
@@ -135,26 +148,64 @@ pub(super) fn publish_diagnostics_for(uri: &str, text: &str) -> Result<()> {
             s.analysis.insert(uri.to_string(), a);
         }
     }
-    let mut published = false;
-    for (diag_uri, diags) in &batches {
+    let prev = {
+        let mut st = state_lock();
+        st.as_mut()
+            .and_then(|s| s.last_diag_uris.remove(uri))
+            .unwrap_or_default()
+    };
+    let merged = merge_diag_batches(uri, batches, &prev);
+    for (diag_uri, diags) in &merged {
         write_stdout(&json!({
             "jsonrpc": "2.0",
             "method": "textDocument/publishDiagnostics",
             "params": { "uri": diag_uri, "diagnostics": diags }
         }))?;
-        if diag_uri == uri {
-            published = true;
+    }
+    {
+        let mut st = state_lock();
+        if let Some(s) = st.as_mut() {
+            s.last_diag_uris.insert(
+                uri.to_string(),
+                merged.iter().map(|(u, _)| u.clone()).collect(),
+            );
         }
     }
-    // Clear stale underlines on the edited buffer when the only errors live elsewhere.
-    if !published {
-        write_stdout(&json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/publishDiagnostics",
-            "params": { "uri": uri, "diagnostics": [] }
-        }))?;
-    }
     Ok(())
+}
+
+/// Ensure the entry URI is published, and clear URIs from the previous analyze
+/// of this buffer that are absent from `batches` (stale import underlines).
+fn merge_diag_batches(
+    entry_uri: &str,
+    batches: Vec<(String, Vec<Value>)>,
+    prev: &[String],
+) -> Vec<(String, Vec<Value>)> {
+    let mut by_uri: HashMap<String, Vec<Value>> = HashMap::default();
+    for (u, diags) in batches {
+        by_uri.insert(u, diags);
+    }
+    by_uri.entry(entry_uri.to_string()).or_insert_with(Vec::new);
+    for u in prev {
+        by_uri.entry(u.clone()).or_insert_with(Vec::new);
+    }
+    // Stable-ish order: entry first, then the rest sorted for determinism.
+    let mut rest: Vec<String> = by_uri
+        .keys()
+        .filter(|u| u.as_str() != entry_uri)
+        .cloned()
+        .collect();
+    rest.sort();
+    let mut out = Vec::with_capacity(rest.len() + 1);
+    if let Some(diags) = by_uri.remove(entry_uri) {
+        out.push((entry_uri.to_string(), diags));
+    }
+    for u in rest {
+        if let Some(diags) = by_uri.remove(&u) {
+            out.push((u, diags));
+        }
+    }
+    out
 }
 
 fn current_overlays() -> HashMap<PathBuf, String> {
@@ -189,8 +240,11 @@ fn analyze_buffer(
                     .first()
                     .map(|f| f.src.clone())
                     .unwrap_or_else(|| text.to_string());
+                // Clear every file in the load graph (not only the entry URI) so
+                // prior import diagnostics do not linger after a clean check.
+                let clears = clear_batches_for_program(uri, &loaded.files);
                 return (
-                    vec![(uri.to_string(), vec![])],
+                    clears,
                     Some(Analysis {
                         typed,
                         src: entry_src,
@@ -244,6 +298,22 @@ fn partial_to_lsp(
         }],
     });
     (diags, analysis)
+}
+
+/// Empty diagnostic batches for the entry URI and every loaded source file.
+fn clear_batches_for_program(entry_uri: &str, files: &[SourceFile]) -> Vec<(String, Vec<Value>)> {
+    let mut seen = HashMap::<String, ()>::default();
+    let mut out = Vec::new();
+    let mut push = |u: String| {
+        if seen.insert(u.clone(), ()).is_none() {
+            out.push((u, Vec::new()));
+        }
+    };
+    push(entry_uri.to_string());
+    for f in files {
+        push(path_to_uri(&f.path));
+    }
+    out
 }
 
 /// Index of `path` in `files`, preferring exact then canonical match (entry is usually 0).
@@ -353,7 +423,10 @@ fn parse_line_col_prefix(line: &str) -> Option<(u32, u32, &str)> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_line_col_prefix;
+    use super::{clear_batches_for_program, merge_diag_batches, parse_line_col_prefix};
+    use crate::load::SourceFile;
+    use serde_json::json;
+    use std::path::PathBuf;
 
     #[test]
     fn parse_cli_diag_prefix() {
@@ -361,5 +434,38 @@ mod tests {
             parse_line_col_prefix("err.lm:5:1: parse: expected RBrace, found Eof").expect("prefix");
         assert_eq!((l, c), (5, 1));
         assert!(rest.starts_with("parse:"));
+    }
+
+    #[test]
+    fn success_clears_all_loaded_files() {
+        let files = vec![
+            SourceFile {
+                path: PathBuf::from("/tmp/a.lm"),
+                src: String::new(),
+            },
+            SourceFile {
+                path: PathBuf::from("/tmp/b.lm"),
+                src: String::new(),
+            },
+        ];
+        let batches = clear_batches_for_program("file:///tmp/a.lm", &files);
+        assert!(batches.iter().all(|(_, d)| d.is_empty()));
+        let uris: Vec<&str> = batches.iter().map(|(u, _)| u.as_str()).collect();
+        assert!(uris.contains(&"file:///tmp/a.lm"));
+        assert!(uris.contains(&"file:///tmp/b.lm"));
+    }
+
+    #[test]
+    fn merge_clears_stale_import_uri() {
+        let err = json!({"message": "boom"});
+        let batches = vec![("file:///entry.lm".into(), vec![])];
+        let prev = vec!["file:///entry.lm".into(), "file:///import.lm".into()];
+        let merged = merge_diag_batches("file:///entry.lm", batches, &prev);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].0, "file:///entry.lm");
+        assert!(merged[0].1.is_empty());
+        assert_eq!(merged[1].0, "file:///import.lm");
+        assert!(merged[1].1.is_empty());
+        let _ = err;
     }
 }

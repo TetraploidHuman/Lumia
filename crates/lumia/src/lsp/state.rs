@@ -30,6 +30,10 @@ pub(super) struct State {
     pub(super) next_req_id: i64,
     /// Pending `workspace/configuration` request id, if any.
     pub(super) pending_config_req: Option<i64>,
+    /// Entry buffer URI → document URIs last touched by `publishDiagnostics`
+    /// for that analyze. Re-analyze clears prior import URIs so underlines
+    /// do not linger after a successful (or differently failing) check.
+    pub(super) last_diag_uris: HashMap<String, Vec<String>>,
 }
 
 #[derive(Clone)]

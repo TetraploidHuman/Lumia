@@ -50,6 +50,7 @@ pub fn run_lsp() -> Result<()> {
         client_supports_configuration: false,
         next_req_id: 1,
         pending_config_req: None,
+        last_diag_uris: HashMap::default(),
     });
     let stdin = io::stdin();
     let mut stdin = stdin.lock();

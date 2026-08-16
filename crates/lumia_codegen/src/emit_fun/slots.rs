@@ -7,11 +7,14 @@ use lumia_ty::Type;
 
 impl<'ctx> Codegen<'ctx> {
     fn slot_may_heap(&self, name: &str) -> bool {
+        // Unknown → non-heap (same lattice as unknown→Int elsewhere). Assign
+        // records `slot_tys` before the first store; a later heap type triggers
+        // `ensure_slot_rooted` on the next store/load.
         self.frame
             .slot_tys
             .get(name)
             .map(Self::type_may_heap)
-            .unwrap_or(true)
+            .unwrap_or(false)
     }
 
     /// Re-push a heap mut slot if a scoped `root_pop_to` unwound its prior root.
@@ -42,8 +45,8 @@ impl<'ctx> Codegen<'ctx> {
                 .build_store(alloca, self.llvm.i64_ty.const_int(0, false)),
         )?;
         self.frame.slot_i64_const.insert(name.to_string(), Some(0));
-        // Int/Bool vars are not GC roots (same as Float). Unknown / heap-capable
-        // slots stay rooted. Assign sets `slot_tys` before the first store.
+        // Int/Bool/unknown vars are not GC roots (same as Float). Heap-capable
+        // slots stay rooted once `slot_tys` says so.
         self.frame.slots.insert(name.to_string(), alloca);
         if self.slot_may_heap(name) {
             self.root_register_slot(alloca, name)?;
@@ -81,7 +84,7 @@ impl<'ctx> Codegen<'ctx> {
                 Some(t) if Self::is_bit_identity_scalar(t) || matches!(t, Type::Float) => false,
                 Some(Type::String) | Some(Type::Char) => false,
                 Some(_) => true, // unknown heap-ish
-                None => true,    // unknown — conservative
+                None => false,   // unknown → Int / non-heap (Assign always sets ty)
             };
         if need_cow_release {
             let old = self

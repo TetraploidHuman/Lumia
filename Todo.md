@@ -219,7 +219,7 @@
 #### codegen / abi
 
 - [ ] **codegen `roots::type_may_heap` 成第五套「是否堆」**：与已列 value_ty / float_abi / mono / `lambda_lift/heap` 并行；`slots` 复用之。宜并入单一 heap lattice。
-- [ ] **未知 mut slot `unwrap_or(true)` 当堆根**：`emit_fun/slots.rs`；与「未知→Int」正交——是 **未知→堆** 反方向缺省。
+- [x] **未知 mut slot `unwrap_or(true)` 当堆根**：`slot_may_heap` 未知→非堆；Assign 缺 `local_tys` 写 `Type::Int`；COW `None` 同步。
 - [x] **`emit_memo` 魔数 `4`，不读 `MEMO_TF_MAX_ARGS`**：已改用 `lumia_abi::MEMO_TF_MAX_ARGS`；`const _: () = assert!(… == 4)` 钉死与 C ABI 四槽一致。
 - [x] **ADT float/bool field mask 静默 `.min(64)` 截断**：`emit_eq` / AllocAdt / with-update 超 64 字段改为 emit 期 `bail!` ICE；加 mask 单测。
 - [x] **musttail 无返回值时静默 `i64 0`**：`emit_musttail_call` 对 void LLVM 结果 `context` ICE（Lumia ABI 恒 i64）。
@@ -232,7 +232,7 @@
 
 - [ ] **`severity_and_code` 靠 `type:` 前缀，生产 type 诊断常无 code**：多文件/分析路径发裸 `message()`；单测只喂已带前缀串。宜结构化 `DiagnosticKind`。
 - [x] **LSP format 解析失败返回空编辑（假绿）**：parse 失败改为 `Err` → JSON-RPC `-32603`；加拒测。
-- [ ] **分析成功只清空当前 URI，跨文件诊断可陈旧**：`Ok` 分支 `vec![(uri, [])]`；先前发到 import URI 的诊断不清理。
+- [x] **分析成功只清空当前 URI，跨文件诊断可陈旧**：成功时清 load 图全部文件 URI；`last_diag_uris` 合并清上次 import；close 顺带清。
 - [ ] **`pkg` lock 缺版本写死 `"0.0.0"`**：锁「绿」但无信息。
 - [ ] **`codegen` feature 半切：slim 仍硬链 `lumia_core`；Build clap 永在**：无 feature 时 Build 体内才 `bail`；LSP 仍拖 Core。宜 core 仅 `codegen` 依赖；隐藏/拆 Build 子命令。
 - [ ] **VS Code README 设置/vsix 号漂移 + 对账脚本不管配置键**：README 仍 `0.3.5.vsix`、Settings 漏 `autoParallel`；`check_editor_assets` 不对账 settings/README/版本。

@@ -738,9 +738,15 @@ impl<'ctx> Codegen<'ctx> {
                         self.frame.slot_tys.insert(name.clone(), Type::Float);
                         self.promote_f64(v)?.into()
                     } else {
-                        if let Some(ty) = self.frame.local_tys.get(&value.0).cloned() {
-                            self.frame.slot_tys.insert(name.clone(), ty);
-                        }
+                        // Unknown RHS → Int (not heap): keeps `slot_may_heap`
+                        // aligned with the unknown→Int default elsewhere.
+                        let ty = self
+                            .frame
+                            .local_tys
+                            .get(&value.0)
+                            .cloned()
+                            .unwrap_or(Type::Int);
+                        self.frame.slot_tys.insert(name.clone(), ty);
                         v
                     };
                     self.store_slot(name, v)?;
