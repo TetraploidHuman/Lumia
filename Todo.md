@@ -168,7 +168,7 @@
 
 #### 测试结构 / 死 API / 过宽 pub
 - [ ] **mono 上帝模块近距测仍空**：`mono/mod.rs` 测已外置 `mono/tests.rs`；`specialize`/`float_cap_fixup`/`ret_ty`/`key`/`traits`/`rewrite` 同文件测仍为 0。宜按子模块外置测 + 行数预算。
-- [ ] **Core lower 残留 `.expect`**：Alt/With 已 `note_ice`+`Err`；`control.rs`/`call.rs` 等仍有 `.expect("ICE: …")`。宜一律 `Err(Ice)`。
+- [x] **Core lower 残留 `.expect`**：Alt/With 与 `call`/`control` Unit 操作数路径已 `note_ice`+`None`（见第八轮 `emit_memo` 旁勾选）。
 - [ ] **锁序缺 CI 禁令**：`lumia_rt` crate 文档已扩全表（heap→sched→roots/memo；channel/memo shade；DICTS/ADT_SHOW 独立）。CI 禁令仍欠。
 - [x] **锁序文档未覆盖 memo/dict/mutator/channel**：已写入 `lumia_rt` crate `# Lock order`（见上条 CI 欠项）。
 
@@ -220,7 +220,8 @@
 
 - [ ] **codegen `roots::type_may_heap` 成第五套「是否堆」**：与已列 value_ty / float_abi / mono / `lambda_lift/heap` 并行；`slots` 复用之。宜并入单一 heap lattice。
 - [ ] **未知 mut slot `unwrap_or(true)` 当堆根**：`emit_fun/slots.rs`；与「未知→Int」正交——是 **未知→堆** 反方向缺省。
-- [ ] **`emit_memo` 魔数 `4`，不读 `MEMO_TF_MAX_ARGS`**：`.take(4)` / `[IntValue; 4]`。宜只引用 abi。
+- [x] **`emit_memo` 魔数 `4`，不读 `MEMO_TF_MAX_ARGS`**：已改用 `lumia_abi::MEMO_TF_MAX_ARGS`；`const _: () = assert!(… == 4)` 钉死与 C ABI 四槽一致。
+- [x] **Core lower 残留 `.expect`**：`call`/`control` 的 Unit 操作数/`if` 条件已 `note_ice`+`None`（与 Alt/With 同型）。
 - [ ] **ADT float/bool field mask 静默 `.min(64)` 截断**：`emit_eq.rs`；>64 字段丢位不报错。宜编译期拒绝或宽 mask。
 - [ ] **musttail 无返回值时静默 `i64 0`**：`tco.rs`。宜 ICE。
 - [ ] **`emit_stack_*` 头布局近拷贝 + 模块注释仍写 Map**：`stack.rs`「List / Map / ADT」但 Map/Set 不走栈。宜共用 header helper；改正注释。

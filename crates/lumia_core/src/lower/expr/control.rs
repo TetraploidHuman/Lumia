@@ -18,8 +18,12 @@ pub(super) fn lower_control(
             else_branch,
             ..
         } => {
-            let c = lower_expr(ctx, cond, ops, pure_region)
-                .expect("ICE: if condition lowered to Unit; type checker should reject");
+            let Some(c) = lower_expr(ctx, cond, ops, pure_region) else {
+                ctx.note_ice(
+                    "ICE: if condition lowered to Unit; type checker should reject",
+                );
+                return None;
+            };
             // Isolate arm bindings so `val`/`var` inside then/else cannot leak.
             let saved = ctx.save_bindings();
             let (then_block, _) = lower_expr_block(ctx, then_branch);

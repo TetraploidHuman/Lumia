@@ -16,10 +16,18 @@ pub(super) fn lower_call_like(
         HirExpr::Binary {
             op, left, right, ..
         } => {
-            let l = lower_expr(ctx, left, ops, pure_region)
-                .expect("ICE: binary operand lowered to Unit; type checker should reject");
-            let r = lower_expr(ctx, right, ops, pure_region)
-                .expect("ICE: binary operand lowered to Unit; type checker should reject");
+            let Some(l) = lower_expr(ctx, left, ops, pure_region) else {
+                ctx.note_ice(
+                    "ICE: binary operand lowered to Unit; type checker should reject",
+                );
+                return None;
+            };
+            let Some(r) = lower_expr(ctx, right, ops, pure_region) else {
+                ctx.note_ice(
+                    "ICE: binary operand lowered to Unit; type checker should reject",
+                );
+                return None;
+            };
             let dest = ctx.fresh();
             ops.push(Op::Let {
                 local: dest,
@@ -33,8 +41,12 @@ pub(super) fn lower_call_like(
             Some(dest)
         }
         HirExpr::Unary { op, expr, .. } => {
-            let o = lower_expr(ctx, expr, ops, pure_region)
-                .expect("ICE: unary operand lowered to Unit; type checker should reject");
+            let Some(o) = lower_expr(ctx, expr, ops, pure_region) else {
+                ctx.note_ice(
+                    "ICE: unary operand lowered to Unit; type checker should reject",
+                );
+                return None;
+            };
             let dest = ctx.fresh();
             ops.push(Op::Let {
                 local: dest,
