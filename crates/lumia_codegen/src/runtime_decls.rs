@@ -220,6 +220,11 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         ret: RtTy::Ptr,
         args: &[RtTy::I32, RtTy::Ptr],
     },
+    RtDecl {
+        name: "lumia_dict_show",
+        ret: RtTy::Ptr,
+        args: &[RtTy::I32, RtTy::Ptr, RtTy::I64],
+    },
     // `lumia_write_barrier` — remembered set for minor GC (old→young stores).
     RtDecl {
         name: "lumia_write_barrier",
@@ -317,6 +322,16 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         args: &[RtTy::Ptr, RtTy::I64, RtTy::I64],
     },
     RtDecl {
+        name: "lumia_map_get",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr, RtTy::I64, RtTy::I64, RtTy::I64],
+    },
+    RtDecl {
+        name: "lumia_map_contains",
+        ret: RtTy::I64,
+        args: &[RtTy::Ptr, RtTy::I64],
+    },
+    RtDecl {
         name: "lumia_list_set",
         ret: RtTy::Ptr,
         args: &[RtTy::Ptr, RtTy::I64, RtTy::I64],
@@ -333,6 +348,16 @@ const RUNTIME_DECLS: &[RtDecl] = &[
     },
     RtDecl {
         name: "lumia_set_insert",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr, RtTy::I64],
+    },
+    RtDecl {
+        name: "lumia_set_contains",
+        ret: RtTy::I64,
+        args: &[RtTy::Ptr, RtTy::I64],
+    },
+    RtDecl {
+        name: "lumia_set_remove",
         ret: RtTy::Ptr,
         args: &[RtTy::Ptr, RtTy::I64],
     },
@@ -852,6 +877,16 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         ret: RtTy::I64,
         args: &[RtTy::Ptr, RtTy::Ptr],
     },
+    RtDecl {
+        name: "lumia_str_contains",
+        ret: RtTy::I64,
+        args: &[RtTy::Ptr, RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumia_str_concat",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr, RtTy::Ptr],
+    },
     // Frozen C ABI names (`T_f` planner; DESIGN vocabulary is not "L2").
     RtDecl {
         name: "lumia_memo_l2_lookup",
@@ -865,6 +900,21 @@ const RUNTIME_DECLS: &[RtDecl] = &[
             RtTy::I64,
             RtTy::Ptr,
         ],
+    },
+    RtDecl {
+        name: "lumia_memo_l2_hits",
+        ret: RtTy::I64,
+        args: &[],
+    },
+    RtDecl {
+        name: "lumia_memo_l2_misses",
+        ret: RtTy::I64,
+        args: &[],
+    },
+    RtDecl {
+        name: "lumia_memo_l2_reset",
+        ret: RtTy::Void,
+        args: &[],
     },
     RtDecl {
         name: "lumia_memo_l2_store",
@@ -888,6 +938,21 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         name: "lumia_memo_idx_store",
         ret: RtTy::Void,
         args: &[RtTy::I64, RtTy::I64, RtTy::I64],
+    },
+    RtDecl {
+        name: "lumia_memo_idx_hits",
+        ret: RtTy::I64,
+        args: &[],
+    },
+    RtDecl {
+        name: "lumia_memo_idx_misses",
+        ret: RtTy::I64,
+        args: &[],
+    },
+    RtDecl {
+        name: "lumia_memo_idx_reset",
+        ret: RtTy::Void,
+        args: &[],
     },
     // Task / Channel concurrency (lumia_rt::task).
     RtDecl {
@@ -1060,5 +1125,104 @@ mod tests {
             "BuiltinInfo.runtime_symbol missing from declare_runtime:\n  {}",
             missing.join("\n  ")
         );
+    }
+
+    /// Diff `lumia_rt` `#[no_mangle] extern "C"` exports against `RUNTIME_DECLS`.
+    /// Test-only / internal symbols can be listed in `RT_EXPORT_ALLOWLIST`.
+    #[test]
+    fn runtime_decls_cover_rt_no_mangle_exports() {
+        let decl_names: HashSet<&str> = RUNTIME_DECLS.iter().map(|d| d.name).collect();
+        let rt_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../lumia_rt");
+        let mut rt_syms = HashSet::default();
+        collect_rt_c_exports(&rt_root, &mut rt_syms);
+
+        // Empty for now: every `lumia_*` C export should be declare-able.
+        const RT_EXPORT_ALLOWLIST: &[&str] = &[];
+
+        let mut missing = Vec::new();
+        for sym in &rt_syms {
+            if decl_names.contains(sym.as_str()) || RT_EXPORT_ALLOWLIST.contains(&sym.as_str()) {
+                continue;
+            }
+            missing.push(sym.clone());
+        }
+        missing.sort();
+        assert!(
+            missing.is_empty(),
+            "lumia_rt #[no_mangle] exports missing from RUNTIME_DECLS:\n  {}\n\
+             (add decls or RT_EXPORT_ALLOWLIST for test-only symbols)",
+            missing.join("\n  ")
+        );
+
+        let mut orphan = Vec::new();
+        for name in &decl_names {
+            if !rt_syms.contains(*name) {
+                orphan.push(*name);
+            }
+        }
+        orphan.sort_unstable();
+        assert!(
+            orphan.is_empty(),
+            "RUNTIME_DECLS names with no lumia_rt #[no_mangle] export:\n  {}",
+            orphan.join("\n  ")
+        );
+    }
+
+    fn collect_rt_c_exports(dir: &std::path::Path, out: &mut HashSet<String>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for ent in entries.flatten() {
+            let path = ent.path();
+            if path.is_dir() {
+                collect_rt_c_exports(&path, out);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let bytes = text.as_bytes();
+            let mut i = 0;
+            while i < bytes.len() {
+                if bytes[i..].starts_with(b"#[no_mangle]") {
+                    let rest = &bytes[i + b"#[no_mangle]".len()..];
+                    if let Some(rel) = find_ascii(rest, b"extern \"C\" fn ") {
+                        let after = &rest[rel + b"extern \"C\" fn ".len()..];
+                        let name = take_ident(after);
+                        if !name.is_empty() {
+                            out.insert(name);
+                        }
+                    }
+                    i += b"#[no_mangle]".len();
+                    continue;
+                }
+                if bytes[i..].starts_with(b"#[export_name = \"") {
+                    let after = &bytes[i + b"#[export_name = \"".len()..];
+                    if let Some(end) = after.iter().position(|&b| b == b'"') {
+                        if let Ok(name) = std::str::from_utf8(&after[..end]) {
+                            out.insert(name.to_string());
+                        }
+                        i += b"#[export_name = \"".len() + end + 1;
+                        continue;
+                    }
+                }
+                i += 1;
+            }
+        }
+    }
+
+    fn find_ascii(hay: &[u8], needle: &[u8]) -> Option<usize> {
+        hay.windows(needle.len()).position(|w| w == needle)
+    }
+
+    fn take_ident(bytes: &[u8]) -> String {
+        let n = bytes
+            .iter()
+            .take_while(|&&b| b.is_ascii_alphanumeric() || b == b'_')
+            .count();
+        String::from_utf8_lossy(&bytes[..n]).into_owned()
     }
 }

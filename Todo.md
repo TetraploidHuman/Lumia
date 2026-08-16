@@ -218,7 +218,7 @@
 - [ ] **Builtin→RT 符号在 `BuiltinInfo` 外覆盖**：codegen `builtin/mod.rs` 按 `Type::List` 把 `ListLen`/`MapSet`/`ListGet` 改道 `lumia_list_len`/`lumia_list_set`/`lumia_list_get`（绕开 info 表里的多态符号）。表驱动 emit 被字符串特判挖空；宜把单态分发收进 `BuiltinInfo` 或 Core opcode。
 - [ ] **HIR `visit` 未被 `lumia_ty` 使用**：`hir/visit.rs` 已有 `for_each_expr`，但 ty 的 `effects`/`alt`/`parallel`/`product_resolve`/`traits`/`free_vars` 全手写 walker（与已列 Core `visit` 欠债同型、前端侧）。新 `Expr` 臂易漏；ty 应变默认走 hir visit。
 - [x] **堆头 / FunRef 标记 / `TRAIT_*` 未进 `lumia_abi`**：`OBJECT_HEADER_BYTES`/`WORDS`、`FUNREF_TAG`、`TRAIT_SHOW…NUM` 进 abi；rt `ObjectHeader` 编译期对账；codegen 栈布局与 dict 注册共用常量。
-- [ ] **`runtime_decls` 与 rt `#[no_mangle]` 不对账**：decls 测试只保证「名字唯一 + Builtin `runtime_symbol` 已声明」，不覆盖全量 C 导出（如部分 map/str/dict/memo 计数器可缺席）。非 builtin 直调符号易漏 declare。宜生成或 diff `no_mangle`↔`RUNTIME_DECLS`（测试专用符号白名单）。
+- [x] **`runtime_decls` 与 rt `#[no_mangle]` 不对账**：补齐缺席导出（dict/map/set/str/memo 计数器等 13 个）；单测 `runtime_decls_cover_rt_no_mangle_exports` 扫 `lumia_rt` 源并对账 `RUNTIME_DECLS`（`RT_EXPORT_ALLOWLIST` 预留测试专用符号）。表仍手维巨文件，见下「手维百科」。
 - [ ] **RT FFI 边界 crate 级放行「看似 safe」**：`lumia_rt` `#![allow(clippy::not_unsafe_ptr_arg_deref)]`，大量 `extern "C"` 不以 `unsafe fn` 标出。指针契约在类型系统外；UB 审计难。宜收窄 allow、ABI 边用 `unsafe fn` + 薄安全包装。
 - [ ] **CI/check 纪律分叉（续）**：双方皆 `clippy --exclude lumia`（CLI/LSP/load 从不 `-D warnings`）；CI Linux 用 `llvm-dynamic`，`check.sh` 不用；`install.sh` 的 `--no-default-features` slim-LSP 产物 CI 未测。在已列 `RUST_TEST_THREADS`/editor assets 之外对齐 feature 与入口 crate。
 - [x] **产品版本 / LSP 生命周期无单一真源**（部分）：LSP `serverInfo.version` 已用 `CARGO_PKG_VERSION`；vscode/IDEA 版本漂移与 shutdown/`exit` 行为仍欠。
