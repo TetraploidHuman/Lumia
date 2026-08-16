@@ -1,27 +1,28 @@
 //! Per-mutator shadow-stack roots + process registry (BUILD §7.7 phase C).
 //!
-//! Each OS thread keeps a TLS root vector. The process registry holds raw
-//! pointers to those vectors so GC (holding the heap lock) can mark every
-//! mutator. `lumia_root_push` / `pop` take the heap lock so root mutation
-//! cannot race with mark.
+//! Each OS thread keeps a TLS root vector behind a **per-mutator** [`Mutex`].
+//! Hot `push` / `pop` take only that local lock (not the process heap Mutex).
+//! GC walks roots while holding the heap lock, then briefly locks each
+//! mutator's roots mutex (order: **heap → roots**). Shade of newly pushed
+//! slots during incremental full mark uses [`crate::heap::full_marking_fast`].
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::sync::{Mutex, OnceLock};
 
 use crate::heap::with_heap;
 
 thread_local! {
-    pub(crate) static ROOTS: RefCell<Vec<*mut *mut u8>> = const { RefCell::new(Vec::new()) };
+    pub(crate) static ROOTS: Mutex<Vec<*mut *mut u8>> = const { Mutex::new(Vec::new()) };
     static REGISTRATION: Registration = Registration::new();
 }
 
 struct MutatorEntry {
-    /// Points at this thread's [`ROOTS`] `RefCell`.
-    roots: *const RefCell<Vec<*mut *mut u8>>,
+    /// Points at this thread's [`ROOTS`] `Mutex`.
+    roots: *const Mutex<Vec<*mut *mut u8>>,
 }
 
-// Entries are only used while the owning thread is alive (Drop unregisters)
-// and while the heap lock serializes mutators with GC.
+// Entries are only used while the owning thread is alive (Drop unregisters).
+// Cross-thread access locks the pointed-to Mutex under the heap lock.
 unsafe impl Send for MutatorEntry {}
 unsafe impl Sync for MutatorEntry {}
 
@@ -33,14 +34,14 @@ fn registry() -> &'static Mutex<Vec<MutatorEntry>> {
 
 struct Registration {
     active: Cell<bool>,
-    roots: *const RefCell<Vec<*mut *mut u8>>,
+    roots: *const Mutex<Vec<*mut *mut u8>>,
 }
 
 impl Registration {
     fn new() -> Self {
         // Touch ROOTS so the TLS slot exists, then publish under the heap lock
         // so GC's registry snapshot cannot miss this mutator.
-        let roots_ptr = ROOTS.with(|r| r as *const RefCell<Vec<*mut *mut u8>>);
+        let roots_ptr = ROOTS.with(|r| r as *const Mutex<Vec<*mut *mut u8>>);
         with_heap(|_| {
             registry()
                 .lock()
@@ -61,7 +62,7 @@ impl Drop for Registration {
         }
         self.active.set(false);
         let roots_ptr = self.roots;
-        // Heap then registry: same order as push/pop so GC never sees a dying mutator.
+        // Heap then registry: same order as GC so a dying mutator is never walked.
         with_heap(|_| {
             if let Ok(mut reg) = registry().lock() {
                 reg.retain(|e| e.roots != roots_ptr);
@@ -76,12 +77,17 @@ pub(crate) fn ensure_mutator_registered() {
     REGISTRATION.with(|_| {});
 }
 
+fn lock_roots(m: &Mutex<Vec<*mut *mut u8>>) -> std::sync::MutexGuard<'_, Vec<*mut *mut u8>> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 /// Visit every registered mutator's root slots.
 ///
-/// Caller must hold the process heap lock (`with_heap`) so other threads
-/// cannot be inside [`push_root`] / [`pop_root`].
+/// Caller must hold the process heap lock (`with_heap`) for registry stability
+/// and heap metadata. Each mutator's vector is then locked separately
+/// (lock order: heap → that mutator's roots).
 pub(crate) fn for_each_mutator_root(mut f: impl FnMut(*mut *mut u8)) {
-    let entries: Vec<*const RefCell<Vec<*mut *mut u8>>> = registry()
+    let entries: Vec<*const Mutex<Vec<*mut *mut u8>>> = registry()
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .iter()
@@ -89,11 +95,10 @@ pub(crate) fn for_each_mutator_root(mut f: impl FnMut(*mut *mut u8)) {
         .collect();
     for ptr in entries {
         // Safety: entry stays registered until the owning thread drops
-        // `Registration`; that Drop takes the registry lock, and we hold
-        // the heap lock so the owner cannot be mid push/pop.
+        // `Registration`; that Drop takes the heap + registry locks, and we
+        // already hold the heap lock.
         let roots = unsafe { &*ptr };
-        // Heap lock held by caller ⇒ no concurrent push/pop on these RefCells.
-        for &slot in roots.borrow().iter() {
+        for &slot in lock_roots(roots).iter() {
             f(slot);
         }
     }
@@ -102,32 +107,26 @@ pub(crate) fn for_each_mutator_root(mut f: impl FnMut(*mut *mut u8)) {
 #[inline]
 pub(crate) fn push_root(slot: *mut *mut u8) {
     ensure_mutator_registered();
-    with_heap(|_| {
-        ROOTS.with(|r| r.borrow_mut().push(slot));
-    });
+    ROOTS.with(|r| lock_roots(r).push(slot));
 }
 
 #[inline]
 pub(crate) fn pop_root() {
     ensure_mutator_registered();
-    with_heap(|_| {
-        ROOTS.with(|r| {
-            let _ = r.borrow_mut().pop();
-        });
+    ROOTS.with(|r| {
+        let _ = lock_roots(r).pop();
     });
 }
 
 /// Replace the current thread's root stack (fiber park / host swap).
 pub(crate) fn take_local_roots() -> Vec<*mut *mut u8> {
     ensure_mutator_registered();
-    with_heap(|_| ROOTS.with(|r| std::mem::take(&mut *r.borrow_mut())))
+    ROOTS.with(|r| std::mem::take(&mut *lock_roots(r)))
 }
 
 pub(crate) fn set_local_roots(roots: Vec<*mut *mut u8>) {
     ensure_mutator_registered();
-    with_heap(|_| {
-        ROOTS.with(|r| *r.borrow_mut() = roots);
-    });
+    ROOTS.with(|r| *lock_roots(r) = roots);
 }
 
 #[cfg(test)]
@@ -135,13 +134,12 @@ mod tests {
     use super::*;
     use crate::common::{is_heap_payload, TYPE_BYTES};
     use crate::gc::{lumia_alloc, lumia_gc_collect, lumia_root_pop, lumia_root_push};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier};
     use std::thread;
 
     #[test]
     fn gc_sees_other_thread_roots() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
         let barrier = Arc::new(Barrier::new(2));
         let barrier_main = Arc::clone(&barrier);
         let kept = Arc::new(AtomicUsize::new(0));
@@ -166,5 +164,20 @@ mod tests {
         assert!(is_heap_payload(p), "child root must survive parent GC");
         barrier_main.wait();
         child.join().unwrap();
+    }
+
+    #[test]
+    fn push_pop_without_heap_lock_roundtrip() {
+        ensure_mutator_registered();
+        let mut a: *mut u8 = std::ptr::null_mut();
+        let mut b: *mut u8 = std::ptr::null_mut();
+        push_root(&mut a as *mut *mut u8);
+        push_root(&mut b as *mut *mut u8);
+        pop_root();
+        pop_root();
+        let taken = take_local_roots();
+        assert!(taken.is_empty());
+        set_local_roots(vec![&mut a as *mut *mut u8]);
+        assert_eq!(take_local_roots().len(), 1);
     }
 }

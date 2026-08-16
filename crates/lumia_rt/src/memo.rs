@@ -1,9 +1,16 @@
 //! Transparent Memo `T_f` tables (DESIGN §7.5).
+//!
+//! Per-mutator tables live behind a TLS [`Mutex`]. Lookup/store take only that
+//! lock (not the process heap Mutex). GC walks slots while holding the heap
+//! lock, then briefly locks each mutator's memo mutex (order: **heap → memo**).
+//! Dijkstra shade on store uses [`crate::heap::full_marking_fast`] **after**
+//! releasing the memo lock so mark never nests heap under memo.
 
-use crate::heap::with_heap;
 use crate::common::trap_abort;
+use crate::heap::{full_marking_fast, with_heap};
 use crate::{MEMO_IDX_CAP, MEMO_IDX_MAX_FUNS, MEMO_TF_MAX_ARGS, MEMO_TF_MAX_FUNS, MEMO_TF_SLOTS};
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
+use std::sync::Mutex;
 
 /// Transparent Memo `T_f` — fixed small associative tables (DESIGN §7.5.1-B).
 /// Caps live in `lumia_abi` (`MEMO_TF_*`). C entry points stay
@@ -49,17 +56,28 @@ impl MemoTfTable {
 }
 
 thread_local! {
-    static MEMO_TF: RefCell<[MemoTfTable; MEMO_TF_MAX_FUNS]> =
-        RefCell::new(std::array::from_fn(|_| MemoTfTable::empty()));
+    static MEMO_TF: Mutex<[MemoTfTable; MEMO_TF_MAX_FUNS]> =
+        Mutex::new(std::array::from_fn(|_| MemoTfTable::empty()));
 }
 
 fn pack_args(a0: i64, a1: i64, a2: i64, a3: i64) -> [i64; MEMO_TF_MAX_ARGS] {
     [a0, a1, a2, a3]
 }
 
+fn lock_tf(
+    m: &Mutex<[MemoTfTable; MEMO_TF_MAX_FUNS]>,
+) -> std::sync::MutexGuard<'_, [MemoTfTable; MEMO_TF_MAX_FUNS]> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+fn lock_idx(
+    m: &Mutex<[Option<Box<MemoIdxTable>>; MEMO_IDX_MAX_FUNS]>,
+) -> std::sync::MutexGuard<'_, [Option<Box<MemoIdxTable>>; MEMO_IDX_MAX_FUNS]> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 /// Lookup: returns 1 and writes `*out_result` on hit; else 0.
 ///
-/// Uses shared `borrow` (counters are `Cell`) so hot miss/hit paths avoid exclusive locks.
 /// Rust path (not `extern "C"`) so `trap_abort` can unwind under `cfg(test)`.
 pub(crate) fn memo_l2_lookup(
     fun_id: i64,
@@ -81,23 +99,20 @@ pub(crate) fn memo_l2_lookup(
     }
     let nargs = nargs.clamp(0, MEMO_TF_MAX_ARGS as i64) as u8;
     let args = pack_args(a0, a1, a2, a3);
-    // Serialize with GC mark walks (heap lock).
-    with_heap(|_| {
-        MEMO_TF.with(|t| {
-            let tables = t.borrow();
-            let table = &tables[fun_id as usize];
-            for slot in &table.slots {
-                if slot.matches(nargs, &args) {
-                    table.hits.set(table.hits.get() + 1);
-                    unsafe {
-                        *out_result = slot.result;
-                    }
-                    return 1;
+    MEMO_TF.with(|t| {
+        let tables = lock_tf(t);
+        let table = &tables[fun_id as usize];
+        for slot in &table.slots {
+            if slot.matches(nargs, &args) {
+                table.hits.set(table.hits.get() + 1);
+                unsafe {
+                    *out_result = slot.result;
                 }
+                return 1;
             }
-            table.misses.set(table.misses.get() + 1);
-            0
-        })
+        }
+        table.misses.set(table.misses.get() + 1);
+        0
     })
 }
 
@@ -133,57 +148,59 @@ pub extern "C" fn lumia_memo_l2_store(
     }
     let nargs = nargs.clamp(0, MEMO_TF_MAX_ARGS as i64) as u8;
     let args = pack_args(a0, a1, a2, a3);
-    with_heap(|h| {
-        let full = h.full_marking;
-        MEMO_TF.with(|t| {
-            let mut tables = t.borrow_mut();
-            let table = &mut tables[fun_id as usize];
-            for slot in &mut table.slots {
-                if slot.matches(nargs, &args) {
-                    slot.result = result;
-                    if full {
-                        crate::gc::mark_value(result);
-                    }
-                    return;
-                }
+    let mut shade_args: Option<([i64; MEMO_TF_MAX_ARGS], u8)> = None;
+    let mut shade_result = false;
+    MEMO_TF.with(|t| {
+        let mut tables = lock_tf(t);
+        let table = &mut tables[fun_id as usize];
+        for slot in &mut table.slots {
+            if slot.matches(nargs, &args) {
+                slot.result = result;
+                shade_result = true;
+                return;
             }
-            let i = table.next_victim.get() % MEMO_TF_SLOTS;
-            table.next_victim.set(i + 1);
-            let mut stored = [0i64; MEMO_TF_MAX_ARGS];
-            stored[..nargs as usize].copy_from_slice(&args[..nargs as usize]);
-            table.slots[i] = MemoTfSlot {
-                valid: true,
-                nargs,
-                args: stored,
-                result,
-            };
-            if full {
-                for a in stored.iter().take(nargs as usize) {
-                    crate::gc::mark_value(*a);
-                }
-                crate::gc::mark_value(result);
-            }
-        });
+        }
+        let i = table.next_victim.get() % MEMO_TF_SLOTS;
+        table.next_victim.set(i + 1);
+        let mut stored = [0i64; MEMO_TF_MAX_ARGS];
+        stored[..nargs as usize].copy_from_slice(&args[..nargs as usize]);
+        table.slots[i] = MemoTfSlot {
+            valid: true,
+            nargs,
+            args: stored,
+            result,
+        };
+        shade_args = Some((stored, nargs));
+        shade_result = true;
     });
+    // Shade after releasing memo lock (heap → memo order for GC walks).
+    if full_marking_fast() {
+        if let Some((stored, n)) = shade_args {
+            for a in stored.iter().take(n as usize) {
+                crate::gc::mark_value(*a);
+            }
+        }
+        if shade_result {
+            crate::gc::mark_value(result);
+        }
+    }
 }
 
 /// Test / `--show-memo-stats` helper: total hits across tables.
 #[no_mangle]
 pub extern "C" fn lumia_memo_l2_hits() -> i64 {
-    with_heap(|_| MEMO_TF.with(|t| t.borrow().iter().map(|x| x.hits.get() as i64).sum()))
+    MEMO_TF.with(|t| lock_tf(t).iter().map(|x| x.hits.get() as i64).sum())
 }
 
 #[no_mangle]
 pub extern "C" fn lumia_memo_l2_misses() -> i64 {
-    with_heap(|_| MEMO_TF.with(|t| t.borrow().iter().map(|x| x.misses.get() as i64).sum()))
+    MEMO_TF.with(|t| lock_tf(t).iter().map(|x| x.misses.get() as i64).sum())
 }
 
 #[no_mangle]
 pub extern "C" fn lumia_memo_l2_reset() {
-    with_heap(|_| {
-        MEMO_TF.with(|t| {
-            *t.borrow_mut() = std::array::from_fn(|_| MemoTfTable::empty());
-        });
+    MEMO_TF.with(|t| {
+        *lock_tf(t) = std::array::from_fn(|_| MemoTfTable::empty());
     });
 }
 
@@ -208,14 +225,14 @@ impl MemoIdxTable {
 
 thread_local! {
     // Lazy: allocate a dense table only on first *store* of that `fun_id` (§7.5 low occupancy).
-    static MEMO_IDX: RefCell<[Option<Box<MemoIdxTable>>; MEMO_IDX_MAX_FUNS]> =
-        const { RefCell::new([const { None }; MEMO_IDX_MAX_FUNS]) };
+    static MEMO_IDX: Mutex<[Option<Box<MemoIdxTable>>; MEMO_IDX_MAX_FUNS]> =
+        Mutex::new([const { None }; MEMO_IDX_MAX_FUNS]);
     static MEMO_REGISTRATION: MemoRegistration = MemoRegistration::new();
 }
 
 struct MemoEntry {
-    tf: *const RefCell<[MemoTfTable; MEMO_TF_MAX_FUNS]>,
-    idx: *const RefCell<[Option<Box<MemoIdxTable>>; MEMO_IDX_MAX_FUNS]>,
+    tf: *const Mutex<[MemoTfTable; MEMO_TF_MAX_FUNS]>,
+    idx: *const Mutex<[Option<Box<MemoIdxTable>>; MEMO_IDX_MAX_FUNS]>,
 }
 
 unsafe impl Send for MemoEntry {}
@@ -262,12 +279,12 @@ fn ensure_memo_registered() {
 }
 
 fn walk_memo_tables(
-    tf: &RefCell<[MemoTfTable; MEMO_TF_MAX_FUNS]>,
-    idx: &RefCell<[Option<Box<MemoIdxTable>>; MEMO_IDX_MAX_FUNS]>,
+    tf: &Mutex<[MemoTfTable; MEMO_TF_MAX_FUNS]>,
+    idx: &Mutex<[Option<Box<MemoIdxTable>>; MEMO_IDX_MAX_FUNS]>,
     mut f: impl FnMut(i64),
 ) {
-    // Caller holds the heap lock ⇒ mutators cannot be in memo store/lookup.
-    let tables = tf.borrow();
+    // Caller holds the heap lock; we take each memo mutex (heap → memo).
+    let tables = lock_tf(tf);
     for table in tables.iter() {
         for slot in &table.slots {
             if !slot.valid {
@@ -279,7 +296,8 @@ fn walk_memo_tables(
             f(slot.result);
         }
     }
-    let tables = idx.borrow();
+    drop(tables);
+    let tables = lock_idx(idx);
     for table in tables.iter().flatten() {
         for (i, &v) in table.valid.iter().enumerate() {
             if v != 0 {
@@ -337,23 +355,21 @@ pub(crate) fn memo_idx_lookup(fun_id: i64, key: i64, out_result: *mut i64) -> i6
         return 0;
     }
     let k = key as usize;
-    with_heap(|_| {
-        MEMO_IDX.with(|t| {
-            let tables = t.borrow();
-            let Some(table) = tables[fun_id as usize].as_ref() else {
-                return 0;
-            };
-            if table.valid[k] != 0 {
-                table.hits.set(table.hits.get() + 1);
-                unsafe {
-                    *out_result = table.values[k];
-                }
-                1
-            } else {
-                table.misses.set(table.misses.get() + 1);
-                0
+    MEMO_IDX.with(|t| {
+        let tables = lock_idx(t);
+        let Some(table) = tables[fun_id as usize].as_ref() else {
+            return 0;
+        };
+        if table.valid[k] != 0 {
+            table.hits.set(table.hits.get() + 1);
+            unsafe {
+                *out_result = table.values[k];
             }
-        })
+            1
+        } else {
+            table.misses.set(table.misses.get() + 1);
+            0
+        }
     })
 }
 
@@ -376,51 +392,42 @@ pub extern "C" fn lumia_memo_idx_store(fun_id: i64, key: i64, result: i64) {
         ));
     }
     let k = key as usize;
-    with_heap(|h| {
-        let full = h.full_marking;
-        MEMO_IDX.with(|t| {
-            let mut tables = t.borrow_mut();
-            let table = memo_idx_table(&mut tables, fun_id as usize);
-            table.valid[k] = 1;
-            table.values[k] = result;
-        });
-        if full {
-            crate::gc::mark_value(result);
-        }
+    MEMO_IDX.with(|t| {
+        let mut tables = lock_idx(t);
+        let table = memo_idx_table(&mut tables, fun_id as usize);
+        table.valid[k] = 1;
+        table.values[k] = result;
     });
+    if full_marking_fast() {
+        crate::gc::mark_value(result);
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn lumia_memo_idx_hits() -> i64 {
-    with_heap(|_| {
-        MEMO_IDX.with(|t| {
-            t.borrow()
-                .iter()
-                .filter_map(|x| x.as_ref())
-                .map(|x| x.hits.get() as i64)
-                .sum()
-        })
+    MEMO_IDX.with(|t| {
+        lock_idx(t)
+            .iter()
+            .filter_map(|x| x.as_ref())
+            .map(|x| x.hits.get() as i64)
+            .sum()
     })
 }
 
 #[no_mangle]
 pub extern "C" fn lumia_memo_idx_misses() -> i64 {
-    with_heap(|_| {
-        MEMO_IDX.with(|t| {
-            t.borrow()
-                .iter()
-                .filter_map(|x| x.as_ref())
-                .map(|x| x.misses.get() as i64)
-                .sum()
-        })
+    MEMO_IDX.with(|t| {
+        lock_idx(t)
+            .iter()
+            .filter_map(|x| x.as_ref())
+            .map(|x| x.misses.get() as i64)
+            .sum()
     })
 }
 
 #[no_mangle]
 pub extern "C" fn lumia_memo_idx_reset() {
-    with_heap(|_| {
-        MEMO_IDX.with(|t| {
-            *t.borrow_mut() = [const { None }; MEMO_IDX_MAX_FUNS];
-        });
+    MEMO_IDX.with(|t| {
+        *lock_idx(t) = [const { None }; MEMO_IDX_MAX_FUNS];
     });
 }

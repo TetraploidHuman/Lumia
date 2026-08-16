@@ -648,7 +648,9 @@ pub extern "C" fn lumia_alloc(nbytes: u64, type_id: u32) -> *mut u8 {
 pub extern "C" fn lumia_root_push(slot: *mut *mut u8) {
     crate::mutator::ensure_mutator_registered();
     crate::mutator::push_root(slot);
-    if with_heap(|h| h.full_marking) {
+    // Dijkstra: shade new roots during incremental full mark without taking
+    // the heap Mutex solely to read the flag (see `full_marking_fast`).
+    if crate::heap::full_marking_fast() {
         unsafe {
             shade_payload(*slot);
         }

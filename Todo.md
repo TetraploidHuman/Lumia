@@ -16,8 +16,8 @@
 ### 运行时热路径锁与探堆
 - [ ] **`is_heap_payload` = 进程堆 Mutex + `heap_set` 查找**：`common.rs` `heap_gen`/`is_heap_payload`。COW 已对 List/ADT 信任 tid；**`eq` / `show` / `println_auto` / `hash` / `ord`（双标量）**与 **`value_rc_*_bits` / `remember_old_to_young` / `write_barrier` / `mark_value` / ADT `set_field` / Map overlay parent** 已用 `may_be_heap_payload_bits`（及 `is_heap_payload_bits`）跳过 Int/Bool/FunRef。真堆指针边仍每点探一次。
 - [ ] **GC `mark_value` 每边再抢锁**：即时量已跳过 Mutex；大对象 mark 对每个**真堆**子字仍 `with_heap`/`is_heap_payload`。宜整波持锁 + 信任已消毒 mask。
-- [ ] **shadow-stack `root_push/pop` 每临时都抢堆锁**：`mutator.rs`；热路径大量 List/ADT Let 付 Mutex。宜 TLS 根栈 + 仅 full-mark 时 shade。
-- [ ] **Memo lookup 整段 `with_heap`**：`memo.rs` 热命中与堆争用。宜世代/epoch，仅 store×full-mark 持锁。
+- [x] **shadow-stack `root_push/pop` 每临时都抢堆锁**：TLS 根向量改为每 mutator `Mutex`；`push`/`pop`/`take`/`set` 不再 `with_heap`。GC 仍持堆锁后按 **heap→roots** 锁各 mutator。`lumia_root_push` 仅在 `full_marking_fast` 时 shade。
+- [x] **Memo lookup 整段 `with_heap`**：`MEMO_TF`/`MEMO_IDX` 同为 TLS `Mutex`；lookup/store/stats 不抢堆锁；store 在释放 memo 锁后按 `full_marking_fast` shade（避免 heap↔memo 死锁）。GC walk：**heap→memo**。
 - [ ] **分配路径多次加锁**：inhibit 检查 → maybe_collect → `finish_alloc` 再插 young/`heap_set`。宜单次 `with_heap` 覆盖；nursery bump 延迟入 set。
 
 ### 分配与慢路径
@@ -109,7 +109,7 @@
 - [ ] **`Type`/`Effect` 住在 `lumia_ty`，Core 硬依赖推断 crate**：`lumia_core`→`lumia_ty`；IR 直接嵌 `lumia_ty::{Type,Effect}`。与已列「收成 `CoreTy`」互补——即便有 `CoreTy`，抽 `lumia_types`（或 abi 旁路）才能让 opt/codegen 不绑 HM。宜类型定义与推断分 crate。
 - [ ] **和类型 `sum_max_arity` 垫成统一 `params` 向量**：lower 算最大变体元数；ty/`value_ty`/`mono`/`AdtField` 按此垫 `Type::Adt.params`。这是上方「异变体载荷共享类型变量」的**表示根因**（Prelude Option/Result 靠字符串特判绕开）。宜 per-variant payload，勿 max-arity 积。
 - [ ] **`lambda_lift` 名不副实，实为 ABI 厨房**：目录以 `float_abi`/`channel_hint`/`float_cap_fixup` 为主（合计数千行），真 lift（`rewrite`/`captures`）反而少数；`mod.rs` 还 re-export hint/fixup。与已列上帝模块正交——是**包边界撒谎**。宜拆 `lift` vs `abi_refine`。
-- [ ] **`lower_hir` 编排中端遍，而非纯 HIR→Core**：末尾串 lift→hint→directize→trait→6×(fixup+mono)→stubs。与已列「魔法迭代上界」同管线、但是**所有权**债。宜 lower 纯翻译；具名 Core pass 管道 + 阶段不变量。
+- [ ] **`lower_hir` 编排中端遍，而非纯 HIR→Core**：末尾串 lift→hint→directize→trait→≤8×(fixup+mono)→stubs（`MAX_FLOAT_MONO_ROUNDS`）。与已列「魔法迭代上界」同管线、但是**所有权**债。宜 lower 纯翻译；具名 Core pass 管道 + 阶段不变量。
 - [ ] **Escape / Lit\* repr 所有权骑 core↔opt**：`escaping` 与 `*Repr` 在 core 定义并默认 `Heap*`；真正填充在 opt Escape/ReprSelect。opt 前 Core「合法但不完整」。宜 opt-only 注解或显式「after escape」阶段类型。
 
 ### 续（2026-08-16 第四轮；不重复上方条目）
@@ -237,6 +237,34 @@
 - [ ] **VS Code README 设置/vsix 号漂移 + 对账脚本不管配置键**：README 仍 `0.3.5.vsix`、Settings 漏 `autoParallel`；`check_editor_assets` 不对账 settings/README/版本。
 - [ ] **`scripts/e2e.sh` 游离：名义 e2e 但不进 CI/`check.sh`**：实际门禁走更宽的 `cargo test -p lumia --tests`。宜删、改名，或明确「非正式入口」。
 - [ ] **位置/着色测例全 ASCII + `lumia_core` crate 文档仍写「SSA-ish」**：BUILD/DESIGN 已改「树形 ANF / 伪 SSA」；`core/lib.rs` 残留。宜多字节位置金样；对齐 crate 文档。
+
+### 续（2026-08-16 第九轮；不重复上方条目）
+
+对照 `FunKind`/`mono_of` 半收口、选项对象、Option tag 旁路、syntax stamp、codegen 帧状态与 memo 词汇再挖；下列为仍欠项。
+
+#### IR 身份 / 选项 / 黑板旁路
+
+- [ ] **`FunKind` / `mono_of` 半迁移，字符串协议仍权威**：已有 `FunKind::{LiftedLambda,ValGetter}` 与 `mono_of`，但 `is_lifted_lambda` / `is_val_getter` 仍 `|| starts_with("__lam_"|"__val_")`；仓内 `__lam_` 提及远多于 `FunKind` 引用；`base_name` / `mono/key` 仍 `split('$')`。结构化身份未收口——与已列 `__map_acc` 命名协议同病、但是**已引入枚举后仍双轨**。宜删前缀回退，clone/lift 强制写 `kind`/`mono_of`，禁止中端解析 `$`/`__lam_`。
+- [ ] **编译选项仍四散（DenseF64 Debug 项勾掉后遗留）**：`TypecheckOptions` / `InferOptions` / `OptOptions` / `CodegenOptions` + CLI/`for_build`（`for_build` 恒 `dense_f64_sr=true` 与 `release` 脱钩）。无单一 `CompileOptions`；测例/check/build/LSP 易各拼一套。
+- [ ] **`CoreModule.option_{some,none}_tag` 又一条 Option 旁路**：lower 扫 `"Option"` 变体写入黑板 → codegen 构造/匹配消费。与已列字符串 `"Option"`/`"Result"` 魔改并列——tag 也未进 prelude 注册表。宜 langitem 一次注册（名、tag、载荷元数、mono 规则）。
+- [ ] **`ForeignAbi::from_symbol("lumia_")` 仍靠前缀猜 ABI**：lower / dense SR 合成 external 时字符串启发式；与「`ForeignAbi` 驱动 declare」叙事不完全一致。宜声明处显式 ABI，禁止符号名推断。
+
+#### 前端 / 管线阶段
+
+- [ ] **`assert_annotate` 在 typecheck 后改写 HIR**：按源码字节插 `"path:line: assert failed"`；既非 ty 职责也非 Core lower。阶段所有权怪，且依赖 surface 源文本。宜 diag / codegen 诊断通道，或 typed 后纯数据注解，勿突变 HIR 表达式树。
+- [ ] **syntax 无 `visit`，`stamp.rs` 手写整树 span walker（≈284）**：与已列 hir/core visit 欠债同型、最前端；新 `Expr`/`Item` 臂易漏 stamp/offset。宜 `syntax::visit` 为默认，stamp/pretty/恢复共用。
+
+#### 中端不动点 / codegen 状态 / RT 词汇
+
+- [ ] **不动点上界汤锅无政策表**：`MAX_FLOAT_MONO_ROUNDS=8`、`MAX_MONO_CLONE_ROUNDS=8`、float_abi/`escape` `0..32`、codegen `closure_cap_tys` `8`。触顶是静默停还是 ICE 无统一约定；与已列 lower 编排/escape 32 轮正交——是**散落魔法常数**债。宜 `abi_refine::FIXPOINT_CAPS` + 触顶诊断。
+- [ ] **`FrameState` 塞进 nsw_iv 分析缓存**：每函数 emit 开头填 `nsw_binop_locals` / `safe_divisor_locals` / `nonneg_iv_load_locals` / `leaf_defs` / `slot_i64_const`。帧状态成 peep 旁表，与已列 `nsw_iv` 岛屿 / `emit_fun` 上帝模块叠加。宜分析结果一次性 `NswFacts`，帧只留 SSA/根/槽。
+- [ ] **`funref_locals` 双份传播**：`emit_fun` 与 `closure_cap_tys` 各自维护 FunRef 别名图；新 `Let`/`Local` 臂需改两处。宜单一 FunRef 分析或只读 `AnalysisFacts`。
+- [ ] **Memo C ABI `lumia_memo_l2_*` vs Rust `MEMO_TF_*` 词汇分裂**：注释承认 DESIGN 是 `T_f`、C 符号为 ABI 冻结；审计/文档/新贡献者仍双名。宜文档钉死「L2=历史符号」或薄 `memo_tf_*` 别名 + 对账测（不必立刻破 ABI）。
+- [ ] **`LitMap`/`LitSet` 与物理布局同枚举**：codegen 已注明 never stack、仅 PE/hint；`repr_select` 对 Map 改走 `SmallMap`。与已列 `SmallMap` 弱语义同根——IR `*Repr` 混「优化提示」与「发射布局」。宜拆 `PeHint` vs `EmitRepr`，或删僵尸变体。
+
+#### 文档新鲜度
+
+- [ ] **DESIGN/BUILD「最后更新」远落后于代码**：DESIGN 标 2026-08-07、BUILD 标 2026-08-11；Core/ABI/编辑器持续改。架构叙事易漂。宜改文档时戳日期，或改为「以 Todo/代码为准」并链到本文件。
 
 ## 已落地记录
 
