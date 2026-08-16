@@ -36,8 +36,49 @@ thread_local! {
         const { Cell::new(std::ptr::null()) };
     /// Nesting of process-shared [`ScopeId`]s (parked with the fiber across OS threads).
     pub(super) static SCOPE_STACK: RefCell<Vec<ScopeId>> = const { RefCell::new(Vec::new()) };
+    /// Recycled scope-stack buffers for spawn snapshots (fine-grained spawn tax).
+    static SCOPE_STACK_FREELIST: RefCell<Vec<Vec<ScopeId>>> = const { RefCell::new(Vec::new()) };
     /// Cached [`current_scope_kind`] — avoids a sched lock on every `pop_ready`.
     static SCOPE_KIND_CACHE: Cell<u8> = const { Cell::new(0) };
+}
+
+const SCOPE_FREELIST_MAX: usize = 64;
+const SCOPE_VEC_CAP_MAX: usize = 64;
+
+/// Copy the current TLS scope stack into a recycled buffer (or a fresh `Vec`).
+pub(super) fn snapshot_scope_stack() -> Vec<ScopeId> {
+    SCOPE_STACK.with(|s| {
+        let src = s.borrow();
+        SCOPE_STACK_FREELIST.with(|fl| {
+            let mut fl = fl.borrow_mut();
+            let mut v = fl
+                .pop()
+                .unwrap_or_else(|| Vec::with_capacity(src.len().max(4)));
+            v.clear();
+            v.extend_from_slice(src.as_slice());
+            v
+        })
+    })
+}
+
+/// Return a scope-stack buffer to the freelist (cleared).
+pub(super) fn recycle_scope_stack(mut v: Vec<ScopeId>) {
+    v.clear();
+    if v.capacity() > SCOPE_VEC_CAP_MAX {
+        return;
+    }
+    SCOPE_STACK_FREELIST.with(|fl| {
+        let mut fl = fl.borrow_mut();
+        if fl.len() < SCOPE_FREELIST_MAX {
+            fl.push(v);
+        }
+    });
+}
+
+fn discard_parked_scope_stack(s: &mut SchedCore, fid: FiberId) {
+    if let Some(v) = s.parked_scope_stacks.remove(&fid) {
+        recycle_scope_stack(v);
+    }
 }
 
 /// Fiber coroutine stack size (bytes). Default 64KiB (override with `LUMIA_FIBER_STACK_KB`).
@@ -343,9 +384,9 @@ pub(super) fn save_fiber_roots(fid: FiberId) {
                 s.parked_call_stacks.insert(fid, frames);
             }
             if scopes.is_empty() {
-                s.parked_scope_stacks.remove(&fid);
-            } else {
-                s.parked_scope_stacks.insert(fid, scopes);
+                discard_parked_scope_stack(s, fid);
+            } else if let Some(old) = s.parked_scope_stacks.insert(fid, scopes) {
+                recycle_scope_stack(old);
             }
         });
     });
@@ -362,7 +403,10 @@ pub(super) fn load_fiber_roots(fid: FiberId) {
         });
         set_local_roots(roots);
         CALL_STACK.with(|s| *s.borrow_mut() = frames);
-        SCOPE_STACK.with(|s| *s.borrow_mut() = scopes);
+        SCOPE_STACK.with(|s| {
+            let old = std::mem::replace(&mut *s.borrow_mut(), scopes);
+            recycle_scope_stack(old);
+        });
         refresh_scope_kind_cache();
     });
 }
@@ -549,7 +593,7 @@ pub(super) fn resume_fiber(fid: FiberId) {
             });
             s.parked_roots.remove(&fid);
             s.parked_call_stacks.remove(&fid);
-            s.parked_scope_stacks.remove(&fid);
+            discard_parked_scope_stack(s, fid);
             coro
         });
         CURRENT_FIBER.with(|c| c.set(None));
@@ -639,7 +683,7 @@ pub(super) fn resume_fiber(fid: FiberId) {
                 });
                 s.parked_roots.remove(&fid);
                 s.parked_call_stacks.remove(&fid);
-                s.parked_scope_stacks.remove(&fid);
+                discard_parked_scope_stack(s, fid);
                 coro
             });
             CURRENT_FIBER.with(|c| c.set(None));
@@ -691,7 +735,7 @@ pub(super) fn resume_fiber(fid: FiberId) {
                     }
                     s.parked_roots.remove(&fid);
                     s.parked_call_stacks.remove(&fid);
-                    s.parked_scope_stacks.remove(&fid);
+                    discard_parked_scope_stack(s, fid);
                     YieldOut::Dispose(coro)
                 } else if let Some(slot) = s.fibers.get_mut(&fid) {
                     slot.coro = Some(coro);
@@ -709,7 +753,7 @@ pub(super) fn resume_fiber(fid: FiberId) {
                     }
                     s.parked_roots.remove(&fid);
                     s.parked_call_stacks.remove(&fid);
-                    s.parked_scope_stacks.remove(&fid);
+                    discard_parked_scope_stack(s, fid);
                     YieldOut::Dispose(coro)
                 }
             });
@@ -741,7 +785,7 @@ pub(super) fn resume_fiber(fid: FiberId) {
                     let waiters = publish_task_result(s, task_id, val);
                     s.parked_roots.remove(&fid);
                     s.parked_call_stacks.remove(&fid);
-                    s.parked_scope_stacks.remove(&fid);
+                    discard_parked_scope_stack(s, fid);
                     let _ = s.fibers.remove(&fid);
                     if let Some(st) = s.tasks.get_mut(&task_id) {
                         st.fiber = None;
@@ -749,7 +793,10 @@ pub(super) fn resume_fiber(fid: FiberId) {
                     waiters
                 });
                 let _ = take_local_roots();
-                SCOPE_STACK.with(|s| s.borrow_mut().clear());
+                SCOPE_STACK.with(|s| {
+                    let old = std::mem::take(&mut *s.borrow_mut());
+                    recycle_scope_stack(old);
+                });
                 let (host_roots, host_frames, host_scopes) = with_sched(|s| {
                     (
                         s.host_roots.remove(&tid),
@@ -764,7 +811,10 @@ pub(super) fn resume_fiber(fid: FiberId) {
                     CALL_STACK.with(|s| *s.borrow_mut() = frames);
                 }
                 if let Some(scopes) = host_scopes {
-                    SCOPE_STACK.with(|s| *s.borrow_mut() = scopes);
+                    SCOPE_STACK.with(|s| {
+                        let old = std::mem::replace(&mut *s.borrow_mut(), scopes);
+                        recycle_scope_stack(old);
+                    });
                 }
                 refresh_scope_kind_cache();
                 waiters
@@ -808,9 +858,15 @@ fn restore_host_roots() {
             CALL_STACK.with(|s| *s.borrow_mut() = frames);
         }
         if let Some(scopes) = scopes {
-            SCOPE_STACK.with(|s| *s.borrow_mut() = scopes);
+            SCOPE_STACK.with(|s| {
+                let old = std::mem::replace(&mut *s.borrow_mut(), scopes);
+                recycle_scope_stack(old);
+            });
         } else {
-            SCOPE_STACK.with(|s| s.borrow_mut().clear());
+            SCOPE_STACK.with(|s| {
+                let old = std::mem::take(&mut *s.borrow_mut());
+                recycle_scope_stack(old);
+            });
         }
         refresh_scope_kind_cache();
     });
@@ -993,7 +1049,7 @@ fn abandon_cancelled_fiber(fid: FiberId) {
         let Some(slot) = s.fibers.get_mut(&fid) else {
             s.parked_roots.remove(&fid);
             s.parked_call_stacks.remove(&fid);
-            s.parked_scope_stacks.remove(&fid);
+            discard_parked_scope_stack(s, fid);
             return Abandon::None;
         };
         if slot.running {
@@ -1021,7 +1077,7 @@ fn abandon_cancelled_fiber(fid: FiberId) {
         let _ = slot.pending.take();
         s.parked_roots.remove(&fid);
         s.parked_call_stacks.remove(&fid);
-        s.parked_scope_stacks.remove(&fid);
+        discard_parked_scope_stack(s, fid);
         match coro {
             Some(c) => Abandon::Dispose(c),
             None => Abandon::None,
@@ -1043,12 +1099,15 @@ fn scrub_roots_before_coro_drop(fid: FiberId) {
     with_heap(|_| {
         let _ = take_local_roots();
         CALL_STACK.with(|s| s.borrow_mut().clear());
-        SCOPE_STACK.with(|s| s.borrow_mut().clear());
+        SCOPE_STACK.with(|s| {
+            let old = std::mem::take(&mut *s.borrow_mut());
+            recycle_scope_stack(old);
+        });
         SCOPE_KIND_CACHE.with(|c| c.set(0));
         with_sched(|s| {
             s.parked_roots.remove(&fid);
             s.parked_call_stacks.remove(&fid);
-            s.parked_scope_stacks.remove(&fid);
+            discard_parked_scope_stack(s, fid);
         });
     });
 }

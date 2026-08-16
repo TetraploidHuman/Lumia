@@ -37,8 +37,9 @@ fn install_task_handle(task: u64) -> *mut u8 {
 fn spawn_with(pending: PendingSpawn) -> *mut u8 {
     assert_task_api_allowed();
     crate::task::ensure_trap_hook();
-    let scope_stack = SCOPE_STACK.with(|s| s.borrow().clone());
+    let scope_stack = super::scheduler::snapshot_scope_stack();
     if scope_stack.is_empty() {
+        super::scheduler::recycle_scope_stack(scope_stack);
         trap_abort("lumia: spawn outside scope");
     }
 

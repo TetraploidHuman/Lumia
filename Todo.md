@@ -25,7 +25,7 @@
 - [x] **`map_get` 总堆分配 Option ADT**：miss 路径改为按 `none_tag` 永生单例（`RC_SHARED` + `Heap.option_none`）；hit 仍堆分配 `Some`。
 
 ### 并行与调度
-- [ ] **spawn 仍克隆 scope**：默认纤程栈已降至 64KiB（`LUMIA_FIBER_STACK_KB` 可覆盖）；细粒度 spawn 仍克隆 scope，宜栈 freelist / 更轻 scope。
+- [x] **spawn 仍克隆 scope**：spawn 经 `snapshot_scope_stack` 复用 freelist 缓冲拷贝 TLS 栈；fiber 结束/`scrub`/`restore_host` 走 `recycle_scope_stack`。纤程栈 freelist 仍欠。
 
 ### 中端优化缺口（相对 DESIGN §7.2）
 - [ ] **融合仅 fold 汇合；缺 build 侧造林**：HIR 仅 `try_fuse_hof_fold`；`flatMap` 总 materialize；无 `Iota`/`Fused` 表示（DESIGN §7.3）。（`ConcatIdent` 过时注释已改准。）
