@@ -2,8 +2,9 @@
 
 use crate::common::{
     adt_float_slot, float_key_eq, float_key_hash, header_from_payload, is_heap_payload,
-    list_elem_is_float, splitmix64, tid_base, trap_abort, TYPE_ADT, TYPE_BYTES, TYPE_CHAR,
-    TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_IOTA, TYPE_MAP, TYPE_SET, TYPE_STRING,
+    list_elem_is_float, may_be_heap_payload_bits, splitmix64, tid_base, trap_abort, TYPE_ADT,
+    TYPE_BYTES, TYPE_CHAR, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_IOTA, TYPE_MAP, TYPE_SET,
+    TYPE_STRING,
 };
 use crate::list::{list_get_of, list_len_of};
 use crate::map_set::{
@@ -14,6 +15,10 @@ pub(crate) fn lumia_ord_cmp(a: i64, b: i64) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     if a == b {
         return Ordering::Equal;
+    }
+    // Both sides are immediates / FunRef — skip heap Mutex.
+    if !may_be_heap_payload_bits(a) && !may_be_heap_payload_bits(b) {
+        return a.cmp(&b);
     }
     let pa = a as *mut u8;
     let pb = b as *mut u8;
@@ -115,6 +120,10 @@ pub fn lumia_hash(key: i64) -> u64 {
 
 pub(crate) fn hash_value(key: i64, depth: u32) -> u64 {
     if depth > 64 {
+        return splitmix64(key as u64);
+    }
+    // Int/Bool/FunRef immediates cannot be managed payloads — skip heap Mutex.
+    if !may_be_heap_payload_bits(key) {
         return splitmix64(key as u64);
     }
     let p = key as *mut u8;

@@ -2,8 +2,8 @@
 
 use crate::adt_show::adt_show_name_ptrs;
 use crate::common::{
-    header_from_payload, is_heap_payload, tid_base, trap_abort, GcInhibitGuard, TYPE_ADT,
-    TYPE_CHAR, TYPE_STRING,
+    header_from_payload, is_heap_payload, may_be_heap_payload_bits, tid_base, trap_abort,
+    GcInhibitGuard, TYPE_ADT, TYPE_CHAR, TYPE_STRING,
 };
 use crate::gc::lumia_alloc;
 use crate::list::{list_float_elems, list_get_of, list_len_of};
@@ -33,6 +33,11 @@ pub extern "C" fn lumia_alloc_char(codepoint: i64) -> *mut u8 {
 #[no_mangle]
 pub extern "C" fn lumia_show(x: i64) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
+    // Int/Bool/FunRef immediates cannot be managed payloads — skip heap Mutex.
+    if !may_be_heap_payload_bits(x) {
+        let s = x.to_string();
+        return lumia_alloc_string(s.as_ptr(), s.len() as u64);
+    }
     let p = x as *mut u8;
     if is_heap_payload(p) {
         unsafe {
