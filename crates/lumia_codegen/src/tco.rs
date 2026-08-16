@@ -1,7 +1,7 @@
 //! TCO / musttail / SCC analysis.
 
 use super::Codegen;
-use anyhow::Result;
+use anyhow::{Context as AnyhowContext, Result};
 use inkwell::values::BasicMetadataValueEnum;
 use lumia_core::{Block, CoreModule, Local, Op, Value};
 use lumia_ty::Type;
@@ -21,10 +21,14 @@ impl<'ctx> Codegen<'ctx> {
         }
         let call = crate::error::llvm(self.llvm.builder.build_call(callee, &av, "tco"))?;
         call.set_tail_call_kind(inkwell::values::LLVMTailCallKind::LLVMTailCallKindMustTail);
+        // Lumia ABI always returns i64 (Unit is the zero word). A void LLVM
+        // result here means the callee declaration drifted from Core.
         let ret = call
             .try_as_basic_value()
             .basic()
-            .unwrap_or_else(|| self.llvm.i64_ty.const_int(0, false).into())
+            .with_context(|| {
+                format!("ICE: musttail call to `{fun}` returned void; expected i64 ABI value")
+            })?
             .into_int_value();
         // No root epilogue: musttail requires call immediately followed by ret.
         debug_assert_eq!(self.frame.root_depth, 0);

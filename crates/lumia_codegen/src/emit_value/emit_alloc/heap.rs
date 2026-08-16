@@ -295,7 +295,7 @@ impl<'ctx> Codegen<'ctx> {
             // Young alloc: init stores need no write barrier.
         }
         // After fields are live: set mask, clearing bits that actually hold heap ptrs.
-        let float_mask = self.adt_float_mask_from_fields(fields);
+        let float_mask = self.adt_float_mask_from_fields(fields)?;
         self.emit_adt_set_float_mask(ptr, float_mask)?;
         Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
             ptr,
@@ -319,9 +319,12 @@ impl<'ctx> Codegen<'ctx> {
         // Overwrite mask: skip nested retain on fields we rewrite (brother buffers).
         let mut overwrite_mask = 0u64;
         for &(idx, _) in updates {
-            if idx < 64 {
-                overwrite_mask |= 1u64 << idx;
+            if idx >= 64 {
+                bail!(
+                    "ICE: ADT field index {idx} exceeds 64-bit overwrite mask (with-update)"
+                );
             }
+            overwrite_mask |= 1u64 << idx;
         }
         let ensure = self.runtime_fn("lumia_adt_ensure_unique_consume_mask")?;
         let mask_v = self.llvm.i64_ty.const_int(overwrite_mask, false);

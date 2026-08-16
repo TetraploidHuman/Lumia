@@ -117,7 +117,7 @@ impl<'ctx> Codegen<'ctx> {
                 }
             }
         }
-        let float_mask = self.adt_float_mask_from_fields(fields);
+        let float_mask = self.adt_float_mask_from_fields(fields)?;
         self.emit_adt_set_float_mask(payload, float_mask)?;
         Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
             payload,
