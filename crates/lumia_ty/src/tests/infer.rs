@@ -248,6 +248,7 @@ fn builtin_arity_from_info_rejects_get() {
             external: None,
             foreign_sig: None,
             foreign_pure: false,
+            is_priv: false,
         })],
         adts: Vec::new(),
         products: Vec::new(),

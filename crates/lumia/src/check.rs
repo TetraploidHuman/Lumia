@@ -265,6 +265,7 @@ val main = {
                 },
                 ty: None,
                 span: assert_span,
+                is_priv: false,
             }],
             adts: Vec::new(),
             products: Vec::new(),

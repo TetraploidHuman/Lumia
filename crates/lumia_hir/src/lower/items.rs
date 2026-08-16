@@ -414,6 +414,7 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
                     external: Some(f.name.clone()),
                     foreign_sig: Some((param_tys, f.ret.clone())),
                     foreign_pure: f.is_pure,
+                    is_priv: false,
                 }));
             }
         }

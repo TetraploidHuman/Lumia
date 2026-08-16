@@ -69,6 +69,8 @@ pub enum Item {
         ty: Option<String>,
         /// Declaration span (`val` …), not the body.
         span: Span,
+        /// `priv val` — not re-exported via import (mirrors syntax).
+        is_priv: bool,
     },
 }
 
@@ -91,6 +93,8 @@ pub struct Fun {
     pub foreign_sig: Option<(Vec<String>, String)>,
     /// `foreign "C" pure fn` → Effect::pure() only when trust is enabled.
     pub foreign_pure: bool,
+    /// `priv val` / private function — not re-exported via import.
+    pub is_priv: bool,
 }
 
 #[derive(Debug, Clone)]

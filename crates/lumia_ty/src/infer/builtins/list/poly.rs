@@ -52,20 +52,27 @@ impl Infer {
                         }
                     }
                     Type::Var(_) => {
-                        // Open `.get` is Map-shaped (`Option` payload) so
-                        // `getOr(m,k,d) = m.get(k) alt d` works; concrete List
-                        // receivers still hit the List arm above.
-                        let k = self.fresh();
-                        let v = self.fresh();
-                        self.unify_at(
-                            span,
-                            lt,
-                            Type::Map(Box::new(k.clone()), Box::new(v.clone())),
-                        )?;
-                        self.unify_at(span, it, k)?;
-                        Type::Adt {
-                            name: "Option".into(),
-                            params: vec![v],
+                        // Under `alt` → Map/`Option` so `getOr = { m,k,d -> m.get(k) alt d }`
+                        // works. Otherwise List element (Int index) so poly
+                        // `pts.get(i) + …` keeps working without `concat(listOf())`.
+                        if self.ctrl.alt_scrutinee_depth > 0 {
+                            let k = self.fresh();
+                            let v = self.fresh();
+                            self.unify_at(
+                                span,
+                                lt,
+                                Type::Map(Box::new(k.clone()), Box::new(v.clone())),
+                            )?;
+                            self.unify_at(span, it, k)?;
+                            Type::Adt {
+                                name: "Option".into(),
+                                params: vec![v],
+                            }
+                        } else {
+                            self.unify_at(span, it, Type::Int)?;
+                            let elem = self.fresh();
+                            self.unify_at(span, lt, Type::List(Box::new(elem.clone())))?;
+                            elem
                         }
                     }
                     other => {

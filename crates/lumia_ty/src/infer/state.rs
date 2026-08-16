@@ -77,6 +77,9 @@ pub(crate) struct ProductState {
 pub(crate) struct AltReturnState {
     pub(crate) return_stack: Vec<Type>,
     pub(crate) alt_kinds: HashMap<lumia_syntax::Span, AltKind>,
+    /// Nesting depth while inferring an `alt` scrutinee. Open `.get` under `alt`
+    /// freezes Map/`Option` (for `getOr`); otherwise open `.get` stays List-shaped.
+    pub(crate) alt_scrutinee_depth: u32,
     /// Ambiguous `.field` → (adt_name, idx) once receiver is known.
     pub(crate) product_field_rewrites: HashMap<lumia_syntax::Span, (String, i64)>,
     /// Deferred `with` → product type name.

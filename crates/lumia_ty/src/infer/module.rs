@@ -269,6 +269,7 @@ fn infer_module_inner(
                 body,
                 ty: ann,
                 span: val_span,
+                ..
             } => {
                 inf.current_file = val_span.file;
                 let (mut ty, eff) = match inf.infer_expr(body) {

@@ -490,7 +490,9 @@ impl Infer {
         span: lumia_syntax::Span,
     ) -> Result<(Type, Effect), TypeError> {
         use crate::alt::AltKind;
+        self.ctrl.alt_scrutinee_depth += 1;
         let (st, se) = self.infer_expr(scrutinee)?;
+        self.ctrl.alt_scrutinee_depth -= 1;
         let st = self.prune(st);
         match st {
             Type::Adt { name, params } if name == "Option" && params.len() == 1 => {

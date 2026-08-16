@@ -39,7 +39,7 @@
 - [x] **闭包捕获后经中间 HOF / 异步来源再 `fold`（Float）**：顺序/融合 fold、`id(xs)`、`MapValues`、`flatMap`/`toList` 累加器、`channel.recv`、`joinOpt() alt listOf()` 等 param-init 路径经 `float_cap_fixup` + identity List passthrough；e2e `fold_hof_param_float`。
 - [x] **自递归 + `List[Float].get` / 下标 Float ABI**：mono `ret_ty` 不再把 `sumAt(xs,i,acc)` 收成 `List[Float]`（自递归 Call 周期取 acc ABI；`MonoKey` 仅对 2 参 `f(xs,eps)` 偏 first-List）；e2e `tco_list_float_get`。
 - [x] **`List[String]` / 多态绑定上 String 被收成 `List`**：开放 `.len()` / `.concat` 不再默认 `Var→List`（`len_vars` / `concat_vars`）；e2e `string_poly_len_concat`。开放 UFCS 其它方法偏置仍见下项。
-- [x] **开放接收者 UFCS 方法解析偏置（多容器同名）**：开放 `.get` 按 Map/`Option`（`getOr`）；`.set` / `Elems`（`.toList`）不再默认 List/Map；`.contains` 拒 List（`contains_vars`）。`.isEmpty` 随 `len_vars`。`.take`/`.drop`/`.reverse` 用 `take_vars`（List|String）。e2e `ufcs_open_recv` / `string_open_take_case`。列表模式用 `concat(listOf())` 钉成 `List`。具体 `String.take` 等见下项。
+- [x] **开放接收者 UFCS 方法解析偏置（多容器同名）**：开放 `.get` 在 `alt` scrutinee 下走 Map/`Option`（`getOr`），否则 List 元素（`pts.get(i)+…`）；`.set` / `Elems` 不默认 List/Map；`.contains` 拒 List；`.isEmpty`/`take`/`drop`/`reverse` 用对应 `*_vars`。e2e `ufcs_open_recv` / `string_open_take_case`。
 - [x] **自递归 + `List[Bool].get` 触发 codegen ICE**：`emit_value_if` 在 musttail 后恢复 `root_depth`；e2e `tco_list_bool_get`。
 - [x] **嵌套 Option/Result 经多态 `unwrapOr`/`andThen` 提标量 → 错位指针 abort**：`flatten(Some(Some(3)))` / `andThen(Some(Some(3)), id)` / 本地绑定 / `Ok(Ok(3))` flatten / `optionMap(…, { xs -> xs.len() })` 再 `unwrapOr`；mono 不再把 body `Int`（`ListLen`）收成 MonoKey `List`，`value_fixed_ty` 识别 `ListLen`；e2e `nested_option_unwrapor_int` / `nested_result_unwrapor_int`。
 - [x] **恒等 Bool `Fun` 经 `alt`（println ABI）**：`(Some({ x -> x }) alt { x -> false })(true/false)` 审计复验打印 `true`/`false`。
@@ -138,7 +138,8 @@
 
 ### 分配与慢路径
 
-- [ ] **`lumia_show` / 嵌套 show 多段 `String` 分配**：容器插值/`println_auto` 锁+分配密集；dict lookup 每次 `String` 键（`dict.rs`）。宜单缓冲写入 + 名字驻留/`FxHashMap`。
+- [ ] **`lumia_show` / 嵌套 show 多段 `String` 分配**：容器插值/`println_auto` 锁+分配密集。宜单缓冲写入。
+- [x] **dict lookup 每次 `String` 键**：嵌套 `FxHashMap` + `&str` 查询（`dict.rs`）；注册时 `Box<str>`，lookup 零分配。
 - [x] **Map overlay `set` 每次建 `Vec` 对**：`map_ops`；小 δ≤8 可栈上写 payload。`map_get` 总堆分配 Option ADT。
   - **部分**：overlay `set` 已改栈上固定数组；`map_get` Option 堆分配仍在。
 - [x] **`map_find` 小表扫完全表**：`map_core.rs` 首命中即返回。
@@ -301,7 +302,7 @@
 
 #### 前端 / 类型 / 诊断
 
-- [ ] **`priv` 在 HIR 被抹掉**：syntax `ValItem.is_priv`；HIR **零** `priv`；`NameVisibility` 仅 loader→ty。单文件 `lower_module`/IDE 路径无法在 IR 上表达或显示隐私。宜 HIR 项带可见性，或明确「仅包图有 priv」。
+- [x] **`priv` 在 HIR 被抹掉**：`Fun.is_priv` / `Item::Val.is_priv` 从 syntax `ValItem.is_priv` 拷贝；`NameVisibility` 仍由 loader 驱动，HIR 可表达隐私供 IDE/单文件路径。
 - [x] **穷尽性跳过 trait/instance 方法体**：`check_module_matches` 亦扫 `Trait`/`Instance` 方法体（与 `Val` 同）。
 - [x] **`trait` 必须源码先于 `instance`（`type` 无此限）**：`collect_instances` 两遍（先注册 trait 再校验 instance）；顺序无关。
 - [ ] **互递归多态随声明序**：`infer_module_inner` 先绑 mono 占位，再按 item 序 generalize/`bind_scheme`。靠前函数见 mono 占位、靠后见 scheme——经典 HM 债，无 SCC 不动点文档/实现。

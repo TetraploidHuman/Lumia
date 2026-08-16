@@ -61,6 +61,7 @@ mod tests {
                 },
                 ty: None,
                 span,
+                is_priv: false,
             }],
             adts: Vec::new(),
             products: Vec::new(),

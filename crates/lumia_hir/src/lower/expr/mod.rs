@@ -56,6 +56,7 @@ pub(crate) fn push_lowered_val(
                 external: None,
                 foreign_sig: None,
                 foreign_pure: false,
+                is_priv: v.is_priv,
             }));
         }
         other => {
@@ -72,6 +73,7 @@ pub(crate) fn push_lowered_val(
                     external: None,
                     foreign_sig: None,
                     foreign_pure: false,
+                    is_priv: v.is_priv,
                 }));
             } else {
                 items.push(Item::Val {
@@ -79,6 +81,7 @@ pub(crate) fn push_lowered_val(
                     body: other,
                     ty: v.ty.clone(),
                     span: v.span,
+                    is_priv: v.is_priv,
                 });
             }
         }
