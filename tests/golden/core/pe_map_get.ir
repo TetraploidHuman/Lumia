@@ -7,16 +7,12 @@ fun main() effect.io=true memo=None {
   %3 = i64 20  // pure
   %4 = i64 3  // pure
   %5 = i64 30  // pure
-  %6 = alloc_map[LitMap](n=3)  // pure
-  %7 = %2  // pure
+  %6 = alloc_map[SmallMap](n=3)  // pure
   %8 = alloc_adt(Option, tag=0, n=1)  // pure
-  %9 = %0  // pure
   %10 = i64 -1  // pure
   %11 = call unwrap_or$Option_Int_Int(%8, %10)  // pure
   %12 = builtin Println(%11)  // effect
-  %13 = i64 9  // pure
   %14 = alloc_adt(Option, tag=1, n=0)  // pure
-  %15 = %0  // pure
   %16 = i64 -1  // pure
   %17 = call unwrap_or$Option_Int_Int(%14, %16)  // pure
   %18 = builtin Println(%17)  // effect

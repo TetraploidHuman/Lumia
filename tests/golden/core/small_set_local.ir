@@ -4,13 +4,11 @@ fun main() effect.io=true memo=None {
   %0 = i64 10  // pure
   %1 = i64 20  // pure
   %2 = i64 30  // pure
-  %3 = alloc_set[LitSet](n=3)  // pure
+  %3 = alloc_set[HeapSet](n=3)  // pure
   %4 = i64 3  // pure
   %5 = builtin Println(%4)  // effect
-  %6 = %1  // pure
   %7 = bool true  // pure
   %8 = builtin Println(%7)  // effect
-  %9 = i64 99  // pure
   %10 = bool false  // pure
   %11 = builtin Println(%10)  // effect
   return %11

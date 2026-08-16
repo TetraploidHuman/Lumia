@@ -5,6 +5,7 @@
 //! process heap and must run with `RUST_TEST_THREADS=1` (see `scripts/check.sh`).
 
 use rustc_hash::FxHashSet;
+use rustc_hash::FxHashMap;
 use std::cell::Cell;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -32,6 +33,8 @@ pub(crate) struct Heap {
     pub old_limit: usize,
     /// Immortal empty `List` singleton payload (or null until first use).
     pub empty_list: *mut u8,
+    /// Immortal `None` Option ADTs keyed by constructor tag (map_get miss path).
+    pub option_none: FxHashMap<i64, *mut u8>,
     /// When true, mark helpers only follow young payloads.
     pub mark_minor: bool,
     /// Incremental full-heap mark in progress.
@@ -62,6 +65,7 @@ impl Heap {
             young_limit: DEFAULT_YOUNG_LIMIT,
             old_limit: DEFAULT_HEAP_LIMIT,
             empty_list: ptr::null_mut(),
+            option_none: FxHashMap::default(),
             mark_minor: false,
             full_marking: false,
             mark_work: Vec::new(),

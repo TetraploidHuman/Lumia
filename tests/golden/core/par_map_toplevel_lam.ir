@@ -19,7 +19,6 @@ fun main() effect.io=true memo=None {
   %6 = builtin ListParMap(%2, %5)  // pure
   %7 = builtin ListLen(%6)  // pure
   %8 = builtin Println(%7)  // effect
-  %9 = %0  // pure
   %10 = builtin ListGet(%6, %0)  // pure
   %11 = builtin Println(%10)  // effect
   %12 = i64 49  // pure

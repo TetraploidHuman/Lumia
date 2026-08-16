@@ -22,7 +22,7 @@
 
 ### 分配与慢路径
 - [ ] **`lumia_show` / 嵌套 show 多段 `String` 分配**：容器插值/`println_auto` 锁+分配密集。宜单缓冲写入。
-- [ ] **`map_get` 总堆分配 Option ADT**：overlay `set` 已改栈上固定数组；`map_get` 仍每次堆分配 Option。
+- [x] **`map_get` 总堆分配 Option ADT**：miss 路径改为按 `none_tag` 永生单例（`RC_SHARED` + `Heap.option_none`）；hit 仍堆分配 `Some`。
 
 ### 并行与调度
 - [ ] **spawn 仍克隆 scope**：默认纤程栈已降至 64KiB（`LUMIA_FIBER_STACK_KB` 可覆盖）；细粒度 spawn 仍克隆 scope，宜栈 freelist / 更轻 scope。
@@ -88,7 +88,7 @@
 - [ ] **`CoreModule` 是分析黑板**：`hash_adts`/`trait_methods`/`channel_elem_*` 等在 lower 填充、lambda_lift 再改。元数据所有权与「何时权威」不清。宜不可变 `CoreModule` + 旁路 `AnalysisFacts`。
 
 #### 中端 / codegen / RT
-- [ ] **编译选项四散 + Debug 仍跑 `DenseF64Sr`**：`TypecheckOptions`/`InferOptions`/`OptOptions`/`CodegenOptions` + CLI/manifest；`OptOptions::Default` 与 Debug 管线仍开 dense SR（`DEBUG_PASSES` 含 `DenseF64Sr`）。无单一 options 对象，测例/check/build 易脱节。
+- [x] **编译选项四散 + Debug 仍跑 `DenseF64Sr`**：`OptOptions::Default.dense_f64_sr = false`；Debug 管线已去掉 `DenseF64Sr`（Release/`for_build`/CLI 仍开）。选项对象仍四散，见结构债。
 - [ ] **C vs Runtime marshalling 表仍双份**：用户函数仍统一 i64；foreign 已由 `ForeignAbi` 驱动 declare。宜继续收成描述表。
 - [ ] **`emit_fun` 函数发射上帝模块（≈833 行）**：帧/根/COW/memo/`dense_f64` 早退/NSW/TCO/`Op` 分发挤在 `emit_function`。宜按生命周期拆（prologue / body / epilogue / 特化出口）。
 - [ ] **`Value::Loop` 开放 SR try 链**：`emit_value/mod.rs` 在通用 loop 前串 ≈12 个 `try_emit_*`（与已列 `*_sr` 文件同病，但缺注册表/插件面）。顺序与 fallthrough 隐式膨胀。宜 matcher 注册表或迁出 opt。

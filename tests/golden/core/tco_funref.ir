@@ -1,7 +1,6 @@
 module TcoFunRef
 
 fun even(n) effect.io=false memo=None {
-  %1 = funref odd  // pure
   %2 = i64 0  // pure
   %3 = %0 == %2  // pure
   %8 = if ...  // pure
@@ -10,8 +9,6 @@ fun even(n) effect.io=false memo=None {
 
 fun even$c_7() effect.io=false memo=None {
   %9 = i64 7  // pure
-  %1 = funref odd  // pure
-  %2 = i64 0  // pure
   %3 = bool false  // pure
   %8 = if ...  // pure
   return %8
@@ -19,28 +16,22 @@ fun even$c_7() effect.io=false memo=None {
 
 fun even$c_x1e8480() effect.io=false memo=None {
   %9 = i64 2000000  // pure
-  %1 = funref odd  // pure
-  %2 = i64 0  // pure
   %3 = bool false  // pure
   %8 = if ...  // pure
   return %8
 }
 
 fun main() effect.io=true memo=None {
-  %0 = i64 2000000  // pure
   %1 = call even$c_x1e8480()  // pure
   %2 = builtin Println(%1)  // effect
-  %3 = %0  // pure
   %4 = call odd$c_x1e8480()  // pure
   %5 = builtin Println(%4)  // effect
-  %6 = i64 7  // pure
   %7 = call even$c_7()  // pure
   %8 = builtin Println(%7)  // effect
   return %8
 }
 
 fun odd(n) effect.io=false memo=None {
-  %1 = funref even  // pure
   %2 = i64 0  // pure
   %3 = %0 == %2  // pure
   %8 = if ...  // pure
@@ -49,8 +40,6 @@ fun odd(n) effect.io=false memo=None {
 
 fun odd$c_x1e8480() effect.io=false memo=None {
   %9 = i64 2000000  // pure
-  %1 = funref even  // pure
-  %2 = i64 0  // pure
   %3 = bool false  // pure
   %8 = if ...  // pure
   return %8

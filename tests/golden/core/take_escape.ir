@@ -13,12 +13,9 @@ fun main() effect.io=true memo=None {
   %2 = call build(%0, %1)  // pure
   %3 = i64 0  // pure
   junk := %3
-  %4 = %3  // pure
   __i_371 := %3
   %14 = loop ...  // effect
-  %15 = %3  // pure
   %16 = builtin ListGet(%2, %3)  // pure
-  %17 = %3  // pure
   %18 = builtin AdtField(%16, %3)  // pure
   %19 = builtin Println(%18)  // effect
   %20 = load junk  // pure

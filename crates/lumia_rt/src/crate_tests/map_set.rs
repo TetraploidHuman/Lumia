@@ -204,3 +204,23 @@ fn ensure_set_f64_nonempty_traps() {
     s = lumia_set_insert(s, 1);
     let _ = crate::map_set::ensure_set_f64(s);
 }
+
+#[test]
+fn map_get_none_is_immortal_singleton() {
+    let a = lumia_map_get(ptr::null_mut(), 0, 0, 1);
+    let b = lumia_map_get(ptr::null_mut(), 99, 0, 1);
+    assert_eq!(a, b, "same none_tag must reuse immortal None");
+    unsafe {
+        assert_eq!(*(a as *const i64), 1);
+    }
+    // Survives GC (perm-rooted like empty list).
+    lumia_gc_collect();
+    let c = lumia_map_get(ptr::null_mut(), 1, 0, 1);
+    assert_eq!(c, a);
+    // Distinct tags get distinct singletons.
+    let d = lumia_map_get(ptr::null_mut(), 0, 0, 7);
+    assert_ne!(d, a);
+    unsafe {
+        assert_eq!(*(d as *const i64), 7);
+    }
+}

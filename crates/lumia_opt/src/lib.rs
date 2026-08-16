@@ -41,7 +41,8 @@ impl Default for OptOptions {
         Self {
             release: false,
             memo_tf: false,
-            dense_f64_sr: true,
+            // Dense float SR is Release / explicit CLI; Debug stays scalar SSA.
+            dense_f64_sr: false,
         }
     }
 }
@@ -120,8 +121,7 @@ const DEBUG_PASSES: &[PipelinePass] = &[
     PipelinePass::SpecializeConst,
     PipelinePass::ConstFold,
     PipelinePass::Licm,
-    // Same dense-float SR as Release so Debug matches hot RT kernels (no Inline).
-    PipelinePass::DenseF64Sr,
+    // DenseF64Sr is Release-only (or `dense_f64_sr` via CLI/`for_build`).
     PipelinePass::Escape,
     PipelinePass::ReprSelect,
     PipelinePass::CopyElim,
@@ -259,12 +259,14 @@ mod tests {
         assert!(pass_names(false).contains(&"specialize_const"));
         assert!(pass_names(false).contains(&"dce"));
         assert!(!pass_names(false).contains(&"memo_tf"));
+        assert!(!pass_names(false).contains(&"dense_f64_sr"));
+        assert!(pass_names(true).contains(&"dense_f64_sr"));
     }
 
     #[test]
     fn pass_pipeline_exact_order() {
-        // Debug: CSE → fold → specialize → fold → LICM → dense_f64_sr → Escape → ReprSelect
-        // (no inline/memo).
+        // Debug: CSE → fold → specialize → fold → LICM → Escape → ReprSelect
+        // (no inline/memo/dense_f64_sr).
         assert_eq!(
             DEBUG_PASSES.iter().map(|p| p.name()).collect::<Vec<_>>(),
             vec![
@@ -273,7 +275,6 @@ mod tests {
                 "specialize_const",
                 "const_fold",
                 "licm",
-                "dense_f64_sr",
                 "escape",
                 "repr_select",
                 "copy_elim",

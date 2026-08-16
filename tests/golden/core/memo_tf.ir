@@ -2,7 +2,6 @@ module MemoTf
 
 fun main() effect.io=true memo=None {
   %0 = i64 200  // pure
-  %12 = i64 200  // pure
   %19 = i64 0  // pure
   $inl0_a := %19
   $inl0___i_221 := %19
@@ -11,10 +10,8 @@ fun main() effect.io=true memo=None {
   %2 = builtin Println(%17)  // effect
   %5 = builtin Println(%17)  // effect
   %6 = i64 10  // pure
-  %26 = i64 10  // pure
-  %33 = i64 0  // pure
-  $inl1_a := %33
-  $inl1___i_221 := %33
+  $inl1_a := %19
+  $inl1___i_221 := %19
   %34 = loop ...  // effect
   %31 = load $inl1_a  // pure
   %8 = builtin Println(%31)  // effect

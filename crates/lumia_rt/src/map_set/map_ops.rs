@@ -7,10 +7,10 @@ use crate::gc::{list_payload_bytes, lumia_alloc};
 use crate::list::force_heap_list;
 
 use super::map_core::{
-    alloc_adt, map_alloc_hash_tid, map_alloc_overlay, map_find, map_from_linear_to_hash,
-    map_hash_find_slot, map_hash_nbytes, map_hash_put_new, map_is_hash, map_is_overlay,
-    map_linear_nbytes, map_lookup_val, map_materialize, map_overlay_dn, map_overlay_parent,
-    map_pair_at, MAP_OVERLAY_MAX, MAP_SMALL_MAX,
+    alloc_adt, alloc_adt_none_immortal, map_alloc_hash_tid, map_alloc_overlay, map_find,
+    map_from_linear_to_hash, map_hash_find_slot, map_hash_nbytes, map_hash_put_new, map_is_hash,
+    map_is_overlay, map_linear_nbytes, map_lookup_val, map_materialize, map_overlay_dn,
+    map_overlay_parent, map_pair_at, MAP_OVERLAY_MAX, MAP_SMALL_MAX,
 };
 use super::tid::{key_eq, map_float_keys, map_is_assoc, map_tid};
 
@@ -26,12 +26,13 @@ pub extern "C" fn lumia_map_contains(map: *mut u8, key: i64) -> i64 {
 }
 
 /// Missing key → None ADT; hit → Some(value). Tags come from the program's `Option` decl.
+/// Misses reuse an immortal per-tag None singleton (no young-heap traffic).
 #[no_mangle]
 pub extern "C" fn lumia_map_get(map: *mut u8, key: i64, some_tag: i64, none_tag: i64) -> *mut u8 {
     unsafe {
         match map_lookup_val(map, key) {
             Some(val) => alloc_adt(some_tag, &[val]),
-            None => alloc_adt(none_tag, &[]),
+            None => alloc_adt_none_immortal(none_tag),
         }
     }
 }

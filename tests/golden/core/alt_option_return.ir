@@ -20,7 +20,6 @@ fun main() effect.io=true memo=None {
   %16 = i64 7  // pure
   %17 = call twice_even(%16)  // pure
   %18 = builtin AdtTag(%17)  // pure
-  %19 = %3  // pure
   %20 = %18 == %3  // pure
   %30 = if ...  // pure
   %31 = builtin Println(%30)  // effect

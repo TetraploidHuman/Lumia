@@ -8,9 +8,7 @@ fun main() effect.io=true memo=None {
   %15 = loop ...  // effect
   %16 = load acc  // pure
   %17 = builtin Println(%16)  // effect
-  %18 = %0  // pure
   j := %0
-  %19 = %0  // pure
   sum := %0
   %27 = i64 1  // pure
   %29 = loop ...  // effect

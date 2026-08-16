@@ -32,8 +32,6 @@ fun main() effect.io=true memo=None {
   %4 = builtin Println(%3)  // effect
   %5 = call gety$Point_Int_Int(%2)  // pure
   %6 = builtin Println(%5)  // effect
-  %7 = %3  // pure
-  %8 = %5  // pure
   %9 = %3 + %5  // pure
   %10 = builtin Println(%9)  // effect
   return %10

@@ -13,14 +13,11 @@ fun main() effect.io=true memo=None {
   %7 = builtin ListAppend(%5, %6)  // pure
   xs := %7
   %8 = load xs  // pure
-  %9 = %0  // pure
   %10 = i64 99  // pure
   %11 = builtin MapSet(%8, %0, %10)  // pure
   %12 = load xs  // pure
-  %13 = %0  // pure
   %14 = builtin ListGet(%12, %0)  // pure
   %15 = builtin Println(%14)  // effect
-  %16 = %0  // pure
   %17 = builtin ListGet(%11, %0)  // pure
   %18 = builtin Println(%17)  // effect
   return %18

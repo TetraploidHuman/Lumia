@@ -437,6 +437,38 @@ pub(crate) fn alloc_adt(tag: i64, fields: &[i64]) -> *mut u8 {
     dest
 }
 
+/// Immortal nullary ADT for `None` (map_get miss). Tagged like a heap Option;
+/// `RC_SHARED` so retain/release are no-ops. One singleton per `none_tag`.
+pub(crate) fn alloc_adt_none_immortal(tag: i64) -> *mut u8 {
+    use crate::common::{header_from_payload, header_layout, RC_SHARED};
+    use crate::gc::finish_alloc;
+    use crate::heap::with_heap;
+    use std::alloc::alloc;
+
+    with_heap(|h| {
+        if let Some(&p) = h.option_none.get(&tag) {
+            return p;
+        }
+        let nbytes = list_payload_bytes(0) as usize;
+        let dest = unsafe {
+            let layout = header_layout(nbytes);
+            let mem = alloc(layout);
+            if mem.is_null() {
+                trap_abort("lumia: out of memory");
+            }
+            finish_alloc(mem, nbytes, TYPE_ADT)
+        };
+        unsafe {
+            *(dest as *mut i64) = tag;
+            (*header_from_payload(dest)).rc = RC_SHARED;
+            (*header_from_payload(dest))._pad = 0;
+        }
+        h.perm.push(dest);
+        h.option_none.insert(tag, dest);
+        dest
+    })
+}
+
 pub(crate) unsafe fn map_alloc_hash_tid(cap: usize, count: i64, tid: u32) -> *mut u8 {
     let nbytes = map_hash_nbytes(cap) as u64;
     let dest = lumia_alloc(nbytes, lumia_abi::tid_with_hash(tid));
