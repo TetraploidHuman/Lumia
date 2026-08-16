@@ -238,7 +238,7 @@ fn value_fixed_ty(
             match list_ty {
                 Type::List(e) | Type::Set(e) => Some(*e),
                 Type::Map(_, v) => Some(Type::Adt {
-                    name: "Option".into(),
+                    name: lumia_hir::OPTION.name.into(),
                     params: vec![*v],
                 }),
                 other => Some(other),
@@ -348,14 +348,15 @@ fn value_fixed_ty(
                 .collect();
             // Result[T,E]: Ok → params[0]=T; Err → params[1]=E (other slot Int placeholder).
             // Option: None → [Int] placeholder so join with Some(T) yields Option[T].
-            let params = if adt_name == "Result" {
+            let params = if lumia_hir::is_result(adt_name) {
                 let payload = field_tys.first().cloned().unwrap_or(Type::Int);
-                if *tag == 0 {
+                let ok_tag = lumia_hir::RESULT.default_tag("Ok").unwrap_or(0);
+                if *tag == ok_tag {
                     vec![payload, Type::Int]
                 } else {
                     vec![Type::Int, payload]
                 }
-            } else if adt_name == "Option" && field_tys.is_empty() {
+            } else if lumia_hir::is_option(adt_name) && field_tys.is_empty() {
                 vec![Type::Int]
             } else {
                 let mut params = field_tys;
@@ -653,7 +654,7 @@ fn join_fixed_ty(a: &Type, b: &Type) -> Option<Type> {
                 params: p2,
             },
         ) if n1 == n2 => {
-            if n1 == "Result" {
+            if lumia_hir::is_result(n1) {
                 let merge = |x: &Type, y: &Type| -> Type {
                     match (x, y) {
                         (Type::Int, other) | (Type::Var(_), other) => other.clone(),
@@ -671,10 +672,10 @@ fn join_fixed_ty(a: &Type, b: &Type) -> Option<Type> {
                     p2.get(1).unwrap_or(&Type::Int),
                 );
                 Some(Type::Adt {
-                    name: "Result".into(),
+                    name: lumia_hir::RESULT.name.into(),
                     params: vec![t, e],
                 })
-            } else if n1 == "Option" {
+            } else if lumia_hir::is_option(n1) {
                 let merge = |x: &Type, y: &Type| -> Type {
                     match (x, y) {
                         (Type::Int, other) | (Type::Var(_), other) => other.clone(),
@@ -688,7 +689,7 @@ fn join_fixed_ty(a: &Type, b: &Type) -> Option<Type> {
                     p2.first().unwrap_or(&Type::Int),
                 );
                 Some(Type::Adt {
-                    name: "Option".into(),
+                    name: lumia_hir::OPTION.name.into(),
                     params: vec![p],
                 })
             } else {

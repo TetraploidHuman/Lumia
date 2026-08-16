@@ -39,7 +39,7 @@ impl Infer {
                 self.unify_at(span, cht, Type::Channel(Box::new(elem.clone())))?;
                 Ok((
                     Type::Adt {
-                        name: "Option".into(),
+                        name: lumia_hir::OPTION.name.into(),
                         params: vec![elem],
                     },
                     self.union_eff(io, che),
@@ -63,7 +63,7 @@ impl Infer {
                 self.unify_at(span, tt, Type::Task(Box::new(elem.clone())))?;
                 Ok((
                     Type::Adt {
-                        name: "Option".into(),
+                        name: lumia_hir::OPTION.name.into(),
                         params: vec![elem],
                     },
                     self.union_eff(io, te),

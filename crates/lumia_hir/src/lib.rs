@@ -17,7 +17,10 @@ pub use ast::{
 };
 pub use builtin_info::{BuiltinEffect, BuiltinEmit, BuiltinInfo, ResultHeap};
 pub use builtin_surface::{surface_names, SurfaceName, SurfaceRole, PRELUDE_CTORS};
-pub use langitem::{prelude_adt, PreludeAdt, PreludeVariant, OPTION, PRELUDE_ADTS, RESULT};
+pub use langitem::{
+    is_option, is_option_or_result, is_result, prelude_adt, prelude_type_param_count, PreludeAdt,
+    PreludeVariant, OPTION, PRELUDE_ADTS, RESULT,
+};
 pub use list_hof::{desugar_list_fold_sequential, desugar_list_map_sequential};
 pub use lower::{expand_with_known, lower_module, LowerCtx, LowerError};
 pub use mangle::mangle_trait_method;

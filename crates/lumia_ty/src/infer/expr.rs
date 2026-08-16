@@ -495,7 +495,7 @@ impl Infer {
         self.ctrl.alt_scrutinee_depth -= 1;
         let st = self.prune(st);
         match st {
-            Type::Adt { name, params } if name == "Option" && params.len() == 1 => {
+            Type::Adt { name, params } if lumia_hir::is_option(&name) && params.len() == 1 => {
                 self.ctrl.alt_kinds.insert(span, AltKind::Option);
                 let payload = params[0].clone();
                 let (rhs_ty, ae) = self.infer_expr(alt)?;
@@ -504,7 +504,7 @@ impl Infer {
                 // `None alt Some(x)` used to unify Option into an open payload Var,
                 // so the desugar else-arm returned an ADT while the type said `T`
                 // (Float → println IEEE bits; Int → accidental Show of Some).
-                if matches!(&rhs_p, Type::Adt { name, .. } if name == "Option") {
+                if matches!(&rhs_p, Type::Adt { name, .. } if lumia_hir::is_option(name)) {
                     return Err(at(
                         span,
                         format!(
@@ -516,7 +516,7 @@ impl Infer {
                 self.unify_at(span, rhs_ty, payload.clone())?;
                 Ok((payload, self.union_eff(se, ae)))
             }
-            Type::Adt { name, params } if name == "Result" && params.len() == 2 => {
+            Type::Adt { name, params } if lumia_hir::is_result(&name) && params.len() == 2 => {
                 self.ctrl.alt_kinds.insert(span, AltKind::Result);
                 let ok_ty = params[0].clone();
                 let err_ty = params[1].clone();
@@ -525,7 +525,7 @@ impl Infer {
                 let (rhs_ty, ae) = self.infer_expr(alt)?;
                 self.pop();
                 let rhs_p = self.prune(rhs_ty.clone());
-                if matches!(&rhs_p, Type::Adt { name, .. } if name == "Result") {
+                if matches!(&rhs_p, Type::Adt { name, .. } if lumia_hir::is_result(name)) {
                     return Err(at(
                         span,
                         format!(
@@ -564,7 +564,7 @@ impl Infer {
             return Ok((Type::Tuple(arg_tys), eff));
         }
         // Result[T, E]: Ok fills T (E fresh); Err fills E (T fresh).
-        let params = if adt_name == "Result" {
+        let params = if lumia_hir::is_result(adt_name) {
             match (variant, arg_tys.as_slice()) {
                 ("Ok", [t]) => vec![t.clone(), self.fresh()],
                 ("Err", [e]) => vec![self.fresh(), e.clone()],

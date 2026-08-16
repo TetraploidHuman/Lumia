@@ -32,8 +32,8 @@ struct SuccessTags {
 impl SuccessTags {
     fn from_adts(adts: &[AdtDef]) -> Self {
         Self {
-            some: variant_tag(adts, "Option", "Some"),
-            ok: variant_tag(adts, "Result", "Ok"),
+            some: variant_tag(adts, lumia_hir::OPTION.name, "Some"),
+            ok: variant_tag(adts, lumia_hir::RESULT.name, "Ok"),
         }
     }
 }

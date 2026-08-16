@@ -604,17 +604,17 @@ fn builtin_value_ty(name: Builtin, args: &[Local], ctx: InferValueCtx<'_>) -> Ty
                         (**e).clone()
                     };
                     Type::Adt {
-                        name: "Option".into(),
+                        name: lumia_hir::OPTION.name.into(),
                         params: vec![elem],
                     }
                 }
                 _ => Type::Adt {
-                    name: "Option".into(),
+                    name: lumia_hir::OPTION.name.into(),
                     params: vec![ctx.channel_elem_hint.cloned().unwrap_or(Type::Int)],
                 },
             })
             .unwrap_or(Type::Adt {
-                name: "Option".into(),
+                name: lumia_hir::OPTION.name.into(),
                 params: vec![ctx.channel_elem_hint.cloned().unwrap_or(Type::Int)],
             }),
         Builtin::TaskJoinOpt => args
@@ -622,16 +622,16 @@ fn builtin_value_ty(name: Builtin, args: &[Local], ctx: InferValueCtx<'_>) -> Ty
             .and_then(|a| local_tys.get(&a.0))
             .map(|t| match t {
                 Type::Task(e) => Type::Adt {
-                    name: "Option".into(),
+                    name: lumia_hir::OPTION.name.into(),
                     params: vec![(**e).clone()],
                 },
                 _ => Type::Adt {
-                    name: "Option".into(),
+                    name: lumia_hir::OPTION.name.into(),
                     params: vec![Type::Int],
                 },
             })
             .unwrap_or(Type::Adt {
-                name: "Option".into(),
+                name: lumia_hir::OPTION.name.into(),
                 params: vec![Type::Int],
             }),
         Builtin::TaskSpawn => Type::Task(Box::new(
@@ -649,10 +649,10 @@ fn builtin_value_ty(name: Builtin, args: &[Local], ctx: InferValueCtx<'_>) -> Ty
             .map(|t| match t {
                 Type::List(e) | Type::Set(e) => (**e).clone(),
                 Type::Map(_, v) => Type::Adt {
-                    name: "Option".into(),
+                    name: lumia_hir::OPTION.name.into(),
                     params: vec![(**v).clone()],
                 },
-                Type::Adt { name, .. } if name == "Option" => t.clone(),
+                Type::Adt { name, .. } if lumia_hir::is_option(name) => t.clone(),
                 _ => Type::Int,
             })
             .unwrap_or(Type::Int),

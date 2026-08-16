@@ -134,7 +134,7 @@ impl Infer {
         if let Some(want) = expect_adt {
             // Variant patterns pass ctor name (`Ok`/`Err`/`Some`);
             // product patterns / field proj pass the ADT name.
-            if name == "Result" && (want == "Ok" || want == "Err") {
+            if lumia_hir::is_result(name) && (want == "Ok" || want == "Err") {
                 if idx != 0 {
                     return Err(at(
                         span,
@@ -149,7 +149,7 @@ impl Infer {
                     )
                 });
             }
-            if name == "Option" && want == "Some" {
+            if lumia_hir::is_option(name) && want == "Some" {
                 if idx != 0 {
                     return Err(at(
                         span,
@@ -302,7 +302,7 @@ impl Infer {
                     span,
                     recv_ty,
                     Type::Adt {
-                        name: "Result".into(),
+                        name: lumia_hir::RESULT.name.into(),
                         params: vec![t.clone(), e.clone()],
                     },
                 )?;
@@ -314,7 +314,7 @@ impl Infer {
                     span,
                     recv_ty,
                     Type::Adt {
-                        name: "Option".into(),
+                        name: lumia_hir::OPTION.name.into(),
                         params: vec![t.clone()],
                     },
                 )?;

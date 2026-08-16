@@ -56,13 +56,7 @@ impl<'ctx> Codegen<'ctx> {
             BuiltinEmit::UnaryObjScalar => {
                 let obj_i = self.coerce_i64(self.local(args[0])?)?;
                 let obj = self.i64_as_ptr(obj_i, "obj")?;
-                let sym = if matches!(b, Builtin::ListLen)
-                    && matches!(self.frame.local_tys.get(&args[0].0), Some(Type::List(_)))
-                {
-                    "lumia_list_len"
-                } else {
-                    Self::builtin_symbol(b)?
-                };
+                let sym = self.rt_symbol_for_list_receiver(b, args[0])?;
                 self.call_rt_basic(sym, &[obj.into()], label)
             }
             BuiltinEmit::ObjI64Ptr => self.emit_rt_obj_i64(b, args, label),
@@ -90,13 +84,7 @@ impl<'ctx> Codegen<'ctx> {
                     }
                 }
                 // Known `List` → skip polymorphic `lumia_set` dispatch.
-                let sym = if matches!(b, Builtin::MapSet)
-                    && matches!(self.frame.local_tys.get(&args[0].0), Some(Type::List(_)))
-                {
-                    "lumia_list_set"
-                } else {
-                    Self::builtin_symbol(b)?
-                };
+                let sym = self.rt_symbol_for_list_receiver(b, args[0])?;
                 self.call_rt_ptr_as_i64(sym, &[obj.into(), a.into(), b_i.into()], label)
             }
             BuiltinEmit::ObjI64OptionTags => {
@@ -107,7 +95,12 @@ impl<'ctx> Codegen<'ctx> {
                 if matches!(b, Builtin::ListGet)
                     && matches!(self.frame.local_tys.get(&args[0].0), Some(Type::List(_)))
                 {
-                    return self.call_rt_basic("lumia_list_get", &[obj.into(), key.into()], label);
+                    return self.call_rt_basic(
+                        Self::list_receiver_rt_override(Builtin::ListGet)
+                            .unwrap_or("lumia_list_get"),
+                        &[obj.into(), key.into()],
+                        label,
+                    );
                 }
                 let some = self
                     .llvm
@@ -149,6 +142,17 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
+    /// When the receiver is a known `List`, use the monomorphic list RT entry
+    /// instead of the polymorphic map/container symbol in [`BuiltinInfo`].
+    pub(crate) fn list_receiver_rt_override(b: Builtin) -> Option<&'static str> {
+        match b {
+            Builtin::ListLen => Some("lumia_list_len"),
+            Builtin::MapSet => Some("lumia_list_set"),
+            Builtin::ListGet => Some("lumia_list_get"),
+            _ => None,
+        }
+    }
+
     fn rt_symbol_for_receiver(
         &self,
         b: &Builtin,
@@ -156,6 +160,19 @@ impl<'ctx> Codegen<'ctx> {
     ) -> Result<&'static str> {
         if matches!(self.frame.local_tys.get(&recv.0), Some(Type::String)) {
             if let Some(sym) = Self::string_receiver_rt_override(*b) {
+                return Ok(sym);
+            }
+        }
+        Self::builtin_symbol(b)
+    }
+
+    fn rt_symbol_for_list_receiver(
+        &self,
+        b: &Builtin,
+        recv: Local,
+    ) -> Result<&'static str> {
+        if matches!(self.frame.local_tys.get(&recv.0), Some(Type::List(_))) {
+            if let Some(sym) = Self::list_receiver_rt_override(*b) {
                 return Ok(sym);
             }
         }
@@ -369,5 +386,22 @@ mod tests {
         );
         assert_eq!(Codegen::string_receiver_rt_override(Builtin::ListAppend), None);
         assert_eq!(Codegen::string_receiver_rt_override(Builtin::ListLen), None);
+    }
+
+    #[test]
+    fn list_receiver_overrides_are_complete() {
+        assert_eq!(
+            Codegen::list_receiver_rt_override(Builtin::ListLen),
+            Some("lumia_list_len")
+        );
+        assert_eq!(
+            Codegen::list_receiver_rt_override(Builtin::MapSet),
+            Some("lumia_list_set")
+        );
+        assert_eq!(
+            Codegen::list_receiver_rt_override(Builtin::ListGet),
+            Some("lumia_list_get")
+        );
+        assert_eq!(Codegen::list_receiver_rt_override(Builtin::ListConcat), None);
     }
 }

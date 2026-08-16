@@ -47,7 +47,7 @@ impl Infer {
                     Type::Map(k, v) => {
                         self.unify_at(span, it, *k)?;
                         Type::Adt {
-                            name: "Option".into(),
+                            name: lumia_hir::OPTION.name.into(),
                             params: vec![*v],
                         }
                     }
@@ -65,7 +65,7 @@ impl Infer {
                             )?;
                             self.unify_at(span, it, k)?;
                             Type::Adt {
-                                name: "Option".into(),
+                                name: lumia_hir::OPTION.name.into(),
                                 params: vec![v],
                             }
                         } else {

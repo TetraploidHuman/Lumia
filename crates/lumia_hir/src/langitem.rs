@@ -1,4 +1,4 @@
-//! Prelude ADT langitems — names and variant shapes shared by HIR lower / Core.
+//! Prelude ADT langitems — names and variant shapes shared by HIR lower / Core / ty / mono.
 
 /// One variant of a prelude sum ADT (`Some` / `None`, …).
 #[derive(Debug, Clone, Copy)]
@@ -13,6 +13,8 @@ pub struct PreludeVariant {
 pub struct PreludeAdt {
     pub name: &'static str,
     pub variants: &'static [PreludeVariant],
+    /// HM type-parameter count (`Option` → 1, `Result` → 2).
+    pub type_params: usize,
 }
 
 impl PreludeAdt {
@@ -37,6 +39,7 @@ impl PreludeAdt {
 
 pub const OPTION: PreludeAdt = PreludeAdt {
     name: "Option",
+    type_params: 1,
     variants: &[
         PreludeVariant {
             name: "Some",
@@ -51,6 +54,7 @@ pub const OPTION: PreludeAdt = PreludeAdt {
 
 pub const RESULT: PreludeAdt = PreludeAdt {
     name: "Result",
+    type_params: 2,
     variants: &[
         PreludeVariant {
             name: "Ok",
@@ -71,6 +75,27 @@ pub fn prelude_adt(name: &str) -> Option<&'static PreludeAdt> {
     PRELUDE_ADTS.iter().find(|a| a.name == name)
 }
 
+#[inline]
+pub fn is_option(name: impl AsRef<str>) -> bool {
+    name.as_ref() == OPTION.name
+}
+
+#[inline]
+pub fn is_result(name: impl AsRef<str>) -> bool {
+    name.as_ref() == RESULT.name
+}
+
+#[inline]
+pub fn is_option_or_result(name: impl AsRef<str>) -> bool {
+    let n = name.as_ref();
+    is_option(n) || is_result(n)
+}
+
+/// HM type-parameter arity for a prelude sum, if any.
+pub fn prelude_type_param_count(name: impl AsRef<str>) -> Option<usize> {
+    prelude_adt(name.as_ref()).map(|a| a.type_params)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,5 +106,10 @@ mod tests {
         assert_eq!(OPTION.default_tag("None"), Some(1));
         assert_eq!(RESULT.default_tag("Ok"), Some(0));
         assert_eq!(RESULT.default_tag("Err"), Some(1));
+        assert_eq!(OPTION.type_params, 1);
+        assert_eq!(RESULT.type_params, 2);
+        assert!(is_option_or_result("Option"));
+        assert!(is_option_or_result("Result"));
+        assert!(!is_option_or_result("List"));
     }
 }

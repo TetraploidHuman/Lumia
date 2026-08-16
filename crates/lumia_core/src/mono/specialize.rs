@@ -496,7 +496,7 @@ fn merge_mono_ret_with_inferred(body: Type, inferred: &Type) -> Type {
                 name: inan,
                 params: ip,
             },
-        ) if bn == inan && (bn == "Option" || bn == "Result") => {
+        ) if bn == inan && lumia_hir::is_option_or_result(bn) => {
             let body_payload = bp.first();
             let inf_payload = ip.first();
             if option_result_payload_weaker(body_payload, inf_payload) {
@@ -570,11 +570,11 @@ fn option_result_payload_weaker(body: Option<&Type>, inferred: Option<&Type>) ->
             )
         }
         // `Option[Option[Int]]` vs `Option[Float]` from nested andThen join.
-        Some(Type::Adt { name, params }) if name == "Option" || name == "Result" => {
+        Some(Type::Adt { name, params }) if lumia_hir::is_option_or_result(name) => {
             params
                 .first()
                 .is_none_or(|p| matches!(p, Type::Int | Type::Var(_)))
-                || !matches!(inf, Type::Adt { name: n, .. } if n == "Option" || n == "Result")
+                || !matches!(inf, Type::Adt { name: n, .. } if lumia_hir::is_option_or_result(n))
         }
         _ => false,
     }

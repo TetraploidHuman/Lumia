@@ -265,7 +265,7 @@ impl<'ctx> Codegen<'ctx> {
         // Option/Result: type-param index ≠ constructor field index (Err field0
         // is params[1]). Rely on per-object `_pad` from AllocAdt field types for
         // Float; keep param bool_mask for Option[Bool] / Result Ok(Bool).
-        let fmask = if matches!(adt_name, "Option" | "Result") {
+        let fmask = if lumia_hir::is_option_or_result(adt_name) {
             0
         } else {
             Self::adt_float_field_mask(params, &[])?

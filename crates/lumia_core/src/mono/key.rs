@@ -135,7 +135,7 @@ fn type_to_mono(t: &Type) -> Option<MonoKind> {
             Box::new(type_to_mono(v)?),
         )),
         Type::Set(e) => type_to_mono(e).map(|k| MonoKind::Set(Box::new(k))),
-        Type::Adt { name, params } if name == "Option" || name == "Result" => {
+        Type::Adt { name, params } if lumia_hir::is_option_or_result(name) => {
             // Polymorphic payloads must appear in the key (map/andThen/…).
             // Open Vars are not ground — returning `Int` here created premature
             // `unwrapOr$Option_Int_Float` clones that blocked a later Float key
@@ -203,7 +203,7 @@ fn is_erased_option_ret(t: &Type) -> bool {
     matches!(
         t,
         Type::Adt { name, params }
-            if name == "Option" && params.first().is_some_and(is_erased_abi_ty)
+            if lumia_hir::is_option(name) && params.first().is_some_and(is_erased_abi_ty)
     )
 }
 
@@ -211,7 +211,7 @@ fn is_erased_result_ret(t: &Type) -> bool {
     matches!(
         t,
         Type::Adt { name, params }
-            if name == "Result" && params.first().is_some_and(is_erased_abi_ty)
+            if lumia_hir::is_result(name) && params.first().is_some_and(is_erased_abi_ty)
     )
 }
 
@@ -364,7 +364,7 @@ impl MonoKey {
         // Int ABI on a Fun value).
         if base == "unwrapOr" {
             if let Some(MonoKind::Adt { name, params }) = kinds.first() {
-                if (name == "Option" || name == "Result") && !params.is_empty() {
+                if lumia_hir::is_option_or_result(name) && !params.is_empty() {
                     let payload = ground_open_vars(params[0].to_type());
                     // FunRef default is the real ABI for `unwrapOr(None/Err, {…})`
                     // and must not be filtered out (that left Option_Int → Int icall).
@@ -516,10 +516,10 @@ impl MonoKey {
         };
         let data = self.0.iter().find(|k| !matches!(k, MonoKind::FunRef(_)))?;
         match data {
-            MonoKind::Adt { name, params } if name == "Option" => {
+            MonoKind::Adt { name, params } if lumia_hir::is_option(name) => {
                 // `andThen` / `flatMap`: callback already returns `Option[U]`.
                 // `map`: callback returns `U` → wrap as `Option[U]`.
-                if matches!(&fun_ret, Type::Adt { name: n, .. } if n == "Option")
+                if matches!(&fun_ret, Type::Adt { name: n, .. } if lumia_hir::is_option(n))
                     && !is_erased_option_ret(&fun_ret)
                 {
                     return Some(ground_open_vars(fun_ret));
@@ -528,11 +528,11 @@ impl MonoKey {
                     .filter(|t| !is_erased_abi_ty(t))
                     .or_else(|| params.first().map(MonoKind::to_type))?;
                 Some(Type::Adt {
-                    name: "Option".into(),
+                    name: lumia_hir::OPTION.name.into(),
                     params: vec![ground_open_vars(inner)],
                 })
             }
-            MonoKind::Adt { name, params } if name == "Result" => {
+            MonoKind::Adt { name, params } if lumia_hir::is_result(name) => {
                 // Always emit Result[Ok, Err] (two params). Callback rets often
                 // carry only the Ok slot (`Result[Float]`); leaving an open Err
                 // Var after refine blocks `type_to_mono` → no `unwrapOr$` clone.
@@ -548,11 +548,11 @@ impl MonoKey {
                         .or_else(|| params.get(1).map(MonoKind::to_type))
                         .unwrap_or(Type::Int);
                     return Some(Type::Adt {
-                        name: "Result".into(),
+                        name: lumia_hir::RESULT.name.into(),
                         params: vec![ground_open_vars(ok), ground_open_vars(err)],
                     });
                 }
-                if matches!(&fun_ret, Type::Adt { name: n, .. } if n == "Result")
+                if matches!(&fun_ret, Type::Adt { name: n, .. } if lumia_hir::is_result(n))
                     && !is_erased_result_ret(&fun_ret)
                 {
                     let Type::Adt {
@@ -564,7 +564,7 @@ impl MonoKey {
                     let ok = fun_ps.first().cloned().unwrap_or(Type::Int);
                     let err = fun_ps.get(1).cloned().unwrap_or(data_err);
                     return Some(Type::Adt {
-                        name: "Result".into(),
+                        name: lumia_hir::RESULT.name.into(),
                         params: vec![ground_open_vars(ok), ground_open_vars(err)],
                     });
                 }
@@ -572,7 +572,7 @@ impl MonoKey {
                     .filter(|t| !is_erased_abi_ty(t))
                     .or_else(|| params.first().map(MonoKind::to_type))?;
                 Some(Type::Adt {
-                    name: "Result".into(),
+                    name: lumia_hir::RESULT.name.into(),
                     params: vec![ground_open_vars(ok), ground_open_vars(data_err)],
                 })
             }
@@ -626,7 +626,7 @@ pub(crate) fn args_mono_key(
                     // guesses never enter the clone layout; materialize restores
                     // the generic formals. Call-site Adt{…, [Float,…]} keeps params.
                     ty = match formal {
-                        Type::Adt { name, .. } if name != "Option" && name != "Result" => {
+                        Type::Adt { name, .. } if !lumia_hir::is_option_or_result(name) => {
                             Type::Adt {
                                 name: name.clone(),
                                 params: vec![],
