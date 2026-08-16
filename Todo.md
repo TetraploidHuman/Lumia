@@ -174,7 +174,7 @@
 #### 前端 / RT / 包装 / 文档
 - [ ] **`std.linalg` 仍占语言标准库**：`cn`/`efe` 已迁 `extras/`，`linalg.lm` 仍几乎全是 `foreign`→`lumia_f64_*`，且在 `std_mod` 白名单。域模块迁出不完整。宜迁 `extras.linalg`（或等价），RT 域核走 feature。
 - [ ] **RT `dispatch.rs` = 开放方法的运行时孪生**：`lumia_len`/`concat`/`set`/`elems`/… 按 `type_id` 分发，与 ty 的 `*_vars` 同族语义分属两处。宜单一能力表生成/对账。
-- [ ] **`string_io.rs` 混装 String / IO / stdin / trap**（≈498）：核心字符串表示与 I/O 策略、trap 耦在一起。宜拆 `string` / `io` / `trap`。
+- [x] **`string_io.rs` 混装 String / IO / stdin / trap**：已拆 `string_io/{string,io,trap}.rs`；crate 仍 `pub use string_io::*`。
 - [ ] **前端巨型分发入口**：`infer_module_inner` / `hir/lower_expr` / `parse_primary` 各两百行级总 match（syntax `expr.rs` 整文件 ≈753）。新糖/项种类都挤同一臂。宜按族拆文件 + sugar 独立 pass。
 - [ ] **LSP semanticTokens（及 format）对已分析缓冲二次 `parse_module_*`**：`Analysis` 不缓存 syntax AST；着色走未 rewrite 表面树、靠 span 对 typed。与「typed HIR 权威」分裂叠加。宜缓存 AST 或明确「着色只认表面」。
 - [ ] **工作区级 clippy allow 仍宽**：空 `codegen/src/bin/` 已删；根 `too_many_arguments`/`type_complexity`/`collapsible_match` 等仍 `allow`，掩盖上帝函数。宜收窄到具体模块。
