@@ -24,6 +24,33 @@ impl<'a> Lexer<'a> {
         self.pos = pos;
     }
 
+    /// Advance one UTF-8 scalar at `pos` (at least one byte if the slice is invalid).
+    fn advance_scalar(&mut self) {
+        if self.pos >= self.bytes.len() {
+            return;
+        }
+        let ch = self.src[self.pos..].chars().next().unwrap_or('\0');
+        self.pos += ch.len_utf8().max(1);
+    }
+
+    /// Skip a nested `"…"` / `'…'` literal (caller already consumed the opening quote).
+    /// Escape sequences advance by scalar so multi-byte content cannot desync `pos`.
+    fn skip_quoted_literal(&mut self, quote: u8) {
+        while self.pos < self.bytes.len() {
+            let b = self.bytes[self.pos];
+            if b == b'\\' {
+                self.pos += 1;
+                self.advance_scalar();
+                continue;
+            }
+            if b == quote {
+                self.pos += 1;
+                return;
+            }
+            self.advance_scalar();
+        }
+    }
+
     /// Peek the next `n` token kinds without advancing this lexer.
     pub fn peek_kinds(&self, n: usize) -> Vec<TokenKind> {
         let mut tmp = Lexer {
@@ -352,32 +379,12 @@ impl<'a> Lexer<'a> {
                         } else if ch == b'"' {
                             // Skip nested string literal inside `${…}`.
                             self.pos += 1;
-                            while self.pos < self.bytes.len() {
-                                let sc = self.bytes[self.pos];
-                                if sc == b'\\' {
-                                    self.pos = self.pos.saturating_add(2);
-                                    continue;
-                                }
-                                self.pos += 1;
-                                if sc == b'"' {
-                                    break;
-                                }
-                            }
+                            self.skip_quoted_literal(b'"');
                             continue;
                         } else if ch == b'\'' {
                             // Skip char literal so `'}'` does not close `${…}`.
                             self.pos += 1;
-                            while self.pos < self.bytes.len() {
-                                let sc = self.bytes[self.pos];
-                                if sc == b'\\' {
-                                    self.pos = self.pos.saturating_add(2);
-                                    continue;
-                                }
-                                self.pos += 1;
-                                if sc == b'\'' {
-                                    break;
-                                }
-                            }
+                            self.skip_quoted_literal(b'\'');
                             continue;
                         }
                         self.pos += 1;
@@ -507,6 +514,32 @@ mod tests {
                         crate::token::StringPart::Lit(s) if s.contains('}')
                     )),
                     "closing brace of char must not end interpolation early: {parts:?}"
+                );
+            }
+            other => panic!("expected InterpString, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn interp_nested_string_escape_advances_by_scalar() {
+        // `\中` is two UTF-8 bytes after `\`; old +2 skip could desync and eat the closer.
+        let mut lx = Lexer::new("\"a${\"\\中\"}b\"");
+        let t = lx.next_token();
+        match t.kind {
+            TokenKind::InterpString(parts) => {
+                assert!(
+                    parts.iter().any(|p| matches!(
+                        p,
+                        crate::token::StringPart::ExprSrc { src, .. } if src.contains('中')
+                    )),
+                    "nested string must stay in ExprSrc: {parts:?}"
+                );
+                assert!(
+                    parts.iter().any(|p| matches!(
+                        p,
+                        crate::token::StringPart::Lit(s) if s == "b"
+                    )),
+                    "outer literal after }} must remain: {parts:?}"
                 );
             }
             other => panic!("expected InterpString, got {other:?}"),
