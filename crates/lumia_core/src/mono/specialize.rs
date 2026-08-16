@@ -3,7 +3,7 @@ use super::key::{
     args_mono_key, ground_open_vars, materialize_mono_param_tys, types_mono_key, MonoKey, MonoKind,
 };
 use super::ret_ty::{block_result_fixed_ty, param_ty_map, refine_mono_container_ret};
-use super::traits::directize_block;
+use super::directize::directize_block;
 use crate::ir::{Block, CoreFun, CoreModule, Local, Op, Value};
 use crate::value_ty::{infer_value_ty_ctx, InferValueCtx};
 use lumia_hir::Builtin;

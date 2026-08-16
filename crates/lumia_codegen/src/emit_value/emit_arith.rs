@@ -299,9 +299,9 @@ impl<'ctx> Codegen<'ctx> {
         }
         let l = self.as_i64(lv)?;
         let r = self.as_i64(rv)?;
-        if let Some(v) = self.try_emit_num_override(op, &lt, &rt, l, r)? {
-            return Ok(v);
-        }
+        // Num ADT `+`/`*` must already be `Call(__Num_*)` after
+        // `resolve_trait_method_calls`; residual Binary is an ICE.
+        self.reject_residual_num_binary(op, &lt, &rt)?;
         let v = match op {
             BinOp::Add if self.dest_is_nsw_safe() => self.emit_nsw_binop(l, r, "add")?,
             BinOp::Sub if self.dest_is_nsw_safe() => self.emit_nsw_binop_sub(l, r, "sub")?,
@@ -410,20 +410,15 @@ impl<'ctx> Codegen<'ctx> {
         Ok(v.into())
     }
 
-    /// `instance Num for T`: `__Num_T_add` / `__Num_T_mul`.
-    fn try_emit_num_override(
-        &mut self,
-        op: &BinOp,
-        lt: &Type,
-        rt: &Type,
-        l: IntValue<'ctx>,
-        r: IntValue<'ctx>,
-    ) -> Result<Option<BasicValueEnum<'ctx>>> {
+    /// Mono must rewrite Num ADT `+`/`*` to `Call(__Num_T_*)`. A surviving
+    /// Binary here would previously hit a silent codegen override on the
+    /// unspecialized instance body — treat that as an ICE instead.
+    fn reject_residual_num_binary(&self, op: &BinOp, lt: &Type, rt: &Type) -> Result<()> {
         if !matches!(op, BinOp::Add | BinOp::Mul) {
-            return Ok(None);
+            return Ok(());
         }
         let Some(name) = Self::adt_method_name(lt, rt) else {
-            return Ok(None);
+            return Ok(());
         };
         let method = if matches!(op, BinOp::Add) {
             "add"
@@ -431,17 +426,13 @@ impl<'ctx> Codegen<'ctx> {
             "mul"
         };
         let mangled = lumia_hir::mangle_trait_method("Num", &name, method);
-        let Some(callee) = self.funs.functions.get(&mangled).copied() else {
-            return Ok(None);
-        };
-        let call = crate::error::llvm(self.llvm.builder.build_call(
-            callee,
-            &[l.into(), r.into()],
-            "num_ov",
-        ))?;
-        Ok(Some(call.try_as_basic_value().basic().unwrap_or_else(
-            || self.llvm.i64_ty.const_int(0, false).into(),
-        )))
+        if self.funs.functions.contains_key(&mangled) {
+            anyhow::bail!(
+                "ICE: Num Binary `{op:?}` on `{name}` survived to codegen \
+                 (expected Call(`{mangled}`) after resolve_trait_method_calls)"
+            );
+        }
+        Ok(())
     }
 
     fn emit_ord_compare(

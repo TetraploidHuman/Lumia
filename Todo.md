@@ -272,7 +272,7 @@
 - [ ] **import 整模块内联、无编译单元边界**：`filter_items` 为私有被调者保留整模块；load 合成扁平 `Module`。无增量编译、无库 ABI；菱形只靠 `(file,name)`。宜真正 CU / 导出摘要。
 - [x] **`std.*` 发现是编译期 `match`**：按 `std/`/`extras/` 目录发现 `*.lm`（`std.a.b`→`a/b.lm`）；错误列出已知模块；拒绝 `..` 段。
 - [x] **每次 `lumia build` shell `cargo -p lumia_rt`**：`LUMIA_RT_LIB` 指向已有静态库时跳过 cargo；否则仍 `cargo -p lumia_rt`（完整预构建随安装分发仍开放）。
-- [ ] **LSP 进程级 `Mutex<State>` + Full sync only**：无 multi-root / configuration；分析串在一把锁。IDE 扩展性差。
+- [ ] **LSP 进程级 `Mutex<State>` + Full sync only**：分析仍串在一把锁；已支持 `workspace/configuration` pull + `didChangeConfiguration` push（`lumia.autoParallel`）。multi-root 仍缺。
 - [ ] **LSP 功能测跳过 loader**：hover/inlay/semantic 等多走 `check_source`；import/`std`/overlay 回归只能靠真人多文件。宜 loader fixture 测。
 - [x] **assert 文案改写仅 build 路径**：`lumia_hir::annotate_assert_messages`；CLI build 与 `compile_source_to_core*` 共用（单文件标签 `"<input>"`）。
 - [x] **编辑器 LSP 解析分叉**：IDEA 亦优先 slim `~/.local/lib/lumia/lumia-lsp`（与 VS Code 对齐）；显式 settings 路径仍尊重。
@@ -401,9 +401,9 @@
 #### 双轨 / 近拷贝 / 包边界撒谎
 
 - [x] **ADT「递归脊柱」分类算法双份**：`lumia_hir::{classify_sum_field_recursive,sum_parametric_arity}`；ty/core lower 共用。
-- [ ] **`mono/traits.rs` 名不副实**：同文件混 `resolve_trait_method_calls`、Binary→`__Num_*` 改写、`directize_funref_calls`。与已列 `lambda_lift` 厨房同病、落在 mono 子模块。宜拆 `directize.rs` / `trait_resolve.rs`。
+- [x] **`mono/traits.rs` 名不副实**：已拆 `mono/directize.rs`（`directize_funref_calls` / `directize_block`）；`traits.rs` 保留 resolve + Num Binary→Call + stubs。`specialize` 改依赖 `directize`，打破模块环。
 - [ ] **双轨函数特化：类型 mono（core）× 常量 specialize（opt）**：`mono/specialize`（`$Float`/`MonoKey`）与 `SpecializeConstPass`（`$c_`）两套 clone/改写 Call；Release 交错顺序靠注释。宜统一 Specialization 框架，或阶段不变量测例。
-- [ ] **Num 实例双路径**：`traits` 把 Add/Mul 改成 Call，`emit_arith::try_emit_num_override` 对残留 Binary 再调 `__Num_T_*`（注释承认「仅 codegen 会打到未特化体」）。半管线/fixture 易漏。宜 lower 边界即成 Call，删 codegen override。
+- [x] **Num 实例双路径**：删除 codegen `try_emit_num_override`；残留 Num ADT Binary 在 `emit_arith` ICE（须先经 `resolve_trait_method_calls`）。
 - [ ] **未知类型普遍 `unwrap_or(Type::Int)` / `ground_open_vars: Var→Int`**：与已列 `List(Int)`「可能堆」软占位 **正交**——这里是「未知→标量 Int」，错误方向相反。宜显式 `CoreTy::Unknown`，禁止 Int 作缺省。
 - [x] **`closure_cap_tys` 预扫填空表 + 魔法 `0..8`**：预扫注入 `core.sum_max_arity` + `fun_param0_identity`；`0..8` 标明为 change-flag 上界。
 - [ ] **`FunTables` 成 codegen 侧第二块 Core 黑板**：镜像 `hash_adts`/`sum_max_arity`/`channel_elem_*`/`adt_variant_names` 并自建 `fun_ret_tys`/`closure_cap_tys`。权威在 CoreModule vs FunTables 不清。宜只读 `AnalysisFacts`/`ModuleTables`，FunTables 仅 LLVM 句柄。
@@ -463,7 +463,7 @@
 #### 模块环 / mono·opt 内部
 
 - [ ] **`ir.rs` ↔ `visit.rs` 包内环依赖**：`ir` 调 `visit::{max_local_in_value,rewrite_value_locals}`，`visit` 再吃 `ir` 类型。难抽 `lumia_ir`。宜 remap/`max_local` 迁入 `ir` 或独立 `ir_ops`。
-- [ ] **`mono/traits` ↔ `mono/specialize` 子模块环**：`traits`←`mono_value_ty`，`specialize`←`directize_block`。与第六轮「traits 名不副实」互补——是 **Rust 模块环**。宜下沉类型助手、拆出 `directize`。
+- [x] **`mono/traits` ↔ `mono/specialize` 子模块环**：`directize` 已独立；`specialize`←`directize_block`，不再经 `traits`。
 - [x] **`ret_ty::block_result_fixed_ty` 用空 `sum_max_arity` 建 `FunIndex`**：改为注入调用方 `FunIndex`（含 `module.sum_max_arity` + channel hint）。
 - [x] **间接调用 callee 降失败时静默 `Value::Int(0)`**：见上方第六轮收口（`note_ice` + `Result`）。
 - [x] **Core lower `Alt`/`With` 用 `panic!`**：见上方第六轮收口（`note_ice` + `Err`；部分 `expect` 仍留）。

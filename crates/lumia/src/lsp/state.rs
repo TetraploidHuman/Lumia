@@ -24,6 +24,12 @@ pub(super) struct State {
     pub(super) analyze_tx: Option<Sender<AnalyzeReq>>,
     /// Mirror of CLI `--parallel` / `--no-parallel` (from `initialize` options).
     pub(super) auto_parallel: bool,
+    /// Client advertised `workspace.configuration` (pull settings).
+    pub(super) client_supports_configuration: bool,
+    /// Next server→client request id.
+    pub(super) next_req_id: i64,
+    /// Pending `workspace/configuration` request id, if any.
+    pub(super) pending_config_req: Option<i64>,
 }
 
 #[derive(Clone)]

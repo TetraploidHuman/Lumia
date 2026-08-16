@@ -2,6 +2,7 @@
 //!
 //! - textDocument/didOpen|didChange|didClose → publishDiagnostics (editor overlays)
 //! - workspace/didChangeWatchedFiles → re-analyze open buffers (import dependents)
+//! - workspace/didChangeConfiguration + workspace/configuration → `lumia.autoParallel`
 //! - textDocument/hover → type from TypedModule.type_at / fun_types
 //! - textDocument/definition → decls (cross-file via Span.file)
 //! - textDocument/completion → in-scope names + common methods
@@ -46,6 +47,9 @@ pub fn run_lsp() -> Result<()> {
         analysis: HashMap::default(),
         analyze_tx: Some(analyze_tx),
         auto_parallel: true,
+        client_supports_configuration: false,
+        next_req_id: 1,
+        pending_config_req: None,
     });
     let stdin = io::stdin();
     let mut stdin = stdin.lock();
@@ -66,9 +70,8 @@ fn handle_message(msg: Value) -> Result<Option<Value>> {
     let id = msg.get("id").cloned();
     match method {
         Some("initialize") => {
-            let opts = msg
-                .get("params")
-                .and_then(|p| p.get("initializationOptions"));
+            let params = msg.get("params");
+            let opts = params.and_then(|p| p.get("initializationOptions"));
             let ap = opts
                 .and_then(|o| {
                     o.get("autoParallel")
@@ -76,8 +79,15 @@ fn handle_message(msg: Value) -> Result<Option<Value>> {
                         .and_then(|v| v.as_bool())
                 })
                 .unwrap_or(true);
+            let supports_config = params
+                .and_then(|p| p.get("capabilities"))
+                .and_then(|c| c.get("workspace"))
+                .and_then(|w| w.get("configuration"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             if let Some(s) = state_lock().as_mut() {
                 s.auto_parallel = ap;
+                s.client_supports_configuration = supports_config;
             }
             Ok(Some(json!({
             "jsonrpc": "2.0",
@@ -101,13 +111,29 @@ fn handle_message(msg: Value) -> Result<Option<Value>> {
                         },
                         "full": true,
                         "range": false
+                    },
+                    "workspace": {
+                        // Client may push `workspace/didChangeConfiguration`; we also
+                        // pull via `workspace/configuration` after `initialized`.
+                        "workspaceFolders": {
+                            "supported": false,
+                            "changeNotifications": false
+                        }
                     }
                 },
                 "serverInfo": { "name": "lumia-lsp", "version": env!("CARGO_PKG_VERSION") }
             }
         })))
         }
-        Some("initialized") | Some("shutdown") => {
+        Some("initialized") => {
+            request_workspace_configuration()?;
+            if id.is_some() {
+                Ok(Some(json!({ "jsonrpc": "2.0", "id": id, "result": null })))
+            } else {
+                Ok(None)
+            }
+        }
+        Some("shutdown") => {
             if id.is_some() {
                 Ok(Some(json!({ "jsonrpc": "2.0", "id": id, "result": null })))
             } else {
@@ -141,30 +167,9 @@ fn handle_message(msg: Value) -> Result<Option<Value>> {
         }
         Some("workspace/didChangeConfiguration") => {
             let settings = msg.get("params").and_then(|p| p.get("settings"));
-            let ap = settings
-                .and_then(|s| {
-                    s.get("lumia")
-                        .and_then(|l| l.get("autoParallel"))
-                        .or_else(|| s.get("autoParallel"))
-                        .or_else(|| s.get("auto_parallel"))
-                })
-                .and_then(|v| v.as_bool());
+            let ap = parse_auto_parallel_settings(settings);
             if let Some(ap) = ap {
-                let docs: Vec<(String, String)> = {
-                    let mut st = state_lock();
-                    if let Some(s) = st.as_mut() {
-                        s.auto_parallel = ap;
-                        s.docs
-                            .iter()
-                            .map(|(u, t)| (u.clone(), t.clone()))
-                            .collect()
-                    } else {
-                        Vec::new()
-                    }
-                };
-                for (uri, text) in docs {
-                    let _ = analyze::publish_diagnostics_for(&uri, &text);
-                }
+                apply_auto_parallel(ap)?;
             }
             Ok(None)
         }
@@ -221,8 +226,95 @@ fn handle_message(msg: Value) -> Result<Option<Value>> {
                 Ok(None)
             }
         }
-        None => Ok(None),
+        None => {
+            // Response to a server→client request (e.g. workspace/configuration).
+            if let Some(rid) = json_rpc_id_i64(msg.get("id")) {
+                let pending = state_lock()
+                    .as_ref()
+                    .and_then(|s| s.pending_config_req);
+                if pending == Some(rid) {
+                    if let Some(s) = state_lock().as_mut() {
+                        s.pending_config_req = None;
+                    }
+                    // `workspace/configuration` returns an array parallel to `items`.
+                    let ap = msg
+                        .get("result")
+                        .and_then(|r| r.as_array())
+                        .and_then(|a| a.first())
+                        .and_then(|v| {
+                            v.get("autoParallel")
+                                .or_else(|| v.get("auto_parallel"))
+                                .and_then(|b| b.as_bool())
+                                .or_else(|| parse_auto_parallel_settings(Some(v)))
+                        });
+                    if let Some(ap) = ap {
+                        apply_auto_parallel(ap)?;
+                    }
+                }
+            }
+            Ok(None)
+        }
     }
+}
+
+fn json_rpc_id_i64(id: Option<&Value>) -> Option<i64> {
+    let id = id?;
+    id.as_i64()
+        .or_else(|| id.as_u64().and_then(|u| i64::try_from(u).ok()))
+}
+
+fn parse_auto_parallel_settings(settings: Option<&Value>) -> Option<bool> {
+    settings.and_then(|s| {
+        s.get("lumia")
+            .and_then(|l| l.get("autoParallel"))
+            .or_else(|| s.get("autoParallel"))
+            .or_else(|| s.get("auto_parallel"))
+            .and_then(|v| v.as_bool())
+    })
+}
+
+fn apply_auto_parallel(ap: bool) -> Result<()> {
+    let docs: Vec<(String, String)> = {
+        let mut st = state_lock();
+        if let Some(s) = st.as_mut() {
+            s.auto_parallel = ap;
+            s.docs
+                .iter()
+                .map(|(u, t)| (u.clone(), t.clone()))
+                .collect()
+        } else {
+            Vec::new()
+        }
+    };
+    for (uri, text) in docs {
+        let _ = analyze::publish_diagnostics_for(&uri, &text);
+    }
+    Ok(())
+}
+
+/// Pull `lumia.*` settings when the client supports `workspace/configuration`.
+fn request_workspace_configuration() -> Result<()> {
+    let req_id = {
+        let mut st = state_lock();
+        let Some(s) = st.as_mut() else {
+            return Ok(());
+        };
+        if !s.client_supports_configuration {
+            return Ok(());
+        }
+        let id = s.next_req_id;
+        s.next_req_id += 1;
+        s.pending_config_req = Some(id);
+        id
+    };
+    write_stdout(&json!({
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "method": "workspace/configuration",
+        "params": {
+            "items": [{ "section": "lumia" }]
+        }
+    }))
 }
 
 #[cfg(test)]

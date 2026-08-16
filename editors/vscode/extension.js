@@ -86,6 +86,7 @@ function startLsp(context) {
     ],
     synchronize: {
       fileEvents: workspace.createFileSystemWatcher("**/*.lm"),
+      configurationSection: "lumia",
     },
     outputChannelName: "Lumia Language Server",
     initializationOptions: {
