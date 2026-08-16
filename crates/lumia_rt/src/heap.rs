@@ -84,6 +84,15 @@ impl Heap {
     pub(crate) fn is_old_header(&self, h: *mut ObjectHeader) -> bool {
         self.old_set.contains(&h)
     }
+
+    /// Update [`alloc_pressure_fast`] from current bytes / full-mark flag.
+    #[inline]
+    pub(crate) fn refresh_alloc_pressure_fast(&self) {
+        let pressure = self.full_marking
+            || self.bytes_young >= self.young_limit
+            || self.bytes_old >= self.old_limit;
+        ALLOC_PRESSURE_FAST.store(pressure, Ordering::Release);
+    }
 }
 
 static PROCESS_HEAP: OnceLock<Mutex<Heap>> = OnceLock::new();
@@ -93,6 +102,10 @@ static PROCESS_HEAP: OnceLock<Mutex<Heap>> = OnceLock::new();
 /// whenever `Heap::full_marking` changes (Release/Acquire).
 static FULL_MARKING_FAST: AtomicBool = AtomicBool::new(false);
 
+/// Soft GC pressure: young/old over limit or full mark in flight.
+/// Alloc skips the pre-collect peek when this is false (only `finish_alloc` locks).
+static ALLOC_PRESSURE_FAST: AtomicBool = AtomicBool::new(false);
+
 #[inline]
 pub(crate) fn full_marking_fast() -> bool {
     FULL_MARKING_FAST.load(Ordering::Acquire)
@@ -101,6 +114,17 @@ pub(crate) fn full_marking_fast() -> bool {
 #[inline]
 pub(crate) fn set_full_marking_fast(v: bool) {
     FULL_MARKING_FAST.store(v, Ordering::Release);
+    if v {
+        // Full mark ⇒ always consider collect on the next alloc peek.
+        ALLOC_PRESSURE_FAST.store(true, Ordering::Release);
+    }
+    // Clearing: callers refresh via `Heap::refresh_alloc_pressure_fast` after
+    // updating `full_marking` / live bytes (do not leave pressure stuck true).
+}
+
+#[inline]
+pub(crate) fn alloc_pressure_fast() -> bool {
+    ALLOC_PRESSURE_FAST.load(Ordering::Acquire)
 }
 
 fn process_heap() -> &'static Mutex<Heap> {

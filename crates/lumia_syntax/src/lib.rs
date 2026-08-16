@@ -11,7 +11,11 @@ mod span;
 mod stamp;
 mod token;
 
-pub use ast::*;
+pub use ast::{
+    BinOp, Expr, ForBinding, ForeignItem, Import, ImportNames, ImportedName, InstanceItem,
+    InterpPart, Item, MatchArm, MatchCondArm, Module, Pattern, Stmt, TraitItem, TypeItem,
+    TypeKind, UnOp, ValItem, Variant, VariantFields,
+};
 pub use diag::{byte_to_line_col, format_diagnostic, format_diagnostic_files, line_starts};
 pub use error::LocatedError;
 pub use lexer::Lexer;

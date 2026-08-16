@@ -202,6 +202,7 @@ impl MarkSweep {
                 h.old_set.insert(obj);
             }
             h.old.extend(survivors);
+            h.refresh_alloc_pressure_fast();
         });
     }
 
@@ -258,6 +259,7 @@ impl MarkSweep {
             h.remembered.clear();
             h.bytes_young = h.bytes_young.saturating_sub(freed_y);
             h.bytes_old = h.bytes_old.saturating_sub(freed_o);
+            h.refresh_alloc_pressure_fast();
             true
         })
     }
@@ -337,6 +339,7 @@ impl MarkSweep {
             h.remembered.clear();
             h.bytes_young = h.bytes_young.saturating_sub(freed_y);
             h.bytes_old = h.bytes_old.saturating_sub(freed_o);
+            h.refresh_alloc_pressure_fast();
             false
         })
     }
@@ -561,13 +564,14 @@ impl MmBackend for MarkSweep {
                  (use scalar Int/Bool/Float callbacks only)",
             );
         }
-        // One peek: inhibit + pressure. Skip `maybe_collect` when clearly idle.
-        let try_gc = with_heap(|h| {
-            h.gc_inhibit == 0
-                && (h.full_marking
-                    || h.bytes_young >= h.young_limit
-                    || h.bytes_old >= h.old_limit)
-        });
+        // Skip heap Mutex when soft pressure is idle (flag refreshed under lock).
+        let try_gc = crate::heap::alloc_pressure_fast()
+            && with_heap(|h| {
+                h.gc_inhibit == 0
+                    && (h.full_marking
+                        || h.bytes_young >= h.young_limit
+                        || h.bytes_old >= h.old_limit)
+            });
         if try_gc {
             Self::maybe_collect_on_alloc();
         }
@@ -660,6 +664,7 @@ pub(crate) unsafe fn finish_alloc(mem: *mut u8, nbytes: usize, type_id: u32) -> 
         h.young.push(header);
         h.heap_set.insert(header);
         h.bytes_young += nbytes;
+        h.refresh_alloc_pressure_fast();
     });
     payload_ptr(header)
 }

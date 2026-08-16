@@ -373,6 +373,7 @@ pub(crate) fn set_gc_limits_for_test(young: usize, old: usize) {
     with_heap(|heap| {
         heap.young_limit = young;
         heap.old_limit = old;
+        heap.refresh_alloc_pressure_fast();
     });
 }
 

@@ -18,7 +18,7 @@
 - [x] **GC `mark_value` 每边再抢锁**：`mark_value_on` / `mark_on` / `scan_fields_on` 在已持有的 `Heap` 上递归；`mark_quantum` 与 STW mark 波不再每子字 `with_heap`。根播种路径仍可走对外 `mark`/`mark_value`（可重入）。
 - [x] **shadow-stack `root_push/pop` 每临时都抢堆锁**：TLS 根向量改为每 mutator `Mutex`；`push`/`pop`/`take`/`set` 不再 `with_heap`。GC 仍持堆锁后按 **heap→roots** 锁各 mutator。`lumia_root_push` 仅在 `full_marking_fast` 时 shade。
 - [x] **Memo lookup 整段 `with_heap`**：`MEMO_TF`/`MEMO_IDX` 同为 TLS `Mutex`；lookup/store/stats 不抢堆锁；store 在释放 memo 锁后按 `full_marking_fast` shade（避免 heap↔memo 死锁）。GC walk：**heap→memo**。
-- [ ] **分配路径多次加锁**：热路径已合并 inhibit+压力为一次 peek，仅在确需时进 `maybe_collect_on_alloc`；`finish_alloc` 仍单独持锁。宜继续单次 `with_heap` 覆盖插入；nursery bump 延迟入 set。
+- [ ] **分配路径多次加锁**：热路径已合并 inhibit+压力为一次 peek，并加 `ALLOC_PRESSURE_FAST`（无压力时跳过 peek）；`finish_alloc`/sweep/limit 下 `refresh_alloc_pressure_fast`。`finish_alloc` 仍单独持锁。宜继续单次 `with_heap` 覆盖插入；nursery bump 延迟入 set。
 
 ### 分配与慢路径
 - [x] **`lumia_show` / 嵌套 show 多段 `String` 分配**：容器/ADT 经 `append_show_*` 写入单一 Rust 缓冲后再 `alloc_string`；嵌套不再每元素 `lumia_show` 堆分配。
@@ -55,7 +55,7 @@
 - [ ] **双前端管线分叉**：`lumia_core::compile_source_to_core*`（单文件 parse→HIR→ty→Core，供单测）与 CLI/`check_program`（`load` 多文件 + `std.*` + visibility + assert 注解）并行。注释已承认差异；大量 core/opt 单测不经 loader，易漏 std/import/包路径回归。
 - [ ] **`visit.rs` 未成为分析默认入口**：已有 `for_each_local_mut` / `for_each_block_dfs` 等，但 `float_abi` / `channel_hint` / `closure_cap_tys` / 多份 `*_sr` / escape·memo 仍手写嵌套 walker。新 `Value` 臂易漏改；与上帝模块叠加放大维护面。
 - [ ] **Windows 工作流仍薄**：已有 `scripts/env.ps1` stub；README/BUILD 宣称 Linux+Windows，完整 `.ps1` 工作流与本地 LLVM 路径仍不对等。
-- [ ] **`lumia_rt` / `lumia_syntax` 公共 API 过宽**：rt `lib.rs` 大量 `pub use` 展开内部模块；syntax `pub use ast::*`。对比 hir/ty/codegen 的 `pub(crate)` 更收敛——重构边界模糊。
+- [ ] **`lumia_rt` 公共 API 过宽**：`lib.rs` 大量 `pub use` 展开内部模块。对比 hir/ty/codegen 的 `pub(crate)` 更收敛——重构边界模糊。（`lumia_syntax` 已改为显式 `ast::{…}` 再导出。）
 ### 续（2026-08-15 第二轮；不重复上方条目）
 - [ ] **Value→Type 三套完整并行 walker**：除已列的 join/prefer 近拷贝外，`value_ty`（≈955，含 `infer_value_ty_ctx` + 拆出的 `builtin_value_ty`）、`float_abi::{local,block}_*_heap_ty`（`local_heap_ty` 单函数 ≈687）、`mono/ret_ty`（≈720）各自重匹配几乎全部 `Value`/`Builtin` 臂；ABI 补丁常需改三处。应收成单一 typed analysis API，heap/mono/codegen 作薄客户端。
 - [ ] **`ClosureCap.as_float` + `float_cap_fixup` 半吊子通道**：IR 上可变 `as_float` 旗标（`rewrite` 写入 → `float_cap_fixup` ≈1231 行事后补丁 → codegen `emit_calls` 消费），与 `param_tys`/`ret_ty`/闭包捕获表并行。Float 捕获 ABI 应只从 typed cap 表导出，删掉事后 mutation。体量/职责继续膨胀见第五轮。
