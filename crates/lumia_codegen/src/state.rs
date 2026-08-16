@@ -72,6 +72,7 @@ pub(crate) struct FrameState<'ctx> {
     /// `slot = slot with {…}`: mut slot name + updated field indices/locals.
     pub adt_with_inplace: Option<(String, Vec<(u32, Local)>)>,
     /// `Binary` Add/Sub locals proven safe as loop IV `±1` (see `nsw_iv`).
+    /// Prefer reading via [`Self::nsw`] when filling from [`crate::nsw_iv::analyze_nsw`].
     pub nsw_binop_locals: HashSet<u32>,
     /// Locals safe as `div`/`rem` RHS (const ∉ {0,-1} or always-≥2 slots).
     pub safe_divisor_locals: HashSet<u32>,
@@ -85,6 +86,16 @@ pub(crate) struct FrameState<'ctx> {
     /// Expected type for the `Let` currently being emitted (from ret / typed slot).
     /// Used so empty `listOf()` / `mapOf()` / `setOf()` keep Float container tags.
     pub expect_alloc_ty: Option<Type>,
+}
+
+impl<'ctx> FrameState<'ctx> {
+    /// Install NSW / leaf peep facts from a single [`crate::nsw_iv::analyze_nsw`] call.
+    pub fn install_nsw(&mut self, facts: crate::nsw_iv::NswFacts) {
+        self.nsw_binop_locals = facts.nsw_binop_locals;
+        self.safe_divisor_locals = facts.safe_divisor_locals;
+        self.nonneg_iv_load_locals = facts.nonneg_iv_load_locals;
+        self.leaf_defs = facts.leaf_defs;
+    }
 }
 
 /// Memo transform emission scratch for the current function.

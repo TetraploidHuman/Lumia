@@ -35,9 +35,37 @@ const NSW_REM_MOD_MAX: i64 = 1_000_000;
 
 /// Locals that are `Binary` Add/Sub/Mul(/Rem) results proven safe for NSW emission.
 pub(crate) fn collect_nsw_binop_locals(body: &Block) -> HashSet<u32> {
-    let all_defs = collect_leaf_defs(body);
-    let nonneg_loads = collect_nonneg_iv_load_locals(body);
+    analyze_nsw(body).nsw_binop_locals
+}
 
+/// Function-wide NSW / IV peep facts — computed once per function emit.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct NswFacts {
+    pub nsw_binop_locals: HashSet<u32>,
+    pub safe_divisor_locals: HashSet<u32>,
+    pub nonneg_iv_load_locals: HashSet<u32>,
+    pub leaf_defs: HashMap<u32, Value>,
+}
+
+/// Run all NSW / leaf analyses for `body` in one pass bundle.
+pub(crate) fn analyze_nsw(body: &Block) -> NswFacts {
+    let leaf_defs = collect_leaf_defs(body);
+    let nonneg_iv_load_locals = collect_nonneg_iv_load_locals(body);
+    let safe_divisor_locals = collect_safe_divisor_locals(body);
+    let nsw_binop_locals = collect_nsw_binop_locals_inner(body, &leaf_defs, &nonneg_iv_load_locals);
+    NswFacts {
+        nsw_binop_locals,
+        safe_divisor_locals,
+        nonneg_iv_load_locals,
+        leaf_defs,
+    }
+}
+
+fn collect_nsw_binop_locals_inner(
+    body: &Block,
+    all_defs: &HashMap<u32, Value>,
+    nonneg_loads: &HashSet<u32>,
+) -> HashSet<u32> {
     let mut out = HashSet::default();
     let mut bounded_ivs: HashSet<String> = HashSet::default();
     let mut iv_upper: HashMap<String, i64> = HashMap::default();

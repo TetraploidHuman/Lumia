@@ -43,8 +43,8 @@ fn select_value(v: &mut Value, bound: Local, escaping: &HashSet<Local>) {
         }
         Value::AllocMap { flat_pairs, repr } => {
             let n_pairs = flat_pairs.len() / 2;
-            // Preserve Eq-only AssocList. Codegen never stacks LitMap (finish+heap
-            // only); small maps use SmallMap, large → default HashOrdered.
+            // Preserve Eq-only AssocList. PE `LitMap` → emit SmallMap/hash (never
+            // stack). Codegen never stacks maps; empty → null at emit.
             if matches!(*repr, MapRepr::AssocList) {
                 // keep
             } else if n_pairs > 0 && n_pairs <= max {
@@ -55,12 +55,17 @@ fn select_value(v: &mut Value, bound: Local, escaping: &HashSet<Local>) {
             } else {
                 *repr = default_map_repr();
             }
+            debug_assert!(
+                !repr.is_pe_hint(),
+                "ReprSelect must lower MapRepr::LitMap before codegen"
+            );
             let _ = (flat_pairs, local_ok);
         }
         Value::AllocSet { elems, repr } => {
-            // Empty → null at emit. Non-empty always HeapSet+finish (no LitSet stack).
+            // Empty → null at emit. PE `LitSet` and all non-empty sets → HeapSet.
             let _ = (elems, local_ok, max);
             *repr = SetRepr::HeapSet;
+            debug_assert!(!repr.is_pe_hint());
         }
         Value::AllocAdt { fields, repr, .. } => {
             if local_ok && fields.len() <= max {
@@ -169,6 +174,65 @@ mod tests {
                 value: Value::AllocSet { repr, .. },
                 ..
             } => assert_eq!(*repr, SetRepr::HeapSet),
+            other => panic!("expected AllocSet, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pe_lit_map_and_set_lower_to_emit_layouts() {
+        let body = Block {
+            ops: vec![
+                Op::Let {
+                    local: Local(0),
+                    value: Value::Int(1),
+                    pure_region: true,
+                },
+                Op::Let {
+                    local: Local(1),
+                    value: Value::Int(2),
+                    pure_region: true,
+                },
+                Op::Let {
+                    local: Local(2),
+                    value: Value::AllocMap {
+                        flat_pairs: vec![Local(0), Local(1)],
+                        repr: MapRepr::LitMap,
+                    },
+                    pure_region: true,
+                },
+                Op::Let {
+                    local: Local(3),
+                    value: Value::AllocSet {
+                        elems: vec![Local(0)],
+                        repr: SetRepr::LitSet,
+                    },
+                    pure_region: true,
+                },
+            ],
+            result: Some(Local(2)),
+        };
+        let mut module = CoreModule::empty("m");
+        module.functions.push(fun(body, HashSet::default()));
+        ReprSelect.run(&mut module);
+        let ops = &module.functions[0].body.ops;
+        match &ops[2] {
+            Op::Let {
+                value: Value::AllocMap { repr, .. },
+                ..
+            } => {
+                assert!(!repr.is_pe_hint(), "{repr:?}");
+                assert_eq!(*repr, MapRepr::SmallMap);
+            }
+            other => panic!("expected AllocMap, got {other:?}"),
+        }
+        match &ops[3] {
+            Op::Let {
+                value: Value::AllocSet { repr, .. },
+                ..
+            } => {
+                assert!(!repr.is_pe_hint(), "{repr:?}");
+                assert_eq!(*repr, SetRepr::HeapSet);
+            }
             other => panic!("expected AllocSet, got {other:?}"),
         }
     }

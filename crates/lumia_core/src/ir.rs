@@ -288,22 +288,43 @@ pub enum ListRepr {
 }
 
 /// Map default path.
+///
+/// [`MapRepr::LitMap`] is a **partial-eval hint** (known constant pairs), not an
+/// emit layout — [`crate`]'s ReprSelect lowers it to [`SmallMap`] / hash before
+/// codegen. Codegen never stacks maps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MapRepr {
     HashOrdered,
     SmallMap,
     /// Eq-only / no Hash — stay linear forever (DESIGN §3.5.1 AssocList).
     AssocList,
-    /// PE / memo fold tag only — codegen always heap+finish (not a stack layout).
+    /// PE / memo fold tag only — not a physical layout.
     LitMap,
 }
 
+impl MapRepr {
+    /// True when this tag is only meaningful to PE / const-fold, not emit.
+    #[inline]
+    pub fn is_pe_hint(self) -> bool {
+        matches!(self, Self::LitMap)
+    }
+}
+
 /// Set representation hint on `AllocSet`.
+///
+/// [`SetRepr::LitSet`] is a PE hint; ReprSelect always emits [`HeapSet`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SetRepr {
     HeapSet,
-    /// PE / memo fold tag only — codegen always heap+finish (not a stack layout).
+    /// PE / memo fold tag only — not a physical layout.
     LitSet,
+}
+
+impl SetRepr {
+    #[inline]
+    pub fn is_pe_hint(self) -> bool {
+        matches!(self, Self::LitSet)
+    }
 }
 
 /// ADT/product representation hint on `AllocAdt`.

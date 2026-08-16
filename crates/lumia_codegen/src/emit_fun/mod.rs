@@ -37,10 +37,7 @@ impl<'ctx> Codegen<'ctx> {
         self.frame.slot_tys.clear();
         self.frame.emit_dest = None;
         self.frame.expect_alloc_ty = None;
-        self.frame.nsw_binop_locals = crate::nsw_iv::collect_nsw_binop_locals(&fun.body);
-        self.frame.safe_divisor_locals = crate::nsw_iv::collect_safe_divisor_locals(&fun.body);
-        self.frame.nonneg_iv_load_locals = crate::nsw_iv::collect_nonneg_iv_load_locals(&fun.body);
-        self.frame.leaf_defs = crate::nsw_iv::collect_leaf_defs(&fun.body);
+        self.frame.install_nsw(crate::nsw_iv::analyze_nsw(&fun.body));
         self.funs.current_fun = fun.name.clone();
         self.memo.current_memo = fun.memo;
         self.funs.tco_peers = self

@@ -48,11 +48,13 @@ impl Default for OptOptions {
 }
 
 impl OptOptions {
+    /// Options for a native build. Memo and dense float SR follow `release`
+    /// (Debug stays scalar SSA unless the CLI overrides).
     pub fn for_build(release: bool) -> Self {
         Self {
             release,
             memo_tf: release,
-            dense_f64_sr: true,
+            dense_f64_sr: release,
         }
     }
 }
@@ -242,6 +244,14 @@ mod tests {
     #[test]
     fn defaults() {
         assert_eq!(default_map_repr(), MapRepr::HashOrdered);
+    }
+
+    #[test]
+    fn for_build_ties_dense_sr_and_memo_to_release() {
+        let dbg = OptOptions::for_build(false);
+        assert!(!dbg.release && !dbg.memo_tf && !dbg.dense_f64_sr);
+        let rel = OptOptions::for_build(true);
+        assert!(rel.release && rel.memo_tf && rel.dense_f64_sr);
     }
 
     #[test]

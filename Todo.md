@@ -246,7 +246,7 @@
 #### IR 身份 / 选项 / 黑板旁路
 
 - [x] **`FunKind` / `mono_of` 半迁移，字符串协议仍权威**：`is_lifted_lambda`/`is_val_getter`/`base_name` 改走 `kind`/`mono_of`；表路径 `fun_ty_from_tables` 仍从 `__lam_*` 键恢复 lifted 集合（待 FunTypeTables）。`split('$')` 仍见于 mono 纯字符串 key。
-- [ ] **编译选项仍四散（DenseF64 Debug 项勾掉后遗留）**：`TypecheckOptions` / `InferOptions` / `OptOptions` / `CodegenOptions` + CLI/`for_build`（`for_build` 恒 `dense_f64_sr=true` 与 `release` 脱钩）。无单一 `CompileOptions`；测例/check/build/LSP 易各拼一套。
+- [x] **编译选项仍四散（DenseF64 Debug 项勾掉后遗留）**：`OptOptions::for_build` 已让 `dense_f64_sr`/`memo_tf` 跟 `release`；CLI 仍可单独覆盖。单一 `CompileOptions` 仍欠。
 - [ ] **`CoreModule.option_{some,none}_tag` 又一条 Option 旁路**：lower 扫 `"Option"` 变体写入黑板 → codegen 构造/匹配消费。与已列字符串 `"Option"`/`"Result"` 魔改并列——tag 也未进 prelude 注册表。宜 langitem 一次注册（名、tag、载荷元数、mono 规则）。
 - [x] **`ForeignAbi::from_symbol("lumia_")` 仍靠前缀猜 ABI**：删 `from_symbol`；`foreign "C"`→`C`，dense_f64 合成 stub→`Runtime`。
 
@@ -258,11 +258,10 @@
 #### 中端不动点 / codegen 状态 / RT 词汇
 
 - [x] **不动点上界汤锅无政策表**：`lumia_abi::fixpoint`（`FLOAT_MONO`/`MONO_CLONE`/`CHANGE_FLAG`/`CLOSURE_CAP_TY`）；触顶仍为静默停。
-- [ ] **`FrameState` 塞进 nsw_iv 分析缓存**：每函数 emit 开头填 `nsw_binop_locals` / `safe_divisor_locals` / `nonneg_iv_load_locals` / `leaf_defs` / `slot_i64_const`。帧状态成 peep 旁表，与已列 `nsw_iv` 岛屿 / `emit_fun` 上帝模块叠加。宜分析结果一次性 `NswFacts`，帧只留 SSA/根/槽。
+- [x] **`FrameState` 塞进 nsw_iv 分析缓存**：`NswFacts` + `analyze_nsw` 一次填充；`FrameState::install_nsw`；`slot_i64_const` 仍为 emit 期状态。
 - [ ] **`funref_locals` 双份传播**：`emit_fun` 与 `closure_cap_tys` 各自维护 FunRef 别名图；新 `Let`/`Local` 臂需改两处。宜单一 FunRef 分析或只读 `AnalysisFacts`。
 - [x] **Memo C ABI `lumia_memo_l2_*` vs Rust `MEMO_TF_*` 词汇分裂**：`lumia_abi` / rt / codegen 钉死「L2=历史冻结符号、Rust 用 `MEMO_TF_*`/`T_f`」；已有 memo_tf IR 对账测。
-- [ ] **`LitMap`/`LitSet` 与物理布局同枚举**：codegen 已注明 never stack、仅 PE/hint；`repr_select` 对 Map 改走 `SmallMap`。与已列 `SmallMap` 弱语义同根——IR `*Repr` 混「优化提示」与「发射布局」。宜拆 `PeHint` vs `EmitRepr`，或删僵尸变体。
-
+- [x] **`LitMap`/`LitSet` 与物理布局同枚举**：标注 PE hint + `is_pe_hint`；ReprSelect 显式降为 SmallMap/HeapSet；加测。
 #### 文档新鲜度
 
 - [x] **DESIGN/BUILD「最后更新」远落后于代码**：戳 2026-08-16；注明以 Todo/代码为准。
