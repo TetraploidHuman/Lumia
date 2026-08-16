@@ -407,7 +407,7 @@ val main = {
                     if matches!(
                         e.as_ref(),
                         Type::Adt { name, params }
-                            if name == "Option"
+                            if lumia_hir::is_option(name)
                                 && params.first().is_some_and(|p| matches!(p, Type::Float))
                     )
             ),
@@ -484,7 +484,7 @@ val main = {
             tys.iter().any(|t| matches!(
                 t,
                 Type::Adt { name, params }
-                    if name == "Option"
+                    if lumia_hir::is_option(name)
                         && params.first().is_some_and(|p| matches!(p, Type::Float))
             )),
             "expected Option[Float], got {tys:?}"
@@ -493,7 +493,7 @@ val main = {
             tys.iter().any(|t| matches!(
                 t,
                 Type::Adt { name, params }
-                    if name == "Result"
+                    if lumia_hir::is_result(name)
                         && params.len() == 2
                         && matches!(params[0], Type::Float)
                         && matches!(params[1], Type::String)
@@ -1404,7 +1404,7 @@ val main = {
                             crate::Op::Let {
                                 value: crate::Value::AllocAdt { adt_name, .. },
                                 ..
-                            } if adt_name == "Option"
+                            } if lumia_hir::is_option(adt_name)
                         )
                     })
             })
@@ -1428,7 +1428,7 @@ val main = {
             matches!(
                 &spawn.ret_ty,
                 Type::Adt { name, params }
-                    if name == "Option"
+                    if lumia_hir::is_option(name)
                         && params.first().is_some_and(|p| matches!(p, Type::Float))
             ),
             "spawn Some(1.5) ret {:?}",

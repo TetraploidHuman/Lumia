@@ -37,7 +37,11 @@ impl Infer {
             self.fresh()
         };
         self.ctrl.return_stack.push(ret_tv.clone());
-        let (rt, re) = self.infer_expr(&fun.body)?;
+        let saved_loop = self.ctrl.loop_depth;
+        self.ctrl.loop_depth = 0;
+        let body_result = self.infer_expr(&fun.body);
+        self.ctrl.loop_depth = saved_loop;
+        let (rt, re) = body_result?;
         self.unify_at(expr_span(&fun.body), rt, ret_tv.clone())?;
         self.ctrl.return_stack.pop();
         // main is always an effect root

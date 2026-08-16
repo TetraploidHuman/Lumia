@@ -10,7 +10,7 @@ use rustc_hash::FxHashMap as HashMap;
 pub fn classify_sum_field_recursive(adt: &AdtDef) -> HashMap<String, Vec<bool>> {
     // Prelude Option/Result keep parametric payloads (Result is also special-cased
     // in ty `infer_adt_new`). Treating `Some` like `Nat.S` would require `Some(3): Option`.
-    if adt.name == "Option" || adt.name == "Result" {
+    if crate::is_option_or_result(&adt.name) {
         return adt
             .variants
             .iter()

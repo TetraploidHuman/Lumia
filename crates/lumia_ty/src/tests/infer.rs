@@ -326,3 +326,74 @@ val main = {
     let typed = infer_module(&hir).expect("poly ctor alias");
     check_effect_boundaries(&typed).unwrap();
 }
+
+#[test]
+fn break_outside_loop_is_error() {
+    let src = r#"
+module M
+val main = {
+    break
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let err = infer_module(&hir).expect_err("bare break");
+    assert!(
+        err.to_string().contains("break") && err.to_string().contains("loop"),
+        "{err}"
+    );
+}
+
+#[test]
+fn continue_outside_loop_is_error() {
+    let src = r#"
+module M
+val main = {
+    continue
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let err = infer_module(&hir).expect_err("bare continue");
+    assert!(
+        err.to_string().contains("continue") && err.to_string().contains("loop"),
+        "{err}"
+    );
+}
+
+#[test]
+fn break_inside_for_ok() {
+    let src = r#"
+module M
+val main = {
+    for i in 1..3 {
+        break
+    }
+    0
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    infer_module(&hir).expect("break in for");
+}
+
+#[test]
+fn break_inside_lambda_inside_loop_is_error() {
+    let src = r#"
+module M
+val main = {
+    for i in 1..3 {
+        val f = { -> break }
+        f()
+    }
+    0
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let err = infer_module(&hir).expect_err("break across lambda");
+    assert!(
+        err.to_string().contains("break") && err.to_string().contains("loop"),
+        "{err}"
+    );
+}

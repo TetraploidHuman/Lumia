@@ -62,7 +62,7 @@
 - [ ] **`mono/specialize.rs` 上帝模块**：≈2135 行集 clone 发现、改写、ret refresh、forwarder 消除、FunRef HOF、Option/Result 载荷规则于一身；几乎每个 mono ABI 修复都落这里。宜按 collect / rewrite / ret_refresh / forwarders 拆分，并与 `ret_ty` 共享 lattice。
 - [ ] **codegen `nsw_iv` 第二块基准形岛屿**：`nsw_iv.rs` ≈1071 行（Collatz/`3*x`、fib、matmul 形 peep），经 `emit_fun` 焊进每个函数 emit。与已列 `*_sr` 同病但未收录——通用 NSW 被热核形状绑架。宜迁 opt / feature-gate，codegen 只发 NSW 标记。
 - [x] **Core IR 嵌 `lumia_syntax::{BinOp,UnOp}`**：已收成 `CoreBinOp`/`CoreUnOp`（`ops.rs`）；lower 边界 `Into`；opt/codegen 改匹配 Core 枚举。中后端仍可能因其它表面依赖 `lumia_syntax`。
-- [x] **Prelude `Option`/`Result` 靠字符串魔改**：`lumia_hir::langitem` 助手已迁入 mono/ty/value_ty/emit_eq 与 float_abi 生产路径；测例/opt memo 等处字面量仍可再扫。
+- [x] **Prelude `Option`/`Result` 靠字符串魔改**：`lumia_hir::langitem` 助手已覆盖 mono/ty/value_ty/emit_eq/float_abi/adt_classify/codegen task/`memo` helpers；channel_hint/mono/memo 测例比较亦改走 `is_option*`。
 - [ ] **SSA `Local` + 字符串 `Name`/`Assign` 双寻址**：`Value::Name(String)` + `Op::Assign { name }` 与 SSA 并存；ABI/`slot_tys` 必须双轨跟踪。槽位应统一 `Local`/`SlotId`，名字仅调试打印。
 - [ ] **`InferValueCtx` 可选表蔓延 / `FunIndex` 仅 mono**：`value_ty` 上下文堆 ≈8 个 `Option<&HashMap<…>>`；`fun_index` 仅 mono 用，而 float_abi/fixup/channel_hint/codegen 反复手拼 `fun_ret_tys`。缺共享 `ModuleTables` → 表装配拷贝。`CodegenTypeTables` 已存在但几乎只服务 codegen（半收口见第五轮）。
 - [x] **Builtin→RT 符号在 `BuiltinInfo` 外覆盖**：`list_receiver_rt_override`（`ListLen`/`MapSet`/`ListGet`→`lumia_list_*`）与既有 `string_receiver_rt_override` 并列；仍非 BuiltinInfo 表内字段，但是唯一 emit 覆盖面。
@@ -213,7 +213,7 @@
 #### HIR ↔ ty / 控制流
 
 - [x] **双份 free_vars，`Assign` 语义分裂**：`hir/collect_free_vars` 现将 Assign LHS 记为 use；`ty/free_var_names` 直接委托 `all_free_vars`（spawn 捕获与 list_hof 并行检查同源；并行侧更保守）。
-- [ ] **`break`/`continue` 定型无循环嵌套校验**：直接 `(Unit, Pure)`；无 `loop_depth`；无拒测。宜 typing 跟踪循环深度。
+- [x] **`break`/`continue` 定型无循环嵌套校验**：`AltReturnState::loop_depth`；`infer_loop` 增减；lambda/`infer_fun` 清零；拒测覆盖裸 `break`/`continue` 与跨闭包。
 - [ ] **ty demote 公开啃 HIR desugar + `LowerCtx::empty()`**：`parallel.rs` 调 `desugar_list_*(&LowerCtx::empty(), …)`。宜纯 desugar 函数或不依赖 LowerCtx 的 typed pass。
 
 #### codegen / abi

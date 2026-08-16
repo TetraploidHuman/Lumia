@@ -138,7 +138,7 @@ fn mono_key_suffix_homogeneous_scalars() {
     assert_eq!(
         MonoKey(vec![
             MonoKind::Adt {
-                name: "Option".into(),
+                name: lumia_hir::OPTION.name.into(),
                 params: vec![MonoKind::Float],
             },
             MonoKind::FunRef("dbl".into()),
@@ -172,7 +172,7 @@ fn mono_key_hof_ret_ty_option_map() {
     };
     let key = MonoKey(vec![
         MonoKind::Adt {
-            name: "Option".into(),
+            name: lumia_hir::OPTION.name.into(),
             params: vec![MonoKind::Int],
         },
         MonoKind::FunRef("dbl".into()),
@@ -183,7 +183,7 @@ fn mono_key_hof_ret_ty_option_map() {
     assert_eq!(
         ret,
         Type::Adt {
-            name: "Option".into(),
+            name: lumia_hir::OPTION.name.into(),
             params: vec![Type::Float],
         }
     );
@@ -1046,7 +1046,7 @@ val main = {
         matches!(
             &body_ty,
             Some(lumia_ty::Type::Adt { name, params })
-                if name == "Option"
+                if lumia_hir::is_option(name)
                     && params.first().is_some_and(|p| matches!(p, lumia_ty::Type::Int))
         ),
         "block_result_fixed_ty should be Option[Int], got {body_ty:?}"
@@ -1055,7 +1055,7 @@ val main = {
         matches!(
             &flat.ret_ty,
             lumia_ty::Type::Adt { name, params }
-                if name == "Option"
+                if lumia_hir::is_option(name)
                     && params.first().is_some_and(|p| matches!(p, lumia_ty::Type::Int))
         ),
         "flatten should return Option[Int], got {:?}",
@@ -1156,7 +1156,7 @@ val main = {
         matches!(
             &and_then.ret_ty,
             Type::Adt { name, params }
-                if name == "Result"
+                if lumia_hir::is_result(name)
                     && params.first().is_some_and(|p| matches!(p, Type::Float))
                     && !params.iter().any(|p| matches!(p, Type::Var(_)))
         ),
@@ -1201,7 +1201,7 @@ val main = {
     assert!(
         matches!(
             &times2.ret_ty,
-            Type::Adt { name, params } if name == "Option"
+            Type::Adt { name, params } if lumia_hir::is_option(name)
                 && params.first().is_some_and(|p| matches!(p, Type::Float))
         ),
         "times2 ret should be Option[Float], got {:?}",
@@ -1215,7 +1215,7 @@ val main = {
     assert!(
         matches!(
             &and_then.ret_ty,
-            Type::Adt { name, params } if name == "Option"
+            Type::Adt { name, params } if lumia_hir::is_option(name)
                 && params.first().is_some_and(|p| matches!(p, Type::Float))
         ),
         "andThen$ clone ret should be Option[Float], got {:?}",
@@ -1224,7 +1224,7 @@ val main = {
     assert!(
         matches!(
             and_then.param_tys.first(),
-            Some(Type::Adt { name, params }) if name == "Option"
+            Some(Type::Adt { name, params }) if lumia_hir::is_option(name)
                 && params.first().is_some_and(|p| matches!(p, Type::Float))
         ),
         "andThen$ param0 should be Option[Float], got {:?}",
@@ -1540,7 +1540,7 @@ val main = {
         matches!(
             &om.ret_ty,
             Type::Adt { name, params }
-                if name == "Option" && matches!(params.first(), Some(Type::Int))
+                if lumia_hir::is_option(name) && matches!(params.first(), Some(Type::Int))
         ),
         "optionMap ret must be Option[Int], got {:?}",
         om.ret_ty

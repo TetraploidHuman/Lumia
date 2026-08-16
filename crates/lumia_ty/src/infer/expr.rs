@@ -69,7 +69,8 @@ impl Infer {
                 step,
                 span,
             } => self.infer_loop(cond, body, step.as_deref(), *span),
-            Expr::Break(_) | Expr::Continue(_) => Ok((Type::Unit, Effect::pure())),
+            Expr::Break(span) => self.infer_break_continue("break", *span),
+            Expr::Continue(span) => self.infer_break_continue("continue", *span),
             Expr::Return { value, span } => self.infer_return(value, *span),
             Expr::Alt {
                 scrutinee,
@@ -297,11 +298,30 @@ impl Infer {
         }
         let ret_tv = self.fresh();
         self.ctrl.return_stack.push(ret_tv.clone());
-        let (rt, re) = self.infer_expr(body)?;
+        // `break`/`continue` must not cross a lambda (same as other languages).
+        let saved_loop = self.ctrl.loop_depth;
+        self.ctrl.loop_depth = 0;
+        let body_result = self.infer_expr(body);
+        self.ctrl.loop_depth = saved_loop;
+        let (rt, re) = body_result?;
         self.unify_at(span, rt, ret_tv.clone())?;
         self.ctrl.return_stack.pop();
         self.pop();
         Ok((Type::Fun(pts, Box::new(ret_tv), re), Effect::pure()))
+    }
+
+    fn infer_break_continue(
+        &self,
+        kw: &str,
+        span: lumia_syntax::Span,
+    ) -> Result<(Type, Effect), TypeError> {
+        if self.ctrl.loop_depth == 0 {
+            return Err(at(
+                span,
+                format!("`{kw}` is only allowed inside a loop"),
+            ));
+        }
+        Ok((Type::Unit, Effect::pure()))
     }
 
     fn infer_binary(
@@ -455,15 +475,20 @@ impl Infer {
         step: Option<&Expr>,
         span: lumia_syntax::Span,
     ) -> Result<(Type, Effect), TypeError> {
-        let (ct, ce) = self.infer_expr(cond)?;
-        self.unify_at(span, ct, Type::Bool)?;
-        let (_, be) = self.infer_expr(body)?;
-        let se = if let Some(s) = step {
-            self.infer_expr(s)?.1
-        } else {
-            Effect::pure()
-        };
-        Ok((Type::Unit, self.union3_eff(ce, be, se)))
+        self.ctrl.loop_depth += 1;
+        let result = (|| {
+            let (ct, ce) = self.infer_expr(cond)?;
+            self.unify_at(span, ct, Type::Bool)?;
+            let (_, be) = self.infer_expr(body)?;
+            let se = if let Some(s) = step {
+                self.infer_expr(s)?.1
+            } else {
+                Effect::pure()
+            };
+            Ok((Type::Unit, self.union3_eff(ce, be, se)))
+        })();
+        self.ctrl.loop_depth -= 1;
+        result
     }
 
     fn infer_return(

@@ -1,6 +1,7 @@
 //! Shared helpers for const-fold PE of literal collections.
 
 use lumia_core::{AdtRepr, ListRepr, Local, Value};
+use lumia_hir::OPTION;
 
 use super::FoldEnv;
 
@@ -228,8 +229,8 @@ pub(super) fn compact_set_elems(elems: &mut Vec<Local>, env: &FoldEnv) {
 
 pub(super) fn alloc_option_some(v: Local) -> Value {
     Value::AllocAdt {
-        adt_name: "Option".into(),
-        tag: 0,
+        adt_name: OPTION.name.into(),
+        tag: OPTION.default_tag("Some").expect("Some"),
         fields: vec![v],
         repr: AdtRepr::LitAdt,
     }
@@ -237,8 +238,8 @@ pub(super) fn alloc_option_some(v: Local) -> Value {
 
 pub(super) fn alloc_option_none() -> Value {
     Value::AllocAdt {
-        adt_name: "Option".into(),
-        tag: 1,
+        adt_name: OPTION.name.into(),
+        tag: OPTION.default_tag("None").expect("None"),
         fields: vec![],
         repr: AdtRepr::LitAdt,
     }

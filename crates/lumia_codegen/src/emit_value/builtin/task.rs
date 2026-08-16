@@ -297,7 +297,12 @@ impl<'ctx> Codegen<'ctx> {
     ) -> Result<IntValue<'ctx>> {
         let n_fields = if field.is_some() { 1u64 } else { 0 };
         let nbytes = self.llvm.i64_ty.const_int((1 + n_fields) * 8, false);
-        let kind = self.funs.adt_show_kinds.get("Option").copied().unwrap_or(0);
+        let kind = self
+            .funs
+            .adt_show_kinds
+            .get(lumia_hir::OPTION.name)
+            .copied()
+            .unwrap_or(0);
         let type_id = self
             .llvm
             .context

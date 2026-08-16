@@ -83,7 +83,7 @@ fn const_fold_map_get_to_option() {
                     repr: AdtRepr::LitAdt,
                 },
                 ..
-            } if adt_name == "Option" && fields == &[Local(3)]
+            } if lumia_hir::is_option(adt_name) && fields == &[Local(3)]
         ),
         "map.get(hit) should PE to Some, got {:?}",
         module.functions[0].body.ops[6]
@@ -99,7 +99,7 @@ fn const_fold_map_get_to_option() {
                     repr: AdtRepr::LitAdt,
                 },
                 ..
-            } if adt_name == "Option" && fields.is_empty()
+            } if lumia_hir::is_option(adt_name) && fields.is_empty()
         ),
         "map.get(miss) should PE to None, got {:?}",
         module.functions[0].body.ops[8]

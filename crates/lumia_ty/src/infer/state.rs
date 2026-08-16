@@ -76,6 +76,8 @@ pub(crate) struct ProductState {
 #[derive(Default)]
 pub(crate) struct AltReturnState {
     pub(crate) return_stack: Vec<Type>,
+    /// Nesting depth of `Loop` exprs (reset across lambdas / fun bodies).
+    pub(crate) loop_depth: u32,
     pub(crate) alt_kinds: HashMap<lumia_syntax::Span, AltKind>,
     /// Nesting depth while inferring an `alt` scrutinee. Open `.get` under `alt`
     /// freezes Map/`Option` (for `getOr`); otherwise open `.get` stays List-shaped.
