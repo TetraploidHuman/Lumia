@@ -230,10 +230,10 @@
 
 #### LSP / pkg / 工具链假绿
 
-- [ ] **`severity_and_code` 靠 `type:` 前缀，生产 type 诊断常无 code**：多文件/分析路径发裸 `message()`；单测只喂已带前缀串。宜结构化 `DiagnosticKind`。
+- [x] **`severity_and_code` 靠 `type:` 前缀，生产 type 诊断常无 code**：`DiagnosticKind` + overlay/partial 显式 kind；LSP `code` 不再啃消息前缀。
 - [x] **LSP format 解析失败返回空编辑（假绿）**：parse 失败改为 `Err` → JSON-RPC `-32603`；加拒测。
 - [x] **分析成功只清空当前 URI，跨文件诊断可陈旧**：成功时清 load 图全部文件 URI；`last_diag_uris` 合并清上次 import；close 顺带清。
-- [ ] **`pkg` lock 缺版本写死 `"0.0.0"`**：锁「绿」但无信息。
+- [x] **`pkg` lock 缺版本写死 `"0.0.0"`**：无 version / 无 dep `Lumia.toml` 时 `bail`，不再假绿。
 - [ ] **`codegen` feature 半切：slim 仍硬链 `lumia_core`；Build clap 永在**：无 feature 时 Build 体内才 `bail`；LSP 仍拖 Core。宜 core 仅 `codegen` 依赖；隐藏/拆 Build 子命令。
 - [ ] **VS Code README 设置/vsix 号漂移 + 对账脚本不管配置键**：README 仍 `0.3.5.vsix`、Settings 漏 `autoParallel`；`check_editor_assets` 不对账 settings/README/版本。
 - [ ] **`scripts/e2e.sh` 游离：名义 e2e 但不进 CI/`check.sh`**：实际门禁走更宽的 `cargo test -p lumia --tests`。宜删、改名，或明确「非正式入口」。

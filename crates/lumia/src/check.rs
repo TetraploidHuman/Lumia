@@ -1,5 +1,6 @@
 //! Shared program typecheck + assert annotation for CLI and LSP.
 
+use crate::diag::{Diagnostic, DiagnosticKind};
 use crate::load::{load_program, load_program_with_overlays, path_label, LoadedProgram, SourceFile};
 use anyhow::Result;
 use lumia_hir::lower_module;
@@ -63,6 +64,7 @@ pub enum OverlayCheckError {
     Load(String),
     Analyze {
         loaded: Box<LoadedProgram>,
+        kind: DiagnosticKind,
         err: TypeError,
     },
 }
@@ -83,10 +85,12 @@ pub fn check_program_with_overlays(
         Ok(typed) => Ok((loaded, typed)),
         Err(AnalyzeError::Lower(e)) => Err(OverlayCheckError::Analyze {
             loaded: Box::new(loaded),
+            kind: DiagnosticKind::Lower,
             err: e.into(),
         }),
         Err(AnalyzeError::Type(err)) => Err(OverlayCheckError::Analyze {
             loaded: Box::new(loaded),
+            kind: DiagnosticKind::Type,
             err,
         }),
     }
@@ -103,7 +107,7 @@ pub fn check_source(text: &str, auto_parallel: bool) -> Result<TypedModule, (Spa
         // the first diagnostic (CLI-style).
     }
     match partial.diagnostics.into_iter().next() {
-        Some(d) => Err(d),
+        Some(d) => Err((d.span, d.display_message())),
         None => Err((Span::dummy(), "analysis failed".into())),
     }
 }
@@ -112,16 +116,16 @@ pub fn check_source(text: &str, auto_parallel: bool) -> Result<TypedModule, (Spa
 #[derive(Debug, Default)]
 pub struct PartialCheck {
     pub typed: Option<TypedModule>,
-    pub diagnostics: Vec<(Span, String)>,
+    pub diagnostics: Vec<Diagnostic>,
 }
 
 /// Parse with recovery, then lower/typecheck whatever items survived.
 pub fn check_source_recovering(text: &str, auto_parallel: bool) -> PartialCheck {
     let outcome = parse_module_recovering(text);
-    let mut diagnostics: Vec<(Span, String)> = outcome
+    let mut diagnostics: Vec<Diagnostic> = outcome
         .errors
         .into_iter()
-        .map(|e| (e.span, format!("parse: {}", e.message)))
+        .map(|e| Diagnostic::new(e.span, DiagnosticKind::Parse, e.message))
         .collect();
 
     if outcome.module.name.is_empty() && outcome.module.items.is_empty() {
@@ -136,7 +140,7 @@ pub fn check_source_recovering(text: &str, auto_parallel: bool) -> PartialCheck 
     let hir = match lower_module(&m) {
         Ok(h) => h,
         Err(e) => {
-            diagnostics.push((e.span, format!("lower: {}", e.message)));
+            diagnostics.push(Diagnostic::new(e.span, DiagnosticKind::Lower, e.message));
             return PartialCheck {
                 typed: None,
                 diagnostics,
@@ -149,7 +153,11 @@ pub fn check_source_recovering(text: &str, auto_parallel: bool) -> PartialCheck 
     };
     let (typed, ty_errs) = typecheck_hir_recovering(&hir, NameVisibility::default(), &opts);
     for e in ty_errs {
-        diagnostics.push((e.span().unwrap_or_default(), e.message().to_string()));
+        diagnostics.push(Diagnostic::new(
+            e.span().unwrap_or_default(),
+            DiagnosticKind::Type,
+            e.message().to_string(),
+        ));
     }
     PartialCheck { typed, diagnostics }
 }

@@ -68,7 +68,12 @@ fn lock_deps_recursive(
             DepSpec::Table(DepTable { version, .. }) => version
                 .clone()
                 .or_else(|| read_package_version(&abs))
-                .unwrap_or_else(|| "0.0.0".into()),
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "dependency `{name}` has no version (set \
+                         `dependencies.{name}.version` or `package.version` in its Lumia.toml)"
+                    )
+                })?,
         };
         packages.push(LockPackage {
             name: name.clone(),

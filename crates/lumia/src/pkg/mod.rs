@@ -166,4 +166,32 @@ version = "1.0.0"
         );
         let _ = fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn lock_rejects_path_dep_without_version() {
+        let dir = std::env::temp_dir().join(format!("lumia_pkg_nover_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let dep = dir.join("vendor").join("leaf");
+        fs::create_dir_all(&dep).unwrap();
+        // Path dep exists but has no Lumia.toml and no version pin.
+        let manifest = dir.join("Lumia.toml");
+        fs::write(
+            &manifest,
+            r#"[package]
+name = "root"
+version = "1.0.0"
+
+[dependencies]
+leaf = { path = "vendor/leaf" }
+"#,
+        )
+        .unwrap();
+        let m = load_manifest(&manifest).unwrap();
+        let err = lock_from_manifest(&manifest, &m).unwrap_err().to_string();
+        assert!(
+            err.contains("no version") && err.contains("leaf"),
+            "expected missing-version error, got {err}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

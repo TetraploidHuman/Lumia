@@ -7,6 +7,7 @@ use super::uri::{path_to_uri, uri_to_path};
 use crate::check::{
     check_program_with_overlays, check_source_recovering, OverlayCheckError, PartialCheck,
 };
+use crate::diag::DiagnosticKind;
 use crate::load::{LoadedProgram, SourceFile};
 use anyhow::Result;
 use lumia_ty::TypedModule;
@@ -267,7 +268,7 @@ fn analyze_buffer(
                 return (
                     vec![(
                         uri.to_string(),
-                        vec![diag_json(1, 1, 1, 2, "analysis failed")],
+                        vec![diag_json(1, 1, 1, 2, DiagnosticKind::Other, "analysis failed")],
                     )],
                     None,
                 );
@@ -286,7 +287,7 @@ fn partial_to_lsp(
     let diags: Vec<Value> = partial
         .diagnostics
         .iter()
-        .map(|(span, msg)| diag_from_span(text, *span, msg))
+        .map(|d| diag_from_span(text, d.span, d.kind, &d.message))
         .collect();
     let analysis = partial.typed.map(|typed| Analysis {
         typed,
@@ -345,7 +346,7 @@ fn load_and_typecheck(
                 vec![diag_from_load_message(text_for_path(path, overlays), &msg)],
             )])
         }
-        Err(OverlayCheckError::Analyze { loaded, err }) => {
+        Err(OverlayCheckError::Analyze { loaded, kind, err }) => {
             let span = err.span().unwrap_or_default();
             let file = loaded
                 .files
@@ -357,7 +358,7 @@ fn load_and_typecheck(
             };
             Err(vec![(
                 diag_uri,
-                vec![diag_from_span(src, span, err.message())],
+                vec![diag_from_span(src, span, kind, err.message())],
             )])
         }
     }
@@ -374,13 +375,14 @@ fn diag_from_load_message(src: &str, msg: &str) -> Value {
     // `file:line:col: kind: text` — file may contain drive letters / colons on Windows.
     if let Some((line, col, rest)) = parse_line_col_prefix(first) {
         let end_col = col.saturating_add(1);
-        return diag_json(line, col, line, end_col, rest);
+        let kind = DiagnosticKind::from_message_prefix(rest);
+        return diag_json(line, col, line, end_col, kind, rest);
     }
     if !src.is_empty() {
         // Last resort: keep message, mark start of buffer.
-        return diag_json(1, 1, 1, 2, msg);
+        return diag_json(1, 1, 1, 2, DiagnosticKind::Other, msg);
     }
-    diag_json(1, 1, 1, 2, msg)
+    diag_json(1, 1, 1, 2, DiagnosticKind::Other, msg)
 }
 
 fn parse_line_col_prefix(line: &str) -> Option<(u32, u32, &str)> {
