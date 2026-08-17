@@ -47,6 +47,8 @@ e2e_ok!(
     "examples/nested_bool_container_show.lm",
     "[true, false]",
     "Box([true, false])",
+    "[true, true]",
+    "Box([true, true])",
     "{true: false}",
     "Box({true: false})",
     "[true]",

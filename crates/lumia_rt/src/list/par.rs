@@ -10,7 +10,7 @@ use crate::common::{list_elem_is_float, trap_abort, GcInhibitGuard, PAR_WORKER, 
 use crate::concurrency_policy::forbid_list_parallel;
 use crate::gc::{list_payload_bytes, lumia_alloc};
 use crate::globals::note_par_task_demotion;
-use lumia_abi::list_type_id;
+use lumia_abi::{list_elem_is_bool, list_type_id_flags};
 
 #[cfg(test)]
 pub(crate) use crate::globals::{par_task_demotions, reset_par_task_demotions};
@@ -55,7 +55,11 @@ pub unsafe extern "C" fn lumia_list_par_map(
     let Some(f) = f else {
         trap_abort("lumia: list_par_map null function");
     };
-    let result_tid = list_type_id(list_elem_is_float(result_tid));
+    // Preserve Float/Bool elem tags from codegen (float-only sanitize dropped TID_B_KEY).
+    let result_tid = list_type_id_flags(
+        list_elem_is_float(result_tid),
+        list_elem_is_bool(result_tid),
+    );
     let iota = !list.is_null() && list_tid(list) == TYPE_LIST_IOTA;
     // SAFETY: list null or live List/Iota — read len / iota start only.
     let (n, iota_start, src_addr) = unsafe {
@@ -73,11 +77,11 @@ pub unsafe extern "C" fn lumia_list_par_map(
         }
     };
     if n <= 0 {
-        return if list_elem_is_float(result_tid) {
-            // Fresh empty F64 list — avoid ensure_list_f64(empty) double-path.
+        return if list_elem_is_float(result_tid) || list_elem_is_bool(result_tid) {
+            // Fresh empty tagged list — avoid ensure_* double-path on immortal empty.
             // SAFETY: alloc returns live payload; write len word.
             unsafe {
-                let dest = lumia_alloc(8, list_type_id(true));
+                let dest = lumia_alloc(8, result_tid);
                 *(dest as *mut i64) = 0;
                 dest
             }

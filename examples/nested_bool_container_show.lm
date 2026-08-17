@@ -11,6 +11,11 @@ val main = {
     println(listOf(true, false))
     println(Box { o = listOf(true, false) })
 
+    // Default auto-parallel map must keep TID_B_KEY for nested Auto Show.
+    val mapped = listOf(1, 2).map { it -> true }
+    println(mapped)
+    println(Box { o = mapped })
+
     var mb = mapOf()
     mb = mb.set(true, false)
     println(mb)
