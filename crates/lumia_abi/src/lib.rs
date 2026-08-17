@@ -16,13 +16,17 @@
 //!
 //! # Container `type_id` packing
 //!
-//! Bases occupy bits `[7:0]` (dense 1..=9). Float / AssocList flags live in
-//! bits `[10:8]` so List/Map/Set no longer need a combinatorial ID matrix:
+//! Bases occupy bits `[7:0]` (dense 1..=9). Scalar / AssocList / Hash flags live
+//! above the base so List/Map/Set no longer need a combinatorial ID matrix:
 //!
 //! - bit 8 `TID_F_KEY` — List: float elems; Set: float elems; Map: float keys
 //! - bit 9 `TID_F_VAL` — Map: float values
 //! - bit 10 `TID_ASSOC` — Map/Set: AssocList (never hash-promote)
 //! - bit 11 `TID_HASH` — Map/Set: open-addressing hash table (vs linear payload)
+//! - bit 12 `TID_B_KEY` — List/Set elems or Map keys are Bool
+//! - bit 13 `TID_B_VAL` — Map values are Bool
+//!
+//! Float and Bool tags are mutually exclusive per slot (Float wins if both set).
 
 mod dense_f64;
 mod fixpoint;
@@ -37,8 +41,9 @@ pub use fixpoint::{
     FixpointCaps, CHANGE_FLAG_ROUNDS, CLOSURE_CAP_TY_ROUNDS, FLOAT_MONO_ROUNDS, MONO_CLONE_ROUNDS,
 };
 pub use float_contract::{
-    float_roles, gc_skip_float_slot, is_float_capable_container, FloatRoles, ENSURE_LIST_F64,
-    ENSURE_MAP_F64, ENSURE_MAP_VF64, ENSURE_SET_F64,
+    float_roles, gc_skip_float_slot, is_float_capable_container, FloatRoles, ENSURE_LIST_BOOL,
+    ENSURE_LIST_F64, ENSURE_MAP_BOOL, ENSURE_MAP_F64, ENSURE_MAP_VBOOL, ENSURE_MAP_VF64,
+    ENSURE_SET_BOOL, ENSURE_SET_F64,
 };
 pub use memo::{
     MEMO_IDX_CAP, MEMO_IDX_MAX_FUNS, MEMO_IDX_TABLE_BYTES, MEMO_PROCESS_BYTE_CAP,
@@ -50,16 +55,19 @@ pub use opt_caps::{
 };
 pub use scheduler::{SCHEDULER_IO, SCHEDULER_WORKER};
 pub use type_id::{
-    adt_show_kind, adt_type_id, is_list_tid, is_map_tid, is_set_tid, list_elem_is_float,
-    list_type_id, map_key_is_float, map_tid_is_assoc, map_type_id, map_val_is_float,
-    set_elem_is_float, set_tid_is_assoc, set_type_id, tid_assoc, tid_base, tid_f_key, tid_f_val,
-    tid_hash, tid_with_f_key, tid_with_f_val, tid_with_hash, tid_without_hash, ScalarKind,
-    ADT_SET_FLOAT_MASK, ADT_SET_BOOL_MASK, FUNREF_TAG, OBJECT_HEADER_BYTES, OBJECT_HEADER_WORDS, TID_ADT_KIND_MASK,
-    TID_ADT_KIND_SHIFT, TID_ASSOC, TID_BASE_MASK, TID_F_KEY, TID_F_VAL, TID_HASH, TRAIT_EQ,
-    TRAIT_HASH, TRAIT_NUM, TRAIT_ORD, TRAIT_SHOW, TYPE_ADT, TYPE_BYTES, TYPE_CHANNEL, TYPE_CHAR,
-    TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_F64, TYPE_LIST_IOTA, TYPE_MAP, TYPE_MAP_ASSOC,
-    TYPE_MAP_ASSOC_F64, TYPE_MAP_ASSOC_F64V, TYPE_MAP_ASSOC_VF64, TYPE_MAP_F64, TYPE_MAP_F64V,
-    TYPE_MAP_VF64, TYPE_SET, TYPE_SET_ASSOC, TYPE_SET_F64, TYPE_STRING, TYPE_TASK,
+    adt_show_kind, adt_type_id, is_list_tid, is_map_tid, is_set_tid, list_elem_is_bool,
+    list_elem_is_float, list_type_id, list_type_id_flags, map_key_is_bool, map_key_is_float,
+    map_tid_is_assoc, map_type_id, map_type_id_flags, map_val_is_bool, map_val_is_float,
+    set_elem_is_bool, set_elem_is_float, set_tid_is_assoc, set_type_id, set_type_id_flags, tid_assoc,
+    tid_b_key, tid_b_val, tid_base, tid_f_key, tid_f_val, tid_hash, tid_with_b_key, tid_with_b_val,
+    tid_with_f_key, tid_with_f_val, tid_with_hash, tid_without_hash, ScalarKind, ADT_SET_BOOL_MASK,
+    ADT_SET_FLOAT_MASK, FUNREF_TAG, OBJECT_HEADER_BYTES, OBJECT_HEADER_WORDS, TID_ADT_KIND_MASK,
+    TID_ADT_KIND_SHIFT, TID_ASSOC, TID_BASE_MASK, TID_B_KEY, TID_B_VAL, TID_F_KEY, TID_F_VAL,
+    TID_HASH, TRAIT_EQ, TRAIT_HASH, TRAIT_NUM, TRAIT_ORD, TRAIT_SHOW, TYPE_ADT, TYPE_BYTES,
+    TYPE_CHANNEL, TYPE_CHAR, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_BOOL, TYPE_LIST_F64, TYPE_LIST_IOTA,
+    TYPE_MAP, TYPE_MAP_ASSOC, TYPE_MAP_ASSOC_F64, TYPE_MAP_ASSOC_F64V, TYPE_MAP_ASSOC_VF64,
+    TYPE_MAP_BOOL, TYPE_MAP_BOOLV, TYPE_MAP_F64, TYPE_MAP_F64V, TYPE_MAP_VBOOL, TYPE_MAP_VF64,
+    TYPE_SET, TYPE_SET_ASSOC, TYPE_SET_BOOL, TYPE_SET_F64, TYPE_STRING, TYPE_TASK,
 };
 
 #[cfg(test)]
@@ -93,6 +101,12 @@ mod tests {
         assert_eq!(TID_ASSOC & TID_BASE_MASK, 0);
         assert_eq!(TID_HASH & TID_BASE_MASK, 0);
         assert_eq!(TID_HASH & (TID_F_KEY | TID_F_VAL | TID_ASSOC), 0);
+        assert_eq!(TID_B_KEY & TID_BASE_MASK, 0);
+        assert_eq!(TID_B_VAL & TID_BASE_MASK, 0);
+        assert_eq!(
+            TID_B_KEY & (TID_F_KEY | TID_F_VAL | TID_ASSOC | TID_HASH | TID_B_VAL),
+            0
+        );
         assert_eq!(SCHEDULER_WORKER, 1);
         assert_eq!(SCHEDULER_IO, 2);
         assert!(tid_hash(tid_with_hash(TYPE_MAP)));
@@ -122,11 +136,34 @@ mod tests {
     fn list_and_set_type_ids() {
         assert_eq!(list_type_id(false), TYPE_LIST);
         assert_eq!(list_type_id(true), TYPE_LIST_F64);
+        assert_eq!(list_type_id_flags(false, true), TYPE_LIST_BOOL);
         assert_eq!(set_type_id(false, false), TYPE_SET);
         assert_eq!(set_type_id(false, true), TYPE_SET_ASSOC);
         assert_eq!(set_type_id(true, false), TYPE_SET_F64);
+        assert_eq!(set_type_id_flags(false, true, false), TYPE_SET_BOOL);
         // Packed: Float + Assoc coexist (old matrix dropped Assoc when Float).
         assert_eq!(set_type_id(true, true), TYPE_SET | TID_F_KEY | TID_ASSOC);
+    }
+
+    #[test]
+    fn bool_map_type_ids_and_classifiers() {
+        assert_eq!(
+            map_type_id_flags(false, false, true, false, false),
+            TYPE_MAP_BOOL
+        );
+        assert_eq!(
+            map_type_id_flags(false, false, false, true, false),
+            TYPE_MAP_VBOOL
+        );
+        assert_eq!(
+            map_type_id_flags(false, false, true, true, false),
+            TYPE_MAP_BOOLV
+        );
+        assert!(list_elem_is_bool(TYPE_LIST_BOOL));
+        assert!(!list_elem_is_bool(TYPE_LIST_F64));
+        assert!(map_key_is_bool(TYPE_MAP_BOOL));
+        assert!(map_val_is_bool(TYPE_MAP_VBOOL));
+        assert!(set_elem_is_bool(TYPE_SET_BOOL));
     }
 
     #[test]

@@ -128,17 +128,17 @@ pub use hash_ord::{
     lumia_hash,
 };
 pub use list::{
-    lumia_ensure_list_f64, lumia_list_append, lumia_list_concat, lumia_list_empty, lumia_list_get,
-    lumia_list_join, lumia_list_len, lumia_list_par_fold, lumia_list_par_map, lumia_list_promote,
-    lumia_list_release, lumia_list_retain, lumia_list_reverse, lumia_list_set, lumia_list_slice,
-    lumia_list_sort, lumia_list_sort_by_keys, lumia_list_take, lumia_ptr_eq, lumia_range,
-    lumia_range_inclusive,
+    lumia_ensure_list_bool, lumia_ensure_list_f64, lumia_list_append, lumia_list_concat,
+    lumia_list_empty, lumia_list_get, lumia_list_join, lumia_list_len, lumia_list_par_fold,
+    lumia_list_par_map, lumia_list_promote, lumia_list_release, lumia_list_retain, lumia_list_reverse,
+    lumia_list_set, lumia_list_slice, lumia_list_sort, lumia_list_sort_by_keys, lumia_list_take,
+    lumia_ptr_eq, lumia_range, lumia_range_inclusive,
 };
 pub use map_set::{
-    lumia_ensure_map_f64, lumia_ensure_map_vf64, lumia_ensure_set_f64, lumia_map_contains,
-    lumia_map_finish, lumia_map_get, lumia_map_items, lumia_map_keys, lumia_map_remove,
-    lumia_map_set, lumia_map_values, lumia_set_contains, lumia_set_finish, lumia_set_insert,
-    lumia_set_remove,
+    lumia_ensure_map_bool, lumia_ensure_map_f64, lumia_ensure_map_vbool, lumia_ensure_map_vf64,
+    lumia_ensure_set_bool, lumia_ensure_set_f64, lumia_map_contains, lumia_map_finish, lumia_map_get,
+    lumia_map_items, lumia_map_keys, lumia_map_remove, lumia_map_set, lumia_map_values,
+    lumia_set_contains, lumia_set_finish, lumia_set_insert, lumia_set_remove,
 };
 pub use memo::{
     lumia_memo_idx_hits, lumia_memo_idx_lookup, lumia_memo_idx_misses, lumia_memo_idx_reset,

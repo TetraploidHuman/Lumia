@@ -93,7 +93,10 @@ pub unsafe extern "C" fn lumia_elems(obj: *mut u8) -> *mut u8 {
         tid if is_set_tid(tid) => unsafe {
             let n = *(obj as *const i64);
             let nbytes = list_payload_bytes(n);
-            let dest_tid = lumia_abi::list_type_id(lumia_abi::set_elem_is_float(tid));
+            let dest_tid = lumia_abi::list_type_id_flags(
+                lumia_abi::set_elem_is_float(tid),
+                lumia_abi::set_elem_is_bool(tid),
+            );
             let dest = lumia_alloc(nbytes, dest_tid);
             let dst = dest as *mut i64;
             *dst = n;

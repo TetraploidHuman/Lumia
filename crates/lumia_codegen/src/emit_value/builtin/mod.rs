@@ -233,7 +233,8 @@ impl<'ctx> Codegen<'ctx> {
     /// Apply [`BuiltinInfo::float_ensures`](lumia_hir::BuiltinInfo::float_ensures) to `obj`.
     ///
     /// `MapSet` is overloaded for `List.set` / `Map.set`. List destinations must
-    /// use `ENSURE_LIST_F64` when the written elem is Float — never map ensures.
+    /// use `ENSURE_LIST_F64` / `ENSURE_LIST_BOOL` when the written elem is Float/Bool
+    /// — never map ensures.
     fn ensure_float_container(
         &mut self,
         b: &Builtin,
@@ -243,21 +244,40 @@ impl<'ctx> Codegen<'ctx> {
         if matches!(b, Builtin::MapSet) {
             let val_float = matches!(self.frame.local_tys.get(&args[2].0), Some(Type::Float));
             let key_float = matches!(self.frame.local_tys.get(&args[1].0), Some(Type::Float));
+            let val_bool = matches!(self.frame.local_tys.get(&args[2].0), Some(Type::Bool));
+            let key_bool = matches!(self.frame.local_tys.get(&args[1].0), Some(Type::Bool));
             match self.frame.local_tys.get(&args[0].0) {
                 Some(Type::List(_)) if val_float => {
                     return self.call_ensure(obj, lumia_abi::ENSURE_LIST_F64);
                 }
+                Some(Type::List(_)) if val_bool => {
+                    return self.call_ensure(obj, lumia_abi::ENSURE_LIST_BOOL);
+                }
                 Some(Type::Map(_, _)) => {
                     if key_float {
                         obj = self.call_ensure(obj, lumia_abi::ENSURE_MAP_F64)?;
+                    } else if key_bool {
+                        obj = self.call_ensure(obj, lumia_abi::ENSURE_MAP_BOOL)?;
                     }
                     if val_float {
                         obj = self.call_ensure(obj, lumia_abi::ENSURE_MAP_VF64)?;
+                    } else if val_bool {
+                        obj = self.call_ensure(obj, lumia_abi::ENSURE_MAP_VBOOL)?;
                     }
                     return Ok(obj);
                 }
                 // Unknown / poly: skip compile-time ensure; RT `lumia_set` dispatches.
                 _ => return Ok(obj),
+            }
+        }
+        if matches!(b, Builtin::SetInsert) {
+            if matches!(self.frame.local_tys.get(&args[1].0), Some(Type::Bool)) {
+                return self.call_ensure(obj, lumia_abi::ENSURE_SET_BOOL);
+            }
+        }
+        if matches!(b, Builtin::ListAppend) {
+            if matches!(self.frame.local_tys.get(&args[1].0), Some(Type::Bool)) {
+                return self.call_ensure(obj, lumia_abi::ENSURE_LIST_BOOL);
             }
         }
         for &(idx, sym) in b.info().float_ensures {

@@ -20,7 +20,8 @@ pub use par::{lumia_list_par_fold, lumia_list_par_map};
 #[cfg(test)]
 pub(crate) use tid::ensure_list_f64;
 pub(crate) use tid::list_float_elems;
-pub use tid::lumia_ensure_list_f64;
+pub(crate) use tid::list_bool_elems;
+pub use tid::{lumia_ensure_list_bool, lumia_ensure_list_f64};
 
 #[cfg(test)]
 #[path = "ops_tests.rs"]

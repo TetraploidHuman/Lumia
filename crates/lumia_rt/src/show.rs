@@ -89,21 +89,31 @@ fn append_show_value(buf: &mut String, bits: i64, as_float: bool, as_bool: bool)
         return;
     }
     if is_list_tid(tid) {
-        // SAFETY: list payload; float_elems reads tid only.
+        // SAFETY: list payload; float/bool elems read tid only.
         unsafe {
-            append_show_list(buf, p, list_float_elems(p), false);
+            append_show_list(
+                buf,
+                p,
+                list_float_elems(p),
+                crate::list::list_bool_elems(p),
+            );
         }
         return;
     }
     if is_map_tid(tid) {
         unsafe {
-            append_show_map(buf, p, false, false);
+            append_show_map(
+                buf,
+                p,
+                crate::map_set::map_bool_keys(p),
+                crate::map_set::map_bool_vals(p),
+            );
         }
         return;
     }
     if is_set_tid(tid) {
         unsafe {
-            append_show_set(buf, p, false);
+            append_show_set(buf, p, crate::map_set::set_bool_elems(p));
         }
         return;
     }
@@ -273,7 +283,7 @@ unsafe fn show_list_mode(list: *mut u8, float_elems: bool, bool_elems: bool) -> 
     alloc_from_buf(&s)
 }
 
-/// Show a list whose elements are Bool (typed print sites; no list TID flag yet).
+/// Show a list whose elements are Bool (typed print sites; Auto show uses TID_B_KEY).
 #[no_mangle]
 pub extern "C" fn lumia_show_list_bool(list: i64) -> *mut u8 {
     let p = list as *mut u8;

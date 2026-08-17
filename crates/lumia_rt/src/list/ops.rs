@@ -6,12 +6,12 @@
 #![deny(clippy::not_unsafe_ptr_arg_deref)]
 
 use super::core::{force_heap_list, list_len_of, lumia_list_empty, lumia_list_promote};
-use super::tid::{heap_list_tid, list_float_elems, list_tid};
+use super::tid::{heap_list_tid, list_bool_elems, list_float_elems, list_tid};
 use crate::common::{list_rc_is_unique, trap_abort, GcInhibitGuard, TYPE_LIST, TYPE_LIST_IOTA};
 use crate::gc::{list_payload_bytes, lumia_alloc};
 use crate::hash_ord::lumia_ord_cmp;
 use crate::string_io::{lumia_alloc_string, with_str_bytes};
-use lumia_abi::list_type_id;
+use lumia_abi::list_type_id_flags;
 use std::ptr;
 
 ///
@@ -288,7 +288,11 @@ pub unsafe extern "C" fn lumia_list_concat(a: *mut u8, b: *mut u8) -> *mut u8 {
             .checked_add(nb)
             .unwrap_or_else(|| trap_abort("lumia: list concat length overflow"));
         let nbytes = list_payload_bytes(n);
-        let tid = list_type_id(list_float_elems(a) || list_float_elems(b));
+        let tid = list_type_id_flags(
+            list_float_elems(a) || list_float_elems(b),
+            (list_bool_elems(a) || list_bool_elems(b))
+                && !(list_float_elems(a) || list_float_elems(b)),
+        );
         let dest = lumia_alloc(nbytes, tid);
         if dest.is_null() {
             trap_abort("lumia: list concat OOM");

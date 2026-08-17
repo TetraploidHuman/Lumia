@@ -4,7 +4,7 @@ use super::super::super::Codegen;
 use anyhow::{bail, Context as AnyhowContext, Result};
 use inkwell::values::BasicValueEnum;
 use inkwell::AddressSpace;
-use lumia_abi::{adt_type_id, list_type_id, map_type_id, set_type_id};
+use lumia_abi::{adt_type_id, list_type_id_flags, map_type_id_flags, set_type_id_flags};
 use lumia_core::Local;
 use lumia_ty::Type;
 
@@ -26,7 +26,18 @@ impl<'ctx> Codegen<'ctx> {
                     Some(Type::List(e)) if matches!(e.as_ref(), Type::Float)
                 )
             });
-        let list_tid = list_type_id(float_elems);
+        let bool_elems = !float_elems
+            && elems
+                .first()
+                .and_then(|e| self.frame.local_tys.get(&e.0).cloned())
+                .map(|t| matches!(t, Type::Bool))
+                .unwrap_or_else(|| {
+                    matches!(
+                        &self.frame.expect_alloc_ty,
+                        Some(Type::List(e)) if matches!(e.as_ref(), Type::Bool)
+                    )
+                });
+        let list_tid = list_type_id_flags(float_elems, bool_elems);
         if elems.is_empty() {
             if float_elems {
                 let ens = self.runtime_fn(lumia_abi::ENSURE_LIST_F64)?;
@@ -54,6 +65,33 @@ impl<'ctx> Codegen<'ctx> {
                     ptr,
                     self.llvm.i64_ty,
                     "empty_f64_i64",
+                ))?
+                .into());
+            }
+            if bool_elems {
+                let ens = self.runtime_fn(lumia_abi::ENSURE_LIST_BOOL)?;
+                let f = self.runtime_fn("lumia_list_empty")?;
+                let empty_call =
+                    crate::error::llvm(self.llvm.builder.build_call(f, &[], "list_empty"))?;
+                let empty = empty_call
+                    .try_as_basic_value()
+                    .basic()
+                    .context("call return value")?
+                    .into_pointer_value();
+                let ens_call = crate::error::llvm(self.llvm.builder.build_call(
+                    ens,
+                    &[empty.into()],
+                    "ens_lbool",
+                ))?;
+                let ptr = ens_call
+                    .try_as_basic_value()
+                    .basic()
+                    .context("call return value")?
+                    .into_pointer_value();
+                return Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
+                    ptr,
+                    self.llvm.i64_ty,
+                    "empty_bool_i64",
                 ))?
                 .into());
             }
@@ -96,8 +134,9 @@ impl<'ctx> Codegen<'ctx> {
             })
             .unwrap_or(Type::Int);
         let float_elems = matches!(elem_ty, Type::Float);
+        let bool_elems = matches!(elem_ty, Type::Bool);
         let no_hash = !self.key_type_has_hash(&elem_ty);
-        let tid = set_type_id(float_elems, no_hash);
+        let tid = set_type_id_flags(float_elems, bool_elems, no_hash);
         // `SetRepr::LitSet` is a PE/hint tag only — never a stack layout. Always
         // heap+finish so `lumia_set_finish` can compact via `key_eq`.
         let v = self.emit_heap_array(elems, tid as u64)?;
@@ -149,12 +188,14 @@ impl<'ctx> Codegen<'ctx> {
         };
         let float_keys = matches!(key_ty, Type::Float);
         let float_vals = matches!(val_ty, Type::Float);
+        let bool_keys = matches!(key_ty, Type::Bool);
+        let bool_vals = matches!(val_ty, Type::Bool);
         let no_hash =
             matches!(repr, lumia_core::MapRepr::AssocList) || !self.key_type_has_hash(&key_ty);
         // Float-value tags win over Assoc for IEEE value ==; Assoc is for
         // key Hash absence (linear forever) when values are not Float.
         // AssocList (+ Float tags) stays linear forever; Hash maps use 4/10/15/16.
-        let tid = map_type_id(float_keys, float_vals, no_hash);
+        let tid = map_type_id_flags(float_keys, float_vals, bool_keys, bool_vals, no_hash);
         // Empty Map is null (RT contract); no heap object.
         if flat_pairs.is_empty() {
             return Ok(self.llvm.i64_ty.const_zero().into());

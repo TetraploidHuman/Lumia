@@ -289,7 +289,8 @@ pub unsafe extern "C" fn lumia_map_keys(map: *mut u8) -> *mut u8 {
             *(map as *const i64)
         };
         let nbytes = list_payload_bytes(n);
-        let dest_tid = lumia_abi::list_type_id(map_float_keys(map));
+        let dest_tid =
+            lumia_abi::list_type_id_flags(map_float_keys(map), super::tid::map_bool_keys(map));
         let dest = lumia_alloc(nbytes, dest_tid);
         let dst = dest as *mut i64;
         *dst = n;
@@ -319,7 +320,10 @@ pub unsafe extern "C" fn lumia_map_values(map: *mut u8) -> *mut u8 {
             *(map as *const i64)
         };
         let nbytes = list_payload_bytes(n);
-        let dest_tid = lumia_abi::list_type_id(super::tid::map_float_vals(map));
+        let dest_tid = lumia_abi::list_type_id_flags(
+            super::tid::map_float_vals(map),
+            super::tid::map_bool_vals(map),
+        );
         let dest = lumia_alloc(nbytes, dest_tid);
         let dst = dest as *mut i64;
         *dst = n;

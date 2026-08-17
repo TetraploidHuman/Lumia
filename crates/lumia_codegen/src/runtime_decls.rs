@@ -342,6 +342,26 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         args: &[RtTy::Ptr],
     },
     RtDecl {
+        name: lumia_abi::ENSURE_MAP_BOOL,
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr],
+    },
+    RtDecl {
+        name: lumia_abi::ENSURE_MAP_VBOOL,
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr],
+    },
+    RtDecl {
+        name: lumia_abi::ENSURE_SET_BOOL,
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr],
+    },
+    RtDecl {
+        name: lumia_abi::ENSURE_LIST_BOOL,
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr],
+    },
+    RtDecl {
         name: "lumia_map_set",
         ret: RtTy::Ptr,
         args: &[RtTy::Ptr, RtTy::I64, RtTy::I64],

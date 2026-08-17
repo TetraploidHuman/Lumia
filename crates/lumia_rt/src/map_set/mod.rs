@@ -19,4 +19,7 @@ pub use map_ops::{
     lumia_map_remove, lumia_map_set, lumia_map_values,
 };
 pub use set::{lumia_set_contains, lumia_set_finish, lumia_set_insert, lumia_set_remove};
-pub use tid::{lumia_ensure_map_f64, lumia_ensure_map_vf64, lumia_ensure_set_f64};
+pub use tid::{
+    lumia_ensure_map_bool, lumia_ensure_map_f64, lumia_ensure_map_vbool, lumia_ensure_map_vf64,
+    lumia_ensure_set_bool, lumia_ensure_set_f64,
+};

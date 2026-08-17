@@ -43,6 +43,22 @@ e2e_ok!(
 );
 
 e2e_ok!(
+    e2e_nested_bool_container_show,
+    "examples/nested_bool_container_show.lm",
+    "[true, false]",
+    "Box([true, false])",
+    "{true: false}",
+    "Box({true: false})",
+    "[true]",
+    "Box([true])",
+    "[false]",
+    "Box([false])",
+    "#{true, false}",
+    "Box(#{true, false})",
+    "Box([1.5])"
+);
+
+e2e_ok!(
     e2e_bool_print,
     "examples/bool_print.lm",
     "true",
