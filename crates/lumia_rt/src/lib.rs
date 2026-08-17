@@ -72,6 +72,8 @@ mod ensure;
 mod eq;
 mod f64_simd;
 mod float_kernels;
+mod i64_simd;
+mod mem_traffic;
 mod gc;
 mod hash_ord;
 mod list;
@@ -122,6 +124,7 @@ pub use efe::{
 };
 pub use eq::{lumia_adt_eq, lumia_eq};
 pub use float_kernels::lumia_mandelbrot_checksum;
+pub use mem_traffic::lumia_mem_traffic_checksum;
 pub use hash_ord::{
     lumia_adt_ensure_unique, lumia_adt_ensure_unique_consume, lumia_adt_ensure_unique_consume_mask,
     lumia_adt_ensure_unique_mask, lumia_adt_field, lumia_adt_set_field, lumia_adt_tag, lumia_cmp,

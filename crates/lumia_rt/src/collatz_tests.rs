@@ -13,6 +13,21 @@ fn bench_cpu_collatz_2_5m() {
     assert_eq!(lumia_collatz_total(2_500_000), 352_279_148);
 }
 
+/// Catch an unoptimized / stale `liblumia_rt` build: Release wall time for the
+/// bench_cpu Collatz window should stay well under a quarter second. (A known
+/// bad staticlib sat near ~100ms+ and doubled `bench_cpu`.)
+#[test]
+fn collatz_2_5m_release_not_pathologically_slow() {
+    let t0 = std::time::Instant::now();
+    let _ = lumia_collatz_total(2_500_000);
+    let dt = t0.elapsed();
+    assert!(
+        dt.as_secs_f64() < 0.25,
+        "lumia_collatz_total(2.5e6) took {dt:?}; expected <250ms in release \
+         (try `cargo clean -p lumia_rt --release && cargo build -p lumia_rt --release`)"
+    );
+}
+
 #[test]
 fn bench_cpu_collatz_strided() {
     assert_eq!(lumia_collatz_strided(1, 3_000_000, 3), 142_794_532);
