@@ -349,8 +349,8 @@ pub extern "C" fn lumia_show_map_bool(map: i64, key_as_bool: i32, val_as_bool: i
 }
 
 /// Show `List[ADT]` with per-field Float/Bool masks (homogeneous elems).
-/// Used for `listOf(Some(true))` / `map.items()` tuples where nested untyped
-/// show only sees ADT `_pad` float bits (bool mask is call-site-only).
+/// Used for `listOf(Some(true))` / `map.items()` tuples. Nested untyped show
+/// ORs call-site masks with each elem's `_pad` (float + bool).
 #[no_mangle]
 pub extern "C" fn lumia_show_list_adt(list: i64, float_mask: i64, bool_mask: i64) -> *mut u8 {
     let p = list as *mut u8;

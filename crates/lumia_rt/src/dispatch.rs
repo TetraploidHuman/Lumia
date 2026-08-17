@@ -126,12 +126,34 @@ pub unsafe extern "C" fn lumia_remove(obj: *mut u8, key_or_elem: i64) -> *mut u8
 
 /// Dispatch get: List/Set by index → i64 elem; Map by key → Option ADT ptr as i64.
 ///
+/// `show_kind` / `bool_mask` are forwarded to [`lumia_map_get`] for Map hits
+/// (List/Set ignore them). Null `obj` is treated as empty Map (same as
+/// [`lumia_remove`]) so `[:].get(k)` / fold-from-empty yields immortal None.
+///
 /// # Safety
-/// `obj` must be a non-null valid List/Set/Map heap payload.
+/// `obj` is null (empty Map) or a valid List/Set/Map heap payload.
 #[no_mangle]
-pub unsafe extern "C" fn lumia_get(obj: *mut u8, key_or_index: i64, some_tag: i64, none_tag: i64) -> i64 {
+pub unsafe extern "C" fn lumia_get(
+    obj: *mut u8,
+    key_or_index: i64,
+    some_tag: i64,
+    none_tag: i64,
+    show_kind: i64,
+    bool_mask: i64,
+) -> i64 {
     if obj.is_null() {
-        trap_abort("lumia: get on null");
+        // Empty Map shell — typed List get never routes here (`lumia_list_get`).
+        let opt = unsafe {
+            crate::map_set::lumia_map_get(
+                obj,
+                key_or_index,
+                some_tag,
+                none_tag,
+                show_kind,
+                bool_mask,
+            )
+        };
+        return opt as i64;
     }
     // SAFETY: non-null payload; header_from_payload is a typed offset helper.
     let h = header_from_payload(obj);
@@ -145,8 +167,16 @@ pub unsafe extern "C" fn lumia_get(obj: *mut u8, key_or_index: i64, some_tag: i6
             set_elem_at(obj, key_or_index as usize)
         }
         tid if is_map_tid(tid) => {
-            let opt =
-                unsafe { crate::map_set::lumia_map_get(obj, key_or_index, some_tag, none_tag) };
+            let opt = unsafe {
+                crate::map_set::lumia_map_get(
+                    obj,
+                    key_or_index,
+                    some_tag,
+                    none_tag,
+                    show_kind,
+                    bool_mask,
+                )
+            };
             opt as i64
         }
         other => trap_abort(&format!("lumia: get unsupported type_id {other}")),

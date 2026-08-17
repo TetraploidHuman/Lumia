@@ -228,17 +228,18 @@ impl<'ctx> Codegen<'ctx> {
         params: &[Type],
     ) -> Result<PointerValue<'ctx>> {
         let i = self.coerce_i64(arg)?;
-        // Result: type-param index ≠ constructor field index (Err field0 is
-        // params[1]). Same as emit_typed_adt_show — rely on per-object `_pad`.
-        let fmask = if adt_name.is_some_and(lumia_hir::is_result) {
-            0
-        } else {
-            Self::adt_float_field_mask(params, &[])?
-        };
-        let bmask = if adt_name.is_some_and(lumia_hir::is_result) {
-            0
-        } else {
-            Self::adt_bool_field_mask(params, &[])?
+        // Option/products/`__Tuple`: call-site masks (field index ≡ param index).
+        // Concatenated sums: mask 0 — AllocAdt `_pad` is authoritative.
+        // Structural `Type::Tuple` (adt_name None): same as `__Tuple`.
+        let (fmask, bmask) = match adt_name {
+            Some(name) => (
+                self.adt_float_call_site_mask(name, params, &[])?,
+                self.adt_bool_call_site_mask(name, params, &[])?,
+            ),
+            None => (
+                Self::adt_float_field_mask(params, &[])?,
+                Self::adt_bool_field_mask(params, &[])?,
+            ),
         };
         self.call_show_rt_ptr(
             SHOW_LIST_ADT,

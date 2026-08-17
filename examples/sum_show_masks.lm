@@ -1,0 +1,26 @@
+module SumShowMasks
+
+import std.io.{println}
+
+/// Concatenated sum params must not drive call-site Show masks:
+/// Circle's Float is params[0]; Rect's Ints are params[1]/params[2].
+type Shape {
+    Circle(r),
+    Rect(w, h)
+}
+
+type Either {
+    Left(a),
+    Right(b)
+}
+
+type FlagPair {
+    Flag(b),
+    Pair(x, y)
+}
+
+val main = {
+    println(listOf(Circle(1.5), Rect(2, 5)))
+    println(listOf(Left(1.5), Right(7)))
+    println(listOf(Flag(true), Pair(1, 2)))
+}

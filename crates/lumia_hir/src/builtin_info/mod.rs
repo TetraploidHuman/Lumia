@@ -53,6 +53,8 @@ pub enum BuiltinEmit {
     I64I64Ptr,
     /// `(obj ptr, i64, i64)` → ptr→i64.
     ObjI64I64Ptr,
+    /// `(obj ptr)` + codegen bool field mask → ptr→i64 (`lumia_map_items`).
+    UnaryObjBoolMask,
     /// `(obj ptr, i64)` + codegen Option some/none tags → scalar i64 (`lumia_get`).
     ObjI64OptionTags,
 }

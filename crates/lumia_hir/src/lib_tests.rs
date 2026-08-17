@@ -30,6 +30,14 @@ fn builtin_effect_and_symbols_are_wired() {
         super::BuiltinEmit::ObjI64I64Ptr
     );
     assert_eq!(
+        Builtin::MapItems.info().emit,
+        super::BuiltinEmit::UnaryObjBoolMask
+    );
+    assert_eq!(
+        Builtin::MapItems.runtime_symbol(),
+        Some("lumia_map_items")
+    );
+    assert_eq!(
         Builtin::SetInsert.info().emit,
         super::BuiltinEmit::ObjI64Ptr
     );

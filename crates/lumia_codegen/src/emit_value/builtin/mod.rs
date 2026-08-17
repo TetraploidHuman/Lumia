@@ -66,7 +66,36 @@ impl<'ctx> Codegen<'ctx> {
             BuiltinEmit::I64I64Ptr => self.emit_rt_i64_i64_ptr(b, args, label),
             BuiltinEmit::ObjI64I64Ptr => self.emit_obj_i64_i64_ptr(b, args, label),
             BuiltinEmit::ObjI64OptionTags => self.emit_obj_i64_option_tags(b, args, label),
+            BuiltinEmit::UnaryObjBoolMask => self.emit_rt_unary_obj_bool_mask(b, args, label),
         }
+    }
+
+    /// `MapItems`: pass Bool key/val layout bits so RT pair ADTs get `_pad` bool masks
+    /// (Float still comes from the map's TID_F_* bits).
+    fn emit_rt_unary_obj_bool_mask(
+        &mut self,
+        b: &Builtin,
+        args: &[Local],
+        label: &str,
+    ) -> Result<BasicValueEnum<'ctx>> {
+        let obj_i = self.coerce_i64(self.local(args[0])?)?;
+        let obj = self.i64_as_ptr(obj_i, "obj")?;
+        let bool_mask = match self.frame.local_tys.get(&args[0].0) {
+            Some(Type::Map(k, v)) => {
+                let mut m = 0u64;
+                if matches!(k.as_ref(), Type::Bool) {
+                    m |= 0b1;
+                }
+                if matches!(v.as_ref(), Type::Bool) {
+                    m |= 0b10;
+                }
+                m
+            }
+            _ => 0u64,
+        };
+        let bool_mask_v = self.llvm.i64_ty.const_int(bool_mask, false);
+        let sym = Self::builtin_symbol(b)?;
+        self.call_rt_ptr_as_i64(sym, &[obj.into(), bool_mask_v.into()], label)
     }
 
     /// `MapSet` / list-index set: retain + float ensure + list-receiver symbol.
@@ -127,10 +156,30 @@ impl<'ctx> Codegen<'ctx> {
             .llvm
             .i64_ty
             .const_int(self.option_variant_tag("None") as u64, true);
+        let show_kind = self
+            .funs
+            .adt_show_kinds
+            .get(lumia_hir::OPTION.name)
+            .copied()
+            .unwrap_or(0);
+        let show_kind_v = self.llvm.i64_ty.const_int(show_kind as u64, false);
+        // Bool payload mask for RT-built Option (Float comes from map TID_F_VAL).
+        let bool_mask = match self.frame.local_tys.get(&args[0].0) {
+            Some(Type::Map(_, v)) if matches!(v.as_ref(), Type::Bool) => 1u64,
+            _ => 0u64,
+        };
+        let bool_mask_v = self.llvm.i64_ty.const_int(bool_mask, false);
         let sym = Self::builtin_symbol(b)?;
         self.call_rt_basic(
             sym,
-            &[obj.into(), key.into(), some.into(), none.into()],
+            &[
+                obj.into(),
+                key.into(),
+                some.into(),
+                none.into(),
+                show_kind_v.into(),
+                bool_mask_v.into(),
+            ],
             label,
         )
     }

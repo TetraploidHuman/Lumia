@@ -158,11 +158,10 @@ impl<'ctx> Codegen<'ctx> {
             {
                 if lp.iter().any(|p| matches!(p, Type::Float))
                     || rp.iter().any(|p| matches!(p, Type::Float))
-                    || lumia_hir::is_result(name)
+                    || !self.adt_call_site_field_masks_ok(name)
                 {
-                    // Result always uses lumia_adt_eq (mask 0 → per-object `_pad`):
-                    // type-param index ≠ constructor field index (Err field0 is
-                    // params[1]), same as typed Show.
+                    // Concatenated sums / Result: mask 0 → per-object `_pad`.
+                    // Option/products with Float: call-site mask bits.
                     return self.emit_typed_adt_eq(name, l, r, lp, rp);
                 }
             }
@@ -175,6 +174,32 @@ impl<'ctx> Codegen<'ctx> {
                 .context("call return value")?
                 .into_int_value(),
         )
+    }
+
+    /// Call-site `params[i] → field i` masks are sound only when every constructor
+    /// uses the same param index as its field index (Option; products).
+    ///
+    /// Concatenated sums (`Result`, `Either`, `Shape`, …) pack distinct variant
+    /// payloads into one `params` vector — `params[i]` is **not** field `i` of
+    /// every ctor. Those must use AllocAdt `_pad` only (mask `0` at the call site).
+    pub(crate) fn adt_call_site_field_masks_ok(&self, adt_name: &str) -> bool {
+        if lumia_hir::is_option(adt_name) {
+            return true;
+        }
+        if lumia_hir::is_result(adt_name) {
+            return false;
+        }
+        // MapItems pairs: synthetic `__Tuple` — field i ≡ params[i].
+        if adt_name == "__Tuple" {
+            return true;
+        }
+        // Products: one Show label (type name). Multi-variant user sums: refuse.
+        match self.funs.adt_variant_names.get(adt_name) {
+            Some(names) if names.len() <= 1 => true,
+            Some(_) => false,
+            // Unknown ADT shape — prefer `_pad` over a wrong call-site mask.
+            None => false,
+        }
     }
 
     /// Bit `i` set ⇒ field `i` uses IEEE eq/show (union of both sides' params).
@@ -216,6 +241,34 @@ impl<'ctx> Codegen<'ctx> {
             }
         }
         Ok(mask)
+    }
+
+    /// Call-site float mask, or `0` when param index ≠ ctor field index.
+    pub(crate) fn adt_float_call_site_mask(
+        &self,
+        adt_name: &str,
+        lp: &[Type],
+        rp: &[Type],
+    ) -> Result<u64> {
+        if self.adt_call_site_field_masks_ok(adt_name) {
+            Self::adt_float_field_mask(lp, rp)
+        } else {
+            Ok(0)
+        }
+    }
+
+    /// Call-site bool mask, or `0` when param index ≠ ctor field index.
+    pub(crate) fn adt_bool_call_site_mask(
+        &self,
+        adt_name: &str,
+        lp: &[Type],
+        rp: &[Type],
+    ) -> Result<u64> {
+        if self.adt_call_site_field_masks_ok(adt_name) {
+            Self::adt_bool_field_mask(lp, rp)
+        } else {
+            Ok(0)
+        }
     }
 
     /// Layout mask from concrete field SSA types at an `AllocAdt` site.
@@ -296,12 +349,7 @@ impl<'ctx> Codegen<'ctx> {
         lp: &[Type],
         rp: &[Type],
     ) -> Result<IntValue<'ctx>> {
-        // Result: type-param index ≠ constructor field index — rely on `_pad`.
-        let mask = if lumia_hir::is_result(adt_name) {
-            0
-        } else {
-            Self::adt_float_field_mask(lp, rp)?
-        };
+        let mask = self.adt_float_call_site_mask(adt_name, lp, rp)?;
         let f = self.runtime_fn(EQ_ADT)?;
         Ok(crate::error::llvm(self.llvm.builder.build_call(
             f,
@@ -326,21 +374,10 @@ impl<'ctx> Codegen<'ctx> {
         params: &[Type],
     ) -> Result<PointerValue<'ctx>> {
         let i = self.coerce_i64(arg)?;
-        // Result: type-param index ≠ constructor field index (Err field0 is
-        // params[1]). Rely on per-object `_pad` from AllocAdt for Float.
-        // Option: Some(x) field0 == params[0] — use param mask so RT-built
-        // `map.get` Options still print Float when `_pad` was historically 0.
-        let fmask = if lumia_hir::is_result(adt_name) {
-            0
-        } else {
-            Self::adt_float_field_mask(params, &[])?
-        };
-        // Result: same index mismatch for Bool as Float — rely on `_pad`.
-        let bmask = if lumia_hir::is_result(adt_name) {
-            0
-        } else {
-            Self::adt_bool_field_mask(params, &[])?
-        };
+        // Option/products: call-site masks (field index ≡ param index).
+        // Concatenated sums: mask 0 — AllocAdt `_pad` is authoritative.
+        let fmask = self.adt_float_call_site_mask(adt_name, params, &[])?;
+        let bmask = self.adt_bool_call_site_mask(adt_name, params, &[])?;
         let fmask_v = self.llvm.i64_ty.const_int(fmask, false);
         let bmask_v = self.llvm.i64_ty.const_int(bmask, false);
         if let Some(names) = self.funs.adt_variant_names.get(adt_name).cloned() {
@@ -441,6 +478,14 @@ mod mask_tests {
         let lp = [Type::Int, Type::Float, Type::Bool];
         let mask = Codegen::adt_bool_field_mask(&lp, &[]).unwrap();
         assert_eq!(mask, 1u64 << 2);
+    }
+
+    #[test]
+    fn call_site_masks_ok_option_and_result() {
+        // Static policy without a full Codegen: Option yes, Result no.
+        assert!(lumia_hir::is_option("Option"));
+        assert!(!lumia_hir::is_result("Option"));
+        assert!(lumia_hir::is_result("Result"));
     }
 }
 

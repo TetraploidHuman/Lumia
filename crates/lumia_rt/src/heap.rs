@@ -33,7 +33,7 @@ pub(crate) struct Heap {
     /// Immortal empty `List` singleton payload (or null until first use).
     pub empty_list: *mut u8,
     /// Immortal `None` Option ADTs keyed by constructor tag (map_get miss path).
-    pub option_none: FxHashMap<i64, *mut u8>,
+    pub option_none: FxHashMap<u64, *mut u8>,
     /// When true, mark helpers only follow young payloads.
     pub mark_minor: bool,
     /// Incremental full-heap mark in progress.

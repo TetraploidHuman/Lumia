@@ -12,7 +12,7 @@ fn map_promotes_to_hash_and_looks_up() {
     assert_eq!(map_count(m), 20);
     for i in 0..20 {
         assert_eq!(unsafe { lumia_map_contains(m, i) }, 1);
-        let opt = unsafe { lumia_map_get(m, i, 0, 1) };
+        let opt = unsafe { lumia_map_get(m, i, 0, 1, 0, 0) };
         // Some(v) tag 0 with field
         unsafe {
             let base = opt as *const i64;
@@ -207,18 +207,18 @@ fn ensure_set_f64_nonempty_traps() {
 
 #[test]
 fn map_get_none_is_immortal_singleton() {
-    let a = unsafe { lumia_map_get(ptr::null_mut(), 0, 0, 1) };
-    let b = unsafe { lumia_map_get(ptr::null_mut(), 99, 0, 1) };
+    let a = unsafe { lumia_map_get(ptr::null_mut(), 0, 0, 1, 0, 0) };
+    let b = unsafe { lumia_map_get(ptr::null_mut(), 99, 0, 1, 0, 0) };
     assert_eq!(a, b, "same none_tag must reuse immortal None");
     unsafe {
         assert_eq!(*(a as *const i64), 1);
     }
     // Survives GC (perm-rooted like empty list).
     lumia_gc_collect();
-    let c = unsafe { lumia_map_get(ptr::null_mut(), 1, 0, 1) };
+    let c = unsafe { lumia_map_get(ptr::null_mut(), 1, 0, 1, 0, 0) };
     assert_eq!(c, a);
     // Distinct tags get distinct singletons.
-    let d = unsafe { lumia_map_get(ptr::null_mut(), 0, 0, 7) };
+    let d = unsafe { lumia_map_get(ptr::null_mut(), 0, 0, 7, 0, 0) };
     assert_ne!(d, a);
     unsafe {
         assert_eq!(*(d as *const i64), 7);
@@ -232,17 +232,56 @@ fn map_get_float_val_sets_option_float_mask() {
     unsafe { lumia_root_push(&mut m as *mut *mut u8) };
     let bits = 2.5f64.to_bits() as i64;
     m = unsafe { lumia_map_set(m, 2, bits) };
-    let opt = unsafe { lumia_map_get(m, 2, 0, 1) };
+    let opt = unsafe { lumia_map_get(m, 2, 0, 1, 0, 0) };
     unsafe {
         assert_eq!(*(opt as *const i64), 0);
         assert_eq!(*(opt as *const i64).add(1), bits);
         assert_eq!((*header_from_payload(opt))._pad, 0b1);
+        assert_eq!(
+            lumia_abi::adt_show_kind((*header_from_payload(opt)).type_id),
+            0
+        );
     }
     let shown = lumia_show(opt as i64);
     let text = with_str_bytes(shown, |b| String::from_utf8_lossy(b).into_owned());
     assert!(
         text.contains("2.5"),
         "Option[Float] show should print 2.5, got {text:?}"
+    );
+    lumia_root_pop();
+}
+
+#[test]
+fn map_get_bool_mask_and_show_kind() {
+    let mut m = ptr::null_mut();
+    unsafe { lumia_root_push(&mut m as *mut *mut u8) };
+    m = unsafe { lumia_map_set(m, 1, 1) }; // true
+    // Register a fake Option show-kind so nested show can resolve names.
+    let names: [*const u8; 2] = [
+        b"Some\0".as_ptr(),
+        b"None\0".as_ptr(),
+    ];
+    unsafe {
+        crate::adt_show::lumia_adt_register_show(9, names.as_ptr(), 2);
+    }
+    let opt = unsafe { lumia_map_get(m, 1, 0, 1, 9, 0b1) };
+    unsafe {
+        assert_eq!(*(opt as *const i64), 0);
+        assert_eq!(*(opt as *const i64).add(1), 1);
+        assert_eq!(
+            crate::common::adt_bool_mask((*header_from_payload(opt))._pad),
+            0b1
+        );
+        assert_eq!(
+            lumia_abi::adt_show_kind((*header_from_payload(opt)).type_id),
+            9
+        );
+    }
+    let shown = lumia_show(opt as i64);
+    let text = with_str_bytes(shown, |b| String::from_utf8_lossy(b).into_owned());
+    assert!(
+        text.contains("Some") && text.contains("true"),
+        "Option[Bool] nested show got {text:?}"
     );
     lumia_root_pop();
 }
@@ -257,7 +296,7 @@ fn map_items_float_pairs_set_float_mask() {
     let k = 1.5f64.to_bits() as i64;
     let v = 2.5f64.to_bits() as i64;
     m = unsafe { lumia_map_set(m, k, v) };
-    let items = unsafe { lumia_map_items(m) };
+    let items = unsafe { lumia_map_items(m, 0) };
     unsafe {
         assert_eq!(*(items as *const i64), 1);
         let pair = *((items as *const i64).add(1)) as *mut u8;
@@ -268,6 +307,29 @@ fn map_items_float_pairs_set_float_mask() {
     assert!(
         text.contains("1.5") && text.contains("2.5"),
         "items() list show should print floats, got {text:?}"
+    );
+    lumia_root_pop();
+}
+
+#[test]
+fn map_items_bool_pairs_set_bool_mask() {
+    let mut m = ptr::null_mut();
+    unsafe { lumia_root_push(&mut m as *mut *mut u8) };
+    m = unsafe { lumia_map_set(m, 1, 0) }; // true -> false
+    let items = unsafe { lumia_map_items(m, 0b11) };
+    unsafe {
+        assert_eq!(*(items as *const i64), 1);
+        let pair = *((items as *const i64).add(1)) as *mut u8;
+        assert_eq!(
+            crate::common::adt_bool_mask((*header_from_payload(pair))._pad),
+            0b11
+        );
+    }
+    let shown = lumia_show(items as i64);
+    let text = with_str_bytes(shown, |b| String::from_utf8_lossy(b).into_owned());
+    assert!(
+        text.contains("true") && text.contains("false"),
+        "items() list show should print bools, got {text:?}"
     );
     lumia_root_pop();
 }
@@ -304,7 +366,7 @@ fn show_map_bool_val_prints_true() {
 #[test]
 fn show_list_adt_bool_field() {
     // Some(true) tag0 field0=1 — typed bool_mask bit0.
-    let opt = crate::map_set::alloc_adt(0, &[1]);
+    let opt = crate::map_set::alloc_adt_with_meta(0, &[1], 0, 0, 0);
     let list = lumia_alloc(list_payload_bytes(1), TYPE_LIST);
     unsafe {
         *(list as *mut i64) = 1;

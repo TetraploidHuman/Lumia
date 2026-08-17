@@ -3,7 +3,7 @@
 use std::ptr;
 
 use crate::common::{
-    float_key_eq, header_from_payload, is_heap_payload_bits, trap_abort, GcInhibitGuard, TYPE_ADT,
+    float_key_eq, header_from_payload, is_heap_payload_bits, trap_abort, GcInhibitGuard,
 };
 use crate::eq::lumia_eq;
 use crate::gc::{list_payload_bytes, lumia_alloc, mark_on, mark_value_on};
@@ -412,9 +412,20 @@ pub(crate) unsafe fn map_find(map: *mut u8, key: i64) -> Option<usize> {
     (0..n as usize).find(|&i| key_eq(*base.add(1 + i * 2), key, float_keys))
 }
 
-pub(crate) fn alloc_adt(tag: i64, fields: &[i64]) -> *mut u8 {
+/// Allocate an ADT with Show-kind packed into `type_id` and optional field masks.
+///
+/// `show_kind` `0` → anonymous `#tag`; `≥ 1` indexes the ADT Show registry.
+/// Masks are applied after fields are live (same sanitize as codegen AllocAdt).
+/// Callers that need zero meta pass `show_kind=0`, `float_mask=0`, `bool_mask=0`.
+pub(crate) fn alloc_adt_with_meta(
+    tag: i64,
+    fields: &[i64],
+    show_kind: u16,
+    float_mask: u64,
+    bool_mask: u64,
+) -> *mut u8 {
     let nbytes = list_payload_bytes(fields.len() as i64);
-    let dest = lumia_alloc(nbytes, TYPE_ADT);
+    let dest = lumia_alloc(nbytes, lumia_abi::adt_type_id(show_kind));
     if dest.is_null() {
         trap_abort("lumia: adt OOM");
     }
@@ -425,19 +436,29 @@ pub(crate) fn alloc_adt(tag: i64, fields: &[i64]) -> *mut u8 {
             *dst.add(1 + i) = *f;
         }
     }
+    if float_mask != 0 {
+        // SAFETY: `dest` is a fresh ADT payload with fields already written.
+        unsafe { crate::show::lumia_adt_set_float_mask(dest, float_mask) };
+    }
+    if bool_mask != 0 {
+        // SAFETY: same as float mask.
+        unsafe { crate::show::lumia_adt_set_bool_mask(dest, bool_mask) };
+    }
     dest
 }
 
 /// Immortal nullary ADT for `None` (map_get miss). Tagged like a heap Option;
-/// `RC_SHARED` so retain/release are no-ops. One singleton per `none_tag`.
-pub(crate) fn alloc_adt_none_immortal(tag: i64) -> *mut u8 {
+/// `RC_SHARED` so retain/release are no-ops. One singleton per `(none_tag, show_kind)`.
+pub(crate) fn alloc_adt_none_immortal(tag: i64, show_kind: u16) -> *mut u8 {
     use crate::common::{header_from_payload, header_layout, payload_ptr, RC_SHARED};
     use crate::gc::{init_alloc_header, insert_young};
     use crate::heap::with_heap;
     use std::alloc::alloc;
 
+    // Pack kind into the cache key so a wrong anonymous tid is never reused.
+    let cache_key = (tag as u64) | ((show_kind as u64) << 32);
     with_heap(|h| {
-        if let Some(&p) = h.option_none.get(&tag) {
+        if let Some(&p) = h.option_none.get(&cache_key) {
             return p;
         }
         let nbytes = list_payload_bytes(0) as usize;
@@ -447,7 +468,7 @@ pub(crate) fn alloc_adt_none_immortal(tag: i64) -> *mut u8 {
             if mem.is_null() {
                 trap_abort("lumia: out of memory");
             }
-            let header = init_alloc_header(mem, nbytes, TYPE_ADT);
+            let header = init_alloc_header(mem, nbytes, lumia_abi::adt_type_id(show_kind));
             insert_young(h, header, nbytes);
             payload_ptr(header)
         };
@@ -457,7 +478,7 @@ pub(crate) fn alloc_adt_none_immortal(tag: i64) -> *mut u8 {
             (*header_from_payload(dest))._pad = 0;
         }
         h.perm.push(dest);
-        h.option_none.insert(tag, dest);
+        h.option_none.insert(cache_key, dest);
         dest
     })
 }

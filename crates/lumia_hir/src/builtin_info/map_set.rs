@@ -84,7 +84,7 @@ pub(crate) fn info_map_set(b: Builtin) -> BuiltinInfo {
             pure,
             Some("lumia_map_items"),
             NO_F,
-            UnaryObjPtr,
+            UnaryObjBoolMask,
             true,
             Always,
         ),

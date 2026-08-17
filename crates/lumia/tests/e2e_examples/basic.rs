@@ -14,6 +14,35 @@ e2e_ok!(
 );
 
 e2e_ok!(
+    e2e_sum_show_masks,
+    "examples/sum_show_masks.lm",
+    "[Circle(1.5), Rect(2, 5)]",
+    "[Left(1.5), Right(7)]",
+    "[Flag(true), Pair(1, 2)]"
+);
+
+e2e_ok!(
+    e2e_nested_map_get_show,
+    "examples/nested_map_get_show.lm",
+    "Some(2.5)",
+    "Box(Some(2.5))",
+    "[Some(2.5)]",
+    "Box(Some(true))",
+    "[Some(true)]"
+);
+
+e2e_ok!(
+    e2e_nested_map_items_show,
+    "examples/nested_map_items_show.lm",
+    "{true: false}",
+    "[#0(true, false)]",
+    "Box([#0(true, false)])",
+    "[#0(true, false)]",
+    "[#0(1.5, 2.5)]",
+    "Box([#0(1.5, 2.5)])"
+);
+
+e2e_ok!(
     e2e_bool_print,
     "examples/bool_print.lm",
     "true",

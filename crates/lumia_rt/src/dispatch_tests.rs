@@ -27,15 +27,26 @@ fn len_null_and_list_map_set_string() {
 fn get_list_and_map_option() {
     unsafe {
         let xs = lumia_list_append(lumia_list_empty(), 42);
-        assert_eq!(lumia_get(xs, 0, 0, 1), 42);
+        assert_eq!(lumia_get(xs, 0, 0, 1, 0, 0), 42);
         let mut m = ptr::null_mut();
         m = lumia_map_set(m, 3, 9);
-        let opt = lumia_get(m, 3, 0, 1);
+        let opt = lumia_get(m, 3, 0, 1, 0, 0);
         let base = opt as *const i64;
         assert_eq!(*base, 0);
         assert_eq!(*base.add(1), 9);
-        let none = lumia_get(m, 99, 0, 1);
+        let none = lumia_get(m, 99, 0, 1, 0, 0);
         assert_eq!(*(none as *const i64), 1);
+    }
+}
+
+#[test]
+fn get_null_empty_map_yields_none() {
+    // `[:]` / `mapOf()` is a null shell — Option-tagged get must not trap.
+    unsafe {
+        let none = lumia_get(ptr::null_mut(), 0, 0, 1, 0, 0);
+        assert_eq!(*(none as *const i64), 1);
+        let again = lumia_get(ptr::null_mut(), 42, 0, 1, 0, 0);
+        assert_eq!(none, again, "immortal None singleton");
     }
 }
 

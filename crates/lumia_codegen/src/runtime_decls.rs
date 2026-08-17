@@ -314,7 +314,7 @@ const RUNTIME_DECLS: &[RtDecl] = &[
     RtDecl {
         name: "lumia_get",
         ret: RtTy::I64,
-        args: &[RtTy::Ptr, RtTy::I64, RtTy::I64, RtTy::I64],
+        args: &[RtTy::Ptr, RtTy::I64, RtTy::I64, RtTy::I64, RtTy::I64, RtTy::I64],
     },
     RtDecl {
         name: "lumia_contains",
@@ -349,7 +349,7 @@ const RUNTIME_DECLS: &[RtDecl] = &[
     RtDecl {
         name: "lumia_map_get",
         ret: RtTy::Ptr,
-        args: &[RtTy::Ptr, RtTy::I64, RtTy::I64, RtTy::I64],
+        args: &[RtTy::Ptr, RtTy::I64, RtTy::I64, RtTy::I64, RtTy::I64, RtTy::I64],
     },
     RtDecl {
         name: "lumia_map_contains",
@@ -409,7 +409,7 @@ const RUNTIME_DECLS: &[RtDecl] = &[
     RtDecl {
         name: "lumia_map_items",
         ret: RtTy::Ptr,
-        args: &[RtTy::Ptr],
+        args: &[RtTy::Ptr, RtTy::I64],
     },
     RtDecl {
         name: "lumia_adt_tag",

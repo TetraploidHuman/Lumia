@@ -147,7 +147,7 @@ fn adt_float_mask_high_bit_skips_gc_mark() {
 
 #[test]
 fn adt_bool_mask_packs_high_half_preserves_float() {
-    let adt = crate::map_set::alloc_adt(0, &[1, 0]);
+    let adt = crate::map_set::alloc_adt_with_meta(0, &[1, 0], 0, 0, 0);
     unsafe { lumia_adt_set_float_mask(adt, 0b1); }
     unsafe { lumia_adt_set_bool_mask(adt, 0b10); }
     unsafe {

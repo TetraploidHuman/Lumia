@@ -14,7 +14,7 @@ use crate::gc::{list_payload_bytes, lumia_alloc};
 use crate::list::force_heap_list;
 
 use super::map_core::{
-    alloc_adt, alloc_adt_none_immortal, map_alloc_hash_tid, map_alloc_overlay, map_find,
+    alloc_adt_none_immortal, alloc_adt_with_meta, map_alloc_hash_tid, map_alloc_overlay, map_find,
     map_from_linear_to_hash, map_hash_find_slot, map_hash_nbytes, map_hash_put_new, map_is_hash,
     map_is_overlay, map_linear_nbytes, map_lookup_val, map_materialize, map_overlay_dn,
     map_overlay_parent, map_pair_at, MAP_OVERLAY_MAX, MAP_SMALL_MAX,
@@ -37,22 +37,37 @@ pub unsafe extern "C" fn lumia_map_contains(map: *mut u8, key: i64) -> i64 {
 /// Missing key → None ADT; hit → Some(value). Tags come from the program's `Option` decl.
 /// Misses reuse an immortal per-tag None singleton (no young-heap traffic).
 ///
+/// `show_kind` packs into the Option `type_id` so nested `lumia_show` prints `Some`/`None`
+/// instead of `#tag`. `bool_mask` bit0 marks an unboxed Bool payload (Float still comes
+/// from the map's `TID_F_VAL` bit via [`map_float_vals`]).
+///
 /// # Safety
 /// `map` is null or a valid Map/overlay payload.
 #[no_mangle]
-pub unsafe extern "C" fn lumia_map_get(map: *mut u8, key: i64, some_tag: i64, none_tag: i64) -> *mut u8 {
+pub unsafe extern "C" fn lumia_map_get(
+    map: *mut u8,
+    key: i64,
+    some_tag: i64,
+    none_tag: i64,
+    show_kind: i64,
+    bool_mask: i64,
+) -> *mut u8 {
     unsafe {
+        let kind = if show_kind < 0 {
+            0
+        } else {
+            show_kind as u16
+        };
         match map_lookup_val(map, key) {
             Some(val) => {
-                let opt = alloc_adt(some_tag, &[val]);
-                // Show/eq read ADT `_pad` float mask. Codegen AllocAdt sets it;
-                // RT-built Option[Float] must too (else `println(m.get(k))` prints IEEE bits).
+                let mut fmask = 0u64;
                 if map_float_vals(map) {
-                    crate::show::lumia_adt_set_float_mask(opt, 0b1);
+                    fmask |= 0b1;
                 }
-                opt
+                let bmask = (bool_mask as u64) & 0b1;
+                alloc_adt_with_meta(some_tag, &[val], kind, fmask, bmask)
             }
-            None => alloc_adt_none_immortal(none_tag),
+            None => alloc_adt_none_immortal(none_tag, kind),
         }
     }
 }
@@ -321,10 +336,13 @@ pub unsafe extern "C" fn lumia_map_values(map: *mut u8) -> *mut u8 {
 /// Insertion-ordered list of `(k, v)` pairs (each pair is ADT tag0 + 2 fields).
 /// Also accepts an existing `List` of pairs (identity) so `for (k,v) in pairs` works.
 ///
+/// `bool_mask` bits: bit0 = Bool key, bit1 = Bool val (Float still from map TID).
+/// Pair ADTs are built via [`alloc_adt_with_meta`] so nested/`lumia_show` see `_pad`.
+///
 /// # Safety
 /// `map` is null, a valid Map/overlay, or a List-of-pairs payload.
 #[no_mangle]
-pub unsafe extern "C" fn lumia_map_items(map: *mut u8) -> *mut u8 {
+pub unsafe extern "C" fn lumia_map_items(map: *mut u8, bool_mask: i64) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
     if !map.is_null() {
         let tid = unsafe { (*header_from_payload(map)).type_id };
@@ -358,14 +376,10 @@ pub unsafe extern "C" fn lumia_map_items(map: *mut u8) -> *mut u8 {
             if map_float_vals(map) {
                 pair_fmask |= 0b10;
             }
+            let pair_bmask = (bool_mask as u64) & 0b11;
             for i in 0..n as usize {
                 let (k, v) = map_pair_at(map, i);
-                let pair = alloc_adt(0, &[k, v]);
-                // Nested list/`append_show_adt` uses pair `_pad`; without this,
-                // `println(m.items())` prints float key/val as IEEE bit ints.
-                if pair_fmask != 0 {
-                    crate::show::lumia_adt_set_float_mask(pair, pair_fmask);
-                }
+                let pair = alloc_adt_with_meta(0, &[k, v], 0, pair_fmask, pair_bmask);
                 *dst.add(1 + i) = pair as i64;
             }
         }
