@@ -91,6 +91,19 @@ e2e_ok!(
     "true"
 );
 
+e2e_ok!(
+    e2e_nested_empty_map_set_show,
+    "examples/nested_empty_map_set_show.lm",
+    "{}",
+    "Some({})",
+    "[{}]",
+    "Box({})",
+    "Some(#{})",
+    "Box(#{})",
+    "{}",
+    "Some({})"
+);
+
 e2e_ok!(e2e_nested_it_map, "examples/nested_it_map.lm", "[2, 3, 4]");
 
 e2e_ok!(e2e_for, "examples/for.lm", "15", "3");

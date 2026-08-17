@@ -292,6 +292,16 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         args: &[],
     },
     RtDecl {
+        name: "lumia_map_empty",
+        ret: RtTy::Ptr,
+        args: &[],
+    },
+    RtDecl {
+        name: "lumia_set_empty",
+        ret: RtTy::Ptr,
+        args: &[],
+    },
+    RtDecl {
         name: "lumia_map_finish",
         ret: RtTy::Ptr,
         args: &[RtTy::Ptr],

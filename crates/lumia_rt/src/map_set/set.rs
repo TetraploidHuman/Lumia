@@ -9,11 +9,19 @@
 
 use std::ptr;
 
-use crate::common::{header_from_payload, trap_abort, GcInhibitGuard};
+use crate::common::{header_from_payload, trap_abort, GcInhibitGuard, TYPE_SET};
+use crate::ensure::immortal_empty_container;
 use crate::gc::{list_payload_bytes, lumia_alloc, mark_value_on};
 use crate::heap::Heap;
 
 use super::tid::{key_eq, set_float_elems, set_is_assoc, set_tid};
+
+/// Shared empty `Set` (`setOf()` / remove-to-empty). Immortal — survives GC.
+/// Null is still accepted as empty by ops (compat); prefer this for nesting Show.
+#[no_mangle]
+pub extern "C" fn lumia_set_empty() -> *mut u8 {
+    immortal_empty_container(|h| h.empty_set, |h, p| h.empty_set = p, TYPE_SET)
+}
 
 /// Set: small stays linear `[n][e0]…`; larger HashOrdered
 /// `[n][cap][order×cap][elem,state × cap]`.
@@ -326,9 +334,9 @@ pub unsafe extern "C" fn lumia_set_remove(set: *mut u8, elem: i64) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
     unsafe {
         let tid = set_tid(set);
-        // Empty Set is null (same as `setOf()`); never allocate a count-0 heap object.
+        // Empty Set is the immortal singleton (null still means empty for compat).
         if set.is_null() {
-            return std::ptr::null_mut();
+            return lumia_set_empty();
         }
         if set_is_hash(set) {
             let base = set as *const i64;
@@ -342,7 +350,7 @@ pub unsafe extern "C" fn lumia_set_remove(set: *mut u8, elem: i64) -> *mut u8 {
             };
             let n2 = n - 1;
             if n2 == 0 {
-                return std::ptr::null_mut();
+                return lumia_set_empty();
             }
             if n2 <= SET_SMALL_MAX {
                 let dest = lumia_alloc(
@@ -393,7 +401,7 @@ pub unsafe extern "C" fn lumia_set_remove(set: *mut u8, elem: i64) -> *mut u8 {
         };
         let n2 = n - 1;
         if n2 == 0 {
-            return std::ptr::null_mut();
+            return lumia_set_empty();
         }
         let dest = lumia_alloc(set_linear_nbytes(n2) as u64, tid);
         let dst = dest as *mut i64;

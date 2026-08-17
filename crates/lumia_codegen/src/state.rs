@@ -108,7 +108,7 @@ pub(crate) struct FrameState<'ctx> {
     /// Used to refuse SR when accumulators/IVs are not at the expected start.
     pub slot_i64_const: HashMap<String, Option<i64>>,
     /// Expected type for the `Let` currently being emitted (from ret / typed slot).
-    /// Used so empty `listOf()` / `mapOf()` / `setOf()` keep Float container tags.
+    /// Used so empty `listOf()` / `mapOf()` / `setOf()` keep Float/Bool container tags.
     pub expect_alloc_ty: Option<Type>,
 }
 

@@ -20,6 +20,15 @@ use super::map_core::{
     map_overlay_parent, map_pair_at, MAP_OVERLAY_MAX, MAP_SMALL_MAX,
 };
 use super::tid::{key_eq, map_float_keys, map_float_vals, map_is_assoc, map_tid};
+use crate::common::TYPE_MAP;
+use crate::ensure::immortal_empty_container;
+
+/// Shared empty `Map` (`mapOf()` / remove-to-empty). Immortal — survives GC.
+/// Null is still accepted as empty by ops (compat); prefer this for nesting Show.
+#[no_mangle]
+pub extern "C" fn lumia_map_empty() -> *mut u8 {
+    immortal_empty_container(|h| h.empty_map, |h, p| h.empty_map = p, TYPE_MAP)
+}
 
 /// # Safety
 /// `map` is null or a valid Map/overlay payload.
@@ -156,9 +165,9 @@ pub unsafe extern "C" fn lumia_map_remove(map: *mut u8, key: i64) -> *mut u8 {
             map
         };
         let tid = map_tid(map);
-        // Empty Map is null (same as `mapOf()`); never allocate a count-0 heap object.
+        // Empty Map is the immortal singleton (null still means empty for compat).
         if map.is_null() {
-            return std::ptr::null_mut();
+            return lumia_map_empty();
         }
         if map_is_hash(map) {
             let base = map as *const i64;
@@ -172,7 +181,7 @@ pub unsafe extern "C" fn lumia_map_remove(map: *mut u8, key: i64) -> *mut u8 {
             };
             let n2 = n - 1;
             if n2 == 0 {
-                return std::ptr::null_mut();
+                return lumia_map_empty();
             }
             if n2 <= MAP_SMALL_MAX {
                 // Demote to linear
@@ -217,7 +226,7 @@ pub unsafe extern "C" fn lumia_map_remove(map: *mut u8, key: i64) -> *mut u8 {
         };
         let n2 = n - 1;
         if n2 == 0 {
-            return std::ptr::null_mut();
+            return lumia_map_empty();
         }
         let nbytes = map_linear_nbytes(n2) as u64;
         let dest = lumia_alloc(nbytes, tid);

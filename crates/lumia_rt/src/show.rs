@@ -298,7 +298,8 @@ pub extern "C" fn lumia_show_list_bool(list: i64) -> *mut u8 {
     unsafe { show_list_mode(p, false, true) }
 }
 
-/// Show a set (`as_bool` 0/1). Empty Set is null (`setOf()` / remove-to-empty).
+/// Show a set (`as_bool` 0/1). Empty Set is immortal (`setOf()` / remove-to-empty);
+/// null still formats as `#{}`.
 #[no_mangle]
 pub extern "C" fn lumia_show_set_bool(set: i64, as_bool: i32) -> *mut u8 {
     let p = set as *mut u8;
@@ -330,7 +331,7 @@ pub extern "C" fn lumia_show_set_bool(set: i64, as_bool: i32) -> *mut u8 {
 #[no_mangle]
 pub extern "C" fn lumia_show_map_bool(map: i64, key_as_bool: i32, val_as_bool: i32) -> *mut u8 {
     let p = map as *mut u8;
-    // Empty Map is null (`mapOf()` / remove-to-empty).
+    // Empty Map is immortal (`mapOf()` / remove-to-empty); null still formats as {}.
     if p.is_null() {
         let mut s = String::new();
         unsafe {

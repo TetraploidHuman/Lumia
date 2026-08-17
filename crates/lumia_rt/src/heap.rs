@@ -32,6 +32,10 @@ pub(crate) struct Heap {
     pub old_limit: usize,
     /// Immortal empty `List` singleton payload (or null until first use).
     pub empty_list: *mut u8,
+    /// Immortal empty `Map` singleton (`mapOf()` / remove-to-empty); null until first use.
+    pub empty_map: *mut u8,
+    /// Immortal empty `Set` singleton (`setOf()` / remove-to-empty); null until first use.
+    pub empty_set: *mut u8,
     /// Immortal `None` Option ADTs keyed by constructor tag (map_get miss path).
     pub option_none: FxHashMap<u64, *mut u8>,
     /// When true, mark helpers only follow young payloads.
@@ -64,6 +68,8 @@ impl Heap {
             young_limit: DEFAULT_YOUNG_LIMIT,
             old_limit: DEFAULT_HEAP_LIMIT,
             empty_list: ptr::null_mut(),
+            empty_map: ptr::null_mut(),
+            empty_set: ptr::null_mut(),
             option_none: FxHashMap::default(),
             mark_minor: false,
             full_marking: false,

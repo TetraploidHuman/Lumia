@@ -121,9 +121,51 @@ impl<'ctx> Codegen<'ctx> {
         elems: &[Local],
         _repr: lumia_core::SetRepr,
     ) -> Result<BasicValueEnum<'ctx>> {
-        // Empty Set is the null pointer (RT contract); no heap object.
+        // Empty Set → immortal singleton (like `listOf()`); null still accepted by RT.
         if elems.is_empty() {
-            return Ok(self.llvm.i64_ty.const_zero().into());
+            let f = self.runtime_fn("lumia_set_empty")?;
+            let empty_call =
+                crate::error::llvm(self.llvm.builder.build_call(f, &[], "set_empty"))?;
+            let mut ptr = empty_call
+                .try_as_basic_value()
+                .basic()
+                .context("call return value")?
+                .into_pointer_value();
+            let elem_ty = match &self.frame.expect_alloc_ty {
+                Some(Type::Set(e)) => e.as_ref().clone(),
+                _ => Type::Int,
+            };
+            if matches!(elem_ty, Type::Float) {
+                let ens = self.runtime_fn(lumia_abi::ENSURE_SET_F64)?;
+                let c = crate::error::llvm(self.llvm.builder.build_call(
+                    ens,
+                    &[ptr.into()],
+                    "ens_sf64",
+                ))?;
+                ptr = c
+                    .try_as_basic_value()
+                    .basic()
+                    .context("call return value")?
+                    .into_pointer_value();
+            } else if matches!(elem_ty, Type::Bool) {
+                let ens = self.runtime_fn(lumia_abi::ENSURE_SET_BOOL)?;
+                let c = crate::error::llvm(self.llvm.builder.build_call(
+                    ens,
+                    &[ptr.into()],
+                    "ens_sbool",
+                ))?;
+                ptr = c
+                    .try_as_basic_value()
+                    .basic()
+                    .context("call return value")?
+                    .into_pointer_value();
+            }
+            return Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
+                ptr,
+                self.llvm.i64_ty,
+                "empty_set_i64",
+            ))?
+            .into());
         }
         let elem_ty = elems
             .first()
@@ -192,14 +234,79 @@ impl<'ctx> Codegen<'ctx> {
         let bool_vals = matches!(val_ty, Type::Bool);
         let no_hash =
             matches!(repr, lumia_core::MapRepr::AssocList) || !self.key_type_has_hash(&key_ty);
+        // Empty Map → immortal singleton (like `listOf()`); null still accepted by RT.
+        if flat_pairs.is_empty() {
+            let f = self.runtime_fn("lumia_map_empty")?;
+            let empty_call =
+                crate::error::llvm(self.llvm.builder.build_call(f, &[], "map_empty"))?;
+            let mut ptr = empty_call
+                .try_as_basic_value()
+                .basic()
+                .context("call return value")?
+                .into_pointer_value();
+            if float_keys {
+                let ens = self.runtime_fn(lumia_abi::ENSURE_MAP_F64)?;
+                let c = crate::error::llvm(self.llvm.builder.build_call(
+                    ens,
+                    &[ptr.into()],
+                    "ens_mf64",
+                ))?;
+                ptr = c
+                    .try_as_basic_value()
+                    .basic()
+                    .context("call return value")?
+                    .into_pointer_value();
+            }
+            if float_vals {
+                let ens = self.runtime_fn(lumia_abi::ENSURE_MAP_VF64)?;
+                let c = crate::error::llvm(self.llvm.builder.build_call(
+                    ens,
+                    &[ptr.into()],
+                    "ens_mvf64",
+                ))?;
+                ptr = c
+                    .try_as_basic_value()
+                    .basic()
+                    .context("call return value")?
+                    .into_pointer_value();
+            }
+            if bool_keys {
+                let ens = self.runtime_fn(lumia_abi::ENSURE_MAP_BOOL)?;
+                let c = crate::error::llvm(self.llvm.builder.build_call(
+                    ens,
+                    &[ptr.into()],
+                    "ens_mbool",
+                ))?;
+                ptr = c
+                    .try_as_basic_value()
+                    .basic()
+                    .context("call return value")?
+                    .into_pointer_value();
+            }
+            if bool_vals {
+                let ens = self.runtime_fn(lumia_abi::ENSURE_MAP_VBOOL)?;
+                let c = crate::error::llvm(self.llvm.builder.build_call(
+                    ens,
+                    &[ptr.into()],
+                    "ens_mvbool",
+                ))?;
+                ptr = c
+                    .try_as_basic_value()
+                    .basic()
+                    .context("call return value")?
+                    .into_pointer_value();
+            }
+            return Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
+                ptr,
+                self.llvm.i64_ty,
+                "empty_map_i64",
+            ))?
+            .into());
+        }
         // Float-value tags win over Assoc for IEEE value ==; Assoc is for
         // key Hash absence (linear forever) when values are not Float.
         // AssocList (+ Float tags) stays linear forever; Hash maps use 4/10/15/16.
         let tid = map_type_id_flags(float_keys, float_vals, bool_keys, bool_vals, no_hash);
-        // Empty Map is null (RT contract); no heap object.
-        if flat_pairs.is_empty() {
-            return Ok(self.llvm.i64_ty.const_zero().into());
-        }
         // `MapRepr::LitMap` is a PE/hint tag only — never a stack layout. Always
         // heap+finish so `lumia_map_finish` can compact (Float ±0 included).
         let nbytes = self
