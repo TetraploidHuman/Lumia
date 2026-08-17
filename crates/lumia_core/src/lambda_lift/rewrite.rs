@@ -8,11 +8,11 @@ use super::float_abi::{
     params_used_as_float_with_caps,
 };
 use super::heap::block_result_may_heap_with_params;
-use crate::ir::{
-    max_local_in_module, rewrite_block_locals, Block, CoreFun, CoreModule, ForeignAbi, FunKind,
-    Local, Op, Value,
+use crate::ir::{Block, CoreFun, CoreModule, ForeignAbi, FunKind, Local, Op, Value};
+use crate::visit::{
+    block_has_io, for_each_op_value_mut, max_local_in_module,
+    rewrite_block_locals,
 };
-use crate::visit::{block_has_io, for_each_nested_block, for_each_op_value_mut};
 use lumia_ty::{Effect, Type};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
@@ -98,16 +98,8 @@ fn lift_lambdas_inner(module: &mut CoreModule) {
         .filter(|f| f.effect.has_io())
         .map(|f| f.name.clone())
         .collect();
-    let mut fun_ret_tys: HashMap<String, Type> = module
-        .functions
-        .iter()
-        .map(|f| (f.name.clone(), f.ret_ty.clone()))
-        .collect();
-    let mut fun_param_tys: HashMap<String, Vec<Type>> = module
-        .functions
-        .iter()
-        .map(|f| (f.name.clone(), f.param_tys.clone()))
-        .collect();
+    let (mut fun_ret_tys, mut fun_param_tys) =
+        crate::ModuleTables::from_module(module).into_maps();
     let mut hof = HofSets::from_module_funs(
         module
             .functions
@@ -552,20 +544,6 @@ fn rewrite_block_names(block: &mut Block, name_remap: &HashMap<String, Local>) {
 /// still needs a local slot for `n = n + 1; n`).
 fn collect_assigned_names(block: &Block) -> HashSet<String> {
     let mut out = HashSet::default();
-    collect_assigned_names_in_block(block, &mut out);
+    crate::visit::collect_assigned_names(block, &mut out);
     out
-}
-
-fn collect_assigned_names_in_block(block: &Block, out: &mut HashSet<String>) {
-    for op in &block.ops {
-        match op {
-            Op::Assign { name, .. } => {
-                out.insert(name.clone());
-            }
-            Op::Let { value, .. } => {
-                for_each_nested_block(value, &mut |b| collect_assigned_names_in_block(b, out));
-            }
-            Op::Break | Op::Continue | Op::Return { .. } => {}
-        }
-    }
 }

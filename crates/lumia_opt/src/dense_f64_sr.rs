@@ -3,6 +3,10 @@
 //! **Sole owner of nest pattern matching.** Codegen only recognizes the rewritten
 //! single-`Call` body and emits a frameless RT trampoline.
 //!
+//! Name/const/IV peeps share [`lumia_core::name_of`] / [`lumia_core::is_unit_inc`] /
+//! [`lumia_core::is_nontrivial_arith`] / [`lumia_core::same_local`] /
+//! [`lumia_core::header_lt_bound`] / [`lumia_core::is_list_get`] with codegen domain SRs.
+//!
 //! Whole-function patterns become a single `Call` so Release inlining places the
 //! RT kernel at the call site (same shape as `std.linalg` wrappers).
 //!
@@ -11,7 +15,10 @@
 //! calls unlock the latter norms).
 
 use lumia_core::{
-    for_each_block_dfs, max_local_in_fun, Block, CoreFun, CoreModule, Local, Op, Value, FunKind};
+    collect_leaf_defs, for_each_let_value_ctrl, header_lt_bound,
+    is_list_get, is_list_set, is_nontrivial_add_or_sub, is_nontrivial_arith, is_unit_inc,
+    max_local_in_fun, name_of, same_local, Block, CoreFun, CoreModule, FunKind, Local, Op, Value,
+};
 use lumia_hir::Builtin;
 use lumia_core::CoreBinOp as BinOp;
 use lumia_ty::{Effect, Type};
@@ -31,7 +38,7 @@ fn dense_f64_sr_module(module: &mut CoreModule) {
         if fun.external.is_some() || fun.is_main || fun.memo.is_some() {
             continue;
         }
-        let defs = collect_leaf_defs(&fun.body);
+        let defs = collect_leaf_defs(&fun.body, true);
         let sym = if match_gemv_fun(fun, &defs).is_some() {
             Some("lumia_f64_gemv")
         } else if match_gemv_t_fun(fun, &defs).is_some() {
@@ -159,8 +166,9 @@ fn external_sig(sym: &str) -> (Vec<Type>, Type) {
         }
         "lumia_f64_softmax" => (vec![lf.clone()], lf),
         "lumia_f64_l2_normalize" => (vec![lf.clone(), Type::Float], lf),
-        "lumia_f64_sqrt" | "lumia_f64_exp" => (vec![Type::Float], Type::Float),
-        _ => (vec![], Type::Int),
+        // Scalar helpers (`sqrt`/`exp`) are not trampoline-eligible; inject only
+        // uses [`lumia_abi::DENSE_F64_TRAMPOLINE_SYMS`].
+        other => panic!("dense_f64_sr external_sig: non-trampoline {other}"),
     }
 }
 
@@ -184,28 +192,6 @@ fn rewrite_body_to_call(fun: &mut CoreFun, sym: &str) {
     }
     fun.ret_ty = ret_ty;
     fun.effect = Effect::pure();
-}
-
-fn collect_leaf_defs(body: &Block) -> HashMap<u32, Value> {
-    let mut all_defs: HashMap<u32, Value> = HashMap::default();
-    for_each_block_dfs(body, &mut |b| {
-        for op in &b.ops {
-            if let Op::Let { local, value, .. } = op {
-                if matches!(
-                    value,
-                    Value::Int(_)
-                        | Value::Float(_)
-                        | Value::Name(_)
-                        | Value::Binary { .. }
-                        | Value::Builtin { .. }
-                        | Value::AllocList { .. }
-                ) {
-                    all_defs.insert(local.0, value.clone());
-                }
-            }
-        }
-    });
-    all_defs
 }
 
 fn is_list_f64(t: &Type) -> bool {
@@ -598,7 +584,7 @@ fn match_zeros_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value>) -> Opt
             }
         }
     }
-    for_each_let(body, &mut |val| {
+    for_each_let_value_ctrl(body, &mut |_b, val| {
         if let Value::AllocList { elems, .. } = val {
             if elems.len() <= 1
                 && elems
@@ -659,86 +645,6 @@ fn first_loop(body: &Block) -> Option<(&Block, &Block, &Block)> {
         }
     }
     None
-}
-
-fn header_lt_bound(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String, Local)> {
-    let res = header.result?;
-    let Value::Binary {
-        op: BinOp::Lt,
-        left,
-        right,
-        ..
-    } = defs.get(&res.0)?
-    else {
-        return None;
-    };
-    let iv = name_of(*left, defs)?;
-    Some((iv, *right))
-}
-
-fn name_of(l: Local, defs: &HashMap<u32, Value>) -> Option<String> {
-    match defs.get(&l.0)? {
-        Value::Name(n) => Some(n.clone()),
-        _ => None,
-    }
-}
-
-/// Resolve `Local` / `Name` load / param identity through leaf defs.
-fn same_local(got: Local, want: Local, defs: &HashMap<u32, Value>) -> bool {
-    if got == want {
-        return true;
-    }
-    match defs.get(&got.0) {
-        Some(Value::Local(l)) => same_local(*l, want, defs),
-        Some(Value::Name(_)) => false, // slot load ≠ param unless assigned from it
-        _ => false,
-    }
-}
-
-fn is_unit_inc(dest: u32, iv: &str, defs: &HashMap<u32, Value>) -> bool {
-    let Some(Value::Binary {
-        op: BinOp::Add,
-        left,
-        right,
-        ..
-    }) = defs.get(&dest)
-    else {
-        return false;
-    };
-    let one_l = matches!(defs.get(&left.0), Some(Value::Int(1)));
-    let one_r = matches!(defs.get(&right.0), Some(Value::Int(1)));
-    let name_l = name_of(*left, defs).as_deref() == Some(iv);
-    let name_r = name_of(*right, defs).as_deref() == Some(iv);
-    (name_l && one_r) || (name_r && one_l)
-}
-
-fn is_list_get(v: &Value) -> Option<(Local, Local)> {
-    match v {
-        Value::Builtin {
-            name: Builtin::ListGet,
-            args, .. } if args.len() == 2 => Some((args[0], args[1])),
-        _ => None,
-    }
-}
-
-fn is_list_set(v: &Value) -> Option<(Local, Local, Local)> {
-    match v {
-        Value::Builtin {
-            name: Builtin::MapSet,
-            args, .. } if args.len() == 3 => Some((args[0], args[1], args[2])),
-        _ => None,
-    }
-}
-
-fn list_arg_is(list: Local, want: Local, defs: &HashMap<u32, Value>) -> bool {
-    if list == want {
-        return true;
-    }
-    match defs.get(&list.0) {
-        Some(Value::Local(l)) => list_arg_is(*l, want, defs),
-        Some(Value::Name(_)) => false,
-        _ => false,
-    }
 }
 
 /// Inner body of gemv: s accumulates A[i*n+j]*x[j]; then out.set(i,s); i+=1.
@@ -827,8 +733,8 @@ fn gemv_inner_accumulates(
             let lg = defs.get(&left.0).and_then(is_list_get);
             let rg = defs.get(&right.0).and_then(is_list_get);
             if let (Some((la, _)), Some((lb, _))) = (lg, rg) {
-                let a_x = (list_arg_is(la, a, defs) && list_arg_is(lb, x, defs))
-                    || (list_arg_is(la, x, defs) && list_arg_is(lb, a, defs));
+                let a_x = (same_local(la, a, defs) && same_local(lb, x, defs))
+                    || (same_local(la, x, defs) && same_local(lb, a, defs));
                 if a_x {
                     // Soft-check index uses i/n/j via presence of Mul/Add involving them elsewhere.
                     let _ = (n, i_slot);
@@ -852,7 +758,7 @@ fn fun_has_gemv_t_shape(
     let mut mul = false;
     let mut set = false;
     let mut zero_fill = false;
-    for_each_let(body, &mut |v| {
+    for_each_let_value_ctrl(body, &mut |_b, v| {
         if let Value::Binary {
             op: BinOp::Mul,
             left,
@@ -863,8 +769,8 @@ fn fun_has_gemv_t_shape(
             let lg = defs.get(&left.0).and_then(is_list_get);
             let rg = defs.get(&right.0).and_then(is_list_get);
             if let (Some((la, _)), Some((lb, _))) = (lg, rg) {
-                if (list_arg_is(la, a, defs) && list_arg_is(lb, x, defs))
-                    || (list_arg_is(la, x, defs) && list_arg_is(lb, a, defs))
+                if (same_local(la, a, defs) && same_local(lb, x, defs))
+                    || (same_local(la, x, defs) && same_local(lb, a, defs))
                 {
                     mul = true;
                 }
@@ -895,8 +801,8 @@ fn fun_has_gemv_t_shape(
             let lg = defs.get(&left.0).and_then(is_list_get);
             let rg = defs.get(&right.0).and_then(is_list_get);
             if let (Some((la, _)), Some((lb, _))) = (lg, rg) {
-                if (list_arg_is(la, a, defs) && list_arg_is(lb, x, defs))
-                    || (list_arg_is(la, x, defs) && list_arg_is(lb, a, defs))
+                if (same_local(la, a, defs) && same_local(lb, x, defs))
+                    || (same_local(la, x, defs) && same_local(lb, a, defs))
                 {
                     mul = true;
                 }
@@ -930,10 +836,10 @@ fn fun_has_addmm_shape(
     let mut uses_alpha = false;
     for vdef in defs.values() {
         if let Some((lst, _)) = is_list_get(vdef) {
-            if list_arg_is(lst, u, defs) {
+            if same_local(lst, u, defs) {
                 get_u = true;
             }
-            if list_arg_is(lst, v, defs) {
+            if same_local(lst, v, defs) {
                 get_v = true;
             }
         }
@@ -944,15 +850,15 @@ fn fun_has_addmm_shape(
             uses_alpha = true;
         }
     }
-    for_each_let(body, &mut |val| {
+    for_each_let_value_ctrl(body, &mut |_b, val| {
         if is_list_set(val).is_some() {
             set = true;
         }
         if let Some((lst, _)) = is_list_get(val) {
-            if list_arg_is(lst, u, defs) {
+            if same_local(lst, u, defs) {
                 get_u = true;
             }
-            if list_arg_is(lst, v, defs) {
+            if same_local(lst, v, defs) {
                 get_v = true;
             }
         }
@@ -974,7 +880,7 @@ fn fun_has_axpy_shape(
     let mut uses_alpha = false;
     for v in defs.values() {
         if let Some((lst, _)) = is_list_get(v) {
-            if list_arg_is(lst, x, defs) {
+            if same_local(lst, x, defs) {
                 get_x = true;
             }
             // y is out_slot Name
@@ -989,12 +895,12 @@ fn fun_has_axpy_shape(
             uses_alpha = true;
         }
     }
-    for_each_let(body, &mut |val| {
+    for_each_let_value_ctrl(body, &mut |_b, val| {
         if is_list_set(val).is_some() {
             set = true;
         }
         if let Some((lst, _)) = is_list_get(val) {
-            if list_arg_is(lst, x, defs) {
+            if same_local(lst, x, defs) {
                 get_x = true;
             }
             if name_of(lst, defs).as_deref() == Some(out_slot) {
@@ -1018,10 +924,10 @@ fn fun_has_sub_shape(
     let mut set = false;
     for v in defs.values() {
         if let Some((lst, _)) = is_list_get(v) {
-            if list_arg_is(lst, a, defs) {
+            if same_local(lst, a, defs) {
                 get_a = true;
             }
-            if list_arg_is(lst, b, defs) {
+            if same_local(lst, b, defs) {
                 get_b = true;
             }
         }
@@ -1032,7 +938,7 @@ fn fun_has_sub_shape(
             set = true;
         }
     }
-    for_each_let(body, &mut |val| {
+    for_each_let_value_ctrl(body, &mut |_b, val| {
         if is_list_set(val).is_some() {
             set = true;
         }
@@ -1058,10 +964,10 @@ fn fun_has_add_shape(
     let mut mul = false;
     for v in defs.values() {
         if let Some((lst, _)) = is_list_get(v) {
-            if list_arg_is(lst, a, defs) || name_of(lst, defs).as_deref() == Some(out_slot) {
+            if same_local(lst, a, defs) || name_of(lst, defs).as_deref() == Some(out_slot) {
                 get_a = true;
             }
-            if list_arg_is(lst, b, defs) {
+            if same_local(lst, b, defs) {
                 get_b = true;
             }
         }
@@ -1075,15 +981,15 @@ fn fun_has_add_shape(
             set = true;
         }
     }
-    for_each_let(body, &mut |val| {
+    for_each_let_value_ctrl(body, &mut |_b, val| {
         if is_list_set(val).is_some() {
             set = true;
         }
         if let Some((lst, _)) = is_list_get(val) {
-            if list_arg_is(lst, a, defs) || name_of(lst, defs).as_deref() == Some(out_slot) {
+            if same_local(lst, a, defs) || name_of(lst, defs).as_deref() == Some(out_slot) {
                 get_a = true;
             }
-            if list_arg_is(lst, b, defs) {
+            if same_local(lst, b, defs) {
                 get_b = true;
             }
         }
@@ -1112,10 +1018,10 @@ fn fun_has_mul_shape(
     let mut add_or_sub = false;
     for v in defs.values() {
         if let Some((lst, _)) = is_list_get(v) {
-            if list_arg_is(lst, a, defs) {
+            if same_local(lst, a, defs) {
                 get_a = true;
             }
-            if list_arg_is(lst, b, defs) {
+            if same_local(lst, b, defs) {
                 get_b = true;
             }
         }
@@ -1129,7 +1035,7 @@ fn fun_has_mul_shape(
             set = true;
         }
     }
-    for_each_let(body, &mut |val| {
+    for_each_let_value_ctrl(body, &mut |_b, val| {
         if is_list_set(val).is_some() {
             set = true;
         }
@@ -1174,7 +1080,7 @@ fn fun_has_scale_shape(
             uses_alpha = true;
         }
     }
-    for_each_let(body, &mut |val| {
+    for_each_let_value_ctrl(body, &mut |_b, val| {
         if is_list_set(val).is_some() {
             set = true;
         }
@@ -1212,7 +1118,7 @@ fn fun_has_fill_shape(body: &Block, defs: &HashMap<u32, Value>, out_slot: &str, 
             arith = true;
         }
     }
-    for_each_let(body, &mut |val| {
+    for_each_let_value_ctrl(body, &mut |_b, val| {
         if is_list_set(val).is_some() {
             set = true;
         }
@@ -1227,47 +1133,6 @@ fn fun_has_fill_shape(body: &Block, defs: &HashMap<u32, Value>, out_slot: &str, 
     set && uses_v && !get_any && !arith
 }
 
-/// `i+1` / `1+i` latch increments must not disqualify elementwise kernels.
-fn is_unit_inc_value(v: &Value, defs: &HashMap<u32, Value>) -> bool {
-    let Value::Binary {
-        op: BinOp::Add,
-        left,
-        right,
-        ..
-    } = v
-    else {
-        return false;
-    };
-    let one_l = matches!(defs.get(&left.0), Some(Value::Int(1)));
-    let one_r = matches!(defs.get(&right.0), Some(Value::Int(1)));
-    let name_l = name_of(*left, defs).is_some();
-    let name_r = name_of(*right, defs).is_some();
-    (name_l && one_r) || (name_r && one_l)
-}
-
-fn is_nontrivial_add_or_sub(v: &Value, defs: &HashMap<u32, Value>) -> bool {
-    matches!(
-        v,
-        Value::Binary {
-            op: BinOp::Add | BinOp::Sub,
-            ..
-        } if !is_unit_inc_value(v, defs)
-    )
-}
-
-fn is_nontrivial_arith(v: &Value, defs: &HashMap<u32, Value>) -> bool {
-    match v {
-        Value::Binary {
-            op: BinOp::Mul | BinOp::Div,
-            ..
-        } => true,
-        Value::Binary {
-            op: BinOp::Add | BinOp::Sub,
-            ..
-        } if !is_unit_inc_value(v, defs) => true,
-        _ => false,
-    }
-}
 
 fn fun_has_clamp_shape(
     body: &Block,
@@ -1280,7 +1145,7 @@ fn fun_has_clamp_shape(
     let mut uses_lo = false;
     let mut uses_hi = false;
     let mut saw_if = false;
-    for_each_let(body, &mut |val| {
+    for_each_let_value_ctrl(body, &mut |_b, val| {
         if is_list_set(val).is_some() {
             set = true;
         }
@@ -1322,7 +1187,7 @@ fn fun_has_copy_shape(
     let mut saw_arith = false;
     for v in defs.values() {
         if let Some((lst, _)) = is_list_get(v) {
-            if list_arg_is(lst, src, defs) {
+            if same_local(lst, src, defs) {
                 get_src = true;
             }
         }
@@ -1349,12 +1214,12 @@ fn fun_has_copy_shape(
             }
         }
     }
-    for_each_let(body, &mut |val| {
+    for_each_let_value_ctrl(body, &mut |_b, val| {
         if is_list_set(val).is_some() {
             set = true;
         }
         if let Some((lst, _)) = is_list_get(val) {
-            if list_arg_is(lst, src, defs) {
+            if same_local(lst, src, defs) {
                 get_src = true;
             }
         }
@@ -1371,7 +1236,7 @@ fn fun_has_sum_sq_shape(body: &Block, defs: &HashMap<u32, Value>, xs: Local) -> 
     let mut div = false;
     for v in defs.values() {
         if let Some((lst, _)) = is_list_get(v) {
-            if list_arg_is(lst, xs, defs) {
+            if same_local(lst, xs, defs) {
                 get = true;
             }
         }
@@ -1388,9 +1253,9 @@ fn fun_has_sum_sq_shape(body: &Block, defs: &HashMap<u32, Value>, xs: Local) -> 
             set = true;
         }
     }
-    for_each_let(body, &mut |val| {
+    for_each_let_value_ctrl(body, &mut |_b, val| {
         if let Some((lst, _)) = is_list_get(val) {
-            if list_arg_is(lst, xs, defs) {
+            if same_local(lst, xs, defs) {
                 get = true;
             }
         }
@@ -1420,7 +1285,7 @@ fn fun_has_mean_shape(body: &Block, defs: &HashMap<u32, Value>, xs: Local) -> bo
     let mut set = false;
     for v in defs.values() {
         if let Some((lst, _)) = is_list_get(v) {
-            if list_arg_is(lst, xs, defs) {
+            if same_local(lst, xs, defs) {
                 get = true;
             }
         }
@@ -1437,9 +1302,9 @@ fn fun_has_mean_shape(body: &Block, defs: &HashMap<u32, Value>, xs: Local) -> bo
             set = true;
         }
     }
-    for_each_let(body, &mut |val| {
+    for_each_let_value_ctrl(body, &mut |_b, val| {
         if let Some((lst, _)) = is_list_get(val) {
-            if list_arg_is(lst, xs, defs) {
+            if same_local(lst, xs, defs) {
                 get = true;
             }
         }
@@ -1469,7 +1334,7 @@ fn fun_has_std_shape(body: &Block, defs: &HashMap<u32, Value>, xs: Local) -> boo
     let mut set = false;
     for v in defs.values() {
         if let Some((lst, _)) = is_list_get(v) {
-            if list_arg_is(lst, xs, defs) {
+            if same_local(lst, xs, defs) {
                 get = true;
             }
         }
@@ -1486,9 +1351,9 @@ fn fun_has_std_shape(body: &Block, defs: &HashMap<u32, Value>, xs: Local) -> boo
             set = true;
         }
     }
-    for_each_let(body, &mut |val| {
+    for_each_let_value_ctrl(body, &mut |_b, val| {
         if let Some((lst, _)) = is_list_get(val) {
-            if list_arg_is(lst, xs, defs) {
+            if same_local(lst, xs, defs) {
                 get = true;
             }
         }
@@ -1534,7 +1399,7 @@ fn fun_has_l2_normalize_shape(
             uses_eps = true;
         }
     }
-    for_each_let(body, &mut |val| {
+    for_each_let_value_ctrl(body, &mut |_b, val| {
         if let Some((lst, _)) = is_list_get(val) {
             if name_of(lst, defs).as_deref() == Some(out_slot) {
                 get = true;
@@ -1571,7 +1436,7 @@ fn fun_has_softmax_shape(body: &Block, defs: &HashMap<u32, Value>, out_slot: &st
             gt = true;
         }
     }
-    for_each_let(body, &mut |val| {
+    for_each_let_value_ctrl(body, &mut |_b, val| {
         if let Some((lst, _)) = is_list_get(val) {
             if name_of(lst, defs).as_deref() == Some(out_slot) {
                 get = true;
@@ -1596,7 +1461,7 @@ fn fun_has_softmax_shape(body: &Block, defs: &HashMap<u32, Value>, out_slot: &st
 
 fn body_calls_any(body: &Block, names: &[&str]) -> bool {
     let mut found = false;
-    for_each_let(body, &mut |val| {
+    for_each_let_value_ctrl(body, &mut |_b, val| {
         if let Value::Call { fun, .. } = val {
             if names.iter().any(|n| fun == n) {
                 found = true;
@@ -1615,302 +1480,6 @@ fn mentions_local(v: &Value, target: Local) -> bool {
     }
 }
 
-fn for_each_let(body: &Block, f: &mut dyn FnMut(&Value)) {
-    for op in &body.ops {
-        if let Op::Let { value, .. } = op {
-            f(value);
-            match value {
-                Value::Loop {
-                    header,
-                    body,
-                    latch,
-                } => {
-                    for_each_let(header, f);
-                    for_each_let(body, f);
-                    for_each_let(latch, f);
-                }
-                Value::If {
-                    then_block,
-                    else_block,
-                    ..
-                } => {
-                    for_each_let(then_block, f);
-                    for_each_let(else_block, f);
-                }
-                _ => {}
-            }
-        }
-    }
-}
-
 #[cfg(test)]
-mod tests {
-    use crate::{optimize, OptOptions};
-
-    #[test]
-    fn rewrites_gemv_helper_to_foreign_call() {
-        let src = r#"
-module M
-val gemv(m, n, a, x, y) = {
-  var out = y
-  var i = 0
-  for i < m {
-    var s = 0.0
-    var j = 0
-    for j < n {
-      s = s + a.get(i * n + j) * x.get(j)
-      j = j + 1
-    }
-    out = out.set(i, s)
-    i = i + 1
-  }
-  out
-}
-val main = {
-  val a = listOf(1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
-  val x = listOf(1.0, 2.0)
-  var y = listOf(0.0, 0.0, 0.0)
-  y = gemv(3, 2, a, x, y)
-  0
-}
-"#;
-        let mut core = lumia_core::compile_source_to_core(src).unwrap();
-        optimize(&mut core, &OptOptions::for_build(true));
-        assert!(
-            core.functions
-                .iter()
-                .any(|f| f.external.as_deref() == Some("lumia_f64_gemv")),
-            "expected injected lumia_f64_gemv foreign"
-        );
-    }
-
-    #[test]
-    fn rewrites_zeros_helper_to_foreign_call() {
-        let src = r#"
-module M
-val nZeros(n) = {
-  var xs = listOf(0.0)
-  var i = 1
-  for i < n {
-    xs = xs.append(0.0)
-    i = i + 1
-  }
-  xs
-}
-val main = {
-  val z = nZeros(4)
-  z.len()
-}
-"#;
-        let mut core = lumia_core::compile_source_to_core(src).unwrap();
-        optimize(&mut core, &OptOptions::for_build(true));
-        assert!(
-            core.functions
-                .iter()
-                .any(|f| f.external.as_deref() == Some("lumia_list_f64_zeros")),
-            "expected injected lumia_list_f64_zeros foreign"
-        );
-    }
-
-    #[test]
-    fn rewrites_sum_sq_and_mean_helpers() {
-        let src = r#"
-module M
-val nSumSq(xs) = {
-  var s = 0.0
-  var i = 0
-  val n = xs.len()
-  for i < n {
-    val v = xs.get(i)
-    s = s + v * v
-    i = i + 1
-  }
-  s
-}
-val nMean(xs) = {
-  var s = 0.0
-  var i = 0
-  val n = xs.len()
-  for i < n {
-    s = s + xs.get(i)
-    i = i + 1
-  }
-  if n == 0 { 0.0 } else { s / (0.0 + n) }
-}
-val main = {
-  val xs = listOf(1.0, 2.0, 3.0)
-  val a = nSumSq(xs)
-  val b = nMean(xs)
-  0
-}
-"#;
-        let mut core = lumia_core::compile_source_to_core(src).unwrap();
-        optimize(&mut core, &OptOptions::for_build(true));
-        let ext: Vec<_> = core
-            .functions
-            .iter()
-            .filter_map(|f| f.external.as_deref())
-            .collect();
-        assert!(
-            ext.contains(&"lumia_f64_sum_sq"),
-            "sum_sq missing in {ext:?}"
-        );
-        assert!(ext.contains(&"lumia_f64_mean"), "mean missing in {ext:?}");
-    }
-
-    #[test]
-    fn rewrites_l2_norm_with_sqrt_foreign() {
-        let src = r#"
-module M
-foreign "C" pure fn lumia_f64_sqrt(x: Float) -> Float
-val nL2(xs) = {
-  var s = 0.0
-  var i = 0
-  val n = xs.len()
-  for i < n {
-    val v = xs.get(i)
-    s = s + v * v
-    i = i + 1
-  }
-  lumia_f64_sqrt(s)
-}
-val main = {
-  val xs = listOf(3.0, 4.0)
-  nL2(xs)
-}
-"#;
-        let mut core = lumia_core::compile_source_to_core(src).unwrap();
-        optimize(&mut core, &OptOptions::for_build(true));
-        assert!(
-            core.functions
-                .iter()
-                .any(|f| f.external.as_deref() == Some("lumia_f64_l2_norm")),
-            "expected lumia_f64_l2_norm"
-        );
-    }
-
-    #[test]
-    fn rewrites_l2_normalize_and_softmax() {
-        let src = r#"
-module M
-foreign "C" pure fn lumia_f64_sqrt(x: Float) -> Float
-foreign "C" pure fn lumia_f64_exp(x: Float) -> Float
-val nNorm(xs, eps) = {
-  var out = xs
-  var s = 0.0
-  var i = 0
-  val n = out.len()
-  for i < n {
-    val v = out.get(i)
-    s = s + v * v
-    i = i + 1
-  }
-  val inv = 1.0 / (lumia_f64_sqrt(s) + eps)
-  i = 0
-  for i < n {
-    out = out.set(i, out.get(i) * inv)
-    i = i + 1
-  }
-  out
-}
-val nSoft(xs) = {
-  var out = xs
-  var m = out.get(0)
-  var i = 1
-  val n = out.len()
-  for i < n {
-    val v = out.get(i)
-    if v > m { m = v }
-    i = i + 1
-  }
-  var z = 0.0
-  i = 0
-  for i < n {
-    val e = lumia_f64_exp(out.get(i) - m)
-    out = out.set(i, e)
-    z = z + e
-    i = i + 1
-  }
-  i = 0
-  for i < n {
-    out = out.set(i, out.get(i) / z)
-    i = i + 1
-  }
-  out
-}
-val main = {
-  var xs = listOf(1.0, 2.0, 3.0)
-  xs = nNorm(xs, 0.001)
-  xs = nSoft(xs)
-  0
-}
-"#;
-        let mut core = lumia_core::compile_source_to_core(src).unwrap();
-        optimize(&mut core, &OptOptions::for_build(true));
-        let ext: Vec<_> = core
-            .functions
-            .iter()
-            .filter_map(|f| f.external.as_deref())
-            .collect();
-        assert!(
-            ext.contains(&"lumia_f64_l2_normalize"),
-            "normalize missing in {ext:?}"
-        );
-        assert!(
-            ext.contains(&"lumia_f64_softmax"),
-            "softmax missing in {ext:?}"
-        );
-    }
-
-    #[test]
-    fn int_strided_loop_is_not_rewritten_to_clamp() {
-        // Regression: bare arity/shape once matched Int loops (bench_cpu
-        // `collatzStrided`) and rewrote them to `lumia_f64_clamp`.
-        let src = r#"
-module M
-val steps(n) = {
-  var x = n
-  var c = 0
-  for x > 1 {
-    if x % 2 == 0 {
-      x = x / 2
-    } else {
-      x = 3 * x + 1
-    }
-    c = c + 1
-  }
-  c
-}
-val strided(start, limit, stride) = {
-  var n = start
-  var total = 0
-  for n <= limit {
-    total = total + steps(n)
-    n = n + stride
-  }
-  total
-}
-val main = {
-  strided(1, 20, 3)
-}
-"#;
-        let mut core = lumia_core::compile_source_to_core(src).unwrap();
-        optimize(&mut core, &OptOptions::for_build(true));
-        assert!(
-            core.functions
-                .iter()
-                .all(|f| f.external.as_deref() != Some("lumia_f64_clamp")),
-            "Int strided loop must not inject lumia_f64_clamp"
-        );
-        let strided = core
-            .functions
-            .iter()
-            .find(|f| f.name == "strided")
-            .expect("strided");
-        let body = format!("{:?}", strided.body);
-        assert!(
-            !body.contains("lumia_f64_clamp"),
-            "strided body must not call lumia_f64_clamp: {body}"
-        );
-    }
-}
+#[path = "dense_f64_sr_tests.rs"]
+mod tests;

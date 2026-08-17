@@ -208,7 +208,6 @@ pub fn lower_hir_with_schemes(
             (a.name.clone(), total)
         })
         .collect();
-    let (option_some_tag, option_none_tag) = option_ctor_tags(&module.adts);
     let mut core = CoreModule {
         name: module.name.clone(),
         functions,
@@ -219,30 +218,39 @@ pub fn lower_hir_with_schemes(
         channel_elem_hint: None,
         channel_elem_by_local: Default::default(),
         channel_elem_conflicts: Vec::new(),
-        option_some_tag,
-        option_none_tag,
     };
     ensure_prelude_ctor_stubs(&mut core);
-    lift_lambdas(&mut core);
-    refine_channel_elem_hint(&mut core);
-    directize_funref_calls(&mut core);
+    // Pure HIR→Core translation ends above. Mid-end ABI refinement runs next
+    // (named pipeline — not part of “lower” ownership long-term).
+    run_core_abi_pipeline(&mut core);
+    Ok(core)
+}
+
+/// Post-lower Core ABI pipeline: lift → channel hint → directize → traits →
+/// float fixup × mono fixpoint → trait stubs.
+///
+/// Kept separate from HIR translation so stage ownership stays auditable
+/// (Todo: `lower_hir` 编排中端遍).
+pub(crate) fn run_core_abi_pipeline(core: &mut CoreModule) {
+    lift_lambdas(core);
+    refine_channel_elem_hint(core);
+    directize_funref_calls(core);
     // Num `a + b` is still Binary until here — rewrite to `__Num_T_add` Call
     // before mono so Float field products get `$…Float…` clones (codegen
     // override alone hits the unspecialized Int-body instance).
-    resolve_trait_method_calls(&mut core);
+    resolve_trait_method_calls(core);
     // Fixpoint: fixup lifts Float/Bool/String/Fun ABI on `__lam_*`; mono clones
     // HOF consumers (`unwrapOr` after `optionMap`, spawn join, …). Change-flag
     // until specialize reports no new clones (capped). One more fixup after the
     // last mono pass patches caps once `$Float` clones exist.
     for _ in 0..lumia_abi::FLOAT_MONO_ROUNDS {
-        fixup_closure_float_caps(&mut core);
-        if !specialize_mono_calls(&mut core) {
+        fixup_closure_float_caps(core);
+        if !specialize_mono_calls(core) {
             break;
         }
     }
-    fixup_closure_float_caps(&mut core);
-    ensure_trait_method_stubs(&mut core);
-    Ok(core)
+    fixup_closure_float_caps(core);
+    ensure_trait_method_stubs(core);
 }
 
 fn type_is_open(t: &Type) -> bool {
@@ -261,29 +269,6 @@ fn type_is_open(t: &Type) -> bool {
 /// Count type parameters for a sum ADT — see [`lumia_hir::sum_parametric_arity`].
 fn sum_parametric_arity(adt: &lumia_hir::AdtDef) -> usize {
     lumia_hir::sum_parametric_arity(adt)
-}
-
-fn option_ctor_tags(adts: &[lumia_hir::AdtDef]) -> (i64, i64) {
-    let opt = lumia_hir::OPTION;
-    let (mut some, mut none) = (
-        opt.default_tag("Some").unwrap_or(0),
-        opt.default_tag("None").unwrap_or(1),
-    );
-    for a in adts {
-        if a.name != opt.name {
-            continue;
-        }
-        for v in &a.variants {
-            if v.name == "Some" {
-                some = v.tag;
-            }
-            if v.name == "None" {
-                none = v.tag;
-            }
-        }
-        return (some, none);
-    }
-    (some, none)
 }
 
 /// Nullary empty-container stubs for first-class `listOf` / `mapOf` / `setOf`.

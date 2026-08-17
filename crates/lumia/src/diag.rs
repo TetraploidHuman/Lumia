@@ -8,6 +8,8 @@ pub enum DiagnosticKind {
     Parse,
     Lower,
     Type,
+    /// Soft advisory (e.g. package `trust_foreign_pure`); does not fail check/build.
+    Warning,
     /// Load / analysis failure without a phase prefix.
     Other,
 }
@@ -18,15 +20,20 @@ impl DiagnosticKind {
             Self::Parse => "parse",
             Self::Lower => "lower",
             Self::Type => "type",
+            Self::Warning => "warning",
             Self::Other => "error",
         }
     }
 
+    /// Hard failure vs soft advisory (LSP severity / CLI exit).
+    pub fn is_error(self) -> bool {
+        !matches!(self, Self::Warning)
+    }
+
     /// LSP `Diagnostic.severity` (Error=1, Warning=2, Information=3, Hint=4).
-    ///
-    /// All current kinds are hard failures; wire new soft kinds here when added.
     pub fn lsp_severity(self) -> u8 {
         match self {
+            Self::Warning => 2,
             Self::Parse | Self::Lower | Self::Type | Self::Other => 1,
         }
     }
@@ -48,6 +55,8 @@ impl DiagnosticKind {
             Self::Lower
         } else if lower.starts_with("type:") {
             Self::Type
+        } else if lower.starts_with("warning:") {
+            Self::Warning
         } else {
             Self::Other
         }
@@ -121,8 +130,19 @@ mod tests {
             DiagnosticKind::Parse
         );
         assert_eq!(
+            DiagnosticKind::from_message_prefix("warning: trust"),
+            DiagnosticKind::Warning
+        );
+        assert_eq!(
             DiagnosticKind::from_message_prefix("nope"),
             DiagnosticKind::Other
         );
+    }
+
+    #[test]
+    fn warning_is_soft_lsp_severity() {
+        assert_eq!(DiagnosticKind::Warning.lsp_severity(), 2);
+        assert!(!DiagnosticKind::Warning.is_error());
+        assert!(DiagnosticKind::Type.is_error());
     }
 }

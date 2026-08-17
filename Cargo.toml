@@ -39,9 +39,6 @@ rustc-hash = "2"
 corosensei = "0.3.4"
 
 [workspace.lints.clippy]
-# Helpers shared across HOF / TCO analysis naturally take many parameters.
-too_many_arguments = "allow"
-# Dyn FnMut callbacks in infer_value_ty_ctx are intentional.
-type_complexity = "allow"
-# Nested Op/Value matches are clearer than deeply nested patterns in opt/memo.
-collapsible_match = "allow"
+# Intentionally empty at workspace scope — god-function allows live on the
+# crates that need them (`lumia_core` / `lumia_opt` / `lumia_codegen` / `lumia_ty`).
+# Do not re-widen here (Todo: 工作区级 clippy allow 仍宽).

@@ -12,9 +12,9 @@ extern "C" fn forty_two() -> i64 {
 
 extern "C" fn send_pair(env: i64) -> i64 {
     let ch = env as *mut u8;
-    lumia_channel_send(ch, 7);
-    lumia_channel_send(ch, 8);
-    lumia_channel_close(ch);
+    unsafe { lumia_channel_send(ch, 7) };
+    unsafe { lumia_channel_send(ch, 8) };
+    unsafe { lumia_channel_close(ch) };
     0
 }
 
@@ -22,7 +22,7 @@ extern "C" fn send_pair(env: i64) -> i64 {
 fn crate_tests_spawn_join_nullary() {
     lumia_scope_enter(0);
     let t = lumia_task_spawn_nullary(Some(forty_two));
-    let v = lumia_task_join(t);
+    let v = unsafe { lumia_task_join(t) };
     lumia_scope_leave();
     assert_eq!(v, 42);
 }
@@ -32,7 +32,7 @@ fn crate_tests_channel_send_recv() {
     lumia_scope_enter(0);
     let ch = lumia_channel_new(2);
     let _ = lumia_task_spawn(Some(send_pair), ch as i64);
-    assert_eq!(lumia_channel_recv(ch), 7);
-    assert_eq!(lumia_channel_recv(ch), 8);
+    assert_eq!(unsafe { lumia_channel_recv(ch) }, 7);
+    assert_eq!(unsafe { lumia_channel_recv(ch) }, 8);
     lumia_scope_leave();
 }

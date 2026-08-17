@@ -9,6 +9,7 @@ use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
 use lumia_core::{Local, MemoTf, Value};
 use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use std::rc::Rc;
 
 /// LLVM context / module / builder / common types.
 pub(crate) struct LlvmTypes<'ctx> {
@@ -19,6 +20,10 @@ pub(crate) struct LlvmTypes<'ctx> {
 }
 
 /// Per-function symbol tables and TCO / ABI metadata.
+///
+/// ABI types and Core analysis side tables are seeded from
+/// [`lumia_core::ModuleTables`] at emit entry; this struct then owns LLVM
+/// handles and emit-only side tables (`closure_cap_tys`, `adt_show_kinds`, …).
 #[derive(Default)]
 pub(crate) struct FunTables<'ctx> {
     pub functions: HashMap<String, FunctionValue<'ctx>>,
@@ -47,6 +52,21 @@ pub(crate) struct FunTables<'ctx> {
     pub adt_show_kinds: HashMap<String, u16>,
 }
 
+impl FunTables<'_> {
+    /// Seed ABI / analysis blackboard fields from Core [`lumia_core::ModuleTables`].
+    /// LLVM handles and emit-only maps (`closure_cap_tys`, `adt_show_kinds`, …) stay here.
+    pub(crate) fn seed_abi_from(&mut self, tables: lumia_core::ModuleTables) {
+        self.hash_adts = tables.hash_adts;
+        self.adt_variant_names = tables.adt_variant_names;
+        self.sum_max_arity = tables.sum_max_arity;
+        self.channel_elem_hint = tables.channel_elem_hint;
+        self.channel_elem_by_local = tables.channel_elem_by_local;
+        self.fun_ret_tys = tables.fun_ret_tys;
+        self.fun_param_tys = tables.fun_param_tys;
+        self.fun_param0_identity = tables.fun_param0_identity;
+    }
+}
+
 /// Per-frame SSA / slot / GC-root state while emitting one function.
 #[derive(Default)]
 pub(crate) struct FrameState<'ctx> {
@@ -63,7 +83,11 @@ pub(crate) struct FrameState<'ctx> {
     /// Evicted by [`crate::Codegen::root_pop_to`] when that depth is unwound so a later
     /// `ensure_slot` / `load_slot` can re-push (scoped if/loop must not leave stale
     /// "already rooted" compile-time state).
-    pub rooted_slots: HashMap<String, u32>,
+    ///
+    /// `Rc` so nested `if` can snapshot with `Rc::clone` (O(1)); mutations use
+    /// `Rc::make_mut` (copy-on-write). Musttail wipe leaves the checkpoint Rc intact
+    /// for O(1) restore.
+    pub rooted_slots: Rc<HashMap<String, u32>>,
     pub entry_bb: Option<BasicBlock<'ctx>>,
     /// Dest local of the `Let` currently being emitted (for NSW lookup).
     pub emit_dest: Option<u32>,

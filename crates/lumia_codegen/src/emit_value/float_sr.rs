@@ -11,7 +11,12 @@ use lumia_core::CoreBinOp as BinOp;
 use rustc_hash::FxHashMap as HashMap;
 
 use super::super::Codegen;
+use super::sr_pattern::{
+    body_assigns_const, const_of, has_float_approx, has_float_binop_with_const, header_lt_const,
+    is_unit_inc, name_of,
+};
 use anyhow::{anyhow, Result};
+use lumia_core::header_lt_bound as core_header_lt_bound;
 
 #[derive(Debug)]
 struct FloatOrbit {
@@ -629,8 +634,8 @@ fn match_mandelbrot(
                     ..
                 }) = defs.get(v)
                 {
-                    let l = name_of(defs, *left);
-                    let r = name_of(defs, *right);
+                    let l = name_of(*left, defs);
+                    let r = name_of(*right, defs);
                     if l.as_deref() == Some(name.as_str()) || r.as_deref() == Some(name.as_str()) {
                         acc = Some(name.clone());
                     }
@@ -651,204 +656,15 @@ fn match_mandelbrot(
     })
 }
 
-fn has_float_approx(defs: &HashMap<u32, Value>, target: f64) -> bool {
-    defs.values().any(|v| match v {
-        Value::Float(f) => (*f - target).abs() < 1e-12,
-        _ => false,
-    })
-}
-
-fn has_float_binop_with_const(defs: &HashMap<u32, Value>, op: BinOp, target: f64) -> bool {
-    defs.values().any(|v| {
-        let Value::Binary {
-            op: bop,
-            left,
-            right,
-            ..
-        } = v
-        else {
-            return false;
-        };
-        if *bop != op {
-            return false;
-        }
-        let lf = match defs.get(&left.0) {
-            Some(Value::Float(f)) => Some(*f),
-            _ => None,
-        };
-        let rf = match defs.get(&right.0) {
-            Some(Value::Float(f)) => Some(*f),
-            _ => None,
-        };
-        lf.is_some_and(|f| (f - target).abs() < 1e-12)
-            || rf.is_some_and(|f| (f - target).abs() < 1e-12)
-    })
-}
-
-fn header_lt_const(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String, i64)> {
-    match header_lt_bound(header, defs)? {
-        (iv, OrbitBound::Const(c)) => Some((iv, c)),
-        _ => None,
-    }
-}
-
 fn header_lt_bound(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String, OrbitBound)> {
-    let res = header.result?;
-    let Value::Binary {
-        op: BinOp::Lt,
-        left,
-        right,
-        ..
-    } = defs.get(&res.0)?
-    else {
-        return None;
-    };
-    let iv = name_of(defs, *left)?;
-    if let Some(c) = const_i64(defs, *right) {
-        return Some((iv, OrbitBound::Const(c)));
-    }
-    Some((iv, OrbitBound::Local(*right)))
-}
-
-fn is_unit_inc(dest: u32, iv: &str, defs: &HashMap<u32, Value>) -> bool {
-    let Some(Value::Binary {
-        op: BinOp::Add,
-        left,
-        right,
-        ..
-    }) = defs.get(&dest)
-    else {
-        return false;
-    };
-    let l = name_of(defs, *left);
-    let r = name_of(defs, *right);
-    let lc = const_i64(defs, *left);
-    let rc = const_i64(defs, *right);
-    (l.as_deref() == Some(iv) && rc == Some(1)) || (r.as_deref() == Some(iv) && lc == Some(1))
-}
-
-fn body_assigns_const(body: &Block, slot: &str, expect: i64, defs: &HashMap<u32, Value>) -> bool {
-    for op in &body.ops {
-        if let Op::Assign {
-            name,
-            value: Local(v),
-        } = op
-        {
-            if name == slot && const_i64(defs, Local(*v)) == Some(expect) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-fn name_of(defs: &HashMap<u32, Value>, l: Local) -> Option<String> {
-    match defs.get(&l.0)? {
-        Value::Name(n) => Some(n.clone()),
-        _ => None,
+    let (iv, right) = core_header_lt_bound(header, defs)?;
+    if let Some(c) = const_of(right, defs) {
+        Some((iv, OrbitBound::Const(c)))
+    } else {
+        Some((iv, OrbitBound::Local(right)))
     }
 }
 
-fn const_i64(defs: &HashMap<u32, Value>, l: Local) -> Option<i64> {
-    match defs.get(&l.0)? {
-        Value::Int(n) => Some(*n),
-        _ => None,
-    }
-}
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use lumia_core::{Op, Value};
-    use lumia_opt::{compile_source_to_optimized, OptOptions};
-
-    fn find_loops(block: &Block, out: &mut Vec<(Block, Block, Block)>) {
-        for op in &block.ops {
-            if let Op::Let {
-                value:
-                    Value::Loop {
-                        header,
-                        body,
-                        latch,
-                    },
-                ..
-            } = op
-            {
-                out.push((
-                    header.as_ref().clone(),
-                    body.as_ref().clone(),
-                    latch.as_ref().clone(),
-                ));
-                find_loops(body, out);
-                find_loops(header, out);
-                find_loops(latch, out);
-            }
-            if let Op::Let {
-                value:
-                    Value::If {
-                        then_block,
-                        else_block,
-                        ..
-                    },
-                ..
-            } = op
-            {
-                find_loops(then_block, out);
-                find_loops(else_block, out);
-            }
-        }
-    }
-
-    #[test]
-    fn matches_float_orbit_and_mandelbrot_in_bench() {
-        let src = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../examples/bench_cpu.lm"
-        ))
-        .unwrap();
-        let core = compile_source_to_optimized(&src, &OptOptions::for_build(true)).unwrap();
-        let mut fo = 0;
-        let mut mb = 0;
-        for f in &core.functions {
-            let defs = crate::nsw_iv::collect_leaf_defs(&f.body);
-            let mut loops = vec![];
-            find_loops(&f.body, &mut loops);
-            for (h, b, l) in &loops {
-                if match_float_orbit(h, b, l, &defs).is_some() {
-                    fo += 1;
-                }
-                if match_mandelbrot(h, b, l, &defs).is_some() {
-                    mb += 1;
-                }
-            }
-        }
-        assert!(fo >= 1, "floatOrbit matches={fo}");
-        assert!(mb >= 1, "mandelbrot matches={mb}");
-    }
-
-    #[test]
-    fn matches_float_orbit_and_mandelbrot_in_opt_sr_correctness() {
-        let src = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../examples/opt_sr_correctness.lm"
-        ))
-        .unwrap();
-        let core = compile_source_to_optimized(&src, &OptOptions::for_build(true)).unwrap();
-        let mut fo = 0;
-        let mut mb = 0;
-        for f in &core.functions {
-            let defs = crate::nsw_iv::collect_leaf_defs(&f.body);
-            let mut loops = vec![];
-            find_loops(&f.body, &mut loops);
-            for (h, b, l) in &loops {
-                if match_float_orbit(h, b, l, &defs).is_some() {
-                    fo += 1;
-                }
-                if match_mandelbrot(h, b, l, &defs).is_some() {
-                    mb += 1;
-                }
-            }
-        }
-        assert!(fo >= 1, "floatOrbit matches={fo}");
-        assert!(mb >= 1, "mandelbrot matches={mb}");
-    }
-}
+#[path = "float_sr_tests.rs"]
+mod tests;

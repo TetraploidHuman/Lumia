@@ -259,7 +259,7 @@ impl<'ctx> Codegen<'ctx> {
 
         self.llvm.builder.position_at_end(some_bb);
         let some =
-            self.emit_option_adt_into(root_slot, self.option_some_tag, Some(val), field_ty)?;
+            self.emit_option_adt_into(root_slot, self.option_variant_tag("Some"), Some(val), field_ty)?;
         crate::error::llvm(self.llvm.builder.build_unconditional_branch(merge_bb))?;
         let some_bb_end = self
             .llvm
@@ -269,7 +269,7 @@ impl<'ctx> Codegen<'ctx> {
 
         self.llvm.builder.position_at_end(none_bb);
         let none =
-            self.emit_option_adt_into(root_slot, self.option_none_tag, None, field_ty)?;
+            self.emit_option_adt_into(root_slot, self.option_variant_tag("None"), None, field_ty)?;
         crate::error::llvm(self.llvm.builder.build_unconditional_branch(merge_bb))?;
         let none_bb_end = self
             .llvm
@@ -349,6 +349,9 @@ impl<'ctx> Codegen<'ctx> {
             crate::error::llvm(self.llvm.builder.build_store(slot, v))?;
             if matches!(field_ty, Type::Float) {
                 self.emit_adt_set_float_mask(ptr, 1)?;
+            }
+            if matches!(field_ty, Type::Bool) {
+                self.emit_adt_set_bool_mask(ptr, 1)?;
             }
         }
         crate::error::llvm(

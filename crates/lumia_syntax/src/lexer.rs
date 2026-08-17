@@ -1,3 +1,4 @@
+use crate::escape::{unescape_char_byte, unescape_string_byte};
 use crate::span::Span;
 use crate::token::{Token, TokenKind};
 
@@ -52,6 +53,9 @@ impl<'a> Lexer<'a> {
     }
 
     /// Peek the next `n` token kinds without advancing this lexer.
+    ///
+    /// Allocates `Ident`/`String` payloads like a real lex; prefer
+    /// [`Self::peek_ident_eq`] when only a structural look-ahead is needed.
     pub fn peek_kinds(&self, n: usize) -> Vec<TokenKind> {
         let mut tmp = Lexer {
             src: self.src,
@@ -63,6 +67,42 @@ impl<'a> Lexer<'a> {
             out.push(tmp.next_token().kind);
         }
         out
+    }
+
+    /// True if the next two tokens are `Ident` then `=` (struct field), without
+    /// cloning Ident strings or re-running a full speculative lexer.
+    pub fn peek_ident_eq(&self) -> bool {
+        let mut pos = skip_trivia_at(self.bytes, self.pos);
+        let start = pos;
+        if pos < self.bytes.len() && self.bytes[pos] == b'_' {
+            pos += 1;
+            if pos >= self.bytes.len() || !is_ident_continue(self.bytes[pos]) {
+                return false; // bare `_` → Underscore, not Ident
+            }
+            while pos < self.bytes.len() && is_ident_continue(self.bytes[pos]) {
+                pos += 1;
+            }
+        } else if pos < self.bytes.len() && self.bytes[pos].is_ascii_alphabetic() {
+            pos += 1;
+            while pos < self.bytes.len() && is_ident_continue(self.bytes[pos]) {
+                pos += 1;
+            }
+        } else {
+            return false;
+        }
+        let word = &self.src[start..pos];
+        // Hard keywords are their own token kinds — not `Ident`.
+        if TokenKind::keyword(word).is_some() {
+            return false;
+        }
+        pos = skip_trivia_at(self.bytes, pos);
+        if self.bytes.get(pos) != Some(&b'=') {
+            return false;
+        }
+        match self.bytes.get(pos + 1).copied() {
+            Some(b'=') | Some(b'>') => false, // `==` / `=>`
+            _ => true,
+        }
     }
 
     pub fn next_token(&mut self) -> Token {
@@ -175,7 +215,7 @@ impl<'a> Lexer<'a> {
                 self.pos += 1;
                 if self.peek() == Some(b'>') {
                     self.pos += 1;
-                    TokenKind::PipePipe
+                    TokenKind::GtGt
                 } else if self.peek() == Some(b'=') {
                     self.pos += 1;
                     TokenKind::Ge
@@ -348,14 +388,9 @@ impl<'a> Lexer<'a> {
                 if self.pos >= self.bytes.len() {
                     break;
                 }
-                match self.bytes[self.pos] {
-                    b'n' => lit.push('\n'),
-                    b't' => lit.push('\t'),
-                    b'r' => lit.push('\r'),
-                    b'\\' => lit.push('\\'),
-                    b'"' => lit.push('"'),
-                    b'$' => lit.push('$'),
-                    other => lit.push(other as char),
+                match unescape_string_byte(self.bytes[self.pos]) {
+                    Some(ch) => lit.push(ch),
+                    None => lit.push(self.bytes[self.pos] as char),
                 }
                 self.pos += 1;
                 continue;
@@ -443,14 +478,9 @@ impl<'a> Lexer<'a> {
             }
             let esc = self.bytes[self.pos];
             self.pos += 1;
-            match esc {
-                b'n' => '\n',
-                b't' => '\t',
-                b'r' => '\r',
-                b'\\' => '\\',
-                b'\'' => '\'',
-                b'0' => '\0',
-                other => other as char,
+            match unescape_char_byte(esc) {
+                Some(ch) => ch,
+                None => esc as char,
             }
         } else {
             // Decode one UTF-8 scalar from remaining bytes
@@ -474,6 +504,34 @@ fn is_ident_continue(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
+/// Skip whitespace and `//` / `/* */` comments starting at `pos` (peek helpers).
+fn skip_trivia_at(bytes: &[u8], mut pos: usize) -> usize {
+    loop {
+        while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
+            pos += 1;
+        }
+        if pos + 1 < bytes.len() && bytes[pos] == b'/' && bytes[pos + 1] == b'/' {
+            pos += 2;
+            while pos < bytes.len() && bytes[pos] != b'\n' {
+                pos += 1;
+            }
+            continue;
+        }
+        if pos + 1 < bytes.len() && bytes[pos] == b'/' && bytes[pos + 1] == b'*' {
+            pos += 2;
+            while pos + 1 < bytes.len() && !(bytes[pos] == b'*' && bytes[pos + 1] == b'/') {
+                pos += 1;
+            }
+            if pos + 1 < bytes.len() {
+                pos += 2;
+            }
+            continue;
+        }
+        break;
+    }
+    pos
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -492,7 +550,7 @@ mod tests {
         }
         assert!(matches!(kinds[0], TokenKind::Val));
         assert!(matches!(kinds[3], TokenKind::Int(1)));
-        assert!(kinds.iter().any(|k| matches!(k, TokenKind::PipePipe)));
+        assert!(kinds.iter().any(|k| matches!(k, TokenKind::GtGt)));
     }
 
     #[test]
@@ -566,12 +624,27 @@ mod tests {
     }
 
     #[test]
-    fn fat_arrow_lexes_as_error() {
-        let mut lx = Lexer::new("=>");
-        let t = lx.next_token();
-        match t.kind {
-            TokenKind::Error(msg) => assert!(msg.contains("`=>`"), "got {msg}"),
-            other => panic!("expected Error, got {other:?}"),
+    fn peek_ident_eq_matches_peek_kinds_and_skips_keywords() {
+        let cases = [
+            ("x = 1", true),
+            ("_y = 1", true),
+            ("  /* c */ x = 1", true),
+            ("val = 1", false), // keyword, not Ident
+            ("_ = 1", false),   // Underscore
+            ("x == 1", false),
+            ("x => 1", false),
+            ("1 = 1", false),
+            ("{ x -> x }", false),
+        ];
+        for (src, want) in cases {
+            let lx = Lexer::new(src);
+            assert_eq!(lx.peek_ident_eq(), want, "peek_ident_eq({src:?})");
+            let kinds = lx.peek_kinds(2);
+            let via_kinds = matches!(
+                (kinds.first(), kinds.get(1)),
+                (Some(TokenKind::Ident(_)), Some(TokenKind::Eq))
+            );
+            assert_eq!(via_kinds, want, "peek_kinds parity for {src:?}: {kinds:?}");
         }
     }
 

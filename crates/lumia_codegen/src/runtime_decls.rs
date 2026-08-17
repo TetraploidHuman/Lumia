@@ -56,6 +56,11 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         args: &[RtTy::Ptr, RtTy::I64],
     },
     RtDecl {
+        name: lumia_abi::ADT_SET_BOOL_MASK,
+        ret: RtTy::Void,
+        args: &[RtTy::Ptr, RtTy::I64],
+    },
+    RtDecl {
         name: "lumia_adt_ensure_unique",
         ret: RtTy::Ptr,
         args: &[RtTy::Ptr],
@@ -96,6 +101,21 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         args: &[RtTy::I64],
     },
     RtDecl {
+        name: "lumia_show_set_bool",
+        ret: RtTy::Ptr,
+        args: &[RtTy::I64, RtTy::I32],
+    },
+    RtDecl {
+        name: "lumia_show_map_bool",
+        ret: RtTy::Ptr,
+        args: &[RtTy::I64, RtTy::I32, RtTy::I32],
+    },
+    RtDecl {
+        name: "lumia_show_list_adt",
+        ret: RtTy::Ptr,
+        args: &[RtTy::I64, RtTy::I64, RtTy::I64],
+    },
+    RtDecl {
         name: "lumia_adt_register_show",
         ret: RtTy::Void,
         args: &[RtTy::I32, RtTy::Ptr, RtTy::I64],
@@ -119,6 +139,11 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         name: "lumia_println_bool",
         ret: RtTy::Void,
         args: &[RtTy::I8],
+    },
+    RtDecl {
+        name: "lumia_println_unit",
+        ret: RtTy::Void,
+        args: &[],
     },
     RtDecl {
         name: "lumia_alloc",
@@ -1067,6 +1092,12 @@ pub(crate) fn declare_runtime<'ctx>(context: &'ctx Context, module: &LlvmModule<
     }
 }
 
+/// Declared `lumia_*` names (tests: specialized Show table ↔ decls).
+#[cfg(test)]
+pub(crate) fn runtime_decl_names_for_test() -> rustc_hash::FxHashSet<&'static str> {
+    RUNTIME_DECLS.iter().map(|d| d.name).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::RUNTIME_DECLS;
@@ -1103,6 +1134,10 @@ mod tests {
         assert!(
             names.contains(lumia_abi::ADT_SET_FLOAT_MASK),
             "ADT_SET_FLOAT_MASK must be in RUNTIME_DECLS"
+        );
+        assert!(
+            names.contains(lumia_abi::ADT_SET_BOOL_MASK),
+            "ADT_SET_BOOL_MASK must be in RUNTIME_DECLS"
         );
     }
 

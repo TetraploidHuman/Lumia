@@ -3,11 +3,19 @@
 //! Per-mutator tables live behind a TLS [`Mutex`]. Lookup/store take only that
 //! lock (not the process heap Mutex). GC walks slots while holding the heap
 //! lock, then briefly locks each mutator's memo mutex (order: **heap → memo**).
-//! Dijkstra shade on store uses [`crate::heap::full_marking_fast`] **after**
+//! Dijkstra shade on store uses [`crate::gc::full_marking_fast`] **after**
 //! releasing the memo lock so mark never nests heap under memo.
+//!
+//! # Safety (FFI)
+//! Lookup `out_result` must be a writable `i64` slot. `fun_id` must be in the
+//! compiled memo table domain (`0..MEMO_TF_MAX_FUNS` / `MEMO_IDX_MAX_FUNS`).
+//! Lock order for GC shade after store: **heap → memo** never nests the reverse.
+
+#![deny(clippy::not_unsafe_ptr_arg_deref)]
 
 use crate::common::trap_abort;
-use crate::heap::{full_marking_fast, with_heap};
+use crate::gc::full_marking_fast;
+use crate::heap::with_heap;
 use crate::{MEMO_IDX_CAP, MEMO_IDX_MAX_FUNS, MEMO_TF_MAX_ARGS, MEMO_TF_MAX_FUNS, MEMO_TF_SLOTS};
 use std::cell::Cell;
 use std::sync::Mutex;
@@ -116,8 +124,12 @@ pub(crate) fn memo_l2_lookup(
     })
 }
 
+/// Associative `T_f` lookup.
+///
+/// # Safety
+/// `out_result` is a writable `i64` slot; `fun_id` is in `0..MEMO_TF_MAX_FUNS`.
 #[no_mangle]
-pub extern "C" fn lumia_memo_l2_lookup(
+pub unsafe extern "C" fn lumia_memo_l2_lookup(
     fun_id: i64,
     nargs: i64,
     a0: i64,
@@ -130,6 +142,8 @@ pub extern "C" fn lumia_memo_l2_lookup(
 }
 
 /// Store result into a slot (round-robin eviction).
+///
+/// `fun_id` must be in `0..MEMO_TF_MAX_FUNS`; traps otherwise.
 #[no_mangle]
 pub extern "C" fn lumia_memo_l2_store(
     fun_id: i64,
@@ -226,7 +240,7 @@ impl MemoIdxTable {
 thread_local! {
     // Lazy: allocate a dense table only on first *store* of that `fun_id` (§7.5 low occupancy).
     static MEMO_IDX: Mutex<[Option<Box<MemoIdxTable>>; MEMO_IDX_MAX_FUNS]> =
-        Mutex::new([const { None }; MEMO_IDX_MAX_FUNS]);
+        const { Mutex::new([const { None }; MEMO_IDX_MAX_FUNS]) };
     static MEMO_REGISTRATION: MemoRegistration = MemoRegistration::new();
 }
 
@@ -373,11 +387,16 @@ pub(crate) fn memo_idx_lookup(fun_id: i64, key: i64, out_result: *mut i64) -> i6
     })
 }
 
+/// Dense-index memo lookup.
+///
+/// # Safety
+/// `out_result` is a writable `i64` slot; `fun_id`/`key` are in the dense domain.
 #[no_mangle]
-pub extern "C" fn lumia_memo_idx_lookup(fun_id: i64, key: i64, out_result: *mut i64) -> i64 {
+pub unsafe extern "C" fn lumia_memo_idx_lookup(fun_id: i64, key: i64, out_result: *mut i64) -> i64 {
     memo_idx_lookup(fun_id, key, out_result)
 }
 
+/// Dense-index memo store. `fun_id`/`key` must be in domain; traps otherwise.
 #[no_mangle]
 pub extern "C" fn lumia_memo_idx_store(fun_id: i64, key: i64, result: i64) {
     ensure_memo_registered();

@@ -5,10 +5,11 @@ use super::protocol::write_stdout;
 use super::state::{next_analyze_gen, state_lock, Analysis, AnalyzeReq, auto_parallel};
 use super::uri::{path_to_uri, uri_to_path};
 use crate::check::{
-    check_program_with_overlays, check_source_recovering, OverlayCheckError, PartialCheck,
+    check_program_with_overlays_recovering, check_source_recovering, OverlayCheckError,
+    PartialCheck,
 };
 use crate::diag::DiagnosticKind;
-use crate::load::{LoadedProgram, SourceFile};
+use crate::load::{path_in_loaded_files, resolve_ide_entry, LoadedProgram, SourceFile};
 use anyhow::Result;
 use lumia_ty::TypedModule;
 use rustc_hash::FxHashMap as HashMap;
@@ -186,9 +187,9 @@ fn merge_diag_batches(
     for (u, diags) in batches {
         by_uri.insert(u, diags);
     }
-    by_uri.entry(entry_uri.to_string()).or_insert_with(Vec::new);
+    by_uri.entry(entry_uri.to_string()).or_default();
     for u in prev {
-        by_uri.entry(u.clone()).or_insert_with(Vec::new);
+        by_uri.entry(u.clone()).or_default();
     }
     // Stable-ish order: entry first, then the rest sorted for determinism.
     let mut rest: Vec<String> = by_uri
@@ -221,62 +222,129 @@ fn current_overlays() -> HashMap<PathBuf, String> {
         .collect()
 }
 
-/// Prefer multi-file load with overlays when the path exists; else buffer-only.
+/// Analyze via loader + overlays so `import std.*` / package graphs work for
+/// unsaved and untitled buffers (not only on-disk `file://` paths).
 ///
 /// Returns `(uri → diagnostics)` batches so errors in imported files publish to
 /// the correct document URI (BUILD: multi-file diagnostics follow `Span.file`).
-fn analyze_buffer(
+pub(crate) fn analyze_buffer(
     uri: &str,
     text: &str,
     overlays: &HashMap<PathBuf, String>,
 ) -> (Vec<(String, Vec<Value>)>, Option<Analysis>) {
-    let path = uri_to_path(uri);
-    if path.is_file() || overlays.contains_key(&path) {
-        let mut ov = overlays.clone();
-        ov.insert(path.clone(), text.to_string());
-        match load_and_typecheck(&path, &ov) {
-            Ok((loaded, typed)) => {
-                let entry_src = loaded
+    // Match `load_program_with_overlays` entry identity so overlay keys hit.
+    let path = absolutize_load_entry(&uri_to_path(uri));
+    let mut ov = absolutize_overlay_keys(overlays);
+    ov.insert(path.clone(), text.to_string());
+    // Prefer package Main/main so editing an imported lib sees the full graph.
+    let ide_entry = resolve_ide_entry(&path);
+    let result = {
+        let primary = load_and_typecheck_recovering(&ide_entry, &ov);
+        let fall_back = match &primary {
+            Ok((loaded, _, _)) => {
+                ide_entry != path && !path_in_loaded_files(&loaded.files, &path)
+            }
+            Err(_) => false,
+        };
+        if fall_back {
+            load_and_typecheck_recovering(&path, &ov)
+        } else {
+            primary
+        }
+    };
+    match result {
+        Ok((loaded, typed, diags)) if diags.is_empty() => {
+            let buffer_file = buffer_file_id(&loaded.files, &path);
+            let src = loaded
+                .files
+                .get(buffer_file as usize)
+                .map(|f| f.src.clone())
+                .unwrap_or_else(|| text.to_string());
+            let clears =
+                remap_buffer_uri(clear_batches_for_program(uri, &loaded.files), &path, uri);
+            (
+                clears,
+                typed.map(|typed| Analysis::from_typed(typed, src, loaded.files, buffer_file)),
+            )
+        }
+        Ok((loaded, typed, diags)) => {
+            let buffer_file = buffer_file_id(&loaded.files, &path);
+            let batches = remap_buffer_uri(diagnostics_to_uri_batches(&loaded, &diags), &path, uri);
+            let analysis = typed.map(|typed| {
+                let src = loaded
                     .files
-                    .first()
+                    .get(buffer_file as usize)
                     .map(|f| f.src.clone())
                     .unwrap_or_else(|| text.to_string());
-                // Clear every file in the load graph (not only the entry URI) so
-                // prior import diagnostics do not linger after a clean check.
-                let clears = clear_batches_for_program(uri, &loaded.files);
-                return (
-                    clears,
-                    Some(Analysis {
-                        typed,
-                        src: entry_src,
-                        buffer_file: buffer_file_id(&loaded.files, &path),
-                        files: loaded.files,
-                    }),
-                );
+                Analysis::from_typed(typed, src, loaded.files, buffer_file)
+            });
+            (batches, analysis)
+        }
+        Err(load_diags) => {
+            // Prefer real multi-file / load diagnostics. Recovering single-buffer
+            // analysis must not hide import/dependency failures (Todo).
+            let load_diags = remap_buffer_uri(load_diags, &path, uri);
+            if !load_diags.is_empty() {
+                return (load_diags, None);
             }
-            Err(load_diags) => {
-                // Prefer real multi-file / load diagnostics. Recovering single-buffer
-                // analysis must not hide import/dependency failures (Todo).
-                if !load_diags.is_empty() {
-                    return (load_diags, None);
-                }
-                let partial = check_source_recovering(text, auto_parallel());
-                if partial.typed.is_some() || !partial.diagnostics.is_empty() {
-                    let (diags, analysis) = partial_to_lsp(text, &path, partial);
-                    return (vec![(uri.to_string(), diags)], analysis);
-                }
-                return (
-                    vec![(
-                        uri.to_string(),
-                        vec![diag_json(1, 1, 1, 2, DiagnosticKind::Other, "analysis failed")],
-                    )],
-                    None,
-                );
+            let partial = check_source_recovering(text, auto_parallel());
+            if partial.typed.is_some() || !partial.diagnostics.is_empty() {
+                let (diags, analysis) = partial_to_lsp(text, &path, partial);
+                return (vec![(uri.to_string(), diags)], analysis);
             }
+            (
+                vec![(
+                    uri.to_string(),
+                    vec![diag_json(1, 1, 1, 2, DiagnosticKind::Other, "analysis failed")],
+                )],
+                None,
+            )
         }
     }
-    let (diags, analysis) = partial_to_lsp(text, &path, check_source_recovering(text, auto_parallel()));
-    (vec![(uri.to_string(), diags)], analysis)
+}
+
+/// Same entry absolutization as [`crate::load::load_program_with_overlays`].
+fn absolutize_load_entry(path: &Path) -> PathBuf {
+    if path.exists() {
+        path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+    } else if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    }
+}
+
+fn absolutize_overlay_keys(overlays: &HashMap<PathBuf, String>) -> HashMap<PathBuf, String> {
+    let mut out = HashMap::default();
+    for (p, src) in overlays {
+        out.insert(absolutize_load_entry(p), src.clone());
+    }
+    out
+}
+
+/// Loader stamps files with filesystem-style paths; map the open buffer back to
+/// the client document URI (`untitled:…` / unsaved `file://`).
+fn remap_buffer_uri(
+    batches: Vec<(String, Vec<Value>)>,
+    buffer_path: &Path,
+    client_uri: &str,
+) -> Vec<(String, Vec<Value>)> {
+    let loaded_uri = path_to_uri(buffer_path);
+    if loaded_uri == client_uri {
+        return batches;
+    }
+    batches
+        .into_iter()
+        .map(|(u, d)| {
+            if u == loaded_uri {
+                (client_uri.to_string(), d)
+            } else {
+                (u, d)
+            }
+        })
+        .collect()
 }
 
 fn partial_to_lsp(
@@ -289,14 +357,16 @@ fn partial_to_lsp(
         .iter()
         .map(|d| diag_from_span(text, d.span, d.kind, &d.message))
         .collect();
-    let analysis = partial.typed.map(|typed| Analysis {
-        typed,
-        src: text.to_string(),
-        buffer_file: 0,
-        files: vec![SourceFile {
-            path: path.to_path_buf(),
-            src: text.to_string(),
-        }],
+    let analysis = partial.typed.map(|typed| {
+        Analysis::from_typed(
+            typed,
+            text.to_string(),
+            vec![SourceFile {
+                path: path.to_path_buf(),
+                src: text.to_string(),
+            }],
+            0,
+        )
     });
     (diags, analysis)
 }
@@ -329,16 +399,23 @@ fn buffer_file_id(files: &[SourceFile], path: &Path) -> u32 {
         .unwrap_or(0) as u32
 }
 
-/// Load + typecheck via shared [`check_program_with_overlays`].
+/// Load + recovering typecheck via [`check_program_with_overlays_recovering`].
 ///
-/// On failure, each diagnostic is tagged with the URI of `Span.file` (not the
-/// entry buffer), so `publishDiagnostics` lands on the correct document.
-fn load_and_typecheck(
+/// On load failure, each diagnostic is tagged with the entry URI. Soft lower/type
+/// diagnostics are grouped by `Span.file` so `publishDiagnostics` lands correctly.
+fn load_and_typecheck_recovering(
     path: &Path,
     overlays: &HashMap<PathBuf, String>,
-) -> Result<(LoadedProgram, TypedModule), Vec<(String, Vec<Value>)>> {
-    match check_program_with_overlays(path, overlays, auto_parallel(), None) {
-        Ok(v) => Ok(v),
+) -> Result<
+    (
+        LoadedProgram,
+        Option<TypedModule>,
+        Vec<crate::diag::Diagnostic>,
+    ),
+    Vec<(String, Vec<Value>)>,
+> {
+    match check_program_with_overlays_recovering(path, overlays, auto_parallel(), None) {
+        Ok(partial) => Ok((partial.loaded, partial.typed, partial.diagnostics)),
         Err(OverlayCheckError::Load(msg)) => {
             let entry_uri = path_to_uri(path);
             Err(vec![(
@@ -346,26 +423,78 @@ fn load_and_typecheck(
                 vec![diag_from_load_message(text_for_path(path, overlays), &msg)],
             )])
         }
-        Err(OverlayCheckError::Analyze { loaded, kind, err }) => {
-            let span = err.span().unwrap_or_default();
-            let file = loaded
-                .files
-                .get(span.file as usize)
-                .or_else(|| loaded.files.first());
-            let (diag_uri, src) = match file {
-                Some(f) => (path_to_uri(&f.path), f.src.as_str()),
-                None => (path_to_uri(path), ""),
-            };
+        Err(OverlayCheckError::Analyze { .. }) => {
+            // Recovering API returns Ok(PartialProgramCheck); Analyze is only for
+            // the fail-fast wrapper. Treat as opaque failure.
             Err(vec![(
-                diag_uri,
-                vec![diag_from_span(src, span, kind, err.message())],
+                path_to_uri(path),
+                vec![diag_json(1, 1, 1, 2, DiagnosticKind::Other, "analysis failed")],
             )])
         }
     }
 }
 
+fn diagnostics_to_uri_batches(
+    loaded: &LoadedProgram,
+    diags: &[crate::diag::Diagnostic],
+) -> Vec<(String, Vec<Value>)> {
+    let mut by_uri: HashMap<String, Vec<Value>> = HashMap::default();
+    // Clear every file in the load graph so prior underlines do not linger on
+    // clean imports when only some files still error.
+    for f in &loaded.files {
+        by_uri.entry(path_to_uri(&f.path)).or_default();
+    }
+    for d in diags {
+        let file = loaded
+            .files
+            .get(d.span.file as usize)
+            .or_else(|| loaded.files.first());
+        let (uri, src) = match file {
+            Some(f) => (path_to_uri(&f.path), f.src.as_str()),
+            None => continue,
+        };
+        by_uri
+            .entry(uri)
+            .or_default()
+            .push(diag_from_span(src, d.span, d.kind, &d.message));
+    }
+    let entry_uri = loaded
+        .files
+        .first()
+        .map(|f| path_to_uri(&f.path))
+        .unwrap_or_default();
+    let mut rest: Vec<String> = by_uri
+        .keys()
+        .filter(|u| u.as_str() != entry_uri)
+        .cloned()
+        .collect();
+    rest.sort();
+    let mut out = Vec::with_capacity(rest.len() + 1);
+    if let Some(diags) = by_uri.remove(&entry_uri) {
+        out.push((entry_uri, diags));
+    }
+    for u in rest {
+        if let Some(diags) = by_uri.remove(&u) {
+            out.push((u, diags));
+        }
+    }
+    out
+}
+
 fn text_for_path<'a>(path: &Path, overlays: &'a HashMap<PathBuf, String>) -> &'a str {
-    overlays.get(path).map(String::as_str).unwrap_or("")
+    if let Some(s) = overlays.get(path) {
+        return s.as_str();
+    }
+    let canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    if let Some(s) = overlays.get(&canon) {
+        return s.as_str();
+    }
+    for (k, v) in overlays {
+        if k.canonicalize().ok().as_ref() == Some(&canon) {
+            return v.as_str();
+        }
+    }
+    ""
 }
 
 /// Pull `line:col` out of `path:line:col: …` load messages so the editor
@@ -425,10 +554,74 @@ fn parse_line_col_prefix(line: &str) -> Option<(u32, u32, &str)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{clear_batches_for_program, merge_diag_batches, parse_line_col_prefix};
+    use super::{
+        analyze_buffer, clear_batches_for_program, merge_diag_batches, parse_line_col_prefix,
+    };
+    use crate::check::check_source_recovering;
     use crate::load::SourceFile;
+    use rustc_hash::FxHashMap as HashMap;
     use serde_json::json;
     use std::path::PathBuf;
+
+    #[test]
+    fn untitled_buffer_resolves_std_import() {
+        // Import aliases require loader injection; builtins alone do not bind `log`.
+        let src = r#"
+module Main
+import std.io.{println as log}
+val main = { log(1) }
+"#;
+        // Baseline: single-buffer check has no loader / std graph.
+        let partial = check_source_recovering(src, true);
+        let unbound = partial
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("unbound") && d.message.contains("log"));
+        assert!(
+            unbound,
+            "check_source_recovering must leave `log` unbound; diags={:?}",
+            partial
+                .diagnostics
+                .iter()
+                .map(|d| d.message.clone())
+                .collect::<Vec<_>>()
+        );
+        let (batches, analysis) =
+            analyze_buffer("untitled:Untitled-1", src, &HashMap::default());
+        assert!(
+            analysis.is_some(),
+            "untitled buffer should typecheck via loader+std"
+        );
+        let diags: Vec<&serde_json::Value> = batches.iter().flat_map(|(_, d)| d).collect();
+        assert!(
+            diags.is_empty(),
+            "unexpected diagnostics on clean untitled std import: {diags:?}"
+        );
+        assert!(
+            batches
+                .iter()
+                .any(|(u, _)| u == "untitled:Untitled-1"),
+            "diagnostics must publish under the client untitled URI, got {batches:?}"
+        );
+    }
+
+    #[test]
+    fn untitled_buffer_type_error_on_client_uri() {
+        let src = r#"
+module Main
+import std.io.{println as log}
+val main: Int = log(1)
+"#;
+        let (batches, _) = analyze_buffer("untitled:Untitled-2", src, &HashMap::default());
+        let client = batches
+            .iter()
+            .find(|(u, d)| u == "untitled:Untitled-2" && !d.is_empty())
+            .expect("type error should land on client untitled URI");
+        assert!(
+            !client.1.is_empty(),
+            "expected at least one diagnostic on untitled URI"
+        );
+    }
 
     #[test]
     fn parse_cli_diag_prefix() {

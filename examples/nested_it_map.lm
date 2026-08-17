@@ -1,0 +1,9 @@
+module NestedItMap
+
+import std.io.{println}
+
+/// Nested bare `{ it + 1 }` must not turn the enclosing `main` block into
+/// `main(it)` (free-`it` sugar must ignore bound `it` inside nested lambdas).
+val main = {
+    println(listOf(1, 2, 3).map { it + 1 })
+}

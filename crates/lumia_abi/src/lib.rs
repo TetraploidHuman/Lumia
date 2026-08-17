@@ -54,7 +54,7 @@ pub use type_id::{
     list_type_id, map_key_is_float, map_tid_is_assoc, map_type_id, map_val_is_float,
     set_elem_is_float, set_tid_is_assoc, set_type_id, tid_assoc, tid_base, tid_f_key, tid_f_val,
     tid_hash, tid_with_f_key, tid_with_f_val, tid_with_hash, tid_without_hash, ScalarKind,
-    ADT_SET_FLOAT_MASK, FUNREF_TAG, OBJECT_HEADER_BYTES, OBJECT_HEADER_WORDS, TID_ADT_KIND_MASK,
+    ADT_SET_FLOAT_MASK, ADT_SET_BOOL_MASK, FUNREF_TAG, OBJECT_HEADER_BYTES, OBJECT_HEADER_WORDS, TID_ADT_KIND_MASK,
     TID_ADT_KIND_SHIFT, TID_ASSOC, TID_BASE_MASK, TID_F_KEY, TID_F_VAL, TID_HASH, TRAIT_EQ,
     TRAIT_HASH, TRAIT_NUM, TRAIT_ORD, TRAIT_SHOW, TYPE_ADT, TYPE_BYTES, TYPE_CHANNEL, TYPE_CHAR,
     TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_F64, TYPE_LIST_IOTA, TYPE_MAP, TYPE_MAP_ASSOC,

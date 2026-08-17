@@ -1,10 +1,16 @@
 //! Map and Set collections.
 
+mod hash_probe;
 mod map_core;
 mod map_ops;
 mod set;
 mod tid;
 
+pub(crate) use hash_probe::{
+    compact_linear_entries, finish_linear_container, open_hash_claim_slot_or_trap,
+    open_hash_find_slot, open_hash_from_linear, OPEN_HASH_ST_EMPTY, OPEN_HASH_ST_FULL,
+    OPEN_HASH_ST_TOMB,
+};
 pub(crate) use map_core::*;
 pub(crate) use set::*;
 pub(crate) use tid::*;

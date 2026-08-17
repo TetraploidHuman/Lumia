@@ -19,20 +19,32 @@ pub(super) fn lower_bind(
             mutable,
             ..
         } => {
-            let v = lower_expr(ctx, value, ops, pure_region);
-            let saved = ctx.save_bindings();
-            if let Some(l) = v {
-                if *mutable {
-                    ctx.bind_mutable(name.clone(), l);
-                    ops.push(Op::Assign {
-                        name: name.clone(),
-                        value: l,
+            // Unit RHS (e.g. `scope { for … }` → Seq ending in Unit): materialize
+            // a Unit local so `__scope_r_*` / other names still bind. Skipping the
+            // bind left `Value::Name` unbound at codegen (`unbound mutable`).
+            let v = match lower_expr(ctx, value, ops, pure_region) {
+                Some(l) => l,
+                None => {
+                    let l = ctx.fresh();
+                    ops.push(Op::Let {
+                        local: l,
+                        value: Value::Unit,
+                        pure_region,
                     });
-                } else {
-                    // `val` may shadow an outer `var` for the duration of `body`.
-                    ctx.mutables.remove(name);
-                    ctx.bind_name(name.clone(), l);
+                    l
                 }
+            };
+            let saved = ctx.save_bindings();
+            if *mutable {
+                ctx.bind_mutable(name.clone(), v);
+                ops.push(Op::Assign {
+                    name: name.clone(),
+                    value: v,
+                });
+            } else {
+                // `val` may shadow an outer `var` for the duration of `body`.
+                ctx.mutables.remove(name);
+                ctx.bind_name(name.clone(), v);
             }
             let result = lower_expr(ctx, body, ops, pure_region);
             ctx.restore_bindings(saved);
@@ -107,5 +119,53 @@ pub(super) fn lower_bind(
             Some(dest)
         }
         _ => unreachable!("lower_bind: non-binding"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::compile_source_to_core;
+    use crate::ir::Value;
+    use crate::visit::for_each_block_dfs;
+
+    #[test]
+    fn scope_for_last_stmt_binds_unit_not_unbound_name() {
+        // `scope { for … }` lowers to `let __scope_r = Seq(…, Unit)`. Skipping
+        // Unit Let left `Name(__scope_r_*)` and codegen failed `unbound mutable`.
+        let core = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+val main = {
+    scope {
+        for x in listOf(1, 2) { println(x) }
+    }
+}
+"#,
+        )
+        .expect("core");
+        let mut unbound_scope_r = false;
+        let mut unit_lets = 0usize;
+        for fun in &core.functions {
+            if fun.name != "main" {
+                continue;
+            }
+            for_each_block_dfs(&fun.body, &mut |b| {
+                for op in &b.ops {
+                    if let crate::ir::Op::Let { value, .. } = op {
+                        if matches!(value, Value::Unit) {
+                            unit_lets += 1;
+                        }
+                        if let Value::Name(n) = value {
+                            if n.starts_with("__scope_r_") {
+                                unbound_scope_r = true;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        assert!(!unbound_scope_r, "scope result still referenced as unbound Name");
+        assert!(unit_lets >= 1, "expected Unit materialization for scope result");
     }
 }

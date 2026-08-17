@@ -61,13 +61,14 @@ object LumiaPaths {
     }
 
     /**
-     * Prefer `src/main.lm` / `main.lm`, else the focused `.lm` file.
+     * Prefer package entry files matching loader `PACKAGE_ENTRY_RELS`
+     * (`Main.lm` / `main.lm` / `src/Main.lm` / `src/main.lm`), else the focused `.lm`.
      * Do not fall back to `examples/hello.lm` (wrong for non-examples projects).
      */
     fun resolveProjectEntry(project: Project, contextFile: VirtualFile? = null): String? {
         val base = project.basePath
         if (base != null) {
-            for (rel in listOf("src/main.lm", "main.lm")) {
+            for (rel in listOf("Main.lm", "main.lm", "src/Main.lm", "src/main.lm")) {
                 val p = "$base/$rel"
                 if (File(p).isFile) return p
             }

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Remove ad-hoc probe binaries and .o files left in the repo root
 # (gitignore keeps them out of git, but they still clutter `ls` / disk).
+#
+# Linux-only: probe detection is ELF magic (`0x7fELF`). Windows PE leftovers
+# are not cleaned here.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"

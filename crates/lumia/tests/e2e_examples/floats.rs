@@ -78,6 +78,16 @@ fn e2e_nested_float_adt_eq() {
 }
 
 #[test]
+fn e2e_result_float_err_eq() {
+    // Result[Float, String] typed == must use per-object `_pad`, not type-param
+    // float mask (Err field0 is params[1], not Float).
+    run_example(
+        "examples/result_float_err_eq.lm",
+        &["1", "0", "1", "1", "0"],
+    );
+}
+
+#[test]
 fn e2e_wide_float_adt_gc() {
     // Float past field index 31 must stay in the u64 ADT mask (GC must not follow bits).
     run_example("examples/wide_float_adt_gc.lm", &["1.25", "2.5"]);

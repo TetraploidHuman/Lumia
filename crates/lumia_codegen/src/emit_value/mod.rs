@@ -1,7 +1,7 @@
 //! Value emission and closely related helpers.
 
 mod affine2_sr;
-mod builtin;
+pub(crate) mod builtin;
 mod collatz_sr;
 mod dense_f64_sr;
 mod emit_alloc;
@@ -10,14 +10,56 @@ mod emit_calls;
 mod emit_control;
 mod float_sr;
 mod number_theory_sr;
+mod sr_pattern;
 mod trial_div_sr;
 
 use super::Codegen;
 use anyhow::{bail, Result};
 use inkwell::values::{BasicValueEnum, FunctionValue};
-use lumia_core::Value;
+use lumia_core::{Block, Value};
 
 impl<'ctx> Codegen<'ctx> {
+    /// Try registered loop shape rewrites, then fall back to generic loop emit.
+    ///
+    /// Order is significant (more specific patterns first). Append new `*_sr`
+    /// matchers to the array below — do not reintroduce an open if/else chain.
+    fn emit_value_loop_with_srs(
+        &mut self,
+        header: &Block,
+        body: &Block,
+        latch: &Block,
+        fv: FunctionValue<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>> {
+        type EmitFn<'c> = fn(
+            &mut Codegen<'c>,
+            &Block,
+            &Block,
+            &Block,
+            FunctionValue<'c>,
+        ) -> Result<Option<BasicValueEnum<'c>>>;
+        let registry: &[EmitFn<'ctx>] = &[
+            Self::try_emit_collatz_total_loop,
+            Self::try_emit_collatz_strided_loop,
+            Self::try_emit_count_primes_loop,
+            Self::try_emit_affine2_rem_sum_loop,
+            Self::try_emit_gcd_sum_loop,
+            Self::try_emit_divisor_sum_loop,
+            Self::try_emit_product_rem_sum_loop,
+            Self::try_emit_range_affine1_loop,
+            Self::try_emit_matmul_affine_loop,
+            Self::try_emit_float_orbit_loop,
+            Self::try_emit_mandelbrot_loop,
+            Self::try_emit_collatz_loop,
+            Self::try_emit_trial_div_loop,
+        ];
+        for emit in registry {
+            if let Some(v) = emit(self, header, body, latch, fv)? {
+                return Ok(v);
+            }
+        }
+        self.emit_value_loop(header, body, latch, fv)
+    }
+
     pub(crate) fn emit_value(
         &mut self,
         value: &Value,
@@ -79,43 +121,7 @@ impl<'ctx> Codegen<'ctx> {
                 header,
                 body,
                 latch,
-            } => {
-                if let Some(v) = self.try_emit_collatz_total_loop(header, body, latch, fv)? {
-                    Ok(v)
-                } else if let Some(v) =
-                    self.try_emit_collatz_strided_loop(header, body, latch, fv)?
-                {
-                    Ok(v)
-                } else if let Some(v) = self.try_emit_count_primes_loop(header, body, latch, fv)? {
-                    Ok(v)
-                } else if let Some(v) =
-                    self.try_emit_affine2_rem_sum_loop(header, body, latch, fv)?
-                {
-                    Ok(v)
-                } else if let Some(v) = self.try_emit_gcd_sum_loop(header, body, latch, fv)? {
-                    Ok(v)
-                } else if let Some(v) = self.try_emit_divisor_sum_loop(header, body, latch, fv)? {
-                    Ok(v)
-                } else if let Some(v) =
-                    self.try_emit_product_rem_sum_loop(header, body, latch, fv)?
-                {
-                    Ok(v)
-                } else if let Some(v) = self.try_emit_range_affine1_loop(header, body, latch, fv)? {
-                    Ok(v)
-                } else if let Some(v) = self.try_emit_matmul_affine_loop(header, body, latch, fv)? {
-                    Ok(v)
-                } else if let Some(v) = self.try_emit_float_orbit_loop(header, body, latch, fv)? {
-                    Ok(v)
-                } else if let Some(v) = self.try_emit_mandelbrot_loop(header, body, latch, fv)? {
-                    Ok(v)
-                } else if let Some(v) = self.try_emit_collatz_loop(header, body, latch, fv)? {
-                    Ok(v)
-                } else if let Some(v) = self.try_emit_trial_div_loop(header, body, latch, fv)? {
-                    Ok(v)
-                } else {
-                    self.emit_value_loop(header, body, latch, fv)
-                }
-            }
+            } => self.emit_value_loop_with_srs(header, body, latch, fv),
             Value::Lambda { .. } => bail!("lambda should have been lifted to FunRef/AllocClosure"),
             Value::AllocClosure { fun, captures } => self.emit_value_alloc_closure(fun, captures),
             Value::ClosureCap {

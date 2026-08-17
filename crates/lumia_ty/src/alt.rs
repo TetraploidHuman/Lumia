@@ -1,11 +1,11 @@
 //! Desugar typed `Alt` into tag tests (Option / Result).
 
-use lumia_hir::{AdtDef, Builtin, Expr, Item, Module};
+use lumia_hir::{for_each_expr_mut, AdtDef, Builtin, Expr, Item, Module};
 use lumia_syntax::BinOp;
 use lumia_syntax::Span;
 use rustc_hash::FxHashMap as HashMap;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AltKind {
     Option,
     Result,
@@ -47,91 +47,28 @@ fn variant_tag(adts: &[AdtDef], adt: &str, variant: &str) -> i64 {
 }
 
 fn desugar_in_expr(expr: &mut Expr, kinds: &HashMap<Span, AltKind>, tags: &SuccessTags) {
-    match expr {
-        Expr::Alt {
+    // Post-order: nested alts rewrite before outer ones replace the node.
+    for_each_expr_mut(expr, &mut |e| {
+        let Expr::Alt {
             scrutinee,
             alt,
             span,
-        } => {
-            desugar_in_expr(scrutinee, kinds, tags);
-            desugar_in_expr(alt, kinds, tags);
-            let kind = kinds
-                .get(span)
-                .copied()
-                .expect("alt kind recorded during inference");
-            let scrutinee = std::mem::replace(scrutinee, Box::new(Expr::Unit(*span)));
-            let alt = std::mem::replace(alt, Box::new(Expr::Unit(*span)));
-            let success_tag = match kind {
-                AltKind::Option => tags.some,
-                AltKind::Result => tags.ok,
-            };
-            *expr = desugar_alt(*scrutinee, *alt, *span, kind, success_tag);
-        }
-        Expr::Let { value, body, .. } => {
-            desugar_in_expr(value, kinds, tags);
-            desugar_in_expr(body, kinds, tags);
-        }
-        Expr::Assign { value, .. }
-        | Expr::Unary { expr: value, .. }
-        | Expr::Return { value, .. } => {
-            desugar_in_expr(value, kinds, tags);
-        }
-        Expr::Lambda { body, .. } => desugar_in_expr(body, kinds, tags),
-        Expr::Call { callee, args, .. } => {
-            desugar_in_expr(callee, kinds, tags);
-            for a in args {
-                desugar_in_expr(a, kinds, tags);
-            }
-        }
-        Expr::BuiltinCall { args, .. } | Expr::AdtNew { args, .. } => {
-            for a in args {
-                desugar_in_expr(a, kinds, tags);
-            }
-        }
-        Expr::Binary { left, right, .. } => {
-            desugar_in_expr(left, kinds, tags);
-            desugar_in_expr(right, kinds, tags);
-        }
-        Expr::If {
-            cond,
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            desugar_in_expr(cond, kinds, tags);
-            desugar_in_expr(then_branch, kinds, tags);
-            desugar_in_expr(else_branch, kinds, tags);
-        }
-        Expr::Loop {
-            cond, body, step, ..
-        } => {
-            desugar_in_expr(cond, kinds, tags);
-            desugar_in_expr(body, kinds, tags);
-            if let Some(s) = step {
-                desugar_in_expr(s, kinds, tags);
-            }
-        }
-        Expr::Seq { stmts, .. } => {
-            for s in stmts {
-                desugar_in_expr(s, kinds, tags);
-            }
-        }
-        Expr::With { base, fields, .. } => {
-            desugar_in_expr(base, kinds, tags);
-            for (_, e) in fields {
-                desugar_in_expr(e, kinds, tags);
-            }
-        }
-        Expr::Var(_, _)
-        | Expr::Int(_, _)
-        | Expr::Float(_, _)
-        | Expr::Bool(_, _)
-        | Expr::String(_, _)
-        | Expr::Char(_, _)
-        | Expr::Unit(_)
-        | Expr::Break(_)
-        | Expr::Continue(_) => {}
-    }
+        } = e
+        else {
+            return;
+        };
+        let kind = kinds
+            .get(span)
+            .copied()
+            .expect("alt kind recorded during inference");
+        let scrutinee = std::mem::replace(scrutinee, Box::new(Expr::Unit(*span)));
+        let alt = std::mem::replace(alt, Box::new(Expr::Unit(*span)));
+        let success_tag = match kind {
+            AltKind::Option => tags.some,
+            AltKind::Result => tags.ok,
+        };
+        *e = desugar_alt(*scrutinee, *alt, *span, kind, success_tag);
+    });
 }
 
 fn desugar_alt(scrutinee: Expr, alt: Expr, span: Span, kind: AltKind, success_tag: i64) -> Expr {

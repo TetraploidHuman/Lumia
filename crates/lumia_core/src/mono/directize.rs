@@ -1,6 +1,7 @@
 //! FunRef / IndirectCall → direct `Call` (spawn thunks, nested If/Loop).
 
 use crate::ir::{Block, CoreModule, Local, Op, Value};
+use crate::visit::collect_closure_cap_funrefs;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet};
 
 pub(crate) fn directize_funref_calls(module: &mut CoreModule) {
@@ -31,70 +32,13 @@ pub(crate) fn directize_funref_calls(module: &mut CoreModule) {
 fn funs_with_closure_env(module: &CoreModule) -> FxHashSet<String> {
     let mut out = FxHashSet::default();
     for fun in &module.functions {
-        mark_env_funs_in_block(&fun.body, &mut out);
+        crate::collect_alloc_closure_env_funs(&fun.body, &mut out);
     }
     out
 }
 
-fn mark_env_funs_in_block(block: &Block, out: &mut FxHashSet<String>) {
-    for op in &block.ops {
-        match op {
-            Op::Let { value, .. } => {
-                if let Value::AllocClosure { fun, captures } = value {
-                    if !captures.is_empty() {
-                        out.insert(fun.clone());
-                    }
-                }
-                crate::for_each_nested_block(value, &mut |b| mark_env_funs_in_block(b, out));
-            }
-            _ => {}
-        }
-    }
-}
-
 pub(crate) fn directize_block(block: &mut Block, parent_funrefs: &HashMap<u32, String>) {
     directize_block_with_slots(block, parent_funrefs, &HashMap::default(), &HashMap::default());
-}
-
-fn collect_closure_cap_funrefs(
-    block: &Block,
-    funref_locals: &mut HashMap<u32, String>,
-    cap_funs: &mut HashMap<String, HashMap<u32, String>>,
-) {
-    for op in &block.ops {
-        match op {
-            Op::Let { local, value, .. } => {
-                match value {
-                    Value::FunRef(name) => {
-                        funref_locals.insert(local.0, name.clone());
-                    }
-                    Value::AllocClosure { fun, captures } => {
-                        funref_locals.insert(local.0, fun.clone());
-                        let entry = cap_funs.entry(fun.clone()).or_default();
-                        for (i, cap) in captures.iter().enumerate() {
-                            if let Some(n) = funref_locals.get(&cap.0) {
-                                entry.insert(i as u32, n.clone());
-                            }
-                        }
-                    }
-                    Value::Local(Local(src)) => {
-                        if let Some(n) = funref_locals.get(src).cloned() {
-                            funref_locals.insert(local.0, n);
-                        } else {
-                            funref_locals.remove(&local.0);
-                        }
-                    }
-                    _ => {
-                        funref_locals.remove(&local.0);
-                    }
-                }
-                crate::for_each_nested_block(value, &mut |b| {
-                    collect_closure_cap_funrefs(b, funref_locals, cap_funs);
-                });
-            }
-            _ => {}
-        }
-    }
 }
 
 fn directize_block_with_slots(
@@ -199,3 +143,7 @@ fn directize_value(value: &mut Value, funref_of: &HashMap<u32, String>) {
         args,
     };
 }
+
+#[cfg(test)]
+#[path = "directize_tests.rs"]
+mod tests;

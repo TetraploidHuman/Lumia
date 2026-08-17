@@ -117,6 +117,7 @@ pub(crate) fn lower_expr(ctx: &LowerCtx, e: &lumia_syntax::Expr) -> Expr {
             param_tys,
             body,
             span,
+            ..
         } => Expr::Lambda {
             params: params.clone(),
             param_ann: param_tys.clone(),

@@ -112,11 +112,7 @@ impl<'a> Parser<'a> {
 
     /// After seeing `TypeName {`, true if next tokens are `ident =` (struct lit vs trailing closure).
     pub(super) fn looks_like_struct_lit(&self) -> bool {
-        let kinds = self.lexer.peek_kinds(2);
-        matches!(
-            (kinds.first(), kinds.get(1)),
-            (Some(TokenKind::Ident(_)), Some(TokenKind::Eq))
-        )
+        self.lexer.peek_ident_eq()
     }
     pub(super) fn error(&self, msg: impl Into<String>) -> ParseError {
         ParseError {
@@ -145,14 +141,35 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Optional `: TypeName` ascription (single ident, like foreign).
+    /// Optional `: Type` ascription (`Int`, `List[Float]`, `Map[Int, String]`, …).
     pub(super) fn parse_optional_type_ann(&mut self) -> Result<Option<String>, ParseError> {
         if !self.at(&TokenKind::Colon) {
             return Ok(None);
         }
         self.bump();
+        Ok(Some(self.parse_type_ann_string()?))
+    }
+
+    /// Surface type string for ascriptions (kept as text; ty resolves it).
+    pub(super) fn parse_type_ann_string(&mut self) -> Result<String, ParseError> {
         let (name, _) = self.expect_ident()?;
-        Ok(Some(name))
+        if !self.at(&TokenKind::LBracket) {
+            return Ok(name);
+        }
+        self.bump();
+        let mut args = Vec::new();
+        if !self.at(&TokenKind::RBracket) {
+            loop {
+                args.push(self.parse_type_ann_string()?);
+                if self.at(&TokenKind::Comma) {
+                    self.bump();
+                    continue;
+                }
+                break;
+            }
+        }
+        self.expect(TokenKind::RBracket)?;
+        Ok(format!("{name}[{}]", args.join(", ")))
     }
 
     /// `name` or `name: Type` binder (lambda / val paren params).

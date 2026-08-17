@@ -6,16 +6,10 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
-}
+#[path = "common/mod.rs"]
+mod common;
 
-fn lumia_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_lumia"))
-}
+use common::{lumia_bin, workspace_root};
 
 fn out_dir() -> PathBuf {
     let dir = std::env::temp_dir().join(format!(

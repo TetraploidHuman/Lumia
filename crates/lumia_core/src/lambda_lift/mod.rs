@@ -1,5 +1,10 @@
 //! Lambda lifting and capture analysis.
+//!
+//! **Package boundary:** true lift is [`rewrite`] / [`captures`] / [`heap`].
+//! Channel/float ABI post-passes live under [`abi_refine`] (and the large
+//! [`float_abi`] lattice). Prefer `abi_refine::*` at orchestration call sites.
 
+pub(crate) mod abi_refine;
 mod captures;
 mod channel_hint;
 pub(crate) mod float_abi;
@@ -7,9 +12,9 @@ mod float_cap_fixup;
 mod heap;
 mod rewrite;
 
-pub use float_abi::prefer_concrete_heap_ty;
-pub(crate) use channel_hint::refine_channel_elem_hint;
-pub(crate) use float_cap_fixup::fixup_closure_float_caps;
+pub use crate::value_ty::prefer_concrete_heap_ty;
+// Re-export for callers that still import from `lambda_lift::{…}` directly.
+pub(crate) use abi_refine::{fixup_closure_float_caps, refine_channel_elem_hint};
 pub(crate) use rewrite::lift_lambdas;
 
 use crate::ir::CoreModule;

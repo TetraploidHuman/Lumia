@@ -2,6 +2,11 @@
 //!
 //! Heap ADTs pack a kind id into `type_id` bits `[31:16]` ([`lumia_abi::adt_type_id`]).
 //! Kind `0` means anonymous (`#tag…`); kinds `≥ 1` index this table.
+//!
+//! # Safety (FFI)
+//! `names` points to `n` NUL-terminated C strings (immortal).
+
+#![deny(clippy::not_unsafe_ptr_arg_deref)]
 
 use crate::common::trap_abort;
 use std::sync::Mutex;
@@ -25,7 +30,7 @@ fn with_table<R>(f: impl FnOnce(&mut Vec<Option<AdtShowEntry>>) -> R) -> R {
 
 /// Register variant labels for `kind` (`≥ 1`). `names` is `n` NUL-terminated strings by tag.
 #[no_mangle]
-pub extern "C" fn lumia_adt_register_show(kind: u32, names: *const *const u8, n: i64) {
+pub unsafe extern "C" fn lumia_adt_register_show(kind: u32, names: *const *const u8, n: i64) {
     if kind == 0 || names.is_null() || n < 0 {
         trap_abort("lumia: adt_register_show invalid args");
     }

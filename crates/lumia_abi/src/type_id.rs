@@ -62,6 +62,7 @@ pub const TYPE_MAP_ASSOC_F64V: u32 = TYPE_MAP | TID_ASSOC | TID_F_KEY | TID_F_VA
 
 /// RT: write per-field Float mask into ADT header `_pad` (after fields are live).
 pub const ADT_SET_FLOAT_MASK: &str = "lumia_adt_set_float_mask";
+pub const ADT_SET_BOOL_MASK: &str = "lumia_adt_set_bool_mask";
 
 /// Scalar classification for container element/key tagging.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

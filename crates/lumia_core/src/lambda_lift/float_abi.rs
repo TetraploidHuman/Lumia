@@ -5,6 +5,11 @@ use crate::{CoreBinOp as BinOp, CoreUnOp as UnOp};
 use lumia_ty::{Effect, Type};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
+pub use crate::value_ty::prefer_concrete_heap_ty;
+use crate::value_ty::{
+    builtin_value_ty, elems_family_recv_ok, via_gated_recv, via_gated_recv_seeded, InferValueCtx,
+};
+
 /// Infer which lambda parameters are used in float contexts.
 pub(super) fn params_used_as_float(block: &Block, params: &[Local]) -> HashSet<u32> {
     params_used_as_float_with_caps(block, params, &HashMap::default())
@@ -33,29 +38,8 @@ pub(super) fn params_used_as_float_with_caps(
 /// Capture indices loaded with `as_float` in `body`.
 pub(super) fn float_closure_cap_indices(block: &Block) -> HashSet<u32> {
     let mut idxs = HashSet::default();
-    collect_float_cap_indices(block, &mut idxs);
+    crate::visit::collect_float_cap_indices(block, &mut idxs);
     idxs
-}
-
-fn collect_float_cap_indices(block: &Block, idxs: &mut HashSet<u32>) {
-    for op in &block.ops {
-        match op {
-            Op::Let { value, .. } => {
-                if let Value::ClosureCap {
-                    index,
-                    as_float: true,
-                    ..
-                } = value
-                {
-                    idxs.insert(*index);
-                }
-                crate::visit::for_each_nested_block(value, &mut |b| {
-                    collect_float_cap_indices(b, idxs);
-                });
-            }
-            _ => {}
-        }
-    }
 }
 
 fn mark_float_uses(
@@ -398,12 +382,13 @@ fn value_is_bool_producing(
             op: UnOp::Not,
             operand,
         } => bool_locals.contains(&operand.0),
-        Value::Builtin { name, .. } => matches!(
-            name,
-            lumia_hir::Builtin::Contains
-                | lumia_hir::Builtin::StrStartsWith
-                | lumia_hir::Builtin::StrEndsWith
-        ),
+        Value::Builtin { name, .. } => {
+            let empty = HashMap::default();
+            matches!(
+                builtin_value_ty(*name, &[], InferValueCtx::local_only(&empty)),
+                Type::Bool
+            )
+        }
         _ => false,
     }
 }
@@ -470,15 +455,14 @@ pub(super) fn block_result_is_unit(block: &Block) -> bool {
             Some(Value::Local(Local(src))) => cur = *src,
             Some(Value::Unit) => return true,
             Some(Value::Builtin { name, .. }) => {
+                // MatchFail is bottom (see `block_result_is_bottom`), not Unit ABI.
+                if matches!(*name, lumia_hir::Builtin::MatchFail) {
+                    return false;
+                }
+                let empty = HashMap::default();
                 return matches!(
-                    name,
-                    lumia_hir::Builtin::ChannelSend
-                        | lumia_hir::Builtin::ChannelClose
-                        | lumia_hir::Builtin::ScopeEnter
-                        | lumia_hir::Builtin::ScopeLeave
-                        | lumia_hir::Builtin::ScopeCancel
-                        | lumia_hir::Builtin::Println
-                        | lumia_hir::Builtin::Assert
+                    builtin_value_ty(*name, &[], InferValueCtx::local_only(&empty)),
+                    Type::Unit
                 );
             }
             _ => return false,
@@ -495,6 +479,37 @@ pub(super) fn block_result_channel_recv_ty(
 ) -> Option<Type> {
     let Local(r) = block.result?;
     channel_recv_elem_ty(block, r, by_local, module_hint, caps, &mut HashSet::default())
+}
+
+/// Spawn/thunk returning a **channel value** (not recv): `Channel[T]` from send hints.
+pub(super) fn block_result_channel_ty(
+    block: &Block,
+    by_local: &HashMap<u32, Type>,
+    module_hint: Option<&Type>,
+    caps: Option<&[Local]>,
+) -> Option<Type> {
+    let Local(r) = block.result?;
+    let root = channel_root_local(block, r, caps, &mut HashSet::default())?;
+    // Only when the result *is* / aliases a `ChannelNew` (recv falls through elsewhere).
+    match let_value(block, root) {
+        Some(Value::Builtin {
+            name: lumia_hir::Builtin::ChannelNew,
+            result_ty,
+            ..
+        }) => {
+            let elem = by_local
+                .get(&root)
+                .cloned()
+                .or_else(|| module_hint.cloned())
+                .or_else(|| match result_ty {
+                    Some(Type::Channel(e)) => Some((**e).clone()),
+                    _ => None,
+                })
+                .unwrap_or(Type::Int);
+            Some(Type::Channel(Box::new(elem)))
+        }
+        _ => None,
+    }
 }
 
 pub(super) fn local_channel_recv_elem_ty(
@@ -599,7 +614,9 @@ fn adt_field_is_float(
             Some(Value::Builtin {
                 name: lumia_hir::Builtin::ListTake
                     | lumia_hir::Builtin::ListSlice
-                    | lumia_hir::Builtin::ListReverse,
+                    | lumia_hir::Builtin::ListReverse
+                    | lumia_hir::Builtin::ListSort
+                    | lumia_hir::Builtin::ListSortByKeys,
                 args: la, .. }) if !la.is_empty() => {
                 cur = la[0].0;
             }
@@ -707,6 +724,10 @@ fn local_is_name_load(block: &Block, id: u32, seen: &mut HashSet<u32>) -> bool {
     }
 }
 
+/// Top-level `AllocList` of floats in `block` only — **intentionally shallow**.
+///
+/// Do not DFS / `for_each_let_value(_ctrl)`: nested If/Loop/Lambda lists are not
+/// the filter-acc source shape this peep covers (Todo: visit 默认入口).
 fn block_has_float_alloc_list(block: &Block, float_locals: &HashSet<u32>) -> bool {
     for op in &block.ops {
         if let Op::Let {
@@ -757,7 +778,9 @@ fn list_elem_is_float(
         Some(Value::Builtin {
             name: lumia_hir::Builtin::ListTake
                 | lumia_hir::Builtin::ListSlice
-                | lumia_hir::Builtin::ListReverse,
+                | lumia_hir::Builtin::ListReverse
+                | lumia_hir::Builtin::ListSort
+                | lumia_hir::Builtin::ListSortByKeys,
             args, .. }) if !args.is_empty() => {
             list_elem_is_float(block, args[0].0, float_locals, fun_ret_tys, seen)
         }
@@ -1021,140 +1044,49 @@ fn collect_fun_cap_tys_in_block(
     outer_lam_caps: Option<&[crate::Local]>,
     out: &mut HashMap<String, HashMap<u32, Type>>,
 ) {
-    for op in &block.ops {
-        match op {
-            Op::Let { value, .. } => {
-                if let Value::AllocClosure { fun, captures } = value {
-                    let entry = out.entry(fun.clone()).or_default();
-                    for (i, c) in captures.iter().enumerate() {
-                        let t = if float_locals.contains(&c.0) {
-                            Some(Type::Float)
-                        } else if let Some(t) = channel_recv_elem_ty(
-                            block,
+    // Prefer merges are order-tolerant for concrete lattice; DFS is safe.
+    crate::visit::for_each_block_dfs(block, &mut |b| {
+        for op in &b.ops {
+            if let Op::Let {
+                value: Value::AllocClosure { fun, captures },
+                ..
+            } = op
+            {
+                let entry = out.entry(fun.clone()).or_default();
+                for (i, c) in captures.iter().enumerate() {
+                    let t = if float_locals.contains(&c.0) {
+                        Some(Type::Float)
+                    } else if let Some(t) = channel_recv_elem_ty(
+                        b,
+                        c.0,
+                        channel_by_local,
+                        channel_module_hint,
+                        outer_lam_caps,
+                        &mut HashSet::default(),
+                    ) {
+                        Some(t)
+                    } else if let Some(t) = param_locals.get(&c.0) {
+                        Some(t.clone())
+                    } else {
+                        local_heap_ty(
+                            b,
                             c.0,
-                            channel_by_local,
-                            channel_module_hint,
-                            outer_lam_caps,
+                            float_locals,
+                            fun_ret_tys,
+                            fun_param_tys,
+                            outer_caps,
                             &mut HashSet::default(),
-                        ) {
-                            Some(t)
-                        } else if let Some(t) = param_locals.get(&c.0) {
-                            Some(t.clone())
-                        } else {
-                            local_heap_ty(
-                                block,
-                                c.0,
-                                float_locals,
-                                fun_ret_tys,
-                                fun_param_tys,
-                                outer_caps,
-                                &mut HashSet::default(),
-                                &mut HashSet::default(),
-                            )
-                        };
-                        if let Some(t) = t {
-                            let e = entry.entry(i as u32).or_insert_with(|| t.clone());
-                            *e = prefer_concrete_heap_ty(e.clone(), t);
-                        }
+                            &mut HashSet::default(),
+                        )
+                    };
+                    if let Some(t) = t {
+                        let e = entry.entry(i as u32).or_insert_with(|| t.clone());
+                        *e = prefer_concrete_heap_ty(e.clone(), t);
                     }
-                }
-                match value {
-                    Value::If {
-                        then_block,
-                        else_block,
-                        ..
-                    } => {
-                        collect_fun_cap_tys_in_block(
-                            then_block,
-                            float_locals,
-                            fun_ret_tys,
-                            fun_param_tys,
-                            outer_caps,
-                            param_locals,
-                            channel_by_local,
-                            channel_module_hint,
-                            outer_lam_caps,
-                            out,
-                        );
-                        collect_fun_cap_tys_in_block(
-                            else_block,
-                            float_locals,
-                            fun_ret_tys,
-                            fun_param_tys,
-                            outer_caps,
-                            param_locals,
-                            channel_by_local,
-                            channel_module_hint,
-                            outer_lam_caps,
-                            out,
-                        );
-                    }
-                    Value::Loop {
-                        header,
-                        body,
-                        latch,
-                    } => {
-                        collect_fun_cap_tys_in_block(
-                            header,
-                            float_locals,
-                            fun_ret_tys,
-                            fun_param_tys,
-                            outer_caps,
-                            param_locals,
-                            channel_by_local,
-                            channel_module_hint,
-                            outer_lam_caps,
-                            out,
-                        );
-                        collect_fun_cap_tys_in_block(
-                            body,
-                            float_locals,
-                            fun_ret_tys,
-                            fun_param_tys,
-                            outer_caps,
-                            param_locals,
-                            channel_by_local,
-                            channel_module_hint,
-                            outer_lam_caps,
-                            out,
-                        );
-                        collect_fun_cap_tys_in_block(
-                            latch,
-                            float_locals,
-                            fun_ret_tys,
-                            fun_param_tys,
-                            outer_caps,
-                            param_locals,
-                            channel_by_local,
-                            channel_module_hint,
-                            outer_lam_caps,
-                            out,
-                        );
-                    }
-                    Value::Lambda { body, .. } => {
-                        debug_assert!(
-                            false,
-                            "ICE: Value::Lambda after lift; expected FunRef/AllocClosure"
-                        );
-                        collect_fun_cap_tys_in_block(
-                            body,
-                            float_locals,
-                            fun_ret_tys,
-                            fun_param_tys,
-                            outer_caps,
-                            param_locals,
-                            channel_by_local,
-                            channel_module_hint,
-                            outer_lam_caps,
-                            out,
-                        );
-                    }
-                    _ => {}
                 }
             }
-            _ => {}
         }
-    }
+    });
 }
 
 /// Concrete heap return for a lifted lambda body (`List[Float]` / float-field ADT /
@@ -1392,6 +1324,73 @@ fn collect_slot_assigns(
     }
 }
 
+/// Project a Builtin through shared [`builtin_value_ty`] (same arms as `value_ty`).
+fn heap_ty_via_builtin_value_ty(
+    name: lumia_hir::Builtin,
+    args: &[Local],
+    local_tys: &HashMap<u32, Type>,
+) -> Type {
+    heap_ty_via_builtin_value_ty_ex(name, args, local_tys, None)
+}
+
+fn heap_ty_via_builtin_value_ty_ex(
+    name: lumia_hir::Builtin,
+    args: &[Local],
+    local_tys: &HashMap<u32, Type>,
+    local_int_consts: Option<&HashMap<u32, i64>>,
+) -> Type {
+    let mut ctx = InferValueCtx::local_only(local_tys);
+    ctx.local_int_consts = local_int_consts;
+    builtin_value_ty(name, args, ctx)
+}
+
+/// Arg type for MapSet/Append/SetInsert-style upgrades: float locals win, else DFS.
+fn resolve_heap_arg_ty(
+    block: &Block,
+    id: u32,
+    float_locals: &HashSet<u32>,
+    fun_ret_tys: &HashMap<String, Type>,
+    fun_param_tys: &HashMap<String, Vec<Type>>,
+    cap_tys: &HashMap<u32, Type>,
+    seen: &mut HashSet<u32>,
+    seen_slots: &mut HashSet<String>,
+) -> Type {
+    if float_locals.contains(&id) {
+        Type::Float
+    } else {
+        local_heap_ty(
+            block,
+            id,
+            float_locals,
+            fun_ret_tys,
+            fun_param_tys,
+            cap_tys,
+            seen,
+            seen_slots,
+        )
+        .unwrap_or(Type::Int)
+    }
+}
+
+/// Ground `result_ty` stamp usable as float/heap ABI truth.
+/// Soft `Int` and open `Var` are rejected so DFS arms can still refine.
+fn stamped_abi_is_authoritative(ty: &Type) -> bool {
+    !matches!(ty, Type::Int | Type::Var(_)) && abi_ty_is_ground(ty)
+}
+
+fn abi_ty_is_ground(t: &Type) -> bool {
+    match t {
+        Type::Var(_) => false,
+        Type::Fun(ps, r, _) => ps.iter().all(abi_ty_is_ground) && abi_ty_is_ground(r),
+        Type::List(e) | Type::Set(e) | Type::Task(e) | Type::Channel(e) => abi_ty_is_ground(e),
+        Type::Map(k, v) => abi_ty_is_ground(k) && abi_ty_is_ground(v),
+        Type::Tuple(ts) | Type::TuplePrefix(ts) | Type::Adt { params: ts, .. } => {
+            ts.iter().all(abi_ty_is_ground)
+        }
+        _ => true,
+    }
+}
+
 fn local_heap_ty(
     block: &Block,
     id: u32,
@@ -1428,7 +1427,7 @@ fn local_heap_ty(
             seen_slots,
         ),
         Value::FunRef(name) | Value::AllocClosure { fun: name, .. } => {
-            fun_ty_from_tables(name, fun_ret_tys, fun_param_tys)
+            super::fun_ty_from_tables_tls(name, fun_ret_tys, fun_param_tys)
         }
         Value::String(_) => Some(Type::String),
         Value::Char(_) => Some(Type::Char),
@@ -1599,10 +1598,19 @@ fn local_heap_ty(
                 params,
             })
         }
+        // Prefer lower/HIR `result_ty` stamps before hand-maintained Builtin arms.
+        // Missing arms used to fall through → soft `List[Int]` (ListSortByKeys /
+        // MapItems / ChannelNew regressions). Soft `Int` / open `Var` are ignored
+        // so DFS refinement still runs when the stamp is only a scalar placeholder.
+        Value::Builtin {
+            result_ty: Some(t),
+            ..
+        } if stamped_abi_is_authoritative(t) => Some(t.clone()),
         Value::Builtin {
             name: lumia_hir::Builtin::ListGet,
             args, .. } if !args.is_empty() => {
-            match local_heap_ty(
+            // Shared projection with `value_ty`; skip Option/`_` soft Int (heap wants None).
+            let recv = local_heap_ty(
                 block,
                 args[0].0,
                 float_locals,
@@ -1611,19 +1619,27 @@ fn local_heap_ty(
                 cap_tys,
                 seen,
                 seen_slots,
-            ) {
-                Some(Type::List(e) | Type::Set(e)) => Some(*e),
-                Some(Type::Map(_, v)) => Some(Type::Adt {
-                    name: lumia_hir::OPTION.name.into(),
-                    params: vec![*v],
-                }),
-                _ => None,
-            }
+            )?;
+            via_gated_recv(lumia_hir::Builtin::ListGet, args, recv, |t| {
+                matches!(t, Type::List(_) | Type::Set(_) | Type::Map(_, _))
+            })
         }
         Value::Builtin {
-            name: lumia_hir::Builtin::Elems,
+            name: name @ (lumia_hir::Builtin::Range | lumia_hir::Builtin::RangeInclusive),
+            args,
+            ..
+        } => Some(heap_ty_via_builtin_value_ty(
+            *name,
+            args,
+            &HashMap::default(),
+        )),
+        Value::Builtin {
+            name: name @ (lumia_hir::Builtin::Elems
+                | lumia_hir::Builtin::MapValues
+                | lumia_hir::Builtin::MapKeys
+                | lumia_hir::Builtin::MapItems),
             args, .. } if !args.is_empty() => {
-            match local_heap_ty(
+            let recv = local_heap_ty(
                 block,
                 args[0].0,
                 float_locals,
@@ -1632,50 +1648,76 @@ fn local_heap_ty(
                 cap_tys,
                 seen,
                 seen_slots,
-            ) {
-                Some(Type::List(e) | Type::Set(e)) => Some(Type::List(e)),
-                Some(Type::Map(k, _)) => Some(Type::List(k)),
-                _ => None,
-            }
+            )?;
+            via_gated_recv(*name, args, recv, |r| elems_family_recv_ok(*name, r))
         }
         Value::Builtin {
-            name: lumia_hir::Builtin::MapValues,
-            args, .. } if !args.is_empty() => {
-            match local_heap_ty(
-                block,
-                args[0].0,
-                float_locals,
-                fun_ret_tys,
-                fun_param_tys,
-                cap_tys,
-                seen,
-                seen_slots,
-            ) {
-                Some(Type::Map(_, v)) => Some(Type::List(v)),
-                _ => None,
-            }
-        }
+            name: lumia_hir::Builtin::ChannelNew,
+            result_ty,
+            ..
+        } => match result_ty {
+            // Soft `List[Int]` placeholder used to win when ChannelNew was absent —
+            // spawn returning a channel then `.recv()` printed IEEE bits.
+            Some(Type::Channel(e)) => Some(Type::Channel(e.clone())),
+            // Soft / unstamped: same as `builtin_value_ty` without channel hint.
+            _ => Some(heap_ty_via_builtin_value_ty(
+                lumia_hir::Builtin::ChannelNew,
+                &[],
+                &HashMap::default(),
+            )),
+        },
         Value::Builtin {
-            name: lumia_hir::Builtin::MapKeys,
-            args, .. } if !args.is_empty() => {
-            match local_heap_ty(
-                block,
-                args[0].0,
-                float_locals,
-                fun_ret_tys,
-                fun_param_tys,
-                cap_tys,
-                seen,
-                seen_slots,
-            ) {
-                Some(Type::Map(k, _)) => Some(Type::List(k)),
-                _ => None,
+            name: lumia_hir::Builtin::ChannelRecv,
+            args,
+            result_ty,
+            ..
+        } if !args.is_empty() => match result_ty {
+            Some(t) if !matches!(t, Type::Int | Type::Var(_)) => Some(t.clone()),
+            _ => {
+                let recv = local_heap_ty(
+                    block,
+                    args[0].0,
+                    float_locals,
+                    fun_ret_tys,
+                    fun_param_tys,
+                    cap_tys,
+                    seen,
+                    seen_slots,
+                )?;
+                via_gated_recv(lumia_hir::Builtin::ChannelRecv, args, recv, |t| {
+                    matches!(t, Type::Channel(_))
+                })
             }
-        }
+        },
+        Value::Builtin {
+            name: lumia_hir::Builtin::ChannelRecvOpt,
+            args,
+            result_ty,
+            ..
+        } if !args.is_empty() => match result_ty {
+            Some(t @ Type::Adt { .. }) => Some(t.clone()),
+            _ => {
+                let recv = local_heap_ty(
+                    block,
+                    args[0].0,
+                    float_locals,
+                    fun_ret_tys,
+                    fun_param_tys,
+                    cap_tys,
+                    seen,
+                    seen_slots,
+                )?;
+                via_gated_recv(lumia_hir::Builtin::ChannelRecvOpt, args, recv, |t| {
+                    matches!(t, Type::Channel(_))
+                })
+            }
+        },
         Value::Builtin {
             name: lumia_hir::Builtin::ListTake
                 | lumia_hir::Builtin::ListSlice
-                | lumia_hir::Builtin::ListReverse,
+                | lumia_hir::Builtin::ListReverse
+                | lumia_hir::Builtin::ListSort
+                | lumia_hir::Builtin::ListSortByKeys,
             args, .. } if !args.is_empty() => {
             match local_heap_ty(
                 block,
@@ -1687,8 +1729,15 @@ fn local_heap_ty(
                 seen,
                 seen_slots,
             ) {
-                Some(Type::List(e)) => Some(Type::List(e)),
-                other => other,
+                Some(recv @ Type::List(_)) => via_gated_recv(
+                    // Passthrough list builtins share the ListTake value_ty arm.
+                    lumia_hir::Builtin::ListTake,
+                    args,
+                    recv,
+                    |_| true,
+                ),
+                // Non-List recv: do not leak Map/Set/String as ListTake result (ret_ty gated).
+                _ => None,
             }
         }
         Value::Builtin {
@@ -1715,29 +1764,64 @@ fn local_heap_ty(
                 seen_slots,
             );
             match (a, b) {
-                // `.concat` is shared by List and String; do not fall through to the
-                // lift `List[Int]` placeholder (spawn { s.concat(…) }.join().len()).
-                (Some(Type::String), _) | (_, Some(Type::String)) => Some(Type::String),
-                (Some(Type::List(e1)), Some(Type::List(e2))) => Some(Type::List(Box::new(
-                    prefer_concrete_heap_ty(*e1, *e2),
-                ))),
-                (Some(Type::List(e)), _) | (_, Some(Type::List(e))) => {
-                    Some(Type::List(e))
+                // Both sides known: share `builtin_value_ty`, then prefer for List×List
+                // (stronger than value_ty's soft-Int upgrade — Float vs String etc.).
+                (Some(ta), Some(tb)) => {
+                    let mut tys = HashMap::default();
+                    tys.insert(args[0].0, ta.clone());
+                    tys.insert(args[1].0, tb.clone());
+                    let via = heap_ty_via_builtin_value_ty(
+                        lumia_hir::Builtin::ListConcat,
+                        args,
+                        &tys,
+                    );
+                    match (ta, tb, via) {
+                        (Type::List(e1), Type::List(e2), Type::List(_)) => {
+                            Some(Type::List(Box::new(prefer_concrete_heap_ty(*e1, *e2))))
+                        }
+                        (Type::String, _, Type::String) | (_, Type::String, Type::String) => {
+                            Some(Type::String)
+                        }
+                        (Type::List(_), _, Type::List(e)) | (_, Type::List(_), Type::List(e)) => {
+                            Some(Type::List(e))
+                        }
+                        _ => None,
+                    }
                 }
+                // One side only: keep String / List concrete (do not invent soft List[Int]).
+                (Some(Type::String), _) | (_, Some(Type::String)) => Some(Type::String),
+                (Some(Type::List(e)), _) | (_, Some(Type::List(e))) => Some(Type::List(e)),
                 _ => None,
             }
         }
         Value::Builtin {
-            name: lumia_hir::Builtin::Show
+            name: name @ (lumia_hir::Builtin::Show
+                | lumia_hir::Builtin::ListLen
+                | lumia_hir::Builtin::AdtTag
+                | lumia_hir::Builtin::Contains
+                | lumia_hir::Builtin::StrStartsWith
+                | lumia_hir::Builtin::StrEndsWith
+                | lumia_hir::Builtin::Println
+                | lumia_hir::Builtin::Assert
+                | lumia_hir::Builtin::ChannelSend
+                | lumia_hir::Builtin::ChannelClose
+                | lumia_hir::Builtin::ScopeEnter
+                | lumia_hir::Builtin::ScopeLeave
+                | lumia_hir::Builtin::ScopeCancel
                 | lumia_hir::Builtin::ReadStdin
                 | lumia_hir::Builtin::StrTrim
                 | lumia_hir::Builtin::StrSplit
                 | lumia_hir::Builtin::StrSubstring
                 | lumia_hir::Builtin::StrToLower
                 | lumia_hir::Builtin::StrToUpper
-                | lumia_hir::Builtin::ListJoin,
+                | lumia_hir::Builtin::ListJoin),
             ..
-        } => Some(Type::String),
+        } => Some(heap_ty_via_builtin_value_ty(
+            *name,
+            &[],
+            &HashMap::default(),
+        )),
+        // MatchFail stays bottom (`block_result_is_bottom`) — not Unit via.
         Value::Builtin {
             name: lumia_hir::Builtin::AdtField,
             args, .. } if args.len() >= 2 => {
@@ -1764,8 +1848,18 @@ fn local_heap_ty(
                 seen_slots,
             );
             match parent {
-                Some(Type::Adt { params, .. }) => params.get(idx).cloned(),
-                Some(Type::Tuple(ts) | Type::TuplePrefix(ts)) => ts.get(idx).cloned(),
+                Some(p @ (Type::Adt { .. } | Type::Tuple(_) | Type::TuplePrefix(_))) => {
+                    let mut tys = HashMap::default();
+                    tys.insert(args[0].0, p);
+                    let mut consts = HashMap::default();
+                    consts.insert(args[1].0, idx as i64);
+                    Some(heap_ty_via_builtin_value_ty_ex(
+                        lumia_hir::Builtin::AdtField,
+                        args,
+                        &tys,
+                        Some(&consts),
+                    ))
+                }
                 _ if float_locals.contains(&id) => Some(Type::Float),
                 _ => None,
             }
@@ -1773,22 +1867,71 @@ fn local_heap_ty(
         Value::Builtin {
             name: lumia_hir::Builtin::ListAppend,
             args, .. } if args.len() >= 2 => {
-            let elem = if float_locals.contains(&args[1].0) {
-                Type::Float
-            } else {
-                local_heap_ty(
-                    block,
-                    args[1].0,
-                    float_locals,
-                    fun_ret_tys,
-                    fun_param_tys,
-                    cap_tys,
-                    seen,
-                    seen_slots,
-                )
-                .unwrap_or(Type::Int)
-            };
-            let list = local_heap_ty(
+            let elem = resolve_heap_arg_ty(
+                block,
+                args[1].0,
+                float_locals,
+                fun_ret_tys,
+                fun_param_tys,
+                cap_tys,
+                seen,
+                seen_slots,
+            );
+            // Prefer over value_ty soft-Int; known List → via + prefer.
+            match local_heap_ty(
+                block,
+                args[0].0,
+                float_locals,
+                fun_ret_tys,
+                fun_param_tys,
+                cap_tys,
+                seen,
+                seen_slots,
+            ) {
+                Some(Type::List(e)) => {
+                    let merged = prefer_concrete_heap_ty(e.as_ref().clone(), elem);
+                    via_gated_recv_seeded(
+                        lumia_hir::Builtin::ListAppend,
+                        args,
+                        Type::List(Box::new(merged.clone())),
+                        |_| true,
+                        |tys| {
+                            tys.insert(args[1].0, merged);
+                        },
+                    )
+                }
+                Some(other) => Some(other),
+                None if !matches!(elem, Type::Int | Type::Var(_)) => {
+                    Some(Type::List(Box::new(elem)))
+                }
+                None => Some(Type::List(Box::new(Type::Int))),
+            }
+        }
+        Value::Builtin {
+            name: lumia_hir::Builtin::MapSet,
+            args, .. } if args.len() >= 3 => {
+            // `m.set(k,v)` / `xs.set(i,v)` — float values must upgrade Map/List ABI.
+            let key_ty = resolve_heap_arg_ty(
+                block,
+                args[1].0,
+                float_locals,
+                fun_ret_tys,
+                fun_param_tys,
+                cap_tys,
+                seen,
+                seen_slots,
+            );
+            let val_ty = resolve_heap_arg_ty(
+                block,
+                args[2].0,
+                float_locals,
+                fun_ret_tys,
+                fun_param_tys,
+                cap_tys,
+                seen,
+                seen_slots,
+            );
+            let recv = local_heap_ty(
                 block,
                 args[0].0,
                 float_locals,
@@ -1798,60 +1941,52 @@ fn local_heap_ty(
                 seen,
                 seen_slots,
             );
-            Some(match list {
-                Some(Type::List(e))
-                    if matches!(e.as_ref(), Type::Int | Type::Var(_))
-                        && !matches!(elem, Type::Int | Type::Var(_)) =>
-                {
-                    Type::List(Box::new(elem))
+            // Map|List: via+prefer. Open receivers stay Map (no Int-key→List).
+            match recv {
+                Some(Type::List(e)) => {
+                    let merged = prefer_concrete_heap_ty(e.as_ref().clone(), val_ty);
+                    via_gated_recv_seeded(
+                        lumia_hir::Builtin::MapSet,
+                        args,
+                        Type::List(Box::new(merged.clone())),
+                        |_| true,
+                        |tys| {
+                            tys.insert(args[1].0, key_ty);
+                            tys.insert(args[2].0, merged);
+                        },
+                    )
                 }
-                Some(Type::List(e)) => Type::List(Box::new(prefer_concrete_heap_ty(
-                    e.as_ref().clone(),
-                    elem,
-                ))),
-                Some(other) => other,
-                None if !matches!(elem, Type::Int | Type::Var(_)) => {
-                    Type::List(Box::new(elem))
+                Some(Type::Map(k, v)) => {
+                    let mk = prefer_concrete_heap_ty(k.as_ref().clone(), key_ty);
+                    let mv = prefer_concrete_heap_ty(v.as_ref().clone(), val_ty);
+                    via_gated_recv_seeded(
+                        lumia_hir::Builtin::MapSet,
+                        args,
+                        Type::Map(Box::new(mk.clone()), Box::new(mv.clone())),
+                        |_| true,
+                        |tys| {
+                            tys.insert(args[1].0, mk);
+                            tys.insert(args[2].0, mv);
+                        },
+                    )
                 }
-                None => Type::List(Box::new(Type::Int)),
-            })
+                _ => Some(Type::Map(Box::new(key_ty), Box::new(val_ty))),
+            }
         }
         Value::Builtin {
-            name: lumia_hir::Builtin::MapSet,
-            args, .. } if args.len() >= 3 => {
-            // `m.set(k,v)` / `xs.set(i,v)` — float values must upgrade Map/List ABI
-            // (`toMap` acc loop, `mapOf(…).set(…)`).
-            let key_ty = if float_locals.contains(&args[1].0) {
-                Type::Float
-            } else {
-                local_heap_ty(
-                    block,
-                    args[1].0,
-                    float_locals,
-                    fun_ret_tys,
-                    fun_param_tys,
-                    cap_tys,
-                    seen,
-                    seen_slots,
-                )
-                .unwrap_or(Type::Int)
-            };
-            let val_ty = if float_locals.contains(&args[2].0) {
-                Type::Float
-            } else {
-                local_heap_ty(
-                    block,
-                    args[2].0,
-                    float_locals,
-                    fun_ret_tys,
-                    fun_param_tys,
-                    cap_tys,
-                    seen,
-                    seen_slots,
-                )
-                .unwrap_or(Type::Int)
-            };
-            match local_heap_ty(
+            name: lumia_hir::Builtin::SetInsert,
+            args, .. } if args.len() >= 2 => {
+            let elem_ty = resolve_heap_arg_ty(
+                block,
+                args[1].0,
+                float_locals,
+                fun_ret_tys,
+                fun_param_tys,
+                cap_tys,
+                seen,
+                seen_slots,
+            );
+            let set = local_heap_ty(
                 block,
                 args[0].0,
                 float_locals,
@@ -1860,39 +1995,45 @@ fn local_heap_ty(
                 cap_tys,
                 seen,
                 seen_slots,
-            ) {
-                Some(Type::List(e)) => Some(Type::List(Box::new(prefer_concrete_heap_ty(
-                    e.as_ref().clone(),
-                    val_ty,
-                )))),
-                Some(Type::Map(k, v)) => Some(Type::Map(
-                    Box::new(prefer_concrete_heap_ty(k.as_ref().clone(), key_ty)),
-                    Box::new(prefer_concrete_heap_ty(v.as_ref().clone(), val_ty)),
-                )),
-                // Do **not** mirror value_ty's Int-key→List guess: empty/`mapOf`
-                // receivers that still look open become Map once `.set` is seen.
-                _ => Some(Type::Map(Box::new(key_ty), Box::new(val_ty))),
+            );
+            match set {
+                Some(Type::Set(e)) => {
+                    let merged = prefer_concrete_heap_ty(e.as_ref().clone(), elem_ty);
+                    via_gated_recv_seeded(
+                        lumia_hir::Builtin::SetInsert,
+                        args,
+                        Type::Set(Box::new(merged.clone())),
+                        |_| true,
+                        |tys| {
+                            tys.insert(args[1].0, merged);
+                        },
+                    )
+                }
+                _ => via_gated_recv_seeded(
+                    lumia_hir::Builtin::SetInsert,
+                    args,
+                    Type::Set(Box::new(elem_ty.clone())),
+                    |_| true,
+                    |tys| {
+                        tys.insert(args[1].0, elem_ty);
+                    },
+                ),
             }
         }
         Value::Builtin {
             name: lumia_hir::Builtin::MapRemove,
             args, .. } if args.len() >= 2 => {
-            let key_ty = if float_locals.contains(&args[1].0) {
-                Type::Float
-            } else {
-                local_heap_ty(
-                    block,
-                    args[1].0,
-                    float_locals,
-                    fun_ret_tys,
-                    fun_param_tys,
-                    cap_tys,
-                    seen,
-                    seen_slots,
-                )
-                .unwrap_or(Type::Int)
-            };
-            match local_heap_ty(
+            let key_ty = resolve_heap_arg_ty(
+                block,
+                args[1].0,
+                float_locals,
+                fun_ret_tys,
+                fun_param_tys,
+                cap_tys,
+                seen,
+                seen_slots,
+            );
+            let recv = local_heap_ty(
                 block,
                 args[0].0,
                 float_locals,
@@ -1901,25 +2042,86 @@ fn local_heap_ty(
                 cap_tys,
                 seen,
                 seen_slots,
-            ) {
-                Some(Type::List(e)) => Some(Type::List(e)),
-                Some(Type::Map(k, v)) => Some(Type::Map(
-                    Box::new(prefer_concrete_heap_ty(k.as_ref().clone(), key_ty)),
-                    v,
-                )),
-                _ => Some(Type::Map(Box::new(key_ty), Box::new(Type::Int))),
+            );
+            match recv {
+                Some(Type::List(e)) => via_gated_recv_seeded(
+                    lumia_hir::Builtin::MapRemove,
+                    args,
+                    Type::List(e),
+                    |_| true,
+                    |tys| {
+                        tys.insert(args[1].0, key_ty);
+                    },
+                ),
+                Some(Type::Set(e)) => {
+                    let merged = prefer_concrete_heap_ty(e.as_ref().clone(), key_ty.clone());
+                    via_gated_recv_seeded(
+                        lumia_hir::Builtin::MapRemove,
+                        args,
+                        Type::Set(Box::new(merged)),
+                        |_| true,
+                        |tys| {
+                            tys.insert(args[1].0, key_ty);
+                        },
+                    )
+                }
+                Some(Type::Map(k, v)) => {
+                    let mk = prefer_concrete_heap_ty(k.as_ref().clone(), key_ty.clone());
+                    via_gated_recv_seeded(
+                        lumia_hir::Builtin::MapRemove,
+                        args,
+                        Type::Map(Box::new(mk), v),
+                        |_| true,
+                        |tys| {
+                            tys.insert(args[1].0, key_ty);
+                        },
+                    )
+                }
+                other => {
+                    // Open / unknown: shared projection (may yield Map from key).
+                    let projected = match other {
+                        Some(r) => via_gated_recv_seeded(
+                            lumia_hir::Builtin::MapRemove,
+                            args,
+                            r,
+                            |_| true,
+                            |tys| {
+                                tys.insert(args[1].0, key_ty.clone());
+                            },
+                        ),
+                        None => {
+                            let mut tys = HashMap::default();
+                            tys.insert(args[1].0, key_ty.clone());
+                            Some(heap_ty_via_builtin_value_ty(
+                                lumia_hir::Builtin::MapRemove,
+                                args,
+                                &tys,
+                            ))
+                        }
+                    };
+                    match projected {
+                        Some(Type::Map(k, v)) => Some(Type::Map(k, v)),
+                        _ => Some(Type::Map(Box::new(key_ty), Box::new(Type::Int))),
+                    }
+                }
             }
         }
         Value::Builtin {
             name: lumia_hir::Builtin::TaskSpawn,
             args, .. } if !args.is_empty() => {
             let elem = fun_ret_of_local(block, args[0].0, fun_ret_tys, seen).unwrap_or(Type::Int);
-            Some(Type::Task(Box::new(elem)))
+            // Seed a Fun so shared `builtin_value_ty` extracts Task[ret] (arity unused).
+            via_gated_recv(
+                lumia_hir::Builtin::TaskSpawn,
+                args,
+                Type::Fun(vec![], Box::new(elem), Effect::Pure),
+                |t| matches!(t, Type::Fun(_, _, _)),
+            )
         }
         Value::Builtin {
             name: lumia_hir::Builtin::ListParFold,
             args, .. } if args.len() >= 2 => {
-            // Acc type: Float init / Float callback / List[Float] elems → Float.
+            // Float specials first (keep out of soft value_ty / ret_ty).
             if float_locals.contains(&args[1].0) {
                 return Some(Type::Float);
             }
@@ -1937,7 +2139,13 @@ fn local_heap_ty(
                     return Some(Type::Float);
                 }
             }
-            local_heap_ty(
+            if let Some(t) = fun_ret_of_local(block, args[2].0, fun_ret_tys, seen)
+                .filter(|t| matches!(t, Type::Float | Type::Bool | Type::String | Type::Char))
+            {
+                return Some(t);
+            }
+            // Non-float: share acc projection via builtin_value_ty.
+            let acc = local_heap_ty(
                 block,
                 args[1].0,
                 float_locals,
@@ -1946,12 +2154,35 @@ fn local_heap_ty(
                 cap_tys,
                 seen,
                 seen_slots,
-            )
-            .or_else(|| {
-                fun_ret_of_local(block, args[2].0, fun_ret_tys, seen).filter(|t| {
-                    matches!(t, Type::Float | Type::Bool | Type::String | Type::Char)
-                })
-            })
+            )?;
+            if let Some(list) = local_heap_ty(
+                block,
+                args[0].0,
+                float_locals,
+                fun_ret_tys,
+                fun_param_tys,
+                cap_tys,
+                seen,
+                seen_slots,
+            ) {
+                via_gated_recv_seeded(
+                    lumia_hir::Builtin::ListParFold,
+                    args,
+                    list,
+                    |_| true,
+                    |tys| {
+                        tys.insert(args[1].0, acc);
+                    },
+                )
+            } else {
+                let mut tys = HashMap::default();
+                tys.insert(args[1].0, acc);
+                Some(heap_ty_via_builtin_value_ty(
+                    lumia_hir::Builtin::ListParFold,
+                    args,
+                    &tys,
+                ))
+            }
         }
         Value::Builtin {
             name: lumia_hir::Builtin::ListParMap,
@@ -1987,21 +2218,71 @@ fn local_heap_ty(
                 Some(Type::List(e)) => Some(*e),
                 _ => None,
             };
-            let elem = match (from_cb, from_list) {
-                (Some(Type::Float), _) => Type::Float,
-                (Some(Type::Int | Type::Var(_)), Some(Type::Float)) | (None, Some(Type::Float)) => {
-                    Type::Float
+            // Float specials first — soft Int/Var Fun ret + List[Float] stay here.
+            match (&from_cb, &from_list) {
+                (Some(Type::Float), _)
+                | (Some(Type::Int | Type::Var(_)), Some(Type::Float))
+                | (None, Some(Type::Float)) => {
+                    return Some(Type::List(Box::new(Type::Float)));
                 }
-                (Some(e), _) => e,
-                (None, Some(e)) => e,
-                (None, None) => Type::Int,
-            };
-            Some(Type::List(Box::new(elem)))
+                _ => {}
+            }
+            if let Some(e) = from_list {
+                return via_gated_recv_seeded(
+                    lumia_hir::Builtin::ListParMap,
+                    args,
+                    Type::List(Box::new(e)),
+                    |_| true,
+                    |tys| {
+                        if let Some(cb_e) = from_cb.clone() {
+                            tys.insert(
+                                args[1].0,
+                                Type::Fun(vec![], Box::new(cb_e), Effect::Pure),
+                            );
+                        } else if let Some(cb) = local_heap_ty(
+                            block,
+                            args[1].0,
+                            float_locals,
+                            fun_ret_tys,
+                            fun_param_tys,
+                            cap_tys,
+                            seen,
+                            seen_slots,
+                        ) {
+                            tys.insert(args[1].0, cb);
+                        }
+                    },
+                );
+            }
+            // Soft: no List recv — seed callback only (same as pre-via path).
+            let mut tys = HashMap::default();
+            if let Some(e) = from_cb {
+                tys.insert(
+                    args[1].0,
+                    Type::Fun(vec![], Box::new(e), Effect::Pure),
+                );
+            } else if let Some(cb) = local_heap_ty(
+                block,
+                args[1].0,
+                float_locals,
+                fun_ret_tys,
+                fun_param_tys,
+                cap_tys,
+                seen,
+                seen_slots,
+            ) {
+                tys.insert(args[1].0, cb);
+            }
+            Some(heap_ty_via_builtin_value_ty(
+                lumia_hir::Builtin::ListParMap,
+                args,
+                &tys,
+            ))
         }
         Value::Builtin {
             name: lumia_hir::Builtin::TaskJoin,
             args, .. } if !args.is_empty() => {
-            match local_heap_ty(
+            let recv = local_heap_ty(
                 block,
                 args[0].0,
                 float_locals,
@@ -2010,16 +2291,16 @@ fn local_heap_ty(
                 cap_tys,
                 seen,
                 seen_slots,
-            ) {
-                Some(Type::Task(e)) => Some(*e),
-                _ => None,
-            }
+            )?;
+            via_gated_recv(lumia_hir::Builtin::TaskJoin, args, recv, |t| {
+                matches!(t, Type::Task(_))
+            })
         }
         Value::Builtin {
             name: lumia_hir::Builtin::TaskJoinOpt,
             args, .. } if !args.is_empty() => {
             // `joinOpt()` → Option[T] from Task[T] (needed for `alt listOf()` cap typing).
-            match local_heap_ty(
+            let recv = local_heap_ty(
                 block,
                 args[0].0,
                 float_locals,
@@ -2028,13 +2309,10 @@ fn local_heap_ty(
                 cap_tys,
                 seen,
                 seen_slots,
-            ) {
-                Some(Type::Task(e)) => Some(Type::Adt {
-                    name: lumia_hir::OPTION.name.into(),
-                    params: vec![*e],
-                }),
-                _ => None,
-            }
+            )?;
+            via_gated_recv(lumia_hir::Builtin::TaskJoinOpt, args, recv, |t| {
+                matches!(t, Type::Task(_))
+            })
         }
         Value::If {
             then_block,
@@ -2079,14 +2357,6 @@ fn local_heap_ty(
     }
 }
 
-fn fun_ty_from_tables(
-    name: &str,
-    fun_ret_tys: &HashMap<String, Type>,
-    fun_param_tys: &HashMap<String, Vec<Type>>,
-) -> Option<Type> {
-    super::fun_ty_from_tables_tls(name, fun_ret_tys, fun_param_tys)
-}
-
 fn fun_ret_of_local(
     block: &Block,
     id: u32,
@@ -2118,158 +2388,11 @@ fn join_match_heap_tys(
         return then_ty;
     }
     match (then_ty, else_ty) {
-        (Some(a), Some(b)) => join_heap_tys(&a, &b),
+        (Some(a), Some(b)) => {
+            crate::value_ty::join_abi_tys(&a, &b, crate::value_ty::JoinAbiKind::Heap)
+        }
         (Some(a), None) | (None, Some(a)) => Some(a),
         (None, None) => None,
-    }
-}
-
-fn join_heap_tys(a: &Type, b: &Type) -> Option<Type> {
-    if a == b {
-        return Some(a.clone());
-    }
-    match (a, b) {
-        // MatchFail / empty arm: Unit is bottom.
-        (Type::Unit, other) | (other, Type::Unit) => Some(other.clone()),
-        // `Err("e") alt 9.5`: then=AdtField(String) from Err-only AllocAdt params,
-        // else=Float — prefer Float (same as `join_value_tys` for println ABI).
-        (Type::Float, other) | (other, Type::Float)
-            if matches!(
-                other,
-                Type::Int
-                    | Type::Var(_)
-                    | Type::Bool
-                    | Type::String
-                    | Type::Char
-                    | Type::Float
-            ) =>
-        {
-            Some(Type::Float)
-        }
-        (Type::Int | Type::Var(_), other) => Some(other.clone()),
-        (other, Type::Int | Type::Var(_)) => Some(other.clone()),
-        (
-            Type::Adt {
-                name: n1,
-                params: p1,
-            },
-            Type::Adt {
-                name: n2,
-                params: p2,
-            },
-        ) if n1 == n2 => {
-            let n = p1.len().max(p2.len());
-            let mut params = Vec::with_capacity(n);
-            for i in 0..n {
-                let x = p1.get(i).cloned().unwrap_or(Type::Int);
-                let y = p2.get(i).cloned().unwrap_or(Type::Int);
-                params.push(prefer_concrete_heap_ty(x, y));
-            }
-            Some(Type::Adt {
-                name: n1.clone(),
-                params,
-            })
-        }
-        (Type::List(e1), Type::List(e2)) => {
-            Some(Type::List(Box::new(prefer_concrete_heap_ty(
-                e1.as_ref().clone(),
-                e2.as_ref().clone(),
-            ))))
-        }
-        (Type::Set(e1), Type::Set(e2)) => {
-            Some(Type::Set(Box::new(prefer_concrete_heap_ty(
-                e1.as_ref().clone(),
-                e2.as_ref().clone(),
-            ))))
-        }
-        (Type::Task(e1), Type::Task(e2)) => {
-            Some(Type::Task(Box::new(prefer_concrete_heap_ty(
-                e1.as_ref().clone(),
-                e2.as_ref().clone(),
-            ))))
-        }
-        (Type::Channel(e1), Type::Channel(e2)) => {
-            Some(Type::Channel(Box::new(prefer_concrete_heap_ty(
-                e1.as_ref().clone(),
-                e2.as_ref().clone(),
-            ))))
-        }
-        (Type::Map(k1, v1), Type::Map(k2, v2)) => Some(Type::Map(
-            Box::new(prefer_concrete_heap_ty(k1.as_ref().clone(), k2.as_ref().clone())),
-            Box::new(prefer_concrete_heap_ty(v1.as_ref().clone(), v2.as_ref().clone())),
-        )),
-        _ => None,
-    }
-}
-
-pub fn prefer_concrete_heap_ty(x: Type, y: Type) -> Type {
-    if x == y {
-        return x;
-    }
-    match (&x, &y) {
-        // Fun ABI must not collapse to Float (curried compose / make(k) rets).
-        (Type::Fun(p1, r1, e1), Type::Fun(p2, r2, e2)) => {
-            let n = p1.len().max(p2.len());
-            let mut params = Vec::with_capacity(n);
-            for i in 0..n {
-                let a = p1.get(i).cloned().unwrap_or(Type::Int);
-                let b = p2.get(i).cloned().unwrap_or(Type::Int);
-                params.push(prefer_concrete_heap_ty(a, b));
-            }
-            Type::Fun(
-                params,
-                Box::new(prefer_concrete_heap_ty(r1.as_ref().clone(), r2.as_ref().clone())),
-                if e1.has_io() || e2.has_io() {
-                    Effect::io()
-                } else {
-                    Effect::pure()
-                },
-            )
-        }
-        (Type::Fun(_, _, _), _) => x.clone(),
-        (_, Type::Fun(_, _, _)) => y.clone(),
-        // Lift may-heap placeholder `List(Int)` must yield to Map/Set/Task/String/…
-        // (`mapOf(…).set` was stuck as List → `.get` used list indexing;
-        // spawn String was stuck as List → `.len()` used `lumia_list_len`).
-        (
-            Type::List(e),
-            other @ (Type::Map(_, _)
-            | Type::Set(_)
-            | Type::Task(_)
-            | Type::Channel(_)
-            | Type::Adt { .. }
-            | Type::String
-            | Type::Char),
-        ) if matches!(e.as_ref(), Type::Int | Type::Var(_)) => other.clone(),
-        (
-            other @ (Type::Map(_, _)
-            | Type::Set(_)
-            | Type::Task(_)
-            | Type::Channel(_)
-            | Type::Adt { .. }
-            | Type::String
-            | Type::Char),
-            Type::List(e),
-        ) if matches!(e.as_ref(), Type::Int | Type::Var(_)) => other.clone(),
-        (Type::Float, _) | (_, Type::Float) => Type::Float,
-        (Type::Int | Type::Var(_), other) => other.clone(),
-        (other, Type::Int | Type::Var(_)) => other.clone(),
-        (
-            Type::Adt {
-                name: n1,
-                params: p1,
-            },
-            Type::Adt {
-                name: n2,
-                params: p2,
-            },
-        ) if n1 == n2 => join_heap_tys(&x, &y).unwrap_or(x),
-        (Type::List(_), Type::List(_))
-        | (Type::Set(_), Type::Set(_))
-        | (Type::Task(_), Type::Task(_))
-        | (Type::Channel(_), Type::Channel(_))
-        | (Type::Map(_, _), Type::Map(_, _)) => join_heap_tys(&x, &y).unwrap_or(x),
-        _ => x,
     }
 }
 
@@ -2761,823 +2884,6 @@ fn closure_cap_index(block: &Block, id: u32, seen: &mut HashSet<u32>) -> Option<
     None
 }
 
-
-
 #[cfg(test)]
-mod tests {
-    use super::is_apply_hof;
-    use crate::compile_source_to_core;
-
-    #[test]
-    fn spawn_string_cap_closure_ret_is_string() {
-        let str2 = compile_source_to_core(
-            r#"
-module M
-import std.io.{println}
-val main = {
-    scope {
-        val prefix = "pre"
-        val f = spawn { { s -> prefix.concat(s) } }.join()
-        println(f("x").len())
-    }
-}
-"#,
-        )
-        .expect("str2");
-        let lam0 = str2
-            .functions
-            .iter()
-            .find(|f| f.name == "__lam_0")
-            .expect("__lam_0");
-        assert!(
-            matches!(lam0.ret_ty, lumia_ty::Type::String),
-            "spawned concat lam ret should be String, got {:?}",
-            lam0.ret_ty
-        );
-    }
-
-
-    #[test]
-    fn spawn_some_true_option_bool() {
-        let core = compile_source_to_core(
-            r#"
-module M
-import std.io.{println}
-val main = {
-    scope {
-        val o = spawn { Some(true) }.join()
-        println(o)
-    }
-}
-"#,
-        )
-        .expect("core");
-        let lam = core
-            .functions
-            .iter()
-            .find(|f| f.name.starts_with("__lam_") && f.params.is_empty())
-            .expect("spawn lam");
-        assert!(
-            matches!(
-                &lam.ret_ty,
-                lumia_ty::Type::Adt { name, params }
-                    if lumia_hir::is_option(name) && params.first().is_some_and(|p| matches!(p, lumia_ty::Type::Bool))
-            ),
-            "spawn Some(true) ret should be Option[Bool], got {:?}",
-            lam.ret_ty
-        );
-    }
-
-    #[test]
-    fn spawn_two_float_folds_sum_ret() {
-        let core = compile_source_to_core(
-            r#"
-module M
-import std.io.{println}
-val main = {
-    scope {
-        val xs = listOf(1.0, 2.0, 3.0)
-        val ys = listOf(1.0, 2.0)
-        val s = spawn { xs.fold(0.0, { a, b -> a + b }) + ys.fold(0.0, { a, b -> a + b }) }.join()
-        println(s)
-    }
-}
-"#,
-        )
-        .expect("core");
-        assert!(
-            core.functions.iter().any(|f| f.name.starts_with("__lam_")
-                && matches!(f.ret_ty, lumia_ty::Type::Float)
-                && f.params.len() <= 1),
-            "spawn body should return Float"
-        );
-    }
-
-    #[test]
-    fn detect_apply_hof_shape() {
-        let core = compile_source_to_core(
-            r#"
-module M
-import std.io.{println}
-val main = {
-    scope {
-        val apply = { f, x -> f(x) }
-        println(spawn { apply({ y -> y * 2.0 }, 1.5) }.join())
-    }
-}
-"#,
-        )
-        .expect("core");
-        let apply = core
-            .functions
-            .iter()
-            .find(|f| f.name == "__lam_0")
-            .expect("apply");
-        assert!(is_apply_hof(&apply.params, &apply.body));
-        let spawn = core
-            .functions
-            .iter()
-            .find(|f| f.name == "__lam_2")
-            .expect("spawn");
-        assert!(
-            matches!(spawn.ret_ty, lumia_ty::Type::Float),
-            "got {:?}",
-            spawn.ret_ty
-        );
-    }
-
-    #[test]
-    fn detect_compose_hof_float() {
-        use super::is_compose_hof;
-        let core = compile_source_to_core(
-            r#"
-module M
-import std.io.{println}
-val main = {
-    scope {
-        val andThen = { f, g, x -> g(f(x)) }
-        println(spawn { andThen({ a -> a + 1.0 }, { b -> b * 2.0 }, 1.5) }.join())
-    }
-}
-"#,
-        )
-        .expect("core");
-        let compose = core
-            .functions
-            .iter()
-            .find(|f| is_compose_hof(&f.params, &f.body))
-            .expect("compose");
-        let spawn = core
-            .functions
-            .iter()
-            .find(|f| {
-                f.name.starts_with("__lam_")
-                    && f.params.len() == 1
-                    && f.body.ops.iter().any(|op| {
-                        matches!(
-                            op,
-                            crate::ir::Op::Let {
-                                value: crate::ir::Value::IndirectCall { args, .. },
-                                ..
-                            } if args.len() == 3
-                        ) || matches!(
-                            op,
-                            crate::ir::Op::Let {
-                                value: crate::ir::Value::Call { args, .. },
-                                ..
-                            } if args.len() == 3
-                        )
-                    })
-            })
-            .expect("spawn");
-        assert!(
-            matches!(spawn.ret_ty, lumia_ty::Type::Float),
-            "compose spawn ret {:?}, compose={}",
-            spawn.ret_ty,
-            compose.name
-        );
-    }
-
-    #[test]
-    fn detect_id_through_apply_float() {
-        use super::is_id_hof;
-        let core = compile_source_to_core(
-            r#"
-module M
-import std.io.{println}
-val main = {
-    scope {
-        val apply = { f, x -> f(x) }
-        val id = { f -> f }
-        println(spawn { apply(id({ y -> y * 2.0 }), 1.5) }.join())
-    }
-}
-"#,
-        )
-        .expect("core");
-        assert!(core.functions.iter().any(|f| is_id_hof(&f.params, &f.body)));
-        let spawn = core
-            .functions
-            .iter()
-            .find(|f| {
-                f.name.starts_with("__lam_")
-                    && f.params.len() == 1
-                    && f.body.ops.iter().any(|op| {
-                        matches!(
-                            op,
-                            crate::ir::Op::Let {
-                                value: crate::ir::Value::IndirectCall { args, .. },
-                                ..
-                            } if args.len() == 2
-                        ) || matches!(
-                            op,
-                            crate::ir::Op::Let {
-                                value: crate::ir::Value::Call { args, .. },
-                                ..
-                            } if args.len() == 2
-                        )
-                    })
-            })
-            .expect("spawn");
-        assert!(
-            matches!(spawn.ret_ty, lumia_ty::Type::Float),
-            "id∘apply spawn ret {:?}",
-            spawn.ret_ty
-        );
-    }
-
-    #[test]
-    fn spawn_map_get_float_keeps_float_ret() {
-        let core = compile_source_to_core(
-            r#"
-module M
-import std.io.{println}
-val main = {
-    scope {
-        println(spawn { listOf(1.5, 2.5).map({ x -> x * 2.0 }).get(0) }.join())
-    }
-}
-"#,
-        )
-        .expect("core");
-        let spawn = core
-            .functions
-            .iter()
-            .find(|f| f.name.starts_with("__lam_") && f.params.is_empty())
-            .expect("spawn");
-        assert!(
-            matches!(spawn.ret_ty, lumia_ty::Type::Float),
-            "map.get spawn ret {:?}",
-            spawn.ret_ty
-        );
-    }
-
-    #[test]
-    fn spawn_if_float_keeps_float_ret() {
-        let core = compile_source_to_core(
-            r#"
-module M
-import std.io.{println}
-val main = {
-    scope {
-        val t = spawn { if true { 1.5 } else { 2.5 } }
-        println(t.join() * 2.0)
-    }
-}
-"#,
-        )
-        .expect("core");
-        let spawn = core
-            .functions
-            .iter()
-            .find(|f| f.name.starts_with("__lam_") && f.params.is_empty())
-            .expect("spawn");
-        assert!(
-            matches!(spawn.ret_ty, lumia_ty::Type::Float),
-            "if-float spawn ret {:?}",
-            spawn.ret_ty
-        );
-    }
-
-    #[test]
-    fn spawn_fold_float_keeps_float_ret() {
-        let core = compile_source_to_core(
-            r#"
-module M
-import std.io.{println}
-val main = {
-    scope {
-        println(spawn { listOf(1.5, 2.5).fold(0.0, { a, b -> a + b }) }.join())
-    }
-}
-"#,
-        )
-        .expect("core");
-        let spawn = core
-            .functions
-            .iter()
-            .find(|f| f.name.starts_with("__lam_") && f.params.is_empty())
-            .expect("spawn");
-        assert!(
-            matches!(spawn.ret_ty, lumia_ty::Type::Float),
-            "fold-float spawn ret {:?}",
-            spawn.ret_ty
-        );
-    }
-
-    #[test]
-    fn spawn_filter_get_float_keeps_float_ret() {
-        let core = compile_source_to_core(
-            r#"
-module M
-import std.io.{println}
-val main = {
-    scope {
-        println(spawn { listOf(1.5, 2.5).filter({ x -> x > 2.0 }).get(0) }.join())
-    }
-}
-"#,
-        )
-        .expect("core");
-        let spawn = core
-            .functions
-            .iter()
-            .find(|f| f.name.starts_with("__lam_") && f.params.is_empty())
-            .expect("spawn");
-        assert!(
-            matches!(spawn.ret_ty, lumia_ty::Type::Float),
-            "filter.get spawn ret {:?}",
-            spawn.ret_ty
-        );
-    }
-
-    #[test]
-    fn spawn_match_float_keeps_float_ret() {
-        let core = compile_source_to_core(
-            r#"
-module M
-import std.io.{println}
-val main = {
-    scope {
-        println(spawn {
-            Some(1.5) match {
-                Some(x) -> x * 2.0
-                None -> 0.0
-            }
-        }.join())
-    }
-}
-"#,
-        )
-        .expect("core");
-        let spawn = core
-            .functions
-            .iter()
-            .find(|f| f.name.starts_with("__lam_") && f.params.is_empty())
-            .expect("spawn");
-        assert!(
-            matches!(spawn.ret_ty, lumia_ty::Type::Float),
-            "match-float spawn ret {:?}",
-            spawn.ret_ty
-        );
-    }
-
-    #[test]
-    fn spawn_match_id_float_keeps_float_ret() {
-        let core = compile_source_to_core(
-            r#"
-module M
-import std.io.{println}
-val main = {
-    scope {
-        println(spawn {
-            Some(1.5) match {
-                Some(x) -> x
-                None -> 0.0
-            }
-        }.join())
-    }
-}
-"#,
-        )
-        .expect("core");
-        let spawn = core
-            .functions
-            .iter()
-            .find(|f| f.name.starts_with("__lam_") && f.params.is_empty())
-            .expect("spawn");
-        assert!(
-            matches!(spawn.ret_ty, lumia_ty::Type::Float),
-            "match-id-float spawn ret {:?}",
-            spawn.ret_ty
-        );
-    }
-
-    #[test]
-    fn spawn_match_option_float_keeps_adt_ret() {
-        let core = compile_source_to_core(
-            r#"
-module M
-import std.io.{println}
-val main = {
-    scope {
-        val o = spawn {
-            Some(1.5) match {
-                Some(x) -> Some(x * 2.0)
-                None -> None
-            }
-        }.join()
-        o match {
-            Some(v) -> println(v)
-            None -> println(0)
-        }
-    }
-}
-"#,
-        )
-        .expect("core");
-        let spawn = core
-            .functions
-            .iter()
-            .find(|f| f.name.starts_with("__lam_") && f.params.is_empty())
-            .expect("spawn");
-        assert!(
-            matches!(
-                &spawn.ret_ty,
-                lumia_ty::Type::Adt { name, params }
-                    if lumia_hir::is_option(name)
-                        && params.first().is_some_and(|p| matches!(p, lumia_ty::Type::Float))
-            ),
-            "match-option-float spawn ret {:?}",
-            spawn.ret_ty
-        );
-    }
-
-    #[test]
-    fn spawn_list_option_float_keeps_elem_adt() {
-        let core = compile_source_to_core(
-            r#"
-module M
-import std.io.{println}
-val main = {
-    scope {
-        val xs = spawn { listOf(Some(1.5)) }.join()
-        xs.get(0) match {
-            Some(v) -> println(v * 2.0)
-            None -> println(0)
-        }
-    }
-}
-"#,
-        )
-        .expect("core");
-        let spawn = core
-            .functions
-            .iter()
-            .find(|f| f.name.starts_with("__lam_") && f.params.is_empty())
-            .expect("spawn");
-        assert!(
-            matches!(
-                &spawn.ret_ty,
-                lumia_ty::Type::List(e)
-                    if matches!(
-                        e.as_ref(),
-                        lumia_ty::Type::Adt { name, params }
-                            if lumia_hir::is_option(name)
-                                && params.first().is_some_and(|p| matches!(p, lumia_ty::Type::Float))
-                    )
-            ),
-            "list-option-float spawn ret {:?}",
-            spawn.ret_ty
-        );
-    }
-
-    #[test]
-    fn spawn_for_float_acc_keeps_float_ret() {
-        let core = compile_source_to_core(
-            r#"
-module M
-import std.io.{println}
-val main = {
-    scope {
-        println(spawn {
-            var s = 0.0
-            for x in listOf(1.0, 2.0, 3.0) { s = s + x }
-            s
-        }.join())
-    }
-}
-"#,
-        )
-        .expect("core");
-        let spawn = core
-            .functions
-            .iter()
-            .find(|f| f.name.starts_with("__lam_") && f.params.is_empty())
-            .expect("spawn");
-        assert!(
-            matches!(spawn.ret_ty, lumia_ty::Type::Float),
-            "for-float-acc spawn ret {:?}",
-            spawn.ret_ty
-        );
-    }
-
-    #[test]
-    fn spawn_mut_fun_call_float_ret() {
-        let core = compile_source_to_core(
-            r#"
-module M
-import std.io.{println}
-val main = {
-    scope {
-        println(spawn {
-            var f = { x -> x * 2.0 }
-            f(1.5)
-        }.join())
-    }
-}
-"#,
-        )
-        .expect("core");
-        let spawn = core
-            .functions
-            .iter()
-            .find(|f| f.name.starts_with("__lam_") && f.params.is_empty())
-            .expect("spawn");
-        assert!(
-            matches!(spawn.ret_ty, lumia_ty::Type::Float),
-            "mut-fun-call spawn ret {:?}",
-            spawn.ret_ty
-        );
-    }
-
-    #[test]
-    fn spawn_bool_cmp_keeps_int_ret() {
-        let core = compile_source_to_core(
-            r#"
-module M
-import std.io.{println}
-val main = {
-    scope {
-        println(spawn { 1.5 > 1.0 }.join())
-    }
-}
-"#,
-        )
-        .expect("core");
-        let spawn = core
-            .functions
-            .iter()
-            .find(|f| f.name.starts_with("__lam_") && f.params.is_empty())
-            .expect("spawn");
-        assert!(
-            matches!(spawn.ret_ty, lumia_ty::Type::Bool),
-            "bool-cmp spawn ret {:?}",
-            spawn.ret_ty
-        );
-    }
-
-    #[test]
-    fn spawn_mut_bool_keeps_bool_ret() {
-        let core = compile_source_to_core(
-            r#"
-module M
-import std.io.{println}
-val main = {
-    scope {
-        println(spawn {
-            var b = false
-            b = 1.5 > 1.0
-            b
-        }.join())
-    }
-}
-"#,
-        )
-        .expect("core");
-        let spawn = core
-            .functions
-            .iter()
-            .find(|f| f.name.starts_with("__lam_") && f.params.is_empty())
-            .expect("spawn");
-        assert!(
-            matches!(spawn.ret_ty, lumia_ty::Type::Bool),
-            "mut-bool spawn ret {:?}",
-            spawn.ret_ty
-        );
-    }
-
-    #[test]
-    fn spawn_nested_task_keeps_task_float_ret() {
-        let core = compile_source_to_core(
-            r#"
-module M
-import std.io.{println}
-val main = {
-    scope {
-        val outer = spawn { spawn { 1.5 * 2.0 } }
-        println(outer.join().join())
-    }
-}
-"#,
-        )
-        .expect("core");
-        let outer = core
-            .functions
-            .iter()
-            .find(|f| {
-                f.name.starts_with("__lam_")
-                    && f.params.is_empty()
-                    && f.body.ops.iter().any(|op| {
-                        matches!(
-                            op,
-                            crate::ir::Op::Let {
-                                value: crate::ir::Value::Builtin {
-                                    name: lumia_hir::Builtin::TaskSpawn,
-                                    ..
-                                },
-                                ..
-                            }
-                        )
-                    })
-            })
-            .expect("outer spawn");
-        assert!(
-            matches!(
-                &outer.ret_ty,
-                lumia_ty::Type::Task(e) if matches!(e.as_ref(), lumia_ty::Type::Float)
-            ),
-            "nested spawn ret should be Task[Float], got {:?}",
-            outer.ret_ty
-        );
-    }
-
-    #[test]
-    fn map_spawn_join_list_append_task_float() {
-        use crate::value_ty::{infer_value_ty_ctx, CodegenTypeTables, InferValueCtx};
-        use crate::Op;
-        use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
-        use lumia_ty::Type;
-        let core = compile_source_to_core(
-            r#"
-module M
-import std.io.{println}
-val main = {
-    scope {
-        val xs = listOf(1.5, 2.5).map({ x -> spawn { x * 2.0 } })
-        println(xs.get(0).join())
-    }
-}
-"#,
-        )
-        .expect("core");
-        let fun_ret_tys: HashMap<_, _> = core
-            .functions
-            .iter()
-            .map(|f| (f.name.clone(), f.ret_ty.clone()))
-            .collect();
-        let fun_param_tys: HashMap<_, _> = core
-            .functions
-            .iter()
-            .map(|f| (f.name.clone(), f.param_tys.clone()))
-            .collect();
-        let main = core.functions.iter().find(|f| f.name == "main").unwrap();
-        let mut local_tys: HashMap<u32, Type> = HashMap::default();
-        let mut slot_tys: HashMap<String, Type> = HashMap::default();
-        let fun_param0_identity = HashSet::default();
-        let mut funref_locals: HashMap<u32, String> = HashMap::default();
-        let local_int_consts: HashMap<u32, i64> = HashMap::default();
-        let sum_max_arity: HashMap<String, usize> = HashMap::default();
-        fn walk(
-            ops: &[Op],
-            local_tys: &mut HashMap<u32, Type>,
-            slot_tys: &mut HashMap<String, Type>,
-            funref_locals: &mut HashMap<u32, String>,
-            fun_ret_tys: &HashMap<String, Type>,
-            fun_param_tys: &HashMap<String, Vec<Type>>,
-            fun_param0_identity: &HashSet<String>,
-            local_int_consts: &HashMap<u32, i64>,
-            sum_max_arity: &HashMap<String, usize>,
-            hint: Option<&Type>,
-        ) {
-            for op in ops {
-                match op {
-                    Op::Let { local, value, .. } => {
-                        crate::for_each_nested_block(value, &mut |b| {
-                            walk(
-                                &b.ops,
-                                local_tys,
-                                slot_tys,
-                                funref_locals,
-                                fun_ret_tys,
-                                fun_param_tys,
-                                fun_param0_identity,
-                                local_int_consts,
-                                sum_max_arity,
-                                hint,
-                            );
-                        });
-                        let ty = infer_value_ty_ctx(
-                            value,
-                            InferValueCtx::full(
-                                local_tys,
-                                CodegenTypeTables {
-                                    slot_tys,
-                                    fun_ret_tys,
-                                    fun_param_tys,
-                                    fun_param0_identity,
-                                    funref_locals,
-                                    local_int_consts,
-                                    sum_max_arity,
-                                    channel_elem_hint: hint,
-                                },
-                            ),
-                            None,
-                        );
-                        local_tys.insert(local.0, ty);
-                    }
-                    Op::Assign { name, value } => {
-                        if let Some(ty) = local_tys.get(&value.0).cloned() {
-                            slot_tys.insert(name.clone(), ty);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        walk(
-            &main.body.ops,
-            &mut local_tys,
-            &mut slot_tys,
-            &mut funref_locals,
-            &fun_ret_tys,
-            &fun_param_tys,
-            &fun_param0_identity,
-            &local_int_consts,
-            &sum_max_arity,
-            core.channel_elem_hint.as_ref(),
-        );
-        let join_ty = local_tys
-            .values()
-            .find(|t| matches!(t, Type::Float))
-            .cloned();
-        assert!(
-            join_ty.is_some(),
-            "expected Float join result in local_tys, got {:?}",
-            local_tys
-                .iter()
-                .filter(|(_, t)| matches!(t, Type::Task(_) | Type::List(_) | Type::Float))
-                .collect::<Vec<_>>()
-        );
-        assert!(
-            local_tys.values().any(|t| matches!(t, Type::List(e) if matches!(e.as_ref(), Type::Task(_)))),
-            "map acc should become List[Task[_]], slot_tys={slot_tys:?}"
-        );
-    }
-
-    #[test]
-    fn flatmap_list_fun_println_ty() {
-        let core = compile_source_to_core(
-            r#"
-module M
-import std.io.{println}
-val main = {
-    val xs = listOf(1.0, 2.0)
-    val fs = xs.flatMap({ x -> listOf({ y -> x + y }) })
-    println(fs.get(0)(1.0))
-}
-"#,
-        )
-        .expect("core");
-        for f in &core.functions {
-            if f.name == "main" || f.name.starts_with("__lam") {
-                eprintln!("{} ret={:?} params={:?}", f.name, f.ret_ty, f.param_tys);
-            }
-        }
-        // Check main has Call to $Float or Float println path via funref
-        let main = core.functions.iter().find(|f| f.name == "main").unwrap();
-        for op in &main.body.ops {
-            if let crate::Op::Let { local, value, .. } = op {
-                match value {
-                    crate::Value::Call { fun, args } => eprintln!("  %{} Call {} {:?}", local.0, fun, args),
-                    crate::Value::IndirectCall { callee, args } => eprintln!("  %{} ICall %{} {:?}", local.0, callee.0, args),
-                    crate::Value::Builtin { name: lumia_hir::Builtin::ListGet, args, .. } => eprintln!("  %{} ListGet {:?}", local.0, args),
-                    crate::Value::Builtin { name: lumia_hir::Builtin::ListConcat, args, .. } => eprintln!("  %{} ListConcat {:?}", local.0, args),
-                    crate::Value::FunRef(n) => eprintln!("  %{} FunRef {}", local.0, n),
-                    crate::Value::AllocClosure { fun, .. } => eprintln!("  %{} AllocClosure {}", local.0, fun),
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn spawn_list_of_float_fun_ret() {
-        let core = compile_source_to_core(
-            r#"
-module M
-import std.io.{println}
-val main = {
-    scope {
-        val fs = spawn { listOf({ x -> x * 2.0 }) }.join()
-        println(fs.get(0)(1.5))
-    }
-}
-"#,
-        )
-        .expect("core");
-        let spawn = core
-            .functions
-            .iter()
-            .find(|f| f.name.starts_with("__lam_") && f.params.is_empty())
-            .expect("spawn_lam");
-        assert!(
-            matches!(
-                &spawn.ret_ty,
-                lumia_ty::Type::List(e) if matches!(e.as_ref(), lumia_ty::Type::Fun(ps, r, _) if ps.len() == 1 && matches!(ps[0], lumia_ty::Type::Float) && matches!(r.as_ref(), lumia_ty::Type::Float))
-            ),
-            "got {:?}",
-            spawn.ret_ty
-        );
-    }
-}
+#[path = "float_abi_tests.rs"]
+mod tests;

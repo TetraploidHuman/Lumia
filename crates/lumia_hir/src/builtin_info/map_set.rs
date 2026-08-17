@@ -31,7 +31,8 @@ pub(crate) fn info_map_set(b: Builtin) -> BuiltinInfo {
             ObjI64I64Ptr,
             true,
             Always,
-        ),
+        )
+        .with_list_receiver_rt("lumia_list_set"),
         MapRemove => bi(
             f,
             2,

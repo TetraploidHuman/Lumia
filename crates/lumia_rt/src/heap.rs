@@ -8,7 +8,6 @@ use rustc_hash::FxHashSet;
 use rustc_hash::FxHashMap;
 use std::cell::Cell;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use crate::common::ObjectHeader;
@@ -85,47 +84,15 @@ impl Heap {
         self.old_set.contains(&h)
     }
 
-    /// Update [`alloc_pressure_fast`] from current bytes / full-mark flag.
+    /// Update GC soft-pressure atomics from current bytes / full-mark flag.
+    /// Implementation lives in [`crate::gc::pressure`] (GC owns the mirrors).
     #[inline]
     pub(crate) fn refresh_alloc_pressure_fast(&self) {
-        let pressure = self.full_marking
-            || self.bytes_young >= self.young_limit
-            || self.bytes_old >= self.old_limit;
-        ALLOC_PRESSURE_FAST.store(pressure, Ordering::Release);
+        crate::gc::refresh_alloc_pressure_fast(self);
     }
 }
 
 static PROCESS_HEAP: OnceLock<Mutex<Heap>> = OnceLock::new();
-
-/// Mirrors [`Heap::full_marking`] for channel/join hot paths that otherwise
-/// take the heap Mutex only to read the flag. Updated under the heap lock
-/// whenever `Heap::full_marking` changes (Release/Acquire).
-static FULL_MARKING_FAST: AtomicBool = AtomicBool::new(false);
-
-/// Soft GC pressure: young/old over limit or full mark in flight.
-/// Alloc skips the pre-collect peek when this is false (only `finish_alloc` locks).
-static ALLOC_PRESSURE_FAST: AtomicBool = AtomicBool::new(false);
-
-#[inline]
-pub(crate) fn full_marking_fast() -> bool {
-    FULL_MARKING_FAST.load(Ordering::Acquire)
-}
-
-#[inline]
-pub(crate) fn set_full_marking_fast(v: bool) {
-    FULL_MARKING_FAST.store(v, Ordering::Release);
-    if v {
-        // Full mark ⇒ always consider collect on the next alloc peek.
-        ALLOC_PRESSURE_FAST.store(true, Ordering::Release);
-    }
-    // Clearing: callers refresh via `Heap::refresh_alloc_pressure_fast` after
-    // updating `full_marking` / live bytes (do not leave pressure stuck true).
-}
-
-#[inline]
-pub(crate) fn alloc_pressure_fast() -> bool {
-    ALLOC_PRESSURE_FAST.load(Ordering::Acquire)
-}
 
 fn process_heap() -> &'static Mutex<Heap> {
     PROCESS_HEAP.get_or_init(|| Mutex::new(Heap::new()))
@@ -143,19 +110,5 @@ pub(crate) fn with_heap<R>(f: impl FnOnce(&mut Heap) -> R) -> R {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn with_heap_reentrant() {
-        with_heap(|h| {
-            h.bytes_young = 42;
-            with_heap(|inner| {
-                assert_eq!(inner.bytes_young, 42);
-                inner.bytes_young = 7;
-            });
-            assert_eq!(h.bytes_young, 7);
-            h.bytes_young = 0;
-        });
-    }
-}
+#[path = "heap_tests.rs"]
+mod tests;

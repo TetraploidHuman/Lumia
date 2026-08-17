@@ -3,12 +3,15 @@
 //! Transparent result reuse lives in [`memo`] (DESIGN §7.5):
 //! local CSE/fold/LICM + runtime `T_f` (`memo_tf`).
 //! Escape analysis + small pure inlining live in [`escape`] / [`inline`].
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::type_complexity)]
+#![allow(clippy::collapsible_match)] // nested Op/Value in escape/memo/inline
 
 mod copy_elim;
 mod dce;
 mod dense_f64_sr;
 mod escape;
-mod fusion;
+mod concat_ident;
 mod inline;
 mod ir_util;
 mod memo;
@@ -16,7 +19,7 @@ mod repr_select;
 mod specialize_const;
 
 pub(crate) use escape::EscapePass;
-pub(crate) use fusion::ConcatIdentPass;
+pub(crate) use concat_ident::ConcatIdentPass;
 pub(crate) use inline::InlinePass;
 pub(crate) use memo::{apply_memo_plan, plan_memo_tf, ConstFoldPass, LicmPass};
 pub(crate) use specialize_const::SpecializeConstPass;
@@ -154,12 +157,19 @@ const RELEASE_PASSES: &[PipelinePass] = &[
     PipelinePass::Dce,
 ];
 
-/// Frontend → Core → optimize (for tests and tooling).
+/// Frontend → Core → optimize for **Core IR fixtures / unit tests**.
+///
+/// **Not** a substitute for the CLI/`check_program` pipeline: this path uses
+/// [`lumia_core::compile_source_to_core*`] (single-buffer, no loader / `std.*` /
+/// package graph). Prefer `optimize(&mut CoreModule, …)` on IR built via the
+/// full check path when validating import/std/package behavior.
 pub fn compile_source_to_optimized(src: &str, opts: &OptOptions) -> Result<CoreModule, String> {
     compile_source_to_optimized_with_frontend(src, opts, &lumia_core::FrontendOptions::default())
 }
 
 /// Same as [`compile_source_to_optimized`] with explicit frontend options.
+///
+/// Still skips loader/`std` — see that function's docs.
 pub fn compile_source_to_optimized_with_frontend(
     src: &str,
     opts: &OptOptions,
@@ -170,7 +180,7 @@ pub fn compile_source_to_optimized_with_frontend(
     Ok(core)
 }
 
-/// Read a `.lm` file and compile through optimize.
+/// Read a `.lm` file and compile through optimize (**fixture path**; no loader).
 pub fn compile_file_to_optimized(
     path: &std::path::Path,
     opts: &OptOptions,
@@ -247,6 +257,26 @@ mod tests {
     }
 
     #[test]
+    fn compile_source_to_optimized_skips_loader_std() {
+        // Fixture path must not pretend to be check_program: import aliases stay unbound
+        // (surface `println` is a free builtin; aliased `log` is not).
+        let err = compile_source_to_optimized(
+            r#"
+module Main
+import std.io.{println as log}
+val main = { log(1) }
+"#,
+            &OptOptions::default(),
+        )
+        .expect_err("aliased std import without loader must fail");
+        let msg = err.to_lowercase();
+        assert!(
+            msg.contains("unbound") || msg.contains("log"),
+            "expected unbound `log`, got {err}"
+        );
+    }
+
+    #[test]
     fn for_build_ties_dense_sr_and_memo_to_release() {
         let dbg = OptOptions::for_build(false);
         assert!(!dbg.release && !dbg.memo_tf && !dbg.dense_f64_sr);
@@ -271,6 +301,34 @@ mod tests {
         assert!(!pass_names(false).contains(&"memo_tf"));
         assert!(!pass_names(false).contains(&"dense_f64_sr"));
         assert!(pass_names(true).contains(&"dense_f64_sr"));
+    }
+
+    #[test]
+    fn dual_track_specialization_stages_are_separated() {
+        // Type mono (`$Float` / MonoKey) runs in lower's `run_core_abi_pipeline`.
+        // Const specialize (`$c_`) is opt-only (`specialize_const` in DEBUG/RELEASE).
+        // Lock-in: opt pipeline never claims a "mono" pass; specialize_const stays.
+        let release = pass_names(true);
+        let debug = pass_names(false);
+        assert!(
+            release.iter().any(|n| *n == "specialize_const")
+                && debug.iter().any(|n| *n == "specialize_const"),
+            "SpecializeConst must remain in both pipelines"
+        );
+        assert!(
+            !release.iter().any(|n| n.contains("mono"))
+                && !debug.iter().any(|n| n.contains("mono")),
+            "type mono must not appear as an opt PipelinePass, got release={release:?}"
+        );
+        // Release runs SpecializeConst twice (pre/post inline); Debug once.
+        assert_eq!(
+            release.iter().filter(|n| **n == "specialize_const").count(),
+            2
+        );
+        assert_eq!(
+            debug.iter().filter(|n| **n == "specialize_const").count(),
+            1
+        );
     }
 
     #[test]

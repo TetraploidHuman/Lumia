@@ -641,7 +641,7 @@ impl Infer {
                 // Allow equi-recursive ADTs (`α ~ Expr[α]`); still reject
                 // cycles through List/Fun/Tuple/Map/etc.
                 if occurs_rigid(v, &t) {
-                    return Err(TypeError::Message("infinite type".into()));
+                    return Err(TypeError::Message(self.occurs_check_msg(&t)));
                 }
                 self.check_num_bind(v, &t)?;
                 self.check_ord_bind(v, &t)?;
@@ -737,8 +737,15 @@ impl Infer {
                 },
             ) => {
                 if a != b || ap.len() != bp.len() {
-                    return Err(TypeError::Message(format!(
-                        "type mismatch: Adt({a}) vs Adt({b})"
+                    return Err(TypeError::Message(self.type_mismatch_msg(
+                        &Type::Adt {
+                            name: a,
+                            params: ap,
+                        },
+                        &Type::Adt {
+                            name: b,
+                            params: bp,
+                        },
                     )));
                 }
                 for (x, y) in ap.into_iter().zip(bp) {
@@ -790,8 +797,32 @@ impl Infer {
                 self.unify(*a_r, *b_r)?;
                 self.unify_eff(a_e, b_e)
             }
-            (a, b) => Err(TypeError::Message(format!("type mismatch: {a:?} vs {b:?}"))),
+            (a, b) => Err(TypeError::Message(self.type_mismatch_msg(&a, &b))),
         }
+    }
+
+    /// User-facing unify failure (DESIGN §3.2): `display_type`, not `Debug` / `?N`.
+    fn type_mismatch_msg(&self, a: &Type, b: &Type) -> String {
+        let nums = self.display_num_vars();
+        format!(
+            "type mismatch: {} vs {}",
+            crate::display::display_type(a, &nums),
+            crate::display::display_type(b, &nums)
+        )
+    }
+
+    fn occurs_check_msg(&self, ty: &Type) -> String {
+        let nums = self.display_num_vars();
+        format!(
+            "recursive type: a type variable occurs inside {}",
+            crate::display::display_type(ty, &nums)
+        )
+    }
+
+    fn display_num_vars(&self) -> Vec<u32> {
+        let mut nums: Vec<u32> = self.uni.num_vars.iter().copied().collect();
+        nums.sort_unstable();
+        nums
     }
 
     pub(crate) fn unify_at(

@@ -303,10 +303,10 @@ for x in s { ... }
 
 ```
 EmptyMap / EmptySet     // 已落地：空 → null
-SmallMap / SmallSet     // 已落地 / 部分：小表线性（Set 走 HeapSet+finish）
+SmallMap / SmallSet     // 规划：独立小表线性布局（代码已删 `SmallMap` 变体；非 Assoc → `HashOrdered`）
 AssocList               // 已落地：无 Hash 键，永不建哈希
 Overlay                 // 已落地：父结构 + 小差分（COW 更新）
-HashOrdered             // 已落地：插入序哈希（默认大表路径）
+HashOrdered             // 已落地：插入序哈希（默认大表路径；含小字面量非 Assoc）
 LitMap / LitSet         // 规划/PE 标签：常量折叠提示；发射仍为堆+finish（非栈布局）
 SortedTree              // 规划：仅当 Ord 可用且分析认为更优
 BuildFused              // 规划：从 List 管道 / fold 构建的延迟视图
@@ -320,7 +320,7 @@ BuildFused              // 规划：从 List 管道 / fold 构建的延迟视图
 |------|------|
 | `Map` | `HashOrdered` + COW / `Overlay`（插入序哈希；写时按共享决定拷贝或差分） |
 | `Set` | 同上引擎 |
-| 字面量很小且未逃逸 | 可直接 `SmallMap`/`SmallSet`（尺寸常量可见 ⇒ 算「能证」） |
+| 字面量很小且未逃逸 | 仍走 `HashOrdered`（`SmallMap`/`SmallSet` 为规划；尺寸可见时也不得改语义） |
 
 `AssocList` / `BuildFused` / `SortedTree` 等 **仅当分析能证明更优或等价且更省** 时启用（§7.1.1）；禁止靠弱启发在默认与特化之间来回赌。
 
@@ -346,7 +346,7 @@ val v = m.get("only")
 ```
 
 - **语义**：与先建完整映射再查找相同（含重复键覆盖规则）。
-- **实现**：若 `m` 不逃逸且只有少数 `get`，可在 `AssocList` / `BuildFused` 上查找或短路扫描，**永不建全量哈希表**；若逃逸或查找密集，再升为 `HashOrdered` 或 `SmallMap`。
+- **实现**：若 `m` 不逃逸且只有少数 `get`，可在 `AssocList` / `BuildFused` 上查找或短路扫描，**永不建全量哈希表**；若逃逸或查找密集，再升为 `HashOrdered`（规划中的 `SmallMap` 未落地）。
 
 ```lumia
 var m = [:]
@@ -355,7 +355,7 @@ m = m.set("b", 2)
 println(m.get("a"))
 ```
 
-- **实现**：可为 `Overlay` 链或直接 `SmallMap`；逃逸后再压成紧凑表示。
+- **实现**：可为 `Overlay` 链或直接 `HashOrdered`（规划中的紧凑 `SmallMap` 未落地）；逃逸后再压成紧凑表示。
 
 ```lumia
 val m = lines
@@ -1730,7 +1730,7 @@ Source
 | **DCE**                           | 删除不影响可观测结果的纯计算                 |
 | **Escape Analysis**               | 决定栈/堆、是否物化 `List`/`Map`/`Set`        |
 | **List Representation Selection** | Lit / Heap 已落地；Iota / Fused 等为规划 |
-| **Map/Set Representation Selection** | Empty(null) / Small / Assoc / Overlay / HashOrdered 已落地；Sorted / BuildFused / 栈 Lit 为规划 |
+| **Map/Set Representation Selection** | Empty(null) / Assoc / Overlay / HashOrdered 已落地；**Small** / Sorted / BuildFused / 栈 Lit 为规划（见 §3.5；无独立 `SmallMap` 变体） |
 | **Deforestation / Fusion**        | `map`/`filter`/`fold` 管道融合；含 `toMap`/`toSet` 延迟建索引 |
 | **Partial Evaluation**            | 常量索引、常量范围折叠、常量键查找折叠                 |
 | **Copy Elimination**              | 未逃逸值避免物理复制                     |
@@ -1774,7 +1774,7 @@ val v = m.get(key)
 ```
 
 **语义：** 与物化完整 `Map` 后 `get` 相同（含重复键覆盖）。  
-**实现：** 不逃逸且单次查找 → 可在过滤后的配对流上线性定位；多次查找或逃逸 → `SmallMap` / `HashOrdered`。
+**实现：** 不逃逸且单次查找 → 可在过滤后的配对流上线性定位；多次查找或逃逸 → `HashOrdered`（`SmallMap` 为规划）。
 
 **用户写：**
 
@@ -2161,7 +2161,7 @@ val main = {
 ```
 
 用户心智：逐行读、拆分、计数、排序、打印。  
-编译器：`normalize` 管道可融合；`fold` 进 `Map` 可走 `SmallMap` → `HashOrdered` / `Overlay`；**语义 never 变**。
+编译器：`normalize` 管道可融合；`fold` 进 `Map` 可走 `HashOrdered` / `Overlay`（`SmallMap` 为规划）；**语义 never 变**。
 （若只要内容相等、不要求打印序，亦可直接 `for (word, n) in counts`——为插入序。）
 
 ---

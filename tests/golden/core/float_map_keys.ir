@@ -3,7 +3,7 @@ module FloatMapKeys
 fun main() effect.io=true memo=None {
   %0 = f64 0  // pure
   %1 = i64 1  // pure
-  %2 = alloc_map[SmallMap](n=1)  // pure
+  %2 = alloc_map[HashOrdered](n=1)  // pure
   %4 = Neg %0  // pure
   %5 = builtin Contains(%2, %4)  // pure
   %6 = builtin Println(%5)  // effect
@@ -12,13 +12,13 @@ fun main() effect.io=true memo=None {
   %14 = builtin Println(%13)  // effect
   %17 = %0 / %0  // pure
   %18 = i64 2  // pure
-  %19 = alloc_map[SmallMap](n=1)  // pure
+  %19 = alloc_map[HashOrdered](n=1)  // pure
   %20 = builtin Contains(%19, %17)  // pure
   %21 = builtin Println(%20)  // effect
   %22 = %17 == %17  // pure
   %25 = if ...  // pure
   %26 = builtin Println(%25)  // effect
-  %27 = alloc_map[SmallMap](n=0)  // pure
+  %27 = alloc_map[HashOrdered](n=0)  // pure
   %29 = i64 3  // pure
   %30 = builtin MapSet(%27, %0, %29)  // pure
   %33 = builtin Contains(%30, %4)  // pure

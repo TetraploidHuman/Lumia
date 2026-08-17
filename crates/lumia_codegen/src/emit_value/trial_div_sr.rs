@@ -12,11 +12,14 @@
 
 use inkwell::values::{BasicValueEnum, FunctionValue};
 use inkwell::IntPredicate;
-use lumia_core::{for_each_block_dfs, Block, Local, Op, Value};
-use lumia_core::CoreBinOp as BinOp;
+use lumia_core::{local_let_matches, Block, Local, Op, Value};
 use rustc_hash::FxHashMap as HashMap;
 
 use super::super::Codegen;
+use super::sr_pattern::{
+    body_assigns_unit_inc, body_assigns_zero_or_false, header_le_const, header_name_sq_le_name,
+    is_name_ne_zero, is_unit_inc, local_is_zero_or_false, name_of, rem_eq_zero_names,
+};
 use anyhow::{Context as AnyhowContext, Result};
 
 #[derive(Debug)]
@@ -167,7 +170,7 @@ fn match_trial_div_loop(
     if !latch.ops.is_empty() {
         return None;
     }
-    let (d, n) = header_dd_le_n(header, defs)?;
+    let (d, n) = header_name_sq_le_name(header, defs)?;
     let ok = body_trial_parts(body, &d, &n, defs)?;
     Some(TrialDivLoop { d, n, ok })
 }
@@ -255,10 +258,17 @@ fn match_count_primes_loop(
             } => {
                 // `if ok { c += 1 }` — cond may be Name(ok), `ok != 0`, or the
                 // SSA result of an inlined `isPrime` `If` (`Value::If` is not in
-                // leaf_defs, so look it up on the block graph).
+                // leaf_defs). Reject trial then-arms that clear `ok` (false/0).
+                let mut then_defs = defs.clone();
+                for top in &then_block.ops {
+                    if let Op::Let { local, value, .. } = top {
+                        then_defs.insert(local.0, value.clone());
+                    }
+                }
                 let cond_ok = name_of(*cond, defs).as_deref() == Some(ok.as_str())
-                    || is_truthy_ok_cond(cond, &ok, defs)
-                    || local_defined_as_if(*cond, body);
+                    || is_name_ne_zero(*cond, &ok, defs)
+                    || (local_let_matches(*cond, body, |v| matches!(v, Value::If { .. }))
+                        && !body_assigns_zero_or_false(then_block, &ok, &then_defs));
                 if !cond_ok {
                     continue;
                 }
@@ -288,117 +298,8 @@ fn match_count_primes_loop(
     }
 }
 
-fn header_le_const(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String, i64)> {
-    let res = header.result?;
-    let Value::Binary {
-        op, left, right, ..
-    } = defs.get(&res.0)?
-    else {
-        return None;
-    };
-    match op {
-        BinOp::Le => {
-            let n = name_of(*left, defs)?;
-            let k = const_of(*right, defs)?;
-            Some((n, k))
-        }
-        BinOp::Ge => {
-            let n = name_of(*right, defs)?;
-            let k = const_of(*left, defs)?;
-            Some((n, k))
-        }
-        _ => None,
-    }
-}
 
-fn is_truthy_ok_cond(cond: &Local, ok: &str, defs: &HashMap<u32, Value>) -> bool {
-    // Common lowering: `ok != 0` or just Name(ok) loaded into cond local.
-    if name_of(*cond, defs).as_deref() == Some(ok) {
-        return true;
-    }
-    if let Some(Value::Binary {
-        op: BinOp::Ne,
-        left,
-        right,
-        ..
-    }) = defs.get(&cond.0)
-    {
-        let zero = const_of(*left, defs) == Some(0) || const_of(*right, defs) == Some(0);
-        let ok_side = name_of(*left, defs).as_deref() == Some(ok)
-            || name_of(*right, defs).as_deref() == Some(ok);
-        return zero && ok_side;
-    }
-    false
-}
-
-/// `leaf_defs` omits `Value::If`; inlined `isPrime` leaves the prime flag as that local.
-fn local_defined_as_if(local: Local, block: &Block) -> bool {
-    let mut found = false;
-    for_each_block_dfs(block, &mut |b| {
-        if found {
-            return;
-        }
-        for op in &b.ops {
-            if let Op::Let {
-                local: l,
-                value: Value::If { .. },
-                ..
-            } = op
-            {
-                if *l == local {
-                    found = true;
-                    return;
-                }
-            }
-        }
-    });
-    found
-}
-
-fn name_of(l: Local, defs: &HashMap<u32, Value>) -> Option<String> {
-    match defs.get(&l.0)? {
-        Value::Name(n) => Some(n.clone()),
-        _ => None,
-    }
-}
-
-fn const_of(l: Local, defs: &HashMap<u32, Value>) -> Option<i64> {
-    match defs.get(&l.0)? {
-        Value::Int(n) => Some(*n),
-        _ => None,
-    }
-}
-
-/// Header result is `d * d <= n`.
-fn header_dd_le_n(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String, String)> {
-    let res = header.result?;
-    let Value::Binary {
-        op: BinOp::Le,
-        left,
-        right,
-        ..
-    } = defs.get(&res.0)?
-    else {
-        return None;
-    };
-    let n = name_of(*right, defs)?;
-    let Value::Binary {
-        op: BinOp::Mul,
-        left: a,
-        right: b,
-        ..
-    } = defs.get(&left.0)?
-    else {
-        return None;
-    };
-    let da = name_of(*a, defs)?;
-    let db = name_of(*b, defs)?;
-    if da != db {
-        return None;
-    }
-    Some((da, n))
-}
-
+/// Trial loop body: `if n % d == 0 { ok = false; break } else { d += 1 }` (or latch step).
 fn body_trial_parts(body: &Block, d: &str, n: &str, defs: &HashMap<u32, Value>) -> Option<String> {
     let mut ok_name: Option<String> = None;
     let mut saw_break = false;
@@ -415,7 +316,7 @@ fn body_trial_parts(body: &Block, d: &str, n: &str, defs: &HashMap<u32, Value>) 
                     },
                 ..
             } => {
-                if !cond_is_divisible(cond, n, d, defs) {
+                if !rem_eq_zero_names(*cond, n, d, defs) {
                     return None;
                 }
                 // then: ok = false; break (Bool(false) may be local to then_block)
@@ -430,16 +331,14 @@ fn body_trial_parts(body: &Block, d: &str, n: &str, defs: &HashMap<u32, Value>) 
                         Op::Assign {
                             name,
                             value: Local(v),
-                        } if const_of(Local(*v), &then_defs) == Some(0)
-                            || matches!(then_defs.get(v), Some(Value::Bool(false))) =>
-                        {
+                        } if local_is_zero_or_false(Local(*v), &then_defs) => {
                             ok_name = Some(name.clone());
                         }
                         Op::Break => saw_break = true,
                         _ => {}
                     }
                 }
-                if block_unit_incs(else_block, d, defs) {
+                if body_assigns_unit_inc(else_block, d, defs) {
                     saw_step = true;
                 }
             }
@@ -460,137 +359,6 @@ fn body_trial_parts(body: &Block, d: &str, n: &str, defs: &HashMap<u32, Value>) 
     }
 }
 
-fn block_unit_incs(block: &Block, name: &str, defs: &HashMap<u32, Value>) -> bool {
-    for op in &block.ops {
-        if let Op::Assign {
-            name: n,
-            value: Local(v),
-        } = op
-        {
-            if n == name && is_unit_inc(*v, name, defs) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-fn cond_is_divisible(cond: &Local, n: &str, d: &str, defs: &HashMap<u32, Value>) -> bool {
-    let Value::Binary {
-        op: BinOp::Eq,
-        left,
-        right,
-        ..
-    } = defs.get(&cond.0).cloned().unwrap_or(Value::Unit)
-    else {
-        return false;
-    };
-    let zero_side = const_of(left, defs) == Some(0) || const_of(right, defs) == Some(0);
-    if !zero_side {
-        return false;
-    }
-    let rem = if const_of(left, defs) == Some(0) {
-        right
-    } else {
-        left
-    };
-    let Value::Binary {
-        op: BinOp::Rem,
-        left: a,
-        right: b,
-        ..
-    } = defs.get(&rem.0).cloned().unwrap_or(Value::Unit)
-    else {
-        return false;
-    };
-    (name_of(a, defs).as_deref() == Some(n) && name_of(b, defs).as_deref() == Some(d))
-        || (name_of(a, defs).as_deref() == Some(d) && name_of(b, defs).as_deref() == Some(n))
-}
-
-fn is_unit_inc(dest: u32, name: &str, defs: &HashMap<u32, Value>) -> bool {
-    let Some(Value::Binary {
-        op: BinOp::Add,
-        left,
-        right,
-        ..
-    }) = defs.get(&dest)
-    else {
-        return false;
-    };
-    let l = name_of(*left, defs).as_deref() == Some(name);
-    let r = name_of(*right, defs).as_deref() == Some(name);
-    (l && const_of(*right, defs) == Some(1)) || (r && const_of(*left, defs) == Some(1))
-}
-
 #[cfg(test)]
-mod match_tests {
-    use super::*;
-    use lumia_opt::{compile_source_to_optimized, OptOptions};
-
-    fn find_loops(b: &Block, out: &mut Vec<(Block, Block, Block)>) {
-        for op in &b.ops {
-            if let Op::Let {
-                value:
-                    Value::Loop {
-                        header,
-                        body,
-                        latch,
-                    },
-                ..
-            } = op
-            {
-                out.push((
-                    header.as_ref().clone(),
-                    body.as_ref().clone(),
-                    latch.as_ref().clone(),
-                ));
-                find_loops(body, out);
-                find_loops(header, out);
-                find_loops(latch, out);
-            }
-            if let Op::Let {
-                value:
-                    Value::If {
-                        then_block,
-                        else_block,
-                        ..
-                    },
-                ..
-            } = op
-            {
-                find_loops(then_block, out);
-                find_loops(else_block, out);
-            }
-        }
-    }
-
-    #[test]
-    fn matches_is_prime_trial_loop() {
-        let src = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../examples/bench_cpu.lm"
-        ))
-        .unwrap();
-        let core = compile_source_to_optimized(&src, &OptOptions::for_build(true)).unwrap();
-        let mut found = 0;
-        let mut found_cp = 0;
-        for f in &core.functions {
-            if !f.name.contains("Prime") && f.name != "main" {
-                continue;
-            }
-            let defs = crate::nsw_iv::collect_leaf_defs(&f.body);
-            let mut loops = vec![];
-            find_loops(&f.body, &mut loops);
-            for (h, b, l) in &loops {
-                if match_trial_div_loop(h, b, l, &defs).is_some() {
-                    found += 1;
-                }
-                if match_count_primes_loop(h, b, l, &defs).is_some() {
-                    found_cp += 1;
-                }
-            }
-        }
-        assert!(found >= 1, "expected trial-div match, got {found}");
-        assert!(found_cp >= 1, "expected count-primes match, got {found_cp}");
-    }
-}
+#[path = "trial_div_sr_tests.rs"]
+mod match_tests;

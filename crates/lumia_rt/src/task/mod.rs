@@ -5,7 +5,16 @@
 
 mod channel;
 mod fiber;
+mod home_coro;
+mod scan_ptrs;
+mod sched_cancel;
 pub(crate) mod sched_core;
+mod sched_env;
+mod sched_fiber_api;
+mod sched_pool;
+mod sched_queue;
+mod sched_roots;
+mod sched_resume;
 pub(crate) mod scheduler;
 #[cfg(test)]
 mod stress;
@@ -27,6 +36,6 @@ pub(super) fn ensure_trap_hook() {
     use std::sync::Once;
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
-        crate::common::set_before_trap(scheduler::cancel_all_scopes);
+        crate::globals::set_before_trap(scheduler::cancel_all_scopes);
     });
 }

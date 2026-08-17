@@ -1,8 +1,14 @@
 //! Heap reachability for lifted-lambda ABI (`ret_ty` rooting).
+//!
+//! Uses shared [`value_alloc_may_heap`] / [`ResultHeap`] / [`type_may_heap`] so
+//! Typed builtins follow the same lattice as codegen roots. Unstamped
+//! `ChannelRecv` / `TaskJoin` stay non-heap (scalar-common; channel/task fixup
+//! still refines when HIR did not stamp a ground payload).
 
 use crate::ir::{Block, Local, Op, Value};
-use crate::value_ty::{value_alloc_may_heap, HeapPolicy};
-use lumia_hir::Builtin;
+use crate::value_ty::{type_may_heap, value_alloc_may_heap, HeapPolicy};
+use lumia_hir::{Builtin, ResultHeap};
+use lumia_ty::Type;
 use rustc_hash::FxHashSet as HashSet;
 
 /// Whether the block result may be a heap pointer. `extra_params` covers lambda
@@ -45,24 +51,11 @@ fn value_may_heap(
     }
     match v {
         Value::Local(Local(id)) => local_may_heap(block, *id, params, seen),
-        Value::Builtin { name, .. } => !matches!(
+        Value::Builtin {
             name,
-            Builtin::ListLen
-                | Builtin::Contains
-                | Builtin::Println
-                | Builtin::Assert
-                | Builtin::ChannelSend
-                | Builtin::ChannelClose
-                | Builtin::ScopeEnter
-                | Builtin::ScopeLeave
-                | Builtin::ScopeCancel
-                | Builtin::MatchFail
-                // Scalar payloads stay non-heap; unknown List/ADT recv is
-                // refined later via channel_elem hints in fixup.
-                | Builtin::ChannelRecv
-                // Elem type comes from TaskSpawn / fun_ret tables (heap_ty).
-                | Builtin::TaskJoin
-        ),
+            result_ty,
+            ..
+        } => builtin_result_may_heap(*name, result_ty.as_ref()),
         Value::Call { .. } | Value::IndirectCall { .. } => true,
         Value::If {
             then_block,
@@ -77,9 +70,29 @@ fn value_may_heap(
     }
 }
 
+/// Lift-time heap for a builtin result — shared [`ResultHeap`] + [`type_may_heap`].
+///
+/// Mirrors codegen `roots::value_may_heap` for Typed: stamped ground types go
+/// through [`type_may_heap`]. Unstamped `ChannelRecv` / `TaskJoin` stay non-heap
+/// so scalar payloads do not get a soft `List(Int)` ret_ty before fixup.
+fn builtin_result_may_heap(name: Builtin, result_ty: Option<&Type>) -> bool {
+    match name.result_heap() {
+        ResultHeap::Never => false,
+        ResultHeap::Always => true,
+        ResultHeap::Typed => match result_ty {
+            Some(ty) => type_may_heap(ty),
+            None => !matches!(name, Builtin::ChannelRecv | Builtin::TaskJoin),
+        },
+    }
+}
+
 fn result_may_heap_inherited(block: &Block, inherited: &HashSet<u32>) -> bool {
     let Some(Local(r)) = block.result else {
         return false;
     };
     local_may_heap(block, r, inherited, &mut HashSet::default())
 }
+
+#[cfg(test)]
+#[path = "heap_tests.rs"]
+mod tests;

@@ -51,6 +51,9 @@ pub fn run_lsp() -> Result<()> {
         next_req_id: 1,
         pending_config_req: None,
         last_diag_uris: HashMap::default(),
+        analyze_gen: HashMap::default(),
+        position_encoding: lumia_syntax::ColumnMetric::Utf16,
+        shut_down: false,
     });
     let stdin = io::stdin();
     let mut stdin = stdin.lock();
@@ -69,6 +72,25 @@ pub fn run_lsp() -> Result<()> {
 fn handle_message(msg: Value) -> Result<Option<Value>> {
     let method = msg.get("method").and_then(|m| m.as_str());
     let id = msg.get("id").cloned();
+
+    // After `shutdown`, only `exit` is valid (LSP).
+    if method != Some("exit") {
+        let shut = state_lock().as_ref().is_some_and(|s| s.shut_down);
+        if shut {
+            if id.is_some() {
+                return Ok(Some(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": {
+                        "code": -32600,
+                        "message": "server shut down; only `exit` is allowed"
+                    }
+                })));
+            }
+            return Ok(None);
+        }
+    }
+
     match method {
         Some("initialize") => {
             let params = msg.get("params");
@@ -86,15 +108,23 @@ fn handle_message(msg: Value) -> Result<Option<Value>> {
                 .and_then(|w| w.get("configuration"))
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
+            // Prefer utf-8 when the client offers it; otherwise LSP default utf-16.
+            let position_encoding = negotiate_position_encoding(params);
+            let position_encoding_str = match position_encoding {
+                lumia_syntax::ColumnMetric::Utf8 => "utf-8",
+                _ => "utf-16",
+            };
             if let Some(s) = state_lock().as_mut() {
                 s.auto_parallel = ap;
                 s.client_supports_configuration = supports_config;
+                s.position_encoding = position_encoding;
             }
             Ok(Some(json!({
             "jsonrpc": "2.0",
             "id": id,
             "result": {
                 "capabilities": {
+                    "positionEncoding": position_encoding_str,
                     "textDocumentSync": 1,
                     "hoverProvider": true,
                     "definitionProvider": true,
@@ -135,13 +165,19 @@ fn handle_message(msg: Value) -> Result<Option<Value>> {
             }
         }
         Some("shutdown") => {
+            if let Some(s) = state_lock().as_mut() {
+                s.shut_down = true;
+            }
             if id.is_some() {
                 Ok(Some(json!({ "jsonrpc": "2.0", "id": id, "result": null })))
             } else {
                 Ok(None)
             }
         }
-        Some("exit") => std::process::exit(0),
+        Some("exit") => {
+            let clean = state_lock().as_ref().is_some_and(|s| s.shut_down);
+            std::process::exit(if clean { 0 } else { 1 });
+        }
         Some("textDocument/didOpen") => {
             if let Some(params) = msg.get("params") {
                 on_did_open(params)?;
@@ -325,6 +361,23 @@ fn request_workspace_configuration() -> Result<()> {
     }))
 }
 
+/// LSP 3.17 `general.positionEncodings`: prefer `utf-8`, else default `utf-16`.
+fn negotiate_position_encoding(params: Option<&Value>) -> lumia_syntax::ColumnMetric {
+    let Some(arr) = params
+        .and_then(|p| p.get("capabilities"))
+        .and_then(|c| c.get("general"))
+        .and_then(|g| g.get("positionEncodings"))
+        .and_then(|v| v.as_array())
+    else {
+        return lumia_syntax::ColumnMetric::Utf16;
+    };
+    if arr.iter().any(|v| v.as_str() == Some("utf-8")) {
+        lumia_syntax::ColumnMetric::Utf8
+    } else {
+        lumia_syntax::ColumnMetric::Utf16
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::protocol::{read_message, MAX_LSP_CONTENT_LENGTH};
@@ -337,5 +390,60 @@ mod tests {
         let mut cur = Cursor::new(raw.into_bytes());
         let err = read_message(&mut cur).expect_err("must reject oversized body");
         assert!(err.to_string().contains("exceeds limit"), "got {err}");
+    }
+
+    #[test]
+    fn negotiate_prefers_utf8_when_offered() {
+        let params = serde_json::json!({
+            "capabilities": {
+                "general": { "positionEncodings": ["utf-16", "utf-8"] }
+            }
+        });
+        assert_eq!(
+            super::negotiate_position_encoding(Some(&params)),
+            lumia_syntax::ColumnMetric::Utf8
+        );
+        assert_eq!(
+            super::negotiate_position_encoding(None),
+            lumia_syntax::ColumnMetric::Utf16
+        );
+    }
+
+    #[test]
+    fn shutdown_rejects_further_requests() {
+        use super::state::{state_lock, State};
+        use rustc_hash::FxHashMap as HashMap;
+        let prev = state_lock().take();
+        *state_lock() = Some(State {
+            docs: HashMap::default(),
+            analysis: HashMap::default(),
+            analyze_tx: None,
+            auto_parallel: true,
+            client_supports_configuration: false,
+            next_req_id: 1,
+            pending_config_req: None,
+            last_diag_uris: HashMap::default(),
+            analyze_gen: HashMap::default(),
+            position_encoding: lumia_syntax::ColumnMetric::Utf16,
+            shut_down: false,
+        });
+        let shut = super::handle_message(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "shutdown"
+        }))
+        .expect("shutdown");
+        assert_eq!(shut.unwrap()["result"], serde_json::Value::Null);
+        assert!(state_lock().as_ref().unwrap().shut_down);
+        let rejected = super::handle_message(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/hover",
+            "params": {}
+        }))
+        .expect("hover after shutdown");
+        let err = rejected.unwrap();
+        assert_eq!(err["error"]["code"], -32600);
+        *state_lock() = prev;
     }
 }

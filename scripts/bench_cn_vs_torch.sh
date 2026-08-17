@@ -45,18 +45,9 @@ echo "== Lumia build =="
 "$LUMIA" build --release examples/bench_cn_forward_kernel.lm -o "$OUT_DIR/lumia_kernel"
 "$LUMIA" build --release examples/bench_cn_forward_naive.lm -o "$OUT_DIR/lumia_naive"
 
-measure_bin() {
-  local bin=$1
-  local samples="" i
-  for ((i = 0; i < RUNS; i++)); do
-    samples+="$(bench_measure "$bin")"$'\n'
-  done
-  printf '%s' "$samples" | bench_measure_stats
-}
-
 echo "== Lumia wall time =="
-k_stats="$(measure_bin "$OUT_DIR/lumia_kernel")"
-n_stats="$(measure_bin "$OUT_DIR/lumia_naive")"
+k_stats="$(bench_measure_runs "$OUT_DIR/lumia_kernel")"
+n_stats="$(bench_measure_runs "$OUT_DIR/lumia_naive")"
 bench_print_stats "lumia_kernel" "$k_stats"
 bench_print_stats "lumia_naive" "$n_stats"
 

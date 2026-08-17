@@ -1,7 +1,8 @@
-//! Core IR types, local remapping, and formatting.
+//! Core IR types and formatting.
+//!
+//! Local remapping / max-local walks live in [`crate::visit`] so this module
+//! does not form a dependency cycle with the visitor.
 
-use crate::visit::max_local_in_value;
-use crate::visit::rewrite_value_locals;
 use crate::ops::{CoreBinOp, CoreUnOp};
 use lumia_hir::Builtin;
 use lumia_ty::{Effect, Type};
@@ -42,10 +43,6 @@ pub struct CoreModule {
     pub channel_elem_by_local: HashMap<u32, Type>,
     /// Same-channel sends that disagreed on payload type `(prev, next)`.
     pub channel_elem_conflicts: Vec<(Type, Type)>,
-    /// `Option::Some` ctor tag from the source module (default 0).
-    pub option_some_tag: i64,
-    /// `Option::None` ctor tag from the source module (default 1).
-    pub option_none_tag: i64,
 }
 
 impl CoreModule {
@@ -61,8 +58,6 @@ impl CoreModule {
             channel_elem_hint: None,
             channel_elem_by_local: HashMap::default(),
             channel_elem_conflicts: Vec::new(),
-            option_some_tag: 0,
-            option_none_tag: 1,
         }
     }
 
@@ -290,12 +285,12 @@ pub enum ListRepr {
 /// Map default path.
 ///
 /// [`MapRepr::LitMap`] is a **partial-eval hint** (known constant pairs), not an
-/// emit layout — [`crate`]'s ReprSelect lowers it to [`SmallMap`] / hash before
-/// codegen. Codegen never stacks maps.
+/// emit layout — ReprSelect lowers it to [`HashOrdered`] / [`AssocList`] before
+/// codegen. Codegen never stacks maps; there is no separate small-table layout
+/// (DESIGN SmallMap remains aspirational).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MapRepr {
     HashOrdered,
-    SmallMap,
     /// Eq-only / no Hash — stay linear forever (DESIGN §3.5.1 AssocList).
     AssocList,
     /// PE / memo fold tag only — not a physical layout.
@@ -334,65 +329,6 @@ pub enum AdtRepr {
     HeapAdt,
     /// Small non-escaping literal → stack header+payload (like `ListRepr::LitList`).
     LitAdt,
-}
-
-pub(crate) fn max_local_in_module(module: &CoreModule) -> u32 {
-    let mut max = 0u32;
-    for fun in &module.functions {
-        max = max.max(max_local_in_fun(fun));
-    }
-    max
-}
-
-/// Highest `Local` id used in a function (params + body).
-pub fn max_local_in_fun(fun: &CoreFun) -> u32 {
-    let mut max = 0u32;
-    for p in &fun.params {
-        max = max.max(p.0);
-    }
-    max.max(max_local_in_block(&fun.body))
-}
-
-pub fn max_local_in_block(block: &Block) -> u32 {
-    let mut max = 0u32;
-    for op in &block.ops {
-        match op {
-            Op::Let { local, value, .. } => {
-                max = max.max(local.0);
-                max = max.max(max_local_in_value(value));
-            }
-            Op::Assign { value, .. } | Op::Return { value } => max = max.max(value.0),
-            Op::Break | Op::Continue => {}
-        }
-    }
-    if let Some(r) = &block.result {
-        max = max.max(r.0);
-    }
-    max
-}
-
-pub fn rewrite_block_locals(block: &mut Block, remap: &HashMap<u32, u32>) {
-    if remap.is_empty() {
-        return;
-    }
-    let map_l = |l: &mut Local| {
-        if let Some(&r) = remap.get(&l.0) {
-            *l = Local(r);
-        }
-    };
-    if let Some(r) = &mut block.result {
-        map_l(r);
-    }
-    for op in &mut block.ops {
-        match op {
-            Op::Let { local, value, .. } => {
-                map_l(local);
-                rewrite_value_locals(value, remap);
-            }
-            Op::Assign { value, .. } | Op::Return { value } => map_l(value),
-            Op::Break | Op::Continue => {}
-        }
-    }
 }
 
 /// Display Core IR for `--show-ir`.

@@ -57,6 +57,8 @@ pub(crate) struct TraitState {
     pub(crate) trait_methods: HashMap<(String, String), Vec<String>>,
     pub(crate) method_trait: HashMap<String, String>,
     pub(crate) ufcs_rewrites: HashMap<lumia_syntax::Span, String>,
+    /// `join(…)` Call spans → TaskJoin / ListJoin after receiver typing.
+    pub(crate) join_rewrites: HashMap<lumia_syntax::Span, lumia_hir::Builtin>,
 }
 
 /// Product type field tables from HIR.

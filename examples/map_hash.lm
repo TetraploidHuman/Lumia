@@ -14,7 +14,7 @@ val unwrap_or(opt, d) = {
     }
 }
 
-/// Build a map large enough to promote past SmallMap into HashOrdered.
+/// Build a map large enough that HashOrdered finish compaction matters.
 val main = {
     var m = mapOf()
     var i = 0

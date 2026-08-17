@@ -79,6 +79,54 @@ if "lumia.autoParallel" not in props:
     print("package.json missing lumia.autoParallel setting", file=sys.stderr)
     sys.exit(1)
 print(f"vscode package {ver}: README vsix + settings keys OK")
+# package-lock root version must match package.json (npm publish / install drift).
+lock = json.loads((root / "editors/vscode/package-lock.json").read_text(encoding="utf-8"))
+lock_ver = lock.get("version")
+pkg_lock_ver = lock.get("packages", {}).get("", {}).get("version")
+if lock_ver != ver or pkg_lock_ver != ver:
+    print(
+        f"package-lock version drift: package.json={ver} "
+        f"lockfile={lock_ver} packages['']={pkg_lock_ver}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+print(f"vscode package-lock {ver}: root version OK")
+# Version triangle: editor plugins ≠ Cargo workspace — document, do not force equality.
+ws = (root / "Cargo.toml").read_text(encoding="utf-8")
+m = re.search(r'^\[workspace\.package\]\s*\n(?:.*\n)*?version\s*=\s*"([^"]+)"', ws, re.M)
+ws_ver = m.group(1) if m else "?"
+idea_xml = (root / "editors/idea/src/main/resources/META-INF/plugin.xml").read_text(
+    encoding="utf-8"
+)
+im = re.search(r"<version>([^<]+)</version>", idea_xml)
+idea_ver = im.group(1) if im else "?"
+um = re.search(r'until-build="([^"]+)"', idea_xml)
+until = um.group(1) if um else "?"
+if until == "262.*":
+    print("IDEA until-build still pinned to single major 262.* — widen when smoke-tested", file=sys.stderr)
+    sys.exit(1)
+print(
+    f"version triangle (independent): vscode={ver} IDEA={idea_ver} "
+    f"(until-build={until}) workspace={ws_ver}"
+)
+# IDEA liveTemplates must not invent prefixes missing from shared snippets
+# (third snippet surface — keys must stay a subset of editors/shared).
+snippets = json.loads(
+    (root / "editors/shared/snippets/lumia.json").read_text(encoding="utf-8")
+)
+shared_keys = set(snippets.keys())
+idea_tpl = (
+    root / "editors/idea/src/main/resources/liveTemplates/Lumia.xml"
+).read_text(encoding="utf-8")
+idea_names = set(re.findall(r'<template name="([^"]+)"', idea_tpl))
+missing = sorted(idea_names - shared_keys)
+if missing:
+    print(
+        f"IDEA liveTemplates not in shared snippets: {missing}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+print(f"IDEA liveTemplates ⊆ shared snippets ({len(idea_names)} keys)")
 PY
 if [[ "$fail" -ne 0 ]]; then
   exit 1

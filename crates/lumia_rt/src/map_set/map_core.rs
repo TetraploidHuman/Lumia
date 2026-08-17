@@ -9,7 +9,7 @@ use crate::eq::lumia_eq;
 use crate::gc::{list_payload_bytes, lumia_alloc, mark_on, mark_value_on};
 use crate::heap::Heap;
 
-use super::tid::{key_eq, key_hash, map_float_keys, map_float_vals, map_is_assoc, map_tid};
+use super::tid::{key_eq, map_float_keys, map_float_vals, map_is_assoc, map_tid};
 
 /// Map: small maps stay linear `[n][k0][v0]…`; larger use HashOrdered
 /// `[n][cap][order×cap][key,val,state × cap]` (DESIGN default path).
@@ -17,9 +17,11 @@ use super::tid::{key_eq, key_hash, map_float_keys, map_float_vals, map_is_assoc,
 pub(crate) const MAP_SMALL_MAX: i64 = lumia_abi::SMALL_CONTAINER_MAX as i64;
 pub(crate) const MAP_OVERLAY_MARK: i64 = -1;
 pub(crate) const MAP_OVERLAY_MAX: i64 = lumia_abi::SMALL_CONTAINER_MAX as i64;
-pub(crate) const MAP_ST_EMPTY: i64 = 0;
-pub(crate) const MAP_ST_FULL: i64 = 1;
-pub(crate) const MAP_ST_TOMB: i64 = 2;
+pub(crate) const MAP_ST_EMPTY: i64 = super::OPEN_HASH_ST_EMPTY;
+#[allow(dead_code)] // reserved for delete/tomb paths; claim uses OPEN_HASH_* directly
+pub(crate) const MAP_ST_FULL: i64 = super::OPEN_HASH_ST_FULL;
+#[allow(dead_code)]
+pub(crate) const MAP_ST_TOMB: i64 = super::OPEN_HASH_ST_TOMB;
 
 pub(crate) fn map_linear_nbytes(n: i64) -> usize {
     if n < 0 {
@@ -391,22 +393,8 @@ pub(crate) unsafe fn map_hash_find_slot(map: *mut u8, key: i64) -> Option<usize>
     let float_keys = map_float_keys(map);
     let base = map as *const i64;
     let cap = *base.add(1) as usize;
-    if cap == 0 {
-        return None;
-    }
-    let mut idx = (key_hash(key, float_keys) as usize) % cap;
-    for _ in 0..cap {
-        let cell = base.add(2 + cap + idx * 3);
-        let st = *cell.add(2);
-        if st == MAP_ST_EMPTY {
-            return None;
-        }
-        if st == MAP_ST_FULL && key_eq(*cell, key, float_keys) {
-            return Some(idx);
-        }
-        idx = (idx + 1) % cap;
-    }
-    None
+    // Map cell: (key, val, state) — stride 3, state at +2.
+    super::open_hash_find_slot(base, cap, key, float_keys, 3, 2)
 }
 
 /// Map payload helpers — linear or HashOrdered (see above).
@@ -421,12 +409,7 @@ pub(crate) unsafe fn map_find(map: *mut u8, key: i64) -> Option<usize> {
     let n = *(map as *const i64);
     let base = map as *const i64;
     // First hit wins (linear maps do not store duplicates after set).
-    for i in 0..n as usize {
-        if key_eq(*base.add(1 + i * 2), key, float_keys) {
-            return Some(i);
-        }
-    }
-    None
+    (0..n as usize).find(|&i| key_eq(*base.add(1 + i * 2), key, float_keys))
 }
 
 pub(crate) fn alloc_adt(tag: i64, fields: &[i64]) -> *mut u8 {
@@ -448,8 +431,8 @@ pub(crate) fn alloc_adt(tag: i64, fields: &[i64]) -> *mut u8 {
 /// Immortal nullary ADT for `None` (map_get miss). Tagged like a heap Option;
 /// `RC_SHARED` so retain/release are no-ops. One singleton per `none_tag`.
 pub(crate) fn alloc_adt_none_immortal(tag: i64) -> *mut u8 {
-    use crate::common::{header_from_payload, header_layout, RC_SHARED};
-    use crate::gc::finish_alloc;
+    use crate::common::{header_from_payload, header_layout, payload_ptr, RC_SHARED};
+    use crate::gc::{init_alloc_header, insert_young};
     use crate::heap::with_heap;
     use std::alloc::alloc;
 
@@ -464,7 +447,9 @@ pub(crate) fn alloc_adt_none_immortal(tag: i64) -> *mut u8 {
             if mem.is_null() {
                 trap_abort("lumia: out of memory");
             }
-            finish_alloc(mem, nbytes, TYPE_ADT)
+            let header = init_alloc_header(mem, nbytes, TYPE_ADT);
+            insert_young(h, header, nbytes);
+            payload_ptr(header)
         };
         unsafe {
             *(dest as *mut i64) = tag;
@@ -500,26 +485,24 @@ pub(crate) unsafe fn map_hash_put_new(dest: *mut u8, key: i64, val: i64, order_i
     let float_keys = map_float_keys(dest);
     let base = dest as *mut i64;
     let cap = *base.add(1) as usize;
-    let mut idx = (key_hash(key, float_keys) as usize) % cap;
-    for _ in 0..cap {
-        let cell = base.add(2 + cap + idx * 3);
-        let st = *cell.add(2);
-        if st == MAP_ST_EMPTY || st == MAP_ST_TOMB {
-            *cell = key;
-            *cell.add(1) = val;
-            *cell.add(2) = MAP_ST_FULL;
-            if !float_keys {
-                crate::lumia_write_barrier(dest, order_i as u32, key as *mut u8);
-            }
-            if !map_float_vals(dest) {
-                crate::lumia_write_barrier(dest, order_i as u32, val as *mut u8);
-            }
-            *base.add(2 + order_i) = idx as i64;
-            return;
-        }
-        idx = (idx + 1) % cap;
+    // Map cell: (key, val, state) — stride 3, state at +2.
+    let (idx, cell) = super::open_hash_claim_slot_or_trap(
+        base,
+        cap,
+        key,
+        float_keys,
+        3,
+        2,
+        "lumia: map hash full",
+    );
+    *cell.add(1) = val;
+    if !float_keys {
+        unsafe { crate::lumia_write_barrier(dest, order_i as u32, key as *mut u8) };
     }
-    trap_abort("lumia: map hash full");
+    if !map_float_vals(dest) {
+        unsafe { crate::lumia_write_barrier(dest, order_i as u32, val as *mut u8) };
+    }
+    *base.add(2 + order_i) = idx as i64;
 }
 
 /// Insert or replace during hash-table build. Returns true if a new key was added.
@@ -530,7 +513,7 @@ pub(crate) unsafe fn map_hash_upsert_build(dest: *mut u8, key: i64, val: i64) ->
         let cell = base.add(2 + cap + slot * 3);
         *cell.add(1) = val; // last wins
         if !map_float_vals(dest) {
-            crate::lumia_write_barrier(dest, slot as u32, val as *mut u8);
+            unsafe { crate::lumia_write_barrier(dest, slot as u32, val as *mut u8) };
         }
         return false;
     }
@@ -545,23 +528,16 @@ pub(crate) unsafe fn map_from_linear_to_hash(
     src: *mut u8,
     extra_key: Option<(i64, i64)>,
 ) -> *mut u8 {
-    let n = if src.is_null() {
-        0i64
-    } else {
-        *(src as *const i64)
-    };
-    let n2 = n + if extra_key.is_some() { 1 } else { 0 };
-    let mut cap = 16usize;
-    while (cap as i64) < n2 * 2 {
-        cap *= 2;
-    }
-    let dest = map_alloc_hash_tid(cap, 0, map_tid(src)); // count filled by upserts
-    let base = src as *const i64;
-    for i in 0..n as usize {
-        let k = *base.add(1 + i * 2);
-        let v = *base.add(2 + i * 2);
-        map_hash_upsert_build(dest, k, v);
-    }
+    let tid = map_tid(src);
+    let dest = super::open_hash_from_linear(
+        src,
+        usize::from(extra_key.is_some()),
+        |cap| map_alloc_hash_tid(cap, 0, tid), // count filled by upserts
+        |dest, i| {
+            let base = src as *const i64;
+            map_hash_upsert_build(dest, *base.add(1 + i * 2), *base.add(2 + i * 2));
+        },
+    );
     if let Some((k, v)) = extra_key {
         map_hash_upsert_build(dest, k, v);
     }

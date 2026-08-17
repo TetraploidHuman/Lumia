@@ -12,5 +12,4 @@ pub(crate) use specialize::specialize_mono_calls;
 pub(crate) use traits::{ensure_trait_method_stubs, resolve_trait_method_calls};
 
 #[cfg(test)]
-#[path = "tests.rs"]
 mod tests;

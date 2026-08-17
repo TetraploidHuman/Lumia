@@ -189,6 +189,176 @@ fn known_pure_len_callee_does_not_escape_arg() {
 }
 
 #[test]
+fn const_specialized_name_summary_hit_does_not_escape() {
+    // Escape summaries are keyed by function name strings. After SpecializeConst,
+    // clones are named `f$c_N`; Escape must look up that exact key (hit path).
+    use lumia_core::{ListRepr, Op};
+    let len_fun = CoreFun {
+        name: "len$c_0".into(),
+        params: vec![Local(0)],
+        param_names: vec!["xs".into()],
+        param_tys: vec![Type::List(Box::new(Type::Int))],
+        body: Block {
+            ops: vec![Op::Let {
+                local: Local(1),
+                value: Value::Builtin {
+                    name: Builtin::ListLen,
+                    args: vec![Local(0)],
+                    result_ty: None,
+                },
+                pure_region: true,
+            }],
+            result: Some(Local(1)),
+        },
+        ret_ty: Type::Int,
+        effect: Effect::pure(),
+        is_main: false,
+        memo: None,
+        external: None,
+        foreign_abi: lumia_core::ForeignAbi::C,
+        escaping: HashSet::default(),
+        scheme_poly: false,
+        mono_of: None,
+        kind: FunKind::Normal,
+    };
+    let main_fun = CoreFun {
+        name: "main".into(),
+        params: vec![],
+        param_names: vec![],
+        param_tys: vec![],
+        body: Block {
+            ops: vec![
+                Op::Let {
+                    local: Local(0),
+                    value: Value::Int(1),
+                    pure_region: true,
+                },
+                Op::Let {
+                    local: Local(1),
+                    value: Value::AllocList {
+                        elems: vec![Local(0)],
+                        repr: ListRepr::HeapList,
+                    },
+                    pure_region: true,
+                },
+                Op::Let {
+                    local: Local(2),
+                    value: Value::Call {
+                        fun: "len$c_0".into(),
+                        args: vec![Local(1)],
+                    },
+                    pure_region: true,
+                },
+            ],
+            result: Some(Local(2)),
+        },
+        ret_ty: Type::Int,
+        effect: Effect::pure(),
+        is_main: true,
+        memo: None,
+        external: None,
+        foreign_abi: lumia_core::ForeignAbi::C,
+        escaping: HashSet::default(),
+        scheme_poly: false,
+        mono_of: None,
+        kind: FunKind::Normal,
+    };
+    let mut module = CoreModule::with_functions("M", vec![len_fun, main_fun]);
+    EscapePass.run(&mut module);
+    let main = module.functions.iter().find(|f| f.name == "main").unwrap();
+    assert!(
+        !main.escaping.contains(&Local(1)),
+        "Call to matching `$c_` summary key must hit (not miss→escape-all): {:?}",
+        main.escaping
+    );
+}
+
+#[test]
+fn const_specialized_name_summary_miss_over_escapes() {
+    // Divergent keys: body cloned as `len$c_0` but Call still says `len` → miss
+    // marks all args escaping (safe over-approx). Lock-in of the string-key hazard.
+    use lumia_core::{ListRepr, Op};
+    let len_fun = CoreFun {
+        name: "len$c_0".into(),
+        params: vec![Local(0)],
+        param_names: vec!["xs".into()],
+        param_tys: vec![Type::List(Box::new(Type::Int))],
+        body: Block {
+            ops: vec![Op::Let {
+                local: Local(1),
+                value: Value::Builtin {
+                    name: Builtin::ListLen,
+                    args: vec![Local(0)],
+                    result_ty: None,
+                },
+                pure_region: true,
+            }],
+            result: Some(Local(1)),
+        },
+        ret_ty: Type::Int,
+        effect: Effect::pure(),
+        is_main: false,
+        memo: None,
+        external: None,
+        foreign_abi: lumia_core::ForeignAbi::C,
+        escaping: HashSet::default(),
+        scheme_poly: false,
+        mono_of: None,
+        kind: FunKind::Normal,
+    };
+    let main_fun = CoreFun {
+        name: "main".into(),
+        params: vec![],
+        param_names: vec![],
+        param_tys: vec![],
+        body: Block {
+            ops: vec![
+                Op::Let {
+                    local: Local(0),
+                    value: Value::Int(1),
+                    pure_region: true,
+                },
+                Op::Let {
+                    local: Local(1),
+                    value: Value::AllocList {
+                        elems: vec![Local(0)],
+                        repr: ListRepr::HeapList,
+                    },
+                    pure_region: true,
+                },
+                Op::Let {
+                    local: Local(2),
+                    value: Value::Call {
+                        fun: "len".into(),
+                        args: vec![Local(1)],
+                    },
+                    pure_region: true,
+                },
+            ],
+            result: Some(Local(2)),
+        },
+        ret_ty: Type::Int,
+        effect: Effect::pure(),
+        is_main: true,
+        memo: None,
+        external: None,
+        foreign_abi: lumia_core::ForeignAbi::C,
+        escaping: HashSet::default(),
+        scheme_poly: false,
+        mono_of: None,
+        kind: FunKind::Normal,
+    };
+    let mut module = CoreModule::with_functions("M", vec![len_fun, main_fun]);
+    EscapePass.run(&mut module);
+    let main = module.functions.iter().find(|f| f.name == "main").unwrap();
+    assert!(
+        main.escaping.contains(&Local(1)),
+        "Call/summary name mismatch must miss→escape-all: {:?}",
+        main.escaping
+    );
+}
+
+#[test]
 fn alloc_elems_escape_when_list_returned() {
     let body = Block {
         ops: vec![

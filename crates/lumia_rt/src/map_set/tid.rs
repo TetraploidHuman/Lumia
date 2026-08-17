@@ -1,4 +1,9 @@
 //! Type-id classifiers and Float-key/value ensure helpers.
+//!
+//! # Safety (FFI)
+//! Ensure helpers retag empty Map/Set float layouts.
+
+#![deny(clippy::not_unsafe_ptr_arg_deref)]
 
 use crate::common::{float_key_eq, float_key_hash, header_from_payload, TYPE_MAP, TYPE_SET};
 use crate::ensure::ensure_empty_float_retag;
@@ -132,16 +137,16 @@ pub(crate) fn set_tid(set: *mut u8) -> u32 {
 }
 
 #[no_mangle]
-pub extern "C" fn lumia_ensure_map_f64(map: *mut u8) -> *mut u8 {
+pub unsafe extern "C" fn lumia_ensure_map_f64(map: *mut u8) -> *mut u8 {
     ensure_map_f64(map)
 }
 
 #[no_mangle]
-pub extern "C" fn lumia_ensure_map_vf64(map: *mut u8) -> *mut u8 {
+pub unsafe extern "C" fn lumia_ensure_map_vf64(map: *mut u8) -> *mut u8 {
     ensure_map_vf64(map)
 }
 
 #[no_mangle]
-pub extern "C" fn lumia_ensure_set_f64(set: *mut u8) -> *mut u8 {
+pub unsafe extern "C" fn lumia_ensure_set_f64(set: *mut u8) -> *mut u8 {
     ensure_set_f64(set)
 }

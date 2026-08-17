@@ -14,6 +14,10 @@ use lumia_core::CoreBinOp as BinOp;
 use rustc_hash::FxHashMap as HashMap;
 
 use super::super::Codegen;
+use super::sr_pattern::{
+    acc_add_rem_const_mod, body_assigns_const, const_of, first_direct_loop, header_lt_const,
+    is_name_mul_const, is_unit_inc,
+};
 use anyhow::{Context as AnyhowContext, Result};
 
 #[derive(Debug)]
@@ -75,22 +79,7 @@ fn match_affine2_rem_sum(
         return None;
     }
     // Body should be: j := 0; Loop { j < n; …; j += 1 }
-    let mut inner: Option<(&Block, &Block, &Block)> = None;
-    for op in &body.ops {
-        if let Op::Let {
-            value:
-                Value::Loop {
-                    header: ih,
-                    body: ib,
-                    latch: il,
-                },
-            ..
-        } = op
-        {
-            inner = Some((ih, ib, il));
-        }
-    }
-    let (ih, ib, il) = inner?;
+    let (ih, ib, il) = first_direct_loop(body)?;
     if !il.ops.is_empty() {
         return None;
     }
@@ -99,19 +88,7 @@ fn match_affine2_rem_sum(
         return None;
     }
     // Outer body must reset `j := 0` before the inner loop (RT assumes j∈[0,n)).
-    let mut saw_j_zero = false;
-    for op in &body.ops {
-        if let Op::Assign {
-            name,
-            value: Local(v),
-        } = op
-        {
-            if name == &j && const_of(Local(*v), defs) == Some(0) {
-                saw_j_zero = true;
-            }
-        }
-    }
-    if !saw_j_zero {
+    if !body_assigns_const(body, &j, 0, defs) {
         return None;
     }
     // Inner body: s = s + ((a*i + b*j + c) % m); j += 1
@@ -169,28 +146,7 @@ fn match_affine2_rem_sum(
     })
 }
 
-fn header_lt_const(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String, i64)> {
-    let res = header.result?;
-    let Value::Binary {
-        op, left, right, ..
-    } = defs.get(&res.0)?
-    else {
-        return None;
-    };
-    match op {
-        BinOp::Lt => {
-            let iv = name_of(*left, defs)?;
-            let k = const_of(*right, defs)?;
-            Some((iv, k))
-        }
-        BinOp::Gt => {
-            let iv = name_of(*right, defs)?;
-            let k = const_of(*left, defs)?;
-            Some((iv, k))
-        }
-        _ => None,
-    }
-}
+
 
 /// `acc = acc + ((a*i + b*j + c) % m)` — returns `(a,b,c,m)`.
 fn parse_acc_affine_rem(
@@ -200,34 +156,8 @@ fn parse_acc_affine_rem(
     j: &str,
     defs: &HashMap<u32, Value>,
 ) -> Option<(i64, i64, i64, i64)> {
-    let Value::Binary {
-        op: BinOp::Add,
-        left,
-        right,
-        ..
-    } = defs.get(&dest)?
-    else {
-        return None;
-    };
-    let (acc_l, rem_l) = if name_of(*left, defs).as_deref() == Some(acc) {
-        (*left, *right)
-    } else if name_of(*right, defs).as_deref() == Some(acc) {
-        (*right, *left)
-    } else {
-        return None;
-    };
-    let _ = acc_l;
-    let Value::Binary {
-        op: BinOp::Rem,
-        left: num,
-        right: den,
-        ..
-    } = defs.get(&rem_l.0)?
-    else {
-        return None;
-    };
-    let m = const_of(*den, defs).filter(|m| *m >= 2)?;
-    parse_affine3(*num, i, j, defs).map(|(a, b, c)| (a, b, c, m))
+    let (num, m) = acc_add_rem_const_mod(dest, acc, defs)?;
+    parse_affine3(num, i, j, defs).map(|(a, b, c)| (a, b, c, m))
 }
 
 /// `a*i + b*j + c` (any association / order of the three terms).
@@ -275,29 +205,19 @@ fn parse_affine3(
                 right,
                 ..
             }) => {
-                let (cl, nl) = (const_of(*left, defs), name_of(*left, defs));
-                let (cr, nr) = (const_of(*right, defs), name_of(*right, defs));
-                if let (Some(k), Some(n)) = (cl, nr.as_deref()) {
-                    if n == i {
-                        *a = a.saturating_add(k);
-                        return true;
-                    }
-                    if n == j {
-                        *b = b.saturating_add(k);
-                        return true;
-                    }
+                let k = match (const_of(*left, defs), const_of(*right, defs)) {
+                    (Some(k), _) | (_, Some(k)) => k,
+                    _ => return false,
+                };
+                if is_name_mul_const(l, i, k, defs) {
+                    *a = a.saturating_add(k);
+                    true
+                } else if is_name_mul_const(l, j, k, defs) {
+                    *b = b.saturating_add(k);
+                    true
+                } else {
+                    false
                 }
-                if let (Some(k), Some(n)) = (cr, nl.as_deref()) {
-                    if n == i {
-                        *a = a.saturating_add(k);
-                        return true;
-                    }
-                    if n == j {
-                        *b = b.saturating_add(k);
-                        return true;
-                    }
-                }
-                false
             }
             _ => false,
         }
@@ -309,101 +229,6 @@ fn parse_affine3(
     }
 }
 
-fn name_of(l: Local, defs: &HashMap<u32, Value>) -> Option<String> {
-    match defs.get(&l.0)? {
-        Value::Name(n) => Some(n.clone()),
-        _ => None,
-    }
-}
-
-fn const_of(l: Local, defs: &HashMap<u32, Value>) -> Option<i64> {
-    match defs.get(&l.0)? {
-        Value::Int(n) => Some(*n),
-        _ => None,
-    }
-}
-
-fn is_unit_inc(dest: u32, name: &str, defs: &HashMap<u32, Value>) -> bool {
-    let Some(Value::Binary {
-        op: BinOp::Add,
-        left,
-        right,
-        ..
-    }) = defs.get(&dest)
-    else {
-        return false;
-    };
-    let l = name_of(*left, defs).as_deref() == Some(name);
-    let r = name_of(*right, defs).as_deref() == Some(name);
-    (l && const_of(*right, defs) == Some(1)) || (r && const_of(*left, defs) == Some(1))
-}
-
 #[cfg(test)]
-mod match_tests {
-    use super::*;
-    use lumia_opt::{compile_source_to_optimized, OptOptions};
-
-    fn find_loops(b: &Block, out: &mut Vec<(Block, Block, Block)>) {
-        for op in &b.ops {
-            if let Op::Let {
-                value:
-                    Value::Loop {
-                        header,
-                        body,
-                        latch,
-                    },
-                ..
-            } = op
-            {
-                out.push((
-                    header.as_ref().clone(),
-                    body.as_ref().clone(),
-                    latch.as_ref().clone(),
-                ));
-                find_loops(body, out);
-                find_loops(header, out);
-                find_loops(latch, out);
-            }
-            if let Op::Let {
-                value:
-                    Value::If {
-                        then_block,
-                        else_block,
-                        ..
-                    },
-                ..
-            } = op
-            {
-                find_loops(then_block, out);
-                find_loops(else_block, out);
-            }
-        }
-    }
-
-    #[test]
-    fn matches_poly_checksum() {
-        let src = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../examples/bench_cpu.lm"
-        ))
-        .unwrap();
-        let core = compile_source_to_optimized(&src, &OptOptions::for_build(true)).unwrap();
-        let mut found = 0;
-        for f in &core.functions {
-            if !f.name.contains("poly") && f.name != "main" {
-                continue;
-            }
-            let defs = crate::nsw_iv::collect_leaf_defs(&f.body);
-            let mut loops = vec![];
-            find_loops(&f.body, &mut loops);
-            for (h, b, l) in &loops {
-                if let Some(p) = match_affine2_rem_sum(h, b, l, &defs) {
-                    assert_eq!(p.n, 12_000);
-                    assert_eq!((p.a, p.b, p.c, p.m), (131, 17, 1, 10007));
-                    found += 1;
-                }
-            }
-        }
-        assert!(found >= 1, "expected poly affine2 match, got {found}");
-    }
-}
+#[path = "affine2_sr_tests.rs"]
+mod match_tests;

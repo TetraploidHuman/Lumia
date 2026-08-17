@@ -104,9 +104,12 @@ impl Infer {
                         format!("field `{field}` index {idx} out of range for `{name}`"),
                     )
                 })?;
-                self.ctrl
-                    .product_field_rewrites
-                    .insert(span, (name, idx as i64));
+                crate::span_facts::insert_unique_span_fact(
+                    &mut self.ctrl.product_field_rewrites,
+                    span,
+                    (name, idx as i64),
+                    "product field",
+                )?;
                 Ok((elem, eff))
             }
             Type::Var(_) => Err(at(
@@ -275,7 +278,13 @@ impl Infer {
         match recv_ty {
             Type::Var(v) => {
                 if occurs(v, &extended) {
-                    return Err(at(span, "infinite type"));
+                    return Err(at(
+                        span,
+                        format!(
+                            "recursive type: a type variable occurs inside {}",
+                            crate::display::display_type(&extended, &[])
+                        ),
+                    ));
                 }
                 self.uni.subst.insert(v, extended);
             }

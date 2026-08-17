@@ -3,6 +3,11 @@
 //! Semantics mirror `cogninucleus/{nucleus,connection}.py` for tiny dense float
 //! (size ≤ 64). Scratch stays on the stack so unique destination buffers remain
 //! zero-alloc across a step.
+//!
+//! # Safety (FFI)
+//! List buffers are null or valid `TYPE_LIST_F64` / Float-elem layouts.
+
+#![deny(clippy::not_unsafe_ptr_arg_deref)]
 
 use crate::common::{list_rc_is_unique, trap_abort, GcInhibitGuard, TYPE_LIST_F64};
 use crate::gc::{list_payload_bytes, lumia_alloc};
@@ -21,8 +26,10 @@ const MAX_DIM: usize = 64;
 /// ```
 ///
 /// Updates `mu` in place; writes `err` and `pred`. Returns `mu`.
+/// # Safety
+/// Caller must pass null or valid `TYPE_LIST_F64` / Float-elem list buffers as required by the kernel contract.
 #[no_mangle]
-pub extern "C" fn lumia_cn_nucleus_step(
+pub unsafe extern "C" fn lumia_cn_nucleus_step(
     mu: *mut u8,
     enc_w: *mut u8,
     pred_w: *mut u8,
@@ -99,8 +106,10 @@ pub extern "C" fn lumia_cn_nucleus_step(
 /// clamp; multiply by `mask`. `W` is row-major `from×to`.
 ///
 /// Mirrors `ConnectionManager.hebbian_update` (`eps = 1e-3` typical).
+/// # Safety
+/// Caller must pass null or valid `TYPE_LIST_F64` / Float-elem list buffers as required by the kernel contract.
 #[no_mangle]
-pub extern "C" fn lumia_cn_hebbian(
+pub unsafe extern "C" fn lumia_cn_hebbian(
     w: *mut u8,
     u: *mut u8,
     v: *mut u8,
@@ -160,8 +169,10 @@ pub extern "C" fn lumia_cn_hebbian(
 }
 
 /// `y = clamp(x @ W, -clip, clip)` with `W` row-major `from×to` (CN `Connection.project`).
+/// # Safety
+/// Caller must pass null or valid `TYPE_LIST_F64` / Float-elem list buffers as required by the kernel contract.
 #[no_mangle]
-pub extern "C" fn lumia_cn_project_clamp(
+pub unsafe extern "C" fn lumia_cn_project_clamp(
     from_size: i64,
     to_size: i64,
     w: *mut u8,
@@ -196,8 +207,10 @@ pub extern "C" fn lumia_cn_project_clamp(
 }
 
 /// `y = clamp(W @ x, -clip, clip)` with `W` row-major `m×n` (CN lateral `error @ Wᵀ`).
+/// # Safety
+/// Caller must pass null or valid `TYPE_LIST_F64` / Float-elem list buffers as required by the kernel contract.
 #[no_mangle]
-pub extern "C" fn lumia_cn_backproj_clamp(
+pub unsafe extern "C" fn lumia_cn_backproj_clamp(
     m: i64,
     n: i64,
     w: *mut u8,
@@ -232,8 +245,10 @@ pub extern "C" fn lumia_cn_backproj_clamp(
 }
 
 /// `y = clamp(y + α·x, -clip, clip)`.
+/// # Safety
+/// Caller must pass null or valid `TYPE_LIST_F64` / Float-elem list buffers as required by the kernel contract.
 #[no_mangle]
-pub extern "C" fn lumia_cn_axpy_clamp(y: *mut u8, alpha: f64, x: *mut u8, clip: f64) -> *mut u8 {
+pub unsafe extern "C" fn lumia_cn_axpy_clamp(y: *mut u8, alpha: f64, x: *mut u8, clip: f64) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
     let x = force_f64(x);
     let y = ensure_unique_f64(y);
@@ -250,8 +265,10 @@ pub extern "C" fn lumia_cn_axpy_clamp(y: *mut u8, alpha: f64, x: *mut u8, clip: 
 }
 
 /// Index of the maximum element (first on ties). Empty → `-1`.
+/// # Safety
+/// Caller must pass null or valid `TYPE_LIST_F64` / Float-elem list buffers as required by the kernel contract.
 #[no_mangle]
-pub extern "C" fn lumia_cn_argmax(xs: *mut u8) -> i64 {
+pub unsafe extern "C" fn lumia_cn_argmax(xs: *mut u8) -> i64 {
     let xs = force_f64(xs);
     unsafe {
         let (p, n) = f64_elems(xs);
@@ -277,8 +294,10 @@ pub extern "C" fn lumia_cn_argmax(xs: *mut u8) -> i64 {
 /// elements are rate-coded (`pot = decay·pot + x`; `out = max(0, pot − thr)²`).
 /// Any remainder is written as `0` in `output` (potential left unchanged).
 /// Updates `potential` in place; returns `output`.
+/// # Safety
+/// Caller must pass null or valid `TYPE_LIST_F64` / Float-elem list buffers as required by the kernel contract.
 #[no_mangle]
-pub extern "C" fn lumia_cn_cluster_rates(
+pub unsafe extern "C" fn lumia_cn_cluster_rates(
     potential: *mut u8,
     input: *mut u8,
     output: *mut u8,
@@ -332,8 +351,10 @@ pub extern "C" fn lumia_cn_cluster_rates(
 /// clamp both to ±weight_clip
 /// ```
 /// Mutates `enc_w` and `pred_w` (unique). Returns `enc_w`.
+/// # Safety
+/// Caller must pass null or valid `TYPE_LIST_F64` / Float-elem list buffers as required by the kernel contract.
 #[no_mangle]
-pub extern "C" fn lumia_cn_learn_generative(
+pub unsafe extern "C" fn lumia_cn_learn_generative(
     enc_w: *mut u8,
     pred_w: *mut u8,
     mu: *mut u8,
@@ -411,8 +432,10 @@ pub extern "C" fn lumia_cn_learn_generative(
 /// δ = enc @ (π · err);  μ += state_lr · δ;  clamp μ
 /// ```
 /// Mutates `mu` (and leaves `err` unchanged). Returns `mu`.
+/// # Safety
+/// Caller must pass null or valid `TYPE_LIST_F64` / Float-elem list buffers as required by the kernel contract.
 #[no_mangle]
-pub extern "C" fn lumia_cn_update_state(
+pub unsafe extern "C" fn lumia_cn_update_state(
     mu: *mut u8,
     enc_w: *mut u8,
     err: *mut u8,
@@ -489,128 +512,6 @@ fn require_unique_f64(list: *mut u8, what: &str) -> *mut u8 {
     ));
 }
 
-
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::dense_f64::lumia_list_f64_zeros;
-    use crate::list::lumia_list_get;
-
-    fn from_slice(xs: &[f64]) -> *mut u8 {
-        let p = lumia_list_f64_zeros(xs.len() as i64);
-        unsafe {
-            let (dst, _) = f64_elems_mut(p);
-            for (i, &v) in xs.iter().enumerate() {
-                *dst.add(i) = v;
-            }
-        }
-        p
-    }
-
-    fn get_f(list: *mut u8, i: i64) -> f64 {
-        f64::from_bits(lumia_list_get(list, i) as u64)
-    }
-
-    #[test]
-    fn nucleus_identity_encoder() {
-        let size = 4i64;
-        let mu = from_slice(&[0.0, 0.0, 0.0, 0.0]);
-        let mut eye = vec![0.0; 16];
-        for i in 0..4 {
-            eye[i * 4 + i] = 1.0;
-        }
-        let enc = from_slice(&eye);
-        let pred_w = from_slice(&eye);
-        let bu = from_slice(&[1.0, 0.0, 0.0, 0.0]);
-        let td = from_slice(&[0.0, 0.0, 0.0, 0.0]);
-        let err = lumia_list_f64_zeros(size);
-        let pred = lumia_list_f64_zeros(size);
-        let mu = lumia_cn_nucleus_step(mu, enc, pred_w, bu, td, err, pred, size, 0.5, 1.0, 10.0);
-        // err=[1,0,0,0]; delta=err; mu=0.5*err; pred=mu
-        assert!((get_f(mu, 0) - 0.5).abs() < 1e-12);
-        assert!((get_f(pred, 0) - 0.5).abs() < 1e-12);
-        assert!((get_f(err, 0) - 1.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn hebbian_outer_and_mask() {
-        let w = from_slice(&[0.0, 0.0, 0.0, 0.0]);
-        let u = from_slice(&[3.0, 0.0]); // → ≈[1,0]
-        let v = from_slice(&[0.0, 4.0]); // → ≈[0,1]
-                                         // Zero the (1,0) synapse; keep (0,1) which receives the outer product.
-        let mask = from_slice(&[1.0, 1.0, 0.0, 1.0]);
-        let w = lumia_cn_hebbian(w, u, v, mask, 2, 2, 1.0, 10.0, 0.0, 1e-3);
-        assert!(get_f(w, 0).abs() < 1e-9);
-        assert!((get_f(w, 1) - 1.0).abs() < 1e-3);
-        assert!(get_f(w, 2).abs() < 1e-9);
-        assert!(get_f(w, 3).abs() < 1e-9);
-    }
-
-    #[test]
-    fn project_and_axpy_clamp() {
-        // W 2×2 identity-ish: project [1,0] → [1,0] then clamp
-        let w = from_slice(&[1.0, 0.0, 0.0, 1.0]);
-        let x = from_slice(&[1.0, 0.0]);
-        let y = lumia_list_f64_zeros(2);
-        let y = lumia_cn_project_clamp(2, 2, w, x, y, 10.0);
-        assert!((get_f(y, 0) - 1.0).abs() < 1e-12);
-        assert!(get_f(y, 1).abs() < 1e-12);
-
-        let y = from_slice(&[9.0, 0.0]);
-        let x = from_slice(&[2.0, 0.0]);
-        let y = lumia_cn_axpy_clamp(y, 1.0, x, 10.0);
-        assert!((get_f(y, 0) - 10.0).abs() < 1e-12); // clamped
-        assert_eq!(lumia_cn_argmax(y), 0);
-    }
-
-    #[test]
-    fn cluster_rates_square_relu() {
-        // size=4, n_clusters=2 → chunk=2; pot0=0, x=[1,0.4, 2,0]
-        let pot = from_slice(&[0.0, 0.0, 0.0, 0.0]);
-        let x = from_slice(&[1.0, 0.4, 2.0, 0.0]);
-        let out = from_slice(&[0.0, 0.0, 0.0, 0.0]);
-        let out = lumia_cn_cluster_rates(pot, x, out, 4, 2, 0.9, 0.5);
-        // pot=x; out=(max(0,pot-0.5))^2 → [0.25, 0, 2.25, 0]
-        assert!((get_f(out, 0) - 0.25).abs() < 1e-12);
-        assert!(get_f(out, 1).abs() < 1e-12);
-        assert!((get_f(out, 2) - 2.25).abs() < 1e-12);
-        assert!(get_f(out, 3).abs() < 1e-12);
-        assert!((get_f(pot, 0) - 1.0).abs() < 1e-12);
-        assert!((get_f(pot, 2) - 2.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn learn_generative_outer_products() {
-        let size = 2i64;
-        let enc = from_slice(&[0.0, 0.0, 0.0, 0.0]);
-        let pred = from_slice(&[0.0, 0.0, 0.0, 0.0]);
-        let mu = from_slice(&[1.0, 0.0]);
-        let err = from_slice(&[0.0, 2.0]);
-        let enc = lumia_cn_learn_generative(enc, pred, mu, err, size, 1.0, 10.0, 0.0, 1.0);
-        // pred += μ⊗err → [[0,2],[0,0]]; enc += 0.5·err⊗(π·err) → [[0,0],[0,2]]
-        assert!(get_f(pred, 0).abs() < 1e-12);
-        assert!((get_f(pred, 1) - 2.0).abs() < 1e-12);
-        assert!(get_f(pred, 2).abs() < 1e-12);
-        assert!(get_f(pred, 3).abs() < 1e-12);
-        assert!(get_f(enc, 0).abs() < 1e-12);
-        assert!(get_f(enc, 1).abs() < 1e-12);
-        assert!(get_f(enc, 2).abs() < 1e-12);
-        assert!((get_f(enc, 3) - 2.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn update_state_encoder_step() {
-        let size = 2i64;
-        let mu = from_slice(&[0.0, 0.0]);
-        let mut eye = vec![0.0; 4];
-        eye[0] = 1.0;
-        eye[3] = 1.0;
-        let enc = from_slice(&eye);
-        let err = from_slice(&[2.0, 0.0]);
-        let mu = lumia_cn_update_state(mu, enc, err, size, 0.5, 1.0, 10.0);
-        // δ = err; μ += 0.5·δ → [1, 0]
-        assert!((get_f(mu, 0) - 1.0).abs() < 1e-12);
-        assert!(get_f(mu, 1).abs() < 1e-12);
-    }
-}
+#[path = "cn_kernels_tests.rs"]
+mod tests;

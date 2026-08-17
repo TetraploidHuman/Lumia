@@ -1,6 +1,7 @@
 //! Hindley–Milner inference engine.
 
 mod builtins;
+mod binding_order;
 mod calls;
 mod expr;
 mod free_vars;
@@ -15,7 +16,6 @@ pub use module::{
 };
 
 use crate::types::{at, Effect, NameVisibility, Scheme, Type, TypeError};
-use lumia_hir::Builtin;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use state::{AltReturnState, EnvState, ProductState, SubstState, TraitState};
 
@@ -35,16 +35,11 @@ pub(crate) struct Infer {
 impl Infer {
     pub(crate) fn new(vis: NameVisibility) -> Self {
         let mut builtins = HashMap::default();
-        // Keep `Println` monomorphic (`Int→Unit`). Fully polymorphic println lets
-        // open `.get` under `alt` pick Map/`Option` and poison arithmetic.
-        builtins.insert(
-            Builtin::Println.display_name().into(),
-            Scheme::mono(Type::Fun(
-                vec![Type::Int],
-                Box::new(Type::Unit),
-                Effect::io(),
-            )),
-        );
+        // Do **not** seed `println` / `assert` / `readStdin` here: free *calls*
+        // lower to `BuiltinCall` (typed via `infer_builtin_call`); first-class use
+        // requires `import std.io.{…}` (see std/io.lm). Seeding `println` made
+        // `val f = println` check-ok on a lone library file while codegen failed
+        // (`unbound mutable`) and multi-file package check correctly rejected it.
         // Collection ctors: [`lumia_hir::PRELUDE_CTORS`]; call sites specialize in
         // `prelude_ctors`. First-class / alias use needs ∀ schemes (not Int stubs).
         // Quantified ids must stay below `next_var` so they never collide with `fresh()`.

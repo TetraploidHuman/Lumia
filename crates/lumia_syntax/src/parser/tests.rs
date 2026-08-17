@@ -368,3 +368,29 @@ fn interp_parse_error_uses_absolute_span() {
         err.span
     );
 }
+
+#[test]
+fn nested_bare_it_lambda_does_not_capture_enclosing_block() {
+    // `val main = { xs.map { it + 1 } }` must stay a 0-arg block, not `main(it)`.
+    let src = r#"
+module M
+val main = {
+    listOf(1).map { it + 1 }
+}
+"#;
+    let m = parse_module(src).expect("parse");
+    let crate::Item::Val(v) = &m.items[0] else {
+        panic!("expected val");
+    };
+    match &v.body {
+        Expr::Block { .. } => {}
+        Expr::Lambda { params, .. } => panic!("main body became lambda with params {params:?}"),
+        other => panic!("unexpected main body {other:?}"),
+    }
+    // Bare `{ it + 1 }` alone still becomes a 1-arg lambda.
+    let lam = parse_expr_str("{ it + 1 }").expect("bare it");
+    match lam {
+        Expr::Lambda { params, .. } => assert_eq!(params, vec!["it".to_string()]),
+        other => panic!("expected it-lambda, got {other:?}"),
+    }
+}

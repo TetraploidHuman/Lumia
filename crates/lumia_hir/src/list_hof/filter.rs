@@ -28,7 +28,7 @@ fn lower_list_filter_inline(
     body: Expr,
     span: Span,
 ) -> Expr {
-    let acc = format!("__flt_acc_{}", span.start.0);
+    let acc = format!("{}_{}", crate::desugar_slots::FLT_ACC_PREFIX, span.start.0);
     let x = format!("__flt_x_{}", span.start.0);
     let pred = Expr::Let {
         name: param,
@@ -55,7 +55,7 @@ fn lower_list_filter_call(
     x: String,
     span: Span,
 ) -> Expr {
-    let acc = format!("__flt_acc_{}", span.start.0);
+    let acc = format!("{}_{}", crate::desugar_slots::FLT_ACC_PREFIX, span.start.0);
     let pred = Expr::Call {
         callee: Box::new(Expr::Var(f_name.clone(), span)),
         args: vec![Expr::Var(x.clone(), span)],
@@ -98,7 +98,7 @@ pub(crate) fn apply_pred(f: &Expr, x: Expr, span: Span) -> Expr {
 
 /// `xs.flatMap(f)` where `f: T -> List[U]` → concat mapped lists.
 pub(crate) fn lower_list_flat_map(_ctx: &LowerCtx, list: Expr, f: Expr, span: Span) -> Expr {
-    let acc = format!("__fmap_acc_{}", span.start.0);
+    let acc = format!("{}_{}", crate::desugar_slots::FMAP_ACC_PREFIX, span.start.0);
     match resolve_unary_callback(f, span, "fmap") {
         UnaryCallback::Inline {
             param,

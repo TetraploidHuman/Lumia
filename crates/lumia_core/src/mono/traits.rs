@@ -10,7 +10,8 @@ pub(crate) fn resolve_trait_method_calls(module: &mut CoreModule) {
     if module.trait_methods.is_empty() {
         return;
     }
-    let trait_methods = module.trait_methods.clone();
+    let tables = crate::ModuleTables::from_module(module);
+    let trait_methods = tables.trait_methods;
     let method_names: FxHashSet<String> = trait_methods.keys().map(|(_, m)| m.clone()).collect();
     // Take bodies out so FunIndex can borrow the signature table immutably.
     let mut functions = std::mem::take(&mut module.functions);
@@ -23,7 +24,12 @@ pub(crate) fn resolve_trait_method_calls(module: &mut CoreModule) {
         .map(|f| std::mem::replace(&mut f.body, empty.clone()))
         .collect();
     {
-        let index = FunIndex::new(&functions, &module.sum_max_arity, &module.trait_methods, module.channel_elem_hint.as_ref());
+        let index = FunIndex::new(
+            &functions,
+            &module.sum_max_arity,
+            &trait_methods,
+            module.channel_elem_hint.as_ref(),
+        );
         for i in 0..functions.len() {
             let mut local_tys: HashMap<u32, Type> = HashMap::default();
             for (j, p) in functions[i].params.iter().enumerate() {
@@ -213,7 +219,7 @@ pub(crate) fn ensure_trait_method_stubs(module: &mut CoreModule) {
     }
     let mut referenced: FxHashSet<String> = FxHashSet::default();
     for fun in &module.functions {
-        collect_trait_method_refs(&fun.body, &method_names, &mut referenced);
+        crate::collect_call_names_in(&fun.body, &method_names, &mut referenced);
     }
     let index = FunIndex::new(
         &module.functions,
@@ -271,49 +277,4 @@ pub(crate) fn ensure_trait_method_stubs(module: &mut CoreModule) {
         });
     }
     module.functions.append(&mut stubs);
-}
-
-fn collect_trait_method_refs(
-    block: &Block,
-    methods: &FxHashSet<String>,
-    out: &mut FxHashSet<String>,
-) {
-    for op in &block.ops {
-        match op {
-            Op::Let { value, .. } => {
-                collect_trait_method_refs_value(value, methods, out);
-            }
-            _ => {}
-        }
-    }
-}
-
-fn collect_trait_method_refs_value(
-    value: &Value,
-    methods: &FxHashSet<String>,
-    out: &mut FxHashSet<String>,
-) {
-    match value {
-        Value::Call { fun, .. } if methods.contains(fun.as_str()) => {
-            out.insert(fun.clone());
-        }
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            collect_trait_method_refs(then_block, methods, out);
-            collect_trait_method_refs(else_block, methods, out);
-        }
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => {
-            collect_trait_method_refs(header, methods, out);
-            collect_trait_method_refs(body, methods, out);
-            collect_trait_method_refs(latch, methods, out);
-        }
-        _ => {}
-    }
 }

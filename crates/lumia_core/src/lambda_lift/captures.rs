@@ -1,7 +1,7 @@
 //! Capture / free-variable analysis for nested lambdas.
 
 use crate::ir::{Block, Local, Op, Value};
-use crate::visit::{for_each_local, for_each_nested_block};
+use crate::visit::{collect_defined_locals, for_each_local};
 use rustc_hash::FxHashSet as HashSet;
 
 pub(super) fn analyze_captures(body: &Block, params: &[Local]) -> (Vec<Local>, Vec<String>) {
@@ -23,27 +23,6 @@ pub(super) fn analyze_captures(body: &Block, params: &[Local]) -> (Vec<Local>, V
     let mut free_names: Vec<String> = free_names.into_iter().collect();
     free_names.sort();
     (free_locals, free_names)
-}
-
-fn collect_defined_locals(block: &Block, defined: &mut HashSet<u32>) {
-    for op in &block.ops {
-        match op {
-            Op::Let { local, value, .. } => {
-                defined.insert(local.0);
-                collect_defined_in_value(value, defined);
-            }
-            Op::Assign { .. } | Op::Break | Op::Continue | Op::Return { .. } => {}
-        }
-    }
-}
-
-fn collect_defined_in_value(value: &Value, defined: &mut HashSet<u32>) {
-    if let Value::Lambda { params, .. } = value {
-        for p in params {
-            defined.insert(p.0);
-        }
-    }
-    for_each_nested_block(value, &mut |b| collect_defined_locals(b, defined));
 }
 
 /// Walk in program order: `Assign` binds a mutable name for subsequent uses.
@@ -127,72 +106,5 @@ fn collect_free_in_value(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::ir::{Block, Local, Op, Value};
-
-    fn empty_block() -> Block {
-        Block {
-            ops: vec![],
-            result: None,
-        }
-    }
-
-    #[test]
-    fn local_mut_loop_counter_is_not_captured() {
-        // `__i := 1; loop { load __i; ... }` — classic `for` lowering.
-        let body = Block {
-            ops: vec![
-                Op::Assign {
-                    name: "__i".into(),
-                    value: Local(0),
-                },
-                Op::Let {
-                    local: Local(1),
-                    value: Value::Loop {
-                        header: Box::new(Block {
-                            ops: vec![Op::Let {
-                                local: Local(2),
-                                value: Value::Name("__i".into()),
-                                pure_region: true,
-                            }],
-                            result: Some(Local(2)),
-                        }),
-                        body: Box::new(empty_block()),
-                        latch: Box::new(Block {
-                            ops: vec![Op::Assign {
-                                name: "__i".into(),
-                                value: Local(3),
-                            }],
-                            result: None,
-                        }),
-                    },
-                    pure_region: true,
-                },
-            ],
-            result: None,
-        };
-        let (_, free_names) = analyze_captures(&body, &[]);
-        assert!(free_names.is_empty(), "{free_names:?}");
-    }
-
-    #[test]
-    fn outer_mut_load_is_captured() {
-        let body = Block {
-            ops: vec![
-                Op::Let {
-                    local: Local(0),
-                    value: Value::Name("n".into()),
-                    pure_region: true,
-                },
-                Op::Assign {
-                    name: "n".into(),
-                    value: Local(0),
-                },
-            ],
-            result: None,
-        };
-        let (_, free_names) = analyze_captures(&body, &[Local(10)]);
-        assert_eq!(free_names, vec!["n".to_string()]);
-    }
-}
+#[path = "captures_tests.rs"]
+mod tests;

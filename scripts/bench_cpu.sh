@@ -52,8 +52,8 @@ stats_min_med_max() {
 }
 
 cd "$ROOT"
-cargo build -q -p lumia
-LUMIA="$ROOT/target/debug/lumia"
+cargo build -q -p lumia --release
+LUMIA="$ROOT/target/release/lumia"
 SRC=examples/bench_cpu.lm
 OUT_DIR="${TMPDIR:-/tmp}/lumia_bench_cpu"
 mkdir -p "$OUT_DIR"

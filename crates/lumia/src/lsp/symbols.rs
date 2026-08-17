@@ -1,9 +1,10 @@
 //! textDocument/documentSymbol — outline from typed module items.
 
+use super::cursor::span_to_range;
 use super::state::{state_lock, Analysis};
 use anyhow::Result;
 use lumia_hir::Item;
-use lumia_syntax::{byte_to_line_col, line_starts, BytePos, Span};
+use lumia_syntax::{BytePos, Span};
 use serde_json::{json, Value};
 
 /// LSP SymbolKind constants used by outline views.
@@ -18,13 +19,7 @@ mod kind {
 }
 
 fn range_json(src: &str, span: Span) -> Value {
-    let starts = line_starts(src);
-    let (sl, sc) = byte_to_line_col(&starts, span.start);
-    let (el, ec) = byte_to_line_col(&starts, span.end);
-    json!({
-        "start": { "line": sl.saturating_sub(1), "character": sc.saturating_sub(1) },
-        "end": { "line": el.saturating_sub(1), "character": ec.saturating_sub(1) }
-    })
+    span_to_range(src, span)
 }
 
 fn symbol(name: &str, kind: i32, src: &str, span: Span) -> Value {
@@ -158,15 +153,34 @@ mod tests {
     fn document_symbols_include_module_and_vals() {
         let src = "module Demo\n\nval main = {\n    1\n}\n";
         let typed = check_source(src, true).expect("typecheck");
-        let a = Analysis {
-            typed,
-            src: src.to_string(),
-            files: vec![],
-            buffer_file: 0,
-        };
+        let a = Analysis::from_typed(typed, src.to_string(), vec![], 0);
         let syms = symbols_for_analysis(&a);
         let names: Vec<&str> = syms.iter().filter_map(|s| s["name"].as_str()).collect();
         assert!(names.contains(&"Demo"));
         assert!(names.contains(&"main"));
+    }
+
+    #[test]
+    fn document_symbols_imported_alias_via_loader() {
+        // Import aliases need loader+std; check_source leaves `log` unbound.
+        use crate::lsp::analyze::analyze_buffer;
+        use rustc_hash::FxHashMap as HashMap;
+        let src = r#"
+module Main
+import std.io.{println as log}
+val main = { log(1) }
+"#;
+        let (_, analysis) = analyze_buffer("untitled:Symbols-1", src, &HashMap::default());
+        let a = analysis.expect("loader must typecheck untitled std import");
+        assert!(
+            a.typed.fun_types.contains_key("log"),
+            "imported alias must bind under loader"
+        );
+        let syms = symbols_for_analysis(&a);
+        let names: Vec<&str> = syms.iter().filter_map(|s| s["name"].as_str()).collect();
+        assert!(
+            names.contains(&"Main") && names.contains(&"main"),
+            "expected module/main symbols via loader, got {names:?}"
+        );
     }
 }

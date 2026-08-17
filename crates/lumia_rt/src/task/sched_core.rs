@@ -4,7 +4,6 @@
 //! corosensei stack (`Coroutine` is `!Send`). Scope **frames** live in
 //! [`SchedCore`]; TLS only holds [`ScopeId`] stacks (parked with the fiber).
 
-use corosensei::{Coroutine, Yielder};
 use rustc_hash::FxHashMap;
 use std::cell::Cell;
 use std::collections::VecDeque;
@@ -12,6 +11,8 @@ use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
 use crate::reentrant::with_mutex_reentrant;
+
+use super::scan_ptrs::{ParkedCallFrames, ParkedRootSlots, TaskHandlePtr, YielderCell};
 
 pub type FiberId = u64;
 pub type TaskId = u64;
@@ -58,7 +59,7 @@ pub struct TaskState {
     pub done: bool,
     pub cancelled: bool,
     pub join_waiters: VecDeque<Waiter>,
-    pub handle: *mut u8,
+    pub handle: TaskHandlePtr,
     pub env: i64,
     /// Mirrored from spawn scope; runtime affinity uses [`FiberSlot::kind`].
     #[allow(dead_code)]
@@ -83,17 +84,19 @@ pub struct FiberSlot {
     pub task: TaskId,
     pub kind: SchedulerKind,
     pub pending: Option<PendingSpawn>,
-    pub coro: Option<Coroutine<(), (), i64>>,
-    pub yielder: Cell<*const Yielder<(), ()>>,
+    /// Parked coroutine lives in home-thread TLS ([`super::home_coro`]), not here.
+    /// True iff that TLS map holds a stack for this fiber.
+    pub has_coro: bool,
+    pub yielder: YielderCell,
     /// OS thread that first resumed this fiber (`None` = not started; stealable).
     pub home: Option<std::thread::ThreadId>,
-    /// True while some OS thread holds the coroutine out of the slot (`resume_fiber`).
+    /// True while some OS thread holds the coroutine out of TLS (`resume_fiber`).
     pub running: bool,
     /// `enqueue` while `running` — re-queue on yield / cancel exit.
     pub wake_pending: bool,
     /// Already present in a ready queue (avoids O(n) `contains`).
     pub on_ready: bool,
-    /// Cancelled; coro must be `force_reset` on [`Self::home`] (not a foreign thread).
+    /// Cancelled; coro must be disposed on [`Self::home`] (not a foreign thread).
     pub reclaim_home: bool,
 }
 
@@ -110,12 +113,12 @@ pub struct SchedCore {
     pub channels: FxHashMap<ChannelId, ChannelState>,
     /// Structured-concurrency frames (TLS holds [`ScopeId`] stacks only).
     pub scopes: FxHashMap<ScopeId, ScopeFrame>,
-    pub parked_roots: FxHashMap<FiberId, Vec<*mut *mut u8>>,
-    pub parked_call_stacks: FxHashMap<FiberId, Vec<*const u8>>,
+    pub parked_roots: FxHashMap<FiberId, ParkedRootSlots>,
+    pub parked_call_stacks: FxHashMap<FiberId, ParkedCallFrames>,
     pub parked_scope_stacks: FxHashMap<FiberId, Vec<ScopeId>>,
     /// Host (non-fiber) roots parked while a fiber runs on that OS thread.
-    pub host_roots: FxHashMap<std::thread::ThreadId, Vec<*mut *mut u8>>,
-    pub host_call_stacks: FxHashMap<std::thread::ThreadId, Vec<*const u8>>,
+    pub host_roots: FxHashMap<std::thread::ThreadId, ParkedRootSlots>,
+    pub host_call_stacks: FxHashMap<std::thread::ThreadId, ParkedCallFrames>,
     pub host_scope_stacks: FxHashMap<std::thread::ThreadId, Vec<ScopeId>>,
     /// Last ABI return handoff (e.g. channel recv) — scanned until overwritten/cleared.
     pub abi_handoff: FxHashMap<std::thread::ThreadId, i64>,
@@ -225,7 +228,12 @@ impl SchedCore {
     }
 }
 
-unsafe impl Send for SchedCore {}
+/// `SchedCore` is naturally `Send`: `!Send` corosensei stacks live in home-thread
+/// TLS ([`super::home_coro`]); parked GC root / call-stack words use
+/// [`super::scan_ptrs`] newtypes. Fibers are created, resumed, and disposed only
+/// on their **home** OS thread; pool workers may move ready/handoff **metadata**
+/// (ids), never a live stack. See
+/// [`dispose_cancelled_coroutine`](super::sched_cancel::dispose_cancelled_coroutine).
 
 struct SchedBox {
     core: Mutex<SchedCore>,
@@ -268,3 +276,7 @@ pub fn sched_wait_while(mut pred: impl FnMut(&SchedCore) -> bool, timeout: Durat
         .unwrap_or_else(|e| e.into_inner());
     !result.timed_out()
 }
+
+#[cfg(test)]
+#[path = "sched_core_tests.rs"]
+mod home_coro_split_tests;

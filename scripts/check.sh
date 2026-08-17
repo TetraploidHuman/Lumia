@@ -19,6 +19,9 @@ esac
 echo "== scripts/check_editor_assets.sh =="
 "$ROOT/scripts/check_editor_assets.sh"
 
+echo "== scripts/check_rt_lock_order.sh =="
+"$ROOT/scripts/check_rt_lock_order.sh"
+
 echo "== cargo fmt --all -- --check =="
 cargo fmt --all -- --check
 
@@ -36,5 +39,21 @@ cargo test -p lumia_opt --tests
 
 echo "== cargo test -p lumia --tests (e2e + opt_correctness fingerprints; gate vs informal scripts/e2e.sh) =="
 cargo test -p lumia --tests "${LUMIA_FEATURES[@]}"
+
+echo "== slim lumia (no codegen): build + check/lsp smoke =="
+# Dedicated target dir so this never overwrites the full LLVM binary (install.sh uses /tmp).
+CARGO_TARGET_DIR="$ROOT/target/slim-lsp" cargo build -p lumia --no-default-features
+SLIM="$ROOT/target/slim-lsp/debug/lumia"
+test -x "$SLIM"
+HELP="$("$SLIM" --help)"
+echo "$HELP" | grep -q 'check'
+echo "$HELP" | grep -q 'lsp'
+# `build` / `run` are cfg'd out without the codegen feature.
+if echo "$HELP" | grep -qE '(^| )build( |$)'; then
+  echo "slim binary unexpectedly exposes build" >&2
+  exit 1
+fi
+"$SLIM" check "$ROOT/examples/hello.lm"
+"$SLIM" lsp --help >/dev/null
 
 echo "OK: check passed"

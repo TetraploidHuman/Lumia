@@ -91,11 +91,27 @@ pub struct BuiltinInfo {
     pub may_capture: bool,
     /// Codegen GC rooting for the *result* (not args). See [`ResultHeap`].
     pub result_heap: ResultHeap,
+    /// When the receiver is typed `String`, emit this RT symbol instead of
+    /// [`Self::runtime_symbol`] (list-family methods overloaded on String).
+    pub string_receiver_rt: Option<&'static str>,
+    /// When the receiver is a known `List`, emit this monomorphic list RT symbol
+    /// instead of the polymorphic map/container entry.
+    pub list_receiver_rt: Option<&'static str>,
 }
 
 impl BuiltinInfo {
     pub fn float_sensitive(self) -> bool {
         !self.float_ensures.is_empty()
+    }
+
+    pub fn with_string_receiver_rt(mut self, sym: &'static str) -> Self {
+        self.string_receiver_rt = Some(sym);
+        self
+    }
+
+    pub fn with_list_receiver_rt(mut self, sym: &'static str) -> Self {
+        self.list_receiver_rt = Some(sym);
+        self
     }
 }
 
@@ -129,6 +145,8 @@ pub(crate) fn bi(
         emit,
         may_capture,
         result_heap,
+        string_receiver_rt: None,
+        list_receiver_rt: None,
     }
 }
 
@@ -180,6 +198,18 @@ impl Builtin {
     /// Primary runtime symbol when emission is a direct `lumia_*` call.
     pub fn runtime_symbol(self) -> Option<&'static str> {
         self.info().runtime_symbol
+    }
+
+    /// When the receiver is typed `String`, use the dedicated String RT entry
+    /// instead of the polymorphic / list symbol in [`Self::runtime_symbol`].
+    pub fn string_receiver_rt_override(self) -> Option<&'static str> {
+        self.info().string_receiver_rt
+    }
+
+    /// When the receiver is a known `List`, use the monomorphic list RT entry
+    /// instead of the polymorphic map/container symbol.
+    pub fn list_receiver_rt_override(self) -> Option<&'static str> {
+        self.info().list_receiver_rt
     }
 
     /// Exhaustive list of builtins — keep in sync when adding a variant.

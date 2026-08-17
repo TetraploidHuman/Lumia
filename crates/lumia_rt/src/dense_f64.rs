@@ -3,6 +3,11 @@
 //! Matrices are **flat row-major** `TYPE_LIST_F64` buffers (not `List[List[Float]]`).
 //! In-place ops COW-clone when the destination is not uniquely owned, so unique
 //! scratch buffers stay zero-alloc across a step.
+//!
+//! # Safety (FFI)
+//! List buffers are null or valid `TYPE_LIST_F64` / Float-elem layouts.
+
+#![deny(clippy::not_unsafe_ptr_arg_deref)]
 
 use crate::common::{list_rc_is_unique, trap_abort, GcInhibitGuard, TYPE_LIST_F64};
 use crate::gc::{list_payload_bytes, lumia_alloc};
@@ -17,7 +22,7 @@ pub extern "C" fn lumia_list_f64_zeros(n: i64) -> *mut u8 {
         trap_abort("lumia: list_f64_zeros negative length");
     }
     if n == 0 {
-        return crate::list::lumia_ensure_list_f64(crate::list::lumia_list_empty());
+        return unsafe { crate::list::lumia_ensure_list_f64(crate::list::lumia_list_empty()) };
     }
     unsafe {
         let dest = lumia_alloc(list_payload_bytes(n), TYPE_LIST_F64);
@@ -34,7 +39,7 @@ pub extern "C" fn lumia_list_f64_zeros(n: i64) -> *mut u8 {
 
 /// Fill every element of a float list with `v` (COW if shared). Returns the list.
 #[no_mangle]
-pub extern "C" fn lumia_f64_fill(xs: *mut u8, v: f64) -> *mut u8 {
+pub unsafe extern "C" fn lumia_f64_fill(xs: *mut u8, v: f64) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
     let xs = ensure_unique_f64(xs);
     unsafe {
@@ -46,7 +51,7 @@ pub extern "C" fn lumia_f64_fill(xs: *mut u8, v: f64) -> *mut u8 {
 
 /// `xs[i] *= alpha` (COW if shared). Returns `xs`.
 #[no_mangle]
-pub extern "C" fn lumia_f64_scale(xs: *mut u8, alpha: f64) -> *mut u8 {
+pub unsafe extern "C" fn lumia_f64_scale(xs: *mut u8, alpha: f64) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
     let xs = ensure_unique_f64(xs);
     unsafe {
@@ -94,7 +99,7 @@ pub extern "C" fn lumia_f64_hypot(x: f64, y: f64) -> f64 {
 
 /// `out[i] = a[i] * b[i]` (same length). Returns `out`.
 #[no_mangle]
-pub extern "C" fn lumia_f64_mul(out: *mut u8, a: *mut u8, b: *mut u8) -> *mut u8 {
+pub unsafe extern "C" fn lumia_f64_mul(out: *mut u8, a: *mut u8, b: *mut u8) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
     let a = force_f64(a);
     let b = force_f64(b);
@@ -113,7 +118,7 @@ pub extern "C" fn lumia_f64_mul(out: *mut u8, a: *mut u8, b: *mut u8) -> *mut u8
 
 /// `out[i] = a[i] + b[i]` (same length). Returns `out`.
 #[no_mangle]
-pub extern "C" fn lumia_f64_add(out: *mut u8, a: *mut u8, b: *mut u8) -> *mut u8 {
+pub unsafe extern "C" fn lumia_f64_add(out: *mut u8, a: *mut u8, b: *mut u8) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
     let a = force_f64(a);
     let b = force_f64(b);
@@ -132,7 +137,7 @@ pub extern "C" fn lumia_f64_add(out: *mut u8, a: *mut u8, b: *mut u8) -> *mut u8
 
 /// Euclidean L2 norm.
 #[no_mangle]
-pub extern "C" fn lumia_f64_l2_norm(xs: *mut u8) -> f64 {
+pub unsafe extern "C" fn lumia_f64_l2_norm(xs: *mut u8) -> f64 {
     let xs = force_f64(xs);
     unsafe {
         let (p, n) = f64_elems(xs);
@@ -142,7 +147,7 @@ pub extern "C" fn lumia_f64_l2_norm(xs: *mut u8) -> f64 {
 
 /// `∑ xᵢ²` (squared L2; used by soft-async skip checks).
 #[no_mangle]
-pub extern "C" fn lumia_f64_sum_sq(xs: *mut u8) -> f64 {
+pub unsafe extern "C" fn lumia_f64_sum_sq(xs: *mut u8) -> f64 {
     let xs = force_f64(xs);
     unsafe {
         let (p, n) = f64_elems(xs);
@@ -152,7 +157,7 @@ pub extern "C" fn lumia_f64_sum_sq(xs: *mut u8) -> f64 {
 
 /// Arithmetic mean. Empty list → `0.0`.
 #[no_mangle]
-pub extern "C" fn lumia_f64_mean(xs: *mut u8) -> f64 {
+pub unsafe extern "C" fn lumia_f64_mean(xs: *mut u8) -> f64 {
     let xs = force_f64(xs);
     unsafe {
         let (p, n) = f64_elems(xs);
@@ -169,7 +174,7 @@ pub extern "C" fn lumia_f64_mean(xs: *mut u8) -> f64 {
 
 /// Population standard deviation (`torch.std(unbiased=False)`). Empty → `0.0`.
 #[no_mangle]
-pub extern "C" fn lumia_f64_std(xs: *mut u8) -> f64 {
+pub unsafe extern "C" fn lumia_f64_std(xs: *mut u8) -> f64 {
     let xs = force_f64(xs);
     unsafe {
         let (p, n) = f64_elems(xs);
@@ -192,7 +197,7 @@ pub extern "C" fn lumia_f64_std(xs: *mut u8) -> f64 {
 
 /// In-place softmax (numerically stable). Returns `xs` (COW if shared).
 #[no_mangle]
-pub extern "C" fn lumia_f64_softmax(xs: *mut u8) -> *mut u8 {
+pub unsafe extern "C" fn lumia_f64_softmax(xs: *mut u8) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
     let xs = ensure_unique_f64(xs);
     unsafe {
@@ -223,7 +228,7 @@ pub extern "C" fn lumia_f64_softmax(xs: *mut u8) -> *mut u8 {
 
 /// In-place `x *= 1 / (‖x‖ + eps)`. Returns `x` (COW if shared).
 #[no_mangle]
-pub extern "C" fn lumia_f64_l2_normalize(xs: *mut u8, eps: f64) -> *mut u8 {
+pub unsafe extern "C" fn lumia_f64_l2_normalize(xs: *mut u8, eps: f64) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
     let xs = ensure_unique_f64(xs);
     unsafe {
@@ -236,7 +241,7 @@ pub extern "C" fn lumia_f64_l2_normalize(xs: *mut u8, eps: f64) -> *mut u8 {
 
 /// Clamp every element into `[lo, hi]` (COW if shared).
 #[no_mangle]
-pub extern "C" fn lumia_f64_clamp(xs: *mut u8, lo: f64, hi: f64) -> *mut u8 {
+pub unsafe extern "C" fn lumia_f64_clamp(xs: *mut u8, lo: f64, hi: f64) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
     let xs = ensure_unique_f64(xs);
     unsafe {
@@ -248,7 +253,7 @@ pub extern "C" fn lumia_f64_clamp(xs: *mut u8, lo: f64, hi: f64) -> *mut u8 {
 
 /// `y = A @ x` with `A` row-major `m×n`. Writes `y` (len `m`). Returns `y`.
 #[no_mangle]
-pub extern "C" fn lumia_f64_gemv(m: i64, n: i64, a: *mut u8, x: *mut u8, y: *mut u8) -> *mut u8 {
+pub unsafe extern "C" fn lumia_f64_gemv(m: i64, n: i64, a: *mut u8, x: *mut u8, y: *mut u8) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
     if m < 0 || n < 0 {
         trap_abort("lumia: gemv negative dims");
@@ -272,7 +277,7 @@ pub extern "C" fn lumia_f64_gemv(m: i64, n: i64, a: *mut u8, x: *mut u8, y: *mut
 
 /// `y = Aᵀ @ x` with `A` row-major `m×n` (`x` len `m`, `y` len `n`). Returns `y`.
 #[no_mangle]
-pub extern "C" fn lumia_f64_gemv_t(m: i64, n: i64, a: *mut u8, x: *mut u8, y: *mut u8) -> *mut u8 {
+pub unsafe extern "C" fn lumia_f64_gemv_t(m: i64, n: i64, a: *mut u8, x: *mut u8, y: *mut u8) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
     if m < 0 || n < 0 {
         trap_abort("lumia: gemv_t negative dims");
@@ -302,7 +307,7 @@ pub extern "C" fn lumia_f64_gemv_t(m: i64, n: i64, a: *mut u8, x: *mut u8, y: *m
 
 /// `W += α · u ⊗ v` with `W` row-major `m×n`, `u` len `m`, `v` len `n`. Returns `W`.
 #[no_mangle]
-pub extern "C" fn lumia_f64_addmm(
+pub unsafe extern "C" fn lumia_f64_addmm(
     m: i64,
     n: i64,
     w: *mut u8,
@@ -338,7 +343,7 @@ pub extern "C" fn lumia_f64_addmm(
 
 /// `y += α · x` (same length). Returns `y`.
 #[no_mangle]
-pub extern "C" fn lumia_f64_axpy(y: *mut u8, alpha: f64, x: *mut u8) -> *mut u8 {
+pub unsafe extern "C" fn lumia_f64_axpy(y: *mut u8, alpha: f64, x: *mut u8) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
     let x = force_f64(x);
     let y = ensure_unique_f64(y);
@@ -354,7 +359,7 @@ pub extern "C" fn lumia_f64_axpy(y: *mut u8, alpha: f64, x: *mut u8) -> *mut u8 
 
 /// `out = a - b` (same length). Returns `out`.
 #[no_mangle]
-pub extern "C" fn lumia_f64_sub(out: *mut u8, a: *mut u8, b: *mut u8) -> *mut u8 {
+pub unsafe extern "C" fn lumia_f64_sub(out: *mut u8, a: *mut u8, b: *mut u8) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
     let a = force_f64(a);
     let b = force_f64(b);
@@ -373,7 +378,7 @@ pub extern "C" fn lumia_f64_sub(out: *mut u8, a: *mut u8, b: *mut u8) -> *mut u8
 
 /// `dst = src` (same length). Returns `dst`.
 #[no_mangle]
-pub extern "C" fn lumia_f64_copy(dst: *mut u8, src: *mut u8) -> *mut u8 {
+pub unsafe extern "C" fn lumia_f64_copy(dst: *mut u8, src: *mut u8) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
     let src = force_f64(src);
     let dst = ensure_unique_f64(dst);
@@ -389,7 +394,7 @@ pub extern "C" fn lumia_f64_copy(dst: *mut u8, src: *mut u8) -> *mut u8 {
 
 /// Stable int fingerprint: `⌊Σ xᵢ · 1000⌋` (for e2e / oracle).
 #[no_mangle]
-pub extern "C" fn lumia_f64_checksum(xs: *mut u8) -> i64 {
+pub unsafe extern "C" fn lumia_f64_checksum(xs: *mut u8) -> i64 {
     let xs = force_f64(xs);
     unsafe {
         let (p, n) = f64_elems(xs);
@@ -432,120 +437,6 @@ fn clone_f64_list(list: *mut u8) -> *mut u8 {
     }
 }
 
-
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::list::{lumia_list_get, lumia_list_len, lumia_list_retain};
-
-    fn bits(f: f64) -> i64 {
-        f.to_bits() as i64
-    }
-
-    fn from_slice(xs: &[f64]) -> *mut u8 {
-        let p = lumia_list_f64_zeros(xs.len() as i64);
-        unsafe {
-            let (dst, _) = f64_elems_mut(p);
-            for (i, &v) in xs.iter().enumerate() {
-                *dst.add(i) = v;
-            }
-        }
-        p
-    }
-
-    #[test]
-    fn scale_mul_add() {
-        let a = from_slice(&[1.0, 2.0, 3.0, 4.0]);
-        let b = from_slice(&[2.0, 2.0, 2.0, 2.0]);
-        let a = lumia_f64_scale(a, 0.5);
-        assert_eq!(lumia_list_get(a, 0), bits(0.5));
-        let out = lumia_list_f64_zeros(4);
-        let out = lumia_f64_mul(out, a, b);
-        assert_eq!(lumia_list_get(out, 1), bits(2.0));
-        let out2 = lumia_list_f64_zeros(4);
-        let out2 = lumia_f64_add(out2, a, b);
-        assert_eq!(lumia_list_get(out2, 0), bits(2.5));
-    }
-
-    #[test]
-    fn zeros_and_fill() {
-        let xs = lumia_list_f64_zeros(3);
-        assert_eq!(lumia_list_len(xs), 3);
-        assert_eq!(lumia_list_get(xs, 0), bits(0.0));
-        let xs = lumia_f64_fill(xs, 2.5);
-        assert_eq!(lumia_list_get(xs, 1), bits(2.5));
-    }
-
-    #[test]
-    fn gemv_matches_naive() {
-        // A = [[1,2],[3,4],[5,6]], x = [1,2] → y = [5,11,17]
-        let a = from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
-        let x = from_slice(&[1.0, 2.0]);
-        let y = lumia_list_f64_zeros(3);
-        let y = lumia_f64_gemv(3, 2, a, x, y);
-        assert_eq!(lumia_list_get(y, 0), bits(5.0));
-        assert_eq!(lumia_list_get(y, 1), bits(11.0));
-        assert_eq!(lumia_list_get(y, 2), bits(17.0));
-    }
-
-    #[test]
-    fn gemv_t_and_addmm() {
-        let a = from_slice(&[1.0, 2.0, 3.0, 4.0]); // 2×2
-        let x = from_slice(&[1.0, 1.0]);
-        let y = lumia_list_f64_zeros(2);
-        let y = lumia_f64_gemv_t(2, 2, a, x, y);
-        // Aᵀ @ [1,1] = [1+3, 2+4] = [4,6]
-        assert_eq!(lumia_list_get(y, 0), bits(4.0));
-        assert_eq!(lumia_list_get(y, 1), bits(6.0));
-
-        let w = lumia_list_f64_zeros(4);
-        let u = from_slice(&[1.0, 2.0]);
-        let v = from_slice(&[3.0, 4.0]);
-        let w = lumia_f64_addmm(2, 2, w, u, v, 1.0);
-        // [[3,4],[6,8]]
-        assert_eq!(lumia_list_get(w, 0), bits(3.0));
-        assert_eq!(lumia_list_get(w, 1), bits(4.0));
-        assert_eq!(lumia_list_get(w, 2), bits(6.0));
-        assert_eq!(lumia_list_get(w, 3), bits(8.0));
-    }
-
-    #[test]
-    fn normalize_and_cow() {
-        let xs = from_slice(&[3.0, 4.0]);
-        let xs = lumia_f64_l2_normalize(xs, 0.0);
-        assert!((lumia_f64_l2_norm(xs) - 1.0).abs() < 1e-12);
-
-        let a = from_slice(&[1.0, 0.0]);
-        lumia_list_retain(a);
-        let b = lumia_f64_fill(a, 9.0);
-        // Shared → COW; original retained binding keeps old bits.
-        assert_ne!(a, b);
-        assert_eq!(lumia_list_get(a, 0), bits(1.0));
-        assert_eq!(lumia_list_get(b, 0), bits(9.0));
-    }
-
-    #[test]
-    fn nucleus_scale_gemv_checksum() {
-        // 16×32 projection fingerprint used as a stable oracle.
-        let m = 16i64;
-        let n = 32i64;
-        let a = lumia_list_f64_zeros(m * n);
-        let x = lumia_list_f64_zeros(n);
-        let y = lumia_list_f64_zeros(m);
-        unsafe {
-            let (ap, _) = f64_elems_mut(a);
-            let (xp, _) = f64_elems_mut(x);
-            for j in 0..n as usize {
-                *xp.add(j) = (j as f64) * 0.01;
-            }
-            for i in 0..m as usize {
-                for j in 0..n as usize {
-                    *ap.add(i * n as usize + j) = ((i + j) as f64) * 0.001;
-                }
-            }
-        }
-        let y = lumia_f64_gemv(m, n, a, x, y);
-        assert_eq!(lumia_f64_checksum(y), 2261);
-    }
-}
+#[path = "dense_f64_tests.rs"]
+mod tests;

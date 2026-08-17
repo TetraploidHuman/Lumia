@@ -99,8 +99,9 @@ impl<'a> Parser<'a> {
         (imports, items, errors)
     }
 
-    /// Like [`parse_item`], but a failed `val` body still emits a stub binding so
-    /// later items can resolve the name during IDE typecheck.
+    /// Like [`parse_item`], but a failed `val` body still emits a stub item so
+    /// later items can be parsed. The stub body is an unbound hole (not an
+    /// identity lambda) so recovering typecheck does not false-green call sites.
     fn parse_item_resilient(&mut self, errors: &mut Vec<ParseError>) -> Result<Item, ParseError> {
         let is_priv = if self.at(&TokenKind::Priv) {
             self.bump();
@@ -181,23 +182,10 @@ impl<'a> Parser<'a> {
                 errors.push(e);
                 self.synchronize_item();
                 let span = start.merge(self.cur.span);
-                // Stub keeps the name in scope. Prefer a small lambda so common
-                // `val f = { a, b -> … }` holes still type-check call sites.
-                let lam_params: Vec<String> = params
-                    .as_ref()
-                    .map(|ps| ps.iter().map(|(n, _)| n.clone()).collect())
-                    .unwrap_or_else(|| vec!["_1".into(), "_2".into()]);
-                let lam_tys: Vec<Option<String>> = params
-                    .as_ref()
-                    .map(|ps| ps.iter().map(|(_, t)| t.clone()).collect())
-                    .unwrap_or_else(|| vec![None, None]);
-                let ret_name = lam_params[0].clone();
-                let body = Expr::Lambda {
-                    params: lam_params,
-                    param_tys: lam_tys,
-                    body: Box::new(Expr::Ident(ret_name, span)),
-                    span,
-                };
+                // Keep the item so later decls still parse, but do **not** inject an
+                // identity lambda (that false-greened call sites). An unbound hole
+                // fails typing → no scheme is bound under recovering typecheck.
+                let body = Expr::Ident("__parse_hole".into(), span);
                 Ok(ValItem {
                     name,
                     ty,
@@ -439,11 +427,11 @@ impl<'a> Parser<'a> {
                 let (vname, _) = self.expect_ident()?;
                 let fields = if self.at(&TokenKind::LParen) {
                     self.bump();
-                    let mut n = 0;
+                    let mut names = Vec::new();
                     if !self.at(&TokenKind::RParen) {
                         loop {
-                            let _ = self.expect_ident()?;
-                            n += 1;
+                            let (name, _) = self.expect_ident()?;
+                            names.push(name);
                             if self.at(&TokenKind::Comma) {
                                 self.bump();
                                 continue;
@@ -452,7 +440,7 @@ impl<'a> Parser<'a> {
                         }
                     }
                     self.expect(TokenKind::RParen)?;
-                    VariantFields::Positional(n)
+                    VariantFields::Positional(names)
                 } else if self.at(&TokenKind::LBrace) {
                     self.bump();
                     let mut named = vec![];

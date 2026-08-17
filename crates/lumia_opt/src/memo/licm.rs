@@ -78,37 +78,8 @@ fn licm_block_with_floats(block: &mut Block, float_locals: &HashSet<u32>) {
 }
 
 fn collect_defs(block: &Block, defs: &mut HashSet<u32>) {
-    for op in &block.ops {
-        match op {
-            Op::Let { local, value, .. } => {
-                defs.insert(local.0);
-                match value {
-                    Value::If {
-                        then_block,
-                        else_block,
-                        ..
-                    } => {
-                        collect_defs(then_block, defs);
-                        collect_defs(else_block, defs);
-                    }
-                    Value::Loop {
-                        header,
-                        body,
-                        latch,
-                    } => {
-                        collect_defs(header, defs);
-                        collect_defs(body, defs);
-                        collect_defs(latch, defs);
-                    }
-                    _ => {}
-                }
-            }
-            Op::Assign { .. }
-            | Op::Break
-            | Op::Continue
-            | Op::Return { .. } => {}
-        }
-    }
+    // Same DFS collector as inline/captures (Lambda params included — more conservative).
+    lumia_core::collect_defined_locals(block, defs);
 }
 
 fn is_hoistable(value: &Value, loop_defs: &HashSet<u32>, float_locals: &HashSet<u32>) -> bool {

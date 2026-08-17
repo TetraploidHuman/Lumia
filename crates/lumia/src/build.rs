@@ -9,20 +9,90 @@ use lumia_opt::{optimize, OptOptions};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Unified flags for the native compile pipeline (CLI / IDE Run share this).
+///
+/// Mid-end and codegen still take [`OptOptions`] / [`CodegenOptions`]; this type
+/// is the single place that maps user-facing knobs onto those crates (Todo:
+/// 编译选项仍四散).
+#[derive(Clone, Debug)]
+pub struct CompileOptions {
+    pub release: bool,
+    /// Transparent Memo `T_f`; effective only when [`Self::release`].
+    pub memo_tf: bool,
+    pub auto_parallel: bool,
+    pub dense_f64_sr: bool,
+    pub trust_foreign_pure: Option<bool>,
+    pub link_args: Vec<String>,
+    pub show_ir: bool,
+    pub emit_llvm: bool,
+}
+
+impl Default for CompileOptions {
+    fn default() -> Self {
+        Self {
+            release: false,
+            memo_tf: true,
+            auto_parallel: true,
+            dense_f64_sr: false,
+            trust_foreign_pure: None,
+            link_args: Vec::new(),
+            show_ir: false,
+            emit_llvm: false,
+        }
+    }
+}
+
+impl CompileOptions {
+    pub fn opt(&self) -> OptOptions {
+        OptOptions {
+            release: self.release,
+            memo_tf: self.release && self.memo_tf,
+            dense_f64_sr: self.dense_f64_sr,
+        }
+    }
+
+    /// Frontend check knobs (`auto_parallel` + optional trust override).
+    ///
+    /// Kept as a pair so `check_program` can still resolve package
+    /// `trust_foreign_pure` when the override is `None`.
+    pub fn check_knobs(&self) -> (bool, Option<bool>) {
+        (self.auto_parallel, self.trust_foreign_pure)
+    }
+
+    pub fn codegen(
+        &self,
+        output: PathBuf,
+        runtime_lib: PathBuf,
+        package_link: &[String],
+    ) -> CodegenOptions {
+        let mut link = self.link_args.clone();
+        for a in package_link {
+            if !link.iter().any(|x| x == a) {
+                link.push(a.clone());
+            }
+        }
+        CodegenOptions {
+            release: self.release,
+            output,
+            runtime_lib,
+            emit_ir: self.emit_llvm,
+            dense_f64_sr: self.dense_f64_sr,
+            link_args: link,
+        }
+    }
+}
+
+/// Typecheck a Lumia source file (same frontend knobs as [`build_file`]).
+pub fn check_file(file: &Path, opts: &CompileOptions) -> Result<()> {
+    let (auto_parallel, trust) = opts.check_knobs();
+    let _ = check_program(file, auto_parallel, trust)?;
+    Ok(())
+}
+
 /// Compile a Lumia source file to a native executable.
-pub fn build_file(
-    file: &Path,
-    output: &Path,
-    release: bool,
-    memo_tf: bool,
-    auto_parallel: bool,
-    dense_f64_sr: bool,
-    trust_foreign_pure: Option<bool>,
-    link_args: Vec<String>,
-    show_ir: bool,
-    emit_llvm: bool,
-) -> Result<()> {
-    let (typed, loaded) = check_program(file, auto_parallel, trust_foreign_pure)?;
+pub fn build_file(file: &Path, output: &Path, opts: &CompileOptions) -> Result<()> {
+    let (auto_parallel, trust) = opts.check_knobs();
+    let (typed, loaded) = check_program(file, auto_parallel, trust)?;
     let labels: Vec<String> = loaded
         .files
         .iter()
@@ -43,19 +113,12 @@ pub fn build_file(
     .map_err(|e| anyhow::anyhow!("core: {e}"))?;
     core.check_channel_elem_conflicts()
         .map_err(|e| anyhow::anyhow!("channel: {e}"))?;
-    optimize(
-        &mut core,
-        &OptOptions {
-            release,
-            memo_tf: release && memo_tf,
-            dense_f64_sr,
-        },
-    );
-    if show_ir {
+    optimize(&mut core, &opts.opt());
+    if opts.show_ir {
         print!("{}", format_module(&core));
     }
 
-    ensure_runtime_built(release)?;
+    ensure_runtime_built(opts.release)?;
 
     let target_dir = workspace_target_dir();
     let runtime_lib = if let Ok(p) = std::env::var("LUMIA_RT_LIB") {
@@ -65,25 +128,12 @@ pub fn build_file(
         }
         p
     } else {
-        find_runtime_lib_prefer(&target_dir, release)?
+        find_runtime_lib_prefer(&target_dir, opts.release)?
     };
 
-    let mut link = link_args;
-    for a in &loaded.link_args {
-        if !link.iter().any(|x| x == a) {
-            link.push(a.clone());
-        }
-    }
     compile_module(
         &core,
-        &CodegenOptions {
-            release,
-            output: output.to_path_buf(),
-            runtime_lib,
-            emit_ir: emit_llvm,
-            dense_f64_sr,
-            link_args: link,
-        },
+        &opts.codegen(output.to_path_buf(), runtime_lib, &loaded.link_args),
     )?;
     Ok(())
 }
@@ -127,4 +177,51 @@ pub fn ensure_runtime_built(release: bool) -> Result<()> {
         anyhow::bail!("failed to build lumia_rt");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compile_options_opt_gates_memo_on_release() {
+        let mut o = CompileOptions {
+            release: false,
+            memo_tf: true,
+            ..CompileOptions::default()
+        };
+        assert!(!o.opt().memo_tf);
+        o.release = true;
+        assert!(o.opt().memo_tf);
+        assert_eq!(o.opt().dense_f64_sr, o.dense_f64_sr);
+    }
+
+    #[test]
+    fn compile_options_codegen_merges_package_link() {
+        let o = CompileOptions {
+            link_args: vec!["-lm".into()],
+            emit_llvm: true,
+            dense_f64_sr: true,
+            release: true,
+            ..CompileOptions::default()
+        };
+        let cg = o.codegen(
+            PathBuf::from("out"),
+            PathBuf::from("librt.a"),
+            &["-Lvendor".into(), "-lm".into()],
+        );
+        assert!(cg.emit_ir);
+        assert!(cg.dense_f64_sr);
+        assert_eq!(cg.link_args, vec!["-lm".to_string(), "-Lvendor".to_string()]);
+    }
+
+    #[test]
+    fn compile_options_check_knobs() {
+        let o = CompileOptions {
+            auto_parallel: false,
+            trust_foreign_pure: Some(true),
+            ..CompileOptions::default()
+        };
+        assert_eq!(o.check_knobs(), (false, Some(true)));
+    }
 }

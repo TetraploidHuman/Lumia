@@ -294,9 +294,11 @@ impl<'ctx> Codegen<'ctx> {
             }
             // Young alloc: init stores need no write barrier.
         }
-        // After fields are live: set mask, clearing bits that actually hold heap ptrs.
+        // After fields are live: set masks, clearing bits that actually hold heap ptrs.
         let float_mask = self.adt_float_mask_from_fields(fields)?;
         self.emit_adt_set_float_mask(ptr, float_mask)?;
+        let bool_mask = self.adt_bool_mask_from_fields(fields)?;
+        self.emit_adt_set_bool_mask(ptr, bool_mask)?;
         Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
             ptr,
             self.llvm.i64_ty,

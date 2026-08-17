@@ -1,16 +1,10 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub(crate) fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
-}
+#[path = "../common/mod.rs"]
+mod common;
 
-pub(crate) fn lumia_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_lumia"))
-}
+pub(crate) use common::{lumia_bin, workspace_root};
 
 pub(crate) fn e2e_out_dir() -> PathBuf {
     // Per-process directory so parallel `cargo test` workers do not clobber

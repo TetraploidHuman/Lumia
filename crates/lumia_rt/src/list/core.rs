@@ -1,8 +1,15 @@
 //! List length/get, promote, COW append, and empty singleton.
+//!
+//! # Safety (FFI)
+//! List entry points take `*mut u8` payloads (null = empty list where documented).
+//! Non-null arguments must be valid List/Iota/LitList layouts for the callee.
+
+#![deny(clippy::not_unsafe_ptr_arg_deref)]
 
 use super::tid::{heap_list_tid, list_tid};
 use crate::common::{
-    header_from_payload, is_heap_payload, list_rc_is_unique, tid_base, trap_abort, GcInhibitGuard,
+    header_from_payload, is_heap_payload, list_rc_is_unique, may_be_heap_payload_bits, tid_base,
+    trap_abort, GcInhibitGuard,
     TYPE_LIST, TYPE_LIST_IOTA,
 };
 use crate::gc::{list_payload_bytes, lumia_alloc};
@@ -73,8 +80,11 @@ pub(crate) fn force_heap_list(list: *mut u8) -> *mut u8 {
     let tid = list_tid(list);
     if tid != TYPE_LIST_IOTA {
         // Stack LitList must become heap before escape into containers / kernels.
-        if tid_base(tid) == TYPE_LIST && !is_heap_payload(list) {
-            return lumia_list_promote(list);
+        if tid_base(tid) == TYPE_LIST
+            && !(may_be_heap_payload_bits(list as i64) && is_heap_payload(list))
+        {
+            // SAFETY: `list` is a stack LitList payload (non-heap TYPE_LIST).
+            return unsafe { lumia_list_promote(list) };
         }
         return list;
     }
@@ -101,13 +111,16 @@ pub(crate) fn force_heap_list(list: *mut u8) -> *mut u8 {
 
 /// Promote stack `LitList` to a heap list so the pointer may escape.
 /// Immortal empty singleton, existing heap payloads (incl. Iota) are unchanged.
+///
+/// # Safety
+/// `list` is null or a valid List/Iota/LitList payload.
 #[no_mangle]
-pub extern "C" fn lumia_list_promote(list: *mut u8) -> *mut u8 {
+pub unsafe extern "C" fn lumia_list_promote(list: *mut u8) -> *mut u8 {
     if list.is_null() {
         return list;
     }
     // HeapList / Iota / permanent empty are already safe to escape.
-    if is_heap_payload(list) {
+    if may_be_heap_payload_bits(list as i64) && is_heap_payload(list) {
         return list;
     }
     let tid = list_tid(list);
@@ -133,13 +146,18 @@ pub extern "C" fn lumia_list_promote(list: *mut u8) -> *mut u8 {
 }
 
 /// List payload layout: HeapList `[len:i64][elem0:i64]…`; Iota `[start][end)`.
+///
+/// # Safety
+/// `list` is null or a valid List/Iota payload.
 #[no_mangle]
-pub extern "C" fn lumia_list_len(list: *mut u8) -> i64 {
+pub unsafe extern "C" fn lumia_list_len(list: *mut u8) -> i64 {
     list_len_of(list)
 }
 
+/// # Safety
+/// `list` is null or a valid List/Iota payload; `index` must be in range.
 #[no_mangle]
-pub extern "C" fn lumia_list_get(list: *mut u8, index: i64) -> i64 {
+pub unsafe extern "C" fn lumia_list_get(list: *mut u8, index: i64) -> i64 {
     list_get_of(list, index)
 }
 
@@ -167,8 +185,11 @@ fn list_grow_cap(needed: i64) -> i64 {
 }
 
 /// Return a HeapList with `elem` appended (COW: unique + spare capacity → in-place).
+///
+/// # Safety
+/// `list` is null or a valid List/Iota/LitList payload.
 #[no_mangle]
-pub extern "C" fn lumia_list_append(list: *mut u8, elem: i64) -> *mut u8 {
+pub unsafe extern "C" fn lumia_list_append(list: *mut u8, elem: i64) -> *mut u8 {
     // Keep materialized Iota alive across the following alloc/copy.
     let _gc = GcInhibitGuard::enter();
     let list = force_heap_list(list);
@@ -218,41 +239,58 @@ pub extern "C" fn lumia_list_append(list: *mut u8, elem: i64) -> *mut u8 {
 }
 
 /// Retain a List value when aliasing (`val a = xs`). No-op for non-lists / ADTs.
+///
+/// # Safety
+/// `list` is null or a valid List payload (non-lists are no-ops inside retain).
 #[no_mangle]
-pub extern "C" fn lumia_list_retain(list: *mut u8) {
+pub unsafe extern "C" fn lumia_list_retain(list: *mut u8) {
     crate::common::list_rc_retain(list);
 }
 
 /// Release a List alias (does not free; GC reclaims). No-op for ADTs.
+///
+/// # Safety
+/// `list` is null or a valid List payload.
 #[no_mangle]
-pub extern "C" fn lumia_list_release(list: *mut u8) {
+pub unsafe extern "C" fn lumia_list_release(list: *mut u8) {
     crate::common::list_rc_release(list);
 }
 
 /// Pointer identity for heap values (`List` / ADT payloads). Used to skip
 /// redundant `with` when a kernel mutated buffers in place.
+///
+/// # Safety
+/// Pointers are compared by address only (no dereference). Callers must still
+/// treat this as an unsafe C ABI entry so the FFI surface stays uniformly
+/// `unsafe` for raw-pointer params.
 #[no_mangle]
-pub extern "C" fn lumia_ptr_eq(a: *mut u8, b: *mut u8) -> i64 {
+pub unsafe extern "C" fn lumia_ptr_eq(a: *mut u8, b: *mut u8) -> i64 {
     i64::from(a == b)
 }
 
 /// Retain a heap List **or** ADT alias (`val a = p`, `AdtField` extract, field store).
+///
+/// # Safety
+/// `obj` is null or a valid List/ADT heap payload.
 #[no_mangle]
-pub extern "C" fn lumia_adt_retain(obj: *mut u8) {
+pub unsafe extern "C" fn lumia_adt_retain(obj: *mut u8) {
     crate::common::value_rc_retain(obj);
 }
 
 /// Release a heap List **or** ADT alias (mut-slot overwrite / field replace).
+///
+/// # Safety
+/// `obj` is null or a valid List/ADT heap payload.
 #[no_mangle]
-pub extern "C" fn lumia_adt_release(obj: *mut u8) {
+pub unsafe extern "C" fn lumia_adt_release(obj: *mut u8) {
     crate::common::value_rc_release(obj);
 }
 
 /// Shared empty `List` (`LitList` / `listOf()`). Immortal — survives GC.
 #[no_mangle]
 pub extern "C" fn lumia_list_empty() -> *mut u8 {
-    use crate::common::{header_from_payload, header_layout, trap_abort, RC_SHARED};
-    use crate::gc::finish_alloc;
+    use crate::common::{header_from_payload, header_layout, payload_ptr, trap_abort, RC_SHARED};
+    use crate::gc::{init_alloc_header, insert_young};
     use crate::heap::with_heap;
     use std::alloc::alloc;
 
@@ -267,7 +305,9 @@ pub extern "C" fn lumia_list_empty() -> *mut u8 {
             if mem.is_null() {
                 trap_abort("lumia: out of memory");
             }
-            finish_alloc(mem, 8, TYPE_LIST)
+            let header = init_alloc_header(mem, 8, TYPE_LIST);
+            insert_young(h, header, 8);
+            payload_ptr(header)
         };
         unsafe {
             *(dest as *mut i64) = 0;

@@ -27,25 +27,25 @@ impl<'a> Parser<'a> {
     }
 
     pub(super) fn parse_block_after_lbrace(&mut self, start: Span) -> Result<Expr, ParseError> {
-        // Check lambda header using temporary collection of first tokens
+        // Single speculative parse: keep params on success, restore once on miss.
         let checkpoint = self.checkpoint();
-        let is_lambda = self.try_parse_lambda_params().is_ok();
-        self.restore(checkpoint);
-
-        if is_lambda {
-            let (params, param_tys) = self.try_parse_lambda_params()?;
-            self.expect(TokenKind::Arrow)?;
-            // Lambda bodies: stop before a column-0 top-level item so a missing
-            // `}` cannot swallow the next `val`/`type`/… declaration.
-            let (stmts, tail) = self.parse_block_contents(true)?;
-            let end = self.expect_rbrace_or_recover()?;
-            let span = start.merge(end);
-            return Ok(Expr::Lambda {
-                params,
-                param_tys,
-                body: Box::new(Expr::Block { stmts, tail, span }),
-                span,
-            });
+        match self.try_parse_lambda_params() {
+            Ok((params, param_tys)) => {
+                self.expect(TokenKind::Arrow)?;
+                // Lambda bodies: stop before a column-0 top-level item so a missing
+                // `}` cannot swallow the next `val`/`type`/… declaration.
+                let (stmts, tail) = self.parse_block_contents(true)?;
+                let end = self.expect_rbrace_or_recover()?;
+                let span = start.merge(end);
+                return Ok(Expr::Lambda {
+                    params,
+                    param_tys,
+                    bare_it: false,
+                    body: Box::new(Expr::Block { stmts, tail, span }),
+                    span,
+                });
+            }
+            Err(_) => self.restore(checkpoint),
         }
 
         let (stmts, tail) = self.parse_block_contents(false)?;
@@ -56,6 +56,7 @@ impl<'a> Parser<'a> {
             Ok(Expr::Lambda {
                 params: vec!["it".into()],
                 param_tys: vec![None],
+                bare_it: true,
                 body: Box::new(Expr::Block {
                     stmts: vec![],
                     tail,

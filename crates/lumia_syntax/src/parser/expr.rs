@@ -29,7 +29,7 @@ impl<'a> Parser<'a> {
 
     pub(super) fn parse_pipeline(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.parse_or()?;
-        while self.at(&TokenKind::PipePipe) {
+        while self.at(&TokenKind::GtGt) {
             let _ = self.bump();
             let right = self.parse_or()?;
             let span = left.span().merge(right.span());

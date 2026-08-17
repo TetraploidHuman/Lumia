@@ -26,6 +26,26 @@ e2e_ok!(
     "flag=false"
 );
 
+e2e_ok!(
+    e2e_mut_map_set_bool_show,
+    "examples/mut_map_set_bool_show.lm",
+    "{true: false, false: true}",
+    "#{true, false}"
+);
+
+e2e_ok!(
+    e2e_empty_map_set_eq,
+    "examples/empty_map_set_eq.lm",
+    "{}",
+    "{}",
+    "true",
+    "#{}",
+    "#{}",
+    "true"
+);
+
+e2e_ok!(e2e_nested_it_map, "examples/nested_it_map.lm", "[2, 3, 4]");
+
 e2e_ok!(e2e_for, "examples/for.lm", "15", "3");
 
 e2e_ok!(e2e_list, "examples/list.lm", "42");
@@ -88,7 +108,8 @@ e2e_ok!(e2e_pure_io_thunk, "examples/pure_io_thunk.lm", "7");
 
 #[test]
 fn e2e_map_adt_assoc() {
-    // No `instance Hash` → assoc list; still correct after growing past SmallMap.
+    // No `instance Hash` → assoc list; still correct after growing past the
+    // former SmallMap size threshold (emit is always hash or assoc).
     run_example(
         "examples/map_adt_assoc.lm",
         &["20", "0", "38", "true", "false"],

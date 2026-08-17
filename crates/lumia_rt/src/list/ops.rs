@@ -1,4 +1,9 @@
 //! List transforms: take/slice/concat/sort and ranges.
+//!
+//! # Safety (FFI)
+//! Pointer args are null or valid List/Iota/String payloads per callee.
+
+#![deny(clippy::not_unsafe_ptr_arg_deref)]
 
 use super::core::{force_heap_list, list_len_of, lumia_list_empty, lumia_list_promote};
 use super::tid::{heap_list_tid, list_float_elems, list_tid};
@@ -9,8 +14,11 @@ use crate::string_io::{lumia_alloc_string, with_str_bytes};
 use lumia_abi::list_type_id;
 use std::ptr;
 
+///
+/// # Safety
+/// `list` is null or a valid List/Iota payload; returned list is newly allocated.
 #[no_mangle]
-pub extern "C" fn lumia_list_take(list: *mut u8, n: i64) -> *mut u8 {
+pub unsafe extern "C" fn lumia_list_take(list: *mut u8, n: i64) -> *mut u8 {
     // Iota take can stay virtual: [start, start+take).
     if list_tid(list) == TYPE_LIST_IOTA {
         let len = list_len_of(list);
@@ -59,8 +67,11 @@ pub extern "C" fn lumia_list_take(list: *mut u8, n: i64) -> *mut u8 {
 }
 
 /// Reverse element order into a new list.
+///
+/// # Safety
+/// `list` is null or a valid List payload (promoted if needed); returned list is newly allocated.
 #[no_mangle]
-pub extern "C" fn lumia_list_reverse(list: *mut u8) -> *mut u8 {
+pub unsafe extern "C" fn lumia_list_reverse(list: *mut u8) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
     let list = force_heap_list(list);
     unsafe {
@@ -88,8 +99,11 @@ pub extern "C" fn lumia_list_reverse(list: *mut u8) -> *mut u8 {
 
 /// Sort `List[Int]` ascending (stable via slice::sort).
 /// Float-elem lists are rejected (IEEE bit order ≠ numeric / key order).
+///
+/// # Safety
+/// `list` is null or a valid Int-elem List payload; returned list is newly allocated.
 #[no_mangle]
-pub extern "C" fn lumia_list_sort(list: *mut u8) -> *mut u8 {
+pub unsafe extern "C" fn lumia_list_sort(list: *mut u8) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
     let list = force_heap_list(list);
     if !list.is_null() && list_float_elems(list) {
@@ -124,8 +138,11 @@ pub extern "C" fn lumia_list_sort(list: *mut u8) -> *mut u8 {
 }
 
 /// Stable permute of `values` by parallel Ord keys (Int / String / Char).
+///
+/// # Safety
+/// `list`/`keys` are null or valid List payloads of equal length; returned list is newly allocated.
 #[no_mangle]
-pub extern "C" fn lumia_list_sort_by_keys(values: *mut u8, keys: *mut u8) -> *mut u8 {
+pub unsafe extern "C" fn lumia_list_sort_by_keys(values: *mut u8, keys: *mut u8) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
     let values = force_heap_list(values);
     let keys = force_heap_list(keys);
@@ -165,8 +182,11 @@ pub extern "C" fn lumia_list_sort_by_keys(values: *mut u8, keys: *mut u8) -> *mu
         dest
     }
 }
+///
+/// # Safety
+/// `list` is null or a valid List[String] payload; `sep` is null or a valid String.
 #[no_mangle]
-pub extern "C" fn lumia_list_join(list: *mut u8, sep: *mut u8) -> *mut u8 {
+pub unsafe extern "C" fn lumia_list_join(list: *mut u8, sep: *mut u8) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
     let list = force_heap_list(list);
     let sep_bytes = with_str_bytes(sep, |b| b.to_vec());
@@ -193,7 +213,7 @@ pub extern "C" fn lumia_list_join(list: *mut u8, sep: *mut u8) -> *mut u8 {
         }
         buf.extend_from_slice(p);
     }
-    lumia_alloc_string(buf.as_ptr(), buf.len() as u64)
+    unsafe { lumia_alloc_string(buf.as_ptr(), buf.len() as u64) }
 }
 
 /// Update index `i` to `elem` (bounds trap).
@@ -201,8 +221,11 @@ pub extern "C" fn lumia_list_join(list: *mut u8, sep: *mut u8) -> *mut u8 {
 /// COW like append: unique RC → in-place; shared → fresh copy. Codegen must
 /// `retain` the source when the old binding stays live (`val ys = xs.set(…)`);
 /// `xs = xs.set(…)` may consume uniqueness and write in place.
+///
+/// # Safety
+/// `list` is null or a valid List payload; returned list is newly allocated (or unique in-place).
 #[no_mangle]
-pub extern "C" fn lumia_list_set(list: *mut u8, index: i64, elem: i64) -> *mut u8 {
+pub unsafe extern "C" fn lumia_list_set(list: *mut u8, index: i64, elem: i64) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
     let list = force_heap_list(list);
     unsafe {
@@ -237,8 +260,11 @@ pub extern "C" fn lumia_list_set(list: *mut u8, index: i64, elem: i64) -> *mut u
 }
 
 /// Return a new HeapList that is `a` followed by `b`.
+///
+/// # Safety
+/// `a`/`b` are null or valid List/Iota/String payloads per concat rules; returned value is newly allocated.
 #[no_mangle]
-pub extern "C" fn lumia_list_concat(a: *mut u8, b: *mut u8) -> *mut u8 {
+pub unsafe extern "C" fn lumia_list_concat(a: *mut u8, b: *mut u8) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
     // Identity on empty without materializing Iota (len is O(1) for Iota).
     let na = list_len_of(a);
@@ -278,8 +304,11 @@ pub extern "C" fn lumia_list_concat(a: *mut u8, b: *mut u8) -> *mut u8 {
 }
 
 /// Return a new list with elements from `start` to end (Iota stays virtual).
+///
+/// # Safety
+/// `list` is null or a valid List/Iota payload; returned list is newly allocated.
 #[no_mangle]
-pub extern "C" fn lumia_list_slice(list: *mut u8, start: i64) -> *mut u8 {
+pub unsafe extern "C" fn lumia_list_slice(list: *mut u8, start: i64) -> *mut u8 {
     if list.is_null() {
         return lumia_list_empty();
     }

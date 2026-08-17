@@ -94,7 +94,7 @@ pub(crate) fn counter_for_in(
     body: Expr,
     span: Span,
 ) -> Expr {
-    let i = format!("__i_{}", span.start.0);
+    let i = format!("{}{}", crate::desugar_slots::FOR_INDEX_PREFIX, span.start.0);
     let cmp = if inclusive { BinOp::Le } else { BinOp::Lt };
     let cond = Expr::Binary {
         op: cmp,
@@ -160,7 +160,7 @@ pub(crate) fn counter_for_in(
 
 pub(crate) fn list_for_in(binding: &str, list: Expr, body: Expr, span: Span) -> Expr {
     let xs = format!("__xs_{}", span.start.0);
-    let i = format!("__i_{}", span.start.0);
+    let i = format!("{}{}", crate::desugar_slots::FOR_INDEX_PREFIX, span.start.0);
     let n = format!("__n_{}", span.start.0);
     // Map is key-addressed; normalize to an indexable List (keys) first.
     let list = Expr::BuiltinCall {

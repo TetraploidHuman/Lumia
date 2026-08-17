@@ -138,7 +138,8 @@ pub struct Variant {
 #[derive(Debug, Clone)]
 pub enum VariantFields {
     Unit,
-    Positional(usize),
+    /// Positional payloads keep binder names from source (`Some(value)` → `["value"]`).
+    Positional(Vec<String>),
     Named(Vec<String>),
 }
 
@@ -161,11 +162,14 @@ pub enum Expr {
         tail: Option<Box<Expr>>,
         span: Span,
     },
-    /// `{ a, b -> body }` or `{ a: Int, b: Int -> body }` or `{ body }`
+    /// `{ a, b -> body }` or `{ a: Int, b: Int -> body }` or bare `{ it + 1 }`
+    /// (desugared to params=`["it"]` with `bare_it`).
     Lambda {
         params: Vec<String>,
         /// Parallel to `params`; `None` = infer. Empty vec means all inferred.
         param_tys: Vec<Option<String>>,
+        /// Written as `{ …it… }` without `it ->` (parser invented the param).
+        bare_it: bool,
         body: Box<Expr>,
         span: Span,
     },

@@ -1,19 +1,40 @@
 //! Shared LSP document state and cached analysis.
 
 use crate::load::SourceFile;
+use lumia_syntax::ParseOutcome;
 use lumia_ty::TypedModule;
 use rustc_hash::FxHashMap as HashMap;
 use std::sync::mpsc::{self, Sender};
-use std::sync::{LazyLock, Mutex};
+use std::sync::Mutex;
 
 pub(super) struct Analysis {
     pub(super) typed: TypedModule,
     /// Primary document source (for hover/completion cursor).
     pub(super) src: String,
+    /// Surface syntax for semantic tokens (same `src`; recovering parse).
+    pub(super) surface: ParseOutcome,
     pub(super) files: Vec<SourceFile>,
     /// `Span.file` of the open buffer within [`Self::files`] (not always 0 if
     /// the buffer is not the load entry — hover/inlay filter by this id).
     pub(super) buffer_file: u32,
+}
+
+impl Analysis {
+    pub(super) fn from_typed(
+        typed: TypedModule,
+        src: String,
+        files: Vec<SourceFile>,
+        buffer_file: u32,
+    ) -> Self {
+        let surface = lumia_syntax::parse_module_recovering(&src);
+        Self {
+            typed,
+            src,
+            surface,
+            files,
+            buffer_file,
+        }
+    }
 }
 
 pub(super) struct State {
@@ -26,6 +47,10 @@ pub(super) struct State {
     pub(super) auto_parallel: bool,
     /// Client advertised `workspace.configuration` (pull settings).
     pub(super) client_supports_configuration: bool,
+    /// Negotiated LSP position encoding (`utf-8` or `utf-16`).
+    pub(super) position_encoding: lumia_syntax::ColumnMetric,
+    /// Set after successful `shutdown` request (LSP lifecycle).
+    pub(super) shut_down: bool,
     /// Next server→client request id.
     pub(super) next_req_id: i64,
     /// Pending `workspace/configuration` request id, if any.
@@ -34,6 +59,9 @@ pub(super) struct State {
     /// for that analyze. Re-analyze clears prior import URIs so underlines
     /// do not linger after a successful (or differently failing) check.
     pub(super) last_diag_uris: HashMap<String, Vec<String>>,
+    /// Per-URI analyze generation (debounce: latest wins). Kept inside [`State`]
+    /// so gen and docs share one lock (no parallel `ANALYZE_GEN` mutex).
+    pub(super) analyze_gen: HashMap<String, u64>,
 }
 
 #[derive(Clone)]
@@ -44,8 +72,6 @@ pub(super) struct AnalyzeReq {
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
-static ANALYZE_GEN: LazyLock<Mutex<HashMap<String, u64>>> =
-    LazyLock::new(|| Mutex::new(HashMap::default()));
 
 pub(super) fn state_lock() -> std::sync::MutexGuard<'static, Option<State>> {
     STATE.lock().unwrap_or_else(|e| e.into_inner())
@@ -59,17 +85,30 @@ pub(super) fn auto_parallel() -> bool {
         .unwrap_or(true)
 }
 
+/// Negotiated position encoding (LSP default: UTF-16).
+pub(super) fn position_encoding() -> lumia_syntax::ColumnMetric {
+    state_lock()
+        .as_ref()
+        .map(|s| s.position_encoding)
+        .unwrap_or(lumia_syntax::ColumnMetric::Utf16)
+}
+
 /// Bump per-uri generation and return the new value (latest wins for debounce).
 pub(super) fn next_analyze_gen(uri: &str) -> u64 {
-    let mut g = ANALYZE_GEN.lock().unwrap_or_else(|e| e.into_inner());
-    let e = g.entry(uri.to_string()).or_insert(0);
+    let mut st = state_lock();
+    let Some(state) = st.as_mut() else {
+        return 0;
+    };
+    let e = state.analyze_gen.entry(uri.to_string()).or_insert(0);
     *e += 1;
     *e
 }
 
 pub(super) fn current_analyze_gen(uri: &str) -> u64 {
-    let g = ANALYZE_GEN.lock().unwrap_or_else(|e| e.into_inner());
-    g.get(uri).copied().unwrap_or(0)
+    state_lock()
+        .as_ref()
+        .and_then(|s| s.analyze_gen.get(uri).copied())
+        .unwrap_or(0)
 }
 
 pub(super) fn spawn_analyze_worker() -> Sender<AnalyzeReq> {

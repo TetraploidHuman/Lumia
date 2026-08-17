@@ -49,7 +49,10 @@ fn eligible_dense(f: &CoreFun) -> bool {
     if f.is_main || !f.effect.is_pure() || f.external.is_some() {
         return false;
     }
-    if f.param_names.first().map(|s| s.as_str()) == Some("env") {
+    // Closures carry an env / FunRef payload — not user Int recursion. Use
+    // FunKind, not the synthetic first param name `"env"` (that false-excluded
+    // ordinary `{ env -> … }` bindings).
+    if f.is_lifted_lambda() {
         return false;
     }
     if f.params.len() != 1 {
@@ -77,6 +80,7 @@ fn structural_int_self_recursion(f: &CoreFun) -> bool {
         fun: &f.name,
         is_param,
         smaller: HashSet::default(),
+        self_funrefs: HashSet::default(),
         known_int: crate::ir_util::KnownScalars::new(),
         self_calls: 0,
         bad_self: false,
@@ -89,9 +93,19 @@ struct StructRec<'a> {
     fun: &'a str,
     is_param: HashSet<u32>,
     smaller: HashSet<u32>,
+    /// Locals proven equal to `FunRef(self)` (SSA aliases included).
+    self_funrefs: HashSet<u32>,
     known_int: crate::ir_util::KnownScalars,
     self_calls: usize,
     bad_self: bool,
+}
+
+fn note_self_call(st: &mut StructRec<'_>, args: &[Local]) {
+    st.self_calls += 1;
+    let ok = args.len() == 1 && st.smaller.contains(&args[0].0);
+    if !ok {
+        st.bad_self = true;
+    }
 }
 
 fn walk_struct_rec(block: &Block, st: &mut StructRec<'_>) {
@@ -108,7 +122,13 @@ fn walk_struct_rec(block: &Block, st: &mut StructRec<'_>) {
                     if st.smaller.contains(src) {
                         st.smaller.insert(local.0);
                     }
+                    if st.self_funrefs.contains(src) {
+                        st.self_funrefs.insert(local.0);
+                    }
                     st.known_int.track(local.0, value);
+                }
+                Value::FunRef(name) if name == st.fun => {
+                    st.self_funrefs.insert(local.0);
                 }
                 Value::Binary {
                     op: BinOp::Sub,
@@ -122,11 +142,12 @@ fn walk_struct_rec(block: &Block, st: &mut StructRec<'_>) {
                     }
                 }
                 Value::Call { fun, args } if fun == st.fun => {
-                    st.self_calls += 1;
-                    let ok = args.len() == 1 && st.smaller.contains(&args[0].0);
-                    if !ok {
-                        st.bad_self = true;
-                    }
+                    note_self_call(st, args);
+                }
+                Value::IndirectCall { callee, args } if st.self_funrefs.contains(&callee.0) => {
+                    // FunRef(self) → IndirectCall is structural self-recursion
+                    // (directize may leave this shape; same param-k proof as Call).
+                    note_self_call(st, args);
                 }
                 Value::If {
                     then_block,
@@ -163,6 +184,7 @@ fn clone_struct_env<'a>(st: &StructRec<'a>) -> StructRec<'a> {
         fun: st.fun,
         is_param: st.is_param.clone(),
         smaller: st.smaller.clone(),
+        self_funrefs: st.self_funrefs.clone(),
         known_int: st.known_int.clone(),
         self_calls: 0,
         bad_self: false,
@@ -178,7 +200,7 @@ fn slots_cost_ok(f: &CoreFun, module: &CoreModule) -> bool {
     if f.is_main || !f.effect.is_pure() || f.external.is_some() {
         return false;
     }
-    if f.param_names.first().map(|s| s.as_str()) == Some("env") {
+    if f.is_lifted_lambda() {
         return false;
     }
     let n = f.params.len();

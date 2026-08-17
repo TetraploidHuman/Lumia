@@ -1,8 +1,8 @@
 //! Cross-file `priv` / import visibility helpers.
 //!
 //! Dependency modules are fully inlined so private callees of public APIs remain
-//! linkable; [`lumia_ty::NameVisibility`] then blocks entry code from naming
-//! non-imported / `priv` symbols.
+//! linkable; [`lumia_ty::NameVisibility`] then allows each file only its own
+//! declarations plus names it imported (entry and deps alike).
 
 use lumia_syntax::{ImportNames, Item};
 use lumia_ty::NameVisibility;
@@ -117,11 +117,12 @@ pub fn apply_import_aliases(mut items: Vec<Item>, names: &ImportNames) -> Vec<It
     items
 }
 
-/// Record declaring file for each name; optionally expand entry-visible set.
+/// Record declaring file for each name; record `newly_visible` as imports of `importer_file`.
 pub fn extend_visibility(
     vis: &mut NameVisibility,
     items: &[Item],
     newly_visible: &HashSet<String>,
+    importer_file: u32,
 ) {
     for it in items {
         if let Some(name) = item_name(it) {
@@ -130,7 +131,11 @@ pub fn extend_visibility(
                 .or_insert_with(|| item_file(it));
         }
     }
-    for n in newly_visible {
-        vis.cross_file_visible.insert(n.clone());
+    if newly_visible.is_empty() {
+        return;
     }
+    vis.imports_by_file
+        .entry(importer_file)
+        .or_default()
+        .extend(newly_visible.iter().cloned());
 }

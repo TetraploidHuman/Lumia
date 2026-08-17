@@ -10,7 +10,7 @@
 
 use super::float_abi::{collect_fun_cap_tys, compute_float_locals_in_block};
 use crate::ir::{Block, CoreModule, Local, Op, Value};
-use crate::visit::for_each_nested_block;
+use crate::visit::{for_each_block_dfs, for_each_nested_block};
 use lumia_hir::Builtin;
 use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
@@ -23,23 +23,16 @@ pub(crate) fn refine_channel_elem_hint(module: &mut CoreModule) {
 fn refine_channel_elem_hint_inner(module: &mut CoreModule) {
     let mut lam_caps: HashMap<String, Vec<Local>> = HashMap::default();
     for fun in &module.functions {
-        collect_alloc_closure_caps(&fun.body, &mut lam_caps);
+        crate::visit::collect_alloc_closure_caps(&fun.body, &mut lam_caps);
     }
 
-    let fun_ret_tys: HashMap<String, Type> = module
-        .functions
-        .iter()
-        .map(|f| (f.name.clone(), f.ret_ty.clone()))
-        .collect();
-    let fun_param_tys: HashMap<String, Vec<Type>> = module
-        .functions
-        .iter()
-        .map(|f| (f.name.clone(), f.param_tys.clone()))
-        .collect();
+    let tables = crate::ModuleTables::from_module(module);
+    let fun_ret_tys = &tables.fun_ret_tys;
+    let fun_param_tys = &tables.fun_param_tys;
     // Spawn thunks may be scanned before their AllocClosure site; cap tys are
     // collected with a fixpoint so `ch.send(f)` via ClosureCap keeps Fun ABI
     // instead of falling back to Int (mixed-payload reject).
-    let fun_cap_tys = collect_fun_cap_tys(module, &fun_ret_tys, &fun_param_tys);
+    let fun_cap_tys = collect_fun_cap_tys(module, fun_ret_tys, fun_param_tys);
 
     let mut root_of: HashMap<u32, u32> = HashMap::default();
     let mut by_ch: HashMap<u32, Option<Type>> = HashMap::default();
@@ -79,8 +72,8 @@ fn refine_channel_elem_hint_inner(module: &mut CoreModule) {
             &mut poisoned_ch,
             &mut conflicts,
             caps.as_deref(),
-            &fun_ret_tys,
-            &fun_param_tys,
+            fun_ret_tys,
+            fun_param_tys,
             &fun_cap_tys,
         );
     }
@@ -112,9 +105,9 @@ fn register_channel_news(
     root_of: &mut HashMap<u32, u32>,
     by_ch: &mut HashMap<u32, Option<Type>>,
 ) {
-    for op in &block.ops {
-        match op {
-            Op::Let { local, value, .. } => {
+    for_each_block_dfs(block, &mut |b| {
+        for op in &b.ops {
+            if let Op::Let { local, value, .. } = op {
                 if let Value::Builtin {
                     name: Builtin::ChannelNew,
                     result_ty,
@@ -125,13 +118,9 @@ fn register_channel_news(
                     let seed = channel_new_elem_ty(result_ty);
                     by_ch.entry(local.0).or_insert(seed);
                 }
-                for_each_nested_block(value, &mut |b| {
-                    register_channel_news(b, root_of, by_ch);
-                });
             }
-            _ => {}
         }
-    }
+    });
 }
 
 fn channel_new_elem_ty(result_ty: &Option<Type>) -> Option<Type> {
@@ -147,17 +136,13 @@ fn propagate_channel_aliases(
     caps: Option<&[Local]>,
 ) -> bool {
     let mut changed = false;
-    for op in &block.ops {
-        match op {
-            Op::Let { local, value, .. } => {
+    for_each_block_dfs(block, &mut |b| {
+        for op in &b.ops {
+            if let Op::Let { local, value, .. } = op {
                 changed |= note_channel_alias(local.0, value, root_of, caps);
-                for_each_nested_block(value, &mut |b| {
-                    changed |= propagate_channel_aliases(b, root_of, caps);
-                });
             }
-            _ => {}
         }
-    }
+    });
     changed
 }
 
@@ -182,22 +167,6 @@ fn note_channel_alias(
         _ => {
             root_of.insert(local, r);
             true
-        }
-    }
-}
-
-fn collect_alloc_closure_caps(block: &Block, lam_caps: &mut HashMap<String, Vec<Local>>) {
-    for op in &block.ops {
-        match op {
-            Op::Let { value, .. } => {
-                if let Value::AllocClosure { fun, captures } = value {
-                    lam_caps.insert(fun.clone(), captures.clone());
-                }
-                for_each_nested_block(value, &mut |b| {
-                    collect_alloc_closure_caps(b, lam_caps);
-                });
-            }
-            _ => {}
         }
     }
 }
@@ -360,7 +329,7 @@ fn guess_local_ty(
             .and_then(|m| m.get(index).cloned())
             .unwrap_or(Type::Int),
         Value::FunRef(name) | Value::AllocClosure { fun: name, .. } => {
-            fun_ty_from_tables(name, fun_ret_tys, fun_param_tys)
+            super::fun_ty_from_tables_tls(name, fun_ret_tys, fun_param_tys)
                 .unwrap_or(Type::Int)
         }
         Value::Builtin {
@@ -550,8 +519,8 @@ fn join_channel_payload(prev: &Type, new: &Type) -> Option<Type> {
         }
         _ => {
             // Soft scalar refine (Int/Var → concrete).
-            let joined = prefer_payload_ty(prev.clone(), new.clone());
-            if &joined == prev || &joined == new || joined == prefer_payload_ty(new.clone(), prev.clone())
+            let joined = super::prefer_concrete_heap_ty(prev.clone(), new.clone());
+            if &joined == prev || &joined == new || joined == super::prefer_concrete_heap_ty(new.clone(), prev.clone())
             {
                 // Only accept if prefer actually picked one side without hard mismatch.
                 if is_flexible_ty(prev) || is_flexible_ty(new) || prev == new {
@@ -581,18 +550,6 @@ fn join_option_param(a: Option<&Type>, b: Option<&Type>) -> Option<Type> {
     }
 }
 
-fn prefer_payload_ty(a: Type, b: Type) -> Type {
-    if a == b {
-        return a;
-    }
-    match (&a, &b) {
-        (Type::Float, _) | (_, Type::Float) => Type::Float,
-        (Type::Int | Type::Var(_), other) => other.clone(),
-        (other, Type::Int | Type::Var(_)) => other.clone(),
-        _ => a,
-    }
-}
-
 fn guess_elems_ty(elems: &[Local], local_tys: &HashMap<u32, Type>) -> Type {
     let mut acc: Option<Type> = None;
     for e in elems {
@@ -600,18 +557,10 @@ fn guess_elems_ty(elems: &[Local], local_tys: &HashMap<u32, Type>) -> Type {
         acc = Some(match acc {
             None => t,
             Some(prev) if prev == t => prev,
-            Some(prev) => prefer_payload_ty(prev, t),
+            Some(prev) => super::prefer_concrete_heap_ty(prev, t),
         });
     }
     acc.unwrap_or(Type::Int)
-}
-
-fn fun_ty_from_tables(
-    name: &str,
-    fun_ret_tys: &HashMap<String, Type>,
-    fun_param_tys: &HashMap<String, Vec<Type>>,
-) -> Option<Type> {
-    super::fun_ty_from_tables_tls(name, fun_ret_tys, fun_param_tys)
 }
 
 #[cfg(test)]

@@ -1,4 +1,9 @@
 //! Stdin / stdout helpers and auto println.
+//!
+//! # Safety (FFI)
+//! `ptr`/`len` describe a valid byte buffer for println helpers.
+
+#![deny(clippy::not_unsafe_ptr_arg_deref)]
 
 use std::io::{self, Read, Write};
 
@@ -38,11 +43,14 @@ pub extern "C" fn lumia_read_stdin() -> *mut u8 {
         }
         buf.extend_from_slice(&chunk[..n]);
     }
-    lumia_alloc_string(buf.as_ptr(), buf.len() as u64)
+    unsafe { lumia_alloc_string(buf.as_ptr(), buf.len() as u64) }
 }
 
+///
+/// # Safety
+/// `ptr` is null or points to `len` readable bytes (not necessarily NUL-terminated).
 #[no_mangle]
-pub extern "C" fn lumia_println_str(ptr: *const u8, len: u64) {
+pub unsafe extern "C" fn lumia_println_str(ptr: *const u8, len: u64) {
     let mut out = io::stdout().lock();
     if ptr.is_null() {
         let _ = writeln!(out);
@@ -59,9 +67,19 @@ pub extern "C" fn lumia_println_bool(b: i8) {
     let _ = writeln!(out, "{}", if b != 0 { "true" } else { "false" });
 }
 
-/// Print a NUL-terminated C string (from LLVM global string ptrs).
+/// Print the Unit value (`Unit` + newline). Used by typed `println(())`.
 #[no_mangle]
-pub extern "C" fn lumia_println_cstr(ptr: *const u8) {
+pub extern "C" fn lumia_println_unit() {
+    let mut out = io::stdout().lock();
+    let _ = writeln!(out, "Unit");
+}
+
+/// Print a NUL-terminated C string (from LLVM global string ptrs).
+///
+/// # Safety
+/// `ptr` is null or a valid NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn lumia_println_cstr(ptr: *const u8) {
     let mut out = io::stdout().lock();
     if ptr.is_null() {
         let _ = writeln!(out);

@@ -1,6 +1,6 @@
 # Lumia
 
-Rust compiler + Core SSA + LLVM 21 codegen + generational mark-sweep GC (STW minor + incremental concurrent full mark).
+Rust compiler + Core IR（树形 ANF / 伪 SSA）+ LLVM 21 codegen + generational mark-sweep GC (STW minor + incremental concurrent full mark).
 
 **Target platforms: Linux and Windows.** Repository: [TetraploidHuman/Lumia](https://github.com/TetraploidHuman/Lumia).
 

@@ -82,7 +82,8 @@ pub enum TokenKind {
     Semi,
     Arrow,    // ->
     // (no FatArrow: `=>` lexes as Error)
-    PipePipe, // >>
+    /// Pipeline operator `>>` (not `||`).
+    GtGt,
     Eq,
     EqEq,
     Ne,
@@ -159,7 +160,7 @@ impl fmt::Display for TokenKind {
             TokenKind::ColonColon => write!(f, "`::`"),
             TokenKind::Semi => write!(f, "`;`"),
             TokenKind::Arrow => write!(f, "`->`"),
-            TokenKind::PipePipe => write!(f, "`>>`"),
+            TokenKind::GtGt => write!(f, "`>>`"),
             TokenKind::Eq => write!(f, "`=`"),
             TokenKind::EqEq => write!(f, "`==`"),
             TokenKind::Ne => write!(f, "`!=`"),

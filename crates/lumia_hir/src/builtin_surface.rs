@@ -22,8 +22,8 @@ impl Builtin {
             ("take", 2) => ListTake,
             ("reverse", 1) => ListReverse,
             ("sort", 1) => ListSort,
-            ("join", 1) => TaskJoin,
-            ("join", 2) => ListJoin,
+            // `join` is overloaded (Task.join / List.join(sep)) — resolved in ty
+            // from the receiver, not arity (arity alone false-greens / misdiagnoses).
             ("joinOpt", 1) => TaskJoinOpt,
             ("send", 2) => ChannelSend,
             ("recv", 1) => ChannelRecv,

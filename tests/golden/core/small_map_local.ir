@@ -7,7 +7,7 @@ fun main() effect.io=true memo=None {
   %3 = i64 20  // pure
   %4 = i64 3  // pure
   %5 = i64 30  // pure
-  %6 = alloc_map[SmallMap](n=3)  // pure
+  %6 = alloc_map[HashOrdered](n=3)  // pure
   %7 = i64 3  // pure
   %8 = builtin Println(%7)  // effect
   %10 = bool true  // pure

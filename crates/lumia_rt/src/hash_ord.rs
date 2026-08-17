@@ -1,10 +1,16 @@
 //! Ord comparison, content hashing, and ADT tag/field accessors.
+//!
+//! # Safety (FFI)
+//! ADT entry points take `*mut u8` heap (or stack LitAdt) payloads. Non-null
+//! `obj` must be a valid ADT layout; null traps or is a documented no-op.
+
+#![deny(clippy::not_unsafe_ptr_arg_deref)]
 
 use crate::common::{
-    adt_float_slot, float_key_eq, float_key_hash, header_from_payload, is_heap_payload,
-    list_elem_is_float, may_be_heap_payload_bits, splitmix64, tid_base, trap_abort, TYPE_ADT,
-    TYPE_BYTES, TYPE_CHAR, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_IOTA, TYPE_MAP, TYPE_SET,
-    TYPE_STRING,
+    adt_float_mask, adt_float_slot, float_key_eq, float_key_hash, header_from_payload,
+    is_heap_payload, is_heap_payload_bits, list_elem_is_float, may_be_heap_payload_bits, splitmix64,
+    tid_base, trap_abort, TYPE_ADT, TYPE_BYTES, TYPE_CHAR, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_IOTA,
+    TYPE_MAP, TYPE_SET, TYPE_STRING,
 };
 use crate::list::{list_get_of, list_len_of};
 use crate::map_set::{
@@ -20,13 +26,14 @@ pub(crate) fn lumia_ord_cmp(a: i64, b: i64) -> std::cmp::Ordering {
     if !may_be_heap_payload_bits(a) && !may_be_heap_payload_bits(b) {
         return a.cmp(&b);
     }
-    let pa = a as *mut u8;
-    let pb = b as *mut u8;
-    let ha = is_heap_payload(pa);
-    let hb = is_heap_payload(pb);
+    // Skip Mutex for Int/Bool/FunRef immediates on either side.
+    let ha = is_heap_payload_bits(a);
+    let hb = is_heap_payload_bits(b);
     if !ha && !hb {
         return a.cmp(&b);
     }
+    let pa = a as *mut u8;
+    let pb = b as *mut u8;
     if ha && hb {
         unsafe {
             let ta = (*header_from_payload(pa)).type_id;
@@ -62,7 +69,7 @@ pub(crate) fn lumia_ord_cmp(a: i64, b: i64) -> std::cmp::Ordering {
                     if words_a != words_b {
                         return words_a.cmp(&words_b);
                     }
-                    let mask = (*ha)._pad | (*hb)._pad;
+                    let mask = adt_float_mask((*ha)._pad) | adt_float_mask((*hb)._pad);
                     let ba = pa as *const i64;
                     let bb = pb as *const i64;
                     // Word 0 = tag (never Float).
@@ -222,7 +229,9 @@ pub(crate) fn hash_value(key: i64, depth: u32) -> u64 {
     }
 }
 #[no_mangle]
-pub extern "C" fn lumia_adt_tag(obj: *mut u8) -> i64 {
+/// # Safety
+/// `obj` must be a non-null valid ADT payload.
+pub unsafe extern "C" fn lumia_adt_tag(obj: *mut u8) -> i64 {
     if obj.is_null() {
         trap_abort("lumia: adt_tag on null");
     }
@@ -230,7 +239,9 @@ pub extern "C" fn lumia_adt_tag(obj: *mut u8) -> i64 {
 }
 
 #[no_mangle]
-pub extern "C" fn lumia_adt_field(obj: *mut u8, index: i64) -> i64 {
+/// # Safety
+/// `obj` must be a non-null valid ADT payload; `index` must be in range.
+pub unsafe extern "C" fn lumia_adt_field(obj: *mut u8, index: i64) -> i64 {
     if obj.is_null() || index < 0 {
         trap_abort(&format!("lumia: adt_field OOB (null or neg index={index})"));
     }
@@ -288,16 +299,23 @@ unsafe fn adt_shallow_clone_heap(src: *mut u8, overwrite_mask: u64) -> *mut u8 {
 
 /// COW: shared heap ADT → shallow clone; unique heap ADT unchanged.
 /// Stack LitAdt has no RC — always promote to a heap clone before in-place `with`.
+///
+/// # Safety
+/// `obj` is null or a valid ADT payload (heap or stack LitAdt).
 #[no_mangle]
-pub extern "C" fn lumia_adt_ensure_unique(obj: *mut u8) -> *mut u8 {
-    lumia_adt_ensure_unique_mask(obj, 0)
+pub unsafe extern "C" fn lumia_adt_ensure_unique(obj: *mut u8) -> *mut u8 {
+    // SAFETY: same contract as mask variant with empty overwrite mask.
+    unsafe { lumia_adt_ensure_unique_mask(obj, 0) }
 }
 
 /// Like [`lumia_adt_ensure_unique`], but `overwrite_mask` skips nested retain on
 /// fields that inplace `with` will rewrite (avoids RC≥2 on untouched siblings
 /// when the product itself must clone).
+///
+/// # Safety
+/// `obj` is null or a valid ADT payload (heap or stack LitAdt).
 #[no_mangle]
-pub extern "C" fn lumia_adt_ensure_unique_mask(obj: *mut u8, overwrite_mask: u64) -> *mut u8 {
+pub unsafe extern "C" fn lumia_adt_ensure_unique_mask(obj: *mut u8, overwrite_mask: u64) -> *mut u8 {
     use crate::common::{cow_rc_is_unique, tid_base, TYPE_ADT};
     if obj.is_null() {
         return obj;
@@ -327,25 +345,35 @@ pub extern "C" fn lumia_adt_ensure_unique_mask(obj: *mut u8, overwrite_mask: u64
 
 /// Drop one alias retain (e.g. with-temp), then [`lumia_adt_ensure_unique`].
 /// Prefer plain `ensure_unique` when the with-temp Let was optimized away.
+///
+/// # Safety
+/// `obj` is null or a valid ADT payload.
 #[no_mangle]
-pub extern "C" fn lumia_adt_ensure_unique_consume(obj: *mut u8) -> *mut u8 {
-    lumia_adt_ensure_unique_consume_mask(obj, 0)
+pub unsafe extern "C" fn lumia_adt_ensure_unique_consume(obj: *mut u8) -> *mut u8 {
+    unsafe { lumia_adt_ensure_unique_consume_mask(obj, 0) }
 }
 
 /// Consume with-temp retain, then unique-check with overwrite mask for `with`.
+///
+/// # Safety
+/// `obj` is null or a valid ADT payload.
 #[no_mangle]
-pub extern "C" fn lumia_adt_ensure_unique_consume_mask(
+pub unsafe extern "C" fn lumia_adt_ensure_unique_consume_mask(
     obj: *mut u8,
     overwrite_mask: u64,
 ) -> *mut u8 {
     use crate::common::cow_rc_drop_alias;
     cow_rc_drop_alias(obj, /*adt_ok=*/ true);
-    lumia_adt_ensure_unique_mask(obj, overwrite_mask)
+    // SAFETY: same ADT payload contract as ensure_unique_mask.
+    unsafe { lumia_adt_ensure_unique_mask(obj, overwrite_mask) }
 }
 
 /// Write ADT field `index` (0-based): release old List/ADT, retain new, barrier.
+///
+/// # Safety
+/// `obj` must be a non-null unique ADT payload; `index` must be in range.
 #[no_mangle]
-pub extern "C" fn lumia_adt_set_field(obj: *mut u8, index: i64, value: i64) {
+pub unsafe extern "C" fn lumia_adt_set_field(obj: *mut u8, index: i64, value: i64) {
     use crate::common::{value_rc_release_bits, value_rc_retain_bits};
     if obj.is_null() || index < 0 {
         trap_abort(&format!(

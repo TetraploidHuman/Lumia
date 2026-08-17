@@ -184,11 +184,16 @@ fn collect_val(a: &Analysis, v: &ValItem, src: &str, out: &mut Vec<AbsToken>) {
         .unwrap_or_default();
     let mut params = params_set(&bare);
     if let Expr::Lambda {
-        params: lp, body, ..
+        params: lp,
+        body,
+        bare_it,
+        ..
     } = &v.body
     {
-        // `val f = { x -> … }` — paint lambda params; body walk adds them too.
-        paint_lambda_params(src, v.body.span().start.0 as usize, lp, out);
+        // `val f = { x -> … }` — paint written binders only (skip invented bare `it`).
+        if !bare_it {
+            paint_lambda_params(src, v.body.span().start.0 as usize, lp, out);
+        }
         for p in lp {
             params.insert(p.clone());
         }
@@ -244,9 +249,12 @@ fn collect_expr(
             params: lp,
             body,
             span,
+            bare_it,
             ..
         } => {
-            paint_lambda_params(src, span.start.0 as usize, lp, out);
+            if !bare_it {
+                paint_lambda_params(src, span.start.0 as usize, lp, out);
+            }
             let mut nested = params.clone();
             for p in lp {
                 nested.insert(p.clone());

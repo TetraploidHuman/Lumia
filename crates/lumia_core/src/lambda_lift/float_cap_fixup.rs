@@ -6,6 +6,7 @@
 
 use crate::ir::{Block, CoreModule, Op, Value};
 use crate::value_ty::{infer_value_ty_ctx, InferValueCtx};
+use crate::visit::collect_closure_cap_funrefs;
 use lumia_hir::Builtin;
 use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
@@ -16,16 +17,9 @@ pub(crate) fn fixup_closure_float_caps(module: &mut CoreModule) {
 }
 
 fn fixup_closure_float_caps_inner(module: &mut CoreModule) {
-    let fun_ret_tys: HashMap<String, Type> = module
-        .functions
-        .iter()
-        .map(|f| (f.name.clone(), f.ret_ty.clone()))
-        .collect();
-    let fun_param_tys: HashMap<String, Vec<Type>> = module
-        .functions
-        .iter()
-        .map(|f| (f.name.clone(), f.param_tys.clone()))
-        .collect();
+    let tables = crate::ModuleTables::from_module(module);
+    let fun_ret_tys = &tables.fun_ret_tys;
+    let fun_param_tys = &tables.fun_param_tys;
 
     // (lifted_fun, capture_index) → must be float
     let mut need_float: HashSet<(String, u32)> = HashSet::default();
@@ -39,8 +33,8 @@ fn fixup_closure_float_caps_inner(module: &mut CoreModule) {
             &fun.body,
             &mut local_tys,
             &mut slot_tys,
-            &fun_ret_tys,
-            &fun_param_tys,
+            fun_ret_tys,
+            fun_param_tys,
             &mut need_float,
         );
     }
@@ -90,18 +84,11 @@ fn upgrade_captured_list_fold_float(module: &mut CoreModule) {
     // `List(Int)` params from float-list call-site args before cap collection.
     upgrade_list_params_from_float_call_sites(module);
 
-    let fun_ret_tys: HashMap<String, Type> = module
-        .functions
-        .iter()
-        .map(|f| (f.name.clone(), f.ret_ty.clone()))
-        .collect();
-    let fun_param_tys: HashMap<String, Vec<Type>> = module
-        .functions
-        .iter()
-        .map(|f| (f.name.clone(), f.param_tys.clone()))
-        .collect();
+    let tables = crate::ModuleTables::from_module(module);
+    let fun_ret_tys = &tables.fun_ret_tys;
+    let fun_param_tys = &tables.fun_param_tys;
     let fun_cap_tys =
-        super::float_abi::collect_fun_cap_tys(module, &fun_ret_tys, &fun_param_tys);
+        super::float_abi::collect_fun_cap_tys(module, fun_ret_tys, fun_param_tys);
     let empty = HashMap::default();
     let by_local = &module.channel_elem_by_local;
     let module_hint = module.channel_elem_hint.as_ref();
@@ -117,8 +104,8 @@ fn upgrade_captured_list_fold_float(module: &mut CoreModule) {
         collect_list_fold_float_upgrade(
             &fun.body,
             caps,
-            &fun_ret_tys,
-            &fun_param_tys,
+            fun_ret_tys,
+            fun_param_tys,
             by_local,
             module_hint,
             &fun.name,
@@ -144,7 +131,10 @@ fn upgrade_captured_list_fold_float(module: &mut CoreModule) {
                     fun.param_tys[i] = Type::Float;
                 }
             }
-            if matches!(fun.ret_ty, Type::Int | Type::Var(_) | Type::List(_)) {
+            // Never coerce List → Float: list builders (`var acc = listOf(1.0); …`)
+            // also end in `Name(acc)` + `Elems`, and used to be mis-classified as
+            // scalar folds (printing IEEE bits across spawn/join).
+            if matches!(fun.ret_ty, Type::Int | Type::Var(_)) {
                 fun.ret_ty = Type::Float;
             }
         }
@@ -154,18 +144,11 @@ fn upgrade_captured_list_fold_float(module: &mut CoreModule) {
 /// When `f(listOf(1.0))` is an `icall` (capturing wrapper), `f`'s list param may
 /// stay `List(Int)`. Lift those params so nested `AllocClosure` caps see `List[Float]`.
 fn upgrade_list_params_from_float_call_sites(module: &mut CoreModule) {
-    let fun_ret_tys: HashMap<String, Type> = module
-        .functions
-        .iter()
-        .map(|f| (f.name.clone(), f.ret_ty.clone()))
-        .collect();
-    let fun_param_tys: HashMap<String, Vec<Type>> = module
-        .functions
-        .iter()
-        .map(|f| (f.name.clone(), f.param_tys.clone()))
-        .collect();
+    let tables = crate::ModuleTables::from_module(module);
+    let fun_ret_tys = &tables.fun_ret_tys;
+    let fun_param_tys = &tables.fun_param_tys;
     let fun_cap_tys =
-        super::float_abi::collect_fun_cap_tys(module, &fun_ret_tys, &fun_param_tys);
+        super::float_abi::collect_fun_cap_tys(module, fun_ret_tys, fun_param_tys);
     let lifted = super::lifted_lambda_names(module);
     let empty = HashMap::default();
 
@@ -175,8 +158,8 @@ fn upgrade_list_params_from_float_call_sites(module: &mut CoreModule) {
         collect_float_list_call_args(
             &fun.body,
             caps,
-            &fun_ret_tys,
-            &fun_param_tys,
+            fun_ret_tys,
+            fun_param_tys,
             &lifted,
             &mut need,
         );
@@ -209,45 +192,38 @@ fn collect_float_list_call_args(
     lifted: &HashSet<String>,
     need: &mut HashMap<String, HashSet<usize>>,
 ) {
-    for op in &block.ops {
-        match op {
-            Op::Let { value, .. } => {
-                match value {
-                    Value::Call { fun, args } => {
-                        note_float_list_args(
-                            block,
-                            fun,
-                            args,
-                            caps,
-                            fun_ret_tys,
-                            fun_param_tys,
-                            lifted,
-                            need,
-                        );
-                    }
-                    Value::IndirectCall { callee, args } => {
-                        if let Some(fun) = funref_name_of_local(block, callee.0) {
-                            note_float_list_args(
-                                block,
-                                &fun,
-                                args,
-                                caps,
-                                fun_ret_tys,
-                                fun_param_tys,
-                                lifted,
-                                need,
-                            );
-                        }
-                    }
-                    _ => {}
+    // Order-independent map inserts — DFS via for_each_let_value.
+    crate::for_each_let_value(block, &mut |b, value| {
+        match value {
+            Value::Call { fun, args } => {
+                note_float_list_args(
+                    b,
+                    fun,
+                    args,
+                    caps,
+                    fun_ret_tys,
+                    fun_param_tys,
+                    lifted,
+                    need,
+                );
+            }
+            Value::IndirectCall { callee, args } => {
+                if let Some(fun) = funref_name_of_local(b, callee.0) {
+                    note_float_list_args(
+                        b,
+                        &fun,
+                        args,
+                        caps,
+                        fun_ret_tys,
+                        fun_param_tys,
+                        lifted,
+                        need,
+                    );
                 }
-                crate::for_each_nested_block(value, &mut |b| {
-                    collect_float_list_call_args(b, caps, fun_ret_tys, fun_param_tys, lifted, need);
-                });
             }
             _ => {}
         }
-    }
+    });
 }
 
 fn note_float_list_args(
@@ -306,77 +282,62 @@ fn collect_list_fold_float_upgrade(
     float_cbs: &mut HashSet<String>,
     float_outers: &mut HashSet<String>,
 ) {
-    for op in &block.ops {
-        match op {
-            Op::Let { value, .. } => {
-                match value {
-                    Value::Builtin {
-                        name: Builtin::ListParFold,
-                        args,
-                        ..
-                    } if args.len() >= 3
-                        && (fold_list_arg_is_float_list(
-                            block,
-                            args[0].0,
-                            caps,
-                            fun_ret_tys,
-                            fun_param_tys,
-                            channel_by_local,
-                            channel_module_hint,
-                        ) || (matches!(local_def(block, args[0].0), Some(Value::Name(_)))
-                            && block_has_elems_of_float_list(
-                                block,
-                                caps,
-                                fun_ret_tys,
-                                fun_param_tys,
-                                channel_by_local,
-                                channel_module_hint,
-                            ))) =>
-                    {
-                        float_outers.insert(outer_name.to_string());
-                        if let Some(cb) = funref_name_of_local(block, args[2].0) {
-                            float_cbs.insert(cb);
-                        }
-                    }
-                    // Sequential / fused `filter….fold`: `Elems(list)` + mutable acc.
-                    Value::Builtin {
-                        name: Builtin::Elems,
-                        args,
-                        ..
-                    } if !args.is_empty()
-                        && fold_acc_ret
-                        && fold_list_arg_is_float_list(
-                            block,
-                            args[0].0,
-                            caps,
-                            fun_ret_tys,
-                            fun_param_tys,
-                            channel_by_local,
-                            channel_module_hint,
-                        ) =>
-                    {
-                        float_outers.insert(outer_name.to_string());
-                    }
-                    _ => {}
-                }
-                crate::for_each_nested_block(value, &mut |b| {
-                    collect_list_fold_float_upgrade(
+    // Order-independent set inserts — DFS via for_each_let_value.
+    crate::for_each_let_value(block, &mut |b, value| {
+        match value {
+            Value::Builtin {
+                name: Builtin::ListParFold,
+                args,
+                ..
+            } if args.len() >= 3
+                && (fold_list_arg_is_float_list(
+                    b,
+                    args[0].0,
+                    caps,
+                    fun_ret_tys,
+                    fun_param_tys,
+                    channel_by_local,
+                    channel_module_hint,
+                ) || (matches!(local_def(b, args[0].0), Some(Value::Name(_)))
+                    && block_has_elems_of_float_list(
                         b,
                         caps,
                         fun_ret_tys,
                         fun_param_tys,
                         channel_by_local,
                         channel_module_hint,
-                        outer_name,
-                        fold_acc_ret,
-                        float_cbs,
-                        float_outers,
-                    );
-                });
+                    ))) =>
+            {
+                float_outers.insert(outer_name.to_string());
+                if let Some(cb) = funref_name_of_local(b, args[2].0) {
+                    float_cbs.insert(cb);
+                }
+            }
+            // Sequential / fused `filter….fold`: `Elems(list)` + mutable acc.
+            // Skip when the outer already returns a List (list builders share
+            // `Name(acc)` + `Elems` with true scalar folds).
+            Value::Builtin {
+                name: Builtin::Elems,
+                args,
+                ..
+            } if !args.is_empty()
+                && fold_acc_ret
+                && !matches!(fun_ret_tys.get(outer_name), Some(Type::List(_)))
+                && fold_list_arg_is_float_list(
+                    b,
+                    args[0].0,
+                    caps,
+                    fun_ret_tys,
+                    fun_param_tys,
+                    channel_by_local,
+                    channel_module_hint,
+                ) =>
+            {
+                float_outers.insert(outer_name.to_string());
             }
             _ => {}
         }
-    }
+    });
 }
 
 fn block_result_is_scalar_fold_acc(block: &Block) -> bool {
@@ -390,16 +351,11 @@ fn block_result_is_scalar_fold_acc(block: &Block) -> bool {
 }
 
 /// Sequential / fused fold slots (`a`, `__fuse_acc_*`). Exclude list builders
-/// (`__map_acc`, `__fmap_acc`, `__tolist_acc`, …) so map→List[Fun] rets stay lists.
+/// so map/filter/… → `List[…]` rets stay lists (not upgraded to scalar Float).
+///
+/// Prefixes must match HIR desugar ([`lumia_hir::LIST_BUILDER_ACC_PREFIXES`]).
 fn is_scalar_fold_acc_slot(name: &str) -> bool {
-    if name.starts_with("__fuse_acc") {
-        return true;
-    }
-    !(name.starts_with("__map_acc")
-        || name.starts_with("__fmap_acc")
-        || name.starts_with("__tolist_acc")
-        || name.starts_with("__filter_acc")
-        || name.starts_with("__i_"))
+    lumia_hir::is_scalar_fold_acc_slot(name)
 }
 
 /// `flatMap` builds a mut list acc then `ListParFold(acc, …)` — the acc is a
@@ -412,52 +368,33 @@ fn block_has_elems_of_float_list(
     channel_by_local: &HashMap<u32, Type>,
     channel_module_hint: Option<&Type>,
 ) -> bool {
-    for op in &block.ops {
-        match op {
-            Op::Let { value, .. } => {
-                if let Value::Builtin {
-                    name: Builtin::Elems,
-                    args,
-                    ..
-                } = value
-                {
-                    if !args.is_empty()
-                        && fold_list_arg_is_float_list(
-                            block,
-                            args[0].0,
-                            caps,
-                            fun_ret_tys,
-                            fun_param_tys,
-                            channel_by_local,
-                            channel_module_hint,
-                        )
-                    {
-                        return true;
-                    }
-                }
-                let mut found = false;
-                crate::for_each_nested_block(value, &mut |b| {
-                    if !found
-                        && block_has_elems_of_float_list(
-                            b,
-                            caps,
-                            fun_ret_tys,
-                            fun_param_tys,
-                            channel_by_local,
-                            channel_module_hint,
-                        )
-                    {
-                        found = true;
-                    }
-                });
-                if found {
-                    return true;
-                }
-            }
-            _ => {}
+    let mut found = false;
+    crate::for_each_let_value(block, &mut |b, value| {
+        if found {
+            return;
         }
-    }
-    false
+        if let Value::Builtin {
+            name: Builtin::Elems,
+            args,
+            ..
+        } = value
+        {
+            if !args.is_empty()
+                && fold_list_arg_is_float_list(
+                    b,
+                    args[0].0,
+                    caps,
+                    fun_ret_tys,
+                    fun_param_tys,
+                    channel_by_local,
+                    channel_module_hint,
+                )
+            {
+                found = true;
+            }
+        }
+    });
+    found
 }
 
 fn fold_list_arg_is_float_list(
@@ -522,6 +459,8 @@ fn fold_list_arg_is_float_list(
                     | Builtin::ListReverse
                     | Builtin::ListConcat
                     | Builtin::ListAppend
+                    | Builtin::ListSort
+                    | Builtin::ListSortByKeys
                     | Builtin::Elems
                     | Builtin::MapKeys
                     | Builtin::ListParMap,
@@ -788,16 +727,7 @@ fn funref_name_of_local(block: &Block, id: u32) -> Option<String> {
 
 /// Upgrade `__lam_*` return types from callee tables / float locals after mono.
 fn refresh_lifted_lambda_rets(module: &mut CoreModule) {
-    let mut fun_ret_tys: HashMap<String, Type> = module
-        .functions
-        .iter()
-        .map(|f| (f.name.clone(), f.ret_ty.clone()))
-        .collect();
-    let fun_param_tys: HashMap<String, Vec<Type>> = module
-        .functions
-        .iter()
-        .map(|f| (f.name.clone(), f.param_tys.clone()))
-        .collect();
+    let (mut fun_ret_tys, fun_param_tys) = crate::ModuleTables::from_module(module).into_maps();
     let hof = super::float_abi::HofSets::from_module_funs(
         module
             .functions
@@ -809,8 +739,8 @@ fn refresh_lifted_lambda_rets(module: &mut CoreModule) {
     let mut lam_caps: HashMap<String, Vec<crate::Local>> = HashMap::default();
     for fun in &module.functions {
         let mut funref_locals: HashMap<u32, String> = HashMap::default();
-        collect_alloc_closure_cap_funs(&fun.body, &mut funref_locals, &mut cap_funs);
-        collect_lam_caps(&fun.body, &mut lam_caps);
+        collect_closure_cap_funrefs(&fun.body, &mut funref_locals, &mut cap_funs);
+        crate::visit::collect_alloc_closure_caps(&fun.body, &mut lam_caps);
     }
     let by_local = module.channel_elem_by_local.clone();
     let module_hint = module.channel_elem_hint.clone();
@@ -844,7 +774,14 @@ fn refresh_lifted_lambda_rets(module: &mut CoreModule) {
                 new_ty = Some(Type::Unit);
             } else {
                 let caps = lam_caps.get(&fun.name).map(|c| c.as_slice());
-                if let Some(t) = super::float_abi::block_result_channel_recv_ty(
+                if let Some(t) = super::float_abi::block_result_channel_ty(
+                    &fun.body,
+                    &by_local,
+                    module_hint.as_ref(),
+                    caps,
+                ) {
+                    new_ty = Some(t);
+                } else if let Some(t) = super::float_abi::block_result_channel_recv_ty(
                     &fun.body,
                     &by_local,
                     module_hint.as_ref(),
@@ -961,69 +898,8 @@ fn refresh_lifted_lambda_rets(module: &mut CoreModule) {
     }
 }
 
-fn collect_alloc_closure_cap_funs(
-    block: &Block,
-    funref_locals: &mut HashMap<u32, String>,
-    cap_funs: &mut HashMap<String, HashMap<u32, String>>,
-) {
-    for op in &block.ops {
-        match op {
-            Op::Let { local, value, .. } => {
-                match value {
-                    Value::FunRef(name) => {
-                        funref_locals.insert(local.0, name.clone());
-                    }
-                    Value::AllocClosure { fun, captures } => {
-                        funref_locals.insert(local.0, fun.clone());
-                        let entry = cap_funs.entry(fun.clone()).or_default();
-                        for (i, cap) in captures.iter().enumerate() {
-                            if let Some(n) = funref_locals.get(&cap.0) {
-                                entry.insert(i as u32, n.clone());
-                            }
-                        }
-                    }
-                    Value::Local(crate::ir::Local(src)) => {
-                        if let Some(n) = funref_locals.get(src).cloned() {
-                            funref_locals.insert(local.0, n);
-                        } else {
-                            funref_locals.remove(&local.0);
-                        }
-                    }
-                    _ => {
-                        funref_locals.remove(&local.0);
-                    }
-                }
-                crate::for_each_nested_block(value, &mut |b| {
-                    collect_alloc_closure_cap_funs(b, funref_locals, cap_funs);
-                });
-            }
-            _ => {}
-        }
-    }
-}
-
-fn collect_lam_caps(block: &Block, lam_caps: &mut HashMap<String, Vec<crate::Local>>) {
-    for op in &block.ops {
-        match op {
-            Op::Let { value, .. } => {
-                if let Value::AllocClosure { fun, captures } = value {
-                    lam_caps.insert(fun.clone(), captures.clone());
-                }
-                crate::for_each_nested_block(value, &mut |b| {
-                    collect_lam_caps(b, lam_caps);
-                });
-            }
-            _ => {}
-        }
-    }
-}
-
 fn refresh_alloc_closure_fun_rets(module: &mut CoreModule) {
-    let mut fun_ret_tys: HashMap<String, Type> = module
-        .functions
-        .iter()
-        .map(|f| (f.name.clone(), f.ret_ty.clone()))
-        .collect();
+    let (mut fun_ret_tys, _) = crate::ModuleTables::from_module(module).into_maps();
     let _ = refresh_alloc_closure_fun_rets_round(module, &mut fun_ret_tys);
 }
 
@@ -1140,17 +1016,12 @@ fn scan_alloc_closure_caps(
                 note_alloc_caps(value, local_tys, need_float);
                 let ty = infer_value_ty_ctx(
                     value,
-                    InferValueCtx {
+                    InferValueCtx::with_fun_abi(
                         local_tys,
-                        slot_tys: Some(slot_tys),
-                        fun_ret_tys: Some(fun_ret_tys),
-                        fun_param_tys: Some(fun_param_tys),
-                        fun_param0_identity: None,
-                        funref_locals: None,
-                        local_int_consts: None,
-                        sum_max_arity: None,
-                        channel_elem_hint: None,
-                    },
+                        Some(slot_tys),
+                        fun_ret_tys,
+                        fun_param_tys,
+                    ),
                     None,
                 );
                 local_tys.insert(local.0, ty);
@@ -1212,3 +1083,7 @@ fn patch_value_caps(value: &mut Value, indices: &[u32], changed: &mut bool) {
     }
     crate::for_each_nested_block_mut(value, &mut |b| patch_caps_in_block(b, indices, changed));
 }
+
+#[cfg(test)]
+#[path = "float_cap_fixup_tests.rs"]
+mod tests;

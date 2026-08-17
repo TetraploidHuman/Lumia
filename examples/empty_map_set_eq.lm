@@ -1,0 +1,16 @@
+module EmptyMapSetEq
+
+import std.io.{println}
+
+val main = {
+    val m0 = mapOf()
+    val m1 = mapOf(1, 2).remove(1)
+    println(m0)
+    println(m1)
+    println(m0 == m1)
+    val s0 = setOf()
+    val s1 = setOf(1).remove(1)
+    println(s0)
+    println(s1)
+    println(s0 == s1)
+}

@@ -1,4 +1,7 @@
 //! Hindley-Milner style type inference + effect sets.
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::type_complexity)]
+#![allow(clippy::collapsible_match)]
 
 mod alt;
 mod display;
@@ -6,6 +9,7 @@ mod effects;
 mod infer;
 mod parallel;
 mod product_resolve;
+mod span_facts;
 mod traits;
 mod typecheck;
 mod types;

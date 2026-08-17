@@ -1,72 +1,37 @@
 //! Seed escaping locals from returns, assigns, calls, and builtins.
 
-use super::ParamEscape;
+use super::EscapeSummaries;
 use lumia_core::{Block, Local, Op, Value};
 use lumia_hir::Builtin;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
-pub(super) fn collect_assigns(block: &Block, assigns: &mut HashMap<String, Vec<Local>>) {
-    for op in &block.ops {
-        match op {
-            Op::Assign { name, value } => {
-                assigns.entry(name.clone()).or_default().push(*value);
-            }
-            Op::Let { value, .. } => {
-                collect_assigns_value(value, assigns);
-            }
-            _ => {}
-        }
-    }
-}
-
-fn collect_assigns_value(value: &Value, assigns: &mut HashMap<String, Vec<Local>>) {
-    match value {
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            collect_assigns(then_block, assigns);
-            collect_assigns(else_block, assigns);
-        }
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => {
-            collect_assigns(header, assigns);
-            collect_assigns(body, assigns);
-            collect_assigns(latch, assigns);
-        }
-        Value::Lambda { body, .. } => collect_assigns(body, assigns),
-        _ => {}
-    }
-}
-
 pub(super) fn seed_escaping(
     block: &Block,
     escaping: &mut HashSet<Local>,
-    summaries: &HashMap<String, ParamEscape>,
+    summaries: &EscapeSummaries,
     assigns: &HashMap<String, Vec<Local>>,
 ) {
-    if let Some(r) = block.result {
-        escaping.insert(r);
-    }
-    for op in &block.ops {
-        match op {
-            Op::Let { value, .. } => {
-                seed_value(value, escaping, summaries, assigns)
-            }
-            Op::Assign { .. } => {
-                // Not an automatic escape: short-lived `var xs = listOf(…)` can
-                // stay Lit*. Escape via `Name` / return is handled in propagate.
-            }
-            Op::Return { value } => {
-                escaping.insert(*value);
-            }
-            Op::Break | Op::Continue => {}
+    // Order-independent set inserts — DFS is safe.
+    lumia_core::for_each_block_dfs(block, &mut |b| {
+        if let Some(r) = b.result {
+            escaping.insert(r);
         }
-    }
+        for op in &b.ops {
+            match op {
+                Op::Let { value, .. } => {
+                    seed_value_shallow(value, escaping, summaries, assigns);
+                }
+                Op::Assign { .. } => {
+                    // Not an automatic escape: short-lived `var xs = listOf(…)` can
+                    // stay Lit*. Escape via `Name` / return is handled in propagate.
+                }
+                Op::Return { value } => {
+                    escaping.insert(*value);
+                }
+                Op::Break | Op::Continue => {}
+            }
+        }
+    });
 }
 
 fn mark_name_assigns(
@@ -81,15 +46,17 @@ fn mark_name_assigns(
     }
 }
 
-fn seed_value(
+/// Seed one value leaf; nested If/Loop/Lambda bodies are visited by DFS.
+fn seed_value_shallow(
     value: &Value,
     escaping: &mut HashSet<Local>,
-    summaries: &HashMap<String, ParamEscape>,
+    summaries: &EscapeSummaries,
     assigns: &HashMap<String, Vec<Local>>,
 ) {
     match value {
         Value::Call { fun, args } => {
-            if let Some(pe) = summaries.get(fun) {
+            // Summaries keyed by EscapeFunId; Call resolves name → id.
+            if let Some(pe) = summaries.lookup_call(fun) {
                 for (i, a) in args.iter().enumerate() {
                     if pe.get(i).copied().unwrap_or(true) {
                         escaping.insert(*a);
@@ -119,25 +86,7 @@ fn seed_value(
             }
         }
         Value::Name(n) => mark_name_assigns(n, escaping, assigns),
-        Value::FunRef(_) => {}
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            seed_escaping(then_block, escaping, summaries, assigns);
-            seed_escaping(else_block, escaping, summaries, assigns);
-        }
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => {
-            seed_escaping(header, escaping, summaries, assigns);
-            seed_escaping(body, escaping, summaries, assigns);
-            seed_escaping(latch, escaping, summaries, assigns);
-        }
-        Value::Lambda { body, .. } => seed_escaping(body, escaping, summaries, assigns),
+        Value::FunRef(_) | Value::If { .. } | Value::Loop { .. } | Value::Lambda { .. } => {}
         _ => {}
     }
 }

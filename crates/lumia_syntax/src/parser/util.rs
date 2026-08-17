@@ -7,7 +7,16 @@ pub(super) fn expr_uses_ident(expr: &Expr, name: &str) -> bool {
             stmts.iter().any(|s| stmt_uses_ident(s, name))
                 || tail.as_ref().is_some_and(|e| expr_uses_ident(e, name))
         }
-        Expr::Lambda { body, .. } => expr_uses_ident(body, name),
+        Expr::Lambda { params, body, .. } => {
+            // Nested `{ it -> … }` / bare-`it` lambdas bind `name`; do not treat
+            // those uses as free (else `val main = { xs.map { it + 1 } }` becomes
+            // `main(it)` and breaks LLVM `lumia_user_main` arity).
+            if params.iter().any(|p| p == name) {
+                false
+            } else {
+                expr_uses_ident(body, name)
+            }
+        }
         Expr::Call { callee, args, .. } => {
             expr_uses_ident(callee, name) || args.iter().any(|a| expr_uses_ident(a, name))
         }

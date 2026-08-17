@@ -2,7 +2,7 @@
 
 use crate::infer::Infer;
 use crate::types::{at, Effect, Type, TypeError};
-use lumia_hir::{Expr, Item, Module};
+use lumia_hir::{for_each_expr_mut, Expr, Item, Module};
 use rustc_hash::FxHashMap as HashMap;
 
 impl Infer {
@@ -128,7 +128,12 @@ impl Infer {
                             _ => self.fresh_eff(),
                         };
                         self.unify_at(span, ct, Type::Fun(ats, Box::new(ret.clone()), call_eff))?;
-                        self.traits.ufcs_rewrites.insert(span, mangled.clone());
+                        crate::span_facts::insert_unique_span_fact(
+                            &mut self.traits.ufcs_rewrites,
+                            span,
+                            mangled.clone(),
+                            "UFCS",
+                        )?;
                         let fun_eff = self.prune_eff(call_eff);
                         Ok(Some((self.prune(ret), self.union_eff(aes, fun_eff))))
                     }
@@ -240,74 +245,75 @@ impl Infer {
     }
 
     pub(crate) fn check_len_bind(&mut self, v: u32, t: &Type) -> Result<(), TypeError> {
-        if !self.uni.len_vars.contains(&v) {
-            return Ok(());
-        }
-        match self.prune(t.clone()) {
-            Type::List(_) | Type::Set(_) | Type::Map(_, _) | Type::String | Type::Var(_) => Ok(()),
-            other => Err(TypeError::Message(format!(
-                "len: expected List/Set/Map/String, got {other:?}"
-            ))),
-        }
+        self.check_open_receiver_bind(
+            self.uni.len_vars.contains(&v),
+            t,
+            |t| matches!(t, Type::List(_) | Type::Set(_) | Type::Map(_, _) | Type::String),
+            |other| format!("len: expected List/Set/Map/String, got {other:?}"),
+        )
     }
 
     pub(crate) fn check_concat_bind(&mut self, v: u32, t: &Type) -> Result<(), TypeError> {
-        if !self.uni.concat_vars.contains(&v) {
-            return Ok(());
-        }
-        match self.prune(t.clone()) {
-            Type::List(_) | Type::String | Type::Var(_) => Ok(()),
-            other => Err(TypeError::Message(format!(
-                "concat: expected List or String, got {other:?}"
-            ))),
-        }
+        self.check_open_receiver_bind(
+            self.uni.concat_vars.contains(&v),
+            t,
+            |t| matches!(t, Type::List(_) | Type::String),
+            |other| format!("concat: expected List or String, got {other:?}"),
+        )
     }
 
     pub(crate) fn check_contains_bind(&mut self, v: u32, t: &Type) -> Result<(), TypeError> {
-        if !self.uni.contains_vars.contains(&v) {
-            return Ok(());
-        }
-        match self.prune(t.clone()) {
-            Type::Map(_, _) | Type::Set(_) | Type::String | Type::Var(_) => Ok(()),
-            other => Err(TypeError::Message(format!(
-                "contains: expected Map, Set, or String, got {other:?}"
-            ))),
-        }
+        self.check_open_receiver_bind(
+            self.uni.contains_vars.contains(&v),
+            t,
+            |t| matches!(t, Type::Map(_, _) | Type::Set(_) | Type::String),
+            |other| format!("contains: expected Map, Set, or String, got {other:?}"),
+        )
     }
 
     pub(crate) fn check_set_bind(&mut self, v: u32, t: &Type) -> Result<(), TypeError> {
-        if !self.uni.set_vars.contains(&v) {
-            return Ok(());
-        }
-        match self.prune(t.clone()) {
-            Type::List(_) | Type::Map(_, _) | Type::Var(_) => Ok(()),
-            other => Err(TypeError::Message(format!(
-                "set: expected Map or List, got {other:?}"
-            ))),
-        }
+        self.check_open_receiver_bind(
+            self.uni.set_vars.contains(&v),
+            t,
+            |t| matches!(t, Type::List(_) | Type::Map(_, _)),
+            |other| format!("set: expected Map or List, got {other:?}"),
+        )
     }
 
     pub(crate) fn check_elems_bind(&mut self, v: u32, t: &Type) -> Result<(), TypeError> {
-        if !self.uni.elems_vars.contains(&v) {
-            return Ok(());
-        }
-        match self.prune(t.clone()) {
-            Type::List(_) | Type::Set(_) | Type::Map(_, _) | Type::Var(_) => Ok(()),
-            other => Err(TypeError::Message(format!(
-                "elems/toList: expected List, Set, or Map, got {other:?}"
-            ))),
-        }
+        self.check_open_receiver_bind(
+            self.uni.elems_vars.contains(&v),
+            t,
+            |t| matches!(t, Type::List(_) | Type::Set(_) | Type::Map(_, _)),
+            |other| format!("elems/toList: expected List, Set, or Map, got {other:?}"),
+        )
     }
 
     pub(crate) fn check_take_bind(&mut self, v: u32, t: &Type) -> Result<(), TypeError> {
-        if !self.uni.take_vars.contains(&v) {
+        self.check_open_receiver_bind(
+            self.uni.take_vars.contains(&v),
+            t,
+            |t| matches!(t, Type::List(_) | Type::String),
+            |other| format!("take/drop/reverse: expected List or String, got {other:?}"),
+        )
+    }
+
+    /// Shared gate for open-method `*_vars` binds (len/concat/…): Var always OK.
+    fn check_open_receiver_bind(
+        &mut self,
+        active: bool,
+        t: &Type,
+        accepts: impl FnOnce(&Type) -> bool,
+        err: impl FnOnce(&Type) -> String,
+    ) -> Result<(), TypeError> {
+        if !active {
             return Ok(());
         }
-        match self.prune(t.clone()) {
-            Type::List(_) | Type::String | Type::Var(_) => Ok(()),
-            other => Err(TypeError::Message(format!(
-                "take/drop/reverse: expected List or String, got {other:?}"
-            ))),
+        let t = self.prune(t.clone());
+        if matches!(t, Type::Var(_)) || accepts(&t) {
+            Ok(())
+        } else {
+            Err(TypeError::Message(err(&t)))
         }
     }
 
@@ -355,81 +361,51 @@ pub(crate) fn apply_ufcs_rewrites(
     }
 }
 
+/// Rewrite deferred `join(…)` calls to [`Builtin::TaskJoin`] / [`Builtin::ListJoin`].
+pub(crate) fn apply_join_rewrites(
+    module: &mut Module,
+    rewrites: &HashMap<lumia_syntax::Span, lumia_hir::Builtin>,
+) {
+    for item in &mut module.items {
+        match item {
+            Item::Fun(f) => rewrite_join_in_expr(&mut f.body, rewrites),
+            Item::Val { body, .. } => rewrite_join_in_expr(body, rewrites),
+        }
+    }
+}
+
+fn rewrite_join_in_expr(
+    expr: &mut Expr,
+    rewrites: &HashMap<lumia_syntax::Span, lumia_hir::Builtin>,
+) {
+    // Post-order: rewrite nested calls before promoting this Call to BuiltinCall.
+    for_each_expr_mut(expr, &mut |e| {
+        let Expr::Call { args, span, .. } = e else {
+            return;
+        };
+        if let Some(b) = rewrites.get(span).copied() {
+            let args = std::mem::take(args);
+            let span = *span;
+            *e = Expr::BuiltinCall {
+                name: b,
+                args,
+                span,
+            };
+        }
+    });
+}
+
 pub(crate) fn rewrite_ufcs_in_expr(
     expr: &mut Expr,
     rewrites: &HashMap<lumia_syntax::Span, String>,
 ) {
-    match expr {
-        Expr::Call { callee, args, span } => {
-            for a in args.iter_mut() {
-                rewrite_ufcs_in_expr(a, rewrites);
-            }
-            if let Some(mangled) = rewrites.get(span) {
-                **callee = Expr::Var(mangled.clone(), *span);
-            } else {
-                rewrite_ufcs_in_expr(callee, rewrites);
-            }
+    // Post-order: children first; then rewrite callee to mangled Fun name when deferred.
+    for_each_expr_mut(expr, &mut |e| {
+        let Expr::Call { callee, span, .. } = e else {
+            return;
+        };
+        if let Some(mangled) = rewrites.get(span) {
+            **callee = Expr::Var(mangled.clone(), *span);
         }
-        Expr::BuiltinCall { args, .. } | Expr::AdtNew { args, .. } => {
-            for a in args {
-                rewrite_ufcs_in_expr(a, rewrites);
-            }
-        }
-        Expr::Let { value, body, .. } => {
-            rewrite_ufcs_in_expr(value, rewrites);
-            rewrite_ufcs_in_expr(body, rewrites);
-        }
-        Expr::Assign { value, .. } | Expr::Unary { expr: value, .. } => {
-            rewrite_ufcs_in_expr(value, rewrites);
-        }
-        Expr::Lambda { body, .. } => rewrite_ufcs_in_expr(body, rewrites),
-        Expr::Binary { left, right, .. } => {
-            rewrite_ufcs_in_expr(left, rewrites);
-            rewrite_ufcs_in_expr(right, rewrites);
-        }
-        Expr::If {
-            cond,
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            rewrite_ufcs_in_expr(cond, rewrites);
-            rewrite_ufcs_in_expr(then_branch, rewrites);
-            rewrite_ufcs_in_expr(else_branch, rewrites);
-        }
-        Expr::Loop {
-            cond, body, step, ..
-        } => {
-            rewrite_ufcs_in_expr(cond, rewrites);
-            rewrite_ufcs_in_expr(body, rewrites);
-            if let Some(s) = step {
-                rewrite_ufcs_in_expr(s, rewrites);
-            }
-        }
-        Expr::Seq { stmts, .. } => {
-            for s in stmts {
-                rewrite_ufcs_in_expr(s, rewrites);
-            }
-        }
-        Expr::Return { value, .. } => rewrite_ufcs_in_expr(value, rewrites),
-        Expr::Alt { scrutinee, alt, .. } => {
-            rewrite_ufcs_in_expr(scrutinee, rewrites);
-            rewrite_ufcs_in_expr(alt, rewrites);
-        }
-        Expr::With { base, fields, .. } => {
-            rewrite_ufcs_in_expr(base, rewrites);
-            for (_, e) in fields {
-                rewrite_ufcs_in_expr(e, rewrites);
-            }
-        }
-        Expr::Var(_, _)
-        | Expr::Int(_, _)
-        | Expr::Float(_, _)
-        | Expr::Bool(_, _)
-        | Expr::String(_, _)
-        | Expr::Char(_, _)
-        | Expr::Unit(_)
-        | Expr::Break(_)
-        | Expr::Continue(_) => {}
-    }
+    });
 }

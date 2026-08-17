@@ -33,13 +33,13 @@ fun main() effect.io=true memo=None {
   %35 = if ...  // pure
   %36 = builtin Println(%35)  // effect
   %37 = i64 1  // pure
-  %39 = alloc_map[SmallMap](n=1)  // pure
-  %43 = alloc_map[SmallMap](n=1)  // pure
+  %39 = alloc_map[HashOrdered](n=1)  // pure
+  %43 = alloc_map[HashOrdered](n=1)  // pure
   %44 = %39 == %43  // pure
   %47 = if ...  // pure
   %48 = builtin Println(%47)  // effect
-  %50 = alloc_map[SmallMap](n=1)  // pure
-  %52 = alloc_map[SmallMap](n=1)  // pure
+  %50 = alloc_map[HashOrdered](n=1)  // pure
+  %52 = alloc_map[HashOrdered](n=1)  // pure
   %53 = %50 == %52  // pure
   %56 = if ...  // pure
   %57 = builtin Println(%56)  // effect

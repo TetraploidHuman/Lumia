@@ -61,12 +61,7 @@ val main = {
 }
 "#;
         let typed = check_source(src, true).expect("typecheck");
-        let a = Analysis {
-            typed,
-            src: src.to_string(),
-            files: vec![],
-            buffer_file: 0,
-        };
+        let a = Analysis::from_typed(typed, src.to_string(), vec![], 0);
         let hints = hints_for_analysis(&a, None);
         let labels: Vec<String> = hints
             .iter()
@@ -98,12 +93,7 @@ val fun(a, b) = {
 }
 "#;
         let typed = check_source(src, true).expect("typecheck");
-        let a = Analysis {
-            typed,
-            src: src.to_string(),
-            files: vec![],
-            buffer_file: 0,
-        };
+        let a = Analysis::from_typed(typed, src.to_string(), vec![], 0);
         let hints = hints_for_analysis(&a, None);
         let by_line: Vec<(u64, String)> = hints
             .iter()
@@ -139,12 +129,7 @@ module Demo
 val add = { x, y -> x + y }
 "#;
         let typed = check_source(src, true).expect("typecheck");
-        let a = Analysis {
-            typed,
-            src: src.to_string(),
-            files: vec![],
-            buffer_file: 0,
-        };
+        let a = Analysis::from_typed(typed, src.to_string(), vec![], 0);
         // Simulate VS Code asking for a huge visible range past the last line.
         let starts = lumia_syntax::line_starts(src);
         let bogus_end_line = starts.len() as u32 + 40;
@@ -174,12 +159,7 @@ val main = {
 }
 "#;
         let typed = check_source(src, true).expect("typecheck");
-        let a = Analysis {
-            typed,
-            src: src.to_string(),
-            files: vec![],
-            buffer_file: 0,
-        };
+        let a = Analysis::from_typed(typed, src.to_string(), vec![], 0);
         let hints = hints_for_analysis(&a, None);
         let labels: Vec<_> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
         assert!(
@@ -206,12 +186,7 @@ val outer = { x ->
 }
 "#;
         let typed = check_source(src, true).expect("typecheck");
-        let a = Analysis {
-            typed,
-            src: src.to_string(),
-            files: vec![],
-            buffer_file: 0,
-        };
+        let a = Analysis::from_typed(typed, src.to_string(), vec![], 0);
         let hints = hints_for_analysis(&a, None);
         let labels: Vec<_> = hints
             .iter()
@@ -237,17 +212,36 @@ val main = {
 }
 "#;
         let typed = check_source(src, true).expect("typecheck");
-        let a = Analysis {
-            typed,
-            src: src.to_string(),
-            files: vec![],
-            buffer_file: 0,
-        };
+        let a = Analysis::from_typed(typed, src.to_string(), vec![], 0);
         let hints = hints_for_analysis(&a, None);
         let labels: Vec<_> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
         assert!(
             labels.contains(&": Int"),
             "expected Int hint on field/call, got {labels:?}"
+        );
+    }
+
+    #[test]
+    fn inlay_imported_alias_via_loader() {
+        // Import aliases need loader+std; check_source leaves `log` unbound.
+        use crate::lsp::analyze::analyze_buffer;
+        use rustc_hash::FxHashMap as HashMap;
+        let src = r#"
+module Main
+import std.io.{println as log}
+val main = { log(1) }
+"#;
+        let (_, analysis) = analyze_buffer("untitled:Inlay-1", src, &HashMap::default());
+        let a = analysis.expect("loader must typecheck untitled std import");
+        assert!(
+            a.typed.fun_types.contains_key("log"),
+            "imported alias `log` must be bound via loader"
+        );
+        let hints = hints_for_analysis(&a, None);
+        // Call-return / binding hints should appear once the alias is typed.
+        assert!(
+            !hints.is_empty(),
+            "expected inlay hints on loader-resolved buffer, got none"
         );
     }
 }

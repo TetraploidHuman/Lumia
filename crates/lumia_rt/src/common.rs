@@ -23,7 +23,8 @@ pub use lumia_abi::{
 /// - `rc`: COW refcount for `TYPE_LIST` / `TYPE_LIST_F64` / `TYPE_ADT`
 ///   (`RC_SHARED` = immortal; alloc starts at 1). Other type_ids leave `rc` at 0.
 /// - `_pad`: **type_id-dependent**
-///   - `TYPE_ADT`: 64-bit per-field Float layout mask (bit `i` ⇒ field `i` is Float)
+///   - `TYPE_ADT`: packed field masks — low 32 = Float, high 32 = Bool
+///     (bit `i` in each half ⇒ field `i`)
 ///   - All other type_ids: initialized to 0 (lists no longer store RC here)
 #[repr(C)]
 pub struct ObjectHeader {
@@ -32,7 +33,7 @@ pub struct ObjectHeader {
     pub marked: u32,
     /// COW refcount for List / ADT (see struct contract).
     pub rc: u32,
-    /// ADT float-field mask; otherwise 0.
+    /// ADT packed float/bool field masks; otherwise 0.
     pub _pad: u64,
 }
 
@@ -41,22 +42,16 @@ const _: () = assert!(std::mem::size_of::<ObjectHeader>() == lumia_abi::OBJECT_H
 /// Max frames retained for trap backtraces (DESIGN §2 / error table).
 const CALL_STACK_CAP: usize = 256;
 
-use std::sync::OnceLock;
-
-/// Best-effort cleanup before fatal abort (e.g. cancel sibling tasks).
-/// Process-global so pool OS threads share the same trap hook.
-static BEFORE_TRAP: OnceLock<fn()> = OnceLock::new();
-
-/// Install a hook invoked at the start of [`trap_abort`] (once per process).
-pub(crate) fn set_before_trap(hook: fn()) {
-    let _ = BEFORE_TRAP.set(hook);
-}
-
 /// Fatal runtime error. Linked into user programs as abort (no FFI unwind).
 /// Prints the Lumia call stack (pushed by codegen) then aborts.
-/// Under `cfg(test)` panics so `#[should_panic]` unit tests can observe the message.
+///
+/// **Dual mode (explicit):**
+/// - Production (`not(test)`): `process::abort` after printing (no Drop unwind).
+/// - Unit tests (`cfg(test)`): `panic!` so `#[should_panic]` can observe the message.
+///   Production abort behavior is covered by linked user binaries / e2e traps, not
+///   by flipping an env var inside the RT test harness (that would abort the suite).
 pub(crate) fn trap_abort(msg: &str) -> ! {
-    if let Some(h) = BEFORE_TRAP.get() {
+    if let Some(h) = crate::globals::before_trap_hook() {
         h();
     }
     let trace = format_call_stack();
@@ -195,10 +190,37 @@ pub(crate) fn cow_rc_is_unique(payload: *mut u8, adt_ok: bool) -> bool {
     }
 }
 
-/// Bit `i` of an ADT float mask — only fields `0..64` are representable.
+/// Bit `i` of an ADT **float** field mask (low 32 bits of header `_pad`).
+///
+/// `_pad` packing: bits `0..31` = Float mask, bits `32..63` = Bool mask.
+#[inline]
+pub(crate) fn adt_float_mask(pad: u64) -> u64 {
+    pad & 0xFFFF_FFFF
+}
+
+/// Bit `i` of an ADT **bool** field mask (high 32 bits of header `_pad`).
+#[inline]
+pub(crate) fn adt_bool_mask(pad: u64) -> u64 {
+    pad >> 32
+}
+
+/// Pack float (lo) + bool (hi) field masks into ADT `_pad`.
+#[inline]
+pub(crate) fn adt_pack_field_masks(float_m: u64, bool_m: u64) -> u64 {
+    (float_m & 0xFFFF_FFFF) | ((bool_m & 0xFFFF_FFFF) << 32)
+}
+
+/// Bit `i` of a float field mask (also accepts packed `_pad` — uses low half).
 #[inline]
 pub(crate) fn adt_float_slot(mask: u64, field_index: usize) -> bool {
-    field_index < 64 && (mask & (1u64 << field_index)) != 0
+    let m = adt_float_mask(mask);
+    field_index < 32 && (m & (1u64 << field_index)) != 0
+}
+
+/// Bit `i` of an **unpacked** bool field mask (bits `0..31`).
+#[inline]
+pub(crate) fn adt_bool_slot(bool_mask: u64, field_index: usize) -> bool {
+    field_index < 32 && (bool_mask & (1u64 << field_index)) != 0
 }
 
 /// Drop one alias retain when `rc > 1` (no-op if unique or immortal).
@@ -325,7 +347,7 @@ pub(crate) fn is_heap_payload(payload: *mut u8) -> bool {
 #[inline]
 pub(crate) fn may_be_heap_payload_bits(bits: i64) -> bool {
     let u = bits as usize;
-    u != 0 && u % 8 == 0
+    u != 0 && u.is_multiple_of(8)
 }
 
 /// [`may_be_heap_payload_bits`] then [`is_heap_payload`] — prefer for i64 field words.
@@ -334,36 +356,8 @@ pub(crate) fn is_heap_payload_bits(bits: i64) -> bool {
     may_be_heap_payload_bits(bits) && is_heap_payload(bits as *mut u8)
 }
 
-pub(crate) fn is_old_header(h: *mut ObjectHeader) -> bool {
-    with_heap(|heap| heap.is_old_header(h))
-}
-
 pub(crate) fn is_young_payload(payload: *mut u8) -> bool {
     matches!(heap_gen(payload), Some(HeapGen::Young))
-}
-
-#[cfg(test)]
-pub(crate) fn set_gc_limits_for_test(young: usize, old: usize) {
-    with_heap(|heap| {
-        heap.young_limit = young;
-        heap.old_limit = old;
-        heap.refresh_alloc_pressure_fast();
-    });
-}
-
-#[cfg(test)]
-pub(crate) fn gc_live_bytes_for_test() -> (usize, usize) {
-    with_heap(|heap| (heap.bytes_young, heap.bytes_old))
-}
-
-#[cfg(test)]
-pub(crate) fn gc_heap_lens_for_test() -> (usize, usize) {
-    with_heap(|heap| (heap.young.len(), heap.old.len()))
-}
-
-#[cfg(test)]
-pub(crate) fn gc_remembered_len_for_test() -> usize {
-    with_heap(|heap| heap.remembered.len())
 }
 
 pub(crate) struct GcInhibitGuard;

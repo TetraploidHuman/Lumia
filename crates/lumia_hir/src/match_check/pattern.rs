@@ -214,12 +214,8 @@ fn pattern_cond_list(
             span,
         }
     };
-    cond = Expr::Binary {
-        op: BinOp::And,
-        left: Box::new(force_ok),
-        right: Box::new(cond),
-        span,
-    };
+    // Must use `short_and` (If), not `BinOp::And` — ty rejects leftover And/Or.
+    cond = short_and(force_ok, cond, span);
     let mut binds = vec![];
     // Rest slice before element gets so typing sees List before open Get.
     if let Some(rname) = rest {

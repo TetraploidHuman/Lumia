@@ -34,7 +34,7 @@
       <option name="Lumia" value="true"/>
     </context>
   </template>
-  <template name="type" value="type $NAME$ {&#10;    val $FIELD$&#10;}" description="Product type" toReformat="true" toShortenFQNames="true">
+  <template name="type-product" value="type $NAME$ {&#10;    val $FIELD$&#10;}" description="Product type" toReformat="true" toShortenFQNames="true">
     <variable name="NAME" expression="&quot;Point&quot;" defaultValue="" alwaysStopAt="true"/>
     <variable name="FIELD" expression="&quot;x&quot;" defaultValue="" alwaysStopAt="true"/>
     <context>

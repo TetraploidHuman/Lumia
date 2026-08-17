@@ -1,0 +1,8 @@
+module TrapNegOverflow
+
+/// `-i64::MIN` must trap (two's-complement overflow).
+val main = {
+    val a = (0 - 9223372036854775807) - 1
+    val b = -a
+    b
+}

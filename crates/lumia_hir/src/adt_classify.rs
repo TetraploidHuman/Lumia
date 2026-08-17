@@ -18,7 +18,7 @@ pub fn classify_sum_field_recursive(adt: &AdtDef) -> HashMap<String, Vec<bool>> 
             .collect();
     }
     let arities: Vec<usize> = adt.variants.iter().map(|v| v.arity).collect();
-    let has_nullary = arities.iter().any(|&a| a == 0);
+    let has_nullary = arities.contains(&0);
     let only_nullary_unary = arities.iter().all(|&a| a <= 1);
     let mut out = HashMap::default();
     for v in &adt.variants {

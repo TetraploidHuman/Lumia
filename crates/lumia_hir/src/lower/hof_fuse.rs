@@ -143,7 +143,7 @@ pub(crate) fn try_fuse_hof_fold(
     if stages.is_empty() {
         return None;
     }
-    let acc = format!("__fuse_acc_{}", span.start.0);
+    let acc = format!("{}_{}", crate::desugar_slots::FUSE_ACC_PREFIX, span.start.0);
     let x0 = format!("__fuse_x_{}", span.start.0);
     let x_out = format!("__fuse_xm_{}", span.start.0);
 

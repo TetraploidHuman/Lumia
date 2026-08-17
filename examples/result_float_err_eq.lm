@@ -1,0 +1,20 @@
+module ResultFloatErrEq
+
+import std.io.{println}
+
+/// `Result[Float, String]`: typed `==` must not treat Err's String as Float
+/// (type-param index ≠ constructor field index). Fresh `"${n}"` strings share
+/// content but not pointer identity — bit-as-float eq would fail.
+val same = { a: Result[Float, String], b: Result[Float, String] -> a == b }
+
+val mk_err = { n -> Err("${n}") }
+
+val main = {
+    val e1 = mk_err(7)
+    val e2 = mk_err(7)
+    println(if same(e1, e2) { 1 } else { 0 })
+    println(if same(e1, mk_err(8)) { 1 } else { 0 })
+    println(if same(Ok(1.5), Ok(1.5)) { 1 } else { 0 })
+    println(if same(Ok(0.0), Ok(-0.0)) { 1 } else { 0 })
+    println(if same(Ok(1.5), e1) { 1 } else { 0 })
+}

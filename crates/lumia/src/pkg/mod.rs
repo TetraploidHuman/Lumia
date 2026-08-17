@@ -6,7 +6,8 @@ mod manifest;
 
 pub use link::{collect_link_args, validate_cli_link_arg};
 pub use lock::{
-    load_lockfile, lock_from_manifest, verify_lockfile, write_lockfile, LockPackage, Lockfile,
+    dependency_roots_from_lock, load_lockfile, lock_from_manifest, verify_lockfile, write_lockfile,
+    LockPackage, Lockfile,
 };
 pub use manifest::{
     add_path_dep, dependency_roots, find_manifest, init_manifest, load_manifest, write_manifest,
@@ -139,11 +140,13 @@ version = "1.0.0"
                     name: "root".into(),
                     version: "0.9.0".into(),
                     path: ".".into(),
+                    content: String::new(),
                 },
                 LockPackage {
                     name: "stale".into(),
                     version: "0.1.0".into(),
                     path: "deps/stale".into(),
+                    content: String::new(),
                 },
             ],
         };
@@ -157,6 +160,7 @@ version = "1.0.0"
                 name: "root".into(),
                 version: "0.9.0".into(),
                 path: ".".into(),
+                content: String::new(),
             }],
         };
         let err2 = verify_lockfile(&manifest, &m, &lock2).unwrap_err().to_string();
@@ -193,5 +197,119 @@ leaf = { path = "vendor/leaf" }
             "expected missing-version error, got {err}"
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lock_version_string_reads_dep_package_version() {
+        let dir = std::env::temp_dir().join(format!("lumia_pkg_verpin_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let dep = dir.join("deps").join("leaf");
+        fs::create_dir_all(&dep).unwrap();
+        fs::write(
+            dep.join("Lumia.toml"),
+            r#"[package]
+name = "leaf"
+version = "2.0.0"
+"#,
+        )
+        .unwrap();
+        let manifest = dir.join("Lumia.toml");
+        // Constraint string must match dep package.version (no silent fake pin).
+        fs::write(
+            &manifest,
+            r#"[package]
+name = "root"
+version = "1.0.0"
+
+[dependencies]
+leaf = "2.0.0"
+"#,
+        )
+        .unwrap();
+        let m = load_manifest(&manifest).unwrap();
+        let lock = lock_from_manifest(&manifest, &m).unwrap();
+        let leaf = lock.package.iter().find(|p| p.name == "leaf").unwrap();
+        assert_eq!(leaf.version, "2.0.0");
+
+        fs::write(
+            &manifest,
+            r#"[package]
+name = "root"
+version = "1.0.0"
+
+[dependencies]
+leaf = "0.1"
+"#,
+        )
+        .unwrap();
+        let m = load_manifest(&manifest).unwrap();
+        let err = lock_from_manifest(&manifest, &m).unwrap_err().to_string();
+        assert!(
+            err.contains("0.1") && err.contains("2.0.0"),
+            "expected constraint vs package.version mismatch, got {err}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lock_content_fingerprint_detects_vendor_edit() {
+        let dir = std::env::temp_dir().join(format!("lumia_pkg_content_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let dep = dir.join("deps").join("leaf");
+        fs::create_dir_all(&dep).unwrap();
+        fs::write(
+            dep.join("Lumia.toml"),
+            r#"[package]
+name = "leaf"
+version = "1.0.0"
+"#,
+        )
+        .unwrap();
+        fs::write(dep.join("Lib.lm"), "module Lib\nval x = 1\n").unwrap();
+        let manifest = dir.join("Lumia.toml");
+        fs::write(
+            &manifest,
+            r#"[package]
+name = "root"
+version = "1.0.0"
+
+[dependencies]
+leaf = "1.0.0"
+"#,
+        )
+        .unwrap();
+        let m = load_manifest(&manifest).unwrap();
+        let lock = lock_from_manifest(&manifest, &m).unwrap();
+        let leaf = lock.package.iter().find(|p| p.name == "leaf").unwrap();
+        assert!(!leaf.content.is_empty(), "dep should have content fingerprint");
+        verify_lockfile(&manifest, &m, &lock).unwrap();
+
+        // Vendor edit without version bump must fail verify.
+        fs::write(dep.join("Lib.lm"), "module Lib\nval x = 2\n").unwrap();
+        let err = verify_lockfile(&manifest, &m, &lock).unwrap_err().to_string();
+        assert!(
+            err.contains("content") || err.contains("fingerprint"),
+            "expected content mismatch, got {err}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lockfile_rejects_unknown_fields() {
+        let err = toml::from_str::<Lockfile>(
+            r#"
+[[package]]
+name = "root"
+version = "1.0.0"
+path = "."
+extra = true
+"#,
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("extra") || msg.contains("unknown"),
+            "expected unknown-field error, got {msg}"
+        );
     }
 }

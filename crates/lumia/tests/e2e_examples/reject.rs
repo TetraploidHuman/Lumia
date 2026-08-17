@@ -147,6 +147,54 @@ fn e2e_bad_assert_aborts() {
     );
 }
 
+fn build_and_expect_trap(rel: &str, stem: &str, needle: &str) {
+    let root = workspace_root();
+    let src = root.join(rel);
+    let bin = e2e_exe(stem);
+    let status = Command::new(lumia_bin())
+        .current_dir(&root)
+        .args(["build", src.to_str().unwrap(), "-o", bin.to_str().unwrap()])
+        .status()
+        .unwrap_or_else(|e| panic!("build {rel}: {e}"));
+    assert!(status.success(), "{rel} should compile");
+    let run = Command::new(&bin)
+        .output()
+        .unwrap_or_else(|e| panic!("run {stem}: {e}"));
+    assert!(
+        !run.status.success(),
+        "{stem} should trap; stdout={}",
+        String::from_utf8_lossy(&run.stdout)
+    );
+    let err = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        err.contains(needle),
+        "{stem}: expected stderr to contain {needle:?}, got: {err}"
+    );
+}
+
+#[test]
+fn e2e_trap_overflow_aborts() {
+    build_and_expect_trap(
+        "examples/trap_overflow.lm",
+        "trap_overflow",
+        "integer overflow",
+    );
+}
+
+#[test]
+fn e2e_trap_div0_aborts() {
+    build_and_expect_trap("examples/trap_div0.lm", "trap_div0", "division by zero");
+}
+
+#[test]
+fn e2e_trap_neg_overflow_aborts() {
+    build_and_expect_trap(
+        "examples/trap_neg_overflow.lm",
+        "trap_neg_overflow",
+        "integer overflow",
+    );
+}
+
 #[test]
 fn e2e_bad_import_type_points_at_dep() {
     run_check(

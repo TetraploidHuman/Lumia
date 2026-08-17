@@ -8,24 +8,26 @@ use thiserror::Error;
 #[derive(Debug, Clone, Default)]
 pub struct NameVisibility {
     pub name_origin: HashMap<String, u32>,
-    pub cross_file_visible: HashSet<String>,
+    /// Names each file may resolve across files (its imports). Same-file names
+    /// use [`Self::name_origin`] instead.
+    pub imports_by_file: HashMap<u32, HashSet<String>>,
     pub entry_file: u32,
 }
 
 impl NameVisibility {
-    /// Entry module may only name locally declared or explicitly imported symbols.
-    /// Dependency modules (inlined for linking) may use the full inlined namespace
-    /// so public APIs can call their private/sibling helpers.
+    /// A name is visible from `from_file` when it is declared in that file, or
+    /// explicitly imported into that file. Dependency modules no longer see the
+    /// whole inlined namespace (that false-greened cross-dep references).
     pub fn allows(&self, name: &str, from_file: u32) -> bool {
         if self.name_origin.is_empty() {
             return true;
         }
-        if from_file != self.entry_file {
-            return true;
-        }
         match self.name_origin.get(name) {
             Some(&origin) if origin == from_file => true,
-            Some(_) => self.cross_file_visible.contains(name),
+            Some(_) => self
+                .imports_by_file
+                .get(&from_file)
+                .is_some_and(|s| s.contains(name)),
             None => true,
         }
     }

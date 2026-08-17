@@ -59,11 +59,13 @@ pub(crate) fn format_expr(out: &mut String, e: &Expr, indent: usize) {
         Expr::Lambda {
             params,
             param_tys,
+            bare_it,
             body,
             ..
         } => {
-            out.push_str("{ ");
-            if !params.is_empty() {
+            let print_params = !params.is_empty() && !*bare_it;
+            if print_params {
+                out.push_str("{ ");
                 for (i, n) in params.iter().enumerate() {
                     if i > 0 {
                         out.push_str(", ");
@@ -75,6 +77,8 @@ pub(crate) fn format_expr(out: &mut String, e: &Expr, indent: usize) {
                     }
                 }
                 out.push_str(" -> ");
+            } else {
+                out.push('{');
             }
             match body.as_ref() {
                 Expr::Block { .. } => {
@@ -85,21 +89,54 @@ pub(crate) fn format_expr(out: &mut String, e: &Expr, indent: usize) {
                     out.push('}');
                 }
                 _ => {
+                    out.push(' ');
                     format_expr(out, body, indent);
                     out.push_str(" }");
                 }
             }
         }
         Expr::Call { callee, args, .. } => {
-            format_expr(out, callee, indent);
-            out.push('(');
-            for (i, a) in args.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(", ");
+            // Surface sugar that parser desugars to calls (DESIGN §4.11):
+            // `a..b` / `a..<b` / `a to b` — print the written form for fmt/IDE.
+            if let (Expr::Ident(name, _), [left, right]) = (callee.as_ref(), args.as_slice()) {
+                let op = match name.as_str() {
+                    "rangeInclusive" => Some(".."),
+                    "range" => Some("..<"),
+                    "to" => Some(" to "),
+                    _ => None,
+                };
+                if let Some(op) = op {
+                    format_expr(out, left, indent);
+                    out.push_str(op);
+                    format_expr(out, right, indent);
+                    return;
                 }
-                format_expr(out, a, indent);
             }
-            out.push(')');
+            // Trailing closure: `f(a) { … }` / `f { … }` (last arg is Lambda/Block).
+            let trailing = matches!(
+                args.last(),
+                Some(Expr::Lambda { .. } | Expr::Block { .. })
+            );
+            format_expr(out, callee, indent);
+            let prefix = if trailing {
+                &args[..args.len() - 1]
+            } else {
+                args.as_slice()
+            };
+            if !trailing || !prefix.is_empty() {
+                out.push('(');
+                for (i, a) in prefix.iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(", ");
+                    }
+                    format_expr(out, a, indent);
+                }
+                out.push(')');
+            }
+            if trailing {
+                out.push(' ');
+                format_expr(out, args.last().unwrap(), indent);
+            }
         }
         Expr::Binary {
             op, left, right, ..

@@ -12,6 +12,11 @@ use lumia_core::CoreBinOp as BinOp;
 use rustc_hash::FxHashMap as HashMap;
 
 use super::super::Codegen;
+use super::sr_pattern::{
+    acc_add_rem_const_mod, add_name_other, body_assigns_const, body_assigns_rem, const_of,
+    first_direct_loop, header_le_const, header_lt_const, is_add_name_plus_any, is_affine_ik1,
+    is_affine_kj1, is_unit_inc, name_ne_zero, name_of,
+};
 use anyhow::{Context as AnyhowContext, Result};
 
 #[derive(Debug)]
@@ -214,7 +219,7 @@ fn match_gcd_sum(
     if n < 2 {
         return None;
     }
-    let (ih, ib, il) = find_inner_loop(body)?;
+    let (ih, ib, il) = first_direct_loop(body)?;
     if !il.ops.is_empty() {
         return None;
     }
@@ -285,39 +290,11 @@ fn is_euclid_loop(header: &Block, body: &Block, latch: &Block, defs: &HashMap<u3
     let Some(res) = header.result else {
         return false;
     };
-    let Some(Value::Binary {
-        op: BinOp::Ne,
-        left,
-        right,
-        ..
-    }) = defs.get(&res.0)
-    else {
+    let Some(y) = name_ne_zero(res, defs) else {
         return false;
     };
-    let y = match (name_of(*left, defs), const_of(*right, defs)) {
-        (Some(n), Some(0)) => n,
-        (Some(_), _) => match (name_of(*right, defs), const_of(*left, defs)) {
-            (Some(n), Some(0)) => n,
-            _ => return false,
-        },
-        _ => return false,
-    };
     // body: rem and swap assigns
-    let mut saw_rem = false;
-    for op in &body.ops {
-        if let Op::Assign {
-            name,
-            value: Local(v),
-        } = op
-        {
-            if name == &y {
-                if let Some(Value::Binary { op: BinOp::Rem, .. }) = defs.get(v) {
-                    saw_rem = true;
-                }
-            }
-        }
-    }
-    saw_rem
+    body_assigns_rem(body, &y, defs)
 }
 
 fn match_divisor_sum(
@@ -365,29 +342,13 @@ fn parse_acc_div_const(
     n: i64,
     defs: &HashMap<u32, Value>,
 ) -> Option<String> {
-    let Value::Binary {
-        op: BinOp::Add,
-        left,
-        right,
-        ..
-    } = defs.get(&dest)?
-    else {
-        return None;
-    };
-    let (acc, term) = if name_of(*left, defs).as_deref() == Some(s_name) {
-        (*right, *left)
-    } else if name_of(*right, defs).as_deref() == Some(s_name) {
-        (*left, *right)
-    } else {
-        return None;
-    };
-    let _ = term;
+    let term = add_name_other(dest, s_name, defs)?;
     let Value::Binary {
         op: BinOp::Div,
         left: dl,
         right: dr,
         ..
-    } = defs.get(&acc.0)?
+    } = defs.get(&term.0)?
     else {
         return None;
     };
@@ -413,7 +374,7 @@ fn match_product_rem_sum(
     if n < 2 {
         return None;
     }
-    let (ih, ib, il) = find_inner_loop(body)?;
+    let (ih, ib, il) = first_direct_loop(body)?;
     if !il.ops.is_empty() {
         return None;
     }
@@ -473,35 +434,7 @@ fn parse_acc_ij1_rem(
     j: &str,
     defs: &HashMap<u32, Value>,
 ) -> Option<(String, i64)> {
-    let Value::Binary {
-        op: BinOp::Add,
-        left,
-        right,
-        ..
-    } = defs.get(&dest)?
-    else {
-        return None;
-    };
-    let term = if name_of(*left, defs).as_deref() == Some(s_name) {
-        *right
-    } else if name_of(*right, defs).as_deref() == Some(s_name) {
-        *left
-    } else {
-        return None;
-    };
-    let Value::Binary {
-        op: BinOp::Rem,
-        left: num,
-        right: den,
-        ..
-    } = defs.get(&term.0)?
-    else {
-        return None;
-    };
-    let m = const_of(*den, defs)?;
-    if m < 2 {
-        return None;
-    }
+    let (num, m) = acc_add_rem_const_mod(dest, s_name, defs)?;
     // num = (i*j + 1)
     let Value::Binary {
         op: BinOp::Add,
@@ -592,22 +525,7 @@ fn parse_acc_get_affine_rem(
     n: i64,
     defs: &HashMap<u32, Value>,
 ) -> Option<(i64, i64, i64)> {
-    let Value::Binary {
-        op: BinOp::Add,
-        left,
-        right,
-        ..
-    } = defs.get(&dest)?
-    else {
-        return None;
-    };
-    let term = if name_of(*left, defs).as_deref() == Some(s_name) {
-        *right
-    } else if name_of(*right, defs).as_deref() == Some(s_name) {
-        *left
-    } else {
-        return None;
-    };
+    let term = add_name_other(dest, s_name, defs)?;
     let Value::Binary {
         op: BinOp::Rem,
         left: num,
@@ -694,7 +612,7 @@ fn match_matmul_affine(
     if n < 2 {
         return None;
     }
-    let (jh, jb, jl) = find_inner_loop(body)?;
+    let (jh, jb, jl) = first_direct_loop(body)?;
     if !jl.ops.is_empty() {
         return None;
     }
@@ -706,7 +624,7 @@ fn match_matmul_affine(
     if !body_assigns_const(body, &j, 0, defs) {
         return None;
     }
-    let (kh, kb, kl) = find_inner_loop(jb)?;
+    let (kh, kb, kl) = first_direct_loop(jb)?;
     if !kl.ops.is_empty() {
         return None;
     }
@@ -814,323 +732,20 @@ fn is_matmul_cell_acc(
         || is_affine_ik1(*b, i, k, n, defs) && is_affine_kj1(*a, k, j, n, defs)
 }
 
-/// `i*n + k + 1`
-fn is_affine_ik1(l: Local, i: &str, k: &str, n: i64, defs: &HashMap<u32, Value>) -> bool {
-    let Some(Value::Binary {
-        op: BinOp::Add,
-        left,
-        right,
-        ..
-    }) = defs.get(&l.0)
-    else {
-        return false;
-    };
-    let (rest, one) = if const_of(*left, defs) == Some(1) {
-        (*right, true)
-    } else if const_of(*right, defs) == Some(1) {
-        (*left, true)
-    } else {
-        return false;
-    };
-    if !one {
-        return false;
-    }
-    let Some(Value::Binary {
-        op: BinOp::Add,
-        left: a,
-        right: b,
-        ..
-    }) = defs.get(&rest.0)
-    else {
-        return false;
-    };
-    // (i*n) + k
-    matches!(
-        (
-            is_name_mul_const(*a, i, n, defs),
-            name_of(*b, defs).as_deref() == Some(k),
-            is_name_mul_const(*b, i, n, defs),
-            name_of(*a, defs).as_deref() == Some(k),
-        ),
-        (true, true, _, _) | (_, _, true, true)
-    )
-}
-
-/// `k*n + j + 1`
-fn is_affine_kj1(l: Local, k: &str, j: &str, n: i64, defs: &HashMap<u32, Value>) -> bool {
-    let Some(Value::Binary {
-        op: BinOp::Add,
-        left,
-        right,
-        ..
-    }) = defs.get(&l.0)
-    else {
-        return false;
-    };
-    let (rest, one) = if const_of(*left, defs) == Some(1) {
-        (*right, true)
-    } else if const_of(*right, defs) == Some(1) {
-        (*left, true)
-    } else {
-        return false;
-    };
-    if !one {
-        return false;
-    }
-    let Some(Value::Binary {
-        op: BinOp::Add,
-        left: a,
-        right: b,
-        ..
-    }) = defs.get(&rest.0)
-    else {
-        return false;
-    };
-    matches!(
-        (
-            is_name_mul_const(*a, k, n, defs),
-            name_of(*b, defs).as_deref() == Some(j),
-            is_name_mul_const(*b, k, n, defs),
-            name_of(*a, defs).as_deref() == Some(j),
-        ),
-        (true, true, _, _) | (_, _, true, true)
-    )
-}
-
-fn is_name_mul_const(l: Local, name: &str, n: i64, defs: &HashMap<u32, Value>) -> bool {
-    let Some(Value::Binary {
-        op: BinOp::Mul,
-        left,
-        right,
-        ..
-    }) = defs.get(&l.0)
-    else {
-        return false;
-    };
-    (name_of(*left, defs).as_deref() == Some(name) && const_of(*right, defs) == Some(n))
-        || (name_of(*right, defs).as_deref() == Some(name) && const_of(*left, defs) == Some(n))
-}
-
 fn parse_acc_rem_name(
     dest: u32,
     s_name: &str,
     cell: &str,
     defs: &HashMap<u32, Value>,
 ) -> Option<i64> {
-    let Value::Binary {
-        op: BinOp::Add,
-        left,
-        right,
-        ..
-    } = defs.get(&dest)?
-    else {
-        return None;
-    };
-    let term = if name_of(*left, defs).as_deref() == Some(s_name) {
-        *right
-    } else if name_of(*right, defs).as_deref() == Some(s_name) {
-        *left
-    } else {
-        return None;
-    };
-    let Value::Binary {
-        op: BinOp::Rem,
-        left: num,
-        right: den,
-        ..
-    } = defs.get(&term.0)?
-    else {
-        return None;
-    };
-    if name_of(*num, defs).as_deref() != Some(cell) {
-        return None;
-    }
-    let m = const_of(*den, defs)?;
-    if m < 2 {
-        None
-    } else {
+    let (num, m) = acc_add_rem_const_mod(dest, s_name, defs)?;
+    if name_of(num, defs).as_deref() == Some(cell) {
         Some(m)
+    } else {
+        None
     }
-}
-
-fn find_inner_loop(body: &Block) -> Option<(&Block, &Block, &Block)> {
-    for op in &body.ops {
-        if let Op::Let {
-            value:
-                Value::Loop {
-                    header,
-                    body,
-                    latch,
-                },
-            ..
-        } = op
-        {
-            return Some((header, body, latch));
-        }
-    }
-    None
-}
-
-fn body_assigns_const(body: &Block, slot: &str, expect: i64, defs: &HashMap<u32, Value>) -> bool {
-    for op in &body.ops {
-        if let Op::Assign {
-            name,
-            value: Local(v),
-        } = op
-        {
-            if name == slot && const_of(Local(*v), defs) == Some(expect) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-fn header_lt_const(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String, i64)> {
-    let res = header.result?;
-    let Value::Binary {
-        op, left, right, ..
-    } = defs.get(&res.0)?
-    else {
-        return None;
-    };
-    match op {
-        BinOp::Lt => {
-            let name = name_of(*left, defs)?;
-            let n = const_of(*right, defs)?;
-            Some((name, n))
-        }
-        _ => None,
-    }
-}
-
-fn header_le_const(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String, i64)> {
-    let res = header.result?;
-    let Value::Binary {
-        op, left, right, ..
-    } = defs.get(&res.0)?
-    else {
-        return None;
-    };
-    match op {
-        BinOp::Le => {
-            let name = name_of(*left, defs)?;
-            let n = const_of(*right, defs)?;
-            Some((name, n))
-        }
-        _ => None,
-    }
-}
-
-fn name_of(l: Local, defs: &HashMap<u32, Value>) -> Option<String> {
-    match defs.get(&l.0)? {
-        Value::Name(n) => Some(n.clone()),
-        _ => None,
-    }
-}
-
-fn const_of(l: Local, defs: &HashMap<u32, Value>) -> Option<i64> {
-    match defs.get(&l.0)? {
-        Value::Int(n) => Some(*n),
-        _ => None,
-    }
-}
-
-fn is_unit_inc(dest: u32, name: &str, defs: &HashMap<u32, Value>) -> bool {
-    let Some(Value::Binary {
-        op: BinOp::Add,
-        left,
-        right,
-        ..
-    }) = defs.get(&dest)
-    else {
-        return false;
-    };
-    let l = name_of(*left, defs).as_deref() == Some(name);
-    let r = name_of(*right, defs).as_deref() == Some(name);
-    (l && const_of(*right, defs) == Some(1)) || (r && const_of(*left, defs) == Some(1))
-}
-
-fn is_add_name_plus_any(dest: u32, s_name: &str, defs: &HashMap<u32, Value>) -> bool {
-    let Some(Value::Binary {
-        op: BinOp::Add,
-        left,
-        right,
-        ..
-    }) = defs.get(&dest)
-    else {
-        return false;
-    };
-    name_of(*left, defs).as_deref() == Some(s_name)
-        || name_of(*right, defs).as_deref() == Some(s_name)
 }
 
 #[cfg(test)]
-mod match_tests {
-    use super::*;
-    use lumia_opt::{compile_source_to_optimized, OptOptions};
-
-    fn find_loops(b: &Block, out: &mut Vec<(Block, Block, Block)>) {
-        for op in &b.ops {
-            if let Op::Let {
-                value:
-                    Value::Loop {
-                        header,
-                        body,
-                        latch,
-                    },
-                ..
-            } = op
-            {
-                out.push((
-                    header.as_ref().clone(),
-                    body.as_ref().clone(),
-                    latch.as_ref().clone(),
-                ));
-                find_loops(body, out);
-            }
-        }
-    }
-
-    #[test]
-    fn matches_new_bench_srs() {
-        let src = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../examples/bench_cpu.lm"
-        ))
-        .unwrap();
-        let core = compile_source_to_optimized(&src, &OptOptions::for_build(true)).unwrap();
-        let mut gcd = 0;
-        let mut div = 0;
-        let mut prod = 0;
-        let mut range = 0;
-        let mut matmul = 0;
-        for f in &core.functions {
-            let defs = crate::nsw_iv::collect_leaf_defs(&f.body);
-            let mut loops = vec![];
-            find_loops(&f.body, &mut loops);
-            for (h, b, l) in &loops {
-                if match_gcd_sum(h, b, l, &defs).is_some() {
-                    gcd += 1;
-                }
-                if match_divisor_sum(h, b, l, &defs).is_some() {
-                    div += 1;
-                }
-                if match_product_rem_sum(h, b, l, &defs).is_some() {
-                    prod += 1;
-                }
-                if match_range_affine1(h, b, l, &defs).is_some() {
-                    range += 1;
-                }
-                if match_matmul_affine(h, b, l, &defs).is_some() {
-                    matmul += 1;
-                }
-            }
-        }
-        assert!(gcd >= 1, "gcd matches={gcd}");
-        assert!(div >= 1, "div matches={div}");
-        assert!(prod >= 1, "prod matches={prod}");
-        assert!(range >= 1, "range matches={range}");
-        assert!(matmul >= 1, "matmul matches={matmul}");
-    }
-}
+#[path = "number_theory_sr_tests.rs"]
+mod match_tests;

@@ -29,5 +29,5 @@ pub const DENSE_F64_TRAMPOLINE_SYMS: &[&str] = &[
 
 #[inline]
 pub fn is_dense_f64_trampoline(sym: &str) -> bool {
-    DENSE_F64_TRAMPOLINE_SYMS.iter().any(|&s| s == sym)
+    DENSE_F64_TRAMPOLINE_SYMS.contains(&sym)
 }

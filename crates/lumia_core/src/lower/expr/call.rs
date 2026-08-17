@@ -211,6 +211,12 @@ fn stamp_builtin_result_ty(
                 _ => None,
             }
         }
+        // Payload of recv / join — lift heap lattice uses `type_may_heap` on the stamp
+        // (same Typed path as codegen roots) instead of hardcoding non-heap.
+        Builtin::ChannelRecv | Builtin::TaskJoin => {
+            let ty = ctx.type_of_span(expr_span(expr))?;
+            type_is_ground(&ty).then_some(ty)
+        }
         // Match `Ok`/`Err`/`Some`: derive from receiver + ctor hint (not the
         // AdtField expr's type_at — those spans collide with arm bodies).
         Builtin::AdtField => stamp_adt_field_result_ty(ctx, expr),
@@ -329,5 +335,41 @@ val main = {
             found_string && found_float,
             "expected Ok→Float and Err→String AdtField stamps"
         );
+    }
+
+    #[test]
+    fn channel_recv_list_payload_stamped_ground() {
+        let core = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+val main = {
+  val ch = channel(1)
+  spawn { ch.send(listOf(1, 2)) }
+  println(ch.recv())
+}
+"#,
+        )
+        .expect("core");
+        let mut found = false;
+        for fun in &core.functions {
+            for_each_block_dfs(&fun.body, &mut |b| {
+                for op in &b.ops {
+                    if let Op::Let {
+                        value:
+                            Value::Builtin {
+                                name: Builtin::ChannelRecv,
+                                result_ty: Some(Type::List(_)),
+                                ..
+                            },
+                        ..
+                    } = op
+                    {
+                        found = true;
+                    }
+                }
+            });
+        }
+        assert!(found, "expected ChannelRecv stamped List payload");
     }
 }

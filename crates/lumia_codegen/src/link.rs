@@ -34,6 +34,8 @@ pub(crate) fn link_executable(
             .arg("-lutil");
         // Drop unused `lumia_rt` / Rust-std objects on all profiles (not only
         // Release). Cuts Debug binary size when domain kernels are unused.
+        // Target OS is Linux + Windows (BUILD); macOS `-dead_strip` is kept only
+        // as an experimental host escape hatch — not a supported product path.
         if cfg!(target_os = "macos") {
             cmd.arg("-Wl,-dead_strip");
         } else {
@@ -53,6 +55,14 @@ pub(crate) fn link_executable(
         bail!("link failed with {status} (driver `{linker}`)");
     }
     Ok(())
+}
+
+/// Drop the intermediate object after a successful link unless `LUMIA_KEEP_OBJ` is set.
+pub(crate) fn remove_link_object_unless_kept(obj: &Path) {
+    if std::env::var_os("LUMIA_KEEP_OBJ").is_some() {
+        return;
+    }
+    let _ = std::fs::remove_file(obj);
 }
 
 /// Locate `liblumia_rt.a` / `lumia_rt.lib` in target dir.
@@ -106,4 +116,32 @@ pub fn find_runtime_lib_prefer(target_dir: &Path, release: bool) -> Result<PathB
         "liblumia_rt.a / lumia_rt.lib not found under {} — run `cargo build -p lumia_rt` first",
         target_dir.display()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::remove_link_object_unless_kept;
+    use std::io::Write;
+
+    #[test]
+    fn remove_link_object_deletes_by_default() {
+        let dir = std::env::temp_dir().join(format!(
+            "lumia_keep_obj_test_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let obj = dir.join("t.o");
+        {
+            let mut f = std::fs::File::create(&obj).expect("create");
+            f.write_all(b"x").expect("write");
+        }
+        assert!(obj.exists());
+        // Ensure keep flag is off for this process (tests run serially in CI for rt, but
+        // codegen tests may parallel — only assert delete when unset).
+        if std::env::var_os("LUMIA_KEEP_OBJ").is_none() {
+            remove_link_object_unless_kept(&obj);
+            assert!(!obj.exists(), "intermediate .o should be removed after link");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

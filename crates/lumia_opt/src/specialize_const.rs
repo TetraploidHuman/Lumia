@@ -30,19 +30,20 @@ struct ConstKey {
 }
 
 fn specialize_const_calls(module: &mut CoreModule) {
-    let candidates: HashMap<String, CoreFun> = module
+    // Arity index only — clone bodies when emitting `$c_` clones.
+    let candidate_arity: HashMap<String, usize> = module
         .functions
         .iter()
         .filter(|f| is_specializeable(f))
-        .map(|f| (f.name.clone(), f.clone()))
+        .map(|f| (f.name.clone(), f.params.len()))
         .collect();
-    if candidates.is_empty() {
+    if candidate_arity.is_empty() {
         return;
     }
 
     let mut needed: HashSet<ConstKey> = HashSet::default();
     for fun in &module.functions {
-        collect_const_calls(&fun.body, &candidates, &mut needed);
+        collect_const_calls(&fun.body, &candidate_arity, &mut needed);
         if needed.len() >= SPECIALIZE_CONST_MAX_TOTAL_CLONES {
             break;
         }
@@ -63,12 +64,20 @@ fn specialize_const_calls(module: &mut CoreModule) {
         ordered.push(key);
     }
 
+    let fun_index: HashMap<String, usize> = module
+        .functions
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.name.clone(), i))
+        .collect();
+
     let mut renames: HashMap<(String, Vec<i64>), String> = HashMap::default();
     let mut new_funs: Vec<CoreFun> = Vec::new();
     for key in &ordered {
-        let Some(orig) = candidates.get(&key.fun) else {
+        let Some(&idx) = fun_index.get(&key.fun) else {
             continue;
         };
+        let orig = &module.functions[idx];
         if key.args.len() != orig.params.len() {
             continue;
         }
@@ -85,7 +94,7 @@ fn specialize_const_calls(module: &mut CoreModule) {
     module.functions.extend(new_funs);
 
     for fun in &mut module.functions {
-        rewrite_const_calls(&mut fun.body, &renames, &candidates);
+        rewrite_const_calls(&mut fun.body, &renames, &candidate_arity);
     }
 }
 
@@ -194,7 +203,7 @@ fn build_const_clone(orig: &CoreFun, args: &[i64], name: String) -> CoreFun {
 
 fn collect_const_calls(
     block: &Block,
-    candidates: &HashMap<String, CoreFun>,
+    candidate_arity: &HashMap<String, usize>,
     needed: &mut HashSet<ConstKey>,
 ) {
     let mut known = crate::ir_util::KnownScalars::new();
@@ -207,8 +216,8 @@ fn collect_const_calls(
             } if *pure_region => {
                 known.track(local.0, value);
                 if let Value::Call { fun, args } = value {
-                    if let Some(c) = candidates.get(fun) {
-                        if c.params.len() == args.len() {
+                    if let Some(&arity) = candidate_arity.get(fun) {
+                        if arity == args.len() {
                             if let Some(consts) = known.resolve_all(args) {
                                 needed.insert(ConstKey {
                                     fun: fun.clone(),
@@ -218,10 +227,10 @@ fn collect_const_calls(
                         }
                     }
                 }
-                walk_nested_collect(value, candidates, needed);
+                walk_nested_collect(value, candidate_arity, needed);
             }
             Op::Let { value, .. } => {
-                walk_nested_collect(value, candidates, needed);
+                walk_nested_collect(value, candidate_arity, needed);
             }
             _ => {}
         }
@@ -233,7 +242,7 @@ fn collect_const_calls(
 
 fn walk_nested_collect(
     value: &Value,
-    candidates: &HashMap<String, CoreFun>,
+    candidate_arity: &HashMap<String, usize>,
     needed: &mut HashSet<ConstKey>,
 ) {
     match value {
@@ -242,19 +251,19 @@ fn walk_nested_collect(
             else_block,
             ..
         } => {
-            collect_const_calls(then_block, candidates, needed);
-            collect_const_calls(else_block, candidates, needed);
+            collect_const_calls(then_block, candidate_arity, needed);
+            collect_const_calls(else_block, candidate_arity, needed);
         }
         Value::Loop {
             header,
             body,
             latch,
         } => {
-            collect_const_calls(header, candidates, needed);
-            collect_const_calls(body, candidates, needed);
-            collect_const_calls(latch, candidates, needed);
+            collect_const_calls(header, candidate_arity, needed);
+            collect_const_calls(body, candidate_arity, needed);
+            collect_const_calls(latch, candidate_arity, needed);
         }
-        Value::Lambda { body, .. } => collect_const_calls(body, candidates, needed),
+        Value::Lambda { body, .. } => collect_const_calls(body, candidate_arity, needed),
         _ => {}
     }
 }
@@ -262,7 +271,7 @@ fn walk_nested_collect(
 fn rewrite_const_calls(
     block: &mut Block,
     renames: &HashMap<(String, Vec<i64>), String>,
-    candidates: &HashMap<String, CoreFun>,
+    candidate_arity: &HashMap<String, usize>,
 ) {
     let mut known = crate::ir_util::KnownScalars::new();
     for op in &mut block.ops {
@@ -273,7 +282,7 @@ fn rewrite_const_calls(
                 pure_region,
             } if *pure_region => {
                 if let Value::Call { fun, args } = value {
-                    if candidates.contains_key(fun) {
+                    if candidate_arity.contains_key(fun) {
                         if let Some(consts) = known.resolve_all(args) {
                             if let Some(mangled) = renames.get(&(fun.clone(), consts)) {
                                 *value = Value::Call {
@@ -285,10 +294,10 @@ fn rewrite_const_calls(
                     }
                 }
                 known.track(local.0, value);
-                walk_nested_rewrite(value, renames, candidates);
+                walk_nested_rewrite(value, renames, candidate_arity);
             }
             Op::Let { value, .. } => {
-                walk_nested_rewrite(value, renames, candidates);
+                walk_nested_rewrite(value, renames, candidate_arity);
             }
             _ => {}
         }
@@ -298,7 +307,7 @@ fn rewrite_const_calls(
 fn walk_nested_rewrite(
     value: &mut Value,
     renames: &HashMap<(String, Vec<i64>), String>,
-    candidates: &HashMap<String, CoreFun>,
+    candidate_arity: &HashMap<String, usize>,
 ) {
     match value {
         Value::If {
@@ -306,134 +315,23 @@ fn walk_nested_rewrite(
             else_block,
             ..
         } => {
-            rewrite_const_calls(then_block, renames, candidates);
-            rewrite_const_calls(else_block, renames, candidates);
+            rewrite_const_calls(then_block, renames, candidate_arity);
+            rewrite_const_calls(else_block, renames, candidate_arity);
         }
         Value::Loop {
             header,
             body,
             latch,
         } => {
-            rewrite_const_calls(header, renames, candidates);
-            rewrite_const_calls(body, renames, candidates);
-            rewrite_const_calls(latch, renames, candidates);
+            rewrite_const_calls(header, renames, candidate_arity);
+            rewrite_const_calls(body, renames, candidate_arity);
+            rewrite_const_calls(latch, renames, candidate_arity);
         }
-        Value::Lambda { body, .. } => rewrite_const_calls(body, renames, candidates),
+        Value::Lambda { body, .. } => rewrite_const_calls(body, renames, candidate_arity),
         _ => {}
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{compile_source_to_optimized, OptOptions};
-
-    #[test]
-    fn specialize_const_clones_pure_int_call() {
-        // Isolate specialize (full release pipeline may inline the clone away).
-        let src = r#"
-module M
-val add1 = { x -> x + 1 }
-val main = {
-    add1(41)
-}
-"#;
-        let mut core = lumia_core::compile_source_to_core(src).expect("core");
-        crate::ConstFoldPass.run(&mut core);
-        SpecializeConstPass.run(&mut core);
-        assert!(
-            core.functions.iter().any(|f| f.name == "add1$c_41"),
-            "expected const-specialized clone, funs={:?}",
-            core.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
-        );
-        let main = core.functions.iter().find(|f| f.is_main).expect("main");
-        let calls_clone = main.body.ops.iter().any(|op| match op {
-            Op::Let {
-                value: Value::Call { fun, args },
-                ..
-            } => fun == "add1$c_41" && args.is_empty(),
-            _ => false,
-        });
-        assert!(calls_clone, "main should call specialized clone");
-    }
-
-    #[test]
-    fn specialize_const_clones_pure_bool_call() {
-        let src = r#"
-module M
-val flip = { b -> if b { false } else { true } }
-val main = {
-    flip(false)
-}
-"#;
-        let mut core = lumia_core::compile_source_to_core(src).expect("core");
-        crate::ConstFoldPass.run(&mut core);
-        SpecializeConstPass.run(&mut core);
-        assert!(
-            core.functions
-                .iter()
-                .any(|f| f.name.starts_with("flip$c_") || f.name.contains("flip$c_")),
-            "expected bool const clone, funs={:?}",
-            core.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn specialize_const_clones_pure_float_call() {
-        let src = r#"
-module M
-val add1f = { x -> x + 1.0 }
-val main = {
-    add1f(41.0)
-}
-"#;
-        let mut core = lumia_core::compile_source_to_core(src).expect("core");
-        crate::ConstFoldPass.run(&mut core);
-        SpecializeConstPass.run(&mut core);
-        assert!(
-            core.functions
-                .iter()
-                .any(|f| f.name.starts_with("add1f$c_") || f.name.contains("add1f$c_")),
-            "expected float const clone, funs={:?}",
-            core.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn specialize_const_pe_result_visible_in_ir() {
-        // After specialize + fold + inline, the call should collapse toward 42.
-        let core = compile_source_to_optimized(
-            r#"
-module M
-val add1 = { x -> x + 1 }
-val main = add1(41)
-"#,
-            &OptOptions::for_build(true),
-        )
-        .expect("opt");
-        let main = core.functions.iter().find(|f| f.is_main).expect("main");
-        let has_42 = main.body.ops.iter().any(|op| {
-            matches!(
-                op,
-                Op::Let {
-                    value: Value::Int(42),
-                    ..
-                }
-            )
-        }) || matches!(
-            main.body.result.and_then(|r| {
-                main.body.ops.iter().rev().find_map(|op| match op {
-                    Op::Let { local, value, .. } if *local == r => Some(value),
-                    _ => None,
-                })
-            }),
-            Some(Value::Int(42)) | Some(Value::Local(_))
-        );
-        // Soft check: either Int(42) appears or a specialized clone exists.
-        let has_clone = core.functions.iter().any(|f| f.name.contains("add1$c_"));
-        assert!(
-            has_42 || has_clone,
-            "expected PE of add1(41) or a const clone"
-        );
-    }
-}
+#[path = "specialize_const_tests.rs"]
+mod tests;

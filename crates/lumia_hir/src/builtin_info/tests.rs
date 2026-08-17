@@ -170,7 +170,6 @@ fn surface_from_method_roundtrips_display_name() {
         Builtin::ListTake,
         Builtin::ListReverse,
         Builtin::ListSort,
-        Builtin::ListJoin,
         Builtin::StrTrim,
         Builtin::StrSplit,
         Builtin::StrSubstring,
@@ -182,7 +181,6 @@ fn surface_from_method_roundtrips_display_name() {
         Builtin::ListConcat,
         Builtin::Range,
         Builtin::RangeInclusive,
-        Builtin::TaskJoin,
         Builtin::ChannelSend,
         Builtin::ChannelRecv,
         Builtin::ChannelRecvOpt,
@@ -213,6 +211,8 @@ fn surface_from_method_roundtrips_display_name() {
         Builtin::AdtField,
         Builtin::ChannelNew,
         Builtin::TaskSpawn,
+        Builtin::TaskJoin,
+        Builtin::ListJoin,
         Builtin::ScopeEnter,
         Builtin::ScopeLeave,
     ] {
@@ -236,6 +236,42 @@ fn result_heap_projections_are_typed_not_capture() {
     assert!(Builtin::ListLen.result_heap() == ResultHeap::Never);
     assert!(Builtin::Show.result_heap() == ResultHeap::Always);
     assert!(!Builtin::Show.may_capture());
+}
+
+#[test]
+fn receiver_rt_overrides_are_complete() {
+    assert_eq!(
+        Builtin::ListReverse.string_receiver_rt_override(),
+        Some("lumia_str_reverse")
+    );
+    assert_eq!(
+        Builtin::ListTake.string_receiver_rt_override(),
+        Some("lumia_str_take")
+    );
+    assert_eq!(
+        Builtin::ListSlice.string_receiver_rt_override(),
+        Some("lumia_str_slice")
+    );
+    assert_eq!(
+        Builtin::ListConcat.string_receiver_rt_override(),
+        Some("lumia_str_concat")
+    );
+    assert_eq!(Builtin::ListAppend.string_receiver_rt_override(), None);
+    assert_eq!(Builtin::ListLen.string_receiver_rt_override(), None);
+
+    assert_eq!(
+        Builtin::ListLen.list_receiver_rt_override(),
+        Some("lumia_list_len")
+    );
+    assert_eq!(
+        Builtin::MapSet.list_receiver_rt_override(),
+        Some("lumia_list_set")
+    );
+    assert_eq!(
+        Builtin::ListGet.list_receiver_rt_override(),
+        Some("lumia_list_get")
+    );
+    assert_eq!(Builtin::ListConcat.list_receiver_rt_override(), None);
 }
 
 #[test]

@@ -2,11 +2,12 @@
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
+#[cfg(not(feature = "codegen"))]
 use lumia::check::check_program;
 use lumia::load::path_label;
 use lumia::pkg;
 use lumia::{doc, lsp};
-use lumia_syntax::{format_diagnostic, parse_module, stamp_module};
+use lumia_syntax::{format_diagnostic, format_matches_source, parse_module, stamp_module};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -76,6 +77,26 @@ enum Commands {
         #[arg(long)]
         emit_llvm: bool,
     },
+    /// Build then run (same flags as `build`; program args after `--`)
+    #[cfg(feature = "codegen")]
+    Run {
+        file: PathBuf,
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        #[arg(long)]
+        release: bool,
+        #[arg(long = "no-memo", alias = "no-memo-l2")]
+        no_memo: bool,
+        #[command(flatten)]
+        shared: SharedCheckArgs,
+        #[arg(long = "no-dense-f64-sr")]
+        no_dense_f64_sr: bool,
+        #[arg(long = "link", value_name = "ARG")]
+        link: Vec<String>,
+        /// Arguments forwarded to the program (place after `--`).
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Format source files (basic pretty-printer)
     Fmt {
         files: Vec<PathBuf>,
@@ -129,11 +150,23 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
         Commands::Check { file, shared } => {
-            let _ = check_program(
+            #[cfg(feature = "codegen")]
+            lumia::build::check_file(
                 &file,
-                !shared.no_parallel,
-                shared.trust_foreign_pure_override(),
+                &lumia::build::CompileOptions {
+                    auto_parallel: !shared.no_parallel,
+                    trust_foreign_pure: shared.trust_foreign_pure_override(),
+                    ..lumia::build::CompileOptions::default()
+                },
             )?;
+            #[cfg(not(feature = "codegen"))]
+            {
+                let _ = check_program(
+                    &file,
+                    !shared.no_parallel,
+                    shared.trust_foreign_pure_override(),
+                )?;
+            }
             println!("ok");
             Ok(())
         }
@@ -162,16 +195,72 @@ fn main() -> Result<()> {
             lumia::build::build_file(
                 &file,
                 &out,
-                release,
-                !no_memo,
-                !shared.no_parallel,
-                !no_dense_f64_sr,
-                shared.trust_foreign_pure_override(),
-                validated_link,
-                show_ir,
-                emit_llvm,
+                &lumia::build::CompileOptions {
+                    release,
+                    memo_tf: !no_memo,
+                    auto_parallel: !shared.no_parallel,
+                    dense_f64_sr: !no_dense_f64_sr,
+                    trust_foreign_pure: shared.trust_foreign_pure_override(),
+                    link_args: validated_link,
+                    show_ir,
+                    emit_llvm,
+                },
             )?;
             println!("wrote {}", out.display());
+            Ok(())
+        }
+        #[cfg(feature = "codegen")]
+        Commands::Run {
+            file,
+            output,
+            release,
+            no_memo,
+            shared,
+            no_dense_f64_sr,
+            link,
+            args,
+        } => {
+            let keep_bin = output.is_some();
+            let out = output.unwrap_or_else(|| {
+                let stem = file
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "a.out".into());
+                std::env::temp_dir().join(format!("lumia_run_{stem}_{}", std::process::id()))
+            });
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let mut validated_link = Vec::with_capacity(link.len());
+            for a in &link {
+                validated_link.push(pkg::validate_cli_link_arg(&cwd, a)?);
+            }
+            lumia::build::build_file(
+                &file,
+                &out,
+                &lumia::build::CompileOptions {
+                    release,
+                    memo_tf: !no_memo,
+                    auto_parallel: !shared.no_parallel,
+                    dense_f64_sr: !no_dense_f64_sr,
+                    trust_foreign_pure: shared.trust_foreign_pure_override(),
+                    link_args: validated_link,
+                    show_ir: false,
+                    emit_llvm: false,
+                },
+            )?;
+            let status = std::process::Command::new(&out)
+                .args(&args)
+                .status()
+                .with_context(|| format!("run {}", out.display()))?;
+            if !keep_bin {
+                let _ = fs::remove_file(&out);
+            }
+            if let Some(code) = status.code() {
+                if code != 0 {
+                    std::process::exit(code);
+                }
+            } else {
+                anyhow::bail!("program terminated by signal ({status})");
+            }
             Ok(())
         }
         Commands::Fmt { files, check } => {
@@ -245,7 +334,7 @@ fn fmt_file(path: &Path, check: bool) -> Result<()> {
     stamp_module(&mut m, 0);
     let formatted = lumia_syntax::format_module_src(&m);
     if check {
-        if formatted.trim_end() != src.trim_end() {
+        if !format_matches_source(&src, &formatted) {
             anyhow::bail!("{} would be reformatted", path.display());
         }
         println!("ok {}", path.display());

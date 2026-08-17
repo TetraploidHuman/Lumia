@@ -10,15 +10,18 @@
 //! Even runs become `k = cttz(x); x >>= k; steps += k`.
 //!
 //! Note: LICM may hoist `Int` literals outside the loop; matching therefore uses
-//! function-wide [`crate::nsw_iv::collect_leaf_defs`].
+//! function-wide [`lumia_core::collect_leaf_defs`].
 
 use inkwell::values::{BasicValueEnum, FunctionValue, IntValue};
 use inkwell::IntPredicate;
 use lumia_core::{Block, Local, Op, Value};
-use lumia_core::CoreBinOp as BinOp;
 use rustc_hash::FxHashMap as HashMap;
 
 use super::super::Codegen;
+use super::sr_pattern::{
+    body_assigns_name_div_const, body_assigns_name_mul_const_plus_const, header_gt_eq,
+    header_le_const, is_add_name_plus_name, is_name_add_const, is_name_rem_eq_const, is_unit_inc,
+};
 use anyhow::{Context as AnyhowContext, Result};
 
 #[derive(Debug)]
@@ -281,7 +284,7 @@ fn match_collatz_loop(
     if !latch.ops.is_empty() {
         return None;
     }
-    let x = header_gt1_iv(header, defs)?;
+    let x = header_gt_eq(header, 1, defs)?;
     let (then_div, else_triple, steps) = body_collatz_parts(body, &x, defs)?;
     if !then_div || !else_triple {
         return None;
@@ -389,7 +392,7 @@ fn match_collatz_strided_loop(
                 value: Local(v),
             } => {
                 if name == &n {
-                    if let Some(k) = const_add_inc(*v, &n, defs) {
+                    if let Some(k) = is_name_add_const(*v, &n, defs) {
                         if k >= 2 {
                             stride = Some(k);
                         }
@@ -413,110 +416,7 @@ fn match_collatz_strided_loop(
     })
 }
 
-/// `Name(n) + K` with const `K`, else `None`.
-fn const_add_inc(dest: u32, name: &str, defs: &HashMap<u32, Value>) -> Option<i64> {
-    let Value::Binary {
-        op: BinOp::Add,
-        left,
-        right,
-        ..
-    } = defs.get(&dest)?
-    else {
-        return None;
-    };
-    if name_of(*left, defs).as_deref() == Some(name) {
-        const_of(*right, defs)
-    } else if name_of(*right, defs).as_deref() == Some(name) {
-        const_of(*left, defs)
-    } else {
-        None
-    }
-}
-
-/// Header result is `Name(n) <= K` (const).
-fn header_le_const(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String, i64)> {
-    let res = header.result?;
-    let Value::Binary {
-        op, left, right, ..
-    } = defs.get(&res.0)?
-    else {
-        return None;
-    };
-    match op {
-        BinOp::Le => {
-            let n = name_of(*left, defs)?;
-            let k = const_of(*right, defs)?;
-            Some((n, k))
-        }
-        BinOp::Ge => {
-            let n = name_of(*right, defs)?;
-            let k = const_of(*left, defs)?;
-            Some((n, k))
-        }
-        _ => None,
-    }
-}
-
-fn is_add_name_plus_name(dest: u32, a: &str, b: &str, defs: &HashMap<u32, Value>) -> bool {
-    let Some(Value::Binary {
-        op: BinOp::Add,
-        left,
-        right,
-        ..
-    }) = defs.get(&dest)
-    else {
-        return false;
-    };
-    let ln = name_of(*left, defs);
-    let rn = name_of(*right, defs);
-    (ln.as_deref() == Some(a) && rn.as_deref() == Some(b))
-        || (ln.as_deref() == Some(b) && rn.as_deref() == Some(a))
-}
-
-fn name_of(l: Local, defs: &HashMap<u32, Value>) -> Option<String> {
-    match defs.get(&l.0)? {
-        Value::Name(n) => Some(n.clone()),
-        _ => None,
-    }
-}
-
-fn const_of(l: Local, defs: &HashMap<u32, Value>) -> Option<i64> {
-    match defs.get(&l.0)? {
-        Value::Int(n) => Some(*n),
-        _ => None,
-    }
-}
-
-/// Header result is `Name(x) > 1` (or `1 < Name(x)`).
-fn header_gt1_iv(header: &Block, defs: &HashMap<u32, Value>) -> Option<String> {
-    let res = header.result?;
-    let Value::Binary {
-        op, left, right, ..
-    } = defs.get(&res.0)?
-    else {
-        return None;
-    };
-    match op {
-        BinOp::Gt => {
-            let x = name_of(*left, defs)?;
-            if const_of(*right, defs) == Some(1) {
-                Some(x)
-            } else {
-                None
-            }
-        }
-        BinOp::Lt => {
-            let x = name_of(*right, defs)?;
-            if const_of(*left, defs) == Some(1) {
-                Some(x)
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
-}
-
+/// Expect: Let If { ... }; Assign steps = steps+1  (order may vary slightly)
 fn body_collatz_parts(
     body: &Block,
     x: &str,
@@ -538,11 +438,11 @@ fn body_collatz_parts(
                     },
                 ..
             } => {
-                if !cond_is_even(cond, x, defs) {
+                if !is_name_rem_eq_const(*cond, x, 2, defs) {
                     return None;
                 }
-                then_div = block_assigns_div2(then_block, x, defs);
-                else_triple = block_assigns_triple_plus1(else_block, x, defs);
+                then_div = body_assigns_name_div_const(then_block, x, 2, defs);
+                else_triple = body_assigns_name_mul_const_plus_const(else_block, x, 3, 1, defs);
             }
             Op::Assign {
                 name,
@@ -558,225 +458,6 @@ fn body_collatz_parts(
     Some((then_div, else_triple, steps?))
 }
 
-fn cond_is_even(cond: &Local, x: &str, defs: &HashMap<u32, Value>) -> bool {
-    // (x % 2) == 0
-    let Value::Binary {
-        op: BinOp::Eq,
-        left,
-        right,
-        ..
-    } = defs.get(&cond.0).cloned().unwrap_or(Value::Unit)
-    else {
-        return false;
-    };
-    let zero_side = const_of(left, defs) == Some(0) || const_of(right, defs) == Some(0);
-    if !zero_side {
-        return false;
-    }
-    let rem = if const_of(left, defs) == Some(0) {
-        right
-    } else {
-        left
-    };
-    let Value::Binary {
-        op: BinOp::Rem,
-        left: a,
-        right: b,
-        ..
-    } = defs.get(&rem.0).cloned().unwrap_or(Value::Unit)
-    else {
-        return false;
-    };
-    let (xv, two) = if const_of(b, defs) == Some(2) {
-        (a, true)
-    } else if const_of(a, defs) == Some(2) {
-        (b, true)
-    } else {
-        (a, false)
-    };
-    two && name_of(xv, defs).as_deref() == Some(x)
-}
-
-fn block_assigns_div2(block: &Block, x: &str, defs: &HashMap<u32, Value>) -> bool {
-    for op in &block.ops {
-        if let Op::Assign {
-            name,
-            value: Local(v),
-        } = op
-        {
-            if name != x {
-                continue;
-            }
-            if let Some(Value::Binary {
-                op: BinOp::Div,
-                left,
-                right,
-                ..
-            }) = defs.get(v)
-            {
-                let ok = (name_of(*left, defs).as_deref() == Some(x)
-                    && const_of(*right, defs) == Some(2))
-                    || (name_of(*right, defs).as_deref() == Some(x)
-                        && const_of(*left, defs) == Some(2));
-                if ok {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-
-fn block_assigns_triple_plus1(block: &Block, x: &str, defs: &HashMap<u32, Value>) -> bool {
-    // x = (3 * x) + 1   or   x = 1 + (3 * x)
-    for op in &block.ops {
-        let Op::Assign {
-            name,
-            value: Local(v),
-        } = op
-        else {
-            continue;
-        };
-        if name != x {
-            continue;
-        }
-        let Some(Value::Binary {
-            op: BinOp::Add,
-            left,
-            right,
-            ..
-        }) = defs.get(v)
-        else {
-            continue;
-        };
-        let mul_l = if const_of(*right, defs) == Some(1) {
-            *left
-        } else if const_of(*left, defs) == Some(1) {
-            *right
-        } else {
-            continue;
-        };
-        let Some(Value::Binary {
-            op: BinOp::Mul,
-            left: a,
-            right: b,
-            ..
-        }) = defs.get(&mul_l.0)
-        else {
-            continue;
-        };
-        let ok = (const_of(*a, defs) == Some(3) && name_of(*b, defs).as_deref() == Some(x))
-            || (const_of(*b, defs) == Some(3) && name_of(*a, defs).as_deref() == Some(x));
-        if ok {
-            return true;
-        }
-    }
-    false
-}
-
-fn is_unit_inc(dest: u32, name: &str, defs: &HashMap<u32, Value>) -> bool {
-    let Some(Value::Binary {
-        op: BinOp::Add,
-        left,
-        right,
-        ..
-    }) = defs.get(&dest)
-    else {
-        return false;
-    };
-    let l = name_of(*left, defs).as_deref() == Some(name);
-    let r = name_of(*right, defs).as_deref() == Some(name);
-    (l && const_of(*right, defs) == Some(1)) || (r && const_of(*left, defs) == Some(1))
-}
-
 #[cfg(test)]
-mod match_tests {
-    use super::*;
-    use lumia_opt::{compile_source_to_optimized, OptOptions};
-
-    fn find_loops(b: &Block, out: &mut Vec<(Block, Block, Block)>) {
-        for op in &b.ops {
-            if let Op::Let {
-                value:
-                    Value::Loop {
-                        header,
-                        body,
-                        latch,
-                    },
-                ..
-            } = op
-            {
-                out.push((
-                    header.as_ref().clone(),
-                    body.as_ref().clone(),
-                    latch.as_ref().clone(),
-                ));
-                find_loops(body, out);
-                find_loops(header, out);
-                find_loops(latch, out);
-            }
-            if let Op::Let {
-                value:
-                    Value::If {
-                        then_block,
-                        else_block,
-                        ..
-                    },
-                ..
-            } = op
-            {
-                find_loops(then_block, out);
-                find_loops(else_block, out);
-            }
-        }
-    }
-
-    #[test]
-    fn matches_collatz_steps_loop() {
-        let src = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../examples/bench_cpu.lm"
-        ))
-        .unwrap();
-        let core = compile_source_to_optimized(&src, &OptOptions::for_build(true)).unwrap();
-        let mut found = 0;
-        let mut found_total = 0;
-        let mut found_strided = 0;
-        for f in &core.functions {
-            if !f.name.contains("collatz") && f.name != "main" {
-                continue;
-            }
-            let defs = crate::nsw_iv::collect_leaf_defs(&f.body);
-            let mut loops = vec![];
-            find_loops(&f.body, &mut loops);
-            for (h, b, l) in &loops {
-                if let Some(p) = match_collatz_loop(h, b, l, &defs) {
-                    assert!(!p.x.is_empty() && !p.steps.is_empty());
-                    found += 1;
-                }
-                if let Some(p) = match_collatz_total_loop(h, b, l, &defs) {
-                    assert_eq!(p.limit, 2_500_000);
-                    assert!(!p.total.is_empty());
-                    found_total += 1;
-                }
-                if let Some(p) = match_collatz_strided_loop(h, b, l, &defs) {
-                    assert_eq!(p.limit, 3_000_000);
-                    assert_eq!(p.stride, 3);
-                    found_strided += 1;
-                }
-            }
-        }
-        assert!(
-            found >= 1,
-            "expected at least one collatz loop match, got {found}"
-        );
-        assert!(
-            found_total >= 1,
-            "expected at least one collatz-total loop match, got {found_total}"
-        );
-        assert!(
-            found_strided >= 1,
-            "expected at least one collatz-strided loop match, got {found_strided}"
-        );
-    }
-}
+#[path = "collatz_sr_tests.rs"]
+mod match_tests;

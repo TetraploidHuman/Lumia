@@ -173,7 +173,9 @@ function resolveLumia() {
   const candidates = [
     configured,
     path.join(home, ".local", "bin", "lumia"),
+    path.join(home, ".local", "bin", "lumia.exe"),
     path.join(home, ".cargo", "bin", "lumia"),
+    path.join(home, ".cargo", "bin", "lumia.exe"),
   ];
   for (const c of candidates) {
     if (c && looksLikePath(c) && isExecutableFile(c)) {
@@ -183,13 +185,16 @@ function resolveLumia() {
   if (configured && !looksLikePath(configured)) {
     return configured;
   }
-  return path.join(home, ".local", "bin", "lumia");
+  return process.platform === "win32"
+    ? path.join(home, ".local", "bin", "lumia.exe")
+    : path.join(home, ".local", "bin", "lumia");
 }
 
 /** Prefer the slim no-LLVM LSP binary for fast cold start. */
 function resolveLumiaLsp() {
   const home = os.homedir();
   const slim = path.join(home, ".local", "lib", "lumia", "lumia-lsp");
+  const slimExe = path.join(home, ".local", "lib", "lumia", "lumia-lsp.exe");
   const configured = workspace
     .getConfiguration("lumia")
     .get("lsp.path", "")
@@ -200,10 +205,14 @@ function resolveLumiaLsp() {
   const looksLikeWrapper =
     !configured ||
     configured === "lumia" ||
+    configured === "lumia.exe" ||
     configured.endsWith(`${path.sep}bin${path.sep}lumia`) ||
-    configured.endsWith("/bin/lumia");
-  if (looksLikeWrapper && isExecutableFile(slim)) {
-    return slim;
+    configured.endsWith(`${path.sep}bin${path.sep}lumia.exe`) ||
+    configured.endsWith("/bin/lumia") ||
+    configured.endsWith("/bin/lumia.exe");
+  if (looksLikeWrapper) {
+    if (isExecutableFile(slim)) return slim;
+    if (isExecutableFile(slimExe)) return slimExe;
   }
 
   if (configured) {
@@ -214,9 +223,8 @@ function resolveLumiaLsp() {
       return configured;
     }
   }
-  if (isExecutableFile(slim)) {
-    return slim;
-  }
+  if (isExecutableFile(slim)) return slim;
+  if (isExecutableFile(slimExe)) return slimExe;
   return resolveLumia();
 }
 
@@ -285,7 +293,11 @@ async function runFile(uri, buildOnly) {
     });
   term.show(true);
 
-  const mkdir = `mkdir -p ${shellQuote(path.dirname(outAbs))}`;
+  const outDir = path.dirname(outAbs);
+  const mkdir =
+    process.platform === "win32"
+      ? `if not exist ${shellQuote(outDir)} mkdir ${shellQuote(outDir)}`
+      : `mkdir -p ${shellQuote(outDir)}`;
   const build = [
     shellQuote(lumia),
     "build",
@@ -293,10 +305,15 @@ async function runFile(uri, buildOnly) {
     "-o",
     shellQuote(outAbs),
   ].join(" ");
+  const join = process.platform === "win32" ? " & " : " && ";
   const script = buildOnly
-    ? `${mkdir} && ${build}`
-    : `${mkdir} && ${build} && ${shellQuote(outAbs)}`;
-  term.sendText(`cd ${shellQuote(cwd)} && ${script}`);
+    ? `${mkdir}${join}${build}`
+    : `${mkdir}${join}${build}${join}${shellQuote(outAbs)}`;
+  const cd =
+    process.platform === "win32"
+      ? `cd /d ${shellQuote(cwd)}`
+      : `cd ${shellQuote(cwd)}`;
+  term.sendText(`${cd}${join}${script}`);
 }
 
 /**

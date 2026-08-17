@@ -14,31 +14,37 @@ use std::alloc::{alloc, dealloc};
 use crate::common::{
     header_from_payload, header_layout, is_heap_payload, is_young_payload,
     may_be_heap_payload_bits, payload_ptr, trap_abort, MarkSweep, ObjectHeader, PAR_WORKER,
-    TYPE_ADT, TYPE_CHANNEL, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_IOTA, TYPE_MAP, TYPE_SET,
-    TYPE_TASK,
+    TYPE_CHANNEL, TYPE_TASK,
 };
 use crate::heap::{with_heap, Heap};
 use crate::mutator::for_each_mutator_root;
-use crate::map_set::{map_mark_payload, set_mark_payload};
 use crate::memo;
-use lumia_abi::{
-    list_elem_is_float, map_key_is_float, map_val_is_float, set_elem_is_float, tid_base,
+use lumia_abi::tid_base;
+
+mod alloc_ffi;
+mod limits;
+mod pressure;
+mod shade;
+
+pub use alloc_ffi::{
+    lumia_alloc, lumia_gc_collect, lumia_root_pop, lumia_root_push, lumia_write_barrier,
+};
+pub(crate) use alloc_ffi::{
+    init_alloc_header, insert_young, list_payload_bytes, soft_gc_needed,
+};
+pub(crate) use pressure::{
+    alloc_pressure_fast, full_marking_fast, refresh_from_heap as refresh_alloc_pressure_fast,
+    set_full_marking_fast,
+};
+pub(crate) use shade::{mark, mark_on, mark_value, mark_value_on};
+
+#[cfg(test)]
+pub(crate) use limits::{
+    gc_set_incremental_full_for_test, gc_set_mark_quantum_for_test, set_gc_limits_for_test,
 };
 
-
-
-fn incremental_full_enabled() -> bool {
-    match std::env::var("LUMIA_GC_INCREMENTAL") {
-        Ok(v) => {
-            let v = v.trim();
-            !(v.eq_ignore_ascii_case("0")
-                || v.eq_ignore_ascii_case("false")
-                || v.eq_ignore_ascii_case("off")
-                || v.eq_ignore_ascii_case("stw"))
-        }
-        Err(_) => with_heap(|h| h.incremental_full),
-    }
-}
+use limits::incremental_full_enabled;
+use shade::{scan_fields_on, scan_old_for_young, scan_old_for_young_on};
 
 impl MarkSweep {
     fn mark_from_roots_full() {
@@ -51,7 +57,7 @@ impl MarkSweep {
 
     /// Re-seed mark work from mutator / sched / memo roots (caller holds heap).
     fn shade_all_roots_locked(h: &mut Heap) {
-        let (parked_vals, task_vals) = crate::task::snapshot_sched_gc_roots();
+        let (parked_vals, task_vals) = crate::concurrency_policy::snapshot_sched_gc_roots();
         for i in 0..h.perm.len() {
             let obj = h.perm[i];
             if may_be_heap_payload_bits(obj as i64)
@@ -135,10 +141,8 @@ impl MarkSweep {
     }
 
     fn minor_collect() {
-        if with_heap(|h| h.full_marking) {
-            if !Self::drain_full_mark() {
-                return;
-            }
+        if with_heap(|h| h.full_marking) && !Self::drain_full_mark() {
+            return;
         }
         // Mutex STW: mark + sweep under one heap lock (alloc/root push blocked).
         with_heap(|h| {
@@ -146,7 +150,7 @@ impl MarkSweep {
                 return;
             }
             h.mark_minor = true;
-            let (parked_vals, task_vals) = crate::task::snapshot_sched_gc_roots();
+            let (parked_vals, task_vals) = crate::concurrency_policy::snapshot_sched_gc_roots();
             for_each_mutator_root(|root| unsafe {
                 let p = *root;
                 if is_young_payload(p) {
@@ -216,7 +220,7 @@ impl MarkSweep {
             Self::clear_marks(&h.old);
             h.mark_work.clear();
             h.full_marking = true;
-            crate::heap::set_full_marking_fast(true);
+            crate::gc::set_full_marking_fast(true);
             h.mark_minor = false;
             true
         });
@@ -237,7 +241,7 @@ impl MarkSweep {
             h.mark_work.clear();
             h.mark_minor = false;
             h.full_marking = false;
-            crate::heap::set_full_marking_fast(false);
+            crate::gc::set_full_marking_fast(false);
             Self::shade_all_roots_locked(h);
             let (freed_y, _, _) = Self::sweep_vec(
                 &mut h.young,
@@ -305,7 +309,7 @@ impl MarkSweep {
                 return true;
             }
             h.full_marking = false;
-            crate::heap::set_full_marking_fast(false);
+            crate::gc::set_full_marking_fast(false);
             h.mark_minor = false;
             h.mark_work.clear();
             Self::shade_all_roots_locked(h);
@@ -404,157 +408,6 @@ impl MarkSweep {
     }
 }
 
-/// Shade a heap object grey for the incremental full mark (Dijkstra).
-fn shade_on(h: &mut Heap, obj: *mut ObjectHeader) {
-    if obj.is_null() {
-        return;
-    }
-    unsafe {
-        if (*obj).marked != 0 {
-            return;
-        }
-        (*obj).marked = 1;
-        h.mark_work.push(obj);
-    }
-}
-
-fn shade(obj: *mut ObjectHeader) {
-    with_heap(|h| shade_on(h, obj));
-}
-
-fn shade_payload(payload: *mut u8) {
-    if payload.is_null() || !is_heap_payload(payload) {
-        return;
-    }
-    shade(header_from_payload(payload));
-}
-
-/// Scan fields of an already-black object; shade (or recursively mark) children.
-/// Caller must hold the process heap lock (`h`).
-fn scan_fields_on(h: &mut Heap, obj: *mut ObjectHeader) {
-    unsafe {
-        let payload = payload_ptr(obj);
-        let tid = (*obj).type_id;
-        match tid_base(tid) {
-            TYPE_LIST => {
-                if !list_elem_is_float(tid) {
-                    let n = *(payload as *const i64);
-                    let base = payload as *const i64;
-                    let max_elems = ((*obj).size as usize).saturating_sub(8) / 8;
-                    if n > 0 {
-                        let n = (n as usize).min(max_elems);
-                        for i in 0..n {
-                            mark_value_on(h, *base.add(1 + i));
-                        }
-                    }
-                }
-            }
-            TYPE_LIST_IOTA => {}
-            TYPE_SET => {
-                set_mark_payload(h, payload, (*obj).size as usize, set_elem_is_float(tid));
-            }
-            TYPE_MAP => {
-                map_mark_payload(
-                    h,
-                    payload,
-                    (*obj).size as usize,
-                    map_key_is_float(tid),
-                    map_val_is_float(tid),
-                );
-            }
-            TYPE_ADT => {
-                // Payload: [tag][field0]… — `_pad` bit `i` ⇒ field `i` is unboxed Float
-                // (sanitized by `lumia_adt_set_float_mask`). Skip those without
-                // membership probes; mistagged masks that bypass sanitize are UB.
-                let words = ((*obj).size as usize) / 8;
-                let base = payload as *const i64;
-                let mask = (*obj)._pad;
-                for i in 1..words {
-                    let field_i = i - 1;
-                    if crate::common::adt_float_slot(mask, field_i) {
-                        continue;
-                    }
-                    mark_value_on(h, *base.add(i));
-                }
-            }
-            TYPE_CLOSURE => {
-                let words = ((*obj).size as usize) / 8;
-                let base = payload as *const i64;
-                for i in 1..words {
-                    mark_value_on(h, *base.add(i));
-                }
-            }
-            TYPE_TASK => {
-                // [task_id, result]
-                let words = ((*obj).size as usize) / 8;
-                if words >= 2 {
-                    mark_value_on(h, *(payload as *const i64).add(1));
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-/// Used by `map_set` mark helpers; respects heap `mark_minor` / `full_marking`.
-pub(crate) fn mark_value(x: i64) {
-    // Int/Bool/FunRef immediates cannot be managed payloads — skip heap Mutex.
-    if !may_be_heap_payload_bits(x) {
-        return;
-    }
-    with_heap(|h| mark_value_on(h, x));
-}
-
-/// Mark one value word while the caller already holds the heap lock.
-pub(crate) fn mark_value_on(h: &mut Heap, x: i64) {
-    if !may_be_heap_payload_bits(x) {
-        return;
-    }
-    let hdr = header_from_payload(x as *mut u8);
-    if h.mark_minor {
-        if h.contains_header(hdr) && !h.is_old_header(hdr) {
-            mark_on(h, hdr);
-        }
-    } else if h.contains_header(hdr) {
-        mark_on(h, hdr);
-    }
-}
-
-pub(crate) fn mark(obj: *mut ObjectHeader) {
-    with_heap(|h| mark_on(h, obj));
-}
-
-pub(crate) fn mark_on(h: &mut Heap, obj: *mut ObjectHeader) {
-    unsafe {
-        if obj.is_null() || (*obj).marked != 0 {
-            return;
-        }
-        if h.mark_minor && h.is_old_header(obj) {
-            return;
-        }
-        if h.full_marking {
-            shade_on(h, obj);
-            return;
-        }
-        (*obj).marked = 1;
-        scan_fields_on(h, obj);
-    }
-}
-
-fn scan_old_for_young_on(h: &mut Heap, obj: *mut ObjectHeader) {
-    unsafe {
-        if obj.is_null() || (*obj).marked != 0 {
-            return;
-        }
-        (*obj).marked = 1;
-        scan_fields_on(h, obj);
-    }
-}
-
-fn scan_old_for_young(obj: *mut ObjectHeader) {
-    with_heap(|h| scan_old_for_young_on(h, obj));
-}
-
 impl MarkSweep {
     /// Allocate `nbytes` of payload (plus header) into the young generation.
     pub fn alloc(&mut self, nbytes: usize, type_id: u32) -> *mut u8 {
@@ -564,24 +417,40 @@ impl MarkSweep {
                  (use scalar Int/Bool/Float callbacks only)",
             );
         }
-        // Skip heap Mutex when soft pressure is idle (flag refreshed under lock).
-        let try_gc = crate::heap::alloc_pressure_fast()
-            && with_heap(|h| {
-                h.gc_inhibit == 0
-                    && (h.full_marking
-                        || h.bytes_young >= h.young_limit
-                        || h.bytes_old >= h.old_limit)
-            });
-        if try_gc {
-            Self::maybe_collect_on_alloc();
-        }
         let layout = header_layout(nbytes);
         unsafe {
             let mem = alloc(layout);
             if mem.is_null() {
                 trap_abort("lumia: out of memory");
             }
-            finish_alloc(mem, nbytes, type_id)
+            let header = init_alloc_header(mem, nbytes, type_id);
+            // Idle soft-pressure: one heap lock (insert only).
+            // Soft pressure: one lock that either inserts or signals collect —
+            // avoids the old peek+insert double lock when no collect runs.
+            if !alloc_pressure_fast() {
+                with_heap(|h| insert_young(h, header, nbytes));
+                return payload_ptr(header);
+            }
+            enum Outcome {
+                Done,
+                NeedCollect,
+            }
+            let outcome = with_heap(|h| {
+                if soft_gc_needed(h) {
+                    Outcome::NeedCollect
+                } else {
+                    insert_young(h, header, nbytes);
+                    Outcome::Done
+                }
+            });
+            match outcome {
+                Outcome::Done => payload_ptr(header),
+                Outcome::NeedCollect => {
+                    Self::maybe_collect_on_alloc();
+                    with_heap(|h| insert_young(h, header, nbytes));
+                    payload_ptr(header)
+                }
+            }
         }
     }
 
@@ -635,84 +504,7 @@ impl MarkSweep {
     }
 }
 
-pub(crate) fn list_payload_bytes(len: i64) -> u64 {
-    if len < 0 {
-        trap_abort("lumia: negative list length");
-    }
-    (len as u64)
-        .checked_add(1)
-        .and_then(|words| words.checked_mul(8))
-        .filter(|&b| b <= u32::MAX as u64)
-        .unwrap_or_else(|| trap_abort(&format!("lumia: list too large (len={len})")))
-}
-
-pub(crate) unsafe fn finish_alloc(mem: *mut u8, nbytes: usize, type_id: u32) -> *mut u8 {
-    if nbytes > u32::MAX as usize {
-        trap_abort("lumia: allocation too large (exceeds u32 size field)");
-    }
-    let header = mem as *mut ObjectHeader;
-    (*header).type_id = type_id;
-    (*header).size = nbytes as u32;
-    (*header).rc = if matches!(tid_base(type_id), TYPE_LIST | TYPE_ADT) {
-        1
-    } else {
-        0
-    };
-    (*header)._pad = 0;
-    with_heap(|h| {
-        (*header).marked = if h.full_marking { 1 } else { 0 };
-        h.young.push(header);
-        h.heap_set.insert(header);
-        h.bytes_young += nbytes;
-        h.refresh_alloc_pressure_fast();
-    });
-    payload_ptr(header)
-}
-
-#[no_mangle]
-pub extern "C" fn lumia_alloc(nbytes: u64, type_id: u32) -> *mut u8 {
-    MarkSweep.alloc(nbytes as usize, type_id)
-}
-
-#[no_mangle]
-pub extern "C" fn lumia_root_push(slot: *mut *mut u8) {
-    crate::mutator::ensure_mutator_registered();
-    crate::mutator::push_root(slot);
-    // Dijkstra: shade new roots during incremental full mark without taking
-    // the heap Mutex solely to read the flag (see `full_marking_fast`).
-    if crate::heap::full_marking_fast() {
-        unsafe {
-            shade_payload(*slot);
-        }
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn lumia_root_pop() {
-    crate::mutator::pop_root();
-}
-
-#[no_mangle]
-pub extern "C" fn lumia_write_barrier(obj: *mut u8, field: u32, new_ptr: *mut u8) {
-    MarkSweep.write_barrier(obj, field, new_ptr);
-}
-
-#[no_mangle]
-pub extern "C" fn lumia_gc_collect() {
-    MarkSweep.collect();
-}
-
 #[cfg(test)]
 pub(crate) fn gc_full_marking_for_test() -> bool {
     with_heap(|h| h.full_marking)
-}
-
-#[cfg(test)]
-pub(crate) fn gc_set_incremental_full_for_test(on: bool) {
-    with_heap(|h| h.incremental_full = on);
-}
-
-#[cfg(test)]
-pub(crate) fn gc_set_mark_quantum_for_test(n: usize) {
-    with_heap(|h| h.mark_quantum = n.max(1));
 }

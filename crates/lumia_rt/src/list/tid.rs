@@ -1,4 +1,9 @@
 //! List type_id helpers and Float-elem ensure.
+//!
+//! # Safety (FFI)
+//! `list` is null or a valid List/Iota payload.
+
+#![deny(clippy::not_unsafe_ptr_arg_deref)]
 
 use crate::common::{header_from_payload, list_elem_is_float, tid_base, TYPE_LIST, TYPE_LIST_IOTA};
 use crate::ensure::ensure_empty_float_retag;
@@ -40,7 +45,12 @@ pub(crate) fn ensure_list_f64(list: *mut u8) -> *mut u8 {
     })
 }
 
+/// Ensure a list uses IEEE elem eq/hash (`list_type_id(true)`).
+/// Empty ordinary lists become a fresh empty F64 list (no in-place retag).
+///
+/// # Safety
+/// `list` is null or a valid List/Iota payload.
 #[no_mangle]
-pub extern "C" fn lumia_ensure_list_f64(list: *mut u8) -> *mut u8 {
+pub unsafe extern "C" fn lumia_ensure_list_f64(list: *mut u8) -> *mut u8 {
     ensure_list_f64(list)
 }

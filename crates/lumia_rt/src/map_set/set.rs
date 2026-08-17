@@ -1,19 +1,28 @@
 //! Set layout and C ABI operations.
+//!
+//! # Safety (FFI)
+//! Set payloads are null or valid Set layouts (linear or HashOrdered). Callers
+//! must not pass dangling or type-confused pointers; returned pointers are
+//! young-heap owned unless null.
+
+#![deny(clippy::not_unsafe_ptr_arg_deref)]
 
 use std::ptr;
 
-use crate::common::{header_from_payload, trap_abort, GcInhibitGuard, TYPE_SET};
+use crate::common::{header_from_payload, trap_abort, GcInhibitGuard};
 use crate::gc::{list_payload_bytes, lumia_alloc, mark_value_on};
 use crate::heap::Heap;
 
-use super::tid::{key_eq, key_hash, set_float_elems, set_is_assoc, set_tid};
+use super::tid::{key_eq, set_float_elems, set_is_assoc, set_tid};
 
 /// Set: small stays linear `[n][e0]…`; larger HashOrdered
 /// `[n][cap][order×cap][elem,state × cap]`.
 pub(crate) const SET_SMALL_MAX: i64 = lumia_abi::SMALL_CONTAINER_MAX as i64;
-pub(crate) const SET_ST_EMPTY: i64 = 0;
-pub(crate) const SET_ST_FULL: i64 = 1;
-pub(crate) const SET_ST_TOMB: i64 = 2;
+pub(crate) const SET_ST_EMPTY: i64 = super::OPEN_HASH_ST_EMPTY;
+#[allow(dead_code)] // reserved for delete/tomb paths; claim uses OPEN_HASH_* directly
+pub(crate) const SET_ST_FULL: i64 = super::OPEN_HASH_ST_FULL;
+#[allow(dead_code)]
+pub(crate) const SET_ST_TOMB: i64 = super::OPEN_HASH_ST_TOMB;
 
 pub(crate) fn set_linear_nbytes(n: i64) -> usize {
     list_payload_bytes(n) as usize
@@ -125,73 +134,44 @@ pub(crate) unsafe fn set_hash_find_slot(set: *mut u8, elem: i64) -> Option<usize
     let float_elems = set_float_elems(set);
     let base = set as *const i64;
     let cap = *base.add(1) as usize;
-    if cap == 0 {
-        return None;
-    }
-    let mut idx = (key_hash(elem, float_elems) as usize) % cap;
-    for _ in 0..cap {
-        let cell = base.add(2 + cap + idx * 2);
-        let st = *cell.add(1);
-        if st == SET_ST_EMPTY {
-            return None;
-        }
-        if st == SET_ST_FULL && key_eq(*cell, elem, float_elems) {
-            return Some(idx);
-        }
-        idx = (idx + 1) % cap;
-    }
-    None
+    // Set cell: (elem, state) — stride 2, state at +1.
+    super::open_hash_find_slot(base, cap, elem, float_elems, 2, 1)
 }
 
 /// If `set` is a linear table larger than [`SET_SMALL_MAX`], promote to HashOrdered.
 /// Also compact duplicate elems in-place via [`key_eq`] (Float ±0 and Int/String/…).
+///
+/// # Safety
+/// `set` is null or a valid Set payload.
 #[no_mangle]
-pub extern "C" fn lumia_set_finish(set: *mut u8) -> *mut u8 {
+pub unsafe extern "C" fn lumia_set_finish(set: *mut u8) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
-    if set.is_null() {
-        return set;
-    }
     unsafe {
-        if set_is_hash(set) || set_is_assoc(set) {
-            return set;
-        }
-        let float_elems = set_float_elems(set);
-        compact_linear_set_elems(set, float_elems);
-        let n = *(set as *const i64);
-        if n > SET_SMALL_MAX {
-            set_from_linear_to_hash(set, None)
-        } else {
-            set
-        }
+        let skip = !set.is_null() && (set_is_hash(set) || set_is_assoc(set));
+        super::finish_linear_container(
+            set,
+            skip,
+            SET_SMALL_MAX,
+            if set.is_null() {
+                false
+            } else {
+                set_float_elems(set)
+            },
+            |p, fk| compact_linear_set_elems(p, fk),
+            |p| set_from_linear_to_hash(p, None),
+        )
     }
 }
 
 unsafe fn compact_linear_set_elems(set: *mut u8, float_elems: bool) {
-    let n = *(set as *const i64);
-    if n <= 1 {
-        return;
-    }
-    let base = set as *mut i64;
-    let mut w = 0i64;
-    for i in 0..n as usize {
-        let e = *base.add(1 + i);
-        let mut seen = false;
-        for j in 0..w as usize {
-            if key_eq(*base.add(1 + j), e, float_elems) {
-                seen = true;
-                break;
-            }
-        }
-        if !seen {
-            *base.add(1 + w as usize) = e;
-            w += 1;
-        }
-    }
-    *base = w;
+    // Set linear: `[n][e0]…` — stride 1, keep-first.
+    super::compact_linear_entries(set, float_elems, 1, false);
 }
 
+/// # Safety
+/// `set` is null or a valid Set payload.
 #[no_mangle]
-pub extern "C" fn lumia_set_contains(set: *mut u8, elem: i64) -> i64 {
+pub unsafe extern "C" fn lumia_set_contains(set: *mut u8, elem: i64) -> i64 {
     if set.is_null() {
         return 0;
     }
@@ -233,22 +213,20 @@ pub(crate) unsafe fn set_hash_put_new(dest: *mut u8, elem: i64, order_i: usize) 
     let float_elems = set_float_elems(dest);
     let base = dest as *mut i64;
     let cap = *base.add(1) as usize;
-    let mut idx = (key_hash(elem, float_elems) as usize) % cap;
-    for _ in 0..cap {
-        let cell = base.add(2 + cap + idx * 2);
-        let st = *cell.add(1);
-        if st == SET_ST_EMPTY || st == SET_ST_TOMB {
-            *cell = elem;
-            *cell.add(1) = SET_ST_FULL;
-            if !float_elems {
-                crate::lumia_write_barrier(dest, order_i as u32, elem as *mut u8);
-            }
-            *base.add(2 + order_i) = idx as i64;
-            return;
-        }
-        idx = (idx + 1) % cap;
+    // Set cell: (elem, state) — stride 2, state at +1.
+    let (idx, _cell) = super::open_hash_claim_slot_or_trap(
+        base,
+        cap,
+        elem,
+        float_elems,
+        2,
+        1,
+        "lumia: set hash full",
+    );
+    if !float_elems {
+        unsafe { crate::lumia_write_barrier(dest, order_i as u32, elem as *mut u8) };
     }
-    trap_abort("lumia: set hash full");
+    *base.add(2 + order_i) = idx as i64;
 }
 
 /// Insert during hash build; skip if already present. Returns true if newly added.
@@ -264,21 +242,16 @@ pub(crate) unsafe fn set_hash_insert_build(dest: *mut u8, elem: i64) -> bool {
 }
 
 pub(crate) unsafe fn set_from_linear_to_hash(src: *mut u8, extra: Option<i64>) -> *mut u8 {
-    let n = if src.is_null() {
-        0i64
-    } else {
-        *(src as *const i64)
-    };
-    let n2 = n + if extra.is_some() { 1 } else { 0 };
-    let mut cap = 16usize;
-    while (cap as i64) < n2 * 2 {
-        cap *= 2;
-    }
-    let dest = set_alloc_hash_tid(cap, 0, set_tid(src));
-    let base = src as *const i64;
-    for i in 0..n as usize {
-        set_hash_insert_build(dest, *base.add(1 + i));
-    }
+    let tid = set_tid(src);
+    let dest = super::open_hash_from_linear(
+        src,
+        usize::from(extra.is_some()),
+        |cap| set_alloc_hash_tid(cap, 0, tid),
+        |dest, i| {
+            let base = src as *const i64;
+            set_hash_insert_build(dest, *base.add(1 + i));
+        },
+    );
     if let Some(e) = extra {
         set_hash_insert_build(dest, e);
     }
@@ -286,8 +259,11 @@ pub(crate) unsafe fn set_from_linear_to_hash(src: *mut u8, extra: Option<i64>) -
 }
 
 /// Immutable insert: new Set with `elem` (no-op copy if already present).
+///
+/// # Safety
+/// `set` is null or a valid Set payload; returned set is newly allocated (or null).
 #[no_mangle]
-pub extern "C" fn lumia_set_insert(set: *mut u8, elem: i64) -> *mut u8 {
+pub unsafe extern "C" fn lumia_set_insert(set: *mut u8, elem: i64) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
     unsafe {
         let tid = set_tid(set);
@@ -342,15 +318,17 @@ pub extern "C" fn lumia_set_insert(set: *mut u8, elem: i64) -> *mut u8 {
 }
 
 /// Drop element if present; returns new Set (insertion order of remaining elems).
+///
+/// # Safety
+/// `set` is null or a valid Set payload; returned set is newly allocated or null.
 #[no_mangle]
-pub extern "C" fn lumia_set_remove(set: *mut u8, elem: i64) -> *mut u8 {
+pub unsafe extern "C" fn lumia_set_remove(set: *mut u8, elem: i64) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
     unsafe {
         let tid = set_tid(set);
+        // Empty Set is null (same as `setOf()`); never allocate a count-0 heap object.
         if set.is_null() {
-            let dest = lumia_alloc(8, TYPE_SET);
-            *(dest as *mut i64) = 0;
-            return dest;
+            return std::ptr::null_mut();
         }
         if set_is_hash(set) {
             let base = set as *const i64;
@@ -363,6 +341,9 @@ pub extern "C" fn lumia_set_remove(set: *mut u8, elem: i64) -> *mut u8 {
                 return dest;
             };
             let n2 = n - 1;
+            if n2 == 0 {
+                return std::ptr::null_mut();
+            }
             if n2 <= SET_SMALL_MAX {
                 let dest = lumia_alloc(
                     set_linear_nbytes(n2) as u64,
@@ -411,6 +392,9 @@ pub extern "C" fn lumia_set_remove(set: *mut u8, elem: i64) -> *mut u8 {
             return dest;
         };
         let n2 = n - 1;
+        if n2 == 0 {
+            return std::ptr::null_mut();
+        }
         let dest = lumia_alloc(set_linear_nbytes(n2) as u64, tid);
         let dst = dest as *mut i64;
         *dst = n2;

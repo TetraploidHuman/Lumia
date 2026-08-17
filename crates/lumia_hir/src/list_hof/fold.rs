@@ -171,7 +171,7 @@ fn range_fold_inline(
     body: Expr,
     span: Span,
 ) -> Expr {
-    let el = format!("__fold_x_{}", span.start.0);
+    let el = format!("{}{}", crate::desugar_slots::FOLD_ELEM_PREFIX, span.start.0);
     let mut body = Expr::Let {
         name: x,
         value: Box::new(Expr::Var(el.clone(), span)),
@@ -233,7 +233,7 @@ fn lower_list_fold_inline(
     body: Expr,
     span: Span,
 ) -> Expr {
-    let el = format!("__fold_x_{}", span.start.0);
+    let el = format!("{}{}", crate::desugar_slots::FOLD_ELEM_PREFIX, span.start.0);
     let mut body = Expr::Let {
         name: x,
         value: Box::new(Expr::Var(el.clone(), span)),

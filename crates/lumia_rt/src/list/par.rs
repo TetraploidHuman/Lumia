@@ -1,17 +1,31 @@
 //! Parallel list map / fold (C ABI workers; GC inhibited).
+//!
+//! # Safety (FFI)
+//! `list` is null or a valid List/Iota payload; worker function pointers are
+//! non-null C ABI callbacks that must not heap-allocate while GC is inhibited.
 
 use super::core::{list_len_of, lumia_list_empty};
 use super::tid::list_tid;
 use crate::common::{list_elem_is_float, trap_abort, GcInhibitGuard, PAR_WORKER, TYPE_LIST_IOTA};
+use crate::concurrency_policy::forbid_list_parallel;
 use crate::gc::{list_payload_bytes, lumia_alloc};
-use crate::task::task_runtime_active;
+use crate::globals::note_par_task_demotion;
 use lumia_abi::list_type_id;
+
+#[cfg(test)]
+pub(crate) use crate::globals::{par_task_demotions, reset_par_task_demotions};
 
 /// Parallel workers must not run under an active Task/Channel scheduler
 /// (DESIGN: no mix). Fall back to sequential instead of aborting — spawn
 /// bodies may still lower `ListParMap` before demotion.
+/// Each demotion bumps [`par_task_demotions`] for observability (tests / diagnostics).
 fn force_sequential_par() -> bool {
-    task_runtime_active()
+    if forbid_list_parallel() {
+        note_par_task_demotion();
+        true
+    } else {
+        false
+    }
 }
 
 /// Lists shorter than this stay sequential (overhead dominates). Was 64; 16
@@ -19,12 +33,7 @@ fn force_sequential_par() -> bool {
 const PAR_SEQUENTIAL_MAX: i64 = 16;
 
 fn par_worker_count() -> usize {
-    static CACHED: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| {
-        std::thread::available_parallelism()
-            .map(|p| p.get())
-            .unwrap_or(4)
-    })
+    crate::globals::par_worker_count()
 }
 
 /// Parallel map over List[scalar] with a C ABI `fn(i64) -> i64`.
@@ -34,8 +43,11 @@ fn par_worker_count() -> usize {
 ///
 /// Iota (`range`) is consumed virtually — no materialization. Workers write
 /// into disjoint `&mut [i64]` slices via `thread::scope` (no data race).
+///
+/// # Safety
+/// `list` is null or a valid List/Iota payload; `f` is a non-null C ABI `elem -> elem` worker.
 #[no_mangle]
-pub extern "C" fn lumia_list_par_map(
+pub unsafe extern "C" fn lumia_list_par_map(
     list: *mut u8,
     f: Option<extern "C" fn(i64) -> i64>,
     result_tid: u32,
@@ -45,6 +57,7 @@ pub extern "C" fn lumia_list_par_map(
     };
     let result_tid = list_type_id(list_elem_is_float(result_tid));
     let iota = !list.is_null() && list_tid(list) == TYPE_LIST_IOTA;
+    // SAFETY: list null or live List/Iota — read len / iota start only.
     let (n, iota_start, src_addr) = unsafe {
         if list.is_null() {
             (0i64, 0i64, 0usize)
@@ -59,23 +72,31 @@ pub extern "C" fn lumia_list_par_map(
             (n, 0i64, list as usize)
         }
     };
-    unsafe {
-        if n <= 0 {
-            return if list_elem_is_float(result_tid) {
-                // Fresh empty F64 list — avoid ensure_list_f64(empty) double-path.
+    if n <= 0 {
+        return if list_elem_is_float(result_tid) {
+            // Fresh empty F64 list — avoid ensure_list_f64(empty) double-path.
+            // SAFETY: alloc returns live payload; write len word.
+            unsafe {
                 let dest = lumia_alloc(8, list_type_id(true));
                 *(dest as *mut i64) = 0;
                 dest
-            } else {
-                lumia_list_empty()
-            };
-        }
+            }
+        } else {
+            lumia_list_empty()
+        };
+    }
+    // SAFETY: allocate result buffer and write length.
+    let (dest, dst) = unsafe {
         let dest = lumia_alloc(list_payload_bytes(n), result_tid);
         let dst = dest as *mut i64;
         *dst = n;
-        let n_usize = n as usize;
-        // Sequential for tiny lists, or under Task/Channel (no OS workers).
-        if force_sequential_par() || n < PAR_SEQUENTIAL_MAX {
+        (dest, dst)
+    };
+    let n_usize = n as usize;
+    // Sequential for tiny lists, or under Task/Channel (no OS workers).
+    if force_sequential_par() || n < PAR_SEQUENTIAL_MAX {
+        // SAFETY: exclusive dest elems; src immutable for the duration.
+        unsafe {
             if iota {
                 for i in 0..n_usize {
                     let x = iota_start
@@ -89,40 +110,40 @@ pub extern "C" fn lumia_list_par_map(
                     *dst.add(1 + i) = f(*src.add(1 + i));
                 }
             }
-            return dest;
         }
-        // Inhibit GC only while OS workers hold list pointers.
-        let _gc = GcInhibitGuard::enter();
-        let workers = par_worker_count().min(n_usize).max(1);
-        let chunk = n_usize.div_ceil(workers);
-        // SAFETY: freshly allocated dest elems; exclusive `&mut` slices via chunks_mut.
-        let out = std::slice::from_raw_parts_mut(dst.add(1), n_usize);
-        std::thread::scope(|scope| {
-            for (w, chunk_out) in out.chunks_mut(chunk).enumerate() {
-                let start = w * chunk;
-                scope.spawn(move || {
-                    PAR_WORKER.with(|c| c.set(true));
-                    if iota {
-                        for (j, slot) in chunk_out.iter_mut().enumerate() {
-                            let i = start + j;
-                            let x = iota_start
-                                .checked_add(i as i64)
-                                .unwrap_or_else(|| trap_abort("lumia: iota index overflow"));
-                            *slot = f(x);
-                        }
-                    } else {
-                        // SAFETY: src immutable for the duration; GC inhibited; no alloc.
-                        let src = src_addr as *const i64;
-                        for (j, slot) in chunk_out.iter_mut().enumerate() {
-                            let i = start + j;
-                            *slot = f(*src.add(1 + i));
-                        }
-                    }
-                });
-            }
-        });
-        dest
+        return dest;
     }
+    // Inhibit GC only while OS workers hold list pointers.
+    let _gc = GcInhibitGuard::enter();
+    let workers = par_worker_count().min(n_usize).max(1);
+    let chunk = n_usize.div_ceil(workers);
+    // SAFETY: freshly allocated dest elems; exclusive `&mut` slices via chunks_mut.
+    let out = unsafe { std::slice::from_raw_parts_mut(dst.add(1), n_usize) };
+    std::thread::scope(|scope| {
+        for (w, chunk_out) in out.chunks_mut(chunk).enumerate() {
+            let start = w * chunk;
+            scope.spawn(move || {
+                PAR_WORKER.with(|c| c.set(true));
+                if iota {
+                    for (j, slot) in chunk_out.iter_mut().enumerate() {
+                        let i = start + j;
+                        let x = iota_start
+                            .checked_add(i as i64)
+                            .unwrap_or_else(|| trap_abort("lumia: iota index overflow"));
+                        *slot = f(x);
+                    }
+                } else {
+                    // SAFETY: src immutable for the duration; GC inhibited; no alloc.
+                    let src = src_addr as *const i64;
+                    for (j, slot) in chunk_out.iter_mut().enumerate() {
+                        let i = start + j;
+                        *slot = unsafe { f(*src.add(1 + i)) };
+                    }
+                }
+            });
+        }
+    });
+    dest
 }
 
 /// Parallel left-fold over List[scalar] with C ABI `fn(acc, x) -> acc`.
@@ -131,8 +152,11 @@ pub extern "C" fn lumia_list_par_map(
 ///
 /// Each worker reduces a private index range into a local accumulator (no shared
 /// writes); the main thread folds partials. Source is read-only during the scope.
+///
+/// # Safety
+/// `list` is null or a valid List/Iota payload; `f` is a non-null C ABI `(acc, elem) -> acc` worker.
 #[no_mangle]
-pub extern "C" fn lumia_list_par_fold(
+pub unsafe extern "C" fn lumia_list_par_fold(
     list: *mut u8,
     init: i64,
     f: Option<extern "C" fn(i64, i64) -> i64>,
@@ -141,6 +165,7 @@ pub extern "C" fn lumia_list_par_fold(
         trap_abort("lumia: list_par_fold null function");
     };
     let iota = !list.is_null() && list_tid(list) == TYPE_LIST_IOTA;
+    // SAFETY: list null or live List/Iota — read len / iota start only.
     let (n, iota_start, src_addr) = unsafe {
         if list.is_null() {
             (0i64, 0i64, 0usize)
@@ -160,6 +185,7 @@ pub extern "C" fn lumia_list_par_fold(
     let n_usize = n as usize;
     if force_sequential_par() || n < PAR_SEQUENTIAL_MAX {
         let mut acc = init;
+        // SAFETY: src immutable; index in-bounds.
         unsafe {
             if iota {
                 for i in 0..n_usize {
@@ -191,6 +217,7 @@ pub extern "C" fn lumia_list_par_fold(
             }
             scope.spawn(move || {
                 PAR_WORKER.with(|c| c.set(true));
+                // SAFETY: src immutable; GC inhibited; exclusive `part` write.
                 unsafe {
                     *part = if iota {
                         let x0 = iota_start
@@ -227,3 +254,7 @@ pub extern "C" fn lumia_list_par_fold(
     }
     acc
 }
+
+#[cfg(test)]
+#[path = "par_tests.rs"]
+mod tests;

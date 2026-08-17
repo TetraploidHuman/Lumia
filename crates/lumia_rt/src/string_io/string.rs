@@ -1,30 +1,44 @@
 //! Heap String representation and UTF-8 text ops.
+//!
+//! # Safety (FFI)
+//! String payloads / C buffers must be valid for the callee.
+
+#![deny(clippy::not_unsafe_ptr_arg_deref)]
 
 use std::ptr;
 
 use crate::common::{
-    header_from_payload, is_heap_payload, trap_abort, GcInhibitGuard, TYPE_BYTES, TYPE_CHAR,
+    header_from_payload, is_heap_payload_bits, trap_abort, GcInhibitGuard, TYPE_BYTES, TYPE_CHAR,
     TYPE_LIST, TYPE_STRING,
 };
 use crate::gc::{list_payload_bytes, lumia_alloc};
 
+///
+/// # Safety
+/// `s`/`prefix` are null or valid String payloads.
 #[no_mangle]
-pub extern "C" fn lumia_str_starts_with(s: *mut u8, prefix: *mut u8) -> i64 {
+pub unsafe extern "C" fn lumia_str_starts_with(s: *mut u8, prefix: *mut u8) -> i64 {
     with_str_bytes(s, |bytes| {
         with_str_bytes(prefix, |p| if bytes.starts_with(p) { 1 } else { 0 })
     })
 }
 
+///
+/// # Safety
+/// `s`/`suffix` are null or valid String payloads.
 #[no_mangle]
-pub extern "C" fn lumia_str_ends_with(s: *mut u8, suffix: *mut u8) -> i64 {
+pub unsafe extern "C" fn lumia_str_ends_with(s: *mut u8, suffix: *mut u8) -> i64 {
     with_str_bytes(s, |bytes| {
         with_str_bytes(suffix, |p| if bytes.ends_with(p) { 1 } else { 0 })
     })
 }
 
 /// Substring search (`haystack.contains(needle)`).
+///
+/// # Safety
+/// `s`/`needle` are null or valid String payloads.
 #[no_mangle]
-pub extern "C" fn lumia_str_contains(s: *mut u8, needle: *mut u8) -> i64 {
+pub unsafe extern "C" fn lumia_str_contains(s: *mut u8, needle: *mut u8) -> i64 {
     with_str_bytes(s, |bytes| {
         with_str_bytes(needle, |n| {
             if n.is_empty() || bytes.windows(n.len()).any(|w| w == n) {
@@ -37,8 +51,11 @@ pub extern "C" fn lumia_str_contains(s: *mut u8, needle: *mut u8) -> i64 {
 }
 
 /// Allocate a GC-managed byte buffer (for strings etc.).
+///
+/// # Safety
+/// `ptr` is null or points to `len` readable bytes; returned String is newly allocated.
 #[no_mangle]
-pub extern "C" fn lumia_alloc_string(ptr: *const u8, len: u64) -> *mut u8 {
+pub unsafe extern "C" fn lumia_alloc_string(ptr: *const u8, len: u64) -> *mut u8 {
     let dest = lumia_alloc(len, TYPE_STRING);
     if !dest.is_null() && len > 0 {
         unsafe {
@@ -49,8 +66,11 @@ pub extern "C" fn lumia_alloc_string(ptr: *const u8, len: u64) -> *mut u8 {
 }
 
 /// NUL-terminated C string copy of a Lumia String (for `foreign` String arguments).
+///
+/// # Safety
+/// `s` is null or a valid String payload; returned C string is immortal/process-owned or null.
 #[no_mangle]
-pub extern "C" fn lumia_string_cstr(s: *mut u8) -> *mut u8 {
+pub unsafe extern "C" fn lumia_string_cstr(s: *mut u8) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
     if s.is_null() {
         let dest = lumia_alloc(1, TYPE_BYTES);
@@ -77,10 +97,13 @@ pub extern "C" fn lumia_string_cstr(s: *mut u8) -> *mut u8 {
 }
 
 /// Build a Lumia String from a NUL-terminated C string (foreign String returns).
+///
+/// # Safety
+/// `cstr` is null or a valid NUL-terminated C string.
 #[no_mangle]
-pub extern "C" fn lumia_cstr_to_string(cstr: *const u8) -> *mut u8 {
+pub unsafe extern "C" fn lumia_cstr_to_string(cstr: *const u8) -> *mut u8 {
     if cstr.is_null() {
-        return lumia_alloc_string(std::ptr::null(), 0);
+        return unsafe { lumia_alloc_string(std::ptr::null(), 0) };
     }
     unsafe {
         let mut n = 0usize;
@@ -114,8 +137,11 @@ fn utf8_char_count(bytes: &[u8]) -> i64 {
 }
 
 /// Byte length of the heap string payload (for C/`println` marshalling).
+///
+/// # Safety
+/// `s` is null or a valid String payload.
 #[no_mangle]
-pub extern "C" fn lumia_str_byte_len(s: *mut u8) -> i64 {
+pub unsafe extern "C" fn lumia_str_byte_len(s: *mut u8) -> i64 {
     if s.is_null() {
         return 0;
     }
@@ -123,13 +149,19 @@ pub extern "C" fn lumia_str_byte_len(s: *mut u8) -> i64 {
 }
 
 /// Codepoint length — user-facing `.len()` on `String`.
+///
+/// # Safety
+/// `s` is null or a valid String payload.
 #[no_mangle]
-pub extern "C" fn lumia_str_len(s: *mut u8) -> i64 {
+pub unsafe extern "C" fn lumia_str_len(s: *mut u8) -> i64 {
     with_str_bytes(s, utf8_char_count)
 }
 
+///
+/// # Safety
+/// `a`/`b` are null or valid String payloads; returned String is newly allocated.
 #[no_mangle]
-pub extern "C" fn lumia_str_concat(a: *mut u8, b: *mut u8) -> *mut u8 {
+pub unsafe extern "C" fn lumia_str_concat(a: *mut u8, b: *mut u8) -> *mut u8 {
     // Keep `a`/`b` alive across the destination allocation.
     let _gc = GcInhibitGuard::enter();
     unsafe {
@@ -163,7 +195,7 @@ pub extern "C" fn lumia_str_concat(a: *mut u8, b: *mut u8) -> *mut u8 {
 
 pub(crate) fn char_codepoint(ch: i64) -> u32 {
     let p = ch as *mut u8;
-    if !p.is_null() && is_heap_payload(p) {
+    if is_heap_payload_bits(ch) {
         unsafe {
             if (*header_from_payload(p)).type_id == TYPE_CHAR {
                 return *(p as *const i64) as u32;
@@ -174,8 +206,11 @@ pub(crate) fn char_codepoint(ch: i64) -> u32 {
 }
 
 /// Trim ASCII whitespace from both ends.
+///
+/// # Safety
+/// `s` is null or a valid String payload; returned String is newly allocated.
 #[no_mangle]
-pub extern "C" fn lumia_str_trim(s: *mut u8) -> *mut u8 {
+pub unsafe extern "C" fn lumia_str_trim(s: *mut u8) -> *mut u8 {
     // Copy before alloc — slice aliases heap bytes that GC may free.
     with_str_bytes(s, |bytes| {
         let start = bytes
@@ -188,17 +223,20 @@ pub extern "C" fn lumia_str_trim(s: *mut u8) -> *mut u8 {
             .map(|i| i + 1)
             .unwrap_or(start);
         let owned = bytes[start..end].to_vec();
-        lumia_alloc_string(owned.as_ptr(), owned.len() as u64)
+        unsafe { lumia_alloc_string(owned.as_ptr(), owned.len() as u64) }
     })
 }
 
 /// Substring `[start, end)` in **Unicode scalar** offsets (clamped).
 /// Never splits a multi-byte UTF-8 sequence.
+///
+/// # Safety
+/// `s` is null or a valid String payload; returned String is newly allocated.
 #[no_mangle]
-pub extern "C" fn lumia_str_substring(s: *mut u8, start: i64, end: i64) -> *mut u8 {
+pub unsafe extern "C" fn lumia_str_substring(s: *mut u8, start: i64, end: i64) -> *mut u8 {
     with_str_bytes(s, |bytes| {
         let owned = str_substring_bytes(bytes, start, end);
-        lumia_alloc_string(owned.as_ptr(), owned.len() as u64)
+        unsafe { lumia_alloc_string(owned.as_ptr(), owned.len() as u64) }
     })
 }
 
@@ -223,29 +261,38 @@ fn str_substring_bytes(bytes: &[u8], start: i64, end: i64) -> Vec<u8> {
 }
 
 /// Prefix of `n` Unicode scalars (clamped), like List `.take`.
+///
+/// # Safety
+/// `s` is null or a valid String payload; returned String is newly allocated.
 #[no_mangle]
-pub extern "C" fn lumia_str_take(s: *mut u8, n: i64) -> *mut u8 {
+pub unsafe extern "C" fn lumia_str_take(s: *mut u8, n: i64) -> *mut u8 {
     with_str_bytes(s, |bytes| {
         let end = if n < 0 { 0 } else { n };
         let owned = str_substring_bytes(bytes, 0, end);
-        lumia_alloc_string(owned.as_ptr(), owned.len() as u64)
+        unsafe { lumia_alloc_string(owned.as_ptr(), owned.len() as u64) }
     })
 }
 
 /// Drop first `n` Unicode scalars (clamped), like List `.drop` / `slice`.
+///
+/// # Safety
+/// `s` is null or a valid String payload; returned String is newly allocated.
 #[no_mangle]
-pub extern "C" fn lumia_str_slice(s: *mut u8, n: i64) -> *mut u8 {
+pub unsafe extern "C" fn lumia_str_slice(s: *mut u8, n: i64) -> *mut u8 {
     with_str_bytes(s, |bytes| {
         let start = if n < 0 { 0 } else { n };
         let end = utf8_char_count(bytes);
         let owned = str_substring_bytes(bytes, start, end);
-        lumia_alloc_string(owned.as_ptr(), owned.len() as u64)
+        unsafe { lumia_alloc_string(owned.as_ptr(), owned.len() as u64) }
     })
 }
 
 /// Reverse Unicode scalars.
+///
+/// # Safety
+/// `s` is null or a valid String payload; returned String is newly allocated.
 #[no_mangle]
-pub extern "C" fn lumia_str_reverse(s: *mut u8) -> *mut u8 {
+pub unsafe extern "C" fn lumia_str_reverse(s: *mut u8) -> *mut u8 {
     with_str_bytes(s, |bytes| {
         let owned = match std::str::from_utf8(bytes) {
             Ok(text) => text.chars().rev().collect::<String>().into_bytes(),
@@ -255,35 +302,44 @@ pub extern "C" fn lumia_str_reverse(s: *mut u8) -> *mut u8 {
                 .collect::<String>()
                 .into_bytes(),
         };
-        lumia_alloc_string(owned.as_ptr(), owned.len() as u64)
+        unsafe { lumia_alloc_string(owned.as_ptr(), owned.len() as u64) }
     })
 }
 
+///
+/// # Safety
+/// `s` is null or a valid String payload; returned String is newly allocated.
 #[no_mangle]
-pub extern "C" fn lumia_str_to_lower(s: *mut u8) -> *mut u8 {
+pub unsafe extern "C" fn lumia_str_to_lower(s: *mut u8) -> *mut u8 {
     with_str_bytes(s, |bytes| {
         let lower = match std::str::from_utf8(bytes) {
             Ok(text) => text.to_lowercase(),
             Err(_) => String::from_utf8_lossy(bytes).to_lowercase(),
         };
-        lumia_alloc_string(lower.as_ptr(), lower.len() as u64)
+        unsafe { lumia_alloc_string(lower.as_ptr(), lower.len() as u64) }
     })
 }
 
+///
+/// # Safety
+/// `s` is null or a valid String payload; returned String is newly allocated.
 #[no_mangle]
-pub extern "C" fn lumia_str_to_upper(s: *mut u8) -> *mut u8 {
+pub unsafe extern "C" fn lumia_str_to_upper(s: *mut u8) -> *mut u8 {
     with_str_bytes(s, |bytes| {
         let upper = match std::str::from_utf8(bytes) {
             Ok(text) => text.to_uppercase(),
             Err(_) => String::from_utf8_lossy(bytes).to_uppercase(),
         };
-        lumia_alloc_string(upper.as_ptr(), upper.len() as u64)
+        unsafe { lumia_alloc_string(upper.as_ptr(), upper.len() as u64) }
     })
 }
 
 /// Split `s` on separator Char (or raw codepoint). Returns List[String].
+///
+/// # Safety
+/// `s`/`sep` are null or valid String payloads; returned List[String] is newly allocated.
 #[no_mangle]
-pub extern "C" fn lumia_str_split(s: *mut u8, sep_ch: i64) -> *mut u8 {
+pub unsafe extern "C" fn lumia_str_split(s: *mut u8, sep_ch: i64) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
     let cp = char_codepoint(sep_ch);
     let mut sep_buf = [0u8; 4];
@@ -294,14 +350,14 @@ pub extern "C" fn lumia_str_split(s: *mut u8, sep_ch: i64) -> *mut u8 {
     with_str_bytes(s, |bytes| {
         let mut parts: Vec<*mut u8> = Vec::new();
         if sep.is_empty() {
-            parts.push(lumia_alloc_string(bytes.as_ptr(), bytes.len() as u64));
+            parts.push(unsafe { lumia_alloc_string(bytes.as_ptr(), bytes.len() as u64) });
         } else {
             let mut start = 0usize;
             let mut i = 0usize;
             while i + sep.len() <= bytes.len() {
                 if &bytes[i..i + sep.len()] == sep.as_slice() {
                     let slice = &bytes[start..i];
-                    parts.push(lumia_alloc_string(slice.as_ptr(), slice.len() as u64));
+                    parts.push(unsafe { lumia_alloc_string(slice.as_ptr(), slice.len() as u64) });
                     i += sep.len();
                     start = i;
                 } else {
@@ -309,7 +365,7 @@ pub extern "C" fn lumia_str_split(s: *mut u8, sep_ch: i64) -> *mut u8 {
                 }
             }
             let slice = &bytes[start..];
-            parts.push(lumia_alloc_string(slice.as_ptr(), slice.len() as u64));
+            parts.push(unsafe { lumia_alloc_string(slice.as_ptr(), slice.len() as u64) });
         }
         let n = parts.len() as i64;
         let dest = lumia_alloc(list_payload_bytes(n), TYPE_LIST);
@@ -325,34 +381,5 @@ pub extern "C" fn lumia_str_split(s: *mut u8, sep_ch: i64) -> *mut u8 {
 }
 
 #[cfg(test)]
-mod utf8_api_tests {
-    use super::{
-        lumia_alloc_string, lumia_str_byte_len, lumia_str_len, lumia_str_reverse, lumia_str_slice,
-        lumia_str_substring, lumia_str_take, lumia_str_to_lower, lumia_str_to_upper, with_str_bytes,
-    };
-
-    #[test]
-    fn len_and_substring_use_codepoints() {
-        let s = lumia_alloc_string("你好".as_ptr(), "你好".len() as u64);
-        assert_eq!(lumia_str_len(s), 2);
-        assert_eq!(lumia_str_byte_len(s), 6);
-        let one = lumia_str_substring(s, 0, 1);
-        with_str_bytes(one, |b| assert_eq!(b, "你".as_bytes()));
-        let both = lumia_str_substring(s, 0, 2);
-        with_str_bytes(both, |b| assert_eq!(b, "你好".as_bytes()));
-        let emoji = lumia_alloc_string("a😀b".as_ptr(), "a😀b".len() as u64);
-        assert_eq!(lumia_str_len(emoji), 3);
-        let mid = lumia_str_substring(emoji, 1, 2);
-        with_str_bytes(mid, |b| assert_eq!(b, "😀".as_bytes()));
-        let take = lumia_str_take(s, 1);
-        with_str_bytes(take, |b| assert_eq!(b, "你".as_bytes()));
-        let drop = lumia_str_slice(s, 1);
-        with_str_bytes(drop, |b| assert_eq!(b, "好".as_bytes()));
-        let rev = lumia_str_reverse(s);
-        with_str_bytes(rev, |b| assert_eq!(b, "好你".as_bytes()));
-        let low = lumia_str_to_lower(lumia_alloc_string("ÄBC".as_ptr(), "ÄBC".len() as u64));
-        with_str_bytes(low, |b| assert_eq!(b, "äbc".as_bytes()));
-        let up = lumia_str_to_upper(lumia_alloc_string("café".as_ptr(), "café".len() as u64));
-        with_str_bytes(up, |b| assert_eq!(b, "CAFÉ".as_bytes()));
-    }
-}
+#[path = "string_tests.rs"]
+mod utf8_api_tests;

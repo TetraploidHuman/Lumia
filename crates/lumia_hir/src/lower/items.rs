@@ -79,7 +79,7 @@ fn scan_type_decls(m: &lumia_syntax::Module) -> TypeScan {
                     for (tag, v) in variants.iter().enumerate() {
                         let arity = match &v.fields {
                             VariantFields::Unit => 0,
-                            VariantFields::Positional(n) => *n,
+                            VariantFields::Positional(names) => names.len(),
                             VariantFields::Named(fs) => fs.len(),
                         };
                         ctors.insert(
@@ -273,6 +273,24 @@ fn collect_fold_assoc(m: &lumia_syntax::Module) -> HashSet<String> {
 }
 
 pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
+    let (module, errs) = lower_module_collecting(m)?;
+    match errs.into_iter().next() {
+        Some(e) => Err(e),
+        None => Ok(module),
+    }
+}
+
+/// Lower even when soft diagnostics were recorded (keeps the module for IDE recovery).
+pub fn lower_module_recovering(m: &lumia_syntax::Module) -> (Option<Module>, Vec<LowerError>) {
+    match lower_module_collecting(m) {
+        Ok((module, errs)) => (Some(module), errs),
+        Err(e) => (None, vec![e]),
+    }
+}
+
+fn lower_module_collecting(
+    m: &lumia_syntax::Module,
+) -> Result<(Module, Vec<LowerError>), LowerError> {
     let TypeScan {
         adts,
         products,
@@ -410,8 +428,57 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
         trait_methods,
         method_traits,
     };
-    if let Some(err) = ctx.take_err() {
-        return Err(err);
+    Ok((module, ctx.take_errs()))
+}
+
+#[cfg(test)]
+mod lower_err_tests {
+    use super::{lower_module, lower_module_recovering};
+    use lumia_syntax::parse_module;
+
+    #[test]
+    fn lower_reports_source_order_first_error() {
+        let src = r#"
+module Main
+type Opt { Some(v) None }
+val main = {
+  val BadCtor(x) = None
+  val AlsoBad(y) = None
+  0
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let err = lower_module(&ast).expect_err("expected lower error");
+        assert!(
+            err.message.contains("irrefutable"),
+            "unexpected: {}",
+            err.message
+        );
+        // Source-order: BadCtor before AlsoBad (inside-out lower used to keep AlsoBad).
+        let also_bad = src.find("AlsoBad").expect("AlsoBad in source") as u32;
+        assert!(
+            err.span.start.0 < also_bad,
+            "expected BadCtor span before AlsoBad@{also_bad}, got {:?}",
+            err.span
+        );
     }
-    Ok(module)
+
+    #[test]
+    fn lower_recovering_collects_both_irrefutable_errors() {
+        let src = r#"
+module Main
+type Opt { Some(v) None }
+val main = {
+  val BadCtor(x) = None
+  val AlsoBad(y) = None
+  0
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let (module, errs) = lower_module_recovering(&ast);
+        assert!(module.is_some());
+        assert_eq!(errs.len(), 2, "errs={errs:?}");
+        assert!(errs.iter().all(|e| e.message.contains("irrefutable")));
+        assert!(errs[0].span.start.0 < errs[1].span.start.0);
+    }
 }

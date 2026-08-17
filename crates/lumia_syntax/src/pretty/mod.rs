@@ -73,15 +73,13 @@ pub fn format_module_src(m: &Module) -> String {
                             out.push_str(&v.name);
                             match &v.fields {
                                 VariantFields::Unit => {}
-                                VariantFields::Positional(n) => {
-                                    // AST keeps arity only; emit stable placeholder idents.
+                                VariantFields::Positional(names) => {
                                     out.push('(');
-                                    for i in 0..*n {
+                                    for (i, name) in names.iter().enumerate() {
                                         if i > 0 {
                                             out.push_str(", ");
                                         }
-                                        out.push('v');
-                                        out.push_str(&i.to_string());
+                                        out.push_str(name);
                                     }
                                     out.push(')');
                                 }
@@ -155,6 +153,22 @@ pub fn format_module_src(m: &Module) -> String {
     out
 }
 
+/// Whether `src` is already in `format_module_src` form.
+///
+/// Only normalizes a **missing final `\n`** (pretty-printer always emits one).
+/// Does **not** strip trailing spaces — those must fail `fmt --check` and
+/// produce an LSP edit (CLI used to `trim_end`, which falsely greened them).
+pub fn format_matches_source(src: &str, formatted: &str) -> bool {
+    fn with_final_newline(s: &str) -> std::borrow::Cow<'_, str> {
+        if s.ends_with('\n') {
+            std::borrow::Cow::Borrowed(s)
+        } else {
+            std::borrow::Cow::Owned(format!("{s}\n"))
+        }
+    }
+    with_final_newline(src) == with_final_newline(formatted)
+}
+
 fn format_imported_name(out: &mut String, n: &ImportedName) {
     out.push_str(&n.name);
     if let Some(a) = &n.alias {
@@ -226,26 +240,12 @@ pub(crate) fn format_block_contents(out: &mut String, e: &Expr, indent: usize) {
     }
 }
 
+pub(crate) use crate::escape::escape_str;
+
 pub(crate) fn pad(out: &mut String, n: usize) {
     for _ in 0..n {
         out.push_str("    ");
     }
-}
-
-pub(crate) fn escape_str(s: &str) -> String {
-    let mut o = String::new();
-    for c in s.chars() {
-        match c {
-            '\\' => o.push_str("\\\\"),
-            '"' => o.push_str("\\\""),
-            '\n' => o.push_str("\\n"),
-            '\r' => o.push_str("\\r"),
-            '\t' => o.push_str("\\t"),
-            '$' => o.push_str("\\$"),
-            c => o.push(c),
-        }
-    }
-    o
 }
 
 #[cfg(test)]
@@ -318,6 +318,18 @@ mod tests {
         assert_eq!(formatted, formatted2, "fmt not idempotent");
         let m3 = parse_module(&formatted2).expect("parse3");
         assert_eq!(shape(&m2), shape(&m3), "fmt unstable after second pass");
+    }
+
+    #[test]
+    fn format_matches_source_ignores_only_missing_final_newline() {
+        let src = "module T\n\nval x = 1\n";
+        let m = parse_module(src).unwrap();
+        let formatted = format_module_src(&m);
+        assert!(format_matches_source(src, &formatted));
+        assert!(format_matches_source(src.trim_end(), &formatted));
+        // Trailing spaces on a line are a real drift (CLI check used to miss these).
+        let dirty = "module T\n\nval x = 1  \n";
+        assert!(!format_matches_source(dirty, &formatted));
     }
 
     #[test]
@@ -406,6 +418,71 @@ val main = {
     }
 
     #[test]
+    fn fmt_range_and_to_surface_sugar() {
+        let src = r#"
+module T
+val main = {
+    val a = 1..3
+    val b = 1..<3
+    val c = 1 to 3
+    a.len() + b.len() + c.len()
+}
+"#;
+        let m = parse_module(src).expect("parse");
+        let formatted = format_module_src(&m);
+        assert!(
+            formatted.contains("1..3") && formatted.contains("1..<3") && formatted.contains("1 to 3"),
+            "expected surface range/to sugar, got:\n{formatted}"
+        );
+        assert!(
+            !formatted.contains("rangeInclusive") && !formatted.contains("range("),
+            "should not print desugared call form:\n{formatted}"
+        );
+        roundtrip(src);
+    }
+
+    #[test]
+    fn fmt_bare_it_surface_sugar() {
+        let src = r#"
+module T
+val main = {
+    val xs = [1, 2, 3]
+    xs.map { it + 1 }
+}
+"#;
+        let m = parse_module(src).expect("parse");
+        let formatted = format_module_src(&m);
+        assert!(
+            formatted.contains("it + 1"),
+            "expected bare it body, got:\n{formatted}"
+        );
+        assert!(
+            !formatted.contains("it ->"),
+            "should not invent explicit `it ->`:\n{formatted}"
+        );
+        assert!(
+            formatted.contains("map {") && !formatted.contains("map({"),
+            "expected trailing-closure form, got:\n{formatted}"
+        );
+        // Explicit `{ it -> … }` must still print the arrow.
+        let explicit = r#"
+module T
+val main = {
+    val xs = [1, 2, 3]
+    xs.map { it -> it + 1 }
+}
+"#;
+        let m2 = parse_module(explicit).expect("parse explicit");
+        let out2 = format_module_src(&m2);
+        assert!(
+            out2.contains("it ->"),
+            "explicit it param must keep arrow:\n{out2}"
+        );
+        roundtrip(src);
+        roundtrip(explicit);
+    }
+
+    #[test]
     fn fmt_match_and_list() {
         roundtrip(
             r#"
@@ -433,8 +510,8 @@ type Point {
 val main = 0
 "#,
         );
-        // Positional field names are not stored in the AST — fmt uses v0,v1,…
-        roundtrip_opts(
+        // Positional binder names are preserved (`Some(value)` stays `value`).
+        roundtrip(
             r#"
 module T
 type Option {
@@ -443,7 +520,6 @@ type Option {
 }
 val main = 0
 "#,
-            false,
         );
     }
 }

@@ -24,6 +24,14 @@ pub(crate) enum MonoKind {
         params: Vec<MonoKind>,
         ret: Box<MonoKind>,
     },
+    /// `Task[T]` — needed so `unwrapTask(spawn { 1.5 })` clones Float ABI.
+    Task(Box<MonoKind>),
+    /// `Channel[T]` — same Float/heap payload specialization as Task.
+    Channel(Box<MonoKind>),
+    /// Structural tuple / tuple-prefix (HIR also uses `__Tuple` Adt; both must key).
+    Tuple(Vec<MonoKind>),
+    /// `()` — so `ignore(unit, 1.5)` can still specialize the Float result path.
+    Unit,
 }
 
 impl MonoKind {
@@ -70,6 +78,13 @@ impl MonoKind {
                 let ps: Vec<_> = params.iter().map(MonoKind::encode).collect();
                 format!("Fun_{}_{}", ps.join("_"), ret.encode())
             }
+            MonoKind::Task(e) => format!("Task_{}", e.encode()),
+            MonoKind::Channel(e) => format!("Channel_{}", e.encode()),
+            MonoKind::Tuple(es) => {
+                let parts: Vec<_> = es.iter().map(MonoKind::encode).collect();
+                format!("Tuple_{}", parts.join("_"))
+            }
+            MonoKind::Unit => "Unit".into(),
         }
     }
 
@@ -95,11 +110,18 @@ impl MonoKind {
                 Box::new(ret.to_type()),
                 Effect::pure(),
             ),
+            MonoKind::Task(e) => Type::Task(Box::new(e.to_type())),
+            MonoKind::Channel(e) => Type::Channel(Box::new(e.to_type())),
+            MonoKind::Tuple(es) => Type::Tuple(es.iter().map(MonoKind::to_type).collect()),
+            MonoKind::Unit => Type::Unit,
         }
     }
 }
 
 fn type_is_heap_structure(t: &Type) -> bool {
+    // ABI-erased *containers* restored from Int keys — not the full GC lattice
+    // ([`crate::type_may_heap`]): String/Char/Fun keep dedicated MonoKinds and
+    // must not be rewritten from Int formals here.
     matches!(
         t,
         Type::Adt { .. }
@@ -185,7 +207,17 @@ fn type_to_mono(t: &Type) -> Option<MonoKind> {
                 ret: Box::new(rk),
             })
         }
-        // Unit / Var: FunRef args use `MonoKind::FunRef` via funref map.
+        Type::Task(e) => type_to_mono(e).map(|k| MonoKind::Task(Box::new(k))),
+        Type::Channel(e) => type_to_mono(e).map(|k| MonoKind::Channel(Box::new(k))),
+        Type::Tuple(ts) | Type::TuplePrefix(ts) => {
+            let mut ks = Vec::with_capacity(ts.len());
+            for t in ts {
+                ks.push(type_to_mono(t)?);
+            }
+            Some(MonoKind::Tuple(ks))
+        }
+        Type::Unit => Some(MonoKind::Unit),
+        // Open Var: FunRef args use `MonoKind::FunRef` via funref map.
         _ => None,
     }
 }
@@ -430,6 +462,13 @@ impl MonoKey {
                 }
             }
         }
+        // Instantiate generic ret from key formals (after unwrapOr / HOF specials).
+        // `unwrapTask: Task[a]→a` must not keep homogeneous `Task(Float)` as ret.
+        if let Some(f) = functions.iter().find(|f| f.name == base) {
+            if let Some(inst) = instantiate_ret_from_mono_key(f, self, functions) {
+                return ground_open_vars(inst);
+            }
+        }
         if kinds.iter().all(|k| k == &kinds[0]) {
             if let MonoKind::FunRef(n) = &kinds[0] {
                 return functions
@@ -601,6 +640,124 @@ impl MonoKey {
     }
 }
 
+/// Bind type vars in `formal` from a ground `concrete` shape (mono key arg).
+fn collect_mono_var_binds(formal: &Type, concrete: &Type, binds: &mut HashMap<u32, Type>) {
+    match (formal, concrete) {
+        (Type::Var(id), c) if !matches!(c, Type::Var(_)) => {
+            binds.entry(*id).or_insert_with(|| c.clone());
+        }
+        (Type::List(fe), Type::List(ce))
+        | (Type::Set(fe), Type::Set(ce))
+        | (Type::Task(fe), Type::Task(ce))
+        | (Type::Channel(fe), Type::Channel(ce)) => {
+            collect_mono_var_binds(fe, ce, binds);
+        }
+        (Type::Map(fk, fv), Type::Map(ck, cv)) => {
+            collect_mono_var_binds(fk, ck, binds);
+            collect_mono_var_binds(fv, cv, binds);
+        }
+        (
+            Type::Adt {
+                name: n1,
+                params: p1,
+            },
+            Type::Adt {
+                name: n2,
+                params: p2,
+            },
+        ) if n1 == n2 => {
+            for (a, b) in p1.iter().zip(p2.iter()) {
+                collect_mono_var_binds(a, b, binds);
+            }
+        }
+        (Type::Fun(fps, fr, _), Type::Fun(cps, cr, _)) => {
+            for (a, b) in fps.iter().zip(cps.iter()) {
+                collect_mono_var_binds(a, b, binds);
+            }
+            collect_mono_var_binds(fr, cr, binds);
+        }
+        (Type::Tuple(fts), Type::Tuple(cts)) | (Type::TuplePrefix(fts), Type::TuplePrefix(cts)) => {
+            for (a, b) in fts.iter().zip(cts.iter()) {
+                collect_mono_var_binds(a, b, binds);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn apply_mono_var_binds(t: &Type, binds: &HashMap<u32, Type>) -> Type {
+    match t {
+        Type::Var(id) => binds
+            .get(id)
+            .cloned()
+            .unwrap_or_else(|| Type::Var(*id)),
+        Type::List(e) => Type::List(Box::new(apply_mono_var_binds(e, binds))),
+        Type::Set(e) => Type::Set(Box::new(apply_mono_var_binds(e, binds))),
+        Type::Task(e) => Type::Task(Box::new(apply_mono_var_binds(e, binds))),
+        Type::Channel(e) => Type::Channel(Box::new(apply_mono_var_binds(e, binds))),
+        Type::Map(k, v) => Type::Map(
+            Box::new(apply_mono_var_binds(k, binds)),
+            Box::new(apply_mono_var_binds(v, binds)),
+        ),
+        Type::Adt { name, params } => Type::Adt {
+            name: name.clone(),
+            params: params
+                .iter()
+                .map(|p| apply_mono_var_binds(p, binds))
+                .collect(),
+        },
+        Type::Fun(ps, r, e) => Type::Fun(
+            ps.iter().map(|p| apply_mono_var_binds(p, binds)).collect(),
+            Box::new(apply_mono_var_binds(r, binds)),
+            *e,
+        ),
+        Type::Tuple(ts) => Type::Tuple(ts.iter().map(|p| apply_mono_var_binds(p, binds)).collect()),
+        Type::TuplePrefix(ts) => {
+            Type::TuplePrefix(ts.iter().map(|p| apply_mono_var_binds(p, binds)).collect())
+        }
+        other => other.clone(),
+    }
+}
+
+/// Instantiate `fun.ret_ty` from mono key arg shapes vs generic formals.
+/// Returns `None` when the result still has open Vars (fall back to heuristics).
+fn instantiate_ret_from_mono_key(
+    fun: &CoreFun,
+    key: &MonoKey,
+    functions: &[CoreFun],
+) -> Option<Type> {
+    if fun.param_tys.len() != key.0.len() {
+        return None;
+    }
+    // Skip when ret is already ground and not a Var-carrying shape we refine —
+    // still allow Var / Task[Var] / etc.
+    let mut binds = HashMap::default();
+    let concretes = key.param_tys(functions);
+    for (formal, concrete) in fun.param_tys.iter().zip(concretes.iter()) {
+        collect_mono_var_binds(formal, concrete, &mut binds);
+    }
+    if binds.is_empty() {
+        return None;
+    }
+    let inst = apply_mono_var_binds(&fun.ret_ty, &binds);
+    if type_has_open_var(&inst) {
+        return None;
+    }
+    Some(inst)
+}
+
+fn type_has_open_var(t: &Type) -> bool {
+    match t {
+        Type::Var(_) => true,
+        Type::List(e) | Type::Set(e) | Type::Task(e) | Type::Channel(e) => type_has_open_var(e),
+        Type::Map(k, v) => type_has_open_var(k) || type_has_open_var(v),
+        Type::Adt { params, .. } => params.iter().any(type_has_open_var),
+        Type::Fun(ps, r, _) => ps.iter().any(type_has_open_var) || type_has_open_var(r),
+        Type::Tuple(ts) | Type::TuplePrefix(ts) => ts.iter().any(type_has_open_var),
+        _ => false,
+    }
+}
+
 /// Build a mono key from call-site arg types.
 ///
 /// When `formals` is the callee's `param_tys` and a site arg is ABI-erased `Int`
@@ -640,4 +797,32 @@ pub(crate) fn args_mono_key(
         kinds.push(type_to_mono(&ty)?);
     }
     Some(MonoKey(kinds))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MonoKind;
+
+    #[test]
+    fn mono_kind_encode_stable_keys() {
+        assert_eq!(MonoKind::Int.encode(), "Int");
+        assert_eq!(
+            MonoKind::List(Box::new(MonoKind::Float)).encode(),
+            "List_Float"
+        );
+        assert_eq!(
+            MonoKind::Map(Box::new(MonoKind::String), Box::new(MonoKind::Int)).encode(),
+            "Map_String_Int"
+        );
+        assert_eq!(
+            MonoKind::Adt {
+                name: "Option".into(),
+                params: vec![MonoKind::Float],
+            }
+            .encode(),
+            "Option_Float"
+        );
+        assert_eq!(MonoKind::FunRef("a.b$c".into()).encode(), "Fn_a_b_c");
+        assert_eq!(MonoKind::Unit.encode(), "Unit");
+    }
 }

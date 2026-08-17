@@ -140,27 +140,11 @@ pub(super) fn workspace_extras_dir() -> PathBuf {
 }
 
 pub(super) fn parse_std_exports(src: &str) -> Result<Vec<String>> {
-    for line in src.lines() {
-        let t = line.trim();
-        let Some(rest) = t.strip_prefix("///") else {
-            continue;
-        };
-        let rest = rest.trim();
-        let Some(list) = rest.strip_prefix("@exports") else {
-            continue;
-        };
-        let list = list.trim().trim_start_matches(':').trim();
-        let names: Vec<String> = list
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-        if names.is_empty() {
-            bail!("@exports list is empty");
-        }
-        return Ok(names);
+    match crate::exports::parse_exports_from_source(src) {
+        None => bail!("missing `/// @exports …` line in bundled module source"),
+        Some(names) if names.is_empty() => bail!("@exports list is empty"),
+        Some(names) => Ok(names),
     }
-    bail!("missing `/// @exports …` line in bundled module source")
 }
 
 pub(super) fn validate_bundled_import(imp: &Import) -> Result<()> {

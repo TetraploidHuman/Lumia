@@ -6,14 +6,35 @@ use inkwell::values::{BasicValueEnum, FunctionValue};
 use inkwell::IntPredicate;
 use lumia_core::Local;
 use rustc_hash::FxHashMap;
+use std::rc::Rc;
 
 impl<'ctx> Codegen<'ctx> {
     /// Snapshot of compile-time shadow-stack bookkeeping at if-entry.
     /// Musttail arms call `root_pop_to(0)` and clear `rooted_slots`; restore
     /// before emitting the sibling arm and again before merge.
-    fn restore_root_checkpoint(&mut self, entry_depth: u32, entry_slots: &FxHashMap<String, u32>) {
+    ///
+    /// Entry uses `Rc::clone` (O(1)); mutations copy-on-write via `Rc::make_mut`.
+    fn restore_root_checkpoint(
+        &mut self,
+        entry_depth: u32,
+        entry_slots: &Rc<FxHashMap<String, u32>>,
+    ) {
         self.frame.root_depth = entry_depth;
-        self.frame.rooted_slots.clone_from(entry_slots);
+        if Rc::ptr_eq(&self.frame.rooted_slots, entry_slots) {
+            Rc::make_mut(&mut self.frame.rooted_slots).retain(|_, d| *d <= entry_depth);
+            return;
+        }
+        // Common path: arm only pushed deeper roots on a unique map.
+        if self.frame.rooted_slots.len() >= entry_slots.len()
+            && entry_slots
+                .iter()
+                .all(|(k, d)| self.frame.rooted_slots.get(k) == Some(d))
+        {
+            Rc::make_mut(&mut self.frame.rooted_slots).retain(|_, d| *d <= entry_depth);
+        } else {
+            // Musttail / wiped / divergent — reattach entry snapshot (O(1)).
+            self.frame.rooted_slots = Rc::clone(entry_slots);
+        }
     }
 
     pub(crate) fn emit_value_if(
@@ -24,7 +45,7 @@ impl<'ctx> Codegen<'ctx> {
         fv: FunctionValue<'ctx>,
     ) -> Result<BasicValueEnum<'ctx>> {
         let entry_depth = self.frame.root_depth;
-        let entry_slots = self.frame.rooted_slots.clone();
+        let entry_slots = Rc::clone(&self.frame.rooted_slots);
         let c = self.as_i64(self.local(*cond)?)?;
         let zero = self.llvm.i64_ty.const_int(0, false);
         let cond_i1 = crate::error::llvm(self.llvm.builder.build_int_compare(

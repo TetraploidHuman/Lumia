@@ -1,6 +1,5 @@
 //! Expression inference.
 
-use super::module::parse_type_name;
 use super::Infer;
 use crate::types::{at, expr_span, Effect, Type, TypeError};
 use lumia_hir::Expr;
@@ -173,7 +172,12 @@ impl Infer {
                 out_params.push(self.fresh());
             }
         }
-        self.ctrl.with_rewrites.insert(span, name.clone());
+        crate::span_facts::insert_unique_span_fact(
+            &mut self.ctrl.with_rewrites,
+            span,
+            name.clone(),
+            "with",
+        )?;
         Ok((
             Type::Adt {
                 name,
@@ -225,12 +229,11 @@ impl Infer {
     ) -> Result<(Type, Effect), TypeError> {
         let (vt, ve) = self.infer_expr(value)?;
         let vt = if let Some(ann) = ann {
-            let expect = parse_type_name(ann).map_err(|e| {
-                at(
-                    expr_span(value),
-                    format!("in type ascription for `{name}`: {}", e.message()),
-                )
-            })?;
+            let expect = self.resolve_type_ann(
+                ann,
+                expr_span(value),
+                &format!("in type ascription for `{name}`"),
+            )?;
             self.unify_at(expr_span(value), vt, expect.clone())?;
             expect
         } else {
@@ -284,12 +287,11 @@ impl Infer {
         let mut pts = vec![];
         for (i, p) in params.iter().enumerate() {
             let tv = if let Some(Some(ann)) = param_ann.get(i) {
-                parse_type_name(ann).map_err(|e| {
-                    at(
-                        span,
-                        format!("in type ascription for `{p}`: {}", e.message()),
-                    )
-                })?
+                self.resolve_type_ann(
+                    ann,
+                    span,
+                    &format!("in type ascription for `{p}`"),
+                )?
             } else {
                 self.fresh()
             };
@@ -521,7 +523,12 @@ impl Infer {
         let st = self.prune(st);
         match st {
             Type::Adt { name, params } if lumia_hir::is_option(&name) && params.len() == 1 => {
-                self.ctrl.alt_kinds.insert(span, AltKind::Option);
+                crate::span_facts::insert_unique_span_fact(
+                    &mut self.ctrl.alt_kinds,
+                    span,
+                    AltKind::Option,
+                    "alt",
+                )?;
                 let payload = params[0].clone();
                 let (rhs_ty, ae) = self.infer_expr(alt)?;
                 let rhs_p = self.prune(rhs_ty.clone());
@@ -542,7 +549,12 @@ impl Infer {
                 Ok((payload, self.union_eff(se, ae)))
             }
             Type::Adt { name, params } if lumia_hir::is_result(&name) && params.len() == 2 => {
-                self.ctrl.alt_kinds.insert(span, AltKind::Result);
+                crate::span_facts::insert_unique_span_fact(
+                    &mut self.ctrl.alt_kinds,
+                    span,
+                    AltKind::Result,
+                    "alt",
+                )?;
                 let ok_ty = params[0].clone();
                 let err_ty = params[1].clone();
                 self.push();

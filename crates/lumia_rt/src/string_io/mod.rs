@@ -6,7 +6,7 @@ mod trap;
 
 pub use io::{
     lumia_println_auto, lumia_println_bool, lumia_println_cstr, lumia_println_float,
-    lumia_println_int, lumia_println_str, lumia_read_stdin,
+    lumia_println_int, lumia_println_str, lumia_println_unit, lumia_read_stdin,
 };
 pub use string::{
     lumia_alloc_string, lumia_cstr_to_string, lumia_str_byte_len, lumia_str_concat,

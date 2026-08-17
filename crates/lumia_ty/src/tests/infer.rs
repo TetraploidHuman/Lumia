@@ -80,6 +80,42 @@ val main = {
 }
 
 #[test]
+fn type_ascription_list_bracket_and_product() {
+    let src = r#"
+module AnnRich
+import std.io.{println}
+type Point { val x val y }
+val head = { xs: List[Float] -> xs.get(0) }
+val getx = { p: Point -> p.x }
+val main = {
+    println(head(listOf(1.5, 2.5)))
+    println(getx(Point { x = 3.5, y = 0.0 }))
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let typed = infer_module(&hir).expect("rich ascriptions");
+    check_effect_boundaries(&typed).unwrap();
+}
+
+#[test]
+fn type_ascription_unknown_nominal_rejected() {
+    let src = r#"
+module Bad
+val k: NoSuchType = 1
+val main = { 0 }
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let err = infer_module(&hir).expect_err("unknown type");
+    assert!(
+        err.message().contains("unknown type") || err.message().contains("NoSuchType"),
+        "unexpected: {}",
+        err.message()
+    );
+}
+
+#[test]
 fn type_ascription_val_and_lambda() {
     let src = r#"
 module Ann
@@ -111,6 +147,30 @@ val main = { 0 }
         err.message().contains("mismatch") || err.message().contains("Float"),
         "unexpected: {}",
         err.message()
+    );
+}
+
+#[test]
+fn unify_mismatch_uses_display_type_not_debug() {
+    let src = r#"
+module M
+val main = {
+    val x = 1
+    val y = "a"
+    x + y
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let err = infer_module(&hir).expect_err("string+int");
+    let msg = err.message();
+    assert!(
+        msg.contains("String") && msg.contains("Int"),
+        "expected display_type names, got {msg}"
+    );
+    assert!(
+        !msg.contains("Type::") && !msg.contains('?'),
+        "must not dump Debug / ?N: {msg}"
     );
 }
 
@@ -325,6 +385,51 @@ val main = {
     let hir = lower_module(&ast).expect("lower");
     let typed = infer_module(&hir).expect("poly ctor alias");
     check_effect_boundaries(&typed).unwrap();
+}
+
+#[test]
+fn free_println_call_ok_without_import() {
+    // Lower rewrites `println(…)` to BuiltinCall — no std.io import required.
+    let src = r#"
+module M
+val main = { println(1) }
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    infer_module(&hir).expect("free println call");
+}
+
+#[test]
+fn first_class_println_requires_import() {
+    // Seeding println in Infer env false-greened `val f = println` on lone files.
+    let src = r#"
+module M
+val f = println
+val main = 0
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let err = infer_module(&hir).expect_err("first-class println needs import");
+    assert!(
+        err.message().contains("unbound") || err.message().contains("println"),
+        "{}",
+        err.message()
+    );
+}
+
+#[test]
+fn poly_id_ok_when_use_declared_first() {
+    // Callee must generalize before callers even if it appears later in the file.
+    let src = r#"
+module M
+import std.io.{println}
+val use = { x -> id(x) + id(1) }
+val id = { x -> x }
+val main = { println(id(true)) }
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    infer_module(&hir).expect("id should stay polymorphic");
 }
 
 #[test]

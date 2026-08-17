@@ -2,7 +2,7 @@
 
 mod io;
 mod list;
-mod show;
+pub(crate) mod show;
 mod task;
 
 use super::super::Codegen;
@@ -64,60 +64,75 @@ impl<'ctx> Codegen<'ctx> {
             BuiltinEmit::ObjObjPtr => self.emit_rt_obj_obj(b, args, label),
             BuiltinEmit::ObjObjScalar => self.emit_rt_obj_obj_scalar(b, args, label),
             BuiltinEmit::I64I64Ptr => self.emit_rt_i64_i64_ptr(b, args, label),
-            BuiltinEmit::ObjI64I64Ptr => {
-                let obj_i = self.coerce_i64(self.local(args[0])?)?;
-                let a = self.coerce_i64(self.local(args[1])?)?;
-                let b_i = self.coerce_i64(self.local(args[2])?)?;
-                let mut obj = self.i64_as_ptr(obj_i, "obj")?;
-                obj = self.ensure_float_container(b, args, obj)?;
-                // List/Map `set`: retain source when the old binding stays live.
-                // Skipped for proven `xs = xs.set(…)` so unique RC can write in place.
-                if matches!(b, Builtin::MapSet) && !self.frame.cow_consume_unique {
-                    self.list_retain_i64(obj_i)?;
+            BuiltinEmit::ObjI64I64Ptr => self.emit_obj_i64_i64_ptr(b, args, label),
+            BuiltinEmit::ObjI64OptionTags => self.emit_obj_i64_option_tags(b, args, label),
+        }
+    }
+
+    /// `MapSet` / list-index set: retain + float ensure + list-receiver symbol.
+    fn emit_obj_i64_i64_ptr(
+        &mut self,
+        b: &Builtin,
+        args: &[Local],
+        label: &str,
+    ) -> Result<BasicValueEnum<'ctx>> {
+        let obj_i = self.coerce_i64(self.local(args[0])?)?;
+        let a = self.coerce_i64(self.local(args[1])?)?;
+        let b_i = self.coerce_i64(self.local(args[2])?)?;
+        let mut obj = self.i64_as_ptr(obj_i, "obj")?;
+        obj = self.ensure_float_container(b, args, obj)?;
+        // List/Map `set`: retain source when the old binding stays live.
+        // Skipped for proven `xs = xs.set(…)` so unique RC can write in place.
+        if matches!(b, Builtin::MapSet) && !self.frame.cow_consume_unique {
+            self.list_retain_i64(obj_i)?;
+        }
+        // Retained value/elem so container alias does not leave nested COW at rc==1.
+        if matches!(b, Builtin::MapSet) {
+            if let Some(ty) = self.frame.local_tys.get(&args[2].0) {
+                if Self::type_needs_cow_retain(ty) {
+                    self.adt_retain_i64(b_i)?;
                 }
-                // Retained value/elem so container alias does not leave nested COW at rc==1.
-                if matches!(b, Builtin::MapSet) {
-                    if let Some(ty) = self.frame.local_tys.get(&args[2].0) {
-                        if Self::type_needs_cow_retain(ty) {
-                            self.adt_retain_i64(b_i)?;
-                        }
-                    }
-                }
-                // Known `List` → skip polymorphic `lumia_set` dispatch.
-                let sym = self.rt_symbol_for_list_receiver(b, args[0])?;
-                self.call_rt_ptr_as_i64(sym, &[obj.into(), a.into(), b_i.into()], label)
-            }
-            BuiltinEmit::ObjI64OptionTags => {
-                let obj_i = self.coerce_i64(self.local(args[0])?)?;
-                let key = self.coerce_i64(self.local(args[1])?)?;
-                let obj = self.i64_as_ptr(obj_i, "obj")?;
-                // Known `List` → `lumia_list_get` (no Option tags / map dispatch).
-                if matches!(b, Builtin::ListGet)
-                    && matches!(self.frame.local_tys.get(&args[0].0), Some(Type::List(_)))
-                {
-                    return self.call_rt_basic(
-                        Self::list_receiver_rt_override(Builtin::ListGet)
-                            .unwrap_or("lumia_list_get"),
-                        &[obj.into(), key.into()],
-                        label,
-                    );
-                }
-                let some = self
-                    .llvm
-                    .i64_ty
-                    .const_int(self.option_some_tag as u64, true);
-                let none = self
-                    .llvm
-                    .i64_ty
-                    .const_int(self.option_none_tag as u64, true);
-                let sym = Self::builtin_symbol(b)?;
-                self.call_rt_basic(
-                    sym,
-                    &[obj.into(), key.into(), some.into(), none.into()],
-                    label,
-                )
             }
         }
+        // Known `List` → skip polymorphic `lumia_set` dispatch.
+        let sym = self.rt_symbol_for_list_receiver(b, args[0])?;
+        self.call_rt_ptr_as_i64(sym, &[obj.into(), a.into(), b_i.into()], label)
+    }
+
+    /// `ListGet` / map get: typed List fast-path vs Option-tagged map lookup.
+    fn emit_obj_i64_option_tags(
+        &mut self,
+        b: &Builtin,
+        args: &[Local],
+        label: &str,
+    ) -> Result<BasicValueEnum<'ctx>> {
+        let obj_i = self.coerce_i64(self.local(args[0])?)?;
+        let key = self.coerce_i64(self.local(args[1])?)?;
+        let obj = self.i64_as_ptr(obj_i, "obj")?;
+        // Known `List` → `lumia_list_get` (no Option tags / map dispatch).
+        if matches!(b, Builtin::ListGet)
+            && matches!(self.frame.local_tys.get(&args[0].0), Some(Type::List(_)))
+        {
+            return self.call_rt_basic(
+                Self::list_receiver_rt_override(Builtin::ListGet).unwrap_or("lumia_list_get"),
+                &[obj.into(), key.into()],
+                label,
+            );
+        }
+        let some = self
+            .llvm
+            .i64_ty
+            .const_int(self.option_variant_tag("Some") as u64, true);
+        let none = self
+            .llvm
+            .i64_ty
+            .const_int(self.option_variant_tag("None") as u64, true);
+        let sym = Self::builtin_symbol(b)?;
+        self.call_rt_basic(
+            sym,
+            &[obj.into(), key.into(), some.into(), none.into()],
+            label,
+        )
     }
 
     /// Required `lumia_*` symbol from [`Builtin::info`].
@@ -129,28 +144,15 @@ impl<'ctx> Codegen<'ctx> {
     /// List-family builtins that share the List emit convention but need a
     /// dedicated String RT entry when the receiver is typed `String`.
     ///
-    /// Kept outside [`BuiltinInfo::runtime_symbol`] because the default symbol
-    /// remains the polymorphic / list entry (`lumia_concat`, `lumia_list_*`);
-    /// this table is the only emit_rt override surface for that remapping.
+    /// Authority: [`Builtin::string_receiver_rt_override`].
     pub(crate) fn string_receiver_rt_override(b: Builtin) -> Option<&'static str> {
-        match b {
-            Builtin::ListReverse => Some("lumia_str_reverse"),
-            Builtin::ListTake => Some("lumia_str_take"),
-            Builtin::ListSlice => Some("lumia_str_slice"),
-            Builtin::ListConcat => Some("lumia_str_concat"),
-            _ => None,
-        }
+        b.string_receiver_rt_override()
     }
 
-    /// When the receiver is a known `List`, use the monomorphic list RT entry
-    /// instead of the polymorphic map/container symbol in [`BuiltinInfo`].
+    /// When the receiver is a known `List`, use the monomorphic list RT entry.
+    /// Authority: [`Builtin::list_receiver_rt_override`].
     pub(crate) fn list_receiver_rt_override(b: Builtin) -> Option<&'static str> {
-        match b {
-            Builtin::ListLen => Some("lumia_list_len"),
-            Builtin::MapSet => Some("lumia_list_set"),
-            Builtin::ListGet => Some("lumia_list_get"),
-            _ => None,
-        }
+        b.list_receiver_rt_override()
     }
 
     fn rt_symbol_for_receiver(
@@ -367,41 +369,14 @@ mod tests {
     use lumia_hir::Builtin;
 
     #[test]
-    fn string_receiver_overrides_are_complete() {
+    fn string_receiver_overrides_delegate_to_builtin() {
         assert_eq!(
             Codegen::string_receiver_rt_override(Builtin::ListReverse),
-            Some("lumia_str_reverse")
-        );
-        assert_eq!(
-            Codegen::string_receiver_rt_override(Builtin::ListTake),
-            Some("lumia_str_take")
-        );
-        assert_eq!(
-            Codegen::string_receiver_rt_override(Builtin::ListSlice),
-            Some("lumia_str_slice")
-        );
-        assert_eq!(
-            Codegen::string_receiver_rt_override(Builtin::ListConcat),
-            Some("lumia_str_concat")
-        );
-        assert_eq!(Codegen::string_receiver_rt_override(Builtin::ListAppend), None);
-        assert_eq!(Codegen::string_receiver_rt_override(Builtin::ListLen), None);
-    }
-
-    #[test]
-    fn list_receiver_overrides_are_complete() {
-        assert_eq!(
-            Codegen::list_receiver_rt_override(Builtin::ListLen),
-            Some("lumia_list_len")
-        );
-        assert_eq!(
-            Codegen::list_receiver_rt_override(Builtin::MapSet),
-            Some("lumia_list_set")
+            Builtin::ListReverse.string_receiver_rt_override()
         );
         assert_eq!(
             Codegen::list_receiver_rt_override(Builtin::ListGet),
-            Some("lumia_list_get")
+            Builtin::ListGet.list_receiver_rt_override()
         );
-        assert_eq!(Codegen::list_receiver_rt_override(Builtin::ListConcat), None);
     }
 }

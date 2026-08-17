@@ -9,8 +9,8 @@ source "$ROOT/scripts/env.sh"
 source "$ROOT/scripts/bench_measure.sh"
 
 cd "$ROOT"
-cargo build -q -p lumia
-LUMIA="$ROOT/target/debug/lumia"
+cargo build -q -p lumia --release
+LUMIA="$ROOT/target/release/lumia"
 SRC=examples/bench_memo.lm
 OUT_DIR="${TMPDIR:-/tmp}/lumia_bench_memo"
 mkdir -p "$OUT_DIR"

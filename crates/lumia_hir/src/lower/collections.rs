@@ -6,7 +6,7 @@ use crate::ast::{Builtin, Expr};
 use lumia_syntax::Span;
 
 pub(crate) fn lower_to_set(_ctx: &LowerCtx, list: Expr, span: Span) -> Expr {
-    let acc = format!("__toset_acc_{}", span.start.0);
+    let acc = format!("{}_{}", crate::desugar_slots::TOSET_ACC_PREFIX, span.start.0);
     let x = format!("__toset_x_{}", span.start.0);
     let step = Expr::Assign {
         name: acc.clone(),
@@ -33,7 +33,7 @@ pub(crate) fn lower_to_set(_ctx: &LowerCtx, list: Expr, span: Span) -> Expr {
 }
 
 pub(crate) fn lower_to_list(_ctx: &LowerCtx, col: Expr, span: Span) -> Expr {
-    let acc = format!("__tolist_acc_{}", span.start.0);
+    let acc = format!("{}_{}", crate::desugar_slots::TOLIST_ACC_PREFIX, span.start.0);
     let x = format!("__tolist_x_{}", span.start.0);
     let step = Expr::Assign {
         name: acc.clone(),
@@ -61,7 +61,7 @@ pub(crate) fn lower_to_list(_ctx: &LowerCtx, col: Expr, span: Span) -> Expr {
 
 /// `pairs.toMap()` — each element is a 2-tuple `(k, v)`.
 pub(crate) fn lower_to_map(_ctx: &LowerCtx, pairs: Expr, span: Span) -> Expr {
-    let acc = format!("__tomap_acc_{}", span.start.0);
+    let acc = format!("{}_{}", crate::desugar_slots::TOMAP_ACC_PREFIX, span.start.0);
     let p = format!("__tomap_p_{}", span.start.0);
     let k = Expr::BuiltinCall {
         name: Builtin::AdtField,
@@ -98,7 +98,7 @@ pub(crate) fn lower_to_map(_ctx: &LowerCtx, pairs: Expr, span: Span) -> Expr {
 }
 
 pub(crate) fn lower_set_union(_ctx: &LowerCtx, a: Expr, b: Expr, span: Span) -> Expr {
-    let acc = format!("__union_acc_{}", span.start.0);
+    let acc = format!("{}_{}", crate::desugar_slots::UNION_ACC_PREFIX, span.start.0);
     let x = format!("__union_x_{}", span.start.0);
     let step = Expr::Assign {
         name: acc.clone(),
@@ -122,7 +122,7 @@ pub(crate) fn lower_set_union(_ctx: &LowerCtx, a: Expr, b: Expr, span: Span) -> 
 }
 
 pub(crate) fn lower_set_intersect(_ctx: &LowerCtx, a: Expr, b: Expr, span: Span) -> Expr {
-    let acc = format!("__isect_acc_{}", span.start.0);
+    let acc = format!("{}_{}", crate::desugar_slots::ISECT_ACC_PREFIX, span.start.0);
     let other = format!("__isect_b_{}", span.start.0);
     let x = format!("__isect_x_{}", span.start.0);
     let insert = Expr::Assign {
@@ -163,7 +163,7 @@ pub(crate) fn lower_set_intersect(_ctx: &LowerCtx, a: Expr, b: Expr, span: Span)
 }
 
 pub(crate) fn lower_set_diff(_ctx: &LowerCtx, a: Expr, b: Expr, span: Span) -> Expr {
-    let acc = format!("__diff_acc_{}", span.start.0);
+    let acc = format!("{}_{}", crate::desugar_slots::DIFF_ACC_PREFIX, span.start.0);
     let x = format!("__diff_x_{}", span.start.0);
     let step = Expr::Assign {
         name: acc.clone(),

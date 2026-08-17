@@ -9,7 +9,7 @@
 
 use crate::ir_util::collect_float_locals;
 use lumia_core::{
-    for_each_local, for_each_nested_block, for_each_nested_block_mut, Block, CoreFun, CoreModule,
+    collect_ssa_live_refs, for_each_local, for_each_nested_block_mut, Block, CoreFun, CoreModule,
     Op, Value,
 };
 use lumia_core::{CoreBinOp as BinOp, CoreUnOp as UnOp};
@@ -53,7 +53,7 @@ fn dce_block(block: &mut Block, float_locals: &HashSet<u32>) {
     }
 
     let mut live = HashSet::default();
-    collect_references(block, &mut live);
+    collect_ssa_live_refs(block, &mut live);
 
     // Trapping / effectful lets stay even if their SSA name is unread.
     let mut changed = true;
@@ -81,27 +81,6 @@ fn dce_block(block: &mut Block, float_locals: &HashSet<u32>) {
         }
         _ => true,
     });
-}
-
-/// Deep: every Local operand and block result under `block` (including nested).
-fn collect_references(block: &Block, live: &mut HashSet<u32>) {
-    if let Some(r) = block.result {
-        live.insert(r.0);
-    }
-    for op in &block.ops {
-        match op {
-            Op::Let { value, .. } => {
-                mark_uses_shallow(value, live);
-                for_each_nested_block(value, &mut |nested| {
-                    collect_references(nested, live);
-                });
-            }
-            Op::Assign { value, .. } | Op::Return { value } => {
-                live.insert(value.0);
-            }
-            Op::Break | Op::Continue => {}
-        }
-    }
 }
 
 fn mark_uses_shallow(value: &Value, used: &mut HashSet<u32>) {
@@ -135,171 +114,5 @@ fn must_keep(value: &Value, float_locals: &HashSet<u32>) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use lumia_core::{Block, CoreFun, CoreModule, Local, Op, Value, FunKind};
-    use lumia_core::CoreBinOp as BinOp;
-    use lumia_ty::Effect;
-
-    fn bare_fun(name: &str, ops: Vec<Op>, result: Option<Local>) -> CoreFun {
-        CoreFun {
-            name: name.into(),
-            params: vec![],
-            param_names: vec![],
-            param_tys: vec![],
-            ret_ty: lumia_ty::Type::Int,
-            effect: Effect::pure(),
-            body: Block {
-                ops,
-                result,
-            },
-            is_main: false,
-            memo: None,
-            external: None,
-            foreign_abi: lumia_core::ForeignAbi::C,
-            escaping: Default::default(),
-            scheme_poly: false,
-            mono_of: None,
-            kind: FunKind::Normal,
-        }
-    }
-
-    #[test]
-    fn drops_unused_pure_literal() {
-        let mut module = CoreModule::with_functions(
-            "D",
-            vec![bare_fun(
-                "f",
-                vec![
-                    Op::Let {
-                        local: Local(0),
-                        value: Value::Int(1),
-                        pure_region: true,
-                    },
-                    Op::Let {
-                        local: Local(1),
-                        value: Value::Int(2),
-                        pure_region: true,
-                    },
-                ],
-                Some(Local(1)),
-            )],
-        );
-        DcePass.run(&mut module);
-        let ops = &module.functions[0].body.ops;
-        assert_eq!(ops.len(), 1);
-        assert!(matches!(
-            &ops[0],
-            Op::Let {
-                local: Local(1),
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn keeps_unused_int_div() {
-        let mut module = CoreModule::with_functions(
-            "D",
-            vec![bare_fun(
-                "f",
-                vec![
-                    Op::Let {
-                        local: Local(0),
-                        value: Value::Int(1),
-                        pure_region: true,
-                    },
-                    Op::Let {
-                        local: Local(1),
-                        value: Value::Int(0),
-                        pure_region: true,
-                    },
-                    Op::Let {
-                        local: Local(2),
-                        value: Value::Binary {
-                            op: BinOp::Div,
-                            left: Local(0),
-                            right: Local(1),
-                        },
-                        pure_region: true,
-                    },
-                    Op::Let {
-                        local: Local(3),
-                        value: Value::Int(9),
-                        pure_region: true,
-                    },
-                ],
-                Some(Local(3)),
-            )],
-        );
-        DcePass.run(&mut module);
-        let ops = &module.functions[0].body.ops;
-        assert!(
-            ops.iter().any(|op| matches!(
-                op,
-                Op::Let {
-                    value: Value::Binary {
-                        op: BinOp::Div,
-                        ..
-                    },
-                    ..
-                }
-            )),
-            "unused Int Div must remain (may trap): {ops:?}"
-        );
-    }
-
-    #[test]
-    fn keeps_temp_only_used_inside_loop() {
-        // `%0 = 0` assigned into a slot read only in the loop body.
-        let loop_body = Block {
-            ops: vec![Op::Assign {
-                name: "acc".into(),
-                value: Local(0),
-            }],
-            result: None,
-        };
-        let mut module = CoreModule::with_functions(
-            "D",
-            vec![bare_fun(
-                "f",
-                vec![
-                    Op::Let {
-                        local: Local(0),
-                        value: Value::Int(0),
-                        pure_region: true,
-                    },
-                    Op::Let {
-                        local: Local(1),
-                        value: Value::Loop {
-                            header: Box::new(Block {
-                                ops: vec![],
-                                result: Some(Local(0)),
-                            }),
-                            body: Box::new(loop_body),
-                            latch: Box::new(Block {
-                                ops: vec![],
-                                result: None,
-                            }),
-                        },
-                        pure_region: false,
-                    },
-                ],
-                Some(Local(1)),
-            )],
-        );
-        DcePass.run(&mut module);
-        let ops = &module.functions[0].body.ops;
-        assert!(
-            ops.iter().any(|op| matches!(
-                op,
-                Op::Let {
-                    local: Local(0),
-                    value: Value::Int(0),
-                    ..
-                }
-            )),
-            "loop-only temp must survive: {ops:?}"
-        );
-    }
-}
+#[path = "dce_tests.rs"]
+mod tests;

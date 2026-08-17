@@ -11,22 +11,10 @@ use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 pub(crate) fn collect_closure_cap_tys(
     core: &CoreModule,
 ) -> HashMap<String, HashMap<u32, Type>> {
-    let fun_ret_tys: HashMap<_, _> = core
-        .functions
-        .iter()
-        .map(|f| (f.name.clone(), f.ret_ty.clone()))
-        .collect();
-    let fun_param_tys: HashMap<_, _> = core
-        .functions
-        .iter()
-        .map(|f| (f.name.clone(), f.param_tys.clone()))
-        .collect();
-    let fun_param0_identity: HashSet<String> = core
-        .functions
-        .iter()
-        .filter(|f| crate::core_fun_is_param0_identity(f))
-        .map(|f| f.name.clone())
-        .collect();
+    let tables = lumia_core::ModuleTables::from_module(core);
+    let fun_ret_tys = &tables.fun_ret_tys;
+    let fun_param_tys = &tables.fun_param_tys;
+    let fun_param0_identity = &tables.fun_param0_identity;
     let mut out: HashMap<String, HashMap<u32, Type>> = HashMap::default();
     // Change-flag fixpoint (capped): outer AllocClosure may depend on inner
     // ClosureCap typing from a prior round.
@@ -48,8 +36,8 @@ pub(crate) fn collect_closure_cap_tys(
                 &mut local_tys,
                 &mut slot_tys,
                 &mut funref_locals,
-                &fun_ret_tys,
-                &fun_param_tys,
+                fun_ret_tys,
+                fun_param_tys,
                 &fun_param0_identity,
                 &local_int_consts,
                 &core.sum_max_arity,
@@ -63,11 +51,6 @@ pub(crate) fn collect_closure_cap_tys(
         }
     }
     out
-}
-
-fn prefer_cap_ty(old: Type, new: Type) -> Type {
-    // Same Fun/Float/Int lattice as float_abi / If joins (Todo: single prefer_*).
-    lumia_core::prefer_concrete_heap_ty(old, new)
 }
 
 fn walk_block(
@@ -149,7 +132,7 @@ fn walk_block(
                     for (i, e) in captures.iter().enumerate() {
                         if let Some(t) = local_tys.get(&e.0).cloned() {
                             let slot = entry.entry(i as u32).or_insert_with(|| t.clone());
-                            *slot = prefer_cap_ty(slot.clone(), t);
+                            *slot = lumia_core::prefer_concrete_heap_ty(slot.clone(), t);
                         }
                     }
                 }

@@ -7,22 +7,12 @@ use inkwell::values::{IntValue, PointerValue};
 use inkwell::AddressSpace;
 use lumia_core::{Block, Op, Value};
 use lumia_ty::Type;
+use std::rc::Rc;
 
 impl<'ctx> Codegen<'ctx> {
+    /// Whether a type may be a heap pointer — shared [`lumia_core::type_may_heap`].
     pub(crate) fn type_may_heap(ty: &Type) -> bool {
-        match ty {
-            Type::String
-            | Type::Char
-            | Type::List(_)
-            | Type::Map(_, _)
-            | Type::Set(_)
-            | Type::Task(_)
-            | Type::Channel(_)
-            | Type::Adt { .. }
-            | Type::Fun(_, _, _) => true,
-            Type::Tuple(ts) | Type::TuplePrefix(ts) => ts.iter().any(Self::type_may_heap),
-            _ => false,
-        }
+        lumia_core::type_may_heap(ty)
     }
 
     pub(crate) fn value_may_heap(&self, v: &Value) -> bool {
@@ -44,6 +34,9 @@ impl<'ctx> Codegen<'ctx> {
                 .fun_ret_tys
                 .get(fun)
                 .map(Self::type_may_heap)
+                // Unknown callee: over-root (true). Slots use unknown→non-heap for
+                // prologue sizing; missing `fun_ret_tys` already means ABI treats the
+                // return as Int — prefer a useless root over a missed heap pointer.
                 .unwrap_or(true),
             Value::Builtin { name, .. } => match name.result_heap() {
                 lumia_hir::ResultHeap::Never => false,
@@ -225,8 +218,7 @@ impl<'ctx> Codegen<'ctx> {
         let push = self.runtime_fn("lumia_root_push")?;
         crate::error::llvm(self.llvm.builder.build_call(push, &[slot.into()], ""))?;
         self.frame.root_depth += 1;
-        self.frame
-            .rooted_slots
+        Rc::make_mut(&mut self.frame.rooted_slots)
             .insert(name.to_string(), self.frame.root_depth);
         Ok(())
     }
@@ -241,7 +233,7 @@ impl<'ctx> Codegen<'ctx> {
             crate::error::llvm(self.llvm.builder.build_call(pop, &[], ""))?;
             self.frame.root_depth -= 1;
         }
-        self.frame.rooted_slots.retain(|_, d| *d <= depth);
+        Rc::make_mut(&mut self.frame.rooted_slots).retain(|_, d| *d <= depth);
         Ok(())
     }
 
@@ -292,6 +284,7 @@ impl<'ctx> Codegen<'ctx> {
             .fun_ret_tys
             .get(&self.funs.current_fun)
             .map(Self::type_may_heap)
+            // Unknown current fun: over-root (see Call unknown policy above).
             .unwrap_or(true);
         if may_heap {
             let handoff = self.runtime_fn("lumia_abi_handoff_set")?;

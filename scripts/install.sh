@@ -25,15 +25,14 @@ case "$PROFILE" in
 esac
 
 echo "== build slim lumia-lsp (no codegen / LLVM) =="
-cargo build -p lumia --no-default-features "${CARGO_FLAGS[@]}" --manifest-path "$ROOT/Cargo.toml"
-LSP_SRC="$ROOT/target/$OUT_DIR/lumia"
+# Isolate slim artifacts so the full rebuild below cannot overwrite them.
+SLIM_TARGET="$ROOT/target/slim-lsp"
+CARGO_TARGET_DIR="$SLIM_TARGET" cargo build -p lumia --no-default-features "${CARGO_FLAGS[@]}" --manifest-path "$ROOT/Cargo.toml"
+LSP_SRC="$SLIM_TARGET/$OUT_DIR/lumia"
 if [[ ! -x "$LSP_SRC" ]]; then
   echo "missing $LSP_SRC" >&2
   exit 1
 fi
-# Preserve slim binary before the full rebuild overwrites target/*/lumia.
-cp -f "$LSP_SRC" /tmp/lumia-lsp-build.$$
-trap 'rm -f /tmp/lumia-lsp-build.$$' EXIT
 
 echo "== build full lumia (codegen) =="
 cargo build -p lumia "${CARGO_FLAGS[@]}" --manifest-path "$ROOT/Cargo.toml"
@@ -47,7 +46,7 @@ LIBEXEC="${HOME}/.local/lib/lumia"
 BIN_WRAP="${HOME}/.local/bin/lumia"
 mkdir -p "$LIBEXEC" "$(dirname "$BIN_WRAP")"
 cp -f "$BIN_SRC" "$LIBEXEC/lumia"
-cp -f /tmp/lumia-lsp-build.$$ "$LIBEXEC/lumia-lsp"
+cp -f "$LSP_SRC" "$LIBEXEC/lumia-lsp"
 chmod +x "$LIBEXEC/lumia" "$LIBEXEC/lumia-lsp"
 
 # Resolve shared-lib dirs once at install time (avoid /nix/store globs on every launch).

@@ -7,8 +7,9 @@
 
 use lumia_abi::INLINE_MAX_EXPAND_DEPTH;
 use lumia_core::{
-    block_calls, count_ops, for_each_block_dfs, has_early_return, max_local_in_fun,
-    rewrite_block_locals, Block, CoreFun, CoreModule, Local, Op, Value,
+    block_calls, collect_defined_locals, collect_slot_names, count_ops, for_each_block_dfs,
+    has_early_return, max_local_in_fun, rewrite_block_locals, Block, CoreFun, CoreModule, Local, Op,
+    Value,
 };
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
@@ -25,30 +26,77 @@ impl InlinePass {
 }
 
 fn inline_module(module: &mut CoreModule) {
-    let inlineable: HashMap<String, CoreFun> = module
+    // Index only — clone callee bodies on first hit (see `ensure_inline_cached`).
+    let indices: HashMap<String, usize> = module
         .functions
         .iter()
-        .filter(|f| is_inlineable(f))
-        .map(|f| (f.name.clone(), f.clone()))
+        .enumerate()
+        .filter(|(_, f)| is_inlineable(f))
+        .map(|(i, f)| (f.name.clone(), i))
         .collect();
-    if inlineable.is_empty() {
+    if indices.is_empty() {
         return;
     }
 
+    let mut functions = std::mem::take(&mut module.functions);
+    let mut cache: HashMap<String, CoreFun> = HashMap::default();
     let mut name_tag = 0u32;
-    for fun in &mut module.functions {
-        let mut next = max_local_in_fun(fun).saturating_add(1);
+
+    for i in 0..functions.len() {
+        // Prefetch transitive inlineable callees while `functions` is shared.
+        prefetch_inline_callees(&functions[i].body, &indices, &functions, &mut cache);
+        let mut next = max_local_in_fun(&functions[i]).saturating_add(1);
+        let caller = functions[i].name.clone();
         let mut expanding = HashSet::default();
         inline_block(
-            &mut fun.body,
-            &inlineable,
-            &fun.name,
+            &mut functions[i].body,
+            &cache,
+            &caller,
             &mut next,
             &mut name_tag,
             &mut expanding,
             0,
         );
     }
+    module.functions = functions;
+}
+
+/// Walk direct `Call` targets; clone reachable inlineables into `cache` once.
+fn prefetch_inline_callees(
+    block: &Block,
+    indices: &HashMap<String, usize>,
+    functions: &[CoreFun],
+    cache: &mut HashMap<String, CoreFun>,
+) {
+    // Cache fill is order-independent — DFS is safe.
+    for_each_block_dfs(block, &mut |b| {
+        for op in &b.ops {
+            if let Op::Let {
+                value: Value::Call { fun, .. },
+                ..
+            } = op
+            {
+                ensure_inline_cached(fun, indices, functions, cache);
+            }
+        }
+    });
+}
+
+fn ensure_inline_cached(
+    name: &str,
+    indices: &HashMap<String, usize>,
+    functions: &[CoreFun],
+    cache: &mut HashMap<String, CoreFun>,
+) {
+    if cache.contains_key(name) {
+        return;
+    }
+    let Some(&idx) = indices.get(name) else {
+        return;
+    };
+    // Insert before recursing so mutual inlineables do not re-enter.
+    cache.insert(name.to_string(), functions[idx].clone());
+    prefetch_inline_callees(&functions[idx].body, indices, functions, cache);
 }
 
 fn is_inlineable(f: &CoreFun) -> bool {
@@ -199,7 +247,7 @@ fn materialize_inline(
 
     // Fresh ids for every other local defined in the callee.
     let mut defined: HashSet<u32> = HashSet::default();
-    collect_defined(&body, &mut defined);
+    collect_defined_locals(&body, &mut defined);
     for id in defined {
         if callee.params.iter().any(|p| p.0 == id) {
             continue;
@@ -229,66 +277,6 @@ fn materialize_inline(
         .expect("inlineable function must return a value");
     // Drop block.result; splice ops into caller.
     (body.ops, result)
-}
-
-fn collect_defined(block: &Block, defined: &mut HashSet<u32>) {
-    for op in &block.ops {
-        match op {
-            Op::Let { local, value, .. } => {
-                defined.insert(local.0);
-                collect_defined_value(value, defined);
-            }
-            _ => {}
-        }
-    }
-}
-
-fn collect_defined_value(value: &Value, defined: &mut HashSet<u32>) {
-    match value {
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            collect_defined(then_block, defined);
-            collect_defined(else_block, defined);
-        }
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => {
-            collect_defined(header, defined);
-            collect_defined(body, defined);
-            collect_defined(latch, defined);
-        }
-        Value::Lambda { params, body } => {
-            for p in params {
-                defined.insert(p.0);
-            }
-            collect_defined(body, defined);
-        }
-        _ => {}
-    }
-}
-
-fn collect_slot_names(block: &Block, names: &mut HashSet<String>) {
-    for_each_block_dfs(block, &mut |b| {
-        for op in &b.ops {
-            match op {
-                Op::Assign { name, .. } => {
-                    names.insert(name.clone());
-                }
-                Op::Let {
-                    value: Value::Name(n),
-                    ..
-                } => {
-                    names.insert(n.clone());
-                }
-                _ => {}
-            }
-        }
-    });
 }
 
 fn rewrite_block_slot_names(block: &mut Block, remap: &HashMap<String, String>) {
@@ -340,385 +328,5 @@ fn rewrite_value_slot_names(value: &mut Value, remap: &HashMap<String, String>) 
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use lumia_core::{has_assign_or_name, Block, CoreFun, CoreModule, Op, Value, FunKind};
-    use lumia_core::CoreBinOp as BinOp;
-    use lumia_ty::{Effect, Type};
-
-    fn pure_add() -> CoreFun {
-        // fun add(a, b) { a + b }
-        CoreFun {
-            name: "add".into(),
-            params: vec![Local(0), Local(1)],
-            param_names: vec!["a".into(), "b".into()],
-            param_tys: vec![Type::Int, Type::Int],
-            body: Block {
-                ops: vec![Op::Let {
-                    local: Local(2),
-                    value: Value::Binary {
-                        op: BinOp::Add,
-                        left: Local(0),
-                        right: Local(1),
-                    },
-                    pure_region: true,
-                }],
-                result: Some(Local(2)),
-            },
-            ret_ty: Type::Int,
-            effect: Effect::pure(),
-            is_main: false,
-            memo: None,
-            external: None,
-            foreign_abi: lumia_core::ForeignAbi::C,
-            escaping: HashSet::default(),
-            scheme_poly: false,
-            mono_of: None,
-            kind: FunKind::Normal,
-        }
-    }
-
-    #[test]
-    fn inlines_small_pure_call() {
-        let mut module = CoreModule::with_functions(
-            "M",
-            vec![
-                pure_add(),
-                CoreFun {
-                    name: "main".into(),
-                    params: vec![],
-                    param_names: vec![],
-                    param_tys: vec![],
-                    body: Block {
-                        ops: vec![
-                            Op::Let {
-                                local: Local(0),
-                                value: Value::Int(1),
-                                pure_region: true,
-                            },
-                            Op::Let {
-                                local: Local(1),
-                                value: Value::Int(2),
-                                pure_region: true,
-                            },
-                            Op::Let {
-                                local: Local(2),
-                                value: Value::Call {
-                                    fun: "add".into(),
-                                    args: vec![Local(0), Local(1)],
-                                },
-                                pure_region: true,
-                            },
-                        ],
-                        result: Some(Local(2)),
-                    },
-                    ret_ty: Type::Int,
-                    effect: Effect::pure(),
-                    is_main: true,
-                    memo: None,
-                    external: None,
-                    foreign_abi: lumia_core::ForeignAbi::C,
-                    escaping: HashSet::default(),
-                    scheme_poly: false,
-                    mono_of: None,
-                    kind: FunKind::Normal,
-                },
-            ],
-        );
-        inline_module(&mut module);
-        let main = module.functions.iter().find(|f| f.name == "main").unwrap();
-        let has_call = main.body.ops.iter().any(|op| {
-            matches!(
-                op,
-                Op::Let {
-                    value: Value::Call { fun, .. },
-                    ..
-                } if fun == "add"
-            )
-        });
-        assert!(!has_call, "add call should be inlined");
-        let has_add = main.body.ops.iter().any(|op| {
-            matches!(
-                op,
-                Op::Let {
-                    value: Value::Binary { op: BinOp::Add, .. },
-                    ..
-                }
-            )
-        });
-        assert!(has_add, "inlined body should contain add");
-    }
-
-    #[test]
-    fn inlines_var_slots_with_renamed_names() {
-        // fun bump(n) { var x = n; x = x + 1; x }
-        let bump = CoreFun {
-            name: "bump".into(),
-            params: vec![Local(0)],
-            param_names: vec!["n".into()],
-            param_tys: vec![Type::Int],
-            body: Block {
-                ops: vec![
-                    Op::Assign {
-                        name: "x".into(),
-                        value: Local(0),
-                    },
-                    Op::Let {
-                        local: Local(1),
-                        value: Value::Name("x".into()),
-                        pure_region: true,
-                    },
-                    Op::Let {
-                        local: Local(2),
-                        value: Value::Int(1),
-                        pure_region: true,
-                    },
-                    Op::Let {
-                        local: Local(3),
-                        value: Value::Binary {
-                            op: BinOp::Add,
-                            left: Local(1),
-                            right: Local(2),
-                        },
-                        pure_region: true,
-                    },
-                    Op::Assign {
-                        name: "x".into(),
-                        value: Local(3),
-                    },
-                    Op::Let {
-                        local: Local(4),
-                        value: Value::Name("x".into()),
-                        pure_region: true,
-                    },
-                ],
-                result: Some(Local(4)),
-            },
-            ret_ty: Type::Int,
-            effect: Effect::pure(),
-            is_main: false,
-            memo: None,
-            external: None,
-            foreign_abi: lumia_core::ForeignAbi::C,
-            escaping: HashSet::default(),
-            scheme_poly: false,
-            mono_of: None,
-            kind: FunKind::Normal,
-        };
-        assert!(has_assign_or_name(&bump.body));
-        assert!(is_inlineable(&bump));
-
-        let mut module = CoreModule::with_functions(
-            "M",
-            vec![
-                bump,
-                CoreFun {
-                    name: "main".into(),
-                    params: vec![],
-                    param_names: vec![],
-                    param_tys: vec![],
-                    body: Block {
-                        ops: vec![
-                            Op::Let {
-                                local: Local(0),
-                                value: Value::Int(1),
-                                pure_region: true,
-                            },
-                            Op::Assign {
-                                name: "x".into(),
-                                value: Local(0),
-                            },
-                            Op::Let {
-                                local: Local(1),
-                                value: Value::Int(41),
-                                pure_region: true,
-                            },
-                            Op::Let {
-                                local: Local(2),
-                                value: Value::Call {
-                                    fun: "bump".into(),
-                                    args: vec![Local(1)],
-                                },
-                                pure_region: true,
-                            },
-                        ],
-                        result: Some(Local(2)),
-                    },
-                    ret_ty: Type::Int,
-                    effect: Effect::pure(),
-                    is_main: true,
-                    memo: None,
-                    external: None,
-                    foreign_abi: lumia_core::ForeignAbi::C,
-                    escaping: HashSet::default(),
-                    scheme_poly: false,
-                    mono_of: None,
-                    kind: FunKind::Normal,
-                },
-            ],
-        );
-        inline_module(&mut module);
-        let main = module.functions.iter().find(|f| f.name == "main").unwrap();
-        let has_call = main.body.ops.iter().any(|op| {
-            matches!(
-                op,
-                Op::Let {
-                    value: Value::Call { fun, .. },
-                    ..
-                } if fun == "bump"
-            )
-        });
-        assert!(!has_call, "bump should be inlined");
-        // Caller keeps its own `x`; inlined body must use a tagged name.
-        let assigns: Vec<&str> = main
-            .body
-            .ops
-            .iter()
-            .filter_map(|op| match op {
-                Op::Assign { name, .. } => Some(name.as_str()),
-                _ => None,
-            })
-            .collect();
-        assert!(assigns.contains(&"x"));
-        assert!(
-            assigns.iter().any(|n| n.starts_with("$inl")),
-            "inlined slots should be renamed, got {assigns:?}"
-        );
-    }
-
-    #[test]
-    fn skips_effectful() {
-        let mut f = pure_add();
-        f.effect = Effect::io();
-        assert!(!is_inlineable(&f));
-    }
-
-    #[test]
-    fn skips_early_return() {
-        let f = CoreFun {
-            name: "early".into(),
-            params: vec![Local(0)],
-            param_names: vec!["x".into()],
-            param_tys: vec![Type::Int],
-            body: Block {
-                ops: vec![Op::Return { value: Local(0) }],
-                result: None,
-            },
-            ret_ty: Type::Int,
-            effect: Effect::pure(),
-            is_main: false,
-            memo: None,
-            external: None,
-            foreign_abi: lumia_core::ForeignAbi::C,
-            escaping: HashSet::default(),
-            scheme_poly: false,
-            mono_of: None,
-            kind: FunKind::Normal,
-        };
-        assert!(!is_inlineable(&f));
-    }
-
-    #[test]
-    fn mutual_inlineable_pair_does_not_hang() {
-        // a calls b, b calls a — both small/pure. Expand stack must cut the cycle.
-        let a = CoreFun {
-            name: "a".into(),
-            params: vec![Local(0)],
-            param_names: vec!["x".into()],
-            param_tys: vec![Type::Int],
-            body: Block {
-                ops: vec![Op::Let {
-                    local: Local(1),
-                    value: Value::Call {
-                        fun: "b".into(),
-                        args: vec![Local(0)],
-                    },
-                    pure_region: true,
-                }],
-                result: Some(Local(1)),
-            },
-            ret_ty: Type::Int,
-            effect: Effect::pure(),
-            is_main: false,
-            memo: None,
-            external: None,
-            foreign_abi: lumia_core::ForeignAbi::C,
-            escaping: HashSet::default(),
-            scheme_poly: false,
-            mono_of: None,
-            kind: FunKind::Normal,
-        };
-        let b = CoreFun {
-            name: "b".into(),
-            params: vec![Local(0)],
-            param_names: vec!["x".into()],
-            param_tys: vec![Type::Int],
-            body: Block {
-                ops: vec![Op::Let {
-                    local: Local(1),
-                    value: Value::Call {
-                        fun: "a".into(),
-                        args: vec![Local(0)],
-                    },
-                    pure_region: true,
-                }],
-                result: Some(Local(1)),
-            },
-            ret_ty: Type::Int,
-            effect: Effect::pure(),
-            is_main: false,
-            memo: None,
-            external: None,
-            foreign_abi: lumia_core::ForeignAbi::C,
-            escaping: HashSet::default(),
-            scheme_poly: false,
-            mono_of: None,
-            kind: FunKind::Normal,
-        };
-        let mut module = CoreModule::with_functions(
-            "M",
-            vec![
-                a,
-                b,
-                CoreFun {
-                    name: "main".into(),
-                    params: vec![],
-                    param_names: vec![],
-                    param_tys: vec![],
-                    body: Block {
-                        ops: vec![
-                            Op::Let {
-                                local: Local(0),
-                                value: Value::Int(1),
-                                pure_region: true,
-                            },
-                            Op::Let {
-                                local: Local(1),
-                                value: Value::Call {
-                                    fun: "a".into(),
-                                    args: vec![Local(0)],
-                                },
-                                pure_region: true,
-                            },
-                        ],
-                        result: Some(Local(1)),
-                    },
-                    ret_ty: Type::Int,
-                    effect: Effect::pure(),
-                    is_main: true,
-                    memo: None,
-                    external: None,
-                    foreign_abi: lumia_core::ForeignAbi::C,
-                    escaping: HashSet::default(),
-                    scheme_poly: false,
-                    mono_of: None,
-                    kind: FunKind::Normal,
-                },
-            ],
-        );
-        inline_module(&mut module);
-        let main = module.functions.iter().find(|f| f.name == "main").unwrap();
-        let ops = count_ops(&main.body);
-        assert!(ops < 64, "mutual inline must terminate, got {ops} ops");
-    }
-}
+#[path = "inline_tests.rs"]
+mod tests;

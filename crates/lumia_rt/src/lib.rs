@@ -7,9 +7,15 @@
 //!   plus Dijkstra shade while an incremental full mark is in flight
 //! - `lumia_gc_collect()` — full-heap collection (drains concurrent mark)
 //!
-//! Env: `LUMIA_GC_INCREMENTAL=0|false|off|stw` forces classic STW full collect
-//! (default: incremental concurrent full mark).
+//! Env: `LUMIA_GC_INCREMENTAL=0|false|off|stw|no` forces classic STW full collect;
+//! `1|true|on|yes|incremental` forces incremental concurrent full mark.
+//! Unrecognized values warn and keep the heap default (incremental on).
 //! - `lumia_println_int(i64)` / `lumia_println_str(*const u8, len)`
+//!
+//! # Global init / Ordering
+//!
+//! Lazy singletons and atomic probe contracts are catalogued in [`globals`].
+//! Prefer `OnceLock` for new process globals; document any new Ordering there.
 //!
 //! # Lock order
 //!
@@ -39,14 +45,24 @@
 //!
 //! C ABI entry points take raw pointers by design; they are not Rust `unsafe fn`
 //! because the LLVM-emitted caller already treats the boundary as unchecked.
-#![allow(clippy::not_unsafe_ptr_arg_deref)]
+//!
+//! # Tests
+//!
+//! Lib tests share one process `Heap` and one `SchedCore`. Parallel harness
+//! threads UAF / abort (GC frees another case's objects). Always run with
+//! `RUST_TEST_THREADS=1` (see `scripts/check.sh` and CI). Stress/fiber cases
+//! also take an internal `sched_test_guard` for TLS scrubbing.
+//! Pointer-taking C ABI is marked `unsafe extern` per subsystem (`deny` on those
+//! modules); the crate-level `not_unsafe_ptr_arg_deref` allow was removed.
 
 mod adt_show;
 mod affine2;
 mod cn_kernels;
 mod collatz;
 mod common;
+mod concurrency_policy;
 mod dense_f64;
+mod globals;
 mod heap;
 mod mutator;
 mod dict;
@@ -135,13 +151,14 @@ pub use number_theory::{
 };
 pub use primes::lumia_count_primes;
 pub use show::{
-    lumia_adt_set_float_mask, lumia_alloc_char, lumia_show, lumia_show_adt, lumia_show_adt_named,
-    lumia_show_bool, lumia_show_float, lumia_show_list_bool,
+    lumia_adt_set_bool_mask, lumia_adt_set_float_mask, lumia_alloc_char, lumia_show,
+    lumia_show_adt, lumia_show_adt_named, lumia_show_bool, lumia_show_float, lumia_show_list_adt,
+    lumia_show_list_bool, lumia_show_map_bool, lumia_show_set_bool,
 };
 pub use string_io::{
     lumia_alloc_string, lumia_assert, lumia_cstr_to_string, lumia_match_fail, lumia_println_auto,
     lumia_println_bool, lumia_println_cstr, lumia_println_float, lumia_println_int,
-    lumia_println_str, lumia_read_stdin, lumia_str_byte_len, lumia_str_concat, lumia_str_contains,
+    lumia_println_str, lumia_println_unit, lumia_read_stdin, lumia_str_byte_len, lumia_str_concat, lumia_str_contains,
     lumia_str_ends_with, lumia_str_len, lumia_str_reverse, lumia_str_slice, lumia_str_split,
     lumia_str_starts_with, lumia_str_substring, lumia_str_take, lumia_str_to_lower,
     lumia_str_to_upper, lumia_str_trim, lumia_string_cstr, lumia_trap_div0, lumia_trap_overflow,
@@ -154,8 +171,11 @@ pub use task::{
 };
 
 /// Push a Lumia frame name (nul-terminated) for trap backtraces.
+///
+/// # Safety
+/// `name` must be null or a valid NUL-terminated C string that outlives the frame.
 #[no_mangle]
-pub extern "C" fn lumia_frame_push(name: *const u8) {
+pub unsafe extern "C" fn lumia_frame_push(name: *const u8) {
     common::frame_push(name);
 }
 
