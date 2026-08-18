@@ -3,6 +3,23 @@
 记录经查实、尚未完整修复或需更大设计落地的问题。语义以 [docs/DESIGN.md](docs/DESIGN.md) 为准；分期见 [docs/BUILD.md](docs/BUILD.md)。
 已确认落地的历史项已从本文件删除（见 git 历史）。
 
+## 基准快照（2026-08-18 Collatz / memTraffic RT，相对上一提交）
+
+单项冷却中位（`taskset`；热节流下会虚高）：
+
+| 核 | 上一提交后 | 本轮 RT 深化后 | 备注 |
+|----|------------|----------------|------|
+| `collatzTotal` | ~34ms | **~28–29ms** | sequential `nxt < n` 短路 + 第二跳不重算 |
+| `collatzStrided` | ~35ms | **~28–29ms** | 同双跳路径；仍保留 doubles |
+| `memTraffic` | ~53ms | **~39ms** | gather：u64 rem + unchecked；AVX2 sum/iota 8-wide |
+
+提交：`4b9a3c3`（首轮 RT）、`d601f4b`（深化）。整段 fly loop / `vpgatherqq` 等已试过并回退。
+
+NSW 开放排他 `i < n`（`U=MAX-1`→仅 `i+1`）+ 无界 safe Div/Rem 已在工作树 `lumia_opt/nsw_iv` 测绿，但与脏树 sidecar/管道缠在一起，**未进本提交**。
+
+下一步：补 DESIGN §7.3 **`Iota`/`Fused` List 表示**（消费端 HOF 融合已扩；欠 IR 级管道视图）。
+
+
 ## 语义与运行时
 
 - [ ] **Task/Channel 更大设计债**：ready_home/handoff/sweep 已落地；**`!Send` coro →** [`home_coro`](crates/lumia_rt/src/task/home_coro.rs)；**scan 指针 →** [`scan_ptrs`](crates/lumia_rt/src/task/scan_ptrs.rs)（`SchedCore` 自然 `Send`）。仍欠 **非 RT `Drop`（C-unwind ABI）**；堆 Mutex 下增量 mark 非真并行。
