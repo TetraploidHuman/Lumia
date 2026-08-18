@@ -12,7 +12,7 @@ use crate::common::{
 };
 use crate::gc::{list_payload_bytes, lumia_alloc};
 use crate::list::{force_heap_list, list_len_of};
-use crate::map_set::{map_count, set_elem_at};
+use crate::map_set::{map_count, set_count, set_elem_at};
 use lumia_abi::{is_list_tid, is_map_tid, is_set_tid};
 
 /// # Safety
@@ -27,7 +27,7 @@ pub unsafe extern "C" fn lumia_len(obj: *mut u8) -> i64 {
     match unsafe { (*h).type_id } {
         TYPE_STRING => unsafe { crate::string_io::lumia_str_len(obj) },
         tid if is_list_tid(tid) => list_len_of(obj),
-        tid if is_set_tid(tid) => unsafe { *(obj as *const i64) },
+        tid if is_set_tid(tid) => set_count(obj),
         tid if is_map_tid(tid) => map_count(obj),
         other => trap_abort(&format!("lumia: len on unsupported type {other}")),
     }
@@ -91,7 +91,7 @@ pub unsafe extern "C" fn lumia_elems(obj: *mut u8) -> *mut u8 {
         tid if tid_base(tid) == TYPE_LIST => obj,
         TYPE_LIST_IOTA => force_heap_list(obj),
         tid if is_set_tid(tid) => unsafe {
-            let n = *(obj as *const i64);
+            let n = set_count(obj);
             let nbytes = list_payload_bytes(n);
             let dest_tid = lumia_abi::list_type_id_flags(
                 lumia_abi::set_elem_is_float(tid),
@@ -163,7 +163,7 @@ pub unsafe extern "C" fn lumia_get(
     match unsafe { (*h).type_id } {
         tid if is_list_tid(tid) => unsafe { crate::list::lumia_list_get(obj, key_or_index) },
         tid if is_set_tid(tid) => {
-            let n = unsafe { *(obj as *const i64) };
+            let n = set_count(obj);
             if key_or_index < 0 || key_or_index >= n {
                 trap_abort("lumia: set get OOB");
             }

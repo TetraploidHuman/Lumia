@@ -150,7 +150,9 @@ version = "1.0.0"
                 },
             ],
         };
-        let err = verify_lockfile(&manifest, &m, &lock).unwrap_err().to_string();
+        let err = verify_lockfile(&manifest, &m, &lock)
+            .unwrap_err()
+            .to_string();
         assert!(
             err.contains("stale") || err.contains("unexpected"),
             "expected extra package rejection, got {err}"
@@ -163,7 +165,9 @@ version = "1.0.0"
                 content: String::new(),
             }],
         };
-        let err2 = verify_lockfile(&manifest, &m, &lock2).unwrap_err().to_string();
+        let err2 = verify_lockfile(&manifest, &m, &lock2)
+            .unwrap_err()
+            .to_string();
         assert!(
             err2.contains("0.9.0") && err2.contains("1.0.0"),
             "expected root version mismatch, got {err2}"
@@ -281,12 +285,17 @@ leaf = "1.0.0"
         let m = load_manifest(&manifest).unwrap();
         let lock = lock_from_manifest(&manifest, &m).unwrap();
         let leaf = lock.package.iter().find(|p| p.name == "leaf").unwrap();
-        assert!(!leaf.content.is_empty(), "dep should have content fingerprint");
+        assert!(
+            !leaf.content.is_empty(),
+            "dep should have content fingerprint"
+        );
         verify_lockfile(&manifest, &m, &lock).unwrap();
 
         // Vendor edit without version bump must fail verify.
         fs::write(dep.join("Lib.lm"), "module Lib\nval x = 2\n").unwrap();
-        let err = verify_lockfile(&manifest, &m, &lock).unwrap_err().to_string();
+        let err = verify_lockfile(&manifest, &m, &lock)
+            .unwrap_err()
+            .to_string();
         assert!(
             err.contains("content") || err.contains("fingerprint"),
             "expected content mismatch, got {err}"

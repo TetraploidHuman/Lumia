@@ -23,8 +23,12 @@ fn par_map_preserves_bool_result_tid() {
         list_bool_elems(out),
         "par_map must keep TID_B_KEY on Bool result lists"
     );
-    let empty = unsafe { lumia_list_par_map(lumia_list_empty(), Some(always_true), TYPE_LIST_BOOL) };
-    assert!(list_bool_elems(empty), "empty Bool par_map must stay tagged");
+    let empty =
+        unsafe { lumia_list_par_map(lumia_list_empty(), Some(always_true), TYPE_LIST_BOOL) };
+    assert!(
+        list_bool_elems(empty),
+        "empty Bool par_map must stay tagged"
+    );
 }
 
 #[test]

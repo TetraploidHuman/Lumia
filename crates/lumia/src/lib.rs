@@ -22,7 +22,7 @@ pub use check::{
 };
 pub use diag::{Diagnostic, DiagnosticKind};
 pub use load::{
-    load_program, load_program_with_overlays, path_in_loaded_files, resolve_ide_entry, LoadedProgram,
-    PACKAGE_ENTRY_RELS, SourceFile,
+    load_program, load_program_with_overlays, path_in_loaded_files, resolve_ide_entry,
+    LoadedProgram, SourceFile, PACKAGE_ENTRY_RELS,
 };
 pub use paths::{extras_dir, std_dir, workspace_root, workspace_root_canonical};

@@ -109,7 +109,11 @@ pub(super) fn resolve_dep_path(root: &Path, name: &str, spec: &DepSpec) -> Resul
                 );
             }
         }
-        DepSpec::Table(DepTable { path: None, version, .. }) => {
+        DepSpec::Table(DepTable {
+            path: None,
+            version,
+            ..
+        }) => {
             let deps = root.join("deps").join(name);
             let vendor = root.join("vendor").join(name);
             if deps.is_dir() {

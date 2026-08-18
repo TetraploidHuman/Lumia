@@ -1,7 +1,7 @@
 use crate::ir_util::collect_float_locals;
 use lumia_core::{Block, Op, Value};
-use lumia_hir::Builtin;
 use lumia_core::{CoreBinOp as BinOp, CoreUnOp as UnOp};
+use lumia_hir::Builtin;
 use rustc_hash::FxHashSet as HashSet;
 
 pub(crate) fn licm_seeded(block: &mut Block, mut float_locals: HashSet<u32>) {
@@ -139,6 +139,9 @@ pub(crate) fn builtin_may_trap_or_effect(b: &Builtin) -> bool {
     if b.is_io() {
         return true;
     }
+    // Keep anything that may trap or has observable concurrency / abort.
+    // Pure non-trapping ops (Range*, AdtTag, ListLen, …) stay out so DCE/CSE/LICM
+    // can drop or hoist unused calls (Todo: DCE builtin_may_trap).
     matches!(
         b,
         Builtin::ListGet
@@ -147,9 +150,6 @@ pub(crate) fn builtin_may_trap_or_effect(b: &Builtin) -> bool {
             | Builtin::Assert
             | Builtin::ListParMap
             | Builtin::ListParFold
-            | Builtin::Range
-            | Builtin::RangeInclusive
             | Builtin::AdtField
-            | Builtin::AdtTag
     )
 }

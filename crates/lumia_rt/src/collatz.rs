@@ -75,11 +75,8 @@ fn collatz_odd_sequential(
         let k2 = y2.trailing_zeros();
         let nxt2 = (y2 >> k2) as usize;
         if nxt2 < n || cache_hit(cache, nxt2, lim) {
-            let steps = i64::from(unsafe { cache_get(cache, nxt2) })
-                + 1
-                + i64::from(k2)
-                + 1
-                + i64::from(k);
+            let steps =
+                i64::from(unsafe { cache_get(cache, nxt2) }) + 1 + i64::from(k2) + 1 + i64::from(k);
             unsafe {
                 cache_set(cache, n, steps as Step);
                 if !cache_hit(cache, nxt, lim) {
@@ -125,16 +122,12 @@ fn collatz_odd_cached(
         let k2 = y2.trailing_zeros();
         let nxt2 = (y2 >> k2) as usize;
         if cache_hit(cache, nxt2, lim) {
-            let steps = i64::from(unsafe { cache_get(cache, nxt2) })
-                + 1
-                + i64::from(k2)
-                + 1
-                + i64::from(k);
+            let steps =
+                i64::from(unsafe { cache_get(cache, nxt2) }) + 1 + i64::from(k2) + 1 + i64::from(k);
             if fill_doubles {
                 cache_set_with_doubles(cache, lim, n, steps as Step);
                 if !cache_hit(cache, nxt, lim) {
-                    let mid =
-                        i64::from(unsafe { cache_get(cache, nxt2) }) + 1 + i64::from(k2);
+                    let mid = i64::from(unsafe { cache_get(cache, nxt2) }) + 1 + i64::from(k2);
                     cache_set_with_doubles(cache, lim, nxt, mid as Step);
                 }
             } else {

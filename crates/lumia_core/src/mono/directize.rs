@@ -38,7 +38,12 @@ fn funs_with_closure_env(module: &CoreModule) -> FxHashSet<String> {
 }
 
 pub(crate) fn directize_block(block: &mut Block, parent_funrefs: &HashMap<u32, String>) {
-    directize_block_with_slots(block, parent_funrefs, &HashMap::default(), &HashMap::default());
+    directize_block_with_slots(
+        block,
+        parent_funrefs,
+        &HashMap::default(),
+        &HashMap::default(),
+    );
 }
 
 fn directize_block_with_slots(
@@ -57,7 +62,7 @@ fn directize_block_with_slots(
                 directize_value(value, &funref_of);
                 walk_nested_blocks_directize(value, &funref_of, &slot_funrefs, cap_funs);
                 if let Value::FunRef(name) = value {
-                    funref_of.insert(local.0, name.clone());
+                    funref_of.insert(local.0, name.name.clone());
                 } else if let Value::Local(Local(src)) = value {
                     if let Some(n) = funref_of.get(src).cloned() {
                         funref_of.insert(local.0, n);
@@ -118,14 +123,12 @@ fn walk_nested_blocks_directize(
             directize_block_with_slots(latch, funref_of, slot_funrefs, cap_funs);
         }
         // Fresh scope: lifted lambda body should not see outer SSA FunRef locals.
-        Value::Lambda { body, .. } => {
-            directize_block_with_slots(
-                body,
-                &HashMap::default(),
-                &HashMap::default(),
-                &HashMap::default(),
-            )
-        }
+        Value::Lambda { body, .. } => directize_block_with_slots(
+            body,
+            &HashMap::default(),
+            &HashMap::default(),
+            &HashMap::default(),
+        ),
         _ => {}
     }
 }
@@ -139,7 +142,7 @@ fn directize_value(value: &mut Value, funref_of: &HashMap<u32, String>) {
     };
     let args = std::mem::take(args);
     *value = Value::Call {
-        fun: name.clone(),
+        fun: name.clone().into(),
         args,
     };
 }

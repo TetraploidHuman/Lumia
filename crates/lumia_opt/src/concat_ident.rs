@@ -51,7 +51,9 @@ fn rewrite_block(block: &mut Block, empty: &HashSet<u32>) {
     for_each_op_value_mut(block, &mut |value| {
         if let Value::Builtin {
             name: Builtin::ListConcat,
-            args, .. } = value
+            args,
+            ..
+        } = value
         {
             if args.len() == 2 {
                 let a = args[0].0;

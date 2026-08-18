@@ -1,6 +1,6 @@
 module list_get_int
 import std.io.{println}
-import std.linalg.{zeros}
+import extras.linalg.{zeros}
 
 val nearest = { pts, n ->
     println(pts.get(0))

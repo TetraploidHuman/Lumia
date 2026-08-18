@@ -1,5 +1,5 @@
 use super::*;
-use lumia_core::{Block, CoreFun, Local, Op, Value, FunKind};
+use lumia_core::{Block, CoreFun, FunKind, Local, Op, Value};
 use lumia_hir::Builtin;
 use lumia_ty::{Effect, Type};
 use rustc_hash::FxHashSet as HashSet;
@@ -18,6 +18,9 @@ fn fun_with_body(body: Block) -> CoreFun {
         external: None,
         foreign_abi: lumia_core::ForeignAbi::C,
         escaping: HashSet::default(),
+        nsw_binop_locals: Default::default(),
+        safe_divisor_locals: Default::default(),
+        nonneg_iv_load_locals: Default::default(),
         scheme_poly: false,
         mono_of: None,
         kind: FunKind::Normal,
@@ -132,6 +135,9 @@ fn known_pure_len_callee_does_not_escape_arg() {
         external: None,
         foreign_abi: lumia_core::ForeignAbi::C,
         escaping: HashSet::default(),
+        nsw_binop_locals: Default::default(),
+        safe_divisor_locals: Default::default(),
+        nonneg_iv_load_locals: Default::default(),
         scheme_poly: false,
         mono_of: None,
         kind: FunKind::Normal,
@@ -174,6 +180,9 @@ fn known_pure_len_callee_does_not_escape_arg() {
         external: None,
         foreign_abi: lumia_core::ForeignAbi::C,
         escaping: HashSet::default(),
+        nsw_binop_locals: Default::default(),
+        safe_divisor_locals: Default::default(),
+        nonneg_iv_load_locals: Default::default(),
         scheme_poly: false,
         mono_of: None,
         kind: FunKind::Normal,
@@ -217,6 +226,9 @@ fn const_specialized_name_summary_hit_does_not_escape() {
         external: None,
         foreign_abi: lumia_core::ForeignAbi::C,
         escaping: HashSet::default(),
+        nsw_binop_locals: Default::default(),
+        safe_divisor_locals: Default::default(),
+        nonneg_iv_load_locals: Default::default(),
         scheme_poly: false,
         mono_of: None,
         kind: FunKind::Normal,
@@ -259,6 +271,9 @@ fn const_specialized_name_summary_hit_does_not_escape() {
         external: None,
         foreign_abi: lumia_core::ForeignAbi::C,
         escaping: HashSet::default(),
+        nsw_binop_locals: Default::default(),
+        safe_divisor_locals: Default::default(),
+        nonneg_iv_load_locals: Default::default(),
         scheme_poly: false,
         mono_of: None,
         kind: FunKind::Normal,
@@ -302,6 +317,9 @@ fn const_specialized_name_summary_miss_over_escapes() {
         external: None,
         foreign_abi: lumia_core::ForeignAbi::C,
         escaping: HashSet::default(),
+        nsw_binop_locals: Default::default(),
+        safe_divisor_locals: Default::default(),
+        nonneg_iv_load_locals: Default::default(),
         scheme_poly: false,
         mono_of: None,
         kind: FunKind::Normal,
@@ -344,6 +362,9 @@ fn const_specialized_name_summary_miss_over_escapes() {
         external: None,
         foreign_abi: lumia_core::ForeignAbi::C,
         escaping: HashSet::default(),
+        nsw_binop_locals: Default::default(),
+        safe_divisor_locals: Default::default(),
+        nonneg_iv_load_locals: Default::default(),
         scheme_poly: false,
         mono_of: None,
         kind: FunKind::Normal,
@@ -656,4 +677,91 @@ fn wide_heap_adt_fields_escape_even_if_adt_local_does_not() {
         esc.contains(&Local(9)),
         "list field of non-escaping HeapAdt must escape (no stack LitList): {esc:?}"
     );
+}
+
+#[test]
+fn mutual_recursion_scc_params_need_not_escape() {
+    // even(n) / odd(n) call each other with Int — params must not escape.
+    // Also locks worklist fixed-point (not whole-module force on converge).
+    fn leaf(name: &str, peer: &str) -> CoreFun {
+        CoreFun {
+            name: name.into(),
+            params: vec![Local(0)],
+            param_names: vec!["n".into()],
+            param_tys: vec![Type::Int],
+            body: Block {
+                ops: vec![
+                    Op::Let {
+                        local: Local(1),
+                        value: Value::Int(1),
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(2),
+                        value: Value::Binary {
+                            op: lumia_core::CoreBinOp::Sub,
+                            left: Local(0),
+                            right: Local(1),
+                        },
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(3),
+                        value: Value::Call {
+                            fun: peer.into(),
+                            args: vec![Local(2)],
+                        },
+                        pure_region: true,
+                    },
+                ],
+                result: Some(Local(3)),
+            },
+            ret_ty: Type::Int,
+            effect: Effect::pure(),
+            is_main: false,
+            memo: None,
+            external: None,
+            foreign_abi: lumia_core::ForeignAbi::C,
+            escaping: HashSet::default(),
+            nsw_binop_locals: Default::default(),
+            safe_divisor_locals: Default::default(),
+            nonneg_iv_load_locals: Default::default(),
+            scheme_poly: false,
+            mono_of: None,
+            kind: FunKind::Normal,
+        }
+    }
+    let mut module =
+        CoreModule::with_functions("M", vec![leaf("even", "odd"), leaf("odd", "even")]);
+    let summaries = super::compute_param_escape_summaries(&module);
+    let even_id = *summaries.name_to_id.get("even").unwrap();
+    let odd_id = *summaries.name_to_id.get("odd").unwrap();
+    assert_eq!(
+        summaries.by_id.get(&even_id).map(|v| v.as_slice()),
+        Some([false].as_slice()),
+        "even param must not escape"
+    );
+    assert_eq!(
+        summaries.by_id.get(&odd_id).map(|v| v.as_slice()),
+        Some([false].as_slice()),
+        "odd param must not escape"
+    );
+
+    let graph = super::call_graph::EscapeCallGraph::from_module(&module, &summaries);
+    let idx = super::call_graph::scc_index_map(&graph);
+    assert_eq!(
+        idx.get(&even_id),
+        idx.get(&odd_id),
+        "even/odd must share an SCC"
+    );
+
+    EscapePass.run(&mut module);
+    for f in &module.functions {
+        assert!(
+            !f.escaping.contains(&Local(0)),
+            "{} param Local(0) must not escape: {:?}",
+            f.name,
+            f.escaping
+        );
+    }
 }

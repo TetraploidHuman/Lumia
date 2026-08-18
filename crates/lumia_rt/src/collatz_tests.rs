@@ -1,8 +1,6 @@
 // Extracted from production module (Todo: RT 测例半迁).
 use super::*;
 
-
-
 #[test]
 fn bench_cpu_collatz_checksum() {
     assert_eq!(lumia_collatz_total(250_000), 29_265_567);

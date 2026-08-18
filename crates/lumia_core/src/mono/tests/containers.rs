@@ -21,8 +21,9 @@ val main = {
     )
     .expect("core");
     assert!(
-        core.functions.iter().any(|f| f.name.starts_with("unwrapOr$")
-            && matches!(f.ret_ty, lumia_ty::Type::Float)),
+        core.functions
+            .iter()
+            .any(|f| f.name.starts_with("unwrapOr$") && matches!(f.ret_ty, lumia_ty::Type::Float)),
         "need Float unwrapOr$ for Err+1.5, got {:?}",
         core.functions
             .iter()
@@ -52,8 +53,9 @@ val main = {
     )
     .expect("core");
     assert!(
-        core.functions.iter().any(|f| f.name.starts_with("unwrapOr$")
-            && matches!(f.ret_ty, lumia_ty::Type::Float)),
+        core.functions
+            .iter()
+            .any(|f| f.name.starts_with("unwrapOr$") && matches!(f.ret_ty, lumia_ty::Type::Float)),
         "need Float unwrapOr$ for None+1.5, got {:?}",
         core.functions
             .iter()
@@ -62,8 +64,9 @@ val main = {
             .collect::<Vec<_>>()
     );
     assert!(
-        core.functions.iter().any(|f| f.name.starts_with("unwrapOr$")
-            && matches!(f.ret_ty, lumia_ty::Type::Bool)),
+        core.functions
+            .iter()
+            .any(|f| f.name.starts_with("unwrapOr$") && matches!(f.ret_ty, lumia_ty::Type::Bool)),
         "need Bool unwrapOr$ for None+true"
     );
 }
@@ -88,14 +91,17 @@ val main = {
 "#,
     )
     .expect("core");
-    let u = core.functions.iter().find(|f| f.name.starts_with("unwrapOr$")).expect("clone");
+    let u = core
+        .functions
+        .iter()
+        .find(|f| f.name.starts_with("unwrapOr$"))
+        .expect("clone");
     assert!(
         matches!(&u.ret_ty, Type::Fun(ps, r, _) if ps.first().is_some_and(|p| matches!(p, Type::Float)) && matches!(r.as_ref(), Type::Float)),
         "unwrapOr$ should return Fun(Float)->Float, got {:?}",
         u.ret_ty
     );
 }
-
 
 #[test]
 fn tuple_both_float_mono() {
@@ -114,11 +120,14 @@ val main = {
     .expect("compile");
     let names: Vec<_> = core.functions.iter().map(|f| f.name.as_str()).collect();
     eprintln!("funs={names:?}");
-    for f in core.functions.iter().filter(|f| f.name.starts_with("both") || f.name.contains("__lam")) {
+    for f in core
+        .functions
+        .iter()
+        .filter(|f| f.name.starts_with("both") || f.name.contains("__lam"))
+    {
         eprintln!("  {} params={:?} ret={:?}", f.name, f.param_tys, f.ret_ty);
     }
 }
-
 
 #[test]
 fn tuple_id_float_mono() {
@@ -204,7 +213,8 @@ val main = {
     )
     .expect("core");
     assert!(
-        core.functions.iter().any(|f| f.name == "__lam_0$Float" || f.name.ends_with("$Float") && f.name.contains("__lam_0")),
+        core.functions.iter().any(|f| f.name == "__lam_0$Float"
+            || f.name.ends_with("$Float") && f.name.contains("__lam_0")),
         "expected __lam_0$Float, got {:?}",
         core.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
     );
@@ -218,9 +228,13 @@ val main = {
                 _ => continue,
             };
             match v {
-                crate::ir::Value::Call { fun, .. } => calls.push(fun.clone()),
+                crate::ir::Value::Call { fun, .. } => calls.push(fun.name.clone()),
                 crate::ir::Value::IndirectCall { .. } => *icalls += 1,
-                crate::ir::Value::If { then_block, else_block, .. } => {
+                crate::ir::Value::If {
+                    then_block,
+                    else_block,
+                    ..
+                } => {
                     walk(then_block, calls, icalls);
                     walk(else_block, calls, icalls);
                 }
@@ -233,7 +247,10 @@ val main = {
         calls.iter().any(|c| c.contains("$Float")),
         "expected Call(__lam_$Float), calls={calls:?} icalls={icalls}"
     );
-    assert_eq!(icalls, 0, "identity apply should be direct Call, icalls={icalls}");
+    assert_eq!(
+        icalls, 0,
+        "identity apply should be direct Call, icalls={icalls}"
+    );
 }
 
 #[test]
@@ -268,14 +285,18 @@ val main = {
         .functions
         .iter()
         .find(|f| f.name.starts_with("unwrapOr$"))
-        .unwrap_or_else(|| panic!("no unwrapOr$ in {:?}", core.functions.iter().map(|f| &f.name).collect::<Vec<_>>()));
+        .unwrap_or_else(|| {
+            panic!(
+                "no unwrapOr$ in {:?}",
+                core.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+            )
+        });
     assert!(
         u.name.contains("Float") && !u.name.contains("Option_Int"),
         "unwrapOr should specialize Option[Float], got {}",
         u.name
     );
 }
-
 
 #[test]
 fn flatten_nested_option_unwrapor_int() {
@@ -316,12 +337,8 @@ val main = {
         &empty_traits,
         core.channel_elem_hint.as_ref(),
     );
-    let body_ty = super::super::ret_ty::block_result_fixed_ty(
-        &flat.body,
-        &index,
-        &empty_traits,
-        &pmap,
-    );
+    let body_ty =
+        super::super::ret_ty::block_result_fixed_ty(&flat.body, &index, &empty_traits, &pmap);
     assert!(
         matches!(
             &body_ty,

@@ -46,10 +46,7 @@ pub(super) fn load_fiber_roots(fid: FiberId) {
     with_heap(|_| {
         let (roots, frames, scopes) = with_sched(|s| {
             (
-                s.parked_roots
-                    .remove(&fid)
-                    .unwrap_or_default()
-                    .into_vec(),
+                s.parked_roots.remove(&fid).unwrap_or_default().into_vec(),
                 s.parked_call_stacks
                     .remove(&fid)
                     .unwrap_or_default()
@@ -143,5 +140,46 @@ pub fn snapshot_sched_gc_roots() -> (Vec<i64>, Vec<i64>) {
         }
         vals.extend(s.abi_handoff.values().copied());
         (rooted, vals)
+    })
+}
+
+/// Rewrite scheduler-owned GC roots in place (evacuating minor; caller holds heap).
+pub fn rewrite_sched_gc_roots(mut f: impl FnMut(i64) -> i64) {
+    with_sched(|s| {
+        for roots in s.parked_roots.values().chain(s.host_roots.values()) {
+            for &slot in roots.iter() {
+                // Safety: same as snapshot — slots live while parked.
+                unsafe {
+                    let old = *slot as i64;
+                    let new = f(old);
+                    if new != old {
+                        *slot = new as *mut u8;
+                    }
+                }
+            }
+        }
+        for ch in s.channels.values_mut() {
+            for v in ch.buf.iter_mut() {
+                *v = f(*v);
+            }
+        }
+        for st in s.tasks.values_mut() {
+            if st.env != 0 {
+                st.env = f(st.env);
+            }
+            if let Some(v) = st.result.as_mut() {
+                *v = f(*v);
+            }
+        }
+        for slot in s.fibers.values_mut() {
+            if let Some(PendingSpawn::Unary(_, e)) = &mut slot.pending {
+                if *e != 0 {
+                    *e = f(*e);
+                }
+            }
+        }
+        for v in s.abi_handoff.values_mut() {
+            *v = f(*v);
+        }
     })
 }

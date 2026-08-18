@@ -5,9 +5,8 @@ use anyhow::{Context as AnyhowContext, Result};
 use inkwell::types::{BasicTypeEnum, IntType};
 use inkwell::values::{IntValue, PointerValue};
 use inkwell::AddressSpace;
-use lumia_core::{Block, Op, Value};
+use lumia_core::{builtin_result_may_heap, Block, HeapMay, Op, Value};
 use lumia_ty::Type;
-use std::rc::Rc;
 
 impl<'ctx> Codegen<'ctx> {
     /// Whether a type may be a heap pointer — shared [`lumia_core::type_may_heap`].
@@ -32,17 +31,15 @@ impl<'ctx> Codegen<'ctx> {
             Value::Call { fun, .. } => self
                 .funs
                 .fun_ret_tys
-                .get(fun)
-                .map(Self::type_may_heap)
-                // Unknown callee: over-root (true). Slots use unknown→non-heap for
-                // prologue sizing; missing `fun_ret_tys` already means ABI treats the
-                // return as Int — prefer a useless root over a missed heap pointer.
-                .unwrap_or(true),
-            Value::Builtin { name, .. } => match name.result_heap() {
-                lumia_hir::ResultHeap::Never => false,
-                lumia_hir::ResultHeap::Always => true,
-                lumia_hir::ResultHeap::Typed => Self::type_may_heap(&self.infer_value_ty(v)),
-            },
+                .get(fun.as_str())
+                .map(HeapMay::from_type)
+                .unwrap_or(HeapMay::Unknown)
+                .for_rooting(),
+            Value::Builtin {
+                name, result_ty, ..
+            } => {
+                builtin_result_may_heap(*name, result_ty.as_ref(), || Some(self.infer_value_ty(v)))
+            }
             _ => false,
         }
     }
@@ -137,7 +134,11 @@ impl<'ctx> Codegen<'ctx> {
             one,
             "fun_rel_is_ref",
         ))?;
-        let skip = crate::error::llvm(self.llvm.builder.build_or(is_null, is_funref, "fun_rel_skip"))?;
+        let skip = crate::error::llvm(self.llvm.builder.build_or(
+            is_null,
+            is_funref,
+            "fun_rel_skip",
+        ))?;
         let cur = self
             .llvm
             .builder
@@ -218,7 +219,8 @@ impl<'ctx> Codegen<'ctx> {
         let push = self.runtime_fn("lumia_root_push")?;
         crate::error::llvm(self.llvm.builder.build_call(push, &[slot.into()], ""))?;
         self.frame.root_depth += 1;
-        Rc::make_mut(&mut self.frame.rooted_slots)
+        self.frame
+            .rooted_slots
             .insert(name.to_string(), self.frame.root_depth);
         Ok(())
     }
@@ -233,7 +235,8 @@ impl<'ctx> Codegen<'ctx> {
             crate::error::llvm(self.llvm.builder.build_call(pop, &[], ""))?;
             self.frame.root_depth -= 1;
         }
-        Rc::make_mut(&mut self.frame.rooted_slots).retain(|_, d| *d <= depth);
+        self.frame.rooted_slots.retain(|_, d| *d <= depth);
+        self.frame.ssa_root_stack.retain(|e| e.depth <= depth);
         Ok(())
     }
 
@@ -283,16 +286,16 @@ impl<'ctx> Codegen<'ctx> {
             .funs
             .fun_ret_tys
             .get(&self.funs.current_fun)
-            .map(Self::type_may_heap)
-            // Unknown current fun: over-root (see Call unknown policy above).
-            .unwrap_or(true);
+            .map(HeapMay::from_type)
+            .unwrap_or(HeapMay::Unknown)
+            .for_rooting();
         if may_heap {
             let handoff = self.runtime_fn("lumia_abi_handoff_set")?;
-            crate::error::llvm(
-                self.llvm
-                    .builder
-                    .build_call(handoff, &[ret.into()], "abi_handoff"),
-            )?;
+            crate::error::llvm(self.llvm.builder.build_call(
+                handoff,
+                &[ret.into()],
+                "abi_handoff",
+            ))?;
         }
         self.emit_root_epilogue()?;
         self.emit_frame_pop()?;

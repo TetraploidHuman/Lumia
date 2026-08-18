@@ -11,7 +11,9 @@
 
 use crate::common::{list_rc_is_unique, trap_abort, GcInhibitGuard, TYPE_LIST_F64};
 use crate::gc::{list_payload_bytes, lumia_alloc};
-use crate::list::{f64_elems, f64_elems_mut, force_heap_list, list_float_elems, list_len_of, require_len};
+use crate::list::{
+    f64_elems, f64_elems_mut, force_heap_list, list_float_elems, list_len_of, require_len,
+};
 use std::ptr;
 
 /// Allocate a length-`n` `List[Float]` filled with `0.0`.
@@ -253,7 +255,13 @@ pub unsafe extern "C" fn lumia_f64_clamp(xs: *mut u8, lo: f64, hi: f64) -> *mut 
 
 /// `y = A @ x` with `A` row-major `m×n`. Writes `y` (len `m`). Returns `y`.
 #[no_mangle]
-pub unsafe extern "C" fn lumia_f64_gemv(m: i64, n: i64, a: *mut u8, x: *mut u8, y: *mut u8) -> *mut u8 {
+pub unsafe extern "C" fn lumia_f64_gemv(
+    m: i64,
+    n: i64,
+    a: *mut u8,
+    x: *mut u8,
+    y: *mut u8,
+) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
     if m < 0 || n < 0 {
         trap_abort("lumia: gemv negative dims");
@@ -277,7 +285,13 @@ pub unsafe extern "C" fn lumia_f64_gemv(m: i64, n: i64, a: *mut u8, x: *mut u8, 
 
 /// `y = Aᵀ @ x` with `A` row-major `m×n` (`x` len `m`, `y` len `n`). Returns `y`.
 #[no_mangle]
-pub unsafe extern "C" fn lumia_f64_gemv_t(m: i64, n: i64, a: *mut u8, x: *mut u8, y: *mut u8) -> *mut u8 {
+pub unsafe extern "C" fn lumia_f64_gemv_t(
+    m: i64,
+    n: i64,
+    a: *mut u8,
+    x: *mut u8,
+    y: *mut u8,
+) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
     if m < 0 || n < 0 {
         trap_abort("lumia: gemv_t negative dims");

@@ -88,13 +88,7 @@ fn lower_list_map_inline(
     list_accum(acc, empty_list(span), &x, list, step, span)
 }
 
-fn lower_list_map_call(
-    list: Expr,
-    f: Expr,
-    f_name: String,
-    x: String,
-    span: Span,
-) -> Expr {
+fn lower_list_map_call(list: Expr, f: Expr, f_name: String, x: String, span: Span) -> Expr {
     let acc = format!("{}_{}", crate::desugar_slots::MAP_ACC_PREFIX, span.start.0);
     let mapped = Expr::Call {
         callee: Box::new(Expr::Var(f_name.clone(), span)),

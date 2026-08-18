@@ -39,8 +39,7 @@ val main = {
     .expect("core");
     assert!(
         core.functions.iter().any(|f| {
-            f.name.starts_with("nAddmm$")
-                && f.name.contains("List_Float_List_Float_List_Float")
+            f.name.starts_with("nAddmm$") && f.name.contains("List_Float_List_Float_List_Float")
         }),
         "expected List_Float nAddmm clone, funs={:?}",
         core.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
@@ -54,9 +53,7 @@ val main = {
                 ..
             } = op
             {
-                if fun.starts_with("nAddmm$")
-                    && fun.contains("List_Float_List_Float_List_Float")
-                {
+                if fun.starts_with("nAddmm$") && fun.contains("List_Float_List_Float_List_Float") {
                     saw = true;
                 }
             }

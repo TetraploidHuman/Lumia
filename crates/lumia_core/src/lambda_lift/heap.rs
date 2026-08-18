@@ -1,14 +1,12 @@
 //! Heap reachability for lifted-lambda ABI (`ret_ty` rooting).
 //!
-//! Uses shared [`value_alloc_may_heap`] / [`ResultHeap`] / [`type_may_heap`] so
-//! Typed builtins follow the same lattice as codegen roots. Unstamped
-//! `ChannelRecv` / `TaskJoin` stay non-heap (scalar-common; channel/task fixup
-//! still refines when HIR did not stamp a ground payload).
+//! Uses shared [`value_alloc_may_heap`] / [`builtin_result_may_heap`] /
+//! [`type_may_heap`] so Typed builtins follow the same lattice as codegen roots.
+//! Unstamped `ChannelRecv` / `TaskJoin` stay non-heap (scalar-common; channel/task
+//! fixup still refines when HIR did not stamp a ground payload).
 
 use crate::ir::{Block, Local, Op, Value};
-use crate::value_ty::{type_may_heap, value_alloc_may_heap, HeapPolicy};
-use lumia_hir::{Builtin, ResultHeap};
-use lumia_ty::Type;
+use crate::value_ty::{builtin_result_may_heap, value_alloc_may_heap, HeapPolicy};
 use rustc_hash::FxHashSet as HashSet;
 
 /// Whether the block result may be a heap pointer. `extra_params` covers lambda
@@ -52,10 +50,8 @@ fn value_may_heap(
     match v {
         Value::Local(Local(id)) => local_may_heap(block, *id, params, seen),
         Value::Builtin {
-            name,
-            result_ty,
-            ..
-        } => builtin_result_may_heap(*name, result_ty.as_ref()),
+            name, result_ty, ..
+        } => builtin_result_may_heap(*name, result_ty.as_ref(), || None),
         Value::Call { .. } | Value::IndirectCall { .. } => true,
         Value::If {
             then_block,
@@ -67,22 +63,6 @@ fn value_may_heap(
                 || result_may_heap_inherited(else_block, params)
         }
         _ => false,
-    }
-}
-
-/// Lift-time heap for a builtin result — shared [`ResultHeap`] + [`type_may_heap`].
-///
-/// Mirrors codegen `roots::value_may_heap` for Typed: stamped ground types go
-/// through [`type_may_heap`]. Unstamped `ChannelRecv` / `TaskJoin` stay non-heap
-/// so scalar payloads do not get a soft `List(Int)` ret_ty before fixup.
-fn builtin_result_may_heap(name: Builtin, result_ty: Option<&Type>) -> bool {
-    match name.result_heap() {
-        ResultHeap::Never => false,
-        ResultHeap::Always => true,
-        ResultHeap::Typed => match result_ty {
-            Some(ty) => type_may_heap(ty),
-            None => !matches!(name, Builtin::ChannelRecv | Builtin::TaskJoin),
-        },
     }
 }
 

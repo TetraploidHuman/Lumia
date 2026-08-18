@@ -23,8 +23,10 @@ fn len_and_substring_use_codepoints() {
     with_str_bytes(drop, |b| assert_eq!(b, "好".as_bytes()));
     let rev = unsafe { lumia_str_reverse(s) };
     with_str_bytes(rev, |b| assert_eq!(b, "好你".as_bytes()));
-    let low = unsafe { lumia_str_to_lower(lumia_alloc_string("ÄBC".as_ptr(), "ÄBC".len() as u64)) };
+    let low =
+        unsafe { lumia_str_to_lower(lumia_alloc_string("ÄBC".as_ptr(), "ÄBC".len() as u64)) };
     with_str_bytes(low, |b| assert_eq!(b, "äbc".as_bytes()));
-    let up = unsafe { lumia_str_to_upper(lumia_alloc_string("café".as_ptr(), "café".len() as u64)) };
+    let up =
+        unsafe { lumia_str_to_upper(lumia_alloc_string("café".as_ptr(), "café".len() as u64)) };
     with_str_bytes(up, |b| assert_eq!(b, "CAFÉ".as_bytes()));
 }

@@ -12,10 +12,16 @@ pub struct Token {
 pub enum StringPart {
     Lit(String),
     /// `$name` — `abs_start` is the byte offset of `name` in the enclosing file.
-    Ident { name: String, abs_start: u32 },
+    Ident {
+        name: String,
+        abs_start: u32,
+    },
     /// `${…}` raw source (re-parsed as an expression).
     /// `abs_start` is the byte offset of `src` (content after `${`) in the enclosing file.
-    ExprSrc { src: String, abs_start: u32 },
+    ExprSrc {
+        src: String,
+        abs_start: u32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -80,7 +86,7 @@ pub enum TokenKind {
     Colon,
     ColonColon,
     Semi,
-    Arrow,    // ->
+    Arrow, // ->
     // (no FatArrow: `=>` lexes as Error)
     /// Pipeline operator `>>` (not `||`).
     GtGt,
@@ -256,7 +262,10 @@ mod keyword_truth_tests {
     #[test]
     fn display_is_user_facing() {
         assert_eq!(TokenKind::RBrace.to_string(), "`}`");
-        assert_eq!(TokenKind::Ident("foo".into()).to_string(), "identifier `foo`");
+        assert_eq!(
+            TokenKind::Ident("foo".into()).to_string(),
+            "identifier `foo`"
+        );
         assert_eq!(TokenKind::Eof.to_string(), "end of file");
     }
 }

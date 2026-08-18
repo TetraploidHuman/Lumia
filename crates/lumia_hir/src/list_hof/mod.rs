@@ -28,10 +28,7 @@ pub(crate) fn list_accum(
         name: acc.clone(),
         value: Box::new(init),
         body: Box::new(Expr::Seq {
-            stmts: vec![
-                for_each_elem(x, list, step, span),
-                Expr::Var(acc, span),
-            ],
+            stmts: vec![for_each_elem(x, list, step, span), Expr::Var(acc, span)],
             span,
         }),
         mutable: true,

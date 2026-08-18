@@ -32,6 +32,8 @@ pub struct InferValueCtx<'a> {
     pub sum_max_arity: Option<&'a HashMap<String, usize>>,
     /// Module-wide `ChannelSend` payload when all sends agree (else erased Int).
     pub channel_elem_hint: Option<&'a Type>,
+    /// Current fun's capture-index → ty (typed Float ABI).
+    pub closure_cap_tys: Option<&'a HashMap<u32, Type>>,
 }
 
 /// Grouped codegen tables so [`InferValueCtx::full`] stays a short call site.
@@ -59,6 +61,7 @@ impl<'a> InferValueCtx<'a> {
             local_int_consts: None,
             sum_max_arity: None,
             channel_elem_hint: None,
+            closure_cap_tys: None,
         }
     }
 
@@ -77,6 +80,7 @@ impl<'a> InferValueCtx<'a> {
             local_int_consts: Some(local_int_consts),
             sum_max_arity: None,
             channel_elem_hint: None,
+            closure_cap_tys: None,
         }
     }
 
@@ -100,6 +104,7 @@ impl<'a> InferValueCtx<'a> {
             local_int_consts: None,
             sum_max_arity: None,
             channel_elem_hint: None,
+            closure_cap_tys: None,
         }
     }
 
@@ -115,6 +120,7 @@ impl<'a> InferValueCtx<'a> {
             local_int_consts: Some(tables.local_int_consts),
             sum_max_arity: Some(tables.sum_max_arity),
             channel_elem_hint: tables.channel_elem_hint,
+            closure_cap_tys: None,
         }
     }
 }
@@ -141,8 +147,8 @@ pub fn value_alloc_may_heap(v: &Value, policy: HeapPolicy) -> bool {
 
 /// Whether a ground [`Type`] may be a heap pointer (GC root / COW).
 ///
-/// Shared by codegen roots and (eventually) lift/mono heap lattices so new
-/// container types update one place (Todo: 多套「是否堆」启发式).
+/// Shared by codegen roots and lift/mono heap lattices so new container types
+/// update one place. For Call/slot *unknown* projections see [`HeapMay`].
 pub fn type_may_heap(ty: &Type) -> bool {
     match ty {
         Type::String
@@ -156,6 +162,68 @@ pub fn type_may_heap(ty: &Type) -> bool {
         | Type::Fun(_, _, _) => true,
         Type::Tuple(ts) | Type::TuplePrefix(ts) => ts.iter().any(type_may_heap),
         _ => false,
+    }
+}
+
+/// Three-way heap likelihood for rooting vs slot sizing (Todo: 未知→非堆假收口).
+///
+/// Full `CoreTy::Unknown` is still deferred; this enum documents the intentional
+/// dual projection in one place:
+/// - [`Self::for_rooting`]: Unknown → true (prefer a useless root over a miss)
+/// - [`Self::for_slot_alloc`]: Unknown → false (unknown slots size as Int until typed)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeapMay {
+    No,
+    Yes,
+    Unknown,
+}
+
+impl HeapMay {
+    pub fn from_type(ty: &Type) -> Self {
+        if type_may_heap(ty) {
+            Self::Yes
+        } else {
+            Self::No
+        }
+    }
+
+    /// Shadow-stack / handoff: over-root when unknown.
+    pub fn for_rooting(self) -> bool {
+        !matches!(self, Self::No)
+    }
+
+    /// Mut-slot prologue sizing: unknown stays non-heap until `slot_tys` says so.
+    pub fn for_slot_alloc(self) -> bool {
+        matches!(self, Self::Yes)
+    }
+}
+
+/// Lift/codegen shared [`ResultHeap`] projection.
+///
+/// Typed + stamp → [`type_may_heap`]. Typed + no stamp: `ChannelRecv` /
+/// `TaskJoin` stay non-heap (scalar-common until fixup); other Typed over-root
+/// unless `infer` yields a ground type.
+pub fn builtin_result_may_heap(
+    name: Builtin,
+    stamped: Option<&Type>,
+    infer: impl FnOnce() -> Option<Type>,
+) -> bool {
+    use lumia_hir::ResultHeap;
+    match name.result_heap() {
+        ResultHeap::Never => false,
+        ResultHeap::Always => true,
+        ResultHeap::Typed => {
+            if let Some(ty) = stamped {
+                return type_may_heap(ty);
+            }
+            if matches!(name, Builtin::ChannelRecv | Builtin::TaskJoin) {
+                return false;
+            }
+            match infer() {
+                Some(ty) => type_may_heap(&ty),
+                None => true,
+            }
+        }
     }
 }
 
@@ -179,12 +247,12 @@ pub fn infer_value_ty_ctx(
     mut call_ret: Option<&mut dyn FnMut(&str, &[Local]) -> Option<Type>>,
 ) -> Type {
     match value {
-        Value::Float(_) => Type::Float,
-        Value::Bool(_) => Type::Bool,
-        Value::Int(_) => Type::Int,
-        Value::String(_) => Type::String,
-        Value::Char(_) => Type::Char,
-        Value::Unit => Type::Unit,
+        Value::Float(_)
+        | Value::Bool(_)
+        | Value::Int(_)
+        | Value::String(_)
+        | Value::Char(_)
+        | Value::Unit => lit_scalar_ty(value).unwrap_or(Type::Int),
         Value::Local(l) => ctx.local_tys.get(&l.0).cloned().unwrap_or(Type::Int),
         Value::Name(n) => ctx
             .slot_tys
@@ -193,12 +261,7 @@ pub fn infer_value_ty_ctx(
         Value::Unary { op: UnOp::Not, .. } => Type::Bool,
         Value::Unary { operand, .. } => ctx.local_tys.get(&operand.0).cloned().unwrap_or(Type::Int),
         Value::Binary { op, left, right } => match op {
-            BinOp::Eq
-            | BinOp::Ne
-            | BinOp::Lt
-            | BinOp::Le
-            | BinOp::Gt
-            | BinOp::Ge => Type::Bool,
+            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => Type::Bool,
             // HIR desugars `and`/`or` to `If`; residual Binary is an ICE.
             BinOp::And | BinOp::Or => {
                 debug_assert!(false, "ICE: BinOp::And|Or in Core; expected If desugar");
@@ -207,12 +270,10 @@ pub fn infer_value_ty_ctx(
             _ => {
                 let lt = ctx.local_tys.get(&left.0).cloned().unwrap_or(Type::Int);
                 let rt = ctx.local_tys.get(&right.0).cloned().unwrap_or(Type::Int);
-                if matches!(lt, Type::Float) || matches!(rt, Type::Float) {
-                    Type::Float
-                } else if matches!(lt, Type::String) || matches!(rt, Type::String) {
+                if matches!(lt, Type::String) || matches!(rt, Type::String) {
                     Type::String
                 } else {
-                    Type::Int
+                    binop_float_or_int(&lt, &rt)
                 }
             }
         },
@@ -221,18 +282,18 @@ pub fn infer_value_ty_ctx(
                 .first()
                 .and_then(|e| ctx.local_tys.get(&e.0).cloned())
                 .unwrap_or(Type::Int);
-            Type::List(Box::new(elem))
+            alloc_list_ty(elem)
         }
         Value::AllocSet { elems, .. } => {
             let elem = elems
                 .first()
                 .and_then(|e| ctx.local_tys.get(&e.0).cloned())
                 .unwrap_or(Type::Int);
-            Type::Set(Box::new(elem))
+            alloc_set_ty(elem)
         }
         Value::AllocMap { flat_pairs, .. } => {
-            let (k, v) = if flat_pairs.len() >= 2 {
-                (
+            let kv = if flat_pairs.len() >= 2 {
+                Some((
                     ctx.local_tys
                         .get(&flat_pairs[0].0)
                         .cloned()
@@ -241,24 +302,23 @@ pub fn infer_value_ty_ctx(
                         .get(&flat_pairs[1].0)
                         .cloned()
                         .unwrap_or(Type::Int),
-                )
+                ))
             } else {
-                (Type::Int, Type::Int)
+                None
             };
-            Type::Map(Box::new(k), Box::new(v))
+            alloc_map_from_pair(kv)
         }
         Value::AllocAdt {
             adt_name, fields, ..
         } => {
-            let mut params: Vec<Type> = fields
+            let params: Vec<Type> = fields
                 .iter()
                 .map(|f| ctx.local_tys.get(&f.0).cloned().unwrap_or(Type::Int))
                 .collect();
-            if let Some(max) = ctx.sum_max_arity.and_then(|m| m.get(adt_name).copied()) {
-                while params.len() < max {
-                    params.push(Type::Int);
-                }
-            }
+            let params = pad_adt_params(
+                params,
+                ctx.sum_max_arity.and_then(|m| m.get(adt_name).copied()),
+            );
             Type::Adt {
                 name: adt_name.clone(),
                 params,
@@ -266,20 +326,22 @@ pub fn infer_value_ty_ctx(
         }
         Value::Call { fun, args } => {
             let ret = match (
-                ctx.fun_ret_tys.and_then(|m| m.get(fun).cloned()),
+                ctx.fun_ret_tys.and_then(|m| m.get(fun.as_str()).cloned()),
                 call_ret.as_mut(),
             ) {
                 // Prefer an explicit table entry when present (mono clones / FunRefs).
                 (Some(t), _) => t,
                 // Otherwise ask the call-site mono / index callback.
-                (None, Some(f)) => f(fun, args).unwrap_or(Type::Int),
+                (None, Some(f)) => f(fun.as_str(), args).unwrap_or(Type::Int),
                 (None, None) => Type::Int,
             };
-            identity_passthrough_call_ret(ret, fun, args, ctx)
+            identity_passthrough_call_ret(ret, fun.as_str(), args, ctx)
         }
         Value::Builtin {
             name: Builtin::ListParMap,
-            args, .. } => Type::List(Box::new(list_par_map_result_elem(args, ctx))),
+            args,
+            ..
+        } => Type::List(Box::new(list_par_map_result_elem(args, ctx))),
         Value::Builtin {
             name,
             args,
@@ -291,16 +353,22 @@ pub fn infer_value_ty_ctx(
                 builtin_value_ty(*name, args, ctx)
             }
         }
-        Value::ClosureCap { as_float: true, .. } => Type::Float,
-        Value::ClosureCap { .. } => Type::Int,
+        Value::ClosureCap { index, .. } => {
+            if let Some(caps) = ctx.closure_cap_tys {
+                if let Some(t) = caps.get(index) {
+                    return t.clone();
+                }
+            }
+            Type::Int
+        }
         Value::FunRef(name) | Value::AllocClosure { fun: name, .. } => {
             let ret = ctx
                 .fun_ret_tys
-                .and_then(|m| m.get(name).cloned())
+                .and_then(|m| m.get(name.as_str()).cloned())
                 .unwrap_or(Type::Int);
             let params = ctx
                 .fun_param_tys
-                .and_then(|m| m.get(name).cloned())
+                .and_then(|m| m.get(name.as_str()).cloned())
                 .unwrap_or_default();
             Type::Fun(params, Box::new(ret), Effect::pure())
         }
@@ -323,14 +391,12 @@ pub fn infer_value_ty_ctx(
         }
         Value::IndirectCall { callee, args } => {
             let fun_ty = ctx.local_tys.get(&callee.0);
-            let ret = match fun_ty {
-                Some(Type::Fun(_, ret, _)) => (**ret).clone(),
-                _ => ctx
-                    .funref_locals
+            let ret = fun_ret_of_callee_ty(fun_ty).unwrap_or_else(|| {
+                ctx.funref_locals
                     .and_then(|m| m.get(&callee.0))
                     .and_then(|name| ctx.fun_ret_tys.and_then(|m| m.get(name).cloned()))
-                    .unwrap_or(Type::Int),
-            };
+                    .unwrap_or(Type::Int)
+            });
             if let Some(name) = ctx.funref_locals.and_then(|m| m.get(&callee.0)) {
                 identity_passthrough_call_ret(ret, name, args, ctx)
             } else if let Some(t) = identity_shaped_fun_arg_passthrough(fun_ty, args, ctx.local_tys)
@@ -347,7 +413,10 @@ pub fn infer_value_ty_ctx(
         // After lambda_lift, residual `Lambda` is an ICE (maps to Int only so
         // release builds still type-check walkers).
         Value::Lambda { .. } => {
-            debug_assert!(false, "ICE: Value::Lambda after lift; expected FunRef/AllocClosure");
+            debug_assert!(
+                false,
+                "ICE: Value::Lambda after lift; expected FunRef/AllocClosure"
+            );
             Type::Int
         }
     }
@@ -410,9 +479,7 @@ fn identity_passthrough_call_ret(
     let Some(arg_ty) = ctx.local_tys.get(&arg0.0) else {
         return ret;
     };
-    let is_id = ctx
-        .fun_param0_identity
-        .is_some_and(|s| s.contains(fun));
+    let is_id = ctx.fun_param0_identity.is_some_and(|s| s.contains(fun));
     let ptys = ctx
         .fun_param_tys
         .and_then(|m| m.get(fun).cloned())
@@ -463,6 +530,67 @@ fn list_elem_preserved(args: &[Local], local_tys: &HashMap<u32, Type>) -> Type {
     Type::List(Box::new(Type::Int))
 }
 
+/// `ListParMap` result element from callback ret + source list elem.
+///
+/// Soft open `Var` on a Float list stays Float (specialize before mono).
+/// **Concrete `Int` must not soft-upgrade** — auto-parallel `map` used to tag
+/// `List[Float].map { _ -> 1 }` as Float and Show Int `1` as a denormal.
+pub(crate) fn par_map_result_elem_ty(
+    list_elem: &Type,
+    cb_ret: &Type,
+    identity_on_float_list: bool,
+) -> Type {
+    if identity_on_float_list && matches!(list_elem, Type::Float) {
+        return Type::Float;
+    }
+    match cb_ret {
+        Type::Float => Type::Float,
+        Type::Var(_) if matches!(list_elem, Type::Float) => Type::Float,
+        Type::Int => Type::Int,
+        Type::Var(_) => list_elem.clone(),
+        other => other.clone(),
+    }
+}
+
+/// Early Float result for float_abi `ListParMap` (before via).
+///
+/// Returns `Some(Float)` when the shared lattice says Float elems; `None` means
+/// fall through to via / soft projection (e.g. concrete Int on a Float list).
+pub(crate) fn par_map_float_abi_early(
+    list_elem: Option<&Type>,
+    cb_ret: Option<&Type>,
+) -> Option<Type> {
+    match (cb_ret, list_elem) {
+        (Some(cb), Some(le)) => {
+            let e = par_map_result_elem_ty(le, cb, false);
+            matches!(e, Type::Float).then_some(Type::Float)
+        }
+        (Some(Type::Float), None) => Some(Type::Float),
+        // Unknown callback on Float list: keep Float ABI for specialize.
+        (None, Some(Type::Float)) => Some(Type::Float),
+        _ => None,
+    }
+}
+
+/// Early Float/scalar result for float_abi `ListParFold` (before via).
+///
+/// `acc_is_float_local` is float_abi-only (def-order `float_locals` table).
+pub(crate) fn par_fold_float_abi_early(
+    acc_is_float_local: bool,
+    list_elem: Option<&Type>,
+    cb_ret: Option<&Type>,
+) -> Option<Type> {
+    if acc_is_float_local {
+        return Some(Type::Float);
+    }
+    if matches!(list_elem, Some(Type::Float)) {
+        return Some(Type::Float);
+    }
+    cb_ret
+        .filter(|t| matches!(t, Type::Float | Type::Bool | Type::String | Type::Char))
+        .cloned()
+}
+
 fn list_par_map_result_elem(args: &[Local], ctx: InferValueCtx<'_>) -> Type {
     let list_elem = match list_elem_preserved(args, ctx.local_tys) {
         Type::List(elem) => *elem,
@@ -481,20 +609,7 @@ fn list_par_map_result_elem(args: &[Local], ctx: InferValueCtx<'_>) -> Type {
             let identity = name
                 .as_ref()
                 .is_some_and(|n| ctx.fun_param0_identity.is_some_and(|s| s.contains(n)));
-            if identity && matches!(list_elem, Type::Float) {
-                return Type::Float;
-            }
-            match &ret {
-                Type::Float => return Type::Float,
-                // Polymorphic FunRefs keep Int/Var ABI until mono; float source
-                // lists must stay List[Float] so fold/map specialize.
-                Type::Int | Type::Var(_) if matches!(list_elem, Type::Float) => {
-                    return Type::Float;
-                }
-                Type::Int => return Type::Int,
-                Type::Var(_) => return list_elem,
-                _ => return ret,
-            }
+            return par_map_result_elem_ty(&list_elem, &ret, identity);
         }
     }
     list_elem
@@ -516,13 +631,87 @@ fn join_value_tys(a: &Type, b: &Type) -> Option<Type> {
 /// Empty `mapOf`/`setOf` placeholders use `Int`/`Var` elems; a later write of a
 /// concrete scalar (Bool/String/Float/…) must upgrade — same idea as ListAppend.
 
+/// Literal scalar / unit type (shared by value_ty / ret_ty / float_abi).
+pub(crate) fn lit_scalar_ty(value: &Value) -> Option<Type> {
+    match value {
+        Value::String(_) => Some(Type::String),
+        Value::Char(_) => Some(Type::Char),
+        Value::Float(_) => Some(Type::Float),
+        Value::Bool(_) => Some(Type::Bool),
+        Value::Int(_) => Some(Type::Int),
+        Value::Unit => Some(Type::Unit),
+        _ => None,
+    }
+}
+
+/// `AllocList` / `AllocSet` / `AllocMap` shape constructors (shared walkers).
+pub(crate) fn alloc_list_ty(elem: Type) -> Type {
+    Type::List(Box::new(elem))
+}
+
+pub(crate) fn alloc_set_ty(elem: Type) -> Type {
+    Type::Set(Box::new(elem))
+}
+
+pub(crate) fn alloc_map_ty(k: Type, v: Type) -> Type {
+    Type::Map(Box::new(k), Box::new(v))
+}
+
+pub(crate) fn alloc_map_from_pair(kv: Option<(Type, Type)>) -> Type {
+    match kv {
+        Some((k, v)) => alloc_map_ty(k, v),
+        None => alloc_map_ty(Type::Int, Type::Int),
+    }
+}
+
+/// Pad sum-ADT params to `max` with Int placeholders (value_ty / ret_ty).
+pub(crate) fn pad_adt_params(mut params: Vec<Type>, max: Option<usize>) -> Vec<Type> {
+    if let Some(max) = max {
+        while params.len() < max {
+            params.push(Type::Int);
+        }
+    }
+    params
+}
+
+/// Fun ret payload from a callee type (IndirectCall shared arm).
+pub(crate) fn fun_ret_of_callee_ty(callee: Option<&Type>) -> Option<Type> {
+    match callee {
+        Some(Type::Fun(_, ret, _)) => Some((**ret).clone()),
+        _ => None,
+    }
+}
+
+/// Float-wins numeric binop (value_ty adds String; float_abi returns None on miss).
+pub(crate) fn binop_float_or_int(lt: &Type, rt: &Type) -> Type {
+    if matches!(lt, Type::Float) || matches!(rt, Type::Float) {
+        Type::Float
+    } else {
+        Type::Int
+    }
+}
+
+/// float_abi arithmetic: only concrete Float is heap-authoritative.
+pub(crate) fn float_arith_binop_ty(lt: Option<&Type>, rt: Option<&Type>) -> Option<Type> {
+    if matches!(lt, Some(Type::Float)) || matches!(rt, Some(Type::Float)) {
+        Some(Type::Float)
+    } else {
+        None
+    }
+}
+
 mod builtin;
 mod join;
 
 pub(crate) use builtin::{
-    builtin_value_ty, elems_family_recv_ok, via_gated_recv, via_gated_recv_seeded,
+    adt_field_via, builtin_value_ty, channel_recv_ok, elems_family_recv_ok, float_adt_field_ty,
+    float_list_append_ty, float_list_concat_ty, float_list_par_fold_ty, float_list_par_map_ty,
+    float_map_remove_ty, float_map_set_ty, float_set_insert_ty, fun_recv_ok,
+    is_fixed_result_builtin, list_concat_both_known, list_get_recv_ok, list_par_fold_via,
+    list_par_map_via, list_passthrough_ok, stamp_or_via, stamp_or_via_gated_recv, task_recv_ok,
+    via_gated_recv, via_gated_recv_seeded,
 };
-pub use join::{join_abi_tys, prefer_concrete_heap_ty, JoinAbiKind};
+pub use join::{join_abi_tys, join_fixed_ty, prefer_concrete_heap_ty, JoinAbiKind};
 
 #[cfg(test)]
 mod tests {
@@ -558,6 +747,31 @@ mod tests {
     }
 
     #[test]
+    fn heap_may_dual_projection() {
+        assert!(HeapMay::from_type(&Type::List(Box::new(Type::Int))).for_rooting());
+        assert!(HeapMay::from_type(&Type::List(Box::new(Type::Int))).for_slot_alloc());
+        assert!(!HeapMay::from_type(&Type::Int).for_rooting());
+        assert!(!HeapMay::from_type(&Type::Int).for_slot_alloc());
+        // Unknown: over-root for GC; under-size slots until typed.
+        assert!(HeapMay::Unknown.for_rooting());
+        assert!(!HeapMay::Unknown.for_slot_alloc());
+    }
+
+    #[test]
+    fn builtin_result_may_heap_stamp_first() {
+        assert!(!builtin_result_may_heap(
+            lumia_hir::Builtin::ListGet,
+            Some(&Type::Int),
+            || Some(Type::List(Box::new(Type::Int)))
+        ));
+        assert!(builtin_result_may_heap(
+            lumia_hir::Builtin::ListGet,
+            None,
+            || Some(Type::List(Box::new(Type::Int)))
+        ));
+    }
+
+    #[test]
     fn list_append_upgrades_int_elem_to_task() {
         let mut tys = HashMap::default();
         tys.insert(0, Type::List(Box::new(Type::Int)));
@@ -566,12 +780,34 @@ mod tests {
             &Value::Builtin {
                 name: lumia_hir::Builtin::ListAppend,
                 args: vec![Local(0), Local(1)],
-                    result_ty: None,
-                },
+                result_ty: None,
+            },
             &tys,
             |_, _| None,
         );
         assert_eq!(t, Type::List(Box::new(Type::Task(Box::new(Type::Float)))));
+    }
+
+    #[test]
+    fn list_append_prefers_nested_float_list_elem() {
+        // Soft Int-only upgrade would keep List[List[Int]]; prefer upgrades elems.
+        let mut tys = HashMap::default();
+        tys.insert(0, Type::List(Box::new(Type::List(Box::new(Type::Int)))));
+        tys.insert(1, Type::List(Box::new(Type::Float)));
+        let t = infer_value_ty(
+            &Value::Builtin {
+                name: lumia_hir::Builtin::ListAppend,
+                args: vec![Local(0), Local(1)],
+                result_ty: None,
+            },
+            &tys,
+            |_, _| None,
+        );
+        assert_eq!(
+            t,
+            Type::List(Box::new(Type::List(Box::new(Type::Float)))),
+            "ListAppend must prefer nested Float elems, got {t:?}"
+        );
     }
 
     #[test]
@@ -591,10 +827,7 @@ mod tests {
             &tys,
             |_, _| None,
         );
-        assert_eq!(
-            t,
-            Type::Map(Box::new(Type::Bool), Box::new(Type::Bool))
-        );
+        assert_eq!(t, Type::Map(Box::new(Type::Bool), Box::new(Type::Bool)));
     }
 
     #[test]
@@ -612,6 +845,96 @@ mod tests {
             |_, _| None,
         );
         assert_eq!(t, Type::Set(Box::new(Type::Bool)));
+    }
+
+    #[test]
+    fn float_list_append_open_invents_list_elem() {
+        let args = [Local(0), Local(1)];
+        assert_eq!(
+            float_list_append_ty(&args, None, Type::Float),
+            Some(Type::List(Box::new(Type::Float)))
+        );
+        assert_eq!(
+            float_list_append_ty(&args, None, Type::Int),
+            Some(Type::List(Box::new(Type::Int)))
+        );
+        // Non-List known recv passes through (no invent).
+        assert_eq!(
+            float_list_append_ty(&args, Some(Type::String), Type::Float),
+            Some(Type::String)
+        );
+    }
+
+    #[test]
+    fn float_map_set_open_never_int_key_to_list() {
+        // builtin_value_ty open Int-key → List; float_abi must stay Map.
+        let args = [Local(0), Local(1), Local(2)];
+        assert_eq!(
+            float_map_set_ty(&args, None, Type::Int, Type::Float),
+            Some(Type::Map(Box::new(Type::Int), Box::new(Type::Float)))
+        );
+        // Known List still via → List with preferred elem.
+        assert_eq!(
+            float_map_set_ty(
+                &args,
+                Some(Type::List(Box::new(Type::Int))),
+                Type::Int,
+                Type::Float
+            ),
+            Some(Type::List(Box::new(Type::Float)))
+        );
+    }
+
+    #[test]
+    fn float_set_insert_open_seeds_set() {
+        let args = [Local(0), Local(1)];
+        assert_eq!(
+            float_set_insert_ty(&args, None, Type::Float),
+            Some(Type::Set(Box::new(Type::Float)))
+        );
+    }
+
+    #[test]
+    fn float_map_remove_open_soft_map() {
+        let args = [Local(0), Local(1)];
+        assert_eq!(
+            float_map_remove_ty(&args, None, Type::Float),
+            Some(Type::Map(Box::new(Type::Float), Box::new(Type::Int)))
+        );
+        // Known Set stays Set (via prefer).
+        assert_eq!(
+            float_map_remove_ty(&args, Some(Type::Set(Box::new(Type::Int))), Type::Float),
+            Some(Type::Set(Box::new(Type::Float)))
+        );
+    }
+
+    #[test]
+    fn float_list_concat_open_one_side_and_both() {
+        let args = [Local(0), Local(1)];
+        // One side only: keep concrete List/String; never invent soft List[Int].
+        assert_eq!(
+            float_list_concat_ty(&args, Some(Type::List(Box::new(Type::Float))), None),
+            Some(Type::List(Box::new(Type::Float)))
+        );
+        assert_eq!(
+            float_list_concat_ty(&args, None, Some(Type::String)),
+            Some(Type::String)
+        );
+        assert_eq!(float_list_concat_ty(&args, None, None), None);
+        // Both List: prefer nested Float over Int placeholder.
+        assert_eq!(
+            float_list_concat_ty(
+                &args,
+                Some(Type::List(Box::new(Type::Int))),
+                Some(Type::List(Box::new(Type::Float))),
+            ),
+            Some(Type::List(Box::new(Type::Float)))
+        );
+        // ret_ty gate: List×scalar → None (not float open policy).
+        assert_eq!(
+            list_concat_both_known(&args, Type::List(Box::new(Type::Int)), Type::Int),
+            None
+        );
     }
 
     #[test]
@@ -649,6 +972,28 @@ mod tests {
     }
 
     #[test]
+    fn list_concat_prefers_nested_float_over_int_list() {
+        // Soft-only used to keep left List[List[Int]]; prefer upgrades elems.
+        let mut tys = HashMap::default();
+        tys.insert(0, Type::List(Box::new(Type::List(Box::new(Type::Int)))));
+        tys.insert(1, Type::List(Box::new(Type::List(Box::new(Type::Float)))));
+        let t = infer_value_ty(
+            &Value::Builtin {
+                name: lumia_hir::Builtin::ListConcat,
+                args: vec![Local(0), Local(1)],
+                result_ty: None,
+            },
+            &tys,
+            |_, _| None,
+        );
+        assert_eq!(
+            t,
+            Type::List(Box::new(Type::List(Box::new(Type::Float)))),
+            "List×List must prefer nested Float elems, got {t:?}"
+        );
+    }
+
+    #[test]
     fn par_map_elem_ty_from_funref_ret() {
         let mut local_tys = HashMap::default();
         local_tys.insert(0, Type::List(Box::new(Type::Int)));
@@ -670,10 +1015,137 @@ mod tests {
             local_int_consts: None,
             sum_max_arity: None,
             channel_elem_hint: None,
+            closure_cap_tys: None,
         };
         assert_eq!(
             list_par_map_elem_ty(&[Local(0), Local(1)], ctx),
             Type::Float
+        );
+    }
+
+    #[test]
+    fn par_map_elem_ty_concrete_int_on_float_list_stays_int() {
+        // Auto-parallel used to soft-upgrade Int→Float and Show 1 as a denormal.
+        let mut local_tys = HashMap::default();
+        local_tys.insert(0, Type::List(Box::new(Type::Float)));
+        local_tys.insert(
+            1,
+            Type::Fun(vec![Type::Float], Box::new(Type::Int), Effect::pure()),
+        );
+        let ctx = InferValueCtx {
+            local_tys: &local_tys,
+            slot_tys: None,
+            fun_ret_tys: None,
+            fun_param_tys: None,
+            fun_param0_identity: None,
+            funref_locals: None,
+            local_int_consts: None,
+            sum_max_arity: None,
+            channel_elem_hint: None,
+            closure_cap_tys: None,
+        };
+        assert_eq!(list_par_map_elem_ty(&[Local(0), Local(1)], ctx), Type::Int);
+    }
+
+    #[test]
+    fn par_map_elem_ty_open_var_on_float_list_stays_float() {
+        let mut local_tys = HashMap::default();
+        local_tys.insert(0, Type::List(Box::new(Type::Float)));
+        local_tys.insert(
+            1,
+            Type::Fun(vec![Type::Float], Box::new(Type::Var(0)), Effect::pure()),
+        );
+        let ctx = InferValueCtx {
+            local_tys: &local_tys,
+            slot_tys: None,
+            fun_ret_tys: None,
+            fun_param_tys: None,
+            fun_param0_identity: None,
+            funref_locals: None,
+            local_int_consts: None,
+            sum_max_arity: None,
+            channel_elem_hint: None,
+            closure_cap_tys: None,
+        };
+        assert_eq!(
+            list_par_map_elem_ty(&[Local(0), Local(1)], ctx),
+            Type::Float
+        );
+    }
+
+    #[test]
+    fn par_map_float_abi_early_int_on_float_list_is_none() {
+        // Concrete Int must not early-return Float (fall through to via / Int TID).
+        assert!(par_map_float_abi_early(Some(&Type::Float), Some(&Type::Int)).is_none());
+        assert_eq!(
+            par_map_float_abi_early(Some(&Type::Float), Some(&Type::Var(0))),
+            Some(Type::Float)
+        );
+        assert_eq!(
+            par_map_float_abi_early(Some(&Type::Float), None),
+            Some(Type::Float)
+        );
+    }
+
+    #[test]
+    fn par_fold_float_abi_early_list_float_and_scalars() {
+        assert_eq!(
+            par_fold_float_abi_early(true, None, None),
+            Some(Type::Float)
+        );
+        assert_eq!(
+            par_fold_float_abi_early(false, Some(&Type::Float), None),
+            Some(Type::Float)
+        );
+        assert_eq!(
+            par_fold_float_abi_early(false, Some(&Type::Int), Some(&Type::Bool)),
+            Some(Type::Bool)
+        );
+        assert!(par_fold_float_abi_early(false, Some(&Type::Int), Some(&Type::Int)).is_none());
+    }
+
+    #[test]
+    fn mono_float_clone_keeps_concrete_int_ret() {
+        // `{ x -> 1 }` at Float still returns Int — not MonoKey-homogeneous Float.
+        let src = r#"
+module D
+val main = {
+    val xs = listOf(1.5, 2.5).map({ x -> 1 })
+    xs
+}
+"#;
+        let m = crate::compile_source_to_core_with_parallel(src, true).unwrap();
+        let float_clone = m
+            .functions
+            .iter()
+            .find(|f| f.name.contains("$Float"))
+            .expect("$Float mono clone");
+        assert!(
+            matches!(float_clone.ret_ty, lumia_ty::Type::Int),
+            "$Float map Int lambda ret must stay Int, got {:?}",
+            float_clone.ret_ty
+        );
+    }
+
+    #[test]
+    fn mono_float_clone_keeps_float_add_ret() {
+        let src = r#"
+module E
+val main = {
+    val xs = listOf(1.5, 2.5).map({ x -> x + x })
+    xs
+}
+"#;
+        let m = crate::compile_source_to_core_with_parallel(src, true).unwrap();
+        let float_clone = m
+            .functions
+            .iter()
+            .find(|f| f.name.contains("$Float"))
+            .expect("$Float mono clone");
+        assert!(
+            matches!(float_clone.ret_ty, lumia_ty::Type::Float),
+            "$Float map (x+x) ret must stay Float, got {:?}",
+            float_clone.ret_ty
         );
     }
 
@@ -700,13 +1172,14 @@ mod tests {
             local_int_consts: Some(&consts),
             sum_max_arity: None,
             channel_elem_hint: None,
+            closure_cap_tys: None,
         };
         let t = infer_value_ty_ctx(
             &Value::Builtin {
                 name: Builtin::AdtField,
                 args: vec![Local(0), Local(1)],
-                    result_ty: None,
-                },
+                result_ty: None,
+            },
             ctx,
             None,
         );

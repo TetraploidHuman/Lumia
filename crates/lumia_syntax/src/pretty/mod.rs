@@ -431,7 +431,9 @@ val main = {
         let m = parse_module(src).expect("parse");
         let formatted = format_module_src(&m);
         assert!(
-            formatted.contains("1..3") && formatted.contains("1..<3") && formatted.contains("1 to 3"),
+            formatted.contains("1..3")
+                && formatted.contains("1..<3")
+                && formatted.contains("1 to 3"),
             "expected surface range/to sugar, got:\n{formatted}"
         );
         assert!(

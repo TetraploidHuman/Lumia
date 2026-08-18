@@ -1,9 +1,7 @@
 //! Shared mutable walks over the syntax AST (spans, pretty, recovery).
 
 use crate::span::Span;
-use crate::{
-    Expr, InterpPart, Item, MatchArm, MatchCondArm, Module, Pattern, Stmt, ValItem,
-};
+use crate::{Expr, InterpPart, Item, MatchArm, MatchCondArm, Module, Pattern, Stmt, ValItem};
 
 /// Apply `f` to every span in `m` (module, imports, items).
 pub fn map_module_spans(m: &mut Module, f: &mut dyn FnMut(&mut Span)) {

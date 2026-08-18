@@ -1,8 +1,6 @@
 //! OS worker / io pool threads for the cooperative scheduler.
 
-use super::sched_core::{
-    sched_notify, sched_wait_while, with_sched, SchedulerKind,
-};
+use super::sched_core::{sched_notify, sched_wait_while, with_sched, SchedulerKind};
 use super::sched_env::{io_threads, worker_threads};
 use super::scheduler::{pop_ready_kind, resume_fiber};
 use crate::mutator::ensure_mutator_registered;

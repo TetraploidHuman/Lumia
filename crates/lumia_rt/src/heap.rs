@@ -4,8 +4,8 @@
 //! holding this heap lock. Independent `cargo test` cases still share one
 //! process heap and must run with `RUST_TEST_THREADS=1` (see `scripts/check.sh`).
 
-use rustc_hash::FxHashSet;
 use rustc_hash::FxHashMap;
+use rustc_hash::FxHashSet;
 use std::cell::Cell;
 use std::ptr;
 use std::sync::{Mutex, OnceLock};
@@ -14,7 +14,8 @@ use crate::common::ObjectHeader;
 use crate::reentrant::with_mutex_reentrant;
 
 /// Soft young / old live-byte thresholds (defaults match historical TLS values).
-/// Young objects live in `Heap.young` (generation list — not a bump nursery).
+/// Small young allocs bump from [`Heap::nursery`] (dual-published to `live_set` +
+/// `heap_set`). Large allocs tenure via [`crate::gc::alloc_ffi::insert_old`].
 pub(crate) const DEFAULT_YOUNG_LIMIT: usize = 1024 * 1024;
 pub(crate) const DEFAULT_HEAP_LIMIT: usize = 8 * 1024 * 1024;
 
@@ -38,6 +39,8 @@ pub(crate) struct Heap {
     pub empty_set: *mut u8,
     /// Immortal `None` Option ADTs keyed by constructor tag (map_get miss path).
     pub option_none: FxHashMap<u64, *mut u8>,
+    /// Process bump nursery for small young objects (see [`crate::gc::nursery`]).
+    pub nursery: crate::gc::nursery::Nursery,
     /// When true, mark helpers only follow young payloads.
     pub mark_minor: bool,
     /// Incremental full-heap mark in progress.
@@ -71,6 +74,7 @@ impl Heap {
             empty_map: ptr::null_mut(),
             empty_set: ptr::null_mut(),
             option_none: FxHashMap::default(),
+            nursery: crate::gc::nursery::Nursery::new(),
             mark_minor: false,
             full_marking: false,
             mark_work: Vec::new(),
@@ -82,6 +86,10 @@ impl Heap {
 
     #[inline]
     pub(crate) fn contains_header(&self, h: *mut ObjectHeader) -> bool {
+        // Nursery bump objects live only in `live_set` (not dual-written to `heap_set`).
+        if self.nursery.contains_header(h) {
+            return self.nursery.is_live(h);
+        }
         self.heap_set.contains(&h)
     }
 
@@ -101,7 +109,12 @@ impl Heap {
 static PROCESS_HEAP: OnceLock<Mutex<Heap>> = OnceLock::new();
 
 fn process_heap() -> &'static Mutex<Heap> {
-    PROCESS_HEAP.get_or_init(|| Mutex::new(Heap::new()))
+    PROCESS_HEAP.get_or_init(|| {
+        let mut h = Heap::new();
+        // Only the process-wide nursery publishes the global range atomics.
+        h.nursery.publish_range();
+        Mutex::new(h)
+    })
 }
 
 thread_local! {

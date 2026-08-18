@@ -10,10 +10,25 @@ use lumia_abi::{
     SPECIALIZE_CONST_MAX_TOTAL_CLONES,
 };
 use lumia_core::{
-    block_calls, count_ops, has_early_return, rewrite_block_locals, Block, CoreFun, CoreModule,
-    Local, Op, Value,
+    block_calls, count_ops, for_each_nested_block, for_each_nested_block_mut, has_early_return,
+    max_local_in_fun, rewrite_block_locals, Block, CoreFun, CoreModule, Local, Op, Value,
 };
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use std::sync::Arc;
+
+/// Shared template for `$c_` clones of one original (body cloned once into Arc).
+struct ConstTemplate {
+    params: Vec<Local>,
+    param_tys: Vec<lumia_ty::Type>,
+    ret_ty: lumia_ty::Type,
+    effect: lumia_ty::Effect,
+    foreign_abi: lumia_core::ForeignAbi,
+    kind: lumia_core::FunKind,
+    mono_of: String,
+    body: Arc<Block>,
+    /// `max_local_in_fun` of the original — bake remaps from here.
+    max_local: u32,
+}
 
 pub struct SpecializeConstPass;
 
@@ -57,7 +72,9 @@ fn specialize_const_calls(module: &mut CoreModule) {
     let mut ordered: Vec<ConstKey> = Vec::new();
     for key in needed {
         let n = per_fun.entry(key.fun.clone()).or_insert(0);
-        if *n >= SPECIALIZE_CONST_MAX_CLONES_PER_FUN || ordered.len() >= SPECIALIZE_CONST_MAX_TOTAL_CLONES {
+        if *n >= SPECIALIZE_CONST_MAX_CLONES_PER_FUN
+            || ordered.len() >= SPECIALIZE_CONST_MAX_TOTAL_CLONES
+        {
             continue;
         }
         *n += 1;
@@ -73,6 +90,7 @@ fn specialize_const_calls(module: &mut CoreModule) {
 
     let mut renames: HashMap<(String, Vec<i64>), String> = HashMap::default();
     let mut new_funs: Vec<CoreFun> = Vec::new();
+    let mut templates: HashMap<String, ConstTemplate> = HashMap::default();
     for key in &ordered {
         let Some(&idx) = fun_index.get(&key.fun) else {
             continue;
@@ -88,7 +106,20 @@ fn specialize_const_calls(module: &mut CoreModule) {
             renames.insert((key.fun.clone(), key.args.clone()), mangled);
             continue;
         }
-        new_funs.push(build_const_clone(orig, &key.args, mangled.clone()));
+        let tmpl = templates
+            .entry(key.fun.clone())
+            .or_insert_with(|| ConstTemplate {
+                params: orig.params.clone(),
+                param_tys: orig.param_tys.clone(),
+                ret_ty: orig.ret_ty.clone(),
+                effect: orig.effect,
+                foreign_abi: orig.foreign_abi,
+                kind: orig.kind,
+                mono_of: orig.name.clone(),
+                max_local: max_local_in_fun(orig),
+                body: Arc::new(orig.body.clone()),
+            });
+        new_funs.push(build_const_clone(tmpl, &key.args, mangled.clone()));
         renames.insert((key.fun.clone(), key.args.clone()), mangled);
     }
     module.functions.extend(new_funs);
@@ -158,17 +189,18 @@ fn bake_const_value(ty: &lumia_ty::Type, n: i64) -> Value {
     }
 }
 
-fn build_const_clone(orig: &CoreFun, args: &[i64], name: String) -> CoreFun {
-    let mut body = orig.body.clone();
+fn build_const_clone(tmpl: &ConstTemplate, args: &[i64], name: String) -> CoreFun {
+    // Deep-clone from shared Arc only when emitting this `$c_` variant.
+    let mut body = (*tmpl.body).clone();
     // Remap original params to fresh locals, then bind them to scalar constants
     // at the top of the body so SSA uses stay valid.
-    let base = lumia_core::max_local_in_fun(orig).saturating_add(1);
+    let base = tmpl.max_local.saturating_add(1);
     let mut remap: HashMap<u32, u32> = HashMap::default();
     let mut preamble = Vec::with_capacity(args.len());
-    for (i, p) in orig.params.iter().enumerate() {
+    for (i, p) in tmpl.params.iter().enumerate() {
         let fresh = Local(base + i as u32);
         remap.insert(p.0, fresh.0);
-        let ty = orig
+        let ty = tmpl
             .param_tys
             .get(i)
             .cloned()
@@ -188,16 +220,19 @@ fn build_const_clone(orig: &CoreFun, args: &[i64], name: String) -> CoreFun {
         param_names: vec![],
         param_tys: vec![],
         body,
-        ret_ty: orig.ret_ty.clone(),
-        effect: orig.effect,
+        ret_ty: tmpl.ret_ty.clone(),
+        effect: tmpl.effect,
         is_main: false,
         memo: None,
         external: None,
-        foreign_abi: lumia_core::ForeignAbi::C,
+        foreign_abi: tmpl.foreign_abi,
         escaping: HashSet::default(),
+        nsw_binop_locals: Default::default(),
+        safe_divisor_locals: Default::default(),
+        nonneg_iv_load_locals: Default::default(),
         scheme_poly: false,
-        mono_of: Some(orig.name.clone()),
-        kind: orig.kind,
+        mono_of: Some(tmpl.mono_of.clone()),
+        kind: tmpl.kind,
     }
 }
 
@@ -216,11 +251,11 @@ fn collect_const_calls(
             } if *pure_region => {
                 known.track(local.0, value);
                 if let Value::Call { fun, args } = value {
-                    if let Some(&arity) = candidate_arity.get(fun) {
+                    if let Some(&arity) = candidate_arity.get(fun.as_str()) {
                         if arity == args.len() {
                             if let Some(consts) = known.resolve_all(args) {
                                 needed.insert(ConstKey {
-                                    fun: fun.clone(),
+                                    fun: fun.name.clone(),
                                     args: consts,
                                 });
                             }
@@ -245,27 +280,10 @@ fn walk_nested_collect(
     candidate_arity: &HashMap<String, usize>,
     needed: &mut HashSet<ConstKey>,
 ) {
-    match value {
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            collect_const_calls(then_block, candidate_arity, needed);
-            collect_const_calls(else_block, candidate_arity, needed);
-        }
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => {
-            collect_const_calls(header, candidate_arity, needed);
-            collect_const_calls(body, candidate_arity, needed);
-            collect_const_calls(latch, candidate_arity, needed);
-        }
-        Value::Lambda { body, .. } => collect_const_calls(body, candidate_arity, needed),
-        _ => {}
-    }
+    // New Value region arms → extend `for_each_nested_block` in visit.rs.
+    for_each_nested_block(value, &mut |b| {
+        collect_const_calls(b, candidate_arity, needed);
+    });
 }
 
 fn rewrite_const_calls(
@@ -282,11 +300,11 @@ fn rewrite_const_calls(
                 pure_region,
             } if *pure_region => {
                 if let Value::Call { fun, args } = value {
-                    if candidate_arity.contains_key(fun) {
+                    if candidate_arity.contains_key(fun.as_str()) {
                         if let Some(consts) = known.resolve_all(args) {
-                            if let Some(mangled) = renames.get(&(fun.clone(), consts)) {
+                            if let Some(mangled) = renames.get(&(fun.name.clone(), consts)) {
                                 *value = Value::Call {
-                                    fun: mangled.clone(),
+                                    fun: mangled.clone().into(),
                                     args: vec![],
                                 };
                             }
@@ -309,27 +327,10 @@ fn walk_nested_rewrite(
     renames: &HashMap<(String, Vec<i64>), String>,
     candidate_arity: &HashMap<String, usize>,
 ) {
-    match value {
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            rewrite_const_calls(then_block, renames, candidate_arity);
-            rewrite_const_calls(else_block, renames, candidate_arity);
-        }
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => {
-            rewrite_const_calls(header, renames, candidate_arity);
-            rewrite_const_calls(body, renames, candidate_arity);
-            rewrite_const_calls(latch, renames, candidate_arity);
-        }
-        Value::Lambda { body, .. } => rewrite_const_calls(body, renames, candidate_arity),
-        _ => {}
-    }
+    // New Value region arms → extend `for_each_nested_block_mut` in visit.rs.
+    for_each_nested_block_mut(value, &mut |b| {
+        rewrite_const_calls(b, renames, candidate_arity);
+    });
 }
 
 #[cfg(test)]

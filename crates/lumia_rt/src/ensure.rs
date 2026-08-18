@@ -3,6 +3,7 @@
 use crate::common::{header_from_payload, header_layout, payload_ptr, trap_abort, RC_SHARED};
 use crate::gc::{init_alloc_header, insert_young, lumia_alloc};
 use crate::heap::with_heap;
+use lumia_abi::tid_without_hash;
 use std::alloc::alloc;
 
 /// Allocate an empty container payload (`len = 0`) with the given packed `type_id`.
@@ -13,6 +14,22 @@ pub(crate) fn alloc_empty_container(tid: u32) -> *mut u8 {
         *(dest as *mut i64) = 0;
     }
     dest
+}
+
+/// Immortal untagged empty when `tid` is plain `base`; otherwise a fresh empty
+/// that keeps Float/Bool/Assoc tags (remove-to-empty / empty++empty).
+#[inline]
+pub(crate) fn empty_container_preserving_tags(
+    tid: u32,
+    base: u32,
+    immortal: extern "C" fn() -> *mut u8,
+) -> *mut u8 {
+    let tid = tid_without_hash(tid);
+    if tid == base {
+        immortal()
+    } else {
+        alloc_empty_container(tid)
+    }
 }
 
 /// Process-immortal empty Map/Set/List-style payload (`count = 0`, `RC_SHARED`).

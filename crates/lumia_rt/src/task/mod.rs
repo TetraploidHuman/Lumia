@@ -13,8 +13,8 @@ mod sched_env;
 mod sched_fiber_api;
 mod sched_pool;
 mod sched_queue;
-mod sched_roots;
 mod sched_resume;
+mod sched_roots;
 pub(crate) mod scheduler;
 #[cfg(test)]
 mod stress;

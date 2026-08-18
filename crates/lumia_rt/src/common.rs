@@ -9,7 +9,7 @@ use crate::heap::with_heap;
 pub use lumia_abi::{
     list_elem_is_float, tid_base, tid_f_key, tid_f_val, MEMO_IDX_CAP, MEMO_IDX_MAX_FUNS,
     MEMO_IDX_TABLE_BYTES, MEMO_PROCESS_BYTE_CAP, MEMO_TF_MAX_ARGS, MEMO_TF_MAX_FUNS, MEMO_TF_SLOTS,
-    TYPE_ADT, TYPE_BYTES, TYPE_CHAR, TYPE_CHANNEL, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_F64,
+    TYPE_ADT, TYPE_BYTES, TYPE_CHANNEL, TYPE_CHAR, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_F64,
     TYPE_LIST_IOTA, TYPE_MAP, TYPE_MAP_ASSOC, TYPE_MAP_ASSOC_F64, TYPE_MAP_ASSOC_F64V,
     TYPE_MAP_ASSOC_VF64, TYPE_MAP_F64, TYPE_MAP_F64V, TYPE_MAP_VF64, TYPE_SET, TYPE_SET_ASSOC,
     TYPE_SET_F64, TYPE_STRING, TYPE_TASK,
@@ -20,7 +20,7 @@ pub use lumia_abi::{
 /// Stack Lit* layouts must use **3** `i64` header words so `header_from_payload` matches:
 /// word0 = `type_id|size`, word1 = `marked|rc`, word2 = `_pad`.
 ///
-/// - `rc`: COW refcount for `TYPE_LIST` / `TYPE_LIST_F64` / `TYPE_ADT`
+/// - `rc`: COW refcount for `TYPE_LIST` / `TYPE_MAP` / `TYPE_SET` / `TYPE_ADT`
 ///   (`RC_SHARED` = immortal; alloc starts at 1). Other type_ids leave `rc` at 0.
 /// - `_pad`: **type_id-dependent**
 ///   - `TYPE_ADT`: packed field masks — low 32 = Float, high 32 = Bool
@@ -136,10 +136,16 @@ pub(crate) fn list_rc_is_unique(payload: *mut u8) -> bool {
     cow_rc_is_unique(payload, /*adt_ok=*/ false)
 }
 
+/// Map/Set COW uniqueness (same RC discipline as lists once allocated).
+#[inline]
+pub(crate) fn map_rc_is_unique(payload: *mut u8) -> bool {
+    cow_rc_is_unique(payload, /*adt_ok=*/ false)
+}
+
 #[inline]
 fn cow_tid_ok(tid: u32, adt_ok: bool) -> bool {
     let b = tid_base(tid);
-    b == TYPE_LIST || (adt_ok && b == TYPE_ADT)
+    b == TYPE_LIST || b == TYPE_MAP || b == TYPE_SET || (adt_ok && b == TYPE_ADT)
 }
 
 #[inline]
@@ -319,7 +325,9 @@ pub(crate) enum HeapGen {
     Old,
 }
 
-/// Single membership probe against the process heap (at most two set lookups).
+/// Single membership probe against the process heap.
+///
+/// Nursery addresses use range + `live_set`; system/old objects use `heap_set`.
 pub(crate) fn heap_gen(payload: *mut u8) -> Option<HeapGen> {
     if payload.is_null() {
         return None;
@@ -337,8 +345,21 @@ pub(crate) fn heap_gen(payload: *mut u8) -> Option<HeapGen> {
     })
 }
 
+/// True when `payload` is a live managed heap object (young or old).
+///
+/// Membership only — does **not** probe `old_set` (unlike [`heap_gen`]).
+/// Published nursery range + cursor + FREE sentinel may answer without the heap
+/// Mutex; otherwise falls back to the locked `contains_header`.
+#[inline]
 pub(crate) fn is_heap_payload(payload: *mut u8) -> bool {
-    heap_gen(payload).is_some()
+    if payload.is_null() {
+        return false;
+    }
+    let h = header_from_payload(payload);
+    match crate::gc::nursery::nursery_probe_live_header(h) {
+        Some(live) => live,
+        None => with_heap(|heap| heap.contains_header(h)),
+    }
 }
 
 /// Cheap filter before [`is_heap_payload`]: managed payloads are non-null and
@@ -354,6 +375,47 @@ pub(crate) fn may_be_heap_payload_bits(bits: i64) -> bool {
 #[inline]
 pub(crate) fn is_heap_payload_bits(bits: i64) -> bool {
     may_be_heap_payload_bits(bits) && is_heap_payload(bits as *mut u8)
+}
+
+/// Two membership probes under **one** heap lock (eq / ord / adt_eq hot path).
+#[inline]
+pub(crate) fn is_heap_payload_pair(a: *mut u8, b: *mut u8) -> (bool, bool) {
+    if a.is_null() && b.is_null() {
+        return (false, false);
+    }
+    let ha = if a.is_null() {
+        None
+    } else {
+        Some(header_from_payload(a))
+    };
+    let hb = if b.is_null() {
+        None
+    } else {
+        Some(header_from_payload(b))
+    };
+    with_heap(|heap| {
+        (
+            ha.is_some_and(|h| heap.contains_header(h)),
+            hb.is_some_and(|h| heap.contains_header(h)),
+        )
+    })
+}
+
+/// Pair form of [`is_heap_payload_bits`] — skips the Mutex when neither side may be heap.
+#[inline]
+pub(crate) fn is_heap_payload_bits_pair(a: i64, b: i64) -> (bool, bool) {
+    let ma = may_be_heap_payload_bits(a);
+    let mb = may_be_heap_payload_bits(b);
+    if !ma && !mb {
+        return (false, false);
+    }
+    if !ma {
+        return (false, is_heap_payload(b as *mut u8));
+    }
+    if !mb {
+        return (is_heap_payload(a as *mut u8), false);
+    }
+    is_heap_payload_pair(a as *mut u8, b as *mut u8)
 }
 
 pub(crate) fn is_young_payload(payload: *mut u8) -> bool {

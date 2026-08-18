@@ -1,8 +1,6 @@
 // Extracted from production module (Todo: RT 测例半迁).
 use super::*;
 
-
-
 fn gcd(mut a: i64, mut b: i64) -> i64 {
     while b != 0 {
         let t = a % b;

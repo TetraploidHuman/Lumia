@@ -1,14 +1,19 @@
 use lumia_abi::{
     MEMO_IDX_TABLE_BYTES, MEMO_PROCESS_BYTE_CAP, MEMO_SLOTS_TABLE_BYTES, MEMO_TF_MAX_ARGS,
 };
-use lumia_core::{block_calls, Block, CoreFun, CoreModule, Local, MemoTf, Op, Value};
 use lumia_core::CoreBinOp as BinOp;
+use lumia_core::{
+    block_calls, for_each_nested_block, Block, CoreFun, CoreModule, Local, MemoTf, Op, Value,
+};
 use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use super::{MEMO_IDX_MAX_FUNS, MEMO_TF_MAX_FUNS_U32};
 
 pub fn plan_memo_tf(module: &CoreModule) -> HashMap<String, MemoTf> {
+    // One module walk for const-arg reuse (Slots hit-rate proxy); avoid
+    // rescanning all bodies per candidate (§7.5.2 / Todo memo plan O(n²)).
+    let const_arg_reuse = max_const_arg_reuse_by_fun(module);
     let mut next_slots = 0u32;
     let mut next_dense = 0u32;
     let mut bytes_used: usize = 0;
@@ -23,7 +28,7 @@ pub fn plan_memo_tf(module: &CoreModule) -> HashMap<String, MemoTf> {
             bytes_used += MEMO_IDX_TABLE_BYTES;
             continue;
         }
-        if slots_cost_ok(f, module)
+        if slots_cost_ok(f, &const_arg_reuse)
             && next_slots < MEMO_TF_MAX_FUNS_U32
             && bytes_used + MEMO_SLOTS_TABLE_BYTES <= MEMO_PROCESS_BYTE_CAP
         {
@@ -160,15 +165,11 @@ fn walk_struct_rec(block: &Block, st: &mut StructRec<'_>) {
                     walk_struct_rec(else_block, &mut e);
                     merge_struct_rec(st, t, e);
                 }
-                Value::Loop {
-                    header,
-                    body,
-                    latch,
-                } => {
+                Value::Loop { .. } => {
+                    // Sequential env through header/body/latch (not fork-join).
+                    // New Loop layout → `for_each_nested_block` in visit.rs.
                     let mut h = clone_struct_env(st);
-                    walk_struct_rec(header, &mut h);
-                    walk_struct_rec(body, &mut h);
-                    walk_struct_rec(latch, &mut h);
+                    for_each_nested_block(value, &mut |b| walk_struct_rec(b, &mut h));
                     st.self_calls += h.self_calls;
                     st.bad_self |= h.bad_self;
                 }
@@ -196,7 +197,7 @@ fn merge_struct_rec(dst: &mut StructRec<'_>, a: StructRec<'_>, b: StructRec<'_>)
     dst.bad_self |= a.bad_self || b.bad_self;
 }
 
-fn slots_cost_ok(f: &CoreFun, module: &CoreModule) -> bool {
+fn slots_cost_ok(f: &CoreFun, const_arg_reuse: &HashMap<String, usize>) -> bool {
     if f.is_main || !f.effect.is_pure() || f.external.is_some() {
         return false;
     }
@@ -222,7 +223,7 @@ fn slots_cost_ok(f: &CoreFun, module: &CoreModule) -> bool {
     // body (e.g. collatzSteps(1..N)) thrash a 4-slot table. Structural Int
     // recursion takes the DenseInt path instead.
     let _ = recursive;
-    let h_proxy = if const_arg_reuse_count(module, &f.name) >= 2 {
+    let h_proxy = if const_arg_reuse.get(&f.name).copied().unwrap_or(0) >= 2 {
         2
     } else {
         0
@@ -230,26 +231,25 @@ fn slots_cost_ok(f: &CoreFun, module: &CoreModule) -> bool {
     h_proxy > 0 && c_body * h_proxy >= 4
 }
 
-/// How many times the most-common fully-constant argument tuple is used at
-/// direct call sites of `fun` (module-wide).
-fn const_arg_reuse_count(module: &CoreModule, fun: &str) -> usize {
-    let mut freq: HashMap<Vec<i64>, usize> = HashMap::default();
+/// Per callee: how often the most-common fully-constant argument tuple appears
+/// at direct call sites (module-wide). Built in one pass over all bodies.
+fn max_const_arg_reuse_by_fun(module: &CoreModule) -> HashMap<String, usize> {
+    let mut freq: HashMap<String, HashMap<Vec<i64>, usize>> = HashMap::default();
     for f in &module.functions {
-        collect_const_calls(
-            &f.body,
-            fun,
-            &mut crate::ir_util::KnownScalars::new(),
-            &mut freq,
-        );
+        collect_const_calls(&f.body, &mut crate::ir_util::KnownScalars::new(), &mut freq);
     }
-    freq.values().copied().max().unwrap_or(0)
+    let mut out = HashMap::default();
+    out.reserve(freq.len());
+    for (fun, counts) in freq {
+        out.insert(fun, counts.values().copied().max().unwrap_or(0));
+    }
+    out
 }
 
 fn collect_const_calls(
     block: &Block,
-    fun: &str,
     known: &mut crate::ir_util::KnownScalars,
-    freq: &mut HashMap<Vec<i64>, usize>,
+    freq: &mut HashMap<String, HashMap<Vec<i64>, usize>>,
 ) {
     for op in &block.ops {
         match op {
@@ -257,9 +257,13 @@ fn collect_const_calls(
                 Value::Int(_) | Value::Bool(_) | Value::Char(_) | Value::Local(_) => {
                     known.track(local.0, value);
                 }
-                Value::Call { fun: callee, args } if callee == fun => {
+                Value::Call { fun: callee, args } => {
                     if let Some(key) = known.resolve_all(args) {
-                        *freq.entry(key).or_default() += 1;
+                        *freq
+                            .entry(callee.name.clone())
+                            .or_default()
+                            .entry(key)
+                            .or_default() += 1;
                     }
                     known.remove(local.0);
                 }
@@ -268,8 +272,8 @@ fn collect_const_calls(
                     else_block,
                     ..
                 } => {
-                    collect_const_calls(then_block, fun, &mut known.clone(), freq);
-                    collect_const_calls(else_block, fun, &mut known.clone(), freq);
+                    collect_const_calls(then_block, &mut known.clone(), freq);
+                    collect_const_calls(else_block, &mut known.clone(), freq);
                     known.remove(local.0);
                 }
                 Value::Loop {
@@ -277,9 +281,9 @@ fn collect_const_calls(
                     body,
                     latch,
                 } => {
-                    collect_const_calls(header, fun, &mut known.clone(), freq);
-                    collect_const_calls(body, fun, &mut known.clone(), freq);
-                    collect_const_calls(latch, fun, &mut known.clone(), freq);
+                    collect_const_calls(header, &mut known.clone(), freq);
+                    collect_const_calls(body, &mut known.clone(), freq);
+                    collect_const_calls(latch, &mut known.clone(), freq);
                     known.remove(local.0);
                 }
                 _ => {

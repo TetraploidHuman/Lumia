@@ -10,7 +10,7 @@
 
 use super::float_abi::{collect_fun_cap_tys, compute_float_locals_in_block};
 use crate::ir::{Block, CoreModule, Local, Op, Value};
-use crate::visit::{for_each_block_dfs, for_each_nested_block};
+use crate::visit::{for_each_let, for_each_nested_block};
 use lumia_hir::Builtin;
 use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
@@ -105,20 +105,16 @@ fn register_channel_news(
     root_of: &mut HashMap<u32, u32>,
     by_ch: &mut HashMap<u32, Option<Type>>,
 ) {
-    for_each_block_dfs(block, &mut |b| {
-        for op in &b.ops {
-            if let Op::Let { local, value, .. } = op {
-                if let Value::Builtin {
-                    name: Builtin::ChannelNew,
-                    result_ty,
-                    ..
-                } = value
-                {
-                    root_of.insert(local.0, local.0);
-                    let seed = channel_new_elem_ty(result_ty);
-                    by_ch.entry(local.0).or_insert(seed);
-                }
-            }
+    for_each_let(block, &mut |_b, local, value| {
+        if let Value::Builtin {
+            name: Builtin::ChannelNew,
+            result_ty,
+            ..
+        } = value
+        {
+            root_of.insert(local.0, local.0);
+            let seed = channel_new_elem_ty(result_ty);
+            by_ch.entry(local.0).or_insert(seed);
         }
     });
 }
@@ -136,12 +132,8 @@ fn propagate_channel_aliases(
     caps: Option<&[Local]>,
 ) -> bool {
     let mut changed = false;
-    for_each_block_dfs(block, &mut |b| {
-        for op in &b.ops {
-            if let Op::Let { local, value, .. } = op {
-                changed |= note_channel_alias(local.0, value, root_of, caps);
-            }
-        }
+    for_each_let(block, &mut |_b, local, value| {
+        changed |= note_channel_alias(local.0, value, root_of, caps);
     });
     changed
 }
@@ -189,14 +181,7 @@ fn scan_block(
         match op {
             Op::Let { local, value, .. } => {
                 note_channel_root(local.0, value, root_of, by_ch, caps);
-                note_send(
-                    value,
-                    local_tys,
-                    root_of,
-                    by_ch,
-                    poisoned_ch,
-                    conflicts,
-                );
+                note_send(value, local_tys, root_of, by_ch, poisoned_ch, conflicts);
                 local_tys.insert(
                     local.0,
                     guess_local_ty(
@@ -273,7 +258,9 @@ fn note_send(
 ) {
     let Value::Builtin {
         name: Builtin::ChannelSend,
-        args, .. } = value
+        args,
+        ..
+    } = value
     else {
         return;
     };
@@ -320,21 +307,18 @@ fn guess_local_ty(
         Value::String(_) => Type::String,
         Value::Char(_) => Type::Char,
         Value::Local(Local(id)) => local_tys.get(id).cloned().unwrap_or(Type::Int),
-        Value::ClosureCap {
-            as_float: true,
-            ..
-        } => Type::Float,
         Value::ClosureCap { index, .. } => fun_cap_tys
             .get(fun_name)
             .and_then(|m| m.get(index).cloned())
             .unwrap_or(Type::Int),
         Value::FunRef(name) | Value::AllocClosure { fun: name, .. } => {
-            super::fun_ty_from_tables_tls(name, fun_ret_tys, fun_param_tys)
-                .unwrap_or(Type::Int)
+            super::fun_ty_from_tables_tls(name, fun_ret_tys, fun_param_tys).unwrap_or(Type::Int)
         }
         Value::Builtin {
             name: Builtin::TaskSpawn,
-            args, .. } if !args.is_empty() => {
+            args,
+            ..
+        } if !args.is_empty() => {
             let elem = match local_tys.get(&args[0].0) {
                 Some(Type::Fun(_, r, _)) => (**r).clone(),
                 _ => Type::Int,
@@ -417,7 +401,10 @@ fn guess_local_ty(
             Type::Map(Box::new(k), Box::new(v))
         }
         Value::AllocAdt {
-            adt_name, tag, fields, ..
+            adt_name,
+            tag,
+            fields,
+            ..
         } => adt_payload_ty(adt_name, *tag, fields, local_tys, float_locals),
         Value::Builtin {
             name: Builtin::ChannelNew,
@@ -495,9 +482,7 @@ fn join_channel_payload(prev: &Type, new: &Type) -> Option<Type> {
                 name: n2,
                 params: p2,
             },
-        ) if n1 == n2
-            && (n1 == lumia_hir::OPTION.name || n1 == lumia_hir::RESULT.name) =>
-        {
+        ) if n1 == n2 && (n1 == lumia_hir::OPTION.name || n1 == lumia_hir::RESULT.name) => {
             let want = if n1.as_str() == lumia_hir::OPTION.name {
                 1
             } else {
@@ -520,7 +505,9 @@ fn join_channel_payload(prev: &Type, new: &Type) -> Option<Type> {
         _ => {
             // Soft scalar refine (Int/Var → concrete).
             let joined = super::prefer_concrete_heap_ty(prev.clone(), new.clone());
-            if &joined == prev || &joined == new || joined == super::prefer_concrete_heap_ty(new.clone(), prev.clone())
+            if &joined == prev
+                || &joined == new
+                || joined == super::prefer_concrete_heap_ty(new.clone(), prev.clone())
             {
                 // Only accept if prefer actually picked one side without hard mismatch.
                 if is_flexible_ty(prev) || is_flexible_ty(new) || prev == new {

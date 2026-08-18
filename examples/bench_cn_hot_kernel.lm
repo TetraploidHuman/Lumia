@@ -1,9 +1,9 @@
 module BenchCnHotKernel
 
-/// CogniNucleus-shaped hot step via `std.linalg` (vis=16, pfc=32).
+/// CogniNucleus-shaped hot step via `extras.linalg` (vis=16, pfc=32).
 /// One step ≈ project + predictive-coding update + Hebbian rank-1.
 import std.io.{println}
-import std.linalg.{zeros, gemv, gemvT, addmm, axpy, sub, clamp, l2Normalize, copy, checksum}
+import extras.linalg.{zeros, gemv, gemvT, addmm, axpy, sub, clamp, l2Normalize, copy, checksum}
 
 val VIS = 16
 val PFC = 32

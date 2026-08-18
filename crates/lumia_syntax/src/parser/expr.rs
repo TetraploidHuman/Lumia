@@ -666,10 +666,7 @@ impl<'a> Parser<'a> {
                 })
             }
             TokenKind::For => self.parse_for_as_expr(),
-            _ => Err(self.error(format!(
-                "unexpected token in expression: {}",
-                self.cur.kind
-            ))),
+            _ => Err(self.error(format!("unexpected token in expression: {}", self.cur.kind))),
         }
     }
 
@@ -705,7 +702,10 @@ impl<'a> Parser<'a> {
                     if trimmed.is_empty() {
                         return Err(ParseError {
                             message: "empty interpolation `${}`".into(),
-                            span: Span::new(abs_start.saturating_sub(2), abs_start.saturating_add(1)),
+                            span: Span::new(
+                                abs_start.saturating_sub(2),
+                                abs_start.saturating_add(1),
+                            ),
                         });
                     }
                     let base = abs_start + lead as u32;

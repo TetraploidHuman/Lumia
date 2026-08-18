@@ -1,7 +1,9 @@
 //! Shared program typecheck for CLI and LSP.
 
 use crate::diag::{Diagnostic, DiagnosticKind};
-use crate::load::{load_program, load_program_with_overlays, path_label, LoadedProgram, SourceFile};
+use crate::load::{
+    load_program, load_program_with_overlays, path_label, LoadedProgram, SourceFile,
+};
 use anyhow::Result;
 use lumia_hir::{lower_module, lower_module_recovering};
 use lumia_syntax::{parse_module_recovering, stamp_module, LocatedError, Span};
@@ -34,7 +36,10 @@ fn typecheck_loaded(
     let hir = lower_module(&loaded.module).map_err(AnalyzeError::Lower)?;
     let opts = TypecheckOptions {
         auto_parallel,
-        trust_foreign_pure: resolve_trust_foreign_pure(trust_foreign_pure, loaded.trust_foreign_pure),
+        trust_foreign_pure: resolve_trust_foreign_pure(
+            trust_foreign_pure,
+            loaded.trust_foreign_pure,
+        ),
     };
     typecheck_hir(&hir, loaded.visibility.clone(), &opts).map_err(AnalyzeError::Type)
 }
@@ -82,22 +87,14 @@ pub fn check_program_with_overlays(
     auto_parallel: bool,
     trust_foreign_pure: Option<bool>,
 ) -> Result<(LoadedProgram, TypedModule), OverlayCheckError> {
-    let partial = check_program_with_overlays_recovering(
-        path,
-        overlays,
-        auto_parallel,
-        trust_foreign_pure,
-    )?;
+    let partial =
+        check_program_with_overlays_recovering(path, overlays, auto_parallel, trust_foreign_pure)?;
     if let Some(typed) = partial.typed {
         if !partial.diagnostics.iter().any(|d| d.kind.is_error()) {
             return Ok((partial.loaded, typed));
         }
     }
-    match partial
-        .diagnostics
-        .into_iter()
-        .find(|d| d.kind.is_error())
-    {
+    match partial.diagnostics.into_iter().find(|d| d.kind.is_error()) {
         Some(d) => Err(OverlayCheckError::Analyze {
             loaded: Box::new(partial.loaded),
             kind: d.kind,
@@ -250,11 +247,7 @@ pub fn check_source_recovering(text: &str, auto_parallel: bool) -> PartialCheck 
 }
 
 fn diag_err(loaded: &LoadedProgram, span: Span, kind: &str, message: &str) -> anyhow::Error {
-    let labels: Vec<String> = loaded
-        .files
-        .iter()
-        .map(|f| path_label(&f.path))
-        .collect();
+    let labels: Vec<String> = loaded.files.iter().map(|f| path_label(&f.path)).collect();
     let table: Vec<(&str, &str)> = labels
         .iter()
         .zip(loaded.files.iter())
@@ -314,7 +307,8 @@ mod tests {
             partial
                 .diagnostics
                 .iter()
-                .any(|d| d.kind == DiagnosticKind::Warning && d.message.contains("trust_foreign_pure")),
+                .any(|d| d.kind == DiagnosticKind::Warning
+                    && d.message.contains("trust_foreign_pure")),
             "expected trust Warning, got {:?}",
             partial.diagnostics
         );

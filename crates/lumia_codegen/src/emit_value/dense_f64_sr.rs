@@ -35,9 +35,7 @@ impl<'ctx> Codegen<'ctx> {
             let v = self.local(*p)?;
             let arg = match ty {
                 Type::Float => self.promote_f64(v)?.into(),
-                Type::List(_) => self
-                    .i64_as_ptr(self.coerce_i64(v)?, "dense_arg")?
-                    .into(),
+                Type::List(_) => self.i64_as_ptr(self.coerce_i64(v)?, "dense_arg")?.into(),
                 _ => self.coerce_i64(v)?.into(),
             };
             args.push(arg);
@@ -124,7 +122,7 @@ fn dense_f64_trampoline_symbol(fun: &lumia_core::CoreFun) -> Option<&'static str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lumia_core::{Block, CoreFun, Local, FunKind};
+    use lumia_core::{Block, CoreFun, FunKind, Local};
     use lumia_opt::{compile_source_to_optimized, OptOptions};
     use lumia_ty::Effect;
 
@@ -159,6 +157,9 @@ mod tests {
             external: None,
             foreign_abi: lumia_core::ForeignAbi::C,
             escaping: Default::default(),
+            nsw_binop_locals: Default::default(),
+            safe_divisor_locals: Default::default(),
+            nonneg_iv_load_locals: Default::default(),
             scheme_poly: false,
             mono_of: None,
             kind: FunKind::Normal,

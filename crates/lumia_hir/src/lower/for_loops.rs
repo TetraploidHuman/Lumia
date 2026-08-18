@@ -232,14 +232,7 @@ pub(crate) fn for_each_elem(x: &str, list: Expr, step: Expr, span: Span) -> Expr
     if let Expr::BuiltinCall { name, args, .. } = &list {
         if matches!(name, Builtin::Range | Builtin::RangeInclusive) && args.len() == 2 {
             let inclusive = matches!(name, Builtin::RangeInclusive);
-            return counter_for_in(
-                x,
-                args[0].clone(),
-                args[1].clone(),
-                inclusive,
-                step,
-                span,
-            );
+            return counter_for_in(x, args[0].clone(), args[1].clone(), inclusive, step, span);
         }
     }
     list_for_in(x, list, step, span)

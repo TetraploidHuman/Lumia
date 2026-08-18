@@ -1,6 +1,56 @@
-use crate::ir::{CoreFun, Local};
+use crate::ir::{CoreFun, FunId, Local};
 use lumia_ty::{Effect, Type};
 use rustc_hash::FxHashMap as HashMap;
+use std::hash::{Hash, Hasher};
+
+/// Named FunRef HOF argument. [`FunId`] is a lookup cache — Eq/Hash use `name` only
+/// so resolved vs unresolved keys still collide in `renames`.
+#[derive(Clone, Debug)]
+pub(crate) struct FunRefKey {
+    pub name: String,
+    pub id: Option<FunId>,
+}
+
+impl PartialEq for FunRefKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
+impl Eq for FunRefKey {}
+
+impl Hash for FunRefKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+    }
+}
+
+impl From<&str> for FunRefKey {
+    fn from(s: &str) -> Self {
+        Self {
+            name: s.into(),
+            id: None,
+        }
+    }
+}
+
+impl From<String> for FunRefKey {
+    fn from(name: String) -> Self {
+        Self { name, id: None }
+    }
+}
+
+/// Resolve a FunRef against the current module table (id if still valid, else name).
+pub(crate) fn lookup_funref<'a>(functions: &'a [CoreFun], fr: &FunRefKey) -> Option<&'a CoreFun> {
+    if let Some(FunId(i)) = fr.id {
+        if let Some(f) = functions.get(i as usize) {
+            if f.name == fr.name {
+                return Some(f);
+            }
+        }
+    }
+    functions.iter().find(|f| f.name == fr.name)
+}
 
 /// Ground type key for monomorphization (Hash-friendly; no open Vars).
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -18,7 +68,7 @@ pub(crate) enum MonoKind {
         params: Vec<MonoKind>,
     },
     /// Named FunRef HOF argument (specialized + directized inside the clone).
-    FunRef(String),
+    FunRef(FunRefKey),
     /// Structural Fun (e.g. `Option[Fun(Float)→Float]` for unwrapOr).
     Fun {
         params: Vec<MonoKind>,
@@ -60,9 +110,10 @@ impl MonoKind {
                     )
                 }
             }
-            MonoKind::FunRef(n) => {
+            MonoKind::FunRef(fr) => {
                 // Sanitize so `$` / path separators do not break the clone name.
-                let safe: String = n
+                let safe: String = fr
+                    .name
                     .chars()
                     .map(|c| {
                         if c.is_ascii_alphanumeric() || c == '_' {
@@ -118,7 +169,7 @@ impl MonoKind {
     }
 }
 
-fn type_is_heap_structure(t: &Type) -> bool {
+fn type_is_mono_container(t: &Type) -> bool {
     // ABI-erased *containers* restored from Int keys — not the full GC lattice
     // ([`crate::type_may_heap`]): String/Char/Fun keep dedicated MonoKinds and
     // must not be rewritten from Int formals here.
@@ -294,7 +345,7 @@ pub(crate) fn restore_mono_param_ty(key_ty: &mut Type, formal: Option<&Type>) {
         return;
     };
     match (&*key_ty, formal) {
-        (Type::Int, t) if type_is_heap_structure(t) => {
+        (Type::Int, t) if type_is_mono_container(t) => {
             *key_ty = t.clone();
         }
         (
@@ -363,9 +414,7 @@ impl MonoKey {
         self.0
             .iter()
             .map(|k| match k {
-                MonoKind::FunRef(n) => functions
-                    .iter()
-                    .find(|f| f.name == *n)
+                MonoKind::FunRef(fr) => lookup_funref(functions, fr)
                     .map(|f| Type::Fun(f.param_tys.clone(), Box::new(f.ret_ty.clone()), f.effect))
                     // Missing name: Unit sentinel — not a fake 0-ary Fun.
                     .unwrap_or(Type::Unit),
@@ -387,9 +436,7 @@ impl MonoKey {
         if kinds.is_empty() {
             return Type::Int;
         }
-        let base = callee
-            .map(|c| base_fun_name(c, functions))
-            .unwrap_or("");
+        let base = callee.map(|c| base_fun_name(c, functions)).unwrap_or("");
         // `unwrapOr(opt, default)` returns the payload / default type — never the
         // Option/Result wrapper. When `default` is a FunRef, "last data arg" is
         // only the ADT and would wrongly keep `Option[Fun…]` (icall then uses
@@ -401,34 +448,26 @@ impl MonoKey {
                     // FunRef default is the real ABI for `unwrapOr(None/Err, {…})`
                     // and must not be filtered out (that left Option_Int → Int icall).
                     let default_ty = match kinds.get(1) {
-                        Some(MonoKind::FunRef(n)) => functions.iter().find(|f| f.name == *n).map(
-                            |f| {
-                                let mut params = f.param_tys.clone();
-                                if f.is_lifted_lambda()
-                                    && params
-                                        .first()
-                                        .is_some_and(|p| matches!(p, Type::Int | Type::Var(_)))
-                                    && params.len() > 1
-                                {
-                                    params.remove(0);
-                                }
-                                Type::Fun(
-                                    params,
-                                    Box::new(f.ret_ty.clone()),
-                                    f.effect,
-                                )
-                            },
-                        ),
+                        Some(MonoKind::FunRef(fr)) => lookup_funref(functions, fr).map(|f| {
+                            let mut params = f.param_tys.clone();
+                            if f.is_lifted_lambda()
+                                && params
+                                    .first()
+                                    .is_some_and(|p| matches!(p, Type::Int | Type::Var(_)))
+                                && params.len() > 1
+                            {
+                                params.remove(0);
+                            }
+                            Type::Fun(params, Box::new(f.ret_ty.clone()), f.effect)
+                        }),
                         Some(k) => Some(ground_open_vars(k.to_type())),
                         None => None,
                     };
                     // Bare `None` / `Err("e")` often mistag the Ok/Some slot as
                     // Int or the Err String; the default carries the real ABI.
                     if let Some(def_ty) = default_ty {
-                        let mistagged_payload = matches!(
-                            payload,
-                            Type::Int | Type::Var(_) | Type::String
-                        );
+                        let mistagged_payload =
+                            matches!(payload, Type::Int | Type::Var(_) | Type::String);
                         let concrete_default = matches!(
                             def_ty,
                             Type::Float
@@ -470,10 +509,8 @@ impl MonoKey {
             }
         }
         if kinds.iter().all(|k| k == &kinds[0]) {
-            if let MonoKind::FunRef(n) = &kinds[0] {
-                return functions
-                    .iter()
-                    .find(|f| f.name == *n)
+            if let MonoKind::FunRef(fr) = &kinds[0] {
+                return lookup_funref(functions, fr)
                     .map(|f| {
                         ground_open_vars(Type::Fun(
                             f.param_tys.clone(),
@@ -521,28 +558,17 @@ impl MonoKey {
 
     /// `map` / `andThen` / `mapErr` shaped keys with a FunRef callback.
     pub(crate) fn hof_ret_ty(&self, functions: &[CoreFun], callee: Option<&str>) -> Option<Type> {
-        let base = callee
-            .map(|c| base_fun_name(c, functions))
-            .unwrap_or("");
+        let base = callee.map(|c| base_fun_name(c, functions)).unwrap_or("");
         // `unwrapOr(opt, defaultFun)` also has Option+FunRef but FunRef is the
         // default value, not a mapper — must not wrap as `Option[…]`.
         if !matches!(
             base,
-            "optionMap"
-                | "resultMap"
-                | "andThen"
-                | "mapErr"
-                | "map"
-                | "flatMap"
-                | "filterMap"
+            "optionMap" | "resultMap" | "andThen" | "mapErr" | "map" | "flatMap" | "filterMap"
         ) {
             return None;
         }
         let fun_ret = self.0.iter().find_map(|k| match k {
-            MonoKind::FunRef(n) => functions
-                .iter()
-                .find(|f| f.name == *n)
-                .map(|f| f.ret_ty.clone()),
+            MonoKind::FunRef(fr) => lookup_funref(functions, fr).map(|f| f.ret_ty.clone()),
             _ => None,
         })?;
         // Shared Fun bodies often keep erased `Int` / may-heap `List(Int)` ret;
@@ -578,10 +604,7 @@ impl MonoKey {
                 let data_err = params.get(1).map(MonoKind::to_type).unwrap_or(Type::Int);
                 // `mapErr`: Ok stays data Ok; callback ret is the new Err.
                 if base == "mapErr" {
-                    let ok = params
-                        .first()
-                        .map(MonoKind::to_type)
-                        .unwrap_or(Type::Int);
+                    let ok = params.first().map(MonoKind::to_type).unwrap_or(Type::Int);
                     let err = payload
                         .filter(|t| !is_erased_abi_ty(t))
                         .or_else(|| params.get(1).map(MonoKind::to_type))
@@ -594,10 +617,7 @@ impl MonoKey {
                 if matches!(&fun_ret, Type::Adt { name: n, .. } if lumia_hir::is_result(n))
                     && !is_erased_result_ret(&fun_ret)
                 {
-                    let Type::Adt {
-                        params: fun_ps, ..
-                    } = &fun_ret
-                    else {
+                    let Type::Adt { params: fun_ps, .. } = &fun_ret else {
                         unreachable!()
                     };
                     let ok = fun_ps.first().cloned().unwrap_or(Type::Int);
@@ -622,21 +642,34 @@ impl MonoKey {
     /// Clone when any arg is non-Int or a FunRef (HOF).
     pub(crate) fn worth_cloning(&self) -> bool {
         self.0.iter().any(|k| {
-            matches!(k, MonoKind::FunRef(_) | MonoKind::Fun { .. })
-                || !matches!(k, MonoKind::Int)
+            matches!(k, MonoKind::FunRef(_) | MonoKind::Fun { .. }) || !matches!(k, MonoKind::Int)
         })
     }
 
     pub(crate) fn funref_param_binds(&self, params: &[Local]) -> HashMap<u32, String> {
         let mut binds = HashMap::default();
         for (i, k) in self.0.iter().enumerate() {
-            if let MonoKind::FunRef(n) = k {
+            if let MonoKind::FunRef(fr) = k {
                 if let Some(p) = params.get(i) {
-                    binds.insert(p.0, n.clone());
+                    binds.insert(p.0, fr.name.clone());
                 }
             }
         }
         binds
+    }
+
+    /// Fill [`FunRefKey::id`] from the current function table (name fallback stays).
+    pub(crate) fn resolve_funref_ids(&mut self, functions: &[CoreFun]) {
+        for k in &mut self.0 {
+            if let MonoKind::FunRef(fr) = k {
+                if fr.id.is_none() {
+                    fr.id = functions
+                        .iter()
+                        .position(|f| f.name == fr.name)
+                        .map(|i| FunId(i as u32));
+                }
+            }
+        }
     }
 }
 
@@ -687,10 +720,7 @@ fn collect_mono_var_binds(formal: &Type, concrete: &Type, binds: &mut HashMap<u3
 
 fn apply_mono_var_binds(t: &Type, binds: &HashMap<u32, Type>) -> Type {
     match t {
-        Type::Var(id) => binds
-            .get(id)
-            .cloned()
-            .unwrap_or_else(|| Type::Var(*id)),
+        Type::Var(id) => binds.get(id).cloned().unwrap_or_else(|| Type::Var(*id)),
         Type::List(e) => Type::List(Box::new(apply_mono_var_binds(e, binds))),
         Type::Set(e) => Type::Set(Box::new(apply_mono_var_binds(e, binds))),
         Type::Task(e) => Type::Task(Box::new(apply_mono_var_binds(e, binds))),
@@ -772,13 +802,13 @@ pub(crate) fn args_mono_key(
     let mut kinds = Vec::with_capacity(args.len());
     for (i, a) in args.iter().enumerate() {
         if let Some(name) = funref_of.get(&a.0) {
-            kinds.push(MonoKind::FunRef(name.clone()));
+            kinds.push(MonoKind::FunRef(name.clone().into()));
             continue;
         }
         let mut ty = local_tys.get(&a.0)?.clone();
         if matches!(ty, Type::Int) {
             if let Some(formal) = formals.and_then(|f| f.get(i)) {
-                if type_is_heap_structure(formal) {
+                if type_is_mono_container(formal) {
                     // ABI-erased product: key by ADT name only so Int field
                     // guesses never enter the clone layout; materialize restores
                     // the generic formals. Call-site Adt{…, [Float,…]} keeps params.

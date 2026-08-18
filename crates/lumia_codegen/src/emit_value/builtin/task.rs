@@ -2,7 +2,7 @@
 
 use super::super::super::Codegen;
 use anyhow::{Context as AnyhowContext, Result};
-use inkwell::values::{BasicValueEnum, IntValue, PhiValue};
+use inkwell::values::{BasicValueEnum, IntValue, PhiValue, PointerValue};
 use inkwell::IntPredicate;
 use lumia_abi::adt_type_id;
 use lumia_core::Local;
@@ -52,26 +52,11 @@ impl<'ctx> Codegen<'ctx> {
     fn emit_task_join_opt(&mut self, args: &[Local]) -> Result<BasicValueEnum<'ctx>> {
         let t_i = self.coerce_i64(self.local(args[0])?)?;
         let t = self.i64_as_ptr(t_i, "join_opt_task")?;
-        let out_ok = self.alloca_in_entry(self.llvm.i64_ty, "join_opt_ok")?;
-        crate::error::llvm(
-            self.llvm
-                .builder
-                .build_store(out_ok, self.llvm.i64_ty.const_int(0, false)),
-        )?;
-        let val = self
-            .call_rt_basic(
-                "lumia_task_join_opt",
-                &[t.into(), out_ok.into()],
-                "join_opt",
-            )?
-            .into_int_value();
-        let ok = crate::error::llvm(self.llvm.builder.build_load(self.llvm.i64_ty, out_ok, "ok"))?
-            .into_int_value();
         let field_ty = match self.frame.local_tys.get(&args[0].0) {
             Some(Type::Task(e)) => e.as_ref().clone(),
             _ => Type::Int,
         };
-        self.emit_option_from_ok_val(ok, val, "join", &field_ty)
+        self.emit_opt_from_rt_out_ok("lumia_task_join_opt", t, "join", field_ty)
     }
 
     /// FunRef: `spawn_nullary(untagged_fn)`. Heap closure: `spawn(fn_from_clos, clos_bits)`.
@@ -107,8 +92,7 @@ impl<'ctx> Codegen<'ctx> {
 
         self.llvm.builder.position_at_end(fr_bb);
         let not1 = crate::error::llvm(self.llvm.builder.build_not(one, "spawn_not1"))?;
-        let cleared =
-            crate::error::llvm(self.llvm.builder.build_and(fun_i, not1, "spawn_fr_clr"))?;
+        let cleared = crate::error::llvm(self.llvm.builder.build_and(fun_i, not1, "spawn_fr_clr"))?;
         let fr_ptr = crate::error::llvm(self.llvm.builder.build_int_to_ptr(
             cleared,
             ptr_ty,
@@ -125,11 +109,11 @@ impl<'ctx> Codegen<'ctx> {
         let fr_end = self.llvm.builder.get_insert_block().context("fr end")?;
 
         self.llvm.builder.position_at_end(cl_bb);
-        let env_ptr = crate::error::llvm(
-            self.llvm
-                .builder
-                .build_int_to_ptr(fun_i, ptr_ty, "spawn_clos"),
-        )?;
+        let env_ptr = crate::error::llvm(self.llvm.builder.build_int_to_ptr(
+            fun_i,
+            ptr_ty,
+            "spawn_clos",
+        ))?;
         let fn_slot = unsafe {
             crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
                 self.llvm.i64_ty,
@@ -138,11 +122,11 @@ impl<'ctx> Codegen<'ctx> {
                 "spawn_fn_slot",
             ))?
         };
-        let fn_i = crate::error::llvm(
-            self.llvm
-                .builder
-                .build_load(self.llvm.i64_ty, fn_slot, "spawn_fn"),
-        )?
+        let fn_i = crate::error::llvm(self.llvm.builder.build_load(
+            self.llvm.i64_ty,
+            fn_slot,
+            "spawn_fn",
+        ))?
         .into_int_value();
         let cl_fptr = crate::error::llvm(self.llvm.builder.build_int_to_ptr(
             fn_i,
@@ -169,40 +153,40 @@ impl<'ctx> Codegen<'ctx> {
     fn emit_channel_recv_opt(&mut self, args: &[Local]) -> Result<BasicValueEnum<'ctx>> {
         let ch_i = self.coerce_i64(self.local(args[0])?)?;
         let ch = self.i64_as_ptr(ch_i, "ch")?;
-        let out_ok = self.alloca_in_entry(self.llvm.i64_ty, "recv_opt_ok")?;
+        let field_ty = match self.frame.local_tys.get(&args[0].0) {
+            Some(Type::Channel(e)) => {
+                let elem = e.as_ref().clone();
+                if matches!(elem, Type::Int | Type::Var(_)) {
+                    self.funs.channel_elem_hint.clone().unwrap_or(elem)
+                } else {
+                    elem
+                }
+            }
+            _ => self.funs.channel_elem_hint.clone().unwrap_or(Type::Int),
+        };
+        self.emit_opt_from_rt_out_ok("lumia_channel_recv_opt", ch, "recv", field_ty)
+    }
+
+    /// Shared `*_opt(recv, &out_ok)` → Option prologue for joinOpt / recvOpt.
+    fn emit_opt_from_rt_out_ok(
+        &mut self,
+        sym: &'static str,
+        recv: PointerValue<'ctx>,
+        prefix: &str,
+        field_ty: Type,
+    ) -> Result<BasicValueEnum<'ctx>> {
+        let out_ok = self.alloca_in_entry(self.llvm.i64_ty, &format!("{prefix}_opt_ok"))?;
         crate::error::llvm(
             self.llvm
                 .builder
                 .build_store(out_ok, self.llvm.i64_ty.const_int(0, false)),
         )?;
         let val = self
-            .call_rt_basic(
-                "lumia_channel_recv_opt",
-                &[ch.into(), out_ok.into()],
-                "recv_opt",
-            )?
+            .call_rt_basic(sym, &[recv.into(), out_ok.into()], &format!("{prefix}_opt"))?
             .into_int_value();
         let ok = crate::error::llvm(self.llvm.builder.build_load(self.llvm.i64_ty, out_ok, "ok"))?
             .into_int_value();
-        let field_ty = match self.frame.local_tys.get(&args[0].0) {
-            Some(Type::Channel(e)) => {
-                let elem = e.as_ref().clone();
-                if matches!(elem, Type::Int | Type::Var(_)) {
-                    self.funs
-                        .channel_elem_hint
-                        .clone()
-                        .unwrap_or(elem)
-                } else {
-                    elem
-                }
-            }
-            _ => self
-                .funs
-                .channel_elem_hint
-                .clone()
-                .unwrap_or(Type::Int),
-        };
-        self.emit_option_from_ok_val(ok, val, "recv", &field_ty)
+        self.emit_option_from_ok_val(ok, val, prefix, &field_ty)
     }
 
     /// Build `Option` from RT `(ok, val)` with **one** shared GC root (both CFG arms).
@@ -223,7 +207,11 @@ impl<'ctx> Codegen<'ctx> {
         // One root slot for both arms — compile-time depth must match runtime pushes.
         let ptr_ty = self.llvm.context.ptr_type(inkwell::AddressSpace::default());
         let root_slot = self.alloca_in_entry_ty(ptr_ty.into(), &format!("{prefix}_opt_root"))?;
-        crate::error::llvm(self.llvm.builder.build_store(root_slot, ptr_ty.const_null()))?;
+        crate::error::llvm(
+            self.llvm
+                .builder
+                .build_store(root_slot, ptr_ty.const_null()),
+        )?;
         let push = self.runtime_fn("lumia_root_push")?;
         crate::error::llvm(self.llvm.builder.build_call(
             push,
@@ -258,8 +246,12 @@ impl<'ctx> Codegen<'ctx> {
         )?;
 
         self.llvm.builder.position_at_end(some_bb);
-        let some =
-            self.emit_option_adt_into(root_slot, self.option_variant_tag("Some"), Some(val), field_ty)?;
+        let some = self.emit_option_adt_into(
+            root_slot,
+            self.option_variant_tag("Some"),
+            Some(val),
+            field_ty,
+        )?;
         crate::error::llvm(self.llvm.builder.build_unconditional_branch(merge_bb))?;
         let some_bb_end = self
             .llvm
@@ -347,12 +339,7 @@ impl<'ctx> Codegen<'ctx> {
                 ))?
             };
             crate::error::llvm(self.llvm.builder.build_store(slot, v))?;
-            if matches!(field_ty, Type::Float) {
-                self.emit_adt_set_float_mask(ptr, 1)?;
-            }
-            if matches!(field_ty, Type::Bool) {
-                self.emit_adt_set_bool_mask(ptr, 1)?;
-            }
+            self.emit_adt_payload_masks_for_ty(ptr, field_ty)?;
         }
         crate::error::llvm(
             self.llvm

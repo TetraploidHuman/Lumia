@@ -1,4 +1,7 @@
-use super::{bi, BuiltinEffect, BuiltinEmit, BuiltinInfo, ResultHeap, ENS_LIST_APPEND, NO_F};
+use super::{
+    bi, BuiltinEffect, BuiltinEmit, BuiltinInfo, ResultHeap, ENS_LIST_APPEND, ENS_LIST_APPEND_BOOL,
+    NO_F,
+};
 use crate::ast::{Builtin, BuiltinFamily};
 
 pub(crate) fn info_list(b: Builtin) -> BuiltinInfo {
@@ -55,7 +58,8 @@ pub(crate) fn info_list(b: Builtin) -> BuiltinInfo {
             ObjI64Ptr,
             true,
             Always,
-        ),
+        )
+        .with_bool_ensures(ENS_LIST_APPEND_BOOL),
         ListConcat => bi(
             f,
             2,

@@ -66,8 +66,8 @@ mod util;
 mod tests;
 
 struct Checkpoint {
-    cur: Token,
-    pos: usize,
+    /// Byte offset of `cur` (`cur.span.start`); restore re-lexes instead of cloning.
+    cur_start: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -83,9 +83,8 @@ impl<'a> Parser<'a> {
     }
 
     pub(super) fn bump(&mut self) -> Token {
-        let prev = self.cur.clone();
-        self.cur = self.lexer.next_token();
-        prev
+        let next = self.lexer.next_token();
+        std::mem::replace(&mut self.cur, next)
     }
 
     pub(super) fn peek(&self) -> &TokenKind {
@@ -130,14 +129,13 @@ impl<'a> Parser<'a> {
     }
 
     pub(super) fn expect_ident(&mut self) -> Result<(String, Span), ParseError> {
-        match &self.cur.kind {
-            TokenKind::Ident(s) => {
-                let s = s.clone();
-                let span = self.cur.span;
-                self.bump();
-                Ok((s, span))
-            }
-            _ => Err(self.error("expected identifier")),
+        if !matches!(self.cur.kind, TokenKind::Ident(_)) {
+            return Err(self.error("expected identifier"));
+        }
+        let tok = self.bump();
+        match tok.kind {
+            TokenKind::Ident(s) => Ok((s, tok.span)),
+            _ => unreachable!("checked Ident above"),
         }
     }
 
@@ -238,14 +236,12 @@ impl<'a> Parser<'a> {
 
     pub(super) fn checkpoint(&self) -> Checkpoint {
         Checkpoint {
-            cur: self.cur.clone(),
-            // We need lexer position — extend Lexer
-            pos: self.lexer.pos(),
+            cur_start: self.cur.span.start.0 as usize,
         }
     }
 
     pub(super) fn restore(&mut self, cp: Checkpoint) {
-        self.cur = cp.cur;
-        self.lexer.set_pos(cp.pos);
+        self.lexer.set_pos(cp.cur_start);
+        self.cur = self.lexer.next_token();
     }
 }

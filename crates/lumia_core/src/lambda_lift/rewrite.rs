@@ -2,16 +2,14 @@
 
 use super::captures::analyze_captures;
 use super::float_abi::{
-    block_result_callee_ty, block_result_fun_ty, block_result_heap_ty,
-    block_result_icall_cap_ty, block_result_is_float, block_result_known_hof_ty,
-    compute_float_locals_in_block, float_closure_cap_indices, HofSets,
-    params_used_as_float_with_caps,
+    block_result_callee_ty, block_result_fun_ty, block_result_heap_ty, block_result_icall_cap_ty,
+    block_result_is_float_seeded, block_result_known_hof_ty, compute_float_locals_in_block,
+    params_used_as_float_with_caps_seeded, HofSets,
 };
 use super::heap::block_result_may_heap_with_params;
 use crate::ir::{Block, CoreFun, CoreModule, ForeignAbi, FunKind, Local, Op, Value};
 use crate::visit::{
-    block_has_io, for_each_op_value_mut, max_local_in_module,
-    rewrite_block_locals,
+    block_has_io, for_each_op_value_mut, max_local_in_module, rewrite_block_locals,
 };
 use lumia_ty::{Effect, Type};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
@@ -27,8 +25,10 @@ fn lambda_param_ret_tys(
     cap_srcs: &[Local],
     funref_locals: &HashMap<u32, String>,
     float_cap_idxs: &HashMap<String, HashSet<u32>>,
+    seed_float_locals: &HashSet<u32>,
 ) -> (Vec<Type>, Type) {
-    let float_params = params_used_as_float_with_caps(body, params, float_cap_idxs);
+    let float_params =
+        params_used_as_float_with_caps_seeded(body, params, float_cap_idxs, seed_float_locals);
     let param_tys = params
         .iter()
         .map(|p| {
@@ -44,7 +44,7 @@ fn lambda_param_ret_tys(
         .enumerate()
         .filter_map(|(i, src)| funref_locals.get(&src.0).cloned().map(|n| (i as u32, n)))
         .collect();
-    let ret_ty = if block_result_is_float(body, fun_ret_tys) {
+    let ret_ty = if block_result_is_float_seeded(body, fun_ret_tys, seed_float_locals) {
         Type::Float
     } else if super::float_abi::block_result_is_bool(body) {
         Type::Bool
@@ -54,13 +54,9 @@ fn lambda_param_ret_tys(
         t
     } else if let Some(t) = block_result_callee_ty(body, fun_ret_tys) {
         t
-    } else if let Some(t) =
-        block_result_known_hof_ty(body, hof, fun_ret_tys, Some(&cap_funs))
-    {
+    } else if let Some(t) = block_result_known_hof_ty(body, hof, fun_ret_tys, Some(&cap_funs)) {
         t
-    } else if let Some(t) =
-        block_result_icall_cap_ty(body, cap_srcs, funref_locals, fun_ret_tys)
-    {
+    } else if let Some(t) = block_result_icall_cap_ty(body, cap_srcs, funref_locals, fun_ret_tys) {
         t
     } else if let Some(t) = block_result_fun_ty(body, fun_ret_tys, fun_param_tys) {
         t
@@ -98,19 +94,14 @@ fn lift_lambdas_inner(module: &mut CoreModule) {
         .filter(|f| f.effect.has_io())
         .map(|f| f.name.clone())
         .collect();
-    let (mut fun_ret_tys, mut fun_param_tys) =
-        crate::ModuleTables::from_module(module).into_maps();
+    let (mut fun_ret_tys, mut fun_param_tys) = crate::ModuleTables::from_module(module).into_maps();
     let mut hof = HofSets::from_module_funs(
         module
             .functions
             .iter()
             .map(|f| (f.name.as_str(), f.params.as_slice(), &f.body)),
     );
-    let mut float_cap_idxs: HashMap<String, HashSet<u32>> = module
-        .functions
-        .iter()
-        .map(|f| (f.name.clone(), float_closure_cap_indices(&f.body)))
-        .collect();
+    let mut float_cap_idxs: HashMap<String, HashSet<u32>> = HashMap::default();
     let mut funref_locals: HashMap<u32, String> = HashMap::default();
     for fun in &mut module.functions {
         let mut float_locals = compute_float_locals_in_block(&fun.body);
@@ -216,10 +207,10 @@ fn lift_block(
                 }
                 match value {
                     Value::FunRef(name) => {
-                        funref_locals.insert(local.0, name.clone());
+                        funref_locals.insert(local.0, name.name.clone());
                     }
                     Value::AllocClosure { fun, .. } => {
-                        funref_locals.insert(local.0, fun.clone());
+                        funref_locals.insert(local.0, fun.name.clone());
                     }
                     Value::Local(Local(src)) => {
                         if let Some(n) = funref_locals.get(src).cloned() {
@@ -308,15 +299,24 @@ fn lift_value(
 
             if captures.is_empty() {
                 let param_names: Vec<String> = (0..params.len()).map(|i| format!("p{i}")).collect();
-                let (param_tys, ret_ty) =
-                    lambda_param_ret_tys(params, body, fun_ret_tys, fun_param_tys, hof, &[], funref_locals, float_cap_idxs);
+                let (param_tys, ret_ty) = lambda_param_ret_tys(
+                    params,
+                    body,
+                    fun_ret_tys,
+                    fun_param_tys,
+                    hof,
+                    &[],
+                    funref_locals,
+                    float_cap_idxs,
+                    &HashSet::default(),
+                );
                 let effect = lifted_effect(body, io_funs);
                 if effect.has_io() {
                     io_funs.insert(name.clone());
                 }
                 fun_ret_tys.insert(name.clone(), ret_ty.clone());
                 fun_param_tys.insert(name.clone(), param_tys.clone());
-                float_cap_idxs.insert(name.clone(), float_closure_cap_indices(body));
+                float_cap_idxs.insert(name.clone(), HashSet::default());
                 hof.note(&name, params, body);
                 super::note_lifted_lambda_name(name.clone());
                 extras.push(CoreFun {
@@ -332,12 +332,15 @@ fn lift_value(
                     external: None,
                     foreign_abi: ForeignAbi::C,
                     escaping: HashSet::default(),
+                    nsw_binop_locals: Default::default(),
+                    safe_divisor_locals: Default::default(),
+                    nonneg_iv_load_locals: Default::default(),
                     // Local let-poly / nested lambdas: specialize at ground call sites.
                     scheme_poly: true,
                     mono_of: None,
                     kind: FunKind::LiftedLambda,
                 });
-                *value = Value::FunRef(name);
+                *value = Value::FunRef(name.into());
                 return;
             }
 
@@ -346,6 +349,8 @@ fn lift_value(
             let mut new_body = *body.clone();
             // Map each capture slot → a fresh local loaded from env at entry.
             let mut load_ops = Vec::new();
+            let mut this_float_caps: HashSet<u32> = HashSet::default();
+            let mut float_cap_seed: HashSet<u32> = HashSet::default();
             for (i, cap_src) in captures.iter().enumerate() {
                 let loaded = Local(*next_local);
                 *next_local += 1;
@@ -353,17 +358,18 @@ fn lift_value(
                     .iter()
                     .find(|(_, l)| l.0 == cap_src.0)
                     .map(|(n, _)| n.clone());
-                let as_float = float_locals.contains(&cap_src.0)
+                let is_float = float_locals.contains(&cap_src.0)
                     || name_hit.as_ref().is_some_and(|n| float_slots.contains(n));
-                if as_float {
+                if is_float {
                     float_locals.insert(loaded.0);
+                    this_float_caps.insert(i as u32);
+                    float_cap_seed.insert(loaded.0);
                 }
                 load_ops.push(Op::Let {
                     local: loaded,
                     value: Value::ClosureCap {
                         env,
                         index: i as u32,
-                        as_float,
                     },
                     pure_region: true,
                 });
@@ -375,7 +381,7 @@ fn lift_value(
                             name: name.clone(),
                             value: loaded,
                         });
-                        if as_float {
+                        if is_float {
                             float_slots.insert(name.clone());
                         }
                         name_remap.remove(&name);
@@ -398,6 +404,9 @@ fn lift_value(
             let mut param_names = vec!["env".into()];
             param_names.extend((0..params.len()).map(|i| format!("p{i}")));
 
+            // Side-table float caps before ABI infer (IR has no as_float flag).
+            float_cap_idxs.insert(name.clone(), this_float_caps);
+
             let (user_param_tys, ret_ty) = lambda_param_ret_tys(
                 params,
                 &new_body,
@@ -407,6 +416,7 @@ fn lift_value(
                 &captures,
                 funref_locals,
                 float_cap_idxs,
+                &float_cap_seed,
             );
             let effect = lifted_effect(&new_body, io_funs);
             if effect.has_io() {
@@ -416,7 +426,6 @@ fn lift_value(
             full_param_tys.extend(user_param_tys);
             fun_ret_tys.insert(name.clone(), ret_ty.clone());
             fun_param_tys.insert(name.clone(), full_param_tys.clone());
-            float_cap_idxs.insert(name.clone(), float_closure_cap_indices(&new_body));
             hof.note(&name, &fun_params, &new_body);
             super::note_lifted_lambda_name(name.clone());
             extras.push(CoreFun {
@@ -432,12 +441,15 @@ fn lift_value(
                 external: None,
                 foreign_abi: ForeignAbi::C,
                 escaping: HashSet::default(),
+                nsw_binop_locals: Default::default(),
+                safe_divisor_locals: Default::default(),
+                nonneg_iv_load_locals: Default::default(),
                 scheme_poly: true,
                 mono_of: None,
                 kind: FunKind::LiftedLambda,
             });
             *value = Value::AllocClosure {
-                fun: name,
+                fun: name.into(),
                 captures,
             };
         }

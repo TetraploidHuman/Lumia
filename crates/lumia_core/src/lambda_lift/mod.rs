@@ -2,13 +2,14 @@
 //!
 //! **Package boundary:** true lift is [`rewrite`] / [`captures`] / [`heap`].
 //! Channel/float ABI post-passes live under [`abi_refine`] (and the large
-//! [`float_abi`] lattice). Prefer `abi_refine::*` at orchestration call sites.
+//! [`float_abi`] lattice / [`abi_refresh`] fixups). Prefer `abi_refine::*` at
+//! orchestration call sites.
 
 pub(crate) mod abi_refine;
+mod abi_refresh;
 mod captures;
 mod channel_hint;
 pub(crate) mod float_abi;
-mod float_cap_fixup;
 mod heap;
 mod rewrite;
 

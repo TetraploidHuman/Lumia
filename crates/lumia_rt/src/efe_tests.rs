@@ -32,9 +32,11 @@ fn efe_horizon1_finite() {
     p[4] = 0.15;
     let pred = from_slice(&p);
     let scores = lumia_list_f64_zeros(4);
-    let scores = unsafe { lumia_efe_action_scores(
-        obs, pred, scores, 4, 2, 4, 11, 0.25, 1.2, 0.28, 3.2, 0.8, 2.0, 0.1,
-    ) };
+    let scores = unsafe {
+        lumia_efe_action_scores(
+            obs, pred, scores, 4, 2, 4, 11, 0.25, 1.2, 0.28, 3.2, 0.8, 2.0, 0.1,
+        )
+    };
     for a in 0..4 {
         let v = f64::from_bits(unsafe { lumia_list_get(scores, a) } as u64);
         assert!(v.is_finite(), "score[{a}]={v}");

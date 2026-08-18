@@ -2,7 +2,7 @@
 
 use super::diagnostics::{diag_from_span, diag_json};
 use super::protocol::write_stdout;
-use super::state::{next_analyze_gen, state_lock, Analysis, AnalyzeReq, auto_parallel};
+use super::state::{auto_parallel, next_analyze_gen, state_lock, Analysis, AnalyzeReq};
 use super::uri::{path_to_uri, uri_to_path};
 use crate::check::{
     check_program_with_overlays_recovering, check_source_recovering, OverlayCheckError,
@@ -241,9 +241,7 @@ pub(crate) fn analyze_buffer(
     let result = {
         let primary = load_and_typecheck_recovering(&ide_entry, &ov);
         let fall_back = match &primary {
-            Ok((loaded, _, _)) => {
-                ide_entry != path && !path_in_loaded_files(&loaded.files, &path)
-            }
+            Ok((loaded, _, _)) => ide_entry != path && !path_in_loaded_files(&loaded.files, &path),
             Err(_) => false,
         };
         if fall_back {
@@ -295,7 +293,14 @@ pub(crate) fn analyze_buffer(
             (
                 vec![(
                     uri.to_string(),
-                    vec![diag_json(1, 1, 1, 2, DiagnosticKind::Other, "analysis failed")],
+                    vec![diag_json(
+                        1,
+                        1,
+                        1,
+                        2,
+                        DiagnosticKind::Other,
+                        "analysis failed",
+                    )],
                 )],
                 None,
             )
@@ -428,7 +433,14 @@ fn load_and_typecheck_recovering(
             // the fail-fast wrapper. Treat as opaque failure.
             Err(vec![(
                 path_to_uri(path),
-                vec![diag_json(1, 1, 1, 2, DiagnosticKind::Other, "analysis failed")],
+                vec![diag_json(
+                    1,
+                    1,
+                    1,
+                    2,
+                    DiagnosticKind::Other,
+                    "analysis failed",
+                )],
             )])
         }
     }
@@ -586,8 +598,7 @@ val main = { log(1) }
                 .map(|d| d.message.clone())
                 .collect::<Vec<_>>()
         );
-        let (batches, analysis) =
-            analyze_buffer("untitled:Untitled-1", src, &HashMap::default());
+        let (batches, analysis) = analyze_buffer("untitled:Untitled-1", src, &HashMap::default());
         assert!(
             analysis.is_some(),
             "untitled buffer should typecheck via loader+std"
@@ -598,9 +609,7 @@ val main = { log(1) }
             "unexpected diagnostics on clean untitled std import: {diags:?}"
         );
         assert!(
-            batches
-                .iter()
-                .any(|(u, _)| u == "untitled:Untitled-1"),
+            batches.iter().any(|(u, _)| u == "untitled:Untitled-1"),
             "diagnostics must publish under the client untitled URI, got {batches:?}"
         );
     }

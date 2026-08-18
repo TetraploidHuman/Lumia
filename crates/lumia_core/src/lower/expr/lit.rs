@@ -74,7 +74,7 @@ pub(super) fn lower_lit(
                 let l = ctx.fresh();
                 ops.push(Op::Let {
                     local: l,
-                    value: Value::FunRef(synth.to_string()),
+                    value: Value::FunRef(synth.into()),
                     pure_region,
                 });
                 Some(l)
@@ -82,7 +82,7 @@ pub(super) fn lower_lit(
                 let l = ctx.fresh();
                 ops.push(Op::Let {
                     local: l,
-                    value: Value::FunRef(name.clone()),
+                    value: Value::FunRef(name.clone().into()),
                     pure_region,
                 });
                 Some(l)
@@ -91,7 +91,7 @@ pub(super) fn lower_lit(
                 ops.push(Op::Let {
                     local: l,
                     value: Value::Call {
-                        fun: format!("__val_{name}"),
+                        fun: format!("__val_{name}").into(),
                         args: vec![],
                     },
                     pure_region,

@@ -81,7 +81,7 @@ impl<'ctx> Codegen<'ctx> {
 
     /// Codegen tables for [`lumia_core::infer_value_ty_ctx`] / ParMap elem typing.
     pub(crate) fn infer_ctx(&self) -> lumia_core::InferValueCtx<'_> {
-        lumia_core::InferValueCtx::full(
+        let mut ctx = lumia_core::InferValueCtx::full(
             &self.frame.local_tys,
             lumia_core::CodegenTypeTables {
                 slot_tys: &self.frame.slot_tys,
@@ -93,7 +93,9 @@ impl<'ctx> Codegen<'ctx> {
                 sum_max_arity: &self.funs.sum_max_arity,
                 channel_elem_hint: self.funs.channel_elem_hint.as_ref(),
             },
-        )
+        );
+        ctx.closure_cap_tys = self.funs.closure_cap_tys.get(&self.funs.current_fun);
+        ctx
     }
 
     /// FunRef values are tagged with the low bit; refuse heap closures for par_* workers.

@@ -324,7 +324,14 @@ const RUNTIME_DECLS: &[RtDecl] = &[
     RtDecl {
         name: "lumia_get",
         ret: RtTy::I64,
-        args: &[RtTy::Ptr, RtTy::I64, RtTy::I64, RtTy::I64, RtTy::I64, RtTy::I64],
+        args: &[
+            RtTy::Ptr,
+            RtTy::I64,
+            RtTy::I64,
+            RtTy::I64,
+            RtTy::I64,
+            RtTy::I64,
+        ],
     },
     RtDecl {
         name: "lumia_contains",
@@ -379,7 +386,14 @@ const RUNTIME_DECLS: &[RtDecl] = &[
     RtDecl {
         name: "lumia_map_get",
         ret: RtTy::Ptr,
-        args: &[RtTy::Ptr, RtTy::I64, RtTy::I64, RtTy::I64, RtTy::I64, RtTy::I64],
+        args: &[
+            RtTy::Ptr,
+            RtTy::I64,
+            RtTy::I64,
+            RtTy::I64,
+            RtTy::I64,
+            RtTy::I64,
+        ],
     },
     RtDecl {
         name: "lumia_map_contains",
@@ -620,6 +634,11 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         name: "lumia_matmul_affine_checksum",
         ret: RtTy::I64,
         args: &[RtTy::I64, RtTy::I64],
+    },
+    RtDecl {
+        name: "lumia_mem_traffic_checksum",
+        ret: RtTy::I64,
+        args: &[RtTy::I64, RtTy::I64, RtTy::I64],
     },
     // Dense List[Float] kernels (flat row-major; unique buffers stay in-place).
     RtDecl {

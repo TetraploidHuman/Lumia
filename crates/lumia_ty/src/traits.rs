@@ -248,7 +248,12 @@ impl Infer {
         self.check_open_receiver_bind(
             self.uni.len_vars.contains(&v),
             t,
-            |t| matches!(t, Type::List(_) | Type::Set(_) | Type::Map(_, _) | Type::String),
+            |t| {
+                matches!(
+                    t,
+                    Type::List(_) | Type::Set(_) | Type::Map(_, _) | Type::String
+                )
+            },
             |other| format!("len: expected List/Set/Map/String, got {other:?}"),
         )
     }

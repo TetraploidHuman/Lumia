@@ -222,3 +222,81 @@ fn write_barrier_shades_during_full_mark() {
     assert!(!xs.is_null());
     lumia_root_pop();
 }
+
+#[test]
+fn large_alloc_tenures_to_old() {
+    // Default young_limit is 1MiB; tenure threshold is half → 512KiB.
+    let nbytes: usize = 600 * 1024;
+    let mut slot = lumia_alloc(nbytes as u64, TYPE_BYTES);
+    assert!(!slot.is_null());
+    let (by, bo) = gc_live_bytes_for_test();
+    assert!(
+        bo >= nbytes && by < nbytes,
+        "large alloc should count as old, not young: young={by} old={bo} nbytes={nbytes}"
+    );
+    let (_yn, on) = gc_heap_lens_for_test();
+    assert!(on >= 1, "tenured object must be on the old list");
+    unsafe { lumia_root_push(&mut slot as *mut *mut u8) };
+    lumia_gc_collect();
+    assert!(!slot.is_null());
+    let h = header_from_payload(slot);
+    unsafe {
+        assert_eq!((*h).type_id, TYPE_BYTES);
+        assert_eq!((*h).size, nbytes as u32);
+    }
+    lumia_root_pop();
+}
+
+#[test]
+fn small_alloc_uses_bump_nursery() {
+    lumia_gc_collect(); // drop prior young so nursery can rewind
+    let p = lumia_alloc(32, TYPE_BYTES);
+    assert!(!p.is_null());
+    let h = header_from_payload(p);
+    let (in_nursery, live, in_heap_set) = crate::heap::with_heap(|heap| {
+        (
+            heap.nursery.contains_header(h),
+            heap.nursery.is_live(h),
+            heap.heap_set.contains(&h),
+        )
+    });
+    assert!(
+        in_nursery && live,
+        "small young alloc should be nursery-live"
+    );
+    assert!(
+        !in_heap_set,
+        "nursery bump must not dual-write heap_set (live_set only)"
+    );
+    assert!(
+        crate::gc::nursery::nursery_range_contains_header(h),
+        "process nursery range must be published for partitioned probes"
+    );
+    assert_eq!(
+        crate::gc::nursery::nursery_probe_live_header(h),
+        Some(true),
+        "lock-free nursery probe should see live bump object"
+    );
+    assert!(crate::common::is_heap_payload(p));
+    assert!(crate::common::is_young_payload(p));
+
+    // Soft young limit → evacuating minor (full `lumia_gc_collect` is non-moving).
+    let _limits = GcLimitGuard::set(256, 16 * 1024 * 1024);
+    let mut slot = p;
+    unsafe { lumia_root_push(&mut slot as *mut *mut u8) };
+    for _ in 0..32 {
+        let _ = lumia_alloc(64, TYPE_BYTES);
+    }
+    assert!(!slot.is_null());
+    let nh = header_from_payload(slot);
+    let (still_nursery, in_old) =
+        crate::heap::with_heap(|heap| (heap.nursery.contains_header(nh), heap.is_old_header(nh)));
+    assert!(
+        !still_nursery && in_old,
+        "evacuating minor must copy survivors out of the nursery into old"
+    );
+    assert!(!crate::common::is_young_payload(slot));
+    lumia_root_pop();
+    lumia_gc_collect();
+    assert!(!crate::common::is_heap_payload(slot));
+}

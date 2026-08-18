@@ -1,8 +1,6 @@
 // Extracted from production module (Todo: RT 测例半迁).
 use super::*;
 
-
-
 #[test]
 fn with_heap_reentrant() {
     with_heap(|h| {

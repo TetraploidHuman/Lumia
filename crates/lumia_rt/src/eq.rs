@@ -8,9 +8,9 @@
 #![deny(clippy::not_unsafe_ptr_arg_deref)]
 
 use crate::common::{
-    float_key_eq, header_from_payload, is_heap_payload, is_heap_payload_bits, list_elem_is_float,
-    may_be_heap_payload_bits, tid_base, tid_f_key, tid_f_val, TYPE_ADT, TYPE_CHAR, TYPE_MAP,
-    TYPE_SET, TYPE_STRING,
+    float_key_eq, header_from_payload, is_heap_payload, is_heap_payload_bits_pair,
+    is_heap_payload_pair, list_elem_is_float, may_be_heap_payload_bits, tid_base, tid_f_key,
+    tid_f_val, TYPE_ADT, TYPE_CHAR, TYPE_MAP, TYPE_SET, TYPE_STRING,
 };
 use crate::list::{list_get_of, list_len_of};
 use crate::map_set::{map_eq, set_eq};
@@ -44,7 +44,8 @@ pub extern "C" fn lumia_eq(a: i64, b: i64) -> i64 {
     }
     let pa = a as *mut u8;
     let pb = b as *mut u8;
-    if !is_heap_payload(pa) || !is_heap_payload(pb) {
+    let (ha, hb) = is_heap_payload_pair(pa, pb);
+    if !ha || !hb {
         return 0;
     }
     // SAFETY: both sides are live heap payloads.
@@ -124,7 +125,8 @@ pub extern "C" fn lumia_eq(a: i64, b: i64) -> i64 {
 pub extern "C" fn lumia_adt_eq(a: i64, b: i64, float_mask: i64) -> i64 {
     let pa = a as *mut u8;
     let pb = b as *mut u8;
-    if !is_heap_payload_bits(a) || !is_heap_payload_bits(b) {
+    let (ha, hb) = is_heap_payload_bits_pair(a, b);
+    if !ha || !hb {
         return if a == b { 1 } else { 0 };
     }
     // SAFETY: both sides are live heap payloads.

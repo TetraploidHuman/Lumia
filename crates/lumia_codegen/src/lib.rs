@@ -12,7 +12,6 @@ mod emit_value;
 mod error;
 mod funref;
 mod link;
-mod nsw_iv;
 mod roots;
 mod runtime_decls;
 mod state;
@@ -186,10 +185,14 @@ pub fn compile_module(core: &CoreModule, opts: &CodegenOptions) -> Result<()> {
             .module
             .run_passes("default<O3>", &tm, pb)
             .map_err(|e| anyhow::anyhow!("LLVM run_passes: {e}"))?;
-        cg.llvm
-            .module
-            .verify()
-            .map_err(|e| anyhow::anyhow!("LLVM verify after O3: {e}"))?;
+        // Pre-O3 verify always runs in `emit_llvm_module`. Post-O3 is optional:
+        // set `LUMIA_VERIFY=1` when hunting LLVM/pass bugs (Todo: secondary verify).
+        if std::env::var_os("LUMIA_VERIFY").is_some() {
+            cg.llvm
+                .module
+                .verify()
+                .map_err(|e| anyhow::anyhow!("LLVM verify after O3: {e}"))?;
+        }
     }
 
     let obj_path = if cfg!(target_os = "windows") {

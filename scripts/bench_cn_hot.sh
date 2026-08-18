@@ -2,7 +2,7 @@
 # CogniNucleus-shaped dense-float hot-path microbench (Release).
 #
 # Compares:
-#   kernel  — `std.linalg` → `lumia_f64_*`
+#   kernel  — `extras.linalg` → `lumia_f64_*`
 #   naive   — nested List[Float] loops with `--no-dense-f64-sr` (scalar get/set)
 #
 # With SR on, naive loops rewrite to the same RT calls as kernel (parity ≈ 1.0×);

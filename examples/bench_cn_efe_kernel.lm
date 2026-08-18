@@ -2,7 +2,7 @@ module BenchCnEfeKernel
 
 /// Same EFE workload as `bench_cn_efe_naive.lm`, via `extras.efe.actionScores`.
 import std.io.{println}
-import std.linalg.{zeros, copy, checksum}
+import extras.linalg.{zeros, copy, checksum}
 import extras.efe.{actionScores}
 
 val OBS = 16

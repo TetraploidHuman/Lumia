@@ -12,13 +12,7 @@ use lumia_hir::Expr as HirExpr;
 pub(super) fn lower_expr_block(ctx: &mut CoreLowerCtx, expr: &HirExpr) -> (Block, Option<Local>) {
     let mut ops = vec![];
     let result = lower_expr(ctx, expr, &mut ops, true);
-    (
-        Block {
-            ops,
-            result,
-        },
-        result,
-    )
+    (Block { ops, result }, result)
 }
 
 pub(super) fn lower_expr(

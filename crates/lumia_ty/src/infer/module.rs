@@ -88,11 +88,7 @@ impl Infer {
             self.bind(p.clone(), tv);
         }
         let ret_tv = if let Some(ann) = &fun.ret_ann {
-            self.resolve_type_ann(
-                ann,
-                expr_span(&fun.body),
-                "in return type ascription",
-            )?
+            self.resolve_type_ann(ann, expr_span(&fun.body), "in return type ascription")?
         } else {
             self.fresh()
         };
@@ -324,7 +320,10 @@ fn infer_module_inner(
     opts: InferOptions,
 ) -> (Option<TypedModule>, Vec<TypeError>) {
     let mut errors = Vec::new();
-    let mut inf = Infer::new(vis);
+    let mut inf = match Infer::try_new(vis) {
+        Ok(i) => i,
+        Err(e) => return (None, vec![e]),
+    };
     inf.traits.ord_instances = module
         .instances
         .iter()
@@ -366,9 +365,7 @@ fn infer_module_inner(
             inf.products
                 .sum_ctors
                 .insert(v.name.clone(), (a.name.clone(), v.arity, param_offset));
-            inf.products
-                .sum_field_recursive
-                .insert(v.name.clone(), rec);
+            inf.products.sum_field_recursive.insert(v.name.clone(), rec);
             param_offset += parametric;
             total_params += parametric;
         }
@@ -577,7 +574,11 @@ fn infer_module_inner(
     if !join_rewrites.is_empty() {
         apply_join_rewrites(&mut module, &join_rewrites);
     }
-    apply_alt_desugars(&mut module, &alt_kinds);
+    if let Err(e) = apply_alt_desugars(&mut module, &alt_kinds) {
+        errors.push(e);
+        // Alt desugar incomplete — do not hand back a half-rewritten module.
+        return (None, errors);
+    }
     apply_product_field_rewrites(&mut module, &field_rewrites, &with_rewrites);
     (
         Some(TypedModule {

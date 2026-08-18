@@ -59,10 +59,7 @@ impl Infer {
             1 => {
                 let (tt, te) = self.infer_expr(&args[0])?;
                 match self.prune(tt.clone()) {
-                    Type::List(_) => Err(at(
-                        span,
-                        "List.join requires a separator: xs.join(sep)",
-                    )),
+                    Type::List(_) => Err(at(span, "List.join requires a separator: xs.join(sep)")),
                     Type::Task(_) | Type::Var(_) => {
                         let elem = self.fresh();
                         self.unify_at(span, tt, Type::Task(Box::new(elem.clone())))?;
@@ -89,10 +86,7 @@ impl Infer {
                 self.unify_at(span, st, Type::String)?;
                 match self.prune(lt.clone()) {
                     Type::Task(_) => {
-                        return Err(at(
-                            span,
-                            "Task.join takes no separator (use t.join())",
-                        ));
+                        return Err(at(span, "Task.join takes no separator (use t.join())"));
                     }
                     Type::List(t) => {
                         self.unify_at(span, *t, Type::String)?;

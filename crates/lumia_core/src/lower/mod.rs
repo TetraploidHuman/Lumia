@@ -1,14 +1,12 @@
-//! HIR → Core lowering.
+//! HIR → Core lowering (pure translation).
+//!
+//! Mid-end ABI refinement lives in [`crate::run_core_abi_pipeline`] — call it
+//! from compile entries after lower, not here.
 
 mod ctx;
 mod expr;
 
 use crate::ir::{CoreFun, CoreModule, ForeignAbi, FunKind, ListRepr, MapRepr, Op, SetRepr, Value};
-use crate::lambda_lift::{fixup_closure_float_caps, lift_lambdas, refine_channel_elem_hint};
-use crate::mono::{
-    directize_funref_calls, ensure_trait_method_stubs, resolve_trait_method_calls,
-    specialize_mono_calls,
-};
 use ctx::CoreLowerCtx;
 use expr::lower_expr_block;
 use lumia_hir::{Item, Module as HirModule};
@@ -126,12 +124,17 @@ pub fn lower_hir_with_schemes(
                         ForeignAbi::default()
                     },
                     escaping: HashSet::default(),
+                    nsw_binop_locals: Default::default(),
+                    safe_divisor_locals: Default::default(),
+                    nonneg_iv_load_locals: Default::default(),
                     scheme_poly,
                     mono_of: None,
                     kind: FunKind::Normal,
                 });
             }
-            Item::Val { name, body, ty: _, .. } => {
+            Item::Val {
+                name, body, ty: _, ..
+            } => {
                 // Module-level `val` → zero-arg getter `__val_<name>` (pure).
                 // Ret type must match inference so codegen roots heap returns.
                 let getter = format!("__val_{name}");
@@ -170,6 +173,9 @@ pub fn lower_hir_with_schemes(
                     external: None,
                     foreign_abi: ForeignAbi::C,
                     escaping: HashSet::default(),
+                    nsw_binop_locals: Default::default(),
+                    safe_divisor_locals: Default::default(),
+                    nonneg_iv_load_locals: Default::default(),
                     scheme_poly,
                     mono_of: None,
                     kind: FunKind::ValGetter,
@@ -220,37 +226,7 @@ pub fn lower_hir_with_schemes(
         channel_elem_conflicts: Vec::new(),
     };
     ensure_prelude_ctor_stubs(&mut core);
-    // Pure HIR→Core translation ends above. Mid-end ABI refinement runs next
-    // (named pipeline — not part of “lower” ownership long-term).
-    run_core_abi_pipeline(&mut core);
     Ok(core)
-}
-
-/// Post-lower Core ABI pipeline: lift → channel hint → directize → traits →
-/// float fixup × mono fixpoint → trait stubs.
-///
-/// Kept separate from HIR translation so stage ownership stays auditable
-/// (Todo: `lower_hir` 编排中端遍).
-pub(crate) fn run_core_abi_pipeline(core: &mut CoreModule) {
-    lift_lambdas(core);
-    refine_channel_elem_hint(core);
-    directize_funref_calls(core);
-    // Num `a + b` is still Binary until here — rewrite to `__Num_T_add` Call
-    // before mono so Float field products get `$…Float…` clones (codegen
-    // override alone hits the unspecialized Int-body instance).
-    resolve_trait_method_calls(core);
-    // Fixpoint: fixup lifts Float/Bool/String/Fun ABI on `__lam_*`; mono clones
-    // HOF consumers (`unwrapOr` after `optionMap`, spawn join, …). Change-flag
-    // until specialize reports no new clones (capped). One more fixup after the
-    // last mono pass patches caps once `$Float` clones exist.
-    for _ in 0..lumia_abi::FLOAT_MONO_ROUNDS {
-        fixup_closure_float_caps(core);
-        if !specialize_mono_calls(core) {
-            break;
-        }
-    }
-    fixup_closure_float_caps(core);
-    ensure_trait_method_stubs(core);
 }
 
 fn type_is_open(t: &Type) -> bool {
@@ -348,6 +324,9 @@ fn ensure_prelude_ctor_stubs(core: &mut CoreModule) {
             external: None,
             foreign_abi: ForeignAbi::C,
             escaping: HashSet::default(),
+            nsw_binop_locals: Default::default(),
+            safe_divisor_locals: Default::default(),
+            nonneg_iv_load_locals: Default::default(),
             scheme_poly: false,
             mono_of: None,
             kind: FunKind::Normal,

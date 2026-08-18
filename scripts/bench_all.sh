@@ -15,6 +15,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 source "$ROOT/scripts/env.sh"
 
 cd "$ROOT"
+# Clang links `liblumia_rt.a` without Rust LTO — ensure the Release staticlib exists
+# and is up to date before any example binary is built (avoids stale/unopt RT).
+cargo build -q -p lumia_rt --release
 export BENCH_SHIELD="${BENCH_SHIELD:-0}"
 CPU_RUNS="${BENCH_CPU_RUNS:-${RUNS:-5}}"
 CN_RUNS="${RUNS:-5}"

@@ -86,7 +86,10 @@ mod tests {
     fn format_document_no_edit_when_only_missing_final_newline() {
         let src = "module T\n\nval x = 1";
         let edits = format_document(src).expect("format");
-        assert!(edits.is_empty(), "missing final newline should match: {edits:?}");
+        assert!(
+            edits.is_empty(),
+            "missing final newline should match: {edits:?}"
+        );
     }
 
     #[test]
@@ -104,10 +107,7 @@ mod tests {
     fn format_document_parse_error_is_err_not_empty() {
         let bad = "module T\nval =\n";
         let err = format_document(bad).expect_err("should fail");
-        assert!(
-            err.to_string().contains("parse failed"),
-            "got: {err}"
-        );
+        assert!(err.to_string().contains("parse failed"), "got: {err}");
     }
 
     #[test]

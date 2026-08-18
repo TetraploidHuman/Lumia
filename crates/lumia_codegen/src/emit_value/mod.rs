@@ -1,16 +1,17 @@
 //! Value emission and closely related helpers.
 
-mod affine2_sr;
 pub(crate) mod builtin;
+#[cfg(feature = "domain-sr")]
 mod collatz_sr;
 mod dense_f64_sr;
 mod emit_alloc;
 mod emit_arith;
 mod emit_calls;
 mod emit_control;
+#[cfg(feature = "domain-sr")]
 mod float_sr;
-mod number_theory_sr;
 mod sr_pattern;
+#[cfg(feature = "domain-sr")]
 mod trial_div_sr;
 
 use super::Codegen;
@@ -23,6 +24,7 @@ impl<'ctx> Codegen<'ctx> {
     ///
     /// Order is significant (more specific patterns first). Append new `*_sr`
     /// matchers to the array below — do not reintroduce an open if/else chain.
+    /// Gated by Cargo feature `domain-sr` (default on).
     fn emit_value_loop_with_srs(
         &mut self,
         header: &Block,
@@ -37,21 +39,14 @@ impl<'ctx> Codegen<'ctx> {
             &Block,
             FunctionValue<'c>,
         ) -> Result<Option<BasicValueEnum<'c>>>;
+        #[cfg(feature = "domain-sr")]
         let registry: &[EmitFn<'ctx>] = &[
-            Self::try_emit_collatz_total_loop,
-            Self::try_emit_collatz_strided_loop,
-            Self::try_emit_count_primes_loop,
-            Self::try_emit_affine2_rem_sum_loop,
-            Self::try_emit_gcd_sum_loop,
-            Self::try_emit_divisor_sum_loop,
-            Self::try_emit_product_rem_sum_loop,
-            Self::try_emit_range_affine1_loop,
-            Self::try_emit_matmul_affine_loop,
             Self::try_emit_float_orbit_loop,
-            Self::try_emit_mandelbrot_loop,
             Self::try_emit_collatz_loop,
             Self::try_emit_trial_div_loop,
         ];
+        #[cfg(not(feature = "domain-sr"))]
+        let registry: &[EmitFn<'ctx>] = &[];
         for emit in registry {
             if let Some(v) = emit(self, header, body, latch, fv)? {
                 return Ok(v);
@@ -108,9 +103,9 @@ impl<'ctx> Codegen<'ctx> {
             Value::Name(name) => self.load_slot(name),
             Value::Binary { op, left, right } => self.emit_value_binary(op, left, right, fv),
             Value::Unary { op, operand } => self.emit_value_unary(op, operand, fv),
-            Value::Call { fun, args } => self.emit_value_call(fun, args),
+            Value::Call { fun, args } => self.emit_value_call(fun.as_str(), args),
             Value::IndirectCall { callee, args } => self.emit_value_indirect_call(callee, args),
-            Value::FunRef(name) => self.emit_value_funref(name),
+            Value::FunRef(name) => self.emit_value_funref(name.as_str()),
             Value::Builtin { name, args, .. } => self.emit_value_builtin(name, args),
             Value::If {
                 cond,
@@ -123,12 +118,10 @@ impl<'ctx> Codegen<'ctx> {
                 latch,
             } => self.emit_value_loop_with_srs(header, body, latch, fv),
             Value::Lambda { .. } => bail!("lambda should have been lifted to FunRef/AllocClosure"),
-            Value::AllocClosure { fun, captures } => self.emit_value_alloc_closure(fun, captures),
-            Value::ClosureCap {
-                env,
-                index,
-                as_float,
-            } => self.emit_value_closure_cap(env, *index, *as_float),
+            Value::AllocClosure { fun, captures } => {
+                self.emit_value_alloc_closure(fun.as_str(), captures)
+            }
+            Value::ClosureCap { env, index } => self.emit_value_closure_cap(env, *index),
             Value::AllocList { elems, repr } => self.emit_value_alloc_list(elems, *repr),
             Value::AllocSet { elems, repr } => self.emit_value_alloc_set(elems, *repr),
             Value::AllocMap { flat_pairs, repr } => self.emit_value_alloc_map(flat_pairs, *repr),

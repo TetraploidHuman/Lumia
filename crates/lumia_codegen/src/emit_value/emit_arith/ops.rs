@@ -59,9 +59,13 @@ impl<'ctx> Codegen<'ctx> {
         // `resolve_trait_method_calls`; residual Binary is an ICE.
         self.reject_residual_num_binary(op, &lt, &rt)?;
         let v = match op {
-            BinOp::Add if self.dest_is_nsw_safe() => self.emit_nsw_binop(l, r, "add")?,
+            BinOp::Add if self.dest_is_nsw_safe() => {
+                self.emit_nsw_binop(l, r, left, right, "add")?
+            }
             BinOp::Sub if self.dest_is_nsw_safe() => self.emit_nsw_binop_sub(l, r, "sub")?,
-            BinOp::Mul if self.dest_is_nsw_safe() => self.emit_nsw_binop_mul(l, r, "mul")?,
+            BinOp::Mul if self.dest_is_nsw_safe() => {
+                self.emit_nsw_binop_mul(l, r, left, right, "mul")?
+            }
             BinOp::Add => self.emit_checked_binop(l, r, fv, "sadd")?,
             BinOp::Sub => self.emit_checked_binop(l, r, fv, "ssub")?,
             BinOp::Mul => self.emit_checked_binop(l, r, fv, "smul")?,

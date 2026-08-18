@@ -1,7 +1,7 @@
 use super::*;
-use lumia_core::{Block, CoreFun, CoreModule, Local, MemoTf, Op, Value, FunKind};
-use lumia_hir::Builtin;
+use lumia_core::{Block, CoreFun, CoreModule, FunKind, Local, MemoTf, Op, Value};
 use lumia_core::{CoreBinOp as BinOp, CoreUnOp as UnOp};
+use lumia_hir::Builtin;
 use lumia_ty::{Effect, Type};
 
 use rustc_hash::FxHashSet as HashSet;
@@ -20,6 +20,9 @@ fn bare_fun(name: &str, params: Vec<Local>, body: Block) -> CoreFun {
         external: None,
         foreign_abi: lumia_core::ForeignAbi::C,
         escaping: HashSet::default(),
+        nsw_binop_locals: Default::default(),
+        safe_divisor_locals: Default::default(),
+        nonneg_iv_load_locals: Default::default(),
         scheme_poly: false,
         mono_of: None,
         kind: FunKind::Normal,

@@ -8,14 +8,10 @@ use rustc_hash::FxHashSet;
 use std::collections::VecDeque;
 
 use super::home_coro;
-use super::sched_core::{
-    sched_notify, with_sched, FiberId, SchedCore, TaskId, Waiter,
-};
+use super::sched_core::{sched_notify, with_sched, FiberId, SchedCore, TaskId, Waiter};
 use super::sched_queue::{enqueue, wake_many};
 use super::sched_roots::discard_parked_scope_stack;
-use super::scheduler::{
-    recycle_scope_stack, CURRENT_FIBER, SCOPE_KIND_CACHE, SCOPE_STACK,
-};
+use super::scheduler::{recycle_scope_stack, CURRENT_FIBER, SCOPE_KIND_CACHE, SCOPE_STACK};
 
 /// Trap hook: cancel every not-yet-finished task in the process (all OS threads).
 pub fn cancel_all_scopes() {
@@ -174,9 +170,9 @@ pub(super) fn check_current_not_cancelled() {
         return;
     };
     let cancelled = with_sched(|s| {
-        s.fibers.get(&fid).and_then(|slot| {
-            s.tasks.get(&slot.task).map(|t| t.cancelled)
-        })
+        s.fibers
+            .get(&fid)
+            .and_then(|slot| s.tasks.get(&slot.task).map(|t| t.cancelled))
     });
     if cancelled == Some(true) {
         trap_abort("lumia: task cancelled");

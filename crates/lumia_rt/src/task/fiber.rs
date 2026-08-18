@@ -19,9 +19,7 @@ use super::scheduler::{
     enqueue, park_until, suspend_current, CURRENT_FIBER, SCOPE_STACK,
 };
 use crate::common::trap_abort;
-use crate::concurrency_policy::{
-    recycle_scope_stack, snapshot_scope_stack, with_rooted_payload,
-};
+use crate::concurrency_policy::{recycle_scope_stack, snapshot_scope_stack, with_rooted_payload};
 use crate::gc::lumia_alloc;
 use lumia_abi::TYPE_TASK;
 

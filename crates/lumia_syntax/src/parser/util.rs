@@ -62,9 +62,7 @@ pub(super) fn expr_uses_ident(expr: &Expr, name: &str) -> bool {
         Expr::Scope {
             scheduler, body, ..
         } => {
-            scheduler
-                .as_ref()
-                .is_some_and(|s| expr_uses_ident(s, name))
+            scheduler.as_ref().is_some_and(|s| expr_uses_ident(s, name))
                 || expr_uses_ident(body, name)
         }
         Expr::Spawn { body, .. } => expr_uses_ident(body, name),

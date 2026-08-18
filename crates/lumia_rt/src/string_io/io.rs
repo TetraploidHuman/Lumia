@@ -7,12 +7,12 @@
 
 use std::io::{self, Read, Write};
 
+use super::string::lumia_alloc_string;
 use crate::common::{
-    header_from_payload, is_heap_payload, may_be_heap_payload_bits, tid_base, trap_abort,
-    TYPE_ADT, TYPE_CHAR, TYPE_STRING,
+    header_from_payload, is_heap_payload, may_be_heap_payload_bits, tid_base, trap_abort, TYPE_ADT,
+    TYPE_CHAR, TYPE_STRING,
 };
 use crate::show::lumia_show;
-use super::string::lumia_alloc_string;
 use lumia_abi::{is_list_tid, is_map_tid, is_set_tid};
 
 #[no_mangle]

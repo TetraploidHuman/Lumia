@@ -442,7 +442,6 @@ val main = {
     }
 }
 
-
 #[test]
 fn specialize_list_par_map_float_callback() {
     let core = compile_source_to_core(
@@ -549,7 +548,9 @@ val main = {
                 value:
                     Value::Builtin {
                         name: lumia_hir::Builtin::ListParFold,
-                        args, .. },
+                        args,
+                        ..
+                    },
                 ..
             } = op
             {
@@ -577,8 +578,6 @@ val main = {
     );
 }
 
-
-
 #[test]
 fn num_vec2_float_add_rewrites_to_call() {
     let core = compile_source_to_core(
@@ -605,9 +604,9 @@ val main = {
     )
     .expect("core");
     assert!(
-        core.functions.iter().any(|f| {
-            f.name.starts_with("__Num_Vec2_add$") && f.name.contains("Float")
-        }),
+        core.functions
+            .iter()
+            .any(|f| { f.name.starts_with("__Num_Vec2_add$") && f.name.contains("Float") }),
         "expected Float Num add clone, funs={:?}",
         core.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
     );

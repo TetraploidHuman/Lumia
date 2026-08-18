@@ -3,7 +3,7 @@ module BenchCnStrictKernel
 /// Strict-PE shape: cluster rates → projectError → nucleus → learnGenerative.
 /// Mirrors CogniNucleus defaults (`strict_pe` + `enable_cluster_rates`).
 import std.io.{println}
-import std.linalg.{zeros, copy, checksum}
+import extras.linalg.{zeros, copy, checksum}
 import extras.cn.{nucleusStep, projectError, clusterRates, learnGenerative}
 
 val SIZE = 32

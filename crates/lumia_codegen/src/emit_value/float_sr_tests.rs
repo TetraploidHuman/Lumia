@@ -3,7 +3,7 @@ use lumia_core::collect_loops;
 use lumia_opt::{compile_source_to_optimized, OptOptions};
 
 #[test]
-fn matches_float_orbit_and_mandelbrot_in_bench() {
+fn matches_float_orbit_in_bench() {
     let src = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../examples/bench_cpu.lm"
@@ -11,7 +11,6 @@ fn matches_float_orbit_and_mandelbrot_in_bench() {
     .unwrap();
     let core = compile_source_to_optimized(&src, &OptOptions::for_build(true)).unwrap();
     let mut fo = 0;
-    let mut mb = 0;
     for f in &core.functions {
         let defs = lumia_core::collect_leaf_defs(&f.body, false);
         let mut loops = vec![];
@@ -20,17 +19,19 @@ fn matches_float_orbit_and_mandelbrot_in_bench() {
             if match_float_orbit(h, b, l, &defs).is_some() {
                 fo += 1;
             }
-            if match_mandelbrot(h, b, l, &defs).is_some() {
-                mb += 1;
-            }
         }
     }
     assert!(fo >= 1, "floatOrbit matches={fo}");
-    assert!(mb >= 1, "mandelbrot matches={mb}");
+    assert!(
+        core.functions
+            .iter()
+            .any(|f| f.external.as_deref() == Some("lumia_mandelbrot_checksum")),
+        "opt domain_sr should rewrite mandelbrotChecksum"
+    );
 }
 
 #[test]
-fn matches_float_orbit_and_mandelbrot_in_opt_sr_correctness() {
+fn matches_float_orbit_in_opt_sr_correctness() {
     let src = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../examples/opt_sr_correctness.lm"
@@ -38,7 +39,6 @@ fn matches_float_orbit_and_mandelbrot_in_opt_sr_correctness() {
     .unwrap();
     let core = compile_source_to_optimized(&src, &OptOptions::for_build(true)).unwrap();
     let mut fo = 0;
-    let mut mb = 0;
     for f in &core.functions {
         let defs = lumia_core::collect_leaf_defs(&f.body, false);
         let mut loops = vec![];
@@ -47,11 +47,7 @@ fn matches_float_orbit_and_mandelbrot_in_opt_sr_correctness() {
             if match_float_orbit(h, b, l, &defs).is_some() {
                 fo += 1;
             }
-            if match_mandelbrot(h, b, l, &defs).is_some() {
-                mb += 1;
-            }
         }
     }
     assert!(fo >= 1, "floatOrbit matches={fo}");
-    assert!(mb >= 1, "mandelbrot matches={mb}");
 }

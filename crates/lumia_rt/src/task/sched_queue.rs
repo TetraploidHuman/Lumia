@@ -1,8 +1,6 @@
 //! Ready-queue pop / enqueue / wake (affinity + kind pools).
 
-use super::sched_core::{
-    sched_notify, with_sched, FiberId, SchedCore, SchedulerKind, Waiter,
-};
+use super::sched_core::{sched_notify, with_sched, FiberId, SchedCore, SchedulerKind, Waiter};
 use super::sched_env::sched_pool_counts;
 use super::sched_pool::ensure_pool_for_kind;
 use super::scheduler::current_scope_kind;
@@ -22,9 +20,10 @@ pub(super) fn try_pop_affinity(
             let Some(fid) = s.ready_home.get_mut(&tid).and_then(|q| q.pop_front()) else {
                 break;
             };
-            let ok = s.fibers.get(&fid).map(|slot| {
-                !slot.running && slot.kind == kind && slot.home == Some(tid)
-            });
+            let ok = s
+                .fibers
+                .get(&fid)
+                .map(|slot| !slot.running && slot.kind == kind && slot.home == Some(tid));
             match ok {
                 Some(true) => {
                     if let Some(slot) = s.fibers.get_mut(&fid) {
@@ -55,9 +54,10 @@ pub(super) fn try_pop_affinity(
         let Some(fid) = s.ready_queue_mut(kind).pop_front() else {
             break;
         };
-        let ok = s.fibers.get(&fid).map(|slot| {
-            !slot.running && (slot.home.is_none() || slot.home == Some(tid))
-        });
+        let ok = s
+            .fibers
+            .get(&fid)
+            .map(|slot| !slot.running && (slot.home.is_none() || slot.home == Some(tid)));
         match ok {
             Some(true) => {
                 if let Some(slot) = s.fibers.get_mut(&fid) {
@@ -194,4 +194,3 @@ pub(super) fn wake_many(waiters: impl IntoIterator<Item = Waiter>) {
         sched_notify();
     }
 }
-

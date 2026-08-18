@@ -48,19 +48,32 @@ impl<'ctx> Codegen<'ctx> {
     /// NSW-safe ≠ nonnegative: bounded trees mark `Sub` (e.g. `i - 5`) which can
     /// be negative; those must keep signed `srem`/`sdiv`.
     pub(super) fn dividend_nonneg(&self, left: &Local) -> bool {
-        if self.frame.nonneg_iv_load_locals.contains(&left.0) {
-            return true;
-        }
-        matches!(self.frame.leaf_defs.get(&left.0), Some(Value::Int(n)) if *n >= 0)
+        self.local_nonneg(left)
     }
 
+    pub(super) fn local_nonneg(&self, loc: &Local) -> bool {
+        if self.frame.nonneg_iv_load_locals.contains(&loc.0) {
+            return true;
+        }
+        matches!(self.frame.leaf_defs.get(&loc.0), Some(Value::Int(n)) if *n >= 0)
+    }
+
+    /// NSW add; also `nuw` when both operands are nonnegative.
     pub(super) fn emit_nsw_binop(
         &self,
         l: IntValue<'ctx>,
         r: IntValue<'ctx>,
+        left: &Local,
+        right: &Local,
         name: &str,
     ) -> Result<IntValue<'ctx>> {
-        crate::error::llvm(self.llvm.builder.build_int_nsw_add(l, r, name))
+        let v = crate::error::llvm(self.llvm.builder.build_int_nsw_add(l, r, name))?;
+        if self.local_nonneg(left) && self.local_nonneg(right) {
+            if let Some(inst) = v.as_instruction() {
+                let _ = inst.set_no_unsigned_wrap_flag(true);
+            }
+        }
+        Ok(v)
     }
 
     pub(super) fn emit_nsw_binop_sub(
@@ -69,16 +82,26 @@ impl<'ctx> Codegen<'ctx> {
         r: IntValue<'ctx>,
         name: &str,
     ) -> Result<IntValue<'ctx>> {
+        // Do not set `nuw` on sub: nonnegative − nonnegative can unsigned-underflow.
         crate::error::llvm(self.llvm.builder.build_int_nsw_sub(l, r, name))
     }
 
+    /// NSW mul; also `nuw` when both operands are nonnegative.
     pub(super) fn emit_nsw_binop_mul(
         &self,
         l: IntValue<'ctx>,
         r: IntValue<'ctx>,
+        left: &Local,
+        right: &Local,
         name: &str,
     ) -> Result<IntValue<'ctx>> {
-        crate::error::llvm(self.llvm.builder.build_int_nsw_mul(l, r, name))
+        let v = crate::error::llvm(self.llvm.builder.build_int_nsw_mul(l, r, name))?;
+        if self.local_nonneg(left) && self.local_nonneg(right) {
+            if let Some(inst) = v.as_instruction() {
+                let _ = inst.set_no_unsigned_wrap_flag(true);
+            }
+        }
+        Ok(v)
     }
 
     pub(crate) fn emit_checked_binop(
@@ -249,5 +272,4 @@ impl<'ctx> Codegen<'ctx> {
             crate::error::llvm(self.llvm.builder.build_int_signed_div(l, r, "div"))?
         })
     }
-
 }

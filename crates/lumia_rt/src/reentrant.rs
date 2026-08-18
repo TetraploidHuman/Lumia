@@ -29,8 +29,9 @@ pub(crate) fn with_mutex_reentrant<T, R>(
                 f(unsafe { &mut *raw })
             });
         }
-        let mut guard: MutexGuard<'static, T> =
-            mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut guard: MutexGuard<'static, T> = mutex
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let raw = &mut *guard as *mut T;
         pin_key.with(|p| p.set(raw));
         depth.set(1);
@@ -44,10 +45,7 @@ pub(crate) fn with_mutex_reentrant<T, R>(
                 self.pin_key.with(|p| p.set(ptr::null_mut()));
             }
         }
-        let _clear = Clear {
-            depth_key,
-            pin_key,
-        };
+        let _clear = Clear { depth_key, pin_key };
         f(&mut *guard)
     })
 }

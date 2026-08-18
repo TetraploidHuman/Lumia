@@ -172,7 +172,12 @@ impl SchedCore {
     }
 
     /// Push onto the stealable kind queue or the owning home queue.
-    pub fn push_ready(&mut self, fid: FiberId, kind: SchedulerKind, home: Option<std::thread::ThreadId>) {
+    pub fn push_ready(
+        &mut self,
+        fid: FiberId,
+        kind: SchedulerKind,
+        home: Option<std::thread::ThreadId>,
+    ) {
         if let Some(h) = home {
             self.ready_home.entry(h).or_default().push_back(fid);
         } else {
@@ -199,9 +204,9 @@ impl SchedCore {
     pub fn queue_has_runnable_for(&self, kind: SchedulerKind, tid: std::thread::ThreadId) -> bool {
         if let Some(q) = self.ready_home.get(&tid) {
             if q.iter().any(|&fid| {
-                self.fibers.get(&fid).is_some_and(|slot| {
-                    !slot.running && slot.kind == kind
-                })
+                self.fibers
+                    .get(&fid)
+                    .is_some_and(|slot| !slot.running && slot.kind == kind)
             }) {
                 return true;
             }

@@ -69,11 +69,7 @@ impl<'ctx> Codegen<'ctx> {
         let len = self
             .call_rt_basic("lumia_str_byte_len", &[ptr.into()], "show_len")?
             .into_int_value();
-        self.call_rt_void(
-            PRINTLN_STR,
-            &[ptr.into(), len.into()],
-            "println_show",
-        )
+        self.call_rt_void(PRINTLN_STR, &[ptr.into(), len.into()], "println_show")
     }
 
     /// Call a Show RT that returns a heap String pointer.
@@ -84,11 +80,13 @@ impl<'ctx> Codegen<'ctx> {
         name: &str,
     ) -> Result<PointerValue<'ctx>> {
         let fun = self.runtime_fn(symbol)?;
-        Ok(crate::error::llvm(self.llvm.builder.build_call(fun, args, name))?
-            .try_as_basic_value()
-            .basic()
-            .context("call return value")?
-            .into_pointer_value())
+        Ok(
+            crate::error::llvm(self.llvm.builder.build_call(fun, args, name))?
+                .try_as_basic_value()
+                .basic()
+                .context("call return value")?
+                .into_pointer_value(),
+        )
     }
 
     /// Classify one value for Show/Println (shared Type arms).
@@ -231,16 +229,7 @@ impl<'ctx> Codegen<'ctx> {
         // Option/products/`__Tuple`: call-site masks (field index ≡ param index).
         // Concatenated sums: mask 0 — AllocAdt `_pad` is authoritative.
         // Structural `Type::Tuple` (adt_name None): same as `__Tuple`.
-        let (fmask, bmask) = match adt_name {
-            Some(name) => (
-                self.adt_float_call_site_mask(name, params, &[])?,
-                self.adt_bool_call_site_mask(name, params, &[])?,
-            ),
-            None => (
-                Self::adt_float_field_mask(params, &[])?,
-                Self::adt_bool_field_mask(params, &[])?,
-            ),
-        };
+        let (fmask, bmask) = self.adt_call_site_fb_masks(adt_name, params)?;
         self.call_show_rt_ptr(
             SHOW_LIST_ADT,
             &[
@@ -272,12 +261,8 @@ impl<'ctx> Codegen<'ctx> {
                     "show_unit",
                 )
             }
-            ShowForm::Float(f) => {
-                self.call_show_rt_ptr(SHOW_FLOAT, &[f.into()], "show_float")
-            }
-            ShowForm::Bool8(b) => {
-                self.call_show_rt_ptr(SHOW_BOOL, &[b.into()], "show_bool")
-            }
+            ShowForm::Float(f) => self.call_show_rt_ptr(SHOW_FLOAT, &[f.into()], "show_float"),
+            ShowForm::Bool8(b) => self.call_show_rt_ptr(SHOW_BOOL, &[b.into()], "show_bool"),
             ShowForm::StrPtr(ptr) => Ok(ptr),
             ShowForm::AutoI64(i) => self.emit_show_auto_i64(i),
         }

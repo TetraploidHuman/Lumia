@@ -4,7 +4,7 @@ use crate::check::check_program;
 use crate::load::path_label;
 use anyhow::{Context, Result};
 use lumia_codegen::{compile_module, find_runtime_lib_prefer, CodegenOptions};
-use lumia_core::{format_module, lower_hir_with_schemes};
+use lumia_core::{format_module, lower_hir_with_schemes, run_core_abi_pipeline};
 use lumia_opt::{optimize, OptOptions};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -48,6 +48,7 @@ impl CompileOptions {
             release: self.release,
             memo_tf: self.release && self.memo_tf,
             dense_f64_sr: self.dense_f64_sr,
+            domain_sr: self.release && cfg!(feature = "codegen"),
         }
     }
 
@@ -93,11 +94,7 @@ pub fn check_file(file: &Path, opts: &CompileOptions) -> Result<()> {
 pub fn build_file(file: &Path, output: &Path, opts: &CompileOptions) -> Result<()> {
     let (auto_parallel, trust) = opts.check_knobs();
     let (typed, loaded) = check_program(file, auto_parallel, trust)?;
-    let labels: Vec<String> = loaded
-        .files
-        .iter()
-        .map(|f| path_label(&f.path))
-        .collect();
+    let labels: Vec<String> = loaded.files.iter().map(|f| path_label(&f.path)).collect();
     let assert_files: Vec<(&str, &str)> = labels
         .iter()
         .zip(loaded.files.iter())
@@ -111,6 +108,7 @@ pub fn build_file(file: &Path, output: &Path, opts: &CompileOptions) -> Result<(
         &assert_files,
     )
     .map_err(|e| anyhow::anyhow!("core: {e}"))?;
+    run_core_abi_pipeline(&mut core);
     core.check_channel_elem_conflicts()
         .map_err(|e| anyhow::anyhow!("channel: {e}"))?;
     optimize(&mut core, &opts.opt());
@@ -212,7 +210,10 @@ mod tests {
         );
         assert!(cg.emit_ir);
         assert!(cg.dense_f64_sr);
-        assert_eq!(cg.link_args, vec!["-lm".to_string(), "-Lvendor".to_string()]);
+        assert_eq!(
+            cg.link_args,
+            vec!["-lm".to_string(), "-Lvendor".to_string()]
+        );
     }
 
     #[test]

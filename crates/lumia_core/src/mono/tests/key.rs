@@ -1,13 +1,14 @@
 use super::super::key::{MonoKey, MonoKind};
 use crate::ir::{Block, CoreFun, ForeignAbi, FunKind, Local};
 use lumia_ty::{Effect, Type};
+use rustc_hash::FxHashSet as HashSet;
 
 #[test]
 fn args_mono_key_accepts_tuple_float() {
     use super::super::key::args_mono_key;
+    use crate::ir::Local;
     use lumia_ty::Type;
     use rustc_hash::FxHashMap as HashMap;
-    use crate::ir::Local;
     let mut local_tys = HashMap::default();
     local_tys.insert(0, Type::Tuple(vec![Type::Float, Type::Int]));
     let key = args_mono_key(&[Local(0)], &local_tys, &HashMap::default(), None)
@@ -18,9 +19,9 @@ fn args_mono_key_accepts_tuple_float() {
 #[test]
 fn args_mono_key_accepts_unit() {
     use super::super::key::args_mono_key;
+    use crate::ir::Local;
     use lumia_ty::Type;
     use rustc_hash::FxHashMap as HashMap;
-    use crate::ir::Local;
     let mut local_tys = HashMap::default();
     local_tys.insert(0, Type::Unit);
     local_tys.insert(1, Type::Float);
@@ -37,11 +38,7 @@ fn args_mono_key_rejects_fun_with_open_param() {
     // Open Fun param must not collapse to `Fun_Int_Float` via unwrap_or(Int).
     local_tys.insert(
         0,
-        Type::Fun(
-            vec![Type::Var(0)],
-            Box::new(Type::Float),
-            Effect::pure(),
-        ),
+        Type::Fun(vec![Type::Var(0)], Box::new(Type::Float), Effect::pure()),
     );
     assert!(
         args_mono_key(&[Local(0)], &local_tys, &HashMap::default(), None).is_none(),
@@ -56,14 +53,10 @@ fn args_mono_key_accepts_ground_fun() {
     let mut local_tys = HashMap::default();
     local_tys.insert(
         0,
-        Type::Fun(
-            vec![Type::Float],
-            Box::new(Type::Float),
-            Effect::pure(),
-        ),
+        Type::Fun(vec![Type::Float], Box::new(Type::Float), Effect::pure()),
     );
-    let key = args_mono_key(&[Local(0)], &local_tys, &HashMap::default(), None)
-        .expect("ground Fun");
+    let key =
+        args_mono_key(&[Local(0)], &local_tys, &HashMap::default(), None).expect("ground Fun");
     assert_eq!(key.suffix(), "$Fun_Float_Float");
 }
 
@@ -92,6 +85,9 @@ fn funref_to_type_is_not_fake_zero_ary_fun() {
         foreign_abi: ForeignAbi::C,
         memo: None,
         escaping: Default::default(),
+        nsw_binop_locals: Default::default(),
+        safe_divisor_locals: Default::default(),
+        nonneg_iv_load_locals: Default::default(),
         scheme_poly: false,
         mono_of: None,
         kind: FunKind::Normal,
@@ -193,6 +189,9 @@ fn mono_key_hof_ret_ty_option_map() {
         foreign_abi: ForeignAbi::C,
         memo: None,
         escaping: Default::default(),
+        nsw_binop_locals: Default::default(),
+        safe_divisor_locals: Default::default(),
+        nonneg_iv_load_locals: Default::default(),
         scheme_poly: false,
         mono_of: None,
         kind: FunKind::Normal,
@@ -214,4 +213,105 @@ fn mono_key_hof_ret_ty_option_map() {
             params: vec![Type::Float],
         }
     );
+}
+
+#[test]
+fn funref_key_eq_hash_ignore_id() {
+    use super::super::key::FunRefKey;
+    use crate::ir::FunId;
+    let a = FunRefKey {
+        name: "dbl".into(),
+        id: Some(FunId(3)),
+    };
+    let b = FunRefKey {
+        name: "dbl".into(),
+        id: None,
+    };
+    assert_eq!(a, b);
+    let mut set = HashSet::default();
+    set.insert(MonoKind::FunRef(a));
+    assert!(set.contains(&MonoKind::FunRef(b)));
+}
+
+#[test]
+fn lookup_funref_uses_id_when_name_matches() {
+    use super::super::key::{lookup_funref, FunRefKey};
+    use crate::ir::FunId;
+    let dbl = CoreFun {
+        name: "dbl".into(),
+        params: vec![Local(0)],
+        param_names: vec!["x".into()],
+        param_tys: vec![Type::Float],
+        ret_ty: Type::Float,
+        effect: Effect::pure(),
+        body: Block {
+            ops: vec![],
+            result: None,
+        },
+        is_main: false,
+        external: None,
+        foreign_abi: ForeignAbi::C,
+        memo: None,
+        escaping: Default::default(),
+        nsw_binop_locals: Default::default(),
+        safe_divisor_locals: Default::default(),
+        nonneg_iv_load_locals: Default::default(),
+        scheme_poly: false,
+        mono_of: None,
+        kind: FunKind::Normal,
+    };
+    let funs = [dbl];
+    let fr = FunRefKey {
+        name: "dbl".into(),
+        id: Some(FunId(0)),
+    };
+    assert_eq!(
+        lookup_funref(&funs, &fr).map(|f| f.name.as_str()),
+        Some("dbl")
+    );
+    let stale = FunRefKey {
+        name: "dbl".into(),
+        id: Some(FunId(99)),
+    };
+    assert_eq!(
+        lookup_funref(&funs, &stale).map(|f| f.name.as_str()),
+        Some("dbl")
+    );
+}
+
+#[test]
+fn resolve_funref_ids_stamps_index() {
+    use crate::ir::FunId;
+    let dbl = CoreFun {
+        name: "dbl".into(),
+        params: vec![],
+        param_names: vec![],
+        param_tys: vec![],
+        ret_ty: Type::Float,
+        effect: Effect::pure(),
+        body: Block {
+            ops: vec![],
+            result: None,
+        },
+        is_main: false,
+        external: None,
+        foreign_abi: ForeignAbi::C,
+        memo: None,
+        escaping: Default::default(),
+        nsw_binop_locals: Default::default(),
+        safe_divisor_locals: Default::default(),
+        nonneg_iv_load_locals: Default::default(),
+        scheme_poly: false,
+        mono_of: None,
+        kind: FunKind::Normal,
+    };
+    let mut key = MonoKey(vec![MonoKind::FunRef("dbl".into())]);
+    key.resolve_funref_ids(std::slice::from_ref(&dbl));
+    match &key.0[0] {
+        MonoKind::FunRef(fr) => {
+            assert_eq!(fr.name, "dbl");
+            assert_eq!(fr.id, Some(FunId(0)));
+        }
+        other => panic!("expected FunRef, got {other:?}"),
+    }
 }

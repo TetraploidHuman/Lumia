@@ -122,12 +122,7 @@ mod tests {
         with_encoding(ColumnMetric::Utf16, || {
             let src = "val 你好 = x\n";
             let x = src.find('x').expect("x") as u32;
-            let d = diag_from_span(
-                src,
-                Span::new(x, x + 1),
-                DiagnosticKind::Type,
-                "unbound",
-            );
+            let d = diag_from_span(src, Span::new(x, x + 1), DiagnosticKind::Type, "unbound");
             assert_eq!(d["range"]["start"]["line"], 0);
             assert_eq!(d["range"]["start"]["character"], 9);
             assert_eq!(d["code"], "type");
@@ -143,8 +138,7 @@ module Main
 import std.io.{println as log}
 val main: Int = log(1)
 "#;
-        let (batches, analysis) =
-            analyze_buffer("untitled:Diag-1", src, &HashMap::default());
+        let (batches, analysis) = analyze_buffer("untitled:Diag-1", src, &HashMap::default());
         assert!(
             analysis.is_some(),
             "loader must typecheck untitled std import enough to emit typed diags"
@@ -154,7 +148,10 @@ val main: Int = log(1)
             .find(|(u, d)| u == "untitled:Diag-1" && !d.is_empty())
             .expect("type error should publish on client untitled URI");
         let d = &client.1[0];
-        assert_eq!(d["severity"], 1, "type error must be Error severity, got {d:?}");
+        assert_eq!(
+            d["severity"], 1,
+            "type error must be Error severity, got {d:?}"
+        );
         assert_eq!(d["source"], "lumia");
         assert!(
             d["code"] == "type" || d["message"].as_str().unwrap_or("").contains("type"),

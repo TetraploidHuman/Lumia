@@ -16,6 +16,43 @@ pub(crate) const EQ_ADT: &str = "lumia_adt_eq";
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const SPECIALIZED_EQ_RT: &[&str] = &[EQ_GENERIC, EQ_ADT];
 
+/// Which ADT `_pad` half to build / emit (float low 32 / bool high 32).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AdtFieldMaskKind {
+    Float,
+    Bool,
+}
+
+impl AdtFieldMaskKind {
+    fn matches(self, ty: &Type) -> bool {
+        match self {
+            Self::Float => matches!(ty, Type::Float),
+            Self::Bool => matches!(ty, Type::Bool),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Float => "float",
+            Self::Bool => "bool",
+        }
+    }
+
+    fn set_rt(self) -> &'static str {
+        match self {
+            Self::Float => lumia_abi::ADT_SET_FLOAT_MASK,
+            Self::Bool => lumia_abi::ADT_SET_BOOL_MASK,
+        }
+    }
+
+    fn set_label(self) -> &'static str {
+        match self {
+            Self::Float => "adt_fmask",
+            Self::Bool => "adt_bmask",
+        }
+    }
+}
+
 impl<'ctx> Codegen<'ctx> {
     pub(crate) fn key_type_has_hash(&self, ty: &Type) -> bool {
         match ty {
@@ -61,13 +98,8 @@ impl<'ctx> Codegen<'ctx> {
         arg: BasicValueEnum<'ctx>,
     ) -> Result<Option<PointerValue<'ctx>>> {
         let i = self.coerce_i64(arg)?;
-        let Some(bits) = self.call_trait_override(
-            "Show",
-            adt_name,
-            "show",
-            &[i.into()],
-            "show_ov",
-        )?
+        let Some(bits) =
+            self.call_trait_override("Show", adt_name, "show", &[i.into()], "show_ov")?
         else {
             return Ok(None);
         };
@@ -89,13 +121,7 @@ impl<'ctx> Codegen<'ctx> {
         right: IntValue<'ctx>,
     ) -> Result<Option<IntValue<'ctx>>> {
         Ok(self
-            .call_trait_override(
-                "Eq",
-                adt_name,
-                "eq",
-                &[left.into(), right.into()],
-                "eq_ov",
-            )?
+            .call_trait_override("Eq", adt_name, "eq", &[left.into(), right.into()], "eq_ov")?
             .map(|v| v.into_int_value()))
     }
 
@@ -154,8 +180,7 @@ impl<'ctx> Codegen<'ctx> {
                     return Ok(eq);
                 }
             }
-            if let (Type::Adt { name, params: lp }, Type::Adt { params: rp, .. }) = (lt, rt)
-            {
+            if let (Type::Adt { name, params: lp }, Type::Adt { params: rp, .. }) = (lt, rt) {
                 if lp.iter().any(|p| matches!(p, Type::Float))
                     || rp.iter().any(|p| matches!(p, Type::Float))
                     || !self.adt_call_site_field_masks_ok(name)
@@ -202,113 +227,120 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
-    /// Bit `i` set ⇒ field `i` uses IEEE eq/show (union of both sides' params).
+    /// Bit `i` set ⇒ field `i` matches `kind` (union of both sides' params).
     ///
-    /// Runtime stores the mask in a `u64` header word — ADTs with more than 64
+    /// Runtime stores the mask in a `u64` header word — ADTs with more than 32
     /// fields cannot be represented and are rejected at emit time.
+    pub(crate) fn adt_field_mask(kind: AdtFieldMaskKind, lp: &[Type], rp: &[Type]) -> Result<u64> {
+        let n = lp.len().max(rp.len());
+        if n > 32 {
+            bail!(
+                "ICE: ADT {} field mask needs {n} bits; packed `_pad` supports at most 32 {} fields",
+                kind.label(),
+                kind.label()
+            );
+        }
+        let mut mask = 0u64;
+        for i in 0..n {
+            let l = lp.get(i).is_some_and(|t| kind.matches(t));
+            let r = rp.get(i).is_some_and(|t| kind.matches(t));
+            if l || r {
+                mask |= 1u64 << i;
+            }
+        }
+        Ok(mask)
+    }
+
     pub(crate) fn adt_float_field_mask(lp: &[Type], rp: &[Type]) -> Result<u64> {
-        let n = lp.len().max(rp.len());
-        if n > 32 {
-            bail!(
-                "ICE: ADT float field mask needs {n} bits; packed `_pad` supports at most 32 float fields"
-            );
-        }
-        let mut mask = 0u64;
-        for i in 0..n {
-            let lf = matches!(lp.get(i), Some(Type::Float));
-            let rf = matches!(rp.get(i), Some(Type::Float));
-            if lf || rf {
-                mask |= 1u64 << i;
-            }
-        }
-        Ok(mask)
+        Self::adt_field_mask(AdtFieldMaskKind::Float, lp, rp)
     }
 
-    /// Bit `i` set ⇒ field `i` prints / compares as Bool.
     pub(crate) fn adt_bool_field_mask(lp: &[Type], rp: &[Type]) -> Result<u64> {
-        let n = lp.len().max(rp.len());
-        if n > 32 {
-            bail!(
-                "ICE: ADT bool field mask needs {n} bits; packed `_pad` supports at most 32 bool fields"
-            );
-        }
-        let mut mask = 0u64;
-        for i in 0..n {
-            let lb = matches!(lp.get(i), Some(Type::Bool));
-            let rb = matches!(rp.get(i), Some(Type::Bool));
-            if lb || rb {
-                mask |= 1u64 << i;
-            }
-        }
-        Ok(mask)
+        Self::adt_field_mask(AdtFieldMaskKind::Bool, lp, rp)
     }
 
-    /// Call-site float mask, or `0` when param index ≠ ctor field index.
+    /// Call-site mask, or `0` when param index ≠ ctor field index.
+    pub(crate) fn adt_call_site_mask(
+        &self,
+        kind: AdtFieldMaskKind,
+        adt_name: &str,
+        lp: &[Type],
+        rp: &[Type],
+    ) -> Result<u64> {
+        if self.adt_call_site_field_masks_ok(adt_name) {
+            Self::adt_field_mask(kind, lp, rp)
+        } else {
+            Ok(0)
+        }
+    }
+
     pub(crate) fn adt_float_call_site_mask(
         &self,
         adt_name: &str,
         lp: &[Type],
         rp: &[Type],
     ) -> Result<u64> {
-        if self.adt_call_site_field_masks_ok(adt_name) {
-            Self::adt_float_field_mask(lp, rp)
-        } else {
-            Ok(0)
-        }
+        self.adt_call_site_mask(AdtFieldMaskKind::Float, adt_name, lp, rp)
     }
 
-    /// Call-site bool mask, or `0` when param index ≠ ctor field index.
     pub(crate) fn adt_bool_call_site_mask(
         &self,
         adt_name: &str,
         lp: &[Type],
         rp: &[Type],
     ) -> Result<u64> {
-        if self.adt_call_site_field_masks_ok(adt_name) {
-            Self::adt_bool_field_mask(lp, rp)
-        } else {
-            Ok(0)
+        self.adt_call_site_mask(AdtFieldMaskKind::Bool, adt_name, lp, rp)
+    }
+
+    /// Float+Bool call-site masks for Show (named ADT or structural Tuple).
+    pub(crate) fn adt_call_site_fb_masks(
+        &self,
+        adt_name: Option<&str>,
+        params: &[Type],
+    ) -> Result<(u64, u64)> {
+        match adt_name {
+            Some(name) => Ok((
+                self.adt_float_call_site_mask(name, params, &[])?,
+                self.adt_bool_call_site_mask(name, params, &[])?,
+            )),
+            None => Ok((
+                Self::adt_float_field_mask(params, &[])?,
+                Self::adt_bool_field_mask(params, &[])?,
+            )),
         }
     }
 
     /// Layout mask from concrete field SSA types at an `AllocAdt` site.
-    pub(crate) fn adt_float_mask_from_fields(&self, fields: &[Local]) -> Result<u64> {
-        if fields.len() > 32 {
-            bail!(
-                "ICE: AllocAdt has {} fields; packed float mask supports at most 32",
-                fields.len()
-            );
-        }
-        let mut mask = 0u64;
-        for (i, f) in fields.iter().enumerate() {
-            if matches!(self.frame.local_tys.get(&f.0), Some(Type::Float)) {
-                mask |= 1u64 << i;
-            }
-        }
-        Ok(mask)
-    }
-
-    /// Bool field mask from concrete SSA types at an `AllocAdt` site.
-    pub(crate) fn adt_bool_mask_from_fields(&self, fields: &[Local]) -> Result<u64> {
-        if fields.len() > 32 {
-            bail!(
-                "ICE: AllocAdt has {} fields; packed bool mask supports at most 32",
-                fields.len()
-            );
-        }
-        let mut mask = 0u64;
-        for (i, f) in fields.iter().enumerate() {
-            if matches!(self.frame.local_tys.get(&f.0), Some(Type::Bool)) {
-                mask |= 1u64 << i;
-            }
-        }
-        Ok(mask)
-    }
-
-    /// Call [`lumia_abi::ADT_SET_FLOAT_MASK`] when `mask != 0` (no-op otherwise).
-    /// Sole emit site for ADT float masks (heap AllocAdt, stack LitAdt, Option).
-    pub(crate) fn emit_adt_set_float_mask(
+    pub(crate) fn adt_mask_from_fields(
         &self,
+        kind: AdtFieldMaskKind,
+        fields: &[Local],
+    ) -> Result<u64> {
+        if fields.len() > 32 {
+            bail!(
+                "ICE: AllocAdt has {} fields; packed {} mask supports at most 32",
+                fields.len(),
+                kind.label()
+            );
+        }
+        let mut mask = 0u64;
+        for (i, f) in fields.iter().enumerate() {
+            if self
+                .frame
+                .local_tys
+                .get(&f.0)
+                .is_some_and(|t| kind.matches(t))
+            {
+                mask |= 1u64 << i;
+            }
+        }
+        Ok(mask)
+    }
+
+    /// Call ADT set-mask RT when `mask != 0` (no-op otherwise).
+    pub(crate) fn emit_adt_set_mask(
+        &self,
+        kind: AdtFieldMaskKind,
         payload: inkwell::values::PointerValue<'ctx>,
         mask: u64,
     ) -> Result<()> {
@@ -316,28 +348,33 @@ impl<'ctx> Codegen<'ctx> {
             return Ok(());
         }
         let m = self.llvm.i64_ty.const_int(mask, false);
-        self.call_rt_void(
-            lumia_abi::ADT_SET_FLOAT_MASK,
-            &[payload.into(), m.into()],
-            "adt_fmask",
-        )
+        self.call_rt_void(kind.set_rt(), &[payload.into(), m.into()], kind.set_label())
     }
 
-    /// Call [`lumia_abi::ADT_SET_BOOL_MASK`] when `mask != 0`.
-    pub(crate) fn emit_adt_set_bool_mask(
+    /// Set Float/Bool field-0 masks when `field_ty` is a scalar of that kind.
+    pub(crate) fn emit_adt_payload_masks_for_ty(
         &self,
         payload: inkwell::values::PointerValue<'ctx>,
-        mask: u64,
+        field_ty: &Type,
     ) -> Result<()> {
-        if mask == 0 {
-            return Ok(());
+        for kind in [AdtFieldMaskKind::Float, AdtFieldMaskKind::Bool] {
+            if kind.matches(field_ty) {
+                self.emit_adt_set_mask(kind, payload, 1)?;
+            }
         }
-        let m = self.llvm.i64_ty.const_int(mask, false);
-        self.call_rt_void(
-            lumia_abi::ADT_SET_BOOL_MASK,
-            &[payload.into(), m.into()],
-            "adt_bmask",
-        )
+        Ok(())
+    }
+
+    /// Stamp both float and bool `_pad` halves from AllocAdt field SSA types.
+    pub(crate) fn emit_adt_field_masks_from_fields(
+        &self,
+        payload: inkwell::values::PointerValue<'ctx>,
+        fields: &[Local],
+    ) -> Result<()> {
+        let float_mask = self.adt_mask_from_fields(AdtFieldMaskKind::Float, fields)?;
+        self.emit_adt_set_mask(AdtFieldMaskKind::Float, payload, float_mask)?;
+        let bool_mask = self.adt_mask_from_fields(AdtFieldMaskKind::Bool, fields)?;
+        self.emit_adt_set_mask(AdtFieldMaskKind::Bool, payload, bool_mask)
     }
 
     /// Structural ADT `==` via runtime size (safe for sum None/Ok arity ≠ type params).
@@ -376,8 +413,7 @@ impl<'ctx> Codegen<'ctx> {
         let i = self.coerce_i64(arg)?;
         // Option/products: call-site masks (field index ≡ param index).
         // Concatenated sums: mask 0 — AllocAdt `_pad` is authoritative.
-        let fmask = self.adt_float_call_site_mask(adt_name, params, &[])?;
-        let bmask = self.adt_bool_call_site_mask(adt_name, params, &[])?;
+        let (fmask, bmask) = self.adt_call_site_fb_masks(Some(adt_name), params)?;
         let fmask_v = self.llvm.i64_ty.const_int(fmask, false);
         let bmask_v = self.llvm.i64_ty.const_int(bmask, false);
         if let Some(names) = self.funs.adt_variant_names.get(adt_name).cloned() {
@@ -460,10 +496,7 @@ mod mask_tests {
     fn float_mask_rejects_more_than_32_fields() {
         let params: Vec<Type> = (0..33).map(|_| Type::Int).collect();
         let err = Codegen::adt_float_field_mask(&params, &[]).unwrap_err();
-        assert!(
-            err.to_string().contains("at most 32"),
-            "got: {err}"
-        );
+        assert!(err.to_string().contains("at most 32"), "got: {err}");
     }
 
     #[test]

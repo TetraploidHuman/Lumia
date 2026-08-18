@@ -1,4 +1,4 @@
-//! Float-heavy checksums recognized by codegen SR.
+//! Float-heavy checksums recognized by codegen / domain SR.
 
 /// Escape-time Mandelbrot checksum on a fixed 200×140 grid over [-2.5,1]×[-1,1].
 ///

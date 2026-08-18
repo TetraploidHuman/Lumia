@@ -209,18 +209,16 @@ pub(super) fn with_sched_unit_test<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
 
-pub(super) use super::sched_queue::{enqueue, pop_ready_kind, wake, wake_many};
 #[cfg(test)]
 pub(super) use super::sched_queue::pop_ready;
+pub(super) use super::sched_queue::{enqueue, pop_ready_kind, wake, wake_many};
 
 pub use super::sched_cancel::{cancel_all_scopes, cancel_scope_children};
-pub(super) use super::sched_cancel::{
-    check_current_not_cancelled, current_fiber_cancelled_locked,
-};
-pub use super::sched_roots::snapshot_sched_gc_roots;
+pub(super) use super::sched_cancel::{check_current_not_cancelled, current_fiber_cancelled_locked};
 pub use super::sched_resume::lumia_scheduler_drain;
 pub(crate) use super::sched_resume::resume_fiber;
 pub(super) use super::sched_resume::{current_waiter, park_until, suspend_current};
+pub use super::sched_roots::{rewrite_sched_gc_roots, snapshot_sched_gc_roots};
 
 /// TYPE_TASK unmarked: clear dangling `TaskState.handle` (heap → sched lock order).
 pub fn on_task_handle_swept(task: TaskId) {
@@ -240,9 +238,10 @@ pub fn on_task_handle_swept(task: TaskId) {
 /// TYPE_CHANNEL unmarked: drop orphan channel if no waiters remain.
 pub fn on_channel_handle_swept(id: ChannelId) {
     with_sched(|s| {
-        let reap = s.channels.get(&id).is_some_and(|ch| {
-            ch.send_waiters.is_empty() && ch.recv_waiters.is_empty()
-        });
+        let reap = s
+            .channels
+            .get(&id)
+            .is_some_and(|ch| ch.send_waiters.is_empty() && ch.recv_waiters.is_empty());
         if reap {
             s.channels.remove(&id);
         }
@@ -283,9 +282,7 @@ pub extern "C" fn lumia_abi_handoff_set(val: i64) {
 pub(super) fn push_waiter_unique(q: &mut VecDeque<Waiter>, w: Waiter) {
     let dup = match w {
         Waiter::Main => q.iter().any(|x| matches!(x, Waiter::Main)),
-        Waiter::Fiber(fid) => q
-            .iter()
-            .any(|x| matches!(x, Waiter::Fiber(f) if *f == fid)),
+        Waiter::Fiber(fid) => q.iter().any(|x| matches!(x, Waiter::Fiber(f) if *f == fid)),
     };
     if !dup {
         q.push_back(w);
@@ -300,7 +297,6 @@ pub extern "C" fn lumia_scheduler_kind(kind: i64) -> i64 {
         SchedulerKind::Default => 0,
     }
 }
-
 
 #[cfg(test)]
 #[path = "scheduler_tests.rs"]

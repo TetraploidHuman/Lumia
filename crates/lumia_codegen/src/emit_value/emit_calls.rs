@@ -116,10 +116,7 @@ impl<'ctx> Codegen<'ctx> {
                         && ps.len() == 1
                         && matches!(ps[0], Type::Int | Type::Var(_))
                         && args.len() == 1
-                        && matches!(
-                            self.frame.local_tys.get(&args[0].0),
-                            Some(Type::Float)
-                        ))
+                        && matches!(self.frame.local_tys.get(&args[0].0), Some(Type::Float)))
             }
             _ => self
                 .funs
@@ -301,13 +298,15 @@ impl<'ctx> Codegen<'ctx> {
             "funref_i64",
         ))?;
         // Tag low bit so IndirectCall can tell FunRef from heap closure.
-        let tagged = crate::error::llvm(self.llvm.builder.build_or(
-            as_i,
-            self.llvm
-                .i64_ty
-                .const_int(lumia_abi::FUNREF_TAG as u64, false),
-            "funref_tag",
-        ))?;
+        let tagged = crate::error::llvm(
+            self.llvm.builder.build_or(
+                as_i,
+                self.llvm
+                    .i64_ty
+                    .const_int(lumia_abi::FUNREF_TAG as u64, false),
+                "funref_tag",
+            ),
+        )?;
         Ok(tagged.into())
     }
 
@@ -396,7 +395,6 @@ impl<'ctx> Codegen<'ctx> {
         &mut self,
         env: &Local,
         index: u32,
-        as_float: bool,
     ) -> Result<BasicValueEnum<'ctx>> {
         let env_i = self.coerce_i64(self.local(*env)?)?;
         let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
@@ -412,7 +410,14 @@ impl<'ctx> Codegen<'ctx> {
         };
         let loaded =
             crate::error::llvm(self.llvm.builder.build_load(self.llvm.i64_ty, slot, "cap"))?;
-        if as_float {
+        let typed_float = matches!(
+            self.funs
+                .closure_cap_tys
+                .get(&self.funs.current_fun)
+                .and_then(|m| m.get(&index)),
+            Some(Type::Float)
+        );
+        if typed_float {
             crate::error::llvm(self.llvm.builder.build_bit_cast(
                 loaded.into_int_value(),
                 self.llvm.context.f64_type(),

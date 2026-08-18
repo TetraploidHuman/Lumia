@@ -42,7 +42,17 @@ pub(crate) fn info_task(b: Builtin) -> BuiltinInfo {
             // Elem refined via `CoreModule.channel_elem_hint` when sends agree.
             Typed,
         ),
-        ChannelRecvOpt => bi(f, 1, 1, io, Some("lumia_channel_recv_opt"), NO_F, Custom, false, Always),
+        ChannelRecvOpt => bi(
+            f,
+            1,
+            1,
+            io,
+            Some("lumia_channel_recv_opt"),
+            NO_F,
+            Custom,
+            false,
+            Always,
+        ),
         ChannelClose => bi(
             f,
             1,
@@ -76,7 +86,17 @@ pub(crate) fn info_task(b: Builtin) -> BuiltinInfo {
             false,
             Always,
         ),
-        TaskSpawn => bi(f, 1, 1, io, Some("lumia_task_spawn"), NO_F, Custom, true, Always),
+        TaskSpawn => bi(
+            f,
+            1,
+            1,
+            io,
+            Some("lumia_task_spawn"),
+            NO_F,
+            Custom,
+            true,
+            Always,
+        ),
         ScopeEnter => bi(
             f,
             1,

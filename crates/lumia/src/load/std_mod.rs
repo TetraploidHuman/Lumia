@@ -12,7 +12,9 @@ pub(super) fn is_std(path: &[String]) -> bool {
 
 /// Optional domain modules under workspace `extras/` (not language std).
 pub(super) fn is_extras(path: &[String]) -> bool {
-    path.first().map(|s| s.as_str() == "extras").unwrap_or(false)
+    path.first()
+        .map(|s| s.as_str() == "extras")
+        .unwrap_or(false)
 }
 
 /// Resolve `std.<a>.<b>` → relative path under workspace `std/` (`a/b.lm`).

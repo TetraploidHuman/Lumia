@@ -9,7 +9,6 @@ use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
 use lumia_core::{Local, MemoTf, Value};
 use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
-use std::rc::Rc;
 
 /// LLVM context / module / builder / common types.
 pub(crate) struct LlvmTypes<'ctx> {
@@ -67,6 +66,16 @@ impl FunTables<'_> {
     }
 }
 
+/// One SSA/param heap root on the shadow stack.
+#[derive(Clone, Debug)]
+pub(crate) struct SsaRoot {
+    /// Last op index in the defining block at which this local is still live.
+    /// `None` = unused after the def (pop as soon as this entry is the LIFO top).
+    pub last_use: Option<usize>,
+    /// `root_depth` immediately after the matching `root_push`.
+    pub depth: u32,
+}
+
 /// Per-frame SSA / slot / GC-root state while emitting one function.
 #[derive(Default)]
 pub(crate) struct FrameState<'ctx> {
@@ -84,10 +93,13 @@ pub(crate) struct FrameState<'ctx> {
     /// `ensure_slot` / `load_slot` can re-push (scoped if/loop must not leave stale
     /// "already rooted" compile-time state).
     ///
-    /// `Rc` so nested `if` can snapshot with `Rc::clone` (O(1)); mutations use
-    /// `Rc::make_mut` (copy-on-write). Musttail wipe leaves the checkpoint Rc intact
-    /// for O(1) restore.
-    pub rooted_slots: Rc<HashMap<String, u32>>,
+    /// Nested `if` snapshots this map at arm entry and restores it after each arm
+    /// (musttail may wipe the live map via `root_pop_to(0)`). Slot count is small.
+    pub rooted_slots: HashMap<String, u32>,
+    /// SSA lets (and heap params) currently on the shadow stack, newest last.
+    /// Used to `root_pop` a dead root when it is the LIFO top (last-use early pop).
+    /// Nested `if` snapshots this vec with [`rooted_slots`].
+    pub ssa_root_stack: Vec<SsaRoot>,
     pub entry_bb: Option<BasicBlock<'ctx>>,
     /// Dest local of the `Let` currently being emitted (for NSW lookup).
     pub emit_dest: Option<u32>,
@@ -95,8 +107,8 @@ pub(crate) struct FrameState<'ctx> {
     pub cow_consume_unique: bool,
     /// `slot = slot with {…}`: mut slot name + updated field indices/locals.
     pub adt_with_inplace: Option<(String, Vec<(u32, Local)>)>,
-    /// `Binary` Add/Sub locals proven safe as loop IV `±1` (see `nsw_iv`).
-    /// Prefer reading via [`Self::nsw`] when filling from [`crate::nsw_iv::analyze_nsw`].
+    /// `Binary` Add/Sub locals proven safe as loop IV `±1` (opt `nsw_iv` → CoreFun).
+    /// Prefer reading via [`Self::install_nsw_from_fun`].
     pub nsw_binop_locals: HashSet<u32>,
     /// Locals safe as `div`/`rem` RHS (const ∉ {0,-1} or always-≥2 slots).
     pub safe_divisor_locals: HashSet<u32>,
@@ -113,12 +125,12 @@ pub(crate) struct FrameState<'ctx> {
 }
 
 impl<'ctx> FrameState<'ctx> {
-    /// Install NSW / leaf peep facts from a single [`crate::nsw_iv::analyze_nsw`] call.
-    pub fn install_nsw(&mut self, facts: crate::nsw_iv::NswFacts) {
-        self.nsw_binop_locals = facts.nsw_binop_locals;
-        self.safe_divisor_locals = facts.safe_divisor_locals;
-        self.nonneg_iv_load_locals = facts.nonneg_iv_load_locals;
-        self.leaf_defs = facts.leaf_defs;
+    /// Install NSW sidecar from Core + rebuild emit-local `leaf_defs`.
+    pub fn install_nsw_from_fun(&mut self, fun: &lumia_core::CoreFun) {
+        self.nsw_binop_locals = fun.nsw_binop_locals.clone();
+        self.safe_divisor_locals = fun.safe_divisor_locals.clone();
+        self.nonneg_iv_load_locals = fun.nonneg_iv_load_locals.clone();
+        self.leaf_defs = lumia_core::collect_leaf_defs(&fun.body, false);
     }
 }
 

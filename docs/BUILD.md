@@ -118,6 +118,14 @@ source scripts/env.sh
 cargo build -p lumia -p lumia_rt
 ```
 
+开发迭代若静态链 LLVM 过慢，可用动态链（feature 已有）：
+
+```bash
+cargo build -p lumia --features llvm-dynamic
+```
+
+`llvm-dynamic` 经 `lumia_codegen/llvm-dynamic` → inkwell `llvm21-1-force-dynamic`；仍需 `LLVM_SYS_211_PREFIX` 与可解析的共享 `libLLVM`。
+
 ### 4.3 编译用户程序
 
 ```bash
@@ -166,7 +174,7 @@ Codegen 与当前 `MarkSweep`（进程堆）共用；换收集器时优先只改
 | 难   | 无对象头 / 无根约定的裸 malloc 与精确 GC 混用         |
 
 
-`List`/`Map`/`Set` 更新默认走新分配 / overlay；`List.append` 在 **retain 证明唯一** 且有余量时可原地扩容（COW）。`List.set` 始终新分配，避免 SSA 别名被原地改写。可插拔 GC / ARC 仍为规划，非运行时策略开关。
+`List`/`Map`/`Set` 更新默认走新分配 / overlay；稀疏 delta 壳（`[word0][parent][dn][…]`）共享 [`container_delta.rs`](../crates/lumia_rt/src/container_delta.rs)（Map/Set Overlay `word0=-1`；List patch `word0=len`）。`List.append` 在 **retain 证明唯一** 且有余量时可原地扩容（COW）。`List.set` 始终新分配，避免 SSA 别名被原地改写。可插拔 GC / ARC 仍为规划，非运行时策略开关。
 
 ---
 
@@ -176,7 +184,7 @@ Codegen 与当前 `MarkSweep`（进程堆）共用；换收集器时优先只改
   - **`memo/` 模块 = §7.5 reuse 族**（非单一 pass）：CSE + PE fold + LICM + `T_f` plan/apply；标量环境统一为 `KnownScalars`（与 `SpecializeConst` 共享）。
 - 测试/工具前端：`lumia_core::FrontendOptions`（`auto_parallel` / `trust_foreign_pure`）经 `compile_source_to_core_with_options`；多文件加载、visibility、assert 消息注解仍仅 CLI。
   - **Inline**：小纯函数直调内联（跳过 `main` / `foreign` / memo / 递归 / 效应）；Release 在 Inline 后再跑 `ConstFold` → `SpecializeConst` → `Escape` → `ReprSelect`（内联露出的字面量可栈分配）。
-  - **Escape**：保守逃逸分析；标量/`Join`/字符串深拷贝投影可不 `may_capture`；`Take`/`Elems` 等共享或拷贝元素指针的仍捕获；逃逸的 `ListGet`/`AdtField` 会标容器。`ReprSelect` 对**未逃逸**小 `List` 标 `LitList`（栈布局）；`Map` 非 Assoc 一律 `HashOrdered`（无独立 SmallMap 布局）。
+  - **Escape**：保守逃逸分析；标量/`Join`/字符串深拷贝投影可不 `may_capture`；`Take`/`Elems` 等共享或拷贝元素指针的仍捕获；逃逸的 `ListGet`/`AdtField` 会标容器。直接 `Call` / `FunRef` / `AllocClosure` 用 [`CallTarget`](../crates/lumia_core/src/ir.rs)（`name` + 可选模块内 `FunId`）；Escape 入口解析 id。`ReprSelect` 对**未逃逸**小 `List` 标 `LitList`（栈布局）；`Map` 非 Assoc 一律 `HashOrdered`（无独立 SmallMap 布局）。
   - **SpecializeConst**：Int/Bool/Char 调用点常量特化（`f$c_…`）；Release 在 Inline 前后各一轮。
   - **CopyElim**：折叠 `let x = y` SSA 别名。
   - **concat_ident**：Core 消 `concat([])` 恒等（`map`/`filter`/`fold` 主融合在 HIR）；空 `listOf()` → `lumia_list_empty` 永生单例。
@@ -185,7 +193,7 @@ Codegen 与当前 `MarkSweep`（进程堆）共用；换收集器时优先只改
 - GC：分代 mark-sweep（young 默认 1MiB → minor STW：只标记 nursery + remembered/rooted old；old 默认 8MiB → **增量并发 full mark**，或 `lumia_gc_collect` 排空）+ **`lumia_write_barrier`**（remembered set + Dijkstra 着色）+ **shadow-stack 根**；`is_heap_payload` 当前为堆 Mutex + `heap_set` 查找（热路径税；非 O(1)）；见 `examples/gc_roots.lm`。
   - **Escape**：短生命周期 `var` 不再一律逃逸；经 `Name`/返回逃逸的赋值仍会标记，便于 `ReprSelect` 选栈 `Lit*`。
 - Map：小表线性 Assoc；超过 `lumia_abi::SMALL_CONTAINER_MAX`（8）对晋升 **HashOrdered**；大表 `set` 走 **Overlay** 差分（满同阈值再压实）；见 `examples/map_hash.lm`。
-- Set：同哲学 — ≤`SMALL_CONTAINER_MAX` 线性，更大 **HashOrdered**（开址 + 插入序）；见 `examples/set_hash.lm`。
+- Set：同哲学 — ≤`SMALL_CONTAINER_MAX` 线性，更大 **HashOrdered**；Hash `insert` 同款 **Overlay**（delta ≤ 同阈值再 materialize）；见 `examples/set_hash.lm`。
 - 元组投影：`p.0` / `p.1`（`examples/tuple_fields.lm`）；Fun 效应变量 + HOF 拾取 IO（`examples/effect_hof.lm`）。
 - 集合字面量糖：`[:]` / `[k : v]` → `mapOf`；`#{}` / `#{a,b}` → `setOf`（`examples/coll_lit.lm`）。
 - `sortBy`：键为 `Int` / `String` / `Char`（稳定）；`assert(cond)` 失败即中止，并打印 `path:line`（`examples/assert_ok.lm`）。
@@ -205,7 +213,7 @@ Codegen 与当前 `MarkSweep`（进程堆）共用；换收集器时优先只改
 - Memo 性能：`scripts/bench_memo.sh`（同参热命中，约 **20×** vs `--no-memo`；报时间 + 峰值 RSS）；`examples/memo_dense.lm` 的 `fib` 下标表约 **1000×+**。
   - `**bench_cpu` 整套**：收益几乎只来自 `fib`（其余核是单遍扫参，无跨调用复用 → 理论无命中）。曾有成本模型把「循环里调用一次」当成命中证据、误挂 4 槽表导致 Collatz **变慢**，已改为要求递归或静态同参复用；稠密表仅结构递减自递归。
 - CPU 计算密集：`scripts/bench_cpu.sh`（素数 / matmul / Mandelbrot / Collatz dense+strided / fib / poly / gcd / divisorSum / productRem / floatOrbit / rangeFold；约 0.5–1s 量级，报 min/median/max **时间 + 峰值 RSS**）。
-- Dense float（热路径）：`scripts/bench_cn_hot.sh` / `bench_cn_step.sh`（`std.linalg` vs `--no-dense-f64-sr` 标量循环；SR 开启时两边 LLVM 等价 ≈1.0×）。
+- Dense float（热路径）：`scripts/bench_cn_hot.sh` / `bench_cn_step.sh`（`extras.linalg` vs `--no-dense-f64-sr` 标量循环；SR 开启时两边 LLVM 等价 ≈1.0×）。
 - Dense float（整步）：`scripts/bench_cn_step.sh`（sensory fill/scale/add + gate mul + decay + PC/Hebbian；扩展 SR 面）。
 - EFE action scores：`scripts/bench_cn_efe.sh`（imagine+G(a) naive vs fused `lumia_efe_action_scores`）。
 - **聚合回归**：`scripts/bench_all.sh` 依次跑 cpu / memo / cn_* / **task**（改调度/GC 时应用此入口）。
@@ -363,6 +371,7 @@ TLS 分代 GC 与 `ListParMap` worker 互斥；在 TLS 上硬开 OS 池会跨线
 - `LUMIA_RT_LIB` — 预构建 `liblumia_rt.a` / `.lib`；设置后 `lumia build` 跳过 `cargo -p lumia_rt`
 - `LUMIA_LINKER` — 链接驱动（默认 `clang`；可设 `clang++`/`lld` 包装等）
 - `LUMIA_KEEP_OBJ` — 设置后保留 `compile_module` 写出的中间 `.o`/`.obj`（默认链接成功即删）
+- `LUMIA_VERIFY` — 设置后在 Release O3 管线后再跑一次 LLVM `verify`（默认跳过以省编译时间；emit 后仍始终 verify）
 - `LUMIA_FIBER_STACK_KB` — 纤程栈 KiB（默认 64，下限 16）
 
 **`readStdin` 软上限**：`lumia_rt` 在约 64MiB 后 `trap_abort`（防恶意/巨型 stdin 拖垮主机）。流式读取或可恢复错误需语言层 `Result`/分块 API，当前为故意硬失败。

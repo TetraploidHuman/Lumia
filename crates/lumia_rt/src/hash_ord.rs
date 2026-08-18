@@ -8,13 +8,13 @@
 
 use crate::common::{
     adt_float_mask, adt_float_slot, float_key_eq, float_key_hash, header_from_payload,
-    is_heap_payload, is_heap_payload_bits, list_elem_is_float, may_be_heap_payload_bits, splitmix64,
-    tid_base, trap_abort, TYPE_ADT, TYPE_BYTES, TYPE_CHAR, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_IOTA,
-    TYPE_MAP, TYPE_SET, TYPE_STRING,
+    is_heap_payload, is_heap_payload_bits_pair, list_elem_is_float, may_be_heap_payload_bits,
+    splitmix64, tid_base, trap_abort, TYPE_ADT, TYPE_BYTES, TYPE_CHAR, TYPE_CLOSURE, TYPE_LIST,
+    TYPE_LIST_IOTA, TYPE_MAP, TYPE_SET, TYPE_STRING,
 };
 use crate::list::{list_get_of, list_len_of};
 use crate::map_set::{
-    map_count, map_float_keys, map_float_vals, map_pair_at, set_elem_at, set_float_elems,
+    map_count, map_float_keys, map_float_vals, map_pair_at, set_count, set_elem_at, set_float_elems,
 };
 
 pub(crate) fn lumia_ord_cmp(a: i64, b: i64) -> std::cmp::Ordering {
@@ -27,8 +27,7 @@ pub(crate) fn lumia_ord_cmp(a: i64, b: i64) -> std::cmp::Ordering {
         return a.cmp(&b);
     }
     // Skip Mutex for Int/Bool/FunRef immediates on either side.
-    let ha = is_heap_payload_bits(a);
-    let hb = is_heap_payload_bits(b);
+    let (ha, hb) = is_heap_payload_bits_pair(a, b);
     if !ha && !hb {
         return a.cmp(&b);
     }
@@ -211,7 +210,7 @@ pub(crate) fn hash_value(key: i64, depth: u32) -> u64 {
             }
             TYPE_SET => {
                 let float_elems = set_float_elems(p);
-                let n = *(p as *const i64);
+                let n = set_count(p);
                 let mut acc = splitmix64(0x534554u64 ^ (n as u64));
                 for i in 0..n as usize {
                     let e = set_elem_at(p, i);
@@ -315,7 +314,10 @@ pub unsafe extern "C" fn lumia_adt_ensure_unique(obj: *mut u8) -> *mut u8 {
 /// # Safety
 /// `obj` is null or a valid ADT payload (heap or stack LitAdt).
 #[no_mangle]
-pub unsafe extern "C" fn lumia_adt_ensure_unique_mask(obj: *mut u8, overwrite_mask: u64) -> *mut u8 {
+pub unsafe extern "C" fn lumia_adt_ensure_unique_mask(
+    obj: *mut u8,
+    overwrite_mask: u64,
+) -> *mut u8 {
     use crate::common::{cow_rc_is_unique, tid_base, TYPE_ADT};
     if obj.is_null() {
         return obj;
@@ -390,13 +392,11 @@ pub unsafe extern "C" fn lumia_adt_set_field(obj: *mut u8, index: i64, value: i6
         }
         let slot = (obj as *mut i64).add(1 + index as usize);
         let float_field = crate::common::adt_float_slot((*h)._pad, index as usize);
-        let value_heap = crate::common::is_heap_payload_bits(value);
+        let old = *slot;
+        let (value_heap, old_heap) = crate::common::is_heap_payload_bits_pair(value, old);
         // Mistag-safe: always RC/barrier when the new word is a live heap ptr,
         // even if `_pad` claims Float (matches ADT mark policy).
-        let old = *slot;
-        if (!float_field || value_heap || crate::common::is_heap_payload_bits(old))
-            && old != value
-        {
+        if (!float_field || value_heap || old_heap) && old != value {
             value_rc_release_bits(old);
             value_rc_retain_bits(value);
         }

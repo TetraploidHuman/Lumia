@@ -22,7 +22,7 @@
 //! | `Mutex<Option<(usize, usize)>>` | `SCHED_ENV` in `task/sched_env.rs` (`LUMIA_SCHED_WORKERS` / `LUMIA_SCHED_IO`) | Write-once in production; tests call `reload_sched_env_for_test` |
 //! | `AtomicU64` + `Relaxed` | [`note_par_task_demotion`] / [`par_task_demotions`] (list-par demotion counter) | Diagnostics / tests only |
 //! | Env parse (no cache) | [`parse_gc_incremental_env`] / `LUMIA_GC_INCREMENTAL` via [`crate::gc::limits`] | Read each collect decision; unknown tokens → keep heap default |
-//! | TLS (not process-global) | [`crate::common`] `PAR_WORKER` / `CALL_STACK`; [`crate::task::scheduler`] `CURRENT_FIBER` / `SCOPE_STACK*` / `FIBER_STACK_FREELIST` / `SCOPE_KIND_CACHE`; [`crate::mutator`] `ROOTS`; [`crate::memo`] `MEMO_TF` / `MEMO_IDX` / `MEMO_REGISTRATION` | Thread-local; documented here so new TLS does not look like a missing OnceLock |
+//! | TLS (not process-global) | [`crate::common`] `PAR_WORKER` / `CALL_STACK`; [`crate::task::scheduler`] `CURRENT_FIBER` / `SCOPE_STACK*` / `FIBER_STACK_FREELIST` / `SCOPE_KIND_CACHE`; [`crate::mutator`] `ROOTS` / `LAB`; [`crate::memo`] `MEMO_TF` / `MEMO_IDX` / `MEMO_REGISTRATION` | Thread-local; documented here so new TLS does not look like a missing OnceLock |
 //! | Test-only process `Mutex<()>` | [`crate::task::scheduler`] `SCHED_UNIT_TEST_LOCK` | Serializes sched unit tests; not a production lock |
 //!
 //! # Lock order
@@ -34,8 +34,8 @@
 //! Policy predicates that cross Task/GC/list-par live in
 //! [`crate::concurrency_policy`].
 
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::OnceLock;
 
 /// Best-effort cleanup before fatal abort (e.g. cancel sibling tasks).
 /// Process-global so pool OS threads share the same trap hook.

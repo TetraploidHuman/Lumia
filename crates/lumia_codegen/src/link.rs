@@ -125,10 +125,7 @@ mod tests {
 
     #[test]
     fn remove_link_object_deletes_by_default() {
-        let dir = std::env::temp_dir().join(format!(
-            "lumia_keep_obj_test_{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("lumia_keep_obj_test_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let obj = dir.join("t.o");
         {
@@ -140,7 +137,10 @@ mod tests {
         // codegen tests may parallel — only assert delete when unset).
         if std::env::var_os("LUMIA_KEEP_OBJ").is_none() {
             remove_link_object_unless_kept(&obj);
-            assert!(!obj.exists(), "intermediate .o should be removed after link");
+            assert!(
+                !obj.exists(),
+                "intermediate .o should be removed after link"
+            );
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -8,9 +8,7 @@ use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// `(lifted_fun → capture_index → ty)` from every `AllocClosure` in `core`.
-pub(crate) fn collect_closure_cap_tys(
-    core: &CoreModule,
-) -> HashMap<String, HashMap<u32, Type>> {
+pub(crate) fn collect_closure_cap_tys(core: &CoreModule) -> HashMap<String, HashMap<u32, Type>> {
     let tables = lumia_core::ModuleTables::from_module(core);
     let fun_ret_tys = &tables.fun_ret_tys;
     let fun_param_tys = &tables.fun_param_tys;
@@ -114,21 +112,14 @@ fn walk_block(
                         ty = Type::Channel(Box::new(elem.clone()));
                     }
                 }
-                // `ClosureCap` defaults to Int in value_ty; prefer the type recorded
-                // when this lam was allocated (Fun / Float / …). Otherwise nested
-                // `AllocClosure` re-captures Int and `a(x)+1.0` sitofps IEEE bits.
-                if let Value::ClosureCap {
-                    index, as_float, ..
-                } = value
-                {
-                    if *as_float {
-                        ty = Type::Float;
-                    } else if let Some(t) = out.get(current_fun).and_then(|m| m.get(index)) {
+                // `ClosureCap`: typed table from AllocClosure sites.
+                if let Value::ClosureCap { index, .. } = value {
+                    if let Some(t) = out.get(current_fun).and_then(|m| m.get(index)) {
                         ty = t.clone();
                     }
                 }
                 if let Value::AllocClosure { fun, captures } = value {
-                    let entry = out.entry(fun.clone()).or_default();
+                    let entry = out.entry(fun.name.clone()).or_default();
                     for (i, e) in captures.iter().enumerate() {
                         if let Some(t) = local_tys.get(&e.0).cloned() {
                             let slot = entry.entry(i as u32).or_insert_with(|| t.clone());

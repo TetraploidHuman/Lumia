@@ -106,6 +106,16 @@ e2e_ok!(
 
 e2e_ok!(e2e_nested_it_map, "examples/nested_it_map.lm", "[2, 3, 4]");
 
+e2e_ok!(
+    e2e_par_map_float_to_int,
+    "examples/par_map_float_to_int.lm",
+    "[1, 1]",
+    "1",
+    "[1]",
+    "[1.5, 2.5]",
+    "[2.5, 3.5]"
+);
+
 e2e_ok!(e2e_for, "examples/for.lm", "15", "3");
 
 e2e_ok!(e2e_list, "examples/list.lm", "42");

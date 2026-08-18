@@ -6,7 +6,9 @@
 //!
 //! Liveness walks **nested** `If`/`Loop` bodies — shallow `for_each_local` alone
 //! would drop loop-carried temps (e.g. `let z = 0` only read inside a loop).
-
+//!
+//! Each block runs to a **fixed point**: dropping a dead Builtin can make its
+//! argument locals dead only on a subsequent seed/retain pass.
 use crate::ir_util::collect_float_locals;
 use lumia_core::{
     collect_ssa_live_refs, for_each_local, for_each_nested_block_mut, Block, CoreFun, CoreModule,
@@ -52,6 +54,19 @@ fn dce_block(block: &mut Block, float_locals: &HashSet<u32>) {
         }
     }
 
+    // Fixed point: dropping a dead Builtin (e.g. unused Range) can expose its
+    // arg locals as dead only on the next seed pass (`collect_ssa_live_refs`
+    // still sees uses inside ops that this round will retain-away).
+    loop {
+        let before = block.ops.len();
+        dce_block_once(block, float_locals);
+        if block.ops.len() == before {
+            break;
+        }
+    }
+}
+
+fn dce_block_once(block: &mut Block, float_locals: &HashSet<u32>) {
     let mut live = HashSet::default();
     collect_ssa_live_refs(block, &mut live);
 
@@ -76,9 +91,7 @@ fn dce_block(block: &mut Block, float_locals: &HashSet<u32>) {
     }
 
     block.ops.retain(|op| match op {
-        Op::Let { local, value, .. } => {
-            live.contains(&local.0) || must_keep(value, float_locals)
-        }
+        Op::Let { local, value, .. } => live.contains(&local.0) || must_keep(value, float_locals),
         _ => true,
     });
 }

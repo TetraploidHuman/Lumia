@@ -4,7 +4,7 @@
 //! `list` is null or a valid List/Iota payload; worker function pointers are
 //! non-null C ABI callbacks that must not heap-allocate while GC is inhibited.
 
-use super::core::{list_len_of, lumia_list_empty};
+use super::core::{force_heap_list, list_is_patch, list_len_of, lumia_list_empty};
 use super::tid::list_tid;
 use crate::common::{list_elem_is_float, trap_abort, GcInhibitGuard, PAR_WORKER, TYPE_LIST_IOTA};
 use crate::concurrency_policy::forbid_list_parallel;
@@ -60,6 +60,12 @@ pub unsafe extern "C" fn lumia_list_par_map(
         list_elem_is_float(result_tid),
         list_elem_is_bool(result_tid),
     );
+    // Patch overlays look like TYPE_LIST but are not dense — flatten first.
+    let list = if list_is_patch(list) {
+        force_heap_list(list)
+    } else {
+        list
+    };
     let iota = !list.is_null() && list_tid(list) == TYPE_LIST_IOTA;
     // SAFETY: list null or live List/Iota — read len / iota start only.
     let (n, iota_start, src_addr) = unsafe {
@@ -167,6 +173,11 @@ pub unsafe extern "C" fn lumia_list_par_fold(
 ) -> i64 {
     let Some(f) = f else {
         trap_abort("lumia: list_par_fold null function");
+    };
+    let list = if list_is_patch(list) {
+        force_heap_list(list)
+    } else {
+        list
     };
     let iota = !list.is_null() && list_tid(list) == TYPE_LIST_IOTA;
     // SAFETY: list null or live List/Iota — read len / iota start only.

@@ -85,6 +85,8 @@ pub struct BuiltinInfo {
     /// When `args[arg_idx]` is Float, call `ensure_sym` on the container (`args[0]`)
     /// before the runtime call (List/Map/Set IEEE tagging).
     pub float_ensures: &'static [(u8, &'static str)],
+    /// Like [`Self::float_ensures`], but when the arg is Bool (List/Map/Set TID_B_*).
+    pub bool_ensures: &'static [(u8, &'static str)],
     pub emit: BuiltinEmit,
     /// Escape analysis: whether arguments may be retained by the runtime
     /// (collections / IO). Pure projections (len/get/tag) are `false`.
@@ -115,14 +117,26 @@ impl BuiltinInfo {
         self.list_receiver_rt = Some(sym);
         self
     }
+
+    pub fn with_bool_ensures(mut self, ens: &'static [(u8, &'static str)]) -> Self {
+        self.bool_ensures = ens;
+        self
+    }
 }
 
 pub(crate) const NO_F: &[(u8, &str)] = &[];
+pub(crate) const NO_B: &[(u8, &str)] = &[];
 pub(crate) const ENS_LIST_APPEND: &[(u8, &str)] = &[(1, lumia_abi::ENSURE_LIST_F64)];
+pub(crate) const ENS_LIST_APPEND_BOOL: &[(u8, &str)] = &[(1, lumia_abi::ENSURE_LIST_BOOL)];
 pub(crate) const ENS_SET_INSERT: &[(u8, &str)] = &[(1, lumia_abi::ENSURE_SET_F64)];
+pub(crate) const ENS_SET_INSERT_BOOL: &[(u8, &str)] = &[(1, lumia_abi::ENSURE_SET_BOOL)];
 pub(crate) const ENS_MAP_SET: &[(u8, &str)] = &[
     (1, lumia_abi::ENSURE_MAP_F64),
     (2, lumia_abi::ENSURE_MAP_VF64),
+];
+pub(crate) const ENS_MAP_SET_BOOL: &[(u8, &str)] = &[
+    (1, lumia_abi::ENSURE_MAP_BOOL),
+    (2, lumia_abi::ENSURE_MAP_VBOOL),
 ];
 
 #[inline]
@@ -144,6 +158,7 @@ pub(crate) fn bi(
         effect,
         runtime_symbol,
         float_ensures,
+        bool_ensures: NO_B,
         emit,
         may_capture,
         result_heap,

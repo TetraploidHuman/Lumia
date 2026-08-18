@@ -16,12 +16,7 @@ impl Infer {
         self.collect_ty_vars_rec(ty, acc, &mut HashSet::default());
     }
 
-    fn collect_ty_vars_rec(
-        &mut self,
-        ty: &Type,
-        acc: &mut HashSet<u32>,
-        seen: &mut HashSet<u32>,
-    ) {
+    fn collect_ty_vars_rec(&mut self, ty: &Type, acc: &mut HashSet<u32>, seen: &mut HashSet<u32>) {
         match ty {
             Type::Var(v) => {
                 if let Some(t) = self.uni.subst.get(v).cloned() {
@@ -371,9 +366,7 @@ impl Infer {
                 }
             }
             Type::Fun(ps, r, e) => Type::Fun(
-                ps.into_iter()
-                    .map(|p| self.prune_rec(p, seen))
-                    .collect(),
+                ps.into_iter().map(|p| self.prune_rec(p, seen)).collect(),
                 Box::new(self.prune_rec(*r, seen)),
                 self.prune_eff(e),
             ),

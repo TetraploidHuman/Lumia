@@ -284,3 +284,77 @@ val main = {
         "strided body must not call lumia_f64_clamp: {body}"
     );
 }
+
+#[test]
+fn rewrites_scale_helper_to_foreign_call() {
+    let src = r#"
+module M
+val nScale(xs, a) = {
+  var out = xs
+  var i = 0
+  val n = out.len()
+  for i < n {
+    out = out.set(i, out.get(i) * a)
+    i = i + 1
+  }
+  out
+}
+val main = {
+  var xs = listOf(1.0, 2.0, 3.0)
+  xs = nScale(xs, 2.0)
+  0
+}
+"#;
+    let mut core = lumia_core::compile_source_to_core(src).unwrap();
+    optimize(&mut core, &OptOptions::for_build(true));
+    assert!(
+        core.functions
+            .iter()
+            .any(|f| f.external.as_deref() == Some("lumia_f64_scale")),
+        "expected injected lumia_f64_scale foreign"
+    );
+}
+
+#[test]
+fn rewrites_fill_and_clamp_helpers() {
+    let src = r#"
+module M
+val nFill(xs, v) = {
+  var out = xs
+  var i = 0
+  val n = out.len()
+  for i < n {
+    out = out.set(i, v)
+    i = i + 1
+  }
+  out
+}
+val nClamp(xs, lo, hi) = {
+  var out = xs
+  var i = 0
+  val n = out.len()
+  for i < n {
+    val x = out.get(i)
+    val y = if x < lo { lo } else { if x > hi { hi } else { x } }
+    out = out.set(i, y)
+    i = i + 1
+  }
+  out
+}
+val main = {
+  var xs = listOf(1.0, 2.0, 3.0)
+  xs = nFill(xs, 0.0)
+  xs = nClamp(xs, 0.0, 1.0)
+  0
+}
+"#;
+    let mut core = lumia_core::compile_source_to_core(src).unwrap();
+    optimize(&mut core, &OptOptions::for_build(true));
+    let ext: Vec<_> = core
+        .functions
+        .iter()
+        .filter_map(|f| f.external.as_deref())
+        .collect();
+    assert!(ext.contains(&"lumia_f64_fill"), "fill missing in {ext:?}");
+    assert!(ext.contains(&"lumia_f64_clamp"), "clamp missing in {ext:?}");
+}

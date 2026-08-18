@@ -61,9 +61,9 @@ pub(super) fn compact_float_map_pairs(flat_pairs: &mut Vec<Local>, env: &FoldEnv
     for chunk in flat_pairs.chunks_exact(2) {
         let (k, v) = (chunk[0], chunk[1]);
         let bits = env.known_float[&k.0];
-        if let Some(i) = (0..out.len() / 2).find(|&i| {
-            float_key_eq_bits(env.known_float[&out[i * 2].0], bits)
-        }) {
+        if let Some(i) =
+            (0..out.len() / 2).find(|&i| float_key_eq_bits(env.known_float[&out[i * 2].0], bits))
+        {
             out[i * 2 + 1] = v;
         } else {
             out.push(k);
@@ -106,8 +106,7 @@ pub(super) fn compact_int_map_pairs(flat_pairs: &mut Vec<Local>, env: &FoldEnv) 
     for chunk in flat_pairs.chunks_exact(2) {
         let (k, v) = (chunk[0], chunk[1]);
         let bits = env.known_int.get(k.0).expect("all_int_keys");
-        if let Some(i) =
-            (0..out.len() / 2).find(|&i| env.known_int.get(out[i * 2].0) == Some(bits))
+        if let Some(i) = (0..out.len() / 2).find(|&i| env.known_int.get(out[i * 2].0) == Some(bits))
         {
             out[i * 2 + 1] = v;
         } else {

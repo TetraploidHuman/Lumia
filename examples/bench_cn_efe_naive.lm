@@ -3,7 +3,7 @@ module BenchCnEfeNaive
 /// CogniNucleus EFE action scores in pure Lumia (imagine + G(a), horizon 2).
 /// Compared against `extras.efe.actionScores` RT kernel in `bench_cn_efe_kernel.lm`.
 import std.io.{println}
-import std.linalg.{zeros, copy, checksum, l2Norm, sub}
+import extras.linalg.{zeros, copy, checksum, l2Norm, sub}
 
 val OBS = 16
 val N_ACTIONS = 4

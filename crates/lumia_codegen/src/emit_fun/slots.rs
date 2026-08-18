@@ -7,14 +7,15 @@ use lumia_ty::Type;
 
 impl<'ctx> Codegen<'ctx> {
     fn slot_may_heap(&self, name: &str) -> bool {
-        // Unknown → non-heap (same lattice as unknown→Int elsewhere). Assign
+        // Unknown → non-heap ([`lumia_core::HeapMay::for_slot_alloc`]). Assign
         // records `slot_tys` before the first store; a later heap type triggers
         // `ensure_slot_rooted` on the next store/load.
         self.frame
             .slot_tys
             .get(name)
-            .map(Self::type_may_heap)
-            .unwrap_or(false)
+            .map(lumia_core::HeapMay::from_type)
+            .unwrap_or(lumia_core::HeapMay::Unknown)
+            .for_slot_alloc()
     }
 
     /// Re-push a heap mut slot if a scoped `root_pop_to` unwound its prior root.

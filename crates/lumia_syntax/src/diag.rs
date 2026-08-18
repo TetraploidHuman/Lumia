@@ -128,12 +128,7 @@ pub fn byte_to_line_col(starts: &[u32], pos: BytePos) -> (u32, u32) {
 }
 
 /// Map 0-based `(line, character)` in `metric` units to a source byte offset.
-pub fn pos_to_byte_metric(
-    src: &str,
-    line: u32,
-    character: u32,
-    metric: ColumnMetric,
-) -> u32 {
+pub fn pos_to_byte_metric(src: &str, line: u32, character: u32, metric: ColumnMetric) -> u32 {
     let starts = line_starts(src);
     let idx = line as usize;
     let start = starts.get(idx).copied().unwrap_or(0) as usize;
@@ -241,7 +236,10 @@ mod tests {
         let (line, col) = byte_to_line_col(&starts, BytePos(x_byte));
         assert_eq!(line, 1);
         assert_eq!(col, x_byte + 1);
-        assert!(col > 10, "multibyte chars must push the byte column past ASCII width");
+        assert!(
+            col > 10,
+            "multibyte chars must push the byte column past ASCII width"
+        );
     }
 
     #[test]

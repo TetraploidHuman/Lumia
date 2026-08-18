@@ -31,7 +31,7 @@ impl<'ctx> Codegen<'ctx> {
         if fun.memo.is_some() {
             self.llvm.builder.position_at_end(compute_bb);
         }
-        let result = self.emit_block(&fun.body, fv)?;
+        let result = self.emit_block_from(&fun.body, fv, 0)?;
         self.emit_function_epilogue(fun, result)
     }
 
@@ -52,6 +52,7 @@ impl<'ctx> Codegen<'ctx> {
         self.memo.memo_idx_key = None;
         self.frame.root_depth = 0;
         self.frame.rooted_slots = Default::default();
+        self.frame.ssa_root_stack.clear();
         self.frame.cow_consume_unique = false;
         self.frame.adt_with_inplace = None;
         self.funs.funref_locals.clear();
@@ -60,7 +61,7 @@ impl<'ctx> Codegen<'ctx> {
         self.frame.slot_tys.clear();
         self.frame.emit_dest = None;
         self.frame.expect_alloc_ty = None;
-        self.frame.install_nsw(crate::nsw_iv::analyze_nsw(&fun.body));
+        self.frame.install_nsw_from_fun(fun);
         self.funs.current_fun = fun.name.clone();
         self.memo.current_memo = fun.memo;
         self.funs.tco_peers = self
@@ -136,6 +137,7 @@ impl<'ctx> Codegen<'ctx> {
                 if Self::type_may_heap(&ty) {
                     let bits = self.coerce_i64(av)?;
                     self.root_push_i64(bits)?;
+                    self.note_ssa_root(&fun.body, 0, *p);
                 }
             }
         }
@@ -198,6 +200,4 @@ impl<'ctx> Codegen<'ctx> {
     pub(crate) fn infer_value_ty(&self, value: &Value) -> Type {
         lumia_core::infer_value_ty_ctx(value, self.infer_ctx(), None)
     }
-
-
 }

@@ -23,6 +23,12 @@ pub fn snapshot_sched_gc_roots() -> (Vec<i64>, Vec<i64>) {
     crate::task::snapshot_sched_gc_roots()
 }
 
+/// In-place rewrite of scheduler GC roots (evacuating minor; heap → sched).
+#[inline]
+pub fn rewrite_sched_gc_roots(f: impl FnMut(i64) -> i64) {
+    crate::task::scheduler::rewrite_sched_gc_roots(f)
+}
+
 /// Snapshot the TLS scope stack for spawn inheritance (recyclable buffer).
 #[inline]
 pub fn snapshot_scope_stack() -> Vec<ScopeId> {

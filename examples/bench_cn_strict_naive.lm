@@ -1,8 +1,8 @@
 module BenchCnStrictNaive
 
-/// Same strict-PE workload as `bench_cn_strict_kernel.lm`, via `std.linalg` + loops.
+/// Same strict-PE workload as `bench_cn_strict_kernel.lm`, via `extras.linalg` + loops.
 import std.io.{println}
-import std.linalg.{
+import extras.linalg.{
     zeros, copy, checksum, sub, scale, gemv, gemvT, axpy, clamp, addmm
 }
 

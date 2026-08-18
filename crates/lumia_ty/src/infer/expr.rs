@@ -287,11 +287,7 @@ impl Infer {
         let mut pts = vec![];
         for (i, p) in params.iter().enumerate() {
             let tv = if let Some(Some(ann)) = param_ann.get(i) {
-                self.resolve_type_ann(
-                    ann,
-                    span,
-                    &format!("in type ascription for `{p}`"),
-                )?
+                self.resolve_type_ann(ann, span, &format!("in type ascription for `{p}`"))?
             } else {
                 self.fresh()
             };
@@ -318,10 +314,7 @@ impl Infer {
         span: lumia_syntax::Span,
     ) -> Result<(Type, Effect), TypeError> {
         if self.ctrl.loop_depth == 0 {
-            return Err(at(
-                span,
-                format!("`{kw}` is only allowed inside a loop"),
-            ));
+            return Err(at(span, format!("`{kw}` is only allowed inside a loop")));
         }
         Ok((Type::Unit, Effect::pure()))
     }

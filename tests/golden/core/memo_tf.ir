@@ -3,17 +3,17 @@ module MemoTf
 fun main() effect.io=true memo=None {
   %0 = i64 200  // pure
   %19 = i64 0  // pure
-  $inl0_a := %19
-  $inl0___i_221 := %19
+  $s23 := %19
+  __i_s24 := %19
   %20 = loop ...  // effect
-  %17 = load $inl0_a  // pure
-  %2 = builtin Println(%17)  // effect
-  %5 = builtin Println(%17)  // effect
+  %15 = load $s23  // pure
+  %2 = builtin Println(%15)  // effect
+  %5 = builtin Println(%15)  // effect
   %6 = i64 10  // pure
-  $inl1_a := %19
-  $inl1___i_221 := %19
-  %34 = loop ...  // effect
-  %31 = load $inl1_a  // pure
+  $s39 := %19
+  __i_s40 := %19
+  %36 = loop ...  // effect
+  %31 = load $s39  // pure
   %8 = builtin Println(%31)  // effect
   return %8
 }

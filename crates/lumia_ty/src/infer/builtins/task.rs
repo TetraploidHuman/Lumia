@@ -86,11 +86,7 @@ impl Infer {
                 let (ft, fe) = self.infer_expr(&args[0])?;
                 let ret = self.fresh();
                 let eff = self.fresh_eff();
-                self.unify_at(
-                    span,
-                    ft,
-                    Type::Fun(vec![], Box::new(ret.clone()), eff),
-                )?;
+                self.unify_at(span, ft, Type::Fun(vec![], Box::new(ret.clone()), eff))?;
                 Ok((Type::Task(Box::new(ret)), self.union_eff(io, fe)))
             }
             Builtin::ScopeEnter => {

@@ -113,10 +113,7 @@ pub(crate) fn format_expr(out: &mut String, e: &Expr, indent: usize) {
                 }
             }
             // Trailing closure: `f(a) { … }` / `f { … }` (last arg is Lambda/Block).
-            let trailing = matches!(
-                args.last(),
-                Some(Expr::Lambda { .. } | Expr::Block { .. })
-            );
+            let trailing = matches!(args.last(), Some(Expr::Lambda { .. } | Expr::Block { .. }));
             format_expr(out, callee, indent);
             let prefix = if trailing {
                 &args[..args.len() - 1]

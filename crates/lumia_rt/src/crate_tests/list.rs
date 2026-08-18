@@ -44,7 +44,11 @@ fn list_set_preserves_old_binding() {
     unsafe { lumia_list_retain(xs) };
     ys = unsafe { lumia_list_set(xs, 1, 99) };
     assert_eq!(unsafe { lumia_list_len(xs) }, 3);
-    assert_eq!(unsafe { lumia_list_get(xs, 1) }, 2, "xs must keep old elem after set");
+    assert_eq!(
+        unsafe { lumia_list_get(xs, 1) },
+        2,
+        "xs must keep old elem after set"
+    );
     assert_eq!(unsafe { lumia_list_get(ys, 1) }, 99);
     assert_ne!(xs, ys, "shared set must return a distinct list");
     lumia_root_pop();
@@ -119,7 +123,10 @@ fn range_is_iota_not_materialized() {
     let h = lumia_range(10, 13);
     let forced = force_heap_list(h);
     unsafe {
-        assert_eq!((*header_from_payload(forced)).type_id, TYPE_LIST);
+        assert!(
+            lumia_abi::list_elem_is_int((*header_from_payload(forced)).type_id),
+            "forced iota must stamp List[Int]"
+        );
     }
     assert_eq!(lumia_eq(h as i64, forced as i64), 1);
     assert_eq!(unsafe { lumia_list_len(lumia_list_take(r, 3)) }, 3);

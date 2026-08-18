@@ -1,11 +1,14 @@
 use super::fun_index::FunIndex;
 use crate::ir::{Block, CoreFun, Local, Op, Value};
 use crate::value_ty::{
-    builtin_value_ty, elems_family_recv_ok, prefer_concrete_heap_ty, via_gated_recv,
-    via_gated_recv_seeded, InferValueCtx,
+    adt_field_via, alloc_list_ty, alloc_map_from_pair, alloc_set_ty, binop_float_or_int,
+    builtin_value_ty, channel_recv_ok, elems_family_recv_ok, fun_recv_ok, fun_ret_of_callee_ty,
+    is_fixed_result_builtin, join_fixed_ty, list_concat_both_known, list_get_recv_ok,
+    list_par_fold_via, list_par_map_via, list_passthrough_ok, lit_scalar_ty, pad_adt_params,
+    stamp_or_via, task_recv_ok, via_gated_recv, via_gated_recv_seeded, InferValueCtx,
 };
-use lumia_hir::Builtin;
 use crate::{CoreBinOp as BinOp, CoreUnOp as UnOp};
+use lumia_hir::Builtin;
 use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
@@ -34,7 +37,11 @@ pub(crate) fn refine_mono_container_ret(orig: &Type, inferred: &Type) -> Type {
                         }
                     }
                 }
-                Type::List(_) | Type::Map(_, _) | Type::Set(_) | Type::Task(_) | Type::Channel(_) => {
+                Type::List(_)
+                | Type::Map(_, _)
+                | Type::Set(_)
+                | Type::Task(_)
+                | Type::Channel(_) => {
                     if let Some(p) = ps.first_mut() {
                         if matches!(p, Type::Var(_)) {
                             *p = inferred.clone();
@@ -183,9 +190,7 @@ fn ret_ty_needs_call_site_fix(ret: &Type) -> bool {
             matches!(k.as_ref(), Type::Int | Type::Var(_))
                 || matches!(v.as_ref(), Type::Int | Type::Var(_))
         }
-        Type::Adt { params, .. } => params
-            .iter()
-            .any(|p| matches!(p, Type::Int | Type::Var(_))),
+        Type::Adt { params, .. } => params.iter().any(|p| matches!(p, Type::Int | Type::Var(_))),
         _ => false,
     }
 }
@@ -203,36 +208,20 @@ fn value_fixed_ty(
         Value::Local(Local(id)) => {
             local_fixed_ty(block, *id, index, trait_methods, param_tys, seen, expanding)
         }
-        Value::Name(name) => {
-            slot_fixed_ty(block, name, index, trait_methods, param_tys, seen, expanding)
-        }
+        Value::Name(name) => slot_fixed_ty(
+            block,
+            name,
+            index,
+            trait_methods,
+            param_tys,
+            seen,
+            expanding,
+        ),
         Value::Builtin { name, args, .. }
-            if matches!(
-                *name,
-                Builtin::Show
-                    | Builtin::MatchFail
-                    | Builtin::ListLen
-                    | Builtin::AdtTag
-                    | Builtin::Contains
-                    | Builtin::StrStartsWith
-                    | Builtin::StrEndsWith
-                    | Builtin::Println
-                    | Builtin::Assert
-                    | Builtin::ChannelSend
-                    | Builtin::ChannelClose
-                    | Builtin::ScopeEnter
-                    | Builtin::ScopeLeave
-                    | Builtin::ScopeCancel
-                    | Builtin::ReadStdin
-                    | Builtin::StrTrim
-                    | Builtin::StrSplit
-                    | Builtin::StrSubstring
-                    | Builtin::StrToLower
-                    | Builtin::StrToUpper
-                    | Builtin::ListJoin
-            ) =>
+            if is_fixed_result_builtin(*name) || matches!(*name, Builtin::MatchFail) =>
         {
             // Fixed scalar/Unit/String results — share value_ty projection.
+            // MatchFail → Unit here; float_abi keeps MatchFail as bottom.
             let empty = HashMap::default();
             Some(builtin_value_ty(
                 *name,
@@ -256,14 +245,23 @@ fn value_fixed_ty(
             )?;
             // Container / Option share projection; other shapes keep recv (≠ Int soft).
             via_gated_recv(Builtin::ListGet, args, list_ty.clone(), |t| {
-                matches!(t, Type::List(_) | Type::Set(_) | Type::Map(_, _))
-                    || matches!(t, Type::Adt { name, .. } if lumia_hir::is_option(name))
+                list_get_recv_ok(t, /*allow_option=*/ true)
             })
             .or(Some(list_ty))
         }
         Value::Builtin {
             name: Builtin::AdtField,
-            args, .. } => adt_field_fixed_ty(block, args, index, trait_methods, param_tys, seen, expanding),
+            args,
+            ..
+        } => adt_field_fixed_ty(
+            block,
+            args,
+            index,
+            trait_methods,
+            param_tys,
+            seen,
+            expanding,
+        ),
         // `unwrapTask = { t -> t.join() }`: body must yield payload, not Task.
         Value::Builtin {
             name: Builtin::TaskJoin,
@@ -279,9 +277,7 @@ fn value_fixed_ty(
                 seen,
                 expanding,
             )?;
-            via_gated_recv(Builtin::TaskJoin, args, recv, |t| {
-                matches!(t, Type::Task(_))
-            })
+            via_gated_recv(Builtin::TaskJoin, args, recv, task_recv_ok)
         }
         Value::Builtin {
             name: Builtin::ChannelRecv,
@@ -297,9 +293,7 @@ fn value_fixed_ty(
                 seen,
                 expanding,
             )?;
-            via_gated_recv(Builtin::ChannelRecv, args, recv, |t| {
-                matches!(t, Type::Channel(_))
-            })
+            via_gated_recv(Builtin::ChannelRecv, args, recv, channel_recv_ok)
         }
         Value::Builtin {
             name: Builtin::TaskJoinOpt,
@@ -315,9 +309,7 @@ fn value_fixed_ty(
                 seen,
                 expanding,
             )?;
-            via_gated_recv(Builtin::TaskJoinOpt, args, recv, |t| {
-                matches!(t, Type::Task(_))
-            })
+            via_gated_recv(Builtin::TaskJoinOpt, args, recv, task_recv_ok)
         }
         Value::Builtin {
             name: Builtin::ChannelRecvOpt,
@@ -333,9 +325,7 @@ fn value_fixed_ty(
                 seen,
                 expanding,
             )?;
-            via_gated_recv(Builtin::ChannelRecvOpt, args, recv, |t| {
-                matches!(t, Type::Channel(_))
-            })
+            via_gated_recv(Builtin::ChannelRecvOpt, args, recv, channel_recv_ok)
         }
         Value::Builtin { name, args, .. }
             if matches!(*name, Builtin::Range | Builtin::RangeInclusive) =>
@@ -384,7 +374,7 @@ fn value_fixed_ty(
                 expanding,
             )?;
             // Passthrough list builtins share the ListTake value_ty arm.
-            via_gated_recv(Builtin::ListTake, args, recv, |t| matches!(t, Type::List(_)))
+            via_gated_recv(Builtin::ListTake, args, recv, list_passthrough_ok)
         }
         Value::Builtin {
             name: Builtin::TaskSpawn,
@@ -400,142 +390,90 @@ fn value_fixed_ty(
                 seen,
                 expanding,
             )?;
-            via_gated_recv(Builtin::TaskSpawn, args, fun_ty, |t| {
-                matches!(t, Type::Fun(_, _, _))
-            })
+            via_gated_recv(Builtin::TaskSpawn, args, fun_ty, fun_recv_ok)
         }
         Value::Builtin {
             name: Builtin::ChannelNew,
             result_ty,
             args,
             ..
-        } => match result_ty {
-            Some(Type::Channel(_)) => result_ty.clone(),
-            _ => {
+        } => stamp_or_via(
+            result_ty,
+            |t| matches!(t, Type::Channel(_)),
+            || {
                 let empty = HashMap::default();
                 Some(builtin_value_ty(
                     Builtin::ChannelNew,
                     args,
                     InferValueCtx::local_only(&empty),
                 ))
-            }
-        },
+            },
+        ),
         Value::Builtin {
             name: Builtin::ListAppend,
             args,
             ..
-        } => {
-            let list = local_fixed_ty(
-                block,
-                args.first()?.0,
-                index,
-                trait_methods,
-                param_tys,
-                seen,
-                expanding,
-            )?;
-            via_gated_recv_seeded(
-                Builtin::ListAppend,
-                args,
-                list,
-                |t| matches!(t, Type::List(_)),
-                |tys| {
-                    if let Some(elem) = args.get(1).and_then(|a| {
-                        local_fixed_ty(block, a.0, index, trait_methods, param_tys, seen, expanding)
-                    }) {
-                        tys.insert(args[1].0, elem);
-                    }
-                },
-            )
-        }
+        } => mutator_fixed_seeded(
+            block,
+            Builtin::ListAppend,
+            args,
+            index,
+            trait_methods,
+            param_tys,
+            seen,
+            expanding,
+            |t| matches!(t, Type::List(_)),
+            &[1],
+        ),
         Value::Builtin {
             name: Builtin::SetInsert,
             args,
             ..
-        } => {
-            let set = local_fixed_ty(
-                block,
-                args.first()?.0,
-                index,
-                trait_methods,
-                param_tys,
-                seen,
-                expanding,
-            )?;
-            via_gated_recv_seeded(
-                Builtin::SetInsert,
-                args,
-                set,
-                |t| matches!(t, Type::Set(_)),
-                |tys| {
-                    if let Some(elem) = args.get(1).and_then(|a| {
-                        local_fixed_ty(block, a.0, index, trait_methods, param_tys, seen, expanding)
-                    }) {
-                        tys.insert(args[1].0, elem);
-                    }
-                },
-            )
-        }
+        } => mutator_fixed_seeded(
+            block,
+            Builtin::SetInsert,
+            args,
+            index,
+            trait_methods,
+            param_tys,
+            seen,
+            expanding,
+            |t| matches!(t, Type::Set(_)),
+            &[1],
+        ),
         Value::Builtin {
             name: Builtin::MapRemove,
             args,
             ..
-        } => {
-            let recv = local_fixed_ty(
-                block,
-                args.first()?.0,
-                index,
-                trait_methods,
-                param_tys,
-                seen,
-                expanding,
-            )?;
-            via_gated_recv_seeded(
-                Builtin::MapRemove,
-                args,
-                recv,
-                |t| matches!(t, Type::Map(_, _) | Type::List(_) | Type::Set(_)),
-                |tys| {
-                    if let Some(key) = args.get(1).and_then(|a| {
-                        local_fixed_ty(block, a.0, index, trait_methods, param_tys, seen, expanding)
-                    }) {
-                        tys.insert(args[1].0, key);
-                    }
-                },
-            )
-        }
+        } => mutator_fixed_seeded(
+            block,
+            Builtin::MapRemove,
+            args,
+            index,
+            trait_methods,
+            param_tys,
+            seen,
+            expanding,
+            |t| matches!(t, Type::Map(_, _) | Type::List(_) | Type::Set(_)),
+            &[1],
+        ),
         Value::Builtin {
             name: Builtin::MapSet,
             args,
             ..
         } => {
             // Gate Map|List only — open Int-key→List guess stays out of ret_ty.
-            let recv = local_fixed_ty(
+            mutator_fixed_seeded(
                 block,
-                args.first()?.0,
+                Builtin::MapSet,
+                args,
                 index,
                 trait_methods,
                 param_tys,
                 seen,
                 expanding,
-            )?;
-            via_gated_recv_seeded(
-                Builtin::MapSet,
-                args,
-                recv,
                 |t| matches!(t, Type::Map(_, _) | Type::List(_)),
-                |tys| {
-                    if let Some(key) = args.get(1).and_then(|a| {
-                        local_fixed_ty(block, a.0, index, trait_methods, param_tys, seen, expanding)
-                    }) {
-                        tys.insert(args[1].0, key);
-                    }
-                    if let Some(val) = args.get(2).and_then(|a| {
-                        local_fixed_ty(block, a.0, index, trait_methods, param_tys, seen, expanding)
-                    }) {
-                        tys.insert(args[2].0, val);
-                    }
-                },
+                &[1, 2],
             )
         }
         Value::Builtin {
@@ -543,7 +481,8 @@ fn value_fixed_ty(
             args,
             ..
         } => {
-            // Both sides List only — share soft value_ty upgrade; no float_abi prefer.
+            // Both sides String or List×List — share `builtin_value_ty` (prefer).
+            // Open one-side policy stays in float_abi (`float_list_concat_ty`).
             let a = local_fixed_ty(
                 block,
                 args.first()?.0,
@@ -562,29 +501,7 @@ fn value_fixed_ty(
                 seen,
                 expanding,
             )?;
-            match (&a, &b) {
-                (Type::String, _) | (_, Type::String) => {
-                    let mut local_tys = HashMap::default();
-                    local_tys.insert(args[0].0, a);
-                    local_tys.insert(args[1].0, b);
-                    Some(builtin_value_ty(
-                        Builtin::ListConcat,
-                        args,
-                        InferValueCtx::local_only(&local_tys),
-                    ))
-                }
-                (Type::List(_), Type::List(_)) => {
-                    let mut local_tys = HashMap::default();
-                    local_tys.insert(args[0].0, a);
-                    local_tys.insert(args[1].0, b);
-                    Some(builtin_value_ty(
-                        Builtin::ListConcat,
-                        args,
-                        InferValueCtx::local_only(&local_tys),
-                    ))
-                }
-                _ => None,
-            }
+            list_concat_both_known(args, a, b)
         }
         Value::Builtin {
             name: Builtin::ListParMap,
@@ -592,7 +509,7 @@ fn value_fixed_ty(
             ..
         } => {
             // Gate List recv only — Float soft upgrades stay in float_abi.
-            let recv = local_fixed_ty(
+            let list = local_fixed_ty(
                 block,
                 args.first()?.0,
                 index,
@@ -601,19 +518,10 @@ fn value_fixed_ty(
                 seen,
                 expanding,
             )?;
-            via_gated_recv_seeded(
-                Builtin::ListParMap,
-                args,
-                recv,
-                |t| matches!(t, Type::List(_)),
-                |tys| {
-                    if let Some(cb) = args.get(1).and_then(|a| {
-                        local_fixed_ty(block, a.0, index, trait_methods, param_tys, seen, expanding)
-                    }) {
-                        tys.insert(args[1].0, cb);
-                    }
-                },
-            )
+            let cb_seed = args.get(1).and_then(|a| {
+                local_fixed_ty(block, a.0, index, trait_methods, param_tys, seen, expanding)
+            });
+            list_par_map_via(args, Some(list), cb_seed)
         }
         Value::Builtin {
             name: Builtin::ListParFold,
@@ -630,27 +538,16 @@ fn value_fixed_ty(
                 seen,
                 expanding,
             )?;
-            if let Some(list) = args.first().and_then(|a| {
+            let list = args.first().and_then(|a| {
                 local_fixed_ty(block, a.0, index, trait_methods, param_tys, seen, expanding)
-            }) {
-                via_gated_recv_seeded(Builtin::ListParFold, args, list, |_| true, |tys| {
-                    tys.insert(args[1].0, acc);
-                })
-            } else {
-                let mut local_tys = HashMap::default();
-                local_tys.insert(args[1].0, acc);
-                Some(builtin_value_ty(
-                    Builtin::ListParFold,
-                    args,
-                    InferValueCtx::local_only(&local_tys),
-                ))
-            }
+            });
+            list_par_fold_via(args, list, acc)
         }
-        Value::String(_) => Some(Type::String),
-        Value::Bool(_) => Some(Type::Bool),
-        Value::Int(_) => Some(Type::Int),
-        Value::Float(_) => Some(Type::Float),
-        Value::Char(_) => Some(Type::Char),
+        v @ (Value::String(_)
+        | Value::Bool(_)
+        | Value::Int(_)
+        | Value::Float(_)
+        | Value::Char(_)) => lit_scalar_ty(v),
         Value::Binary { op, left, right } => binary_fixed_ty(
             block,
             *op,
@@ -664,12 +561,18 @@ fn value_fixed_ty(
         ),
         Value::Unary { op, operand } => match op {
             UnOp::Not => Some(Type::Bool),
-            UnOp::Neg => {
-                local_fixed_ty(block, operand.0, index, trait_methods, param_tys, seen, expanding)
-            }
+            UnOp::Neg => local_fixed_ty(
+                block,
+                operand.0,
+                index,
+                trait_methods,
+                param_tys,
+                seen,
+                expanding,
+            ),
         },
         Value::Call { fun, args } => {
-            let Some(f) = index.get(fun) else {
+            let Some(f) = index.get(fun.as_str()) else {
                 // Unresolved short trait method: do **not** sample an arbitrary
                 // mangled impl (Float vs Int / heap vs scalar can disagree). Leave
                 // open until `resolve_trait_method_calls` rewrites the Call.
@@ -681,13 +584,19 @@ fn value_fixed_ty(
             // not Int (else later `addx` misses `$Box_*` clones).
             if ret_ty_needs_call_site_fix(&f.ret_ty) {
                 // Self-/mutual recursion: entering the callee body re-hits this Call.
-                if !expanding.insert(fun.clone()) {
+                if !expanding.insert(fun.name.clone()) {
                     // Cycle: open generic `ret` is useless. Prefer a concrete
                     // call-site arg ABI (fold/acc Float) so `sumAt(xs,i,acc)`
                     // clones keep `ret=Float` instead of key's first-List.
                     for a in args.iter().rev() {
                         if let Some(t) = local_fixed_ty(
-                            block, a.0, index, trait_methods, param_tys, seen, expanding,
+                            block,
+                            a.0,
+                            index,
+                            trait_methods,
+                            param_tys,
+                            seen,
+                            expanding,
                         ) {
                             if !matches!(t, Type::Int | Type::Var(_)) {
                                 return Some(t);
@@ -702,7 +611,13 @@ fn value_fixed_ty(
                         .get(i)
                         .and_then(|a| {
                             local_fixed_ty(
-                                block, a.0, index, trait_methods, param_tys, seen, expanding,
+                                block,
+                                a.0,
+                                index,
+                                trait_methods,
+                                param_tys,
+                                seen,
+                                expanding,
                             )
                         })
                         .or_else(|| f.param_tys.get(i).cloned())
@@ -716,14 +631,14 @@ fn value_fixed_ty(
                     &call_params,
                     expanding,
                 );
-                expanding.remove(fun);
+                expanding.remove(fun.as_str());
                 if let Some(t) = refined {
                     return Some(t);
                 }
                 for a in args {
-                    if let Some(t) = local_fixed_ty(
-                        block, a.0, index, trait_methods, param_tys, seen, expanding,
-                    ) {
+                    if let Some(t) =
+                        local_fixed_ty(block, a.0, index, trait_methods, param_tys, seen, expanding)
+                    {
                         if !matches!(t, Type::Int | Type::Var(_)) {
                             return Some(t);
                         }
@@ -758,13 +673,7 @@ fn value_fixed_ty(
             } else if lumia_hir::is_option(adt_name) && field_tys.is_empty() {
                 vec![Type::Int]
             } else {
-                let mut params = field_tys;
-                if let Some(max) = index.sum_max_arity.get(adt_name).copied() {
-                    while params.len() < max {
-                        params.push(Type::Int);
-                    }
-                }
-                params
+                pad_adt_params(field_tys, index.sum_max_arity.get(adt_name).copied())
             };
             Some(Type::Adt {
                 name: adt_name.clone(),
@@ -777,10 +686,18 @@ fn value_fixed_ty(
             ..
         } => {
             let t = block_result_fixed_ty_indexed(
-                then_block, index, trait_methods, param_tys, expanding,
+                then_block,
+                index,
+                trait_methods,
+                param_tys,
+                expanding,
             )?;
             let e = block_result_fixed_ty_indexed(
-                else_block, index, trait_methods, param_tys, expanding,
+                else_block,
+                index,
+                trait_methods,
+                param_tys,
+                expanding,
             )?;
             join_fixed_ty(&t, &e)
         }
@@ -788,17 +705,17 @@ fn value_fixed_ty(
             let elem = elems.first().and_then(|e| {
                 local_fixed_ty(block, e.0, index, trait_methods, param_tys, seen, expanding)
             });
-            Some(Type::List(Box::new(elem.unwrap_or(Type::Int))))
+            Some(alloc_list_ty(elem.unwrap_or(Type::Int)))
         }
         Value::AllocSet { elems, .. } => {
             let elem = elems.first().and_then(|e| {
                 local_fixed_ty(block, e.0, index, trait_methods, param_tys, seen, expanding)
             });
-            Some(Type::Set(Box::new(elem.unwrap_or(Type::Int))))
+            Some(alloc_set_ty(elem.unwrap_or(Type::Int)))
         }
         Value::AllocMap { flat_pairs, .. } => {
-            let (k, v) = if flat_pairs.len() >= 2 {
-                (
+            let kv = if flat_pairs.len() >= 2 {
+                Some((
                     local_fixed_ty(
                         block,
                         flat_pairs[0].0,
@@ -819,26 +736,32 @@ fn value_fixed_ty(
                         expanding,
                     )
                     .unwrap_or(Type::Int),
-                )
+                ))
             } else {
-                (Type::Int, Type::Int)
+                None
             };
-            Some(Type::Map(Box::new(k), Box::new(v)))
+            Some(alloc_map_from_pair(kv))
         }
         Value::FunRef(name) | Value::AllocClosure { fun: name, .. } => {
-            let f = index.get(name)?;
+            let f = index.get(name.as_str())?;
             Some(Type::Fun(
                 f.param_tys.clone(),
                 Box::new(f.ret_ty.clone()),
                 f.effect,
             ))
         }
-        Value::IndirectCall { callee, .. } => {
-            match local_fixed_ty(block, callee.0, index, trait_methods, param_tys, seen, expanding) {
-                Some(Type::Fun(_, ret, _)) => Some(*ret),
-                _ => None,
-            }
-        }
+        Value::IndirectCall { callee, .. } => fun_ret_of_callee_ty(
+            local_fixed_ty(
+                block,
+                callee.0,
+                index,
+                trait_methods,
+                param_tys,
+                seen,
+                expanding,
+            )
+            .as_ref(),
+        ),
         _ => None,
     }
 }
@@ -893,7 +816,14 @@ fn scan_slot_ty(
             }
             Op::Let { value, .. } => {
                 scan_value_slots(
-                    value, name, index, trait_methods, param_tys, seen, expanding, found,
+                    value,
+                    name,
+                    index,
+                    trait_methods,
+                    param_tys,
+                    seen,
+                    expanding,
+                    found,
                 );
             }
             _ => {}
@@ -944,13 +874,34 @@ fn scan_value_slots(
             latch,
         } => {
             scan_slot_ty(
-                header, name, index, trait_methods, param_tys, seen, expanding, found,
+                header,
+                name,
+                index,
+                trait_methods,
+                param_tys,
+                seen,
+                expanding,
+                found,
             );
             scan_slot_ty(
-                body, name, index, trait_methods, param_tys, seen, expanding, found,
+                body,
+                name,
+                index,
+                trait_methods,
+                param_tys,
+                seen,
+                expanding,
+                found,
             );
             scan_slot_ty(
-                latch, name, index, trait_methods, param_tys, seen, expanding, found,
+                latch,
+                name,
+                index,
+                trait_methods,
+                param_tys,
+                seen,
+                expanding,
+                found,
             );
         }
         _ => {}
@@ -984,23 +935,32 @@ fn binary_fixed_ty(
     expanding: &mut HashSet<String>,
 ) -> Option<Type> {
     match op {
-        BinOp::Eq
-        | BinOp::Ne
-        | BinOp::Lt
-        | BinOp::Le
-        | BinOp::Gt
-        | BinOp::Ge => Some(Type::Bool),
+        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => Some(Type::Bool),
         BinOp::And | BinOp::Or => {
             debug_assert!(false, "ICE: BinOp::And|Or in Core; expected If desugar");
             Some(Type::Bool)
         }
         BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => {
-            let l =
-                local_fixed_ty(block, left, index, trait_methods, param_tys, seen, expanding)?;
-            let r =
-                local_fixed_ty(block, right, index, trait_methods, param_tys, seen, expanding)?;
+            let l = local_fixed_ty(
+                block,
+                left,
+                index,
+                trait_methods,
+                param_tys,
+                seen,
+                expanding,
+            )?;
+            let r = local_fixed_ty(
+                block,
+                right,
+                index,
+                trait_methods,
+                param_tys,
+                seen,
+                expanding,
+            )?;
             match (&l, &r) {
-                (Type::Float, _) | (_, Type::Float) => Some(Type::Float),
+                (Type::Float, _) | (_, Type::Float) => Some(binop_float_or_int(&l, &r)),
                 (Type::Int, Type::Int) => Some(Type::Int),
                 _ => Some(l),
             }
@@ -1019,26 +979,58 @@ fn adt_field_fixed_ty(
 ) -> Option<Type> {
     let recv = args.first()?;
     let idx_local = args.get(1)?;
-    let recv_ty =
-        local_fixed_ty(block, recv.0, index, trait_methods, param_tys, seen, expanding)?;
+    let recv_ty = local_fixed_ty(
+        block,
+        recv.0,
+        index,
+        trait_methods,
+        param_tys,
+        seen,
+        expanding,
+    )?;
     let idx = int_const_in_block(block, idx_local.0)?;
     if idx < 0 {
         return None;
     }
-    match &recv_ty {
-        Type::Adt { .. } | Type::Tuple(_) | Type::TuplePrefix(_) => {
-            let mut local_tys = HashMap::default();
-            local_tys.insert(recv.0, recv_ty);
-            let mut consts = HashMap::default();
-            consts.insert(idx_local.0, idx);
-            Some(builtin_value_ty(
-                Builtin::AdtField,
-                args,
-                InferValueCtx::with_int_consts(&local_tys, &consts),
-            ))
+    adt_field_via(args, recv_ty, idx)
+}
+
+/// Resolve recv + seed arg tys, then [`via_gated_recv_seeded`] (ret_ty mutators).
+fn mutator_fixed_seeded(
+    block: &Block,
+    name: Builtin,
+    args: &[Local],
+    index: &FunIndex<'_>,
+    trait_methods: &HashMap<(String, String), Vec<String>>,
+    param_tys: &HashMap<u32, Type>,
+    seen: &mut HashSet<u32>,
+    expanding: &mut HashSet<String>,
+    gate: impl FnOnce(&Type) -> bool,
+    seed_idxs: &[usize],
+) -> Option<Type> {
+    let recv = local_fixed_ty(
+        block,
+        args.first()?.0,
+        index,
+        trait_methods,
+        param_tys,
+        seen,
+        expanding,
+    )?;
+    let mut seeds = Vec::new();
+    for &i in seed_idxs {
+        let a = args.get(i)?;
+        if let Some(t) =
+            local_fixed_ty(block, a.0, index, trait_methods, param_tys, seen, expanding)
+        {
+            seeds.push((a.0, t));
         }
-        _ => None,
     }
+    via_gated_recv_seeded(name, args, recv, gate, |tys| {
+        for (id, t) in seeds {
+            tys.insert(id, t);
+        }
+    })
 }
 
 fn int_const_in_block(block: &Block, id: u32) -> Option<i64> {
@@ -1076,115 +1068,15 @@ fn block_result_fixed_ty_indexed(
 ) -> Option<Type> {
     let Local(r) = block.result?;
     let mut seen = HashSet::default();
-    local_fixed_ty(block, r, index, trait_methods, param_tys, &mut seen, expanding)
-}
-
-fn join_fixed_ty(a: &Type, b: &Type) -> Option<Type> {
-    if a == b {
-        return Some(a.clone());
-    }
-    match (a, b) {
-        // MatchFail / empty arm: Unit is bottom.
-        (Type::Unit, other) | (other, Type::Unit) => Some(other.clone()),
-        // Float beats scalar (String/Bool/Char/Int/Var) — parity with `join_abi_tys`
-        // (`Err("e") alt 9.5` / Option alt float must not keep String for println).
-        (Type::Float, other) | (other, Type::Float)
-            if matches!(
-                other,
-                Type::Int
-                    | Type::Var(_)
-                    | Type::Bool
-                    | Type::String
-                    | Type::Char
-                    | Type::Float
-            ) =>
-        {
-            Some(Type::Float)
-        }
-        // Fun vs scalar — keep Fun (parity with `JoinAbiKind::Value`).
-        (Type::Fun(_, _, _), other) | (other, Type::Fun(_, _, _))
-            if matches!(
-                other,
-                Type::Int
-                    | Type::Var(_)
-                    | Type::Bool
-                    | Type::String
-                    | Type::Char
-                    | Type::Float
-            ) =>
-        {
-            match (a, b) {
-                (Type::Fun(_, _, _), _) => Some(a.clone()),
-                _ => Some(b.clone()),
-            }
-        }
-        // Fun×Fun merge (parity with `join_abi` Value).
-        (Type::Fun(p1, r1, e1), Type::Fun(p2, r2, e2)) => {
-            let n = p1.len().max(p2.len());
-            let mut params = Vec::with_capacity(n);
-            for i in 0..n {
-                let x = p1.get(i).cloned().unwrap_or(Type::Int);
-                let y = p2.get(i).cloned().unwrap_or(Type::Int);
-                params.push(join_fixed_ty(&x, &y).unwrap_or(x));
-            }
-            let ret = join_fixed_ty(r1, r2).unwrap_or_else(|| (**r1).clone());
-            Some(Type::Fun(params, Box::new(ret), e1.union(*e2)))
-        }
-        (Type::Bool, Type::Int | Type::Var(_))
-        | (Type::Int | Type::Var(_), Type::Bool) => Some(Type::Bool),
-        (Type::String, Type::Int | Type::Var(_))
-        | (Type::Int | Type::Var(_), Type::String) => Some(Type::String),
-        (Type::Char, Type::Int | Type::Var(_))
-        | (Type::Int | Type::Var(_), Type::Char) => Some(Type::Char),
-        // Container merges — Heap-style prefer (parity with `join_abi` Heap).
-        (Type::List(e1), Type::List(e2)) => Some(Type::List(Box::new(prefer_concrete_heap_ty(
-            e1.as_ref().clone(),
-            e2.as_ref().clone(),
-        )))),
-        (Type::Set(e1), Type::Set(e2)) => Some(Type::Set(Box::new(prefer_concrete_heap_ty(
-            e1.as_ref().clone(),
-            e2.as_ref().clone(),
-        )))),
-        (Type::Task(e1), Type::Task(e2)) => Some(Type::Task(Box::new(prefer_concrete_heap_ty(
-            e1.as_ref().clone(),
-            e2.as_ref().clone(),
-        )))),
-        (Type::Channel(e1), Type::Channel(e2)) => {
-            Some(Type::Channel(Box::new(prefer_concrete_heap_ty(
-                e1.as_ref().clone(),
-                e2.as_ref().clone(),
-            ))))
-        }
-        (Type::Map(k1, v1), Type::Map(k2, v2)) => Some(Type::Map(
-            Box::new(prefer_concrete_heap_ty(k1.as_ref().clone(), k2.as_ref().clone())),
-            Box::new(prefer_concrete_heap_ty(v1.as_ref().clone(), v2.as_ref().clone())),
-        )),
-        (
-            Type::Adt {
-                name: n1,
-                params: p1,
-            },
-            Type::Adt {
-                name: n2,
-                params: p2,
-            },
-        ) if n1 == n2 => {
-            // Prefer Float over String in Result/Option payloads (same lattice as Heap join).
-            let n = p1.len().max(p2.len());
-            let mut params = Vec::with_capacity(n);
-            for i in 0..n {
-                params.push(prefer_concrete_heap_ty(
-                    p1.get(i).cloned().unwrap_or(Type::Int),
-                    p2.get(i).cloned().unwrap_or(Type::Int),
-                ));
-            }
-            Some(Type::Adt {
-                name: n1.clone(),
-                params,
-            })
-        }
-        _ => None,
-    }
+    local_fixed_ty(
+        block,
+        r,
+        index,
+        trait_methods,
+        param_tys,
+        &mut seen,
+        expanding,
+    )
 }
 
 #[cfg(test)]

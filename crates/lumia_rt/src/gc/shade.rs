@@ -4,10 +4,12 @@ use crate::common::{
     header_from_payload, is_heap_payload, may_be_heap_payload_bits, payload_ptr, ObjectHeader,
     TYPE_ADT, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_IOTA, TYPE_MAP, TYPE_SET, TYPE_TASK,
 };
+use crate::container_delta::{delta_len_clamped, mark_delta_parent};
 use crate::heap::{with_heap, Heap};
 use crate::map_set::{map_mark_payload, set_mark_payload};
 use lumia_abi::{
-    list_elem_is_float, map_key_is_float, map_val_is_float, set_elem_is_float, tid_base,
+    list_elem_skip_gc_mark, map_key_is_float, map_val_is_float, set_elem_is_float, tid_base,
+    tid_list_patch,
 };
 
 /// Shade a heap object grey for the incremental full mark (Dijkstra).
@@ -43,7 +45,15 @@ pub(super) fn scan_fields_on(h: &mut Heap, obj: *mut ObjectHeader) {
         let tid = (*obj).type_id;
         match tid_base(tid) {
             TYPE_LIST => {
-                if !list_elem_is_float(tid) {
+                if tid_list_patch(tid) {
+                    // `[len][parent][dn][idx][val]…` — mark parent + heap vals.
+                    mark_delta_parent(h, payload);
+                    let base = payload as *const i64;
+                    let dn = delta_len_clamped(payload, (*obj).size as usize, 2);
+                    for i in 0..dn {
+                        mark_value_on(h, *base.add(4 + i * 2));
+                    }
+                } else if !list_elem_skip_gc_mark(tid) {
                     let n = *(payload as *const i64);
                     let base = payload as *const i64;
                     let max_elems = ((*obj).size as usize).saturating_sub(8) / 8;
@@ -160,4 +170,3 @@ pub(super) fn scan_old_for_young_on(h: &mut Heap, obj: *mut ObjectHeader) {
 pub(super) fn scan_old_for_young(obj: *mut ObjectHeader) {
     with_heap(|h| scan_old_for_young_on(h, obj));
 }
-

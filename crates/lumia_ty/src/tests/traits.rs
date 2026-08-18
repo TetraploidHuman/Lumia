@@ -182,8 +182,8 @@ val main = {
 #[test]
 fn dump_num_vec2_add_ty() {
     use crate::{display_type, infer_module};
-    use lumia_syntax::parse_module;
     use lumia_hir::lower_module;
+    use lumia_syntax::parse_module;
     let src = r#"
 module M
 type Vec2 { val x val y }
@@ -211,7 +211,12 @@ val main = {
     println!("ty dbg = {:?}", t);
     println!("scheme = {:?}", sch);
     if let Some(s) = &sch {
-        println!("needs_mono={} num_vars={:?} vars={:?}", s.needs_mono(), s.num_vars, s.vars);
+        println!(
+            "needs_mono={} num_vars={:?} vars={:?}",
+            s.needs_mono(),
+            s.num_vars,
+            s.vars
+        );
         println!("scheme ty = {}", display_type(&s.ty, &s.num_vars));
     }
 }

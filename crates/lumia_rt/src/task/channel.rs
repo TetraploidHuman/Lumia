@@ -13,9 +13,9 @@ use super::scheduler::{
 };
 use crate::common::trap_abort;
 use crate::concurrency_policy::with_rooted_payload;
+use crate::gc::full_marking_fast;
 use crate::gc::lumia_alloc;
 use crate::heap::with_heap;
-use crate::gc::full_marking_fast;
 use lumia_abi::TYPE_CHANNEL;
 use std::collections::VecDeque;
 
@@ -120,27 +120,27 @@ pub unsafe extern "C" fn lumia_channel_send(handle: *mut u8, value: i64) {
             Cancelled,
         }
         let (step, to_wake) = with_channel_gc(|full, s| {
-                if current_fiber_cancelled_locked(s) {
-                    return (Step::Cancelled, None);
+            if current_fiber_cancelled_locked(s) {
+                return (Step::Cancelled, None);
+            }
+            let map = &mut s.channels;
+            let Some(ch) = map.get_mut(&id) else {
+                return (Step::FailClosed, None);
+            };
+            if ch.closed {
+                return (Step::FailClosed, None);
+            }
+            if ch.buf.len() < ch.cap {
+                ch.buf.push_back(value);
+                if full {
+                    // Dijkstra: mutator write into a GC root set.
+                    crate::gc::mark_value(value);
                 }
-                let map = &mut s.channels;
-                let Some(ch) = map.get_mut(&id) else {
-                    return (Step::FailClosed, None);
-                };
-                if ch.closed {
-                    return (Step::FailClosed, None);
-                }
-                if ch.buf.len() < ch.cap {
-                    ch.buf.push_back(value);
-                    if full {
-                        // Dijkstra: mutator write into a GC root set.
-                        crate::gc::mark_value(value);
-                    }
-                    let w = ch.recv_waiters.pop_front();
-                    return (Step::Done, w);
-                }
-                push_waiter_unique(&mut ch.send_waiters, current_waiter());
-                (Step::Wait, None)
+                let w = ch.recv_waiters.pop_front();
+                return (Step::Done, w);
+            }
+            push_waiter_unique(&mut ch.send_waiters, current_waiter());
+            (Step::Wait, None)
         });
         if let Some(w) = to_wake {
             wake(w);
@@ -186,27 +186,27 @@ pub unsafe extern "C" fn lumia_channel_recv(handle: *mut u8) -> i64 {
             Cancelled,
         }
         let (step, to_wake) = with_channel_gc(|full, s| {
-                if current_fiber_cancelled_locked(s) {
-                    return (Step::Cancelled, None);
+            if current_fiber_cancelled_locked(s) {
+                return (Step::Cancelled, None);
+            }
+            let map = &mut s.channels;
+            let Some(ch) = map.get_mut(&id) else {
+                return (Step::ClosedEmpty, None);
+            };
+            if let Some(v) = ch.buf.pop_front() {
+                // Pin until the next ABI overwrites/clears this thread's handoff.
+                if full {
+                    crate::gc::mark_value(v);
                 }
-                let map = &mut s.channels;
-                let Some(ch) = map.get_mut(&id) else {
-                    return (Step::ClosedEmpty, None);
-                };
-                if let Some(v) = ch.buf.pop_front() {
-                    // Pin until the next ABI overwrites/clears this thread's handoff.
-                    if full {
-                        crate::gc::mark_value(v);
-                    }
-                    s.abi_handoff.insert(tid, v);
-                    let w = ch.send_waiters.pop_front();
-                    return (Step::Value(v), w);
-                }
-                if ch.closed {
-                    return (Step::ClosedEmpty, None);
-                }
-                push_waiter_unique(&mut ch.recv_waiters, current_waiter());
-                (Step::Wait, None)
+                s.abi_handoff.insert(tid, v);
+                let w = ch.send_waiters.pop_front();
+                return (Step::Value(v), w);
+            }
+            if ch.closed {
+                return (Step::ClosedEmpty, None);
+            }
+            push_waiter_unique(&mut ch.recv_waiters, current_waiter());
+            (Step::Wait, None)
         });
         if let Some(w) = to_wake {
             wake(w);
@@ -258,28 +258,28 @@ pub unsafe extern "C" fn lumia_channel_recv_opt(handle: *mut u8, out_ok: *mut i6
             Cancelled,
         }
         let (step, to_wake) = with_channel_gc(|full, s| {
-                if current_fiber_cancelled_locked(s) {
-                    return (Step::Cancelled, None);
+            if current_fiber_cancelled_locked(s) {
+                return (Step::Cancelled, None);
+            }
+            let map = &mut s.channels;
+            let Some(ch) = map.get_mut(&id) else {
+                s.abi_handoff.remove(&tid);
+                return (Step::None, None);
+            };
+            if let Some(v) = ch.buf.pop_front() {
+                if full {
+                    crate::gc::mark_value(v);
                 }
-                let map = &mut s.channels;
-                let Some(ch) = map.get_mut(&id) else {
-                    s.abi_handoff.remove(&tid);
-                    return (Step::None, None);
-                };
-                if let Some(v) = ch.buf.pop_front() {
-                    if full {
-                        crate::gc::mark_value(v);
-                    }
-                    s.abi_handoff.insert(tid, v);
-                    let w = ch.send_waiters.pop_front();
-                    return (Step::Value(v), w);
-                }
-                if ch.closed {
-                    s.abi_handoff.remove(&tid);
-                    return (Step::None, None);
-                }
-                push_waiter_unique(&mut ch.recv_waiters, current_waiter());
-                (Step::Wait, None)
+                s.abi_handoff.insert(tid, v);
+                let w = ch.send_waiters.pop_front();
+                return (Step::Value(v), w);
+            }
+            if ch.closed {
+                s.abi_handoff.remove(&tid);
+                return (Step::None, None);
+            }
+            push_waiter_unique(&mut ch.recv_waiters, current_waiter());
+            (Step::Wait, None)
         });
         if let Some(w) = to_wake {
             wake(w);

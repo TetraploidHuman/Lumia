@@ -16,7 +16,9 @@ mod tests {
         assert!(!Codegen::is_bit_identity_scalar(&Type::Float));
         assert!(!Codegen::is_bit_identity_scalar(&Type::String));
         assert!(!Codegen::is_bit_identity_scalar(&Type::Char));
-        assert!(!Codegen::is_bit_identity_scalar(&Type::List(Box::new(Type::Int))));
+        assert!(!Codegen::is_bit_identity_scalar(&Type::List(Box::new(
+            Type::Int
+        ))));
         assert!(!Codegen::is_bit_identity_scalar(&Type::Var(0)));
     }
 

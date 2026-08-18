@@ -185,7 +185,7 @@ pub fn load_program_with_overlays(
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
-        let mut search_roots = vec![package_root];
+    let mut search_roots = vec![package_root];
     let mut link_args = Vec::new();
     let mut trust_foreign_pure = false;
     if let Some(manifest_path) = crate::pkg::find_manifest(&entry) {
@@ -266,8 +266,6 @@ pub(super) fn normalize_overlays(overlays: &HashMap<PathBuf, String>) -> HashMap
     out
 }
 
-
-
 #[cfg(test)]
 mod overlay_tests {
     use super::*;
@@ -293,10 +291,7 @@ mod overlay_tests {
         .unwrap();
         let link_lib = link.join("Lib.lm");
         let mut overlays = HashMap::default();
-        overlays.insert(
-            link_lib,
-            "module Lib\nval x = \"hi\"\n".into(),
-        );
+        overlays.insert(link_lib, "module Lib\nval x = \"hi\"\n".into());
         let err = crate::check::check_program_with_overlays(&real_main, &overlays, false, None)
             .expect_err("overlay should make x a String");
         let msg = match &err {
@@ -320,11 +315,7 @@ mod overlay_tests {
         let lib = nest.join("Lib.lm");
         fs::write(&lib, "module Lib\nval x = 1\n").unwrap();
         let main = nest.join("Main.lm");
-        fs::write(
-            &main,
-            "module Main\nimport Lib.{x}\nval main = x + 1\n",
-        )
-        .unwrap();
+        fs::write(&main, "module Main\nimport Lib.{x}\nval main = x + 1\n").unwrap();
         // Non-canonical overlay key: .../a/b/../b/Lib.lm
         let weird = nest.join("..").join("b").join("Lib.lm");
         let mut overlays = HashMap::default();
@@ -358,10 +349,7 @@ mod overlay_tests {
         )
         .unwrap();
         let mut overlays = HashMap::default();
-        overlays.insert(
-            real.join("Lib.lm"),
-            "module Lib\nval x = \"hi\"\n".into(),
-        );
+        overlays.insert(real.join("Lib.lm"), "module Lib\nval x = \"hi\"\n".into());
         let link_main = link.join("Main.lm");
         let err = crate::check::check_program_with_overlays(&link_main, &overlays, false, None)
             .expect_err("real-path overlay must apply when entry is symlink");
@@ -383,22 +371,17 @@ mod overlay_tests {
         let lib = dir.join("Lib.lm");
         let main = dir.join("Main.lm");
         fs::write(&lib, "module Lib\nval x = 1\n").unwrap();
-        fs::write(
-            &main,
-            "module Main\nimport Lib.{x}\nval main = x + 1\n",
-        )
-        .unwrap();
+        fs::write(&main, "module Main\nimport Lib.{x}\nval main = x + 1\n").unwrap();
         let cwd = std::env::current_dir().unwrap();
         std::env::set_current_dir(&dir).unwrap();
         let mut overlays = HashMap::default();
         // Relative key as an editor might produce without absolutizing.
-        overlays.insert(PathBuf::from("Lib.lm"), "module Lib\nval x = \"hi\"\n".into());
-        let err = crate::check::check_program_with_overlays(
-            Path::new("Main.lm"),
-            &overlays,
-            false,
-            None,
+        overlays.insert(
+            PathBuf::from("Lib.lm"),
+            "module Lib\nval x = \"hi\"\n".into(),
         );
+        let err =
+            crate::check::check_program_with_overlays(Path::new("Main.lm"), &overlays, false, None);
         let _ = std::env::set_current_dir(&cwd);
         let err = err.expect_err("relative overlay key should apply");
         let msg = match &err {
@@ -493,9 +476,13 @@ mod overlay_tests {
         crate::check::check_program(&lib, true, None).expect("Lib alone ok");
         // IDE entry = Main: Main's type error is visible, Lib is in the graph.
         let entry = resolve_ide_entry(&lib);
-        let partial =
-            crate::check::check_program_with_overlays_recovering(&entry, &HashMap::default(), true, None)
-                .expect("load");
+        let partial = crate::check::check_program_with_overlays_recovering(
+            &entry,
+            &HashMap::default(),
+            true,
+            None,
+        )
+        .expect("load");
         assert!(path_in_loaded_files(&partial.loaded.files, &lib));
         assert!(
             partial.diagnostics.iter().any(|d| {
@@ -526,16 +513,27 @@ mod overlay_tests {
         fs::write(&orphan, "module Orphan\nval y: Int = \"no\"\n").unwrap();
         let entry = resolve_ide_entry(&orphan);
         assert!(paths_same_file(&entry, &main));
-        let via_main =
-            crate::check::check_program_with_overlays_recovering(&entry, &HashMap::default(), true, None)
-                .expect("load Main");
+        let via_main = crate::check::check_program_with_overlays_recovering(
+            &entry,
+            &HashMap::default(),
+            true,
+            None,
+        )
+        .expect("load Main");
         assert!(!path_in_loaded_files(&via_main.loaded.files, &orphan));
         // Fallback: analyze orphan as its own entry (LSP does this).
-        let alone =
-            crate::check::check_program_with_overlays_recovering(&orphan, &HashMap::default(), true, None)
-                .expect("load orphan");
+        let alone = crate::check::check_program_with_overlays_recovering(
+            &orphan,
+            &HashMap::default(),
+            true,
+            None,
+        )
+        .expect("load orphan");
         assert!(
-            alone.diagnostics.iter().any(|d| matches!(d.kind, crate::diag::DiagnosticKind::Type)),
+            alone
+                .diagnostics
+                .iter()
+                .any(|d| matches!(d.kind, crate::diag::DiagnosticKind::Type)),
             "orphan type error must surface on fallback, got {:?}",
             alone.diagnostics
         );

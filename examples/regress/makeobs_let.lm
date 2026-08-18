@@ -1,6 +1,6 @@
 module makeobs_let
 import std.io.{println}
-import std.linalg.{zeros, hypotF}
+import extras.linalg.{zeros, hypotF}
 
 type Eco {
     val ecoX

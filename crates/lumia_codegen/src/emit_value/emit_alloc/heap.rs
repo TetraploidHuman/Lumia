@@ -4,7 +4,9 @@ use super::super::super::Codegen;
 use anyhow::{bail, Context as AnyhowContext, Result};
 use inkwell::values::BasicValueEnum;
 use inkwell::AddressSpace;
-use lumia_abi::{adt_type_id, list_type_id_flags, map_type_id_flags, set_type_id_flags};
+use lumia_abi::{
+    adt_type_id, list_type_id_flags, list_type_id_int, map_type_id_flags, set_type_id_flags,
+};
 use lumia_core::Local;
 use lumia_ty::Type;
 
@@ -37,7 +39,25 @@ impl<'ctx> Codegen<'ctx> {
                         Some(Type::List(e)) if matches!(e.as_ref(), Type::Bool)
                     )
                 });
-        let list_tid = list_type_id_flags(float_elems, bool_elems);
+        let int_elems = !float_elems
+            && !bool_elems
+            && elems
+                .first()
+                .and_then(|e| self.frame.local_tys.get(&e.0).cloned())
+                .map(|t| matches!(t, Type::Int))
+                .unwrap_or_else(|| {
+                    matches!(
+                        &self.frame.expect_alloc_ty,
+                        Some(Type::List(e)) if matches!(e.as_ref(), Type::Int)
+                    )
+                });
+        let list_tid = if float_elems || bool_elems {
+            list_type_id_flags(float_elems, bool_elems)
+        } else if int_elems {
+            list_type_id_int()
+        } else {
+            list_type_id_flags(false, false)
+        };
         if elems.is_empty() {
             if float_elems {
                 let ens = self.runtime_fn(lumia_abi::ENSURE_LIST_F64)?;
@@ -124,8 +144,7 @@ impl<'ctx> Codegen<'ctx> {
         // Empty Set → immortal singleton (like `listOf()`); null still accepted by RT.
         if elems.is_empty() {
             let f = self.runtime_fn("lumia_set_empty")?;
-            let empty_call =
-                crate::error::llvm(self.llvm.builder.build_call(f, &[], "set_empty"))?;
+            let empty_call = crate::error::llvm(self.llvm.builder.build_call(f, &[], "set_empty"))?;
             let mut ptr = empty_call
                 .try_as_basic_value()
                 .basic()
@@ -237,8 +256,7 @@ impl<'ctx> Codegen<'ctx> {
         // Empty Map → immortal singleton (like `listOf()`); null still accepted by RT.
         if flat_pairs.is_empty() {
             let f = self.runtime_fn("lumia_map_empty")?;
-            let empty_call =
-                crate::error::llvm(self.llvm.builder.build_call(f, &[], "map_empty"))?;
+            let empty_call = crate::error::llvm(self.llvm.builder.build_call(f, &[], "map_empty"))?;
             let mut ptr = empty_call
                 .try_as_basic_value()
                 .basic()
@@ -443,10 +461,7 @@ impl<'ctx> Codegen<'ctx> {
             // Young alloc: init stores need no write barrier.
         }
         // After fields are live: set masks, clearing bits that actually hold heap ptrs.
-        let float_mask = self.adt_float_mask_from_fields(fields)?;
-        self.emit_adt_set_float_mask(ptr, float_mask)?;
-        let bool_mask = self.adt_bool_mask_from_fields(fields)?;
-        self.emit_adt_set_bool_mask(ptr, bool_mask)?;
+        self.emit_adt_field_masks_from_fields(ptr, fields)?;
         Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
             ptr,
             self.llvm.i64_ty,
@@ -470,9 +485,7 @@ impl<'ctx> Codegen<'ctx> {
         let mut overwrite_mask = 0u64;
         for &(idx, _) in updates {
             if idx >= 64 {
-                bail!(
-                    "ICE: ADT field index {idx} exceeds 64-bit overwrite mask (with-update)"
-                );
+                bail!("ICE: ADT field index {idx} exceeds 64-bit overwrite mask (with-update)");
             }
             overwrite_mask |= 1u64 << idx;
         }

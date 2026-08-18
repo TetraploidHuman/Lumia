@@ -195,7 +195,7 @@ fn collect_calls_with_funrefs(
         };
         match value {
             Value::Call { fun, .. } => {
-                out.insert(fun.clone());
+                out.insert(fun.name.clone());
             }
             Value::IndirectCall { callee, .. } => {
                 if let Some(fun) = funref_of.get(&callee.0) {
@@ -222,7 +222,7 @@ fn collect_calls_with_funrefs(
             _ => {}
         }
         if let Value::FunRef(name) = value {
-            funref_of.insert(local.0, name.clone());
+            funref_of.insert(local.0, name.name.clone());
         } else if let Value::Local(Local(src)) = value {
             if let Some(n) = funref_of.get(src).cloned() {
                 funref_of.insert(local.0, n);
@@ -238,7 +238,7 @@ fn collect_calls_with_funrefs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lumia_core::{Block, CoreFun, CoreModule, Local, Op, Value, FunKind};
+    use lumia_core::{Block, CoreFun, CoreModule, FunKind, Local, Op, Value};
     use lumia_ty::{Effect, Type};
 
     fn fun(name: &str, body: Block, self_call: Option<&str>) -> CoreFun {
@@ -269,6 +269,9 @@ mod tests {
             external: None,
             foreign_abi: lumia_core::ForeignAbi::C,
             escaping: HashSet::default(),
+            nsw_binop_locals: Default::default(),
+            safe_divisor_locals: Default::default(),
+            nonneg_iv_load_locals: Default::default(),
             scheme_poly: false,
             mono_of: None,
             kind: FunKind::Normal,

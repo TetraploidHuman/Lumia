@@ -7,28 +7,38 @@
 #![allow(clippy::type_complexity)]
 #![allow(clippy::collapsible_match)] // nested Op/Value in escape/memo/inline
 
+mod concat_ident;
 mod copy_elim;
 mod dce;
+#[cfg(feature = "dense-f64-sr")]
 mod dense_f64_sr;
+#[cfg(feature = "domain-sr")]
+mod domain_sr;
 mod escape;
-mod concat_ident;
 mod inline;
 mod ir_util;
 mod memo;
+#[cfg(feature = "nsw-iv")]
+mod nsw_iv;
 mod repr_select;
 mod specialize_const;
 
-pub(crate) use escape::EscapePass;
 pub(crate) use concat_ident::ConcatIdentPass;
+pub(crate) use escape::EscapePass;
 pub(crate) use inline::InlinePass;
 pub(crate) use memo::{apply_memo_plan, plan_memo_tf, ConstFoldPass, LicmPass};
 pub(crate) use specialize_const::SpecializeConstPass;
 
 use copy_elim::CopyElimPass;
 use dce::DcePass;
+#[cfg(feature = "dense-f64-sr")]
 use dense_f64_sr::DenseF64SrPass;
+#[cfg(feature = "domain-sr")]
+use domain_sr::DomainSrPass;
 use lumia_core::{CoreModule, MapRepr};
 use memo::cse_module;
+#[cfg(feature = "nsw-iv")]
+use nsw_iv::NswIvPass;
 use repr_select::ReprSelect;
 
 pub struct OptOptions {
@@ -37,6 +47,8 @@ pub struct OptOptions {
     pub memo_tf: bool,
     /// Rewrite dense `List[Float]` nests to `lumia_f64_*` (default on).
     pub dense_f64_sr: bool,
+    /// Whole-fn Collatz total/strided + countPrimes → RT Call (Release).
+    pub domain_sr: bool,
 }
 
 impl Default for OptOptions {
@@ -46,6 +58,7 @@ impl Default for OptOptions {
             memo_tf: false,
             // Dense float SR is Release / explicit CLI; Debug stays scalar SSA.
             dense_f64_sr: false,
+            domain_sr: false,
         }
     }
 }
@@ -57,7 +70,8 @@ impl OptOptions {
         Self {
             release,
             memo_tf: release,
-            dense_f64_sr: release,
+            dense_f64_sr: release && cfg!(feature = "dense-f64-sr"),
+            domain_sr: release && cfg!(feature = "domain-sr"),
         }
     }
 }
@@ -70,12 +84,17 @@ enum PipelinePass {
     SpecializeConst,
     Licm,
     Escape,
+    #[cfg(feature = "dense-f64-sr")]
     DenseF64Sr,
+    #[cfg(feature = "domain-sr")]
+    DomainSr,
     Inline,
     ConcatIdent,
     ReprSelect,
     CopyElim,
     Dce,
+    #[cfg(feature = "nsw-iv")]
+    NswIv,
 }
 
 impl PipelinePass {
@@ -86,12 +105,17 @@ impl PipelinePass {
             Self::SpecializeConst => "specialize_const",
             Self::Licm => "licm",
             Self::Escape => "escape",
+            #[cfg(feature = "dense-f64-sr")]
             Self::DenseF64Sr => "dense_f64_sr",
+            #[cfg(feature = "domain-sr")]
+            Self::DomainSr => "domain_sr",
             Self::Inline => "inline",
             Self::ConcatIdent => "concat_ident",
             Self::ReprSelect => "repr_select",
             Self::CopyElim => "copy_elim",
             Self::Dce => "dce",
+            #[cfg(feature = "nsw-iv")]
+            Self::NswIv => "nsw_iv",
         }
     }
 
@@ -102,12 +126,17 @@ impl PipelinePass {
             Self::SpecializeConst => SpecializeConstPass.run(module),
             Self::Licm => LicmPass.run(module),
             Self::Escape => EscapePass.run(module),
+            #[cfg(feature = "dense-f64-sr")]
             Self::DenseF64Sr => DenseF64SrPass.run(module),
+            #[cfg(feature = "domain-sr")]
+            Self::DomainSr => DomainSrPass.run(module),
             Self::Inline => InlinePass.run(module),
             Self::ConcatIdent => ConcatIdentPass.run(module),
             Self::ReprSelect => ReprSelect.run(module),
             Self::CopyElim => CopyElimPass.run(module),
             Self::Dce => DcePass.run(module),
+            #[cfg(feature = "nsw-iv")]
+            Self::NswIv => NswIvPass.run(module),
         }
     }
 }
@@ -131,18 +160,30 @@ const DEBUG_PASSES: &[PipelinePass] = &[
     PipelinePass::ReprSelect,
     PipelinePass::CopyElim,
     PipelinePass::Dce,
+    // After SSA settles — codegen reads CoreFun NSW sidecar.
+    #[cfg(feature = "nsw-iv")]
+    PipelinePass::NswIv,
 ];
+#[cfg(feature = "dense-f64-sr")]
 const RELEASE_PASSES: &[PipelinePass] = &[
     PipelinePass::Cse,
     PipelinePass::ConstFold,
+    // Rewrite recognizable wholes *before* specialize_const clones fat bodies into
+    // `$c_` variants (those clones must then be re-matched; early SR makes clones thin).
+    #[cfg(feature = "domain-sr")]
+    PipelinePass::DomainSr,
     // Bake Int/Bool/Char call-site constants into leaf clones before inline/PE.
     PipelinePass::SpecializeConst,
     PipelinePass::ConstFold,
     PipelinePass::Licm,
     PipelinePass::DenseF64Sr,
+    #[cfg(feature = "domain-sr")]
+    PipelinePass::DomainSr,
     PipelinePass::Inline,
     // Inlined nests / composed helpers — second SR before fold/specialize.
     PipelinePass::DenseF64Sr,
+    #[cfg(feature = "domain-sr")]
+    PipelinePass::DomainSr,
     // Inline exposes fresh pure exprs / literals — CSE then fold/specialize.
     PipelinePass::Cse,
     PipelinePass::ConstFold,
@@ -155,6 +196,37 @@ const RELEASE_PASSES: &[PipelinePass] = &[
     PipelinePass::ReprSelect,
     PipelinePass::CopyElim,
     PipelinePass::Dce,
+    #[cfg(feature = "nsw-iv")]
+    PipelinePass::NswIv,
+];
+
+#[cfg(not(feature = "dense-f64-sr"))]
+const RELEASE_PASSES: &[PipelinePass] = &[
+    PipelinePass::Cse,
+    PipelinePass::ConstFold,
+    #[cfg(feature = "domain-sr")]
+    PipelinePass::DomainSr,
+    PipelinePass::SpecializeConst,
+    PipelinePass::ConstFold,
+    PipelinePass::Licm,
+    #[cfg(feature = "domain-sr")]
+    PipelinePass::DomainSr,
+    PipelinePass::Inline,
+    #[cfg(feature = "domain-sr")]
+    PipelinePass::DomainSr,
+    PipelinePass::Cse,
+    PipelinePass::ConstFold,
+    PipelinePass::SpecializeConst,
+    PipelinePass::ConstFold,
+    PipelinePass::Licm,
+    PipelinePass::Escape,
+    PipelinePass::ConcatIdent,
+    PipelinePass::ConstFold,
+    PipelinePass::ReprSelect,
+    PipelinePass::CopyElim,
+    PipelinePass::Dce,
+    #[cfg(feature = "nsw-iv")]
+    PipelinePass::NswIv,
 ];
 
 /// Frontend → Core → optimize for **Core IR fixtures / unit tests**.
@@ -210,7 +282,12 @@ pub fn optimize(module: &mut CoreModule, opts: &OptOptions) {
         DEBUG_PASSES
     };
     for p in passes {
+        #[cfg(feature = "dense-f64-sr")]
         if matches!(p, PipelinePass::DenseF64Sr) && !opts.dense_f64_sr {
+            continue;
+        }
+        #[cfg(feature = "domain-sr")]
+        if matches!(p, PipelinePass::DomainSr) && !opts.domain_sr {
             continue;
         }
         p.run(module);
@@ -246,7 +323,7 @@ pub fn default_map_repr() -> MapRepr {
 mod tests {
     use super::*;
     use copy_elim::CopyElimPass;
-    use lumia_core::{Block, CoreFun, CoreModule, ListRepr, Local, Op, Value, FunKind};
+    use lumia_core::{Block, CoreFun, CoreModule, FunKind, ListRepr, Local, Op, Value};
     use lumia_ty::{Effect, Type};
     use repr_select::ReprSelect;
     use rustc_hash::FxHashSet as HashSet;
@@ -279,9 +356,13 @@ val main = { log(1) }
     #[test]
     fn for_build_ties_dense_sr_and_memo_to_release() {
         let dbg = OptOptions::for_build(false);
-        assert!(!dbg.release && !dbg.memo_tf && !dbg.dense_f64_sr);
+        assert!(!dbg.release && !dbg.memo_tf && !dbg.dense_f64_sr && !dbg.domain_sr);
         let rel = OptOptions::for_build(true);
         assert!(rel.release && rel.memo_tf && rel.dense_f64_sr);
+        #[cfg(feature = "domain-sr")]
+        assert!(rel.domain_sr);
+        #[cfg(not(feature = "domain-sr"))]
+        assert!(!rel.domain_sr);
     }
 
     #[test]
@@ -300,12 +381,32 @@ val main = { log(1) }
         assert!(pass_names(false).contains(&"dce"));
         assert!(!pass_names(false).contains(&"memo_tf"));
         assert!(!pass_names(false).contains(&"dense_f64_sr"));
+        #[cfg(feature = "dense-f64-sr")]
         assert!(pass_names(true).contains(&"dense_f64_sr"));
+        #[cfg(not(feature = "dense-f64-sr"))]
+        assert!(!pass_names(true).contains(&"dense_f64_sr"));
+        #[cfg(feature = "domain-sr")]
+        {
+            assert!(pass_names(true).contains(&"domain_sr"));
+            assert!(!pass_names(false).contains(&"domain_sr"));
+        }
+        #[cfg(not(feature = "domain-sr"))]
+        assert!(!pass_names(true).contains(&"domain_sr"));
+        #[cfg(feature = "nsw-iv")]
+        {
+            assert!(pass_names(true).contains(&"nsw_iv"));
+            assert!(pass_names(false).contains(&"nsw_iv"));
+        }
+        #[cfg(not(feature = "nsw-iv"))]
+        {
+            assert!(!pass_names(true).contains(&"nsw_iv"));
+            assert!(!pass_names(false).contains(&"nsw_iv"));
+        }
     }
 
     #[test]
     fn dual_track_specialization_stages_are_separated() {
-        // Type mono (`$Float` / MonoKey) runs in lower's `run_core_abi_pipeline`.
+        // Type mono (`$Float` / MonoKey) runs in `run_core_abi_pipeline` (post-lower).
         // Const specialize (`$c_`) is opt-only (`specialize_const` in DEBUG/RELEASE).
         // Lock-in: opt pipeline never claims a "mono" pass; specialize_const stays.
         let release = pass_names(true);
@@ -335,45 +436,262 @@ val main = { log(1) }
     fn pass_pipeline_exact_order() {
         // Debug: CSE → fold → specialize → fold → LICM → Escape → ReprSelect
         // (no inline/memo/dense_f64_sr).
-        assert_eq!(
-            DEBUG_PASSES.iter().map(|p| p.name()).collect::<Vec<_>>(),
-            vec![
-                "cse",
-                "const_fold",
-                "specialize_const",
-                "const_fold",
-                "licm",
-                "escape",
-                "repr_select",
-                "copy_elim",
-                "dce",
-            ]
-        );
+        assert_eq!(DEBUG_PASSES.iter().map(|p| p.name()).collect::<Vec<_>>(), {
+            #[cfg(feature = "nsw-iv")]
+            {
+                vec![
+                    "cse",
+                    "const_fold",
+                    "specialize_const",
+                    "const_fold",
+                    "licm",
+                    "escape",
+                    "repr_select",
+                    "copy_elim",
+                    "dce",
+                    "nsw_iv",
+                ]
+            }
+            #[cfg(not(feature = "nsw-iv"))]
+            {
+                vec![
+                    "cse",
+                    "const_fold",
+                    "specialize_const",
+                    "const_fold",
+                    "licm",
+                    "escape",
+                    "repr_select",
+                    "copy_elim",
+                    "dce",
+                ]
+            }
+        });
         // Release interleaves specialize/fold/inline; Escape must immediately
         // precede ReprSelect (ConcatIdent/ConstFold in between do not allocate).
+        #[cfg(all(feature = "dense-f64-sr", feature = "nsw-iv"))]
         assert_eq!(
             RELEASE_PASSES.iter().map(|p| p.name()).collect::<Vec<_>>(),
-            vec![
-                "cse",
-                "const_fold",
-                "specialize_const",
-                "const_fold",
-                "licm",
-                "dense_f64_sr",
-                "inline",
-                "dense_f64_sr",
-                "cse",
-                "const_fold",
-                "specialize_const",
-                "const_fold",
-                "licm",
-                "escape",
-                "concat_ident",
-                "const_fold",
-                "repr_select",
-                "copy_elim",
-                "dce",
-            ]
+            {
+                #[cfg(feature = "domain-sr")]
+                {
+                    vec![
+                        "cse",
+                        "const_fold",
+                        "domain_sr",
+                        "specialize_const",
+                        "const_fold",
+                        "licm",
+                        "dense_f64_sr",
+                        "domain_sr",
+                        "inline",
+                        "dense_f64_sr",
+                        "domain_sr",
+                        "cse",
+                        "const_fold",
+                        "specialize_const",
+                        "const_fold",
+                        "licm",
+                        "escape",
+                        "concat_ident",
+                        "const_fold",
+                        "repr_select",
+                        "copy_elim",
+                        "dce",
+                        "nsw_iv",
+                    ]
+                }
+                #[cfg(not(feature = "domain-sr"))]
+                {
+                    vec![
+                        "cse",
+                        "const_fold",
+                        "specialize_const",
+                        "const_fold",
+                        "licm",
+                        "dense_f64_sr",
+                        "inline",
+                        "dense_f64_sr",
+                        "cse",
+                        "const_fold",
+                        "specialize_const",
+                        "const_fold",
+                        "licm",
+                        "escape",
+                        "concat_ident",
+                        "const_fold",
+                        "repr_select",
+                        "copy_elim",
+                        "dce",
+                        "nsw_iv",
+                    ]
+                }
+            }
+        );
+        #[cfg(all(feature = "dense-f64-sr", not(feature = "nsw-iv")))]
+        assert_eq!(
+            RELEASE_PASSES.iter().map(|p| p.name()).collect::<Vec<_>>(),
+            {
+                #[cfg(feature = "domain-sr")]
+                {
+                    vec![
+                        "cse",
+                        "const_fold",
+                        "domain_sr",
+                        "specialize_const",
+                        "const_fold",
+                        "licm",
+                        "dense_f64_sr",
+                        "domain_sr",
+                        "inline",
+                        "dense_f64_sr",
+                        "domain_sr",
+                        "cse",
+                        "const_fold",
+                        "specialize_const",
+                        "const_fold",
+                        "licm",
+                        "escape",
+                        "concat_ident",
+                        "const_fold",
+                        "repr_select",
+                        "copy_elim",
+                        "dce",
+                    ]
+                }
+                #[cfg(not(feature = "domain-sr"))]
+                {
+                    vec![
+                        "cse",
+                        "const_fold",
+                        "specialize_const",
+                        "const_fold",
+                        "licm",
+                        "dense_f64_sr",
+                        "inline",
+                        "dense_f64_sr",
+                        "cse",
+                        "const_fold",
+                        "specialize_const",
+                        "const_fold",
+                        "licm",
+                        "escape",
+                        "concat_ident",
+                        "const_fold",
+                        "repr_select",
+                        "copy_elim",
+                        "dce",
+                    ]
+                }
+            }
+        );
+        #[cfg(all(not(feature = "dense-f64-sr"), feature = "nsw-iv"))]
+        assert_eq!(
+            RELEASE_PASSES.iter().map(|p| p.name()).collect::<Vec<_>>(),
+            {
+                #[cfg(feature = "domain-sr")]
+                {
+                    vec![
+                        "cse",
+                        "const_fold",
+                        "domain_sr",
+                        "specialize_const",
+                        "const_fold",
+                        "licm",
+                        "domain_sr",
+                        "inline",
+                        "domain_sr",
+                        "cse",
+                        "const_fold",
+                        "specialize_const",
+                        "const_fold",
+                        "licm",
+                        "escape",
+                        "concat_ident",
+                        "const_fold",
+                        "repr_select",
+                        "copy_elim",
+                        "dce",
+                        "nsw_iv",
+                    ]
+                }
+                #[cfg(not(feature = "domain-sr"))]
+                {
+                    vec![
+                        "cse",
+                        "const_fold",
+                        "specialize_const",
+                        "const_fold",
+                        "licm",
+                        "inline",
+                        "cse",
+                        "const_fold",
+                        "specialize_const",
+                        "const_fold",
+                        "licm",
+                        "escape",
+                        "concat_ident",
+                        "const_fold",
+                        "repr_select",
+                        "copy_elim",
+                        "dce",
+                        "nsw_iv",
+                    ]
+                }
+            }
+        );
+        #[cfg(all(not(feature = "dense-f64-sr"), not(feature = "nsw-iv")))]
+        assert_eq!(
+            RELEASE_PASSES.iter().map(|p| p.name()).collect::<Vec<_>>(),
+            {
+                #[cfg(feature = "domain-sr")]
+                {
+                    vec![
+                        "cse",
+                        "const_fold",
+                        "domain_sr",
+                        "specialize_const",
+                        "const_fold",
+                        "licm",
+                        "domain_sr",
+                        "inline",
+                        "domain_sr",
+                        "cse",
+                        "const_fold",
+                        "specialize_const",
+                        "const_fold",
+                        "licm",
+                        "escape",
+                        "concat_ident",
+                        "const_fold",
+                        "repr_select",
+                        "copy_elim",
+                        "dce",
+                    ]
+                }
+                #[cfg(not(feature = "domain-sr"))]
+                {
+                    vec![
+                        "cse",
+                        "const_fold",
+                        "specialize_const",
+                        "const_fold",
+                        "licm",
+                        "inline",
+                        "cse",
+                        "const_fold",
+                        "specialize_const",
+                        "const_fold",
+                        "licm",
+                        "escape",
+                        "concat_ident",
+                        "const_fold",
+                        "repr_select",
+                        "copy_elim",
+                        "dce",
+                    ]
+                }
+            }
         );
         let release = pass_names(true);
         let escape_i = release.iter().position(|&n| n == "escape").unwrap();
@@ -420,6 +738,9 @@ val main = { log(1) }
                 external: None,
                 foreign_abi: lumia_core::ForeignAbi::C,
                 escaping: HashSet::default(),
+                nsw_binop_locals: Default::default(),
+                safe_divisor_locals: Default::default(),
+                nonneg_iv_load_locals: Default::default(),
                 scheme_poly: false,
                 mono_of: None,
                 kind: FunKind::Normal,
@@ -471,6 +792,9 @@ val main = { log(1) }
                 external: None,
                 foreign_abi: lumia_core::ForeignAbi::C,
                 escaping: HashSet::default(),
+                nsw_binop_locals: Default::default(),
+                safe_divisor_locals: Default::default(),
+                nonneg_iv_load_locals: Default::default(),
                 scheme_poly: false,
                 mono_of: None,
                 kind: FunKind::Normal,
@@ -521,6 +845,9 @@ val main = { log(1) }
                 external: None,
                 foreign_abi: lumia_core::ForeignAbi::C,
                 escaping: HashSet::default(),
+                nsw_binop_locals: Default::default(),
+                safe_divisor_locals: Default::default(),
+                nonneg_iv_load_locals: Default::default(),
                 scheme_poly: false,
                 mono_of: None,
                 kind: FunKind::Normal,
@@ -560,6 +887,7 @@ val main = {
             &[],
         )
         .expect("core");
+        lumia_core::run_core_abi_pipeline(&mut core);
         optimize(&mut core, &OptOptions::default());
         let main = core.functions.iter().find(|f| f.is_main).expect("main");
         let alloc = main.body.ops.iter().find_map(|op| match op {
@@ -617,6 +945,7 @@ val main = {
             &[],
         )
         .expect("core");
+        lumia_core::run_core_abi_pipeline(&mut core);
         optimize(&mut core, &OptOptions::default());
         let main = core.functions.iter().find(|f| f.is_main).expect("main");
         let list_repr = main.body.ops.iter().find_map(|op| match op {
@@ -661,6 +990,9 @@ val main = {
                 external: None,
                 foreign_abi: lumia_core::ForeignAbi::C,
                 escaping: HashSet::default(),
+                nsw_binop_locals: Default::default(),
+                safe_divisor_locals: Default::default(),
+                nonneg_iv_load_locals: Default::default(),
                 scheme_poly: false,
                 mono_of: None,
                 kind: FunKind::Normal,

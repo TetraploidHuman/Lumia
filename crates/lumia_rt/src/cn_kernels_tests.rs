@@ -32,7 +32,8 @@ fn nucleus_identity_encoder() {
     let td = from_slice(&[0.0, 0.0, 0.0, 0.0]);
     let err = lumia_list_f64_zeros(size);
     let pred = lumia_list_f64_zeros(size);
-    let mu = unsafe { lumia_cn_nucleus_step(mu, enc, pred_w, bu, td, err, pred, size, 0.5, 1.0, 10.0) };
+    let mu =
+        unsafe { lumia_cn_nucleus_step(mu, enc, pred_w, bu, td, err, pred, size, 0.5, 1.0, 10.0) };
     // err=[1,0,0,0]; delta=err; mu=0.5*err; pred=mu
     assert!((get_f(mu, 0) - 0.5).abs() < 1e-12);
     assert!((get_f(pred, 0) - 0.5).abs() < 1e-12);

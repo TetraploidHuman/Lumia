@@ -13,8 +13,9 @@ use product::{lower_struct_lit, lower_with};
 use super::ctx::LowerCtx;
 use super::hof_fuse::{
     try_fuse_hof_all, try_fuse_hof_any, try_fuse_hof_build_filter, try_fuse_hof_build_map,
-    try_fuse_hof_find, try_fuse_hof_flat_map, try_fuse_hof_fold, try_fuse_hof_get,
-    try_fuse_hof_is_empty, try_fuse_hof_len,
+    try_fuse_hof_contains, try_fuse_hof_drop, try_fuse_hof_find, try_fuse_hof_flat_map,
+    try_fuse_hof_fold, try_fuse_hof_get, try_fuse_hof_is_empty, try_fuse_hof_len,
+    try_fuse_hof_take, try_fuse_hof_to_list, try_fuse_hof_to_map, try_fuse_hof_to_set,
 };
 use super::match_arms::{lower_match, lower_match_cond};
 use crate::ast::{Builtin, Expr, Fun, Item};
@@ -191,16 +192,12 @@ pub(crate) fn lower_expr(ctx: &LowerCtx, e: &lumia_syntax::Expr) -> Expr {
                         }
                     }
                     if name == "map" && args.len() == 1 {
-                        if let Some(fused) =
-                            try_fuse_hof_build_map(ctx, left, &args[0], *span)
-                        {
+                        if let Some(fused) = try_fuse_hof_build_map(ctx, left, &args[0], *span) {
                             return fused;
                         }
                     }
                     if name == "filter" && args.len() == 1 {
-                        if let Some(fused) =
-                            try_fuse_hof_build_filter(ctx, left, &args[0], *span)
-                        {
+                        if let Some(fused) = try_fuse_hof_build_filter(ctx, left, &args[0], *span) {
                             return fused;
                         }
                     }
@@ -229,6 +226,36 @@ pub(crate) fn lower_expr(ctx: &LowerCtx, e: &lumia_syntax::Expr) -> Expr {
                             return fused;
                         }
                     }
+                    if name == "take" && args.len() == 1 {
+                        if let Some(fused) = try_fuse_hof_take(ctx, left, &args[0], *span) {
+                            return fused;
+                        }
+                    }
+                    if (name == "drop" || name == "slice") && args.len() == 1 {
+                        if let Some(fused) = try_fuse_hof_drop(ctx, left, &args[0], *span) {
+                            return fused;
+                        }
+                    }
+                    if name == "contains" && args.len() == 1 {
+                        if let Some(fused) = try_fuse_hof_contains(ctx, left, &args[0], *span) {
+                            return fused;
+                        }
+                    }
+                    if name == "toList" && args.is_empty() {
+                        if let Some(fused) = try_fuse_hof_to_list(ctx, left, *span) {
+                            return fused;
+                        }
+                    }
+                    if name == "toSet" && args.is_empty() {
+                        if let Some(fused) = try_fuse_hof_to_set(ctx, left, *span) {
+                            return fused;
+                        }
+                    }
+                    if name == "toMap" && args.is_empty() {
+                        if let Some(fused) = try_fuse_hof_to_map(ctx, left, *span) {
+                            return fused;
+                        }
+                    }
                 }
             }
             match right.as_ref() {
@@ -246,6 +273,21 @@ pub(crate) fn lower_expr(ctx: &LowerCtx, e: &lumia_syntax::Expr) -> Expr {
                         }
                         if name == "isEmpty" {
                             if let Some(fused) = try_fuse_hof_is_empty(ctx, left, *span) {
+                                return fused;
+                            }
+                        }
+                        if name == "toList" {
+                            if let Some(fused) = try_fuse_hof_to_list(ctx, left, *span) {
+                                return fused;
+                            }
+                        }
+                        if name == "toSet" {
+                            if let Some(fused) = try_fuse_hof_to_set(ctx, left, *span) {
+                                return fused;
+                            }
+                        }
+                        if name == "toMap" {
+                            if let Some(fused) = try_fuse_hof_to_map(ctx, left, *span) {
                                 return fused;
                             }
                         }
@@ -539,11 +581,7 @@ fn prepend_scope_leave_on_return(expr: Expr, scope_span: lumia_syntax::Span) -> 
             alt: Box::new(prepend_scope_leave_on_return(*alt, scope_span)),
             span,
         },
-        Expr::With {
-            base,
-            fields,
-            span,
-        } => Expr::With {
+        Expr::With { base, fields, span } => Expr::With {
             base: Box::new(prepend_scope_leave_on_return(*base, scope_span)),
             fields: fields
                 .into_iter()

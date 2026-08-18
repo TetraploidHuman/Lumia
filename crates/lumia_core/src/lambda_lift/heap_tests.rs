@@ -1,45 +1,66 @@
 use super::*;
 use crate::ir::{Block, Local, Op, Value};
+use crate::value_ty::builtin_result_may_heap;
 use lumia_hir::Builtin;
+use lumia_ty::Type;
 
 #[test]
 fn result_heap_never_builtins_are_non_heap() {
-    assert!(!builtin_result_may_heap(Builtin::ListLen, None));
-    assert!(!builtin_result_may_heap(Builtin::ChannelSend, None));
-    assert!(!builtin_result_may_heap(Builtin::ScopeEnter, None));
+    assert!(!builtin_result_may_heap(Builtin::ListLen, None, || None));
+    assert!(!builtin_result_may_heap(Builtin::ChannelSend, None, || {
+        None
+    }));
+    assert!(!builtin_result_may_heap(Builtin::ScopeEnter, None, || None));
 }
 
 #[test]
 fn typed_recv_join_unstamped_stay_non_heap() {
-    assert!(!builtin_result_may_heap(Builtin::ChannelRecv, None));
-    assert!(!builtin_result_may_heap(Builtin::TaskJoin, None));
+    assert!(!builtin_result_may_heap(Builtin::ChannelRecv, None, || {
+        None
+    }));
+    assert!(!builtin_result_may_heap(Builtin::TaskJoin, None, || None));
     // Other Typed projections stay conservative without a stamp.
-    assert!(builtin_result_may_heap(Builtin::ListGet, None));
-    assert!(builtin_result_may_heap(Builtin::AdtField, None));
+    assert!(builtin_result_may_heap(Builtin::ListGet, None, || None));
+    assert!(builtin_result_may_heap(Builtin::AdtField, None, || None));
 }
 
 #[test]
 fn typed_recv_join_stamped_follow_type_may_heap() {
     assert!(builtin_result_may_heap(
         Builtin::ChannelRecv,
-        Some(&Type::List(Box::new(Type::Float)))
+        Some(&Type::List(Box::new(Type::Float))),
+        || None
     ));
     assert!(builtin_result_may_heap(
         Builtin::TaskJoin,
-        Some(&Type::String)
+        Some(&Type::String),
+        || None
     ));
     assert!(!builtin_result_may_heap(
         Builtin::ChannelRecv,
-        Some(&Type::Int)
+        Some(&Type::Int),
+        || None
     ));
     assert!(!builtin_result_may_heap(
         Builtin::TaskJoin,
-        Some(&Type::Float)
+        Some(&Type::Float),
+        || None
     ));
     assert!(builtin_result_may_heap(
         Builtin::ChannelRecv,
-        Some(&Type::Char)
+        Some(&Type::Char),
+        || None
     ));
+}
+
+#[test]
+fn typed_infer_overrides_unstamped_when_ground() {
+    assert!(!builtin_result_may_heap(Builtin::ListGet, None, || {
+        Some(Type::Int)
+    }));
+    assert!(builtin_result_may_heap(Builtin::ListGet, None, || {
+        Some(Type::List(Box::new(Type::Int)))
+    }));
 }
 
 #[test]

@@ -17,15 +17,11 @@ pub(super) fn lower_call_like(
             op, left, right, ..
         } => {
             let Some(l) = lower_expr(ctx, left, ops, pure_region) else {
-                ctx.note_ice(
-                    "ICE: binary operand lowered to Unit; type checker should reject",
-                );
+                ctx.note_ice("ICE: binary operand lowered to Unit; type checker should reject");
                 return None;
             };
             let Some(r) = lower_expr(ctx, right, ops, pure_region) else {
-                ctx.note_ice(
-                    "ICE: binary operand lowered to Unit; type checker should reject",
-                );
+                ctx.note_ice("ICE: binary operand lowered to Unit; type checker should reject");
                 return None;
             };
             let dest = ctx.fresh();
@@ -42,9 +38,7 @@ pub(super) fn lower_call_like(
         }
         HirExpr::Unary { op, expr, .. } => {
             let Some(o) = lower_expr(ctx, expr, ops, pure_region) else {
-                ctx.note_ice(
-                    "ICE: unary operand lowered to Unit; type checker should reject",
-                );
+                ctx.note_ice("ICE: unary operand lowered to Unit; type checker should reject");
                 return None;
             };
             let dest = ctx.fresh();
@@ -96,7 +90,7 @@ pub(super) fn lower_call_like(
                     let io = ctx.io_funs.contains(n);
                     (
                         Value::Call {
-                            fun: n.to_string(),
+                            fun: n.into(),
                             args: arg_locals,
                         },
                         pure_region && !io,
@@ -197,11 +191,7 @@ pub(super) fn lower_call_like(
 }
 
 /// Stamp ground builtin results from HIR typecheck (`type_at`).
-fn stamp_builtin_result_ty(
-    ctx: &CoreLowerCtx,
-    name: Builtin,
-    expr: &HirExpr,
-) -> Option<Type> {
+fn stamp_builtin_result_ty(ctx: &CoreLowerCtx, name: Builtin, expr: &HirExpr) -> Option<Type> {
     match name {
         // Channel[T] from send/recv typing — avoid erased Int elem.
         Builtin::ChannelNew => {

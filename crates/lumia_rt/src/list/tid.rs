@@ -7,7 +7,9 @@
 
 use crate::common::{header_from_payload, list_elem_is_float, tid_base, TYPE_LIST, TYPE_LIST_IOTA};
 use crate::ensure::ensure_empty_float_retag;
-use lumia_abi::{list_elem_is_bool, list_type_id, list_type_id_flags};
+use lumia_abi::{
+    list_elem_is_bool, list_elem_is_int, list_type_id, list_type_id_flags, list_type_id_int,
+};
 
 #[inline]
 pub(crate) fn list_tid(list: *mut u8) -> u32 {
@@ -18,11 +20,17 @@ pub(crate) fn list_tid(list: *mut u8) -> u32 {
     }
 }
 
-/// Preserve Float/Bool-elem tagging when allocating a derived HeapList.
+/// Preserve Float/Bool/Int-elem tagging when allocating a derived HeapList.
 #[inline]
 pub(crate) fn heap_list_tid(list: *mut u8) -> u32 {
     let tid = list_tid(list);
-    list_type_id_flags(list_elem_is_float(tid), list_elem_is_bool(tid))
+    if list_elem_is_float(tid) || list_elem_is_bool(tid) {
+        list_type_id_flags(list_elem_is_float(tid), list_elem_is_bool(tid))
+    } else if list_elem_is_int(tid) {
+        list_type_id_int()
+    } else {
+        TYPE_LIST
+    }
 }
 
 pub(crate) fn list_float_elems(list: *mut u8) -> bool {

@@ -13,9 +13,7 @@ pub fn parse_exports_payload(after_keyword: &str) -> Vec<String> {
 }
 
 fn exports_keyword_rest(after: &str) -> bool {
-    after.is_empty()
-        || after.starts_with(char::is_whitespace)
-        || after.starts_with(':')
+    after.is_empty() || after.starts_with(char::is_whitespace) || after.starts_with(':')
 }
 
 /// First `/// @exports …` line in module source, if any.
@@ -72,7 +70,10 @@ mod tests {
 
     #[test]
     fn empty_exports_is_some_empty() {
-        assert_eq!(parse_exports_from_source("/// @exports\nmodule M\n"), Some(vec![]));
+        assert_eq!(
+            parse_exports_from_source("/// @exports\nmodule M\n"),
+            Some(vec![])
+        );
         let mut docs = vec!["@exports".into()];
         assert_eq!(take_exports_from_doc_lines(&mut docs), Some(vec![]));
     }

@@ -1,9 +1,7 @@
 //! Auto-parallel eligibility finalization.
 
 use crate::types::{expr_span, Type, TypedModule};
-use lumia_hir::{
-    desugar_list_fold_sequential, desugar_list_map_sequential, Builtin, Expr, Item,
-};
+use lumia_hir::{desugar_list_fold_sequential, desugar_list_map_sequential, Builtin, Expr, Item};
 
 pub(crate) fn is_par_scalar(t: &Type) -> bool {
     matches!(t, Type::Int | Type::Bool | Type::Float)

@@ -6,8 +6,9 @@ use super::super::collections::{
 use super::super::ctx::LowerCtx;
 use super::super::hof_fuse::{
     try_fuse_hof_all, try_fuse_hof_any, try_fuse_hof_build_filter, try_fuse_hof_build_map,
-    try_fuse_hof_find, try_fuse_hof_flat_map, try_fuse_hof_fold, try_fuse_hof_get,
-    try_fuse_hof_is_empty, try_fuse_hof_len,
+    try_fuse_hof_contains, try_fuse_hof_drop, try_fuse_hof_find, try_fuse_hof_flat_map,
+    try_fuse_hof_fold, try_fuse_hof_get, try_fuse_hof_is_empty, try_fuse_hof_len,
+    try_fuse_hof_take, try_fuse_hof_to_list, try_fuse_hof_to_map, try_fuse_hof_to_set,
 };
 use super::lower_expr;
 use crate::ast::{Builtin, Expr};
@@ -109,6 +110,36 @@ pub(super) fn lower_call(
                 return fused;
             }
         }
+        if name == "take" && args.len() == 2 {
+            if let Some(fused) = try_fuse_hof_take(ctx, &args[0], &args[1], span) {
+                return fused;
+            }
+        }
+        if (name == "drop" || name == "slice") && args.len() == 2 {
+            if let Some(fused) = try_fuse_hof_drop(ctx, &args[0], &args[1], span) {
+                return fused;
+            }
+        }
+        if name == "contains" && args.len() == 2 {
+            if let Some(fused) = try_fuse_hof_contains(ctx, &args[0], &args[1], span) {
+                return fused;
+            }
+        }
+        if name == "toList" && args.len() == 1 {
+            if let Some(fused) = try_fuse_hof_to_list(ctx, &args[0], span) {
+                return fused;
+            }
+        }
+        if name == "toSet" && args.len() == 1 {
+            if let Some(fused) = try_fuse_hof_to_set(ctx, &args[0], span) {
+                return fused;
+            }
+        }
+        if name == "toMap" && args.len() == 1 {
+            if let Some(fused) = try_fuse_hof_to_map(ctx, &args[0], span) {
+                return fused;
+            }
+        }
         // Free call to a top-level `val`/`foreign` (e.g. `trim(s)`, `>> trim`):
         // prefer that binding over `Builtin::from_method`. Method calls like
         // `s.trim()` still desugar through `lower_call_from_parts` → builtin,
@@ -175,6 +206,36 @@ pub(super) fn lower_call(
         }
         if field == "get" && args.len() == 1 {
             if let Some(fused) = try_fuse_hof_get(ctx, base, &args[0], span) {
+                return fused;
+            }
+        }
+        if field == "take" && args.len() == 1 {
+            if let Some(fused) = try_fuse_hof_take(ctx, base, &args[0], span) {
+                return fused;
+            }
+        }
+        if (field == "drop" || field == "slice") && args.len() == 1 {
+            if let Some(fused) = try_fuse_hof_drop(ctx, base, &args[0], span) {
+                return fused;
+            }
+        }
+        if field == "contains" && args.len() == 1 {
+            if let Some(fused) = try_fuse_hof_contains(ctx, base, &args[0], span) {
+                return fused;
+            }
+        }
+        if field == "toList" && args.is_empty() {
+            if let Some(fused) = try_fuse_hof_to_list(ctx, base, span) {
+                return fused;
+            }
+        }
+        if field == "toSet" && args.is_empty() {
+            if let Some(fused) = try_fuse_hof_to_set(ctx, base, span) {
+                return fused;
+            }
+        }
+        if field == "toMap" && args.is_empty() {
+            if let Some(fused) = try_fuse_hof_to_map(ctx, base, span) {
                 return fused;
             }
         }

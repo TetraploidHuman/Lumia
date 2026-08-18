@@ -2,7 +2,7 @@
 # Full CogniNucleus-ish step microbench (Release).
 #
 # Extends the hot GEMV/Hebbian path with sensory fill/scale/add, gate mul, and
-# weight decay. Compares `std.linalg` vs nested loops under `--no-dense-f64-sr`.
+# weight decay. Compares `extras.linalg` vs nested loops under `--no-dense-f64-sr`.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck disable=SC1091

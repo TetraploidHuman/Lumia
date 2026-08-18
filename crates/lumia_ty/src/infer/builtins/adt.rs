@@ -344,12 +344,7 @@ impl Infer {
                     .get(want)
                     .and_then(|v| v.get(idx).copied())
                     .unwrap_or(false);
-                let total = self
-                    .products
-                    .sum_max_arity
-                    .get(&adt)
-                    .copied()
-                    .unwrap_or(0);
+                let total = self.products.sum_max_arity.get(&adt).copied().unwrap_or(0);
                 let params: Vec<Type> = (0..total).map(|_| self.fresh()).collect();
                 let adt_ty = Type::Adt {
                     name: adt.clone(),

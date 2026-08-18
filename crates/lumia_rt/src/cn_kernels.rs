@@ -11,7 +11,9 @@
 
 use crate::common::{list_rc_is_unique, trap_abort, GcInhibitGuard, TYPE_LIST_F64};
 use crate::gc::{list_payload_bytes, lumia_alloc};
-use crate::list::{f64_elems, f64_elems_mut, force_heap_list, list_float_elems, list_len_of, require_len};
+use crate::list::{
+    f64_elems, f64_elems_mut, force_heap_list, list_float_elems, list_len_of, require_len,
+};
 use std::ptr;
 
 const MAX_DIM: usize = 64;
@@ -248,7 +250,12 @@ pub unsafe extern "C" fn lumia_cn_backproj_clamp(
 /// # Safety
 /// Caller must pass null or valid `TYPE_LIST_F64` / Float-elem list buffers as required by the kernel contract.
 #[no_mangle]
-pub unsafe extern "C" fn lumia_cn_axpy_clamp(y: *mut u8, alpha: f64, x: *mut u8, clip: f64) -> *mut u8 {
+pub unsafe extern "C" fn lumia_cn_axpy_clamp(
+    y: *mut u8,
+    alpha: f64,
+    x: *mut u8,
+    clip: f64,
+) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
     let x = force_f64(x);
     let y = ensure_unique_f64(y);
@@ -394,7 +401,7 @@ pub unsafe extern "C" fn lumia_cn_learn_generative(
         {
             trap_abort("lumia: cn learn_generative aliased buffers");
         }
-        // Match composed `std.linalg` path bit-for-bit:
+        // Match composed `extras.linalg` path bit-for-bit:
         //   scale(keep); pred += lr·(μ⊗err); tmp=π·err; enc += (lr/2)·(err⊗tmp); clamp
         // (Do **not** fuse `(lr/2)·ei·π` — that changes IEEE association vs addmm.)
         let mut err_s = [0.0_f64; MAX_DIM];

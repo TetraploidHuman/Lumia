@@ -1,8 +1,8 @@
 //! Local const-fold + copy-prop (DESIGN §7.5.1-A).
 
-use lumia_core::{Block, Local, Op, Value};
-use lumia_hir::Builtin;
+use lumia_core::{for_each_ctrl_nested_block_mut, Block, Local, Op, Value};
 use lumia_core::{CoreBinOp as BinOp, CoreUnOp as UnOp};
+use lumia_hir::Builtin;
 use rustc_hash::FxHashMap as HashMap;
 
 use super::cse::rewrite_value;
@@ -174,46 +174,18 @@ pub(crate) fn const_fold_block(block: &mut Block) {
                         let local_id = local.0;
                         env.fold_builtin(name, &args, local_id, value);
                     }
-                    Value::If {
-                        then_block,
-                        else_block,
-                        ..
-                    } => {
-                        const_fold_block(then_block);
-                        const_fold_block(else_block);
-                    }
-                    Value::Loop {
-                        header,
-                        body,
-                        latch,
-                    } => {
-                        const_fold_block(header);
-                        const_fold_block(body);
-                        const_fold_block(latch);
+                    v @ (Value::If { .. } | Value::Loop { .. }) => {
+                        for_each_ctrl_nested_block_mut(v, &mut |nested| {
+                            const_fold_block(nested);
+                        });
                     }
                     _ => {}
                 }
             }
             Op::Let { value, .. } => {
-                if let Value::If {
-                    then_block,
-                    else_block,
-                    ..
-                } = value
-                {
-                    const_fold_block(then_block);
-                    const_fold_block(else_block);
-                }
-                if let Value::Loop {
-                    header,
-                    body,
-                    latch,
-                } = value
-                {
-                    const_fold_block(header);
-                    const_fold_block(body);
-                    const_fold_block(latch);
-                }
+                for_each_ctrl_nested_block_mut(value, &mut |nested| {
+                    const_fold_block(nested);
+                });
             }
             _ => {}
         }

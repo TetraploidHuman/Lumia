@@ -1,6 +1,6 @@
-use lumia_core::{Block, CoreModule, Local, Op, Value};
-use lumia_hir::Builtin;
+use lumia_core::{for_each_ctrl_nested_block_mut, Block, CoreModule, Local, Op, Value};
 use lumia_core::{CoreBinOp as BinOp, CoreUnOp as UnOp};
+use lumia_hir::Builtin;
 use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
@@ -81,48 +81,16 @@ fn cse_block(
                         seen.insert(key, local.0);
                     }
                 }
-                if let Value::If {
-                    then_block,
-                    else_block,
-                    ..
-                } = value
-                {
-                    cse_block(then_block, pure_funs, float_rets, float_locals);
-                    cse_block(else_block, pure_funs, float_rets, float_locals);
-                }
-                if let Value::Loop {
-                    header,
-                    body,
-                    latch,
-                } = value
-                {
-                    cse_block(header, pure_funs, float_rets, float_locals);
-                    cse_block(body, pure_funs, float_rets, float_locals);
-                    cse_block(latch, pure_funs, float_rets, float_locals);
-                }
+                for_each_ctrl_nested_block_mut(value, &mut |nested| {
+                    cse_block(nested, pure_funs, float_rets, float_locals);
+                });
             }
             Op::Let { local, value, .. } => {
                 rewrite_value(value, &rewrite);
                 note_float_local(local.0, value, float_locals, float_rets);
-                if let Value::If {
-                    then_block,
-                    else_block,
-                    ..
-                } = value
-                {
-                    cse_block(then_block, pure_funs, float_rets, float_locals);
-                    cse_block(else_block, pure_funs, float_rets, float_locals);
-                }
-                if let Value::Loop {
-                    header,
-                    body,
-                    latch,
-                } = value
-                {
-                    cse_block(header, pure_funs, float_rets, float_locals);
-                    cse_block(body, pure_funs, float_rets, float_locals);
-                    cse_block(latch, pure_funs, float_rets, float_locals);
-                }
+                for_each_ctrl_nested_block_mut(value, &mut |nested| {
+                    cse_block(nested, pure_funs, float_rets, float_locals);
+                });
             }
             Op::Assign { value, .. } | Op::Return { value } => {
                 if let Some(&r) = rewrite.get(&value.0) {
@@ -157,7 +125,7 @@ fn note_float_local(
             left,
             right,
         } => float_locals.contains(&left.0) && float_locals.contains(&right.0),
-        Value::Call { fun, .. } => float_rets.contains(fun),
+        Value::Call { fun, .. } => float_rets.contains(fun.as_str()),
         _ => false,
     };
     if is_float {
@@ -201,12 +169,11 @@ fn expr_key(
             }
         }
         Value::Binary { op, left, right } => Some(ExprKey::Binary(*op, left.0, right.0)),
-        Value::Builtin { name, args, .. } if builtin_is_pure(name) => Some(ExprKey::Builtin(
-            *name,
-            args.iter().map(|a| a.0).collect(),
-        )),
-        Value::Call { fun, args } if pure_funs.contains(fun) => Some(ExprKey::Call(
-            fun.clone(),
+        Value::Builtin { name, args, .. } if builtin_is_pure(name) => {
+            Some(ExprKey::Builtin(*name, args.iter().map(|a| a.0).collect()))
+        }
+        Value::Call { fun, args } if pure_funs.contains(fun.as_str()) => Some(ExprKey::Call(
+            fun.name.clone(),
             args.iter().map(|a| a.0).collect(),
         )),
         _ => None,

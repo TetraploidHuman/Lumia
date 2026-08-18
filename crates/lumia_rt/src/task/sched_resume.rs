@@ -114,8 +114,7 @@ pub(crate) fn resume_fiber(fid: FiberId) {
             }
         }
         let task = slot.task;
-        let cancelled =
-            s.tasks.get(&task).is_some_and(|t| t.cancelled) || slot.reclaim_home;
+        let cancelled = s.tasks.get(&task).is_some_and(|t| t.cancelled) || slot.reclaim_home;
         Some((task, cancelled))
     });
     let Some((task_id, cancelled)) = claim else {
@@ -291,14 +290,9 @@ pub(crate) fn resume_fiber(fid: FiberId) {
                 Parked,
             }
             let out = with_sched(|s| {
-                let cancelled = s
-                    .fibers
-                    .get(&fid)
-                    .is_some_and(|slot| {
-                        slot.reclaim_home
-                            || s.tasks.get(&slot.task).is_some_and(|t| t.cancelled)
-                    })
-                    || !s.fibers.contains_key(&fid);
+                let cancelled = s.fibers.get(&fid).is_some_and(|slot| {
+                    slot.reclaim_home || s.tasks.get(&slot.task).is_some_and(|t| t.cancelled)
+                }) || !s.fibers.contains_key(&fid);
                 if cancelled {
                     if let Some(mut slot) = s.fibers.remove(&fid) {
                         slot.running = false;

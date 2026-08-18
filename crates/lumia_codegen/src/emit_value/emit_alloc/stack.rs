@@ -45,9 +45,13 @@ impl<'ctx> Codegen<'ctx> {
             .llvm
             .i64_ty
             .const_int(type_id | (payload_bytes << 32), false);
-        for (i, val) in [hdr0, self.llvm.i64_ty.const_int(1, false), self.llvm.i64_ty.const_int(0, false)]
-            .into_iter()
-            .enumerate()
+        for (i, val) in [
+            hdr0,
+            self.llvm.i64_ty.const_int(1, false),
+            self.llvm.i64_ty.const_int(0, false),
+        ]
+        .into_iter()
+        .enumerate()
         {
             let slot = unsafe {
                 crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
@@ -60,15 +64,17 @@ impl<'ctx> Codegen<'ctx> {
             crate::error::llvm(self.llvm.builder.build_store(slot, val))?;
         }
         let payload = unsafe {
-            crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
-                self.llvm.i64_ty,
-                storage,
-                &[self
-                    .llvm
-                    .i64_ty
-                    .const_int(lumia_abi::OBJECT_HEADER_WORDS as u64, false)],
-                "stk_payload",
-            ))?
+            crate::error::llvm(
+                self.llvm.builder.build_in_bounds_gep(
+                    self.llvm.i64_ty,
+                    storage,
+                    &[self
+                        .llvm
+                        .i64_ty
+                        .const_int(lumia_abi::OBJECT_HEADER_WORDS as u64, false)],
+                    "stk_payload",
+                ),
+            )?
         };
         Ok((storage, payload))
     }
@@ -91,15 +97,17 @@ impl<'ctx> Codegen<'ctx> {
         for (i, e) in fields.iter().enumerate() {
             let v = self.coerce_i64(self.local(*e)?)?;
             let slot = unsafe {
-                crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
-                    self.llvm.i64_ty,
-                    storage,
-                    &[self
-                        .llvm
-                        .i64_ty
-                        .const_int((lumia_abi::OBJECT_HEADER_WORDS + 1 + i) as u64, false)],
-                    "adt_f",
-                ))?
+                crate::error::llvm(
+                    self.llvm.builder.build_in_bounds_gep(
+                        self.llvm.i64_ty,
+                        storage,
+                        &[self
+                            .llvm
+                            .i64_ty
+                            .const_int((lumia_abi::OBJECT_HEADER_WORDS + 1 + i) as u64, false)],
+                        "adt_f",
+                    ),
+                )?
             };
             crate::error::llvm(self.llvm.builder.build_store(slot, v))?;
             // Stack parent still aliases nested heap List/ADT for COW RC.
@@ -109,10 +117,7 @@ impl<'ctx> Codegen<'ctx> {
                 }
             }
         }
-        let float_mask = self.adt_float_mask_from_fields(fields)?;
-        self.emit_adt_set_float_mask(payload, float_mask)?;
-        let bool_mask = self.adt_bool_mask_from_fields(fields)?;
-        self.emit_adt_set_bool_mask(payload, bool_mask)?;
+        self.emit_adt_field_masks_from_fields(payload, fields)?;
         Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
             payload,
             self.llvm.i64_ty,
@@ -138,15 +143,17 @@ impl<'ctx> Codegen<'ctx> {
         for (i, e) in elems.iter().enumerate() {
             let v = self.coerce_i64(self.local(*e)?)?;
             let slot = unsafe {
-                crate::error::llvm(self.llvm.builder.build_in_bounds_gep(
-                    self.llvm.i64_ty,
-                    storage,
-                    &[self
-                        .llvm
-                        .i64_ty
-                        .const_int((lumia_abi::OBJECT_HEADER_WORDS + 1 + i) as u64, false)],
-                    "sa_elem",
-                ))?
+                crate::error::llvm(
+                    self.llvm.builder.build_in_bounds_gep(
+                        self.llvm.i64_ty,
+                        storage,
+                        &[self
+                            .llvm
+                            .i64_ty
+                            .const_int((lumia_abi::OBJECT_HEADER_WORDS + 1 + i) as u64, false)],
+                        "sa_elem",
+                    ),
+                )?
             };
             crate::error::llvm(self.llvm.builder.build_store(slot, v))?;
             if let Some(ty) = self.frame.local_tys.get(&e.0) {

@@ -12,15 +12,15 @@
 
 use inkwell::values::{BasicValueEnum, FunctionValue};
 use inkwell::IntPredicate;
-use lumia_core::{local_let_matches, Block, Local, Op, Value};
+use lumia_core::{Block, Local, Op, Value};
 use rustc_hash::FxHashMap as HashMap;
 
 use super::super::Codegen;
 use super::sr_pattern::{
-    body_assigns_unit_inc, body_assigns_zero_or_false, header_le_const, header_name_sq_le_name,
-    is_name_ne_zero, is_unit_inc, local_is_zero_or_false, name_of, rem_eq_zero_names,
+    body_assigns_unit_inc, header_name_sq_le_name, is_unit_inc, local_is_zero_or_false,
+    rem_eq_zero_names,
 };
-use anyhow::{Context as AnyhowContext, Result};
+use anyhow::Result;
 
 #[derive(Debug)]
 struct TrialDivLoop {
@@ -29,45 +29,7 @@ struct TrialDivLoop {
     ok: String,
 }
 
-#[derive(Debug)]
-struct CountPrimesLoop {
-    count: String,
-    n: String,
-    limit: i64,
-}
-
 impl<'ctx> Codegen<'ctx> {
-    /// Outer `for n ≤ LIMIT { if isPrime(n) { c++ } }` → sieve runtime.
-    pub(crate) fn try_emit_count_primes_loop(
-        &mut self,
-        header: &Block,
-        body: &Block,
-        latch: &Block,
-        _fv: FunctionValue<'ctx>,
-    ) -> Result<Option<BasicValueEnum<'ctx>>> {
-        let Some(pat) = match_count_primes_loop(header, body, latch, &self.frame.leaf_defs) else {
-            return Ok(None);
-        };
-        // Sieve counts `2..=limit` from a zero accumulator.
-        if !self.slot_known_eq(&pat.n, 2) || !self.slot_known_eq(&pat.count, 0) {
-            return Ok(None);
-        }
-        let rt = self.runtime_fn("lumia_count_primes")?;
-        let lim = self.llvm.i64_ty.const_int(pat.limit as u64, true);
-        let call = crate::error::llvm(self.llvm.builder.build_call(rt, &[lim.into()], "nprimes"))?;
-        let c = call
-            .try_as_basic_value()
-            .basic()
-            .context("count_primes result")?
-            .into_int_value();
-        self.store_slot_i64(&pat.count, c)?;
-        self.store_slot_i64(
-            &pat.n,
-            self.llvm.i64_ty.const_int((pat.limit + 1) as u64, true),
-        )?;
-        Ok(Some(self.llvm.i64_ty.const_int(0, false).into()))
-    }
-
     /// If `header`/`body`/`latch` form a trial-division loop, emit the odd-step path.
     pub(crate) fn try_emit_trial_div_loop(
         &mut self,
@@ -175,131 +137,6 @@ fn match_trial_div_loop(
     Some(TrialDivLoop { d, n, ok })
 }
 
-/// `for n ≤ LIMIT { … trial-div on n …; if ok { c += 1 }; n += 1 }`.
-fn match_count_primes_loop(
-    header: &Block,
-    body: &Block,
-    latch: &Block,
-    defs: &HashMap<u32, Value>,
-) -> Option<CountPrimesLoop> {
-    if !latch.ops.is_empty() {
-        return None;
-    }
-    let (n, limit) = header_le_const(header, defs)?;
-    if limit < 2 {
-        return None;
-    }
-    let mut ok_name: Option<String> = None;
-    let mut saw_trial = false;
-    // Nested trial loop on the same `n`.
-    fn walk(
-        b: &Block,
-        n: &str,
-        defs: &HashMap<u32, Value>,
-        ok: &mut Option<String>,
-        saw: &mut bool,
-    ) {
-        for op in &b.ops {
-            if let Op::Let {
-                value:
-                    Value::Loop {
-                        header,
-                        body,
-                        latch,
-                    },
-                ..
-            } = op
-            {
-                if let Some(p) = match_trial_div_loop(header, body, latch, defs) {
-                    if p.n == n {
-                        *saw = true;
-                        *ok = Some(p.ok);
-                    }
-                }
-                walk(body, n, defs, ok, saw);
-            }
-            if let Op::Let {
-                value:
-                    Value::If {
-                        then_block,
-                        else_block,
-                        ..
-                    },
-                ..
-            } = op
-            {
-                walk(then_block, n, defs, ok, saw);
-                walk(else_block, n, defs, ok, saw);
-            }
-        }
-    }
-    walk(body, &n, defs, &mut ok_name, &mut saw_trial);
-    if !saw_trial {
-        return None;
-    }
-    let ok = ok_name?;
-    let mut count_name: Option<String> = None;
-    let mut saw_n_inc = false;
-    for op in &body.ops {
-        match op {
-            Op::Assign {
-                name,
-                value: Local(v),
-            } => {
-                if name == &n && is_unit_inc(*v, &n, defs) {
-                    saw_n_inc = true;
-                }
-            }
-            Op::Let {
-                value: Value::If {
-                    cond, then_block, ..
-                },
-                ..
-            } => {
-                // `if ok { c += 1 }` — cond may be Name(ok), `ok != 0`, or the
-                // SSA result of an inlined `isPrime` `If` (`Value::If` is not in
-                // leaf_defs). Reject trial then-arms that clear `ok` (false/0).
-                let mut then_defs = defs.clone();
-                for top in &then_block.ops {
-                    if let Op::Let { local, value, .. } = top {
-                        then_defs.insert(local.0, value.clone());
-                    }
-                }
-                let cond_ok = name_of(*cond, defs).as_deref() == Some(ok.as_str())
-                    || is_name_ne_zero(*cond, &ok, defs)
-                    || (local_let_matches(*cond, body, |v| matches!(v, Value::If { .. }))
-                        && !body_assigns_zero_or_false(then_block, &ok, &then_defs));
-                if !cond_ok {
-                    continue;
-                }
-                for top in &then_block.ops {
-                    if let Op::Assign {
-                        name,
-                        value: Local(v),
-                    } = top
-                    {
-                        if name != &n && name != &ok && is_unit_inc(*v, name, defs) {
-                            count_name = Some(name.clone());
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    if saw_n_inc {
-        Some(CountPrimesLoop {
-            count: count_name?,
-            n,
-            limit,
-        })
-    } else {
-        None
-    }
-}
-
-
-/// Trial loop body: `if n % d == 0 { ok = false; break } else { d += 1 }` (or latch step).
 fn body_trial_parts(body: &Block, d: &str, n: &str, defs: &HashMap<u32, Value>) -> Option<String> {
     let mut ok_name: Option<String> = None;
     let mut saw_break = false;

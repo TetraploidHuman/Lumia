@@ -55,7 +55,7 @@ fn seed_value_shallow(
 ) {
     match value {
         Value::Call { fun, args } => {
-            // Summaries keyed by EscapeFunId; Call resolves name → id.
+            // Prefer CallTarget.id; name fallback for unresolved callees.
             if let Some(pe) = summaries.lookup_call(fun) {
                 for (i, a) in args.iter().enumerate() {
                     if pe.get(i).copied().unwrap_or(true) {

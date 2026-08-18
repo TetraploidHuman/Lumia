@@ -3,7 +3,7 @@
 #
 # Vis→pfc→mot with clusterRates, projectError, updateState lateral,
 # learnGenerative, Hebbian μ⊗ε, EFE + argmax. Kernel uses extras.cn fused ops;
-# naive composes the new pieces via std.linalg.
+# naive composes the new pieces via extras.linalg.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck disable=SC1091

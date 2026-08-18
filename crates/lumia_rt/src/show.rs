@@ -15,7 +15,7 @@ use crate::common::{
 use crate::gc::lumia_alloc;
 use crate::list::{list_float_elems, list_get_of, list_len_of};
 use crate::map_set::{
-    map_count, map_float_keys, map_float_vals, map_pair_at, set_elem_at, set_float_elems,
+    map_count, map_float_keys, map_float_vals, map_pair_at, set_count, set_elem_at, set_float_elems,
 };
 use crate::string_io::lumia_alloc_string;
 use lumia_abi::{adt_show_kind, is_list_tid, is_map_tid, is_set_tid};
@@ -91,12 +91,7 @@ fn append_show_value(buf: &mut String, bits: i64, as_float: bool, as_bool: bool)
     if is_list_tid(tid) {
         // SAFETY: list payload; float/bool elems read tid only.
         unsafe {
-            append_show_list(
-                buf,
-                p,
-                list_float_elems(p),
-                crate::list::list_bool_elems(p),
-            );
+            append_show_list(buf, p, list_float_elems(p), crate::list::list_bool_elems(p));
         }
         return;
     }
@@ -132,12 +127,7 @@ unsafe fn append_show_list(buf: &mut String, list: *mut u8, float_elems: bool, b
     buf.push(']');
 }
 
-unsafe fn append_show_map(
-    buf: &mut String,
-    map: *mut u8,
-    key_as_bool: bool,
-    val_as_bool: bool,
-) {
+unsafe fn append_show_map(buf: &mut String, map: *mut u8, key_as_bool: bool, val_as_bool: bool) {
     buf.push('{');
     let n = map_count(map);
     let float_keys = map_float_keys(map);
@@ -157,11 +147,7 @@ unsafe fn append_show_map(
 
 unsafe fn append_show_set(buf: &mut String, set: *mut u8, bool_elems: bool) {
     buf.push_str("#{");
-    let n = if set.is_null() {
-        0i64
-    } else {
-        *(set as *const i64)
-    };
+    let n = set_count(set);
     let float_elems = set_float_elems(set);
     for i in 0..n as usize {
         if i > 0 {
@@ -262,11 +248,7 @@ pub extern "C" fn lumia_show(x: i64) -> *mut u8 {
                 return alloc_from_buf(s);
             }
             // Containers / ADTs: one Rust buffer → one heap String (no nested show allocs).
-            if tid_base(tid) == TYPE_ADT
-                || is_list_tid(tid)
-                || is_map_tid(tid)
-                || is_set_tid(tid)
-            {
+            if tid_base(tid) == TYPE_ADT || is_list_tid(tid) || is_map_tid(tid) || is_set_tid(tid) {
                 let mut s = String::new();
                 append_show_value(&mut s, x, false, false);
                 return alloc_from_buf(&s);
@@ -413,11 +395,7 @@ pub extern "C" fn lumia_show_list_adt(list: i64, float_mask: i64, bool_mask: i64
     }
 }
 
-pub(crate) unsafe fn show_adt_masked(
-    payload: *mut u8,
-    float_mask: u64,
-    bool_mask: u64,
-) -> *mut u8 {
+pub(crate) unsafe fn show_adt_masked(payload: *mut u8, float_mask: u64, bool_mask: u64) -> *mut u8 {
     show_adt_masked_named(payload, float_mask, bool_mask, std::ptr::null(), 0)
 }
 
@@ -446,8 +424,7 @@ pub extern "C" fn lumia_show_adt(x: i64, float_mask: i64, bool_mask: i64) -> *mu
     if unsafe { tid_base((*h).type_id) != TYPE_ADT } {
         return lumia_show(x);
     }
-    let fmask =
-        (float_mask as u64) | unsafe { crate::common::adt_float_mask((*h)._pad) };
+    let fmask = (float_mask as u64) | unsafe { crate::common::adt_float_mask((*h)._pad) };
     let bmask = (bool_mask as u64) | unsafe { crate::common::adt_bool_mask((*h)._pad) };
     // SAFETY: ADT payload verified.
     unsafe { show_adt_masked(p, fmask, bmask) }

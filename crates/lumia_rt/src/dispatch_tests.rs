@@ -1,7 +1,10 @@
 use super::*;
 use crate::common::header_from_payload;
-use crate::list::{lumia_list_append, lumia_list_empty, lumia_list_len};
-use crate::map_set::{lumia_map_set, lumia_set_insert};
+use crate::list::{lumia_list_append, lumia_list_empty, lumia_list_len, lumia_list_retain};
+use crate::map_set::{
+    lumia_map_remove, lumia_map_set, lumia_set_insert, lumia_set_remove, map_is_overlay,
+    set_is_overlay,
+};
 use crate::string_io::lumia_alloc_string;
 use std::ptr;
 
@@ -20,6 +23,21 @@ fn len_null_and_list_map_set_string() {
         assert_eq!(lumia_len(s), 1);
         let st = lumia_alloc_string(b"hi".as_ptr(), 2);
         assert_eq!(lumia_len(st), 2);
+    }
+}
+
+#[test]
+fn len_set_overlay_uses_logical_count() {
+    unsafe {
+        let mut s = ptr::null_mut();
+        for i in 0..9 {
+            s = lumia_set_insert(s, i);
+        }
+        // Unique hash inserts in place; Overlay is for a shared parent.
+        lumia_list_retain(s);
+        s = lumia_set_insert(s, 100);
+        assert!(set_is_overlay(s));
+        assert_eq!(lumia_len(s), 10);
     }
 }
 
@@ -47,6 +65,155 @@ fn get_null_empty_map_yields_none() {
         assert_eq!(*(none as *const i64), 1);
         let again = lumia_get(ptr::null_mut(), 42, 0, 1, 0, 0);
         assert_eq!(none, again, "immortal None singleton");
+    }
+}
+
+#[test]
+fn map_set_unique_linear_updates_in_place() {
+    unsafe {
+        let m = lumia_map_set(ptr::null_mut(), 1, 10);
+        let m2 = lumia_map_set(m, 1, 99);
+        assert_eq!(m, m2, "unique linear map must update value in place");
+        let m3 = lumia_map_set(m2, 2, 20);
+        assert_eq!(m2, m3, "unique linear map must append with spare capacity");
+    }
+}
+
+#[test]
+fn map_set_unique_overlay_updates_in_place() {
+    unsafe {
+        let mut m = ptr::null_mut();
+        for i in 0..8 {
+            m = lumia_map_set(m, i, i);
+        }
+        let hash = lumia_map_set(m, 8, 8);
+        // Shared hash forces Overlay; unique overlay then mutates in place.
+        lumia_list_retain(hash);
+        let ov1 = lumia_map_set(hash, 99, 1);
+        assert!(map_is_overlay(ov1));
+        let ov2 = lumia_map_set(ov1, 99, 2);
+        assert_eq!(ov1, ov2, "unique overlay must update in place");
+        let ov3 = lumia_map_set(ov2, 100, 3);
+        assert_eq!(ov2, ov3, "unique overlay must append in place");
+    }
+}
+
+#[test]
+fn set_insert_existing_is_identity() {
+    unsafe {
+        let s = lumia_set_insert(ptr::null_mut(), 7);
+        let s2 = lumia_set_insert(s, 7);
+        assert_eq!(s, s2, "inserting an existing element must be identity");
+        let s3 = lumia_set_insert(s2, 8);
+        assert_eq!(s2, s3, "unique linear set must append with spare capacity");
+    }
+}
+
+#[test]
+fn map_remove_missing_is_identity() {
+    unsafe {
+        let mut m = lumia_map_set(ptr::null_mut(), 1, 10);
+        m = lumia_map_set(m, 2, 20);
+        let miss = lumia_map_remove(m, 99);
+        assert_eq!(m, miss, "removing a missing key must be identity");
+        let m2 = lumia_map_remove(m, 1);
+        assert_eq!(m, m2, "unique linear map remove must compact in place");
+        assert_eq!(lumia_len(m2), 1);
+        assert_eq!(lumia_contains(m2, 2), 1);
+        assert_eq!(lumia_contains(m2, 1), 0);
+    }
+}
+
+#[test]
+fn set_remove_missing_is_identity() {
+    unsafe {
+        let s = lumia_set_insert(ptr::null_mut(), 7);
+        let s2 = lumia_set_remove(s, 99);
+        assert_eq!(s, s2, "removing a missing elem must be identity");
+        let s3 = lumia_set_insert(s2, 8);
+        let s4 = lumia_set_remove(s3, 7);
+        assert_eq!(s3, s4, "unique linear set remove must compact in place");
+        assert_eq!(lumia_len(s4), 1);
+        assert_eq!(lumia_contains(s4, 8), 1);
+        assert_eq!(lumia_contains(s4, 7), 0);
+    }
+}
+
+#[test]
+fn overlay_remove_missing_is_identity() {
+    unsafe {
+        let mut m = ptr::null_mut();
+        for i in 0..9 {
+            m = lumia_map_set(m, i, i);
+        }
+        lumia_list_retain(m);
+        let ov = lumia_map_set(m, 99, 1);
+        assert!(map_is_overlay(ov));
+        let miss = lumia_map_remove(ov, 12345);
+        assert_eq!(ov, miss, "overlay remove miss must not materialize");
+        let mut s = ptr::null_mut();
+        for i in 0..9 {
+            s = lumia_set_insert(s, i);
+        }
+        lumia_list_retain(s);
+        let sov = lumia_set_insert(s, 99);
+        assert!(set_is_overlay(sov));
+        let smiss = lumia_set_remove(sov, 12345);
+        assert_eq!(sov, smiss, "set overlay remove miss must not materialize");
+    }
+}
+
+#[test]
+fn overlay_remove_delta_only_skips_materialize() {
+    unsafe {
+        let mut m = ptr::null_mut();
+        for i in 0..9 {
+            m = lumia_map_set(m, i, i);
+        }
+        lumia_list_retain(m);
+        let ov = lumia_map_set(m, 99, 1);
+        assert!(map_is_overlay(ov));
+        let ov2 = lumia_map_set(ov, 100, 2);
+        assert_eq!(ov, ov2, "unique overlay append");
+        let kept = lumia_map_remove(ov2, 99);
+        assert_eq!(
+            kept, ov2,
+            "unique overlay-only remove must compact in place"
+        );
+        assert!(map_is_overlay(kept));
+        assert_eq!(lumia_contains(kept, 99), 0);
+        assert_eq!(lumia_contains(kept, 100), 1);
+        assert_eq!(lumia_contains(kept, 0), 1);
+        let parent = lumia_map_remove(kept, 100);
+        assert_eq!(parent, m, "last overlay-only remove returns parent");
+        assert!(!map_is_overlay(parent));
+
+        let mut s = ptr::null_mut();
+        for i in 0..9 {
+            s = lumia_set_insert(s, i);
+        }
+        lumia_list_retain(s);
+        let sov = lumia_set_insert(s, 99);
+        assert!(set_is_overlay(sov));
+        let back = lumia_set_remove(sov, 99);
+        assert_eq!(back, s, "last set overlay-only remove returns parent");
+        assert!(!set_is_overlay(back));
+    }
+}
+
+#[test]
+fn set_insert_unique_overlay_appends_in_place() {
+    unsafe {
+        let mut s = ptr::null_mut();
+        for i in 0..8 {
+            s = lumia_set_insert(s, i);
+        }
+        let hash = lumia_set_insert(s, 8);
+        lumia_list_retain(hash);
+        let ov1 = lumia_set_insert(hash, 99);
+        assert!(set_is_overlay(ov1));
+        let ov2 = lumia_set_insert(ov1, 100);
+        assert_eq!(ov1, ov2, "unique set overlay must append in place");
     }
 }
 

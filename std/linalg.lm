@@ -1,59 +1,13 @@
-/// Dense `List[Float]` linear algebra (`import std.linalg.{…}`).
+/// Deprecated alias — use `import extras.linalg.{…}`.
 ///
-/// Matrices are **flat row-major** float lists. Dest buffers that are uniquely
-/// owned are updated in place (zero-alloc); shared ones COW-clone.
+/// Kept so older snippets that still say `std.linalg` keep resolving during
+/// the migration window. Prefer `extras.linalg` in new code.
 ///
 /// @exports zeros, fill, scale, mul, add, l2Norm, l2Normalize, sumSq, mean, std, softMax, clamp, gemv, gemvT, addmm, axpy, sub, copy, checksum, sqrtF, expF, sinF, cosF, atan2F, hypotF
 module linalg
 
-foreign "C" pure fn lumia_list_f64_zeros(n: Int) -> ListFloat
-foreign "C" pure fn lumia_f64_fill(xs: ListFloat, v: Float) -> ListFloat
-foreign "C" pure fn lumia_f64_scale(xs: ListFloat, alpha: Float) -> ListFloat
-foreign "C" pure fn lumia_f64_mul(out: ListFloat, a: ListFloat, b: ListFloat) -> ListFloat
-foreign "C" pure fn lumia_f64_add(out: ListFloat, a: ListFloat, b: ListFloat) -> ListFloat
-foreign "C" pure fn lumia_f64_l2_norm(xs: ListFloat) -> Float
-foreign "C" pure fn lumia_f64_l2_normalize(xs: ListFloat, eps: Float) -> ListFloat
-foreign "C" pure fn lumia_f64_sum_sq(xs: ListFloat) -> Float
-foreign "C" pure fn lumia_f64_mean(xs: ListFloat) -> Float
-foreign "C" pure fn lumia_f64_std(xs: ListFloat) -> Float
-foreign "C" pure fn lumia_f64_softmax(xs: ListFloat) -> ListFloat
-foreign "C" pure fn lumia_f64_sqrt(x: Float) -> Float
-foreign "C" pure fn lumia_f64_exp(x: Float) -> Float
-foreign "C" pure fn lumia_f64_sin(x: Float) -> Float
-foreign "C" pure fn lumia_f64_cos(x: Float) -> Float
-foreign "C" pure fn lumia_f64_atan2(y: Float, x: Float) -> Float
-foreign "C" pure fn lumia_f64_hypot(x: Float, y: Float) -> Float
-foreign "C" pure fn lumia_f64_clamp(xs: ListFloat, lo: Float, hi: Float) -> ListFloat
-foreign "C" pure fn lumia_f64_gemv(m: Int, n: Int, a: ListFloat, x: ListFloat, y: ListFloat) -> ListFloat
-foreign "C" pure fn lumia_f64_gemv_t(m: Int, n: Int, a: ListFloat, x: ListFloat, y: ListFloat) -> ListFloat
-foreign "C" pure fn lumia_f64_addmm(m: Int, n: Int, w: ListFloat, u: ListFloat, v: ListFloat, alpha: Float) -> ListFloat
-foreign "C" pure fn lumia_f64_axpy(y: ListFloat, alpha: Float, x: ListFloat) -> ListFloat
-foreign "C" pure fn lumia_f64_sub(out: ListFloat, a: ListFloat, b: ListFloat) -> ListFloat
-foreign "C" pure fn lumia_f64_copy(dst: ListFloat, src: ListFloat) -> ListFloat
-foreign "C" pure fn lumia_f64_checksum(xs: ListFloat) -> Int
-
-val zeros = { n -> lumia_list_f64_zeros(n) }
-val fill = { xs, v -> lumia_f64_fill(xs, v) }
-val scale = { xs, alpha -> lumia_f64_scale(xs, alpha) }
-val mul = { out, a, b -> lumia_f64_mul(out, a, b) }
-val add = { out, a, b -> lumia_f64_add(out, a, b) }
-val l2Norm = { xs -> lumia_f64_l2_norm(xs) }
-val l2Normalize = { xs, eps -> lumia_f64_l2_normalize(xs, eps) }
-val sumSq = { xs -> lumia_f64_sum_sq(xs) }
-val mean = { xs -> lumia_f64_mean(xs) }
-val std = { xs -> lumia_f64_std(xs) }
-val softMax = { xs -> lumia_f64_softmax(xs) }
-val sqrtF = { x -> lumia_f64_sqrt(x) }
-val expF = { x -> lumia_f64_exp(x) }
-val sinF = { x -> lumia_f64_sin(x) }
-val cosF = { x -> lumia_f64_cos(x) }
-val atan2F = { y, x -> lumia_f64_atan2(y, x) }
-val hypotF = { x, y -> lumia_f64_hypot(x, y) }
-val clamp = { xs, lo, hi -> lumia_f64_clamp(xs, lo, hi) }
-val gemv = { m, n, a, x, y -> lumia_f64_gemv(m, n, a, x, y) }
-val gemvT = { m, n, a, x, y -> lumia_f64_gemv_t(m, n, a, x, y) }
-val addmm = { m, n, w, u, v, alpha -> lumia_f64_addmm(m, n, w, u, v, alpha) }
-val axpy = { y, alpha, x -> lumia_f64_axpy(y, alpha, x) }
-val sub = { out, a, b -> lumia_f64_sub(out, a, b) }
-val copy = { dst, src -> lumia_f64_copy(dst, src) }
-val checksum = { xs -> lumia_f64_checksum(xs) }
+import extras.linalg.{
+  zeros, fill, scale, mul, add, l2Norm, l2Normalize, sumSq, mean, std, softMax,
+  clamp, gemv, gemvT, addmm, axpy, sub, copy, checksum, sqrtF, expF, sinF, cosF,
+  atan2F, hypotF
+}

@@ -21,12 +21,10 @@ pub(crate) fn note_funref_local(
 ) {
     match value {
         Value::FunRef(name) => {
-            funref_locals.insert(local, name.clone());
+            funref_locals.insert(local, name.name.clone());
         }
-        Value::AllocClosure { fun, .. }
-            if matches!(alloc_closure, AllocClosureFunref::Track) =>
-        {
-            funref_locals.insert(local, fun.clone());
+        Value::AllocClosure { fun, .. } if matches!(alloc_closure, AllocClosureFunref::Track) => {
+            funref_locals.insert(local, fun.name.clone());
         }
         Value::Local(Local(src)) => {
             if let Some(n) = funref_locals.get(src).cloned() {

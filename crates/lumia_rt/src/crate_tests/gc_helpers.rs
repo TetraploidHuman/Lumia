@@ -22,7 +22,11 @@ pub(super) struct GcLimitGuard {
 
 impl GcLimitGuard {
     pub(super) fn set(young: usize, old: usize) -> Self {
-        let (y, o) = with_heap(|h| (h.young_limit, h.old_limit));
+        // Flush TLS LABs so pending bytes hit `bytes_young` before the new soft limit.
+        let (y, o) = with_heap(|h| {
+            crate::mutator::flush_all_labs(h);
+            (h.young_limit, h.old_limit)
+        });
         set_gc_limits_for_test(young, old);
         Self { young: y, old: o }
     }

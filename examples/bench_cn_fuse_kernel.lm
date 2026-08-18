@@ -2,7 +2,7 @@ module BenchCnFuseKernel
 
 /// Same PC + Hebbian workload as `bench_cn_fuse_naive.lm`, via `extras.cn`.
 import std.io.{println}
-import std.linalg.{zeros, copy, checksum}
+import extras.linalg.{zeros, copy, checksum}
 import extras.cn.{nucleusStep, hebbian}
 
 val SIZE = 32

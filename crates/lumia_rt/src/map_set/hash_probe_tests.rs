@@ -6,10 +6,7 @@ use super::*;
 fn empty_cap_is_none() {
     let words = [0i64, 0];
     unsafe {
-        assert_eq!(
-            open_hash_find_slot(words.as_ptr(), 0, 1, false, 2, 1),
-            None
-        );
+        assert_eq!(open_hash_find_slot(words.as_ptr(), 0, 1, false, 2, 1), None);
         assert_eq!(
             open_hash_claim_slot(words.as_ptr() as *mut i64, 0, 1, false, 2, 1),
             None
@@ -59,6 +56,28 @@ fn claim_slot_reuses_tomb_and_sets_full() {
         assert_eq!(got, idx);
         assert_eq!(*cell_ptr, key);
         assert_eq!(*cell_ptr.add(1), OPEN_HASH_ST_FULL);
+    }
+}
+
+#[test]
+fn remove_slot_tombs_and_compacts_order() {
+    let cap = 4usize;
+    // [n][cap] + order[cap] + (elem,state)[cap]
+    let mut words = vec![3i64, cap as i64];
+    words.extend([0i64, 1, 2, -1]);
+    words.extend(std::iter::repeat_n(0i64, cap * 2));
+    words[2 + cap] = 10;
+    words[2 + cap + 1] = OPEN_HASH_ST_FULL;
+    words[2 + cap + 2] = 20;
+    words[2 + cap + 3] = OPEN_HASH_ST_FULL;
+    words[2 + cap + 4] = 30;
+    words[2 + cap + 5] = OPEN_HASH_ST_FULL;
+    unsafe {
+        open_hash_remove_slot(words.as_mut_ptr(), cap, 1, 3, 2, 1);
+        assert_eq!(words[0], 2);
+        assert_eq!(&words[2..4], &[0, 2]);
+        assert_eq!(words[2 + cap + 3], OPEN_HASH_ST_TOMB);
+        assert_eq!(words[2 + cap + 2], 20);
     }
 }
 
@@ -147,4 +166,3 @@ fn compact_linear_last_wins_and_keep_first() {
         assert_eq!(&set[..4], &[3, 1, 2, 3]);
     }
 }
-

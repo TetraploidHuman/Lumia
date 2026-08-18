@@ -59,6 +59,7 @@ fn select_alloc_repr(v: &mut Value, bound: Local, escaping: &HashSet<Local>) {
     match v {
         Value::AllocList { elems, repr } => {
             // `ListRepr::Fused` is HIR-only (deforestation); never leave it for emit.
+            // Runtime virtual lists are Iota (`lumia_range` / `TYPE_LIST_IOTA`).
             if elems.is_empty() {
                 // Empty → immortal singleton (`lumia_list_empty`).
                 *repr = ListRepr::LitList;

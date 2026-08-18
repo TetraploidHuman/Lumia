@@ -8,10 +8,20 @@ use lumia_ty::{Effect, Type};
 /// Policy for If/alt joining.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JoinAbiKind {
-    /// `Value::If` inference: Fun vs scalar keeps Fun; no container merge.
+    /// `Value::If` inference: Fun vs scalar keeps Fun; no container merge;
+    /// blanket `Int|Var → other`.
     Value,
     /// Heap/float ABI: merge List/Map/Set/Task/Channel; Adt via [`prefer_concrete_heap_ty`].
     Heap,
+    /// Mono `ret_ty` If join: Fun lattice like [`Value`], containers/Adt like
+    /// [`Heap`], but **no** blanket `Int|Var → other` (only Bool/String/Char upgrades).
+    Fixed,
+}
+
+/// Mono fixed-ret If join (thin wrapper over [`join_abi_tys`] + [`JoinAbiKind::Fixed`]).
+#[inline]
+pub fn join_fixed_ty(a: &Type, b: &Type) -> Option<Type> {
+    join_abi_tys(a, b, JoinAbiKind::Fixed)
 }
 
 /// Join two types for If/alt / match arms.
@@ -19,6 +29,8 @@ pub fn join_abi_tys(a: &Type, b: &Type, kind: JoinAbiKind) -> Option<Type> {
     if a == b {
         return Some(a.clone());
     }
+    let fun_scalar = matches!(kind, JoinAbiKind::Value | JoinAbiKind::Fixed);
+    let containers = matches!(kind, JoinAbiKind::Heap | JoinAbiKind::Fixed);
     match (a, b) {
         // MatchFail / empty arm: Unit is bottom, not a real payload.
         (Type::Unit, other) | (other, Type::Unit) => Some(other.clone()),
@@ -28,27 +40,17 @@ pub fn join_abi_tys(a: &Type, b: &Type, kind: JoinAbiKind) -> Option<Type> {
         (Type::Float, other) | (other, Type::Float)
             if matches!(
                 other,
-                Type::Int
-                    | Type::Var(_)
-                    | Type::Bool
-                    | Type::String
-                    | Type::Char
-                    | Type::Float
+                Type::Int | Type::Var(_) | Type::Bool | Type::String | Type::Char | Type::Float
             ) =>
         {
             Some(Type::Float)
         }
         // `Err("e") alt { x -> … }` / `None alt fun`: String vs Fun — keep Fun.
         (Type::Fun(_, _, _), other) | (other, Type::Fun(_, _, _))
-            if kind == JoinAbiKind::Value
+            if fun_scalar
                 && matches!(
                     other,
-                    Type::Int
-                        | Type::Var(_)
-                        | Type::Bool
-                        | Type::String
-                        | Type::Char
-                        | Type::Float
+                    Type::Int | Type::Var(_) | Type::Bool | Type::String | Type::Char | Type::Float
                 ) =>
         {
             match (a, b) {
@@ -56,8 +58,36 @@ pub fn join_abi_tys(a: &Type, b: &Type, kind: JoinAbiKind) -> Option<Type> {
                 _ => Some(b.clone()),
             }
         }
-        (Type::Int | Type::Var(_), other) => Some(other.clone()),
-        (other, Type::Int | Type::Var(_)) => Some(other.clone()),
+        // Prefer Fun when joining two Fun shapes (alt arms / unwrapOr / mono Fixed).
+        (Type::Fun(p1, r1, e1), Type::Fun(p2, r2, e2)) if fun_scalar => {
+            let n = p1.len().max(p2.len());
+            let mut params = Vec::with_capacity(n);
+            for i in 0..n {
+                let x = p1.get(i).cloned().unwrap_or(Type::Int);
+                let y = p2.get(i).cloned().unwrap_or(Type::Int);
+                params.push(join_abi_tys(&x, &y, kind).unwrap_or(x));
+            }
+            let ret = join_abi_tys(r1, r2, kind).unwrap_or_else(|| (**r1).clone());
+            Some(Type::Fun(params, Box::new(ret), e1.union(*e2)))
+        }
+        // Fixed: upgrade only Bool/String/Char over soft Int (not arbitrary payloads).
+        (Type::Bool, Type::Int | Type::Var(_)) | (Type::Int | Type::Var(_), Type::Bool)
+            if kind == JoinAbiKind::Fixed =>
+        {
+            Some(Type::Bool)
+        }
+        (Type::String, Type::Int | Type::Var(_)) | (Type::Int | Type::Var(_), Type::String)
+            if kind == JoinAbiKind::Fixed =>
+        {
+            Some(Type::String)
+        }
+        (Type::Char, Type::Int | Type::Var(_)) | (Type::Int | Type::Var(_), Type::Char)
+            if kind == JoinAbiKind::Fixed =>
+        {
+            Some(Type::Char)
+        }
+        (Type::Int | Type::Var(_), other) if kind != JoinAbiKind::Fixed => Some(other.clone()),
+        (other, Type::Int | Type::Var(_)) if kind != JoinAbiKind::Fixed => Some(other.clone()),
         (
             Type::Adt {
                 name: n1,
@@ -75,7 +105,7 @@ pub fn join_abi_tys(a: &Type, b: &Type, kind: JoinAbiKind) -> Option<Type> {
                 let y = p2.get(i).cloned().unwrap_or(Type::Int);
                 params.push(match kind {
                     JoinAbiKind::Value => join_abi_tys(&x, &y, kind).unwrap_or(x),
-                    JoinAbiKind::Heap => prefer_concrete_heap_ty(x, y),
+                    JoinAbiKind::Heap | JoinAbiKind::Fixed => prefer_concrete_heap_ty(x, y),
                 });
             }
             Some(Type::Adt {
@@ -83,45 +113,27 @@ pub fn join_abi_tys(a: &Type, b: &Type, kind: JoinAbiKind) -> Option<Type> {
                 params,
             })
         }
-        // Prefer Fun when joining two Fun shapes (alt arms / unwrapOr).
-        (Type::Fun(p1, r1, e1), Type::Fun(p2, r2, e2)) if kind == JoinAbiKind::Value => {
-            let n = p1.len().max(p2.len());
-            let mut params = Vec::with_capacity(n);
-            for i in 0..n {
-                let x = p1.get(i).cloned().unwrap_or(Type::Int);
-                let y = p2.get(i).cloned().unwrap_or(Type::Int);
-                params.push(join_abi_tys(&x, &y, kind).unwrap_or(x));
-            }
-            let ret = join_abi_tys(r1, r2, kind).unwrap_or_else(|| (**r1).clone());
-            Some(Type::Fun(params, Box::new(ret), e1.union(*e2)))
-        }
-        (Type::List(e1), Type::List(e2)) if kind == JoinAbiKind::Heap => {
-            Some(Type::List(Box::new(prefer_concrete_heap_ty(
-                e1.as_ref().clone(),
-                e2.as_ref().clone(),
-            ))))
-        }
-        (Type::Set(e1), Type::Set(e2)) if kind == JoinAbiKind::Heap => {
-            Some(Type::Set(Box::new(prefer_concrete_heap_ty(
-                e1.as_ref().clone(),
-                e2.as_ref().clone(),
-            ))))
-        }
-        (Type::Task(e1), Type::Task(e2)) if kind == JoinAbiKind::Heap => {
-            Some(Type::Task(Box::new(prefer_concrete_heap_ty(
-                e1.as_ref().clone(),
-                e2.as_ref().clone(),
-            ))))
-        }
-        (Type::Channel(e1), Type::Channel(e2)) if kind == JoinAbiKind::Heap => {
-            Some(Type::Channel(Box::new(prefer_concrete_heap_ty(
-                e1.as_ref().clone(),
-                e2.as_ref().clone(),
-            ))))
-        }
-        (Type::Map(k1, v1), Type::Map(k2, v2)) if kind == JoinAbiKind::Heap => Some(Type::Map(
-            Box::new(prefer_concrete_heap_ty(k1.as_ref().clone(), k2.as_ref().clone())),
-            Box::new(prefer_concrete_heap_ty(v1.as_ref().clone(), v2.as_ref().clone())),
+        (Type::List(e1), Type::List(e2)) if containers => Some(Type::List(Box::new(
+            prefer_concrete_heap_ty(e1.as_ref().clone(), e2.as_ref().clone()),
+        ))),
+        (Type::Set(e1), Type::Set(e2)) if containers => Some(Type::Set(Box::new(
+            prefer_concrete_heap_ty(e1.as_ref().clone(), e2.as_ref().clone()),
+        ))),
+        (Type::Task(e1), Type::Task(e2)) if containers => Some(Type::Task(Box::new(
+            prefer_concrete_heap_ty(e1.as_ref().clone(), e2.as_ref().clone()),
+        ))),
+        (Type::Channel(e1), Type::Channel(e2)) if containers => Some(Type::Channel(Box::new(
+            prefer_concrete_heap_ty(e1.as_ref().clone(), e2.as_ref().clone()),
+        ))),
+        (Type::Map(k1, v1), Type::Map(k2, v2)) if containers => Some(Type::Map(
+            Box::new(prefer_concrete_heap_ty(
+                k1.as_ref().clone(),
+                k2.as_ref().clone(),
+            )),
+            Box::new(prefer_concrete_heap_ty(
+                v1.as_ref().clone(),
+                v2.as_ref().clone(),
+            )),
         )),
         _ => None,
     }
@@ -147,7 +159,10 @@ pub fn prefer_concrete_heap_ty(x: Type, y: Type) -> Type {
             }
             Type::Fun(
                 params,
-                Box::new(prefer_concrete_heap_ty(r1.as_ref().clone(), r2.as_ref().clone())),
+                Box::new(prefer_concrete_heap_ty(
+                    r1.as_ref().clone(),
+                    r2.as_ref().clone(),
+                )),
                 if e1.has_io() || e2.has_io() {
                     Effect::io()
                 } else {
@@ -232,6 +247,72 @@ mod tests {
         assert_eq!(
             join_abi_tys(&f, &Type::String, JoinAbiKind::Value),
             Some(f.clone())
+        );
+    }
+
+    #[test]
+    fn join_fixed_float_beats_string_and_bool() {
+        assert_eq!(
+            join_fixed_ty(&Type::String, &Type::Float),
+            Some(Type::Float)
+        );
+        assert_eq!(join_fixed_ty(&Type::Float, &Type::Bool), Some(Type::Float));
+        assert_eq!(join_fixed_ty(&Type::Char, &Type::Float), Some(Type::Float));
+    }
+
+    #[test]
+    fn join_fixed_keeps_fun_over_string() {
+        let f = Type::Fun(vec![], Box::new(Type::Int), Effect::pure());
+        assert_eq!(join_fixed_ty(&f, &Type::String), Some(f.clone()));
+        assert_eq!(join_fixed_ty(&Type::String, &f), Some(f));
+    }
+
+    #[test]
+    fn join_fixed_merges_list_and_result_float() {
+        assert_eq!(
+            join_fixed_ty(
+                &Type::List(Box::new(Type::Int)),
+                &Type::List(Box::new(Type::Float))
+            ),
+            Some(Type::List(Box::new(Type::Float)))
+        );
+        let a = Type::Adt {
+            name: "Result".into(),
+            params: vec![Type::String, Type::Int],
+        };
+        let b = Type::Adt {
+            name: "Result".into(),
+            params: vec![Type::Float, Type::Int],
+        };
+        assert_eq!(
+            join_fixed_ty(&a, &b),
+            Some(Type::Adt {
+                name: "Result".into(),
+                params: vec![Type::Float, Type::Int],
+            })
+        );
+    }
+
+    #[test]
+    fn join_fixed_fun_fun_merges_rets() {
+        let a = Type::Fun(vec![Type::Int], Box::new(Type::Int), Effect::pure());
+        let b = Type::Fun(vec![Type::Int], Box::new(Type::Float), Effect::pure());
+        assert_eq!(
+            join_fixed_ty(&a, &b),
+            Some(Type::Fun(
+                vec![Type::Int],
+                Box::new(Type::Float),
+                Effect::pure()
+            ))
+        );
+    }
+
+    #[test]
+    fn join_fixed_does_not_blanket_int_to_list() {
+        // Value would yield List; Fixed must stay open (None).
+        assert_eq!(
+            join_fixed_ty(&Type::Int, &Type::List(Box::new(Type::Float))),
+            None
         );
     }
 

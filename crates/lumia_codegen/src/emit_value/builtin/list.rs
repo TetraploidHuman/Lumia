@@ -22,8 +22,13 @@ impl<'ctx> Codegen<'ctx> {
                 let elem_ty = list_par_map_elem_ty(args, self.infer_ctx());
                 let elem_is_float = matches!(elem_ty, Type::Float);
                 let elem_is_bool = matches!(elem_ty, Type::Bool);
-                let result_tid =
-                    lumia_abi::list_type_id_flags(elem_is_float, elem_is_bool) as u64;
+                let result_tid = if elem_is_float || elem_is_bool {
+                    lumia_abi::list_type_id_flags(elem_is_float, elem_is_bool)
+                } else if matches!(elem_ty, Type::Int) {
+                    lumia_abi::list_type_id_int()
+                } else {
+                    lumia_abi::list_type_id_flags(false, false)
+                } as u64;
                 let sym = Self::builtin_symbol(name)?;
                 let tid_v = self.llvm.context.i32_type().const_int(result_tid, false);
                 self.call_rt_ptr_as_i64(sym, &[list.into(), fptr.into(), tid_v.into()], "par_map")

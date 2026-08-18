@@ -1,8 +1,8 @@
 use super::fun_index::FunIndex;
 use super::specialize::mono_value_ty;
 use crate::ir::{Block, CoreFun, CoreModule, ForeignAbi, FunKind, Local, Op, Value};
-use lumia_hir::Builtin;
 use crate::CoreBinOp as BinOp;
+use lumia_hir::Builtin;
 use lumia_ty::{Effect, Type};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet};
 
@@ -13,48 +13,25 @@ pub(crate) fn resolve_trait_method_calls(module: &mut CoreModule) {
     let tables = crate::ModuleTables::from_module(module);
     let trait_methods = tables.trait_methods;
     let method_names: FxHashSet<String> = trait_methods.keys().map(|(_, m)| m.clone()).collect();
-    // Take bodies out so FunIndex can borrow the signature table immutably.
-    let mut functions = std::mem::take(&mut module.functions);
-    let empty = Block {
-        ops: Vec::new(),
-        result: None,
-    };
-    let mut bodies: Vec<Block> = functions
-        .iter_mut()
-        .map(|f| std::mem::replace(&mut f.body, empty.clone()))
-        .collect();
-    {
-        let index = FunIndex::new(
-            &functions,
-            &module.sum_max_arity,
-            &trait_methods,
-            module.channel_elem_hint.as_ref(),
-        );
-        for i in 0..functions.len() {
-            let mut local_tys: HashMap<u32, Type> = HashMap::default();
-            for (j, p) in functions[i].params.iter().enumerate() {
-                local_tys.insert(
-                    p.0,
-                    functions[i].param_tys.get(j).cloned().unwrap_or(Type::Int),
-                );
-            }
-            let mut slot_tys: HashMap<String, Type> = HashMap::default();
-            let mut int_consts: HashMap<u32, i64> = HashMap::default();
-            resolve_trait_block(
-                &mut bodies[i],
-                &mut local_tys,
-                &mut slot_tys,
-                &mut int_consts,
-                &trait_methods,
-                &method_names,
-                &index,
-            );
+    let shadow = super::fun_index::SigShadow::from_module(module);
+    let index = shadow.index();
+    for fun in &mut module.functions {
+        let mut local_tys: HashMap<u32, Type> = HashMap::default();
+        for (j, p) in fun.params.iter().enumerate() {
+            local_tys.insert(p.0, fun.param_tys.get(j).cloned().unwrap_or(Type::Int));
         }
+        let mut slot_tys: HashMap<String, Type> = HashMap::default();
+        let mut int_consts: HashMap<u32, i64> = HashMap::default();
+        resolve_trait_block(
+            &mut fun.body,
+            &mut local_tys,
+            &mut slot_tys,
+            &mut int_consts,
+            &trait_methods,
+            &method_names,
+            &index,
+        );
     }
-    for (fun, body) in functions.iter_mut().zip(bodies) {
-        fun.body = body;
-    }
-    module.functions = functions;
 }
 
 fn resolve_trait_block(
@@ -110,9 +87,9 @@ fn resolve_trait_value(
             if method_names.contains(fun.as_str()) {
                 if let Some(recv) = args.first() {
                     if let Some(Type::Adt { name, .. }) = local_tys.get(&recv.0) {
-                        if let Some(cands) = trait_methods.get(&(name.clone(), fun.clone())) {
+                        if let Some(cands) = trait_methods.get(&(name.clone(), fun.name.clone())) {
                             if let [mangled] = cands.as_slice() {
-                                *fun = mangled.clone();
+                                *fun = mangled.clone().into();
                             }
                         }
                     }
@@ -122,9 +99,7 @@ fn resolve_trait_value(
         // `a + b` / `a * b` on ADTs with `instance Num` stay as Binary through
         // lower; rewrite to `__Num_T_add`/`mul` Call so mono can specialize
         // Float fields (codegen override alone hits the unspecialized body).
-        Value::Binary { op, left, right }
-            if matches!(op, BinOp::Add | BinOp::Mul) =>
-        {
+        Value::Binary { op, left, right } if matches!(op, BinOp::Add | BinOp::Mul) => {
             let method = if matches!(op, BinOp::Add) {
                 "add"
             } else {
@@ -137,7 +112,7 @@ fn resolve_trait_value(
                     if let Some(cands) = trait_methods.get(&(n1.clone(), method.to_string())) {
                         if let [mangled] = cands.as_slice() {
                             *value = Value::Call {
-                                fun: mangled.clone(),
+                                fun: mangled.clone().into(),
                                 args: vec![*left, *right],
                             };
                         }
@@ -258,8 +233,8 @@ pub(crate) fn ensure_trait_method_stubs(module: &mut CoreModule) {
                     value: Value::Builtin {
                         name: Builtin::MatchFail,
                         args: vec![],
-                    result_ty: None,
-                },
+                        result_ty: None,
+                    },
                     pure_region: false,
                 }],
                 result: Some(fail_local),
@@ -271,6 +246,9 @@ pub(crate) fn ensure_trait_method_stubs(module: &mut CoreModule) {
             external: None,
             foreign_abi: ForeignAbi::C,
             escaping: Default::default(),
+            nsw_binop_locals: Default::default(),
+            safe_divisor_locals: Default::default(),
+            nonneg_iv_load_locals: Default::default(),
             scheme_poly: false,
             mono_of: None,
             kind: FunKind::Normal,

@@ -2,21 +2,21 @@
 
 use std::ptr;
 
-use crate::common::{
-    float_key_eq, header_from_payload, is_heap_payload_bits, trap_abort, GcInhibitGuard,
-};
+use crate::common::{float_key_eq, header_from_payload, trap_abort, GcInhibitGuard};
 use crate::eq::lumia_eq;
-use crate::gc::{list_payload_bytes, lumia_alloc, mark_on, mark_value_on};
+use crate::gc::{list_payload_bytes, lumia_alloc, mark_value_on};
 use crate::heap::Heap;
 
+use super::overlay::{
+    alloc_overlay_shell, is_overlay, mark_overlay_parent, overlay_delta_len, overlay_dn,
+    overlay_parent, MAP_OVERLAY_MARK,
+};
 use super::tid::{key_eq, map_float_keys, map_float_vals, map_is_assoc, map_tid};
 
 /// Map: small maps stay linear `[n][k0][v0]…`; larger use HashOrdered
 /// `[n][cap][order×cap][key,val,state × cap]` (DESIGN default path).
 /// Hash writes may produce Overlay: `[-1][parent][dn][k0][v0]…` (delta ≤ [`SMALL_CONTAINER_MAX`]).
 pub(crate) const MAP_SMALL_MAX: i64 = lumia_abi::SMALL_CONTAINER_MAX as i64;
-pub(crate) const MAP_OVERLAY_MARK: i64 = -1;
-pub(crate) const MAP_OVERLAY_MAX: i64 = lumia_abi::SMALL_CONTAINER_MAX as i64;
 pub(crate) const MAP_ST_EMPTY: i64 = super::OPEN_HASH_ST_EMPTY;
 #[allow(dead_code)] // reserved for delete/tomb paths; claim uses OPEN_HASH_* directly
 pub(crate) const MAP_ST_FULL: i64 = super::OPEN_HASH_ST_FULL;
@@ -36,6 +36,28 @@ pub(crate) fn map_linear_nbytes(n: i64) -> usize {
         .unwrap_or_else(|| trap_abort(&format!("lumia: map too large (n={n})")))
 }
 
+/// Geometric spare capacity for unique linear Map/Set growth, capped at `small_max`.
+pub(crate) fn linear_grow_cap(needed: i64, small_max: i64) -> i64 {
+    let mut cap = 4i64;
+    while cap < needed {
+        let next = cap.saturating_mul(2);
+        if next >= small_max || next < cap {
+            return small_max.max(needed);
+        }
+        cap = next;
+    }
+    cap.min(small_max)
+}
+
+/// Pair slots available in a linear map payload (`[n][k0][v0]…`).
+///
+/// # Safety
+/// `map` is a non-null linear Map (not hash/overlay).
+pub(crate) unsafe fn map_linear_pair_capacity(map: *mut u8) -> i64 {
+    let nbytes = (*header_from_payload(map)).size as i64;
+    (nbytes / 8 - 1) / 2
+}
+
 pub(crate) fn map_hash_nbytes(cap: usize) -> usize {
     // [count][cap] + order[cap] + (key,val,state)[cap]
     cap.checked_mul(4)
@@ -45,24 +67,8 @@ pub(crate) fn map_hash_nbytes(cap: usize) -> usize {
         .unwrap_or_else(|| trap_abort(&format!("lumia: map hash table too large (cap={cap})")))
 }
 
-pub(crate) fn map_overlay_nbytes(dn: i64) -> usize {
-    if dn < 0 {
-        trap_abort("lumia: negative overlay delta");
-    }
-    (dn as u64)
-        .checked_mul(2)
-        .and_then(|kv| kv.checked_add(3))
-        .and_then(|words| words.checked_mul(8))
-        .filter(|&b| b <= u32::MAX as u64)
-        .map(|b| b as usize)
-        .unwrap_or_else(|| trap_abort(&format!("lumia: map overlay too large (dn={dn})")))
-}
-
 pub(crate) fn map_is_overlay(map: *mut u8) -> bool {
-    if map.is_null() {
-        return false;
-    }
-    unsafe { *(map as *const i64) == MAP_OVERLAY_MARK }
+    is_overlay(map)
 }
 
 pub(crate) fn map_is_hash(map: *mut u8) -> bool {
@@ -73,11 +79,11 @@ pub(crate) fn map_is_hash(map: *mut u8) -> bool {
 }
 
 pub(crate) unsafe fn map_overlay_parent(map: *mut u8) -> *mut u8 {
-    *(map as *const i64).add(1) as *mut u8
+    overlay_parent(map)
 }
 
 pub(crate) unsafe fn map_overlay_dn(map: *mut u8) -> i64 {
-    *(map as *const i64).add(2)
+    overlay_dn(map)
 }
 
 /// Logical entry count (insertion-unique keys).
@@ -232,12 +238,8 @@ pub(crate) unsafe fn map_clone_hash_upsert_or_linear(map: *mut u8, key: i64, val
 
 pub(crate) unsafe fn map_alloc_overlay(parent: *mut u8, pairs: &[(i64, i64)]) -> *mut u8 {
     let dn = pairs.len() as i64;
-    let nbytes = map_overlay_nbytes(dn) as u64;
-    let dest = lumia_alloc(nbytes, map_tid(parent));
+    let dest = alloc_overlay_shell(parent, dn, 2, map_tid(parent), "map");
     let dst = dest as *mut i64;
-    *dst = MAP_OVERLAY_MARK;
-    *dst.add(1) = parent as i64;
-    *dst.add(2) = dn;
     for (i, (k, v)) in pairs.iter().enumerate() {
         *dst.add(3 + i * 2) = *k;
         *dst.add(4 + i * 2) = *v;
@@ -255,19 +257,8 @@ pub(crate) fn map_mark_payload(
         let base = payload as *const i64;
         let n0 = *base;
         if n0 == MAP_OVERLAY_MARK {
-            let parent = map_overlay_parent(payload);
-            // Parent word is a payload ptr; filter immediates before mark lock.
-            if is_heap_payload_bits(parent as i64) {
-                mark_on(h, header_from_payload(parent));
-            }
-            let dn0 = map_overlay_dn(payload);
-            // Overlay pairs start at word 3; clamp to declared payload size.
-            let max_pairs = size.saturating_sub(3 * 8) / 16;
-            let dn = if dn0 > 0 {
-                (dn0 as usize).min(max_pairs)
-            } else {
-                0
-            };
+            mark_overlay_parent(h, payload);
+            let dn = overlay_delta_len(payload, size, 2);
             for i in 0..dn {
                 if !float_keys {
                     mark_value_on(h, *base.add(3 + i * 2));

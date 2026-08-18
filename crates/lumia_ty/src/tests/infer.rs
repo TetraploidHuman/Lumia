@@ -200,7 +200,6 @@ val main = {
     check_effect_boundaries(&typed).unwrap();
 }
 
-
 #[test]
 fn recursive_expr_eval() {
     let src = r#"

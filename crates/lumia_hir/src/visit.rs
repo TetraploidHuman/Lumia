@@ -69,6 +69,85 @@ pub fn for_each_expr(expr: &Expr, f: &mut impl FnMut(&Expr)) {
     }
 }
 
+/// Pre-order walk that does **not** enter [`Expr::Lambda`] bodies.
+///
+/// Construction of a closure is pure (DESIGN §3.7); effect / free-var analyses
+/// that must not treat nested thunks as eager IO use this instead of
+/// [`for_each_expr`]. Callers that need the thunk body walk it explicitly.
+pub fn for_each_expr_skipping_lambdas(expr: &Expr, f: &mut impl FnMut(&Expr)) {
+    f(expr);
+    match expr {
+        Expr::Let { value, body, .. } => {
+            for_each_expr_skipping_lambdas(value, f);
+            for_each_expr_skipping_lambdas(body, f);
+        }
+        Expr::Assign { value, .. } | Expr::Unary { expr: value, .. } => {
+            for_each_expr_skipping_lambdas(value, f);
+        }
+        // Skip nested thunk bodies — do not run `f` on them.
+        Expr::Lambda { .. } => {}
+        Expr::Call { callee, args, .. } => {
+            for_each_expr_skipping_lambdas(callee, f);
+            for a in args {
+                for_each_expr_skipping_lambdas(a, f);
+            }
+        }
+        Expr::Binary { left, right, .. } => {
+            for_each_expr_skipping_lambdas(left, f);
+            for_each_expr_skipping_lambdas(right, f);
+        }
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            for_each_expr_skipping_lambdas(cond, f);
+            for_each_expr_skipping_lambdas(then_branch, f);
+            for_each_expr_skipping_lambdas(else_branch, f);
+        }
+        Expr::Loop {
+            cond, body, step, ..
+        } => {
+            for_each_expr_skipping_lambdas(cond, f);
+            for_each_expr_skipping_lambdas(body, f);
+            if let Some(s) = step {
+                for_each_expr_skipping_lambdas(s, f);
+            }
+        }
+        Expr::Seq { stmts, .. } => {
+            for s in stmts {
+                for_each_expr_skipping_lambdas(s, f);
+            }
+        }
+        Expr::BuiltinCall { args, .. } | Expr::AdtNew { args, .. } => {
+            for a in args {
+                for_each_expr_skipping_lambdas(a, f);
+            }
+        }
+        Expr::Return { value, .. } => for_each_expr_skipping_lambdas(value, f),
+        Expr::Alt { scrutinee, alt, .. } => {
+            for_each_expr_skipping_lambdas(scrutinee, f);
+            for_each_expr_skipping_lambdas(alt, f);
+        }
+        Expr::With { base, fields, .. } => {
+            for_each_expr_skipping_lambdas(base, f);
+            for (_, e) in fields {
+                for_each_expr_skipping_lambdas(e, f);
+            }
+        }
+        Expr::Int(..)
+        | Expr::Float(..)
+        | Expr::Bool(..)
+        | Expr::String(..)
+        | Expr::Char(..)
+        | Expr::Unit(_)
+        | Expr::Var(_, _)
+        | Expr::Break(_)
+        | Expr::Continue(_) => {}
+    }
+}
+
 /// Mutable post-order walk: children first, then `f(expr)`.
 pub fn for_each_expr_mut(expr: &mut Expr, f: &mut impl FnMut(&mut Expr)) {
     match expr {

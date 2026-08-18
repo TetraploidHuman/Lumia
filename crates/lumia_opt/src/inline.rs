@@ -1,21 +1,43 @@
 //! Function inlining (DESIGN §7.2 Inline + Specialization).
 //!
-//! Release-only: inline small pure leaf functions at direct call sites.
+//! Release-only: inline small pure leaf functions at direct call sites, and at
+//! `IndirectCall` sites whose callee is a proven `FunRef` (SSA-aliased).
 //! Skips `main`, `foreign`, memoized, recursive, and effectful callees.
-//! Callees that use `var` (Assign / Name) are allowed: slot names are renamed
-//! to `$inl{tag}_…` so they cannot clash with the caller's mutable slots.
+//! Callees that use `var` (Assign / Name) are allowed: slot names are uniquified
+//! from the same Local id counter (`$s{id}`), preserving HIR desugar prefixes
+//! so Float ABI classifiers still match.
 
 use lumia_abi::INLINE_MAX_EXPAND_DEPTH;
 use lumia_core::{
     block_calls, collect_defined_locals, collect_slot_names, count_ops, for_each_block_dfs,
-    has_early_return, max_local_in_fun, rewrite_block_locals, Block, CoreFun, CoreModule, Local, Op,
-    Value,
+    has_early_return, max_local_in_fun, rewrite_block_locals, Block, CoreFun, CoreModule, Local,
+    Op, Value,
 };
+use lumia_hir::{FOLD_ELEM_PREFIX, FOR_INDEX_PREFIX, FUSE_ACC_PREFIX, LIST_BUILDER_ACC_PREFIXES};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use std::sync::Arc;
+
+/// Cached callee slice for inlining — params + body only (no full [`CoreFun`] clone).
+struct InlineCallee {
+    params: Vec<Local>,
+    body: Arc<Block>,
+}
 
 /// Max SSA ops in callee body (including nested) before we refuse to inline.
 /// Sized to cover small helpers with a loop + vars (e.g. `isPrime`, `collatzSteps`).
-const INLINE_MAX_OPS: usize = 32;
+/// 64 is safe once Domain SR rewrites const-specialized `$c_` clones (unmatched
+/// `matmulChecksum$c_2000` inlined into huge `main` previously caused ~7×).
+///
+/// Override with `LUMIA_INLINE_MAX_OPS` for diagnostics.
+fn inline_max_ops() -> usize {
+    static CACHED: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("LUMIA_INLINE_MAX_OPS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(64)
+    })
+}
 
 pub struct InlinePass;
 
@@ -26,7 +48,8 @@ impl InlinePass {
 }
 
 fn inline_module(module: &mut CoreModule) {
-    // Index only — clone callee bodies on first hit (see `ensure_inline_cached`).
+    let max_ops = inline_max_ops();
+    // Index only — cache params + Arc<body> on first hit (see `ensure_inline_cached`).
     let indices: HashMap<String, usize> = module
         .functions
         .iter()
@@ -34,13 +57,37 @@ fn inline_module(module: &mut CoreModule) {
         .filter(|(_, f)| is_inlineable(f))
         .map(|(i, f)| (f.name.clone(), i))
         .collect();
+    if std::env::var_os("LUMIA_INLINE_DUMP").is_some() {
+        let mut rows: Vec<(usize, String)> = module
+            .functions
+            .iter()
+            .filter(|f| f.external.is_none() && !f.is_main)
+            .map(|f| (count_ops(&f.body), f.name.clone()))
+            .collect();
+        rows.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        eprintln!(
+            "[inline] INLINE_MAX_OPS={max_ops} inlineable={}",
+            indices.len()
+        );
+        for (ops, name) in &rows {
+            let mark = if indices.contains_key(name) {
+                "INLINEABLE"
+            } else if *ops > max_ops {
+                "too_big"
+            } else {
+                "blocked"
+            };
+            if *ops > 40 || indices.contains_key(name) {
+                eprintln!("[inline]  {ops:>4}  {mark:<10}  {name}");
+            }
+        }
+    }
     if indices.is_empty() {
         return;
     }
 
     let mut functions = std::mem::take(&mut module.functions);
-    let mut cache: HashMap<String, CoreFun> = HashMap::default();
-    let mut name_tag = 0u32;
+    let mut cache: HashMap<String, InlineCallee> = HashMap::default();
 
     for i in 0..functions.len() {
         // Prefetch transitive inlineable callees while `functions` is shared.
@@ -53,7 +100,6 @@ fn inline_module(module: &mut CoreModule) {
             &cache,
             &caller,
             &mut next,
-            &mut name_tag,
             &mut expanding,
             0,
         );
@@ -61,22 +107,30 @@ fn inline_module(module: &mut CoreModule) {
     module.functions = functions;
 }
 
-/// Walk direct `Call` targets; clone reachable inlineables into `cache` once.
+/// Walk direct `Call` / `FunRef` targets; cache reachable inlineables once.
 fn prefetch_inline_callees(
     block: &Block,
     indices: &HashMap<String, usize>,
     functions: &[CoreFun],
-    cache: &mut HashMap<String, CoreFun>,
+    cache: &mut HashMap<String, InlineCallee>,
 ) {
     // Cache fill is order-independent — DFS is safe.
     for_each_block_dfs(block, &mut |b| {
         for op in &b.ops {
-            if let Op::Let {
-                value: Value::Call { fun, .. },
-                ..
-            } = op
-            {
-                ensure_inline_cached(fun, indices, functions, cache);
+            match op {
+                Op::Let {
+                    value: Value::Call { fun, .. },
+                    ..
+                } => {
+                    ensure_inline_cached(fun.as_str(), indices, functions, cache);
+                }
+                Op::Let {
+                    value: Value::FunRef(fun),
+                    ..
+                } => {
+                    ensure_inline_cached(fun, indices, functions, cache);
+                }
+                _ => {}
             }
         }
     });
@@ -86,7 +140,7 @@ fn ensure_inline_cached(
     name: &str,
     indices: &HashMap<String, usize>,
     functions: &[CoreFun],
-    cache: &mut HashMap<String, CoreFun>,
+    cache: &mut HashMap<String, InlineCallee>,
 ) {
     if cache.contains_key(name) {
         return;
@@ -95,7 +149,14 @@ fn ensure_inline_cached(
         return;
     };
     // Insert before recursing so mutual inlineables do not re-enter.
-    cache.insert(name.to_string(), functions[idx].clone());
+    let f = &functions[idx];
+    cache.insert(
+        name.to_string(),
+        InlineCallee {
+            params: f.params.clone(),
+            body: Arc::new(f.body.clone()),
+        },
+    );
     prefetch_inline_callees(&functions[idx].body, indices, functions, cache);
 }
 
@@ -106,7 +167,7 @@ fn is_inlineable(f: &CoreFun) -> bool {
     if !f.effect.is_pure() {
         return false;
     }
-    if count_ops(&f.body) > INLINE_MAX_OPS {
+    if count_ops(&f.body) > inline_max_ops() {
         return false;
     }
     if block_calls(&f.body, &f.name) {
@@ -121,14 +182,15 @@ fn is_inlineable(f: &CoreFun) -> bool {
 
 fn inline_block(
     block: &mut Block,
-    inlineable: &HashMap<String, CoreFun>,
+    inlineable: &HashMap<String, InlineCallee>,
     caller: &str,
     next: &mut u32,
-    name_tag: &mut u32,
     expanding: &mut HashSet<String>,
     depth: usize,
 ) {
     let mut out: Vec<Op> = Vec::with_capacity(block.ops.len());
+    // Locals proven equal to `FunRef(name)` (SSA aliases) — enables IndirectCall expand.
+    let mut funrefs: HashMap<u32, String> = HashMap::default();
     for op in std::mem::take(&mut block.ops) {
         match op {
             Op::Let {
@@ -137,33 +199,51 @@ fn inline_block(
                 pure_region,
             } => {
                 let mut value = value;
-                inline_value(
-                    &mut value, inlineable, caller, next, name_tag, expanding, depth,
-                );
-                if let Value::Call { fun, args } = &value {
-                    // Refuse self-recursion, re-entry on the expand stack (mutual
-                    // a↔b), and runaway nested expand depth.
+                inline_value(&mut value, inlineable, caller, next, expanding, depth);
+                // Resolve FunRef / IndirectCall → direct Call when possible.
+                let expand_fun: Option<String> = match &value {
+                    Value::Call { fun, .. } => Some(fun.name.clone()),
+                    Value::IndirectCall { callee, .. } => funrefs.get(&callee.0).cloned(),
+                    Value::FunRef(name) => {
+                        funrefs.insert(local.0, name.name.clone());
+                        None
+                    }
+                    Value::Local(Local(src)) => {
+                        if let Some(n) = funrefs.get(src) {
+                            funrefs.insert(local.0, n.clone());
+                        }
+                        None
+                    }
+                    _ => {
+                        funrefs.remove(&local.0);
+                        None
+                    }
+                };
+
+                if let Some(fun) = expand_fun.as_deref() {
+                    let args: Option<Vec<Local>> = match &value {
+                        Value::Call { args, .. } | Value::IndirectCall { args, .. } => {
+                            Some(args.clone())
+                        }
+                        _ => None,
+                    };
                     let can_expand = fun != caller
                         && depth < INLINE_MAX_EXPAND_DEPTH
                         && !expanding.contains(fun);
                     if can_expand {
-                        if let Some(callee) = inlineable.get(fun) {
+                        if let (Some(args), Some(callee)) = (args.as_ref(), inlineable.get(fun)) {
                             if args.len() == callee.params.len() {
-                                let (prelude, result) =
-                                    materialize_inline(callee, args, next, name_tag);
-                                // Callee snapshot may still contain calls to other
-                                // inlineable leaves — expand those against the same map.
+                                let (prelude, result) = materialize_inline(callee, args, next);
                                 let mut nested = Block {
                                     ops: prelude,
                                     result: Some(result),
                                 };
-                                expanding.insert(fun.clone());
+                                expanding.insert(fun.to_string());
                                 inline_block(
                                     &mut nested,
                                     inlineable,
-                                    fun.as_str(),
+                                    fun,
                                     next,
-                                    name_tag,
                                     expanding,
                                     depth + 1,
                                 );
@@ -176,6 +256,7 @@ fn inline_block(
                                     value: Value::Local(result),
                                     pure_region,
                                 });
+                                funrefs.remove(&local.0);
                                 continue;
                             }
                         }
@@ -195,10 +276,9 @@ fn inline_block(
 
 fn inline_value(
     value: &mut Value,
-    inlineable: &HashMap<String, CoreFun>,
+    inlineable: &HashMap<String, InlineCallee>,
     caller: &str,
     next: &mut u32,
-    name_tag: &mut u32,
     expanding: &mut HashSet<String>,
     depth: usize,
 ) {
@@ -208,36 +288,48 @@ fn inline_value(
             else_block,
             ..
         } => {
-            inline_block(
-                then_block, inlineable, caller, next, name_tag, expanding, depth,
-            );
-            inline_block(
-                else_block, inlineable, caller, next, name_tag, expanding, depth,
-            );
+            inline_block(then_block, inlineable, caller, next, expanding, depth);
+            inline_block(else_block, inlineable, caller, next, expanding, depth);
         }
         Value::Loop {
             header,
             body,
             latch,
         } => {
-            inline_block(header, inlineable, caller, next, name_tag, expanding, depth);
-            inline_block(body, inlineable, caller, next, name_tag, expanding, depth);
-            inline_block(latch, inlineable, caller, next, name_tag, expanding, depth);
+            inline_block(header, inlineable, caller, next, expanding, depth);
+            inline_block(body, inlineable, caller, next, expanding, depth);
+            inline_block(latch, inlineable, caller, next, expanding, depth);
         }
         Value::Lambda { body, .. } => {
-            inline_block(body, inlineable, caller, next, name_tag, expanding, depth)
+            inline_block(body, inlineable, caller, next, expanding, depth)
         }
         _ => {}
     }
 }
 
-fn materialize_inline(
-    callee: &CoreFun,
-    args: &[Local],
-    next: &mut u32,
-    name_tag: &mut u32,
-) -> (Vec<Op>, Local) {
-    let mut body = callee.body.clone();
+/// Uniquify an inlined mutable slot using the Local id space.
+///
+/// Keeps HIR desugar prefixes so Float ABI / fold classifiers still match.
+fn unique_inline_slot_name(original: &str, id: u32) -> String {
+    let prefixes = std::iter::once(FOR_INDEX_PREFIX)
+        .chain(std::iter::once(FUSE_ACC_PREFIX))
+        .chain(std::iter::once(FOLD_ELEM_PREFIX))
+        .chain(LIST_BUILDER_ACC_PREFIXES.iter().copied());
+    for p in prefixes {
+        if original.starts_with(p) {
+            return if p.ends_with('_') {
+                format!("{p}s{id}")
+            } else {
+                format!("{p}_s{id}")
+            };
+        }
+    }
+    format!("$s{id}")
+}
+
+fn materialize_inline(callee: &InlineCallee, args: &[Local], next: &mut u32) -> (Vec<Op>, Local) {
+    // Deep-clone from shared Arc only at expand time (caller mutates remap).
+    let mut body = (*callee.body).clone();
     let mut remap: HashMap<u32, u32> = HashMap::default();
 
     // Map params → actuals (no new locals).
@@ -259,15 +351,18 @@ fn materialize_inline(
 
     rewrite_block_locals(&mut body, &remap);
 
-    // Rename mutable slots so they cannot collide with the caller's vars.
+    // Uniquify mutable slots from the same Local id counter (no `$inl{tag}_` protocol).
     let mut slot_names: HashSet<String> = HashSet::default();
     collect_slot_names(&body, &mut slot_names);
     if !slot_names.is_empty() {
-        let tag = *name_tag;
-        *name_tag += 1;
         let name_remap: HashMap<String, String> = slot_names
             .into_iter()
-            .map(|n| (n.clone(), format!("$inl{tag}_{n}")))
+            .map(|n| {
+                let id = *next;
+                *next += 1;
+                let fresh = unique_inline_slot_name(&n, id);
+                (n, fresh)
+            })
             .collect();
         rewrite_block_slot_names(&mut body, &name_remap);
     }

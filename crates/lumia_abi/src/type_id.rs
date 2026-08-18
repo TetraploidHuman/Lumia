@@ -47,6 +47,11 @@ pub const TID_HASH: u32 = 1 << 11;
 pub const TID_B_KEY: u32 = 1 << 12;
 /// Map values are unboxed Bool.
 pub const TID_B_VAL: u32 = 1 << 13;
+/// List sparse patch overlay on a parent (usually Iota): payload
+/// `[len][parent][dn][idx0][val0]…` (see DESIGN §7.3 overlay + range).
+pub const TID_LIST_PATCH: u32 = 1 << 14;
+/// List elems are unboxed Int (not String/ADT/nested) — GC may skip elem shade.
+pub const TID_LIST_INT: u32 = 1 << 15;
 
 /// ADT Show-kind occupies bits `[31:16]` (0 = anonymous / `#tag` fallback).
 pub const TID_ADT_KIND_SHIFT: u32 = 16;
@@ -55,6 +60,8 @@ pub const TID_ADT_KIND_MASK: u32 = 0xFFFF << TID_ADT_KIND_SHIFT;
 /// Historical names as packed aliases (prefer constructors / flag helpers).
 pub const TYPE_LIST_F64: u32 = TYPE_LIST | TID_F_KEY;
 pub const TYPE_LIST_BOOL: u32 = TYPE_LIST | TID_B_KEY;
+pub const TYPE_LIST_PATCH: u32 = TYPE_LIST | TID_LIST_PATCH;
+pub const TYPE_LIST_INT: u32 = TYPE_LIST | TID_LIST_INT;
 pub const TYPE_MAP_F64: u32 = TYPE_MAP | TID_F_KEY;
 pub const TYPE_SET_F64: u32 = TYPE_SET | TID_F_KEY;
 pub const TYPE_SET_BOOL: u32 = TYPE_SET | TID_B_KEY;
@@ -103,6 +110,16 @@ pub fn tid_b_key(tid: u32) -> bool {
 #[inline]
 pub fn tid_b_val(tid: u32) -> bool {
     tid & TID_B_VAL != 0
+}
+
+#[inline]
+pub fn tid_list_patch(tid: u32) -> bool {
+    tid_base(tid) == TYPE_LIST && tid & TID_LIST_PATCH != 0
+}
+
+#[inline]
+pub fn tid_list_int(tid: u32) -> bool {
+    tid_base(tid) == TYPE_LIST && tid & TID_LIST_INT != 0
 }
 
 #[inline]
@@ -167,6 +184,7 @@ pub fn adt_show_kind(tid: u32) -> u16 {
 }
 
 /// Heap list `type_id` from Float/Bool elem tags (Float wins if both set).
+/// Untagged `TYPE_LIST` means unknown/heap elems (String, ADT, nested) — **not** Int.
 pub fn list_type_id_flags(elem_is_float: bool, elem_is_bool: bool) -> u32 {
     TYPE_LIST
         | if elem_is_float {
@@ -176,6 +194,12 @@ pub fn list_type_id_flags(elem_is_float: bool, elem_is_bool: bool) -> u32 {
         } else {
             0
         }
+}
+
+/// Dense `List[Int]` — elems are immediates; GC shade skips the elem loop.
+#[inline]
+pub fn list_type_id_int() -> u32 {
+    TYPE_LIST_INT
 }
 
 /// Heap list `type_id` from element Float tag (Bool → [`list_type_id_flags`]).
@@ -300,4 +324,16 @@ pub fn list_elem_is_float(tid: u32) -> bool {
 #[inline]
 pub fn list_elem_is_bool(tid: u32) -> bool {
     tid_base(tid) == TYPE_LIST && tid_b_key(tid) && !tid_f_key(tid)
+}
+
+/// List elems are unboxed Int (see [`TID_LIST_INT`]).
+#[inline]
+pub fn list_elem_is_int(tid: u32) -> bool {
+    tid_list_int(tid) && !tid_f_key(tid) && !tid_b_key(tid)
+}
+
+/// Elem words are not GC pointers (Float / Bool / Int tags).
+#[inline]
+pub fn list_elem_skip_gc_mark(tid: u32) -> bool {
+    list_elem_is_float(tid) || list_elem_is_bool(tid) || list_elem_is_int(tid)
 }

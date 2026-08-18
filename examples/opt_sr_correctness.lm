@@ -265,7 +265,7 @@ val rangeFoldChecksum(n) = {
 /// copies the whole buffer (write traffic); per-element `set` would be O(n²).
 val memTrafficChecksum(n, scanPasses, gatherSteps) = {
     var xs = range(0, n)
-    xs = xs.set(0, xs.get(0))
+    xs = xs.concat(listOf(0)).take(n)
     var p = 0
     var s = 0
     for p < scanPasses {

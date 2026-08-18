@@ -120,41 +120,41 @@ fn handle_message(msg: Value) -> Result<Option<Value>> {
                 s.position_encoding = position_encoding;
             }
             Ok(Some(json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "result": {
-                "capabilities": {
-                    "positionEncoding": position_encoding_str,
-                    "textDocumentSync": 1,
-                    "hoverProvider": true,
-                    "definitionProvider": true,
-                    "completionProvider": {
-                        "triggerCharacters": [".", "("],
-                        "resolveProvider": false
-                    },
-                    "documentFormattingProvider": true,
-                    "documentSymbolProvider": true,
-                    "inlayHintProvider": true,
-                    "semanticTokensProvider": {
-                        "legend": {
-                            "tokenTypes": TOKEN_TYPES,
-                            "tokenModifiers": TOKEN_MODIFIERS
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "capabilities": {
+                        "positionEncoding": position_encoding_str,
+                        "textDocumentSync": 1,
+                        "hoverProvider": true,
+                        "definitionProvider": true,
+                        "completionProvider": {
+                            "triggerCharacters": [".", "("],
+                            "resolveProvider": false
                         },
-                        "full": true,
-                        "range": false
-                    },
-                    "workspace": {
-                        // Client may push `workspace/didChangeConfiguration`; we also
-                        // pull via `workspace/configuration` after `initialized`.
-                        "workspaceFolders": {
-                            "supported": false,
-                            "changeNotifications": false
+                        "documentFormattingProvider": true,
+                        "documentSymbolProvider": true,
+                        "inlayHintProvider": true,
+                        "semanticTokensProvider": {
+                            "legend": {
+                                "tokenTypes": TOKEN_TYPES,
+                                "tokenModifiers": TOKEN_MODIFIERS
+                            },
+                            "full": true,
+                            "range": false
+                        },
+                        "workspace": {
+                            // Client may push `workspace/didChangeConfiguration`; we also
+                            // pull via `workspace/configuration` after `initialized`.
+                            "workspaceFolders": {
+                                "supported": false,
+                                "changeNotifications": false
+                            }
                         }
-                    }
-                },
-                "serverInfo": { "name": "lumia-lsp", "version": env!("CARGO_PKG_VERSION") }
-            }
-        })))
+                    },
+                    "serverInfo": { "name": "lumia-lsp", "version": env!("CARGO_PKG_VERSION") }
+                }
+            })))
         }
         Some("initialized") => {
             request_workspace_configuration()?;
@@ -273,9 +273,7 @@ fn handle_message(msg: Value) -> Result<Option<Value>> {
         None => {
             // Response to a server→client request (e.g. workspace/configuration).
             if let Some(rid) = json_rpc_id_i64(msg.get("id")) {
-                let pending = state_lock()
-                    .as_ref()
-                    .and_then(|s| s.pending_config_req);
+                let pending = state_lock().as_ref().and_then(|s| s.pending_config_req);
                 if pending == Some(rid) {
                     if let Some(s) = state_lock().as_mut() {
                         s.pending_config_req = None;
@@ -322,10 +320,7 @@ fn apply_auto_parallel(ap: bool) -> Result<()> {
         let mut st = state_lock();
         if let Some(s) = st.as_mut() {
             s.auto_parallel = ap;
-            s.docs
-                .iter()
-                .map(|(u, t)| (u.clone(), t.clone()))
-                .collect()
+            s.docs.iter().map(|(u, t)| (u.clone(), t.clone())).collect()
         } else {
             Vec::new()
         }

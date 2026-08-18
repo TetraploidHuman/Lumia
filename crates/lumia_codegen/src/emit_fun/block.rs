@@ -12,6 +12,19 @@ impl<'ctx> Codegen<'ctx> {
         block: &Block,
         fv: FunctionValue<'ctx>,
     ) -> Result<Option<BasicValueEnum<'ctx>>> {
+        self.emit_block_from(block, fv, self.frame.ssa_root_stack.len())
+    }
+
+    /// Like [`Self::emit_block`] but may early-pop SSA roots down to `stack_base`.
+    /// Function bodies pass `0` so heap params can die; nested blocks pass the
+    /// current stack length so they cannot pop outer roots.
+    pub(crate) fn emit_block_from(
+        &mut self,
+        block: &Block,
+        fv: FunctionValue<'ctx>,
+        stack_base: usize,
+    ) -> Result<Option<BasicValueEnum<'ctx>>> {
+        self.pop_unused_ssa_roots(stack_base)?;
         for (idx, op) in block.ops.iter().enumerate() {
             // If current block already terminated (after break/continue), skip.
             if self
@@ -53,8 +66,14 @@ impl<'ctx> Codegen<'ctx> {
                         self.frame.local_tys.insert(local.0, ty);
                         self.note_int_const(local.0, value);
                         self.funs.funref_locals.remove(&local.0);
+                    } else if self.let_skip_root_no_safepoint(block, idx, *local, value) {
+                        self.bind_let_skip_root(*local, value, v)?;
                     } else {
+                        let d0 = self.frame.root_depth;
                         self.bind_let_after_emit(*local, value, v)?;
+                        if self.frame.root_depth > d0 {
+                            self.note_ssa_root(block, idx + 1, *local);
+                        }
                     }
                 }
                 Op::Assign { name, value } => {
@@ -124,6 +143,15 @@ impl<'ctx> Codegen<'ctx> {
                     }
                     self.emit_return_i64(ret_i)?;
                 }
+            }
+            if self
+                .llvm
+                .builder
+                .get_insert_block()
+                .and_then(|bb| bb.get_terminator())
+                .is_none()
+            {
+                self.pop_dead_ssa_roots(idx, stack_base)?;
             }
         }
         if self

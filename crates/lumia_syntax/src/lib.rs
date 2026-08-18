@@ -15,8 +15,8 @@ pub mod visit;
 
 pub use ast::{
     BinOp, Expr, ForBinding, ForeignItem, Import, ImportNames, ImportedName, InstanceItem,
-    InterpPart, Item, MatchArm, MatchCondArm, Module, Pattern, Stmt, TraitItem, TypeItem,
-    TypeKind, UnOp, ValItem, Variant, VariantFields,
+    InterpPart, Item, MatchArm, MatchCondArm, Module, Pattern, Stmt, TraitItem, TypeItem, TypeKind,
+    UnOp, ValItem, Variant, VariantFields,
 };
 pub use diag::{
     byte_at_metric_col, byte_to_line_col, byte_to_line_col_metric, format_diagnostic,

@@ -165,7 +165,13 @@ val main = {
                 }
             });
         }
-        assert!(!unbound_scope_r, "scope result still referenced as unbound Name");
-        assert!(unit_lets >= 1, "expected Unit materialization for scope result");
+        assert!(
+            !unbound_scope_r,
+            "scope result still referenced as unbound Name"
+        );
+        assert!(
+            unit_lets >= 1,
+            "expected Unit materialization for scope result"
+        );
     }
 }

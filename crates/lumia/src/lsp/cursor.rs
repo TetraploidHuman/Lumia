@@ -12,8 +12,7 @@ pub(super) fn pos_to_byte(src: &str, line: u32, character: u32) -> u32 {
 /// 0-based LSP `(line, character)` for a byte offset under the negotiated encoding.
 pub(super) fn byte_to_position(src: &str, byte: u32) -> (u32, u32) {
     let starts = line_starts(src);
-    let (line, col) =
-        byte_to_line_col_metric(src, &starts, BytePos(byte), position_encoding());
+    let (line, col) = byte_to_line_col_metric(src, &starts, BytePos(byte), position_encoding());
     (line.saturating_sub(1), col.saturating_sub(1))
 }
 

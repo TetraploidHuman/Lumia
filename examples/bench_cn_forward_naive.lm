@@ -3,7 +3,7 @@ module BenchCnForwardNaive
 /// Same strict-PE triad as `bench_cn_forward_kernel.lm`, with composed linalg
 /// for project/cluster/updateState/learnGenerative (nucleus/hebbian still fused).
 import std.io.{println}
-import std.linalg.{
+import extras.linalg.{
     zeros, copy, sub, scale, add, gemv, gemvT, axpy, clamp, addmm, checksum
 }
 import extras.cn.{nucleusStep, hebbian, argMax}

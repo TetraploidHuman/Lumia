@@ -241,10 +241,7 @@ fn cse_does_not_dedup_int_mul() {
         matches!(
             &ops[3],
             Op::Let {
-                value: Value::Binary {
-                    op: BinOp::Mul,
-                    ..
-                },
+                value: Value::Binary { op: BinOp::Mul, .. },
                 ..
             }
         ),

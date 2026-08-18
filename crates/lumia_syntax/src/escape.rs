@@ -67,6 +67,9 @@ mod tests {
 
     #[test]
     fn escape_str_covers_table() {
-        assert_eq!(escape_str("a\\b\"c\nd\re\tf$g"), "a\\\\b\\\"c\\nd\\re\\tf\\$g");
+        assert_eq!(
+            escape_str("a\\b\"c\nd\re\tf$g"),
+            "a\\\\b\\\"c\\nd\\re\\tf\\$g"
+        );
     }
 }

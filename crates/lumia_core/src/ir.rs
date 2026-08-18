@@ -11,6 +11,98 @@ use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Local(pub u32);
 
+/// Module-local function index into [`CoreModule::functions`].
+///
+/// Stable until functions are inserted/removed/reordered. Direct [`Value::Call`]
+/// sites carry an optional id on [`CallTarget`] after
+/// [`crate::resolve_module_call_fun_ids`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FunId(pub u32);
+
+/// Callee of a direct [`Value::Call`]: name always present; id when resolved.
+#[derive(Debug, Clone)]
+pub struct CallTarget {
+    pub name: String,
+    /// [`FunId`] into the current module, or `None` if unknown / not yet resolved.
+    pub id: Option<FunId>,
+}
+
+impl CallTarget {
+    #[inline]
+    pub fn named(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            id: None,
+        }
+    }
+
+    #[inline]
+    pub fn as_str(&self) -> &str {
+        &self.name
+    }
+}
+
+impl From<&str> for CallTarget {
+    fn from(s: &str) -> Self {
+        Self::named(s)
+    }
+}
+
+impl From<String> for CallTarget {
+    fn from(s: String) -> Self {
+        Self::named(s)
+    }
+}
+
+impl PartialEq<str> for CallTarget {
+    fn eq(&self, other: &str) -> bool {
+        self.name == other
+    }
+}
+
+impl PartialEq<&str> for CallTarget {
+    fn eq(&self, other: &&str) -> bool {
+        self.name == *other
+    }
+}
+
+impl PartialEq<String> for CallTarget {
+    fn eq(&self, other: &String) -> bool {
+        &self.name == other
+    }
+}
+
+impl PartialEq<CallTarget> for String {
+    fn eq(&self, other: &CallTarget) -> bool {
+        self == &other.name
+    }
+}
+
+impl PartialEq<CallTarget> for str {
+    fn eq(&self, other: &CallTarget) -> bool {
+        self == other.name.as_str()
+    }
+}
+
+impl AsRef<str> for CallTarget {
+    fn as_ref(&self) -> &str {
+        &self.name
+    }
+}
+
+impl std::ops::Deref for CallTarget {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.name
+    }
+}
+
+impl std::fmt::Display for CallTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.name)
+    }
+}
+
 /// Calling convention for [`CoreFun::external`] imports.
 ///
 /// Set explicitly at the declare / synth site. Mid/backend must use this field —
@@ -99,6 +191,12 @@ pub struct CoreFun {
     pub foreign_abi: ForeignAbi,
     /// Locals that may escape (always filled by EscapePass before ReprSelect).
     pub escaping: HashSet<Local>,
+    /// `Binary` Add/Sub/Mul(/Rem) locals proven NSW-safe (opt `NswIvPass`; empty if gated off).
+    pub nsw_binop_locals: HashSet<u32>,
+    /// Locals safe as `div`/`rem` RHS (opt `NswIvPass`).
+    pub safe_divisor_locals: HashSet<u32>,
+    /// `Name(iv)` loads proven nonnegative by a loop header (opt `NswIvPass`).
+    pub nonneg_iv_load_locals: HashSet<u32>,
     /// HM scheme needs call-site clones (`∀` / Num / trait preds), or signature still open.
     pub scheme_poly: bool,
     /// When set, this function is a monomorphization clone of the named original.
@@ -204,7 +302,7 @@ pub enum Value {
         operand: Local,
     },
     Call {
-        fun: String,
+        fun: CallTarget,
         args: Vec<Local>,
     },
     /// Call through a function pointer (first-class / lifted lambda).
@@ -235,7 +333,7 @@ pub enum Value {
         body: Box<Block>,
     },
     /// Pointer to a known Core/LLVM function (as i64).
-    FunRef(String),
+    FunRef(CallTarget),
     /// Representation hint after lowering (default path)
     AllocList {
         elems: Vec<Local>,
@@ -259,15 +357,17 @@ pub enum Value {
     },
     /// Heap closure: `[fn_ptr:i64][cap0]…` — `fun` takes `(env, …params)`.
     AllocClosure {
-        fun: String,
+        fun: CallTarget,
         captures: Vec<Local>,
     },
     /// Load capture word `index` from closure env (`env` is the heap ptr as i64).
-    /// `as_float` restores IEEE bits to f64 in codegen (captures are stored as i64).
+    ///
+    /// Float capture ABI is **not** encoded here: lift tracks float indices in a
+    /// side table; after mono, typed cap tables (`collect_fun_cap_tys` /
+    /// codegen `closure_cap_tys`) drive bitcasts.
     ClosureCap {
         env: Local,
         index: u32,
-        as_float: bool,
     },
 }
 
@@ -284,6 +384,8 @@ pub enum ListRepr {
     LitList,
     /// DESIGN §7.3 fused pipeline tag — reserved; ReprSelect never emits this.
     /// Deforestation is HIR-side (`try_fuse_hof_get` / `try_deforest_hof_let`).
+    /// Escaped pipes materialize via ordinary `map`/`filter`; runtime Iota
+    /// (`TYPE_LIST_IOTA`) is the virtual list path, not this variant.
     Fused,
 }
 
@@ -403,7 +505,7 @@ fn format_value(v: &Value) -> String {
         Value::Unary { op, operand } => format!("{op:?} %{}", operand.0),
         Value::Call { fun, args } => {
             let a: Vec<_> = args.iter().map(|l| format!("%{}", l.0)).collect();
-            format!("call {fun}({})", a.join(", "))
+            format!("call {}({})", fun.name, a.join(", "))
         }
         Value::IndirectCall { callee, args } => {
             let a: Vec<_> = args.iter().map(|l| format!("%{}", l.0)).collect();
@@ -420,16 +522,8 @@ fn format_value(v: &Value) -> String {
         Value::AllocClosure { fun, captures } => {
             format!("alloc_closure({fun}, n={})", captures.len())
         }
-        Value::ClosureCap {
-            env,
-            index,
-            as_float,
-        } => {
-            if *as_float {
-                format!("closure_cap_f(%{}, {index})", env.0)
-            } else {
-                format!("closure_cap(%{}, {index})", env.0)
-            }
+        Value::ClosureCap { env, index } => {
+            format!("closure_cap(%{}, {index})", env.0)
         }
         Value::AllocList { elems, repr } => {
             format!("alloc_list[{repr:?}](n={})", elems.len())

@@ -22,13 +22,8 @@ pub fn const_of(l: Local, defs: &HashMap<u32, Value>) -> Option<i64> {
 
 /// `dest = name + 1` or `dest = 1 + name`.
 pub fn is_unit_inc(dest: u32, name: &str, defs: &HashMap<u32, Value>) -> bool {
-    matches!(
-        defs.get(&dest),
-        Some(Value::Binary {
-            op: BinOp::Add,
-            ..
-        })
-    ) && is_unit_step(dest, name, defs)
+    matches!(defs.get(&dest), Some(Value::Binary { op: BinOp::Add, .. }))
+        && is_unit_step(dest, name, defs)
 }
 
 /// `dest = name ± 1` (Add `+1` either side, or Sub `name - 1`).
@@ -191,6 +186,28 @@ pub fn header_lt_bound(header: &Block, defs: &HashMap<u32, Value>) -> Option<(St
     Some((iv, *right))
 }
 
+/// Header result is `Name(iv) <= bound` (or `bound >= Name(iv)`) where `bound` is a Local.
+pub fn header_le_bound(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String, Local)> {
+    let res = header.result?;
+    let Value::Binary {
+        op, left, right, ..
+    } = defs.get(&res.0)?
+    else {
+        return None;
+    };
+    match op {
+        BinOp::Le => {
+            let iv = name_of(*left, defs)?;
+            Some((iv, *right))
+        }
+        BinOp::Ge => {
+            let iv = name_of(*right, defs)?;
+            Some((iv, *left))
+        }
+        _ => None,
+    }
+}
+
 /// Resolve `Local` / identity through `Value::Local` leaf defs.
 pub fn same_local(got: Local, want: Local, defs: &HashMap<u32, Value>) -> bool {
     if got == want {
@@ -307,15 +324,7 @@ pub fn body_assigns_rem(block: &Block, name: &str, defs: &HashMap<u32, Value>) -
             value: Local(v),
         } = op
         {
-            if n == name
-                && matches!(
-                    defs.get(v),
-                    Some(Value::Binary {
-                        op: BinOp::Rem,
-                        ..
-                    })
-                )
-            {
+            if n == name && matches!(defs.get(v), Some(Value::Binary { op: BinOp::Rem, .. })) {
                 return true;
             }
         }
@@ -397,16 +406,12 @@ pub fn rem_eq_zero_names(
         return false;
     };
     (name_of(a, defs).as_deref() == Some(a_name) && name_of(b, defs).as_deref() == Some(b_name))
-        || (name_of(a, defs).as_deref() == Some(b_name) && name_of(b, defs).as_deref() == Some(a_name))
+        || (name_of(a, defs).as_deref() == Some(b_name)
+            && name_of(b, defs).as_deref() == Some(a_name))
 }
 
 /// `(Name(name) % k) == 0` / `(k % Name(name)) == 0`.
-pub fn is_name_rem_eq_const(
-    cond: Local,
-    name: &str,
-    k: i64,
-    defs: &HashMap<u32, Value>,
-) -> bool {
+pub fn is_name_rem_eq_const(cond: Local, name: &str, k: i64, defs: &HashMap<u32, Value>) -> bool {
     let Some((a, b)) = rem_eq_zero_operands(cond, defs) else {
         return false;
     };
@@ -440,8 +445,7 @@ pub fn is_name_mul_name(l: Local, name: &str, defs: &HashMap<u32, Value>) -> boo
     else {
         return false;
     };
-    name_of(*left, defs).as_deref() == Some(name)
-        && name_of(*right, defs).as_deref() == Some(name)
+    name_of(*left, defs).as_deref() == Some(name) && name_of(*right, defs).as_deref() == Some(name)
 }
 
 /// `c * nonneg` / `nonneg * c` with `1..=max_factor` (nsw Collatz `3*x`).
@@ -809,11 +813,7 @@ pub fn has_float_approx(defs: &HashMap<u32, Value>, target: f64) -> bool {
 }
 
 /// Whether any binary `op` has a float-literal operand within `1e-12` of `target`.
-pub fn has_float_binop_with_const(
-    defs: &HashMap<u32, Value>,
-    op: BinOp,
-    target: f64,
-) -> bool {
+pub fn has_float_binop_with_const(defs: &HashMap<u32, Value>, op: BinOp, target: f64) -> bool {
     defs.values().any(|v| {
         let Value::Binary {
             op: bop,
@@ -843,8 +843,8 @@ pub fn has_float_binop_with_const(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Block, Local, Value};
     use crate::CoreBinOp as BinOp;
+    use crate::{Block, Local, Value};
 
     #[test]
     fn unit_inc_and_header_lt_gt() {

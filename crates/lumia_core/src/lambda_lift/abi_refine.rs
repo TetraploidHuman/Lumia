@@ -4,5 +4,5 @@
 //! post-mono float-capture fixups are mid-end ABI contracts — not lifting.
 //! Prefer this module at call sites so the package boundary stays honest.
 
+pub(crate) use super::abi_refresh::fixup_closure_float_caps;
 pub(crate) use super::channel_hint::refine_channel_elem_hint;
-pub(crate) use super::float_cap_fixup::fixup_closure_float_caps;

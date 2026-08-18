@@ -2,7 +2,7 @@
 /// Skipping retain let the parent drop and zeroed nearest-threat obs in CN eco.
 module adt_field_call_arg
 import std.io.{println}
-import std.linalg.{zeros, fill, hypotF}
+import extras.linalg.{zeros, fill, hypotF}
 
 type Eco {
     val ecoX

@@ -9,12 +9,17 @@
 use super::tid::{heap_list_tid, list_tid};
 use crate::common::{
     header_from_payload, is_heap_payload, list_rc_is_unique, may_be_heap_payload_bits, tid_base,
-    trap_abort, GcInhibitGuard,
-    TYPE_LIST, TYPE_LIST_IOTA,
+    trap_abort, GcInhibitGuard, TYPE_LIST, TYPE_LIST_IOTA,
 };
+use crate::container_delta::{delta_dn, delta_nbytes, delta_parent, write_delta_parent_dn};
 use crate::gc::{list_payload_bytes, lumia_alloc};
+use lumia_abi::{tid_list_patch, TYPE_LIST_PATCH};
 
-/// HeapList: `[len][elem…]`; Iota: `[start][end_exclusive]`.
+/// Max sparse overrides on a list patch (same budget as Map overlay).
+pub(crate) const LIST_PATCH_MAX: i64 = lumia_abi::SMALL_CONTAINER_MAX as i64;
+
+/// HeapList: `[len][elem…]`; Iota: `[start][end_exclusive]`;
+/// Patch (`TYPE_LIST|TID_LIST_PATCH`): `[len][parent][dn][idx0][val0]…`.
 pub(crate) fn list_len_of(list: *mut u8) -> i64 {
     if list.is_null() {
         return 0;
@@ -37,47 +42,77 @@ pub(crate) fn list_len_of(list: *mut u8) -> i64 {
     }
 }
 
+#[inline]
+pub(crate) fn list_is_patch(list: *mut u8) -> bool {
+    !list.is_null() && tid_list_patch(list_tid(list))
+}
+
+#[inline]
+pub(crate) unsafe fn list_patch_parent(list: *mut u8) -> *mut u8 {
+    delta_parent(list)
+}
+
+#[inline]
+pub(crate) unsafe fn list_patch_dn(list: *mut u8) -> i64 {
+    delta_dn(list)
+}
+
 pub(crate) fn list_get_of(list: *mut u8, index: i64) -> i64 {
     if list.is_null() || index < 0 {
         trap_abort("lumia: list get out of bounds");
     }
     unsafe {
-        match (*header_from_payload(list)).type_id {
-            TYPE_LIST_IOTA => {
-                let base = list as *const i64;
-                let start = *base;
-                let end = *base.add(1);
-                let len = if end > start {
-                    end.checked_sub(start)
-                        .unwrap_or_else(|| trap_abort("lumia: iota length overflow"))
-                } else {
-                    0
-                };
-                if index >= len {
-                    trap_abort("lumia: list get out of bounds");
-                }
-                start
-                    .checked_add(index)
-                    .unwrap_or_else(|| trap_abort("lumia: iota index overflow"))
+        let tid = (*header_from_payload(list)).type_id;
+        if tid == TYPE_LIST_IOTA {
+            let base = list as *const i64;
+            let start = *base;
+            let end = *base.add(1);
+            let len = if end > start {
+                end.checked_sub(start)
+                    .unwrap_or_else(|| trap_abort("lumia: iota length overflow"))
+            } else {
+                0
+            };
+            if index >= len {
+                trap_abort("lumia: list get out of bounds");
             }
-            _ => {
-                let len = *(list as *const i64);
-                if index >= len {
-                    trap_abort("lumia: list get out of bounds");
-                }
-                let base = list as *const i64;
-                *base.add(1 + index as usize)
-            }
+            return start
+                .checked_add(index)
+                .unwrap_or_else(|| trap_abort("lumia: iota index overflow"));
         }
+        if tid_list_patch(tid) {
+            let len = *(list as *const i64);
+            if index >= len {
+                trap_abort("lumia: list get out of bounds");
+            }
+            let dn = list_patch_dn(list) as usize;
+            let base = list as *const i64;
+            // Last write wins.
+            for i in (0..dn).rev() {
+                if *base.add(3 + i * 2) == index {
+                    return *base.add(4 + i * 2);
+                }
+            }
+            return list_get_of(list_patch_parent(list), index);
+        }
+        let len = *(list as *const i64);
+        if index >= len {
+            trap_abort("lumia: list get out of bounds");
+        }
+        let base = list as *const i64;
+        *base.add(1 + index as usize)
     }
 }
 
-/// Materialize Iota → HeapList; promote stack LitList; identity for heap / null.
+/// Materialize Iota/patch → HeapList; promote stack LitList; identity for dense heap / null.
 pub(crate) fn force_heap_list(list: *mut u8) -> *mut u8 {
     if list.is_null() {
         return list;
     }
     let tid = list_tid(list);
+    if tid_list_patch(tid) {
+        return flatten_list_patch(list);
+    }
     if tid != TYPE_LIST_IOTA {
         // Stack LitList must become heap before escape into containers / kernels.
         if tid_base(tid) == TYPE_LIST
@@ -93,7 +128,7 @@ pub(crate) fn force_heap_list(list: *mut u8) -> *mut u8 {
     if n < 0 {
         trap_abort("lumia: iota length overflow");
     }
-    let dest = lumia_alloc(list_payload_bytes(n), TYPE_LIST);
+    let dest = lumia_alloc(list_payload_bytes(n), lumia_abi::list_type_id_int());
     unsafe {
         let dst = dest as *mut i64;
         *dst = n;
@@ -105,6 +140,43 @@ pub(crate) fn force_heap_list(list: *mut u8) -> *mut u8 {
                 .unwrap_or_else(|| trap_abort("lumia: iota element overflow"));
             *dst.add(1 + i) = v;
         }
+    }
+    dest
+}
+
+fn flatten_list_patch(list: *mut u8) -> *mut u8 {
+    let _guard = GcInhibitGuard::enter();
+    let n = list_len_of(list);
+    if n < 0 {
+        trap_abort("lumia: list patch length overflow");
+    }
+    let dest = lumia_alloc(list_payload_bytes(n), lumia_abi::list_type_id_int());
+    unsafe {
+        let dst = dest as *mut i64;
+        *dst = n;
+        for i in 0..n as usize {
+            *dst.add(1 + i) = list_get_of(list, i as i64);
+        }
+    }
+    dest
+}
+
+/// Allocate a patch overlay: `[len][parent][dn][idx…][val…]`.
+pub(crate) unsafe fn alloc_list_patch(parent: *mut u8, len: i64, pairs: &[(i64, i64)]) -> *mut u8 {
+    let dn = pairs.len() as i64;
+    if dn > LIST_PATCH_MAX {
+        trap_abort("lumia: list patch overflow");
+    }
+    let dest = lumia_alloc(
+        delta_nbytes(LIST_PATCH_MAX, 2, "list patch") as u64,
+        TYPE_LIST_PATCH,
+    );
+    let dst = dest as *mut i64;
+    *dst = len;
+    write_delta_parent_dn(dst, parent, dn);
+    for (i, &(idx, val)) in pairs.iter().enumerate() {
+        *dst.add(3 + i * 2) = idx;
+        *dst.add(4 + i * 2) = val;
     }
     dest
 }
@@ -163,7 +235,7 @@ pub unsafe extern "C" fn lumia_list_get(list: *mut u8, index: i64) -> i64 {
 
 /// Capacity (element slots) from the allocated payload size (`[len][elem…]`).
 #[inline]
-fn list_capacity_elems(list: *mut u8) -> i64 {
+pub(crate) fn list_capacity_elems(list: *mut u8) -> i64 {
     if list.is_null() {
         return 0;
     }
@@ -173,7 +245,7 @@ fn list_capacity_elems(list: *mut u8) -> i64 {
     }
 }
 
-fn list_grow_cap(needed: i64) -> i64 {
+pub(crate) fn list_grow_cap(needed: i64) -> i64 {
     // Geometric growth: amortize repeated unique appends.
     let mut cap = 4i64;
     while cap < needed {

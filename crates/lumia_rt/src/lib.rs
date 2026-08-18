@@ -23,13 +23,14 @@
 //!
 //! 1. **heap** (`with_heap`) — process `Heap` / GC metadata
 //! 2. **sched** (`with_sched`) — Task / Channel / fiber tables
-//! 3. **per-mutator roots** (TLS `ROOTS` Mutex) — shadow-stack slots
+//! 3. **per-mutator roots / LAB** (TLS `ROOTS` / `LAB` Mutex) — shadow-stack
+//!    slots and nursery local allocation buffers
 //! 4. **per-mutator memo** (TLS `MEMO_TF` / `MEMO_IDX` Mutex) — memo tables
 //!
 //! Process-global helpers that nest under heap when GC registers/walks:
 //!
 //! - **mutator registry** / **memo registry** — take only while holding heap
-//!   (registration and GC root enumeration: **heap → registry → per-mutator**)
+//!   (registration and GC root / LAB flush: **heap → registry → per-mutator**)
 //! - **channel hot path** — `with_channel_gc`: when `full_marking_fast`,
 //!   **heap → sched**; otherwise sched alone (shade deferred to root remark)
 //! - **memo store shade** — release memo Mutex **before** any heap shade
@@ -61,10 +62,8 @@ mod cn_kernels;
 mod collatz;
 mod common;
 mod concurrency_policy;
+mod container_delta;
 mod dense_f64;
-mod globals;
-mod heap;
-mod mutator;
 mod dict;
 mod dispatch;
 mod efe;
@@ -72,13 +71,16 @@ mod ensure;
 mod eq;
 mod f64_simd;
 mod float_kernels;
-mod i64_simd;
-mod mem_traffic;
 mod gc;
+mod globals;
 mod hash_ord;
+mod heap;
+mod i64_simd;
 mod list;
 mod map_set;
+mod mem_traffic;
 mod memo;
+mod mutator;
 mod number_theory;
 mod primes;
 mod reentrant;
@@ -88,12 +90,11 @@ mod task;
 
 pub use adt_show::lumia_adt_register_show;
 pub use common::{
-    tid_base, MarkSweep, ObjectHeader, MEMO_IDX_CAP, MEMO_IDX_MAX_FUNS,
-    MEMO_IDX_TABLE_BYTES, MEMO_PROCESS_BYTE_CAP, MEMO_TF_MAX_ARGS, MEMO_TF_MAX_FUNS, MEMO_TF_SLOTS,
-    TYPE_ADT, TYPE_BYTES, TYPE_CHAR, TYPE_CHANNEL, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_F64,
-    TYPE_LIST_IOTA, TYPE_MAP, TYPE_MAP_ASSOC, TYPE_MAP_ASSOC_F64, TYPE_MAP_ASSOC_F64V,
-    TYPE_MAP_ASSOC_VF64, TYPE_MAP_F64, TYPE_MAP_F64V, TYPE_MAP_VF64, TYPE_SET, TYPE_SET_ASSOC,
-    TYPE_SET_F64, TYPE_STRING, TYPE_TASK,
+    tid_base, MarkSweep, ObjectHeader, MEMO_IDX_CAP, MEMO_IDX_MAX_FUNS, MEMO_IDX_TABLE_BYTES,
+    MEMO_PROCESS_BYTE_CAP, MEMO_TF_MAX_ARGS, MEMO_TF_MAX_FUNS, MEMO_TF_SLOTS, TYPE_ADT, TYPE_BYTES,
+    TYPE_CHANNEL, TYPE_CHAR, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_F64, TYPE_LIST_IOTA, TYPE_MAP,
+    TYPE_MAP_ASSOC, TYPE_MAP_ASSOC_F64, TYPE_MAP_ASSOC_F64V, TYPE_MAP_ASSOC_VF64, TYPE_MAP_F64,
+    TYPE_MAP_F64V, TYPE_MAP_VF64, TYPE_SET, TYPE_SET_ASSOC, TYPE_SET_F64, TYPE_STRING, TYPE_TASK,
 };
 
 pub use gc::{lumia_alloc, lumia_gc_collect, lumia_root_pop, lumia_root_push, lumia_write_barrier};
@@ -124,7 +125,6 @@ pub use efe::{
 };
 pub use eq::{lumia_adt_eq, lumia_eq};
 pub use float_kernels::lumia_mandelbrot_checksum;
-pub use mem_traffic::lumia_mem_traffic_checksum;
 pub use hash_ord::{
     lumia_adt_ensure_unique, lumia_adt_ensure_unique_consume, lumia_adt_ensure_unique_consume_mask,
     lumia_adt_ensure_unique_mask, lumia_adt_field, lumia_adt_set_field, lumia_adt_tag, lumia_cmp,
@@ -133,9 +133,9 @@ pub use hash_ord::{
 pub use list::{
     lumia_ensure_list_bool, lumia_ensure_list_f64, lumia_list_append, lumia_list_concat,
     lumia_list_empty, lumia_list_get, lumia_list_join, lumia_list_len, lumia_list_par_fold,
-    lumia_list_par_map, lumia_list_promote, lumia_list_release, lumia_list_retain, lumia_list_reverse,
-    lumia_list_set, lumia_list_slice, lumia_list_sort, lumia_list_sort_by_keys, lumia_list_take,
-    lumia_ptr_eq, lumia_range, lumia_range_inclusive,
+    lumia_list_par_map, lumia_list_promote, lumia_list_release, lumia_list_retain,
+    lumia_list_reverse, lumia_list_set, lumia_list_slice, lumia_list_sort, lumia_list_sort_by_keys,
+    lumia_list_take, lumia_ptr_eq, lumia_range, lumia_range_inclusive,
 };
 pub use map_set::{
     lumia_ensure_map_bool, lumia_ensure_map_f64, lumia_ensure_map_vbool, lumia_ensure_map_vf64,
@@ -144,6 +144,7 @@ pub use map_set::{
     lumia_map_set, lumia_map_values, lumia_set_contains, lumia_set_empty, lumia_set_finish,
     lumia_set_insert, lumia_set_remove,
 };
+pub use mem_traffic::lumia_mem_traffic_checksum;
 pub use memo::{
     lumia_memo_idx_hits, lumia_memo_idx_lookup, lumia_memo_idx_misses, lumia_memo_idx_reset,
     lumia_memo_idx_store, lumia_memo_l2_hits, lumia_memo_l2_lookup, lumia_memo_l2_misses,
@@ -162,10 +163,11 @@ pub use show::{
 pub use string_io::{
     lumia_alloc_string, lumia_assert, lumia_cstr_to_string, lumia_match_fail, lumia_println_auto,
     lumia_println_bool, lumia_println_cstr, lumia_println_float, lumia_println_int,
-    lumia_println_str, lumia_println_unit, lumia_read_stdin, lumia_str_byte_len, lumia_str_concat, lumia_str_contains,
-    lumia_str_ends_with, lumia_str_len, lumia_str_reverse, lumia_str_slice, lumia_str_split,
-    lumia_str_starts_with, lumia_str_substring, lumia_str_take, lumia_str_to_lower,
-    lumia_str_to_upper, lumia_str_trim, lumia_string_cstr, lumia_trap_div0, lumia_trap_overflow,
+    lumia_println_str, lumia_println_unit, lumia_read_stdin, lumia_str_byte_len, lumia_str_concat,
+    lumia_str_contains, lumia_str_ends_with, lumia_str_len, lumia_str_reverse, lumia_str_slice,
+    lumia_str_split, lumia_str_starts_with, lumia_str_substring, lumia_str_take,
+    lumia_str_to_lower, lumia_str_to_upper, lumia_str_trim, lumia_string_cstr, lumia_trap_div0,
+    lumia_trap_overflow,
 };
 pub use task::{
     lumia_abi_handoff_set, lumia_channel_close, lumia_channel_new, lumia_channel_recv,

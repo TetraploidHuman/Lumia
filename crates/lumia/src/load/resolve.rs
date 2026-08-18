@@ -270,7 +270,8 @@ pub(super) fn load_module_file_uncached(
     }
 
     // Std modules are inlined; drop their import nodes from the entry AST.
-    m.imports.retain(|i| !is_std(&i.path) && !is_extras(&i.path));
+    m.imports
+        .retain(|i| !is_std(&i.path) && !is_extras(&i.path));
     // Record this file's declarations (same-file visibility via name_origin).
     let empty = HashSet::default();
     extend_visibility(visibility, &m.items, &empty, file_id);

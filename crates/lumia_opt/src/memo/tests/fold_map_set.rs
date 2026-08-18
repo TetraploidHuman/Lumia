@@ -48,8 +48,8 @@ fn const_fold_map_get_to_option() {
                         value: Value::Builtin {
                             name: Builtin::ListGet,
                             args: vec![Local(4), Local(5)],
-                    result_ty: None,
-                },
+                            result_ty: None,
+                        },
                         pure_region: true,
                     },
                     Op::Let {
@@ -62,8 +62,8 @@ fn const_fold_map_get_to_option() {
                         value: Value::Builtin {
                             name: Builtin::ListGet,
                             args: vec![Local(4), Local(7)],
-                    result_ty: None,
-                },
+                            result_ty: None,
+                        },
                         pure_region: true,
                     },
                 ],
@@ -140,8 +140,8 @@ fn const_fold_contains_skips_nonconst_keys() {
                         value: Value::Builtin {
                             name: Builtin::Contains,
                             args: vec![Local(2), Local(3)],
-                    result_ty: None,
-                },
+                            result_ty: None,
+                        },
                         pure_region: true,
                     },
                 ],
@@ -204,8 +204,8 @@ fn const_fold_map_set_and_set_insert() {
                         value: Value::Builtin {
                             name: Builtin::MapSet,
                             args: vec![Local(3), Local(0), Local(2)],
-                    result_ty: None,
-                },
+                            result_ty: None,
+                        },
                         pure_region: true,
                     },
                     Op::Let {
@@ -226,8 +226,8 @@ fn const_fold_map_set_and_set_insert() {
                         value: Value::Builtin {
                             name: Builtin::SetInsert,
                             args: vec![Local(5), Local(6)],
-                    result_ty: None,
-                },
+                            result_ty: None,
+                        },
                         pure_region: true,
                     },
                     Op::Let {
@@ -253,8 +253,8 @@ fn const_fold_map_set_and_set_insert() {
                         value: Value::Builtin {
                             name: Builtin::MapSet,
                             args: vec![Local(8), Local(9), Local(10)],
-                    result_ty: None,
-                },
+                            result_ty: None,
+                        },
                         pure_region: true,
                     },
                 ],

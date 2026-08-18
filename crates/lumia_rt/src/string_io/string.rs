@@ -247,7 +247,11 @@ fn str_substring_bytes(bytes: &[u8], start: i64, end: i64) -> Vec<u8> {
             let a = start.clamp(0, n) as usize;
             let b = end.clamp(0, n) as usize;
             let b = b.max(a);
-            text.chars().skip(a).take(b - a).collect::<String>().into_bytes()
+            text.chars()
+                .skip(a)
+                .take(b - a)
+                .collect::<String>()
+                .into_bytes()
         }
         Err(_) => {
             let cow = String::from_utf8_lossy(bytes);
@@ -255,7 +259,11 @@ fn str_substring_bytes(bytes: &[u8], start: i64, end: i64) -> Vec<u8> {
             let a = start.clamp(0, n) as usize;
             let b = end.clamp(0, n) as usize;
             let b = b.max(a);
-            cow.chars().skip(a).take(b - a).collect::<String>().into_bytes()
+            cow.chars()
+                .skip(a)
+                .take(b - a)
+                .collect::<String>()
+                .into_bytes()
         }
     }
 }

@@ -7,8 +7,8 @@ use crate::task::fiber::{
     task_spawn,
 };
 use crate::task::scheduler::{
-    await_sched_quiescent_for_test, cancel_scope_children, lumia_scheduler_drain,
-    sched_test_guard, SCHEDULER_WORKER,
+    await_sched_quiescent_for_test, cancel_scope_children, lumia_scheduler_drain, sched_test_guard,
+    SCHEDULER_WORKER,
 };
 use lumia_abi::TYPE_LIST;
 use std::sync::atomic::{AtomicI64, Ordering};

@@ -25,7 +25,9 @@ fn object_header_pad_list_rc_vs_adt_float_mask() {
         assert_eq!((*header_from_payload(adt)).rc, 1);
         assert_eq!((*header_from_payload(adt))._pad, 0);
     }
-    unsafe { lumia_adt_set_float_mask(adt, 0b1); }
+    unsafe {
+        lumia_adt_set_float_mask(adt, 0b1);
+    }
     unsafe {
         assert_eq!((*header_from_payload(adt))._pad, 0b1);
         assert_eq!((*header_from_payload(adt)).rc, 1);
@@ -132,7 +134,9 @@ fn adt_float_mask_high_bit_skips_gc_mark() {
         }
         *base.add(32) = bits;
     }
-    unsafe { lumia_adt_set_float_mask(adt, 1u64 << 31); }
+    unsafe {
+        lumia_adt_set_float_mask(adt, 1u64 << 31);
+    }
     unsafe { lumia_root_push(&mut adt as *mut *mut u8) };
     lumia_gc_collect();
     unsafe {
@@ -148,16 +152,17 @@ fn adt_float_mask_high_bit_skips_gc_mark() {
 #[test]
 fn adt_bool_mask_packs_high_half_preserves_float() {
     let adt = crate::map_set::alloc_adt_with_meta(0, &[1, 0], 0, 0, 0);
-    unsafe { lumia_adt_set_float_mask(adt, 0b1); }
-    unsafe { lumia_adt_set_bool_mask(adt, 0b10); }
+    unsafe {
+        lumia_adt_set_float_mask(adt, 0b1);
+    }
+    unsafe {
+        lumia_adt_set_bool_mask(adt, 0b10);
+    }
     unsafe {
         let pad = (*header_from_payload(adt))._pad;
         assert_eq!(crate::common::adt_float_mask(pad), 0b1);
         assert_eq!(crate::common::adt_bool_mask(pad), 0b10);
-        assert_eq!(
-            pad,
-            crate::common::adt_pack_field_masks(0b1, 0b10)
-        );
+        assert_eq!(pad, crate::common::adt_pack_field_masks(0b1, 0b10));
     }
 }
 
@@ -173,7 +178,9 @@ fn adt_float_mask_sanitizes_heap_pointer_slots() {
         *(adt as *mut i64) = 0;
         *((adt as *mut i64).add(1)) = list as i64;
     }
-    unsafe { lumia_adt_set_float_mask(adt, 0b1); }
+    unsafe {
+        lumia_adt_set_float_mask(adt, 0b1);
+    }
     unsafe {
         assert_eq!(
             (*header_from_payload(adt))._pad,

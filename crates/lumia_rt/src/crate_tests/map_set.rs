@@ -44,7 +44,10 @@ fn map_overlay_set_avoids_full_clone() {
         map_is_hash(m),
         "expected hash after promoting past small max"
     );
-    m = unsafe { lumia_map_set(m, 100, 42) };
+    // Unique hash with spare load inserts in place; Overlay is for shared parents.
+    let hash = m;
+    unsafe { lumia_list_retain(hash) };
+    m = unsafe { lumia_map_set(hash, 100, 42) };
     assert!(map_is_overlay(m));
     assert_eq!(map_count(m), 10);
     assert_eq!(unsafe { lumia_map_contains(m, 100) }, 1);
@@ -61,6 +64,90 @@ fn map_overlay_set_avoids_full_clone() {
 }
 
 #[test]
+fn map_unique_hash_inserts_in_place() {
+    let mut m: *mut u8 = ptr::null_mut();
+    unsafe { lumia_root_push(&mut m as *mut *mut u8) };
+    for i in 0..9 {
+        m = unsafe { lumia_map_set(m, i, i) };
+    }
+    assert!(map_is_hash(m));
+    let hash = m;
+    m = unsafe { lumia_map_set(hash, 100, 42) };
+    assert_eq!(m, hash, "unique hash with spare load must insert in place");
+    assert!(map_is_hash(m));
+    assert_eq!(map_count(m), 10);
+    lumia_root_pop();
+}
+
+#[test]
+fn map_unique_hash_remove_is_in_place() {
+    let mut m: *mut u8 = ptr::null_mut();
+    unsafe { lumia_root_push(&mut m as *mut *mut u8) };
+    // Stay under hash load-factor so unique inserts do not spill to Overlay.
+    for i in 0..12 {
+        m = unsafe { lumia_map_set(m, i, i * 10) };
+    }
+    assert!(map_is_hash(m));
+    let hash = m;
+    m = unsafe { lumia_map_remove(hash, 5) };
+    assert_eq!(m, hash, "unique hash remove must tomb in place");
+    assert!(map_is_hash(m));
+    assert_eq!(map_count(m), 11);
+    assert_eq!(unsafe { lumia_map_contains(m, 5) }, 0);
+    assert_eq!(unsafe { lumia_map_contains(m, 0) }, 1);
+    assert_eq!(unsafe { lumia_map_contains(m, 11) }, 1);
+    m = unsafe { lumia_map_set(m, 5, 50) };
+    assert_eq!(
+        m, hash,
+        "unique hash reinsert after tomb must reuse the table"
+    );
+    assert_eq!(unsafe { lumia_map_contains(m, 5) }, 1);
+    lumia_root_pop();
+}
+
+#[test]
+fn map_unique_hash_demote_is_in_place() {
+    let mut m: *mut u8 = ptr::null_mut();
+    unsafe { lumia_root_push(&mut m as *mut *mut u8) };
+    for i in 0..12 {
+        m = unsafe { lumia_map_set(m, i, i * 10) };
+    }
+    assert!(map_is_hash(m));
+    let hash = m;
+    for i in 0..4 {
+        m = unsafe { lumia_map_remove(m, i) };
+        assert_eq!(m, hash);
+    }
+    assert!(
+        !map_is_hash(m),
+        "unique hash must demote to linear at small n"
+    );
+    assert!(!map_is_overlay(m));
+    assert_eq!(map_count(m), 8);
+    assert_eq!(unsafe { lumia_map_contains(m, 0) }, 0);
+    assert_eq!(unsafe { lumia_map_contains(m, 4) }, 1);
+    lumia_root_pop();
+}
+
+#[test]
+fn set_unique_hash_remove_is_in_place() {
+    let mut s: *mut u8 = ptr::null_mut();
+    unsafe { lumia_root_push(&mut s as *mut *mut u8) };
+    for i in 0..12 {
+        s = unsafe { lumia_set_insert(s, i) };
+    }
+    assert!(set_is_hash(s));
+    let hash = s;
+    s = unsafe { lumia_set_remove(hash, 5) };
+    assert_eq!(s, hash, "unique hash set remove must tomb in place");
+    assert!(set_is_hash(s));
+    assert_eq!(set_count(s), 11);
+    assert_eq!(unsafe { lumia_set_contains(s, 5) }, 0);
+    assert_eq!(unsafe { set_elem_at(s, 5) }, 6);
+    lumia_root_pop();
+}
+
+#[test]
 fn set_promotes_to_hash_and_contains() {
     let mut s: *mut u8 = ptr::null_mut();
     unsafe { lumia_root_push(&mut s as *mut *mut u8) };
@@ -68,8 +155,11 @@ fn set_promotes_to_hash_and_contains() {
         s = unsafe { lumia_set_insert(s, i) };
     }
     assert!(!s.is_null());
-    assert!(set_is_hash(s));
-    assert_eq!(unsafe { *(s as *const i64) }, 20);
+    assert!(
+        set_is_hash(s) || set_is_overlay(s),
+        "expected hash or overlay after promoting past small max"
+    );
+    assert_eq!(set_count(s), 20);
     for i in 0..20 {
         assert_eq!(unsafe { lumia_set_contains(s, i) }, 1);
         assert_eq!(unsafe { set_elem_at(s, i as usize) }, i);
@@ -77,15 +167,43 @@ fn set_promotes_to_hash_and_contains() {
     assert_eq!(unsafe { lumia_set_contains(s, 99) }, 0);
     s = unsafe { lumia_set_remove(s, 5) };
     assert_eq!(unsafe { lumia_set_contains(s, 5) }, 0);
-    assert_eq!(unsafe { *(s as *const i64) }, 19);
+    assert_eq!(set_count(s), 19);
     assert_eq!(unsafe { set_elem_at(s, 0) }, 0);
     assert_eq!(unsafe { set_elem_at(s, 5) }, 6);
     // Shrink far enough to demote to linear
     for i in 0..12 {
         s = unsafe { lumia_set_remove(s, i) };
     }
-    assert!(!set_is_hash(s));
-    assert_eq!(unsafe { *(s as *const i64) }, 8);
+    assert!(!set_is_hash(s) && !set_is_overlay(s));
+    assert_eq!(set_count(s), 8);
+    lumia_root_pop();
+}
+
+#[test]
+fn set_overlay_insert_avoids_full_clone() {
+    let mut s: *mut u8 = ptr::null_mut();
+    unsafe { lumia_root_push(&mut s as *mut *mut u8) };
+    for i in 0..9 {
+        s = unsafe { lumia_set_insert(s, i) };
+    }
+    assert!(
+        set_is_hash(s),
+        "expected hash after promoting past small max"
+    );
+    let hash = s;
+    unsafe { lumia_list_retain(hash) };
+    s = unsafe { lumia_set_insert(hash, 100) };
+    assert!(set_is_overlay(s));
+    assert_eq!(set_count(s), 10);
+    assert_eq!(unsafe { lumia_set_contains(s, 100) }, 1);
+    assert_eq!(unsafe { lumia_set_contains(s, 3) }, 1);
+    s = unsafe { lumia_set_insert(s, 101) };
+    assert!(set_is_overlay(s));
+    unsafe {
+        assert_eq!(set_overlay_dn(s), 2);
+    }
+    assert_eq!(set_count(s), 11);
+    assert_eq!(unsafe { lumia_set_contains(s, 101) }, 1);
     lumia_root_pop();
 }
 
@@ -256,11 +374,8 @@ fn map_get_bool_mask_and_show_kind() {
     let mut m = ptr::null_mut();
     unsafe { lumia_root_push(&mut m as *mut *mut u8) };
     m = unsafe { lumia_map_set(m, 1, 1) }; // true
-    // Register a fake Option show-kind so nested show can resolve names.
-    let names: [*const u8; 2] = [
-        b"Some\0".as_ptr(),
-        b"None\0".as_ptr(),
-    ];
+                                           // Register a fake Option show-kind so nested show can resolve names.
+    let names: [*const u8; 2] = [b"Some\0".as_ptr(), b"None\0".as_ptr()];
     unsafe {
         crate::adt_show::lumia_adt_register_show(9, names.as_ptr(), 2);
     }
@@ -356,10 +471,7 @@ fn show_map_bool_val_prints_true() {
     m = unsafe { lumia_map_set(m, 1, 1) };
     let shown = lumia_show_map_bool(m as i64, 0, 1);
     let text = with_str_bytes(shown, |b| String::from_utf8_lossy(b).into_owned());
-    assert!(
-        text.contains("true"),
-        "Map[Int,Bool] show got {text:?}"
-    );
+    assert!(text.contains("true"), "Map[Int,Bool] show got {text:?}");
     lumia_root_pop();
 }
 

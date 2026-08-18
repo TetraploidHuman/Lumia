@@ -1,7 +1,7 @@
 //! Hindley–Milner inference engine.
 
-mod builtins;
 mod binding_order;
+mod builtins;
 mod calls;
 mod expr;
 mod free_vars;
@@ -33,7 +33,7 @@ pub(crate) struct Infer {
 }
 
 impl Infer {
-    pub(crate) fn new(vis: NameVisibility) -> Self {
+    pub(crate) fn try_new(vis: NameVisibility) -> Result<Self, TypeError> {
         let mut builtins = HashMap::default();
         // Do **not** seed `println` / `assert` / `readStdin` here: free *calls*
         // lower to `BuiltinCall` (typed via `infer_builtin_call`); first-class use
@@ -89,11 +89,15 @@ impl Infer {
                         ),
                     )
                 }
-                other => panic!("lumia: unhandled PRELUDE_CTOR `{other}`"),
+                other => {
+                    return Err(TypeError::Message(format!(
+                        "internal: unhandled PRELUDE_CTOR `{other}` (keep in sync with PRELUDE_CTORS)"
+                    )));
+                }
             };
             builtins.insert(sn.name.into(), sch);
         }
-        Self {
+        Ok(Self {
             uni: SubstState {
                 next_var,
                 ..SubstState::default()
@@ -109,7 +113,13 @@ impl Infer {
             decls: HashMap::default(),
             vis,
             current_file: 0,
-        }
+        })
+    }
+
+    /// Prefer [`Self::try_new`] from recovering pipelines; this panics on ICE.
+    #[allow(dead_code)]
+    pub(crate) fn new(vis: NameVisibility) -> Self {
+        Self::try_new(vis).unwrap_or_else(|e| panic!("lumia ICE seeding Infer: {}", e.message()))
     }
 
     pub(crate) fn check_name_visible(

@@ -41,12 +41,7 @@ pub(crate) fn lower_list_fold(ctx: &LowerCtx, list: Expr, init: Expr, f: Expr, s
 }
 
 /// Sequential `fold` loop (also used when auto-parallel demotes `ListParFold`).
-pub fn desugar_list_fold_sequential(
-    list: Expr,
-    init: Expr,
-    f: Expr,
-    span: Span,
-) -> Expr {
+pub fn desugar_list_fold_sequential(list: Expr, init: Expr, f: Expr, span: Span) -> Expr {
     match resolve_binary_callback(f, span, "fold") {
         BinaryCallback::Inline {
             acc,

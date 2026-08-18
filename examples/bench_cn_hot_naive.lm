@@ -4,7 +4,7 @@ module BenchCnHotNaive
 /// as nested Lumia `List[Float]` get/set loops (linalg only for L2 + checksum).
 /// Codegen should SR these helpers to `lumia_f64_*` RT kernels.
 import std.io.{println}
-import std.linalg.{checksum, l2Normalize}
+import extras.linalg.{checksum, l2Normalize}
 
 val VIS = 16
 val PFC = 32

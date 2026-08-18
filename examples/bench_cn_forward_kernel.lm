@@ -4,7 +4,7 @@ module BenchCnForwardKernel
 /// generative lateral via updateState, learnGenerative, Hebbian μ⊗ε, EFE+argmax.
 /// Dense skeleton aligned with CogniNucleus FreeEnergyAgent defaults (hip/amy/hyp off).
 import std.io.{println}
-import std.linalg.{zeros, copy, sub, scale, add, gemv, checksum}
+import extras.linalg.{zeros, copy, sub, scale, add, gemv, checksum}
 import extras.cn.{
     nucleusStep, hebbian, projectClamp, projectError, argMax,
     clusterRates, learnGenerative, updateState

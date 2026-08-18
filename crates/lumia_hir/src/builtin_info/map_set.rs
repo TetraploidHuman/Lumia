@@ -1,5 +1,6 @@
 use super::{
-    bi, BuiltinEffect, BuiltinEmit, BuiltinInfo, ResultHeap, ENS_MAP_SET, ENS_SET_INSERT, NO_F,
+    bi, BuiltinEffect, BuiltinEmit, BuiltinInfo, ResultHeap, ENS_MAP_SET, ENS_MAP_SET_BOOL,
+    ENS_SET_INSERT, ENS_SET_INSERT_BOOL, NO_F,
 };
 use crate::ast::{Builtin, BuiltinFamily};
 
@@ -32,7 +33,8 @@ pub(crate) fn info_map_set(b: Builtin) -> BuiltinInfo {
             true,
             Always,
         )
-        .with_list_receiver_rt("lumia_list_set"),
+        .with_list_receiver_rt("lumia_list_set")
+        .with_bool_ensures(ENS_MAP_SET_BOOL),
         MapRemove => bi(
             f,
             2,
@@ -54,7 +56,8 @@ pub(crate) fn info_map_set(b: Builtin) -> BuiltinInfo {
             ObjI64Ptr,
             true,
             Always,
-        ),
+        )
+        .with_bool_ensures(ENS_SET_INSERT_BOOL),
         MapKeys => bi(
             f,
             1,

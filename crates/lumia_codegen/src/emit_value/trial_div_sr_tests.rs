@@ -11,9 +11,8 @@ fn matches_is_prime_trial_loop() {
     .unwrap();
     let core = compile_source_to_optimized(&src, &OptOptions::for_build(true)).unwrap();
     let mut found = 0;
-    let mut found_cp = 0;
     for f in &core.functions {
-        if !f.name.contains("Prime") && f.name != "main" {
+        if !f.name.contains("Prime") && !f.name.contains("prime") {
             continue;
         }
         let defs = lumia_core::collect_leaf_defs(&f.body, false);
@@ -23,11 +22,14 @@ fn matches_is_prime_trial_loop() {
             if match_trial_div_loop(h, b, l, &defs).is_some() {
                 found += 1;
             }
-            if match_count_primes_loop(h, b, l, &defs).is_some() {
-                found_cp += 1;
-            }
         }
     }
     assert!(found >= 1, "expected trial-div match, got {found}");
-    assert!(found_cp >= 1, "expected count-primes match, got {found_cp}");
+    // Whole-fn countPrimes lives in lumia_opt::domain_sr now.
+    assert!(
+        core.functions
+            .iter()
+            .any(|f| f.external.as_deref() == Some("lumia_count_primes")),
+        "opt domain_sr should rewrite countPrimes"
+    );
 }

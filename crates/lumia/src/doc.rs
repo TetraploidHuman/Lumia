@@ -11,13 +11,7 @@ pub fn render_file(path: &Path) -> Result<String> {
     let module = parse_module(&src).map_err(|e| {
         let starts = lumia_syntax::line_starts(&src);
         let (line, col) = lumia_syntax::byte_to_line_col(&starts, e.span.start);
-        anyhow::anyhow!(
-            "{}:{}:{}: parse: {}",
-            path.display(),
-            line,
-            col,
-            e.message
-        )
+        anyhow::anyhow!("{}:{}:{}: parse: {}", path.display(), line, col, e.message)
     })?;
     Ok(render_module(&src, &module, path))
 }

@@ -4,7 +4,7 @@
 //! Slot state constants are identical (`EMPTY`/`FULL`/`TOMB`).
 
 use super::tid::{key_eq, key_hash};
-use crate::common::trap_abort;
+use crate::common::{header_from_payload, trap_abort};
 
 pub(crate) const OPEN_HASH_ST_EMPTY: i64 = 0;
 pub(crate) const OPEN_HASH_ST_FULL: i64 = 1;
@@ -67,6 +67,75 @@ pub(crate) unsafe fn open_hash_claim_slot(
         idx = (idx + 1) % cap;
     }
     None
+}
+
+/// Tombstone `slot` and compact insertion-order `[0, n)` so live count is `n-1`.
+///
+/// Probe chains stay intact (`TOMB` ≠ `EMPTY`). Caller must keep `n-1 > 0`
+/// (empty tables become the immortal singleton, not a zero-count hash).
+pub(crate) unsafe fn open_hash_remove_slot(
+    base: *mut i64,
+    cap: usize,
+    slot: usize,
+    n: i64,
+    cell_stride: usize,
+    state_off: usize,
+) {
+    debug_assert!(n > 1);
+    debug_assert!(slot < cap);
+    let cell = base.add(2 + cap + slot * cell_stride);
+    *cell.add(state_off) = OPEN_HASH_ST_TOMB;
+    let mut w = 0usize;
+    for i in 0..n as usize {
+        let s = *base.add(2 + i);
+        if s == slot as i64 {
+            continue;
+        }
+        *base.add(2 + w) = s;
+        w += 1;
+    }
+    debug_assert_eq!(w as i64, n - 1);
+    *base = n - 1;
+}
+
+/// Rewrite a unique HashOrdered table as linear `[n][entry…]` in the same allocation.
+///
+/// `entry_words` is 2 for Map `(k,v)` and 1 for Set `(e)`. `skip_slot` is omitted
+/// from the linear table (the key being removed). `n` is the live hash count
+/// *before* the delete (`n-1` must be in `1..=SMALL_CONTAINER_MAX`).
+pub(crate) unsafe fn open_hash_demote_linear_in_place(
+    ptr: *mut u8,
+    skip_slot: usize,
+    n: i64,
+    cap: usize,
+    cell_stride: usize,
+    entry_words: usize,
+    linear_tid: u32,
+) {
+    debug_assert!(n > 1);
+    debug_assert!((n as usize - 1) <= lumia_abi::SMALL_CONTAINER_MAX);
+    debug_assert!(entry_words >= 1 && entry_words <= 2);
+    debug_assert!(entry_words <= cell_stride);
+    let base = ptr as *mut i64;
+    let mut buf = [0i64; lumia_abi::SMALL_CONTAINER_MAX * 2];
+    let mut w = 0usize;
+    for i in 0..n as usize {
+        let slot = *base.add(2 + i) as usize;
+        if slot == skip_slot {
+            continue;
+        }
+        let cell = base.add(2 + cap + slot * cell_stride);
+        for o in 0..entry_words {
+            buf[w * entry_words + o] = *cell.add(o);
+        }
+        w += 1;
+    }
+    debug_assert_eq!(w as i64, n - 1);
+    *base = w as i64;
+    for i in 0..w * entry_words {
+        *base.add(1 + i) = buf[i];
+    }
+    (*header_from_payload(ptr)).type_id = linear_tid;
 }
 
 /// Like [`open_hash_claim_slot`], but traps with `full_msg` when the table is full.

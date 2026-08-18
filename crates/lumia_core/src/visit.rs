@@ -321,6 +321,30 @@ pub fn for_each_nested_block_mut(value: &mut Value, f: &mut impl FnMut(&mut Bloc
     }
 }
 
+/// Nested If/Loop regions only — skips Lambda (CSE/fold/effect must not enter closures).
+pub fn for_each_ctrl_nested_block_mut(value: &mut Value, f: &mut impl FnMut(&mut Block)) {
+    match value {
+        Value::If {
+            then_block,
+            else_block,
+            ..
+        } => {
+            f(then_block);
+            f(else_block);
+        }
+        Value::Loop {
+            header,
+            body,
+            latch,
+        } => {
+            f(header);
+            f(body);
+            f(latch);
+        }
+        _ => {}
+    }
+}
+
 pub fn for_each_nested_block(value: &Value, f: &mut impl FnMut(&Block)) {
     match value {
         Value::If {
@@ -458,10 +482,15 @@ pub fn collect_slot_names(block: &Block, names: &mut HashSet<String>) {
 /// For **order-independent** set/map inserts only. Do **not** use for Let-ordered
 /// analyses (`mark_float`, `collect_closure_cap_funrefs`, `collect_free`, …).
 pub fn for_each_let_value(block: &Block, f: &mut impl FnMut(&Block, &Value)) {
+    for_each_let(block, &mut |b, _local, value| f(b, value));
+}
+
+/// Like [`for_each_let_value`], but also passes the Let destination [`Local`].
+pub fn for_each_let(block: &Block, f: &mut impl FnMut(&Block, Local, &Value)) {
     for_each_block_dfs(block, &mut |b| {
         for op in &b.ops {
-            if let Op::Let { value, .. } = op {
-                f(b, value);
+            if let Op::Let { local, value, .. } = op {
+                f(b, *local, value);
             }
         }
     });
@@ -504,7 +533,11 @@ pub fn for_each_let_value_ctrl(block: &Block, f: &mut impl FnMut(&Block, &Value)
 ///
 /// Order-independent existence check — DFS (enters Lambda). Used when
 /// `leaf_defs` omits nested shapes (e.g. trial_div inlined `isPrime` → `If`).
-pub fn local_let_matches(local: Local, block: &Block, mut pred: impl FnMut(&Value) -> bool) -> bool {
+pub fn local_let_matches(
+    local: Local,
+    block: &Block,
+    mut pred: impl FnMut(&Value) -> bool,
+) -> bool {
     let mut found = false;
     for_each_block_dfs(block, &mut |b| {
         if found {
@@ -512,9 +545,7 @@ pub fn local_let_matches(local: Local, block: &Block, mut pred: impl FnMut(&Valu
         }
         for op in &b.ops {
             if let Op::Let {
-                local: l,
-                value,
-                ..
+                local: l, value, ..
             } = op
             {
                 if *l == local && pred(value) {
@@ -557,7 +588,7 @@ pub fn collect_ssa_live_refs(block: &Block, live: &mut HashSet<u32>) {
 pub fn collect_alloc_closure_caps(block: &Block, lam_caps: &mut HashMap<String, Vec<Local>>) {
     for_each_let_value(block, &mut |_b, value| {
         if let Value::AllocClosure { fun, captures } = value {
-            lam_caps.insert(fun.clone(), captures.clone());
+            lam_caps.insert(fun.name.clone(), captures.clone());
         }
     });
 }
@@ -567,37 +598,19 @@ pub fn collect_alloc_closure_env_funs(block: &Block, out: &mut HashSet<String>) 
     for_each_let_value(block, &mut |_b, value| {
         if let Value::AllocClosure { fun, captures } = value {
             if !captures.is_empty() {
-                out.insert(fun.clone());
+                out.insert(fun.name.clone());
             }
         }
     });
 }
 
 /// Collect Call targets that appear in `methods` (DFS-safe; enters Lambda bodies).
-pub fn collect_call_names_in(
-    block: &Block,
-    methods: &HashSet<String>,
-    out: &mut HashSet<String>,
-) {
+pub fn collect_call_names_in(block: &Block, methods: &HashSet<String>, out: &mut HashSet<String>) {
     for_each_let_value(block, &mut |_b, value| {
         if let Value::Call { fun, .. } = value {
             if methods.contains(fun.as_str()) {
-                out.insert(fun.clone());
+                out.insert(fun.name.clone());
             }
-        }
-    });
-}
-
-/// Collect `ClosureCap { as_float: true }` indices (order-independent; DFS-safe).
-pub fn collect_float_cap_indices(block: &Block, idxs: &mut HashSet<u32>) {
-    for_each_let_value(block, &mut |_b, value| {
-        if let Value::ClosureCap {
-            index,
-            as_float: true,
-            ..
-        } = value
-        {
-            idxs.insert(*index);
         }
     });
 }
@@ -627,11 +640,11 @@ pub fn collect_closure_cap_funrefs(
             Op::Let { local, value, .. } => {
                 match value {
                     Value::FunRef(name) => {
-                        funref_locals.insert(local.0, name.clone());
+                        funref_locals.insert(local.0, name.name.clone());
                     }
                     Value::AllocClosure { fun, captures } => {
-                        funref_locals.insert(local.0, fun.clone());
-                        let entry = cap_funs.entry(fun.clone()).or_default();
+                        funref_locals.insert(local.0, fun.name.clone());
+                        let entry = cap_funs.entry(fun.name.clone()).or_default();
                         for (i, cap) in captures.iter().enumerate() {
                             if let Some(n) = funref_locals.get(&cap.0) {
                                 entry.insert(i as u32, n.clone());
@@ -723,7 +736,7 @@ pub fn block_has_io(block: &Block, io_callees: &HashSet<String>) -> bool {
 
 fn value_has_eager_io(value: &Value, io_callees: &HashSet<String>) -> bool {
     match value {
-        Value::Call { fun, .. } if io_callees.contains(fun) => true,
+        Value::Call { fun, .. } if io_callees.contains(fun.as_str()) => true,
         Value::Builtin { name, .. } if name.is_io() => true,
         // Indirect call may invoke an IO Fun; opt must not treat it as pure.
         Value::IndirectCall { .. } => true,
@@ -789,6 +802,28 @@ pub fn for_each_op_value_mut(block: &mut Block, on_value: &mut dyn FnMut(&mut Va
             }
             _ => {}
         }
+    }
+}
+
+/// Fill [`CallTarget::id`] on every direct `Call` / `FunRef` / `AllocClosure`
+/// from current [`CoreModule::functions`] names.
+///
+/// Call after passes that rename/add functions (or at Escape entry). Cleared ids stay
+/// `None` until the next resolve; prefer clearing id when rewriting a callee name.
+pub fn resolve_module_call_fun_ids(module: &mut crate::CoreModule) {
+    use crate::ir::FunId;
+    let mut by_name: HashMap<String, FunId> = HashMap::default();
+    by_name.reserve(module.functions.len());
+    for (i, f) in module.functions.iter().enumerate() {
+        by_name.insert(f.name.clone(), FunId(i as u32));
+    }
+    for f in &mut module.functions {
+        for_each_op_value_mut(&mut f.body, &mut |value| match value {
+            Value::Call { fun, .. } | Value::FunRef(fun) | Value::AllocClosure { fun, .. } => {
+                fun.id = by_name.get(&fun.name).copied();
+            }
+            _ => {}
+        });
     }
 }
 
@@ -967,5 +1002,91 @@ mod tests {
         collect_loops(&block, &mut loops);
         assert_eq!(loops.len(), 1);
         assert_eq!(loops[0].0.result, Some(Local(1)));
+    }
+
+    #[test]
+    fn resolve_module_call_fun_ids_fills_call_target() {
+        use crate::{CoreFun, CoreModule, FunId, FunKind};
+        use lumia_ty::{Effect, Type};
+
+        let callee = CoreFun {
+            name: "g".into(),
+            params: vec![],
+            param_names: vec![],
+            param_tys: vec![],
+            body: Block {
+                ops: vec![],
+                result: Some(Local(0)),
+            },
+            ret_ty: Type::Int,
+            effect: Effect::pure(),
+            is_main: false,
+            memo: None,
+            external: None,
+            foreign_abi: crate::ForeignAbi::C,
+            escaping: Default::default(),
+            nsw_binop_locals: Default::default(),
+            safe_divisor_locals: Default::default(),
+            nonneg_iv_load_locals: Default::default(),
+            scheme_poly: false,
+            mono_of: None,
+            kind: FunKind::Normal,
+        };
+        let caller = CoreFun {
+            name: "f".into(),
+            params: vec![],
+            param_names: vec![],
+            param_tys: vec![],
+            body: Block {
+                ops: vec![
+                    Op::Let {
+                        local: Local(0),
+                        value: Value::FunRef("g".into()),
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(1),
+                        value: Value::Call {
+                            fun: "g".into(),
+                            args: vec![],
+                        },
+                        pure_region: true,
+                    },
+                ],
+                result: Some(Local(1)),
+            },
+            ret_ty: Type::Int,
+            effect: Effect::pure(),
+            is_main: false,
+            memo: None,
+            external: None,
+            foreign_abi: crate::ForeignAbi::C,
+            escaping: Default::default(),
+            nsw_binop_locals: Default::default(),
+            safe_divisor_locals: Default::default(),
+            nonneg_iv_load_locals: Default::default(),
+            scheme_poly: false,
+            mono_of: None,
+            kind: FunKind::Normal,
+        };
+        let mut module = CoreModule::with_functions("M", vec![callee, caller]);
+        resolve_module_call_fun_ids(&mut module);
+        let Op::Let {
+            value: Value::FunRef(fr),
+            ..
+        } = &module.functions[1].body.ops[0]
+        else {
+            panic!("expected FunRef");
+        };
+        assert_eq!(fr.id, Some(FunId(0)));
+        let Op::Let {
+            value: Value::Call { fun, .. },
+            ..
+        } = &module.functions[1].body.ops[1]
+        else {
+            panic!("expected Call");
+        };
+        assert_eq!(fun.as_str(), "g");
+        assert_eq!(fun.id, Some(FunId(0)));
     }
 }

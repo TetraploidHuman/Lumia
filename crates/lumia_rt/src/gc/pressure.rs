@@ -42,8 +42,7 @@ pub(crate) fn alloc_pressure_fast() -> bool {
 /// Update [`alloc_pressure_fast`] from current bytes / full-mark flag.
 #[inline]
 pub(crate) fn refresh_from_heap(h: &Heap) {
-    let pressure =
-        h.full_marking || h.bytes_young >= h.young_limit || h.bytes_old >= h.old_limit;
+    let pressure = h.full_marking || h.bytes_young >= h.young_limit || h.bytes_old >= h.old_limit;
     ALLOC_PRESSURE_FAST.store(pressure, Ordering::Release);
 }
 

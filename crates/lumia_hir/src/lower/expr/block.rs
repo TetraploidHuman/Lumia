@@ -2,7 +2,7 @@
 
 use super::super::ctx::LowerCtx;
 use super::super::for_loops::lower_for_in;
-use super::super::hof_fuse::try_deforest_hof_let;
+use super::super::hof_fuse::{try_deforest_hof_let, try_fuse_hof_for_in};
 use super::lower_expr;
 use crate::ast::Expr;
 use crate::match_check::{pattern_cond, pattern_irrefutable};
@@ -117,7 +117,15 @@ pub(super) fn lower_block(
                 body,
                 span: s,
             } => {
-                let loop_e = lower_for_in(ctx, binding, iter, body, *s);
+                let loop_e = match binding {
+                    lumia_syntax::ForBinding::Name(name) => {
+                        try_fuse_hof_for_in(ctx, name, iter, body, *s)
+                            .unwrap_or_else(|| lower_for_in(ctx, binding, iter, body, *s))
+                    }
+                    lumia_syntax::ForBinding::Pair(_, _) => {
+                        lower_for_in(ctx, binding, iter, body, *s)
+                    }
+                };
                 let rest_e = fold(ctx, rest, tail, span);
                 Expr::Seq {
                     stmts: vec![loop_e, rest_e],

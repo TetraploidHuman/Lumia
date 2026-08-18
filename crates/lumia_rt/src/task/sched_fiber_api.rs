@@ -150,7 +150,12 @@ pub(super) fn scope_alloc(kind: SchedulerKind) -> ScopeId {
 }
 
 pub(super) fn scope_take_children(sid: ScopeId) -> Vec<TaskId> {
-    with_sched(|s| s.scopes.remove(&sid).map(|f| f.children).unwrap_or_default())
+    with_sched(|s| {
+        s.scopes
+            .remove(&sid)
+            .map(|f| f.children)
+            .unwrap_or_default()
+    })
 }
 
 /// Tasks among `candidates` that are still unfinished (not done and not cancelled).

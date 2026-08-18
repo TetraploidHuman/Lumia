@@ -6,6 +6,7 @@
 
 use crate::ir::CoreModule;
 use crate::lower::lower_hir_with_schemes;
+use crate::run_core_abi_pipeline;
 use lumia_hir::lower_module;
 use lumia_syntax::parse_module;
 use lumia_ty::{typecheck_hir, NameVisibility, TypecheckOptions};
@@ -48,7 +49,7 @@ pub fn compile_source_to_core_with_options(
         "typecheck",
         typecheck_hir(&hir, NameVisibility::default(), opts),
     )?;
-    let core = stage(
+    let mut core = stage(
         "core",
         lower_hir_with_schemes(
             &typed.module,
@@ -58,7 +59,11 @@ pub fn compile_source_to_core_with_options(
             &[("<input>", src)],
         ),
     )?;
-    stage("channel", core.check_channel_elem_conflicts().map(|()| core))
+    run_core_abi_pipeline(&mut core);
+    stage(
+        "channel",
+        core.check_channel_elem_conflicts().map(|()| core),
+    )
 }
 
 /// Read a `.lm` file and compile through to Core.
@@ -157,11 +162,12 @@ val main = { println(1) }
         let main = core.functions.iter().find(|f| f.is_main).expect("main");
         let assert_args = main.body.ops.iter().find_map(|op| match op {
             Op::Let {
-                value: Value::Builtin {
-                    name: Builtin::Assert,
-                    args,
-                    ..
-                },
+                value:
+                    Value::Builtin {
+                        name: Builtin::Assert,
+                        args,
+                        ..
+                    },
                 ..
             } => Some(args.as_slice()),
             _ => None,

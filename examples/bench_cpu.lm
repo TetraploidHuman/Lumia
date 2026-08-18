@@ -263,9 +263,10 @@ val rangeFoldChecksum(n) = {
 /// Heap memory traffic (not SR'd): materialize a large list, scan it, then
 /// gather with an LCG index (cache-unfriendly reads). One `set` per scan pass
 /// copies the whole buffer (write traffic); per-element `set` would be O(n²).
+/// Densify via concat/take — identity/`sparse` Iota `set` stays virtual (RT patch).
 val memTrafficChecksum(n, scanPasses, gatherSteps) = {
     var xs = range(0, n)
-    xs = xs.set(0, xs.get(0))
+    xs = xs.concat(listOf(0)).take(n)
     var p = 0
     var s = 0
     for p < scanPasses {

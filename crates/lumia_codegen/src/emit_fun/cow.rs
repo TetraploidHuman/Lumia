@@ -1,10 +1,51 @@
 //! COW reassignment detection (list/map set, ADT `with`).
 
 use super::super::Codegen;
+use anyhow::Result;
+use inkwell::values::IntValue;
 use lumia_core::{Block, Local, Op, Value};
 use lumia_hir::Builtin;
 
+/// Builtins whose emit retains the source container for COW when the old
+/// binding stays live (`!cow_consume_unique`).
+pub(crate) fn is_cow_container_mutator(b: Builtin) -> bool {
+    matches!(
+        b,
+        Builtin::MapSet
+            | Builtin::ListAppend
+            | Builtin::ListConcat
+            | Builtin::SetInsert
+            | Builtin::MapRemove
+            | Builtin::ListReverse
+            | Builtin::ListSort
+            | Builtin::ListSortByKeys
+    )
+}
+
 impl<'ctx> Codegen<'ctx> {
+    /// Retain container (+ optional nested payload) for
+    /// [`is_cow_container_mutator`] builtins.
+    ///
+    /// Container retain is skipped for proven `xs = xs.set/append/concat(…)`;
+    /// payload retain keeps nested COW safe when the container is aliased.
+    pub(crate) fn cow_retain_mutator_args(
+        &mut self,
+        container_i64: IntValue<'ctx>,
+        payload: Option<(Local, IntValue<'ctx>)>,
+    ) -> Result<()> {
+        if !self.frame.cow_consume_unique {
+            self.list_retain_i64(container_i64)?;
+        }
+        if let Some((local, bits)) = payload {
+            if let Some(ty) = self.frame.local_tys.get(&local.0) {
+                if Self::type_needs_cow_retain(ty) {
+                    self.adt_retain_i64(bits)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// `Name`/`Local` alias or `AdtField` extract — not a fresh alloc / call result.
     pub(super) fn value_is_cow_alias(value: &Value) -> bool {
         matches!(
@@ -30,12 +71,10 @@ impl<'ctx> Codegen<'ctx> {
         let Value::Builtin { name, args, .. } = value else {
             return false;
         };
-        let list_arg = match name {
-            lumia_hir::Builtin::MapSet | lumia_hir::Builtin::ListAppend => args.first(),
-            lumia_hir::Builtin::ListConcat => args.first(),
-            _ => None,
-        };
-        let Some(list_arg) = list_arg else {
+        if !is_cow_container_mutator(*name) {
+            return false;
+        }
+        let Some(list_arg) = args.first() else {
             return false;
         };
         let Some(Value::Name(slot)) = self.frame.leaf_defs.get(&list_arg.0) else {
@@ -95,7 +134,9 @@ impl<'ctx> Codegen<'ctx> {
     fn adt_field_from_slot(&self, field: &Local, slot: &str) -> Option<i64> {
         let Value::Builtin {
             name: Builtin::AdtField,
-            args, .. } = self.frame.leaf_defs.get(&field.0)?
+            args,
+            ..
+        } = self.frame.leaf_defs.get(&field.0)?
         else {
             return None;
         };
@@ -114,5 +155,24 @@ impl<'ctx> Codegen<'ctx> {
         }
         self.frame.local_int_consts.get(&idx_l.0).copied()
     }
+}
 
+#[cfg(test)]
+mod tests {
+    use super::is_cow_container_mutator;
+    use lumia_hir::Builtin;
+
+    #[test]
+    fn cow_container_mutator_set_is_mapset_append_concat_insert() {
+        assert!(is_cow_container_mutator(Builtin::MapSet));
+        assert!(is_cow_container_mutator(Builtin::ListAppend));
+        assert!(is_cow_container_mutator(Builtin::ListConcat));
+        assert!(is_cow_container_mutator(Builtin::SetInsert));
+        assert!(is_cow_container_mutator(Builtin::MapRemove));
+        assert!(is_cow_container_mutator(Builtin::ListReverse));
+        assert!(is_cow_container_mutator(Builtin::ListSort));
+        assert!(is_cow_container_mutator(Builtin::ListSortByKeys));
+        assert!(!is_cow_container_mutator(Builtin::ListTake));
+        assert!(!is_cow_container_mutator(Builtin::StrSubstring));
+    }
 }

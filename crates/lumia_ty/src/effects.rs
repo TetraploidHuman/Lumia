@@ -39,6 +39,10 @@ pub fn check_effect_boundaries(typed: &TypedModule) -> Result<(), TypeError> {
 
 /// When this Fun value is *called*, does its body perform IO?
 /// Nested lambda *construction* is not IO; calling a nested IO thunk is.
+///
+/// Call / Let / Builtin keep a dedicated walk (local Fun-effect tracking).
+/// Other spines share the skip-lambda child layout with
+/// [`lumia_hir::for_each_expr_skipping_lambdas`] (Lambda bodies are not entered).
 fn fun_body_has_io(body: &Expr, fun_types: &HashMap<String, Type>) -> bool {
     fn walk(
         expr: &Expr,
@@ -72,6 +76,7 @@ fn fun_body_has_io(body: &Expr, fun_types: &HashMap<String, Type>) -> bool {
                     return true;
                 }
                 let io = match value.as_ref() {
+                    // Explicitly walk the thunk body (skipping_lambdas would miss it).
                     Expr::Lambda { body: lam, .. } => fun_body_has_io(lam, fun_types),
                     Expr::Var(n, _) => {
                         locals.get(n).copied().unwrap_or(false)

@@ -25,6 +25,8 @@
 //! - bit 11 `TID_HASH` — Map/Set: open-addressing hash table (vs linear payload)
 //! - bit 12 `TID_B_KEY` — List/Set elems or Map keys are Bool
 //! - bit 13 `TID_B_VAL` — Map values are Bool
+//! - bit 14 `TID_LIST_PATCH` — List sparse overlay (`[len][parent][dn][i][v]…`)
+//! - bit 15 `TID_LIST_INT` — List elems are unboxed Int (GC shade skip)
 //!
 //! Float and Bool tags are mutually exclusive per slot (Float wins if both set).
 
@@ -56,18 +58,20 @@ pub use opt_caps::{
 pub use scheduler::{SCHEDULER_IO, SCHEDULER_WORKER};
 pub use type_id::{
     adt_show_kind, adt_type_id, is_list_tid, is_map_tid, is_set_tid, list_elem_is_bool,
-    list_elem_is_float, list_type_id, list_type_id_flags, map_key_is_bool, map_key_is_float,
-    map_tid_is_assoc, map_type_id, map_type_id_flags, map_val_is_bool, map_val_is_float,
-    set_elem_is_bool, set_elem_is_float, set_tid_is_assoc, set_type_id, set_type_id_flags, tid_assoc,
-    tid_b_key, tid_b_val, tid_base, tid_f_key, tid_f_val, tid_hash, tid_with_b_key, tid_with_b_val,
+    list_elem_is_float, list_elem_is_int, list_elem_skip_gc_mark, list_type_id, list_type_id_flags,
+    list_type_id_int, map_key_is_bool, map_key_is_float, map_tid_is_assoc, map_type_id,
+    map_type_id_flags, map_val_is_bool, map_val_is_float, set_elem_is_bool, set_elem_is_float,
+    set_tid_is_assoc, set_type_id, set_type_id_flags, tid_assoc, tid_b_key, tid_b_val, tid_base,
+    tid_f_key, tid_f_val, tid_hash, tid_list_int, tid_list_patch, tid_with_b_key, tid_with_b_val,
     tid_with_f_key, tid_with_f_val, tid_with_hash, tid_without_hash, ScalarKind, ADT_SET_BOOL_MASK,
     ADT_SET_FLOAT_MASK, FUNREF_TAG, OBJECT_HEADER_BYTES, OBJECT_HEADER_WORDS, TID_ADT_KIND_MASK,
     TID_ADT_KIND_SHIFT, TID_ASSOC, TID_BASE_MASK, TID_B_KEY, TID_B_VAL, TID_F_KEY, TID_F_VAL,
-    TID_HASH, TRAIT_EQ, TRAIT_HASH, TRAIT_NUM, TRAIT_ORD, TRAIT_SHOW, TYPE_ADT, TYPE_BYTES,
-    TYPE_CHANNEL, TYPE_CHAR, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_BOOL, TYPE_LIST_F64, TYPE_LIST_IOTA,
-    TYPE_MAP, TYPE_MAP_ASSOC, TYPE_MAP_ASSOC_F64, TYPE_MAP_ASSOC_F64V, TYPE_MAP_ASSOC_VF64,
-    TYPE_MAP_BOOL, TYPE_MAP_BOOLV, TYPE_MAP_F64, TYPE_MAP_F64V, TYPE_MAP_VBOOL, TYPE_MAP_VF64,
-    TYPE_SET, TYPE_SET_ASSOC, TYPE_SET_BOOL, TYPE_SET_F64, TYPE_STRING, TYPE_TASK,
+    TID_HASH, TID_LIST_INT, TID_LIST_PATCH, TRAIT_EQ, TRAIT_HASH, TRAIT_NUM, TRAIT_ORD, TRAIT_SHOW,
+    TYPE_ADT, TYPE_BYTES, TYPE_CHANNEL, TYPE_CHAR, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_BOOL,
+    TYPE_LIST_F64, TYPE_LIST_INT, TYPE_LIST_IOTA, TYPE_LIST_PATCH, TYPE_MAP, TYPE_MAP_ASSOC,
+    TYPE_MAP_ASSOC_F64, TYPE_MAP_ASSOC_F64V, TYPE_MAP_ASSOC_VF64, TYPE_MAP_BOOL, TYPE_MAP_BOOLV,
+    TYPE_MAP_F64, TYPE_MAP_F64V, TYPE_MAP_VBOOL, TYPE_MAP_VF64, TYPE_SET, TYPE_SET_ASSOC,
+    TYPE_SET_BOOL, TYPE_SET_F64, TYPE_STRING, TYPE_TASK,
 };
 
 #[cfg(test)]
@@ -103,8 +107,39 @@ mod tests {
         assert_eq!(TID_HASH & (TID_F_KEY | TID_F_VAL | TID_ASSOC), 0);
         assert_eq!(TID_B_KEY & TID_BASE_MASK, 0);
         assert_eq!(TID_B_VAL & TID_BASE_MASK, 0);
+        assert_eq!(TID_LIST_PATCH & TID_BASE_MASK, 0);
+        assert_eq!(TID_LIST_INT & TID_BASE_MASK, 0);
         assert_eq!(
-            TID_B_KEY & (TID_F_KEY | TID_F_VAL | TID_ASSOC | TID_HASH | TID_B_VAL),
+            TID_B_KEY
+                & (TID_F_KEY
+                    | TID_F_VAL
+                    | TID_ASSOC
+                    | TID_HASH
+                    | TID_B_VAL
+                    | TID_LIST_PATCH
+                    | TID_LIST_INT),
+            0
+        );
+        assert_eq!(
+            TID_LIST_PATCH
+                & (TID_F_KEY
+                    | TID_F_VAL
+                    | TID_ASSOC
+                    | TID_HASH
+                    | TID_B_KEY
+                    | TID_B_VAL
+                    | TID_LIST_INT),
+            0
+        );
+        assert_eq!(
+            TID_LIST_INT
+                & (TID_F_KEY
+                    | TID_F_VAL
+                    | TID_ASSOC
+                    | TID_HASH
+                    | TID_B_KEY
+                    | TID_B_VAL
+                    | TID_LIST_PATCH),
             0
         );
         assert_eq!(SCHEDULER_WORKER, 1);

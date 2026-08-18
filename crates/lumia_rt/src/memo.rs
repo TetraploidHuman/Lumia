@@ -340,6 +340,53 @@ pub(crate) fn for_each_memo_i64(mut f: impl FnMut(i64)) {
     }
 }
 
+fn walk_memo_tables_mut(
+    tf: &Mutex<[MemoTfTable; MEMO_TF_MAX_FUNS]>,
+    idx: &Mutex<[Option<Box<MemoIdxTable>>; MEMO_IDX_MAX_FUNS]>,
+    mut f: impl FnMut(&mut i64),
+) {
+    let mut tables = lock_tf(tf);
+    for table in tables.iter_mut() {
+        for slot in &mut table.slots {
+            if !slot.valid {
+                continue;
+            }
+            for a in slot.args.iter_mut().take(slot.nargs as usize) {
+                f(a);
+            }
+            f(&mut slot.result);
+        }
+    }
+    drop(tables);
+    let mut tables = lock_idx(idx);
+    for table in tables.iter_mut().flatten() {
+        for (i, &v) in table.valid.iter().enumerate() {
+            if v != 0 {
+                f(&mut table.values[i]);
+            }
+        }
+    }
+}
+
+/// Mutating walk for evacuating minor (rewrite nursery forwarding stamps).
+pub(crate) fn for_each_memo_i64_mut(mut f: impl FnMut(&mut i64)) {
+    ensure_memo_registered();
+    let entries: Vec<MemoEntry> = memo_registry()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+        .map(|e| MemoEntry {
+            tf: e.tf,
+            idx: e.idx,
+        })
+        .collect();
+    for e in entries {
+        unsafe {
+            walk_memo_tables_mut(&*e.tf, &*e.idx, &mut f);
+        }
+    }
+}
+
 fn memo_idx_table(
     tables: &mut [Option<Box<MemoIdxTable>>; MEMO_IDX_MAX_FUNS],
     fun_id: usize,
