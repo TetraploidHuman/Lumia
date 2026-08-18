@@ -34,7 +34,7 @@ use dce::DcePass;
 #[cfg(feature = "dense-f64-sr")]
 use dense_f64_sr::DenseF64SrPass;
 #[cfg(feature = "domain-sr")]
-use domain_sr::DomainSrPass;
+use domain_sr::{DomainSrPass, TrialDivOddPass};
 use lumia_core::{CoreModule, MapRepr};
 use memo::cse_module;
 #[cfg(feature = "nsw-iv")]
@@ -48,6 +48,7 @@ pub struct OptOptions {
     /// Rewrite dense `List[Float]` nests to `lumia_f64_*` (default on).
     pub dense_f64_sr: bool,
     /// Whole-fn Collatz total/strided + countPrimes → RT Call (Release).
+    /// Trial-div odd-step still runs in Debug when the `domain-sr` feature is on.
     pub domain_sr: bool,
 }
 
@@ -88,6 +89,8 @@ enum PipelinePass {
     DenseF64Sr,
     #[cfg(feature = "domain-sr")]
     DomainSr,
+    #[cfg(feature = "domain-sr")]
+    TrialDivOdd,
     Inline,
     ConcatIdent,
     ReprSelect,
@@ -109,6 +112,8 @@ impl PipelinePass {
             Self::DenseF64Sr => "dense_f64_sr",
             #[cfg(feature = "domain-sr")]
             Self::DomainSr => "domain_sr",
+            #[cfg(feature = "domain-sr")]
+            Self::TrialDivOdd => "trial_div_odd",
             Self::Inline => "inline",
             Self::ConcatIdent => "concat_ident",
             Self::ReprSelect => "repr_select",
@@ -130,6 +135,8 @@ impl PipelinePass {
             Self::DenseF64Sr => DenseF64SrPass.run(module),
             #[cfg(feature = "domain-sr")]
             Self::DomainSr => DomainSrPass.run(module),
+            #[cfg(feature = "domain-sr")]
+            Self::TrialDivOdd => TrialDivOddPass.run(module),
             Self::Inline => InlinePass.run(module),
             Self::ConcatIdent => ConcatIdentPass.run(module),
             Self::ReprSelect => ReprSelect.run(module),
@@ -155,6 +162,9 @@ const DEBUG_PASSES: &[PipelinePass] = &[
     PipelinePass::SpecializeConst,
     PipelinePass::ConstFold,
     PipelinePass::Licm,
+    // Odd-step trial-div in Core so Debug codegen uses the generic loop emit.
+    #[cfg(feature = "domain-sr")]
+    PipelinePass::TrialDivOdd,
     // DenseF64Sr is Release-only (or `dense_f64_sr` via CLI/`for_build`).
     PipelinePass::Escape,
     PipelinePass::ReprSelect,
@@ -184,6 +194,10 @@ const RELEASE_PASSES: &[PipelinePass] = &[
     PipelinePass::DenseF64Sr,
     #[cfg(feature = "domain-sr")]
     PipelinePass::DomainSr,
+    // After last whole-fn SR: leftover `isPrime` loops (must not run before
+    // DomainSr, which matches inlined `d+=1` trial-div).
+    #[cfg(feature = "domain-sr")]
+    PipelinePass::TrialDivOdd,
     // Inline exposes fresh pure exprs / literals — CSE then fold/specialize.
     PipelinePass::Cse,
     PipelinePass::ConstFold,
@@ -214,6 +228,8 @@ const RELEASE_PASSES: &[PipelinePass] = &[
     PipelinePass::Inline,
     #[cfg(feature = "domain-sr")]
     PipelinePass::DomainSr,
+    #[cfg(feature = "domain-sr")]
+    PipelinePass::TrialDivOdd,
     PipelinePass::Cse,
     PipelinePass::ConstFold,
     PipelinePass::SpecializeConst,
@@ -389,9 +405,14 @@ val main = { log(1) }
         {
             assert!(pass_names(true).contains(&"domain_sr"));
             assert!(!pass_names(false).contains(&"domain_sr"));
+            assert!(pass_names(true).contains(&"trial_div_odd"));
+            assert!(pass_names(false).contains(&"trial_div_odd"));
         }
         #[cfg(not(feature = "domain-sr"))]
-        assert!(!pass_names(true).contains(&"domain_sr"));
+        {
+            assert!(!pass_names(true).contains(&"domain_sr"));
+            assert!(!pass_names(true).contains(&"trial_div_odd"));
+        }
         #[cfg(feature = "nsw-iv")]
         {
             assert!(pass_names(true).contains(&"nsw_iv"));
@@ -434,39 +455,24 @@ val main = { log(1) }
 
     #[test]
     fn pass_pipeline_exact_order() {
-        // Debug: CSE → fold → specialize → fold → LICM → Escape → ReprSelect
-        // (no inline/memo/dense_f64_sr).
-        assert_eq!(DEBUG_PASSES.iter().map(|p| p.name()).collect::<Vec<_>>(), {
-            #[cfg(feature = "nsw-iv")]
-            {
-                vec![
-                    "cse",
-                    "const_fold",
-                    "specialize_const",
-                    "const_fold",
-                    "licm",
-                    "escape",
-                    "repr_select",
-                    "copy_elim",
-                    "dce",
-                    "nsw_iv",
-                ]
-            }
-            #[cfg(not(feature = "nsw-iv"))]
-            {
-                vec![
-                    "cse",
-                    "const_fold",
-                    "specialize_const",
-                    "const_fold",
-                    "licm",
-                    "escape",
-                    "repr_select",
-                    "copy_elim",
-                    "dce",
-                ]
-            }
-        });
+        // Debug: CSE → fold → specialize → fold → LICM → [trial_div_odd] →
+        // Escape → ReprSelect (no inline/memo/dense_f64_sr).
+        let mut debug_expected = vec![
+            "cse",
+            "const_fold",
+            "specialize_const",
+            "const_fold",
+            "licm",
+        ];
+        #[cfg(feature = "domain-sr")]
+        debug_expected.push("trial_div_odd");
+        debug_expected.extend(["escape", "repr_select", "copy_elim", "dce"]);
+        #[cfg(feature = "nsw-iv")]
+        debug_expected.push("nsw_iv");
+        assert_eq!(
+            DEBUG_PASSES.iter().map(|p| p.name()).collect::<Vec<_>>(),
+            debug_expected
+        );
         // Release interleaves specialize/fold/inline; Escape must immediately
         // precede ReprSelect (ConcatIdent/ConstFold in between do not allocate).
         #[cfg(all(feature = "dense-f64-sr", feature = "nsw-iv"))]
@@ -487,6 +493,7 @@ val main = { log(1) }
                         "inline",
                         "dense_f64_sr",
                         "domain_sr",
+                        "trial_div_odd",
                         "cse",
                         "const_fold",
                         "specialize_const",
@@ -546,6 +553,7 @@ val main = { log(1) }
                         "inline",
                         "dense_f64_sr",
                         "domain_sr",
+                        "trial_div_odd",
                         "cse",
                         "const_fold",
                         "specialize_const",
@@ -601,6 +609,7 @@ val main = { log(1) }
                         "domain_sr",
                         "inline",
                         "domain_sr",
+                        "trial_div_odd",
                         "cse",
                         "const_fold",
                         "specialize_const",
@@ -656,6 +665,7 @@ val main = { log(1) }
                         "domain_sr",
                         "inline",
                         "domain_sr",
+                        "trial_div_odd",
                         "cse",
                         "const_fold",
                         "specialize_const",

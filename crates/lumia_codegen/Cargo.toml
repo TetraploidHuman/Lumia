@@ -8,8 +8,9 @@ edition.workspace = true
 # Linux CI (apt.llvm.org) and local Nix prefixes ship libLLVM.so; enable via
 # `--features lumia_codegen/llvm-dynamic`. Windows CI stays prefer-static.
 llvm-dynamic = ["inkwell/llvm21-1-force-dynamic"]
-# Domain / bench loop shape rewrites (collatz, number_theory, trial_div, …).
-# Default on; disable for a thinner codegen (generic loops only).
+# Domain / bench loop shape rewrites (collatz, floatOrbit).
+# Trial-div odd-step lives in lumia_opt. Default on; disable for a thinner
+# codegen (generic loops only).
 default = ["domain-sr"]
 domain-sr = []
 

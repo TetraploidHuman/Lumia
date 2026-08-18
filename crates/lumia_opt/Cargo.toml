@@ -11,7 +11,8 @@ dense-f64-sr = []
 # Off for codegen-slim; codegen only reads CoreFun sidecar sets.
 nsw-iv = []
 # Whole-fn Collatz total/strided + countPrimes → RT Call (Release / CLI).
-# Off for codegen-slim; codegen keeps only steps/trial-div loop emits.
+# Trial-div odd-step Core rewrite (Debug + Release). Off for codegen-slim;
+# codegen keeps only steps/floatOrbit loop emits.
 domain-sr = []
 
 [dependencies]

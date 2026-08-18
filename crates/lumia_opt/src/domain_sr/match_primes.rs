@@ -3,8 +3,8 @@
 use super::externs::RtArg;
 use lumia_core::{
     body_assigns_unit_inc, const_of, first_direct_loop, header_le_bound, header_le_const,
-    header_name_sq_le_name, is_unit_inc, local_is_zero_or_false, name_of, rem_eq_zero_names,
-    same_local, Block, CoreFun, Local, Op, Value,
+    header_name_sq_cmp, is_unit_inc, local_is_zero_or_false, name_of, rem_eq_zero_names,
+    rem_eq_zero_operands, same_local, Block, CoreFun, Local, Op, Value,
 };
 use lumia_ty::Type;
 use rustc_hash::FxHashMap as HashMap;
@@ -245,11 +245,12 @@ fn is_is_prime_fun(name: &str) -> bool {
     name == "isPrime" || name.starts_with("isPrime$")
 }
 
-struct TrialDiv {
-    n: String,
+pub(super) struct TrialDiv {
+    pub d: String,
+    pub n: String,
 }
 
-fn match_trial_div_loop(
+pub(super) fn match_trial_div_loop(
     header: &Block,
     body: &Block,
     latch: &Block,
@@ -258,12 +259,44 @@ fn match_trial_div_loop(
     if !latch.ops.is_empty() {
         return None;
     }
-    let (d, n) = header_name_sq_le_name(header, defs)?;
-    let _ok = body_trial_parts(body, &d, &n, defs)?;
-    Some(TrialDiv { n })
+    let (d, bound, strict) = header_name_sq_cmp(header, defs)?;
+    if strict {
+        return None;
+    }
+    // Bound is `Name(n)` after inline, or the `isPrime(n)` param local in Debug.
+    let n = name_of(bound, defs).unwrap_or_default();
+    let _ok = body_trial_parts(body, &d, bound, &n, defs)?;
+    Some(TrialDiv { d, n })
 }
 
-fn body_trial_parts(body: &Block, d: &str, n: &str, defs: &HashMap<u32, Value>) -> Option<String> {
+fn rem_n_mod_d_zero(
+    cond: Local,
+    n_local: Local,
+    n_name: &str,
+    d: &str,
+    defs: &HashMap<u32, Value>,
+) -> bool {
+    if !n_name.is_empty() && rem_eq_zero_names(cond, n_name, d, defs) {
+        return true;
+    }
+    let Some((a, b)) = rem_eq_zero_operands(cond, defs) else {
+        return false;
+    };
+    let is_n = |l: Local| {
+        same_local(l, n_local, defs)
+            || (!n_name.is_empty() && name_of(l, defs).as_deref() == Some(n_name))
+    };
+    let is_d = |l: Local| name_of(l, defs).as_deref() == Some(d);
+    (is_n(a) && is_d(b)) || (is_n(b) && is_d(a))
+}
+
+fn body_trial_parts(
+    body: &Block,
+    d: &str,
+    n_local: Local,
+    n_name: &str,
+    defs: &HashMap<u32, Value>,
+) -> Option<String> {
     let mut ok_name: Option<String> = None;
     let mut saw_break = false;
     let mut saw_step = false;
@@ -278,7 +311,7 @@ fn body_trial_parts(body: &Block, d: &str, n: &str, defs: &HashMap<u32, Value>) 
                     },
                 ..
             } => {
-                if !rem_eq_zero_names(*cond, n, d, defs) {
+                if !rem_n_mod_d_zero(*cond, n_local, n_name, d, defs) {
                     return None;
                 }
                 let mut then_defs = defs.clone();

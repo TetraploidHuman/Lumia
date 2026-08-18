@@ -1,8 +1,9 @@
 //! Domain Loop SR → RT `Call` (Collatz, primes, affine2, number-theory, mandelbrot).
 //!
-//! **Sole owner of whole-function rewrites** for these shapes. Codegen keeps
-//! LLVM IR emits that are not whole-fn RT ports (`collatzSteps` cttz, trial-div
-//! odd-step, `floatOrbit` `<4|8 x double>` vector IR).
+//! **Sole owner of whole-function rewrites** for these shapes. Trial-div odd-step
+//! is a Core rewrite ([`TrialDivOddPass`]); codegen keeps LLVM IR emits that
+//! are not whole-fn / Core ports (`collatzSteps` cttz, `floatOrbit`
+//! `<4|8 x double>` vector IR).
 //!
 //! Gated by Cargo feature `domain-sr`.
 
@@ -10,7 +11,10 @@ mod externs;
 mod match_bench;
 mod match_collatz;
 mod match_primes;
+mod trial_div_odd;
 mod util;
+
+pub(crate) use trial_div_odd::TrialDivOddPass;
 
 use externs::{ensure_external, rewrite_body_to_call, rewrite_body_to_rt};
 use lumia_core::{collect_leaf_defs, CoreModule};

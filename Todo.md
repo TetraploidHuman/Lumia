@@ -20,7 +20,7 @@
 - [x] **workspace `[profile.release]`**（中）：根 `Cargo.toml` thin LTO + `strip = "debuginfo"`；`lumia_rt` `codegen-units = 1`。
 - [ ] **默认/文档推 `llvm-dynamic` 链编译器**（中）：BUILD §4.2 已写开发用法；仍可考虑把开发默认切到 dynamic。
 - [ ] **Debug/check 可选用 LLVM `-O1`/`fast`**（低中）：`!release` 现为 `OptimizationLevel::None`；需要可跑产物时不必全 O3 中端+LLVM。
-- [ ] **字符串键 → FunId / 实习名**（中）：`Call` / `FunRef` / `AllocClosure` 已统一 [`CallTarget`](crates/lumia_core/src/ir.rs)（`name`+可选 `FunId`）；Escape resolve 三者一并填 id（2026-08-18）。仍欠 mono key / Ident 实习、少 clone 名。
+- [ ] **字符串键 → FunId / 实习名**（中）：`Call` / `FunRef` / `AllocClosure` 已统一 [`CallTarget`](crates/lumia_core/src/ir.rs)（`name`+可选 `FunId`）；Escape resolve 三者一并填 id；**mono `FunRefKey` 已带可选 `FunId`（Eq/Hash 仍按名）**（2026-08-18）。仍欠 Ident 实习、少 clone 名。
 - [ ] **`Type` 树实习 / 封闭 `CoreTy`**（中）：推断克隆开放 `lumia_ty::Type`；中端宜封闭 ABI lattice，前端可 arena+intern ADT 名。← 与「中端仍吃开放 Type」「CoreTy」同债。
 - [ ] **LSP 脏模块缓存**（中）：进程 `Mutex` + Full re-analyze；format 再严格 parse。增量分析降 IDE 编译感延迟。
 
@@ -37,7 +37,7 @@
 - [x] **Map/Set 唯一 RC 原地更新**（中高）：Map/Set alloc `rc=1` + COW；unique overlay 更新/追加（壳按 `OVERLAY_MAX` 预分配）；unique Hash 在负载允许时原地 upsert；**线性表预留容量后 unique 追加**；Set 已存在元素 identity；**remove 未命中 identity**（含 overlay）；**unique 线性 compact**；**unique Hash tombstone 删除**（`n > SMALL_MAX`）与 **原地 demote 线性**（`n ≤ SMALL_MAX`）；**overlay 仅 delta 键 remove 不 materialize**（父键命中仍 flatten）；**codegen `s = s.insert/remove` 与 `xs = xs.reverse/sort/sortBy` 走 COW consume**（2026-08-18）。
 - [ ] **Map/Set `Small*` / `BuildFused` / 单键短路**（中）：HIR 已对未逃逸 **单次** `pipe.toMap().get/contains`、`pipe.toSet().contains` 做线性扫（2026-08-18）；仍欠运行时 `SmallMap` / 逃逸后补建哈希。
 - [ ] **进程共享 Memo `T_f`**（中）：现 TLS-only；OS worker 间不共享命中。
-- [ ] **领域 SR 迁出 codegen → opt**（中）：batch1+2 whole-fn 已迁；剩 floatOrbit IR + steps/trial-div。**0 参 `$c_` 克隆**可命中；**Release 管道在首次 `SpecializeConst` 前增加 Domain SR**；**`memTrafficChecksum`→`lumia_mem_traffic_checksum`（i64 SIMD）**；**floatOrbit x4 为 `<4 x double>`**（2026-08-18）。
+- [ ] **领域 SR 迁出 codegen → opt**（中）：batch1+2 whole-fn 已迁；**trial-div odd-step 已迁 Core**（`TrialDivOddPass`，Debug+Release）；剩 floatOrbit IR + `collatzSteps` cttz。**0 参 `$c_` 克隆**可命中；**Release 管道在首次 `SpecializeConst` 前增加 Domain SR**；**`memTrafficChecksum`→`lumia_mem_traffic_checksum`（i64 SIMD）**；**floatOrbit x4 为 `<4 x double>`**（2026-08-18）。
 - [ ] **List-par 与 GC 再解耦**（中）：调度/根/nursery 边界继续收窄，降并行 HOF 停顿。
 - [ ] **TCO 覆盖面审计**（低中）：`musttail` 已有；查漏更多自递归形状。
 
@@ -160,7 +160,7 @@ SIMD 轮已落地：`floatOrbit` `<4 x double>`、`memTraffic`→RT+i64 SIMD。`
 
 ### 结构 / 一致性（仍欠）
 - [ ] **Core Float ABI / `local_heap_ty` 仍厚**：`float_abi/` 已按相位拆分，`prefer`/`join` 已迁 `value_ty/join`。仍欠与 `value_ty` / `mono/ret_ty` 整 walker 合流。
-- [ ] **领域 SR 仍侵入 codegen + RT**：batch1+2 whole-fn 已迁 `lumia_opt/domain-sr`；codegen 仍留 steps/trial-div/floatOrbit IR；仍欠 RT 域核 Cargo feature。
+- [ ] **领域 SR 仍侵入 codegen + RT**：batch1+2 whole-fn + trial-div odd-step 已迁 `lumia_opt/domain-sr`；codegen 仍留 steps/floatOrbit IR；仍欠 RT 域核 Cargo feature。
 - [x] **`dense_f64_sr` opt 侧门闩**：Cargo feature `dense-f64-sr`（默认开）；`lumia` `codegen` 开启、`codegen-slim` 关闭。仍欠 codegen 领域 SR 分层。
 - [ ] **Core IR 穿透携带 `lumia_hir::Builtin`**：中后端必须依赖 `lumia_hir`+`lumia_syntax`；宜 Core 自有 opcode/元数据。
 - [ ] **自动并行决策跨 HIR→ty 两阶段**：`list_hof` 先升 `ListPar*`，`finalize_auto_parallel` 再 demote；策略散在前端两层。
@@ -202,7 +202,7 @@ SIMD 轮已落地：`floatOrbit` `<4 x double>`、`memTraffic`→RT+i64 SIMD。`
 - [ ] **编译选项仍四散**：CLI 已有 [`CompileOptions`](crates/lumia/src/build.rs)；中端/codegen 仍分 `OptOptions`/`CodegenOptions`；无 codegen feature 时 check 直调 `check_program`。
 - [ ] **C vs Runtime marshalling 表仍双份**：用户函数仍统一 i64；foreign 已由 `ForeignAbi` 驱动。
 - [x] **`emit_fun` 已拆 prologue + block/tco/cow/let_bind**：`mod.rs` ≈203 编排。
-- [x] **领域 SR 批量迁出 opt（batch 2）**：affine2 / gcd / divisor / product-rem / range-affine1 / matmul / mandelbrot whole-fn → `lumia_opt/domain-sr`；codegen 仅留 `collatzSteps` cttz、trial-div odd-step、`floatOrbit` IR。
+- [x] **领域 SR 批量迁出 opt（batch 2）**：affine2 / gcd / divisor / product-rem / range-affine1 / matmul / mandelbrot whole-fn → `lumia_opt/domain-sr`；codegen 仅留 `collatzSteps` cttz、`floatOrbit` IR。**trial-div odd-step 已迁 Core `TrialDivOddPass`**（2026-08-18）。
 - [ ] **Task ↔ GC ↔ list-par 硬耦合**：已收窄（`forbid_list_parallel`、rooted publish、栈 freelist）。宜继续抽 shade 算法边界。
 - [ ] **`lumia_opt` 第三前端入口**：`compile_source_to_optimized*` 仍跳 loader/std（fixture-only，已有锁测）。
 

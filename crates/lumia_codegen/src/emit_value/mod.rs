@@ -11,8 +11,6 @@ mod emit_control;
 #[cfg(feature = "domain-sr")]
 mod float_sr;
 mod sr_pattern;
-#[cfg(feature = "domain-sr")]
-mod trial_div_sr;
 
 use super::Codegen;
 use anyhow::{bail, Result};
@@ -24,7 +22,8 @@ impl<'ctx> Codegen<'ctx> {
     ///
     /// Order is significant (more specific patterns first). Append new `*_sr`
     /// matchers to the array below — do not reintroduce an open if/else chain.
-    /// Gated by Cargo feature `domain-sr` (default on).
+    /// Gated by Cargo feature `domain-sr` (default on). Trial-div odd-step is
+    /// a Core rewrite in `lumia_opt` (`TrialDivOddPass`).
     fn emit_value_loop_with_srs(
         &mut self,
         header: &Block,
@@ -43,7 +42,6 @@ impl<'ctx> Codegen<'ctx> {
         let registry: &[EmitFn<'ctx>] = &[
             Self::try_emit_float_orbit_loop,
             Self::try_emit_collatz_loop,
-            Self::try_emit_trial_div_loop,
         ];
         #[cfg(not(feature = "domain-sr"))]
         let registry: &[EmitFn<'ctx>] = &[];
