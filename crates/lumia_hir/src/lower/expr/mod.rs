@@ -11,7 +11,11 @@ use interp::lower_interp;
 use product::{lower_struct_lit, lower_with};
 
 use super::ctx::LowerCtx;
-use super::hof_fuse::try_fuse_hof_fold;
+use super::hof_fuse::{
+    try_fuse_hof_all, try_fuse_hof_any, try_fuse_hof_build_filter, try_fuse_hof_build_map,
+    try_fuse_hof_find, try_fuse_hof_flat_map, try_fuse_hof_fold, try_fuse_hof_get,
+    try_fuse_hof_is_empty, try_fuse_hof_len,
+};
 use super::match_arms::{lower_match, lower_match_cond};
 use crate::ast::{Builtin, Expr, Fun, Item};
 use lumia_syntax::BinOp;
@@ -186,6 +190,45 @@ pub(crate) fn lower_expr(ctx: &LowerCtx, e: &lumia_syntax::Expr) -> Expr {
                             return fused;
                         }
                     }
+                    if name == "map" && args.len() == 1 {
+                        if let Some(fused) =
+                            try_fuse_hof_build_map(ctx, left, &args[0], *span)
+                        {
+                            return fused;
+                        }
+                    }
+                    if name == "filter" && args.len() == 1 {
+                        if let Some(fused) =
+                            try_fuse_hof_build_filter(ctx, left, &args[0], *span)
+                        {
+                            return fused;
+                        }
+                    }
+                    if name == "flatMap" && args.len() == 1 {
+                        if let Some(fused) = try_fuse_hof_flat_map(ctx, left, &args[0], *span) {
+                            return fused;
+                        }
+                    }
+                    if name == "any" && args.len() == 1 {
+                        if let Some(fused) = try_fuse_hof_any(ctx, left, &args[0], *span) {
+                            return fused;
+                        }
+                    }
+                    if name == "all" && args.len() == 1 {
+                        if let Some(fused) = try_fuse_hof_all(ctx, left, &args[0], *span) {
+                            return fused;
+                        }
+                    }
+                    if name == "find" && args.len() == 1 {
+                        if let Some(fused) = try_fuse_hof_find(ctx, left, &args[0], *span) {
+                            return fused;
+                        }
+                    }
+                    if name == "get" && args.len() == 1 {
+                        if let Some(fused) = try_fuse_hof_get(ctx, left, &args[0], *span) {
+                            return fused;
+                        }
+                    }
                 }
             }
             match right.as_ref() {
@@ -194,18 +237,35 @@ pub(crate) fn lower_expr(ctx: &LowerCtx, e: &lumia_syntax::Expr) -> Expr {
                     new_args.extend(args.iter().map(|e| lower_expr(ctx, e)));
                     lower_call_from_parts(ctx, lower_expr(ctx, callee), new_args, *span)
                 }
-                other => lower_call_from_parts(
-                    ctx,
-                    lower_expr(ctx, other),
-                    vec![lower_expr(ctx, left)],
-                    *span,
-                ),
+                other => {
+                    if let lumia_syntax::Expr::Ident(name, _) = other {
+                        if name == "len" {
+                            if let Some(fused) = try_fuse_hof_len(ctx, left, *span) {
+                                return fused;
+                            }
+                        }
+                        if name == "isEmpty" {
+                            if let Some(fused) = try_fuse_hof_is_empty(ctx, left, *span) {
+                                return fused;
+                            }
+                        }
+                    }
+                    lower_call_from_parts(
+                        ctx,
+                        lower_expr(ctx, other),
+                        vec![lower_expr(ctx, left)],
+                        *span,
+                    )
+                }
             }
         }
         lumia_syntax::Expr::Field { base, field, span } => {
             // `xs.len` → len(xs); product fields → adt_field; `p.0` → adt_field;
             // else call field(base)
             if field == "len" {
+                if let Some(fused) = try_fuse_hof_len(ctx, base, *span) {
+                    return fused;
+                }
                 Expr::BuiltinCall {
                     name: Builtin::ListLen,
                     args: vec![lower_expr(ctx, base)],

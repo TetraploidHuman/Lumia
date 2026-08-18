@@ -599,3 +599,414 @@ fn fun_and_val_carry_declaration_span() {
         "main decl span {main:?} should start at `val`"
     );
 }
+
+#[test]
+fn map_filter_chain_fuses_single_builder() {
+    // Keep a list sink (not `.len()`) so build fusion applies, not count fusion.
+    let src = r#"
+module M
+val main = {
+  val xs = listOf(1, 2, 3, 4)
+  xs.map({ x -> x * 2 }).filter({ x -> x > 2 })
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let body = hir
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Item::Fun(f) if f.name == "main" => Some(&f.body),
+            _ => None,
+        })
+        .expect("main");
+    let mut map_acc = 0usize;
+    let mut flt_acc = 0usize;
+    for_each_expr(body, &mut |e| {
+        if let Expr::Let { name, .. } = e {
+            if name.starts_with("__map_acc") {
+                map_acc += 1;
+            }
+            if name.starts_with("__flt_acc") {
+                flt_acc += 1;
+            }
+        }
+    });
+    assert_eq!(flt_acc, 0, "fused build must not emit separate filter acc");
+    assert_eq!(
+        map_acc, 1,
+        "fused map/filter must use one list builder, got {map_acc}"
+    );
+}
+
+#[test]
+fn map_flatmap_chain_fuses_single_builder() {
+    // Keep a list sink (not `.len()`) so flatMap build fusion applies.
+    let src = r#"
+module M
+val main = {
+  val xs = listOf(1, 2, 3)
+  xs.map({ x -> x }).flatMap({ x -> listOf(x, x) })
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let body = hir
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Item::Fun(f) if f.name == "main" => Some(&f.body),
+            _ => None,
+        })
+        .expect("main");
+    let mut map_acc = 0usize;
+    let mut fmap_acc = 0usize;
+    for_each_expr(body, &mut |e| {
+        if let Expr::Let { name, .. } = e {
+            if name.starts_with("__map_acc") {
+                map_acc += 1;
+            }
+            if name.starts_with("__fmap_acc") {
+                fmap_acc += 1;
+            }
+        }
+    });
+    assert_eq!(map_acc, 0, "fused flatMap must not keep separate map builder");
+    assert_eq!(fmap_acc, 1, "expected one fmap builder, got {fmap_acc}");
+}
+
+#[test]
+fn map_any_chain_fuses_no_map_builder() {
+    let src = r#"
+module M
+val main = {
+  val xs = listOf(1, 2, 3, 4)
+  xs.map({ x -> x * 2 }).any({ x -> x > 5 })
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let body = hir
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Item::Fun(f) if f.name == "main" => Some(&f.body),
+            _ => None,
+        })
+        .expect("main");
+    let mut map_acc = 0usize;
+    let mut any_acc = 0usize;
+    for_each_expr(body, &mut |e| {
+        if let Expr::Let { name, .. } = e {
+            if name.starts_with("__map_acc") {
+                map_acc += 1;
+            }
+            if name.starts_with("__any_acc") {
+                any_acc += 1;
+            }
+        }
+    });
+    assert_eq!(map_acc, 0, "fused any must not keep map builder");
+    assert_eq!(any_acc, 1, "expected one any acc, got {any_acc}");
+}
+
+#[test]
+fn map_filter_len_fuses_count_loop() {
+    let src = r#"
+module M
+val main = {
+  val xs = listOf(1, 2, 3, 4)
+  xs.map({ x -> x * 2 }).filter({ x -> x > 2 }).len()
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let body = hir
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Item::Fun(f) if f.name == "main" => Some(&f.body),
+            _ => None,
+        })
+        .expect("main");
+    let mut map_acc = 0usize;
+    let mut flt_acc = 0usize;
+    let mut len_acc = 0usize;
+    for_each_expr(body, &mut |e| {
+        if let Expr::Let { name, .. } = e {
+            if name.starts_with("__map_acc") {
+                map_acc += 1;
+            }
+            if name.starts_with("__flt_acc") {
+                flt_acc += 1;
+            }
+            if name.starts_with("__len_acc") {
+                len_acc += 1;
+            }
+        }
+    });
+    assert_eq!(map_acc, 0, "fused len must not keep map builder");
+    assert_eq!(flt_acc, 0, "fused len must not keep filter builder");
+    // ListLen on the *source* is expected (indexed for-each); builders must be gone.
+    assert_eq!(len_acc, 1, "expected one len counter, got {len_acc}");
+}
+
+#[test]
+fn map_filter_is_empty_fuses_short_circuit() {
+    let src = r#"
+module M
+val main = {
+  val xs = listOf(1, 2, 3, 4)
+  xs.map({ x -> x * 2 }).filter({ x -> x > 100 }).isEmpty()
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let body = hir
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Item::Fun(f) if f.name == "main" => Some(&f.body),
+            _ => None,
+        })
+        .expect("main");
+    let mut map_acc = 0usize;
+    let mut empty_acc = 0usize;
+    for_each_expr(body, &mut |e| {
+        if let Expr::Let { name, .. } = e {
+            if name.starts_with("__map_acc") {
+                map_acc += 1;
+            }
+            if name.starts_with("__empty_acc") {
+                empty_acc += 1;
+            }
+        }
+    });
+    assert_eq!(map_acc, 0, "fused isEmpty must not keep map builder");
+    assert_eq!(empty_acc, 1, "expected one empty acc, got {empty_acc}");
+}
+
+#[test]
+fn map_flatmap_len_fuses_count_loop() {
+    let src = r#"
+module M
+val main = {
+  val xs = listOf(1, 2, 3)
+  xs.map({ x -> x }).flatMap({ x -> listOf(x, x) }).len()
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let body = hir
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Item::Fun(f) if f.name == "main" => Some(&f.body),
+            _ => None,
+        })
+        .expect("main");
+    let mut fmap_acc = 0usize;
+    let mut len_acc = 0usize;
+    for_each_expr(body, &mut |e| {
+        if let Expr::Let { name, .. } = e {
+            if name.starts_with("__fmap_acc") {
+                fmap_acc += 1;
+            }
+            if name.starts_with("__len_acc") {
+                len_acc += 1;
+            }
+        }
+    });
+    assert_eq!(fmap_acc, 0, "fused flatMap.len must not build concat list");
+    assert_eq!(len_acc, 1, "expected one len counter, got {len_acc}");
+}
+
+#[test]
+fn flatmap_any_fuses_no_builder() {
+    let src = r#"
+module M
+val main = {
+  val xs = listOf(1, 2, 3)
+  xs.flatMap({ x -> listOf(x, x) }).any({ y -> y > 2 })
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let body = hir
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Item::Fun(f) if f.name == "main" => Some(&f.body),
+            _ => None,
+        })
+        .expect("main");
+    let mut fmap_acc = 0usize;
+    let mut any_acc = 0usize;
+    for_each_expr(body, &mut |e| {
+        if let Expr::Let { name, .. } = e {
+            if name.starts_with("__fmap_acc") {
+                fmap_acc += 1;
+            }
+            if name.starts_with("__any_acc") {
+                any_acc += 1;
+            }
+        }
+    });
+    assert_eq!(fmap_acc, 0, "fused flatMap.any must not build concat list");
+    assert_eq!(any_acc, 1, "expected one any acc, got {any_acc}");
+}
+
+#[test]
+fn flatmap_fold_fuses_no_builder() {
+    let src = r#"
+module M
+val main = {
+  val xs = listOf(1, 2, 3)
+  xs.flatMap({ x -> listOf(x, x) }).fold(0, { a, y -> a + y })
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let body = hir
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Item::Fun(f) if f.name == "main" => Some(&f.body),
+            _ => None,
+        })
+        .expect("main");
+    let mut fmap_acc = 0usize;
+    let mut fuse_acc = 0usize;
+    for_each_expr(body, &mut |e| {
+        if let Expr::Let { name, .. } = e {
+            if name.starts_with("__fmap_acc") {
+                fmap_acc += 1;
+            }
+            if name.starts_with("__fuse_acc") {
+                fuse_acc += 1;
+            }
+        }
+    });
+    assert_eq!(fmap_acc, 0, "fused flatMap.fold must not build concat list");
+    assert!(fuse_acc >= 1, "expected fused fold acc");
+}
+
+#[test]
+fn map_filter_get_fuses_no_builder() {
+    let src = r#"
+module M
+val main = {
+  val xs = listOf(1, 2, 3, 4)
+  xs.map({ x -> x * 2 }).filter({ x -> x > 2 }).get(0)
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let body = hir
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Item::Fun(f) if f.name == "main" => Some(&f.body),
+            _ => None,
+        })
+        .expect("main");
+    let mut map_acc = 0usize;
+    let mut flt_acc = 0usize;
+    let mut get_acc = 0usize;
+    for_each_expr(body, &mut |e| {
+        if let Expr::Let { name, .. } = e {
+            if name.starts_with("__map_acc") {
+                map_acc += 1;
+            }
+            if name.starts_with("__flt_acc") {
+                flt_acc += 1;
+            }
+            if name.starts_with("__get_acc") {
+                get_acc += 1;
+            }
+        }
+    });
+    assert_eq!(map_acc, 0, "fused get must not keep map builder");
+    assert_eq!(flt_acc, 0, "fused get must not keep filter builder");
+    assert_eq!(get_acc, 1, "expected one get Option slot, got {get_acc}");
+}
+
+#[test]
+fn let_bound_map_filter_get_deforests() {
+    let src = r#"
+module M
+val main = {
+  val xs = listOf(1, 2, 3, 4)
+  val ys = xs.map({ x -> x * 2 }).filter({ x -> x > 2 })
+  ys.get(0) + ys.get(1)
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let body = hir
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Item::Fun(f) if f.name == "main" => Some(&f.body),
+            _ => None,
+        })
+        .expect("main");
+    let mut map_acc = 0usize;
+    let mut flt_acc = 0usize;
+    let mut get_acc = 0usize;
+    for_each_expr(body, &mut |e| {
+        if let Expr::Let { name, .. } = e {
+            if name.starts_with("__map_acc") {
+                map_acc += 1;
+            }
+            if name.starts_with("__flt_acc") {
+                flt_acc += 1;
+            }
+            if name.starts_with("__get_acc") {
+                get_acc += 1;
+            }
+        }
+    });
+    assert_eq!(map_acc, 0, "let-bound fused get must not keep map builder");
+    assert_eq!(flt_acc, 0, "let-bound fused get must not keep filter builder");
+    assert_eq!(get_acc, 2, "expected two fused gets, got {get_acc}");
+}
+
+#[test]
+fn lone_map_let_get_still_materializes() {
+    let src = r#"
+module M
+val main = {
+  val xs = listOf(1, 2, 3)
+  val ys = xs.map({ x -> x * 2 })
+  ys.get(0)
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let body = hir
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Item::Fun(f) if f.name == "main" => Some(&f.body),
+            _ => None,
+        })
+        .expect("main");
+    let mut par_map = 0usize;
+    let mut get_acc = 0usize;
+    for_each_expr(body, &mut |e| {
+        match e {
+            Expr::Let { name, .. } if name.starts_with("__get_acc") => get_acc += 1,
+            Expr::BuiltinCall {
+                name: Builtin::ListParMap,
+                ..
+            } => par_map += 1,
+            _ => {}
+        }
+    });
+    assert_eq!(get_acc, 0, "lone map + let-get must not deforest");
+    assert!(
+        par_map >= 1,
+        "lone map + let-get must keep ListParMap (Float ABI clones)"
+    );
+}

@@ -17,7 +17,7 @@
 
 NSW 开放排他 `i < n`（`U=MAX-1`→仅 `i+1`）+ 无界 safe Div/Rem 已在工作树 `lumia_opt/nsw_iv` 测绿，但与脏树 sidecar/管道缠在一起，**未进本提交**。
 
-下一步：补 DESIGN §7.3 **`Iota`/`Fused` List 表示**（消费端 HOF 融合已扩；欠 IR 级管道视图）。
+下一步：DESIGN §7.3 **Iota/Fused** — HIR `.get` fuse + Let-bound get/len 脱糖已落地；Core `ListRepr::Fused` 为保留标签。Iota 仍走 RT `TYPE_LIST_IOTA`；无运行时 Fused 对象 / 多 get 共享扫描。
 
 
 ## 语义与运行时
@@ -36,7 +36,7 @@ NSW 开放排他 `i < n`（`U=MAX-1`→仅 `i+1`）+ 无界 safe Div/Rem 已在�
 - [x] **纤程栈 freelist**：scope 已走 `snapshot_scope_stack`/`recycle_scope_stack`；**已加** TLS [`take_fiber_stack`](crates/lumia_rt/src/task/scheduler.rs) / [`recycle_fiber_stack`](crates/lumia_rt/src/task/scheduler.rs) / [`recycle_coroutine_stack`](crates/lumia_rt/src/task/scheduler.rs)（`into_stack`；home-thread；取消与正常 Return 回收；未用 pre_stack 回池）。
 
 ### 中端优化缺口（相对 DESIGN §7.2）
-- [ ] **融合仅 fold 汇合；缺 build 侧造林**：HIR 仅 `try_fuse_hof_fold`；`flatMap` 总 materialize；无 `Iota`/`Fused` 表示（DESIGN §7.3）。（`ConcatIdent` 过时注释已改准。）
+- [ ] **HOF 融合**：build/`flatMap`/`any`/`all`/`find`/`len`/`isEmpty`/`.get` 与 Let-bound get/len 脱糖已落地（2026-08-18）。Core `ListRepr::Fused` 保留、ReprSelect 不发出；Iota 仍 RT `TYPE_LIST_IOTA`。仍欠运行时 Fused 视图与多 `get` 共享扫描。
 - [ ] **Inline 仅体积阈值（≤32 ops）且仅 Release**：无热度；`IndirectCall` 不内联；捕获闭包 **恒堆分配**（escape 强制 `AllocClosure`）。
 - [ ] **默认 Int `+/-/*` 走 `llvm.*.with.overflow`**：仅 `nsw_iv` 形标记免检；`nuw` 未用——一般循环付溢出分支，妨碍向量化。
 - [ ] **堆类型 Let 默认 `root_push`**：缺通用 last-use 消根；AdtField→call 仍保守 retain。

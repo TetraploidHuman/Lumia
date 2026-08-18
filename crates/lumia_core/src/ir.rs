@@ -272,14 +272,19 @@ pub enum Value {
 }
 
 /// List representation hint on `AllocList` (§3.5 / §7.1.1).
-/// Runtime Iota ranges use `TYPE_LIST_IOTA` via `lumia_range`, not this enum.
-/// Deforestation lives in HIR (`try_fuse_hof_*`), not as an AllocList tag.
+///
+/// - **Runtime Iota** ranges use `TYPE_LIST_IOTA` via `lumia_range` (not this enum).
+/// - **Fused** map/filter views are deforested in HIR (`try_fuse_hof_*`, including
+///   `.get` / Let-bound get·len) rather than allocated as a tagged list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListRepr {
     /// Default heap `[len][elems…]`.
     HeapList,
     /// Empty → immortal `lumia_list_empty`; small non-escaping → stack header+payload.
     LitList,
+    /// DESIGN §7.3 fused pipeline tag — reserved; ReprSelect never emits this.
+    /// Deforestation is HIR-side (`try_fuse_hof_get` / `try_deforest_hof_let`).
+    Fused,
 }
 
 /// Map default path.

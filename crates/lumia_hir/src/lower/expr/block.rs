@@ -2,6 +2,7 @@
 
 use super::super::ctx::LowerCtx;
 use super::super::for_loops::lower_for_in;
+use super::super::hof_fuse::try_deforest_hof_let;
 use super::lower_expr;
 use crate::ast::Expr;
 use crate::match_check::{pattern_cond, pattern_irrefutable};
@@ -140,6 +141,10 @@ pub(super) fn lower_val_pat(
     // Fast path: `val x = e` / `val x: T = e`
     if let lumia_syntax::Pattern::Ident(name, _) = pat {
         if ctx.lookup_ctor(name).is_none_or(|c| c.arity != 0) {
+            // DESIGN §7.3: `val ys = pipe.map/filter…` used only via get/len → deforest.
+            if let Some(deforested) = try_deforest_hof_let(ctx, name, expr, &body, span) {
+                return deforested;
+            }
             return Expr::Let {
                 name: name.clone(),
                 value: Box::new(lower_expr(ctx, expr)),
