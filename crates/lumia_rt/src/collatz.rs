@@ -5,7 +5,8 @@
 //!
 //! Sequential [`lumia_collatz_total`] skips `2v,4v,…` fan-out on Syracuse hits:
 //! the even scan later writes those cells as `cache[n/2]+1`. Strided paths keep
-//! the fan-out (sparse IV).
+//! the fan-out (sparse IV). Sequential odds short-circuit when `nxt < n`
+//! (prefix already filled) before the shared odd helper.
 
 type Step = i16;
 
@@ -44,10 +45,52 @@ pub extern "C" fn lumia_collatz_total(limit: i64) -> i64 {
             unsafe { cache_set(&mut cache, n, steps) };
             total += i64::from(steps);
         } else if n != 1 {
-            total += collatz_odd_cached(n, &mut cache, lim, &mut stack, false);
+            total += collatz_odd_sequential(n, &mut cache, lim, &mut stack);
         }
     }
     total
+}
+
+/// Sequential odd `n > 1`: `nxt < n` ⇒ unconditional hit (prefix filled).
+/// On miss, continue from the already-computed first Syracuse hop (no redo).
+#[inline]
+fn collatz_odd_sequential(
+    n: usize,
+    cache: &mut [Step],
+    lim: usize,
+    stack: &mut Vec<(i64, i64)>,
+) -> i64 {
+    let y = (n as u64).wrapping_mul(3).wrapping_add(1);
+    let k = y.trailing_zeros();
+    let nxt = (y >> k) as usize;
+    if nxt < n {
+        // SAFETY: `1 <= nxt < n <= lim`; all cells `< n` are filled.
+        let steps = i64::from(unsafe { cache_get(cache, nxt) }) + 1 + i64::from(k);
+        unsafe { cache_set(cache, n, steps as Step) };
+        return steps;
+    }
+    // First hop missed the filled prefix — try a second hop, else stack-walk.
+    if nxt > 1 && nxt <= lim {
+        let y2 = (nxt as u64).wrapping_mul(3).wrapping_add(1);
+        let k2 = y2.trailing_zeros();
+        let nxt2 = (y2 >> k2) as usize;
+        if nxt2 < n || cache_hit(cache, nxt2, lim) {
+            let steps = i64::from(unsafe { cache_get(cache, nxt2) })
+                + 1
+                + i64::from(k2)
+                + 1
+                + i64::from(k);
+            unsafe {
+                cache_set(cache, n, steps as Step);
+                if !cache_hit(cache, nxt, lim) {
+                    let mid = i64::from(cache_get(cache, nxt2)) + 1 + i64::from(k2);
+                    cache_set(cache, nxt, mid as Step);
+                }
+            }
+            return steps;
+        }
+    }
+    collatz_steps_cached(n as i64, cache, lim, stack, false)
 }
 
 /// Odd `n > 1`: try `steps = 1 + cttz(3n+1) + cache[next]` before the general walker.
@@ -72,7 +115,6 @@ fn collatz_odd_cached(
         if fill_doubles {
             cache_set_with_doubles(cache, lim, n, steps as Step);
         } else {
-            // SAFETY: `n <= lim` for the sequential/strided callers.
             unsafe { cache_set(cache, n, steps as Step) };
         }
         return steps;

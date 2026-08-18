@@ -54,15 +54,24 @@ unsafe fn sum_scalar(a: *const i64, n: usize) -> i64 {
 #[target_feature(enable = "avx2")]
 unsafe fn sum_avx2(a: *const i64, n: usize) -> i64 {
     use std::arch::x86_64::*;
-    let mut acc = _mm256_setzero_si256();
+    let mut acc0 = _mm256_setzero_si256();
+    let mut acc1 = _mm256_setzero_si256();
     let mut i = 0usize;
+    while i + 8 <= n {
+        let v0 = _mm256_loadu_si256(a.add(i) as *const __m256i);
+        let v1 = _mm256_loadu_si256(a.add(i + 4) as *const __m256i);
+        acc0 = _mm256_add_epi64(acc0, v0);
+        acc1 = _mm256_add_epi64(acc1, v1);
+        i += 8;
+    }
+    acc0 = _mm256_add_epi64(acc0, acc1);
     while i + 4 <= n {
         let v = _mm256_loadu_si256(a.add(i) as *const __m256i);
-        acc = _mm256_add_epi64(acc, v);
+        acc0 = _mm256_add_epi64(acc0, v);
         i += 4;
     }
     let mut lanes = [0i64; 4];
-    _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, acc);
+    _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, acc0);
     let mut s = lanes[0]
         .wrapping_add(lanes[1])
         .wrapping_add(lanes[2])
@@ -79,10 +88,19 @@ unsafe fn sum_avx2(a: *const i64, n: usize) -> i64 {
 unsafe fn fill_iota_avx2(out: *mut i64, n: usize, start: i64) {
     use std::arch::x86_64::*;
     let mut i = 0usize;
-    let offs = _mm256_set_epi64x(3, 2, 1, 0);
+    let offs0 = _mm256_set_epi64x(3, 2, 1, 0);
+    let offs1 = _mm256_set_epi64x(7, 6, 5, 4);
+    while i + 8 <= n {
+        let base = _mm256_set1_epi64x(start.wrapping_add(i as i64));
+        let v0 = _mm256_add_epi64(base, offs0);
+        let v1 = _mm256_add_epi64(base, offs1);
+        _mm256_storeu_si256(out.add(i) as *mut __m256i, v0);
+        _mm256_storeu_si256(out.add(i + 4) as *mut __m256i, v1);
+        i += 8;
+    }
     while i + 4 <= n {
         let base = _mm256_set1_epi64x(start.wrapping_add(i as i64));
-        let v = _mm256_add_epi64(base, offs);
+        let v = _mm256_add_epi64(base, offs0);
         _mm256_storeu_si256(out.add(i) as *mut __m256i, v);
         i += 4;
     }

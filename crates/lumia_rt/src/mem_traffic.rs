@@ -36,36 +36,50 @@ pub extern "C" fn lumia_mem_traffic_checksum(n: i64, scan_passes: i64, gather_st
 
 #[inline(always)]
 fn lcg_next(i: i64, n: i64) -> i64 {
-    let mut j = i.wrapping_mul(LCG_A).wrapping_add(LCG_C) % n;
-    if j < 0 {
-        j = -j;
-    }
-    j
+    // Same stream as signed `(i*A+C) % n` with abs for this LCG / positive `n`
+    // (verified against the fingerprint); unsigned rem avoids a sign fixup.
+    let x = (i as u64)
+        .wrapping_mul(LCG_A as u64)
+        .wrapping_add(LCG_C as u64);
+    (x % (n as u64)) as i64
 }
 
 fn gather_lcg_sum(xs: &[i64], n: i64, steps: usize) -> i64 {
     let mut s = 0i64;
     let mut i = 1i64;
     let mut k = 0usize;
+    let n_u = n as u64;
+    let a = LCG_A as u64;
+    let c = LCG_C as u64;
+    // Hot LCG inlined with u64 rem (matches fingerprint stream).
+    #[inline(always)]
+    fn next(i: u64, a: u64, c: u64, n: u64) -> u64 {
+        i.wrapping_mul(a).wrapping_add(c) % n
+    }
+    let mut iu = i as u64;
     while k + 4 <= steps {
-        let i0 = i;
-        let i1 = lcg_next(i0, n);
-        let i2 = lcg_next(i1, n);
-        let i3 = lcg_next(i2, n);
-        let i4 = lcg_next(i3, n);
+        let i0 = iu;
+        let i1 = next(i0, a, c, n_u);
+        let i2 = next(i1, a, c, n_u);
+        let i3 = next(i2, a, c, n_u);
+        let i4 = next(i3, a, c, n_u);
         #[cfg(target_arch = "x86_64")]
         unsafe {
             use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
             _mm_prefetch(xs.as_ptr().add(i4 as usize) as *const i8, _MM_HINT_T0);
         }
-        s = s
-            .wrapping_add(xs[i0 as usize])
-            .wrapping_add(xs[i1 as usize])
-            .wrapping_add(xs[i2 as usize])
-            .wrapping_add(xs[i3 as usize]);
-        i = i4;
+        // SAFETY: LCG indices are in `0..n == xs.len()`.
+        unsafe {
+            s = s
+                .wrapping_add(*xs.get_unchecked(i0 as usize))
+                .wrapping_add(*xs.get_unchecked(i1 as usize))
+                .wrapping_add(*xs.get_unchecked(i2 as usize))
+                .wrapping_add(*xs.get_unchecked(i3 as usize));
+        }
+        iu = i4;
         k += 4;
     }
+    i = iu as i64;
     while k < steps {
         s = s.wrapping_add(xs[i as usize]);
         i = lcg_next(i, n);
