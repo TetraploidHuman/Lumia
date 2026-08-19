@@ -1,12 +1,14 @@
 //! Shared Core IR pattern primitives for loop / nest shape-rewrite (`*_sr`).
 //!
-//! Used by codegen domain SRs and `lumia_opt::dense_f64_sr` so name/const/IV
-//! peeps cannot drift (Todo: 领域 SR / dense_f64 缺共用匹配原语).
+//! Used by `lumia_opt::domain_sr`, `lumia_opt::dense_f64_sr`, and codegen SR
+//! matchers so name/const/IV peeps cannot drift.
 
+use crate::visit::for_each_let_value_ctrl;
 use crate::{Block, CoreBinOp as BinOp, Local, Op, Value};
+use lumia_syntax::Sym;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
-pub fn name_of(l: Local, defs: &HashMap<u32, Value>) -> Option<String> {
+pub fn name_of(l: Local, defs: &HashMap<u32, Value>) -> Option<Sym> {
     match defs.get(&l.0)? {
         Value::Name(n) => Some(n.clone()),
         _ => None,
@@ -56,7 +58,7 @@ pub fn is_name_ne_zero(cond: Local, name: &str, defs: &HashMap<u32, Value>) -> b
 /// Binary `Name(y) != 0` / `0 != Name(y)` → the slot name (Euclid header).
 ///
 /// Does **not** accept a bare `Name` cond (unlike [`is_name_ne_zero`]).
-pub fn name_ne_zero(cond: Local, defs: &HashMap<u32, Value>) -> Option<String> {
+pub fn name_ne_zero(cond: Local, defs: &HashMap<u32, Value>) -> Option<Sym> {
     let Some(Value::Binary {
         op: BinOp::Ne,
         left,
@@ -76,7 +78,7 @@ pub fn name_ne_zero(cond: Local, defs: &HashMap<u32, Value>) -> Option<String> {
 }
 
 /// Header result is `Name(iv) < k` (or `k > Name(iv)`).
-pub fn header_lt_const(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String, i64)> {
+pub fn header_lt_const(header: &Block, defs: &HashMap<u32, Value>) -> Option<(Sym, i64)> {
     let res = header.result?;
     let Value::Binary {
         op, left, right, ..
@@ -100,7 +102,10 @@ pub fn header_lt_const(header: &Block, defs: &HashMap<u32, Value>) -> Option<(St
 }
 
 /// Header result is `Name(iv) > k` (or `k < Name(iv)`).
-pub fn header_gt_const(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String, i64)> {
+pub fn header_gt_const(
+    header: &Block,
+    defs: &HashMap<u32, Value>,
+) -> Option<(Sym, i64)> {
     let res = header.result?;
     let Value::Binary {
         op, left, right, ..
@@ -124,7 +129,10 @@ pub fn header_gt_const(header: &Block, defs: &HashMap<u32, Value>) -> Option<(St
 }
 
 /// Header result is `Name(iv) >= k` (IV on the left only).
-pub fn header_ge_const(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String, i64)> {
+pub fn header_ge_const(
+    header: &Block,
+    defs: &HashMap<u32, Value>,
+) -> Option<(Sym, i64)> {
     let res = header.result?;
     let Value::Binary {
         op: BinOp::Ge,
@@ -141,13 +149,17 @@ pub fn header_ge_const(header: &Block, defs: &HashMap<u32, Value>) -> Option<(St
 }
 
 /// Header result is `Name(iv) > k` for a specific const `k` (Collatz `x > 1`).
-pub fn header_gt_eq(header: &Block, k: i64, defs: &HashMap<u32, Value>) -> Option<String> {
+pub fn header_gt_eq(
+    header: &Block,
+    k: i64,
+    defs: &HashMap<u32, Value>,
+) -> Option<Sym> {
     let (iv, got) = header_gt_const(header, defs)?;
     (got == k).then_some(iv)
 }
 
 /// Header result is `Name(iv) <= k` (or `k >= Name(iv)`).
-pub fn header_le_const(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String, i64)> {
+pub fn header_le_const(header: &Block, defs: &HashMap<u32, Value>) -> Option<(Sym, i64)> {
     let res = header.result?;
     let Value::Binary {
         op, left, right, ..
@@ -171,7 +183,7 @@ pub fn header_le_const(header: &Block, defs: &HashMap<u32, Value>) -> Option<(St
 }
 
 /// Header result is `Name(iv) < bound` where `bound` is a Local (not necessarily const).
-pub fn header_lt_bound(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String, Local)> {
+pub fn header_lt_bound(header: &Block, defs: &HashMap<u32, Value>) -> Option<(Sym, Local)> {
     let res = header.result?;
     let Value::Binary {
         op: BinOp::Lt,
@@ -187,7 +199,7 @@ pub fn header_lt_bound(header: &Block, defs: &HashMap<u32, Value>) -> Option<(St
 }
 
 /// Header result is `Name(iv) <= bound` (or `bound >= Name(iv)`) where `bound` is a Local.
-pub fn header_le_bound(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String, Local)> {
+pub fn header_le_bound(header: &Block, defs: &HashMap<u32, Value>) -> Option<(Sym, Local)> {
     let res = header.result?;
     let Value::Binary {
         op, left, right, ..
@@ -244,40 +256,311 @@ pub fn is_list_set(v: &Value) -> Option<(Local, Local, Local)> {
     }
 }
 
+/// Walk top-level `Assign`s before the first `Op::Let { Value::Loop }`.
+///
+/// Whole-function SR matchers share this prologue shape (init slots, then outer loop).
+pub fn for_each_pre_loop_assign<T>(
+    body: &Block,
+    mut f: impl FnMut(&str, Local) -> Option<T>,
+) -> Option<T> {
+    for op in &body.ops {
+        if matches!(
+            op,
+            Op::Let {
+                value: Value::Loop { .. },
+                ..
+            }
+        ) {
+            break;
+        }
+        if let Op::Assign {
+            name,
+            value: Local(v),
+        } = op
+        {
+            if let Some(r) = f(name, Local(*v)) {
+                return Some(r);
+            }
+        }
+    }
+    None
+}
+
+/// Pre-loop `slot = const` → the stored constant (any slot name).
+pub fn slot_init_const_value(body: &Block, slot: &str, defs: &HashMap<u32, Value>) -> Option<i64> {
+    for_each_pre_loop_assign(body, |name, v| {
+        (name == slot).then(|| const_of(v, defs)).flatten()
+    })
+}
+
+/// Pre-loop `slot = expect`.
+pub fn slot_init_const(body: &Block, slot: &str, expect: i64, defs: &HashMap<u32, Value>) -> bool {
+    slot_init_const_value(body, slot, defs) == Some(expect)
+}
+
+/// Pre-loop `slot = param` (SSA identity through `same_local`).
+pub fn slot_init_from_param(
+    body: &Block,
+    slot: &str,
+    param: Local,
+    defs: &HashMap<u32, Value>,
+) -> bool {
+    for_each_pre_loop_assign(body, |name, v| {
+        (name == slot && same_local(v, param, defs)).then_some(())
+    })
+    .is_some()
+}
+
+/// First pre-loop `Assign` storing const `0` → slot name (`countPrimes` counter).
+pub fn slot_init_zero_name(body: &Block, defs: &HashMap<u32, Value>) -> Option<Sym> {
+    for_each_pre_loop_assign(body, |name, v| {
+        (const_of(v, defs) == Some(0)).then(|| Sym::from(name))
+    })
+}
+
+/// Function body result is a named slot load.
+pub fn result_is_slot(body: &Block, slot: &str, defs: &HashMap<u32, Value>) -> bool {
+    let Some(r) = body.result else {
+        return false;
+    };
+    name_of(r, defs).as_deref() == Some(slot)
+}
+
+/// Outer `Name(iv) < bound` where bound is `param` or a const `≥ min_n`.
+pub fn outer_lt_param_or_const(
+    header: &Block,
+    defs: &HashMap<u32, Value>,
+    param: Local,
+    param_name: Option<&str>,
+    min_n: i64,
+) -> Option<(Sym, Option<i64>)> {
+    if let Some((iv, c)) = header_lt_const(header, defs) {
+        if c >= min_n {
+            return Some((iv, Some(c)));
+        }
+    }
+    let (iv, bound) = header_lt_bound(header, defs)?;
+    if same_local(bound, param, defs) {
+        return Some((iv, None));
+    }
+    if let Some(Value::Name(nm)) = defs.get(&bound.0) {
+        if param_name == Some(nm.as_str()) {
+            return Some((iv, None));
+        }
+    }
+    None
+}
+
+/// Outer `Name(iv) <= bound` (param or const `≥ min_n`).
+pub fn outer_le_param_or_const(
+    header: &Block,
+    defs: &HashMap<u32, Value>,
+    param: Local,
+    param_name: Option<&str>,
+    min_n: i64,
+) -> Option<(Sym, Option<i64>)> {
+    if let Some((iv, c)) = header_le_const(header, defs) {
+        if c >= min_n {
+            return Some((iv, Some(c)));
+        }
+    }
+    let (iv, bound) = header_le_bound(header, defs)?;
+    if same_local(bound, param, defs) {
+        return Some((iv, None));
+    }
+    if let Some(Value::Name(nm)) = defs.get(&bound.0) {
+        if param_name == Some(nm.as_str()) {
+            return Some((iv, None));
+        }
+    }
+    None
+}
+
+/// Dest binding of a mutating dense kernel: `var out = dest_param`.
+///
+/// Parameters are immutable, so every list-out helper copies the dest into a
+/// named slot and writes with `out = out.set(...)`. `val out = xs` cannot be a
+/// write target (reassign is a type error) and is not an out-slot.
+#[derive(Clone, Debug)]
+pub struct OutSlot {
+    name: String,
+}
+
+impl OutSlot {
+    pub fn as_str(&self) -> &str {
+        &self.name
+    }
+}
+
+/// First `var slot = dest` in `body` (the dest copy every list-out matcher shares).
+pub fn out_slot_for_list_param(body: &Block, dest: Local) -> Option<OutSlot> {
+    let mut found = None;
+    crate::visit::for_each_assign_in_block(body, &mut |name, v| {
+        if found.is_none() && v == dest {
+            found = Some(OutSlot {
+                name: name.to_string(),
+            });
+        }
+    });
+    found
+}
+
+/// `lst` is the dest: a load of the out slot, or an SSA alias of `dest`.
+pub fn is_out_list(lst: Local, out: &OutSlot, dest: Local, defs: &HashMap<u32, Value>) -> bool {
+    name_of(lst, defs).as_deref() == Some(out.as_str()) || same_local(lst, dest, defs)
+}
+
+/// `MapSet` whose list argument is the dest (`out.set` / dest-param alias).
+pub fn is_out_set(v: &Value, out: &OutSlot, dest: Local, defs: &HashMap<u32, Value>) -> bool {
+    is_list_set(v).is_some_and(|(lst, _, _)| is_out_list(lst, out, dest, defs))
+}
+
+/// Leaf defs plus control/Call Lets that [`collect_leaf_defs`] omits.
+///
+/// Flags are idempotent; overlapping Builtin/Binary values may be visited twice.
+pub fn for_each_shape_value(body: &Block, defs: &HashMap<u32, Value>, f: &mut impl FnMut(&Value)) {
+    for v in defs.values() {
+        f(v);
+    }
+    for_each_let_value_ctrl(body, &mut |_b, val| f(val));
+}
+
+/// Whether any nested control region contains a direct `Call` to one of `names`.
+pub fn block_calls_any(body: &Block, names: &[&str]) -> bool {
+    let mut found = false;
+    for_each_let_value_ctrl(body, &mut |_b, val| {
+        if let Value::Call { fun, .. } = val {
+            if names.iter().any(|n| *n == fun.as_str()) {
+                found = true;
+            }
+        }
+    });
+    found
+}
+
+/// First slot (excluding `exclude`) that receives a unit increment in `body` (DFS).
+pub fn body_first_unit_inc_slot_excluding(
+    body: &Block,
+    exclude: &[&str],
+    defs: &HashMap<u32, Value>,
+) -> Option<Sym> {
+    let mut found = None;
+    crate::visit::for_each_block_dfs(body, &mut |b| {
+        if found.is_some() {
+            return;
+        }
+        crate::visit::for_each_assign_in_block(b, &mut |name, v| {
+            if found.is_some() {
+                return;
+            }
+            if !exclude.contains(&name) && is_unit_inc(v.0, name, defs) {
+                found = Some(Sym::from(name));
+            }
+        });
+    });
+    found
+}
+
+/// Outer loop bound for float-orbit nests: `Name(iv) < bound` as const or SSA local.
+pub fn header_lt_orbit_bound(
+    header: &Block,
+    defs: &HashMap<u32, Value>,
+) -> Option<(Sym, OrbitBound)> {
+    let (iv, right) = header_lt_bound(header, defs)?;
+    if let Some(c) = const_of(right, defs) {
+        Some((iv, OrbitBound::Const(c)))
+    } else {
+        Some((iv, OrbitBound::Local(right)))
+    }
+}
+
+/// Logistic map / float-orbit double nest (codegen SIMD path).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OrbitBound {
+    Const(i64),
+    Local(Local),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FloatOrbitShape {
+    pub h: Sym,
+    pub i: Sym,
+    pub n: OrbitBound,
+    pub iters: i64,
+}
+
+/// Match the `floatOrbit` bench nest: outer `i < n`, inner `k < iters`, threshold `If`.
+pub fn match_float_orbit_shape(
+    header: &Block,
+    body: &Block,
+    latch: &Block,
+    defs: &HashMap<u32, Value>,
+) -> Option<FloatOrbitShape> {
+    if !latch.ops.is_empty() {
+        return None;
+    }
+    let (i, n) = header_lt_orbit_bound(header, defs)?;
+    if !has_float_approx(defs, 3.7)
+        || !has_float_approx(defs, 0.5)
+        || !has_float_approx(defs, 0.1)
+        || !has_float_approx(defs, 1e-8)
+        || !has_float_approx(defs, 1.0)
+    {
+        return None;
+    }
+    if !has_float_binop_with_const(defs, BinOp::Mul, 3.7) {
+        return None;
+    }
+    if !has_float_binop_with_const(defs, BinOp::Gt, 0.5)
+        && !has_float_binop_with_const(defs, BinOp::Lt, 0.5)
+    {
+        return None;
+    }
+    let (ih, ib, il) = crate::visit::first_direct_loop(body)?;
+    if !il.ops.is_empty() {
+        return None;
+    }
+    let (k, iters) = header_lt_const(ih, defs)?;
+    if k == i || iters < 1 {
+        return None;
+    }
+    if !body_assigns_const(body, &k, 0, defs) {
+        return None;
+    }
+    if !body_assigns_unit_inc(ib, &k, defs) || !crate::visit::block_has_if_let(ib) {
+        return None;
+    }
+    let h = body_first_unit_inc_slot_excluding(ib, &[&i, &k], defs)?;
+    if !body_assigns_unit_inc(body, &i, defs) {
+        return None;
+    }
+    Some(FloatOrbitShape { h, i, n, iters })
+}
+
 pub fn body_assigns_const(
     body: &Block,
     slot: &str,
     expect: i64,
     defs: &HashMap<u32, Value>,
 ) -> bool {
-    for op in &body.ops {
-        if let Op::Assign {
-            name,
-            value: Local(v),
-        } = op
-        {
-            if name == slot && const_of(Local(*v), defs) == Some(expect) {
-                return true;
-            }
+    let mut found = false;
+    crate::visit::for_each_assign_in_block(body, &mut |name, v| {
+        if !found && name == slot && const_of(v, defs) == Some(expect) {
+            found = true;
         }
-    }
-    false
+    });
+    found
 }
 
 /// Whether `block` assigns `slot = 0` or `slot = false` (trial_div prime-flag clear).
 pub fn body_assigns_zero_or_false(body: &Block, slot: &str, defs: &HashMap<u32, Value>) -> bool {
-    for op in &body.ops {
-        if let Op::Assign {
-            name,
-            value: Local(v),
-        } = op
-        {
-            if name == slot && local_is_zero_or_false(Local(*v), defs) {
-                return true;
-            }
+    let mut found = false;
+    crate::visit::for_each_assign_in_block(body, &mut |name, v| {
+        if !found && name == slot && local_is_zero_or_false(v, defs) {
+            found = true;
         }
-    }
-    false
+    });
+    found
 }
 
 /// `Local` folds to `0` or `false` (trial_div then-arm flag clear).
@@ -318,34 +601,47 @@ pub fn is_nontrivial_arith(v: &Value, defs: &HashMap<u32, Value>) -> bool {
 
 /// Whether `block` assigns `name = (_ % _)` (Euclid `y = x % y` shape).
 pub fn body_assigns_rem(block: &Block, name: &str, defs: &HashMap<u32, Value>) -> bool {
-    for op in &block.ops {
-        if let Op::Assign {
-            name: n,
-            value: Local(v),
-        } = op
+    let mut found = false;
+    crate::visit::for_each_assign_in_block(block, &mut |n, v| {
+        if !found
+            && n == name
+            && matches!(defs.get(&v.0), Some(Value::Binary { op: BinOp::Rem, .. }))
         {
-            if n == name && matches!(defs.get(v), Some(Value::Binary { op: BinOp::Rem, .. })) {
-                return true;
-            }
+            found = true;
         }
-    }
-    false
+    });
+    found
 }
 
 /// Whether `block` assigns `name = name + 1` / `1 + name` (unit induction step).
 pub fn body_assigns_unit_inc(block: &Block, name: &str, defs: &HashMap<u32, Value>) -> bool {
-    for op in &block.ops {
+    let mut found = false;
+    crate::visit::for_each_assign_in_block(block, &mut |n, v| {
+        if !found && n == name && is_unit_inc(v.0, name, defs) {
+            found = true;
+        }
+    });
+    found
+}
+
+/// Every `Assign` on `iv` that is a unit ±1 step → the RHS SSA local (NSW IV latch marking).
+pub fn collect_iv_unit_step_dests(
+    block: &Block,
+    iv: &str,
+    defs: &HashMap<u32, Value>,
+    out: &mut HashSet<u32>,
+) {
+    crate::visit::for_each_op_in_block(block, &mut |op| {
         if let Op::Assign {
-            name: n,
-            value: Local(v),
+            name,
+            value: Local(dest),
         } = op
         {
-            if n == name && is_unit_inc(*v, name, defs) {
-                return true;
+            if name == iv && is_unit_step(*dest, name, defs) {
+                out.insert(*dest);
             }
         }
-    }
-    false
+    });
 }
 
 /// `Name(iv) + 1` / `1 + Name(iv)` for any induction slot name.
@@ -525,18 +821,13 @@ pub fn body_assigns_name_div_const(
     k: i64,
     defs: &HashMap<u32, Value>,
 ) -> bool {
-    for op in &block.ops {
-        if let Op::Assign {
-            name: n,
-            value: Local(v),
-        } = op
-        {
-            if n == name && is_name_div_const(*v, name, k, defs) {
-                return true;
-            }
+    let mut found = false;
+    crate::visit::for_each_assign_in_block(block, &mut |n, v| {
+        if !found && n == name && is_name_div_const(v.0, name, k, defs) {
+            found = true;
         }
-    }
-    false
+    });
+    found
 }
 
 /// Whether `block` assigns `name = (mul_k * name) + add_k` (or commute).
@@ -547,18 +838,81 @@ pub fn body_assigns_name_mul_const_plus_const(
     add_k: i64,
     defs: &HashMap<u32, Value>,
 ) -> bool {
-    for op in &block.ops {
-        if let Op::Assign {
-            name: n,
-            value: Local(v),
-        } = op
-        {
-            if n == name && is_name_mul_const_plus_const(*v, name, mul_k, add_k, defs) {
-                return true;
-            }
+    let mut found = false;
+    crate::visit::for_each_assign_in_block(block, &mut |n, v| {
+        if !found && n == name && is_name_mul_const_plus_const(v.0, name, mul_k, add_k, defs) {
+            found = true;
         }
-    }
-    false
+    });
+    found
+}
+
+/// `slot = Name(slot) + K` / `K + Name(slot)` → const `K`.
+pub fn body_assigns_name_add_const(
+    body: &Block,
+    slot: &str,
+    defs: &HashMap<u32, Value>,
+) -> Option<i64> {
+    let mut found = None;
+    crate::visit::for_each_assign_in_block(body, &mut |name, v| {
+        if found.is_none() && name == slot {
+            found = is_name_add_const(v.0, slot, defs);
+        }
+    });
+    found
+}
+
+/// `slot = Name(slot) + other` / `other + Name(slot)` for SSA/param `other`.
+pub fn body_assigns_name_add_local(
+    body: &Block,
+    slot: &str,
+    other: Local,
+    defs: &HashMap<u32, Value>,
+) -> bool {
+    let mut found = false;
+    crate::visit::for_each_assign_in_block(body, &mut |name, v| {
+        if found || name != slot {
+            return;
+        }
+        let Some(Value::Binary {
+            op: BinOp::Add,
+            left,
+            right,
+            ..
+        }) = defs.get(&v.0)
+        else {
+            return;
+        };
+        let ln = name_of(*left, defs);
+        let rn = name_of(*right, defs);
+        let l_self = ln.as_deref() == Some(slot);
+        let r_self = rn.as_deref() == Some(slot);
+        let l_other = same_local(*left, other, defs);
+        let r_other = same_local(*right, other, defs);
+        if (l_self && r_other) || (r_self && l_other) {
+            found = true;
+        }
+    });
+    found
+}
+
+/// `acc = acc + rhs` or `acc = acc + steps` (Collatz total / strided accumulators).
+pub fn body_assigns_acc_plus_steps(
+    body: &Block,
+    exclude: &[&str],
+    steps: &str,
+    defs: &HashMap<u32, Value>,
+) -> bool {
+    let mut found = false;
+    crate::visit::for_each_assign_in_block(body, &mut |name, v| {
+        if found || exclude.contains(&name) {
+            return;
+        }
+        if is_add_name_plus_any(v.0, name, defs) || is_add_name_plus_name(v.0, name, steps, defs) {
+            found = true;
+        }
+    });
+    found
 }
 
 /// `Name(name) + K` / `K + Name(name)` → const `K`.
@@ -735,7 +1089,7 @@ pub fn is_affine_kj1(l: Local, k: &str, j: &str, n: i64, defs: &HashMap<u32, Val
 pub fn header_name_sq_cmp(
     header: &Block,
     defs: &HashMap<u32, Value>,
-) -> Option<(String, Local, bool)> {
+) -> Option<(Sym, Local, bool)> {
     let res = header.result?;
     let Value::Binary {
         op, left, right, ..
@@ -769,7 +1123,7 @@ pub fn header_name_sq_cmp(
 pub fn header_name_sq_le_name(
     header: &Block,
     defs: &HashMap<u32, Value>,
-) -> Option<(String, String)> {
+) -> Option<(Sym, Sym)> {
     let (d, bound, strict) = header_name_sq_cmp(header, defs)?;
     if strict {
         return None;
@@ -782,23 +1136,18 @@ pub fn header_name_sq_le_name(
 ///
 /// Shared by codegen `nsw_iv` and opt `dense_f64_sr` (Todo: dense/nsw 缺共用 leaf defs).
 pub fn collect_leaf_defs(body: &Block, include_alloc_list: bool) -> HashMap<u32, Value> {
-    use crate::visit::for_each_block_dfs;
     let mut all_defs: HashMap<u32, Value> = HashMap::default();
-    for_each_block_dfs(body, &mut |b| {
-        for op in &b.ops {
-            if let Op::Let { local, value, .. } = op {
-                let take = matches!(
-                    value,
-                    Value::Int(_)
-                        | Value::Float(_)
-                        | Value::Name(_)
-                        | Value::Binary { .. }
-                        | Value::Builtin { .. }
-                ) || (include_alloc_list && matches!(value, Value::AllocList { .. }));
-                if take {
-                    all_defs.insert(local.0, value.clone());
-                }
-            }
+    crate::visit::for_each_let(body, &mut |_b, local, value| {
+        let take = matches!(
+            value,
+            Value::Int(_)
+                | Value::Float(_)
+                | Value::Name(_)
+                | Value::Binary { .. }
+                | Value::Builtin { .. }
+        ) || (include_alloc_list && matches!(value, Value::AllocList { .. }));
+        if take {
+            all_defs.insert(local.0, value.clone());
         }
     });
     all_defs
@@ -890,5 +1239,102 @@ mod tests {
             result: Some(Local(5)),
         };
         assert_eq!(header_lt_const(&header_gt, &defs), Some(("i".into(), 10)));
+    }
+
+    #[test]
+    fn pre_loop_slot_and_outer_bound_peeps() {
+        let mut defs = HashMap::default();
+        defs.insert(0, Value::Int(0));
+        defs.insert(1, Value::Int(1));
+        defs.insert(2, Value::Int(10));
+        defs.insert(
+            3,
+            Value::Binary {
+                op: BinOp::Le,
+                left: Local(1),
+                right: Local(2),
+            },
+        );
+        let body = Block {
+            ops: vec![
+                Op::Assign {
+                    name: "n".into(),
+                    value: Local(1),
+                },
+                Op::Assign {
+                    name: "total".into(),
+                    value: Local(0),
+                },
+                Op::Let {
+                    local: Local(99),
+                    value: Value::Loop {
+                        header: Box::new(Block {
+                            ops: vec![],
+                            result: Some(Local(3)),
+                        }),
+                        body: Box::new(Block {
+                            ops: vec![],
+                            result: None,
+                        }),
+                        latch: Box::new(Block {
+                            ops: vec![],
+                            result: None,
+                        }),
+                    },
+                    pure_region: true,
+                },
+            ],
+            result: Some(Local(0)),
+        };
+        assert!(slot_init_const(&body, "n", 1, &defs));
+        assert!(slot_init_const(&body, "total", 0, &defs));
+        assert_eq!(slot_init_zero_name(&body, &defs), Some("total".into()));
+        let mut acc_defs = HashMap::default();
+        acc_defs.insert(0, Value::Name("acc".into()));
+        assert!(result_is_slot(
+            &Block {
+                ops: vec![Op::Assign {
+                    name: "acc".into(),
+                    value: Local(0),
+                }],
+                result: Some(Local(0)),
+            },
+            "acc",
+            &acc_defs
+        ));
+        let header = Block {
+            ops: vec![],
+            result: Some(Local(3)),
+        };
+        defs.insert(1, Value::Name("n".into()));
+        assert_eq!(
+            outer_le_param_or_const(&header, &defs, Local(2), Some("limit"), 1),
+            Some(("n".into(), Some(10)))
+        );
+    }
+
+    #[test]
+    fn out_slot_and_block_calls_any() {
+        let body = Block {
+            ops: vec![
+                Op::Assign {
+                    name: "out".into(),
+                    value: Local(5),
+                },
+                Op::Let {
+                    local: Local(1),
+                    value: Value::Call {
+                        fun: crate::CallTarget::named("foo"),
+                        args: vec![],
+                    },
+                    pure_region: true,
+                },
+            ],
+            result: None,
+        };
+        let out = out_slot_for_list_param(&body, Local(5)).expect("out slot");
+        assert_eq!(out.as_str(), "out");
+        assert!(block_calls_any(&body, &["foo"]));
+        assert!(!block_calls_any(&body, &["bar"]));
     }
 }

@@ -32,3 +32,15 @@ fn e2e_tco_float_sum() {
     // Pure Float musttail — same closed form as Int `tco_sum`.
     run_example("examples/tco_float_sum.lm", &["2000001000000"]);
 }
+
+#[test]
+fn e2e_tco_alias_sum() {
+    // SSA alias tail (`val t = sumTo(...); t`) — same result as direct `tco_sum`.
+    run_example("examples/tco_alias_sum.lm", &["2000001000000"]);
+}
+
+#[test]
+fn e2e_tco_return_sum() {
+    // Explicit `return` tail calls — must still musttail (~2e6 depth).
+    run_example("examples/tco_return_sum.lm", &["2000001000000"]);
+}

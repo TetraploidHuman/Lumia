@@ -9,8 +9,8 @@
 //! hint is set only when every channel agrees on the same payload.
 
 use super::float_abi::{collect_fun_cap_tys, compute_float_locals_in_block};
-use crate::ir::{Block, CoreModule, Local, Op, Value};
-use crate::visit::{for_each_let, for_each_nested_block};
+use crate::ir::{Block, CoreModule, Local, Value};
+use crate::visit::{for_each_let, for_each_let_in_block};
 use lumia_hir::Builtin;
 use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
@@ -49,7 +49,7 @@ fn refine_channel_elem_hint_inner(module: &mut CoreModule) {
     loop {
         let mut changed = false;
         for fun in &module.functions {
-            let caps = lam_caps.get(&fun.name).map(|c| c.as_slice());
+            let caps = lam_caps.get(fun.name.as_str()).map(|c| c.as_slice());
             changed |= propagate_channel_aliases(&fun.body, &mut root_of, caps);
         }
         if !changed {
@@ -58,7 +58,7 @@ fn refine_channel_elem_hint_inner(module: &mut CoreModule) {
     }
     // Pass 3: attribute sends (payload tys) onto roots.
     for fun in &module.functions {
-        let caps = lam_caps.get(&fun.name).cloned();
+        let caps = lam_caps.get(fun.name.as_str()).cloned();
         let mut local_tys: HashMap<u32, Type> = HashMap::default();
         for (p, ty) in fun.params.iter().zip(fun.param_tys.iter()) {
             local_tys.insert(p.0, ty.clone());
@@ -177,42 +177,37 @@ fn scan_block(
     fun_cap_tys: &HashMap<String, HashMap<u32, Type>>,
 ) {
     let float_locals = compute_float_locals_in_block(block);
-    for op in &block.ops {
-        match op {
-            Op::Let { local, value, .. } => {
-                note_channel_root(local.0, value, root_of, by_ch, caps);
-                note_send(value, local_tys, root_of, by_ch, poisoned_ch, conflicts);
-                local_tys.insert(
-                    local.0,
-                    guess_local_ty(
-                        value,
-                        fun_name,
-                        local_tys,
-                        &float_locals,
-                        fun_ret_tys,
-                        fun_param_tys,
-                        fun_cap_tys,
-                    ),
-                );
-                for_each_nested_block(value, &mut |b| {
-                    scan_block(
-                        b,
-                        fun_name,
-                        local_tys,
-                        root_of,
-                        by_ch,
-                        poisoned_ch,
-                        conflicts,
-                        caps,
-                        fun_ret_tys,
-                        fun_param_tys,
-                        fun_cap_tys,
-                    );
-                });
-            }
-            _ => {}
-        }
-    }
+    for_each_let_in_block(block, &mut |local, value, _pure| {
+        note_channel_root(local.0, value, root_of, by_ch, caps);
+        note_send(value, local_tys, root_of, by_ch, poisoned_ch, conflicts);
+        local_tys.insert(
+            local.0,
+            guess_local_ty(
+                value,
+                fun_name,
+                local_tys,
+                &float_locals,
+                fun_ret_tys,
+                fun_param_tys,
+                fun_cap_tys,
+            ),
+        );
+        crate::for_each_nested_block(value, &mut |b| {
+            scan_block(
+                b,
+                fun_name,
+                local_tys,
+                root_of,
+                by_ch,
+                poisoned_ch,
+                conflicts,
+                caps,
+                fun_ret_tys,
+                fun_param_tys,
+                fun_cap_tys,
+            );
+        });
+    });
 }
 
 fn note_channel_root(

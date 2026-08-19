@@ -1,8 +1,10 @@
 //! Recursive-descent parser for a practical Lumia subset.
 
 use crate::error::LocatedError;
+use crate::intern::StringInterner;
 use crate::lexer::Lexer;
 use crate::span::Span;
+use crate::sym::Sym;
 use crate::token::{StringPart, Token, TokenKind};
 use crate::{
     BinOp, Expr, ForBinding, Import, ImportNames, ImportedName, InterpPart, Item, MatchArm,
@@ -52,6 +54,7 @@ struct Parser<'a> {
     src: &'a str,
     lexer: Lexer<'a>,
     cur: Token,
+    intern: StringInterner,
     /// When false, `{` is not consumed as a trailing closure (e.g. `for x in xs {`).
     allow_trailing_closure: bool,
 }
@@ -78,6 +81,7 @@ impl<'a> Parser<'a> {
             src,
             lexer,
             cur,
+            intern: StringInterner::default(),
             allow_trailing_closure: true,
         }
     }
@@ -128,15 +132,27 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(super) fn expect_ident(&mut self) -> Result<(String, Span), ParseError> {
-        if !matches!(self.cur.kind, TokenKind::Ident(_)) {
+    pub(super) fn at_ident(&self) -> bool {
+        matches!(self.cur.kind, TokenKind::Ident)
+    }
+
+    /// Intern spelling at `span` from the parser source buffer.
+    pub(super) fn intern_span(&mut self, span: Span) -> Sym {
+        let a = span.start.0 as usize;
+        let b = span.end.0 as usize;
+        self.intern.intern(&self.src[a..b])
+    }
+
+    pub(super) fn intern_word(&mut self, word: &str) -> Sym {
+        self.intern.intern(word)
+    }
+
+    pub(super) fn expect_ident(&mut self) -> Result<(Sym, Span), ParseError> {
+        if !self.at_ident() {
             return Err(self.error("expected identifier"));
         }
         let tok = self.bump();
-        match tok.kind {
-            TokenKind::Ident(s) => Ok((s, tok.span)),
-            _ => unreachable!("checked Ident above"),
-        }
+        Ok((self.intern_span(tok.span), tok.span))
     }
 
     /// Optional `: Type` ascription (`Int`, `List[Float]`, `Map[Int, String]`, …).
@@ -152,7 +168,7 @@ impl<'a> Parser<'a> {
     pub(super) fn parse_type_ann_string(&mut self) -> Result<String, ParseError> {
         let (name, _) = self.expect_ident()?;
         if !self.at(&TokenKind::LBracket) {
-            return Ok(name);
+            return Ok(name.to_string());
         }
         self.bump();
         let mut args = Vec::new();
@@ -171,9 +187,7 @@ impl<'a> Parser<'a> {
     }
 
     /// `name` or `name: Type` binder (lambda / val paren params).
-    pub(super) fn parse_annotated_binder(
-        &mut self,
-    ) -> Result<(String, Option<String>), ParseError> {
+    pub(super) fn parse_annotated_binder(&mut self) -> Result<(Sym, Option<String>), ParseError> {
         let (name, _) = self.expect_ident()?;
         let ty = self.parse_optional_type_ann()?;
         Ok((name, ty))

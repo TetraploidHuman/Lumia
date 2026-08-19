@@ -6,7 +6,7 @@ use super::token::{
     TY_METHOD, TY_PARAMETER, TY_PROPERTY, TY_STRUCT, TY_TYPE, TY_VARIABLE,
 };
 use crate::lsp::state::Analysis;
-use lumia_hir::{surface_names, SurfaceRole};
+use lumia_hir::{surface_names, SurfaceRole, Sym};
 use lumia_syntax::{
     Expr, ForBinding, ImportNames, Item, MatchArm, MatchCondArm, Module, Pattern, Stmt, TypeKind,
     ValItem,
@@ -159,7 +159,7 @@ fn collect_val(a: &Analysis, v: &ValItem, src: &str, out: &mut Vec<AbsToken>) {
     if let Some((s, e)) = find_word(src, &v.name, start, name_end) {
         let is_fn = v.params.is_some()
             || matches!(v.body, Expr::Lambda { .. })
-            || matches!(a.typed.fun_types.get(&v.name), Some(Type::Fun(..)));
+            || matches!(a.typed.fun_types.get(v.name.as_str()), Some(Type::Fun(..)));
         let (ty, mods) = if is_fn {
             (TY_FUNCTION, MOD_DECL)
         } else {
@@ -180,7 +180,7 @@ fn collect_val(a: &Analysis, v: &ValItem, src: &str, out: &mut Vec<AbsToken>) {
     let bare: Vec<String> = v
         .params
         .as_ref()
-        .map(|ps| ps.iter().map(|(n, _)| n.clone()).collect())
+        .map(|ps| ps.iter().map(|(n, _)| n.to_string()).collect())
         .unwrap_or_default();
     let mut params = params_set(&bare);
     if let Expr::Lambda {
@@ -195,7 +195,7 @@ fn collect_val(a: &Analysis, v: &ValItem, src: &str, out: &mut Vec<AbsToken>) {
             paint_lambda_params(src, v.body.span().start.0 as usize, lp, out);
         }
         for p in lp {
-            params.insert(p.clone());
+            params.insert(p.to_string());
         }
         collect_expr(a, body, src, &params, out);
     } else {
@@ -207,11 +207,16 @@ fn params_set(names: &[String]) -> rustc_hash::FxHashSet<String> {
     names.iter().cloned().collect()
 }
 
-fn paint_lambda_params(src: &str, lam_start: usize, params: &[String], out: &mut Vec<AbsToken>) {
+fn paint_lambda_params(
+    src: &str,
+    lam_start: usize,
+    params: &[Sym],
+    out: &mut Vec<AbsToken>,
+) {
     let end = src.len().min(lam_start + 256);
     let mut cursor = lam_start;
     for p in params {
-        if let Some((s, e)) = find_word(src, p, cursor, end) {
+        if let Some((s, e)) = find_word(src, p.as_str(), cursor, end) {
             push(out, s, e, TY_PARAMETER, MOD_DECL);
             cursor = e;
         }
@@ -257,7 +262,7 @@ fn collect_expr(
             }
             let mut nested = params.clone();
             for p in lp {
-                nested.insert(p.clone());
+                nested.insert(p.to_string());
             }
             collect_expr(a, body, src, &nested, out);
         }

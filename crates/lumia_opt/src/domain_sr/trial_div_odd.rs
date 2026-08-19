@@ -9,8 +9,9 @@
 
 use super::match_primes::match_trial_div_loop;
 use lumia_core::{
-    collect_leaf_defs, for_each_op_value_mut, is_unit_inc, max_local_in_fun, Block, CoreBinOp,
-    CoreFun, CoreModule, Local, Op, Value,
+    collect_leaf_defs, flat_map_top_level_ops_in_block, for_each_ctrl_nested_in_block_mut,
+    for_each_op_value_mut, is_unit_inc, max_local_in_fun, Block, CoreBinOp, CoreFun, CoreModule,
+    Local, Op, Value,
 };
 use rustc_hash::FxHashMap as HashMap;
 
@@ -31,7 +32,12 @@ fn rewrite_fun(fun: &mut CoreFun) {
     let defs = collect_leaf_defs(&fun.body, false);
     let mut next = max_local_in_fun(fun).saturating_add(1);
     for_each_op_value_mut(&mut fun.body, &mut |value| {
-        let Value::Loop { header, body, latch } = value else {
+        let Value::Loop {
+            header,
+            body,
+            latch,
+        } = value
+        else {
             return;
         };
         let Some(pat) = match_trial_div_loop(header, body, latch, &defs) else {
@@ -47,22 +53,10 @@ fn rewrite_odd_in_block(
     defs: &HashMap<u32, Value>,
     next: &mut u32,
 ) -> bool {
-    let mut changed = false;
-    for op in &mut block.ops {
-        if let Op::Let {
-            value: Value::If {
-                then_block,
-                else_block,
-                ..
-            },
-            ..
-        } = op
-        {
-            changed |= rewrite_odd_in_block(then_block, d, defs, next);
-            changed |= rewrite_odd_in_block(else_block, d, defs, next);
-        }
-    }
-    changed |= replace_unit_inc_assigns(block, d, defs, next);
+    let mut changed = replace_unit_inc_assigns(block, d, defs, next);
+    for_each_ctrl_nested_in_block_mut(block, &mut |nested| {
+        changed |= rewrite_odd_in_block(nested, d, defs, next);
+    });
     changed
 }
 
@@ -72,25 +66,23 @@ fn replace_unit_inc_assigns(
     defs: &HashMap<u32, Value>,
     next: &mut u32,
 ) -> bool {
-    let mut new_ops = Vec::with_capacity(block.ops.len());
     let mut changed = false;
-    for op in std::mem::take(&mut block.ops) {
-        match &op {
-            Op::Assign {
-                name,
-                value: Local(v),
-            } if name == d && is_unit_inc(*v, d, defs) => {
-                changed = true;
-                let nxt = emit_odd_step_lets(&mut new_ops, d, next);
-                new_ops.push(Op::Assign {
-                    name: d.to_string(),
-                    value: nxt,
-                });
-            }
-            _ => new_ops.push(op),
+    flat_map_top_level_ops_in_block(block, &mut |op| match &op {
+        Op::Assign {
+            name,
+            value: Local(v),
+        } if name == d && is_unit_inc(*v, d, defs) => {
+            changed = true;
+            let mut new_ops = Vec::new();
+            let nxt = emit_odd_step_lets(&mut new_ops, d, next);
+            new_ops.push(Op::Assign {
+                name: d.to_string().into(),
+                value: nxt,
+            });
+            new_ops
         }
-    }
-    block.ops = new_ops;
+        _ => vec![op],
+    });
     changed
 }
 
@@ -103,7 +95,7 @@ fn emit_odd_step_lets(ops: &mut Vec<Op>, d: &str, next: &mut u32) -> Local {
     let nxt = alloc(next);
     ops.push(let_pure(two, Value::Int(2)));
     ops.push(let_pure(three, Value::Int(3)));
-    ops.push(let_pure(dload, Value::Name(d.to_string())));
+    ops.push(let_pure(dload, Value::Name(d.to_string().into())));
     ops.push(let_pure(
         is2,
         Value::Binary {

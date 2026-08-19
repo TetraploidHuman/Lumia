@@ -16,7 +16,12 @@ pub(crate) fn apply_product_field_rewrites(
     let products: HashMap<String, Vec<String>> = module
         .products
         .iter()
-        .map(|p| (p.name.clone(), p.fields.clone()))
+        .map(|p| {
+            (
+                p.name.to_string(),
+                p.fields.iter().map(|f| f.to_string()).collect(),
+            )
+        })
         .collect();
     for item in &mut module.items {
         match item {
@@ -64,7 +69,7 @@ fn apply_node_rewrite(
             if let Some((adt, idx)) = field_rewrites.get(span) {
                 if matches!(&args[1], Expr::Int(-1, _)) {
                     args[1] = Expr::Int(*idx, *span);
-                    args[2] = Expr::String(adt.clone(), *span);
+                    args[2] = Expr::String(adt.clone().into(), *span);
                 }
             }
         }

@@ -3,7 +3,8 @@
 use crate::default_map_repr;
 use lumia_abi::SMALL_CONTAINER_MAX;
 use lumia_core::{
-    AdtRepr, Block, CoreFun, CoreModule, ListRepr, Local, MapRepr, Op, SetRepr, Value,
+    for_each_ctrl_nested_in_block_mut, for_each_let_in_block_mut, AdtRepr, Block, CoreFun,
+    CoreModule, ListRepr, Local, MapRepr, SetRepr, Value,
 };
 use rustc_hash::FxHashSet as HashSet;
 
@@ -25,32 +26,11 @@ fn select_in_fun(f: &mut CoreFun, escaping: &HashSet<Local>) {
 }
 
 fn select_in_block(block: &mut Block, escaping: &HashSet<Local>) {
-    for op in &mut block.ops {
-        if let Op::Let { local, value, .. } = op {
-            select_alloc_repr(value, *local, escaping);
-            // Enter If/Loop only — Lambda skipped (same as prior `_ => {}`).
-            match value {
-                Value::If {
-                    then_block,
-                    else_block,
-                    ..
-                } => {
-                    select_in_block(then_block, escaping);
-                    select_in_block(else_block, escaping);
-                }
-                Value::Loop {
-                    header,
-                    body,
-                    latch,
-                } => {
-                    select_in_block(header, escaping);
-                    select_in_block(body, escaping);
-                    select_in_block(latch, escaping);
-                }
-                _ => {}
-            }
-        }
-    }
+    for_each_let_in_block_mut(block, &mut |local, value, _pure| {
+        select_alloc_repr(value, local, escaping);
+    });
+    // If/Loop only — Lambda skipped (same contract as memo CSE/fold).
+    for_each_ctrl_nested_in_block_mut(block, &mut |nested| select_in_block(nested, escaping));
 }
 
 fn select_alloc_repr(v: &mut Value, bound: Local, escaping: &HashSet<Local>) {

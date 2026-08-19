@@ -5,11 +5,13 @@ mod ast;
 mod diag;
 mod error;
 mod escape;
+mod intern;
 mod lexer;
 mod parser;
 mod pretty;
 mod span;
 mod stamp;
+mod sym;
 mod token;
 pub mod visit;
 
@@ -24,9 +26,11 @@ pub use diag::{
     ColumnMetric,
 };
 pub use error::LocatedError;
+pub use intern::StringInterner;
 pub use lexer::Lexer;
 pub use parser::{parse_expr_str, parse_module, parse_module_recovering, ParseError, ParseOutcome};
 pub use pretty::{format_matches_source, format_module_src};
 pub use span::{BytePos, Span};
 pub use stamp::stamp_module;
+pub use sym::Sym;
 pub use token::{StringPart, Token, TokenKind};

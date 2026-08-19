@@ -6,7 +6,8 @@ use inkwell::context::Context;
 use inkwell::module::Module as LlvmModule;
 use inkwell::types::IntType;
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
-use lumia_core::{Local, MemoTf, Value};
+use lumia_core::{FunRefAliases, Local, MemoTf, Value};
+use lumia_hir::Sym;
 use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
@@ -32,7 +33,8 @@ pub(crate) struct FunTables<'ctx> {
     pub external_funs: HashSet<String>,
     /// `foreign` symbols that use the `lumia_rt` object ABI (no String↔cstr).
     pub runtime_external_funs: HashSet<String>,
-    pub funref_locals: HashMap<u32, String>,
+    /// FunRef SSA + named-slot aliases (shared protocol with core directize / TCO).
+    pub funref: FunRefAliases,
     pub current_fun: String,
     pub tco_peers: HashSet<String>,
     pub tco_sccs: HashMap<String, HashSet<String>>,
@@ -66,13 +68,31 @@ impl FunTables<'_> {
     }
 }
 
-/// One SSA/param heap root on the shadow stack.
+/// Last use of an SSA heap root lies in only one arm of the enclosing `If`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum IfArmExclusive {
+    Then,
+    Else,
+}
+
+/// Cross-control-flow last-use site — enables early shadow-stack pop at region exit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CrossBlockLastUse {
+    IfArm(IfArmExclusive),
+    Loop,
+    Lambda,
+}
 #[derive(Clone, Debug)]
 pub(crate) struct SsaRoot {
+    pub local: lumia_core::Local,
     /// Last op index in the defining block at which this local is still live.
-    /// `None` = unused after the def (pop as soon as this entry is the LIFO top).
+    /// `None` = unused after the def (pop as soon as possible).
     pub last_use: Option<usize>,
-    /// `root_depth` immediately after the matching `root_push`.
+    /// When [`Self::last_use`] ends inside a single `If` arm, `Loop`, or `Lambda` region.
+    pub last_use_cross: Option<CrossBlockLastUse>,
+    /// Index in the mutator ROOTS vec at push time (maintained across swap_remove).
+    pub roots_index: usize,
+    /// `root_depth` immediately after the matching `root_push` (scope unwind).
     pub depth: u32,
 }
 
@@ -80,11 +100,11 @@ pub(crate) struct SsaRoot {
 #[derive(Default)]
 pub(crate) struct FrameState<'ctx> {
     pub locals: HashMap<u32, BasicValueEnum<'ctx>>,
-    pub slots: HashMap<String, PointerValue<'ctx>>,
-    pub float_slots: HashSet<String>,
+    pub slots: HashMap<Sym, PointerValue<'ctx>>,
+    pub float_slots: HashSet<Sym>,
     pub loop_stack: Vec<(BasicBlock<'ctx>, BasicBlock<'ctx>, u32)>,
     pub local_tys: HashMap<u32, Type>,
-    pub slot_tys: HashMap<String, Type>,
+    pub slot_tys: HashMap<Sym, Type>,
     /// Locals bound to `Value::Int(n)` — used to type `AdtField` as `params[n]`.
     pub local_int_consts: HashMap<u32, i64>,
     pub root_depth: u32,
@@ -94,11 +114,14 @@ pub(crate) struct FrameState<'ctx> {
     /// "already rooted" compile-time state).
     ///
     /// Nested `if` snapshots this map at arm entry and restores it after each arm
-    /// (musttail may wipe the live map via `root_pop_to(0)`). Slot count is small.
-    pub rooted_slots: HashMap<String, u32>,
+    /// (musttail may wipe the live map via `root_pop_to(0)`). Cross-block SSA
+    /// roots (`If` single arm / `Loop` body) are popped at region exit and the
+    /// snapshot is refreshed so restore does not resurrect dead roots.
+    pub rooted_slots: HashMap<Sym, u32>,
     /// SSA lets (and heap params) currently on the shadow stack, newest last.
-    /// Used to `root_pop` a dead root when it is the LIFO top (last-use early pop).
-    /// Nested `if` snapshots this vec with [`rooted_slots`].
+    /// Used to `root_pop` / swap_remove dead roots as soon as last-use passes
+    /// (including buried entries under still-live roots). Nested `if` snapshots
+    /// this vec with [`rooted_slots`].
     pub ssa_root_stack: Vec<SsaRoot>,
     pub entry_bb: Option<BasicBlock<'ctx>>,
     /// Dest local of the `Let` currently being emitted (for NSW lookup).
@@ -106,7 +129,7 @@ pub(crate) struct FrameState<'ctx> {
     /// `MapSet` may mutate in place: codegen proved `xs = xs.set(…)` consumes the slot.
     pub cow_consume_unique: bool,
     /// `slot = slot with {…}`: mut slot name + updated field indices/locals.
-    pub adt_with_inplace: Option<(String, Vec<(u32, Local)>)>,
+    pub adt_with_inplace: Option<(Sym, Vec<(u32, Local)>)>,
     /// `Binary` Add/Sub locals proven safe as loop IV `±1` (opt `nsw_iv` → CoreFun).
     /// Prefer reading via [`Self::install_nsw_from_fun`].
     pub nsw_binop_locals: HashSet<u32>,
@@ -118,7 +141,7 @@ pub(crate) struct FrameState<'ctx> {
     pub leaf_defs: HashMap<u32, Value>,
     /// Last known const for i64 mut slots (`None` = non-const / unknown).
     /// Used to refuse SR when accumulators/IVs are not at the expected start.
-    pub slot_i64_const: HashMap<String, Option<i64>>,
+    pub slot_i64_const: HashMap<Sym, Option<i64>>,
     /// Expected type for the `Let` currently being emitted (from ret / typed slot).
     /// Used so empty `listOf()` / `mapOf()` / `setOf()` keep Float/Bool container tags.
     pub expect_alloc_ty: Option<Type>,

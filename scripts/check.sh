@@ -5,14 +5,17 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck disable=SC1091
 source "$ROOT/scripts/env.sh"
 
-# Match CI: Linux uses llvm-dynamic; Windows/static stays prefer-static.
-# Workspace feature path: `lumia_codegen/llvm-dynamic` (not for -p lumia_opt --tests).
+# Match CI: `lumia` default already enables llvm-dynamic (shared libLLVM).
+# Workspace `--exclude lumia` still needs the codegen package feature on Linux.
+# Windows: opt out of the default (SDK is prefer-static).
 LLVM_WS_FEATURES=()
 LUMIA_FEATURES=()
 case "$(uname -s)" in
   Linux)
     LLVM_WS_FEATURES=(--features lumia_codegen/llvm-dynamic)
-    LUMIA_FEATURES=(--features llvm-dynamic)
+    ;;
+  MINGW*|MSYS*|CYGWIN*)
+    LUMIA_FEATURES=(--no-default-features --features codegen)
     ;;
 esac
 
@@ -27,6 +30,13 @@ cargo fmt --all -- --check
 
 echo "== cargo clippy --workspace --exclude lumia --lib ${LLVM_WS_FEATURES[*]:-} -- -D warnings =="
 cargo clippy --workspace --exclude lumia --lib "${LLVM_WS_FEATURES[@]}" -- -D warnings
+
+# lumia lib (no codegen/LLVM needed): check + clippy + unit tests.
+echo "== cargo clippy -p lumia --no-default-features --lib -- -D warnings =="
+cargo clippy -p lumia --no-default-features --lib -- -D warnings
+
+echo "== cargo test -p lumia --no-default-features --lib =="
+cargo test -p lumia --no-default-features --lib
 
 echo "== cargo test --workspace --exclude lumia --lib (RUST_TEST_THREADS=1: shared process heap) =="
 # Process heap is shared across test cases; parallel lib tests would UAF.

@@ -17,9 +17,11 @@ pub(super) fn ensure_external(module: &mut CoreModule, sym: &str) {
     let (param_tys, ret_ty) = external_sig(sym);
     let n = param_tys.len();
     let params: Vec<Local> = (0..n as u32).map(Local).collect();
-    let param_names: Vec<String> = (0..n).map(|i| format!("a{i}")).collect();
+    let param_names: Vec<lumia_syntax::Sym> = (0..n)
+        .map(|i| lumia_syntax::Sym::from(format!("a{i}")))
+        .collect();
     module.functions.push(CoreFun {
-        name: sym.to_string(),
+        name: lumia_syntax::Sym::from(sym),
         params,
         param_names,
         param_tys,

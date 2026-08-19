@@ -5,7 +5,9 @@ use super::super::key::{
 };
 use crate::ir::{Block, CoreFun, CoreModule, Local, Op, Value};
 use crate::value_ty::{infer_value_ty_ctx, InferValueCtx};
+use crate::visit::for_each_top_level_op_in_block;
 use lumia_hir::Builtin;
+use lumia_syntax::Sym;
 use lumia_ty::{Effect, Type};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet};
 use std::sync::Arc;
@@ -63,12 +65,12 @@ fn specialize_mono_round(
         for (i, p) in fun.params.iter().enumerate() {
             local_tys.insert(p.0, fun.param_tys.get(i).cloned().unwrap_or(Type::Int));
         }
-        let mut slot_tys: HashMap<String, Type> = HashMap::default();
+        let mut slot_tys: HashMap<Sym, Type> = HashMap::default();
         let mut int_consts: HashMap<u32, i64> = HashMap::default();
         // Shared across nested Loop/If like `slot_tys` so flatMap's mut acc
         // (`ListConcat` in the loop body) is visible to post-loop `ListGet`.
-        let mut slot_list_funrefs: HashMap<String, FunrefSlots> = HashMap::default();
-        let mut slot_adt_funrefs: HashMap<String, FunrefSlots> = HashMap::default();
+        let mut slot_list_funrefs: HashMap<Sym, FunrefSlots> = HashMap::default();
+        let mut slot_adt_funrefs: HashMap<Sym, FunrefSlots> = HashMap::default();
         let mut list_funrefs: HashMap<u32, FunrefSlots> = HashMap::default();
         let mut adt_funrefs: HashMap<u32, FunrefSlots> = HashMap::default();
         let mut bool_consts: HashMap<u32, bool> = HashMap::default();
@@ -152,7 +154,7 @@ fn specialize_mono_round(
                 .or_insert_with(|| Arc::new(orig.body.clone()))
                 .clone();
             let clone = CoreFun {
-                name: new_name.clone(),
+                name: new_name.clone().into(),
                 params: orig.params.clone(),
                 param_names: orig.param_names.clone(),
                 param_tys: param_tys.clone(),
@@ -186,7 +188,7 @@ fn specialize_mono_round(
         // `Call(dbl$Float, …)` whose ret is Float, not the erased Int FunRef.
         directize_block(&mut body, &binds);
         let mut clone = CoreFun {
-            name: new_name.clone(),
+            name: new_name.clone().into(),
             params: orig.params.clone(),
             param_names: orig.param_names.clone(),
             param_tys: param_tys.clone(),
@@ -218,15 +220,15 @@ fn specialize_mono_round(
 fn scan_mono_block(
     block: &Block,
     local_tys: &mut HashMap<u32, Type>,
-    slot_tys: &mut HashMap<String, Type>,
+    slot_tys: &mut HashMap<Sym, Type>,
     int_consts: &mut HashMap<u32, i64>,
     bool_consts: &mut HashMap<u32, bool>,
     index: &FunIndex<'_>,
     needed: &mut FxHashSet<(String, MonoKey)>,
     parent_funrefs: &HashMap<u32, String>,
-    parent_slot_funrefs: &HashMap<String, String>,
-    slot_list_funrefs: &mut HashMap<String, FunrefSlots>,
-    slot_adt_funrefs: &mut HashMap<String, FunrefSlots>,
+    parent_slot_funrefs: &HashMap<Sym, String>,
+    slot_list_funrefs: &mut HashMap<Sym, FunrefSlots>,
+    slot_adt_funrefs: &mut HashMap<Sym, FunrefSlots>,
     list_funrefs: &mut HashMap<u32, FunrefSlots>,
     adt_funrefs: &mut HashMap<u32, FunrefSlots>,
     adt_tags: &mut HashMap<u32, i64>,
@@ -235,76 +237,74 @@ fn scan_mono_block(
     let mut slot_funrefs = parent_slot_funrefs.clone();
     // Task local → spawned FunRef/AllocClosure name (for join → FunRef chase).
     let mut spawn_of: HashMap<u32, String> = HashMap::default();
-    for op in &block.ops {
-        match op {
-            Op::Let { local, value, .. } => {
-                // Nested If/Loop arms first so `If` result can join arm locals
-                // (`opt alt listOf(0.0)` → List[Float]). Typing before the walk
-                // left If as Int and skipped ListParFold Float mono clones.
-                walk_mono_nested_scan(
-                    value,
-                    local_tys,
-                    slot_tys,
-                    int_consts,
-                    bool_consts,
-                    index,
-                    needed,
-                    &funref_of,
-                    &slot_funrefs,
-                    slot_list_funrefs,
-                    slot_adt_funrefs,
-                    list_funrefs,
-                    adt_funrefs,
-                    adt_tags,
-                );
-                let ty = mono_value_ty_with_funrefs(
-                    value, local_tys, slot_tys, int_consts, index, &funref_of,
-                );
-                local_tys.insert(local.0, ty);
-                note_scalar_consts(local.0, value, int_consts, bool_consts, adt_tags);
-                track_funref_after_let(
-                    local.0,
-                    value,
-                    &mut funref_of,
-                    &mut spawn_of,
-                    list_funrefs,
-                    adt_funrefs,
-                    &slot_funrefs,
-                    slot_list_funrefs,
-                    slot_adt_funrefs,
-                    int_consts,
-                    bool_consts,
-                    None,
-                    None,
-                    None,
-                    Some(index),
-                );
-                // After nested + this let: ListParFold sees List[Float] list arg.
-                note_mono_call(value, local_tys, index, needed, &funref_of);
-            }
-            Op::Assign { name, value } => {
-                if let Some(ty) = local_tys.get(&value.0).cloned() {
-                    slot_tys.insert(name.clone(), ty);
-                }
-                if let Some(fr) = funref_of.get(&value.0).cloned() {
-                    slot_funrefs.insert(name.clone(), fr);
-                } else {
-                    slot_funrefs.remove(name);
-                }
-                if let Some(v) = list_funrefs.get(&value.0).cloned() {
-                    slot_list_funrefs.insert(name.clone(), v);
-                } else {
-                    slot_list_funrefs.remove(name);
-                }
-                if let Some(v) = adt_funrefs.get(&value.0).cloned() {
-                    slot_adt_funrefs.insert(name.clone(), v);
-                } else {
-                    slot_adt_funrefs.remove(name);
-                }
-            }
-            _ => {}
+    for_each_top_level_op_in_block(block, &mut |op| match op {
+        Op::Let { local, value, .. } => {
+            // Nested If/Loop arms first so `If` result can join arm locals
+            // (`opt alt listOf(0.0)` → List[Float]). Typing before the walk
+            // left If as Int and skipped ListParFold Float mono clones.
+            walk_mono_nested_scan(
+                value,
+                local_tys,
+                slot_tys,
+                int_consts,
+                bool_consts,
+                index,
+                needed,
+                &funref_of,
+                &slot_funrefs,
+                slot_list_funrefs,
+                slot_adt_funrefs,
+                list_funrefs,
+                adt_funrefs,
+                adt_tags,
+            );
+            let ty = mono_value_ty_with_funrefs(
+                value, local_tys, slot_tys, int_consts, index, &funref_of,
+            );
+            local_tys.insert(local.0, ty);
+            note_scalar_consts(local.0, value, int_consts, bool_consts, adt_tags);
+            track_funref_after_let(
+                local.0,
+                value,
+                &mut funref_of,
+                &mut spawn_of,
+                list_funrefs,
+                adt_funrefs,
+                &slot_funrefs,
+                slot_list_funrefs,
+                slot_adt_funrefs,
+                int_consts,
+                bool_consts,
+                None,
+                None,
+                None,
+                Some(index),
+            );
+            // After nested + this let: ListParFold sees List[Float] list arg.
+            note_mono_call(value, local_tys, index, needed, &funref_of);
         }
-    }
+        Op::Assign { name, value } => {
+            if let Some(ty) = local_tys.get(&value.0).cloned() {
+                slot_tys.insert(name.clone(), ty);
+            }
+            if let Some(fr) = funref_of.get(&value.0).cloned() {
+                slot_funrefs.insert(name.clone(), fr);
+            } else {
+                slot_funrefs.remove(name);
+            }
+            if let Some(v) = list_funrefs.get(&value.0).cloned() {
+                slot_list_funrefs.insert(name.clone(), v);
+            } else {
+                slot_list_funrefs.remove(name);
+            }
+            if let Some(v) = adt_funrefs.get(&value.0).cloned() {
+                slot_adt_funrefs.insert(name.clone(), v);
+            } else {
+                slot_adt_funrefs.remove(name);
+            }
+        }
+        _ => {}
+    });
 }
 
 pub(super) fn note_scalar_consts(
@@ -405,15 +405,15 @@ pub(super) fn note_scalar_consts(
 fn walk_mono_nested_scan(
     value: &Value,
     local_tys: &mut HashMap<u32, Type>,
-    slot_tys: &mut HashMap<String, Type>,
+    slot_tys: &mut HashMap<Sym, Type>,
     int_consts: &mut HashMap<u32, i64>,
     bool_consts: &mut HashMap<u32, bool>,
     index: &FunIndex<'_>,
     needed: &mut FxHashSet<(String, MonoKey)>,
     funref_of: &HashMap<u32, String>,
-    slot_funrefs: &HashMap<String, String>,
-    slot_list_funrefs: &mut HashMap<String, FunrefSlots>,
-    slot_adt_funrefs: &mut HashMap<String, FunrefSlots>,
+    slot_funrefs: &HashMap<Sym, String>,
+    slot_list_funrefs: &mut HashMap<Sym, FunrefSlots>,
+    slot_adt_funrefs: &mut HashMap<Sym, FunrefSlots>,
     list_funrefs: &mut HashMap<u32, FunrefSlots>,
     adt_funrefs: &mut HashMap<u32, FunrefSlots>,
     adt_tags: &mut HashMap<u32, i64>,
@@ -576,7 +576,7 @@ fn note_needed_clone(
 pub(crate) fn mono_value_ty(
     value: &Value,
     local_tys: &HashMap<u32, Type>,
-    slot_tys: &HashMap<String, Type>,
+    slot_tys: &HashMap<Sym, Type>,
     int_consts: &HashMap<u32, i64>,
     index: &FunIndex<'_>,
 ) -> Type {
@@ -593,7 +593,7 @@ pub(crate) fn mono_value_ty(
 fn mono_value_ty_with_funrefs(
     value: &Value,
     local_tys: &HashMap<u32, Type>,
-    slot_tys: &HashMap<String, Type>,
+    slot_tys: &HashMap<Sym, Type>,
     int_consts: &HashMap<u32, i64>,
     index: &FunIndex<'_>,
     funref_of: &HashMap<u32, String>,

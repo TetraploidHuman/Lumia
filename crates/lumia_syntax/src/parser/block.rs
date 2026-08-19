@@ -54,7 +54,7 @@ impl<'a> Parser<'a> {
         let uses_it = tail.as_ref().is_some_and(|e| expr_uses_ident(e, "it"));
         if stmts.is_empty() && uses_it {
             Ok(Expr::Lambda {
-                params: vec!["it".into()],
+                params: vec![self.intern_word("it")],
                 param_tys: vec![None],
                 bare_it: true,
                 body: Box::new(Expr::Block {
@@ -84,7 +84,7 @@ impl<'a> Parser<'a> {
 
     pub(super) fn try_parse_lambda_params(
         &mut self,
-    ) -> Result<(Vec<String>, Vec<Option<String>>), ParseError> {
+    ) -> Result<(Vec<Sym>, Vec<Option<String>>), ParseError> {
         if self.at(&TokenKind::Arrow) {
             return Ok((vec![], vec![]));
         }
@@ -158,7 +158,7 @@ impl<'a> Parser<'a> {
             } else if self.at(&TokenKind::Continue) {
                 let s = self.bump().span;
                 stmts.push(Stmt::Continue(s));
-            } else if matches!(self.peek(), TokenKind::Ident(_)) {
+            } else if self.at_ident() {
                 // Could be assign `name = expr` or expression
                 let cp = self.checkpoint();
                 let (name, nspan) = self.expect_ident()?;
@@ -203,11 +203,11 @@ impl<'a> Parser<'a> {
             if self.at(&TokenKind::LParen) {
                 let cp = self.checkpoint();
                 self.bump();
-                if matches!(self.peek(), TokenKind::Ident(_)) {
+                if self.at_ident() {
                     let (k, _) = self.expect_ident()?;
                     if self.at(&TokenKind::Comma) {
                         self.bump();
-                        if matches!(self.peek(), TokenKind::Ident(_)) {
+                        if self.at_ident() {
                             let (v, _) = self.expect_ident()?;
                             if self.at(&TokenKind::RParen) {
                                 self.bump();
@@ -229,7 +229,7 @@ impl<'a> Parser<'a> {
                 }
                 self.restore(cp);
             }
-            if matches!(self.peek(), TokenKind::Ident(_)) {
+            if self.at_ident() {
                 let cp = self.checkpoint();
                 let (binding, _) = self.expect_ident()?;
                 if self.at(&TokenKind::In) {

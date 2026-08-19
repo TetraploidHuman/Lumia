@@ -109,7 +109,7 @@ pub(super) fn symbols_for_analysis(a: &Analysis) -> Vec<Value> {
     }
     for trait_name in m.method_traits.values() {
         // method_traits maps method → trait; emit each trait once.
-        if out.iter().any(|s| s["name"] == *trait_name) {
+        if out.iter().any(|s| s["name"].as_str() == Some(trait_name.as_str())) {
             continue;
         }
         out.push(symbol(

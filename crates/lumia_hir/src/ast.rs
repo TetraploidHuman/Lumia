@@ -1,58 +1,56 @@
 //! HIR AST — modules, expressions, builtins, ADTs.
 
-use lumia_syntax::{BinOp, Span, UnOp};
+use lumia_syntax::{BinOp, Span, Sym, UnOp};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 #[derive(Debug, Clone)]
 pub struct Module {
-    pub name: String,
+    pub name: Sym,
     pub items: Vec<Item>,
     /// Sum types declared in this module.
     pub adts: Vec<AdtDef>,
     /// Product types declared in this module.
     pub products: Vec<ProductDef>,
     /// `(trait, type)` pairs from `instance Trait for Type { }` (incl. auto-derived).
-    pub instances: HashSet<(String, String)>,
+    pub instances: HashSet<(Sym, Sym)>,
     /// Instance / default methods: `(type, method)` → mangled `__Trait_Type_method`.
-    /// Used for UFCS `x.method(...)` resolution (compile-time; DESIGN §6.2).
-    /// Show overrides are looked up as `("T", "show")` (no separate Show side table).
-    pub trait_methods: HashMap<(String, String), Vec<String>>,
+    pub trait_methods: HashMap<(Sym, Sym), Vec<Sym>>,
     /// Short method name → declaring trait (from `trait` items; poly UFCS constraints).
-    pub method_traits: HashMap<String, String>,
+    pub method_traits: HashMap<Sym, Sym>,
 }
 
 impl Module {
     /// Field names for a product type declared in this module.
-    pub fn product_fields(&self, name: &str) -> Option<Vec<String>> {
+    pub fn product_fields(&self, name: &str) -> Option<Vec<Sym>> {
         self.products
             .iter()
-            .find(|p| p.name == name)
+            .find(|p| p.name.as_str() == name)
             .map(|p| p.fields.clone())
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct ProductDef {
-    pub name: String,
-    pub fields: Vec<String>,
+    pub name: Sym,
+    pub fields: Vec<Sym>,
 }
 
 #[derive(Debug, Clone)]
 pub struct AdtDef {
-    pub name: String,
+    pub name: Sym,
     pub variants: Vec<AdtVariant>,
 }
 
 #[derive(Debug, Clone)]
 pub struct AdtVariant {
-    pub name: String,
+    pub name: Sym,
     pub tag: i64,
     pub arity: usize,
 }
 
 #[derive(Debug, Clone)]
 pub struct CtorInfo {
-    pub adt_name: String,
+    pub adt_name: Sym,
     pub tag: i64,
     pub arity: usize,
 }
@@ -62,7 +60,7 @@ pub enum Item {
     Fun(Fun),
     /// Non-function `val` at module level
     Val {
-        name: String,
+        name: Sym,
         body: Expr,
         /// Optional `val x: Int = …` ascription.
         ty: Option<String>,
@@ -75,8 +73,8 @@ pub enum Item {
 
 #[derive(Debug, Clone)]
 pub struct Fun {
-    pub name: String,
-    pub params: Vec<String>,
+    pub name: Sym,
+    pub params: Vec<Sym>,
     /// Parallel to `params`; empty = all inferred.
     pub param_ann: Vec<Option<String>>,
     /// Optional return ascription from `val f: Ret = { … }` / `val f: Ret (x) = …`.
@@ -87,7 +85,7 @@ pub struct Fun {
     /// True if this is the program entry `main`
     pub is_main: bool,
     /// C ABI symbol when declared via `foreign "C" fn …`
-    pub external: Option<String>,
+    pub external: Option<Sym>,
     /// When `external` is set: (param type names, return type name), e.g. `Int`.
     pub foreign_sig: Option<(Vec<String>, String)>,
     /// `foreign "C" pure fn` → Effect::pure() only when trust is enabled.
@@ -101,12 +99,12 @@ pub enum Expr {
     Int(i64, Span),
     Float(f64, Span),
     Bool(bool, Span),
-    String(String, Span),
+    String(Sym, Span),
     Char(char, Span),
     Unit(Span),
-    Var(String, Span),
+    Var(Sym, Span),
     Let {
-        name: String,
+        name: Sym,
         value: Box<Expr>,
         body: Box<Expr>,
         mutable: bool,
@@ -114,12 +112,12 @@ pub enum Expr {
         ty: Option<String>,
     },
     Assign {
-        name: String,
+        name: Sym,
         value: Box<Expr>,
         span: Span,
     },
     Lambda {
-        params: Vec<String>,
+        params: Vec<Sym>,
         /// Parallel to `params`; empty = all inferred.
         param_ann: Vec<Option<String>>,
         body: Box<Expr>,
@@ -172,7 +170,7 @@ pub enum Expr {
     /// Desugared after typecheck once the base expression's ADT is known.
     With {
         base: Box<Expr>,
-        fields: Vec<(String, Expr)>,
+        fields: Vec<(Sym, Expr)>,
         span: Span,
     },
     Seq {
@@ -187,8 +185,8 @@ pub enum Expr {
     },
     /// Sum-type constructor: heap `[tag][payload…]`.
     AdtNew {
-        adt_name: String,
-        variant: String,
+        adt_name: Sym,
+        variant: Sym,
         tag: i64,
         args: Vec<Expr>,
         span: Span,

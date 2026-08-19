@@ -1,8 +1,9 @@
 //! Fixed-point propagation of escaping locals through aliases and containers.
 
 use lumia_abi::SMALL_CONTAINER_MAX;
-use lumia_core::{Block, Local, MapRepr, Op, Value};
+use lumia_core::{for_each_op_in_block, Block, Local, MapRepr, Op, Value};
 use lumia_hir::Builtin;
+use lumia_syntax::Sym;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// Must match [`crate::repr_select`] and RT `MAP_SMALL_MAX` / `SET_SMALL_MAX`
@@ -30,18 +31,20 @@ fn alloc_forces_heap(value: &Value) -> bool {
 pub(super) fn propagate_block(
     block: &Block,
     escaping: &mut HashSet<Local>,
-    assigns: &HashMap<String, Vec<Local>>,
+    assigns: &HashMap<Sym, Vec<Local>>,
 ) -> bool {
     let mut changed = false;
-    for op in &block.ops {
+    for_each_op_in_block(block, &mut |op| {
         match op {
             Op::Let { local, value, .. } => {
-                changed |= propagate_let(*local, value, escaping, assigns);
+                if propagate_let(*local, value, escaping, assigns) {
+                    changed = true;
+                }
             }
             Op::Assign { name, value } => {
                 // If this named slot already has an escaping write, new RHS escapes.
                 if assigns
-                    .get(name)
+                    .get(name.as_str())
                     .is_some_and(|ls| ls.iter().any(|l| escaping.contains(l)))
                     && escaping.insert(*value)
                 {
@@ -50,7 +53,7 @@ pub(super) fn propagate_block(
             }
             Op::Break | Op::Continue | Op::Return { .. } => {}
         }
-    }
+    });
     changed
 }
 
@@ -58,52 +61,21 @@ fn propagate_let(
     local: Local,
     value: &Value,
     escaping: &mut HashSet<Local>,
-    assigns: &HashMap<String, Vec<Local>>,
+    assigns: &HashMap<Sym, Vec<Local>>,
 ) -> bool {
-    let mut changed = false;
     // Escaping container **or** non-escaping Heap* (size / always-heap): fields
     // must not stay stack Lit* — GC cannot trace stack payloads via heap edges.
     if escaping.contains(&local) || alloc_forces_heap(value) {
-        changed |= mark_inputs_escaping(value, escaping, assigns);
-    }
-    changed |= propagate_value_only(value, escaping, assigns);
-    changed
-}
-
-fn propagate_value_only(
-    value: &Value,
-    escaping: &mut HashSet<Local>,
-    assigns: &HashMap<String, Vec<Local>>,
-) -> bool {
-    match value {
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            let mut c = propagate_block(then_block, escaping, assigns);
-            c |= propagate_block(else_block, escaping, assigns);
-            c
-        }
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => {
-            let mut c = propagate_block(header, escaping, assigns);
-            c |= propagate_block(body, escaping, assigns);
-            c |= propagate_block(latch, escaping, assigns);
-            c
-        }
-        Value::Lambda { body, .. } => propagate_block(body, escaping, assigns),
-        _ => false,
+        mark_inputs_escaping(value, escaping, assigns)
+    } else {
+        false
     }
 }
 
 fn mark_inputs_escaping(
     value: &Value,
     escaping: &mut HashSet<Local>,
-    assigns: &HashMap<String, Vec<Local>>,
+    assigns: &HashMap<Sym, Vec<Local>>,
 ) -> bool {
     let mut changed = false;
     let mut mark = |l: Local| {
@@ -114,7 +86,7 @@ fn mark_inputs_escaping(
     match value {
         Value::Local(l) => mark(*l),
         Value::Name(n) => {
-            if let Some(ls) = assigns.get(n) {
+            if let Some(ls) = assigns.get(n.as_str()) {
                 for l in ls {
                     mark(*l);
                 }

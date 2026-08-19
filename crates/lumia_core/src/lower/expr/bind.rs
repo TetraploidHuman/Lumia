@@ -36,15 +36,15 @@ pub(super) fn lower_bind(
             };
             let saved = ctx.save_bindings();
             if *mutable {
-                ctx.bind_mutable(name.clone(), v);
+                ctx.bind_mutable(name.to_string(), v);
                 ops.push(Op::Assign {
                     name: name.clone(),
                     value: v,
                 });
             } else {
                 // `val` may shadow an outer `var` for the duration of `body`.
-                ctx.mutables.remove(name);
-                ctx.bind_name(name.clone(), v);
+                ctx.mutables.remove(name.as_str());
+                ctx.bind_name(name.to_string(), v);
             }
             let result = lower_expr(ctx, body, ops, pure_region);
             ctx.restore_bindings(saved);
@@ -64,7 +64,7 @@ pub(super) fn lower_bind(
                     l
                 }
             };
-            if ctx.mutables.contains(name) {
+            if ctx.mutables.contains(name.as_str()) {
                 ops.push(Op::Assign {
                     name: name.clone(),
                     value: v,
@@ -72,7 +72,7 @@ pub(super) fn lower_bind(
             } else {
                 // Immutable binding: ty rejects user assigns; do not mutate an
                 // outer `var` shadowed by `val` (and do not mark name mutable).
-                ctx.bind_name(name.clone(), v);
+                ctx.bind_name(name.to_string(), v);
             }
             None
         }
@@ -99,7 +99,7 @@ pub(super) fn lower_bind(
             let mut pls = vec![];
             for p in params {
                 let l = inner.fresh();
-                inner.bind_name(p.clone(), l);
+                inner.bind_name(p.to_string(), l);
                 pls.push(l);
             }
             let (block, _) = lower_expr_block(&mut inner, body);

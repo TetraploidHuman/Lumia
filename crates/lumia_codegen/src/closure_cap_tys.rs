@@ -2,8 +2,10 @@
 //! `ClosureCap` even when the callee body is emitted before its callers.
 
 use lumia_core::{
-    infer_value_ty_ctx, Block, CodegenTypeTables, CoreModule, InferValueCtx, Op, Value,
+    infer_value_ty_ctx, Block, CodegenTypeTables, CoreModule, FunRefAliases, InferValueCtx, Op,
+    Value,
 };
+use lumia_hir::Sym;
 use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
@@ -20,8 +22,8 @@ pub(crate) fn collect_closure_cap_tys(core: &CoreModule) -> HashMap<String, Hash
         let before = out.clone();
         for fun in &core.functions {
             let mut local_tys: HashMap<u32, Type> = HashMap::default();
-            let mut slot_tys: HashMap<String, Type> = HashMap::default();
-            let mut funref_locals: HashMap<u32, String> = HashMap::default();
+            let mut slot_tys: HashMap<Sym, Type> = HashMap::default();
+            let mut funref = FunRefAliases::default();
             let local_int_consts: HashMap<u32, i64> = HashMap::default();
             for (i, ty) in fun.param_tys.iter().enumerate() {
                 if let Some(p) = fun.params.get(i) {
@@ -33,7 +35,7 @@ pub(crate) fn collect_closure_cap_tys(core: &CoreModule) -> HashMap<String, Hash
                 &fun.name,
                 &mut local_tys,
                 &mut slot_tys,
-                &mut funref_locals,
+                &mut funref,
                 fun_ret_tys,
                 fun_param_tys,
                 &fun_param0_identity,
@@ -55,8 +57,8 @@ fn walk_block(
     block: &Block,
     current_fun: &str,
     local_tys: &mut HashMap<u32, Type>,
-    slot_tys: &mut HashMap<String, Type>,
-    funref_locals: &mut HashMap<u32, String>,
+    slot_tys: &mut HashMap<Sym, Type>,
+    funref: &mut FunRefAliases,
     fun_ret_tys: &HashMap<String, Type>,
     fun_param_tys: &HashMap<String, Vec<Type>>,
     fun_param0_identity: &HashSet<String>,
@@ -74,7 +76,7 @@ fn walk_block(
                     current_fun,
                     local_tys,
                     slot_tys,
-                    funref_locals,
+                    funref,
                     fun_ret_tys,
                     fun_param_tys,
                     fun_param0_identity,
@@ -93,7 +95,7 @@ fn walk_block(
                             fun_ret_tys,
                             fun_param_tys,
                             fun_param0_identity,
-                            funref_locals,
+                            funref_locals: &funref.locals,
                             local_int_consts,
                             sum_max_arity,
                             channel_elem_hint,
@@ -128,8 +130,8 @@ fn walk_block(
                     }
                 }
                 local_tys.insert(local.0, ty);
-                crate::funref::note_funref_local(
-                    funref_locals,
+                crate::funref::note_funref_let(
+                    funref,
                     local.0,
                     value,
                     crate::funref::AllocClosureFunref::Track,
@@ -139,6 +141,7 @@ fn walk_block(
                 if let Some(ty) = local_tys.get(&value.0).cloned() {
                     slot_tys.insert(name.clone(), ty);
                 }
+                crate::funref::note_funref_assign(funref, name, *value);
             }
             Op::Break | Op::Continue | Op::Return { .. } => {}
         }
@@ -149,8 +152,8 @@ fn walk_value_nested(
     value: &Value,
     current_fun: &str,
     local_tys: &mut HashMap<u32, Type>,
-    slot_tys: &mut HashMap<String, Type>,
-    funref_locals: &mut HashMap<u32, String>,
+    slot_tys: &mut HashMap<Sym, Type>,
+    funref: &mut FunRefAliases,
     fun_ret_tys: &HashMap<String, Type>,
     fun_param_tys: &HashMap<String, Vec<Type>>,
     fun_param0_identity: &HashSet<String>,
@@ -166,7 +169,7 @@ fn walk_value_nested(
             current_fun,
             local_tys,
             slot_tys,
-            funref_locals,
+            funref,
             fun_ret_tys,
             fun_param_tys,
             fun_param0_identity,

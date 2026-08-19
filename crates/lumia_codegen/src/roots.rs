@@ -6,6 +6,7 @@ use inkwell::types::{BasicTypeEnum, IntType};
 use inkwell::values::{IntValue, PointerValue};
 use inkwell::AddressSpace;
 use lumia_core::{builtin_result_may_heap, Block, HeapMay, Op, Value};
+use lumia_hir::Sym;
 use lumia_ty::Type;
 
 impl<'ctx> Codegen<'ctx> {
@@ -221,7 +222,7 @@ impl<'ctx> Codegen<'ctx> {
         self.frame.root_depth += 1;
         self.frame
             .rooted_slots
-            .insert(name.to_string(), self.frame.root_depth);
+            .insert(Sym::from(name), self.frame.root_depth);
         Ok(())
     }
 
@@ -237,6 +238,46 @@ impl<'ctx> Codegen<'ctx> {
         }
         self.frame.rooted_slots.retain(|_, d| *d <= depth);
         self.frame.ssa_root_stack.retain(|e| e.depth <= depth);
+        Ok(())
+    }
+
+    pub(crate) fn root_pop_one(&mut self) -> Result<()> {
+        debug_assert!(self.frame.root_depth > 0);
+        let pop = self.runtime_fn("lumia_root_pop")?;
+        crate::error::llvm(self.llvm.builder.build_call(pop, &[], ""))?;
+        self.frame.root_depth -= 1;
+        Ok(())
+    }
+
+    pub(crate) fn root_swap_remove(&mut self, index: usize) -> Result<()> {
+        debug_assert!(self.frame.root_depth > 0);
+        debug_assert!(index < self.frame.root_depth as usize);
+        let rm = self.runtime_fn("lumia_root_swap_remove")?;
+        let idx = self.llvm.i64_ty.const_int(index as u64, false);
+        crate::error::llvm(self.llvm.builder.build_call(rm, &[idx.into()], ""))?;
+        self.frame.root_depth -= 1;
+        Ok(())
+    }
+
+    fn ssa_remove_root_entry(&mut self, si: usize, roots_index: usize) {
+        self.frame.ssa_root_stack.remove(si);
+        for e in &mut self.frame.ssa_root_stack[si..] {
+            if e.roots_index > roots_index {
+                e.roots_index -= 1;
+            }
+        }
+    }
+
+    /// Drop one dead/unused SSA root metadata entry and fix surviving indices.
+    pub(crate) fn ssa_pop_tracked_root(&mut self, si: usize) -> Result<()> {
+        let roots_index = self.frame.ssa_root_stack[si].roots_index;
+        let top = self.frame.root_depth as usize - 1;
+        if roots_index == top {
+            self.root_pop_one()?;
+        } else {
+            self.root_swap_remove(roots_index)?;
+        }
+        self.ssa_remove_root_entry(si, roots_index);
         Ok(())
     }
 

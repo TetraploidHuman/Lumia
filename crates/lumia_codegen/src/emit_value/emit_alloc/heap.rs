@@ -473,7 +473,7 @@ impl<'ctx> Codegen<'ctx> {
     /// Unique / COW path for `slot = slot with { … }` (heap products only).
     fn emit_adt_with_inplace(
         &mut self,
-        slot: &str,
+        slot: &lumia_hir::Sym,
         updates: &[(u32, Local)],
     ) -> Result<BasicValueEnum<'ctx>> {
         let loaded = self.load_slot(slot)?;

@@ -4,7 +4,7 @@ use super::Infer;
 use crate::alt::apply_alt_desugars;
 use crate::product_resolve::apply_product_field_rewrites;
 use crate::traits::{apply_join_rewrites, apply_ufcs_rewrites};
-use crate::types::{at, expr_span, Effect, NameVisibility, Type, TypeError, TypedModule};
+use crate::types::{at, expr_span, Effect, NameVisibility, Scheme, Type, TypeError, TypedModule};
 use lumia_hir::{Fun, Item, Module};
 use rustc_hash::FxHashMap as HashMap;
 
@@ -85,7 +85,7 @@ impl Infer {
                 self.fresh()
             };
             pts.push(tv.clone());
-            self.bind(p.clone(), tv);
+            self.bind(p.to_string(), tv);
         }
         let ret_tv = if let Some(ann) = &fun.ret_ann {
             self.resolve_type_ann(ann, expr_span(&fun.body), "in return type ascription")?
@@ -328,29 +328,43 @@ fn infer_module_inner(
         .instances
         .iter()
         .filter(|(tr, _)| tr == "Ord")
-        .map(|(_, ty)| ty.clone())
+        .map(|(_, ty)| ty.to_string())
         .collect();
     inf.traits.num_instances = module
         .instances
         .iter()
         .filter(|(tr, _)| tr == "Num")
-        .map(|(_, ty)| ty.clone())
+        .map(|(_, ty)| ty.to_string())
         .collect();
     inf.traits.trait_methods = module
         .trait_methods
         .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
+        .map(|((tr, ty), ms)| {
+            (
+                (tr.to_string(), ty.to_string()),
+                ms.iter().map(|m| m.to_string()).collect(),
+            )
+        })
         .collect();
-    inf.traits.instances = module.instances.iter().cloned().collect();
+    inf.traits.instances = module
+        .instances
+        .iter()
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .collect();
     inf.traits.method_trait = module
         .method_traits
         .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
     inf.products.products = module
         .products
         .iter()
-        .map(|p| (p.name.clone(), p.fields.clone()))
+        .map(|p| {
+            (
+                p.name.to_string(),
+                p.fields.iter().map(|f| f.to_string()).collect(),
+            )
+        })
         .collect();
     inf.products.sum_field_recursive = HashMap::default();
     inf.products.sum_max_arity = HashMap::default();
@@ -362,19 +376,22 @@ fn infer_module_inner(
         for v in &a.variants {
             let rec = kinds.get(v.name.as_str()).cloned().unwrap_or_default();
             let parametric = rec.iter().filter(|r| !**r).count();
+            inf.products.sum_ctors.insert(
+                v.name.to_string(),
+                (a.name.to_string(), v.arity, param_offset),
+            );
             inf.products
-                .sum_ctors
-                .insert(v.name.clone(), (a.name.clone(), v.arity, param_offset));
-            inf.products.sum_field_recursive.insert(v.name.clone(), rec);
+                .sum_field_recursive
+                .insert(v.name.to_string(), rec);
             param_offset += parametric;
             total_params += parametric;
         }
         inf.products
             .sum_max_arity
-            .insert(a.name.clone(), total_params);
+            .insert(a.name.to_string(), total_params);
     }
-    let mut fun_types = HashMap::default();
-    let mut fun_schemes = HashMap::default();
+    let mut fun_types: HashMap<String, Type> = HashMap::default();
+    let mut fun_schemes: HashMap<String, Scheme> = HashMap::default();
     let mut main_effect = Effect::pure();
 
     // Type top-level bindings in dependency-SCC order so a callee is generalized
@@ -385,7 +402,7 @@ fn infer_module_inner(
         for &idx in &scc {
             if let Item::Fun(f) = &module.items[idx] {
                 let tv = inf.fresh();
-                inf.bind(f.name.clone(), tv);
+                inf.bind(f.name.to_string(), tv);
             }
         }
 
@@ -433,7 +450,7 @@ fn infer_module_inner(
                             continue;
                         }
                     };
-                    if let Some(existing) = inf.lookup(&f.name) {
+                    if let Some(existing) = inf.lookup(f.name.as_str()) {
                         if let Err(e) = inf.unify(existing, ty.clone()) {
                             errors.push(e);
                             if !opts.recovering {
@@ -443,7 +460,7 @@ fn infer_module_inner(
                         }
                     }
                     let ty = inf.prune(ty);
-                    pending_funs.push((f.name.clone(), ty, eff, f.span, f.is_main));
+                    pending_funs.push((f.name.to_string(), ty, eff, f.span, f.is_main));
                 }
                 Item::Val {
                     name,
@@ -505,9 +522,9 @@ fn infer_module_inner(
                     }
                     let ty = inf.prune(ty);
                     let scheme = inf.generalize(ty.clone());
-                    fun_schemes.insert(name.clone(), scheme.clone());
-                    inf.bind_scheme(name.clone(), scheme, false);
-                    inf.decls.insert(name.clone(), *val_span);
+                    fun_schemes.insert(name.to_string(), scheme.clone());
+                    inf.bind_scheme(name.to_string(), scheme, false);
+                    inf.decls.insert(name.to_string(), *val_span);
                     fun_types.insert(
                         format!("__val_{name}"),
                         Type::Fun(vec![], Box::new(ty), Effect::pure()),

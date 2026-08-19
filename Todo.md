@@ -9,7 +9,7 @@
 
 ### 编译速度（主机侧：解析 → 中端 → LLVM → 链）
 
-- [ ] **Token / Ident 实习 + 少 clone**（高）：[`parser/mod.rs`](crates/lumia_syntax/src/parser/mod.rs) `bump` 已改 `mem::replace`；`expect_ident` 已 move；**Checkpoint 已改为按 span 重 lex（不再 clone Token）**。仍欠 `StringInterner` + span-only token。
+- [x] **Token / Ident 实习 + 少 clone**（高）：**Lexer span-only**（`TokenKind::Ident` + `StringPart::{Ident,ExprSrc}`）；**Parser `StringInterner` + AST `Sym`（`Arc<str>`）** 解析期去重 ident **与字面量 `String`**；**HIR 持 `Sym`**（user 名 + 字面量）；Core 边界 `Sym→String`（2026-08-19）。
 - [ ] **前端 arena（syntax/HIR）少拷 Expr 子树**（高）：脱糖与 `list_hof` 大量 `body.clone()`；大模块峰值 RSS 与解析 CPU 同涨。
 - [ ] **import 增量编译单元**（高）：整模块内联重解析/重类型/重 opt/重 codegen。无 ABI 边界则大工程与 LSP 编译墙钟无解。← 与「import 整模块内联」同债。
 - [x] **Memo plan 单次扫模块**（高）：[`memo/plan.rs`](crates/lumia_opt/src/memo/plan.rs) 一次 `max_const_arg_reuse_by_fun` 收集 `fun → const-arg 最大频次`；`slots_cost_ok` 只查表（原每候选全模块扫 ≈O(n²)）。
@@ -18,44 +18,44 @@
 - [ ] **树形 IR → CFG 或统一 visitor**（中）：每 pass 自写嵌套 walker；CFG/`visit` 默认入口降中端编译时间与漏扫。← 与「树形 Core」「visit 未成默认入口」同债。
 - [x] **Release LLVM 二次 `verify` 可闸**（中）：[`codegen/lib.rs`](crates/lumia_codegen/src/lib.rs) emit 后仍 verify；O3 后再验需 `LUMIA_VERIFY`（见 BUILD §8）。
 - [x] **workspace `[profile.release]`**（中）：根 `Cargo.toml` thin LTO + `strip = "debuginfo"`；`lumia_rt` `codegen-units = 1`。
-- [ ] **默认/文档推 `llvm-dynamic` 链编译器**（中）：BUILD §4.2 已写开发用法；仍可考虑把开发默认切到 dynamic。
-- [ ] **Debug/check 可选用 LLVM `-O1`/`fast`**（低中）：`!release` 现为 `OptimizationLevel::None`；需要可跑产物时不必全 O3 中端+LLVM。
-- [ ] **字符串键 → FunId / 实习名**（中）：`Call` / `FunRef` / `AllocClosure` 已统一 [`CallTarget`](crates/lumia_core/src/ir.rs)（`name`+可选 `FunId`）；Escape resolve 三者一并填 id；**mono `FunRefKey` 已带可选 `FunId`（Eq/Hash 仍按名）**（2026-08-18）。仍欠 Ident 实习、少 clone 名。
+- [x] **默认/文档推 `llvm-dynamic` 链编译器**（中）：`lumia` `default = ["codegen", "llvm-dynamic"]`；裸 `cargo build -p lumia` 走共享 libLLVM。Windows / 静态：`--no-default-features --features codegen`（CI/`check.sh` 已分叉）。BUILD §4.2 已同步（2026-08-18）。
+- [x] **Debug/check 可选用 LLVM `-O1`/`fast`**（低中）：[`LlvmOptLevel`](crates/lumia_codegen/src/opt_level.rs) 与 `--llvm-opt={none,1,2,3}`（`fast`=`1`，非 `-Ofast`）。Debug 默认 `default<O1>`，`--release` 默认 O3；中端 Debug vs Release 仍只看 `--release`。`--emit-llvm` 为管线后 IR（2026-08-18）。
+- [x] **字符串键 → FunId / 实习名**（中）：`Call` / `FunRef` / `AllocClosure` 已统一 [`CallTarget`](crates/lumia_core/src/ir.rs)（`name`+可选 `FunId`）；**`optimize` 首尾 + Escape 入口 + [`run_core_abi_pipeline`](crates/lumia_core/src/abi_pipeline.rs) 出口** `resolve_module_call_fun_ids`（2026-08-19）；**mono `FunRefKey` 填 id 统一走 [`FunIndex::stamp_funref_ids`](crates/lumia_core/src/mono/fun_index.rs)**（2026-08-19）；**syntax `Sym` intern 已落地**（2026-08-19）；**Core IR `Op::Assign`/`Value::Name`/`param_names`/`CoreFun::name` 已迁至 `Sym`**（2026-08-19）。**命名槽位表全量 `Sym` 键**（`slot_tys` / `float_slots` / `bool_slots` / `seen_slots` / mono `slot_*_funrefs` / codegen Frame `slots`·`rooted_slots`·`slot_i64_const`；`Sym: Borrow<str>`；escape/inline/memo/specialize_const/nsw_iv 槽与函数名映射跟进，2026-08-19）。仍欠：函数 ABI 旁表（`fun_ret_tys` / `fun_param_tys` / ADT 名）与 `CallTarget.name` 迁 `Sym`；codegen 槽 API 仍收 `&str` 再 `Sym::from`。
 - [ ] **`Type` 树实习 / 封闭 `CoreTy`**（中）：推断克隆开放 `lumia_ty::Type`；中端宜封闭 ABI lattice，前端可 arena+intern ADT 名。← 与「中端仍吃开放 Type」「CoreTy」同债。
 - [ ] **LSP 脏模块缓存**（中）：进程 `Mutex` + Full re-analyze；format 再严格 parse。增量分析降 IDE 编译感延迟。
 
 ### 运行速度（生成码 + RT）
 
 - [x] **Iota 虚拟列表落地**（高）：RT `TYPE_LIST_IOTA`（`lumia_range`）O(1) 建表；get/len/take/slice/par_map 走虚路径；`set` 叠 patch；**相邻 Iota concat 仍虚**；unique reverse/sort/sortBy/concat 吃 spare。Core `ListRepr::Fused` 仍为 HIR 脱糖保留标签（ReprSelect 不发出）；逃逸管道按普通 `map`/`filter` 物化（2026-08-18）。
-- [ ] **HOF 融合超出 fold 汇合**（高）：build/`flatMap`/`any`/`all`/`find`/`len`/`isEmpty`/`contains`/`toSet`/`toMap`/`toList`；**`for-in` 扫 map/filter/take/drop/flatMap**；Let-bound for-in / contains / get/len/take/drop；take|drop×消费端；**`toMap().get/contains` 单键扫配对流（last-wins Option；≥2 次仍建 Hash）**；**`toSet().contains` 短路扫**；Loop 内 get 不脱糖（2026-08-18）。
+- [ ] **HOF 融合超出 fold 汇合**（高）：build/`flatMap`/`any`/`all`/`find`/`len`/`isEmpty`/`contains`/`toSet`/`toMap`/`toList`；**`for-in` 扫 map/filter/take/drop/flatMap**；Let-bound for-in / contains / get/len/take/drop/**isEmpty** / **any** / **all** / **find** / **assoc fold**；take|drop×消费端；**`toMap().get/contains` 单键扫配对流（last-wins Option；≥2 次仍建 Hash）**；**`toSet().contains` 短路扫**；Loop 内 get 不脱糖（2026-08-18）。**Let-bound `isEmpty` / `take.isEmpty` / `drop.isEmpty` deforest**；**`drop(n).isEmpty` skip 后短路**；**Let-bound `ListParFold` 降序后走 for-in 融合**；**Let-bound nested `take.take`/`drop.drop`（min/sum）+ `drop.drop.isEmpty`**；**pipe `drop.drop.isEmpty` / `take.drop.isEmpty` skip 后短路**；**Let-bound `take.drop` 单 builder + `take.drop.isEmpty` 短路**（2026-08-19）。**iota+lone map/filter+len(±gets) 保物化（ListParMap / __flt_acc；非 shared-scan）**（`range_map` golden 回归，2026-08-19）。
 - [x] **扩大 NSW/`nuw` Int 算术**（高）：默认 `llvm.*.with.overflow`；`nsw_iv` 已覆盖 IV/树/字面量 + const-upper 非负 IV `+`/`*` + **开放排他 `i < n` 最坏 `U=MAX-1`（仅 `i+1`）** + **named-upper 的开放 inclusive `i <= n`（嵌套在已有 `iv_upper` 下）** + **safe Div / 小 const Rem 不依赖 IV 界** + **有界非负 IV 对加/乘 `i+j` / `i*j`**（2026-08-18）。仍欠更广一般算术。
 - [ ] **更富内联**（高）：`INLINE_MAX_OPS=64`（Domain SR 已覆盖 `$c_` 克隆后恢复；2026-08-18）；`IndirectCall`+`FunRef` 已可内联。仍欠热度、捕获闭包栈分配 / defunctionalize；仅 Release。
-- [ ] **GC 根跨块 last-use**（高）：同块无 safepoint 跳过 `root_push` 已落地；**纯 `If` 臂 / 夹心纯 `If` / GC-free `Loop`（含体内用途）** 已纳入 last-use 消根；**有 safepoint 时 LIFO last-use 早 `root_pop`**（死后且在栈顶的 SSA/参根立刻弹出；`Lambda` 仍保守，2026-08-18）。仍欠非栈顶死根 / 通用跨块精细消根。
+- [x] **GC 根跨块 last-use**（高）：同块无 safepoint 跳过 `root_push` 已落地；**纯 `If` 臂 / 夹心纯 `If` / GC-free `Loop`（含体内用途）** 已纳入 last-use 消根；**有 safepoint 时 last-use 早 `root_pop`（含 `lumia_root_swap_remove` 非栈顶死根）**（2026-08-19）；**`CrossBlockLastUse`：`If` 单臂 + `Loop` exit + `Lambda`/`AllocClosure` exit 早 pop + checkpoint 刷新**（2026-08-19）。**AdtField（base rooted）→ Call 实参 / 只读 builtin 接收者** skip retain；**ephemeral 用途扫描对齐 If 单臂**（2026-08-19）。
 - [ ] **未逃逸闭包 / 小 ADT 栈化**（高）：escape 已有，物化仍偏堆；DESIGN 栈/SROA 路径未吃满。
-- [ ] **通用 `List[Float]` 向量化**（中高）：`dense_f64_sr` 形状匹配已扩 `var out = xs` / `val out = xs` 别名（scale/clamp/fill 测例已覆盖）；未匹配仍标量 SSA + RT list。
+- [ ] **通用 `List[Float]` 向量化**（中高）：list-out 已统一 `var out = dest`（[`OutSlot`](crates/lumia_opt/src/dense_f64_sr/shape_util.rs)；elem/BLAS/norm 同入口；fill/copy/set 用槽约束，2026-08-18）。`val out = dest` 不能当写目标。未匹配仍标量 SSA + RT list。
 - [x] **Set 走 Overlay 类持久更新**（中高）：Map 同款 `[-1][parent][dn][e…]`；Hash `insert` 叠 delta（≤`SMALL_CONTAINER_MAX`）再 materialize；mark/evacuate/show/eq 已接（2026-08-18）。
 - [x] **Map/Set 唯一 RC 原地更新**（中高）：Map/Set alloc `rc=1` + COW；unique overlay 更新/追加（壳按 `OVERLAY_MAX` 预分配）；unique Hash 在负载允许时原地 upsert；**线性表预留容量后 unique 追加**；Set 已存在元素 identity；**remove 未命中 identity**（含 overlay）；**unique 线性 compact**；**unique Hash tombstone 删除**（`n > SMALL_MAX`）与 **原地 demote 线性**（`n ≤ SMALL_MAX`）；**overlay 仅 delta 键 remove 不 materialize**（父键命中仍 flatten）；**codegen `s = s.insert/remove` 与 `xs = xs.reverse/sort/sortBy` 走 COW consume**（2026-08-18）。
 - [ ] **Map/Set `Small*` / `BuildFused` / 单键短路**（中）：HIR 已对未逃逸 **单次** `pipe.toMap().get/contains`、`pipe.toSet().contains` 做线性扫（2026-08-18）；仍欠运行时 `SmallMap` / 逃逸后补建哈希。
 - [ ] **进程共享 Memo `T_f`**（中）：现 TLS-only；OS worker 间不共享命中。
-- [ ] **领域 SR 迁出 codegen → opt**（中）：batch1+2 whole-fn 已迁；**trial-div odd-step 已迁 Core**（`TrialDivOddPass`，Debug+Release）；剩 floatOrbit IR + `collatzSteps` cttz。**0 参 `$c_` 克隆**可命中；**Release 管道在首次 `SpecializeConst` 前增加 Domain SR**；**`memTrafficChecksum`→`lumia_mem_traffic_checksum`（i64 SIMD）**；**floatOrbit x4 为 `<4 x double>`**（2026-08-18）。
+- [ ] **领域 SR 迁出 codegen → opt**（中）：batch1+2 whole-fn 已迁；**trial-div odd-step 已迁 Core**（`TrialDivOddPass`，Debug+Release）；**`collatzSteps` cttz 已迁 RT + `CollatzStepsPass`（Debug+Release）**（2026-08-19）。**`floatOrbit` 已迁 RT + `FloatOrbitPass`（Debug+Release）+ `DomainSrPass`（Release；删 codegen `<4|8 x double>` IR emit，2026-08-19）**。**0 参 `$c_` 克隆**可命中；**Release 管道在首次 `SpecializeConst` 前增加 Domain SR**；**`memTrafficChecksum`→`lumia_mem_traffic_checksum`（i64 SIMD）**（2026-08-18）。**domain_sr / dense_f64_sr 形状 peep 已统一 [`sr_pattern.rs`](crates/lumia_core/src/sr_pattern.rs)**（pre-loop slot / outer bound / OutSlot / block_calls_any；删 `domain_sr/util.rs`，2026-08-19）。
 - [ ] **List-par 与 GC 再解耦**（中）：调度/根/nursery 边界继续收窄，降并行 HOF 停顿。
-- [ ] **TCO 覆盖面审计**（低中）：`musttail` 已有；查漏更多自递归形状。
+- [ ] **TCO 覆盖面审计**（低中）：`musttail` 已有；**FunRef 别名已统一** [`FunRefAliases`](crates/lumia_core/src/funref_alias.rs)（SSA + `var` 槽；directize / collect / lift / TCO SCC / emit 同协议，2026-08-18）。**SCC 分析已迁 [`lumia_core::tco`](crates/lumia_core/src/tco.rs)**（codegen 薄 re-export；**Float `sumTo` 单测 + pipeline 集成测**，2026-08-19）。**tail callee 解析收口 [`resolve_tco_callee`](crates/lumia_core/src/tco.rs) / [`resolve_tco_tail_call`](crates/lumia_core/src/tco.rs)**（`Call` / FunRef `IndirectCall` / **SSA `Local` 别名链**；codegen `try_emit_tco_let` + **`Op::Return` 早返回** 统一委托 `try_emit_tco_tail`，2026-08-19）。**示例/e2e**：`tco_alias_sum` + **`tco_return_sum`**（显式 `return` 尾递归）。
 
 ### 内存占用（编译器峰值 + 程序运行）
 
 - [ ] **解析/HIR arena + 少 Expr clone**（高）：同上前端 arena；直接压编译器峰值。
-- [ ] **少根槽 / 更短 live root**（高）：跨块消根 + **LIFO last-use 早 pop**（2026-08-18）后 nursery mark 扫描更短、停顿更小。非栈顶死根仍占槽。
+- [x] **少根槽 / 更短 live root**（高）：跨块消根 + **last-use 早 pop + swap_remove 非栈顶死根** + **`CrossBlockLastUse`（If 单臂 / Loop exit / Lambda exit）** + **AdtField rooted-base ephemeral**（2026-08-19）后 nursery mark 扫描更短、停顿更小。
 - [x] **inline/mono 避免整函数体 clone**（中高）：inline + specialize_const + mono FunRef 路径均 `Arc` 模板（2026-08-18）。
 - [ ] **统一持久容器层**（中高）：List/ADT RC-COW vs Map/Set Overlay；**delta 壳**（nbytes/parent/dn/clamp/mark-parent）已抽 [`container_delta.rs`](crates/lumia_rt/src/container_delta.rs)，Map/Set Overlay + List patch + GC 已接（2026-08-18）。仍欠共享 materialize / 全量合流。
 - [ ] **ReprSelect / Lit\* 推更多栈与永生小值**（中）：空 List/Map 永生已有；小未逃逸 ADT/Map/Set 栈路径仍欠。
 - [ ] **Nursery / TLS LAB 按负载可调**（中）：已有分代+LAB；LAB 尺寸与 young limit 可工作负载调参或自适应。
-- [x] **DCE 收紧 `builtin_may_trap_or_effect`**（低中）：`Range`/`RangeInclusive`/`AdtTag` 已移出陷阱集；DCE 已迭代到不动点以清掉死 Builtin 的残留参数（2026-08-17）。
+- [x] **DCE 收紧 `builtin_may_trap_or_effect`**（低中）：`Range`/`RangeInclusive`/`AdtTag` 已移出陷阱集；DCE 已迭代到不动点以清掉死 Builtin 的残留参数（2026-08-17）。**DCE/LICM/CSE 共享 [`builtin_effect.rs`](crates/lumia_opt/src/builtin_effect.rs)**（2026-08-19）。
 - [x] **链时 `--gc-sections` + RT thin LTO**（低中）：link 已 gc-sections；workspace release thin LTO + `lumia_rt` CGU=1 已落地（2026-08-17）。
 - [ ] **`--mm=arc` 仍非近优**（低）：分代 GC 已主路径；ARC 仅为延迟敏感愿景。
 
 ### 建议推进顺序（ROI）
 
-1. **跑得更快**：HOF 续（`.get`/Let 脱糖 + **toMap 单键扫**已落地；Iota 仍 RT）→ 广 NSW → 少 GC 根（纯 If / GC-free Loop 已扩；**LIFO last-use 早 pop**）→ 闭包/小值栈化；Set overlay 已落地。
+1. **跑得更快**：HOF 续（`.get`/Let 脱糖 + **toMap 单键扫**已落地；Iota 仍 RT）→ 广 NSW → 少 GC 根（**swap_remove 非栈顶早 pop** 已落地）→ 闭包/小值栈化；Set overlay 已落地。
 2. **编译更快**：Ident/token 实习 → escape FunId on IR（**CallTarget 已落地**）→ 少 CoreFun clone（inline/specialize_const/mono Arc 已落地）→（中期）增量模块。
 3. **更省内存**：arena + 消根 + 持久容器统一；`[profile.release]` thin LTO 已落地，续推 arena/消根。
 
@@ -147,8 +147,8 @@ SIMD 轮已落地：`floatOrbit` `<4 x double>`、`memTraffic`→RT+i64 SIMD。`
 - [ ] **融合：消费端已扩**：build/`flatMap`/`any`/`all`/`find`/`len`/`isEmpty`/`contains`/`toSet`/`toMap`/`toList`/`.get`/`.take`/`.drop`；**`for-in` 扫 map/filter/take/drop/flatMap**；Let-bound for-in 与 get/len/take/drop/contains；**`toMap().get/contains` / `toSet().contains` 单次查找不建 Hash**；Loop 内 get 不脱糖（2026-08-18）。Core `ListRepr::Fused` 保留；Iota 仍 RT `TYPE_LIST_IOTA`。
 - [ ] **Inline 仅体积阈值且仅 Release**：阈值已提到 64 ops（`$c_` Domain SR 修好后）；`IndirectCall`+`FunRef` 已内联。仍欠热度；捕获闭包恒堆分配（escape → `AllocClosure`）。
 - [ ] **默认 Int `+/-/*` 走 `llvm.*.with.overflow`**：`nsw_iv`（opt）已覆盖 rem/unit/tree-acc、ge1 safe-div、Collatz、非负−非负 Sub、字面量 +/\*、const-upper IV、**开放排他 `i<n`→`i+1`**、**named-upper 开放 `i<=n`**、**无界 safe Div/Rem**（2026-08-18）；codegen 对非负 NSW `Add`/`Mul` 兼标 **`nuw`**。仍欠更广一般算术。
-- [ ] **堆类型 Let 默认 `root_push`**：ephemeral + 同块无 safepoint 的 `let_skip_root_no_safepoint` 已落地；**纯 `If` / GC-free `Loop` 嵌套用途与夹心** 已消根；**有 safepoint 时 LIFO last-use 早 `root_pop`**（2026-08-18）。仍欠非栈顶死根；`Lambda` 与 AdtField→call 仍保守 retain。
-- [ ] **通用 `List[Float]` 向量化靠 `dense_f64_sr`**：未匹配形状仍标量 SSA + RT list；非通用向量管线。
+- [x] **堆类型 Let 默认 `root_push`**：ephemeral + 同块无 safepoint 的 `let_skip_root_no_safepoint` 已落地；**纯 `If` / GC-free `Loop` 嵌套用途与夹心** 已消根；**有 safepoint 时 last-use 早 pop（含 swap_remove 非栈顶）** + **`CrossBlockLastUse` 跨 If/Loop/Lambda 早 pop** + **AdtField→call 且 base 已 rooted 时 skip retain/root**（2026-08-19）。Lambda 体内用途仍保守 retain（skip-root 拒绝）。
+- [ ] **通用 `List[Float]` 向量化靠 `dense_f64_sr`**：out-slot 协议已统一（2026-08-18）；未匹配形状仍标量 SSA + RT list；非通用向量管线。
 - [x] **Memo plan 单次扫模块**：`max_const_arg_reuse_by_fun` 一次收集 reuse（2026-08-17）。
 - [x] **Escape 固定点仍贵**：已改 worklist + 开放 SCC 强制（2026-08-18）；**Call 已挂 `FunId`（`CallTarget`）**（2026-08-18）。
 
@@ -160,18 +160,18 @@ SIMD 轮已落地：`floatOrbit` `<4 x double>`、`memTraffic`→RT+i64 SIMD。`
 
 ### 结构 / 一致性（仍欠）
 - [ ] **Core Float ABI / `local_heap_ty` 仍厚**：`float_abi/` 已按相位拆分，`prefer`/`join` 已迁 `value_ty/join`。仍欠与 `value_ty` / `mono/ret_ty` 整 walker 合流。
-- [ ] **领域 SR 仍侵入 codegen + RT**：batch1+2 whole-fn + trial-div odd-step 已迁 `lumia_opt/domain-sr`；codegen 仍留 steps/floatOrbit IR；仍欠 RT 域核 Cargo feature。
+- [ ] **领域 SR 仍侵入 codegen + RT**：batch1+2 whole-fn + trial-div odd-step + **collatzSteps RT** + **floatOrbit RT** 已迁 `lumia_opt/domain-sr`（2026-08-19）；仍欠 RT 域核 Cargo feature。
 - [x] **`dense_f64_sr` opt 侧门闩**：Cargo feature `dense-f64-sr`（默认开）；`lumia` `codegen` 开启、`codegen-slim` 关闭。仍欠 codegen 领域 SR 分层。
 - [ ] **Core IR 穿透携带 `lumia_hir::Builtin`**：中后端必须依赖 `lumia_hir`+`lumia_syntax`；宜 Core 自有 opcode/元数据。
 - [ ] **自动并行决策跨 HIR→ty 两阶段**：`list_hof` 先升 `ListPar*`，`finalize_auto_parallel` 再 demote；策略散在前端两层。
 - [ ] **跨层错误类型分裂**：`LocatedError` / `TypeError` / `Result<_, String>` / `anyhow`；诊断易丢 span。
 - [ ] **库路径 panic vs Result 不一**：`lumia_ty` alt/PRELUDE_CTOR 已改 `TypeError`/`try_new`；`lumia_core` lower 等对「理论不可达」仍可有 `expect`（非 test）。
-- [ ] **双前端管线分叉**：`compile_source_to_core*`（单测）vs CLI/`check_program`（loader+std）；单测易漏 import/包路径。
-- [ ] **`visit.rs` 未成默认入口**：共享 `for_each_*`/`collect_*` 已扩；memo CSE/fold、**`specialize_const`**、memo plan 的 Loop 臂已走 visit。生产 `*_sr` 匹配与 memo plan 的 If 分叉合并仍手写。
+- [x] **双前端管线分叉**：`lumia_core::compile_typed_to_core` 已收口共享 **typed→Core→ABI/channel** 段；`lumia::compile_program_to_core` / `compile_program_to_optimized` 提供 **loader+std** 真入口；CLI `build` 已复用同一路径（2026-08-19）。保留 `compile_source_to_core*` / `compile_source_to_optimized*` 作为**单缓冲 fixture helper**，但不再冒充完整程序入口。
+- [ ] **`visit.rs` 未成默认入口**：共享 `for_each_*`/`collect_*`/`body_weight` 已扩；**`for_each_let_in_block_ctrl`（If-fork + Loop 顺序 env）**、**`for_each_top_level_op_in_block_mut`**、**`flat_map_top_level_ops_in_block`（take/splice 重组）** 等已加；**memo plan / specialize_const / domain_sr / dce / copy_elim / repr_select / inline / lambda_lift rewrite+captures / mono directize+traits+forwarders+collect / funref_alias / memo licm+cse+fold / dense_f64 gemv / sr_pattern collect_leaf_defs / trial_div_odd / escape seed+propagate** 已迁 visit 入口（2026-08-19）。**`for_each_op_in_block_mut`** 已加（2026-08-19）。**`*_sr` 形状 peep 已收口 [`sr_pattern.rs`](crates/lumia_core/src/sr_pattern.rs)**。**SSA def 查找收口 [`find_local_def`](crates/lumia_core/src/visit.rs) / [`find_top_level_local_def`](crates/lumia_core/src/visit.rs)**（删 `let_value_dfs` / **`let_value` 第四份**；`local_lookup` / `float_abi/helpers` / `heap` / `channel_hint` / `float_caps` / `rewrite` / **`mark_float` 顶层 chase** / **`mono/ret_ty` slot+const 查找** / **`ret_refresh` AllocClosure 别名** 已迁，2026-08-19）。**`mark_float_uses` / `compute_float_locals_from` 已迁 `for_each_top_level_op_in_block`**（`defs` 改 owned `Value` 解除 E0521，2026-08-19）。**block result 别名剥离收口 [`peel_block_result`](crates/lumia_core/src/visit.rs) / [`peel_local_to_value`](crates/lumia_core/src/visit.rs)**（`block_result_is_bottom` / **`block_result_is_bool_lit`** / `block_result_is_unit` 共享，2026-08-19）。**命名 slot `Assign` 遍历收口 [`for_each_named_slot_assign_in_block`](crates/lumia_core/src/visit.rs)**（`float_abi/helpers` slot heap join / `mono/ret_ty` 已迁，2026-08-19）。**`channel_hint_tests` 顶层 op 扫描迁 `for_each_top_level_op_in_block`**（2026-08-19）。codegen loop SR 已清空（floatOrbit → domain_sr，2026-08-19）。
 - [ ] **Windows 工作流仍薄**：`env.ps1` 已对称 PATH/LIB。仍欠 Nix 级发现与完整 `.ps1` 工作流。
 
 ### 续（2026-08-15 第二轮）
-- [ ] **Value→Type 三套 walker 未合流**：`builtin_value_ty` / `join_fixed_ty` / gated via / float 薄包装已大幅共用。仍欠单一 walker（float_abi Float soft vs `ret_ty`；开放 Map / MatchFail bottom 等残留分叉）。
+- [ ] **Value→Type 三套 walker 未合流**：`builtin_value_ty` / `join_fixed_ty` / gated via / float 薄包装已大幅共用。**命名 slot `Assign` fold 收口 [`fold_slot_assign_ty`](crates/lumia_core/src/value_ty/join.rs) + [`JoinAssignKind`](crates/lumia_core/src/value_ty/join.rs)**（`float_abi/helpers` slot heap / `alloc_elems` / `mono/ret_ty` 统一委托；`join_slot_assign_ty` 仍专管 Fixed 格，2026-08-19）。**If/match 臂合流收口 [`join_if_arm_tys`](crates/lumia_core/src/value_ty/join.rs)**（`float_abi/local_heap` + **`mono/ret_ty` 统一**；bottom 检测收口 [`block_result_is_bottom`](crates/lumia_core/src/visit.rs)，2026-08-19）。仍欠单一 walker（float_abi Float soft vs `ret_ty` 开放 Map 等残留分叉）。
 - [x] **`ClosureCap.as_float` 已删除**：旁路 `float_cap_idxs` + [`abi_refresh`](crates/lumia_core/src/lambda_lift/abi_refresh/)；只吃 typed cap 表。
 - [ ] **`mono/specialize` 与 `ret_ty` 未共享 lattice**：相位拆分（collect/rewrite/ret_refresh/forwarders/funref）已落地；`SigShadow` 已消空 `Block` `mem::replace`。仍欠共享 lattice。
 - [x] **`nsw_iv` 分析已迁 opt**：feature `lumia_opt/nsw-iv`；[`NswIvPass`](crates/lumia_opt/src/nsw_iv/mod.rs) 写 `CoreFun` sidecar；codegen 只 `install_nsw_from_fun` + 本地 `leaf_defs`。非负字面量 +/\*、**const-upper IV +/\* 字面量**、emit `nuw` 已加。仍欠更广开放循环 NSW。
@@ -180,7 +180,7 @@ SIMD 轮已落地：`floatOrbit` `<4 x double>`、`memTraffic`→RT+i64 SIMD。`
 - [x] **Builtin→RT 符号已并入 `BuiltinInfo`**：`string_receiver_rt` / `list_receiver_rt`；codegen 薄委托。
 - [x] **HIR `for_each_expr_skipping_lambdas` + `fun_body_has_io`**：visit 跳过 Lambda 体；effects 与 skip-lambda 子树布局对齐（Call/Let/Builtin 仍专用 walk 跟 Fun 效应）。
 - [x] **RT FFI crate 级 `not_unsafe_ptr_arg_deref` allow 已删**：子系统 `unsafe extern "C"` + `deny` + `# Safety`。
-- [ ] **CI/check 仍 `clippy`/`test --exclude lumia`**：`lumia`/`lumia_core` clippy 债未收；slim 冒烟已接 `check.sh`/CI，勿回退。
+- [x] **CI/check 仍 `clippy`/`test --exclude lumia`**：**`lumia --no-default-features --lib` 全 97 测通过（2026-08-19）**；`check.sh` + `ci.yml` 均加 `cargo clippy/test -p lumia --no-default-features --lib` 步骤；`lsp/inlay/collect.rs`、`lsp/semantic/walk.rs`、`vis.rs` 最后遗留 `Sym`↔`String` 类型错误已修。仍欠：`lumia`/`lumia_core` 完整 clippy（含 codegen feature）。
 
 ### 续（2026-08-16 第三轮）
 #### IR / 类型层
@@ -199,12 +199,12 @@ SIMD 轮已落地：`floatOrbit` `<4 x double>`、`memTraffic`→RT+i64 SIMD。`
 - [ ] **`CoreModule` 是分析黑板**：元数据所有权与「何时权威」不清；宜不可变模块 + `AnalysisFacts`。
 
 #### 中端 / codegen / RT
-- [ ] **编译选项仍四散**：CLI 已有 [`CompileOptions`](crates/lumia/src/build.rs)；中端/codegen 仍分 `OptOptions`/`CodegenOptions`；无 codegen feature 时 check 直调 `check_program`。
+- [ ] **编译选项仍四散**：CLI 已有 [`CompileOptions`](crates/lumia/src/build.rs)；**LLVM 档已收口** `LlvmOptLevel`（`CompileOptions` → `CodegenOptions`）；`build`/`run` 共享 `SharedBuildArgs`（2026-08-18）。中端仍分 `OptOptions`；无 codegen feature 时 check 直调 `check_program`。
 - [ ] **C vs Runtime marshalling 表仍双份**：用户函数仍统一 i64；foreign 已由 `ForeignAbi` 驱动。
 - [x] **`emit_fun` 已拆 prologue + block/tco/cow/let_bind**：`mod.rs` ≈203 编排。
-- [x] **领域 SR 批量迁出 opt（batch 2）**：affine2 / gcd / divisor / product-rem / range-affine1 / matmul / mandelbrot whole-fn → `lumia_opt/domain-sr`；codegen 仅留 `collatzSteps` cttz、`floatOrbit` IR。**trial-div odd-step 已迁 Core `TrialDivOddPass`**（2026-08-18）。
+- [x] **领域 SR 批量迁出 opt（batch 2）**：affine2 / gcd / divisor / product-rem / range-affine1 / matmul / mandelbrot whole-fn → `lumia_opt/domain-sr`；**`floatOrbitChecksum` → `lumia_float_orbit_checksum`（删 codegen IR SR，2026-08-19）**。**trial-div odd-step 已迁 Core `TrialDivOddPass`**（2026-08-18）。
 - [ ] **Task ↔ GC ↔ list-par 硬耦合**：已收窄（`forbid_list_parallel`、rooted publish、栈 freelist）。宜继续抽 shade 算法边界。
-- [ ] **`lumia_opt` 第三前端入口**：`compile_source_to_optimized*` 仍跳 loader/std（fixture-only，已有锁测）。
+- [x] **`lumia_opt` 第三前端入口**：`compile_source_to_optimized*` 明确降格为 **fixture-only**；loader/std 真入口改由 `lumia::compile_program_to_optimized` 承担，`build` 已走同一路（2026-08-19）。
 
 #### 工具链 / 文档 / 测试
 - [ ] **import 整模块内联、无编译单元边界**：无增量编译、无库 ABI。
@@ -225,7 +225,7 @@ SIMD 轮已落地：`floatOrbit` `<4 x double>`、`memTraffic`→RT+i64 SIMD。`
 #### 前端 / 类型 / 诊断
 - [ ] **表面糖在 parser 抹平**：fmt/LSP 已回打 `..`/`to`/裸 `it`/尾随闭包。仍欠 typed/HIR 脱糖阶段。
 - [ ] **仅 item 级恢复**：无表达式级恢复；一处坏表达式可吞整项。
-- [ ] **`bump`/`Checkpoint` 仍可分配**：`bump` 已 `mem::replace`；Ident/`String` 字面量与 Checkpoint clone 仍欠 intern/arena。
+- [x] **`bump`/`Checkpoint` 仍可分配**：`bump` 已 `mem::replace`；**Ident token span-only + AST `Sym` intern（ident + 字面量 `String`）**（2026-08-19）；仍欠 arena。
 - [ ] **一切积/和盲插 `Eq`/`Show` instance**：非 langitem/注册表派生。
 
 #### RT / opt / codegen
@@ -233,7 +233,7 @@ SIMD 轮已落地：`floatOrbit` `<4 x double>`、`memTraffic`→RT+i64 SIMD。`
 - [x] **Map/Set 开哈希近克隆已抽** [`hash_probe`](crates/lumia_rt/src/map_set/hash_probe.rs)。
 - [ ] **Memo 存 TLS、堆是进程全局**：OS worker 间不共享命中。
 - [x] **Memo 规划已认 `IndirectCall`/FunRef 自递归**。
-- [ ] **Escape 摘要仍按名解析 Call**：存储已按 `EscapeFunId`；宜 Call/FunRef 携带稳定 FunId。
+- [x] **Escape 摘要仍按名解析 Call**：存储已按 `EscapeFunId`；**Call/FunRef/AllocClosure 携 `CallTarget`+`FunId`**，`lookup_call` 先 id（2026-08-18）。名字回退仅未 resolve 站点。
 - [ ] **目标三元组仍锁宿主**：欠交叉编译与「只出对象不链」。
 - [ ] **workspace Inkwell 钉死 `target-x86`**：非 x86 宿主结构性出局。
 - [ ] **`lumia_rt`/`opt`/`core` 无 Cargo feature**：领域核/SIMD/stress 无法包级裁剪。
@@ -243,7 +243,7 @@ SIMD 轮已落地：`floatOrbit` `<4 x double>`、`memTraffic`→RT+i64 SIMD。`
 #### LSP / 包 / 编辑器 / CLI
 - [ ] **LSP 诊断缺 relatedInformation/tags**：`Warning` severity 已加；仍欠 tags 与更多 soft 种类。
 - [ ] **LSP 能力面缺口大**：无 references/rename/signatureHelp/codeAction/…；`initialize` 忽略 client capabilities。
-- [ ] **`pkg` 仍仅 init/lock/add**：缺 update/remove/outdated。
+- [x] **`pkg` 仍仅 init/lock/add**：[`remove`](crates/lumia/src/pkg/manifest.rs) / [`update`/`outdated`](crates/lumia/src/pkg/lock.rs) 共用 `write_lock_from_manifest` + `LockDiff`（path 依赖：fingerprint/版本漂移；`outdated` 过期非 0；2026-08-18）。
 
 ### 续（2026-08-16 第五轮）
 - [x] **`float_cap_fixup` 已拆为 [`abi_refresh/`](crates/lumia_core/src/lambda_lift/abi_refresh/)**。

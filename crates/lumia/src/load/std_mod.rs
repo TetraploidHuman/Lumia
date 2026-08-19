@@ -1,17 +1,24 @@
 //! `std.*` and optional `extras.*` module loading + `@exports` validation.
 
 use anyhow::{bail, Context, Result};
-use lumia_syntax::{Import, ImportNames};
+use lumia_syntax::{Import, ImportNames, Sym};
 use rustc_hash::FxHashSet as HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub(super) fn is_std(path: &[String]) -> bool {
+fn path_to_dotted(path: &[Sym]) -> String {
+    path.iter()
+        .map(|s| s.as_str())
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+pub(super) fn is_std(path: &[Sym]) -> bool {
     path.first().map(|s| s.as_str() == "std").unwrap_or(false)
 }
 
 /// Optional domain modules under workspace `extras/` (not language std).
-pub(super) fn is_extras(path: &[String]) -> bool {
+pub(super) fn is_extras(path: &[Sym]) -> bool {
     path.first()
         .map(|s| s.as_str() == "extras")
         .unwrap_or(false)
@@ -21,18 +28,18 @@ pub(super) fn is_extras(path: &[String]) -> bool {
 ///
 /// Discovery is filesystem-based: any `*.lm` under the bundled dir is importable
 /// (no compile-time allowlist). Segment `..` / separators are rejected.
-pub(super) fn std_module(path: &[String]) -> Result<PathBuf> {
+pub(super) fn std_module(path: &[Sym]) -> Result<PathBuf> {
     resolve_bundled_rel("std", path, &workspace_std_dir())
 }
 
 /// Resolve `extras.<name>` → relative path under workspace `extras/`.
-pub(super) fn extras_module(path: &[String]) -> Result<PathBuf> {
+pub(super) fn extras_module(path: &[Sym]) -> Result<PathBuf> {
     resolve_bundled_rel("extras", path, &workspace_extras_dir())
 }
 
-fn resolve_bundled_rel(kind: &str, path: &[String], dir: &Path) -> Result<PathBuf> {
+fn resolve_bundled_rel(kind: &str, path: &[Sym], dir: &Path) -> Result<PathBuf> {
     if path.first().map(|s| s.as_str()) != Some(kind) || path.len() < 2 {
-        bail!("not a `{kind}.*` module path `{}`", path.join("."));
+        bail!("not a `{kind}.*` module path `{}`", path_to_dotted(path));
     }
     for seg in &path[1..] {
         if seg.is_empty()
@@ -48,7 +55,7 @@ fn resolve_bundled_rel(kind: &str, path: &[String], dir: &Path) -> Result<PathBu
     let mut rel = PathBuf::new();
     let segs = &path[1..];
     for s in &segs[..segs.len() - 1] {
-        rel.push(s);
+        rel.push(s.as_str());
     }
     rel.push(format!("{}.lm", segs.last().expect("len >= 2")));
     let file = dir.join(&rel);
@@ -56,7 +63,7 @@ fn resolve_bundled_rel(kind: &str, path: &[String], dir: &Path) -> Result<PathBu
         let known = list_known_modules(kind, dir);
         bail!(
             "unknown {kind} module `{}` (known: {known})",
-            path.join(".")
+            path_to_dotted(path)
         );
     }
     Ok(rel)
@@ -114,19 +121,19 @@ fn collect_lm_modules(root: &Path, dir: &Path, out: &mut Vec<String>) {
 }
 
 /// Export sets are read from module `@exports` lines — no hardcoded dual list.
-pub(super) fn bundled_exports(path: &[String]) -> Result<Vec<String>> {
+pub(super) fn bundled_exports(path: &[Sym]) -> Result<Vec<String>> {
     let (dir, rel) = if is_std(path) {
         (workspace_std_dir(), std_module(path)?)
     } else if is_extras(path) {
         (workspace_extras_dir(), extras_module(path)?)
     } else {
-        bail!("not a bundled module `{}`", path.join("."));
+        bail!("not a bundled module `{}`", path_to_dotted(path));
     };
     let file = dir.join(rel);
     let src = fs::read_to_string(&file).with_context(|| {
         format!(
             "read bundled module {} (expected at {})",
-            path.join("."),
+            path_to_dotted(path),
             file.display()
         )
     })?;
@@ -163,7 +170,7 @@ pub(super) fn validate_bundled_import(imp: &Import) -> Result<()> {
                 bail!(
                     "`{}` is not exported by `{}` (exports: {})",
                     n.name,
-                    imp.path.join("."),
+                    path_to_dotted(&imp.path),
                     exports.join(", ")
                 )
             }
@@ -174,7 +181,7 @@ pub(super) fn validate_bundled_import(imp: &Import) -> Result<()> {
                     bail!(
                         "`{}` is not exported by `{}` (exports: {})",
                         n.name,
-                        imp.path.join("."),
+                        path_to_dotted(&imp.path),
                         exports.join(", ")
                     );
                 }
@@ -190,13 +197,13 @@ mod tests {
 
     #[test]
     fn std_io_resolves_by_directory() {
-        let rel = std_module(&["std".into(), "io".into()]).expect("std.io");
+        let rel = std_module(&[Sym::from("std"), Sym::from("io")]).expect("std.io");
         assert_eq!(rel, PathBuf::from("io.lm"));
     }
 
     #[test]
     fn unknown_std_lists_known() {
-        let err = std_module(&["std".into(), "nope".into()]).unwrap_err();
+        let err = std_module(&[Sym::from("std"), Sym::from("nope")]).unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("unknown std module"), "{msg}");
         assert!(msg.contains("std.io"), "{msg}");
@@ -204,7 +211,7 @@ mod tests {
 
     #[test]
     fn rejects_path_traversal_segment() {
-        let err = std_module(&["std".into(), "..".into(), "io".into()]).unwrap_err();
+        let err = std_module(&[Sym::from("std"), Sym::from(".."), Sym::from("io")]).unwrap_err();
         assert!(format!("{err}").contains("invalid"), "{err}");
     }
 }

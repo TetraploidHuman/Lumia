@@ -1,25 +1,28 @@
 //! Domain Loop SR → RT `Call` (Collatz, primes, affine2, number-theory, mandelbrot).
 //!
 //! **Sole owner of whole-function rewrites** for these shapes. Trial-div odd-step
-//! is a Core rewrite ([`TrialDivOddPass`]); codegen keeps LLVM IR emits that
-//! are not whole-fn / Core ports (`collatzSteps` cttz, `floatOrbit`
-//! `<4|8 x double>` vector IR).
-//!
-//! Gated by Cargo feature `domain-sr`.
+//! is a Core rewrite ([`TrialDivOddPass`]); `collatzSteps` → RT runs in Debug+Release
+//! via [`CollatzStepsPass`]; `floatOrbitChecksum` → RT via [`FloatOrbitPass`] (Debug+Release)
+//! and [`DomainSrPass`] (Release, before/after specialize).
 
+mod collatz_steps;
 mod externs;
+mod float_orbit;
 mod match_bench;
 mod match_collatz;
+mod match_float_orbit;
 mod match_primes;
 mod trial_div_odd;
-mod util;
 
+pub(crate) use collatz_steps::CollatzStepsPass;
+pub(crate) use float_orbit::FloatOrbitPass;
 pub(crate) use trial_div_odd::TrialDivOddPass;
 
 use externs::{ensure_external, rewrite_body_to_call, rewrite_body_to_rt};
 use lumia_core::{collect_leaf_defs, CoreModule};
 use match_bench::match_bench_domain_fun;
-use match_collatz::{match_collatz_strided_fun, match_collatz_total_fun};
+use match_collatz::{match_collatz_steps_fun, match_collatz_strided_fun, match_collatz_total_fun};
+use match_float_orbit::match_float_orbit_checksum_fun;
 use match_primes::match_count_primes_fun;
 use rustc_hash::FxHashSet as HashSet;
 
@@ -42,12 +45,16 @@ fn domain_sr_module(module: &mut CoreModule) {
             continue;
         }
         let defs = collect_leaf_defs(&fun.body, true);
-        let hit = if let Some(args) = match_collatz_total_fun(fun, &defs) {
+        let hit = if let Some(args) = match_collatz_steps_fun(fun, &defs) {
+            Some(("lumia_collatz_steps", Some(args)))
+        } else if let Some(args) = match_collatz_total_fun(fun, &defs) {
             Some(("lumia_collatz_total", Some(args)))
         } else if let Some(args) = match_collatz_strided_fun(fun, &defs) {
             Some(("lumia_collatz_strided", Some(args)))
         } else if let Some(args) = match_count_primes_fun(fun, &defs) {
             Some(("lumia_count_primes", Some(args)))
+        } else if let Some(args) = match_float_orbit_checksum_fun(fun, &defs) {
+            Some(("lumia_float_orbit_checksum", Some(args)))
         } else if let Some((sym, args)) = match_bench_domain_fun(fun, &defs) {
             Some((sym, Some(args)))
         } else {

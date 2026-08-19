@@ -5,7 +5,8 @@
 //! Unstamped `ChannelRecv` / `TaskJoin` stay non-heap (scalar-common; channel/task
 //! fixup still refines when HIR did not stamp a ground payload).
 
-use crate::ir::{Block, Local, Op, Value};
+use crate::find_top_level_local_def;
+use crate::ir::{Block, Local, Value};
 use crate::value_ty::{builtin_result_may_heap, value_alloc_may_heap, HeapPolicy};
 use rustc_hash::FxHashSet as HashSet;
 
@@ -28,14 +29,10 @@ fn local_may_heap(block: &Block, id: u32, params: &HashSet<u32>, seen: &mut Hash
     if params.contains(&id) {
         return true;
     }
-    for op in &block.ops {
-        if let Op::Let { local, value, .. } = op {
-            if local.0 == id {
-                return value_may_heap(block, value, params, seen);
-            }
-        }
-    }
-    false
+    let Some(value) = find_top_level_local_def(block, id) else {
+        return false;
+    };
+    value_may_heap(block, value, params, seen)
 }
 
 fn value_may_heap(

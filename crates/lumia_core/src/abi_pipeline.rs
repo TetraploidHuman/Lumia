@@ -10,6 +10,7 @@ use crate::mono::{
     directize_funref_calls, ensure_trait_method_stubs, resolve_trait_method_calls,
     specialize_mono_calls,
 };
+use crate::resolve_module_call_fun_ids;
 
 /// Post-lower Core ABI pipeline: lift → channel hint → directize → traits →
 /// float fixup × mono fixpoint → trait stubs.
@@ -33,4 +34,40 @@ pub fn run_core_abi_pipeline(core: &mut CoreModule) {
     }
     fixup_closure_float_caps(core);
     ensure_trait_method_stubs(core);
+    // Mono/lift may add or rename callees; stamp FunIds before opt/codegen consumers.
+    resolve_module_call_fun_ids(core);
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::pipeline::compile_source_to_core;
+    use crate::visit::for_each_op_value;
+    use crate::Value;
+
+    #[test]
+    fn stamps_call_fun_ids_after_pipeline() {
+        let core = compile_source_to_core(
+            r#"
+module M
+val add = { a, b -> a + b }
+val main = { add(1, 2) }
+"#,
+        )
+        .expect("core");
+        let mut missing = false;
+        for fun in &core.functions {
+            for_each_op_value(&fun.body, &mut |value| match value {
+                Value::Call { fun, .. } | Value::FunRef(fun) | Value::AllocClosure { fun, .. } => {
+                    if fun.id.is_none() {
+                        missing = true;
+                    }
+                }
+                _ => {}
+            });
+        }
+        assert!(
+            !missing,
+            "every CallTarget must have FunId after abi pipeline"
+        );
+    }
 }

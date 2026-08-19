@@ -10,6 +10,7 @@ mod list_hof;
 mod lower;
 mod mangle;
 mod match_check;
+mod sym_util;
 mod visit;
 
 pub use adt_classify::{classify_sum_field_recursive, sum_parametric_arity};
@@ -28,6 +29,7 @@ pub use langitem::{
 };
 pub use list_hof::{desugar_list_fold_sequential, desugar_list_map_sequential};
 pub use lower::{expand_with_known, lower_module, lower_module_recovering, LowerCtx, LowerError};
+pub use lumia_syntax::Sym;
 pub use mangle::mangle_trait_method;
 pub use visit::{
     all_free_vars, fold, for_each_expr, for_each_expr_mut, for_each_expr_skipping_lambdas,

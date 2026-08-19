@@ -105,7 +105,7 @@ pub use cn_kernels::{
     lumia_cn_hebbian, lumia_cn_learn_generative, lumia_cn_nucleus_step, lumia_cn_project_clamp,
     lumia_cn_update_state,
 };
-pub use collatz::{lumia_collatz_strided, lumia_collatz_total};
+pub use collatz::{lumia_collatz_steps, lumia_collatz_strided, lumia_collatz_total};
 pub use dense_f64::{
     lumia_f64_add, lumia_f64_addmm, lumia_f64_atan2, lumia_f64_axpy, lumia_f64_checksum,
     lumia_f64_clamp, lumia_f64_copy, lumia_f64_cos, lumia_f64_exp, lumia_f64_fill, lumia_f64_gemv,
@@ -124,7 +124,7 @@ pub use efe::{
     lumia_efe_action_scores, lumia_efe_apply_embodied_reflexes, lumia_efe_embodied_action_scores,
 };
 pub use eq::{lumia_adt_eq, lumia_eq};
-pub use float_kernels::lumia_mandelbrot_checksum;
+pub use float_kernels::{lumia_float_orbit_checksum, lumia_mandelbrot_checksum};
 pub use hash_ord::{
     lumia_adt_ensure_unique, lumia_adt_ensure_unique_consume, lumia_adt_ensure_unique_consume_mask,
     lumia_adt_ensure_unique_mask, lumia_adt_field, lumia_adt_set_field, lumia_adt_tag, lumia_cmp,

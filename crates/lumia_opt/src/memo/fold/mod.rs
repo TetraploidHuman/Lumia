@@ -1,6 +1,8 @@
 //! Local const-fold + copy-prop (DESIGN §7.5.1-A).
 
-use lumia_core::{for_each_ctrl_nested_block_mut, Block, Local, Op, Value};
+use lumia_core::{
+    for_each_ctrl_nested_block_mut, for_each_top_level_op_in_block_mut, Block, Local, Op, Value,
+};
 use lumia_core::{CoreBinOp as BinOp, CoreUnOp as UnOp};
 use lumia_hir::Builtin;
 use rustc_hash::FxHashMap as HashMap;
@@ -82,7 +84,7 @@ impl FoldEnv {
 
 pub(crate) fn const_fold_block(block: &mut Block) {
     let mut env = FoldEnv::new();
-    for op in &mut block.ops {
+    for_each_top_level_op_in_block_mut(block, &mut |op| {
         match op {
             Op::Let {
                 local,
@@ -189,7 +191,7 @@ pub(crate) fn const_fold_block(block: &mut Block) {
             }
             _ => {}
         }
-    }
+    });
 }
 
 fn fold_bin(op: BinOp, a: i64, b: i64) -> Option<i64> {
@@ -213,69 +215,35 @@ fn fold_bin(op: BinOp, a: i64, b: i64) -> Option<i64> {
 
 pub(crate) fn copy_prop_block(block: &mut Block) {
     let mut rewrite: HashMap<u32, u32> = HashMap::default();
-    for op in &mut block.ops {
-        match op {
-            Op::Let {
-                local,
-                value,
-                pure_region,
-            } if *pure_region => {
-                rewrite_value(value, &rewrite);
-                if let Value::Local(Local(src)) = value {
-                    let root = rewrite.get(src).copied().unwrap_or(*src);
-                    rewrite.insert(local.0, root);
-                    *value = Value::Local(Local(root));
-                }
-                if let Value::If {
-                    then_block,
-                    else_block,
-                    ..
-                } = value
-                {
-                    copy_prop_block(then_block);
-                    copy_prop_block(else_block);
-                }
-                if let Value::Loop {
-                    header,
-                    body,
-                    latch,
-                } = value
-                {
-                    copy_prop_block(header);
-                    copy_prop_block(body);
-                    copy_prop_block(latch);
-                }
+    for_each_top_level_op_in_block_mut(block, &mut |op| match op {
+        Op::Let {
+            local,
+            value,
+            pure_region,
+        } if *pure_region => {
+            rewrite_value(value, &rewrite);
+            if let Value::Local(Local(src)) = value {
+                let root = rewrite.get(src).copied().unwrap_or(*src);
+                rewrite.insert(local.0, root);
+                *value = Value::Local(Local(root));
             }
-            Op::Let { value, .. } => {
-                rewrite_value(value, &rewrite);
-                if let Value::If {
-                    then_block,
-                    else_block,
-                    ..
-                } = value
-                {
-                    copy_prop_block(then_block);
-                    copy_prop_block(else_block);
-                }
-                if let Value::Loop {
-                    header,
-                    body,
-                    latch,
-                } = value
-                {
-                    copy_prop_block(header);
-                    copy_prop_block(body);
-                    copy_prop_block(latch);
-                }
-            }
-            Op::Assign { value, .. } | Op::Return { value } => {
-                if let Some(r) = rewrite.get(&value.0) {
-                    *value = Local(*r);
-                }
-            }
-            Op::Break | Op::Continue => {}
+            for_each_ctrl_nested_block_mut(value, &mut |nested| {
+                copy_prop_block(nested);
+            });
         }
-    }
+        Op::Let { value, .. } => {
+            rewrite_value(value, &rewrite);
+            for_each_ctrl_nested_block_mut(value, &mut |nested| {
+                copy_prop_block(nested);
+            });
+        }
+        Op::Assign { value, .. } | Op::Return { value } => {
+            if let Some(r) = rewrite.get(&value.0) {
+                *value = Local(*r);
+            }
+        }
+        Op::Break | Op::Continue => {}
+    });
     if let Some(r) = block.result {
         if let Some(nr) = rewrite.get(&r.0) {
             block.result = Some(Local(*nr));

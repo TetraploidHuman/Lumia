@@ -3,7 +3,7 @@ use super::blas_shape::{
     fun_has_gemv_t_shape, fun_has_mul_shape, fun_has_sub_shape,
 };
 use super::shape_util::{
-    first_assign_from_local, first_loop, param_float, param_int, param_list_f64, ret_list_f64,
+    first_loop, out_slot_for_list_param, param_float, param_int, param_list_f64, ret_list_f64,
 };
 use lumia_core::{header_lt_bound, same_local, Value};
 use rustc_hash::FxHashMap as HashMap;
@@ -27,7 +27,7 @@ pub(super) fn match_gemv_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Valu
         fun.params[4],
     );
     let body = &fun.body;
-    let out_slot = first_assign_from_local(body, y)?;
+    let out = out_slot_for_list_param(body, y)?;
     let (header, loop_body, latch) = first_loop(body)?;
     if !latch.ops.is_empty() {
         return None;
@@ -36,7 +36,7 @@ pub(super) fn match_gemv_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Valu
     if !same_local(bound, m, defs) {
         return None;
     }
-    if !body_has_gemv_inner(loop_body, defs, &out_slot, &i_slot, a, x, n) {
+    if !body_has_gemv_inner(loop_body, defs, &out, y, &i_slot, a, x, n) {
         return None;
     }
     Some(())
@@ -64,8 +64,8 @@ pub(super) fn match_gemv_t_fun(
         fun.params[4],
     );
     let body = &fun.body;
-    let out_slot = first_assign_from_local(body, y)?;
-    if !fun_has_gemv_t_shape(body, defs, &out_slot, a, x, m, n) {
+    let out = out_slot_for_list_param(body, y)?;
+    if !fun_has_gemv_t_shape(body, defs, &out, y, a, x, m, n) {
         return None;
     }
     Some(())
@@ -92,8 +92,8 @@ pub(super) fn match_addmm_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Val
         fun.params[5],
     );
     let body = &fun.body;
-    let out_slot = first_assign_from_local(body, w)?;
-    if !fun_has_addmm_shape(body, defs, &out_slot, u, v, alpha, m, n) {
+    let out = out_slot_for_list_param(body, w)?;
+    if !fun_has_addmm_shape(body, defs, &out, w, u, v, alpha, m, n) {
         return None;
     }
     Some(())
@@ -110,8 +110,8 @@ pub(super) fn match_axpy_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Valu
     }
     let (y, alpha, x) = (fun.params[0], fun.params[1], fun.params[2]);
     let body = &fun.body;
-    let out_slot = first_assign_from_local(body, y)?;
-    if !fun_has_axpy_shape(body, defs, &out_slot, x, alpha) {
+    let out = out_slot_for_list_param(body, y)?;
+    if !fun_has_axpy_shape(body, defs, &out, y, x, alpha) {
         return None;
     }
     Some(())
@@ -126,10 +126,10 @@ pub(super) fn match_sub_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value
     {
         return None;
     }
-    let (out, a, b) = (fun.params[0], fun.params[1], fun.params[2]);
+    let (dest, a, b) = (fun.params[0], fun.params[1], fun.params[2]);
     let body = &fun.body;
-    let out_slot = first_assign_from_local(body, out)?;
-    if !fun_has_sub_shape(body, defs, &out_slot, a, b) {
+    let out = out_slot_for_list_param(body, dest)?;
+    if !fun_has_sub_shape(body, defs, &out, dest, a, b) {
         return None;
     }
     Some(())
@@ -144,10 +144,10 @@ pub(super) fn match_add_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value
     {
         return None;
     }
-    let (out, a, b) = (fun.params[0], fun.params[1], fun.params[2]);
+    let (dest, a, b) = (fun.params[0], fun.params[1], fun.params[2]);
     let body = &fun.body;
-    let out_slot = first_assign_from_local(body, out)?;
-    if !fun_has_add_shape(body, defs, &out_slot, a, b) {
+    let out = out_slot_for_list_param(body, dest)?;
+    if !fun_has_add_shape(body, defs, &out, dest, a, b) {
         return None;
     }
     Some(())
@@ -162,10 +162,10 @@ pub(super) fn match_mul_fun(fun: &lumia_core::CoreFun, defs: &HashMap<u32, Value
     {
         return None;
     }
-    let (out, a, b) = (fun.params[0], fun.params[1], fun.params[2]);
+    let (dest, a, b) = (fun.params[0], fun.params[1], fun.params[2]);
     let body = &fun.body;
-    let out_slot = first_assign_from_local(body, out)?;
-    if !fun_has_mul_shape(body, defs, &out_slot, a, b) {
+    let out = out_slot_for_list_param(body, dest)?;
+    if !fun_has_mul_shape(body, defs, &out, dest, a, b) {
         return None;
     }
     Some(())

@@ -229,6 +229,24 @@ pub(crate) fn pop_root() {
     });
 }
 
+/// Remove the root at `index` (swap with last, then pop). Order among remaining
+/// roots is irrelevant for GC scanning; used to drop dead SSA roots buried
+/// under still-live ones without waiting for LIFO top.
+#[inline]
+pub(crate) fn swap_remove_root(index: usize) {
+    ensure_mutator_registered();
+    ROOTS.with(|r| {
+        let mut g = lock_roots(r);
+        let last = g.len().wrapping_sub(1);
+        if index < last {
+            g.swap(index, last);
+        }
+        if !g.is_empty() {
+            g.pop();
+        }
+    });
+}
+
 /// Replace the current thread's root stack (fiber park / host swap).
 pub(crate) fn take_local_roots() -> Vec<*mut *mut u8> {
     ensure_mutator_registered();

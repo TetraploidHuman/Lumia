@@ -1,5 +1,5 @@
 // Extracted from production module (Todo: RT 测例半迁).
-use super::{lumia_mandelbrot_checksum, mandelbrot_x4};
+use super::{lumia_float_orbit_checksum, lumia_mandelbrot_checksum, mandelbrot_x4};
 
 fn mandelbrot_scalar(max_it: i64) -> i64 {
     const W: i64 = 200;
@@ -42,7 +42,6 @@ fn mandelbrot_scalar(max_it: i64) -> i64 {
     acc
 }
 
-/// Reference logistic-orbit checksum (matches Lumia `floatOrbitChecksum`).
 fn float_orbit_scalar(n: i64, iters: i64) -> i64 {
     if n <= 0 || iters <= 0 {
         return 0;
@@ -60,7 +59,6 @@ fn float_orbit_scalar(n: i64, iters: i64) -> i64 {
     h
 }
 
-/// 4-wide independent orbits (codegen IR shape when `n % 4 == 0`).
 fn float_orbit_x4(n: i64, iters: i64) -> i64 {
     assert!(n >= 0 && n % 4 == 0);
     if n == 0 || iters <= 0 {
@@ -84,6 +82,31 @@ fn float_orbit_x4(n: i64, iters: i64) -> i64 {
             }
         }
         i += 4;
+    }
+    h
+}
+
+fn float_orbit_x8(n: i64, iters: i64) -> i64 {
+    assert!(n >= 0 && n % 8 == 0);
+    if n == 0 || iters <= 0 {
+        return 0;
+    }
+    let mut h = 0i64;
+    let mut i = 0i64;
+    while i < n {
+        let mut xs = [0.0_f64; 8];
+        for lane in 0..8 {
+            xs[lane] = 0.1 + 1e-8 * ((i + lane as i64) as f64);
+        }
+        for _ in 0..iters {
+            for lane in 0..8 {
+                let x = xs[lane];
+                let x1 = 3.7 * x * (1.0 - x);
+                xs[lane] = x1;
+                h += (x1 > 0.5) as i64;
+            }
+        }
+        i += 8;
     }
     h
 }
@@ -113,7 +136,7 @@ fn mandelbrot_edge_empty() {
 
 #[test]
 fn float_orbit_bench_fingerprint() {
-    assert_eq!(float_orbit_scalar(100_000, 50), 3_920_082);
+    assert_eq!(lumia_float_orbit_checksum(100_000, 50), 3_920_082);
 }
 
 #[test]
@@ -126,6 +149,30 @@ fn float_orbit_x4_matches_scalar_many() {
                 "n={n} iters={iters}"
             );
         }
+    }
+}
+
+#[test]
+fn float_orbit_x8_matches_scalar_many() {
+    for n in [0i64, 8, 16, 80, 800, 8000] {
+        for iters in [0i64, 1, 5, 20, 50] {
+            assert_eq!(
+                float_orbit_x8(n, iters),
+                float_orbit_scalar(n, iters),
+                "n={n} iters={iters}"
+            );
+        }
+    }
+}
+
+#[test]
+fn float_orbit_rt_matches_scalar() {
+    for (n, iters) in [(100_000, 50), (2000, 20), (1001, 15), (4, 0), (0, 50)] {
+        assert_eq!(
+            lumia_float_orbit_checksum(n, iters),
+            float_orbit_scalar(n, iters),
+            "n={n} iters={iters}"
+        );
     }
 }
 

@@ -63,10 +63,10 @@ impl ModuleTables {
         fun_ret_tys.reserve(module.functions.len());
         fun_param_tys.reserve(module.functions.len());
         for f in &module.functions {
-            fun_ret_tys.insert(f.name.clone(), f.ret_ty.clone());
-            fun_param_tys.insert(f.name.clone(), f.param_tys.clone());
+            fun_ret_tys.insert(f.name.to_string(), f.ret_ty.clone());
+            fun_param_tys.insert(f.name.to_string(), f.param_tys.clone());
             if core_fun_is_param0_identity(f) {
-                fun_param0_identity.insert(f.name.clone());
+                fun_param0_identity.insert(f.name.to_string());
             }
         }
         Self {

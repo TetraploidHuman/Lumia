@@ -57,7 +57,7 @@ val main = 0
         ImportNames::Single(n) => {
             assert_eq!(n.name, "add");
             assert_eq!(n.alias.as_deref(), Some("plus"));
-            assert_eq!(m.imports[1].path, vec!["math".to_string()]);
+            assert_eq!(m.imports[1].path, vec![crate::Sym::from("math")]);
         }
         other => panic!("expected single, got {other:?}"),
     }
@@ -390,7 +390,28 @@ val main = {
     // Bare `{ it + 1 }` alone still becomes a 1-arg lambda.
     let lam = parse_expr_str("{ it + 1 }").expect("bare it");
     match lam {
-        Expr::Lambda { params, .. } => assert_eq!(params, vec!["it".to_string()]),
+        Expr::Lambda { params, .. } => assert_eq!(params, vec![crate::Sym::from("it")]),
         other => panic!("expected it-lambda, got {other:?}"),
     }
+}
+
+#[test]
+fn duplicate_string_literals_share_sym() {
+    use std::sync::Arc;
+    let src = "module M\nval x = \"hello\" + \"hello\"\n";
+    let m = parse_module(src).expect("parse");
+    let crate::Item::Val(v) = &m.items[0] else {
+        panic!("expected val");
+    };
+    let Expr::Binary { left, right, .. } = &v.body else {
+        panic!("expected + on two strings, got {:?}", v.body);
+    };
+    let Expr::String(a, _) = left.as_ref() else {
+        panic!("expected string lhs");
+    };
+    let Expr::String(b, _) = right.as_ref() else {
+        panic!("expected string rhs");
+    };
+    assert_eq!(a, b);
+    assert!(Arc::ptr_eq(a.arc(), b.arc()));
 }

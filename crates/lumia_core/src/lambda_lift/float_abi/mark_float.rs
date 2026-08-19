@@ -2,7 +2,11 @@
 
 use crate::ir::{Block, Local, Op, Value};
 use crate::value_ty::{builtin_value_ty, InferValueCtx};
-use crate::{CoreBinOp as BinOp, CoreUnOp as UnOp};
+use crate::{
+    block_result_is_bottom, find_top_level_local_def, for_each_top_level_op_in_block,
+    peel_block_result, CoreBinOp as BinOp, CoreUnOp as UnOp,
+};
+use lumia_syntax::Sym;
 use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
@@ -54,19 +58,16 @@ pub(super) fn mark_float_uses(
     used: &mut HashSet<u32>,
     float_cap_idxs: &HashMap<String, HashSet<u32>>,
 ) {
-    let mut defs: HashMap<u32, &Value> = HashMap::default();
-    for op in &block.ops {
-        match op {
-            Op::Let { local, value, .. } => {
-                defs.insert(local.0, value);
-                mark_float_in_value(value, params, float_locals, used, float_cap_idxs, &defs);
-                if value_is_float_producing(value, float_locals) {
-                    float_locals.insert(local.0);
-                }
+    let mut defs: HashMap<u32, Value> = HashMap::default();
+    for_each_top_level_op_in_block(block, &mut |op| {
+        if let Op::Let { local, value, .. } = op {
+            defs.insert(local.0, value.clone());
+            mark_float_in_value(value, params, float_locals, used, float_cap_idxs, &defs);
+            if value_is_float_producing(value, float_locals) {
+                float_locals.insert(local.0);
             }
-            _ => {}
         }
-    }
+    });
 }
 
 pub(super) fn mark_float_in_value(
@@ -75,7 +76,7 @@ pub(super) fn mark_float_in_value(
     float_locals: &mut HashSet<u32>,
     used: &mut HashSet<u32>,
     float_cap_idxs: &HashMap<String, HashSet<u32>>,
-    defs: &HashMap<u32, &Value>,
+    defs: &HashMap<u32, Value>,
 ) {
     match v {
         Value::Binary { left, right, .. } => {
@@ -144,7 +145,7 @@ pub(super) fn mark_float_through_def(
     id: u32,
     params: &HashSet<u32>,
     used: &mut HashSet<u32>,
-    defs: &HashMap<u32, &Value>,
+    defs: &HashMap<u32, Value>,
     seen: &mut HashSet<u32>,
 ) {
     if !seen.insert(id) {
@@ -177,8 +178,8 @@ pub(crate) fn value_is_float_producing(v: &Value, float_locals: &HashSet<u32>) -
 pub(super) fn value_is_float_producing_with_defs(
     v: &Value,
     float_locals: &HashSet<u32>,
-    defs: &HashMap<u32, &Value>,
-    float_slots: &HashSet<String>,
+    defs: &HashMap<u32, Value>,
+    float_slots: &HashSet<Sym>,
 ) -> bool {
     match v {
         Value::Float(_) => true,
@@ -245,7 +246,7 @@ pub(super) fn binary_produces_float(
 pub(super) fn list_local_elems_float(
     id: u32,
     float_locals: &HashSet<u32>,
-    defs: &HashMap<u32, &Value>,
+    defs: &HashMap<u32, Value>,
 ) -> bool {
     let mut cur = id;
     let mut seen = HashSet::default();
@@ -291,82 +292,80 @@ pub(crate) fn block_result_is_bool(block: &Block) -> bool {
 pub(super) fn compute_bool_locals_from(
     block: &Block,
     parent: &HashSet<u32>,
-    bool_slots: &mut HashSet<String>,
+    bool_slots: &mut HashSet<Sym>,
 ) -> HashSet<u32> {
     let mut bool_locals = parent.clone();
-    for op in &block.ops {
-        match op {
-            Op::Assign { name, value } => {
-                if bool_locals.contains(&value.0) {
-                    bool_slots.insert(name.clone());
-                } else {
-                    bool_slots.remove(name);
-                }
+    for_each_top_level_op_in_block(block, &mut |op| match op {
+        Op::Assign { name, value } => {
+            if bool_locals.contains(&value.0) {
+                bool_slots.insert(name.clone());
+            } else {
+                bool_slots.remove(name);
             }
-            Op::Let { local, value, .. } => {
-                if value_is_bool_producing(value, &bool_locals, bool_slots) {
+        }
+        Op::Let { local, value, .. } => {
+            if value_is_bool_producing(value, &bool_locals, bool_slots) {
+                bool_locals.insert(local.0);
+            }
+            if let Value::Name(n) = value {
+                if bool_slots.contains(n) {
                     bool_locals.insert(local.0);
                 }
-                if let Value::Name(n) = value {
-                    if bool_slots.contains(n) {
-                        bool_locals.insert(local.0);
-                    }
-                }
-                if let Value::Local(Local(src)) = value {
-                    if bool_locals.contains(src) {
-                        bool_locals.insert(local.0);
-                    }
-                }
-                if let Value::If {
-                    cond,
-                    then_block,
-                    else_block,
-                    ..
-                } = value
-                {
-                    let mut then_slots = bool_slots.clone();
-                    let mut else_slots = bool_slots.clone();
-                    let tf = compute_bool_locals_from(then_block, &bool_locals, &mut then_slots);
-                    let ef = compute_bool_locals_from(else_block, &bool_locals, &mut else_slots);
-                    bool_locals.extend(tf.iter().copied());
-                    bool_locals.extend(ef.iter().copied());
-                    let then_b = then_block.result.is_some_and(|Local(r)| tf.contains(&r));
-                    let else_b = else_block.result.is_some_and(|Local(r)| ef.contains(&r));
-                    let then_ok = then_b || block_result_is_bottom(then_block);
-                    let else_ok = else_b || block_result_is_bottom(else_block);
-                    // `and`/`or` desugar to `if c then x else false` / `if c then true else x`.
-                    // The open arm may be `ListGet` of a Bool list (fold) and is not yet
-                    // in `bool_locals` — still a Bool result when `c` is Bool.
-                    let short_circuit = bool_locals.contains(&cond.0)
-                        && (block_result_is_bool_lit(else_block, false)
-                            || block_result_is_bool_lit(then_block, true));
-                    if (then_ok && else_ok && (then_b || else_b)) || short_circuit {
-                        bool_locals.insert(local.0);
-                    }
-                    bool_slots.extend(then_slots);
-                    bool_slots.extend(else_slots);
-                }
-                if let Value::Loop {
-                    header,
-                    body,
-                    latch,
-                } = value
-                {
-                    bool_locals.extend(compute_bool_locals_from(header, &bool_locals, bool_slots));
-                    bool_locals.extend(compute_bool_locals_from(body, &bool_locals, bool_slots));
-                    bool_locals.extend(compute_bool_locals_from(latch, &bool_locals, bool_slots));
+            }
+            if let Value::Local(Local(src)) = value {
+                if bool_locals.contains(src) {
+                    bool_locals.insert(local.0);
                 }
             }
-            _ => {}
+            if let Value::If {
+                cond,
+                then_block,
+                else_block,
+                ..
+            } = value
+            {
+                let mut then_slots = bool_slots.clone();
+                let mut else_slots = bool_slots.clone();
+                let tf = compute_bool_locals_from(then_block, &bool_locals, &mut then_slots);
+                let ef = compute_bool_locals_from(else_block, &bool_locals, &mut else_slots);
+                bool_locals.extend(tf.iter().copied());
+                bool_locals.extend(ef.iter().copied());
+                let then_b = then_block.result.is_some_and(|Local(r)| tf.contains(&r));
+                let else_b = else_block.result.is_some_and(|Local(r)| ef.contains(&r));
+                let then_ok = then_b || crate::block_result_is_bottom(then_block);
+                let else_ok = else_b || crate::block_result_is_bottom(else_block);
+                // `and`/`or` desugar to `if c then x else false` / `if c then true else x`.
+                // The open arm may be `ListGet` of a Bool list (fold) and is not yet
+                // in `bool_locals` — still a Bool result when `c` is Bool.
+                let short_circuit = bool_locals.contains(&cond.0)
+                    && (crate::block_result_is_bool_lit(else_block, false)
+                        || crate::block_result_is_bool_lit(then_block, true));
+                if (then_ok && else_ok && (then_b || else_b)) || short_circuit {
+                    bool_locals.insert(local.0);
+                }
+                bool_slots.extend(then_slots);
+                bool_slots.extend(else_slots);
+            }
+            if let Value::Loop {
+                header,
+                body,
+                latch,
+            } = value
+            {
+                bool_locals.extend(compute_bool_locals_from(header, &bool_locals, bool_slots));
+                bool_locals.extend(compute_bool_locals_from(body, &bool_locals, bool_slots));
+                bool_locals.extend(compute_bool_locals_from(latch, &bool_locals, bool_slots));
+            }
         }
-    }
+        _ => {}
+    });
     bool_locals
 }
 
 pub(super) fn value_is_bool_producing(
     v: &Value,
     bool_locals: &HashSet<u32>,
-    bool_slots: &HashSet<String>,
+    bool_slots: &HashSet<Sym>,
 ) -> bool {
     match v {
         Value::Bool(_) => true,
@@ -394,74 +393,21 @@ pub(super) fn block_result_local_is_float(block: &Block, float_locals: &HashSet<
         .is_some_and(|Local(r)| float_locals.contains(&r))
 }
 
-/// Unreachable / exhaustiveness arm (`MatchFail`) — compatible with any result ty.
-pub(super) fn block_result_is_bottom(block: &Block) -> bool {
-    let Some(Local(r)) = block.result else {
-        return false;
-    };
-    let mut seen = HashSet::default();
-    let mut cur = r;
-    loop {
-        if !seen.insert(cur) {
-            return false;
-        }
-        match super::helpers::let_value(block, cur) {
-            Some(Value::Local(Local(src))) => cur = *src,
-            Some(Value::Builtin {
-                name: lumia_hir::Builtin::MatchFail,
-                ..
-            }) => return true,
-            _ => return false,
-        }
-    }
-}
-
-/// `if` arm that is the Bool literal from `and`/`or` desugaring.
-pub(super) fn block_result_is_bool_lit(block: &Block, expect: bool) -> bool {
-    let Some(Local(r)) = block.result else {
-        return false;
-    };
-    let mut seen = HashSet::default();
-    let mut cur = r;
-    loop {
-        if !seen.insert(cur) {
-            return false;
-        }
-        match super::helpers::let_value(block, cur) {
-            Some(Value::Local(Local(src))) => cur = *src,
-            Some(Value::Bool(b)) => return *b == expect,
-            _ => return false,
-        }
-    }
-}
-
 /// Body result is `Unit` (`send` / scope / println / …).
 pub(crate) fn block_result_is_unit(block: &Block) -> bool {
-    let Some(Local(r)) = block.result else {
-        return false;
-    };
-    let mut seen = HashSet::default();
-    let mut cur = r;
-    loop {
-        if !seen.insert(cur) {
-            return false;
-        }
-        match super::helpers::let_value(block, cur) {
-            Some(Value::Local(Local(src))) => cur = *src,
-            Some(Value::Unit) => return true,
-            Some(Value::Builtin { name, .. }) => {
-                // MatchFail is bottom (see `block_result_is_bottom`), not Unit ABI.
-                if matches!(*name, lumia_hir::Builtin::MatchFail) {
-                    return false;
-                }
-                let empty = HashMap::default();
-                return matches!(
-                    builtin_value_ty(*name, &[], InferValueCtx::local_only(&empty)),
-                    Type::Unit
-                );
+    match peel_block_result(block) {
+        Some(Value::Unit) => true,
+        Some(Value::Builtin { name, args, .. }) => {
+            if matches!(*name, lumia_hir::Builtin::MatchFail) {
+                return false;
             }
-            _ => return false,
+            let empty = HashMap::default();
+            matches!(
+                builtin_value_ty(*name, args, InferValueCtx::local_only(&empty)),
+                Type::Unit
+            )
         }
+        _ => false,
     }
 }
 
@@ -493,7 +439,7 @@ pub(crate) fn block_result_channel_ty(
     let Local(r) = block.result?;
     let root = channel_root_local(block, r, caps, &mut HashSet::default())?;
     // Only when the result *is* / aliases a `ChannelNew` (recv falls through elsewhere).
-    match super::helpers::let_value(block, root) {
+    match find_top_level_local_def(block, root) {
         Some(Value::Builtin {
             name: lumia_hir::Builtin::ChannelNew,
             result_ty,
@@ -542,7 +488,7 @@ pub(super) fn channel_recv_elem_ty(
     if !seen.insert(id) {
         return None;
     }
-    match super::helpers::let_value(block, id)? {
+    match find_top_level_local_def(block, id)? {
         Value::Local(Local(src)) => {
             channel_recv_elem_ty(block, *src, by_local, module_hint, caps, seen)
         }
@@ -570,7 +516,7 @@ pub(super) fn channel_root_local(
     if !seen.insert(id) {
         return None;
     }
-    match super::helpers::let_value(block, id) {
+    match find_top_level_local_def(block, id) {
         Some(Value::Local(Local(src))) => channel_root_local(block, *src, caps, seen),
         Some(Value::Builtin {
             name: lumia_hir::Builtin::ChannelNew,
@@ -591,7 +537,7 @@ pub(super) fn channel_root_local(
 pub(super) fn adt_field_is_float(
     args: &[Local],
     float_locals: &HashSet<u32>,
-    defs: &HashMap<u32, &Value>,
+    defs: &HashMap<u32, Value>,
 ) -> bool {
     if args.len() < 2 {
         return false;
@@ -669,7 +615,7 @@ pub(super) fn adt_local_field_is_float(
     id: u32,
     idx: usize,
     float_locals: &HashSet<u32>,
-    defs: &HashMap<u32, &Value>,
+    defs: &HashMap<u32, Value>,
     seen: &mut HashSet<u32>,
 ) -> bool {
     if !seen.insert(id) {
@@ -736,7 +682,7 @@ pub(super) fn list_get_float_result(
     if !seen.insert(id) {
         return false;
     }
-    match super::helpers::let_value(block, id) {
+    match find_top_level_local_def(block, id) {
         Some(Value::Local(Local(src))) => {
             list_get_float_result(block, *src, float_locals, fun_ret_tys, seen)
         }
@@ -761,7 +707,7 @@ pub(super) fn local_is_name_load(block: &Block, id: u32, seen: &mut HashSet<u32>
     if !seen.insert(id) {
         return false;
     }
-    match super::helpers::let_value(block, id) {
+    match find_top_level_local_def(block, id) {
         Some(Value::Name(_)) => true,
         Some(Value::Local(Local(src))) => local_is_name_load(block, *src, seen),
         _ => false,
@@ -773,18 +719,22 @@ pub(super) fn local_is_name_load(block: &Block, id: u32, seen: &mut HashSet<u32>
 /// Do not DFS / `for_each_let_value(_ctrl)`: nested If/Loop/Lambda lists are not
 /// the filter-acc source shape this peep covers (Todo: visit 默认入口).
 pub(super) fn block_has_float_alloc_list(block: &Block, float_locals: &HashSet<u32>) -> bool {
-    for op in &block.ops {
+    let mut found = false;
+    for_each_top_level_op_in_block(block, &mut |op| {
+        if found {
+            return;
+        }
         if let Op::Let {
             value: Value::AllocList { elems, .. },
             ..
         } = op
         {
             if !elems.is_empty() && elems.iter().all(|e| float_locals.contains(&e.0)) {
-                return true;
+                found = true;
             }
         }
-    }
-    false
+    });
+    found
 }
 
 pub(super) fn list_elem_is_float(
@@ -797,7 +747,7 @@ pub(super) fn list_elem_is_float(
     if !seen.insert(id) {
         return false;
     }
-    match super::helpers::let_value(block, id) {
+    match find_top_level_local_def(block, id) {
         Some(Value::Local(Local(src))) => {
             list_elem_is_float(block, *src, float_locals, fun_ret_tys, seen)
         }
@@ -841,7 +791,7 @@ pub(super) fn list_elem_is_float(
             name: lumia_hir::Builtin::MapValues,
             args,
             ..
-        }) if !args.is_empty() => match super::helpers::let_value(block, args[0].0) {
+        }) if !args.is_empty() => match find_top_level_local_def(block, args[0].0) {
             // Prefer heap typing when available; float map literals still in-block.
             _ => local_map_values_are_float(block, args[0].0, float_locals, seen),
         },
@@ -862,7 +812,7 @@ pub(super) fn local_map_values_are_float(
     if !seen.insert(id) {
         return false;
     }
-    match super::helpers::let_value(block, id) {
+    match find_top_level_local_def(block, id) {
         Some(Value::Local(Local(src))) => {
             local_map_values_are_float(block, *src, float_locals, seen)
         }
@@ -887,7 +837,7 @@ pub(super) fn list_fold_float_result(
     if !seen.insert(id) {
         return false;
     }
-    match super::helpers::let_value(block, id) {
+    match find_top_level_local_def(block, id) {
         Some(Value::Local(Local(src))) => {
             list_fold_float_result(block, *src, float_locals, fun_ret_tys, seen)
         }
@@ -912,7 +862,7 @@ pub(super) fn funref_ret_is_float(
     if !seen.insert(id) {
         return false;
     }
-    match super::helpers::let_value(block, id) {
+    match find_top_level_local_def(block, id) {
         Some(Value::Local(Local(src))) => funref_ret_is_float(block, *src, fun_ret_tys, seen),
         Some(Value::FunRef(name) | Value::AllocClosure { fun: name, .. }) => {
             matches!(fun_ret_tys.get(name.as_str()), Some(Type::Float))
@@ -933,111 +883,98 @@ pub(crate) fn compute_float_locals_in_block(block: &Block) -> HashSet<u32> {
     .0
 }
 
-pub(super) fn compute_float_locals_from<'a>(
-    block: &'a Block,
+pub(super) fn compute_float_locals_from(
+    block: &Block,
     parent_floats: &HashSet<u32>,
-    parent_defs: &HashMap<u32, &'a Value>,
-    float_slots: &mut HashSet<String>,
-) -> (HashSet<u32>, HashMap<u32, &'a Value>) {
+    parent_defs: &HashMap<u32, Value>,
+    float_slots: &mut HashSet<Sym>,
+) -> (HashSet<u32>, HashMap<u32, Value>) {
     let mut float_locals = parent_floats.clone();
     let mut defs = parent_defs.clone();
-    for op in &block.ops {
-        match op {
-            Op::Assign { name, value } => {
-                if float_locals.contains(&value.0) {
-                    float_slots.insert(name.clone());
-                } else {
-                    float_slots.remove(name);
-                }
+    for_each_top_level_op_in_block(block, &mut |op| match op {
+        Op::Assign { name, value } => {
+            if float_locals.contains(&value.0) {
+                float_slots.insert(name.clone());
+            } else {
+                float_slots.remove(name);
             }
-            Op::Let { local, value, .. } => {
-                defs.insert(local.0, value);
-                if value_is_float_producing_with_defs(value, &float_locals, &defs, float_slots)
-                    || matches!(value, Value::Float(_))
-                {
+        }
+        Op::Let { local, value, .. } => {
+            defs.insert(local.0, value.clone());
+            if value_is_float_producing_with_defs(value, &float_locals, &defs, float_slots)
+                || matches!(value, Value::Float(_))
+            {
+                float_locals.insert(local.0);
+            }
+            if let Value::Binary { op, left, right } = value {
+                if binary_produces_float(*op, left, right, &float_locals) {
                     float_locals.insert(local.0);
                 }
-                if let Value::Binary { op, left, right } = value {
-                    if binary_produces_float(*op, left, right, &float_locals) {
-                        float_locals.insert(local.0);
-                    }
-                }
-                if let Value::Local(Local(src)) = value {
-                    if float_locals.contains(src) {
-                        float_locals.insert(local.0);
-                    }
-                }
-                if let Value::Name(n) = value {
-                    if float_slots.contains(n) {
-                        float_locals.insert(local.0);
-                    }
-                }
-                if let Value::Unary { op, operand } = value {
-                    if matches!(op, UnOp::Neg) && float_locals.contains(&operand.0) {
-                        float_locals.insert(local.0);
-                    }
-                }
-                if let Value::Builtin {
-                    name: lumia_hir::Builtin::AdtField,
-                    args,
-                    result_ty,
-                } = value
-                {
-                    let is_f = match result_ty {
-                        Some(Type::Float) => true,
-                        Some(_) => false,
-                        None => adt_field_is_float(args, &float_locals, &defs),
-                    };
-                    if is_f {
-                        float_locals.insert(local.0);
-                    }
-                }
-                if let Value::If {
-                    then_block,
-                    else_block,
-                    ..
-                } = value
-                {
-                    let mut then_slots = float_slots.clone();
-                    let mut else_slots = float_slots.clone();
-                    let (tf, _) = compute_float_locals_from(
-                        then_block,
-                        &float_locals,
-                        &defs,
-                        &mut then_slots,
-                    );
-                    let (ef, _) = compute_float_locals_from(
-                        else_block,
-                        &float_locals,
-                        &defs,
-                        &mut else_slots,
-                    );
-                    float_locals.extend(tf);
-                    float_locals.extend(ef);
-                    // Prefer Float ABI if either arm keeps the slot as Float.
-                    float_slots.extend(then_slots);
-                    float_slots.extend(else_slots);
-                }
-                if let Value::Loop {
-                    header,
-                    body,
-                    latch,
-                } = value
-                {
-                    let (hf, _) =
-                        compute_float_locals_from(header, &float_locals, &defs, float_slots);
-                    float_locals.extend(hf);
-                    let (bf, _) =
-                        compute_float_locals_from(body, &float_locals, &defs, float_slots);
-                    float_locals.extend(bf);
-                    let (lf, _) =
-                        compute_float_locals_from(latch, &float_locals, &defs, float_slots);
-                    float_locals.extend(lf);
+            }
+            if let Value::Local(Local(src)) = value {
+                if float_locals.contains(src) {
+                    float_locals.insert(local.0);
                 }
             }
-            _ => {}
+            if let Value::Name(n) = value {
+                if float_slots.contains(n) {
+                    float_locals.insert(local.0);
+                }
+            }
+            if let Value::Unary { op, operand } = value {
+                if matches!(op, UnOp::Neg) && float_locals.contains(&operand.0) {
+                    float_locals.insert(local.0);
+                }
+            }
+            if let Value::Builtin {
+                name: lumia_hir::Builtin::AdtField,
+                args,
+                result_ty,
+            } = value
+            {
+                let is_f = match result_ty {
+                    Some(Type::Float) => true,
+                    Some(_) => false,
+                    None => adt_field_is_float(args, &float_locals, &defs),
+                };
+                if is_f {
+                    float_locals.insert(local.0);
+                }
+            }
+            if let Value::If {
+                then_block,
+                else_block,
+                ..
+            } = value
+            {
+                let mut then_slots = float_slots.clone();
+                let mut else_slots = float_slots.clone();
+                let (tf, _) =
+                    compute_float_locals_from(then_block, &float_locals, &defs, &mut then_slots);
+                let (ef, _) =
+                    compute_float_locals_from(else_block, &float_locals, &defs, &mut else_slots);
+                float_locals.extend(tf);
+                float_locals.extend(ef);
+                // Prefer Float ABI if either arm keeps the slot as Float.
+                float_slots.extend(then_slots);
+                float_slots.extend(else_slots);
+            }
+            if let Value::Loop {
+                header,
+                body,
+                latch,
+            } = value
+            {
+                let (hf, _) = compute_float_locals_from(header, &float_locals, &defs, float_slots);
+                float_locals.extend(hf);
+                let (bf, _) = compute_float_locals_from(body, &float_locals, &defs, float_slots);
+                float_locals.extend(bf);
+                let (lf, _) = compute_float_locals_from(latch, &float_locals, &defs, float_slots);
+                float_locals.extend(lf);
+            }
         }
-    }
+        _ => {}
+    });
     (float_locals, defs)
 }
 
@@ -1075,7 +1012,10 @@ pub(super) fn collect_fun_cap_tys_inner(
                 param_locals.insert(p.0, ty.clone());
             }
             // Caps already known for this fun (from outer AllocClosure sites).
-            let outer = out.get(&fun.name).cloned().unwrap_or_default();
+            let outer = out
+                .get(fun.name.as_str())
+                .cloned()
+                .unwrap_or_default();
             collect_fun_cap_tys_in_block(
                 &fun.body,
                 &float_locals,
@@ -1117,7 +1057,7 @@ pub(super) fn collect_fun_cap_tys_in_block(
                 ..
             } = op
             {
-                let entry = out.entry(fun.name.clone()).or_default();
+                let entry = out.entry(fun.name.to_string()).or_default();
                 for (i, c) in captures.iter().enumerate() {
                     let t = if float_locals.contains(&c.0) {
                         Some(Type::Float)

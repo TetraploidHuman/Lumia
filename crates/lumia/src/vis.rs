@@ -48,7 +48,7 @@ pub fn import_visible_names(items: &[Item], names: &ImportNames) -> HashSet<Stri
     match names {
         ImportNames::All => pubs,
         ImportNames::Single(n) => {
-            if pubs.contains(&n.name) {
+            if pubs.contains(n.name.as_str()) {
                 [n.local().to_string()].into_iter().collect()
             } else {
                 HashSet::default()
@@ -56,7 +56,7 @@ pub fn import_visible_names(items: &[Item], names: &ImportNames) -> HashSet<Stri
         }
         ImportNames::Selective(ns) => ns
             .iter()
-            .filter(|n| pubs.contains(&n.name))
+            .filter(|n| pubs.contains(n.name.as_str()))
             .map(|n| n.local().to_string())
             .collect(),
     }
@@ -64,10 +64,10 @@ pub fn import_visible_names(items: &[Item], names: &ImportNames) -> HashSet<Stri
 
 fn set_item_name(it: &mut Item, name: &str) {
     match it {
-        Item::Val(v) => v.name = name.to_string(),
-        Item::Type(t) => t.name = name.to_string(),
-        Item::Foreign(f) => f.name = name.to_string(),
-        Item::Trait(t) => t.name = name.to_string(),
+        Item::Val(v) => v.name = name.to_string().into(),
+        Item::Type(t) => t.name = name.to_string().into(),
+        Item::Foreign(f) => f.name = name.to_string().into(),
+        Item::Trait(t) => t.name = name.to_string().into(),
         Item::Instance(_) => {}
     }
 }
@@ -86,7 +86,7 @@ pub fn apply_import_aliases(mut items: Vec<Item>, names: &ImportNames) -> Vec<It
     let renames: Vec<(String, String)> = match names {
         ImportNames::All => return items,
         ImportNames::Single(n) => match &n.alias {
-            Some(a) if a != &n.name => vec![(n.name.clone(), a.clone())],
+            Some(a) if a != &n.name => vec![(n.name.to_string(), a.to_string())],
             _ => return items,
         },
         ImportNames::Selective(ns) => ns
@@ -95,7 +95,7 @@ pub fn apply_import_aliases(mut items: Vec<Item>, names: &ImportNames) -> Vec<It
                 n.alias
                     .as_ref()
                     .filter(|a| *a != &n.name)
-                    .map(|a| (n.name.clone(), a.clone()))
+                    .map(|a| (n.name.to_string(), a.to_string()))
             })
             .collect(),
     };

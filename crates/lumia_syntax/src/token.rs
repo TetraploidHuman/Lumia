@@ -8,19 +8,21 @@ pub struct Token {
 }
 
 /// Fragment of an interpolated string literal.
+///
+/// Ident / `${…}` pieces are **span-only** (byte offsets into the enclosing file).
+/// The parser slices `src[abs_start..abs_end]` — the source buffer is the intern table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StringPart {
     Lit(String),
-    /// `$name` — `abs_start` is the byte offset of `name` in the enclosing file.
+    /// `$name` — `[abs_start, abs_end)` is `name` in the enclosing file.
     Ident {
-        name: String,
         abs_start: u32,
+        abs_end: u32,
     },
-    /// `${…}` raw source (re-parsed as an expression).
-    /// `abs_start` is the byte offset of `src` (content after `${`) in the enclosing file.
+    /// `${…}` — `[abs_start, abs_end)` is the body after `${` (before `}`).
     ExprSrc {
-        src: String,
         abs_start: u32,
+        abs_end: u32,
     },
 }
 
@@ -32,7 +34,8 @@ pub enum TokenKind {
     String(String),
     /// String with `$ident` / `${…}` pieces (lexer already split).
     InterpString(Vec<StringPart>),
-    Ident(String),
+    /// Identifier spelling lives in the source at [`Token::span`] (no heap copy).
+    Ident,
     /// Unicode scalar value
     Char(char),
 
@@ -119,7 +122,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Float(n) => write!(f, "float `{n}`"),
             TokenKind::String(_) => write!(f, "string literal"),
             TokenKind::InterpString(_) => write!(f, "interpolated string"),
-            TokenKind::Ident(s) => write!(f, "identifier `{s}`"),
+            TokenKind::Ident => write!(f, "identifier"),
             TokenKind::Char(c) => write!(f, "character `{c}`"),
             TokenKind::Module => write!(f, "`module`"),
             TokenKind::Import => write!(f, "`import`"),
@@ -262,10 +265,7 @@ mod keyword_truth_tests {
     #[test]
     fn display_is_user_facing() {
         assert_eq!(TokenKind::RBrace.to_string(), "`}`");
-        assert_eq!(
-            TokenKind::Ident("foo".into()).to_string(),
-            "identifier `foo`"
-        );
+        assert_eq!(TokenKind::Ident.to_string(), "identifier");
         assert_eq!(TokenKind::Eof.to_string(), "end of file");
     }
 }

@@ -2,6 +2,13 @@
 //!
 //! # Safety (FFI)
 //! `slot` must point at a live root slot; `obj`/`new_ptr` follow write-barrier contracts.
+//!
+//! # Shadow stack
+//! Roots are a per-mutator LIFO stack ([`crate::mutator::push_root`]). Codegen may
+//! drop dead SSA roots early via [`lumia_root_pop`] or [`lumia_root_swap_remove`]
+//! when a buried root dies while newer roots stay live (order among live roots is
+//! irrelevant for GC scanning). Codegen may also pop at `If` arm / `Loop` exit
+//! when last-use analysis proves the root cannot survive the sibling region.
 
 #![deny(clippy::not_unsafe_ptr_arg_deref)]
 
@@ -210,6 +217,11 @@ pub unsafe extern "C" fn lumia_root_push(slot: *mut *mut u8) {
 #[no_mangle]
 pub extern "C" fn lumia_root_pop() {
     crate::mutator::pop_root();
+}
+
+#[no_mangle]
+pub extern "C" fn lumia_root_swap_remove(index: u64) {
+    crate::mutator::swap_remove_root(index as usize);
 }
 
 ///

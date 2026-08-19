@@ -5,7 +5,9 @@ use anyhow::{Context as AnyhowContext, Result};
 use inkwell::values::{BasicValueEnum, FunctionValue};
 use inkwell::IntPredicate;
 use lumia_core::Local;
+use lumia_hir::Sym;
 use rustc_hash::FxHashMap;
+use crate::state::CrossBlockLastUse;
 
 impl<'ctx> Codegen<'ctx> {
     /// Restore compile-time shadow-stack bookkeeping to the if-entry snapshot.
@@ -16,7 +18,7 @@ impl<'ctx> Codegen<'ctx> {
     fn restore_root_checkpoint(
         &mut self,
         entry_depth: u32,
-        entry_slots: &FxHashMap<String, u32>,
+        entry_slots: &FxHashMap<Sym, u32>,
         entry_ssa: &[crate::state::SsaRoot],
     ) {
         self.frame.root_depth = entry_depth;
@@ -31,9 +33,11 @@ impl<'ctx> Codegen<'ctx> {
         else_block: &lumia_core::Block,
         fv: FunctionValue<'ctx>,
     ) -> Result<BasicValueEnum<'ctx>> {
+        use crate::state::{CrossBlockLastUse, IfArmExclusive};
+
         let entry_depth = self.frame.root_depth;
         let entry_slots = self.frame.rooted_slots.clone();
-        let entry_ssa = self.frame.ssa_root_stack.clone();
+        let mut entry_ssa = self.frame.ssa_root_stack.clone();
         let c = self.as_i64(self.local(*cond)?)?;
         let zero = self.llvm.i64_ty.const_int(0, false);
         let cond_i1 = crate::error::llvm(self.llvm.builder.build_int_compare(
@@ -74,6 +78,10 @@ impl<'ctx> Codegen<'ctx> {
             crate::error::llvm(self.llvm.builder.build_unconditional_branch(merge_bb))?;
         }
         let then_is_float = matches!(then_raw, BasicValueEnum::FloatValue(_));
+        // Then-only roots die here; refresh the checkpoint so `restore` below does
+        // not resurrect them through the else arm (cross-block last-use).
+        self.pop_ssa_roots_cross_block(CrossBlockLastUse::IfArm(IfArmExclusive::Then))?;
+        entry_ssa = self.frame.ssa_root_stack.clone();
         // Sibling arm must not see musttail / nested pops from `then`.
         self.restore_root_checkpoint(entry_depth, &entry_slots, &entry_ssa);
 
@@ -101,6 +109,9 @@ impl<'ctx> Codegen<'ctx> {
         }
         let float_merge = then_is_float || matches!(else_raw, BasicValueEnum::FloatValue(_));
 
+        // Else-only roots die before merge; refresh so merge checkpoint stays slim.
+        self.pop_ssa_roots_cross_block(CrossBlockLastUse::IfArm(IfArmExclusive::Else))?;
+        entry_ssa = self.frame.ssa_root_stack.clone();
         // Merge is only reached from non-tail arms which left roots at entry.
         self.restore_root_checkpoint(entry_depth, &entry_slots, &entry_ssa);
 
@@ -202,6 +213,9 @@ impl<'ctx> Codegen<'ctx> {
 
         self.frame.loop_stack.pop();
         self.llvm.builder.position_at_end(exit_bb);
+        // Loop-confined roots (parent lets used only under this loop) die at exit
+        // (normal header-false and `break` both land here after `root_pop_to`).
+        self.pop_ssa_roots_cross_block(CrossBlockLastUse::Loop)?;
         Ok(self.llvm.i64_ty.const_int(0, false).into())
     }
 }

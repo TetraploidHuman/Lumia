@@ -19,7 +19,7 @@ use rustc_hash::FxHashMap as HashMap;
 pub fn check_effect_boundaries(typed: &TypedModule) -> Result<(), TypeError> {
     for item in &typed.module.items {
         if let Item::Fun(f) = item {
-            let fun_ty = typed.fun_types.get(&f.name);
+            let fun_ty = typed.fun_types.get(f.name.as_str());
             let fun_is_effectful = match fun_ty {
                 Some(Type::Fun(_, _, e)) => e.has_io() || f.is_main,
                 _ => f.is_main,
@@ -58,10 +58,10 @@ fn fun_body_has_io(body: &Expr, fun_types: &HashMap<String, Type>) -> bool {
             }
             Expr::Call { callee, args, .. } => {
                 if let Expr::Var(name, _) = callee.as_ref() {
-                    if locals.get(name).copied().unwrap_or(false) {
+                    if locals.get(name.as_str()).copied().unwrap_or(false) {
                         return true;
                     }
-                    if let Some(Type::Fun(_, _, e)) = fun_types.get(name) {
+                    if let Some(Type::Fun(_, _, e)) = fun_types.get(name.as_str()) {
                         if e.has_io() {
                             return true;
                         }
@@ -79,22 +79,22 @@ fn fun_body_has_io(body: &Expr, fun_types: &HashMap<String, Type>) -> bool {
                     // Explicitly walk the thunk body (skipping_lambdas would miss it).
                     Expr::Lambda { body: lam, .. } => fun_body_has_io(lam, fun_types),
                     Expr::Var(n, _) => {
-                        locals.get(n).copied().unwrap_or(false)
+                        locals.get(n.as_str()).copied().unwrap_or(false)
                             || matches!(
-                                fun_types.get(n),
+                                fun_types.get(n.as_str()),
                                 Some(Type::Fun(_, _, e)) if e.has_io()
                             )
                     }
                     _ => false,
                 };
-                let prev = locals.insert(name.clone(), io);
+                let prev = locals.insert(name.to_string(), io);
                 let r = walk(body, fun_types, locals);
                 match prev {
                     Some(v) => {
-                        locals.insert(name.clone(), v);
+                        locals.insert(name.to_string(), v);
                     }
                     None => {
-                        locals.remove(name);
+                        locals.remove(name.as_str());
                     }
                 }
                 r
@@ -157,14 +157,14 @@ pub(crate) fn check_expr_effects(
         }
         Expr::Call { callee, args, span } => {
             if let Expr::Var(name, _) = callee.as_ref() {
-                let local_io = locals.get(name).copied().unwrap_or(false);
+                let local_io = locals.get(name.as_str()).copied().unwrap_or(false);
                 if local_io && !in_effect_ctx {
                     return Err(at(
                         *span,
                         format!("cannot call effectful `{name}` from pure context"),
                     ));
                 }
-                if let Some(Type::Fun(_, _, e)) = fun_types.get(name) {
+                if let Some(Type::Fun(_, _, e)) = fun_types.get(name.as_str()) {
                     if e.has_io() && !in_effect_ctx {
                         return Err(at(
                             *span,
@@ -186,22 +186,22 @@ pub(crate) fn check_expr_effects(
             let io = match value.as_ref() {
                 Expr::Lambda { body: lam_body, .. } => fun_body_has_io(lam_body, fun_types),
                 Expr::Var(n, _) => {
-                    locals.get(n).copied().unwrap_or(false)
+                    locals.get(n.as_str()).copied().unwrap_or(false)
                         || matches!(
-                            fun_types.get(n),
+                            fun_types.get(n.as_str()),
                             Some(Type::Fun(_, _, e)) if e.has_io()
                         )
                 }
                 _ => false,
             };
-            let prev = locals.insert(name.clone(), io);
+            let prev = locals.insert(name.to_string(), io);
             let r = check_expr_effects(body, in_effect_ctx, fun_types, locals);
             match prev {
                 Some(v) => {
-                    locals.insert(name.clone(), v);
+                    locals.insert(name.to_string(), v);
                 }
                 None => {
-                    locals.remove(name);
+                    locals.remove(name.as_str());
                 }
             }
             r

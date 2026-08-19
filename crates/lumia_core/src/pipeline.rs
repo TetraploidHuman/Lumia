@@ -9,7 +9,7 @@ use crate::lower::lower_hir_with_schemes;
 use crate::run_core_abi_pipeline;
 use lumia_hir::lower_module;
 use lumia_syntax::parse_module;
-use lumia_ty::{typecheck_hir, NameVisibility, TypecheckOptions};
+use lumia_ty::{typecheck_hir, NameVisibility, TypecheckOptions, TypedModule};
 
 /// Options for the test/tooling frontend — same as the shared typecheck path.
 pub type FrontendOptions = TypecheckOptions;
@@ -49,21 +49,27 @@ pub fn compile_source_to_core_with_options(
         "typecheck",
         typecheck_hir(&hir, NameVisibility::default(), opts),
     )?;
-    let mut core = stage(
-        "core",
-        lower_hir_with_schemes(
-            &typed.module,
-            &typed.fun_types,
-            &typed.fun_schemes,
-            &typed.type_at,
-            &[("<input>", src)],
-        ),
-    )?;
-    run_core_abi_pipeline(&mut core);
-    stage(
-        "channel",
-        core.check_channel_elem_conflicts().map(|()| core),
+    compile_typed_to_core(&typed, &[("<input>", src)])
+}
+
+/// Lower an already-typed module to Core, then run the shared Core ABI/channel
+/// pipeline used by both fixture helpers and the CLI loader path.
+pub fn compile_typed_to_core(
+    typed: &TypedModule,
+    assert_files: &[(&str, &str)],
+) -> Result<CoreModule, String> {
+    let mut core = lower_hir_with_schemes(
+        &typed.module,
+        &typed.fun_types,
+        &typed.fun_schemes,
+        &typed.type_at,
+        assert_files,
     )
+    .map_err(|e| format!("core: {e}"))?;
+    run_core_abi_pipeline(&mut core);
+    core.check_channel_elem_conflicts()
+        .map_err(|e| format!("channel: {e}"))?;
+    Ok(core)
 }
 
 /// Read a `.lm` file and compile through to Core.

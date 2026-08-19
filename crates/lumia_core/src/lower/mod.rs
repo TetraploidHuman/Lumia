@@ -37,7 +37,7 @@ pub fn lower_hir_with_schemes(
         .items
         .iter()
         .filter_map(|item| match item {
-            Item::Fun(f) => Some(f.name.clone()),
+            Item::Fun(f) => Some(f.name.to_string()),
             _ => None,
         })
         .collect();
@@ -45,14 +45,14 @@ pub fn lower_hir_with_schemes(
         .items
         .iter()
         .filter_map(|item| match item {
-            Item::Val { name, .. } => Some(name.clone()),
+            Item::Val { name, .. } => Some(name.to_string()),
             _ => None,
         })
         .collect();
     let trait_method_names: HashSet<String> = module
         .trait_methods
         .keys()
-        .map(|(_, m)| m.clone())
+        .map(|(_, m)| m.to_string())
         .collect();
     let io_funs: HashSet<String> = fun_types
         .iter()
@@ -76,14 +76,14 @@ pub fn lower_hir_with_schemes(
                 let mut params = vec![];
                 for p in &f.params {
                     let l = ctx.fresh();
-                    ctx.bind_name(p.clone(), l);
+                    ctx.bind_name(p.to_string(), l);
                     params.push(l);
                 }
                 let (body, _) = lower_expr_block(&mut ctx, &f.body);
                 if let Some(msg) = ctx.ice {
                     return Err(msg);
                 }
-                let (ret_ty, effect, param_tys) = match fun_types.get(&f.name) {
+                let (ret_ty, effect, param_tys) = match fun_types.get(f.name.as_str()) {
                     Some(Type::Fun(ps, r, e)) => ((**r).clone(), *e, ps.clone()),
                     _ => (
                         Type::Unit,
@@ -96,7 +96,7 @@ pub fn lower_hir_with_schemes(
                     ),
                 };
                 let scheme_poly = fun_schemes
-                    .get(&f.name)
+                    .get(f.name.as_str())
                     .map(|s| s.needs_mono())
                     .unwrap_or_else(|| {
                         type_is_open(&Type::Fun(
@@ -115,7 +115,7 @@ pub fn lower_hir_with_schemes(
                     effect,
                     is_main: f.is_main,
                     memo: None,
-                    external: f.external.clone(),
+                    external: f.external.as_ref().map(|s| s.to_string()),
                     // Surface `foreign "C"` is always the platform C ABI, even if
                     // the symbol happens to look like `lumia_*`.
                     foreign_abi: if f.external.is_some() {
@@ -138,7 +138,10 @@ pub fn lower_hir_with_schemes(
                 // Module-level `val` → zero-arg getter `__val_<name>` (pure).
                 // Ret type must match inference so codegen roots heap returns.
                 let getter = format!("__val_{name}");
-                let ret_ty = match fun_types.get(&getter).or_else(|| fun_types.get(name)) {
+                let ret_ty = match fun_types
+                    .get(&getter)
+                    .or_else(|| fun_types.get(name.as_str()))
+                {
                     Some(Type::Fun(_, r, _)) => (**r).clone(),
                     Some(t) => t.clone(),
                     None => Type::Int,
@@ -157,11 +160,11 @@ pub fn lower_hir_with_schemes(
                 }
                 // Getters are nullary; poly lives on the value's Fun scheme / lifted body.
                 let scheme_poly = fun_schemes
-                    .get(name)
+                    .get(name.as_str())
                     .map(|s| s.needs_mono())
                     .unwrap_or(false);
                 functions.push(CoreFun {
-                    name: getter,
+                    name: getter.into(),
                     params: vec![],
                     param_names: vec![],
                     param_tys: vec![],
@@ -187,7 +190,7 @@ pub fn lower_hir_with_schemes(
         .instances
         .iter()
         .filter(|(tr, _)| tr == "Hash")
-        .map(|(_, ty)| ty.clone())
+        .map(|(_, ty)| ty.to_string())
         .collect();
     let mut adt_variant_names: HashMap<String, Vec<String>> = HashMap::default();
     for adt in &module.adts {
@@ -197,13 +200,13 @@ pub fn lower_hir_with_schemes(
             if idx >= names.len() {
                 names.resize(idx + 1, String::new());
             }
-            names[idx] = v.name.clone();
+            names[idx] = v.name.to_string();
         }
-        adt_variant_names.insert(adt.name.clone(), names);
+        adt_variant_names.insert(adt.name.to_string(), names);
     }
     for prod in &module.products {
         // Products are tag-0 payloads; print the type name.
-        adt_variant_names.insert(prod.name.clone(), vec![prod.name.clone()]);
+        adt_variant_names.insert(prod.name.to_string(), vec![prod.name.to_string()]);
     }
     let sum_max_arity: HashMap<String, usize> = module
         .adts
@@ -211,14 +214,24 @@ pub fn lower_hir_with_schemes(
         .map(|a| {
             // Match ty: parametric slots only (recursive spines are `Self`).
             let total = sum_parametric_arity(a);
-            (a.name.clone(), total)
+            (a.name.to_string(), total)
+        })
+        .collect();
+    let trait_methods: HashMap<(String, String), Vec<String>> = module
+        .trait_methods
+        .iter()
+        .map(|((tr, ty), ms)| {
+            (
+                (tr.to_string(), ty.to_string()),
+                ms.iter().map(|m| m.to_string()).collect(),
+            )
         })
         .collect();
     let mut core = CoreModule {
-        name: module.name.clone(),
+        name: module.name.to_string(),
         functions,
         hash_adts,
-        trait_methods: module.trait_methods.clone(),
+        trait_methods,
         adt_variant_names,
         sum_max_arity,
         channel_elem_hint: None,
@@ -274,7 +287,8 @@ fn ensure_prelude_ctor_stubs(core: &mut CoreModule) {
             }
         });
     }
-    let existing: HashSet<String> = core.functions.iter().map(|f| f.name.clone()).collect();
+    let existing: HashSet<String> =
+        core.functions.iter().map(|f| f.name.to_string()).collect();
     for name in needed {
         if existing.contains(name) {
             continue;

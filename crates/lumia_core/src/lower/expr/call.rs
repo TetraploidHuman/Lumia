@@ -177,7 +177,7 @@ pub(super) fn lower_call_like(
             ops.push(Op::Let {
                 local: dest,
                 value: Value::AllocAdt {
-                    adt_name: adt_name.clone(),
+                    adt_name: adt_name.to_string(),
                     tag: *tag,
                     fields,
                     repr: AdtRepr::HeapAdt,

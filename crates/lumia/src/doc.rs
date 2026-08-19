@@ -24,7 +24,7 @@ fn render_module(src: &str, module: &Module, path: &Path) -> String {
             .unwrap_or("module")
             .to_string()
     } else {
-        module.name.clone()
+        module.name.to_string()
     };
     out.push_str(&format!("# Module `{title}`\n\n"));
 
@@ -48,7 +48,12 @@ fn render_module(src: &str, module: &Module, path: &Path) -> String {
     if !module.imports.is_empty() {
         out.push_str("## Imports\n\n");
         for imp in &module.imports {
-            let path_s = imp.path.join(".");
+            let path_s = imp
+                .path
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(".");
             out.push_str(&format!("- `import {path_s}`\n"));
         }
         out.push('\n');
@@ -103,11 +108,20 @@ fn render_module(src: &str, module: &Module, path: &Path) -> String {
                                 out.push_str(&format!("- `{}`\n", v.name));
                             }
                             VariantFields::Positional(names) => {
-                                let holes = names.join(", ");
+                                let holes = names
+                                    .iter()
+                                    .map(|n| n.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
                                 out.push_str(&format!("- `{}`({holes})\n", v.name));
                             }
                             VariantFields::Named(fields) => {
-                                out.push_str(&format!("- `{}`({})\n", v.name, fields.join(", ")));
+                                let holes = fields
+                                    .iter()
+                                    .map(|n| n.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                                out.push_str(&format!("- `{}`({})\n", v.name, holes));
                             }
                         }
                     }
@@ -147,7 +161,7 @@ fn render_module(src: &str, module: &Module, path: &Path) -> String {
                     let names: Vec<&str> = ps.iter().map(|(n, _)| n.as_str()).collect();
                     format!("{}({})", v.name, names.join(", "))
                 }
-                _ => v.name.clone(),
+                _ => v.name.to_string(),
             };
             out.push_str(&format!("### `{sig}`\n\n"));
             let docs = preceding_doc_lines(src, v.span.start.0 as usize);

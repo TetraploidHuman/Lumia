@@ -122,7 +122,7 @@ pub(super) fn constant_funref_ret_map(functions: &[CoreFun]) -> HashMap<String, 
     let mut out = HashMap::default();
     for f in functions {
         if let Some(n) = constant_returned_funref_in_body(&f.body) {
-            out.insert(f.name.clone(), n);
+            out.insert(f.name.to_string(), n);
         }
     }
     out
@@ -133,7 +133,7 @@ pub(super) fn constant_list_funref_ret_map(functions: &[CoreFun]) -> HashMap<Str
     let mut out = HashMap::default();
     for f in functions {
         if let Some(v) = constant_returned_list_funrefs_in_body(&f.body) {
-            out.insert(f.name.clone(), v);
+            out.insert(f.name.to_string(), v);
         }
     }
     out
@@ -144,7 +144,7 @@ pub(super) fn constant_adt_funref_ret_map(functions: &[CoreFun]) -> HashMap<Stri
     let mut out = HashMap::default();
     for f in functions {
         if let Some(v) = constant_returned_adt_funrefs_in_body(&f.body) {
-            out.insert(f.name.clone(), v);
+            out.insert(f.name.to_string(), v);
         }
     }
     out

@@ -4,6 +4,8 @@ use super::manifest::{load_manifest, resolve_dep_path, DepSpec, DepTable, Manife
 use anyhow::{bail, Context, Result};
 use rustc_hash::FxHashSet as HashSet;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -13,7 +15,7 @@ pub struct Lockfile {
     pub package: Vec<LockPackage>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct LockPackage {
     pub name: String,
@@ -34,6 +36,138 @@ pub fn write_lockfile(path: &Path, lock: &Lockfile) -> Result<()> {
 pub fn load_lockfile(path: &Path) -> Result<Lockfile> {
     let src = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     toml::from_str(&src).with_context(|| format!("parse {}", path.display()))
+}
+
+/// `Lumia.lock` next to the given `Lumia.toml`.
+pub fn lockfile_path(manifest_path: &Path) -> PathBuf {
+    manifest_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("Lumia.lock")
+}
+
+/// How a locked package drifted versus a freshly resolved lock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LockPkgChange {
+    pub name: String,
+    pub version: Option<(String, String)>,
+    pub path: Option<(String, String)>,
+    pub content: bool,
+}
+
+/// Added / removed / changed packages between two lockfiles.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LockDiff {
+    pub added: Vec<LockPackage>,
+    pub removed: Vec<LockPackage>,
+    pub changed: Vec<LockPkgChange>,
+}
+
+impl LockDiff {
+    pub fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.removed.is_empty() && self.changed.is_empty()
+    }
+}
+
+impl fmt::Display for LockDiff {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for p in &self.added {
+            writeln!(f, "+ {} {}  {}", p.name, p.version, p.path)?;
+        }
+        for p in &self.removed {
+            writeln!(f, "- {} {}  {}", p.name, p.version, p.path)?;
+        }
+        for c in &self.changed {
+            if let Some((from, to)) = &c.version {
+                writeln!(f, "~ {} version {from} → {to}", c.name)?;
+            }
+            if let Some((from, to)) = &c.path {
+                writeln!(f, "~ {} path {from} → {to}", c.name)?;
+            }
+            if c.content {
+                writeln!(f, "~ {} content fingerprint changed", c.name)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Result of rewriting `Lumia.lock` from the current manifest + vendor trees.
+#[derive(Debug, Clone)]
+pub struct LockWrite {
+    pub path: PathBuf,
+    /// True when the lockfile did not exist before this write.
+    pub created: bool,
+    pub diff: LockDiff,
+}
+
+/// Compare two lockfiles by package name (stable order).
+pub fn diff_lockfiles(old: &Lockfile, new: &Lockfile) -> LockDiff {
+    let old_by: BTreeMap<&str, &LockPackage> =
+        old.package.iter().map(|p| (p.name.as_str(), p)).collect();
+    let new_by: BTreeMap<&str, &LockPackage> =
+        new.package.iter().map(|p| (p.name.as_str(), p)).collect();
+    let mut diff = LockDiff::default();
+    for (name, pkg) in &new_by {
+        if !old_by.contains_key(name) {
+            diff.added.push((*pkg).clone());
+        }
+    }
+    for (name, pkg) in &old_by {
+        if !new_by.contains_key(name) {
+            diff.removed.push((*pkg).clone());
+        }
+    }
+    for (name, exp) in &new_by {
+        let Some(got) = old_by.get(name) else {
+            continue;
+        };
+        let version =
+            (got.version != exp.version).then(|| (got.version.clone(), exp.version.clone()));
+        let path = (got.path != exp.path).then(|| (got.path.clone(), exp.path.clone()));
+        let content = got.content != exp.content;
+        if version.is_some() || path.is_some() || content {
+            diff.changed.push(LockPkgChange {
+                name: (*name).to_string(),
+                version,
+                path,
+                content,
+            });
+        }
+    }
+    diff
+}
+
+/// Resolve the manifest graph and write `Lumia.lock`. Reports a diff when a lock already existed.
+pub fn write_lock_from_manifest(manifest_path: &Path) -> Result<LockWrite> {
+    let m = load_manifest(manifest_path)?;
+    let new = lock_from_manifest(manifest_path, &m)?;
+    let path = lockfile_path(manifest_path);
+    let created = !path.is_file();
+    let diff = if created {
+        LockDiff::default()
+    } else {
+        let old = load_lockfile(&path)?;
+        diff_lockfiles(&old, &new)
+    };
+    write_lockfile(&path, &new)?;
+    Ok(LockWrite {
+        path,
+        created,
+        diff,
+    })
+}
+
+/// Diff the on-disk lock against a freshly resolved graph. Does not write.
+pub fn outdated_lock(manifest_path: &Path) -> Result<(PathBuf, LockDiff)> {
+    let path = lockfile_path(manifest_path);
+    if !path.is_file() {
+        bail!("{} is missing (run `lumia pkg lock`)", path.display());
+    }
+    let m = load_manifest(manifest_path)?;
+    let old = load_lockfile(&path)?;
+    let new = lock_from_manifest(manifest_path, &m)?;
+    Ok((path, diff_lockfiles(&old, &new)))
 }
 
 /// Build a lockfile from the manifest (path pins; versions from dep `Lumia.toml` when present).
@@ -235,7 +369,7 @@ pub fn verify_lockfile(manifest_path: &Path, m: &Manifest, lock: &Lockfile) -> R
     for got in &lock.package {
         if !expected_names.contains(&got.name) {
             bail!(
-                "Lumia.lock has unexpected package `{}` (run `lumia pkg lock`)",
+                "Lumia.lock has unexpected package `{}` (run `lumia pkg update`)",
                 got.name
             );
         }
@@ -243,13 +377,13 @@ pub fn verify_lockfile(manifest_path: &Path, m: &Manifest, lock: &Lockfile) -> R
     for exp in &expected.package {
         let Some(got) = lock.package.iter().find(|p| p.name == exp.name) else {
             bail!(
-                "Lumia.lock missing package `{}` (run `lumia pkg lock`)",
+                "Lumia.lock missing package `{}` (run `lumia pkg update`)",
                 exp.name
             );
         };
         if got.path != exp.path {
             bail!(
-                "Lumia.lock path for `{}` is `{}`, expected `{}` (run `lumia pkg lock`)",
+                "Lumia.lock path for `{}` is `{}`, expected `{}` (run `lumia pkg update`)",
                 exp.name,
                 got.path,
                 exp.path
@@ -257,7 +391,7 @@ pub fn verify_lockfile(manifest_path: &Path, m: &Manifest, lock: &Lockfile) -> R
         }
         if got.version != exp.version {
             bail!(
-                "Lumia.lock version for `{}` is `{}`, expected `{}` (run `lumia pkg lock`)",
+                "Lumia.lock version for `{}` is `{}`, expected `{}` (run `lumia pkg update`)",
                 exp.name,
                 got.version,
                 exp.version
@@ -266,7 +400,7 @@ pub fn verify_lockfile(manifest_path: &Path, m: &Manifest, lock: &Lockfile) -> R
         if got.content != exp.content {
             bail!(
                 "Lumia.lock content fingerprint for `{}` is `{}`, expected `{}` \
-                 (dependency sources changed; run `lumia pkg lock`)",
+                 (dependency sources changed; run `lumia pkg update`)",
                 exp.name,
                 got.content,
                 exp.content

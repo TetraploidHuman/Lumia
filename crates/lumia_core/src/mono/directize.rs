@@ -1,8 +1,9 @@
 //! FunRef / IndirectCall → direct `Call` (spawn thunks, nested If/Loop).
 
-use crate::ir::{Block, CoreModule, Local, Op, Value};
-use crate::visit::collect_closure_cap_funrefs;
+use crate::ir::{Block, CoreModule, Op, Value};
+use crate::visit::{collect_closure_cap_funrefs, for_each_top_level_op_in_block_mut};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet};
+use lumia_hir::Sym;
 
 pub(crate) fn directize_funref_calls(module: &mut CoreModule) {
     // AllocClosure capture index → FunRef name, so spawn thunks that capture
@@ -18,7 +19,10 @@ pub(crate) fn directize_funref_calls(module: &mut CoreModule) {
     let empty_funrefs = HashMap::default();
     let empty_slots = HashMap::default();
     for fun in &mut module.functions {
-        let caps = cap_funs.get(&fun.name).cloned().unwrap_or_default();
+        let caps = cap_funs
+            .get(fun.name.as_str())
+            .cloned()
+            .unwrap_or_default();
         let caps: HashMap<u32, String> = caps
             .into_iter()
             .filter(|(_, name)| !with_env.contains(name))
@@ -49,58 +53,30 @@ pub(crate) fn directize_block(block: &mut Block, parent_funrefs: &HashMap<u32, S
 fn directize_block_with_slots(
     block: &mut Block,
     parent_funrefs: &HashMap<u32, String>,
-    parent_slot_funrefs: &HashMap<String, String>,
+    parent_slot_funrefs: &HashMap<Sym, String>,
     cap_funs: &HashMap<u32, String>,
 ) {
     // Inherit FunRef bindings from the enclosing block so `val f = g; if … { f(x) }`
     // inside nested If/Loop still becomes a direct `Call`.
-    let mut funref_of = parent_funrefs.clone();
-    let mut slot_funrefs = parent_slot_funrefs.clone();
-    for op in &mut block.ops {
-        match op {
-            Op::Let { local, value, .. } => {
-                directize_value(value, &funref_of);
-                walk_nested_blocks_directize(value, &funref_of, &slot_funrefs, cap_funs);
-                if let Value::FunRef(name) = value {
-                    funref_of.insert(local.0, name.name.clone());
-                } else if let Value::Local(Local(src)) = value {
-                    if let Some(n) = funref_of.get(src).cloned() {
-                        funref_of.insert(local.0, n);
-                    } else {
-                        funref_of.remove(&local.0);
-                    }
-                } else if let Value::Name(n) = value {
-                    if let Some(fr) = slot_funrefs.get(n).cloned() {
-                        funref_of.insert(local.0, fr);
-                    } else {
-                        funref_of.remove(&local.0);
-                    }
-                } else if let Value::ClosureCap { index, .. } = value {
-                    if let Some(n) = cap_funs.get(index).cloned() {
-                        funref_of.insert(local.0, n);
-                    } else {
-                        funref_of.remove(&local.0);
-                    }
-                } else {
-                    funref_of.remove(&local.0);
-                }
-            }
-            Op::Assign { name, value } => {
-                if let Some(fr) = funref_of.get(&value.0).cloned() {
-                    slot_funrefs.insert(name.clone(), fr);
-                } else {
-                    slot_funrefs.remove(name);
-                }
-            }
-            Op::Break | Op::Continue | Op::Return { .. } => {}
+    let mut aliases = crate::FunRefAliases {
+        locals: parent_funrefs.clone(),
+        slots: parent_slot_funrefs.clone(),
+    };
+    for_each_top_level_op_in_block_mut(block, &mut |op| match op {
+        Op::Let { local, value, .. } => {
+            directize_value(value, &aliases.locals);
+            walk_nested_blocks_directize(value, &aliases.locals, &aliases.slots, cap_funs);
+            aliases.note_let(local.0, value, crate::FunRefAlloc::Ignore, Some(cap_funs));
         }
-    }
+        Op::Assign { name, value } => aliases.note_assign(name.clone(), *value),
+        Op::Break | Op::Continue | Op::Return { .. } => {}
+    });
 }
 
 fn walk_nested_blocks_directize(
     value: &mut Value,
     funref_of: &HashMap<u32, String>,
-    slot_funrefs: &HashMap<String, String>,
+    slot_funrefs: &HashMap<Sym, String>,
     cap_funs: &HashMap<u32, String>,
 ) {
     match value {

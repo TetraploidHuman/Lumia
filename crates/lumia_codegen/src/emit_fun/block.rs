@@ -57,6 +57,7 @@ impl<'ctx> Codegen<'ctx> {
                         || self.let_is_ephemeral_rooted_recv(block, idx, *local, value)
                         || self.let_is_ephemeral_call_arg(block, idx, *local, value)
                         || self.let_is_ephemeral_adt_field_base(block, idx, *local, value)
+                        || self.let_is_ephemeral_adt_field_call_arg(block, idx, *local, value)
                         || self.let_is_unused_inplace_with_field(block, idx, *local, value)
                     {
                         // Skip retain+root: source is already live (mut slot / prior let).
@@ -65,7 +66,7 @@ impl<'ctx> Codegen<'ctx> {
                         self.frame.locals.insert(local.0, v);
                         self.frame.local_tys.insert(local.0, ty);
                         self.note_int_const(local.0, value);
-                        self.funs.funref_locals.remove(&local.0);
+                        self.funs.funref.locals.remove(&local.0);
                     } else if self.let_skip_root_no_safepoint(block, idx, *local, value) {
                         self.bind_let_skip_root(*local, value, v)?;
                     } else {
@@ -74,6 +75,12 @@ impl<'ctx> Codegen<'ctx> {
                         if self.frame.root_depth > d0 {
                             self.note_ssa_root(block, idx + 1, *local);
                         }
+                    }
+                    if matches!(
+                        value,
+                        lumia_core::Value::Lambda { .. } | lumia_core::Value::AllocClosure { .. }
+                    ) {
+                        self.pop_ssa_roots_cross_block(crate::state::CrossBlockLastUse::Lambda)?;
                     }
                 }
                 Op::Assign { name, value } => {
@@ -97,6 +104,7 @@ impl<'ctx> Codegen<'ctx> {
                         self.frame.slot_tys.insert(name.clone(), ty);
                         v
                     };
+                    crate::funref::note_funref_assign(&mut self.funs.funref, name, *value);
                     self.store_slot(name, v)?;
                 }
                 Op::Break => {
@@ -120,6 +128,9 @@ impl<'ctx> Codegen<'ctx> {
                     crate::error::llvm(self.llvm.builder.build_unconditional_branch(cont_bb))?;
                 }
                 Op::Return { value } => {
+                    if self.try_emit_tco_return(block, *value)? {
+                        return Ok(None);
+                    }
                     let v = self.local(*value)?;
                     let ret_i = if matches!(self.frame.local_tys.get(&value.0), Some(Type::Float)) {
                         match v {

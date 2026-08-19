@@ -3,6 +3,7 @@
 use super::super::Codegen;
 use anyhow::{Context as AnyhowContext, Result};
 use inkwell::values::{BasicValueEnum, PointerValue};
+use lumia_hir::Sym;
 use lumia_ty::Type;
 
 impl<'ctx> Codegen<'ctx> {
@@ -45,10 +46,10 @@ impl<'ctx> Codegen<'ctx> {
                 .builder
                 .build_store(alloca, self.llvm.i64_ty.const_int(0, false)),
         )?;
-        self.frame.slot_i64_const.insert(name.to_string(), Some(0));
+        self.frame.slot_i64_const.insert(Sym::from(name), Some(0));
         // Int/Bool/unknown vars are not GC roots (same as Float). Heap-capable
         // slots stay rooted once `slot_tys` says so.
-        self.frame.slots.insert(name.to_string(), alloca);
+        self.frame.slots.insert(Sym::from(name), alloca);
         if self.slot_may_heap(name) {
             self.root_register_slot(alloca, name)?;
         }
@@ -62,10 +63,10 @@ impl<'ctx> Codegen<'ctx> {
                 let fty = self.llvm.context.f64_type();
                 let alloca = self.alloca_in_entry_ty(fty.into(), &format!("mut_{name}"))?;
                 crate::error::llvm(self.llvm.builder.build_store(alloca, fty.const_float(0.0)))?;
-                self.frame.slots.insert(name.to_string(), alloca);
+                self.frame.slots.insert(Sym::from(name), alloca);
             }
-            self.frame.float_slots.insert(name.to_string());
-            self.frame.slot_tys.insert(name.to_string(), Type::Float);
+            self.frame.float_slots.insert(Sym::from(name));
+            self.frame.slot_tys.insert(Sym::from(name), Type::Float);
             let slot = *self.frame.slots.get(name).context("float slot")?;
             crate::error::llvm(self.llvm.builder.build_store(slot, f))?;
             return Ok(());
@@ -156,11 +157,31 @@ impl<'ctx> Codegen<'ctx> {
     /// Record whether `name` currently holds a compile-time i64 constant.
     pub(crate) fn note_slot_i64_const(&mut self, name: &str, v: inkwell::values::IntValue<'ctx>) {
         let known = v.get_sign_extended_constant();
-        self.frame.slot_i64_const.insert(name.to_string(), known);
+        self.frame.slot_i64_const.insert(Sym::from(name), known);
     }
 
     /// True when the slot's last store was exactly the const `expect`.
     pub(crate) fn slot_known_eq(&self, name: &str, expect: i64) -> bool {
         self.frame.slot_i64_const.get(name) == Some(&Some(expect))
+    }
+
+    pub(crate) fn load_slot_i64(&mut self, name: &str) -> Result<inkwell::values::IntValue<'ctx>> {
+        let v = self.load_slot(name)?;
+        self.as_i64(v)
+    }
+
+    pub(crate) fn store_slot_i64(
+        &mut self,
+        name: &str,
+        v: inkwell::values::IntValue<'ctx>,
+    ) -> Result<()> {
+        let ptr = *self
+            .frame
+            .slots
+            .get(name)
+            .with_context(|| format!("missing slot {name}"))?;
+        crate::error::llvm(self.llvm.builder.build_store(ptr, v))?;
+        self.note_slot_i64_const(name, v);
+        Ok(())
     }
 }

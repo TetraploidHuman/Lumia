@@ -1,5 +1,6 @@
-use super::{merge_slot_ty, param_ty_map, refine_mono_container_ret};
+use super::{param_ty_map, refine_mono_container_ret};
 use crate::ir::{Block, CoreFun, FunKind, Local};
+use crate::join_slot_assign_ty;
 use crate::ForeignAbi;
 use lumia_ty::{Effect, Type};
 use rustc_hash::FxHashSet as HashSet;
@@ -70,16 +71,25 @@ fn refine_mono_container_fills_var_slots_only() {
 fn merge_slot_ty_heap_beats_float() {
     // Char/String are heap pointers — must not lose to Float (old is_ref_ty
     // omitted Char and could store a Char pointer in an XMM slot).
-    assert_eq!(merge_slot_ty(Some(Type::Char), Type::Float), Type::Char);
-    assert_eq!(merge_slot_ty(Some(Type::Float), Type::Char), Type::Char);
-    assert_eq!(merge_slot_ty(Some(Type::String), Type::Float), Type::String);
     assert_eq!(
-        merge_slot_ty(Some(Type::List(Box::new(Type::Int))), Type::Int),
+        join_slot_assign_ty(Some(Type::Char), Type::Float),
+        Type::Char
+    );
+    assert_eq!(
+        join_slot_assign_ty(Some(Type::Float), Type::Char),
+        Type::Char
+    );
+    assert_eq!(
+        join_slot_assign_ty(Some(Type::String), Type::Float),
+        Type::String
+    );
+    assert_eq!(
+        join_slot_assign_ty(Some(Type::List(Box::new(Type::Int))), Type::Int),
         Type::List(Box::new(Type::Int))
     );
     // Int-only tuples are not heap pointers under `type_may_heap`.
     assert_eq!(
-        merge_slot_ty(Some(Type::Tuple(vec![Type::Int, Type::Int])), Type::Float),
+        join_slot_assign_ty(Some(Type::Tuple(vec![Type::Int, Type::Int])), Type::Float),
         Type::Float
     );
 }

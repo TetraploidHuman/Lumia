@@ -5,8 +5,10 @@
 #[cfg(feature = "codegen")]
 pub mod build;
 #[cfg(feature = "codegen")]
-pub use build::{check_file, CompileOptions};
+pub use build::{check_file, CompileOptions, LlvmOptLevel};
 pub mod check;
+#[cfg(any(feature = "codegen", feature = "codegen-slim"))]
+pub mod compile;
 pub mod diag;
 pub mod doc;
 pub mod exports;
@@ -20,6 +22,8 @@ pub use check::{
     check_program, check_program_with_overlays, check_program_with_overlays_recovering,
     check_source, check_source_recovering, OverlayCheckError, PartialCheck, PartialProgramCheck,
 };
+#[cfg(any(feature = "codegen", feature = "codegen-slim"))]
+pub use compile::{compile_program_to_core, compile_program_to_optimized, typed_program_to_core};
 pub use diag::{Diagnostic, DiagnosticKind};
 pub use load::{
     load_program, load_program_with_overlays, path_in_loaded_files, resolve_ide_entry,

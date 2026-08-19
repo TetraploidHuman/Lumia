@@ -1,9 +1,10 @@
 use lumia_core::CoreBinOp as BinOp;
 use lumia_core::{const_of, is_name_mul_name, name_of, Block, Local, Value};
+use lumia_syntax::Sym;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 pub(super) struct IvBoundInfo {
-    pub ivs: HashSet<String>,
+    pub ivs: HashSet<Sym>,
     pub bound_const: Option<i64>,
     /// True for `<` / `>` (unit ±1 always NSW-safe).
     pub strict: bool,
@@ -12,7 +13,7 @@ pub(super) struct IvBoundInfo {
     /// `iv_upper = i64::MAX - 1` for `i + 1`-class peeps.
     pub is_upper: bool,
     /// Non-const upper bound slot (`i < n` / `i <= n` / `n > i` / `n >= i`).
-    pub bound_name: Option<String>,
+    pub bound_name: Option<Sym>,
 }
 
 /// IV names + optional **upper** const bound from `<`/`>`/`<=`/`>=`.
@@ -76,8 +77,8 @@ pub(super) fn iv_bound_info(header: &Block, all_defs: &HashMap<u32, Value>) -> I
 pub(super) fn square_bound(
     header: &Block,
     all_defs: &HashMap<u32, Value>,
-    iv_upper: &HashMap<String, i64>,
-) -> Option<(String, i64)> {
+    iv_upper: &HashMap<Sym, i64>,
+) -> Option<(Sym, i64)> {
     let (iv, bound, _strict) = lumia_core::header_name_sq_cmp(header, all_defs)?;
     let c = const_of(bound, all_defs)
         .or_else(|| name_of(bound, all_defs).and_then(|n| iv_upper.get(&n).copied()))?;

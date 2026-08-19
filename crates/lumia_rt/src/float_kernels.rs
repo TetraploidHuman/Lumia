@@ -1,4 +1,21 @@
-//! Float-heavy checksums recognized by codegen / domain SR.
+//! Float-heavy checksums recognized by domain SR.
+
+/// Logistic-orbit Int checksum: `floatOrbitChecksum(n, iters)` bench shape.
+///
+/// Outer `i < n`, inner `k < iters`, `x = 3.7 * x * (1 - x)`, `h += (x > 0.5)`.
+#[no_mangle]
+pub extern "C" fn lumia_float_orbit_checksum(n: i64, iters: i64) -> i64 {
+    if n <= 0 || iters <= 0 {
+        return 0;
+    }
+    if n >= 8 && n % 8 == 0 {
+        float_orbit_x8(n, iters)
+    } else if n >= 4 && n % 4 == 0 {
+        float_orbit_x4(n, iters)
+    } else {
+        float_orbit_scalar(n, iters)
+    }
+}
 
 /// Escape-time Mandelbrot checksum on a fixed 200×140 grid over [-2.5,1]×[-1,1].
 ///
@@ -7,6 +24,68 @@
 #[no_mangle]
 pub extern "C" fn lumia_mandelbrot_checksum(max_it: i64) -> i64 {
     mandelbrot_x4(max_it)
+}
+
+fn float_orbit_scalar(n: i64, iters: i64) -> i64 {
+    let mut h = 0i64;
+    for i in 0..n {
+        let mut x = 0.1 + 1e-8 * (i as f64);
+        for _ in 0..iters {
+            x = 3.7 * x * (1.0 - x);
+            if x > 0.5 {
+                h += 1;
+            }
+        }
+    }
+    h
+}
+
+/// 4-wide independent orbits (matches legacy codegen `<4 x double>` when `n % 4 == 0`).
+fn float_orbit_x4(n: i64, iters: i64) -> i64 {
+    debug_assert!(n >= 0 && n % 4 == 0);
+    let mut h = 0i64;
+    let mut i = 0i64;
+    while i < n {
+        let mut xs = [
+            0.1 + 1e-8 * (i as f64),
+            0.1 + 1e-8 * ((i + 1) as f64),
+            0.1 + 1e-8 * ((i + 2) as f64),
+            0.1 + 1e-8 * ((i + 3) as f64),
+        ];
+        for _ in 0..iters {
+            for lane in 0..4 {
+                let x = xs[lane];
+                let x1 = 3.7 * x * (1.0 - x);
+                xs[lane] = x1;
+                h += (x1 > 0.5) as i64;
+            }
+        }
+        i += 4;
+    }
+    h
+}
+
+/// 8-wide independent orbits (matches legacy codegen `<8 x double>` when `n % 8 == 0`).
+fn float_orbit_x8(n: i64, iters: i64) -> i64 {
+    debug_assert!(n >= 0 && n % 8 == 0);
+    let mut h = 0i64;
+    let mut i = 0i64;
+    while i < n {
+        let mut xs = [0.0_f64; 8];
+        for lane in 0..8 {
+            xs[lane] = 0.1 + 1e-8 * ((i + lane as i64) as f64);
+        }
+        for _ in 0..iters {
+            for lane in 0..8 {
+                let x = xs[lane];
+                let x1 = 3.7 * x * (1.0 - x);
+                xs[lane] = x1;
+                h += (x1 > 0.5) as i64;
+            }
+        }
+        i += 8;
+    }
+    h
 }
 
 fn mandelbrot_x4(max_it: i64) -> i64 {

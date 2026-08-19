@@ -280,8 +280,9 @@ fn lookup_funref_uses_id_when_name_matches() {
 }
 
 #[test]
-fn resolve_funref_ids_stamps_index() {
+fn stamp_funref_ids_stamps_index() {
     use crate::ir::FunId;
+    use crate::mono::fun_index::FunIndex;
     let dbl = CoreFun {
         name: "dbl".into(),
         params: vec![],
@@ -305,8 +306,12 @@ fn resolve_funref_ids_stamps_index() {
         mono_of: None,
         kind: FunKind::Normal,
     };
+    let funs = [dbl];
+    let sum_max_arity = Default::default();
+    let trait_methods = Default::default();
+    let index = FunIndex::new(&funs, &sum_max_arity, &trait_methods, None);
     let mut key = MonoKey(vec![MonoKind::FunRef("dbl".into())]);
-    key.resolve_funref_ids(std::slice::from_ref(&dbl));
+    index.stamp_funref_ids(&mut key);
     match &key.0[0] {
         MonoKind::FunRef(fr) => {
             assert_eq!(fr.name, "dbl");

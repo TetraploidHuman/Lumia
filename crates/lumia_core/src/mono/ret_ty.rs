@@ -1,13 +1,16 @@
 use super::fun_index::FunIndex;
-use crate::ir::{Block, CoreFun, Local, Op, Value};
+use crate::find_top_level_local_def;
+use crate::for_each_named_slot_assign_in_block;
+use crate::ir::{Block, CoreFun, Local, Value};
 use crate::value_ty::{
     adt_field_via, alloc_list_ty, alloc_map_from_pair, alloc_set_ty, binop_float_or_int,
     builtin_value_ty, channel_recv_ok, elems_family_recv_ok, fun_recv_ok, fun_ret_of_callee_ty,
-    is_fixed_result_builtin, join_fixed_ty, list_concat_both_known, list_get_recv_ok,
+    is_fixed_result_builtin, join_if_arm_tys, list_concat_both_known, list_get_recv_ok,
     list_par_fold_via, list_par_map_via, list_passthrough_ok, lit_scalar_ty, pad_adt_params,
-    stamp_or_via, task_recv_ok, via_gated_recv, via_gated_recv_seeded, InferValueCtx,
+    stamp_or_via, task_recv_ok, via_gated_recv, via_gated_recv_seeded, InferValueCtx, JoinAbiKind,
 };
-use crate::{CoreBinOp as BinOp, CoreUnOp as UnOp};
+use crate::value_ty::{fold_slot_assign_ty, JoinAssignKind};
+use crate::{block_result_is_bottom, CoreBinOp as BinOp, CoreUnOp as UnOp};
 use lumia_hir::Builtin;
 use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
@@ -157,24 +160,17 @@ fn local_fixed_ty(
     let result = if let Some(t) = param_tys.get(&id) {
         Some(t.clone())
     } else {
-        let mut found = None;
-        for op in &block.ops {
-            if let Op::Let { local, value, .. } = op {
-                if local.0 == id {
-                    found = value_fixed_ty(
-                        block,
-                        value,
-                        index,
-                        trait_methods,
-                        param_tys,
-                        seen,
-                        expanding,
-                    );
-                    break;
-                }
-            }
-        }
-        found
+        find_top_level_local_def(block, id).and_then(|value| {
+            value_fixed_ty(
+                block,
+                value,
+                index,
+                trait_methods,
+                param_tys,
+                seen,
+                expanding,
+            )
+        })
     };
     seen.remove(&id);
     result
@@ -685,21 +681,31 @@ fn value_fixed_ty(
             else_block,
             ..
         } => {
-            let t = block_result_fixed_ty_indexed(
-                then_block,
-                index,
-                trait_methods,
-                param_tys,
-                expanding,
-            )?;
-            let e = block_result_fixed_ty_indexed(
-                else_block,
-                index,
-                trait_methods,
-                param_tys,
-                expanding,
-            )?;
-            join_fixed_ty(&t, &e)
+            let then_bottom = block_result_is_bottom(then_block);
+            let else_bottom = block_result_is_bottom(else_block);
+            let t = if then_bottom {
+                None
+            } else {
+                block_result_fixed_ty_indexed(
+                    then_block,
+                    index,
+                    trait_methods,
+                    param_tys,
+                    expanding,
+                )
+            };
+            let e = if else_bottom {
+                None
+            } else {
+                block_result_fixed_ty_indexed(
+                    else_block,
+                    index,
+                    trait_methods,
+                    param_tys,
+                    expanding,
+                )
+            };
+            join_if_arm_tys(t, e, then_bottom, else_bottom, JoinAbiKind::Fixed)
         }
         Value::AllocList { elems, .. } => {
             let elem = elems.first().and_then(|e| {
@@ -802,125 +808,13 @@ fn scan_slot_ty(
     expanding: &mut HashSet<String>,
     found: &mut Option<Type>,
 ) {
-    for op in &block.ops {
-        match op {
-            Op::Assign {
-                name: n,
-                value: Local(id),
-            } if n == name => {
-                if let Some(t) =
-                    local_fixed_ty(block, *id, index, trait_methods, param_tys, seen, expanding)
-                {
-                    *found = Some(merge_slot_ty(found.take(), t));
-                }
-            }
-            Op::Let { value, .. } => {
-                scan_value_slots(
-                    value,
-                    name,
-                    index,
-                    trait_methods,
-                    param_tys,
-                    seen,
-                    expanding,
-                    found,
-                );
-            }
-            _ => {}
+    let sym = lumia_syntax::Sym::from(name);
+    for_each_named_slot_assign_in_block(block, &sym, &mut |Local(id)| {
+        if let Some(t) = local_fixed_ty(block, id, index, trait_methods, param_tys, seen, expanding)
+        {
+            fold_slot_assign_ty(found, t, JoinAssignKind::Fixed);
         }
-    }
-}
-
-fn scan_value_slots(
-    value: &Value,
-    name: &str,
-    index: &FunIndex<'_>,
-    trait_methods: &HashMap<(String, String), Vec<String>>,
-    param_tys: &HashMap<u32, Type>,
-    seen: &mut HashSet<u32>,
-    expanding: &mut HashSet<String>,
-    found: &mut Option<Type>,
-) {
-    match value {
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            scan_slot_ty(
-                then_block,
-                name,
-                index,
-                trait_methods,
-                param_tys,
-                seen,
-                expanding,
-                found,
-            );
-            scan_slot_ty(
-                else_block,
-                name,
-                index,
-                trait_methods,
-                param_tys,
-                seen,
-                expanding,
-                found,
-            );
-        }
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => {
-            scan_slot_ty(
-                header,
-                name,
-                index,
-                trait_methods,
-                param_tys,
-                seen,
-                expanding,
-                found,
-            );
-            scan_slot_ty(
-                body,
-                name,
-                index,
-                trait_methods,
-                param_tys,
-                seen,
-                expanding,
-                found,
-            );
-            scan_slot_ty(
-                latch,
-                name,
-                index,
-                trait_methods,
-                param_tys,
-                seen,
-                expanding,
-                found,
-            );
-        }
-        _ => {}
-    }
-}
-
-fn merge_slot_ty(prev: Option<Type>, next: Type) -> Type {
-    use crate::type_may_heap;
-    match (prev, next) {
-        (None, t) => t,
-        (Some(p), n) if p == n => p,
-        // Pointer-carrying slots win over unboxed numeric — never store a
-        // List/ADT/Char pointer as Float (XMM NaN canonicalization / missed GC root).
-        // Shared lattice: [`crate::type_may_heap`] (was a near-copy `is_ref_ty`).
-        (Some(p), n) if type_may_heap(&p) && !type_may_heap(&n) => p,
-        (Some(p), n) if !type_may_heap(&p) && type_may_heap(&n) => n,
-        (Some(Type::Float), _) | (_, Type::Float) => Type::Float,
-        (Some(p), _) => p,
-    }
+    });
 }
 
 fn binary_fixed_ty(
@@ -1034,29 +928,11 @@ fn mutator_fixed_seeded(
 }
 
 fn int_const_in_block(block: &Block, id: u32) -> Option<i64> {
-    for op in &block.ops {
-        if let Op::Let {
-            local,
-            value: Value::Int(n),
-            ..
-        } = op
-        {
-            if local.0 == id {
-                return Some(*n);
-            }
-        }
-        if let Op::Let {
-            local,
-            value: Value::Local(Local(src)),
-            ..
-        } = op
-        {
-            if local.0 == id {
-                return int_const_in_block(block, *src);
-            }
-        }
+    match find_top_level_local_def(block, id)? {
+        Value::Int(n) => Some(*n),
+        Value::Local(Local(src)) => int_const_in_block(block, *src),
+        _ => None,
     }
-    None
 }
 
 fn block_result_fixed_ty_indexed(

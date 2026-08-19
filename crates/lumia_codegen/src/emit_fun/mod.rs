@@ -20,7 +20,7 @@ impl<'ctx> Codegen<'ctx> {
         let fv = *self
             .funs
             .functions
-            .get(&fun.name)
+            .get(fun.name.as_str())
             .context("missing function decl")?;
         let entry = self.emit_function_prologue(fun, fv)?;
         if self.try_emit_dense_f64_specialization(fun, fv)? {
@@ -55,19 +55,19 @@ impl<'ctx> Codegen<'ctx> {
         self.frame.ssa_root_stack.clear();
         self.frame.cow_consume_unique = false;
         self.frame.adt_with_inplace = None;
-        self.funs.funref_locals.clear();
+        self.funs.funref = Default::default();
         self.frame.local_tys.clear();
         self.frame.local_int_consts.clear();
         self.frame.slot_tys.clear();
         self.frame.emit_dest = None;
         self.frame.expect_alloc_ty = None;
         self.frame.install_nsw_from_fun(fun);
-        self.funs.current_fun = fun.name.clone();
+        self.funs.current_fun = fun.name.to_string();
         self.memo.current_memo = fun.memo;
         self.funs.tco_peers = self
             .funs
             .tco_sccs
-            .get(&fun.name)
+            .get(fun.name.as_str())
             .cloned()
             .unwrap_or_default();
         Ok(entry)

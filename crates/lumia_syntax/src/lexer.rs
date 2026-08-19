@@ -54,8 +54,8 @@ impl<'a> Lexer<'a> {
 
     /// Peek the next `n` token kinds without advancing this lexer.
     ///
-    /// Allocates `Ident`/`String` payloads like a real lex; prefer
-    /// [`Self::peek_ident_eq`] when only a structural look-ahead is needed.
+    /// Still allocates `String`/`Lit` payloads where the token owns text; `Ident`
+    /// is span-only. Prefer [`Self::peek_ident_eq`] for struct-lit look-ahead.
     pub fn peek_kinds(&self, n: usize) -> Vec<TokenKind> {
         let mut tmp = Lexer {
             src: self.src,
@@ -199,7 +199,7 @@ impl<'a> Lexer<'a> {
                     TokenKind::Ne
                 } else {
                     // bare ! not used; treat as ident error via unknown
-                    TokenKind::Ident("!".into())
+                    TokenKind::Error("unexpected `!` (use `not` for negation)".into())
                 }
             }
             b'<' => {
@@ -322,7 +322,7 @@ impl<'a> Lexer<'a> {
         if let Some(kw) = TokenKind::keyword(s) {
             kw
         } else {
-            TokenKind::Ident(s.to_string())
+            TokenKind::Ident
         }
     }
 
@@ -424,13 +424,13 @@ impl<'a> Lexer<'a> {
                         }
                         self.pos += 1;
                     }
-                    let inner = self.src[start..self.pos.min(self.bytes.len())].to_string();
+                    let end = self.pos;
                     if self.pos < self.bytes.len() && self.bytes[self.pos] == b'}' {
                         self.pos += 1;
                     }
                     parts.push(crate::token::StringPart::ExprSrc {
-                        src: inner,
                         abs_start: start as u32,
+                        abs_end: end as u32,
                     });
                     continue;
                 }
@@ -441,10 +441,9 @@ impl<'a> Lexer<'a> {
                     while self.pos < self.bytes.len() && is_ident_continue(self.bytes[self.pos]) {
                         self.pos += 1;
                     }
-                    let name = self.src[start..self.pos].to_string();
                     parts.push(crate::token::StringPart::Ident {
-                        name,
                         abs_start: start as u32,
+                        abs_end: self.pos as u32,
                     });
                     continue;
                 }
@@ -562,7 +561,8 @@ mod tests {
                 assert!(
                     parts.iter().any(|p| matches!(
                         p,
-                        crate::token::StringPart::ExprSrc { src, .. } if src.contains('\'')
+                        crate::token::StringPart::ExprSrc { abs_start, abs_end }
+                            if lx.src[*abs_start as usize..*abs_end as usize].contains('\'')
                     )),
                     "char literal must stay inside ExprSrc, got {parts:?}"
                 );
@@ -588,7 +588,8 @@ mod tests {
                 assert!(
                     parts.iter().any(|p| matches!(
                         p,
-                        crate::token::StringPart::ExprSrc { src, .. } if src.contains('中')
+                        crate::token::StringPart::ExprSrc { abs_start, abs_end }
+                            if lx.src[*abs_start as usize..*abs_end as usize].contains('中')
                     )),
                     "nested string must stay in ExprSrc: {parts:?}"
                 );
@@ -642,7 +643,7 @@ mod tests {
             let kinds = lx.peek_kinds(2);
             let via_kinds = matches!(
                 (kinds.first(), kinds.get(1)),
-                (Some(TokenKind::Ident(_)), Some(TokenKind::Eq))
+                (Some(TokenKind::Ident), Some(TokenKind::Eq))
             );
             assert_eq!(via_kinds, want, "peek_kinds parity for {src:?}: {kinds:?}");
         }

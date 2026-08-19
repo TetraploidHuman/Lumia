@@ -5,6 +5,7 @@ use lumia_ty::Type;
 #[test]
 fn domain_rt_syms_have_external_sigs() {
     for sym in [
+        "lumia_collatz_steps",
         "lumia_collatz_total",
         "lumia_collatz_strided",
         "lumia_count_primes",
@@ -16,6 +17,7 @@ fn domain_rt_syms_have_external_sigs() {
         "lumia_matmul_affine_checksum",
         "lumia_mandelbrot_checksum",
         "lumia_mem_traffic_checksum",
+        "lumia_float_orbit_checksum",
     ] {
         let (params, ret) = external_sig(sym);
         assert_eq!(ret, Type::Int, "{sym}");
@@ -49,6 +51,7 @@ fn rewrites_collatz_and_primes_helpers() {
     let mut core = lumia_core::compile_source_to_core(&src).unwrap();
     optimize(&mut core, &OptOptions::for_build(true));
     for (name, sym) in [
+        ("collatzSteps", "lumia_collatz_steps"),
         ("collatzTotal", "lumia_collatz_total"),
         ("collatzStrided", "lumia_collatz_strided"),
         ("countPrimes", "lumia_count_primes"),
@@ -148,29 +151,23 @@ fn rewrites_const_specialized_primes_and_collatz_clones() {
 }
 
 #[test]
-fn leaves_collatz_steps_and_float_orbit_for_codegen() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/opt_sr_correctness.lm");
+fn rewrites_float_orbit_from_bench_cpu() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/bench_cpu.lm");
     let src = std::fs::read_to_string(&path).unwrap();
     let mut core = lumia_core::compile_source_to_core(&src).unwrap();
     optimize(&mut core, &OptOptions::for_build(true));
-    for name in ["collatzSteps", "floatOrbitChecksum"] {
-        let f = core
-            .functions
-            .iter()
-            .find(|f| f.name == name)
-            .unwrap_or_else(|| panic!("missing {name}"));
-        assert!(
-            !f.body.ops.iter().any(|op| matches!(
-                op,
-                lumia_core::Op::Let {
-                    value: lumia_core::Value::Call { fun, .. },
-                    ..
-                } if fun.starts_with("lumia_")
-            )),
-            "{name} must remain for codegen IR SR, got {:?}",
-            f.body.ops
-        );
+    let clones: Vec<_> = core
+        .functions
+        .iter()
+        .filter(|f| f.name.starts_with("floatOrbitChecksum$c_"))
+        .map(|f| f.name.as_str())
+        .collect();
+    assert!(
+        !clones.is_empty(),
+        "expected specialize_const floatOrbitChecksum$c_*"
+    );
+    for name in clones {
+        assert_rewritten(&core, name, "lumia_float_orbit_checksum");
     }
 }
 

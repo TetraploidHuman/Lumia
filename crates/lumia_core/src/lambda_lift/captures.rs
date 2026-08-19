@@ -1,10 +1,11 @@
 //! Capture / free-variable analysis for nested lambdas.
 
 use crate::ir::{Block, Local, Op, Value};
-use crate::visit::{collect_defined_locals, for_each_local};
+use crate::visit::{collect_defined_locals, for_each_local, for_each_op_in_block};
+use lumia_syntax::Sym;
 use rustc_hash::FxHashSet as HashSet;
 
-pub(super) fn analyze_captures(body: &Block, params: &[Local]) -> (Vec<Local>, Vec<String>) {
+pub(super) fn analyze_captures(body: &Block, params: &[Local]) -> (Vec<Local>, Vec<Sym>) {
     let mut defined = HashSet::default();
     for p in params {
         defined.insert(p.0);
@@ -20,7 +21,7 @@ pub(super) fn analyze_captures(body: &Block, params: &[Local]) -> (Vec<Local>, V
         .map(Local)
         .collect();
     free_locals.sort_by_key(|l| l.0);
-    let mut free_names: Vec<String> = free_names.into_iter().collect();
+    let mut free_names: Vec<Sym> = free_names.into_iter().collect();
     free_names.sort();
     (free_locals, free_names)
 }
@@ -30,25 +31,23 @@ pub(super) fn analyze_captures(body: &Block, params: &[Local]) -> (Vec<Local>, V
 fn collect_free(
     block: &Block,
     used_locals: &mut HashSet<u32>,
-    bound_names: &mut HashSet<String>,
-    free_names: &mut HashSet<String>,
+    bound_names: &mut HashSet<Sym>,
+    free_names: &mut HashSet<Sym>,
 ) {
-    for op in &block.ops {
-        match op {
-            Op::Let { value, .. } => {
-                collect_free_in_value(value, used_locals, bound_names, free_names);
-            }
-            Op::Assign { name, value } => {
-                // RHS is a Local (load of outer `n` is a prior `Let` with `Name`).
-                used_locals.insert(value.0);
-                bound_names.insert(name.clone());
-            }
-            Op::Return { value } => {
-                used_locals.insert(value.0);
-            }
-            Op::Break | Op::Continue => {}
+    for_each_op_in_block(block, &mut |op| match op {
+        Op::Let { value, .. } => {
+            collect_free_in_value(value, used_locals, bound_names, free_names);
         }
-    }
+        Op::Assign { name, value } => {
+            // RHS is a Local (load of outer `n` is a prior `Let` with `Name`).
+            used_locals.insert(value.0);
+            bound_names.insert(name.clone());
+        }
+        Op::Return { value } => {
+            used_locals.insert(value.0);
+        }
+        Op::Break | Op::Continue => {}
+    });
     if let Some(r) = &block.result {
         used_locals.insert(r.0);
     }
@@ -57,8 +56,8 @@ fn collect_free(
 fn collect_free_in_value(
     value: &Value,
     used_locals: &mut HashSet<u32>,
-    bound_names: &mut HashSet<String>,
-    free_names: &mut HashSet<String>,
+    bound_names: &mut HashSet<Sym>,
+    free_names: &mut HashSet<Sym>,
 ) {
     for_each_local(value, &mut |l| {
         used_locals.insert(l.0);

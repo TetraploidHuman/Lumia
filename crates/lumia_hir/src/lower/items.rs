@@ -4,6 +4,8 @@ use super::ctx::{LowerCtx, LowerError};
 use super::expr::push_lowered_val;
 use crate::ast::{AdtDef, AdtVariant, CtorInfo, Expr, Fun, Item, Module, ProductDef};
 use crate::match_check::check_module_matches;
+use crate::sym_util::synthetic;
+use lumia_syntax::Sym;
 use lumia_syntax::VariantFields;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
@@ -83,7 +85,7 @@ fn scan_type_decls(m: &lumia_syntax::Module) -> TypeScan {
                             VariantFields::Named(fs) => fs.len(),
                         };
                         ctors.insert(
-                            v.name.clone(),
+                            v.name.to_string(),
                             CtorInfo {
                                 adt_name: t.name.clone(),
                                 tag: tag as i64,
@@ -103,19 +105,21 @@ fn scan_type_decls(m: &lumia_syntax::Module) -> TypeScan {
                 }
                 lumia_syntax::TypeKind::Product(fields) => {
                     for (i, f) in fields.iter().enumerate() {
-                        match product_fields.get(f) {
+                        match product_fields.get(f.as_str()) {
                             Some((prev, _)) if prev != &t.name => {
-                                // Same field name on two products → resolve via receiver/`with` base type.
-                                ambiguous_product_fields.insert(f.clone());
+                                ambiguous_product_fields.insert(f.to_string());
                             }
                             None => {
-                                product_fields.insert(f.clone(), (t.name.clone(), i));
+                                product_fields.insert(f.to_string(), (t.name.to_string(), i));
                             }
-                            Some(_) => {} // same type re-decl shouldn't happen
+                            Some(_) => {}
                         }
                     }
-                    let fields = fields.clone();
-                    product_map.insert(t.name.clone(), fields.clone());
+                    let fields: Vec<Sym> = fields.clone();
+                    product_map.insert(
+                        t.name.to_string(),
+                        fields.iter().map(|s| s.to_string()).collect(),
+                    );
                     products.push(ProductDef {
                         name: t.name.clone(),
                         fields,
@@ -144,18 +148,21 @@ fn collect_instances(
     adts: &[AdtDef],
     product_map: &HashMap<String, Vec<String>>,
     trait_requires: &mut HashMap<String, Vec<String>>,
-) -> Result<HashSet<(String, String)>, LowerError> {
-    let mut instances: HashSet<(String, String)> = HashSet::default();
+) -> Result<HashSet<(Sym, Sym)>, LowerError> {
+    let mut instances: HashSet<(Sym, Sym)> = HashSet::default();
     // Pass 1: register all traits (order vs `instance` must not matter; `type` already is).
     for item in &m.items {
         if let lumia_syntax::Item::Trait(t) = item {
-            trait_requires.insert(t.name.clone(), t.requires.clone());
+            trait_requires.insert(
+                t.name.to_string(),
+                t.requires.iter().map(|r| r.to_string()).collect(),
+            );
         }
     }
     // Pass 2: validate instances against known types + traits.
     for item in &m.items {
         if let lumia_syntax::Item::Instance(i) = item {
-            let known_type = product_map.contains_key(&i.type_name)
+            let known_type = product_map.contains_key(i.type_name.as_str())
                 || adts.iter().any(|a| a.name == i.type_name);
             if !known_type {
                 return Err(LowerError {
@@ -166,7 +173,7 @@ fn collect_instances(
                     span: i.span,
                 });
             }
-            if !trait_requires.contains_key(&i.trait_name) {
+            if !trait_requires.contains_key(i.trait_name.as_str()) {
                 return Err(LowerError {
                     message: format!(
                         "instance for unknown trait `{}` (no `trait {}` in this module)",
@@ -182,23 +189,24 @@ fn collect_instances(
     // Hash / Ord / Num stay opt-in: Hash gates Map/Set hash tables; Ord/Num are stronger claims.
     for name in product_map
         .keys()
-        .cloned()
+        .map(|s| Sym::from(s.as_str()))
         .chain(adts.iter().map(|a| a.name.clone()))
     {
         for tr in ["Eq", "Show"] {
-            instances.insert((tr.into(), name.clone()));
+            instances.insert((Sym::from(tr), name.clone()));
         }
     }
     for (tr, ty) in &instances {
-        if let Some(reqs) = trait_requires.get(tr) {
+        if let Some(reqs) = trait_requires.get(tr.as_str()) {
             for req in reqs {
-                if !instances.contains(&(req.clone(), ty.clone())) {
+                if !instances.contains(&(Sym::from(req.as_str()), ty.clone())) {
                     let span = m
                         .items
                         .iter()
                         .find_map(|it| match it {
                             lumia_syntax::Item::Instance(i)
-                                if i.trait_name == *tr && i.type_name == *ty =>
+                                if i.trait_name.as_str() == tr.as_str()
+                                    && i.type_name.as_str() == ty.as_str() =>
                             {
                                 Some(i.span)
                             }
@@ -232,11 +240,11 @@ fn collect_toplevel_funs(m: &lumia_syntax::Module) -> HashSet<String> {
                         lumia_syntax::Expr::Lambda { .. } | lumia_syntax::Expr::Block { .. }
                     );
                 if is_fun {
-                    toplevel_funs.insert(v.name.clone());
+                    toplevel_funs.insert(v.name.to_string());
                 }
             }
             lumia_syntax::Item::Foreign(f) => {
-                toplevel_funs.insert(f.name.clone());
+                toplevel_funs.insert(f.name.to_string());
             }
             _ => {}
         }
@@ -252,19 +260,21 @@ fn collect_fold_assoc(m: &lumia_syntax::Module) -> HashSet<String> {
                 if params.len() == 2
                     && crate::list_hof::syntax_fold_body_is_associative(
                         &v.body,
-                        &params[0].0,
-                        &params[1].0,
+                        &params[0].0.as_str(),
+                        &params[1].0.as_str(),
                     )
                 {
-                    toplevel_fold_assoc.insert(v.name.clone());
+                    toplevel_fold_assoc.insert(v.name.to_string());
                 }
             } else if let lumia_syntax::Expr::Lambda { params, body, .. } = &v.body {
                 if params.len() == 2
                     && crate::list_hof::syntax_fold_body_is_associative(
-                        body, &params[0], &params[1],
+                        body,
+                        &params[0].as_str(),
+                        &params[1].as_str(),
                     )
                 {
-                    toplevel_fold_assoc.insert(v.name.clone());
+                    toplevel_fold_assoc.insert(v.name.to_string());
                 }
             }
         }
@@ -312,10 +322,9 @@ fn lower_module_collecting(
         product_fields.remove(f);
     }
     // trait name → (method name → default body)
-    let mut trait_defaults: HashMap<String, HashMap<String, lumia_syntax::ValItem>> =
-        HashMap::default();
+    let mut trait_defaults: HashMap<Sym, HashMap<Sym, lumia_syntax::ValItem>> = HashMap::default();
     // method → trait (reject duplicate short names across traits at lower time).
-    let mut method_traits: HashMap<String, String> = HashMap::default();
+    let mut method_traits: HashMap<Sym, Sym> = HashMap::default();
     for item in &m.items {
         if let lumia_syntax::Item::Trait(t) = item {
             let mut ms = HashMap::default();
@@ -355,18 +364,17 @@ fn lower_module_collecting(
 
     let mut items = Vec::new();
     // (type, method) → mangled `__Trait_Type_method` (may be multi-trait).
-    let mut trait_methods: HashMap<(String, String), Vec<String>> = HashMap::default();
+    let mut trait_methods: HashMap<(Sym, Sym), Vec<Sym>> = HashMap::default();
     let mut lowered_methods: HashSet<String> = HashSet::default();
-    let note_method =
-        |ty: &str,
-         method: &str,
-         mangled: String,
-         trait_methods: &mut HashMap<(String, String), Vec<String>>| {
-            trait_methods
-                .entry((ty.to_string(), method.to_string()))
-                .or_default()
-                .push(mangled);
-        };
+    let note_method = |ty: &Sym,
+                       method: &Sym,
+                       mangled: &str,
+                       trait_methods: &mut HashMap<(Sym, Sym), Vec<Sym>>| {
+        trait_methods
+            .entry((ty.clone(), method.clone()))
+            .or_default()
+            .push(synthetic(mangled));
+    };
     for item in &m.items {
         match item {
             lumia_syntax::Item::Val(v) => {
@@ -377,9 +385,9 @@ fn lower_module_collecting(
                 for method in &i.methods {
                     let mangled =
                         crate::mangle_trait_method(&i.trait_name, &i.type_name, &method.name);
-                    push_lowered_val(&ctx, &mut items, method, &mangled);
+                    push_lowered_val(&ctx, &mut items, method, &synthetic(&mangled));
                     lowered_methods.insert(mangled.clone());
-                    note_method(&i.type_name, &method.name, mangled, &mut trait_methods);
+                    note_method(&i.type_name, &method.name, &mangled, &mut trait_methods);
                 }
                 if let Some(defaults) = trait_defaults.get(&i.trait_name) {
                     for (method_name, default) in defaults {
@@ -388,9 +396,14 @@ fn lower_module_collecting(
                         if lowered_methods.contains(&mangled) {
                             continue;
                         }
-                        push_lowered_val(&ctx, &mut items, default, &mangled);
+                        push_lowered_val(&ctx, &mut items, default, &synthetic(&mangled));
                         lowered_methods.insert(mangled.clone());
-                        note_method(&i.type_name, method_name, mangled, &mut trait_methods);
+                        note_method(
+                            &i.type_name,
+                            &Sym::from(method_name.as_str()),
+                            &mangled,
+                            &mut trait_methods,
+                        );
                     }
                 }
             }
@@ -401,7 +414,7 @@ fn lower_module_collecting(
                         f.span,
                     );
                 }
-                let params: Vec<String> = f.params.iter().map(|(n, _)| n.clone()).collect();
+                let params: Vec<Sym> = f.params.iter().map(|(n, _)| n.clone()).collect();
                 let param_tys: Vec<String> = f.params.iter().map(|(_, t)| t.clone()).collect();
                 items.push(Item::Fun(Fun {
                     name: f.name.clone(),
@@ -426,7 +439,10 @@ fn lower_module_collecting(
         products,
         instances,
         trait_methods,
-        method_traits,
+        method_traits: method_traits
+            .into_iter()
+            .map(|(k, v)| (Sym::from(k.as_str()), Sym::from(v.as_str())))
+            .collect(),
     };
     Ok((module, ctx.take_errs()))
 }

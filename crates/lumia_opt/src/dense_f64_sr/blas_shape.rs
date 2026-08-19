@@ -1,15 +1,17 @@
-use super::shape_util::mentions_local;
+use super::shape_util::{for_each_shape_value, is_out_list, is_out_set, mentions_local, OutSlot};
 use lumia_core::CoreBinOp as BinOp;
 use lumia_core::{
-    for_each_let_value_ctrl, header_lt_bound, is_list_get, is_list_set, is_nontrivial_add_or_sub,
-    is_unit_inc, name_of, same_local, Block, Local, Op, Value,
+    for_each_assign_in_block, for_each_direct_loop_in_block, for_each_let_in_block,
+    header_lt_bound, is_list_get, is_list_set, is_nontrivial_add_or_sub, is_unit_inc, same_local,
+    Block, Local, Value,
 };
 use rustc_hash::FxHashMap as HashMap;
 
 pub(super) fn body_has_gemv_inner(
     body: &Block,
     defs: &HashMap<u32, Value>,
-    out_slot: &str,
+    out: &OutSlot,
+    dest: Local,
     i_slot: &str,
     a: Local,
     x: Local,
@@ -18,45 +20,32 @@ pub(super) fn body_has_gemv_inner(
     let mut saw_inner = false;
     let mut saw_set = false;
     let mut saw_i_inc = false;
-    for op in &body.ops {
-        match op {
-            Op::Let {
-                value:
-                    Value::Loop {
-                        header,
-                        body: ib,
-                        latch,
-                    },
-                ..
-            } => {
-                if !latch.ops.is_empty() {
-                    continue;
-                }
-                let Some((j_slot, bound)) = header_lt_bound(header, defs) else {
-                    continue;
-                };
-                if !same_local(bound, n, defs) {
-                    continue;
-                }
-                if gemv_inner_accumulates(ib, defs, &j_slot, a, x, n, i_slot) {
-                    saw_inner = true;
-                }
-            }
-            Op::Assign { name, value } => {
-                if name == out_slot {
-                    if let Some(val) = defs.get(&value.0) {
-                        if is_list_set(val).is_some() {
-                            saw_set = true;
-                        }
-                    }
-                }
-                if name == i_slot && is_unit_inc(value.0, i_slot, defs) {
-                    saw_i_inc = true;
-                }
-            }
-            _ => {}
+    for_each_direct_loop_in_block(body, &mut |header, ib, latch| {
+        if !latch.ops.is_empty() {
+            return;
         }
-    }
+        let Some((j_slot, bound)) = header_lt_bound(header, defs) else {
+            return;
+        };
+        if !same_local(bound, n, defs) {
+            return;
+        }
+        if gemv_inner_accumulates(ib, defs, &j_slot, a, x, n, i_slot) {
+            saw_inner = true;
+        }
+    });
+    for_each_assign_in_block(body, &mut |name, value| {
+        if name == out.as_str() {
+            if let Some(val) = defs.get(&value.0) {
+                if is_out_set(val, out, dest, defs) {
+                    saw_set = true;
+                }
+            }
+        }
+        if name == i_slot && is_unit_inc(value.0, i_slot, defs) {
+            saw_i_inc = true;
+        }
+    });
     saw_inner && saw_set && saw_i_inc
 }
 
@@ -71,22 +60,18 @@ fn gemv_inner_accumulates(
 ) -> bool {
     let mut saw_mul_gets = false;
     let mut saw_j_inc = false;
-    for op in &body.ops {
-        if let Op::Assign { name, value } = op {
-            if name == j_slot && is_unit_inc(value.0, j_slot, defs) {
-                saw_j_inc = true;
-            }
+    for_each_assign_in_block(body, &mut |name, value| {
+        if name == j_slot && is_unit_inc(value.0, j_slot, defs) {
+            saw_j_inc = true;
         }
-        if let Op::Let {
-            value:
-                Value::Binary {
-                    op: BinOp::Mul,
-                    left,
-                    right,
-                    ..
-                },
+    });
+    for_each_let_in_block(body, &mut |_local, value, _pure| {
+        if let Value::Binary {
+            op: BinOp::Mul,
+            left,
+            right,
             ..
-        } = op
+        } = value
         {
             let lg = defs.get(&left.0).and_then(is_list_get);
             let rg = defs.get(&right.0).and_then(is_list_get);
@@ -94,105 +79,84 @@ fn gemv_inner_accumulates(
                 let a_x = (same_local(la, a, defs) && same_local(lb, x, defs))
                     || (same_local(la, x, defs) && same_local(lb, a, defs));
                 if a_x {
-                    // Soft-check index uses i/n/j via presence of Mul/Add involving them elsewhere.
                     let _ = (n, i_slot);
                     saw_mul_gets = true;
                 }
             }
         }
-    }
+    });
     saw_mul_gets && saw_j_inc
+}
+
+fn mul_gets_a_x(v: &Value, defs: &HashMap<u32, Value>, a: Local, x: Local) -> bool {
+    let Value::Binary {
+        op: BinOp::Mul,
+        left,
+        right,
+        ..
+    } = v
+    else {
+        return false;
+    };
+    let lg = defs.get(&left.0).and_then(is_list_get);
+    let rg = defs.get(&right.0).and_then(is_list_get);
+    let Some((la, _)) = lg else {
+        return false;
+    };
+    let Some((lb, _)) = rg else {
+        return false;
+    };
+    (same_local(la, a, defs) && same_local(lb, x, defs))
+        || (same_local(la, x, defs) && same_local(lb, a, defs))
 }
 
 pub(super) fn fun_has_gemv_t_shape(
     body: &Block,
     defs: &HashMap<u32, Value>,
-    out_slot: &str,
+    out: &OutSlot,
+    dest: Local,
     a: Local,
     x: Local,
-    m: Local,
-    n: Local,
+    _m: Local,
+    _n: Local,
 ) -> bool {
     let mut mul = false;
     let mut set = false;
     let mut zero_fill = false;
-    for_each_let_value_ctrl(body, &mut |_b, v| {
-        if let Value::Binary {
-            op: BinOp::Mul,
-            left,
-            right,
-            ..
-        } = v
-        {
-            let lg = defs.get(&left.0).and_then(is_list_get);
-            let rg = defs.get(&right.0).and_then(is_list_get);
-            if let (Some((la, _)), Some((lb, _))) = (lg, rg) {
-                if (same_local(la, a, defs) && same_local(lb, x, defs))
-                    || (same_local(la, x, defs) && same_local(lb, a, defs))
+    for_each_shape_value(body, defs, &mut |v| {
+        if mul_gets_a_x(v, defs, a, x) {
+            mul = true;
+        }
+        if is_out_set(v, out, dest, defs) {
+            set = true;
+            if let Some((_, _, val)) = is_list_set(v) {
+                if matches!(defs.get(&val.0), Some(Value::Float(f)) if *f == 0.0)
+                    || matches!(defs.get(&val.0), Some(Value::Int(0)))
                 {
-                    mul = true;
+                    zero_fill = true;
                 }
             }
         }
-        if is_list_set(v).is_some() {
-            set = true;
-        }
-        // Zero-fill: set(j, 0.0) or set(j, Float(0))
-        if let Some((_, _, val)) = is_list_set(v) {
-            if matches!(defs.get(&val.0), Some(Value::Float(f)) if *f == 0.0)
-                || matches!(defs.get(&val.0), Some(Value::Int(0)))
-            {
-                zero_fill = true;
-            }
-        }
-        let _ = (m, n, out_slot);
     });
-    // Also scan leaf_defs for MapSet / Mul (lets may be inlined into Assigns)
-    for v in defs.values() {
-        if let Value::Binary {
-            op: BinOp::Mul,
-            left,
-            right,
-            ..
-        } = v
-        {
-            let lg = defs.get(&left.0).and_then(is_list_get);
-            let rg = defs.get(&right.0).and_then(is_list_get);
-            if let (Some((la, _)), Some((lb, _))) = (lg, rg) {
-                if (same_local(la, a, defs) && same_local(lb, x, defs))
-                    || (same_local(la, x, defs) && same_local(lb, a, defs))
-                {
-                    mul = true;
-                }
-            }
-        }
-        if is_list_set(v).is_some() {
-            set = true;
-        }
-        if let Some((_, _, val)) = is_list_set(v) {
-            if matches!(defs.get(&val.0), Some(Value::Float(f)) if *f == 0.0) {
-                zero_fill = true;
-            }
-        }
-    }
     mul && set && zero_fill
 }
 
 pub(super) fn fun_has_addmm_shape(
     body: &Block,
     defs: &HashMap<u32, Value>,
-    out_slot: &str,
+    out: &OutSlot,
+    dest: Local,
     u: Local,
     v: Local,
     alpha: Local,
-    m: Local,
-    n: Local,
+    _m: Local,
+    _n: Local,
 ) -> bool {
     let mut get_u = false;
     let mut get_v = false;
     let mut set = false;
     let mut uses_alpha = false;
-    for vdef in defs.values() {
+    for_each_shape_value(body, defs, &mut |vdef| {
         if let Some((lst, _)) = is_list_get(vdef) {
             if same_local(lst, u, defs) {
                 get_u = true;
@@ -201,34 +165,21 @@ pub(super) fn fun_has_addmm_shape(
                 get_v = true;
             }
         }
-        if is_list_set(vdef).is_some() {
+        if is_out_set(vdef, out, dest, defs) {
             set = true;
         }
         if mentions_local(vdef, alpha) {
             uses_alpha = true;
         }
-    }
-    for_each_let_value_ctrl(body, &mut |_b, val| {
-        if is_list_set(val).is_some() {
-            set = true;
-        }
-        if let Some((lst, _)) = is_list_get(val) {
-            if same_local(lst, u, defs) {
-                get_u = true;
-            }
-            if same_local(lst, v, defs) {
-                get_v = true;
-            }
-        }
     });
-    let _ = (out_slot, m, n);
     get_u && get_v && set && uses_alpha
 }
 
 pub(super) fn fun_has_axpy_shape(
     body: &Block,
     defs: &HashMap<u32, Value>,
-    out_slot: &str,
+    out: &OutSlot,
+    dest: Local,
     x: Local,
     alpha: Local,
 ) -> bool {
@@ -236,34 +187,20 @@ pub(super) fn fun_has_axpy_shape(
     let mut get_y = false;
     let mut set = false;
     let mut uses_alpha = false;
-    for v in defs.values() {
+    for_each_shape_value(body, defs, &mut |v| {
         if let Some((lst, _)) = is_list_get(v) {
             if same_local(lst, x, defs) {
                 get_x = true;
             }
-            // y is out_slot Name
-            if name_of(lst, defs).as_deref() == Some(out_slot) {
+            if is_out_list(lst, out, dest, defs) {
                 get_y = true;
             }
         }
-        if is_list_set(v).is_some() {
+        if is_out_set(v, out, dest, defs) {
             set = true;
         }
         if mentions_local(v, alpha) {
             uses_alpha = true;
-        }
-    }
-    for_each_let_value_ctrl(body, &mut |_b, val| {
-        if is_list_set(val).is_some() {
-            set = true;
-        }
-        if let Some((lst, _)) = is_list_get(val) {
-            if same_local(lst, x, defs) {
-                get_x = true;
-            }
-            if name_of(lst, defs).as_deref() == Some(out_slot) {
-                get_y = true;
-            }
         }
     });
     get_x && get_y && set && uses_alpha
@@ -272,7 +209,8 @@ pub(super) fn fun_has_axpy_shape(
 pub(super) fn fun_has_sub_shape(
     body: &Block,
     defs: &HashMap<u32, Value>,
-    out_slot: &str,
+    out: &OutSlot,
+    dest: Local,
     a: Local,
     b: Local,
 ) -> bool {
@@ -280,7 +218,7 @@ pub(super) fn fun_has_sub_shape(
     let mut get_b = false;
     let mut sub = false;
     let mut set = false;
-    for v in defs.values() {
+    for_each_shape_value(body, defs, &mut |v| {
         if let Some((lst, _)) = is_list_get(v) {
             if same_local(lst, a, defs) {
                 get_a = true;
@@ -292,26 +230,18 @@ pub(super) fn fun_has_sub_shape(
         if matches!(v, Value::Binary { op: BinOp::Sub, .. }) {
             sub = true;
         }
-        if is_list_set(v).is_some() {
+        if is_out_set(v, out, dest, defs) {
             set = true;
-        }
-    }
-    for_each_let_value_ctrl(body, &mut |_b, val| {
-        if is_list_set(val).is_some() {
-            set = true;
-        }
-        if matches!(val, Value::Binary { op: BinOp::Sub, .. }) {
-            sub = true;
         }
     });
-    let _ = out_slot;
     get_a && get_b && sub && set
 }
 
 pub(super) fn fun_has_add_shape(
     body: &Block,
     defs: &HashMap<u32, Value>,
-    out_slot: &str,
+    out: &OutSlot,
+    dest: Local,
     a: Local,
     b: Local,
 ) -> bool {
@@ -320,9 +250,9 @@ pub(super) fn fun_has_add_shape(
     let mut add = false;
     let mut set = false;
     let mut mul = false;
-    for v in defs.values() {
+    for_each_shape_value(body, defs, &mut |v| {
         if let Some((lst, _)) = is_list_get(v) {
-            if same_local(lst, a, defs) || name_of(lst, defs).as_deref() == Some(out_slot) {
+            if same_local(lst, a, defs) || is_out_list(lst, out, dest, defs) {
                 get_a = true;
             }
             if same_local(lst, b, defs) {
@@ -335,27 +265,8 @@ pub(super) fn fun_has_add_shape(
         if matches!(v, Value::Binary { op: BinOp::Mul, .. }) {
             mul = true;
         }
-        if is_list_set(v).is_some() {
+        if is_out_set(v, out, dest, defs) {
             set = true;
-        }
-    }
-    for_each_let_value_ctrl(body, &mut |_b, val| {
-        if is_list_set(val).is_some() {
-            set = true;
-        }
-        if let Some((lst, _)) = is_list_get(val) {
-            if same_local(lst, a, defs) || name_of(lst, defs).as_deref() == Some(out_slot) {
-                get_a = true;
-            }
-            if same_local(lst, b, defs) {
-                get_b = true;
-            }
-        }
-        if matches!(val, Value::Binary { op: BinOp::Add, .. }) {
-            add = true;
-        }
-        if matches!(val, Value::Binary { op: BinOp::Mul, .. }) {
-            mul = true;
         }
     });
     // Exclude axpy-like `y + α*x` (has Mul).
@@ -365,7 +276,8 @@ pub(super) fn fun_has_add_shape(
 pub(super) fn fun_has_mul_shape(
     body: &Block,
     defs: &HashMap<u32, Value>,
-    out_slot: &str,
+    out: &OutSlot,
+    dest: Local,
     a: Local,
     b: Local,
 ) -> bool {
@@ -374,7 +286,7 @@ pub(super) fn fun_has_mul_shape(
     let mut mul = false;
     let mut set = false;
     let mut add_or_sub = false;
-    for v in defs.values() {
+    for_each_shape_value(body, defs, &mut |v| {
         if let Some((lst, _)) = is_list_get(v) {
             if same_local(lst, a, defs) {
                 get_a = true;
@@ -389,21 +301,9 @@ pub(super) fn fun_has_mul_shape(
         if is_nontrivial_add_or_sub(v, defs) {
             add_or_sub = true;
         }
-        if is_list_set(v).is_some() {
+        if is_out_set(v, out, dest, defs) {
             set = true;
-        }
-    }
-    for_each_let_value_ctrl(body, &mut |_b, val| {
-        if is_list_set(val).is_some() {
-            set = true;
-        }
-        if matches!(val, Value::Binary { op: BinOp::Mul, .. }) {
-            mul = true;
-        }
-        if is_nontrivial_add_or_sub(val, defs) {
-            add_or_sub = true;
         }
     });
-    let _ = out_slot;
     get_a && get_b && mul && set && !add_or_sub
 }

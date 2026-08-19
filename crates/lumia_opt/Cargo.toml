@@ -19,11 +19,11 @@ domain-sr = []
 lumia_abi.workspace = true
 lumia_core.workspace = true
 lumia_hir.workspace = true
+lumia_syntax.workspace = true
 lumia_ty.workspace = true
 rustc-hash = { workspace = true }
 
 [dev-dependencies]
-lumia_syntax.workspace = true
 
 [lints]
 workspace = true

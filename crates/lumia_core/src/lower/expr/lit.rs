@@ -42,7 +42,7 @@ pub(super) fn lower_lit(
             let l = ctx.fresh();
             ops.push(Op::Let {
                 local: l,
-                value: Value::String(s.clone()),
+                value: Value::String(s.to_string()),
                 pure_region,
             });
             Some(l)
@@ -58,7 +58,7 @@ pub(super) fn lower_lit(
         }
         HirExpr::Unit(_) => None,
         HirExpr::Var(name, _) => {
-            if ctx.mutables.contains(name) {
+            if ctx.mutables.contains(name.as_str()) {
                 let l = ctx.fresh();
                 ops.push(Op::Let {
                     local: l,
@@ -66,9 +66,9 @@ pub(super) fn lower_lit(
                     pure_region,
                 });
                 Some(l)
-            } else if let Some(l) = ctx.name_to_local.get(name) {
+            } else if let Some(l) = ctx.name_to_local.get(name.as_str()) {
                 Some(*l)
-            } else if let Some(synth) = prelude_ctor_funref(name) {
+            } else if let Some(synth) = prelude_ctor_funref(name.as_str()) {
                 // First-class / alias use: `val lo = listOf` → FunRef to a nullary
                 // empty-alloc stub (call sites `listOf(…)` stay special-cased).
                 let l = ctx.fresh();
@@ -78,15 +78,15 @@ pub(super) fn lower_lit(
                     pure_region,
                 });
                 Some(l)
-            } else if ctx.toplevel_funs.contains(name) {
+            } else if ctx.toplevel_funs.contains(name.as_str()) {
                 let l = ctx.fresh();
                 ops.push(Op::Let {
                     local: l,
-                    value: Value::FunRef(name.clone().into()),
+                    value: Value::FunRef(name.to_string().into()),
                     pure_region,
                 });
                 Some(l)
-            } else if ctx.toplevel_vals.contains(name) {
+            } else if ctx.toplevel_vals.contains(name.as_str()) {
                 let l = ctx.fresh();
                 ops.push(Op::Let {
                     local: l,

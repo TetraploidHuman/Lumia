@@ -43,7 +43,7 @@ fn is_prime_fun(core: &CoreModule) -> &lumia_core::CoreFun {
         })
 }
 
-fn add_name_plus_two(dest: u32, defs: &HashMap<u32, Value>) -> Option<String> {
+fn add_name_plus_two(dest: u32, defs: &HashMap<u32, Value>) -> Option<lumia_syntax::Sym> {
     let Value::Binary {
         op: CoreBinOp::Add,
         left,

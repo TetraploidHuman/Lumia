@@ -12,6 +12,7 @@ mod emit_value;
 mod error;
 mod funref;
 mod link;
+mod opt_level;
 mod roots;
 mod runtime_decls;
 mod state;
@@ -20,6 +21,7 @@ mod tco;
 pub use error::CodegenError;
 pub use link::find_runtime_lib_prefer;
 use link::link_executable;
+pub use opt_level::LlvmOptLevel;
 use runtime_decls::declare_runtime;
 use state::{FrameState, FunTables, LlvmTypes, MemoEmit};
 use tco::compute_tco_sccs;
@@ -34,14 +36,18 @@ use inkwell::targets::{
 };
 use inkwell::types::BasicMetadataTypeEnum;
 use inkwell::values::FunctionValue;
-use inkwell::{AddressSpace, OptimizationLevel};
+use inkwell::AddressSpace;
 use lumia_core::CoreModule;
 use lumia_ty::Type;
 use rustc_hash::FxHashMap as HashMap;
 use std::path::PathBuf;
 
 pub struct CodegenOptions {
+    /// Product mode: strip link, omit trap backtrace frames, pick `lumia_rt` profile.
+    /// Independent of [`Self::llvm_opt`] (Debug can still run `default<O1>`).
     pub release: bool,
+    /// LLVM new-PM + instruction selection. See [`LlvmOptLevel::from_release`].
+    pub llvm_opt: LlvmOptLevel,
     pub output: PathBuf,
     pub emit_ir: bool,
     pub runtime_lib: PathBuf,
@@ -52,7 +58,7 @@ pub struct CodegenOptions {
 }
 
 /// Emit LLVM IR for `core`, run `module.verify()`, and return the IR text.
-/// Does not write object files or invoke the linker.
+/// Does not write object files, invoke the linker, or run [`CodegenOptions::llvm_opt`].
 pub fn emit_verified_llvm_ir(core: &CoreModule, opts: &CodegenOptions) -> Result<String> {
     let context = Context::create();
     let cg = emit_llvm_module(&context, core, opts)?;
@@ -82,7 +88,7 @@ fn emit_llvm_module<'ctx>(
         } else if let Some(sym) = &f.external {
             sym.clone()
         } else {
-            f.name.clone()
+            f.name.to_string()
         };
         let fv = if let Some(sym) = &f.external {
             let mut runtime_abi = matches!(f.foreign_abi, lumia_core::ForeignAbi::Runtime);
@@ -103,9 +109,9 @@ fn emit_llvm_module<'ctx>(
                 fv.set_linkage(inkwell::module::Linkage::External);
                 fv
             };
-            cg.funs.external_funs.insert(f.name.clone());
+            cg.funs.external_funs.insert(f.name.to_string());
             if runtime_abi {
-                cg.funs.runtime_external_funs.insert(f.name.clone());
+                cg.funs.runtime_external_funs.insert(f.name.to_string());
             }
             fv
         } else {
@@ -115,7 +121,7 @@ fn emit_llvm_module<'ctx>(
             );
             cg.llvm.module.add_function(&name, fn_ty, None)
         };
-        cg.funs.functions.insert(f.name.clone(), fv);
+        cg.funs.functions.insert(f.name.to_string(), fv);
         attrs::add_nounwind(context, fv);
     }
 
@@ -135,19 +141,33 @@ fn emit_llvm_module<'ctx>(
         &cg.funs.adt_variant_names,
     );
 
-    if opts.emit_ir {
-        let ir_path = opts.output.with_extension("ll");
-        cg.llvm
-            .module
-            .print_to_file(&ir_path)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-    }
-
     cg.llvm
         .module
         .verify()
         .map_err(|e| anyhow::anyhow!("LLVM verify: {e}"))?;
     Ok(cg)
+}
+
+fn apply_llvm_opt(module: &LlvmModule, tm: &TargetMachine, level: LlvmOptLevel) -> Result<()> {
+    let Some(pipeline) = level.pass_pipeline() else {
+        return Ok(());
+    };
+    let pb = PassBuilderOptions::create();
+    let loops = level.aggressive_loop_opts();
+    pb.set_loop_vectorization(loops);
+    pb.set_loop_slp_vectorization(loops);
+    pb.set_loop_unrolling(loops);
+    module
+        .run_passes(pipeline, tm, pb)
+        .map_err(|e| anyhow::anyhow!("LLVM run_passes ({pipeline}): {e}"))?;
+    // Pre-pipeline verify always runs in `emit_llvm_module`. Post-pipeline is
+    // optional: set `LUMIA_VERIFY=1` when hunting LLVM/pass bugs.
+    if std::env::var_os("LUMIA_VERIFY").is_some() {
+        module
+            .verify()
+            .map_err(|e| anyhow::anyhow!("LLVM verify after {pipeline}: {e}"))?;
+    }
+    Ok(())
 }
 
 pub fn compile_module(core: &CoreModule, opts: &CodegenOptions) -> Result<()> {
@@ -159,11 +179,7 @@ pub fn compile_module(core: &CoreModule, opts: &CodegenOptions) -> Result<()> {
     let target = Target::from_triple(&triple).map_err(|e| anyhow::anyhow!("{e}"))?;
     let cpu = TargetMachine::get_host_cpu_name().to_string();
     let features = TargetMachine::get_host_cpu_features().to_string();
-    let opt = if opts.release {
-        OptimizationLevel::Aggressive
-    } else {
-        OptimizationLevel::None
-    };
+    let opt = opts.llvm_opt.inkwell();
     // PIC is fine on ELF/Mach-O; MSVC COFF expects the default reloc model.
     let reloc = if cfg!(target_os = "windows") {
         RelocMode::Default
@@ -174,25 +190,16 @@ pub fn compile_module(core: &CoreModule, opts: &CodegenOptions) -> Result<()> {
         .create_target_machine(&triple, &cpu, &features, opt, reloc, CodeModel::Default)
         .context("create target machine")?;
 
-    // Release: run LLVM new-PM pipeline before object emit so mem2reg / loop
-    // opts / vectorize see our mut-slot allocas and checked arithmetic.
-    if opts.release {
-        let pb = PassBuilderOptions::create();
-        pb.set_loop_vectorization(true);
-        pb.set_loop_slp_vectorization(true);
-        pb.set_loop_unrolling(true);
+    // Run the LLVM new-PM pipeline before object emit so mem2reg / loop opts
+    // see mut-slot allocas. Debug defaults to O1; Release to O3.
+    apply_llvm_opt(&cg.llvm.module, &tm, opts.llvm_opt)?;
+
+    if opts.emit_ir {
+        let ir_path = opts.output.with_extension("ll");
         cg.llvm
             .module
-            .run_passes("default<O3>", &tm, pb)
-            .map_err(|e| anyhow::anyhow!("LLVM run_passes: {e}"))?;
-        // Pre-O3 verify always runs in `emit_llvm_module`. Post-O3 is optional:
-        // set `LUMIA_VERIFY=1` when hunting LLVM/pass bugs (Todo: secondary verify).
-        if std::env::var_os("LUMIA_VERIFY").is_some() {
-            cg.llvm
-                .module
-                .verify()
-                .map_err(|e| anyhow::anyhow!("LLVM verify after O3: {e}"))?;
-        }
+            .print_to_file(&ir_path)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
     }
 
     let obj_path = if cfg!(target_os = "windows") {

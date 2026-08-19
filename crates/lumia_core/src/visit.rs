@@ -4,6 +4,7 @@
 //! remap / collect / max-local stay exhaustive in one place.
 
 use crate::ir::{Block, CoreFun, CoreModule, Local, Op, Value};
+use lumia_syntax::Sym;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// Visit every `Local` operand stored directly on this `Value` node.
@@ -251,7 +252,7 @@ pub fn collect_uses_in_value(
         locals.insert(l.0);
     });
     if let Value::Name(n) = value {
-        names.insert(n.clone());
+        names.insert(n.as_str().to_string());
     }
     match value {
         Value::If {
@@ -369,6 +370,84 @@ pub fn for_each_nested_block(value: &Value, f: &mut impl FnMut(&Block)) {
     }
 }
 
+/// Fork-join over `Value::If` arms with independent environments.
+///
+/// Used by analyses that must not leak branch-local facts across arms (memo
+/// structural recursion, const-arg frequency). Returns `None` when `value`
+/// is not an If. Loop stays sequential via [`for_each_nested_block`].
+pub fn map_if_branches<E>(
+    value: &Value,
+    seed: &E,
+    fork: impl Fn(&E) -> E,
+    mut walk: impl FnMut(&Block, &mut E),
+) -> Option<(E, E)> {
+    let Value::If {
+        then_block,
+        else_block,
+        ..
+    } = value
+    else {
+        return None;
+    };
+    let mut then_env = fork(seed);
+    let mut else_env = fork(seed);
+    walk(then_block, &mut then_env);
+    walk(else_block, &mut else_env);
+    Some((then_env, else_env))
+}
+
+/// In-block sequential Let walk with **If fork-join** and **Loop sequential env**.
+///
+/// Used by memo plan (structural recursion / const-arg reuse) and any analysis that
+/// must preserve Let-order within a block but fork on `If` and clone-through on `Loop`.
+/// Does not enter `Lambda` bodies.
+pub fn for_each_let_in_block_ctrl<E>(
+    block: &Block,
+    env: &mut E,
+    fork: &impl Fn(&E) -> E,
+    on_let: &mut impl FnMut(Local, &Value, &mut E),
+    on_control_let: &mut impl FnMut(Local, &Value, &mut E),
+    merge_if: &impl Fn(&mut E, E, E),
+    merge_loop: &impl Fn(&mut E, E),
+) {
+    for_each_let_in_block(block, &mut |local, value, _pure| match value {
+        Value::If { .. } => {
+            on_control_let(local, value, env);
+            if let Some((t, e)) = map_if_branches(value, env, fork, |b, e| {
+                for_each_let_in_block_ctrl(
+                    b,
+                    e,
+                    fork,
+                    on_let,
+                    on_control_let,
+                    merge_if,
+                    merge_loop,
+                );
+            }) {
+                merge_if(env, t, e);
+            }
+        }
+        Value::Loop { .. } => {
+            on_control_let(local, value, env);
+            let mut loop_env = fork(env);
+            for_each_nested_block(value, &mut |b| {
+                for_each_let_in_block_ctrl(
+                    b,
+                    &mut loop_env,
+                    fork,
+                    on_let,
+                    on_control_let,
+                    merge_if,
+                    merge_loop,
+                );
+            });
+            merge_loop(env, loop_env);
+        }
+        Value::Lambda { .. } => on_control_let(local, value, env),
+        _ => on_let(local, value, env),
+    });
+}
+
 /// First direct `Value::Loop` in `block.ops` (no nested DFS).
 ///
 /// Used by nest SR matchers that only want the immediate inner loop body.
@@ -447,7 +526,7 @@ pub fn collect_defined_locals(block: &Block, defined: &mut HashSet<u32>) {
 }
 
 /// Collect mutable slot names written by `Assign` under `block` (DFS).
-pub fn collect_assigned_names(block: &Block, out: &mut HashSet<String>) {
+pub fn collect_assigned_names(block: &Block, out: &mut HashSet<Sym>) {
     for_each_block_dfs(block, &mut |b| {
         for op in &b.ops {
             if let Op::Assign { name, .. } = op {
@@ -458,7 +537,7 @@ pub fn collect_assigned_names(block: &Block, out: &mut HashSet<String>) {
 }
 
 /// Collect slot names from `Assign` writes and `Value::Name` loads (DFS).
-pub fn collect_slot_names(block: &Block, names: &mut HashSet<String>) {
+pub fn collect_slot_names(block: &Block, names: &mut HashSet<Sym>) {
     for_each_block_dfs(block, &mut |b| {
         for op in &b.ops {
             match op {
@@ -483,6 +562,177 @@ pub fn collect_slot_names(block: &Block, names: &mut HashSet<String>) {
 /// analyses (`mark_float`, `collect_closure_cap_funrefs`, `collect_free`, …).
 pub fn for_each_let_value(block: &Block, f: &mut impl FnMut(&Block, &Value)) {
     for_each_let(block, &mut |b, _local, value| f(b, value));
+}
+
+/// In-block **op order** over `Op::Let` only (no nested entry — caller handles If/Loop in the callback).
+///
+/// Prefer [`for_each_let`] when order across nested blocks does not matter (DFS).
+pub fn for_each_let_in_block(block: &Block, f: &mut impl FnMut(Local, &Value, bool)) {
+    for_each_top_level_op_in_block(block, &mut |op| {
+        if let Op::Let {
+            local,
+            value,
+            pure_region,
+            ..
+        } = op
+        {
+            f(*local, value, *pure_region);
+        }
+    });
+}
+
+/// Mutating in-block Let walk (same order contract as [`for_each_let_in_block`]).
+pub fn for_each_let_in_block_mut(block: &mut Block, f: &mut impl FnMut(Local, &mut Value, bool)) {
+    for op in &mut block.ops {
+        if let Op::Let {
+            local,
+            value,
+            pure_region,
+            ..
+        } = op
+        {
+            f(*local, value, *pure_region);
+        }
+    }
+}
+
+/// Current block only — every `Op` in sequential order (no nested entry).
+pub fn for_each_top_level_op_in_block(block: &Block, f: &mut impl FnMut(&Op)) {
+    for op in &block.ops {
+        f(op);
+    }
+}
+
+/// Mutating in-block op walk (same order contract as [`for_each_top_level_op_in_block`]).
+pub fn for_each_top_level_op_in_block_mut(block: &mut Block, f: &mut impl FnMut(&mut Op)) {
+    for op in &mut block.ops {
+        f(op);
+    }
+}
+
+/// SSA def lookup: sequential in-block `Let`s, then nested If/Loop/Lambda bodies on earlier binds.
+///
+/// Shared by float ABI chase, ABI refresh alias walk, and heap typing. Does **not** follow
+/// `Assign`/`Name` slots — only SSA `Op::Let`.
+pub fn find_local_def<'a>(block: &'a Block, id: u32) -> Option<&'a Value> {
+    for op in &block.ops {
+        let Op::Let { local, value, .. } = op else {
+            continue;
+        };
+        if local.0 == id {
+            return Some(value);
+        }
+        if let Some(v) = find_local_def_in_value(value, id) {
+            return Some(v);
+        }
+    }
+    None
+}
+
+/// Nested-region half of [`find_local_def`] (If/Loop/Lambda only).
+pub fn find_local_def_in_value<'a>(value: &'a Value, id: u32) -> Option<&'a Value> {
+    match value {
+        Value::If {
+            then_block,
+            else_block,
+            ..
+        } => find_local_def(then_block, id).or_else(|| find_local_def(else_block, id)),
+        Value::Loop {
+            header,
+            body,
+            latch,
+        } => find_local_def(header, id)
+            .or_else(|| find_local_def(body, id))
+            .or_else(|| find_local_def(latch, id)),
+        Value::Lambda { body, .. } => find_local_def(body, id),
+        _ => None,
+    }
+}
+
+/// Direct `Op::Let` in `block.ops` only — no nested search through earlier bind values.
+///
+/// Used when alias chase must stay in the current SSA block (e.g. lifted-lambda heap reachability).
+pub fn find_top_level_local_def<'a>(block: &'a Block, id: u32) -> Option<&'a Value> {
+    for op in &block.ops {
+        if let Op::Let { local, value, .. } = op {
+            if local.0 == id {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+/// Take/splice top-level ops: each input op becomes zero or more output ops in order.
+///
+/// Shared entry for passes that expand or remove ops (`inline`, `lambda_lift`, LICM, …).
+pub fn flat_map_top_level_ops_in_block(block: &mut Block, f: &mut impl FnMut(Op) -> Vec<Op>) {
+    let mut out = Vec::with_capacity(block.ops.len());
+    for op in std::mem::take(&mut block.ops) {
+        out.extend(f(op));
+    }
+    block.ops = out;
+}
+
+/// Current block only — every top-level `Op::Assign` in sequential order.
+pub fn for_each_assign_in_block(block: &Block, f: &mut impl FnMut(&str, Local)) {
+    for_each_top_level_op_in_block(block, &mut |op| {
+        if let Op::Assign {
+            name,
+            value: Local(v),
+        } = op
+        {
+            f(name, Local(*v));
+        }
+    });
+}
+
+/// Every `Assign` to `name` under `block`, including nested If/Loop/Lambda regions.
+///
+/// Shared by float ABI slot heap typing and mono `ret_ty` slot fixed-type joins.
+pub fn for_each_named_slot_assign_in_block(block: &Block, name: &Sym, f: &mut impl FnMut(Local)) {
+    for_each_op_in_block(block, &mut |op| {
+        if let Op::Assign {
+            name: n,
+            value: Local(v),
+        } = op
+        {
+            if *n == *name {
+                f(Local(*v));
+            }
+        }
+    });
+}
+
+/// Pre-loop top-level Lets only — stops before the first `Op::Let { Value::Loop }`.
+pub fn for_each_pre_loop_let_in_block(block: &Block, f: &mut impl FnMut(Local, &Value)) {
+    for op in &block.ops {
+        if matches!(
+            op,
+            Op::Let {
+                value: Value::Loop { .. },
+                ..
+            }
+        ) {
+            break;
+        }
+        if let Op::Let { local, value, .. } = op {
+            f(*local, value);
+        }
+    }
+}
+
+/// Whether any `Op::Break` appears under `block` (DFS, all blocks).
+pub fn block_has_break(block: &Block) -> bool {
+    let mut found = false;
+    for_each_block_dfs(block, &mut |b| {
+        for_each_top_level_op_in_block(b, &mut |op| {
+            if matches!(op, Op::Break) {
+                found = true;
+            }
+        });
+    });
+    found
 }
 
 /// Like [`for_each_let_value`], but also passes the Let destination [`Local`].
@@ -616,7 +866,7 @@ pub fn collect_call_names_in(block: &Block, methods: &HashSet<String>, out: &mut
 }
 
 /// Collect `Assign` name → value locals (order-independent; DFS-safe).
-pub fn collect_assigns(block: &Block, assigns: &mut HashMap<String, Vec<Local>>) {
+pub fn collect_assigns(block: &Block, assigns: &mut HashMap<Sym, Vec<Local>>) {
     for_each_block_dfs(block, &mut |b| {
         for op in &b.ops {
             if let Op::Assign { name, value } = op {
@@ -626,49 +876,37 @@ pub fn collect_assigns(block: &Block, assigns: &mut HashMap<String, Vec<Local>>)
     });
 }
 
-/// Track FunRef / AllocClosure SSA aliases and which capture slots hold FunRefs.
+/// Track FunRef / AllocClosure aliases (SSA + named slots) and which capture
+/// slots hold FunRefs.
 ///
-/// **Let-ordered** (not DFS): aliasing depends on definition order. Shared by
-/// mono `directize` and `float_cap_fixup`.
+/// **Let-ordered** (not DFS). Shared by mono `directize` and `float_cap_fixup`.
+/// Nested If/Loop inherit a clone; Lambda starts fresh (same as directize).
 pub fn collect_closure_cap_funrefs(
     block: &Block,
     funref_locals: &mut HashMap<u32, String>,
     cap_funs: &mut HashMap<String, HashMap<u32, String>>,
 ) {
-    for op in &block.ops {
-        match op {
-            Op::Let { local, value, .. } => {
-                match value {
-                    Value::FunRef(name) => {
-                        funref_locals.insert(local.0, name.name.clone());
-                    }
-                    Value::AllocClosure { fun, captures } => {
-                        funref_locals.insert(local.0, fun.name.clone());
-                        let entry = cap_funs.entry(fun.name.clone()).or_default();
-                        for (i, cap) in captures.iter().enumerate() {
-                            if let Some(n) = funref_locals.get(&cap.0) {
-                                entry.insert(i as u32, n.clone());
-                            }
-                        }
-                    }
-                    Value::Local(Local(src)) => {
-                        if let Some(n) = funref_locals.get(src).cloned() {
-                            funref_locals.insert(local.0, n);
-                        } else {
-                            funref_locals.remove(&local.0);
-                        }
-                    }
-                    _ => {
-                        funref_locals.remove(&local.0);
-                    }
+    let mut aliases = crate::FunRefAliases {
+        locals: std::mem::take(funref_locals),
+        slots: HashMap::default(),
+    };
+    aliases.walk_block(
+        block,
+        crate::FunRefAlloc::Track,
+        None,
+        &mut |value, aliases| {
+            let Value::AllocClosure { fun, captures } = value else {
+                return;
+            };
+            let entry = cap_funs.entry(fun.name.clone()).or_default();
+            for (i, cap) in captures.iter().enumerate() {
+                if let Some(n) = aliases.resolve(cap.0) {
+                    entry.insert(i as u32, n.to_string());
                 }
-                for_each_nested_block(value, &mut |b| {
-                    collect_closure_cap_funrefs(b, funref_locals, cap_funs);
-                });
             }
-            _ => {}
-        }
-    }
+        },
+    );
+    *funref_locals = aliases.locals;
 }
 
 /// Total SSA op count in `block` and nested If/Loop/Lambda bodies.
@@ -676,6 +914,34 @@ pub fn count_ops(block: &Block) -> usize {
     let mut n = 0;
     for_each_block_dfs(block, &mut |b| n += b.ops.len());
     n
+}
+
+/// Memo plan cost heuristic: top-level ops plus weighted nested control (If/Loop).
+pub fn body_weight(block: &Block) -> usize {
+    let mut n = block.ops.len();
+    for op in &block.ops {
+        if let Op::Let { value, .. } = op {
+            n += let_value_weight(value);
+        }
+    }
+    n
+}
+
+fn let_value_weight(value: &Value) -> usize {
+    match value {
+        Value::If {
+            then_block,
+            else_block,
+            ..
+        } => 1 + body_weight(then_block) + body_weight(else_block),
+        Value::Loop {
+            header,
+            body,
+            latch,
+        } => 1 + body_weight(header) + body_weight(body) + body_weight(latch),
+        Value::Call { .. } | Value::IndirectCall { .. } | Value::Builtin { .. } => 1,
+        _ => 0,
+    }
 }
 
 /// Whether any nested region contains a direct `Call` to `fun` (enters Lambda).
@@ -701,7 +967,7 @@ pub fn block_calls(block: &Block, fun: &str) -> bool {
     found
 }
 
-/// Whether `block` or a nested region contains `Op::Return`.
+/// Whether `block` has early return.
 pub fn has_early_return(block: &Block) -> bool {
     let mut found = false;
     for_each_block_dfs(block, &mut |b| {
@@ -710,6 +976,45 @@ pub fn has_early_return(block: &Block) -> bool {
         }
     });
     found
+}
+
+/// Peel a top-level SSA alias chain to its terminal [`Value`] (no nested-block defs).
+pub fn peel_local_to_value<'a>(block: &'a Block, start: u32) -> Option<&'a Value> {
+    let mut seen = HashSet::default();
+    let mut cur = start;
+    loop {
+        if !seen.insert(cur) {
+            return None;
+        }
+        match find_top_level_local_def(block, cur)? {
+            Value::Local(Local(src)) => cur = *src,
+            terminal => return Some(terminal),
+        }
+    }
+}
+
+/// Like [`peel_local_to_value`] starting from [`Block::result`].
+pub fn peel_block_result<'a>(block: &'a Block) -> Option<&'a Value> {
+    let Local(r) = block.result?;
+    peel_local_to_value(block, r)
+}
+
+/// Unreachable / exhaustiveness arm (`MatchFail`) — compatible with any result ty.
+///
+/// Shared by float heap ABI (bottom, not Unit) and mono `ret_ty` If joins.
+pub fn block_result_is_bottom(block: &Block) -> bool {
+    matches!(
+        peel_block_result(block),
+        Some(Value::Builtin {
+            name: lumia_hir::Builtin::MatchFail,
+            ..
+        })
+    )
+}
+
+/// `if` arm that is the Bool literal from `and`/`or` desugaring.
+pub fn block_result_is_bool_lit(block: &Block, expect: bool) -> bool {
+    matches!(peel_block_result(block), Some(Value::Bool(b)) if *b == expect)
 }
 
 /// Eager IO in `block` (not deferred nested-lambda bodies).
@@ -787,6 +1092,143 @@ pub fn has_assign_or_name(block: &Block) -> bool {
     found
 }
 
+/// Every `Op::Let { Value::Loop { .. } }` under `block` (DFS into nested regions).
+pub fn for_each_loop_in_block(block: &Block, f: &mut impl FnMut(&Block, &Block, &Block)) {
+    for_each_block_dfs(block, &mut |b| {
+        for op in &b.ops {
+            if let Op::Let {
+                value:
+                    Value::Loop {
+                        header,
+                        body,
+                        latch,
+                    },
+                ..
+            } = op
+            {
+                f(header, body, latch);
+            }
+        }
+    });
+}
+
+/// Loops bound directly in `block.ops` (no DFS — matches [`first_direct_loop`] scope per block).
+pub fn for_each_direct_loop_in_block(block: &Block, f: &mut impl FnMut(&Block, &Block, &Block)) {
+    for op in &block.ops {
+        if let Op::Let {
+            value:
+                Value::Loop {
+                    header,
+                    body,
+                    latch,
+                },
+            ..
+        } = op
+        {
+            f(header, body, latch);
+        }
+    }
+}
+
+/// Collect SSA locals from `Let { Value::Name(n) }` in one block (`names` may be a singleton).
+pub fn collect_name_loads_in_block(block: &Block, names: &HashSet<Sym>, out: &mut HashSet<u32>) {
+    for op in &block.ops {
+        if let Op::Let {
+            local,
+            value: Value::Name(n),
+            ..
+        } = op
+        {
+            if names.contains(n.as_str()) {
+                out.insert(local.0);
+            }
+        }
+    }
+}
+
+/// DFS: collect every `Let { Name(name) }` local under `block`.
+pub fn collect_name_load_locals(block: &Block, name: &str, out: &mut HashSet<u32>) {
+    for_each_block_dfs(block, &mut |b| {
+        for op in &b.ops {
+            if let Op::Let {
+                local,
+                value: Value::Name(n),
+                ..
+            } = op
+            {
+                if n == name {
+                    out.insert(local.0);
+                }
+            }
+        }
+    });
+}
+
+/// DFS: collect locals loading any name in `names`.
+pub fn collect_name_load_locals_any(
+    block: &Block,
+    names: &HashSet<Sym>,
+    out: &mut HashSet<u32>,
+) {
+    for_each_block_dfs(block, &mut |b| collect_name_loads_in_block(b, names, out));
+}
+
+/// Sequential in-block op walk: every `Op`, then nested If/Loop/Lambda bodies on `Let`.
+///
+/// Unlike [`for_each_op_value`], visits **all** op kinds (`Assign`, `Return`, …).
+/// Nested regions are entered only through `Let` values (same as escape propagate).
+pub fn for_each_op_in_block(block: &Block, f: &mut impl FnMut(&Op)) {
+    for op in &block.ops {
+        f(op);
+        if let Op::Let { value, .. } = op {
+            for_each_nested_block(value, &mut |nested| for_each_op_in_block(nested, f));
+        }
+    }
+}
+
+/// Mutating counterpart of [`for_each_op_in_block`].
+pub fn for_each_op_in_block_mut(block: &mut Block, f: &mut impl FnMut(&mut Op)) {
+    for op in &mut block.ops {
+        f(op);
+        if let Op::Let { value, .. } = op {
+            for_each_nested_block_mut(value, &mut |nested| for_each_op_in_block_mut(nested, f));
+        }
+    }
+}
+
+/// Whether any `Op::Let` under control regions (not Lambda) binds an `If`.
+pub fn block_has_if_let(block: &Block) -> bool {
+    let mut found = false;
+    for_each_let_value_ctrl(block, &mut |_b, val| {
+        if matches!(val, Value::If { .. }) {
+            found = true;
+        }
+    });
+    found
+}
+
+/// Sequential in-block walk: each `Op::Let` value, then nested If/Loop/Lambda regions.
+///
+/// Preserves **in-block op order** (unlike [`for_each_let_value`] DFS). Prefer this
+/// for passes that walk one block at a time and recurse into nested control regions.
+pub fn for_each_op_value(block: &Block, f: &mut impl FnMut(&Value)) {
+    for op in &block.ops {
+        if let Op::Let { value, .. } = op {
+            f(value);
+            for_each_nested_block(value, &mut |nested| for_each_op_value(nested, f));
+        }
+    }
+}
+
+/// Visit nested If/Loop bodies in each top-level `Op::Let` (skips Lambda).
+pub fn for_each_ctrl_nested_in_block_mut(block: &mut Block, f: &mut impl FnMut(&mut Block)) {
+    for op in &mut block.ops {
+        if let Op::Let { value, .. } = op {
+            for_each_ctrl_nested_block_mut(value, f);
+        }
+    }
+}
+
 /// Mutating walk: for each `Let`/`Effect` value, call `on_value` then recurse into nested blocks.
 ///
 /// `on_value` should transform the current value leaf only — nested regions are visited
@@ -815,7 +1257,7 @@ pub fn resolve_module_call_fun_ids(module: &mut crate::CoreModule) {
     let mut by_name: HashMap<String, FunId> = HashMap::default();
     by_name.reserve(module.functions.len());
     for (i, f) in module.functions.iter().enumerate() {
-        by_name.insert(f.name.clone(), FunId(i as u32));
+        by_name.insert(f.name.to_string(), FunId(i as u32));
     }
     for f in &mut module.functions {
         for_each_op_value_mut(&mut f.body, &mut |value| match value {
@@ -831,6 +1273,128 @@ pub fn resolve_module_call_fun_ids(module: &mut crate::CoreModule) {
 mod tests {
     use super::*;
     use crate::{ListRepr, Op};
+
+    #[test]
+    fn map_if_branches_forks_and_returns_both_envs() {
+        let v = Value::If {
+            cond: Local(0),
+            then_block: Box::new(Block {
+                ops: vec![Op::Let {
+                    local: Local(1),
+                    value: Value::Int(1),
+                    pure_region: true,
+                }],
+                result: Some(Local(1)),
+            }),
+            else_block: Box::new(Block {
+                ops: vec![
+                    Op::Let {
+                        local: Local(2),
+                        value: Value::Int(2),
+                        pure_region: true,
+                    },
+                    Op::Let {
+                        local: Local(3),
+                        value: Value::Int(3),
+                        pure_region: true,
+                    },
+                ],
+                result: Some(Local(3)),
+            }),
+        };
+        let (then_n, else_n) =
+            map_if_branches(&v, &0usize, |n| *n, |b, n| *n += b.ops.len()).expect("If should fork");
+        assert_eq!(then_n, 1);
+        assert_eq!(else_n, 2);
+        assert!(map_if_branches(&Value::Int(0), &0usize, |n| *n, |_, _| ()).is_none());
+    }
+
+    #[test]
+    fn for_each_let_in_block_ctrl_forks_if_and_sequential_loop() {
+        let block = Block {
+            ops: vec![
+                Op::Let {
+                    local: Local(1),
+                    value: Value::Int(1),
+                    pure_region: true,
+                },
+                Op::Let {
+                    local: Local(2),
+                    value: Value::If {
+                        cond: Local(0),
+                        then_block: Box::new(Block {
+                            ops: vec![Op::Let {
+                                local: Local(3),
+                                value: Value::Int(10),
+                                pure_region: true,
+                            }],
+                            result: Some(Local(3)),
+                        }),
+                        else_block: Box::new(Block {
+                            ops: vec![Op::Let {
+                                local: Local(4),
+                                value: Value::Int(20),
+                                pure_region: true,
+                            }],
+                            result: Some(Local(4)),
+                        }),
+                    },
+                    pure_region: true,
+                },
+            ],
+            result: Some(Local(2)),
+        };
+        let mut sum = 0usize;
+        let mut control = 0usize;
+        let fork = |n: &usize| *n;
+        let mut on_let = |_: Local, value: &Value, env: &mut usize| {
+            if let Value::Int(n) = value {
+                *env += *n as usize;
+            }
+        };
+        let mut on_control = |_: Local, _: &Value, _: &mut usize| {
+            control += 1;
+        };
+        for_each_let_in_block_ctrl(
+            &block,
+            &mut sum,
+            &fork,
+            &mut on_let,
+            &mut on_control,
+            &|dst, t, e| {
+                *dst = t + e;
+            },
+            &|dst, h| *dst += h,
+        );
+        assert_eq!(sum, 32); // 1 + (1+10) + (1+20) with merge_if = t+e
+        assert_eq!(control, 1); // If binding
+    }
+
+    #[test]
+    fn for_each_op_value_respects_block_order() {
+        let block = Block {
+            ops: vec![
+                Op::Let {
+                    local: Local(1),
+                    value: Value::Int(1),
+                    pure_region: true,
+                },
+                Op::Let {
+                    local: Local(2),
+                    value: Value::Int(2),
+                    pure_region: true,
+                },
+            ],
+            result: None,
+        };
+        let mut seen = Vec::new();
+        for_each_op_value(&block, &mut |v| {
+            if let Value::Int(n) = v {
+                seen.push(*n);
+            }
+        });
+        assert_eq!(seen, vec![1, 2]);
+    }
 
     #[test]
     fn rewrite_remaps_call_args_and_if_blocks() {
@@ -876,6 +1440,65 @@ mod tests {
             _ => panic!("expected if"),
         }
         let _ = ListRepr::HeapList; // keep repr import path warm if needed
+    }
+
+    fn block_result_is_bottom_sees_match_fail() {
+        let block = Block {
+            ops: vec![Op::Let {
+                local: Local(1),
+                value: Value::Builtin {
+                    name: lumia_hir::Builtin::MatchFail,
+                    args: vec![],
+                    result_ty: None,
+                },
+                pure_region: true,
+            }],
+            result: Some(Local(1)),
+        };
+        assert!(block_result_is_bottom(&block));
+    }
+
+    #[test]
+    fn peel_block_result_follows_local_alias_chain() {
+        let block = Block {
+            ops: vec![
+                Op::Let {
+                    local: Local(1),
+                    value: Value::Float(1.5),
+                    pure_region: true,
+                },
+                Op::Let {
+                    local: Local(2),
+                    value: Value::Local(Local(1)),
+                    pure_region: true,
+                },
+            ],
+            result: Some(Local(2)),
+        };
+        assert!(
+            matches!(peel_block_result(&block), Some(Value::Float(v)) if (*v - 1.5).abs() < 1e-9)
+        );
+    }
+
+    #[test]
+    fn block_result_is_bool_lit_sees_alias_chain() {
+        let block = Block {
+            ops: vec![
+                Op::Let {
+                    local: Local(1),
+                    value: Value::Bool(true),
+                    pure_region: true,
+                },
+                Op::Let {
+                    local: Local(2),
+                    value: Value::Local(Local(1)),
+                    pure_region: true,
+                },
+            ],
+            result: Some(Local(2)),
+        };
+        assert!(block_result_is_bool_lit(&block, true));
+        assert!(!block_result_is_bool_lit(&block, false));
     }
 
     #[test]
@@ -1005,6 +1628,44 @@ mod tests {
     }
 
     #[test]
+    fn body_weight_counts_nested_control() {
+        let block = Block {
+            ops: vec![
+                Op::Let {
+                    local: Local(0),
+                    value: Value::Call {
+                        fun: "f".into(),
+                        args: vec![],
+                    },
+                    pure_region: false,
+                },
+                Op::Let {
+                    local: Local(1),
+                    value: Value::If {
+                        cond: Local(2),
+                        then_block: Box::new(Block {
+                            ops: vec![Op::Let {
+                                local: Local(3),
+                                value: Value::Int(1),
+                                pure_region: true,
+                            }],
+                            result: None,
+                        }),
+                        else_block: Box::new(Block {
+                            ops: vec![],
+                            result: None,
+                        }),
+                    },
+                    pure_region: false,
+                },
+            ],
+            result: None,
+        };
+        // 2 top-level + 1 (If) + 1 (then op)
+        assert_eq!(body_weight(&block), 5);
+    }
+
+    #[test]
     fn resolve_module_call_fun_ids_fills_call_target() {
         use crate::{CoreFun, CoreModule, FunId, FunKind};
         use lumia_ty::{Effect, Type};
@@ -1088,5 +1749,271 @@ mod tests {
         };
         assert_eq!(fun.as_str(), "g");
         assert_eq!(fun.id, Some(FunId(0)));
+    }
+
+    #[test]
+    fn for_each_op_in_block_visits_assign_and_nested_ops_in_order() {
+        let mut seen = Vec::new();
+        let block = Block {
+            ops: vec![
+                Op::Assign {
+                    name: "a".into(),
+                    value: Local(0),
+                },
+                Op::Let {
+                    local: Local(1),
+                    value: Value::If {
+                        cond: Local(2),
+                        then_block: Box::new(Block {
+                            ops: vec![Op::Assign {
+                                name: "t".into(),
+                                value: Local(3),
+                            }],
+                            result: None,
+                        }),
+                        else_block: Box::new(Block {
+                            ops: vec![],
+                            result: None,
+                        }),
+                    },
+                    pure_region: true,
+                },
+            ],
+            result: None,
+        };
+        for_each_op_in_block(&block, &mut |op| {
+            if let Op::Assign { name, .. } = op {
+                seen.push(name.clone());
+            }
+        });
+        assert_eq!(seen, vec!["a".to_string(), "t".to_string()]);
+        assert!(block_has_if_let(&block));
+    }
+
+    #[test]
+    fn for_each_loop_in_block_finds_nested_loops() {
+        let inner = Block {
+            ops: vec![],
+            result: None,
+        };
+        let outer_body = Block {
+            ops: vec![Op::Let {
+                local: Local(1),
+                value: Value::Loop {
+                    header: Box::new(Block {
+                        ops: vec![],
+                        result: None,
+                    }),
+                    body: Box::new(inner),
+                    latch: Box::new(Block {
+                        ops: vec![],
+                        result: None,
+                    }),
+                },
+                pure_region: true,
+            }],
+            result: None,
+        };
+        let mut n = 0;
+        for_each_loop_in_block(&outer_body, &mut |_, _, _| n += 1);
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn for_each_op_in_block_mut_updates_nested_assign() {
+        let mut block = Block {
+            ops: vec![Op::Let {
+                local: Local(0),
+                value: Value::Loop {
+                    header: Box::new(Block {
+                        ops: vec![],
+                        result: None,
+                    }),
+                    body: Box::new(Block {
+                        ops: vec![Op::Assign {
+                            name: "x".into(),
+                            value: Local(1),
+                        }],
+                        result: None,
+                    }),
+                    latch: Box::new(Block {
+                        ops: vec![],
+                        result: None,
+                    }),
+                },
+                pure_region: true,
+            }],
+            result: None,
+        };
+        for_each_op_in_block_mut(&mut block, &mut |op| {
+            if let Op::Assign { value, .. } = op {
+                *value = Local(2);
+            }
+        });
+        let loop_body = match &block.ops[0] {
+            Op::Let {
+                value: Value::Loop { body, .. },
+                ..
+            } => body,
+            _ => panic!("expected loop"),
+        };
+        assert!(matches!(
+            &loop_body.ops[0],
+            Op::Assign {
+                value: Local(2),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn flat_map_top_level_ops_splices_and_drops() {
+        let mut block = Block {
+            ops: vec![
+                Op::Let {
+                    local: Local(0),
+                    value: Value::Int(1),
+                    pure_region: true,
+                },
+                Op::Break,
+                Op::Continue,
+            ],
+            result: None,
+        };
+        flat_map_top_level_ops_in_block(&mut block, &mut |op| match op {
+            Op::Break => vec![],
+            Op::Continue => vec![
+                Op::Assign {
+                    name: "x".into(),
+                    value: Local(0),
+                },
+                Op::Continue,
+            ],
+            other => vec![other],
+        });
+        assert_eq!(block.ops.len(), 3);
+        assert!(matches!(&block.ops[0], Op::Let { .. }));
+        assert!(matches!(
+            &block.ops[1],
+            Op::Assign { name, .. } if name == "x"
+        ));
+        assert!(matches!(&block.ops[2], Op::Continue));
+    }
+
+    #[test]
+    fn collect_name_load_locals_dfs() {
+        let block = Block {
+            ops: vec![
+                Op::Let {
+                    local: Local(5),
+                    value: Value::Name("i".into()),
+                    pure_region: true,
+                },
+                Op::Let {
+                    local: Local(1),
+                    value: Value::If {
+                        cond: Local(2),
+                        then_block: Box::new(Block {
+                            ops: vec![Op::Let {
+                                local: Local(6),
+                                value: Value::Name("i".into()),
+                                pure_region: true,
+                            }],
+                            result: None,
+                        }),
+                        else_block: Box::new(Block {
+                            ops: vec![],
+                            result: None,
+                        }),
+                    },
+                    pure_region: true,
+                },
+            ],
+            result: None,
+        };
+        let mut ids = HashSet::default();
+        collect_name_load_locals(&block, "i", &mut ids);
+        assert!(ids.contains(&5));
+        assert!(ids.contains(&6));
+    }
+
+    #[test]
+    fn find_local_def_sequential_and_nested() {
+        let block = Block {
+            ops: vec![
+                Op::Let {
+                    local: Local(1),
+                    value: Value::If {
+                        cond: Local(0),
+                        then_block: Box::new(Block {
+                            ops: vec![Op::Let {
+                                local: Local(2),
+                                value: Value::Float(1.0),
+                                pure_region: true,
+                            }],
+                            result: Some(Local(2)),
+                        }),
+                        else_block: Box::new(Block {
+                            ops: vec![],
+                            result: None,
+                        }),
+                    },
+                    pure_region: true,
+                },
+                Op::Let {
+                    local: Local(3),
+                    value: Value::Local(Local(9)),
+                    pure_region: true,
+                },
+            ],
+            result: Some(Local(3)),
+        };
+        assert!(matches!(
+            find_local_def(&block, 2),
+            Some(Value::Float(v)) if (*v - 1.0).abs() < f64::EPSILON
+        ));
+        assert!(matches!(
+            find_local_def(&block, 3),
+            Some(Value::Local(Local(9)))
+        ));
+        assert!(find_local_def(&block, 99).is_none());
+        assert!(find_top_level_local_def(&block, 2).is_none());
+        assert!(matches!(
+            find_top_level_local_def(&block, 3),
+            Some(Value::Local(Local(9)))
+        ));
+    }
+
+    #[test]
+    fn for_each_named_slot_assign_in_block_nested() {
+        let block = Block {
+            ops: vec![Op::Let {
+                local: Local(1),
+                value: Value::If {
+                    cond: Local(0),
+                    then_block: Box::new(Block {
+                        ops: vec![Op::Assign {
+                            name: "acc".into(),
+                            value: Local(2),
+                        }],
+                        result: None,
+                    }),
+                    else_block: Box::new(Block {
+                        ops: vec![Op::Assign {
+                            name: "acc".into(),
+                            value: Local(3),
+                        }],
+                        result: None,
+                    }),
+                },
+                pure_region: true,
+            }],
+            result: None,
+        };
+        let mut srcs = Vec::new();
+        let acc = lumia_syntax::Sym::from("acc");
+        for_each_named_slot_assign_in_block(&block, &acc, &mut |Local(id)| srcs.push(id));
+        srcs.sort_unstable();
+        assert_eq!(srcs, vec![2, 3]);
     }
 }

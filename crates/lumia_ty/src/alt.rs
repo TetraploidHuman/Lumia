@@ -96,7 +96,7 @@ fn desugar_in_expr(
 
 fn desugar_alt(scrutinee: Expr, alt: Expr, span: Span, kind: AltKind, success_tag: i64) -> Expr {
     let s = "__alt_s".to_string();
-    let scrut_var = Expr::Var(s.clone(), span);
+    let scrut_var = Expr::Var(s.clone().into(), span);
     let tag = Expr::BuiltinCall {
         name: Builtin::AdtTag,
         args: vec![scrut_var.clone()],
@@ -124,7 +124,7 @@ fn desugar_alt(scrutinee: Expr, alt: Expr, span: Span, kind: AltKind, success_ta
         },
     };
     Expr::Let {
-        name: s,
+        name: s.into(),
         value: Box::new(scrutinee),
         body: Box::new(Expr::If {
             cond: Box::new(is_success),

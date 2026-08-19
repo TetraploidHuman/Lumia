@@ -304,30 +304,31 @@ pub fn free_vars_expr(expr: &Expr, bound: &[String]) -> Vec<String> {
 fn collect_free_vars(expr: &Expr, bound: &mut Vec<String>, out: &mut Vec<String>) {
     match expr {
         Expr::Var(n, _) => {
-            if !bound.iter().any(|b| b == n) && !out.iter().any(|x| x == n) {
-                out.push(n.clone());
+            if !bound.iter().any(|b| b == n.as_str()) && !out.iter().any(|x| x == n.as_str()) {
+                out.push(n.to_string());
             }
         }
         Expr::Let {
             name, value, body, ..
         } => {
             collect_free_vars(value, bound, out);
-            bound.push(name.clone());
+            bound.push(name.to_string());
             collect_free_vars(body, bound, out);
             bound.pop();
         }
         Expr::Lambda { params, body, .. } => {
             let n = bound.len();
             for p in params {
-                bound.push(p.clone());
+                bound.push(p.to_string());
             }
             collect_free_vars(body, bound, out);
             bound.truncate(n);
         }
         Expr::Assign { name, value, .. } => {
             // LHS is a use of the slot (spawn must see outer `var` writes).
-            if !bound.iter().any(|b| b == name) && !out.iter().any(|x| x == name) {
-                out.push(name.clone());
+            if !bound.iter().any(|b| b == name.as_str()) && !out.iter().any(|x| x == name.as_str())
+            {
+                out.push(name.to_string());
             }
             collect_free_vars(value, bound, out);
         }

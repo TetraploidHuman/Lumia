@@ -29,7 +29,7 @@ pub(super) fn upgrade_captured_list_fold_float(module: &mut CoreModule) {
         if !fun.is_lifted_lambda() {
             continue;
         }
-        let caps = fun_cap_tys.get(&fun.name).unwrap_or(&empty);
+        let caps = fun_cap_tys.get(fun.name.as_str()).unwrap_or(&empty);
         let fold_acc_ret = block_result_is_scalar_fold_acc(&fun.body);
         collect_list_fold_float_upgrade(
             &fun.body,
@@ -46,7 +46,7 @@ pub(super) fn upgrade_captured_list_fold_float(module: &mut CoreModule) {
     }
 
     for fun in &mut module.functions {
-        if float_cbs.contains(&fun.name) {
+        if float_cbs.contains(fun.name.as_str()) {
             for ty in &mut fun.param_tys {
                 if matches!(ty, Type::Int | Type::Var(_)) {
                     *ty = Type::Float;
@@ -54,7 +54,7 @@ pub(super) fn upgrade_captured_list_fold_float(module: &mut CoreModule) {
             }
             fun.ret_ty = Type::Float;
         }
-        if float_outers.contains(&fun.name) {
+        if float_outers.contains(fun.name.as_str()) {
             // Env (params[0]) stays; user params (fold init) → Float.
             for i in 1..fun.param_tys.len() {
                 if matches!(fun.param_tys[i], Type::Int | Type::Var(_)) {
@@ -84,7 +84,7 @@ pub(super) fn upgrade_list_params_from_float_call_sites(module: &mut CoreModule)
 
     let mut need: HashMap<String, HashSet<usize>> = HashMap::default();
     for fun in &module.functions {
-        let caps = fun_cap_tys.get(&fun.name).unwrap_or(&empty);
+        let caps = fun_cap_tys.get(fun.name.as_str()).unwrap_or(&empty);
         collect_float_list_call_args(
             &fun.body,
             caps,
@@ -96,7 +96,7 @@ pub(super) fn upgrade_list_params_from_float_call_sites(module: &mut CoreModule)
     }
 
     for fun in &mut module.functions {
-        let Some(idxs) = need.get(&fun.name) else {
+        let Some(idxs) = need.get(fun.name.as_str()) else {
             continue;
         };
         for &i in idxs {

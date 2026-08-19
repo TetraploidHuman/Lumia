@@ -120,8 +120,8 @@ impl<'ctx> Codegen<'ctx> {
             }
             _ => self
                 .funs
-                .funref_locals
-                .get(&callee.0)
+                .funref
+                .resolve(callee.0)
                 .and_then(|name| self.funs.fun_ret_tys.get(name))
                 .is_some_and(|ty| matches!(ty, Type::Float)),
         };

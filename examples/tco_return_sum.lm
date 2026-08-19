@@ -1,0 +1,17 @@
+module TcoReturnSum
+
+import std.io.{println}
+
+/// Same closed form as `tco_sum`, but both arms use explicit `return` —
+/// codegen must TCO via `Op::Return`, not only block-result lets.
+val sumTo(n, acc) = {
+    if n == 0 {
+        return acc
+    } else {
+        return sumTo(n - 1, acc + n)
+    }
+}
+
+val main = {
+    println(sumTo(2000000, 0))
+}

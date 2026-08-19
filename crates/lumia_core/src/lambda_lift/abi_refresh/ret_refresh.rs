@@ -1,6 +1,7 @@
 //! Refresh lifted-lambda / AllocClosure Fun return types after mono.
 
-use crate::ir::{Block, CoreModule, Op, Value};
+use crate::find_top_level_local_def;
+use crate::ir::{Block, CoreModule, Value};
 use crate::visit::collect_closure_cap_funrefs;
 use lumia_ty::Type;
 use rustc_hash::FxHashMap as HashMap;
@@ -45,7 +46,7 @@ pub(super) fn refresh_lifted_lambda_rets(module: &mut CoreModule) {
             if matches!(fun.ret_ty, Type::Float | Type::Bool | Type::Unit) {
                 continue;
             }
-            let this_caps = fun_cap_tys.get(&fun.name).unwrap_or(&empty_caps);
+            let this_caps = fun_cap_tys.get(fun.name.as_str()).unwrap_or(&empty_caps);
             let mut new_ty: Option<Type> = None;
             if super::super::float_abi::block_result_is_float(&fun.body, &fun_ret_tys) {
                 new_ty = Some(Type::Float);
@@ -54,7 +55,7 @@ pub(super) fn refresh_lifted_lambda_rets(module: &mut CoreModule) {
             } else if super::super::float_abi::block_result_is_unit(&fun.body) {
                 new_ty = Some(Type::Unit);
             } else {
-                let caps = lam_caps.get(&fun.name).map(|c| c.as_slice());
+                let caps = lam_caps.get(fun.name.as_str()).map(|c| c.as_slice());
                 if let Some(t) = super::super::float_abi::block_result_channel_ty(
                     &fun.body,
                     &by_local,
@@ -109,7 +110,7 @@ pub(super) fn refresh_lifted_lambda_rets(module: &mut CoreModule) {
                     }
                 }
                 if new_ty.is_none() {
-                    let caps = cap_funs.get(&fun.name);
+                    let caps = cap_funs.get(fun.name.as_str());
                     let from_call =
                         super::super::float_abi::block_result_callee_ty(&fun.body, &fun_ret_tys);
                     let from_apply = super::super::float_abi::block_result_known_hof_ty(
@@ -166,7 +167,7 @@ pub(super) fn refresh_lifted_lambda_rets(module: &mut CoreModule) {
                     super::super::float_abi::prefer_concrete_heap_ty(fun.ret_ty.clone(), t);
                 if merged != fun.ret_ty {
                     fun.ret_ty = merged.clone();
-                    fun_ret_tys.insert(fun.name.clone(), merged);
+                    fun_ret_tys.insert(fun.name.to_string(), merged);
                     changed = true;
                 }
             }
@@ -200,7 +201,7 @@ pub(super) fn refresh_alloc_closure_fun_rets_round(
             } else {
                 Vec::new()
             };
-            (f.name.clone(), (params, f.ret_ty.clone()))
+            (f.name.to_string(), (params, f.ret_ty.clone()))
         })
         .collect();
 
@@ -231,7 +232,7 @@ pub(super) fn refresh_alloc_closure_fun_rets_round(
                     super::super::float_abi::prefer_concrete_heap_ty(fun.ret_ty.clone(), candidate);
                 if merged != fun.ret_ty {
                     fun.ret_ty = merged.clone();
-                    fun_ret_tys.insert(fun.name.clone(), merged);
+                    fun_ret_tys.insert(fun.name.to_string(), merged);
                     changed = true;
                 }
             }
@@ -242,39 +243,12 @@ pub(super) fn refresh_alloc_closure_fun_rets_round(
 
 pub(super) fn result_alloc_closure_fun(block: &Block) -> Option<String> {
     let r = block.result?;
-    for op in &block.ops {
-        if let Op::Let {
-            local,
-            value: Value::AllocClosure { fun, .. },
-            ..
-        } = op
-        {
-            if *local == r {
-                return Some(fun.name.clone());
-            }
-        }
-        if let Op::Let {
-            local,
-            value: Value::Local(src),
-            ..
-        } = op
-        {
-            if *local == r {
-                // Follow trivial alias.
-                for op2 in &block.ops {
-                    if let Op::Let {
-                        local: l2,
-                        value: Value::AllocClosure { fun, .. },
-                        ..
-                    } = op2
-                    {
-                        if *l2 == *src {
-                            return Some(fun.name.clone());
-                        }
-                    }
-                }
-            }
-        }
+    match find_top_level_local_def(block, r.0)? {
+        Value::AllocClosure { fun, .. } => Some(fun.name.clone()),
+        Value::Local(src) => match find_top_level_local_def(block, src.0)? {
+            Value::AllocClosure { fun, .. } => Some(fun.name.clone()),
+            _ => None,
+        },
+        _ => None,
     }
-    None
 }

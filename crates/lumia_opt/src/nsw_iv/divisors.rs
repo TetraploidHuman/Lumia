@@ -1,14 +1,15 @@
 use lumia_core::{
-    collect_assigns, collect_leaf_defs as core_collect_leaf_defs, for_each_block_dfs,
-    header_ge_const, header_gt_const, is_unit_inc, Block, Op, Value,
+    collect_assigns, collect_leaf_defs as core_collect_leaf_defs, collect_name_load_locals,
+    for_each_loop_in_block, header_ge_const, header_gt_const, is_unit_inc, Block, Value,
 };
+use lumia_syntax::Sym;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// Slots that are only ever assigned `0` or `self + 1` (Collatz `steps`, etc.).
 pub(super) fn collect_unit_counter_slots(
     body: &Block,
     all_defs: &HashMap<u32, Value>,
-) -> HashSet<String> {
+) -> HashSet<Sym> {
     let mut assigns = HashMap::default();
     collect_assigns(body, &mut assigns);
     let mut out = HashSet::default();
@@ -42,7 +43,7 @@ pub(crate) fn collect_safe_divisor_locals(body: &Block) -> HashSet<u32> {
             Value::Int(n) if *n != 0 && *n != -1 => {
                 out.insert(*id);
             }
-            Value::Name(n) if ge1_slots.contains(n) => {
+            Value::Name(n) if ge1_slots.contains(n.as_str()) => {
                 out.insert(*id);
             }
             _ => {}
@@ -59,23 +60,10 @@ pub(crate) fn collect_nonneg_iv_load_locals(body: &Block) -> HashSet<u32> {
     let mut assigns = HashMap::default();
     collect_assigns(body, &mut assigns);
     let mut out = HashSet::default();
-    for_each_block_dfs(body, &mut |b| {
-        for op in &b.ops {
-            if let Op::Let {
-                value:
-                    Value::Loop {
-                        header,
-                        body: loop_body,
-                        latch,
-                    },
-                ..
-            } = op
-            {
-                for iv in nonneg_iv_names(header, &assigns, &all_defs) {
-                    mark_name_loads(loop_body, iv.as_str(), &mut out);
-                    mark_name_loads(latch, iv.as_str(), &mut out);
-                }
-            }
+    for_each_loop_in_block(body, &mut |header, loop_body, latch| {
+        for iv in nonneg_iv_names(header, &assigns, &all_defs) {
+            collect_name_load_locals(loop_body, iv.as_str(), &mut out);
+            collect_name_load_locals(latch, iv.as_str(), &mut out);
         }
     });
     out
@@ -83,9 +71,9 @@ pub(crate) fn collect_nonneg_iv_load_locals(body: &Block) -> HashSet<u32> {
 
 fn nonneg_iv_names(
     header: &Block,
-    assigns: &HashMap<String, Vec<lumia_core::Local>>,
+    assigns: &HashMap<Sym, Vec<lumia_core::Local>>,
     all_defs: &HashMap<u32, Value>,
-) -> HashSet<String> {
+) -> HashSet<Sym> {
     let mut names = HashSet::default();
     // `iv > k` / `k < iv` with k ≥ -1 ⇒ iv ≥ 0.
     if let Some((iv, k)) = header_gt_const(header, all_defs) {
@@ -114,7 +102,7 @@ fn nonneg_iv_names(
 
 /// Slot init ≥ 0 (some `Int ≥ 0` assign) and every other assign is `self + 1`.
 fn slot_nonneg_unit_up(
-    assigns: &HashMap<String, Vec<lumia_core::Local>>,
+    assigns: &HashMap<Sym, Vec<lumia_core::Local>>,
     name: &str,
     all_defs: &HashMap<u32, Value>,
 ) -> bool {
@@ -136,23 +124,6 @@ fn slot_nonneg_unit_up(
     has_nonneg_const
 }
 
-fn mark_name_loads(block: &Block, iv: &str, out: &mut HashSet<u32>) {
-    for_each_block_dfs(block, &mut |b| {
-        for op in &b.ops {
-            if let Op::Let {
-                local,
-                value: Value::Name(n),
-                ..
-            } = op
-            {
-                if n == iv {
-                    out.insert(local.0);
-                }
-            }
-        }
-    });
-}
-
 /// Mutable slots whose every assignment is `≥ 1` or `slot = slot + 1`.
 ///
 /// Superset of [`collect_ge2_unit_slots`]; used for safe-divisor Name loads
@@ -160,7 +131,7 @@ fn mark_name_loads(block: &Block, iv: &str, out: &mut HashSet<u32>) {
 pub(crate) fn collect_ge1_unit_slots(
     body: &Block,
     all_defs: &HashMap<u32, Value>,
-) -> HashSet<String> {
+) -> HashSet<Sym> {
     let mut assigns = HashMap::default();
     collect_assigns(body, &mut assigns);
 
@@ -191,7 +162,7 @@ pub(crate) fn collect_ge1_unit_slots(
 pub(crate) fn collect_ge2_unit_slots(
     body: &Block,
     all_defs: &HashMap<u32, Value>,
-) -> HashSet<String> {
+) -> HashSet<Sym> {
     let mut assigns = HashMap::default();
     collect_assigns(body, &mut assigns);
 

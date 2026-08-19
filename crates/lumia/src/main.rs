@@ -45,6 +45,57 @@ impl SharedCheckArgs {
     }
 }
 
+/// Flags shared by `build` and `run` (keep clap help / defaults in sync).
+#[cfg(feature = "codegen")]
+#[derive(Args, Debug, Clone)]
+struct SharedBuildArgs {
+    #[arg(long)]
+    release: bool,
+    /// Disable transparent Memo `T_f` even in `--release` (for benchmarks).
+    #[arg(long = "no-memo", alias = "no-memo-l2")]
+    no_memo: bool,
+    #[command(flatten)]
+    shared: SharedCheckArgs,
+    /// Disable dense `List[Float]` → `lumia_f64_*` strength reduction (bench baseline).
+    #[arg(long = "no-dense-f64-sr")]
+    no_dense_f64_sr: bool,
+    /// Extra linker args (repeatable), e.g. `--link -lm --link -L/opt/lib`.
+    #[arg(long = "link", value_name = "ARG")]
+    link: Vec<String>,
+    /// LLVM new-PM + instruction selection (`none`/`0`, `1`, `2`, `3`; `fast` = `1`).
+    /// Default: `1` without `--release` (runnable Debug), `3` with `--release`.
+    /// Independent of mid-end `--release` (Memo, domain SR, strip). Not LLVM `-Ofast`.
+    #[arg(long = "llvm-opt", value_name = "LEVEL", value_parser = parse_llvm_opt)]
+    llvm_opt: Option<lumia::LlvmOptLevel>,
+}
+
+#[cfg(feature = "codegen")]
+fn parse_llvm_opt(s: &str) -> Result<lumia::LlvmOptLevel, String> {
+    lumia::LlvmOptLevel::parse_cli(s)
+}
+
+#[cfg(feature = "codegen")]
+impl SharedBuildArgs {
+    fn compile_options(&self, show_ir: bool, emit_llvm: bool) -> Result<lumia::CompileOptions> {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let mut link = Vec::with_capacity(self.link.len());
+        for a in &self.link {
+            link.push(pkg::validate_cli_link_arg(&cwd, a)?);
+        }
+        Ok(lumia::CompileOptions {
+            release: self.release,
+            memo_tf: !self.no_memo,
+            auto_parallel: !self.shared.no_parallel,
+            dense_f64_sr: !self.no_dense_f64_sr,
+            trust_foreign_pure: self.shared.trust_foreign_pure_override(),
+            link_args: link,
+            show_ir,
+            emit_llvm,
+            llvm_opt: self.llvm_opt,
+        })
+    }
+}
+
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Type- and effect-check only
@@ -59,19 +110,8 @@ enum Commands {
         file: PathBuf,
         #[arg(short, long)]
         output: Option<PathBuf>,
-        #[arg(long)]
-        release: bool,
-        /// Disable transparent Memo `T_f` even in `--release` (for benchmarks).
-        #[arg(long = "no-memo", alias = "no-memo-l2")]
-        no_memo: bool,
         #[command(flatten)]
-        shared: SharedCheckArgs,
-        /// Disable dense `List[Float]` → `lumia_f64_*` strength reduction (bench baseline).
-        #[arg(long = "no-dense-f64-sr")]
-        no_dense_f64_sr: bool,
-        /// Extra linker args (repeatable), e.g. `--link -lm --link -L/opt/lib`.
-        #[arg(long = "link", value_name = "ARG")]
-        link: Vec<String>,
+        build: SharedBuildArgs,
         #[arg(long)]
         show_ir: bool,
         #[arg(long)]
@@ -83,16 +123,8 @@ enum Commands {
         file: PathBuf,
         #[arg(short, long)]
         output: Option<PathBuf>,
-        #[arg(long)]
-        release: bool,
-        #[arg(long = "no-memo", alias = "no-memo-l2")]
-        no_memo: bool,
         #[command(flatten)]
-        shared: SharedCheckArgs,
-        #[arg(long = "no-dense-f64-sr")]
-        no_dense_f64_sr: bool,
-        #[arg(long = "link", value_name = "ARG")]
-        link: Vec<String>,
+        build: SharedBuildArgs,
         /// Arguments forwarded to the program (place after `--`).
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
@@ -133,17 +165,39 @@ enum PkgCmd {
     },
     /// Resolve path deps and write `Lumia.lock`
     Lock {
-        #[arg(long, default_value = "Lumia.toml")]
-        manifest: PathBuf,
+        #[command(flatten)]
+        manifest: ManifestArg,
     },
     /// Add a path dependency to `Lumia.toml` and refresh the lockfile
     Add {
         name: String,
         #[arg(long)]
         path: String,
-        #[arg(long, default_value = "Lumia.toml")]
-        manifest: PathBuf,
+        #[command(flatten)]
+        manifest: ManifestArg,
     },
+    /// Remove a dependency from `Lumia.toml` and refresh the lockfile
+    Remove {
+        name: String,
+        #[command(flatten)]
+        manifest: ManifestArg,
+    },
+    /// Refresh `Lumia.lock` from current vendor trees (versions + content fingerprints)
+    Update {
+        #[command(flatten)]
+        manifest: ManifestArg,
+    },
+    /// Report lock drift versus vendor trees without writing (exit 1 if stale)
+    Outdated {
+        #[command(flatten)]
+        manifest: ManifestArg,
+    },
+}
+
+#[derive(Args, Debug, Clone)]
+struct ManifestArg {
+    #[arg(long, default_value = "Lumia.toml")]
+    manifest: PathBuf,
 }
 
 fn main() -> Result<()> {
@@ -174,11 +228,7 @@ fn main() -> Result<()> {
         Commands::Build {
             file,
             output,
-            release,
-            no_memo,
-            shared,
-            no_dense_f64_sr,
-            link,
+            build,
             show_ir,
             emit_llvm,
         } => {
@@ -187,25 +237,7 @@ fn main() -> Result<()> {
                     .map(PathBuf::from)
                     .unwrap_or_else(|| PathBuf::from("a.out"))
             });
-            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            let mut validated_link = Vec::with_capacity(link.len());
-            for a in &link {
-                validated_link.push(pkg::validate_cli_link_arg(&cwd, a)?);
-            }
-            lumia::build::build_file(
-                &file,
-                &out,
-                &lumia::build::CompileOptions {
-                    release,
-                    memo_tf: !no_memo,
-                    auto_parallel: !shared.no_parallel,
-                    dense_f64_sr: !no_dense_f64_sr,
-                    trust_foreign_pure: shared.trust_foreign_pure_override(),
-                    link_args: validated_link,
-                    show_ir,
-                    emit_llvm,
-                },
-            )?;
+            lumia::build::build_file(&file, &out, &build.compile_options(show_ir, emit_llvm)?)?;
             println!("wrote {}", out.display());
             Ok(())
         }
@@ -213,11 +245,7 @@ fn main() -> Result<()> {
         Commands::Run {
             file,
             output,
-            release,
-            no_memo,
-            shared,
-            no_dense_f64_sr,
-            link,
+            build,
             args,
         } => {
             let keep_bin = output.is_some();
@@ -228,25 +256,7 @@ fn main() -> Result<()> {
                     .unwrap_or_else(|| "a.out".into());
                 std::env::temp_dir().join(format!("lumia_run_{stem}_{}", std::process::id()))
             });
-            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            let mut validated_link = Vec::with_capacity(link.len());
-            for a in &link {
-                validated_link.push(pkg::validate_cli_link_arg(&cwd, a)?);
-            }
-            lumia::build::build_file(
-                &file,
-                &out,
-                &lumia::build::CompileOptions {
-                    release,
-                    memo_tf: !no_memo,
-                    auto_parallel: !shared.no_parallel,
-                    dense_f64_sr: !no_dense_f64_sr,
-                    trust_foreign_pure: shared.trust_foreign_pure_override(),
-                    link_args: validated_link,
-                    show_ir: false,
-                    emit_llvm: false,
-                },
-            )?;
+            lumia::build::build_file(&file, &out, &build.compile_options(false, false)?)?;
             let status = std::process::Command::new(&out)
                 .args(&args)
                 .status()
@@ -290,14 +300,8 @@ fn main() -> Result<()> {
                 Ok(())
             }
             PkgCmd::Lock { manifest } => {
-                let m = pkg::load_manifest(&manifest)?;
-                let lock = pkg::lock_from_manifest(&manifest, &m)?;
-                let lock_path = manifest
-                    .parent()
-                    .unwrap_or(Path::new("."))
-                    .join("Lumia.lock");
-                pkg::write_lockfile(&lock_path, &lock)?;
-                println!("wrote {}", lock_path.display());
+                let w = pkg::write_lock_from_manifest(&manifest.manifest)?;
+                println!("wrote {}", w.path.display());
                 Ok(())
             }
             PkgCmd::Add {
@@ -305,16 +309,41 @@ fn main() -> Result<()> {
                 path,
                 manifest,
             } => {
-                pkg::add_path_dep(&manifest, &name, &path)?;
-                let m = pkg::load_manifest(&manifest)?;
-                let lock = pkg::lock_from_manifest(&manifest, &m)?;
-                let lock_path = manifest
-                    .parent()
-                    .unwrap_or(Path::new("."))
-                    .join("Lumia.lock");
-                pkg::write_lockfile(&lock_path, &lock)?;
-                println!("added `{name}` → {path}; wrote {}", lock_path.display());
+                pkg::add_path_dep(&manifest.manifest, &name, &path)?;
+                let w = pkg::write_lock_from_manifest(&manifest.manifest)?;
+                println!("added `{name}` → {path}; wrote {}", w.path.display());
                 Ok(())
+            }
+            PkgCmd::Remove { name, manifest } => {
+                pkg::remove_dep(&manifest.manifest, &name)?;
+                let w = pkg::write_lock_from_manifest(&manifest.manifest)?;
+                println!("removed `{name}`; wrote {}", w.path.display());
+                Ok(())
+            }
+            PkgCmd::Update { manifest } => {
+                let w = pkg::write_lock_from_manifest(&manifest.manifest)?;
+                if w.created {
+                    println!("wrote {}", w.path.display());
+                } else if w.diff.is_empty() {
+                    println!("{} already up to date", w.path.display());
+                } else {
+                    print!("{}", w.diff);
+                    println!("wrote {}", w.path.display());
+                }
+                Ok(())
+            }
+            PkgCmd::Outdated { manifest } => {
+                let (path, diff) = pkg::outdated_lock(&manifest.manifest)?;
+                if diff.is_empty() {
+                    println!("{} is up to date", path.display());
+                    Ok(())
+                } else {
+                    print!("{diff}");
+                    anyhow::bail!(
+                        "{path} is stale (run `lumia pkg update`)",
+                        path = path.display()
+                    );
+                }
             }
         },
     }

@@ -68,8 +68,8 @@ impl Infer {
                         ..
                     } if params.len() == 2 => {
                         self.push();
-                        self.bind(params[0].clone(), acc.clone());
-                        self.bind(params[1].clone(), elem.clone());
+                        self.bind(params[0].to_string(), acc.clone());
+                        self.bind(params[1].to_string(), elem.clone());
                         let (rt, re) = self.infer_expr(body)?;
                         self.pop();
                         self.unify_at(*lsp, rt, acc.clone())?;

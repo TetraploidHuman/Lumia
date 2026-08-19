@@ -410,7 +410,7 @@ pub(crate) fn rewrite_ufcs_in_expr(
             return;
         };
         if let Some(mangled) = rewrites.get(span) {
-            **callee = Expr::Var(mangled.clone(), *span);
+            **callee = Expr::Var(mangled.clone().into(), *span);
         }
     });
 }

@@ -23,7 +23,7 @@ pub(crate) const MEMO_TF_MAX_FUNS_U32: u32 = lumia_abi::MEMO_TF_MAX_FUNS as u32;
 pub(crate) const MEMO_IDX_MAX_FUNS: u32 = lumia_abi::MEMO_IDX_MAX_FUNS as u32;
 
 pub(crate) use fold::{const_fold_block, copy_prop_block};
-pub(crate) use licm::{builtin_may_trap_or_effect, licm_seeded};
+pub(crate) use licm::licm_seeded;
 
 /// Local const-fold + copy-prop (DESIGN §7.5.1-A).
 pub struct ConstFoldPass;

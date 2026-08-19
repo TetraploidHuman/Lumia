@@ -19,17 +19,18 @@ use super::hof_fuse::{
 };
 use super::match_arms::{lower_match, lower_match_cond};
 use crate::ast::{Builtin, Expr, Fun, Item};
-use lumia_syntax::BinOp;
+use crate::sym_util::synthetic;
+use lumia_syntax::{BinOp, Sym};
 
 pub(crate) fn push_lowered_val(
     ctx: &LowerCtx,
     items: &mut Vec<Item>,
     v: &lumia_syntax::ValItem,
-    name: &str,
+    name: &Sym,
 ) {
     let body = lower_expr(ctx, &v.body);
     let body = if let Some(params) = &v.params {
-        let names: Vec<String> = params.iter().map(|(n, _)| n.clone()).collect();
+        let names: Vec<Sym> = params.iter().map(|(n, _)| n.clone()).collect();
         let param_ann: Vec<Option<String>> = params.iter().map(|(_, t)| t.clone()).collect();
         Expr::Lambda {
             params: names,
@@ -40,9 +41,6 @@ pub(crate) fn push_lowered_val(
     } else {
         body
     };
-    // DESIGN §4.4: `val f = { ... }` (no `->`) is a zero-arg function, not a
-    // block value. Same for `main`. `{ x -> ... }` / `{ -> ... }` already lower
-    // as Lambda above. Plain `val x = 1` stays Item::Val.
     match body {
         Expr::Lambda {
             params,
@@ -51,13 +49,13 @@ pub(crate) fn push_lowered_val(
             span: _,
         } => {
             items.push(Item::Fun(Fun {
-                name: name.to_string(),
+                name: name.clone(),
                 params,
                 param_ann,
                 ret_ann: v.ty.clone(),
                 body: *body,
                 span: v.span,
-                is_main: name == "main",
+                is_main: name.as_str() == "main",
                 external: None,
                 foreign_sig: None,
                 foreign_pure: false,
@@ -65,16 +63,17 @@ pub(crate) fn push_lowered_val(
             }));
         }
         other => {
-            let zero_arg_fun = name == "main" || matches!(v.body, lumia_syntax::Expr::Block { .. });
+            let zero_arg_fun =
+                name.as_str() == "main" || matches!(v.body, lumia_syntax::Expr::Block { .. });
             if zero_arg_fun {
                 items.push(Item::Fun(Fun {
-                    name: name.to_string(),
+                    name: name.clone(),
                     params: vec![],
                     param_ann: vec![],
                     ret_ann: v.ty.clone(),
                     body: other,
                     span: v.span,
-                    is_main: name == "main",
+                    is_main: name.as_str() == "main",
                     external: None,
                     foreign_sig: None,
                     foreign_pure: false,
@@ -82,7 +81,7 @@ pub(crate) fn push_lowered_val(
                 }));
             } else {
                 items.push(Item::Val {
-                    name: name.to_string(),
+                    name: name.clone(),
                     body: other,
                     ty: v.ty.clone(),
                     span: v.span,
@@ -101,7 +100,7 @@ pub(crate) fn lower_expr(ctx: &LowerCtx, e: &lumia_syntax::Expr) -> Expr {
         lumia_syntax::Expr::Interp { parts, span } => lower_interp(ctx, parts, *span),
         lumia_syntax::Expr::Char(c, s) => Expr::Char(*c, *s),
         lumia_syntax::Expr::Ident(n, s) => {
-            if let Some(c) = ctx.lookup_ctor(n) {
+            if let Some(c) = ctx.lookup_ctor(n.as_str()) {
                 if c.arity == 0 {
                     return Expr::AdtNew {
                         adt_name: c.adt_name,
@@ -320,8 +319,7 @@ pub(crate) fn lower_expr(ctx: &LowerCtx, e: &lumia_syntax::Expr) -> Expr {
                     args: vec![lower_expr(ctx, base), Expr::Int(idx, *span)],
                     span: *span,
                 }
-            } else if ctx.is_ambiguous_product_field(field) {
-                // Defer index resolution until ty knows the receiver product.
+            } else if ctx.is_ambiguous_product_field(field.as_str()) {
                 Expr::BuiltinCall {
                     name: Builtin::AdtField,
                     args: vec![
@@ -331,7 +329,7 @@ pub(crate) fn lower_expr(ctx: &LowerCtx, e: &lumia_syntax::Expr) -> Expr {
                     ],
                     span: *span,
                 }
-            } else if let Some((adt_name, idx)) = ctx.lookup_product_field(field) {
+            } else if let Some((adt_name, idx)) = ctx.lookup_product_field(field.as_str()) {
                 // Carry expected product name so ty can reject wrong receivers
                 // (global name→index alone is unsound across distinct products).
                 Expr::BuiltinCall {
@@ -339,7 +337,7 @@ pub(crate) fn lower_expr(ctx: &LowerCtx, e: &lumia_syntax::Expr) -> Expr {
                     args: vec![
                         lower_expr(ctx, base),
                         Expr::Int(idx as i64, *span),
-                        Expr::String(adt_name, *span),
+                        Expr::String(Sym::from(adt_name), *span),
                     ],
                     span: *span,
                 }
@@ -357,7 +355,7 @@ pub(crate) fn lower_expr(ctx: &LowerCtx, e: &lumia_syntax::Expr) -> Expr {
         lumia_syntax::Expr::With { base, fields, span } => lower_with(ctx, base, fields, *span),
         lumia_syntax::Expr::TupleLit { elems, span } => Expr::AdtNew {
             adt_name: "__Tuple".into(),
-            variant: String::new(),
+            variant: "".into(),
             tag: 0,
             args: elems.iter().map(|e| lower_expr(ctx, e)).collect(),
             span: *span,
@@ -438,7 +436,7 @@ fn lower_scope(
         None => Expr::Int(0, span),
     };
     let body = prepend_scope_leave_on_return(lower_expr(ctx, body), span);
-    let result = format!("__scope_r_{}", span.start.0);
+    let result = synthetic(format!("__scope_r_{}", span.start.0));
     Expr::Seq {
         stmts: vec![
             Expr::BuiltinCall {
@@ -478,7 +476,7 @@ fn prepend_scope_leave_on_return(expr: Expr, scope_span: lumia_syntax::Span) -> 
     };
     match expr {
         Expr::Return { value, span } => {
-            let tmp = format!("__scope_ret_{}", span.start.0);
+            let tmp = synthetic(format!("__scope_ret_{}", span.start.0));
             Expr::Let {
                 name: tmp.clone(),
                 value: Box::new(prepend_scope_leave_on_return(*value, scope_span)),

@@ -4,8 +4,9 @@ use super::ctx::LowerCtx;
 use super::expr::lower_expr;
 use super::for_loops::{empty_list, empty_map, empty_set, for_each_elem};
 use crate::ast::{Builtin, Expr};
-use crate::list_hof::{append_assign, concat_assign};
-use lumia_syntax::{BinOp, Span};
+use crate::list_hof::{append_assign, concat_assign, desugar_list_fold_sequential};
+use crate::sym_util::synthetic;
+use lumia_syntax::{BinOp, Span, Sym};
 
 enum HofStage<'a> {
     Map(&'a lumia_syntax::Expr),
@@ -134,17 +135,17 @@ fn stage_pipeline(
     stages: &[HofStage<'_>],
     x0: &str,
     span: Span,
-) -> (Expr, Vec<(String, Expr)>, Vec<Expr>) {
-    let mut cur = Expr::Var(x0.to_string(), span);
+) -> (Expr, Vec<(Sym, Expr)>, Vec<Expr>) {
+    let mut cur = Expr::Var(x0.into(), span);
     let mut guards: Vec<Expr> = Vec::new();
-    let mut lets: Vec<(String, Expr)> = Vec::new();
+    let mut lets: Vec<(Sym, Expr)> = Vec::new();
     for (i, stage) in stages.iter().enumerate() {
         match stage {
             HofStage::Filter(p) => {
                 guards.push(apply_hof_fn(ctx, p, cur.clone(), span));
             }
             HofStage::Map(m) => {
-                let tmp = format!("__fuse_m_{}_{}", span.start.0, i);
+                let tmp = synthetic(format!("__fuse_m_{}_{}", span.start.0, i));
                 let mapped = apply_hof_fn(ctx, m, cur, span);
                 lets.push((tmp.clone(), mapped));
                 cur = Expr::Var(tmp, span);
@@ -154,12 +155,7 @@ fn stage_pipeline(
     (cur, lets, guards)
 }
 
-fn wrap_staged_step(
-    mut body: Expr,
-    lets: Vec<(String, Expr)>,
-    guards: Vec<Expr>,
-    span: Span,
-) -> Expr {
+fn wrap_staged_step(mut body: Expr, lets: Vec<(Sym, Expr)>, guards: Vec<Expr>, span: Span) -> Expr {
     if let Some(g0) = guards.into_iter().reduce(|a, b| and_guard(a, b, span)) {
         body = Expr::If {
             cond: Box::new(g0),
@@ -244,8 +240,8 @@ fn fuse_hof_fold_under_take(
         }
     }
     let uid = span.start.0;
-    let raw = format!("__take_raw_{uid}");
-    let lim = format!("__take_n_{uid}");
+    let raw = synthetic(format!("__take_raw_{uid}"));
+    let lim = synthetic(format!("__take_n_{uid}"));
     let (source, stages, fmap) = peel_len_base(inner)?;
     let body = match fmap {
         Some(fm) => fuse_hof_fold_flat_map_capped(ctx, source, &stages, fm, init, f, &lim, span),
@@ -266,8 +262,8 @@ fn fuse_hof_fold_under_drop(
         return fuse_hof_fold_on(ctx, inner, init, f, span);
     }
     let uid = span.start.0;
-    let raw = format!("__drop_raw_{uid}");
-    let lim = format!("__drop_n_{uid}");
+    let raw = synthetic(format!("__drop_raw_{uid}"));
+    let lim = synthetic(format!("__drop_n_{uid}"));
     let (source, stages, fmap) = peel_len_base(inner)?;
     let body = match fmap {
         Some(fm) => fuse_hof_fold_flat_map_skip(ctx, source, &stages, fm, init, f, &lim, span),
@@ -284,9 +280,13 @@ fn fuse_hof_fold(
     f: &lumia_syntax::Expr,
     span: Span,
 ) -> Expr {
-    let acc = format!("{}_{}", crate::desugar_slots::FUSE_ACC_PREFIX, span.start.0);
-    let x0 = format!("__fuse_x_{}", span.start.0);
-    let x_out = format!("__fuse_xm_{}", span.start.0);
+    let acc = synthetic(format!(
+        "{}_{}",
+        crate::desugar_slots::FUSE_ACC_PREFIX,
+        span.start.0
+    ));
+    let x0 = synthetic(format!("__fuse_x_{}", span.start.0));
+    let x_out = synthetic(format!("__fuse_xm_{}", span.start.0));
 
     let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     lets.push((x_out.clone(), cur));
@@ -309,7 +309,7 @@ fn fuse_hof_fold(
         value: Box::new(lower_expr(ctx, init)),
         body: Box::new(Expr::Seq {
             stmts: vec![
-                for_each_elem(&x0, source_e, step, span),
+                for_each_elem(x0.as_str(), source_e, step, span),
                 Expr::Var(acc, span),
             ],
             span,
@@ -328,10 +328,14 @@ fn fuse_hof_fold_flat_map(
     f: &lumia_syntax::Expr,
     span: Span,
 ) -> Expr {
-    let acc = format!("{}_{}", crate::desugar_slots::FUSE_ACC_PREFIX, span.start.0);
-    let x0 = format!("__fuse_x_{}", span.start.0);
-    let x_out = format!("__fuse_xm_{}", span.start.0);
-    let y = format!("__fuse_y_{}", span.start.0);
+    let acc = synthetic(format!(
+        "{}_{}",
+        crate::desugar_slots::FUSE_ACC_PREFIX,
+        span.start.0
+    ));
+    let x0 = synthetic(format!("__fuse_x_{}", span.start.0));
+    let x_out = synthetic(format!("__fuse_xm_{}", span.start.0));
+    let y = synthetic(format!("__fuse_y_{}", span.start.0));
 
     let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     lets.push((x_out.clone(), cur));
@@ -348,7 +352,7 @@ fn fuse_hof_fold_flat_map(
         )),
         span,
     };
-    let body = for_each_elem(&y, chunk, bump, span);
+    let body = for_each_elem(y.as_str(), chunk, bump, span);
     let step = wrap_staged_step(body, lets, guards, span);
     let source_e = lower_expr(ctx, source);
     Expr::Let {
@@ -356,7 +360,7 @@ fn fuse_hof_fold_flat_map(
         value: Box::new(lower_expr(ctx, init)),
         body: Box::new(Expr::Seq {
             stmts: vec![
-                for_each_elem(&x0, source_e, step, span),
+                for_each_elem(x0.as_str(), source_e, step, span),
                 Expr::Var(acc, span),
             ],
             span,
@@ -372,14 +376,14 @@ fn fuse_hof_fold_capped(
     stages: &[HofStage<'_>],
     init: &lumia_syntax::Expr,
     f: &lumia_syntax::Expr,
-    lim: &str,
+    lim: &Sym,
     span: Span,
 ) -> Expr {
     let uid = span.start.0;
-    let acc = format!("{}_{}", crate::desugar_slots::FUSE_ACC_PREFIX, uid);
-    let k = format!("__take_k_{uid}");
-    let x0 = format!("__fuse_x_{uid}");
-    let x_out = format!("__fuse_xm_{uid}");
+    let acc = synthetic(format!("{}_{}", crate::desugar_slots::FUSE_ACC_PREFIX, uid));
+    let k = synthetic(format!("__take_k_{uid}"));
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
+    let x_out = synthetic(format!("__fuse_xm_{uid}"));
     let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     lets.push((x_out.clone(), cur));
     let bump = Expr::Seq {
@@ -424,7 +428,7 @@ fn fuse_hof_fold_capped(
         ],
         Expr::Seq {
             stmts: vec![
-                for_each_elem(&x0, source_e, step, span),
+                for_each_elem(x0.as_str(), source_e, step, span),
                 Expr::Var(acc, span),
             ],
             span,
@@ -438,14 +442,14 @@ fn fuse_hof_fold_skip(
     stages: &[HofStage<'_>],
     init: &lumia_syntax::Expr,
     f: &lumia_syntax::Expr,
-    lim: &str,
+    lim: &Sym,
     span: Span,
 ) -> Expr {
     let uid = span.start.0;
-    let acc = format!("{}_{}", crate::desugar_slots::FUSE_ACC_PREFIX, uid);
-    let skipped = format!("__drop_k_{uid}");
-    let x0 = format!("__fuse_x_{uid}");
-    let x_out = format!("__fuse_xm_{uid}");
+    let acc = synthetic(format!("{}_{}", crate::desugar_slots::FUSE_ACC_PREFIX, uid));
+    let skipped = synthetic(format!("__drop_k_{uid}"));
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
+    let x_out = synthetic(format!("__fuse_xm_{uid}"));
     let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     lets.push((x_out.clone(), cur));
     let bump = Expr::Assign {
@@ -469,7 +473,7 @@ fn fuse_hof_fold_skip(
         ],
         Expr::Seq {
             stmts: vec![
-                for_each_elem(&x0, source_e, step, span),
+                for_each_elem(x0.as_str(), source_e, step, span),
                 Expr::Var(acc, span),
             ],
             span,
@@ -484,15 +488,15 @@ fn fuse_hof_fold_flat_map_capped(
     fmap: &lumia_syntax::Expr,
     init: &lumia_syntax::Expr,
     f: &lumia_syntax::Expr,
-    lim: &str,
+    lim: &Sym,
     span: Span,
 ) -> Expr {
     let uid = span.start.0;
-    let acc = format!("{}_{}", crate::desugar_slots::FUSE_ACC_PREFIX, uid);
-    let k = format!("__take_k_{uid}");
-    let x0 = format!("__fuse_x_{uid}");
-    let x_out = format!("__fuse_xm_{uid}");
-    let y = format!("__fuse_y_{uid}");
+    let acc = synthetic(format!("{}_{}", crate::desugar_slots::FUSE_ACC_PREFIX, uid));
+    let k = synthetic(format!("__take_k_{uid}"));
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
+    let x_out = synthetic(format!("__fuse_xm_{uid}"));
+    let y = synthetic(format!("__fuse_y_{uid}"));
     let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     lets.push((x_out.clone(), cur));
     let chunk = apply_hof_fn(ctx, fmap, Expr::Var(x_out, span), span);
@@ -528,7 +532,7 @@ fn fuse_hof_fold_flat_map_capped(
         ],
         span,
     };
-    let inner = for_each_elem(&y, chunk, bump, span);
+    let inner = for_each_elem(y.as_str(), chunk, bump, span);
     let step = take_limit_step(&k, lim, wrap_staged_step(inner, lets, guards, span), span);
     let source_e = lower_expr(ctx, source);
     nest_lets(
@@ -538,7 +542,7 @@ fn fuse_hof_fold_flat_map_capped(
         ],
         Expr::Seq {
             stmts: vec![
-                for_each_elem(&x0, source_e, step, span),
+                for_each_elem(x0.as_str(), source_e, step, span),
                 Expr::Var(acc, span),
             ],
             span,
@@ -553,15 +557,15 @@ fn fuse_hof_fold_flat_map_skip(
     fmap: &lumia_syntax::Expr,
     init: &lumia_syntax::Expr,
     f: &lumia_syntax::Expr,
-    lim: &str,
+    lim: &Sym,
     span: Span,
 ) -> Expr {
     let uid = span.start.0;
-    let acc = format!("{}_{}", crate::desugar_slots::FUSE_ACC_PREFIX, uid);
-    let skipped = format!("__drop_k_{uid}");
-    let x0 = format!("__fuse_x_{uid}");
-    let x_out = format!("__fuse_xm_{uid}");
-    let y = format!("__fuse_y_{uid}");
+    let acc = synthetic(format!("{}_{}", crate::desugar_slots::FUSE_ACC_PREFIX, uid));
+    let skipped = synthetic(format!("__drop_k_{uid}"));
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
+    let x_out = synthetic(format!("__fuse_xm_{uid}"));
+    let y = synthetic(format!("__fuse_y_{uid}"));
     let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     lets.push((x_out.clone(), cur));
     let chunk = apply_hof_fn(ctx, fmap, Expr::Var(x_out, span), span);
@@ -577,7 +581,7 @@ fn fuse_hof_fold_flat_map_skip(
         span,
     };
     let inner_y = drop_then(&skipped, lim, bump, span);
-    let body = for_each_elem(&y, chunk, inner_y, span);
+    let body = for_each_elem(y.as_str(), chunk, inner_y, span);
     let step = wrap_staged_step(body, lets, guards, span);
     let source_e = lower_expr(ctx, source);
     nest_lets(
@@ -587,7 +591,7 @@ fn fuse_hof_fold_flat_map_skip(
         ],
         Expr::Seq {
             stmts: vec![
-                for_each_elem(&x0, source_e, step, span),
+                for_each_elem(x0.as_str(), source_e, step, span),
                 Expr::Var(acc, span),
             ],
             span,
@@ -635,9 +639,13 @@ fn fuse_hof_build(
     span: Span,
 ) -> Expr {
     // Reuse map-acc prefix so Float ABI keeps this a list builder slot.
-    let acc = format!("{}_{}", crate::desugar_slots::MAP_ACC_PREFIX, span.start.0);
-    let x0 = format!("__fuse_x_{}", span.start.0);
-    let x_out = format!("__fuse_xm_{}", span.start.0);
+    let acc = synthetic(format!(
+        "{}_{}",
+        crate::desugar_slots::MAP_ACC_PREFIX,
+        span.start.0
+    ));
+    let x0 = synthetic(format!("__fuse_x_{}", span.start.0));
+    let x_out = synthetic(format!("__fuse_xm_{}", span.start.0));
 
     let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     lets.push((x_out.clone(), cur));
@@ -651,7 +659,7 @@ fn fuse_hof_build(
         value: Box::new(empty_list(span)),
         body: Box::new(Expr::Seq {
             stmts: vec![
-                for_each_elem(&x0, source_e, step, span),
+                for_each_elem(x0.as_str(), source_e, step, span),
                 Expr::Var(acc, span),
             ],
             span,
@@ -682,9 +690,13 @@ fn fuse_hof_flat_map(
     f: &lumia_syntax::Expr,
     span: Span,
 ) -> Expr {
-    let acc = format!("{}_{}", crate::desugar_slots::FMAP_ACC_PREFIX, span.start.0);
-    let x0 = format!("__fuse_x_{}", span.start.0);
-    let x_out = format!("__fuse_xm_{}", span.start.0);
+    let acc = synthetic(format!(
+        "{}_{}",
+        crate::desugar_slots::FMAP_ACC_PREFIX,
+        span.start.0
+    ));
+    let x0 = synthetic(format!("__fuse_x_{}", span.start.0));
+    let x_out = synthetic(format!("__fuse_xm_{}", span.start.0));
 
     let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     lets.push((x_out.clone(), cur));
@@ -699,7 +711,7 @@ fn fuse_hof_flat_map(
         value: Box::new(empty_list(span)),
         body: Box::new(Expr::Seq {
             stmts: vec![
-                for_each_elem(&x0, source_e, step, span),
+                for_each_elem(x0.as_str(), source_e, step, span),
                 Expr::Var(acc, span),
             ],
             span,
@@ -756,8 +768,8 @@ fn fuse_hof_len_under_take(
     span: Span,
 ) -> Option<Expr> {
     let uid = span.start.0;
-    let raw = format!("__take_raw_{uid}");
-    let lim = format!("__take_n_{uid}");
+    let raw = synthetic(format!("__take_raw_{uid}"));
+    let lim = synthetic(format!("__take_n_{uid}"));
     // Nested take/drop: `min(lim, len(inner))` (nested cuts are rare; keep correct).
     if peel_trailing_take_drop(inner).is_some() {
         let inner_len = try_fuse_hof_len(ctx, inner, span)?;
@@ -790,8 +802,8 @@ fn fuse_hof_len_under_drop(
     span: Span,
 ) -> Option<Expr> {
     let uid = span.start.0;
-    let raw = format!("__drop_raw_{uid}");
-    let lim = format!("__drop_n_{uid}");
+    let raw = synthetic(format!("__drop_raw_{uid}"));
+    let lim = synthetic(format!("__drop_n_{uid}"));
     // Nested take/drop: `max(0, len(inner) - lim)`.
     if peel_trailing_take_drop(inner).is_some() {
         let inner_len = try_fuse_hof_len(ctx, inner, span)?;
@@ -845,9 +857,9 @@ fn fuse_hof_len(
     stages: &[HofStage<'_>],
     span: Span,
 ) -> Expr {
-    let acc = format!("__len_acc_{}", span.start.0);
-    let x0 = format!("__fuse_x_{}", span.start.0);
-    let x_out = format!("__fuse_xm_{}", span.start.0);
+    let acc = synthetic(format!("__len_acc_{}", span.start.0));
+    let x0 = synthetic(format!("__fuse_x_{}", span.start.0));
+    let x_out = synthetic(format!("__fuse_xm_{}", span.start.0));
 
     let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     lets.push((x_out.clone(), cur));
@@ -870,7 +882,7 @@ fn fuse_hof_len(
         value: Box::new(Expr::Int(0, span)),
         body: Box::new(Expr::Seq {
             stmts: vec![
-                for_each_elem(&x0, source_e, step, span),
+                for_each_elem(x0.as_str(), source_e, step, span),
                 Expr::Var(acc, span),
             ],
             span,
@@ -887,10 +899,10 @@ fn fuse_hof_len_flat_map(
     f: &lumia_syntax::Expr,
     span: Span,
 ) -> Expr {
-    let acc = format!("__len_acc_{}", span.start.0);
-    let x0 = format!("__fuse_x_{}", span.start.0);
-    let x_out = format!("__fuse_xm_{}", span.start.0);
-    let y = format!("__fuse_y_{}", span.start.0);
+    let acc = synthetic(format!("__len_acc_{}", span.start.0));
+    let x0 = synthetic(format!("__fuse_x_{}", span.start.0));
+    let x_out = synthetic(format!("__fuse_xm_{}", span.start.0));
+    let y = synthetic(format!("__fuse_y_{}", span.start.0));
 
     let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     lets.push((x_out.clone(), cur));
@@ -906,7 +918,7 @@ fn fuse_hof_len_flat_map(
         }),
         span,
     };
-    let body = for_each_elem(&y, chunk, bump, span);
+    let body = for_each_elem(y.as_str(), chunk, bump, span);
     let step = wrap_staged_step(body, lets, guards, span);
     let source_e = lower_expr(ctx, source);
 
@@ -915,7 +927,7 @@ fn fuse_hof_len_flat_map(
         value: Box::new(Expr::Int(0, span)),
         body: Box::new(Expr::Seq {
             stmts: vec![
-                for_each_elem(&x0, source_e, step, span),
+                for_each_elem(x0.as_str(), source_e, step, span),
                 Expr::Var(acc, span),
             ],
             span,
@@ -925,12 +937,12 @@ fn fuse_hof_len_flat_map(
     }
 }
 
-fn len_bump(acc: &str, span: Span) -> Expr {
+fn len_bump(acc: &Sym, span: Span) -> Expr {
     Expr::Assign {
-        name: acc.to_string(),
+        name: acc.clone(),
         value: Box::new(Expr::Binary {
             op: BinOp::Add,
-            left: Box::new(Expr::Var(acc.to_string(), span)),
+            left: Box::new(Expr::Var(acc.clone(), span)),
             right: Box::new(Expr::Int(1, span)),
             span,
         }),
@@ -943,12 +955,12 @@ fn fuse_hof_len_capped(
     ctx: &LowerCtx,
     source: &lumia_syntax::Expr,
     stages: &[HofStage<'_>],
-    lim: &str,
+    lim: &Sym,
     span: Span,
 ) -> Expr {
-    let acc = format!("__len_acc_{}", span.start.0);
-    let x0 = format!("__fuse_x_{}", span.start.0);
-    let x_out = format!("__fuse_xm_{}", span.start.0);
+    let acc = synthetic(format!("__len_acc_{}", span.start.0));
+    let x0 = synthetic(format!("__fuse_x_{}", span.start.0));
+    let x_out = synthetic(format!("__fuse_xm_{}", span.start.0));
     let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     lets.push((x_out.clone(), cur));
     let bump = Expr::Seq {
@@ -971,7 +983,7 @@ fn fuse_hof_len_capped(
         value: Box::new(Expr::Int(0, span)),
         body: Box::new(Expr::Seq {
             stmts: vec![
-                for_each_elem(&x0, source_e, step, span),
+                for_each_elem(x0.as_str(), source_e, step, span),
                 Expr::Var(acc, span),
             ],
             span,
@@ -986,13 +998,13 @@ fn fuse_hof_len_flat_map_capped(
     source: &lumia_syntax::Expr,
     stages: &[HofStage<'_>],
     f: &lumia_syntax::Expr,
-    lim: &str,
+    lim: &Sym,
     span: Span,
 ) -> Expr {
-    let acc = format!("__len_acc_{}", span.start.0);
-    let x0 = format!("__fuse_x_{}", span.start.0);
-    let x_out = format!("__fuse_xm_{}", span.start.0);
-    let y = format!("__fuse_y_{}", span.start.0);
+    let acc = synthetic(format!("__len_acc_{}", span.start.0));
+    let x0 = synthetic(format!("__fuse_x_{}", span.start.0));
+    let x_out = synthetic(format!("__fuse_xm_{}", span.start.0));
+    let y = synthetic(format!("__fuse_y_{}", span.start.0));
     let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     lets.push((x_out.clone(), cur));
     let chunk = apply_hof_fn(ctx, f, Expr::Var(x_out, span), span);
@@ -1011,7 +1023,7 @@ fn fuse_hof_len_flat_map_capped(
     let inner_y = take_limit_step(&acc, lim, bump, span);
     let body = Expr::Seq {
         stmts: vec![
-            for_each_elem(&y, chunk, inner_y, span),
+            for_each_elem(y.as_str(), chunk, inner_y, span),
             Expr::If {
                 cond: Box::new(take_reached(&acc, lim, span)),
                 then_branch: Box::new(Expr::Break(span)),
@@ -1029,7 +1041,7 @@ fn fuse_hof_len_flat_map_capped(
         value: Box::new(Expr::Int(0, span)),
         body: Box::new(Expr::Seq {
             stmts: vec![
-                for_each_elem(&x0, source_e, step, span),
+                for_each_elem(x0.as_str(), source_e, step, span),
                 Expr::Var(acc, span),
             ],
             span,
@@ -1044,14 +1056,14 @@ fn fuse_hof_len_skip(
     ctx: &LowerCtx,
     source: &lumia_syntax::Expr,
     stages: &[HofStage<'_>],
-    lim: &str,
+    lim: &Sym,
     span: Span,
 ) -> Expr {
     let uid = span.start.0;
-    let acc = format!("__len_acc_{uid}");
-    let skipped = format!("__drop_k_{uid}");
-    let x0 = format!("__fuse_x_{uid}");
-    let x_out = format!("__fuse_xm_{uid}");
+    let acc = synthetic(format!("__len_acc_{uid}"));
+    let skipped = synthetic(format!("__drop_k_{uid}"));
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
+    let x_out = synthetic(format!("__fuse_xm_{uid}"));
     let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     lets.push((x_out.clone(), cur));
     let body = drop_then(&skipped, lim, len_bump(&acc, span), span);
@@ -1064,7 +1076,7 @@ fn fuse_hof_len_skip(
         ],
         Expr::Seq {
             stmts: vec![
-                for_each_elem(&x0, source_e, step, span),
+                for_each_elem(x0.as_str(), source_e, step, span),
                 Expr::Var(acc, span),
             ],
             span,
@@ -1077,20 +1089,20 @@ fn fuse_hof_len_flat_map_skip(
     source: &lumia_syntax::Expr,
     stages: &[HofStage<'_>],
     f: &lumia_syntax::Expr,
-    lim: &str,
+    lim: &Sym,
     span: Span,
 ) -> Expr {
     let uid = span.start.0;
-    let acc = format!("__len_acc_{uid}");
-    let skipped = format!("__drop_k_{uid}");
-    let x0 = format!("__fuse_x_{uid}");
-    let x_out = format!("__fuse_xm_{uid}");
-    let y = format!("__fuse_y_{uid}");
+    let acc = synthetic(format!("__len_acc_{uid}"));
+    let skipped = synthetic(format!("__drop_k_{uid}"));
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
+    let x_out = synthetic(format!("__fuse_xm_{uid}"));
+    let y = synthetic(format!("__fuse_y_{uid}"));
     let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     lets.push((x_out.clone(), cur));
     let chunk = apply_hof_fn(ctx, f, Expr::Var(x_out, span), span);
     let inner_y = drop_then(&skipped, lim, len_bump(&acc, span), span);
-    let body = for_each_elem(&y, chunk, inner_y, span);
+    let body = for_each_elem(y.as_str(), chunk, inner_y, span);
     let step = wrap_staged_step(body, lets, guards, span);
     let source_e = lower_expr(ctx, source);
     nest_lets(
@@ -1100,7 +1112,7 @@ fn fuse_hof_len_flat_map_skip(
         ],
         Expr::Seq {
             stmts: vec![
-                for_each_elem(&x0, source_e, step, span),
+                for_each_elem(x0.as_str(), source_e, step, span),
                 Expr::Var(acc, span),
             ],
             span,
@@ -1108,19 +1120,121 @@ fn fuse_hof_len_flat_map_skip(
     )
 }
 
-fn drop_then(skipped: &str, lim: &str, then_branch: Expr, span: Span) -> Expr {
+fn fuse_hof_len_skip_capped(
+    ctx: &LowerCtx,
+    source: &lumia_syntax::Expr,
+    stages: &[HofStage<'_>],
+    drop_lim: &Sym,
+    take_lim: &Sym,
+    span: Span,
+) -> Expr {
+    let uid = span.start.0;
+    let acc = synthetic(format!("__len_acc_{uid}"));
+    let skipped = synthetic(format!("__drop_k_{uid}"));
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
+    let x_out = synthetic(format!("__fuse_xm_{uid}"));
+    let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
+    lets.push((x_out.clone(), cur));
+    let bump = Expr::Seq {
+        stmts: vec![
+            len_bump(&acc, span),
+            Expr::If {
+                cond: Box::new(take_reached(&acc, take_lim, span)),
+                then_branch: Box::new(Expr::Break(span)),
+                else_branch: Box::new(Expr::Unit(span)),
+                span,
+            },
+        ],
+        span,
+    };
+    let body = drop_then(&skipped, drop_lim, bump, span);
+    let step = take_limit_step(
+        &acc,
+        take_lim,
+        wrap_staged_step(body, lets, guards, span),
+        span,
+    );
+    nest_lets(
+        vec![
+            (skipped, Expr::Int(0, span), true),
+            (acc.clone(), Expr::Int(0, span), true),
+        ],
+        Expr::Seq {
+            stmts: vec![
+                for_each_elem(x0.as_str(), lower_expr(ctx, source), step, span),
+                Expr::Var(acc, span),
+            ],
+            span,
+        },
+    )
+}
+
+fn fuse_hof_len_flat_map_skip_capped(
+    ctx: &LowerCtx,
+    source: &lumia_syntax::Expr,
+    stages: &[HofStage<'_>],
+    f: &lumia_syntax::Expr,
+    drop_lim: &Sym,
+    take_lim: &Sym,
+    span: Span,
+) -> Expr {
+    let uid = span.start.0;
+    let acc = synthetic(format!("__len_acc_{uid}"));
+    let skipped = synthetic(format!("__drop_k_{uid}"));
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
+    let x_out = synthetic(format!("__fuse_xm_{uid}"));
+    let y = synthetic(format!("__fuse_y_{uid}"));
+    let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
+    lets.push((x_out.clone(), cur));
+    let chunk = apply_hof_fn(ctx, f, Expr::Var(x_out, span), span);
+    let bump = Expr::Seq {
+        stmts: vec![
+            len_bump(&acc, span),
+            Expr::If {
+                cond: Box::new(take_reached(&acc, take_lim, span)),
+                then_branch: Box::new(Expr::Break(span)),
+                else_branch: Box::new(Expr::Unit(span)),
+                span,
+            },
+        ],
+        span,
+    };
+    let inner_y = drop_then(&skipped, drop_lim, bump, span);
+    let body = for_each_elem(y.as_str(), chunk, inner_y, span);
+    let step = take_limit_step(
+        &acc,
+        take_lim,
+        wrap_staged_step(body, lets, guards, span),
+        span,
+    );
+    nest_lets(
+        vec![
+            (skipped, Expr::Int(0, span), true),
+            (acc.clone(), Expr::Int(0, span), true),
+        ],
+        Expr::Seq {
+            stmts: vec![
+                for_each_elem(x0.as_str(), lower_expr(ctx, source), step, span),
+                Expr::Var(acc, span),
+            ],
+            span,
+        },
+    )
+}
+
+fn drop_then(skipped: &Sym, lim: &Sym, then_branch: Expr, span: Span) -> Expr {
     Expr::If {
         cond: Box::new(Expr::Binary {
             op: BinOp::Lt,
-            left: Box::new(Expr::Var(skipped.to_string(), span)),
-            right: Box::new(Expr::Var(lim.to_string(), span)),
+            left: Box::new(Expr::Var(skipped.clone(), span)),
+            right: Box::new(Expr::Var(lim.clone(), span)),
             span,
         }),
         then_branch: Box::new(Expr::Assign {
-            name: skipped.to_string(),
+            name: skipped.clone(),
             value: Box::new(Expr::Binary {
                 op: BinOp::Add,
-                left: Box::new(Expr::Var(skipped.to_string(), span)),
+                left: Box::new(Expr::Var(skipped.clone(), span)),
                 right: Box::new(Expr::Int(1, span)),
                 span,
             }),
@@ -1257,7 +1371,7 @@ fn peel_trailing_take_drop(
     }
 }
 
-fn bind_nonneg_lim(raw: String, lim: String, n: Expr, body: Expr, span: Span) -> Expr {
+fn bind_nonneg_lim(raw: Sym, lim: Sym, n: Expr, body: Expr, span: Span) -> Expr {
     match n {
         Expr::Int(k, s) if k >= 0 => {
             let _ = raw;
@@ -1363,8 +1477,8 @@ pub(crate) fn try_fuse_hof_is_empty(
                         span,
                     });
                 let uid = span.start.0;
-                let raw = format!("__take_raw_{uid}");
-                let lim = format!("__take_n_{uid}");
+                let raw = synthetic(format!("__take_raw_{uid}"));
+                let lim = synthetic(format!("__take_n_{uid}"));
                 Some(bind_nonneg_lim(
                     raw,
                     lim.clone(),
@@ -1383,17 +1497,12 @@ pub(crate) fn try_fuse_hof_is_empty(
                     span,
                 ))
             }
-            // drop(0).isEmpty ≡ inner.isEmpty; else count-after-skip == 0.
+            // drop(0).isEmpty ≡ inner.isEmpty; else skip then short-circuit.
             TrailingCut::Drop(_) => {
                 if matches!(n, Expr::Int(0, _)) {
                     return try_fuse_hof_is_empty(ctx, inner, span);
                 }
-                fuse_hof_len_under_drop(ctx, inner, n, span).map(|len_e| Expr::Binary {
-                    op: BinOp::Eq,
-                    left: Box::new(len_e),
-                    right: Box::new(Expr::Int(0, span)),
-                    span,
-                })
+                fuse_hof_is_empty_under_drop(ctx, inner, n, span)
             }
         };
     }
@@ -1414,9 +1523,9 @@ fn fuse_hof_is_empty(
     stages: &[HofStage<'_>],
     span: Span,
 ) -> Expr {
-    let acc = format!("__empty_acc_{}", span.start.0);
-    let x0 = format!("__fuse_x_{}", span.start.0);
-    let x_out = format!("__fuse_xm_{}", span.start.0);
+    let acc = synthetic(format!("__empty_acc_{}", span.start.0));
+    let x0 = synthetic(format!("__fuse_x_{}", span.start.0));
+    let x_out = synthetic(format!("__fuse_xm_{}", span.start.0));
 
     let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     lets.push((x_out.clone(), cur));
@@ -1440,7 +1549,7 @@ fn fuse_hof_is_empty(
         value: Box::new(Expr::Bool(true, span)),
         body: Box::new(Expr::Seq {
             stmts: vec![
-                for_each_elem(&x0, source_e, step, span),
+                for_each_elem(x0.as_str(), source_e, step, span),
                 Expr::Var(acc, span),
             ],
             span,
@@ -1457,10 +1566,10 @@ fn fuse_hof_is_empty_flat_map(
     f: &lumia_syntax::Expr,
     span: Span,
 ) -> Expr {
-    let acc = format!("__empty_acc_{}", span.start.0);
-    let x0 = format!("__fuse_x_{}", span.start.0);
-    let x_out = format!("__fuse_xm_{}", span.start.0);
-    let y = format!("__fuse_y_{}", span.start.0);
+    let acc = synthetic(format!("__empty_acc_{}", span.start.0));
+    let x0 = synthetic(format!("__fuse_x_{}", span.start.0));
+    let x_out = synthetic(format!("__fuse_xm_{}", span.start.0));
+    let y = synthetic(format!("__fuse_y_{}", span.start.0));
 
     let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     lets.push((x_out.clone(), cur));
@@ -1508,7 +1617,7 @@ fn fuse_hof_is_empty_flat_map(
         value: Box::new(Expr::Bool(true, span)),
         body: Box::new(Expr::Seq {
             stmts: vec![
-                for_each_elem(&x0, source_e, step, span),
+                for_each_elem(x0.as_str(), source_e, step, span),
                 Expr::Var(acc, span),
             ],
             span,
@@ -1516,6 +1625,194 @@ fn fuse_hof_is_empty_flat_map(
         mutable: true,
         ty: None,
     }
+}
+
+fn is_empty_hit(acc: &Sym, span: Span) -> Expr {
+    Expr::Seq {
+        stmts: vec![
+            Expr::Assign {
+                name: acc.clone(),
+                value: Box::new(Expr::Bool(false, span)),
+                span,
+            },
+            Expr::Break(span),
+        ],
+        span,
+    }
+}
+
+/// Skip first `lim` survivors, then short-circuit on the next (fused `.drop(n).isEmpty()`).
+fn fuse_hof_is_empty_skip(
+    ctx: &LowerCtx,
+    source: &lumia_syntax::Expr,
+    stages: &[HofStage<'_>],
+    lim: &Sym,
+    span: Span,
+) -> Expr {
+    let uid = span.start.0;
+    let acc = synthetic(format!("__empty_acc_{uid}"));
+    let skipped = synthetic(format!("__drop_k_{uid}"));
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
+    let x_out = synthetic(format!("__fuse_xm_{uid}"));
+    let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
+    lets.push((x_out.clone(), cur));
+    let body = drop_then(&skipped, lim, is_empty_hit(&acc, span), span);
+    let step = wrap_staged_step(body, lets, guards, span);
+    let source_e = lower_expr(ctx, source);
+    nest_lets(
+        vec![
+            (skipped, Expr::Int(0, span), true),
+            (acc.clone(), Expr::Bool(true, span), true),
+        ],
+        Expr::Seq {
+            stmts: vec![
+                for_each_elem(x0.as_str(), source_e, step, span),
+                Expr::Var(acc, span),
+            ],
+            span,
+        },
+    )
+}
+
+fn fuse_hof_is_empty_flat_map_skip(
+    ctx: &LowerCtx,
+    source: &lumia_syntax::Expr,
+    stages: &[HofStage<'_>],
+    f: &lumia_syntax::Expr,
+    lim: &Sym,
+    span: Span,
+) -> Expr {
+    let uid = span.start.0;
+    let acc = synthetic(format!("__empty_acc_{uid}"));
+    let skipped = synthetic(format!("__drop_k_{uid}"));
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
+    let x_out = synthetic(format!("__fuse_xm_{uid}"));
+    let y = synthetic(format!("__fuse_y_{uid}"));
+    let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
+    lets.push((x_out.clone(), cur));
+    let chunk = apply_hof_fn(ctx, f, Expr::Var(x_out, span), span);
+    let inner_y = drop_then(&skipped, lim, is_empty_hit(&acc, span), span);
+    let inner = for_each_elem(y.as_str(), chunk, inner_y, span);
+    let body = Expr::Seq {
+        stmts: vec![
+            inner,
+            Expr::If {
+                cond: Box::new(Expr::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(Expr::Var(acc.clone(), span)),
+                    right: Box::new(Expr::Bool(false, span)),
+                    span,
+                }),
+                then_branch: Box::new(Expr::Break(span)),
+                else_branch: Box::new(Expr::Unit(span)),
+                span,
+            },
+        ],
+        span,
+    };
+    let step = wrap_staged_step(body, lets, guards, span);
+    let source_e = lower_expr(ctx, source);
+    nest_lets(
+        vec![
+            (skipped, Expr::Int(0, span), true),
+            (acc.clone(), Expr::Bool(true, span), true),
+        ],
+        Expr::Seq {
+            stmts: vec![
+                for_each_elem(x0.as_str(), source_e, step, span),
+                Expr::Var(acc, span),
+            ],
+            span,
+        },
+    )
+}
+
+fn pipe_is_empty_skip(
+    ctx: &LowerCtx,
+    source: &lumia_syntax::Expr,
+    stages: &[HofStage<'_>],
+    fmap: Option<&lumia_syntax::Expr>,
+    lim: &Sym,
+    span: Span,
+) -> Expr {
+    match fmap {
+        Some(f) => fuse_hof_is_empty_flat_map_skip(ctx, source, stages, f, lim, span),
+        None => fuse_hof_is_empty_skip(ctx, source, stages, lim, span),
+    }
+}
+
+fn fuse_hof_is_empty_under_drop(
+    ctx: &LowerCtx,
+    inner: &lumia_syntax::Expr,
+    n: Expr,
+    span: Span,
+) -> Option<Expr> {
+    let uid = span.start.0;
+    let raw = synthetic(format!("__drop_raw_{uid}"));
+    let lim = synthetic(format!("__drop_n_{uid}"));
+    // `drop(a).drop(b).isEmpty` ≡ skip(a+b) then short-circuit — do not fall
+    // back to counting the remainder (`len == 0`).
+    let mut inner = inner;
+    let mut n = n;
+    while let Some((next, TrailingCut::Drop(m))) = peel_trailing_take_drop(inner) {
+        n = add_counts(lower_expr(ctx, m), n, span);
+        inner = next;
+    }
+    // `take(t).drop(n).isEmpty` ≡ empty when n ≥ t, else skip n then short-circuit
+    // (the (n+1)th survivor is inside the take window).
+    if let Some((src, TrailingCut::Take(t_e))) = peel_trailing_take_drop(inner) {
+        if peel_trailing_take_drop(src).is_some() {
+            return fuse_hof_len_under_drop(ctx, inner, n, span).map(|len_e| Expr::Binary {
+                op: BinOp::Eq,
+                left: Box::new(len_e),
+                right: Box::new(Expr::Int(0, span)),
+                span,
+            });
+        }
+        let t = lower_expr(ctx, t_e);
+        let (source, stages, fmap) = peel_len_base(src)?;
+        if let (Expr::Int(nk, _), Expr::Int(tk, _)) = (&n, &t) {
+            let nk = (*nk).max(0);
+            let tk = (*tk).max(0);
+            if nk >= tk {
+                return Some(Expr::Bool(true, span));
+            }
+            let body = pipe_is_empty_skip(ctx, source, &stages, fmap, &lim, span);
+            return Some(bind_nonneg_lim(raw, lim, Expr::Int(nk, span), body, span));
+        }
+        let t_raw = synthetic(format!("__take_raw_{uid}"));
+        let t_lim = synthetic(format!("__take_n_{uid}"));
+        let body = pipe_is_empty_skip(ctx, source, &stages, fmap, &lim, span);
+        let guarded = Expr::If {
+            cond: Box::new(Expr::Binary {
+                op: BinOp::Ge,
+                left: Box::new(Expr::Var(lim.clone(), span)),
+                right: Box::new(Expr::Var(t_lim.clone(), span)),
+                span,
+            }),
+            then_branch: Box::new(Expr::Bool(true, span)),
+            else_branch: Box::new(body),
+            span,
+        };
+        return Some(bind_nonneg_lim(
+            raw,
+            lim,
+            n,
+            bind_nonneg_lim(t_raw, t_lim, t, guarded, span),
+            span,
+        ));
+    }
+    if peel_trailing_take_drop(inner).is_some() {
+        return fuse_hof_len_under_drop(ctx, inner, n, span).map(|len_e| Expr::Binary {
+            op: BinOp::Eq,
+            left: Box::new(len_e),
+            right: Box::new(Expr::Int(0, span)),
+            span,
+        });
+    }
+    let (source, stages, fmap) = peel_len_base(inner)?;
+    let body = pipe_is_empty_skip(ctx, source, &stages, fmap, &lim, span);
+    Some(bind_nonneg_lim(raw, lim, n, body, span))
 }
 
 /// Fuse `base.(map|filter)+.any(p)` — short-circuit without intermediate lists.
@@ -1570,7 +1867,7 @@ pub(crate) fn try_fuse_hof_contains(
     if let Some(inner) = peel_trailing_to_set(base) {
         return fuse_toset_contains(ctx, inner, lower_expr(ctx, needle), span);
     }
-    let nv = format!("__contains_n_{}", span.start.0);
+    let nv = synthetic(format!("__contains_n_{}", span.start.0));
     let p = contains_eq_lambda(&nv, span);
     let fused = try_fuse_hof_search(ctx, base, &p, span, FuseSearchKind::Any)?;
     Some(Expr::Let {
@@ -1589,7 +1886,7 @@ fn fuse_toset_contains(
     needle: Expr,
     span: Span,
 ) -> Option<Expr> {
-    let nv = format!("__contains_n_{}", span.start.0);
+    let nv = synthetic(format!("__contains_n_{}", span.start.0));
     let p = contains_eq_lambda(&nv, span);
     let fused = match try_fuse_hof_search(ctx, inner, &p, span, FuseSearchKind::Any) {
         Some(e) => e,
@@ -1608,15 +1905,15 @@ fn fuse_toset_contains(
 }
 
 fn contains_eq_lambda(needle_name: &str, span: Span) -> lumia_syntax::Expr {
-    let x = format!("__contains_x_{}", span.start.0);
+    let x = synthetic(format!("__contains_x_{}", span.start.0));
     lumia_syntax::Expr::Lambda {
-        params: vec![x.clone()],
+        params: vec![Sym::from(x.as_str())],
         param_tys: vec![None],
         bare_it: false,
         body: Box::new(lumia_syntax::Expr::Binary {
             op: BinOp::Eq,
-            left: Box::new(lumia_syntax::Expr::Ident(x, span)),
-            right: Box::new(lumia_syntax::Expr::Ident(needle_name.to_string(), span)),
+            left: Box::new(lumia_syntax::Expr::Ident(Sym::from(x.as_str()), span)),
+            right: Box::new(lumia_syntax::Expr::Ident(Sym::from(needle_name), span)),
             span,
         }),
         span,
@@ -1694,8 +1991,8 @@ fn fuse_hof_search_under_take(
         }
     }
     let uid = span.start.0;
-    let raw = format!("__take_raw_{uid}");
-    let lim = format!("__take_n_{uid}");
+    let raw = synthetic(format!("__take_raw_{uid}"));
+    let lim = synthetic(format!("__take_n_{uid}"));
     let (source, stages, fmap) = peel_len_base(inner)?;
     let body = match fmap {
         Some(fm) => fuse_hof_search_flat_map_capped(ctx, source, &stages, fm, p, &lim, span, kind),
@@ -1716,8 +2013,8 @@ fn fuse_hof_search_under_drop(
         return fuse_hof_search_on(ctx, inner, p, span, kind);
     }
     let uid = span.start.0;
-    let raw = format!("__drop_raw_{uid}");
-    let lim = format!("__drop_n_{uid}");
+    let raw = synthetic(format!("__drop_raw_{uid}"));
+    let lim = synthetic(format!("__drop_n_{uid}"));
     let (source, stages, fmap) = peel_len_base(inner)?;
     let body = match fmap {
         Some(fm) => fuse_hof_search_flat_map_skip(ctx, source, &stages, fm, p, &lim, span, kind),
@@ -1739,9 +2036,9 @@ fn fuse_hof_search(
         FuseSearchKind::All => ("all", Expr::Bool(true, span)),
         FuseSearchKind::Find => ("find", crate::list_hof::option_none(ctx, span)),
     };
-    let acc = format!("__{prefix}_acc_{}", span.start.0);
-    let x0 = format!("__fuse_x_{}", span.start.0);
-    let x_out = format!("__fuse_xm_{}", span.start.0);
+    let acc = synthetic(format!("__{prefix}_acc_{}", span.start.0));
+    let x0 = synthetic(format!("__fuse_x_{}", span.start.0));
+    let x_out = synthetic(format!("__fuse_xm_{}", span.start.0));
 
     let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     lets.push((x_out.clone(), cur));
@@ -1756,7 +2053,7 @@ fn fuse_hof_search(
         value: Box::new(init),
         body: Box::new(Expr::Seq {
             stmts: vec![
-                for_each_elem(&x0, source_e, step, span),
+                for_each_elem(x0.as_str(), source_e, step, span),
                 Expr::Var(acc, span),
             ],
             span,
@@ -1769,8 +2066,8 @@ fn fuse_hof_search(
 fn search_step_body(
     ctx: &LowerCtx,
     kind: FuseSearchKind,
-    acc: &str,
-    x_out: &str,
+    acc: &Sym,
+    x_out: &Sym,
     pred: Expr,
     span: Span,
 ) -> Expr {
@@ -1780,7 +2077,7 @@ fn search_step_body(
             then_branch: Box::new(Expr::Seq {
                 stmts: vec![
                     Expr::Assign {
-                        name: acc.to_string(),
+                        name: acc.clone(),
                         value: Box::new(Expr::Bool(true, span)),
                         span,
                     },
@@ -1797,7 +2094,7 @@ fn search_step_body(
             else_branch: Box::new(Expr::Seq {
                 stmts: vec![
                     Expr::Assign {
-                        name: acc.to_string(),
+                        name: acc.clone(),
                         value: Box::new(Expr::Bool(false, span)),
                         span,
                     },
@@ -1812,10 +2109,10 @@ fn search_step_body(
             then_branch: Box::new(Expr::Seq {
                 stmts: vec![
                     Expr::Assign {
-                        name: acc.to_string(),
+                        name: acc.clone(),
                         value: Box::new(crate::list_hof::option_some(
                             ctx,
-                            Expr::Var(x_out.to_string(), span),
+                            Expr::Var(x_out.clone(), span),
                             span,
                         )),
                         span,
@@ -1844,11 +2141,11 @@ fn fuse_hof_search_flat_map(
         FuseSearchKind::All => ("all", Expr::Bool(true, span)),
         FuseSearchKind::Find => ("find", crate::list_hof::option_none(ctx, span)),
     };
-    let acc = format!("__{prefix}_acc_{}", span.start.0);
-    let hit = format!("__{prefix}_hit_{}", span.start.0);
-    let x0 = format!("__fuse_x_{}", span.start.0);
-    let x_out = format!("__fuse_xm_{}", span.start.0);
-    let y = format!("__fuse_y_{}", span.start.0);
+    let acc = synthetic(format!("__{prefix}_acc_{}", span.start.0));
+    let hit = synthetic(format!("__{prefix}_hit_{}", span.start.0));
+    let x0 = synthetic(format!("__fuse_x_{}", span.start.0));
+    let x_out = synthetic(format!("__fuse_xm_{}", span.start.0));
+    let y = synthetic(format!("__fuse_y_{}", span.start.0));
 
     let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     lets.push((x_out.clone(), cur));
@@ -1924,7 +2221,7 @@ fn fuse_hof_search_flat_map(
             span,
         },
     };
-    let inner = for_each_elem(&y, chunk, inner_body, span);
+    let inner = for_each_elem(y.as_str(), chunk, inner_body, span);
     let body = Expr::Seq {
         stmts: vec![
             inner,
@@ -1948,7 +2245,7 @@ fn fuse_hof_search_flat_map(
             value: Box::new(init),
             body: Box::new(Expr::Seq {
                 stmts: vec![
-                    for_each_elem(&x0, source_e, step, span),
+                    for_each_elem(x0.as_str(), source_e, step, span),
                     Expr::Var(acc, span),
                 ],
                 span,
@@ -1961,17 +2258,17 @@ fn fuse_hof_search_flat_map(
     }
 }
 
-fn search_short_circuit(ctx: &LowerCtx, kind: FuseSearchKind, acc: &str, span: Span) -> Expr {
+fn search_short_circuit(ctx: &LowerCtx, kind: FuseSearchKind, acc: &Sym, span: Span) -> Expr {
     match kind {
         FuseSearchKind::Any => Expr::Binary {
             op: BinOp::Eq,
-            left: Box::new(Expr::Var(acc.to_string(), span)),
+            left: Box::new(Expr::Var(acc.clone(), span)),
             right: Box::new(Expr::Bool(true, span)),
             span,
         },
         FuseSearchKind::All => Expr::Binary {
             op: BinOp::Eq,
-            left: Box::new(Expr::Var(acc.to_string(), span)),
+            left: Box::new(Expr::Var(acc.clone(), span)),
             right: Box::new(Expr::Bool(false, span)),
             span,
         },
@@ -1984,7 +2281,7 @@ fn fuse_hof_search_capped(
     source: &lumia_syntax::Expr,
     stages: &[HofStage<'_>],
     p: &lumia_syntax::Expr,
-    lim: &str,
+    lim: &Sym,
     span: Span,
     kind: FuseSearchKind,
 ) -> Expr {
@@ -1994,10 +2291,10 @@ fn fuse_hof_search_capped(
         FuseSearchKind::Find => ("find", crate::list_hof::option_none(ctx, span)),
     };
     let uid = span.start.0;
-    let acc = format!("__{prefix}_acc_{uid}");
-    let k = format!("__take_k_{uid}");
-    let x0 = format!("__fuse_x_{uid}");
-    let x_out = format!("__fuse_xm_{uid}");
+    let acc = synthetic(format!("__{prefix}_acc_{uid}"));
+    let k = synthetic(format!("__take_k_{uid}"));
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
+    let x_out = synthetic(format!("__fuse_xm_{uid}"));
     let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     lets.push((x_out.clone(), cur));
     let pred = apply_hof_fn(ctx, p, Expr::Var(x_out.clone(), span), span);
@@ -2030,7 +2327,7 @@ fn fuse_hof_search_capped(
         vec![(k, Expr::Int(0, span), true), (acc.clone(), init, true)],
         Expr::Seq {
             stmts: vec![
-                for_each_elem(&x0, source_e, step, span),
+                for_each_elem(x0.as_str(), source_e, step, span),
                 Expr::Var(acc, span),
             ],
             span,
@@ -2043,7 +2340,7 @@ fn fuse_hof_search_skip(
     source: &lumia_syntax::Expr,
     stages: &[HofStage<'_>],
     p: &lumia_syntax::Expr,
-    lim: &str,
+    lim: &Sym,
     span: Span,
     kind: FuseSearchKind,
 ) -> Expr {
@@ -2053,10 +2350,10 @@ fn fuse_hof_search_skip(
         FuseSearchKind::Find => ("find", crate::list_hof::option_none(ctx, span)),
     };
     let uid = span.start.0;
-    let acc = format!("__{prefix}_acc_{uid}");
-    let skipped = format!("__drop_k_{uid}");
-    let x0 = format!("__fuse_x_{uid}");
-    let x_out = format!("__fuse_xm_{uid}");
+    let acc = synthetic(format!("__{prefix}_acc_{uid}"));
+    let skipped = synthetic(format!("__drop_k_{uid}"));
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
+    let x_out = synthetic(format!("__fuse_xm_{uid}"));
     let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     lets.push((x_out.clone(), cur));
     let pred = apply_hof_fn(ctx, p, Expr::Var(x_out.clone(), span), span);
@@ -2075,7 +2372,7 @@ fn fuse_hof_search_skip(
         ],
         Expr::Seq {
             stmts: vec![
-                for_each_elem(&x0, source_e, step, span),
+                for_each_elem(x0.as_str(), source_e, step, span),
                 Expr::Var(acc, span),
             ],
             span,
@@ -2089,7 +2386,7 @@ fn fuse_hof_search_flat_map_capped(
     stages: &[HofStage<'_>],
     fmap: &lumia_syntax::Expr,
     p: &lumia_syntax::Expr,
-    lim: &str,
+    lim: &Sym,
     span: Span,
     kind: FuseSearchKind,
 ) -> Expr {
@@ -2099,11 +2396,11 @@ fn fuse_hof_search_flat_map_capped(
         FuseSearchKind::Find => ("find", crate::list_hof::option_none(ctx, span)),
     };
     let uid = span.start.0;
-    let acc = format!("__{prefix}_acc_{uid}");
-    let k = format!("__take_k_{uid}");
-    let x0 = format!("__fuse_x_{uid}");
-    let x_out = format!("__fuse_xm_{uid}");
-    let y = format!("__fuse_y_{uid}");
+    let acc = synthetic(format!("__{prefix}_acc_{uid}"));
+    let k = synthetic(format!("__take_k_{uid}"));
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
+    let x_out = synthetic(format!("__fuse_xm_{uid}"));
+    let y = synthetic(format!("__fuse_y_{uid}"));
     let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     lets.push((x_out.clone(), cur));
     let chunk = apply_hof_fn(ctx, fmap, Expr::Var(x_out, span), span);
@@ -2130,7 +2427,7 @@ fn fuse_hof_search_flat_map_capped(
         ],
         span,
     };
-    let inner = for_each_elem(&y, chunk, inner_y, span);
+    let inner = for_each_elem(y.as_str(), chunk, inner_y, span);
     let body = Expr::Seq {
         stmts: vec![
             inner,
@@ -2154,7 +2451,7 @@ fn fuse_hof_search_flat_map_capped(
         vec![(k, Expr::Int(0, span), true), (acc.clone(), init, true)],
         Expr::Seq {
             stmts: vec![
-                for_each_elem(&x0, source_e, step, span),
+                for_each_elem(x0.as_str(), source_e, step, span),
                 Expr::Var(acc, span),
             ],
             span,
@@ -2168,7 +2465,7 @@ fn fuse_hof_search_flat_map_skip(
     stages: &[HofStage<'_>],
     fmap: &lumia_syntax::Expr,
     p: &lumia_syntax::Expr,
-    lim: &str,
+    lim: &Sym,
     span: Span,
     kind: FuseSearchKind,
 ) -> Expr {
@@ -2178,11 +2475,11 @@ fn fuse_hof_search_flat_map_skip(
         FuseSearchKind::Find => ("find", crate::list_hof::option_none(ctx, span)),
     };
     let uid = span.start.0;
-    let acc = format!("__{prefix}_acc_{uid}");
-    let skipped = format!("__drop_k_{uid}");
-    let x0 = format!("__fuse_x_{uid}");
-    let x_out = format!("__fuse_xm_{uid}");
-    let y = format!("__fuse_y_{uid}");
+    let acc = synthetic(format!("__{prefix}_acc_{uid}"));
+    let skipped = synthetic(format!("__drop_k_{uid}"));
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
+    let x_out = synthetic(format!("__fuse_xm_{uid}"));
+    let y = synthetic(format!("__fuse_y_{uid}"));
     let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     lets.push((x_out.clone(), cur));
     let chunk = apply_hof_fn(ctx, fmap, Expr::Var(x_out, span), span);
@@ -2193,7 +2490,7 @@ fn fuse_hof_search_flat_map_skip(
         search_step_body(ctx, kind, &acc, &y, pred, span),
         span,
     );
-    let inner = for_each_elem(&y, chunk, inner_y, span);
+    let inner = for_each_elem(y.as_str(), chunk, inner_y, span);
     let body = Expr::Seq {
         stmts: vec![
             inner,
@@ -2215,7 +2512,7 @@ fn fuse_hof_search_flat_map_skip(
         ],
         Expr::Seq {
             stmts: vec![
-                for_each_elem(&x0, source_e, step, span),
+                for_each_elem(x0.as_str(), source_e, step, span),
                 Expr::Var(acc, span),
             ],
             span,
@@ -2288,9 +2585,9 @@ fn fuse_hof_get_under_take(
     span: Span,
 ) -> Option<Expr> {
     let uid = span.start.0;
-    let raw = format!("__take_raw_{uid}");
-    let lim = format!("__take_n_{uid}");
-    let idx = format!("__take_get_idx_{uid}");
+    let raw = synthetic(format!("__take_raw_{uid}"));
+    let lim = synthetic(format!("__take_n_{uid}"));
+    let idx = synthetic(format!("__take_get_idx_{uid}"));
     let fused = fuse_hof_get_resolved(ctx, inner, Expr::Var(idx.clone(), span), span)?;
     let body = Expr::If {
         cond: Box::new(Expr::Binary {
@@ -2326,8 +2623,8 @@ fn fuse_hof_get_under_drop(
     span: Span,
 ) -> Option<Expr> {
     let uid = span.start.0;
-    let raw = format!("__drop_raw_{uid}");
-    let lim = format!("__drop_n_{uid}");
+    let raw = synthetic(format!("__drop_raw_{uid}"));
+    let lim = synthetic(format!("__drop_n_{uid}"));
     let adj = Expr::Binary {
         op: BinOp::Add,
         left: Box::new(index),
@@ -2346,12 +2643,12 @@ fn fuse_hof_get(
     span: Span,
 ) -> Expr {
     let uid = span.start.0;
-    let seen = format!("__fuse_seen_{uid}");
+    let seen = synthetic(format!("__fuse_seen_{uid}"));
     // Option slot — must not be `Int(0)` (Float / Task pipelines fail typecheck).
-    let acc = format!("__get_acc_{uid}");
-    let x0 = format!("__fuse_x_{uid}");
-    let x_out = format!("__fuse_xm_{uid}");
-    let idx = format!("__fuse_idx_{uid}");
+    let acc = synthetic(format!("__get_acc_{uid}"));
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
+    let x_out = synthetic(format!("__fuse_xm_{uid}"));
+    let idx = synthetic(format!("__fuse_idx_{uid}"));
 
     let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     lets.push((x_out.clone(), cur));
@@ -2371,7 +2668,7 @@ fn fuse_hof_get(
                 name: acc.clone(),
                 value: Box::new(crate::list_hof::option_none(ctx, span)),
                 body: Box::new(Expr::Seq {
-                    stmts: vec![for_each_elem(&x0, source_e, step, span), result],
+                    stmts: vec![for_each_elem(x0.as_str(), source_e, step, span), result],
                     span,
                 }),
                 mutable: true,
@@ -2394,12 +2691,12 @@ fn fuse_hof_get_flat_map(
     span: Span,
 ) -> Expr {
     let uid = span.start.0;
-    let seen = format!("__fuse_seen_{uid}");
-    let acc = format!("__get_acc_{uid}");
-    let x0 = format!("__fuse_x_{uid}");
-    let x_out = format!("__fuse_xm_{uid}");
-    let y = format!("__fuse_y_{uid}");
-    let idx = format!("__fuse_idx_{uid}");
+    let seen = synthetic(format!("__fuse_seen_{uid}"));
+    let acc = synthetic(format!("__get_acc_{uid}"));
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
+    let x_out = synthetic(format!("__fuse_xm_{uid}"));
+    let y = synthetic(format!("__fuse_y_{uid}"));
+    let idx = synthetic(format!("__fuse_idx_{uid}"));
 
     let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     lets.push((x_out.clone(), cur));
@@ -2434,7 +2731,7 @@ fn fuse_hof_get_flat_map(
             (acc, crate::list_hof::option_none(ctx, span), true),
         ],
         Expr::Seq {
-            stmts: vec![for_each_elem(&x0, source_e, step, span), result],
+            stmts: vec![for_each_elem(x0.as_str(), source_e, step, span), result],
             span,
         },
     )
@@ -2493,9 +2790,9 @@ fn fuse_hof_take_min(
     span: Span,
 ) -> Expr {
     let uid = span.start.0;
-    let a = format!("__take_a_{uid}");
-    let b = format!("__take_b_{uid}");
-    let lim = format!("__take_n_{uid}");
+    let a = synthetic(format!("__take_a_{uid}"));
+    let b = synthetic(format!("__take_b_{uid}"));
+    let lim = synthetic(format!("__take_n_{uid}"));
     let min_e = Expr::If {
         cond: Box::new(Expr::Binary {
             op: BinOp::Lt,
@@ -2530,10 +2827,10 @@ fn fuse_hof_take_after_drop(
     span: Span,
 ) -> Expr {
     let uid = span.start.0;
-    let drop_raw = format!("__drop_raw_{uid}");
-    let drop_lim = format!("__drop_n_{uid}");
-    let take_raw = format!("__take_raw_{uid}");
-    let take_lim = format!("__take_n_{uid}");
+    let drop_raw = synthetic(format!("__drop_raw_{uid}"));
+    let drop_lim = synthetic(format!("__drop_n_{uid}"));
+    let take_raw = synthetic(format!("__take_raw_{uid}"));
+    let take_lim = synthetic(format!("__take_n_{uid}"));
     let body = fuse_hof_take_after_drop_scan(ctx, inner, &drop_lim, &take_lim, span);
     bind_nonneg_lim(
         drop_raw,
@@ -2547,8 +2844,8 @@ fn fuse_hof_take_after_drop(
 fn fuse_hof_take_after_drop_scan(
     ctx: &LowerCtx,
     inner: &lumia_syntax::Expr,
-    drop_lim: &str,
-    take_lim: &str,
+    drop_lim: &Sym,
+    take_lim: &Sym,
     span: Span,
 ) -> Expr {
     if let Some((base, fmap)) = peel_trailing_flat_map(inner) {
@@ -2565,24 +2862,32 @@ fn fuse_hof_take_after_drop_scan(
             args: vec![
                 Expr::BuiltinCall {
                     name: Builtin::ListSlice,
-                    args: vec![
-                        lower_expr(ctx, inner),
-                        Expr::Var(drop_lim.to_string(), span),
-                    ],
+                    args: vec![lower_expr(ctx, inner), Expr::Var(drop_lim.clone(), span)],
                     span,
                 },
-                Expr::Var(take_lim.to_string(), span),
+                Expr::Var(take_lim.clone(), span),
             ],
             span,
         };
     }
+    fuse_hof_take_after_drop_stages(ctx, source, &stages, drop_lim, take_lim, span)
+}
+
+fn fuse_hof_take_after_drop_stages(
+    ctx: &LowerCtx,
+    source: &lumia_syntax::Expr,
+    stages: &[HofStage<'_>],
+    drop_lim: &Sym,
+    take_lim: &Sym,
+    span: Span,
+) -> Expr {
     let uid = span.start.0;
-    let acc = format!("{}_{}", crate::desugar_slots::MAP_ACC_PREFIX, uid);
-    let skipped = format!("__drop_k_{uid}");
-    let k = format!("__take_k_{uid}");
-    let x0 = format!("__fuse_x_{uid}");
-    let x_out = format!("__fuse_xm_{uid}");
-    let (cur, mut lets, guards) = stage_pipeline(ctx, &stages, &x0, span);
+    let acc = synthetic(format!("{}_{}", crate::desugar_slots::MAP_ACC_PREFIX, uid));
+    let skipped = synthetic(format!("__drop_k_{uid}"));
+    let k = synthetic(format!("__take_k_{uid}"));
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
+    let x_out = synthetic(format!("__fuse_xm_{uid}"));
+    let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     lets.push((x_out.clone(), cur));
     let append = take_append_step(&acc, &k, take_lim, &x_out, span);
     let body = drop_then(&skipped, drop_lim, append, span);
@@ -2601,7 +2906,7 @@ fn fuse_hof_take_after_drop_scan(
         ],
         Expr::Seq {
             stmts: vec![
-                for_each_elem(&x0, source_e, step, span),
+                for_each_elem(x0.as_str(), source_e, step, span),
                 Expr::Var(acc, span),
             ],
             span,
@@ -2614,23 +2919,23 @@ fn fuse_hof_take_after_drop_flat_map(
     source: &lumia_syntax::Expr,
     stages: &[HofStage<'_>],
     fmap: &lumia_syntax::Expr,
-    drop_lim: &str,
-    take_lim: &str,
+    drop_lim: &Sym,
+    take_lim: &Sym,
     span: Span,
 ) -> Expr {
     let uid = span.start.0;
-    let acc = format!("{}_{}", crate::desugar_slots::MAP_ACC_PREFIX, uid);
-    let skipped = format!("__drop_k_{uid}");
-    let k = format!("__take_k_{uid}");
-    let x0 = format!("__fuse_x_{uid}");
-    let x_out = format!("__fuse_xm_{uid}");
-    let y = format!("__fuse_y_{uid}");
+    let acc = synthetic(format!("{}_{}", crate::desugar_slots::MAP_ACC_PREFIX, uid));
+    let skipped = synthetic(format!("__drop_k_{uid}"));
+    let k = synthetic(format!("__take_k_{uid}"));
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
+    let x_out = synthetic(format!("__fuse_xm_{uid}"));
+    let y = synthetic(format!("__fuse_y_{uid}"));
     let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     lets.push((x_out.clone(), cur));
     let chunk = apply_hof_fn(ctx, fmap, Expr::Var(x_out, span), span);
     let append = take_append_step(&acc, &k, take_lim, &y, span);
     let inner_y = drop_then(&skipped, drop_lim, append, span);
-    let body = for_each_elem(&y, chunk, inner_y, span);
+    let body = for_each_elem(y.as_str(), chunk, inner_y, span);
     let step = take_limit_step(
         &k,
         take_lim,
@@ -2646,7 +2951,7 @@ fn fuse_hof_take_after_drop_flat_map(
         ],
         Expr::Seq {
             stmts: vec![
-                for_each_elem(&x0, source_e, step, span),
+                for_each_elem(x0.as_str(), source_e, step, span),
                 Expr::Var(acc, span),
             ],
             span,
@@ -2662,11 +2967,11 @@ fn fuse_hof_take(
     span: Span,
 ) -> Expr {
     let uid = span.start.0;
-    let acc = format!("{}_{}", crate::desugar_slots::MAP_ACC_PREFIX, uid);
-    let k = format!("__take_k_{uid}");
-    let lim = format!("__take_n_{uid}");
-    let x0 = format!("__fuse_x_{uid}");
-    let x_out = format!("__fuse_xm_{uid}");
+    let acc = synthetic(format!("{}_{}", crate::desugar_slots::MAP_ACC_PREFIX, uid));
+    let k = synthetic(format!("__take_k_{uid}"));
+    let lim = synthetic(format!("__take_n_{uid}"));
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
+    let x_out = synthetic(format!("__fuse_xm_{uid}"));
 
     let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     lets.push((x_out.clone(), cur));
@@ -2686,7 +2991,7 @@ fn fuse_hof_take(
         ],
         Expr::Seq {
             stmts: vec![
-                for_each_elem(&x0, source_e, step, span),
+                for_each_elem(x0.as_str(), source_e, step, span),
                 Expr::Var(acc, span),
             ],
             span,
@@ -2703,12 +3008,12 @@ fn fuse_hof_take_flat_map(
     span: Span,
 ) -> Expr {
     let uid = span.start.0;
-    let acc = format!("{}_{}", crate::desugar_slots::MAP_ACC_PREFIX, uid);
-    let k = format!("__take_k_{uid}");
-    let lim = format!("__take_n_{uid}");
-    let x0 = format!("__fuse_x_{uid}");
-    let x_out = format!("__fuse_xm_{uid}");
-    let y = format!("__fuse_y_{uid}");
+    let acc = synthetic(format!("{}_{}", crate::desugar_slots::MAP_ACC_PREFIX, uid));
+    let k = synthetic(format!("__take_k_{uid}"));
+    let lim = synthetic(format!("__take_n_{uid}"));
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
+    let x_out = synthetic(format!("__fuse_xm_{uid}"));
+    let y = synthetic(format!("__fuse_y_{uid}"));
 
     let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     lets.push((x_out.clone(), cur));
@@ -2716,7 +3021,7 @@ fn fuse_hof_take_flat_map(
     let inner_y = take_limit_step(&k, &lim, take_append_step(&acc, &k, &lim, &y, span), span);
     let body = Expr::Seq {
         stmts: vec![
-            for_each_elem(&y, chunk, inner_y, span),
+            for_each_elem(y.as_str(), chunk, inner_y, span),
             Expr::If {
                 cond: Box::new(take_reached(&k, &lim, span)),
                 then_branch: Box::new(Expr::Break(span)),
@@ -2737,7 +3042,7 @@ fn fuse_hof_take_flat_map(
         ],
         Expr::Seq {
             stmts: vec![
-                for_each_elem(&x0, source_e, step, span),
+                for_each_elem(x0.as_str(), source_e, step, span),
                 Expr::Var(acc, span),
             ],
             span,
@@ -2797,9 +3102,9 @@ fn fuse_hof_drop_sum(
     span: Span,
 ) -> Expr {
     let uid = span.start.0;
-    let xa = format!("__drop_a_{uid}");
-    let xb = format!("__drop_b_{uid}");
-    let lim = format!("__drop_n_{uid}");
+    let xa = synthetic(format!("__drop_a_{uid}"));
+    let xb = synthetic(format!("__drop_b_{uid}"));
+    let lim = synthetic(format!("__drop_n_{uid}"));
     let sum = Expr::Binary {
         op: BinOp::Add,
         left: Box::new(Expr::Var(xa.clone(), span)),
@@ -2828,12 +3133,12 @@ fn fuse_hof_drop_after_take(
     span: Span,
 ) -> Expr {
     let uid = span.start.0;
-    let t_raw = format!("__take_raw_{uid}");
-    let t_lim = format!("__take_n_{uid}");
-    let d_raw = format!("__drop_raw_{uid}");
-    let d_lim = format!("__drop_n_{uid}");
+    let t_raw = synthetic(format!("__take_raw_{uid}"));
+    let t_lim = synthetic(format!("__take_n_{uid}"));
+    let d_raw = synthetic(format!("__drop_raw_{uid}"));
+    let d_lim = synthetic(format!("__drop_n_{uid}"));
     // remain = max(0, take_n - drop_n); then drop(drop_n).take(remain).
-    let remain = format!("__take_remain_{uid}");
+    let remain = synthetic(format!("__take_remain_{uid}"));
     let remain_e = Expr::If {
         cond: Box::new(Expr::Binary {
             op: BinOp::Ge,
@@ -2880,12 +3185,12 @@ fn fuse_hof_drop(
     span: Span,
 ) -> Expr {
     let uid = span.start.0;
-    let acc = format!("{}_{}", crate::desugar_slots::MAP_ACC_PREFIX, uid);
-    let raw = format!("__drop_raw_{uid}");
-    let lim = format!("__drop_n_{uid}");
-    let skipped = format!("__drop_k_{uid}");
-    let x0 = format!("__fuse_x_{uid}");
-    let x_out = format!("__fuse_xm_{uid}");
+    let acc = synthetic(format!("{}_{}", crate::desugar_slots::MAP_ACC_PREFIX, uid));
+    let raw = synthetic(format!("__drop_raw_{uid}"));
+    let lim = synthetic(format!("__drop_n_{uid}"));
+    let skipped = synthetic(format!("__drop_k_{uid}"));
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
+    let x_out = synthetic(format!("__fuse_xm_{uid}"));
     let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     lets.push((x_out.clone(), cur));
     let body = drop_then(
@@ -2907,7 +3212,7 @@ fn fuse_hof_drop(
             ],
             Expr::Seq {
                 stmts: vec![
-                    for_each_elem(&x0, source_e, step, span),
+                    for_each_elem(x0.as_str(), source_e, step, span),
                     Expr::Var(acc, span),
                 ],
                 span,
@@ -2926,13 +3231,13 @@ fn fuse_hof_drop_flat_map(
     span: Span,
 ) -> Expr {
     let uid = span.start.0;
-    let acc = format!("{}_{}", crate::desugar_slots::MAP_ACC_PREFIX, uid);
-    let raw = format!("__drop_raw_{uid}");
-    let lim = format!("__drop_n_{uid}");
-    let skipped = format!("__drop_k_{uid}");
-    let x0 = format!("__fuse_x_{uid}");
-    let x_out = format!("__fuse_xm_{uid}");
-    let y = format!("__fuse_y_{uid}");
+    let acc = synthetic(format!("{}_{}", crate::desugar_slots::MAP_ACC_PREFIX, uid));
+    let raw = synthetic(format!("__drop_raw_{uid}"));
+    let lim = synthetic(format!("__drop_n_{uid}"));
+    let skipped = synthetic(format!("__drop_k_{uid}"));
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
+    let x_out = synthetic(format!("__fuse_xm_{uid}"));
+    let y = synthetic(format!("__fuse_y_{uid}"));
     let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     lets.push((x_out.clone(), cur));
     let chunk = apply_hof_fn(ctx, fmap, Expr::Var(x_out, span), span);
@@ -2942,7 +3247,7 @@ fn fuse_hof_drop_flat_map(
         append_assign(&acc, Expr::Var(y.clone(), span), span),
         span,
     );
-    let body = for_each_elem(&y, chunk, inner_y, span);
+    let body = for_each_elem(y.as_str(), chunk, inner_y, span);
     let step = wrap_staged_step(body, lets, guards, span);
     let source_e = lower_expr(ctx, source);
     bind_nonneg_lim(
@@ -2956,7 +3261,7 @@ fn fuse_hof_drop_flat_map(
             ],
             Expr::Seq {
                 stmts: vec![
-                    for_each_elem(&x0, source_e, step, span),
+                    for_each_elem(x0.as_str(), source_e, step, span),
                     Expr::Var(acc, span),
                 ],
                 span,
@@ -2966,16 +3271,16 @@ fn fuse_hof_drop_flat_map(
     )
 }
 
-fn take_reached(k: &str, lim: &str, span: Span) -> Expr {
+fn take_reached(k: &Sym, lim: &Sym, span: Span) -> Expr {
     Expr::Binary {
         op: BinOp::Ge,
-        left: Box::new(Expr::Var(k.to_string(), span)),
-        right: Box::new(Expr::Var(lim.to_string(), span)),
+        left: Box::new(Expr::Var(k.clone(), span)),
+        right: Box::new(Expr::Var(lim.clone(), span)),
         span,
     }
 }
 
-fn take_limit_step(k: &str, lim: &str, then_branch: Expr, span: Span) -> Expr {
+fn take_limit_step(k: &Sym, lim: &Sym, then_branch: Expr, span: Span) -> Expr {
     Expr::If {
         cond: Box::new(take_reached(k, lim, span)),
         then_branch: Box::new(Expr::Break(span)),
@@ -2984,15 +3289,15 @@ fn take_limit_step(k: &str, lim: &str, then_branch: Expr, span: Span) -> Expr {
     }
 }
 
-fn take_append_step(acc: &str, k: &str, lim: &str, elem: &str, span: Span) -> Expr {
+fn take_append_step(acc: &Sym, k: &Sym, lim: &Sym, elem: &Sym, span: Span) -> Expr {
     Expr::Seq {
         stmts: vec![
-            append_assign(acc, Expr::Var(elem.to_string(), span), span),
+            append_assign(acc, Expr::Var(elem.clone(), span), span),
             Expr::Assign {
-                name: k.to_string(),
+                name: k.clone(),
                 value: Box::new(Expr::Binary {
                     op: BinOp::Add,
-                    left: Box::new(Expr::Var(k.to_string(), span)),
+                    left: Box::new(Expr::Var(k.clone(), span)),
                     right: Box::new(Expr::Int(1, span)),
                     span,
                 }),
@@ -3009,21 +3314,21 @@ fn take_append_step(acc: &str, k: &str, lim: &str, elem: &str, span: Span) -> Ex
     }
 }
 
-fn get_scan_step(ctx: &LowerCtx, seen: &str, acc: &str, idx: &str, elem: &str, span: Span) -> Expr {
+fn get_scan_step(ctx: &LowerCtx, seen: &Sym, acc: &Sym, idx: &Sym, elem: &Sym, span: Span) -> Expr {
     Expr::If {
         cond: Box::new(Expr::Binary {
             op: BinOp::Eq,
-            left: Box::new(Expr::Var(seen.to_string(), span)),
-            right: Box::new(Expr::Var(idx.to_string(), span)),
+            left: Box::new(Expr::Var(seen.clone(), span)),
+            right: Box::new(Expr::Var(idx.clone(), span)),
             span,
         }),
         then_branch: Box::new(Expr::Seq {
             stmts: vec![
                 Expr::Assign {
-                    name: acc.to_string(),
+                    name: acc.clone(),
                     value: Box::new(crate::list_hof::option_some(
                         ctx,
-                        Expr::Var(elem.to_string(), span),
+                        Expr::Var(elem.clone(), span),
                         span,
                     )),
                     span,
@@ -3033,10 +3338,10 @@ fn get_scan_step(ctx: &LowerCtx, seen: &str, acc: &str, idx: &str, elem: &str, s
             span,
         }),
         else_branch: Box::new(Expr::Assign {
-            name: seen.to_string(),
+            name: seen.clone(),
             value: Box::new(Expr::Binary {
                 op: BinOp::Add,
-                left: Box::new(Expr::Var(seen.to_string(), span)),
+                left: Box::new(Expr::Var(seen.clone(), span)),
                 right: Box::new(Expr::Int(1, span)),
                 span,
             }),
@@ -3046,7 +3351,7 @@ fn get_scan_step(ctx: &LowerCtx, seen: &str, acc: &str, idx: &str, elem: &str, s
     }
 }
 
-fn nest_lets(binds: Vec<(String, Expr, bool)>, body: Expr) -> Expr {
+fn nest_lets(binds: Vec<(Sym, Expr, bool)>, body: Expr) -> Expr {
     binds
         .into_iter()
         .rev()
@@ -3059,13 +3364,13 @@ fn nest_lets(binds: Vec<(String, Expr, bool)>, body: Expr) -> Expr {
         })
 }
 
-fn is_some_var(ctx: &LowerCtx, acc: &str, span: Span) -> Expr {
+fn is_some_var(ctx: &LowerCtx, acc: &Sym, span: Span) -> Expr {
     let some_tag = ctx.lookup_ctor("Some").map(|c| c.tag).unwrap_or(0);
     Expr::Binary {
         op: BinOp::Eq,
         left: Box::new(Expr::BuiltinCall {
             name: Builtin::AdtTag,
-            args: vec![Expr::Var(acc.to_string(), span)],
+            args: vec![Expr::Var(acc.clone(), span)],
             span,
         }),
         right: Box::new(Expr::Int(some_tag, span)),
@@ -3152,17 +3457,17 @@ fn fuse_hof_for_in(
     span: Span,
 ) -> Expr {
     let uid = span.start.0;
-    let x0 = format!("__fuse_x_{uid}");
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
     let (cur, lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     let body = Expr::Let {
-        name: binding.to_string(),
+        name: binding.into(),
         value: Box::new(cur),
         body: Box::new(user_body),
         mutable: false,
         ty: None,
     };
     let step = wrap_staged_step(body, lets, guards, span);
-    for_each_elem(&x0, lower_expr(ctx, source), step, span)
+    for_each_elem(x0.as_str(), lower_expr(ctx, source), step, span)
 }
 
 fn fuse_hof_for_in_under_take(
@@ -3179,8 +3484,8 @@ fn fuse_hof_for_in_under_take(
         }
     }
     let uid = span.start.0;
-    let raw = format!("__take_raw_{uid}");
-    let lim = format!("__take_n_{uid}");
+    let raw = synthetic(format!("__take_raw_{uid}"));
+    let lim = synthetic(format!("__take_n_{uid}"));
     let (source, stages, fmap) = peel_len_base(inner)?;
     let body = match fmap {
         Some(f) => {
@@ -3215,8 +3520,8 @@ fn fuse_hof_for_in_under_drop(
         ));
     }
     let uid = span.start.0;
-    let raw = format!("__drop_raw_{uid}");
-    let lim = format!("__drop_n_{uid}");
+    let raw = synthetic(format!("__drop_raw_{uid}"));
+    let lim = synthetic(format!("__drop_n_{uid}"));
     let (source, stages, fmap) = peel_len_base(inner)?;
     let body = match fmap {
         Some(f) => {
@@ -3227,9 +3532,9 @@ fn fuse_hof_for_in_under_drop(
     Some(bind_nonneg_lim(raw, lim, n, body, span))
 }
 
-fn bind_user(binding: &str, elem: Expr, user_body: Expr, span: Span) -> Expr {
+fn bind_user(binding: &str, elem: Expr, user_body: Expr, _span: Span) -> Expr {
     Expr::Let {
-        name: binding.to_string(),
+        name: binding.into(),
         value: Box::new(elem),
         body: Box::new(user_body),
         mutable: false,
@@ -3237,14 +3542,14 @@ fn bind_user(binding: &str, elem: Expr, user_body: Expr, span: Span) -> Expr {
     }
 }
 
-fn k_inc_then(k: &str, then_branch: Expr, span: Span) -> Expr {
+fn k_inc_then(k: &Sym, then_branch: Expr, span: Span) -> Expr {
     Expr::Seq {
         stmts: vec![
             Expr::Assign {
-                name: k.to_string(),
+                name: k.clone(),
                 value: Box::new(Expr::Binary {
                     op: BinOp::Add,
-                    left: Box::new(Expr::Var(k.to_string(), span)),
+                    left: Box::new(Expr::Var(k.clone(), span)),
                     right: Box::new(Expr::Int(1, span)),
                     span,
                 }),
@@ -3262,18 +3567,18 @@ fn fuse_hof_for_in_capped(
     source: &lumia_syntax::Expr,
     stages: &[HofStage<'_>],
     user_body: Expr,
-    lim: &str,
+    lim: &Sym,
     span: Span,
 ) -> Expr {
     let uid = span.start.0;
-    let k = format!("__take_k_{uid}");
-    let x0 = format!("__fuse_x_{uid}");
+    let k = synthetic(format!("__take_k_{uid}"));
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
     let (cur, lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     let inner = k_inc_then(&k, bind_user(binding, cur, user_body, span), span);
     let step = take_limit_step(&k, lim, wrap_staged_step(inner, lets, guards, span), span);
     nest_lets(
         vec![(k, Expr::Int(0, span), true)],
-        for_each_elem(&x0, lower_expr(ctx, source), step, span),
+        for_each_elem(x0.as_str(), lower_expr(ctx, source), step, span),
     )
 }
 
@@ -3283,12 +3588,12 @@ fn fuse_hof_for_in_skip(
     source: &lumia_syntax::Expr,
     stages: &[HofStage<'_>],
     user_body: Expr,
-    lim: &str,
+    lim: &Sym,
     span: Span,
 ) -> Expr {
     let uid = span.start.0;
-    let skipped = format!("__drop_k_{uid}");
-    let x0 = format!("__fuse_x_{uid}");
+    let skipped = synthetic(format!("__drop_k_{uid}"));
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
     let (cur, lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     let inner = drop_then(
         &skipped,
@@ -3299,7 +3604,7 @@ fn fuse_hof_for_in_skip(
     let step = wrap_staged_step(inner, lets, guards, span);
     nest_lets(
         vec![(skipped, Expr::Int(0, span), true)],
-        for_each_elem(&x0, lower_expr(ctx, source), step, span),
+        for_each_elem(x0.as_str(), lower_expr(ctx, source), step, span),
     )
 }
 
@@ -3313,16 +3618,16 @@ fn fuse_hof_for_in_flat_map(
     span: Span,
 ) -> Expr {
     let uid = span.start.0;
-    let done = format!("__for_done_{uid}");
-    let x0 = format!("__fuse_x_{uid}");
-    let x_out = format!("__fuse_xm_{uid}");
-    let y = format!("__fuse_y_{uid}");
+    let done = synthetic(format!("__for_done_{uid}"));
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
+    let x_out = synthetic(format!("__fuse_xm_{uid}"));
+    let y = synthetic(format!("__fuse_y_{uid}"));
     let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     lets.push((x_out.clone(), cur));
     let chunk = apply_hof_fn(ctx, fmap, Expr::Var(x_out, span), span);
     let user = rewrite_for_in_breaks(&user_body, &done, span);
     let inner_y = bind_user(binding, Expr::Var(y.clone(), span), user, span);
-    let inner = for_each_elem(&y, chunk, inner_y, span);
+    let inner = for_each_elem(y.as_str(), chunk, inner_y, span);
     let body = Expr::Seq {
         stmts: vec![
             inner,
@@ -3339,7 +3644,12 @@ fn fuse_hof_for_in_flat_map(
     Expr::Let {
         name: done.clone(),
         value: Box::new(Expr::Bool(false, span)),
-        body: Box::new(for_each_elem(&x0, lower_expr(ctx, source), step, span)),
+        body: Box::new(for_each_elem(
+            x0.as_str(),
+            lower_expr(ctx, source),
+            step,
+            span,
+        )),
         mutable: true,
         ty: None,
     }
@@ -3352,15 +3662,15 @@ fn fuse_hof_for_in_flat_map_capped(
     stages: &[HofStage<'_>],
     fmap: &lumia_syntax::Expr,
     user_body: Expr,
-    lim: &str,
+    lim: &Sym,
     span: Span,
 ) -> Expr {
     let uid = span.start.0;
-    let done = format!("__for_done_{uid}");
-    let k = format!("__take_k_{uid}");
-    let x0 = format!("__fuse_x_{uid}");
-    let x_out = format!("__fuse_xm_{uid}");
-    let y = format!("__fuse_y_{uid}");
+    let done = synthetic(format!("__for_done_{uid}"));
+    let k = synthetic(format!("__take_k_{uid}"));
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
+    let x_out = synthetic(format!("__fuse_xm_{uid}"));
+    let y = synthetic(format!("__fuse_y_{uid}"));
     let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     lets.push((x_out.clone(), cur));
     let chunk = apply_hof_fn(ctx, fmap, Expr::Var(x_out, span), span);
@@ -3375,7 +3685,7 @@ fn fuse_hof_for_in_flat_map_capped(
         ),
         span,
     );
-    let inner = for_each_elem(&y, chunk, inner_y, span);
+    let inner = for_each_elem(y.as_str(), chunk, inner_y, span);
     let body = Expr::Seq {
         stmts: vec![
             inner,
@@ -3399,7 +3709,7 @@ fn fuse_hof_for_in_flat_map_capped(
             (done, Expr::Bool(false, span), true),
             (k, Expr::Int(0, span), true),
         ],
-        for_each_elem(&x0, lower_expr(ctx, source), step, span),
+        for_each_elem(x0.as_str(), lower_expr(ctx, source), step, span),
     )
 }
 
@@ -3410,15 +3720,15 @@ fn fuse_hof_for_in_flat_map_skip(
     stages: &[HofStage<'_>],
     fmap: &lumia_syntax::Expr,
     user_body: Expr,
-    lim: &str,
+    lim: &Sym,
     span: Span,
 ) -> Expr {
     let uid = span.start.0;
-    let done = format!("__for_done_{uid}");
-    let skipped = format!("__drop_k_{uid}");
-    let x0 = format!("__fuse_x_{uid}");
-    let x_out = format!("__fuse_xm_{uid}");
-    let y = format!("__fuse_y_{uid}");
+    let done = synthetic(format!("__for_done_{uid}"));
+    let skipped = synthetic(format!("__drop_k_{uid}"));
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
+    let x_out = synthetic(format!("__fuse_xm_{uid}"));
+    let y = synthetic(format!("__fuse_y_{uid}"));
     let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     lets.push((x_out.clone(), cur));
     let chunk = apply_hof_fn(ctx, fmap, Expr::Var(x_out, span), span);
@@ -3429,7 +3739,7 @@ fn fuse_hof_for_in_flat_map_skip(
         bind_user(binding, Expr::Var(y.clone(), span), user, span),
         span,
     );
-    let inner = for_each_elem(&y, chunk, inner_y, span);
+    let inner = for_each_elem(y.as_str(), chunk, inner_y, span);
     let body = Expr::Seq {
         stmts: vec![
             inner,
@@ -3448,18 +3758,18 @@ fn fuse_hof_for_in_flat_map_skip(
             (done, Expr::Bool(false, span), true),
             (skipped, Expr::Int(0, span), true),
         ],
-        for_each_elem(&x0, lower_expr(ctx, source), step, span),
+        for_each_elem(x0.as_str(), lower_expr(ctx, source), step, span),
     )
 }
 
 /// Rewrite for-in `break` to set `done` (so a fused `flatMap` can exit the outer
 /// scan). Nested `Loop` breaks are left alone.
-fn rewrite_for_in_breaks(e: &Expr, done: &str, span: Span) -> Expr {
+fn rewrite_for_in_breaks(e: &Expr, done: &Sym, span: Span) -> Expr {
     match e {
         Expr::Break(s) => Expr::Seq {
             stmts: vec![
                 Expr::Assign {
-                    name: done.to_string(),
+                    name: done.clone(),
                     value: Box::new(Expr::Bool(true, span)),
                     span: *s,
                 },
@@ -3641,15 +3951,15 @@ fn fuse_tomap_lookup(
         let uid = span.start.0;
         return match cut {
             TrailingCut::Take(_) => {
-                let raw = format!("__take_raw_{uid}");
-                let lim = format!("__take_n_{uid}");
+                let raw = synthetic(format!("__take_raw_{uid}"));
+                let lim = synthetic(format!("__take_n_{uid}"));
                 let (source, stages, fmap) = peel_stream_base(inner);
                 let body = tomap_lookup_capped(ctx, source, &stages, fmap, &lim, key, span, kind);
                 Some(bind_nonneg_lim(raw, lim, n, body, span))
             }
             TrailingCut::Drop(_) => {
-                let raw = format!("__drop_raw_{uid}");
-                let lim = format!("__drop_n_{uid}");
+                let raw = synthetic(format!("__drop_raw_{uid}"));
+                let lim = synthetic(format!("__drop_n_{uid}"));
                 let (source, stages, fmap) = peel_stream_base(inner);
                 let body = tomap_lookup_skip(ctx, source, &stages, fmap, &lim, key, span, kind);
                 Some(bind_nonneg_lim(raw, lim, n, body, span))
@@ -3682,20 +3992,23 @@ fn peel_stream_base<'a>(
     (source, stages, None)
 }
 
-fn tomap_lookup_acc(ctx: &LowerCtx, kind: TomapLookup, uid: u32, span: Span) -> (String, Expr) {
+fn tomap_lookup_acc(ctx: &LowerCtx, kind: TomapLookup, uid: u32, span: Span) -> (Sym, Expr) {
     match kind {
         TomapLookup::Get => (
-            format!("__mget_acc_{uid}"),
+            synthetic(format!("__mget_acc_{uid}")),
             crate::list_hof::option_none(ctx, span),
         ),
-        TomapLookup::Contains => (format!("__mcontains_acc_{uid}"), Expr::Bool(false, span)),
+        TomapLookup::Contains => (
+            synthetic(format!("__mcontains_acc_{uid}")),
+            Expr::Bool(false, span),
+        ),
     }
 }
 
-fn pair_field(p: &str, idx: i64, span: Span) -> Expr {
+fn pair_field(p: &Sym, idx: i64, span: Span) -> Expr {
     Expr::BuiltinCall {
         name: Builtin::AdtField,
-        args: vec![Expr::Var(p.to_string(), span), Expr::Int(idx, span)],
+        args: vec![Expr::Var(p.clone(), span), Expr::Int(idx, span)],
         span,
     }
 }
@@ -3703,21 +4016,21 @@ fn pair_field(p: &str, idx: i64, span: Span) -> Expr {
 fn tomap_lookup_update(
     ctx: &LowerCtx,
     kind: TomapLookup,
-    acc: &str,
+    acc: &Sym,
     elem: Expr,
-    key: &str,
+    key: &Sym,
     span: Span,
 ) -> Expr {
-    let p = format!("__mget_p_{}", span.start.0);
+    let p = synthetic(format!("__mget_p_{}", span.start.0));
     let key_eq = Expr::Binary {
         op: BinOp::Eq,
         left: Box::new(pair_field(&p, 0, span)),
-        right: Box::new(Expr::Var(key.to_string(), span)),
+        right: Box::new(Expr::Var(key.clone(), span)),
         span,
     };
     let hit = match kind {
         TomapLookup::Get => Expr::Assign {
-            name: acc.to_string(),
+            name: acc.clone(),
             value: Box::new(crate::list_hof::option_some(
                 ctx,
                 pair_field(&p, 1, span),
@@ -3728,7 +4041,7 @@ fn tomap_lookup_update(
         TomapLookup::Contains => Expr::Seq {
             stmts: vec![
                 Expr::Assign {
-                    name: acc.to_string(),
+                    name: acc.clone(),
                     value: Box::new(Expr::Bool(true, span)),
                     span,
                 },
@@ -3751,7 +4064,7 @@ fn tomap_lookup_update(
     }
 }
 
-fn wrap_key_scan(kn: String, key: Expr, inner: Expr, _span: Span) -> Expr {
+fn wrap_key_scan(kn: Sym, key: Expr, inner: Expr, _span: Span) -> Expr {
     Expr::Let {
         name: kn,
         value: Box::new(key),
@@ -3771,8 +4084,8 @@ fn tomap_lookup_plain(
 ) -> Expr {
     let uid = span.start.0;
     let (acc, init) = tomap_lookup_acc(ctx, kind, uid, span);
-    let kn = format!("__mget_k_{uid}");
-    let x0 = format!("__fuse_x_{uid}");
+    let kn = synthetic(format!("__mget_k_{uid}"));
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
     let (cur, lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     let step = wrap_staged_step(
         tomap_lookup_update(ctx, kind, &acc, cur, &kn, span),
@@ -3788,7 +4101,7 @@ fn tomap_lookup_plain(
             value: Box::new(init),
             body: Box::new(Expr::Seq {
                 stmts: vec![
-                    for_each_elem(&x0, lower_expr(ctx, source), step, span),
+                    for_each_elem(x0.as_str(), lower_expr(ctx, source), step, span),
                     Expr::Var(acc, span),
                 ],
                 span,
@@ -3805,20 +4118,20 @@ fn tomap_lookup_capped(
     source: &lumia_syntax::Expr,
     stages: &[HofStage<'_>],
     fmap: Option<&lumia_syntax::Expr>,
-    lim: &str,
+    lim: &Sym,
     key: Expr,
     span: Span,
     kind: TomapLookup,
 ) -> Expr {
     let uid = span.start.0;
     let (acc, init) = tomap_lookup_acc(ctx, kind, uid, span);
-    let kn = format!("__mget_k_{uid}");
-    let k = format!("__take_k_{uid}");
-    let x0 = format!("__fuse_x_{uid}");
+    let kn = synthetic(format!("__mget_k_{uid}"));
+    let k = synthetic(format!("__take_k_{uid}"));
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
     let step = match fmap {
         Some(f) => {
-            let x_out = format!("__fuse_xm_{uid}");
-            let y = format!("__fuse_y_{uid}");
+            let x_out = synthetic(format!("__fuse_xm_{uid}"));
+            let y = synthetic(format!("__fuse_y_{uid}"));
             let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
             lets.push((x_out.clone(), cur));
             let chunk = apply_hof_fn(ctx, f, Expr::Var(x_out, span), span);
@@ -3832,7 +4145,7 @@ fn tomap_lookup_capped(
                 ),
                 span,
             );
-            let inner = for_each_elem(&y, chunk, inner_y, span);
+            let inner = for_each_elem(y.as_str(), chunk, inner_y, span);
             let body = Expr::Seq {
                 stmts: vec![
                     inner,
@@ -3864,7 +4177,7 @@ fn tomap_lookup_capped(
             vec![(k, Expr::Int(0, span), true), (acc.clone(), init, true)],
             Expr::Seq {
                 stmts: vec![
-                    for_each_elem(&x0, lower_expr(ctx, source), step, span),
+                    for_each_elem(x0.as_str(), lower_expr(ctx, source), step, span),
                     Expr::Var(acc, span),
                 ],
                 span,
@@ -3879,20 +4192,20 @@ fn tomap_lookup_skip(
     source: &lumia_syntax::Expr,
     stages: &[HofStage<'_>],
     fmap: Option<&lumia_syntax::Expr>,
-    lim: &str,
+    lim: &Sym,
     key: Expr,
     span: Span,
     kind: TomapLookup,
 ) -> Expr {
     let uid = span.start.0;
     let (acc, init) = tomap_lookup_acc(ctx, kind, uid, span);
-    let kn = format!("__mget_k_{uid}");
-    let skipped = format!("__drop_k_{uid}");
-    let x0 = format!("__fuse_x_{uid}");
+    let kn = synthetic(format!("__mget_k_{uid}"));
+    let skipped = synthetic(format!("__drop_k_{uid}"));
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
     let step = match fmap {
         Some(f) => {
-            let x_out = format!("__fuse_xm_{uid}");
-            let y = format!("__fuse_y_{uid}");
+            let x_out = synthetic(format!("__fuse_xm_{uid}"));
+            let y = synthetic(format!("__fuse_y_{uid}"));
             let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
             lets.push((x_out.clone(), cur));
             let chunk = apply_hof_fn(ctx, f, Expr::Var(x_out, span), span);
@@ -3902,7 +4215,12 @@ fn tomap_lookup_skip(
                 tomap_lookup_update(ctx, kind, &acc, Expr::Var(y.clone(), span), &kn, span),
                 span,
             );
-            wrap_staged_step(for_each_elem(&y, chunk, inner_y, span), lets, guards, span)
+            wrap_staged_step(
+                for_each_elem(y.as_str(), chunk, inner_y, span),
+                lets,
+                guards,
+                span,
+            )
         }
         None => {
             let (cur, lets, guards) = stage_pipeline(ctx, stages, &x0, span);
@@ -3929,7 +4247,7 @@ fn tomap_lookup_skip(
             ],
             Expr::Seq {
                 stmts: vec![
-                    for_each_elem(&x0, lower_expr(ctx, source), step, span),
+                    for_each_elem(x0.as_str(), lower_expr(ctx, source), step, span),
                     Expr::Var(acc, span),
                 ],
                 span,
@@ -3950,10 +4268,10 @@ fn tomap_lookup_flat_map(
 ) -> Expr {
     let uid = span.start.0;
     let (acc, init) = tomap_lookup_acc(ctx, kind, uid, span);
-    let kn = format!("__mget_k_{uid}");
-    let x0 = format!("__fuse_x_{uid}");
-    let x_out = format!("__fuse_xm_{uid}");
-    let y = format!("__fuse_y_{uid}");
+    let kn = synthetic(format!("__mget_k_{uid}"));
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
+    let x_out = synthetic(format!("__fuse_xm_{uid}"));
+    let y = synthetic(format!("__fuse_y_{uid}"));
     let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     lets.push((x_out.clone(), cur));
     let chunk = apply_hof_fn(ctx, fmap, Expr::Var(x_out, span), span);
@@ -3972,7 +4290,7 @@ fn tomap_lookup_flat_map(
             value: Box::new(init),
             body: Box::new(Expr::Seq {
                 stmts: vec![
-                    for_each_elem(&x0, lower_expr(ctx, source), step, span),
+                    for_each_elem(x0.as_str(), lower_expr(ctx, source), step, span),
                     Expr::Var(acc, span),
                 ],
                 span,
@@ -4015,15 +4333,15 @@ fn fuse_hof_collect(
         let uid = span.start.0;
         return match cut {
             TrailingCut::Take(_) => {
-                let raw = format!("__take_raw_{uid}");
-                let lim = format!("__take_n_{uid}");
+                let raw = synthetic(format!("__take_raw_{uid}"));
+                let lim = synthetic(format!("__take_n_{uid}"));
                 let (source, stages, fmap) = peel_len_base(inner)?;
                 let body = collect_capped(ctx, source, &stages, fmap, &lim, span, kind);
                 Some(bind_nonneg_lim(raw, lim, n, body, span))
             }
             TrailingCut::Drop(_) => {
-                let raw = format!("__drop_raw_{uid}");
-                let lim = format!("__drop_n_{uid}");
+                let raw = synthetic(format!("__drop_raw_{uid}"));
+                let lim = synthetic(format!("__drop_n_{uid}"));
                 let (source, stages, fmap) = peel_len_base(inner)?;
                 let body = collect_skip(ctx, source, &stages, fmap, &lim, span, kind);
                 Some(bind_nonneg_lim(raw, lim, n, body, span))
@@ -4041,41 +4359,49 @@ fn fuse_hof_collect(
     Some(collect_plain(ctx, source, &stages, span, kind))
 }
 
-fn collect_acc_init(kind: CollectKind, uid: u32, span: Span) -> (String, Expr) {
+fn collect_acc_init(kind: CollectKind, uid: u32, span: Span) -> (Sym, Expr) {
     match kind {
         CollectKind::Set => (
-            format!("{}_{}", crate::desugar_slots::TOSET_ACC_PREFIX, uid),
+            synthetic(format!(
+                "{}_{}",
+                crate::desugar_slots::TOSET_ACC_PREFIX,
+                uid
+            )),
             empty_set(span),
         ),
         CollectKind::Map => (
-            format!("{}_{}", crate::desugar_slots::TOMAP_ACC_PREFIX, uid),
+            synthetic(format!(
+                "{}_{}",
+                crate::desugar_slots::TOMAP_ACC_PREFIX,
+                uid
+            )),
             empty_map(span),
         ),
     }
 }
 
-fn collect_insert(kind: CollectKind, acc: &str, elem: Expr, span: Span) -> Expr {
+fn collect_insert(kind: CollectKind, acc: &Sym, elem: Expr, span: Span) -> Expr {
     match kind {
         CollectKind::Set => Expr::Assign {
-            name: acc.to_string(),
+            name: acc.clone(),
             value: Box::new(Expr::BuiltinCall {
                 name: Builtin::SetInsert,
-                args: vec![Expr::Var(acc.to_string(), span), elem],
+                args: vec![Expr::Var(acc.clone(), span), elem],
                 span,
             }),
             span,
         },
         CollectKind::Map => {
-            let p = format!("__tomap_p_{}", span.start.0);
+            let p = synthetic(format!("__tomap_p_{}", span.start.0));
             Expr::Let {
                 name: p.clone(),
                 value: Box::new(elem),
                 body: Box::new(Expr::Assign {
-                    name: acc.to_string(),
+                    name: acc.clone(),
                     value: Box::new(Expr::BuiltinCall {
                         name: Builtin::MapSet,
                         args: vec![
-                            Expr::Var(acc.to_string(), span),
+                            Expr::Var(acc.clone(), span),
                             Expr::BuiltinCall {
                                 name: Builtin::AdtField,
                                 args: vec![Expr::Var(p.clone(), span), Expr::Int(0, span)],
@@ -4107,7 +4433,7 @@ fn collect_plain(
 ) -> Expr {
     let uid = span.start.0;
     let (acc, init) = collect_acc_init(kind, uid, span);
-    let x0 = format!("__fuse_x_{uid}");
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
     let (cur, lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     let step = wrap_staged_step(collect_insert(kind, &acc, cur, span), lets, guards, span);
     Expr::Let {
@@ -4115,7 +4441,7 @@ fn collect_plain(
         value: Box::new(init),
         body: Box::new(Expr::Seq {
             stmts: vec![
-                for_each_elem(&x0, lower_expr(ctx, source), step, span),
+                for_each_elem(x0.as_str(), lower_expr(ctx, source), step, span),
                 Expr::Var(acc, span),
             ],
             span,
@@ -4130,18 +4456,18 @@ fn collect_capped(
     source: &lumia_syntax::Expr,
     stages: &[HofStage<'_>],
     fmap: Option<&lumia_syntax::Expr>,
-    lim: &str,
+    lim: &Sym,
     span: Span,
     kind: CollectKind,
 ) -> Expr {
     let uid = span.start.0;
     let (acc, init) = collect_acc_init(kind, uid, span);
-    let k = format!("__take_k_{uid}");
-    let x0 = format!("__fuse_x_{uid}");
+    let k = synthetic(format!("__take_k_{uid}"));
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
     let step = match fmap {
         Some(f) => {
-            let x_out = format!("__fuse_xm_{uid}");
-            let y = format!("__fuse_y_{uid}");
+            let x_out = synthetic(format!("__fuse_xm_{uid}"));
+            let y = synthetic(format!("__fuse_y_{uid}"));
             let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
             lets.push((x_out.clone(), cur));
             let chunk = apply_hof_fn(ctx, f, Expr::Var(x_out, span), span);
@@ -4155,7 +4481,7 @@ fn collect_capped(
                 ),
                 span,
             );
-            let inner = for_each_elem(&y, chunk, inner_y, span);
+            let inner = for_each_elem(y.as_str(), chunk, inner_y, span);
             let body = Expr::Seq {
                 stmts: vec![
                     inner,
@@ -4180,7 +4506,7 @@ fn collect_capped(
         vec![(k, Expr::Int(0, span), true), (acc.clone(), init, true)],
         Expr::Seq {
             stmts: vec![
-                for_each_elem(&x0, lower_expr(ctx, source), step, span),
+                for_each_elem(x0.as_str(), lower_expr(ctx, source), step, span),
                 Expr::Var(acc, span),
             ],
             span,
@@ -4193,18 +4519,18 @@ fn collect_skip(
     source: &lumia_syntax::Expr,
     stages: &[HofStage<'_>],
     fmap: Option<&lumia_syntax::Expr>,
-    lim: &str,
+    lim: &Sym,
     span: Span,
     kind: CollectKind,
 ) -> Expr {
     let uid = span.start.0;
     let (acc, init) = collect_acc_init(kind, uid, span);
-    let skipped = format!("__drop_k_{uid}");
-    let x0 = format!("__fuse_x_{uid}");
+    let skipped = synthetic(format!("__drop_k_{uid}"));
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
     let step = match fmap {
         Some(f) => {
-            let x_out = format!("__fuse_xm_{uid}");
-            let y = format!("__fuse_y_{uid}");
+            let x_out = synthetic(format!("__fuse_xm_{uid}"));
+            let y = synthetic(format!("__fuse_y_{uid}"));
             let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
             lets.push((x_out.clone(), cur));
             let chunk = apply_hof_fn(ctx, f, Expr::Var(x_out, span), span);
@@ -4214,7 +4540,12 @@ fn collect_skip(
                 collect_insert(kind, &acc, Expr::Var(y.clone(), span), span),
                 span,
             );
-            wrap_staged_step(for_each_elem(&y, chunk, inner_y, span), lets, guards, span)
+            wrap_staged_step(
+                for_each_elem(y.as_str(), chunk, inner_y, span),
+                lets,
+                guards,
+                span,
+            )
         }
         None => {
             let (cur, lets, guards) = stage_pipeline(ctx, stages, &x0, span);
@@ -4233,7 +4564,7 @@ fn collect_skip(
         ],
         Expr::Seq {
             stmts: vec![
-                for_each_elem(&x0, lower_expr(ctx, source), step, span),
+                for_each_elem(x0.as_str(), lower_expr(ctx, source), step, span),
                 Expr::Var(acc, span),
             ],
             span,
@@ -4251,9 +4582,9 @@ fn collect_flat_map(
 ) -> Expr {
     let uid = span.start.0;
     let (acc, init) = collect_acc_init(kind, uid, span);
-    let x0 = format!("__fuse_x_{uid}");
-    let x_out = format!("__fuse_xm_{uid}");
-    let y = format!("__fuse_y_{uid}");
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
+    let x_out = synthetic(format!("__fuse_xm_{uid}"));
+    let y = synthetic(format!("__fuse_y_{uid}"));
     let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     lets.push((x_out.clone(), cur));
     let chunk = apply_hof_fn(ctx, fmap, Expr::Var(x_out, span), span);
@@ -4269,7 +4600,7 @@ fn collect_flat_map(
         value: Box::new(init),
         body: Box::new(Expr::Seq {
             stmts: vec![
-                for_each_elem(&x0, lower_expr(ctx, source), step, span),
+                for_each_elem(x0.as_str(), lower_expr(ctx, source), step, span),
                 Expr::Var(acc, span),
             ],
             span,
@@ -4326,6 +4657,11 @@ pub(crate) fn try_deforest_hof_let(
     let has_len = pipe_has_len(body, name);
     // ≥2 gets, or get+len: one scan (len needs the full walk, so no early break).
     if !gets.is_empty() && (gets.len() >= 2 || has_len) {
+        // Range + lone map/filter on iota: materialize (ListParMap / __flt_acc builder),
+        // then len/get on the bound list — not shared Option scan (range_map golden).
+        if has_len && source_is_iota(source) && stages.len() == 1 {
+            return None;
+        }
         return Some(rewrite_shared_gets(
             ctx, body, name, source, &stages, &gets, has_len, span,
         ));
@@ -4416,6 +4752,7 @@ fn pipe_consumers_only(e: &Expr, name: &str) -> bool {
                 | Builtin::ListSlice
                 | Builtin::Contains
                 | Builtin::Elems
+                | Builtin::ListParFold
         )
     })
 }
@@ -4747,13 +5084,19 @@ fn rewrite_shared_gets(
     span: Span,
 ) -> Expr {
     let uid = span.start.0;
-    let seen = format!("__fuse_seen_{uid}");
-    let x0 = format!("__fuse_x_{uid}");
-    let x_out = format!("__fuse_xm_{uid}");
+    let seen = synthetic(format!("__fuse_seen_{uid}"));
+    let x0 = synthetic(format!("__fuse_x_{uid}"));
+    let x_out = synthetic(format!("__fuse_xm_{uid}"));
     let n = indices.len();
-    let accs: Vec<String> = (0..n).map(|i| format!("__get_acc_{uid}_{i}")).collect();
-    let idxs: Vec<String> = (0..n).map(|i| format!("__fuse_idx_{uid}_{i}")).collect();
-    let gs: Vec<String> = (0..n).map(|i| format!("__get_v_{uid}_{i}")).collect();
+    let accs: Vec<Sym> = (0..n)
+        .map(|i| synthetic(format!("__get_acc_{uid}_{i}")))
+        .collect();
+    let idxs: Vec<Sym> = (0..n)
+        .map(|i| synthetic(format!("__fuse_idx_{uid}_{i}")))
+        .collect();
+    let gs: Vec<Sym> = (0..n)
+        .map(|i| synthetic(format!("__get_v_{uid}_{i}")))
+        .collect();
 
     let (cur, mut lets, guards) = stage_pipeline(ctx, stages, &x0, span);
     lets.push((x_out.clone(), cur));
@@ -4835,7 +5178,7 @@ fn rewrite_shared_gets(
             ty: None,
         };
     }
-    let mut binds: Vec<(String, Expr, bool)> = Vec::new();
+    let mut binds: Vec<(Sym, Expr, bool)> = Vec::new();
     for (idx_n, idx_e) in idxs.iter().zip(indices.iter()) {
         binds.push((idx_n.clone(), idx_e.clone(), false));
     }
@@ -4846,7 +5189,7 @@ fn rewrite_shared_gets(
     nest_lets(
         binds,
         Expr::Seq {
-            stmts: vec![for_each_elem(&x0, source_e, step, span), after],
+            stmts: vec![for_each_elem(x0.as_str(), source_e, step, span), after],
             span,
         },
     )
@@ -4855,7 +5198,7 @@ fn rewrite_shared_gets(
 fn replace_pipe_slots(
     e: &Expr,
     name: &str,
-    slots: &[String],
+    slots: &[Sym],
     i: &mut usize,
     len_slot: Option<&str>,
 ) -> Expr {
@@ -4871,7 +5214,7 @@ fn replace_pipe_slots(
             let g = slots
                 .get(*i)
                 .cloned()
-                .unwrap_or_else(|| format!("__get_v_{}", *i));
+                .unwrap_or_else(|| synthetic(format!("__get_v_{}", *i)));
             *i += 1;
             Expr::Var(g, *s)
         }
@@ -4884,7 +5227,7 @@ fn replace_pipe_slots(
                 .first()
                 .is_some_and(|a| matches!(a, Expr::Var(n, _) if n == name)) =>
         {
-            Expr::Var(len_slot.unwrap().to_string(), *s)
+            Expr::Var(len_slot.unwrap().into(), *s)
         }
         Expr::Let {
             name: bind,
@@ -5020,25 +5363,139 @@ enum PipeCut {
     Drop(Expr),
 }
 
-fn peel_pipe_cut(e: &Expr, name: &str) -> Option<PipeCut> {
-    match e {
-        Expr::BuiltinCall {
-            name: b @ (Builtin::ListTake | Builtin::ListSlice),
-            args,
+fn add_counts(a: Expr, b: Expr, span: Span) -> Expr {
+    match (&a, &b) {
+        (Expr::Int(x, s), Expr::Int(y, _)) => Expr::Int(x.saturating_add(*y), *s),
+        _ => Expr::Binary {
+            op: BinOp::Add,
+            left: Box::new(a),
+            right: Box::new(b),
             span,
-        } if args
-            .first()
-            .is_some_and(|a| matches!(a, Expr::Var(n, _) if n == name)) =>
-        {
-            let n = args.get(1).cloned().unwrap_or(Expr::Int(0, *span));
-            Some(if matches!(b, Builtin::ListTake) {
-                PipeCut::Take(n)
-            } else {
-                PipeCut::Drop(n)
-            })
-        }
-        _ => None,
+        },
     }
+}
+
+fn min_counts(a: Expr, b: Expr, span: Span) -> Expr {
+    match (&a, &b) {
+        (Expr::Int(x, s), Expr::Int(y, _)) => Expr::Int((*x).min(*y), *s),
+        _ => {
+            let uid = span.start.0;
+            let xa = synthetic(format!("__take_a_{uid}"));
+            let xb = synthetic(format!("__take_b_{uid}"));
+            nest_lets(
+                vec![(xa.clone(), a, false), (xb.clone(), b, false)],
+                Expr::If {
+                    cond: Box::new(Expr::Binary {
+                        op: BinOp::Lt,
+                        left: Box::new(Expr::Var(xa.clone(), span)),
+                        right: Box::new(Expr::Var(xb.clone(), span)),
+                        span,
+                    }),
+                    then_branch: Box::new(Expr::Var(xa, span)),
+                    else_branch: Box::new(Expr::Var(xb, span)),
+                    span,
+                },
+            )
+        }
+    }
+}
+
+/// Peel `ys.take` / `ys.drop`, collapsing nested `take.take` (min) and `drop.drop` (sum).
+fn peel_pipe_cut(e: &Expr, name: &str) -> Option<PipeCut> {
+    if let Some(n) = peel_drop_n(e, name) {
+        return Some(PipeCut::Drop(n));
+    }
+    if let Some(n) = peel_take_n(e, name) {
+        return Some(PipeCut::Take(n));
+    }
+    None
+}
+
+fn innermost<'a>(e: &'a Expr) -> &'a Expr {
+    match e {
+        Expr::Let { body, .. } => innermost(body),
+        Expr::Seq { stmts, .. } => stmts.last().map(innermost).unwrap_or(e),
+        _ => e,
+    }
+}
+
+fn wrap_like(template: &Expr, core: Expr) -> Expr {
+    match template {
+        Expr::Let {
+            name,
+            value,
+            body,
+            mutable,
+            ty,
+        } => Expr::Let {
+            name: name.clone(),
+            value: value.clone(),
+            body: Box::new(wrap_like(body, core)),
+            mutable: *mutable,
+            ty: ty.clone(),
+        },
+        Expr::Seq { stmts, span } if !stmts.is_empty() => {
+            let mut out = stmts[..stmts.len() - 1].to_vec();
+            out.push(wrap_like(stmts.last().unwrap(), core));
+            Expr::Seq {
+                stmts: out,
+                span: *span,
+            }
+        }
+        _ => core,
+    }
+}
+
+fn peel_drop_n(e: &Expr, name: &str) -> Option<Expr> {
+    let Expr::BuiltinCall {
+        name: Builtin::ListSlice,
+        args,
+        span,
+    } = e
+    else {
+        return None;
+    };
+    let recv = args.first()?;
+    let n = args.get(1).cloned().unwrap_or(Expr::Int(0, *span));
+    if matches!(recv, Expr::Var(v, _) if v == name) {
+        return Some(n);
+    }
+    let inner = peel_drop_n(recv, name)?;
+    Some(add_counts(inner, n, *span))
+}
+
+fn peel_take_n(e: &Expr, name: &str) -> Option<Expr> {
+    let Expr::BuiltinCall {
+        name: Builtin::ListTake,
+        args,
+        span,
+    } = e
+    else {
+        return None;
+    };
+    let recv = args.first()?;
+    let n = args.get(1).cloned().unwrap_or(Expr::Int(0, *span));
+    if matches!(recv, Expr::Var(v, _) if v == name) {
+        return Some(n);
+    }
+    let inner = peel_take_n(recv, name)?;
+    Some(min_counts(inner, n, *span))
+}
+
+/// `take(t).drop(d)` / `drop(d).take(t)` lower to `ListTake(ListSlice(ys, d), t)`.
+fn peel_take_after_drop(e: &Expr, name: &str) -> Option<(Expr, Expr)> {
+    let Expr::BuiltinCall {
+        name: Builtin::ListTake,
+        args,
+        span,
+    } = e
+    else {
+        return None;
+    };
+    let recv = args.first()?;
+    let take_n = args.get(1).cloned().unwrap_or(Expr::Int(0, *span));
+    let drop_n = peel_drop_n(recv, name)?;
+    Some((drop_n, take_n))
 }
 
 fn fuse_pipe_get_under_cut(
@@ -5053,9 +5510,9 @@ fn fuse_pipe_get_under_cut(
     match cut {
         PipeCut::Take(n) => {
             let uid = span.start.0;
-            let raw = format!("__take_raw_{uid}");
-            let lim = format!("__take_n_{uid}");
-            let idx = format!("__take_get_idx_{uid}");
+            let raw = synthetic(format!("__take_raw_{uid}"));
+            let lim = synthetic(format!("__take_n_{uid}"));
+            let idx = synthetic(format!("__take_get_idx_{uid}"));
             let fused = match fmap {
                 Some(f) => fuse_hof_get_flat_map(
                     ctx,
@@ -5094,8 +5551,8 @@ fn fuse_pipe_get_under_cut(
         }
         PipeCut::Drop(n) => {
             let uid = span.start.0;
-            let raw = format!("__drop_raw_{uid}");
-            let lim = format!("__drop_n_{uid}");
+            let raw = synthetic(format!("__drop_raw_{uid}"));
+            let lim = synthetic(format!("__drop_n_{uid}"));
             let adj = Expr::Binary {
                 op: BinOp::Add,
                 left: Box::new(index),
@@ -5122,8 +5579,8 @@ fn fuse_pipe_len_under_cut(
     let uid = span.start.0;
     match cut {
         PipeCut::Take(n) => {
-            let raw = format!("__take_raw_{uid}");
-            let lim = format!("__take_n_{uid}");
+            let raw = synthetic(format!("__take_raw_{uid}"));
+            let lim = synthetic(format!("__take_n_{uid}"));
             let body = match fmap {
                 Some(f) => fuse_hof_len_flat_map_capped(ctx, source, stages, f, &lim, span),
                 None => fuse_hof_len_capped(ctx, source, stages, &lim, span),
@@ -5131,8 +5588,8 @@ fn fuse_pipe_len_under_cut(
             bind_nonneg_lim(raw, lim, n, body, span)
         }
         PipeCut::Drop(n) => {
-            let raw = format!("__drop_raw_{uid}");
-            let lim = format!("__drop_n_{uid}");
+            let raw = synthetic(format!("__drop_raw_{uid}"));
+            let lim = synthetic(format!("__drop_n_{uid}"));
             let body = match fmap {
                 Some(f) => fuse_hof_len_flat_map_skip(ctx, source, stages, f, &lim, span),
                 None => fuse_hof_len_skip(ctx, source, stages, &lim, span),
@@ -5150,7 +5607,7 @@ fn fuse_pipe_contains(
     needle: Expr,
     span: Span,
 ) -> Expr {
-    let nv = format!("__contains_n_{}", span.start.0);
+    let nv = synthetic(format!("__contains_n_{}", span.start.0));
     let p = contains_eq_lambda(&nv, span);
     let search = match fmap {
         Some(f) => fuse_hof_search_flat_map(ctx, source, stages, f, &p, span, FuseSearchKind::Any),
@@ -5175,12 +5632,12 @@ fn fuse_pipe_contains_under_cut(
     span: Span,
 ) -> Expr {
     let uid = span.start.0;
-    let nv = format!("__contains_n_{uid}");
+    let nv = synthetic(format!("__contains_n_{uid}"));
     let p = contains_eq_lambda(&nv, span);
     let search = match cut {
         PipeCut::Take(n) => {
-            let raw = format!("__take_raw_{uid}");
-            let lim = format!("__take_n_{uid}");
+            let raw = synthetic(format!("__take_raw_{uid}"));
+            let lim = synthetic(format!("__take_n_{uid}"));
             let body = match fmap {
                 Some(f) => fuse_hof_search_flat_map_capped(
                     ctx,
@@ -5199,8 +5656,8 @@ fn fuse_pipe_contains_under_cut(
             bind_nonneg_lim(raw, lim, n, body, span)
         }
         PipeCut::Drop(n) => {
-            let raw = format!("__drop_raw_{uid}");
-            let lim = format!("__drop_n_{uid}");
+            let raw = synthetic(format!("__drop_raw_{uid}"));
+            let lim = synthetic(format!("__drop_n_{uid}"));
             let body = match fmap {
                 Some(f) => fuse_hof_search_flat_map_skip(
                     ctx,
@@ -5229,7 +5686,7 @@ fn fuse_pipe_contains_under_cut(
 }
 
 /// Lowered `for x in ys` / `for x in ys.take(n)` — `Elems` + indexed get loop.
-fn match_list_for_in(e: &Expr, pipe: &str) -> Option<(String, Expr, Option<PipeCut>)> {
+fn match_list_for_in(e: &Expr, pipe: &str) -> Option<(Sym, Expr, Option<PipeCut>)> {
     let Expr::Let {
         name: xs,
         value,
@@ -5332,8 +5789,8 @@ fn fuse_pipe_for_in(
         },
         Some(PipeCut::Take(n)) => {
             let uid = span.start.0;
-            let raw = format!("__take_raw_{uid}");
-            let lim = format!("__take_n_{uid}");
+            let raw = synthetic(format!("__take_raw_{uid}"));
+            let lim = synthetic(format!("__take_n_{uid}"));
             let body = match fmap {
                 Some(f) => fuse_hof_for_in_flat_map_capped(
                     ctx, binding, source, stages, f, user, &lim, span,
@@ -5344,8 +5801,8 @@ fn fuse_pipe_for_in(
         }
         Some(PipeCut::Drop(n)) => {
             let uid = span.start.0;
-            let raw = format!("__drop_raw_{uid}");
-            let lim = format!("__drop_n_{uid}");
+            let raw = synthetic(format!("__drop_raw_{uid}"));
+            let lim = synthetic(format!("__drop_n_{uid}"));
             let body = match fmap {
                 Some(f) => {
                     fuse_hof_for_in_flat_map_skip(ctx, binding, source, stages, f, user, &lim, span)
@@ -5357,6 +5814,295 @@ fn fuse_pipe_for_in(
     }
 }
 
+/// `ys.isEmpty()` / `ys.take(n).isEmpty()` / `ys.drop(n).isEmpty()` lower to
+/// `ListLen(recv) == 0`. Fuse to a short-circuit scan (take) or skip-count (drop).
+fn try_rewrite_pipe_is_empty(
+    ctx: &LowerCtx,
+    e: &Expr,
+    name: &str,
+    source: &lumia_syntax::Expr,
+    stages: &[HofStage<'_>],
+    fmap: Option<&lumia_syntax::Expr>,
+) -> Option<Expr> {
+    let Expr::Binary {
+        op: BinOp::Eq,
+        left,
+        right,
+        span,
+    } = e
+    else {
+        return None;
+    };
+    if !matches!(right.as_ref(), Expr::Int(0, _)) {
+        return None;
+    }
+    let Expr::BuiltinCall {
+        name: Builtin::ListLen,
+        args,
+        ..
+    } = left.as_ref()
+    else {
+        return None;
+    };
+    let recv = args.first()?;
+    let recv_core = innermost(recv);
+    if matches!(recv_core, Expr::Var(n, _) if n == name) {
+        return Some(wrap_like(
+            recv,
+            pipe_is_empty_scan(ctx, source, stages, fmap, *span),
+        ));
+    }
+    if let Some((drop, take)) = peel_take_after_drop(recv_core, name) {
+        return Some(wrap_like(
+            recv,
+            fuse_pipe_is_empty_take_after_drop(ctx, source, stages, fmap, drop, take, *span),
+        ));
+    }
+    let cut = peel_pipe_cut(recv_core, name)?;
+    Some(wrap_like(
+        recv,
+        fuse_pipe_is_empty_under_cut(ctx, source, stages, fmap, cut, *span),
+    ))
+}
+
+fn pipe_is_empty_scan(
+    ctx: &LowerCtx,
+    source: &lumia_syntax::Expr,
+    stages: &[HofStage<'_>],
+    fmap: Option<&lumia_syntax::Expr>,
+    span: Span,
+) -> Expr {
+    match fmap {
+        Some(f) => fuse_hof_is_empty_flat_map(ctx, source, stages, f, span),
+        None => fuse_hof_is_empty(ctx, source, stages, span),
+    }
+}
+
+/// `take(0).isEmpty` → true; `take(k>0).isEmpty` ≡ inner.isEmpty (short-circuit).
+/// `drop(0).isEmpty` ≡ inner.isEmpty; else skip then count == 0.
+fn fuse_pipe_is_empty_under_cut(
+    ctx: &LowerCtx,
+    source: &lumia_syntax::Expr,
+    stages: &[HofStage<'_>],
+    fmap: Option<&lumia_syntax::Expr>,
+    cut: PipeCut,
+    span: Span,
+) -> Expr {
+    match cut {
+        PipeCut::Take(n) => {
+            if let Expr::Int(k, _) = n {
+                if k <= 0 {
+                    return Expr::Bool(true, span);
+                }
+                return pipe_is_empty_scan(ctx, source, stages, fmap, span);
+            }
+            let uid = span.start.0;
+            let raw = synthetic(format!("__take_raw_{uid}"));
+            let lim = synthetic(format!("__take_n_{uid}"));
+            let inner = pipe_is_empty_scan(ctx, source, stages, fmap, span);
+            bind_nonneg_lim(
+                raw,
+                lim.clone(),
+                n,
+                Expr::If {
+                    cond: Box::new(Expr::Binary {
+                        op: BinOp::Eq,
+                        left: Box::new(Expr::Var(lim, span)),
+                        right: Box::new(Expr::Int(0, span)),
+                        span,
+                    }),
+                    then_branch: Box::new(Expr::Bool(true, span)),
+                    else_branch: Box::new(inner),
+                    span,
+                },
+                span,
+            )
+        }
+        PipeCut::Drop(n) => {
+            if matches!(n, Expr::Int(0, _)) {
+                return pipe_is_empty_scan(ctx, source, stages, fmap, span);
+            }
+            let uid = span.start.0;
+            let raw = synthetic(format!("__drop_raw_{uid}"));
+            let lim = synthetic(format!("__drop_n_{uid}"));
+            bind_nonneg_lim(
+                raw,
+                lim.clone(),
+                n,
+                pipe_is_empty_skip(ctx, source, stages, fmap, &lim, span),
+                span,
+            )
+        }
+    }
+}
+
+/// `drop(d).take(t).isEmpty` ≡ empty when `t ≤ 0`, else skip `d` then short-circuit.
+fn fuse_pipe_is_empty_take_after_drop(
+    ctx: &LowerCtx,
+    source: &lumia_syntax::Expr,
+    stages: &[HofStage<'_>],
+    fmap: Option<&lumia_syntax::Expr>,
+    drop: Expr,
+    take: Expr,
+    span: Span,
+) -> Expr {
+    if let Expr::Int(k, _) = take {
+        if k <= 0 {
+            return Expr::Bool(true, span);
+        }
+        return fuse_pipe_is_empty_under_cut(ctx, source, stages, fmap, PipeCut::Drop(drop), span);
+    }
+    let uid = span.start.0;
+    let raw = synthetic(format!("__take_raw_{uid}"));
+    let lim = synthetic(format!("__take_n_{uid}"));
+    let inner = fuse_pipe_is_empty_under_cut(ctx, source, stages, fmap, PipeCut::Drop(drop), span);
+    bind_nonneg_lim(
+        raw,
+        lim.clone(),
+        take,
+        Expr::If {
+            cond: Box::new(Expr::Binary {
+                op: BinOp::Eq,
+                left: Box::new(Expr::Var(lim, span)),
+                right: Box::new(Expr::Int(0, span)),
+                span,
+            }),
+            then_branch: Box::new(Expr::Bool(true, span)),
+            else_branch: Box::new(inner),
+            span,
+        },
+        span,
+    )
+}
+
+fn fuse_pipe_len_take_after_drop(
+    ctx: &LowerCtx,
+    source: &lumia_syntax::Expr,
+    stages: &[HofStage<'_>],
+    fmap: Option<&lumia_syntax::Expr>,
+    drop: Expr,
+    take: Expr,
+    span: Span,
+) -> Expr {
+    if let Expr::Int(k, _) = take {
+        if k <= 0 {
+            return Expr::Int(0, span);
+        }
+        let uid = span.start.0;
+        let raw = synthetic(format!("__drop_raw_{uid}"));
+        let lim = synthetic(format!("__drop_n_{uid}"));
+        let tlim = synthetic(format!("__take_n_{uid}"));
+        let body = match fmap {
+            Some(f) => fuse_hof_len_flat_map_skip_capped(ctx, source, stages, f, &lim, &tlim, span),
+            None => fuse_hof_len_skip_capped(ctx, source, stages, &lim, &tlim, span),
+        };
+        return bind_nonneg_lim(
+            raw,
+            lim,
+            drop,
+            Expr::Let {
+                name: tlim,
+                value: Box::new(Expr::Int(k, span)),
+                body: Box::new(body),
+                mutable: false,
+                ty: None,
+            },
+            span,
+        );
+    }
+    let uid = span.start.0;
+    let d_raw = synthetic(format!("__drop_raw_{uid}"));
+    let d_lim = synthetic(format!("__drop_n_{uid}"));
+    let t_raw = synthetic(format!("__take_raw_{uid}"));
+    let t_lim = synthetic(format!("__take_n_{uid}"));
+    let body = match fmap {
+        Some(f) => fuse_hof_len_flat_map_skip_capped(ctx, source, stages, f, &d_lim, &t_lim, span),
+        None => fuse_hof_len_skip_capped(ctx, source, stages, &d_lim, &t_lim, span),
+    };
+    bind_nonneg_lim(
+        d_raw,
+        d_lim,
+        drop,
+        bind_nonneg_lim(t_raw, t_lim, take, body, span),
+        span,
+    )
+}
+
+fn fuse_pipe_get_take_after_drop(
+    ctx: &LowerCtx,
+    source: &lumia_syntax::Expr,
+    stages: &[HofStage<'_>],
+    fmap: Option<&lumia_syntax::Expr>,
+    drop: Expr,
+    take: Expr,
+    index: Expr,
+    span: Span,
+) -> Expr {
+    let uid = span.start.0;
+    let t_raw = synthetic(format!("__take_raw_{uid}"));
+    let t_lim = synthetic(format!("__take_n_{uid}"));
+    let idx = synthetic(format!("__take_get_idx_{uid}"));
+    let fused = fuse_pipe_get_under_cut(
+        ctx,
+        source,
+        stages,
+        fmap,
+        PipeCut::Drop(drop),
+        Expr::Var(idx.clone(), span),
+        span,
+    );
+    bind_nonneg_lim(
+        t_raw,
+        t_lim.clone(),
+        take,
+        Expr::Let {
+            name: idx.clone(),
+            value: Box::new(index),
+            body: Box::new(Expr::If {
+                cond: Box::new(Expr::Binary {
+                    op: BinOp::Lt,
+                    left: Box::new(Expr::Var(idx, span)),
+                    right: Box::new(Expr::Var(t_lim, span)),
+                    span,
+                }),
+                then_branch: Box::new(fused),
+                else_branch: Box::new(empty_get_oob(span)),
+                span,
+            }),
+            mutable: false,
+            ty: None,
+        },
+        span,
+    )
+}
+
+fn fuse_pipe_list_take_after_drop(
+    ctx: &LowerCtx,
+    source: &lumia_syntax::Expr,
+    stages: &[HofStage<'_>],
+    fmap: Option<&lumia_syntax::Expr>,
+    drop: Expr,
+    take: Expr,
+    span: Span,
+) -> Expr {
+    let uid = span.start.0;
+    let d_raw = synthetic(format!("__drop_raw_{uid}"));
+    let d_lim = synthetic(format!("__drop_n_{uid}"));
+    let t_raw = synthetic(format!("__take_raw_{uid}"));
+    let t_lim = synthetic(format!("__take_n_{uid}"));
+    let body = match fmap {
+        Some(f) => fuse_hof_take_after_drop_flat_map(ctx, source, stages, f, &d_lim, &t_lim, span),
+        None => fuse_hof_take_after_drop_stages(ctx, source, stages, &d_lim, &t_lim, span),
+    };
+    bind_nonneg_lim(
+        d_raw,
+        d_lim,
+        drop,
+        bind_nonneg_lim(t_raw, t_lim, take, body, span),
+        span,
+    )
+}
+
 fn rewrite_pipe_consumers(
     ctx: &LowerCtx,
     e: &Expr,
@@ -5366,6 +6112,33 @@ fn rewrite_pipe_consumers(
     fmap: Option<&lumia_syntax::Expr>,
     span: Span,
 ) -> Expr {
+    if let Some(fused) = try_rewrite_pipe_is_empty(ctx, e, name, source, stages, fmap) {
+        return fused;
+    }
+    // Associative `ys.fold` lowers to `ListParFold`; sequentialize so for-in
+    // fusion can deforest the pipe (chunked par fold cannot see map/filter stages).
+    if let Expr::BuiltinCall {
+        name: Builtin::ListParFold,
+        args,
+        span: s,
+    } = e
+    {
+        if args.len() >= 3 {
+            let recv = &args[0];
+            let core = innermost(recv);
+            let on_pipe =
+                matches!(core, Expr::Var(n, _) if n == name) || peel_pipe_cut(core, name).is_some();
+            if on_pipe {
+                let seq = desugar_list_fold_sequential(
+                    args[0].clone(),
+                    args[1].clone(),
+                    args[2].clone(),
+                    *s,
+                );
+                return rewrite_pipe_consumers(ctx, &seq, name, source, stages, fmap, span);
+            }
+        }
+    }
     if let Some((binding, user, cut)) = match_list_for_in(e, name) {
         return fuse_pipe_for_in(ctx, &binding, source, stages, fmap, user, cut, span);
     }
@@ -5375,9 +6148,21 @@ fn rewrite_pipe_consumers(
         span: s,
     } = e
     {
-        if let Some(cut) = args.first().and_then(|a| peel_pipe_cut(a, name)) {
-            let idx = args.get(1).cloned().unwrap_or(Expr::Int(0, *s));
-            return fuse_pipe_get_under_cut(ctx, source, stages, fmap, cut, idx, *s);
+        if let Some(recv) = args.first() {
+            if let Some((drop, take)) = peel_take_after_drop(innermost(recv), name) {
+                let idx = args.get(1).cloned().unwrap_or(Expr::Int(0, *s));
+                return wrap_like(
+                    recv,
+                    fuse_pipe_get_take_after_drop(ctx, source, stages, fmap, drop, take, idx, *s),
+                );
+            }
+            if let Some(cut) = peel_pipe_cut(innermost(recv), name) {
+                let idx = args.get(1).cloned().unwrap_or(Expr::Int(0, *s));
+                return wrap_like(
+                    recv,
+                    fuse_pipe_get_under_cut(ctx, source, stages, fmap, cut, idx, *s),
+                );
+            }
         }
     }
     if let Expr::BuiltinCall {
@@ -5386,8 +6171,19 @@ fn rewrite_pipe_consumers(
         span: s,
     } = e
     {
-        if let Some(cut) = args.first().and_then(|a| peel_pipe_cut(a, name)) {
-            return fuse_pipe_len_under_cut(ctx, source, stages, fmap, cut, *s);
+        if let Some(recv) = args.first() {
+            if let Some((drop, take)) = peel_take_after_drop(innermost(recv), name) {
+                return wrap_like(
+                    recv,
+                    fuse_pipe_len_take_after_drop(ctx, source, stages, fmap, drop, take, *s),
+                );
+            }
+            if let Some(cut) = peel_pipe_cut(innermost(recv), name) {
+                return wrap_like(
+                    recv,
+                    fuse_pipe_len_under_cut(ctx, source, stages, fmap, cut, *s),
+                );
+            }
         }
     }
     if let Expr::BuiltinCall {
@@ -5396,9 +6192,14 @@ fn rewrite_pipe_consumers(
         span: s,
     } = e
     {
-        if let Some(cut) = args.first().and_then(|a| peel_pipe_cut(a, name)) {
-            let needle = args.get(1).cloned().unwrap_or(Expr::Unit(*s));
-            return fuse_pipe_contains_under_cut(ctx, source, stages, fmap, cut, needle, *s);
+        if let Some(recv) = args.first() {
+            if let Some(cut) = peel_pipe_cut(innermost(recv), name) {
+                let needle = args.get(1).cloned().unwrap_or(Expr::Unit(*s));
+                return wrap_like(
+                    recv,
+                    fuse_pipe_contains_under_cut(ctx, source, stages, fmap, cut, needle, *s),
+                );
+            }
         }
         if args
             .first()
@@ -5408,9 +6209,24 @@ fn rewrite_pipe_consumers(
             return fuse_pipe_contains(ctx, source, stages, fmap, needle, *s);
         }
     }
+    if let Some((drop, take)) = peel_take_after_drop(e, name) {
+        return fuse_pipe_list_take_after_drop(ctx, source, stages, fmap, drop, take, span);
+    }
+    if let Some(cut) = peel_pipe_cut(e, name) {
+        return match cut {
+            PipeCut::Take(n) => match fmap {
+                Some(f) => fuse_hof_take_flat_map(ctx, source, stages, f, n, span),
+                None => fuse_hof_take(ctx, source, stages, n, span),
+            },
+            PipeCut::Drop(n) => match fmap {
+                Some(f) => fuse_hof_drop_flat_map(ctx, source, stages, f, n, span),
+                None => fuse_hof_drop(ctx, source, stages, n, span),
+            },
+        };
+    }
     match e {
         Expr::BuiltinCall {
-            name: b @ (Builtin::ListGet | Builtin::ListLen | Builtin::ListTake | Builtin::ListSlice),
+            name: b @ (Builtin::ListGet | Builtin::ListLen),
             args,
             span: s,
         } if args
@@ -5429,20 +6245,6 @@ fn rewrite_pipe_consumers(
                     Some(f) => fuse_hof_len_flat_map(ctx, source, stages, f, *s),
                     None => fuse_hof_len(ctx, source, stages, *s),
                 },
-                Builtin::ListTake => {
-                    let n = args.get(1).cloned().unwrap_or(Expr::Int(0, *s));
-                    match fmap {
-                        Some(f) => fuse_hof_take_flat_map(ctx, source, stages, f, n, *s),
-                        None => fuse_hof_take(ctx, source, stages, n, *s),
-                    }
-                }
-                Builtin::ListSlice => {
-                    let n = args.get(1).cloned().unwrap_or(Expr::Int(0, *s));
-                    match fmap {
-                        Some(f) => fuse_hof_drop_flat_map(ctx, source, stages, f, n, *s),
-                        None => fuse_hof_drop(ctx, source, stages, n, *s),
-                    }
-                }
                 _ => unreachable!(),
             }
         }

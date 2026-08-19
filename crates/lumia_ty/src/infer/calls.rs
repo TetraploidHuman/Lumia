@@ -13,17 +13,17 @@ impl Infer {
     ) -> Result<(Type, Effect), TypeError> {
         if let Expr::Var(name, _) = callee {
             // Prelude ctors (`listOf`/`setOf`/`mapOf`) — see `prelude_ctors`.
-            if let Some(result) = self.try_infer_prelude_ctor(name, args, span)? {
+            if let Some(result) = self.try_infer_prelude_ctor(name.as_str(), args, span)? {
                 return Ok(result);
             }
             // Overload `join`: Task.join() vs List.join(sep) — pick by receiver.
-            if name == "join" && self.lookup(name).is_none() {
+            if name == "join" && self.lookup(name.as_str()).is_none() {
                 return self.infer_join_surface(args, span);
             }
             // UFCS trait method: unbound `method(recv, …)` → mangled instance fun.
             // Free top-level `method` wins when bound (checked below via lookup).
-            if self.lookup(name).is_none() && !args.is_empty() {
-                if let Some(result) = self.try_infer_trait_ufcs(name, args, span)? {
+            if self.lookup(name.as_str()).is_none() && !args.is_empty() {
+                if let Some(result) = self.try_infer_trait_ufcs(name.as_str(), args, span)? {
                     return Ok(result);
                 }
             }

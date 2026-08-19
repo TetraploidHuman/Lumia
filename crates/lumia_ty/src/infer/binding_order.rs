@@ -47,13 +47,13 @@ pub(super) fn binding_sccs(module: &Module) -> Vec<Vec<usize>> {
                 }
             }
             // UFCS: free short method name depends on every mangled instance body.
-            if module.method_traits.contains_key(&name) {
+            if module.method_traits.keys().any(|k| k.as_str() == name) {
                 for ((_, method), mangleds) in &module.trait_methods {
-                    if method != &name {
+                    if method.as_str() != name {
                         continue;
                     }
                     for m in mangleds {
-                        if let Some(&j) = name_to_idx.get(m) {
+                        if let Some(&j) = name_to_idx.get(m.as_str()) {
                             if j != i {
                                 succ.entry(j).or_default().push(i);
                             }

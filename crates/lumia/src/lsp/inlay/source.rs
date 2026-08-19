@@ -1,6 +1,7 @@
 //! Source-text heuristics for placing inlay hints.
 
 use lumia_syntax::line_starts;
+use lumia_hir::Sym;
 use serde_json::Value;
 
 pub(super) fn is_ident_byte(b: u8) -> bool {
@@ -89,15 +90,15 @@ pub(super) fn lambda_param_ends(src: &str, start: usize, end: usize) -> Vec<(Str
 /// Ends of `params` names in order within `src[from..to]` (e.g. `(a, b)` or `{ a, b ->`).
 pub(super) fn param_ends_in_window(
     src: &str,
-    params: &[String],
+    params: &[Sym],
     from: usize,
     to: usize,
 ) -> Vec<(String, usize)> {
     let mut cursor = from;
     let mut out = Vec::new();
     for p in params {
-        if let Some(end) = find_word_end(src, p, cursor, to) {
-            out.push((p.clone(), end));
+        if let Some(end) = find_word_end(src, p.as_str(), cursor, to) {
+            out.push((p.to_string(), end));
             cursor = end;
         }
     }

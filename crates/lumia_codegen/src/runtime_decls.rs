@@ -236,6 +236,11 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         args: &[],
     },
     RtDecl {
+        name: "lumia_root_swap_remove",
+        ret: RtTy::Void,
+        args: &[RtTy::I64],
+    },
+    RtDecl {
         name: "lumia_dict_register",
         ret: RtTy::Void,
         args: &[RtTy::I32, RtTy::Ptr, RtTy::Ptr],
@@ -586,6 +591,11 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         args: &[],
     },
     RtDecl {
+        name: "lumia_collatz_steps",
+        ret: RtTy::I64,
+        args: &[RtTy::I64],
+    },
+    RtDecl {
         name: "lumia_collatz_total",
         ret: RtTy::I64,
         args: &[RtTy::I64],
@@ -639,6 +649,11 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         name: "lumia_mem_traffic_checksum",
         ret: RtTy::I64,
         args: &[RtTy::I64, RtTy::I64, RtTy::I64],
+    },
+    RtDecl {
+        name: "lumia_float_orbit_checksum",
+        ret: RtTy::I64,
+        args: &[RtTy::I64, RtTy::I64],
     },
     // Dense List[Float] kernels (flat row-major; unique buffers stay in-place).
     RtDecl {

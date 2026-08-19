@@ -3,6 +3,7 @@
 use super::ctx::LowerCtx;
 use super::expr::lower_expr;
 use crate::ast::{Builtin, Expr};
+use crate::sym_util::synthetic;
 use lumia_syntax::{BinOp, Span};
 
 pub(crate) fn lower_for_in(
@@ -27,7 +28,7 @@ pub(crate) fn lower_for_in(
                     span,
                 }
             };
-            let pair = format!("__kv_{}", span.start.0);
+            let pair = synthetic(format!("__kv_{}", span.start.0));
             let bind_k = Expr::Let {
                 name: k.clone(),
                 value: Box::new(Expr::BuiltinCall {
@@ -57,7 +58,7 @@ pub(crate) fn lower_for_in(
                 if matches!(b, Builtin::Range | Builtin::RangeInclusive) && args.len() == 2 {
                     let inclusive = matches!(b, Builtin::RangeInclusive);
                     return counter_for_in(
-                        name,
+                        name.as_str(),
                         args[0].clone(),
                         args[1].clone(),
                         inclusive,
@@ -66,7 +67,7 @@ pub(crate) fn lower_for_in(
                     );
                 }
             }
-            list_for_in(name, lowered_iter, body_e, span)
+            list_for_in(name.as_str(), lowered_iter, body_e, span)
         }
     }
 }
@@ -94,7 +95,11 @@ pub(crate) fn counter_for_in(
     body: Expr,
     span: Span,
 ) -> Expr {
-    let i = format!("{}{}", crate::desugar_slots::FOR_INDEX_PREFIX, span.start.0);
+    let i = synthetic(format!(
+        "{}{}",
+        crate::desugar_slots::FOR_INDEX_PREFIX,
+        span.start.0
+    ));
     let cmp = if inclusive { BinOp::Le } else { BinOp::Lt };
     let cond = Expr::Binary {
         op: cmp,
@@ -159,9 +164,13 @@ pub(crate) fn counter_for_in(
 }
 
 pub(crate) fn list_for_in(binding: &str, list: Expr, body: Expr, span: Span) -> Expr {
-    let xs = format!("__xs_{}", span.start.0);
-    let i = format!("{}{}", crate::desugar_slots::FOR_INDEX_PREFIX, span.start.0);
-    let n = format!("__n_{}", span.start.0);
+    let xs = synthetic(format!("__xs_{}", span.start.0));
+    let i = synthetic(format!(
+        "{}{}",
+        crate::desugar_slots::FOR_INDEX_PREFIX,
+        span.start.0
+    ));
+    let n = synthetic(format!("__n_{}", span.start.0));
     // Map is key-addressed; normalize to an indexable List (keys) first.
     let list = Expr::BuiltinCall {
         name: Builtin::Elems,

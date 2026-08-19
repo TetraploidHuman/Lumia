@@ -4,6 +4,7 @@
 
 use crate::{AdtRepr, CoreBinOp as BinOp, CoreUnOp as UnOp, ListRepr, Local, Value};
 use lumia_hir::Builtin;
+use lumia_syntax::Sym;
 use lumia_ty::{Effect, Type};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
@@ -21,7 +22,7 @@ pub enum HeapPolicy {
 #[derive(Clone, Copy)]
 pub struct InferValueCtx<'a> {
     pub local_tys: &'a HashMap<u32, Type>,
-    pub slot_tys: Option<&'a HashMap<String, Type>>,
+    pub slot_tys: Option<&'a HashMap<Sym, Type>>,
     pub fun_ret_tys: Option<&'a HashMap<String, Type>>,
     pub fun_param_tys: Option<&'a HashMap<String, Vec<Type>>>,
     pub fun_param0_identity: Option<&'a HashSet<String>>,
@@ -39,7 +40,7 @@ pub struct InferValueCtx<'a> {
 /// Grouped codegen tables so [`InferValueCtx::full`] stays a short call site.
 #[derive(Clone, Copy)]
 pub struct CodegenTypeTables<'a> {
-    pub slot_tys: &'a HashMap<String, Type>,
+    pub slot_tys: &'a HashMap<Sym, Type>,
     pub fun_ret_tys: &'a HashMap<String, Type>,
     pub fun_param_tys: &'a HashMap<String, Vec<Type>>,
     pub fun_param0_identity: &'a HashSet<String>,
@@ -90,7 +91,7 @@ impl<'a> InferValueCtx<'a> {
     /// tables are not needed — thinner than [`Self::full`].
     pub fn with_fun_abi(
         local_tys: &'a HashMap<u32, Type>,
-        slot_tys: Option<&'a HashMap<String, Type>>,
+        slot_tys: Option<&'a HashMap<Sym, Type>>,
         fun_ret_tys: &'a HashMap<String, Type>,
         fun_param_tys: &'a HashMap<String, Vec<Type>>,
     ) -> Self {
@@ -711,7 +712,10 @@ pub(crate) use builtin::{
     list_par_map_via, list_passthrough_ok, stamp_or_via, stamp_or_via_gated_recv, task_recv_ok,
     via_gated_recv, via_gated_recv_seeded,
 };
-pub use join::{join_abi_tys, join_fixed_ty, prefer_concrete_heap_ty, JoinAbiKind};
+pub use join::{
+    fold_slot_assign_ty, join_abi_tys, join_fixed_ty, join_if_arm_tys, join_slot_assign_ty,
+    prefer_concrete_heap_ty, JoinAbiKind, JoinAssignKind,
+};
 
 #[cfg(test)]
 mod tests {

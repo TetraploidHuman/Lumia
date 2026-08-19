@@ -15,7 +15,7 @@ impl<'a> Parser<'a> {
                 errors.extend(more);
                 return ParseOutcome {
                     module: Module {
-                        name: String::new(),
+                        name: self.intern_word(""),
                         span: start.merge(self.cur.span),
                         imports,
                         items,
@@ -39,18 +39,17 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_module_header(&mut self) -> Result<String, ParseError> {
+    fn parse_module_header(&mut self) -> Result<Sym, ParseError> {
         self.expect(TokenKind::Module)?;
         let (name, _) = self.expect_ident()?;
-        // allow dotted module names: math.vector
-        let mut full = name;
+        let mut full = name.to_string();
         while self.at(&TokenKind::Dot) {
             self.bump();
             let (n, _) = self.expect_ident()?;
             full.push('.');
-            full.push_str(&n);
+            full.push_str(n.as_str());
         }
-        Ok(full)
+        Ok(self.intern.intern(&full))
     }
 
     fn parse_imports_and_items_recovering(&mut self) -> (Vec<Import>, Vec<Item>, Vec<ParseError>) {
@@ -185,7 +184,7 @@ impl<'a> Parser<'a> {
                 // Keep the item so later decls still parse, but do **not** inject an
                 // identity lambda (that false-greened call sites). An unbound hole
                 // fails typing → no scheme is bound under recovering typecheck.
-                let body = Expr::Ident("__parse_hole".into(), span);
+                let body = Expr::Ident(self.intern_word("__parse_hole"), span);
                 Ok(ValItem {
                     name,
                     ty,
@@ -208,7 +207,7 @@ impl<'a> Parser<'a> {
             match &self.cur.kind {
                 TokenKind::LBrace => break,
                 TokenKind::Star => break,
-                TokenKind::Ident(_) => {
+                TokenKind::Ident => {
                     let (n, _) = self.expect_ident()?;
                     path.push(n);
                 }
@@ -331,7 +330,7 @@ impl<'a> Parser<'a> {
             }
             _ => return Err(self.error("expected ABI string after `foreign` (e.g. \"C\")")),
         };
-        let is_pure = if matches!(self.cur.kind, TokenKind::Ident(ref s) if s == "pure") {
+        let is_pure = if self.at_ident() && self.intern_span(self.cur.span) == "pure" {
             self.bump();
             true
         } else {
@@ -349,7 +348,7 @@ impl<'a> Parser<'a> {
                 let (pname, _) = self.expect_ident()?;
                 self.expect(TokenKind::Colon)?;
                 let (pty, _) = self.expect_ident()?;
-                params.push((pname, pty));
+                params.push((pname, pty.to_string()));
                 if self.at(&TokenKind::Comma) {
                     self.bump();
                     continue;
@@ -364,7 +363,7 @@ impl<'a> Parser<'a> {
             abi,
             name,
             params,
-            ret,
+            ret: ret.to_string(),
             is_pure,
             span: start.merge(ret_span),
         }))

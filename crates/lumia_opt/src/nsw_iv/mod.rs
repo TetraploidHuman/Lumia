@@ -49,8 +49,10 @@ use rustc_hash::FxHashSet as HashSet;
 use bounds::{iv_bound_info, mark_square_mul, square_bound};
 #[cfg(feature = "nsw-iv")]
 use lumia_core::{
-    collect_leaf_defs as core_collect_leaf_defs, for_each_block_dfs, Block, Op, Value,
+    collect_leaf_defs as core_collect_leaf_defs, for_each_loop_in_block, Block, Value,
 };
+#[cfg(feature = "nsw-iv")]
+use lumia_syntax::Sym;
 #[cfg(feature = "nsw-iv")]
 use marks::{
     mark_acc_plus_bounded_rem, mark_acc_plus_safe_div, mark_acc_plus_unit_counter,
@@ -150,111 +152,85 @@ fn collect_nsw_binop_locals_inner(
     nonneg_loads: &HashSet<u32>,
 ) -> HashSet<u32> {
     let mut out = HashSet::default();
-    let mut bounded_ivs: HashSet<String> = HashSet::default();
-    let mut iv_upper: rustc_hash::FxHashMap<String, i64> = rustc_hash::FxHashMap::default();
+    let mut bounded_ivs: HashSet<Sym> = HashSet::default();
+    let mut iv_upper: rustc_hash::FxHashMap<Sym, i64> = rustc_hash::FxHashMap::default();
     let mut max_bound: i64 = 0;
     let mut max_loop_const: i64 = 0;
 
     // Pass 1: unit steps + collect const-bounded IV uppers.
-    for_each_block_dfs(body, &mut |b| {
-        for op in &b.ops {
-            if let Op::Let {
-                value:
-                    Value::Loop {
-                        header,
-                        body,
-                        latch,
-                    },
-                ..
-            } = op
-            {
-                let info = iv_bound_info(header, all_defs);
-                // Copy before mutating `iv_upper` for this loop's IVs.
-                let named_upper = info
-                    .bound_name
-                    .as_ref()
-                    .and_then(|n| iv_upper.get(n).copied());
-                // Inclusive `i <= n`: unit ±1 is NSW when `n` itself has a known
-                // upper `U < MAX` (nested `n < K` / `n < limit` with U=MAX-1).
-                let unit_ok = info.strict
-                    || info
-                        .bound_const
-                        .is_some_and(|b| (0..=i64::MAX - 2).contains(&b))
-                    || (!info.strict
-                        && info.is_upper
-                        && named_upper.is_some_and(|u| (0..=i64::MAX - 1).contains(&u)));
-                if unit_ok {
-                    for name in &info.ivs {
-                        mark_unit_steps(body, name, all_defs, &mut out);
-                        mark_unit_steps(latch, name, all_defs, &mut out);
-                    }
-                    // Do **not** NSW-mark arbitrary `x = x ± 1` in the body: a separate
-                    // counter can still overflow while the IV stays in range.
+    for_each_loop_in_block(body, &mut |header, body, latch| {
+        let info = iv_bound_info(header, all_defs);
+        // Copy before mutating `iv_upper` for this loop's IVs.
+        let named_upper = info
+            .bound_name
+            .as_ref()
+            .and_then(|n| iv_upper.get(n).copied());
+        // Inclusive `i <= n`: unit ±1 is NSW when `n` itself has a known
+        // upper `U < MAX` (nested `n < K` / `n < limit` with U=MAX-1).
+        let unit_ok = info.strict
+            || info
+                .bound_const
+                .is_some_and(|b| (0..=i64::MAX - 2).contains(&b))
+            || (!info.strict
+                && info.is_upper
+                && named_upper.is_some_and(|u| (0..=i64::MAX - 1).contains(&u)));
+        if unit_ok {
+            for name in &info.ivs {
+                mark_unit_steps(body, name, all_defs, &mut out);
+                mark_unit_steps(latch, name, all_defs, &mut out);
+            }
+            // Do **not** NSW-mark arbitrary `x = x ± 1` in the body: a separate
+            // counter can still overflow while the IV stays in range.
+        }
+        if let Some(b) = info.bound_const {
+            if b > 0 {
+                max_loop_const = max_loop_const.max(b);
+            }
+            if (1..=NSW_IV_UPPER_MAX).contains(&b) {
+                for name in &info.ivs {
+                    let e = iv_upper.entry(name.clone()).or_insert(b);
+                    *e = (*e).max(b);
                 }
-                if let Some(b) = info.bound_const {
-                    if b > 0 {
-                        max_loop_const = max_loop_const.max(b);
-                    }
-                    if (1..=NSW_IV_UPPER_MAX).contains(&b) {
-                        for name in &info.ivs {
-                            let e = iv_upper.entry(name.clone()).or_insert(b);
-                            *e = (*e).max(b);
-                        }
-                    }
-                    if (1..=NSW_BOUND_MAX).contains(&b) {
-                        bounded_ivs.extend(info.ivs.iter().cloned());
-                        max_bound = max_bound.max(b);
-                    }
-                } else if info.is_upper {
-                    if let Some(u) = named_upper {
-                        // Named upper already recorded (outer IV / prior loop):
-                        // exclusive `i < n` and inclusive `i <= n` both have
-                        // max i ≤ U (exclusive is tighter; storing U matches
-                        // const `i < K` which records K).
-                        for name in &info.ivs {
-                            let e = iv_upper.entry(name.clone()).or_insert(u);
-                            *e = (*e).max(u);
-                        }
-                    } else if info.strict {
-                        // Open exclusive `i < n`: worst-case max i is `i64::MAX - 1`
-                        // (when n = MAX). Seeds `i + 1` via mark_nonneg_iv_add_mul_bounded
-                        // without unlocking bounded-tree / square peeps (caps below).
-                        for name in &info.ivs {
-                            let e = iv_upper.entry(name.clone()).or_insert(i64::MAX - 1);
-                            *e = (*e).max(i64::MAX - 1);
-                        }
-                    }
+            }
+            if (1..=NSW_BOUND_MAX).contains(&b) {
+                bounded_ivs.extend(info.ivs.iter().cloned());
+                max_bound = max_bound.max(b);
+            }
+        } else if info.is_upper {
+            if let Some(u) = named_upper {
+                // Named upper already recorded (outer IV / prior loop):
+                // exclusive `i < n` and inclusive `i <= n` both have
+                // max i ≤ U (exclusive is tighter; storing U matches
+                // const `i < K` which records K).
+                for name in &info.ivs {
+                    let e = iv_upper.entry(name.clone()).or_insert(u);
+                    *e = (*e).max(u);
+                }
+            } else if info.strict {
+                // Open exclusive `i < n`: worst-case max i is `i64::MAX - 1`
+                // (when n = MAX). Seeds `i + 1` via mark_nonneg_iv_add_mul_bounded
+                // without unlocking bounded-tree / square peeps (caps below).
+                for name in &info.ivs {
+                    let e = iv_upper.entry(name.clone()).or_insert(i64::MAX - 1);
+                    *e = (*e).max(i64::MAX - 1);
                 }
             }
         }
     });
 
     // Pass 2: `d*d ≤ C` / `d*d ≤ bounded_iv` — mark square + `d = d+1`.
-    for_each_block_dfs(body, &mut |b| {
-        for op in &b.ops {
-            if let Op::Let {
-                value:
-                    Value::Loop {
-                        header,
-                        body,
-                        latch,
-                    },
-                ..
-            } = op
-            {
-                if let Some((iv, c)) = square_bound(header, all_defs, &iv_upper) {
-                    if (1..=NSW_IV_UPPER_MAX).contains(&c) {
-                        mark_unit_steps(body, &iv, all_defs, &mut out);
-                        mark_unit_steps(latch, &iv, all_defs, &mut out);
-                        mark_square_mul(body, latch, &iv, all_defs, &mut out);
-                        let d_max = ((c as f64).sqrt().floor() as i64) + 2;
-                        let e = iv_upper.entry(iv.clone()).or_insert(d_max);
-                        *e = (*e).max(d_max);
-                        if (1..=NSW_BOUND_MAX).contains(&c) {
-                            bounded_ivs.insert(iv);
-                            max_bound = max_bound.max(d_max);
-                        }
-                    }
+    for_each_loop_in_block(body, &mut |header, body, latch| {
+        if let Some((iv, c)) = square_bound(header, all_defs, &iv_upper) {
+            if (1..=NSW_IV_UPPER_MAX).contains(&c) {
+                mark_unit_steps(body, &iv, all_defs, &mut out);
+                mark_unit_steps(latch, &iv, all_defs, &mut out);
+                mark_square_mul(body, latch, &iv, all_defs, &mut out);
+                let d_max = ((c as f64).sqrt().floor() as i64) + 2;
+                let e = iv_upper.entry(iv.clone()).or_insert(d_max);
+                *e = (*e).max(d_max);
+                if (1..=NSW_BOUND_MAX).contains(&c) {
+                    bounded_ivs.insert(iv);
+                    max_bound = max_bound.max(d_max);
                 }
             }
         }

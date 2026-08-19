@@ -12,7 +12,9 @@ name = "lumia"
 path = "src/main.rs"
 
 [features]
-default = ["codegen"]
+# Default: full codegen + shared libLLVM (Linux/Nix/apt). Windows SDKs are
+# static-oriented — use `--no-default-features --features codegen` there (CI/check).
+default = ["codegen", "llvm-dynamic"]
 # Pulls inkwell/LLVM (~100MB+). LSP / check / fmt do not need this.
 # Enables domain loop SR + NSW IV / dense-f64 on opt (codegen stays emit-only for NSW).
 codegen = [
@@ -26,6 +28,7 @@ codegen = [
 ]
 # Codegen without domain SR / NSW IV / dense-f64 nest rewrite.
 codegen-slim = ["dep:lumia_codegen", "dep:lumia_opt", "dep:lumia_core"]
+# Shared libLLVM via inkwell force-dynamic (much faster link). On by default.
 llvm-dynamic = ["codegen", "lumia_codegen/llvm-dynamic"]
 
 [dependencies]

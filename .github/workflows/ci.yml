@@ -18,16 +18,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # apt.llvm.org ships libLLVM.so — force-dynamic avoids ~7min static link.
+          # apt.llvm.org ships libLLVM.so — `lumia` default includes llvm-dynamic.
+          # Workspace `--exclude lumia` still needs the codegen package feature.
           - os: ubuntu-latest
-            # Workspace / -p package feature paths differ: package/feature needs --workspace;
-            # -p lumia uses the crate-local alias.
             cargo_features: --features lumia_codegen/llvm-dynamic
-            lumia_features: --features llvm-dynamic
-          # vovkos Windows SDK is static-oriented; keep prefer-static.
+            lumia_features: ""
+          # vovkos Windows SDK is static-oriented: disable shared default.
           - os: windows-latest
             cargo_features: ""
-            lumia_features: ""
+            lumia_features: --no-default-features --features codegen
 
     steps:
       - uses: actions/checkout@v4
@@ -167,6 +166,12 @@ jobs:
 
       - name: Cargo clippy (library crates)
         run: cargo clippy --workspace --exclude lumia --lib ${{ matrix.cargo_features }} -- -D warnings
+
+      - name: Cargo clippy (lumia lib, no codegen)
+        run: cargo clippy -p lumia --no-default-features --lib -- -D warnings
+
+      - name: Cargo test (lumia lib, no codegen)
+        run: cargo test -p lumia --no-default-features --lib
 
       - name: Cargo test (library crates)
         # Process-shared heap: parallel RT tests can UAF (see scripts/check.sh).

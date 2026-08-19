@@ -36,7 +36,7 @@ fn flatten_or<'a>(pat: &'a Pattern, out: &mut Vec<&'a Pattern>) {
 pub(crate) fn coverage_catch_all(pat: &Pattern, ctors: &HashMap<String, CtorInfo>) -> bool {
     match pat {
         Pattern::Wildcard(_) => true,
-        Pattern::Ident(name, _) => ctors.get(name).is_none_or(|c| c.arity != 0),
+        Pattern::Ident(name, _) => ctors.get(name.as_str()).is_none_or(|c| c.arity != 0),
         Pattern::Or(ps, _) => ps.iter().any(|p| coverage_catch_all(p, ctors)),
         Pattern::Struct { fields, .. } => {
             fields.iter().all(|(_, sub)| coverage_catch_all(sub, ctors))
@@ -100,28 +100,34 @@ pub(crate) fn check_pats_cover(
     for p in &flat {
         match *p {
             Pattern::Ident(name, _) => {
-                if let Some(c) = ctors.get(name) {
+                if let Some(c) = ctors.get(name.as_str()) {
                     if c.arity == 0 {
                         saw_sum = true;
-                        covered.entry(c.adt_name.clone()).or_default().insert(c.tag);
+                        covered
+                            .entry(c.adt_name.to_string())
+                            .or_default()
+                            .insert(c.tag);
                     }
                 }
             }
             Pattern::Variant { name, args, .. } => {
-                if let Some(c) = ctors.get(name) {
+                if let Some(c) = ctors.get(name.as_str()) {
                     saw_sum = true;
-                    covered.entry(c.adt_name.clone()).or_default().insert(c.tag);
+                    covered
+                        .entry(c.adt_name.to_string())
+                        .or_default()
+                        .insert(c.tag);
                     ctor_args
-                        .entry(name.clone())
+                        .entry(name.to_string())
                         .or_default()
                         .push(args.iter().collect());
                 }
             }
             Pattern::Struct { name, fields, .. } => {
                 saw_product = true;
-                let entry = product_fields.entry(name.clone()).or_default();
+                let entry = product_fields.entry(name.to_string()).or_default();
                 for (fname, sub) in fields {
-                    entry.entry(fname.clone()).or_default().push(sub);
+                    entry.entry(fname.to_string()).or_default().push(sub);
                 }
             }
             Pattern::Tuple { elems, .. } => {
@@ -179,7 +185,7 @@ pub(crate) fn check_pats_cover(
                 if v.arity == 0 {
                     continue;
                 }
-                let Some(rows) = ctor_args.get(&v.name) else {
+                let Some(rows) = ctor_args.get(v.name.as_str()) else {
                     continue;
                 };
                 if v.arity >= 2 {
@@ -207,7 +213,7 @@ pub(crate) fn check_pats_cover(
                         continue;
                     }
                     let nested = if path.is_empty() {
-                        v.name.clone()
+                        v.name.to_string()
                     } else {
                         format!("{path}.{}", v.name)
                     };

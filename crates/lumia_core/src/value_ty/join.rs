@@ -18,10 +18,54 @@ pub enum JoinAbiKind {
     Fixed,
 }
 
+/// Policy for folding successive `Assign` writes to the same named slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JoinAssignKind {
+    /// Float/heap ABI refresh (`float_abi` slot heap typing).
+    Heap,
+    /// Mono fixed `ret_ty` slot typing ([`join_slot_assign_ty`]).
+    Fixed,
+}
+
+/// Fold one more slot write into an accumulator (`None` → first write).
+#[inline]
+pub fn fold_slot_assign_ty(acc: &mut Option<Type>, next: Type, kind: JoinAssignKind) {
+    *acc = Some(match acc.take() {
+        None => next,
+        Some(prev) => match kind {
+            JoinAssignKind::Heap => prefer_concrete_heap_ty(prev, next),
+            JoinAssignKind::Fixed => join_slot_assign_ty(Some(prev), next),
+        },
+    });
+}
+
 /// Mono fixed-ret If join (thin wrapper over [`join_abi_tys`] + [`JoinAbiKind::Fixed`]).
 #[inline]
 pub fn join_fixed_ty(a: &Type, b: &Type) -> Option<Type> {
     join_abi_tys(a, b, JoinAbiKind::Fixed)
+}
+
+/// Join optional types from `if`/match arms, treating bottom (`MatchFail`) arms as absent.
+///
+/// Used by float heap ABI ([`JoinAbiKind::Heap`]) and mono fixed ret ([`JoinAbiKind::Fixed`]).
+pub fn join_if_arm_tys(
+    then_ty: Option<Type>,
+    else_ty: Option<Type>,
+    then_bottom: bool,
+    else_bottom: bool,
+    kind: JoinAbiKind,
+) -> Option<Type> {
+    if then_bottom {
+        return else_ty;
+    }
+    if else_bottom {
+        return then_ty;
+    }
+    match (then_ty, else_ty) {
+        (Some(a), Some(b)) => join_abi_tys(&a, &b, kind),
+        (Some(a), None) | (None, Some(a)) => Some(a),
+        (None, None) => None,
+    }
 }
 
 /// Join two types for If/alt / match arms.
@@ -219,6 +263,22 @@ pub fn prefer_concrete_heap_ty(x: Type, y: Type) -> Type {
     }
 }
 
+/// Join types from successive `Assign` writes to the same named slot (mono `ret_ty`).
+///
+/// Heap pointers beat Float/scalars — unlike [`prefer_concrete_heap_ty`], `Char`/`String`
+/// beat Float so mutable slots are not mis-typed as XMM NaN bit patterns.
+pub fn join_slot_assign_ty(prev: Option<Type>, next: Type) -> Type {
+    use crate::type_may_heap;
+    match (prev, next) {
+        (None, t) => t,
+        (Some(p), n) if p == n => p,
+        (Some(p), n) if type_may_heap(&p) && !type_may_heap(&n) => p,
+        (Some(p), n) if !type_may_heap(&p) && type_may_heap(&n) => n,
+        (Some(Type::Float), _) | (_, Type::Float) => Type::Float,
+        (Some(p), _) => p,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,5 +381,87 @@ mod tests {
         let list = Type::List(Box::new(Type::Int));
         let map = Type::Map(Box::new(Type::Int), Box::new(Type::Float));
         assert_eq!(prefer_concrete_heap_ty(list, map.clone()), map);
+    }
+
+    #[test]
+    fn join_slot_assign_char_beats_float() {
+        assert_eq!(
+            join_slot_assign_ty(Some(Type::Char), Type::Float),
+            Type::Char
+        );
+        assert_eq!(
+            join_slot_assign_ty(Some(Type::Float), Type::Char),
+            Type::Char
+        );
+        assert_eq!(
+            join_slot_assign_ty(Some(Type::List(Box::new(Type::Int))), Type::Int),
+            Type::List(Box::new(Type::Int))
+        );
+    }
+
+    #[test]
+    fn join_if_arm_tys_bottom_then_takes_else() {
+        assert_eq!(
+            join_if_arm_tys(
+                Some(Type::Int),
+                Some(Type::Float),
+                true,
+                false,
+                JoinAbiKind::Heap,
+            ),
+            Some(Type::Float),
+        );
+    }
+
+    #[test]
+    fn join_if_arm_tys_bottom_else_takes_then() {
+        assert_eq!(
+            join_if_arm_tys(
+                Some(Type::Float),
+                Some(Type::Int),
+                false,
+                true,
+                JoinAbiKind::Fixed,
+            ),
+            Some(Type::Float),
+        );
+    }
+
+    #[test]
+    fn join_if_arm_tys_merges_heap_containers() {
+        assert_eq!(
+            join_if_arm_tys(
+                Some(Type::List(Box::new(Type::Int))),
+                Some(Type::List(Box::new(Type::Float))),
+                false,
+                false,
+                JoinAbiKind::Heap,
+            ),
+            Some(Type::List(Box::new(Type::Float))),
+        );
+    }
+
+    #[test]
+    fn fold_slot_assign_heap_merges_list_elem() {
+        let mut acc = None;
+        fold_slot_assign_ty(
+            &mut acc,
+            Type::List(Box::new(Type::Int)),
+            JoinAssignKind::Heap,
+        );
+        fold_slot_assign_ty(
+            &mut acc,
+            Type::List(Box::new(Type::Float)),
+            JoinAssignKind::Heap,
+        );
+        assert_eq!(acc, Some(Type::List(Box::new(Type::Float))));
+    }
+
+    #[test]
+    fn fold_slot_assign_fixed_char_beats_float() {
+        let mut acc = None;
+        fold_slot_assign_ty(&mut acc, Type::Char, JoinAssignKind::Fixed);
+        fold_slot_assign_ty(&mut acc, Type::Float, JoinAssignKind::Fixed);
+        assert_eq!(acc, Some(Type::Char));
     }
 }

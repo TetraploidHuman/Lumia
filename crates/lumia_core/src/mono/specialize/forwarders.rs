@@ -1,4 +1,5 @@
 use crate::ir::{Block, CoreFun, CoreModule, Op, Value};
+use crate::visit::{for_each_top_level_op_in_block, for_each_top_level_op_in_block_mut};
 use rustc_hash::FxHashMap as HashMap;
 
 /// Mono FunRef toehold: if a clone's result is `Call(target, params)` (pure
@@ -8,7 +9,7 @@ pub(super) fn elide_trivial_mono_forwarders(module: &mut CoreModule) {
     for f in &module.functions {
         if let Some(target) = trivial_param_forward_target(f) {
             if target != f.name {
-                forward.insert(f.name.clone(), target);
+                forward.insert(f.name.to_string(), target);
             }
         }
     }
@@ -43,35 +44,33 @@ pub(super) fn elide_trivial_mono_forwarders(module: &mut CoreModule) {
 fn trivial_param_forward_target(fun: &CoreFun) -> Option<String> {
     fun.mono_of.as_ref()?;
     let result = fun.body.result?;
-    for op in &fun.body.ops {
+    let mut target = None;
+    for_each_top_level_op_in_block(&fun.body, &mut |op| {
         let Op::Let {
             local,
-            value: Value::Call { fun: target, args },
+            value: Value::Call { fun: callee, args },
             ..
         } = op
         else {
-            continue;
+            return;
         };
         if *local != result {
-            continue;
+            return;
         }
         // Exact forward of all formals (identity-shaped mono clone).
         if args.len() == fun.params.len() && args.iter().eq(fun.params.iter()) {
-            return Some(target.name.clone());
+            target = Some(callee.name.clone());
         }
-    }
-    None
+    });
+    target
 }
 
 fn rewrite_forward_calls(block: &mut Block, forward: &HashMap<String, String>) {
-    for op in &mut block.ops {
-        match op {
-            Op::Let { value, .. } => {
-                rewrite_forward_value(value, forward);
-            }
-            _ => {}
+    for_each_top_level_op_in_block_mut(block, &mut |op| {
+        if let Op::Let { value, .. } = op {
+            rewrite_forward_value(value, forward);
         }
-    }
+    });
 }
 
 fn rewrite_forward_value(value: &mut Value, forward: &HashMap<String, String>) {

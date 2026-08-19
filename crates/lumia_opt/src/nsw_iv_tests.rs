@@ -364,19 +364,38 @@ i = i + 1
 
 #[test]
 fn marks_collatz_x_loads_nonneg() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/bench_cpu.lm");
-    let src = std::fs::read_to_string(&path).unwrap();
-    let core =
-        crate::compile_source_to_optimized(&src, &crate::OptOptions::for_build(true)).unwrap();
+    // Use a helper name that domain_sr does not rewrite to RT.
+    let core = compile_source_to_core(
+        r#"
+module M
+val collatzLikeSteps(n) = {
+  var x = n
+  var steps = 0
+  for x > 1 {
+    if x % 2 == 0 {
+      x = x / 2
+    } else {
+      x = 3 * x + 1
+    }
+    steps = steps + 1
+  }
+  steps
+}
+val main = collatzLikeSteps(27)
+"#,
+    )
+    .unwrap();
+    let mut core = core;
+    crate::optimize(&mut core, &crate::OptOptions::for_build(true));
     let f = core
         .functions
         .iter()
-        .find(|f| f.name == "collatzSteps")
+        .find(|f| f.name == "collatzLikeSteps")
         .unwrap();
     let nonneg = collect_nonneg_iv_load_locals(&f.body);
     assert!(
         !nonneg.is_empty(),
-        "collatzSteps `x` under x>1 should be nonneg loads"
+        "collatzLikeSteps `x` under x>1 should be nonneg loads"
     );
 }
 

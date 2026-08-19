@@ -23,7 +23,7 @@ pub(crate) fn format_pat(out: &mut String, p: &Pattern) {
         }
         Pattern::String(s, _) => {
             out.push('"');
-            out.push_str(&escape_str(s));
+            out.push_str(&escape_str(s.as_str()));
             out.push('"');
         }
         Pattern::Ident(n, _) => out.push_str(n),

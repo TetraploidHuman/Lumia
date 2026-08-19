@@ -1,3 +1,4 @@
+
 //! Rewrite nested `Value::Lambda` into top-level `__lam_N` functions.
 
 use super::captures::analyze_captures;
@@ -9,8 +10,11 @@ use super::float_abi::{
 use super::heap::block_result_may_heap_with_params;
 use crate::ir::{Block, CoreFun, CoreModule, ForeignAbi, FunKind, Local, Op, Value};
 use crate::visit::{
-    block_has_io, for_each_op_value_mut, max_local_in_module, rewrite_block_locals,
+    block_has_io, flat_map_top_level_ops_in_block, for_each_op_value_mut, max_local_in_module,
+    rewrite_block_locals,
 };
+use crate::{FunRefAliases, FunRefAlloc};
+use lumia_syntax::Sym;
 use lumia_ty::{Effect, Type};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
@@ -92,7 +96,7 @@ fn lift_lambdas_inner(module: &mut CoreModule) {
         .functions
         .iter()
         .filter(|f| f.effect.has_io())
-        .map(|f| f.name.clone())
+        .map(|f| f.name.to_string())
         .collect();
     let (mut fun_ret_tys, mut fun_param_tys) = crate::ModuleTables::from_module(module).into_maps();
     let mut hof = HofSets::from_module_funs(
@@ -102,7 +106,6 @@ fn lift_lambdas_inner(module: &mut CoreModule) {
             .map(|f| (f.name.as_str(), f.params.as_slice(), &f.body)),
     );
     let mut float_cap_idxs: HashMap<String, HashSet<u32>> = HashMap::default();
-    let mut funref_locals: HashMap<u32, String> = HashMap::default();
     for fun in &mut module.functions {
         let mut float_locals = compute_float_locals_in_block(&fun.body);
         for (i, ty) in fun.param_tys.iter().enumerate() {
@@ -113,6 +116,7 @@ fn lift_lambdas_inner(module: &mut CoreModule) {
             }
         }
         let mut float_slots = compute_float_slots(&fun.body, &float_locals);
+        let mut funref = FunRefAliases::default();
         lift_block(
             &mut fun.body,
             &mut extras,
@@ -124,7 +128,7 @@ fn lift_lambdas_inner(module: &mut CoreModule) {
             &mut fun_ret_tys,
             &mut fun_param_tys,
             &mut hof,
-            &mut funref_locals,
+            &mut funref,
             &mut float_cap_idxs,
         );
     }
@@ -132,30 +136,24 @@ fn lift_lambdas_inner(module: &mut CoreModule) {
 }
 
 /// Mutable / immutable slots that currently hold Float (`Assign` from a float local).
-fn compute_float_slots(block: &Block, float_locals: &HashSet<u32>) -> HashSet<String> {
+fn compute_float_slots(block: &Block, float_locals: &HashSet<u32>) -> HashSet<Sym> {
     let mut slots = HashSet::default();
     collect_float_slots(block, float_locals, &mut slots);
     slots
 }
 
-fn collect_float_slots(block: &Block, float_locals: &HashSet<u32>, slots: &mut HashSet<String>) {
-    for op in &block.ops {
-        match op {
-            Op::Assign { name, value } => {
-                if float_locals.contains(&value.0) {
-                    slots.insert(name.clone());
-                } else {
-                    slots.remove(name);
-                }
+fn collect_float_slots(block: &Block, float_locals: &HashSet<u32>, slots: &mut HashSet<Sym>) {
+    crate::for_each_op_in_block(block, &mut |op| match op {
+        Op::Assign { name, value } => {
+            if float_locals.contains(&value.0) {
+                slots.insert(name.clone());
+            } else {
+                slots.remove(name);
             }
-            Op::Let { value, .. } => {
-                crate::for_each_nested_block(value, &mut |b| {
-                    collect_float_slots(b, float_locals, slots);
-                });
-            }
-            Op::Break | Op::Continue | Op::Return { .. } => {}
         }
-    }
+        Op::Break | Op::Continue | Op::Return { .. } => {}
+        Op::Let { .. } => {}
+    });
 }
 
 fn lift_block(
@@ -164,16 +162,15 @@ fn lift_block(
     id: &mut u32,
     next_local: &mut u32,
     float_locals: &mut HashSet<u32>,
-    float_slots: &mut HashSet<String>,
+    float_slots: &mut HashSet<Sym>,
     io_funs: &mut HashSet<String>,
     fun_ret_tys: &mut HashMap<String, Type>,
     fun_param_tys: &mut HashMap<String, Vec<Type>>,
     hof: &mut HofSets,
-    funref_locals: &mut HashMap<u32, String>,
+    funref: &mut FunRefAliases,
     float_cap_idxs: &mut HashMap<String, HashSet<u32>>,
 ) {
-    let mut new_ops = Vec::with_capacity(block.ops.len());
-    for mut op in std::mem::take(&mut block.ops) {
+    flat_map_top_level_ops_in_block(block, &mut |mut op| {
         match &mut op {
             Op::Let {
                 local,
@@ -195,34 +192,19 @@ fn lift_block(
                     fun_ret_tys,
                     fun_param_tys,
                     hof,
-                    funref_locals,
+                    funref,
                     float_cap_idxs,
                 );
-                new_ops.append(&mut prelude);
                 // Keep float_locals fresh for later captures in this block.
                 if matches!(value, Value::Name(n) if float_slots.contains(n))
                     || super::float_abi::value_is_float_producing(value, float_locals)
                 {
                     float_locals.insert(local.0);
                 }
-                match value {
-                    Value::FunRef(name) => {
-                        funref_locals.insert(local.0, name.name.clone());
-                    }
-                    Value::AllocClosure { fun, .. } => {
-                        funref_locals.insert(local.0, fun.name.clone());
-                    }
-                    Value::Local(Local(src)) => {
-                        if let Some(n) = funref_locals.get(src).cloned() {
-                            funref_locals.insert(local.0, n);
-                        } else {
-                            funref_locals.remove(&local.0);
-                        }
-                    }
-                    _ => {
-                        funref_locals.remove(&local.0);
-                    }
-                }
+                funref.note_let(local.0, value, FunRefAlloc::Track, None);
+                let mut out = prelude;
+                out.push(op);
+                return out;
             }
             Op::Assign { name, value } => {
                 if float_locals.contains(&value.0) {
@@ -230,12 +212,12 @@ fn lift_block(
                 } else {
                     float_slots.remove(name);
                 }
+                funref.note_assign(name.clone(), *value);
             }
             Op::Break | Op::Continue | Op::Return { .. } => {}
         }
-        new_ops.push(op);
-    }
-    block.ops = new_ops;
+        vec![op]
+    });
 }
 
 fn lift_value(
@@ -246,12 +228,12 @@ fn lift_value(
     prelude: &mut Vec<Op>,
     pure_region: bool,
     float_locals: &mut HashSet<u32>,
-    float_slots: &mut HashSet<String>,
+    float_slots: &mut HashSet<Sym>,
     io_funs: &mut HashSet<String>,
     fun_ret_tys: &mut HashMap<String, Type>,
     fun_param_tys: &mut HashMap<String, Vec<Type>>,
     hof: &mut HofSets,
-    funref_locals: &mut HashMap<u32, String>,
+    funref: &mut FunRefAliases,
     float_cap_idxs: &mut HashMap<String, HashSet<u32>>,
 ) {
     match value {
@@ -267,7 +249,7 @@ fn lift_value(
                 fun_ret_tys,
                 fun_param_tys,
                 hof,
-                funref_locals,
+                funref,
                 float_cap_idxs,
             );
             let (free_locals, free_names) = analyze_captures(body, params);
@@ -277,7 +259,7 @@ fn lift_value(
 
             let mut captures = Vec::new();
             let mut remap: HashMap<u32, u32> = HashMap::default();
-            let mut name_remap: HashMap<String, Local> = HashMap::default();
+            let mut name_remap: HashMap<Sym, Local> = HashMap::default();
 
             for fl in &free_locals {
                 captures.push(*fl);
@@ -298,7 +280,9 @@ fn lift_value(
             }
 
             if captures.is_empty() {
-                let param_names: Vec<String> = (0..params.len()).map(|i| format!("p{i}")).collect();
+                let param_names: Vec<Sym> = (0..params.len())
+                    .map(|i| Sym::from(format!("p{i}")))
+                    .collect();
                 let (param_tys, ret_ty) = lambda_param_ret_tys(
                     params,
                     body,
@@ -306,7 +290,7 @@ fn lift_value(
                     fun_param_tys,
                     hof,
                     &[],
-                    funref_locals,
+                    &funref.locals,
                     float_cap_idxs,
                     &HashSet::default(),
                 );
@@ -320,7 +304,7 @@ fn lift_value(
                 hof.note(&name, params, body);
                 super::note_lifted_lambda_name(name.clone());
                 extras.push(CoreFun {
-                    name: name.clone(),
+                    name: name.clone().into(),
                     params: params.clone(),
                     param_names,
                     param_tys,
@@ -401,8 +385,8 @@ fn lift_value(
 
             let mut fun_params = vec![env];
             fun_params.extend(params.iter().copied());
-            let mut param_names = vec!["env".into()];
-            param_names.extend((0..params.len()).map(|i| format!("p{i}")));
+            let mut param_names: Vec<Sym> = vec![Sym::from("env")];
+            param_names.extend((0..params.len()).map(|i| Sym::from(format!("p{i}"))));
 
             // Side-table float caps before ABI infer (IR has no as_float flag).
             float_cap_idxs.insert(name.clone(), this_float_caps);
@@ -414,7 +398,7 @@ fn lift_value(
                 fun_param_tys,
                 hof,
                 &captures,
-                funref_locals,
+                &funref.locals,
                 float_cap_idxs,
                 &float_cap_seed,
             );
@@ -429,7 +413,7 @@ fn lift_value(
             hof.note(&name, &fun_params, &new_body);
             super::note_lifted_lambda_name(name.clone());
             extras.push(CoreFun {
-                name: name.clone(),
+                name: name.clone().into(),
                 params: fun_params,
                 param_names,
                 param_tys: full_param_tys,
@@ -469,7 +453,7 @@ fn lift_value(
                 fun_ret_tys,
                 fun_param_tys,
                 hof,
-                funref_locals,
+                funref,
                 float_cap_idxs,
             );
             lift_block(
@@ -483,7 +467,7 @@ fn lift_value(
                 fun_ret_tys,
                 fun_param_tys,
                 hof,
-                funref_locals,
+                funref,
                 float_cap_idxs,
             );
         }
@@ -503,7 +487,7 @@ fn lift_value(
                 fun_ret_tys,
                 fun_param_tys,
                 hof,
-                funref_locals,
+                funref,
                 float_cap_idxs,
             );
             lift_block(
@@ -517,7 +501,7 @@ fn lift_value(
                 fun_ret_tys,
                 fun_param_tys,
                 hof,
-                funref_locals,
+                funref,
                 float_cap_idxs,
             );
             lift_block(
@@ -531,7 +515,7 @@ fn lift_value(
                 fun_ret_tys,
                 fun_param_tys,
                 hof,
-                funref_locals,
+                funref,
                 float_cap_idxs,
             );
         }
@@ -539,7 +523,7 @@ fn lift_value(
     }
 }
 
-fn rewrite_block_names(block: &mut Block, name_remap: &HashMap<String, Local>) {
+fn rewrite_block_names(block: &mut Block, name_remap: &HashMap<Sym, Local>) {
     if name_remap.is_empty() {
         return;
     }
@@ -554,7 +538,7 @@ fn rewrite_block_names(block: &mut Block, name_remap: &HashMap<String, Local>) {
 
 /// Free names that are written with `Assign` inside `block` (capture-by-value
 /// still needs a local slot for `n = n + 1; n`).
-fn collect_assigned_names(block: &Block) -> HashSet<String> {
+fn collect_assigned_names(block: &Block) -> HashSet<Sym> {
     let mut out = HashSet::default();
     crate::visit::collect_assigned_names(block, &mut out);
     out

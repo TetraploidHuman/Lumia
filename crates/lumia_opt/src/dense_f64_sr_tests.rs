@@ -358,3 +358,91 @@ val main = {
     assert!(ext.contains(&"lumia_f64_fill"), "fill missing in {ext:?}");
     assert!(ext.contains(&"lumia_f64_clamp"), "clamp missing in {ext:?}");
 }
+
+fn externals(core: &lumia_core::CoreModule) -> Vec<&str> {
+    core.functions
+        .iter()
+        .filter_map(|f| f.external.as_deref())
+        .collect()
+}
+
+#[test]
+fn rewrites_copy_axpy_and_add_helpers() {
+    let src = r#"
+module M
+val nCopy(dst, src) = {
+  var out = dst
+  var i = 0
+  val n = src.len()
+  for i < n {
+    out = out.set(i, src.get(i))
+    i = i + 1
+  }
+  out
+}
+val nAxpy(y, alpha, x) = {
+  var out = y
+  var i = 0
+  val n = out.len()
+  for i < n {
+    out = out.set(i, out.get(i) + alpha * x.get(i))
+    i = i + 1
+  }
+  out
+}
+val nAdd(out0, a, b) = {
+  var out = out0
+  var i = 0
+  val n = a.len()
+  for i < n {
+    out = out.set(i, a.get(i) + b.get(i))
+    i = i + 1
+  }
+  out
+}
+val main = {
+  var y = listOf(1.0, 2.0, 3.0)
+  val x = listOf(4.0, 5.0, 6.0)
+  y = nCopy(y, x)
+  y = nAxpy(y, 2.0, x)
+  y = nAdd(y, y, x)
+  0
+}
+"#;
+    let mut core = lumia_core::compile_source_to_core(src).unwrap();
+    optimize(&mut core, &OptOptions::for_build(true));
+    let ext = externals(&core);
+    assert!(ext.contains(&"lumia_f64_copy"), "copy missing in {ext:?}");
+    assert!(ext.contains(&"lumia_f64_axpy"), "axpy missing in {ext:?}");
+    assert!(ext.contains(&"lumia_f64_add"), "add missing in {ext:?}");
+}
+
+#[test]
+fn set_on_other_list_is_not_scale() {
+    // `var other = xs` is an out-slot, but the only `set` writes `acc`.
+    let src = r#"
+module M
+val nNotScale(xs, a) = {
+  var other = xs
+  var acc = listOf(0.0)
+  var i = 0
+  val n = xs.len()
+  for i < n {
+    acc = acc.set(0, xs.get(i) * a)
+    i = i + 1
+  }
+  other
+}
+val main = {
+  var xs = listOf(1.0, 2.0, 3.0)
+  xs = nNotScale(xs, 2.0)
+  0
+}
+"#;
+    let mut core = lumia_core::compile_source_to_core(src).unwrap();
+    optimize(&mut core, &OptOptions::for_build(true));
+    assert!(
+        !externals(&core).contains(&"lumia_f64_scale"),
+        "set on a non-dest list must not rewrite to lumia_f64_scale"
+    );
+}

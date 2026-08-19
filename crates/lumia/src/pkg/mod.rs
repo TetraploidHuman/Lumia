@@ -6,12 +6,13 @@ mod manifest;
 
 pub use link::{collect_link_args, validate_cli_link_arg};
 pub use lock::{
-    dependency_roots_from_lock, load_lockfile, lock_from_manifest, verify_lockfile, write_lockfile,
-    LockPackage, Lockfile,
+    dependency_roots_from_lock, diff_lockfiles, load_lockfile, lock_from_manifest, lockfile_path,
+    outdated_lock, verify_lockfile, write_lock_from_manifest, write_lockfile, LockDiff,
+    LockPackage, LockPkgChange, LockWrite, Lockfile,
 };
 pub use manifest::{
-    add_path_dep, dependency_roots, find_manifest, init_manifest, load_manifest, write_manifest,
-    DepSpec, DepTable, Manifest, PackageMeta,
+    add_path_dep, dependency_roots, find_manifest, init_manifest, load_manifest, remove_dep,
+    write_manifest, DepSpec, DepTable, Manifest, PackageMeta,
 };
 
 #[cfg(test)]
@@ -320,5 +321,177 @@ extra = true
             msg.contains("extra") || msg.contains("unknown"),
             "expected unknown-field error, got {msg}"
         );
+    }
+
+    fn write_leaf_pkg(dir: &Path, name: &str, version: &str, src: &str) {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(
+            dir.join("Lumia.toml"),
+            format!("[package]\nname = \"{name}\"\nversion = \"{version}\"\n"),
+        )
+        .unwrap();
+        fs::write(dir.join("Lib.lm"), src).unwrap();
+    }
+
+    #[test]
+    fn remove_dep_missing_does_not_rewrite() {
+        let dir = std::env::temp_dir().join(format!("lumia_pkg_rmiss_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let manifest = dir.join("Lumia.toml");
+        fs::write(
+            &manifest,
+            r#"[package]
+name = "t"
+version = "0.1.0"
+"#,
+        )
+        .unwrap();
+        let before = fs::read_to_string(&manifest).unwrap();
+        let err = remove_dep(&manifest, "nope").unwrap_err();
+        assert!(
+            err.to_string().contains("nope"),
+            "expected missing-dep error, got {err}"
+        );
+        assert_eq!(before, fs::read_to_string(&manifest).unwrap());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remove_dep_refreshes_lock() {
+        let dir = std::env::temp_dir().join(format!("lumia_pkg_rm_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let leaf = dir.join("deps").join("leaf");
+        write_leaf_pkg(&leaf, "leaf", "1.0.0", "module Lib\nval x = 1\n");
+        let manifest = dir.join("Lumia.toml");
+        fs::write(
+            &manifest,
+            r#"[package]
+name = "root"
+version = "1.0.0"
+
+[dependencies]
+leaf = { path = "deps/leaf" }
+"#,
+        )
+        .unwrap();
+        write_lock_from_manifest(&manifest).unwrap();
+        remove_dep(&manifest, "leaf").unwrap();
+        let w = write_lock_from_manifest(&manifest).unwrap();
+        assert!(
+            w.diff.removed.iter().any(|p| p.name == "leaf"),
+            "expected leaf removed from lock, got {:?}",
+            w.diff
+        );
+        let m = load_manifest(&manifest).unwrap();
+        assert!(!m.dependencies.contains_key("leaf"));
+        let lock = load_lockfile(&w.path).unwrap();
+        assert!(lock.package.iter().all(|p| p.name != "leaf"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn outdated_then_update_content_fingerprint() {
+        let dir = std::env::temp_dir().join(format!("lumia_pkg_out_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let leaf = dir.join("deps").join("leaf");
+        write_leaf_pkg(&leaf, "leaf", "1.0.0", "module Lib\nval x = 1\n");
+        let manifest = dir.join("Lumia.toml");
+        fs::write(
+            &manifest,
+            r#"[package]
+name = "root"
+version = "1.0.0"
+
+[dependencies]
+leaf = { path = "deps/leaf" }
+"#,
+        )
+        .unwrap();
+        write_lock_from_manifest(&manifest).unwrap();
+        let (_, fresh) = outdated_lock(&manifest).unwrap();
+        assert!(fresh.is_empty(), "fresh lock should be up to date: {fresh}");
+        fs::write(leaf.join("Lib.lm"), "module Lib\nval x = 2\n").unwrap();
+        let (path, stale) = outdated_lock(&manifest).unwrap();
+        assert!(
+            stale.changed.iter().any(|c| c.name == "leaf" && c.content),
+            "expected content change, got {stale}"
+        );
+        assert_eq!(path, lockfile_path(&manifest));
+        let w = write_lock_from_manifest(&manifest).unwrap();
+        assert!(!w.created);
+        assert!(w.diff.changed.iter().any(|c| c.name == "leaf" && c.content));
+        let (_, after) = outdated_lock(&manifest).unwrap();
+        assert!(after.is_empty(), "update should clear outdated: {after}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn outdated_missing_lock_errors() {
+        let dir = std::env::temp_dir().join(format!("lumia_pkg_nolock_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let manifest = dir.join("Lumia.toml");
+        fs::write(
+            &manifest,
+            r#"[package]
+name = "root"
+version = "1.0.0"
+"#,
+        )
+        .unwrap();
+        let err = outdated_lock(&manifest).unwrap_err().to_string();
+        assert!(
+            err.contains("missing") && err.contains("pkg lock"),
+            "expected missing-lock hint, got {err}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn diff_lockfiles_add_remove_version() {
+        let old = Lockfile {
+            package: vec![
+                LockPackage {
+                    name: "root".into(),
+                    version: "1.0.0".into(),
+                    path: ".".into(),
+                    content: String::new(),
+                },
+                LockPackage {
+                    name: "gone".into(),
+                    version: "0.1.0".into(),
+                    path: "deps/gone".into(),
+                    content: "aaa".into(),
+                },
+            ],
+        };
+        let new = Lockfile {
+            package: vec![
+                LockPackage {
+                    name: "root".into(),
+                    version: "1.1.0".into(),
+                    path: ".".into(),
+                    content: String::new(),
+                },
+                LockPackage {
+                    name: "new".into(),
+                    version: "2.0.0".into(),
+                    path: "deps/new".into(),
+                    content: "bbb".into(),
+                },
+            ],
+        };
+        let d = diff_lockfiles(&old, &new);
+        assert!(d.added.iter().any(|p| p.name == "new"));
+        assert!(d.removed.iter().any(|p| p.name == "gone"));
+        assert!(d
+            .changed
+            .iter()
+            .any(|c| { c.name == "root" && c.version == Some(("1.0.0".into(), "1.1.0".into())) }));
+        let text = d.to_string();
+        assert!(text.contains("+ new"), "{text}");
+        assert!(text.contains("- gone"), "{text}");
+        assert!(text.contains("1.0.0") && text.contains("1.1.0"), "{text}");
     }
 }

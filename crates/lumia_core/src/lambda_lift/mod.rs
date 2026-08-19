@@ -56,7 +56,7 @@ pub(crate) fn lifted_lambda_names(module: &CoreModule) -> HashSet<String> {
         .functions
         .iter()
         .filter(|f| f.is_lifted_lambda())
-        .map(|f| f.name.clone())
+        .map(|f| f.name.to_string())
         .collect()
 }
 

@@ -118,13 +118,16 @@ source scripts/env.sh
 cargo build -p lumia -p lumia_rt
 ```
 
-开发迭代若静态链 LLVM 过慢，可用动态链（feature 已有）：
+`lumia` **默认**开启 `llvm-dynamic`（`lumia_codegen/llvm-dynamic` → inkwell `llvm21-1-force-dynamic`）：链共享 `libLLVM`，开发/CI 链接远快于静态。仍需 `LLVM_SYS_211_PREFIX` 与可解析的 `libLLVM.so`（`scripts/env.sh` / apt / Nix）。
 
-```bash
-cargo build -p lumia --features llvm-dynamic
-```
+| 场景 | 命令 |
+| --- | --- |
+| Linux / Nix 开发（默认） | `cargo build -p lumia` |
+| 强制静态链 LLVM | `cargo build -p lumia --no-default-features --features codegen` |
+| Windows（CI / SDK 无共享 lib） | 同上：`--no-default-features --features codegen` |
+| 无 LLVM 的 LSP / check | `cargo build -p lumia --no-default-features` |
 
-`llvm-dynamic` 经 `lumia_codegen/llvm-dynamic` → inkwell `llvm21-1-force-dynamic`；仍需 `LLVM_SYS_211_PREFIX` 与可解析的共享 `libLLVM`。
+工作区测 `lumia_codegen`（`--workspace --exclude lumia`）时 Linux 仍显式传 `--features lumia_codegen/llvm-dynamic`（包默认不含该 feature，避免 Windows workspace 误开）。
 
 ### 4.3 编译用户程序
 
@@ -201,7 +204,7 @@ Codegen 与当前 `MarkSweep`（进程堆）共用；换收集器时优先只改
 - `for (k, v) in m` 自动 `.items()`；若迭代器已是 pair 列表（`m.items()` / `….sortBy(…)`）则不再套一层（WordCount）。
 - `lumia fmt`：基础 pretty-print（4 空格）；`--check` 只校验。
 - 旗舰示例：`examples/word_count.lm`（DESIGN §14：stdin → 分词计数 → `items().sortBy` 打印）。
-- **包管理**：`Lumia.toml` path 依赖 + `lumia pkg init|lock|add`；有 deps 时**必须**有 `Lumia.lock`；`package.link` 自动并入链接参数（见 `examples/use_path_dep.lm`）。
+- **包管理**：`Lumia.toml` path 依赖 + `lumia pkg init|lock|add|remove|update|outdated`；有 deps 时**必须**有 `Lumia.lock`；`package.link` 自动并入链接参数（见 `examples/use_path_dep.lm`）。无 registry：`outdated`/`update` 对照 vendor 树的版本与 content fingerprint。
 - **用户 `import` 路径解析**（相对导入目录与包 search roots，按序试第一个存在的文件）：
   1. `a/b.lm`（`import a.b` → 段用 `/` 连接）
   2. `a/b/mod.lm`（目录模块；仓库内几乎不用，保留兼容）
@@ -351,15 +354,17 @@ TLS 分代 GC 与 `ListParMap` worker 互斥；在 TLS 上硬开 OS 池会跨线
 | 命令                                                                                                         | 职责                                                                |
 | ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
 | `lumia check <file> [--no-parallel] [--trust-foreign-pure|--no-trust-foreign-pure]`                                                | 解析 + 类型 / 效应                                                      |
-| `lumia build <file> [-o out] [--release] [--no-memo] [--no-parallel] [--trust-foreign-pure|--no-trust-foreign-pure] [--link ARG]… [--show-ir] [--emit-llvm]` | 原生二进制；默认自动并行安全 `map`；`--no-parallel` 关闭；`--trust-foreign-pure` 信任 FFI `pure`（覆盖包设置）；`--no-trust-foreign-pure` 强制不信任；`--link` 见下；`--no-memo` 关 `T_f`  |
+| `lumia build <file> [-o out] [--release] [--llvm-opt LEVEL] [--no-memo] [--no-parallel] [--trust-foreign-pure|--no-trust-foreign-pure] [--link ARG]… [--show-ir] [--emit-llvm]` | 原生二进制；默认自动并行安全 `map`；`--no-parallel` 关闭；`--trust-foreign-pure` 信任 FFI `pure`（覆盖包设置）；`--no-trust-foreign-pure` 强制不信任；`--link` 见下；`--no-memo` 关 `T_f`；`--llvm-opt` 见下  |
 | `lumia run <file> [build flags…] [-- args…]` | `build` 后立刻执行；默认写临时二进制并删；`-o` 保留产物；`--` 后参数传给程序 |
 | `lumia fmt [files…] [--check]`                                                                             | 基础 pretty-print（4 空格）；`--check` 不写回                               |
 | `lumia doc <file> [-o out.md]`                                                                             | 从 `///` 与公开 API 生成 Markdown（DESIGN §13）                            |
 | `lumia lsp`                                                                                                | LSP（overlay 诊断 + hover + 跨文件定义 + 补全 + format）                     |
-| `lumia pkg init` / `lumia pkg lock` / `lumia pkg add`                                                      | `Lumia.toml` / `Lumia.lock`；有 deps 时构建要求 lock；`package.link` 并入链接 |
+| `lumia pkg init` / `lock` / `add` / `remove` / `update` / `outdated` | `Lumia.toml` / `Lumia.lock`；有 deps 时构建要求 lock；`package.link` 并入链接；`outdated` 锁过期则非 0 |
 
 
 包管理：`Lumia.toml` + lockfile 由 `lumia pkg` 管理；**不**把 Cargo 暴露给用户程序。
+
+**`--llvm-opt` 与 `--release`**：中端（Memo / domain SR / 回溯帧）仍只看 `--release`。LLVM new-PM 与指令选择是独立档：`none`/`0`、`1`、`2`、`3`（`fast` = `1`，**不是** LLVM `-Ofast`）。未指定时 Debug 默认 `1`（`mem2reg`，可跑），`--release` 默认 `3`。`--emit-llvm` 写出 **过 LLVM 管线之后** 的 `.ll`。
 
 **`--link` 信任模型**：CLI `--link` 允许绝对 `-L` / `.a`（本机显式意图）。`package.link` 路径限制在包根下。对不可信源码树，任意链接参数等同原生 RCE 面——不要对不可信输入开启宽 `--link`；沙箱需在宿主层做。
 
@@ -371,7 +376,7 @@ TLS 分代 GC 与 `ListParMap` worker 互斥；在 TLS 上硬开 OS 池会跨线
 - `LUMIA_RT_LIB` — 预构建 `liblumia_rt.a` / `.lib`；设置后 `lumia build` 跳过 `cargo -p lumia_rt`
 - `LUMIA_LINKER` — 链接驱动（默认 `clang`；可设 `clang++`/`lld` 包装等）
 - `LUMIA_KEEP_OBJ` — 设置后保留 `compile_module` 写出的中间 `.o`/`.obj`（默认链接成功即删）
-- `LUMIA_VERIFY` — 设置后在 Release O3 管线后再跑一次 LLVM `verify`（默认跳过以省编译时间；emit 后仍始终 verify）
+- `LUMIA_VERIFY` — 设置后在 LLVM new-PM 管线后再跑一次 `verify`（默认跳过以省编译时间；emit 后仍始终 verify）。`--llvm-opt=none` 时没有管线，此变量无额外 verify。
 - `LUMIA_FIBER_STACK_KB` — 纤程栈 KiB（默认 64，下限 16）
 
 **`readStdin` 软上限**：`lumia_rt` 在约 64MiB 后 `trap_abort`（防恶意/巨型 stdin 拖垮主机）。流式读取或可恢复错误需语言层 `Result`/分块 API，当前为故意硬失败。

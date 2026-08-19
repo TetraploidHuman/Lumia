@@ -12,6 +12,7 @@ fn workspace_root() -> PathBuf {
 fn test_opts() -> CodegenOptions {
     CodegenOptions {
         release: false,
+        llvm_opt: LlvmOptLevel::None,
         output: PathBuf::from("/tmp/lumia_codegen_test"),
         emit_ir: false,
         runtime_lib: PathBuf::from("/tmp/unused_rt"),

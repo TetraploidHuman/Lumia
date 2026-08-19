@@ -69,6 +69,7 @@ val main = {
 #[test]
 fn channel_new_stamps_ground_elem_from_type_at() {
     use crate::visit::for_each_block_dfs;
+    use crate::visit::for_each_top_level_op_in_block;
     use crate::{Op, Value};
     use lumia_hir::Builtin;
 
@@ -89,7 +90,7 @@ val main = {
     let mut found = false;
     for fun in &core.functions {
         for_each_block_dfs(&fun.body, &mut |block| {
-            for op in &block.ops {
+            for_each_top_level_op_in_block(block, &mut |op| {
                 if let Op::Let {
                     value:
                         Value::Builtin {
@@ -107,7 +108,7 @@ val main = {
                     );
                     found = true;
                 }
-            }
+            });
         });
     }
     assert!(found, "expected stamped ChannelNew from type_at");

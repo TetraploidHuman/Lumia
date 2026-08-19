@@ -14,6 +14,7 @@ use fold_list::upgrade_captured_list_fold_float;
 use ret_refresh::{refresh_alloc_closure_fun_rets, refresh_lifted_lambda_rets};
 
 use crate::ir::CoreModule;
+use lumia_syntax::Sym;
 use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
@@ -34,7 +35,7 @@ fn fixup_closure_float_caps_inner(module: &mut CoreModule) {
         for (p, ty) in fun.params.iter().zip(fun.param_tys.iter()) {
             local_tys.insert(p.0, ty.clone());
         }
-        let mut slot_tys: HashMap<String, Type> = HashMap::default();
+        let mut slot_tys: HashMap<Sym, Type> = HashMap::default();
         scan_alloc_closure_caps(
             &fun.body,
             &mut local_tys,

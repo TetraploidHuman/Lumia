@@ -22,7 +22,7 @@ pub(super) fn lower_interp(ctx: &LowerCtx, parts: &[lumia_syntax::InterpPart], s
         }
     }
     if pieces.is_empty() {
-        return Expr::String(String::new(), span);
+        return Expr::String("".into(), span);
     }
     let mut acc = pieces.remove(0);
     for p in pieces {

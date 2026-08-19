@@ -1,8 +1,10 @@
 use lumia_core::CoreBinOp as BinOp;
 use lumia_core::{
-    collect_assigns, const_of, for_each_block_dfs, is_rem, is_small_factor_mul_nonneg, is_unit_inc,
-    is_unit_step, name_of, Block, Local, Op, Value,
+    collect_assigns, collect_iv_unit_step_dests, collect_name_loads_in_block, const_of,
+    for_each_block_dfs, is_rem, is_small_factor_mul_nonneg, is_unit_inc, name_of, Block, Local,
+    Value,
 };
+use lumia_syntax::Sym;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use super::divisors::{collect_ge1_unit_slots, collect_unit_counter_slots};
@@ -17,7 +19,7 @@ use super::{NSW_ACC_BOUND_MAX, NSW_BOUND_MAX, NSW_REM_MOD_MAX, NSW_SMALL_FACTOR}
 pub(super) fn mark_nonneg_iv_add_mul_bounded(
     all_defs: &HashMap<u32, Value>,
     nonneg_loads: &HashSet<u32>,
-    iv_upper: &HashMap<String, i64>,
+    iv_upper: &HashMap<Sym, i64>,
     out: &mut HashSet<u32>,
 ) {
     if iv_upper.is_empty() || nonneg_loads.is_empty() {
@@ -68,7 +70,7 @@ pub(super) fn mark_nonneg_iv_add_mul_bounded(
 pub(super) fn mark_bounded_nonneg_pair_add(
     all_defs: &HashMap<u32, Value>,
     nonneg_loads: &HashSet<u32>,
-    iv_upper: &HashMap<String, i64>,
+    iv_upper: &HashMap<Sym, i64>,
     out: &mut HashSet<u32>,
 ) {
     if iv_upper.is_empty() || nonneg_loads.is_empty() {
@@ -204,29 +206,13 @@ pub(super) fn mark_unit_steps(
     all_defs: &HashMap<u32, Value>,
     out: &mut HashSet<u32>,
 ) {
-    for_each_block_dfs(block, &mut |b| {
-        for op in &b.ops {
-            let Op::Assign {
-                name,
-                value: Local(dest),
-            } = op
-            else {
-                continue;
-            };
-            if name != iv {
-                continue;
-            }
-            if is_unit_step(*dest, name, all_defs) {
-                out.insert(*dest);
-            }
-        }
-    });
+    collect_iv_unit_step_dests(block, iv, all_defs, out);
 }
 
 pub(super) fn mark_small_factor_muls(
     all_defs: &HashMap<u32, Value>,
     nonneg_loads: &HashSet<u32>,
-    iv_upper: &HashMap<String, i64>,
+    iv_upper: &HashMap<Sym, i64>,
     out: &mut HashSet<u32>,
 ) {
     for (id, v) in all_defs {
@@ -304,7 +290,7 @@ pub(super) fn mark_safe_div_bins(
         {
             let safe_r = match all_defs.get(&right.0) {
                 Some(Value::Int(n)) if *n != 0 && *n != -1 => true,
-                Some(Value::Name(n)) if ge1.contains(n) => true,
+                Some(Value::Name(n)) if ge1.contains(n.as_str()) => true,
                 _ => false,
             };
             if safe_r {
@@ -435,7 +421,7 @@ fn rem_accumulator_slots(
     body: &Block,
     all_defs: &HashMap<u32, Value>,
     rem_ok: &HashSet<u32>,
-) -> HashSet<String> {
+) -> HashSet<Sym> {
     let mut assigns = HashMap::default();
     collect_assigns(body, &mut assigns);
     let mut out = HashSet::default();
@@ -528,8 +514,8 @@ pub(super) fn mark_acc_plus_unit_counter(
 fn unit_counter_acc_slots(
     body: &Block,
     all_defs: &HashMap<u32, Value>,
-    counters: &HashSet<String>,
-) -> HashSet<String> {
+    counters: &HashSet<Sym>,
+) -> HashSet<Sym> {
     let mut assigns = HashMap::default();
     collect_assigns(body, &mut assigns);
     let mut out = HashSet::default();
@@ -573,14 +559,14 @@ fn unit_counter_acc_slots(
 /// Close Add/Sub/Mul/Rem under IV loads + small consts when some exclusive bound is const.
 pub(super) fn mark_bounded_arith_tree(
     body: &Block,
-    ivs: &HashSet<String>,
+    ivs: &HashSet<Sym>,
     bound: i64,
     all_defs: &HashMap<u32, Value>,
     nonneg_loads: &HashSet<u32>,
     out: &mut HashSet<u32>,
 ) {
     let mut seed: HashSet<u32> = out.clone();
-    let seed_names: HashSet<String> = ivs.clone();
+    let seed_names: HashSet<Sym> = ivs.clone();
     let const_lim = bound
         .saturating_mul(bound)
         .min(NSW_BOUND_MAX.saturating_mul(NSW_BOUND_MAX));
@@ -589,14 +575,14 @@ pub(super) fn mark_bounded_arith_tree(
             Value::Int(n) if *n >= 0 && *n <= const_lim => {
                 seed.insert(*id);
             }
-            Value::Name(n) if ivs.contains(n) => {
+            Value::Name(n) if ivs.contains(n.as_str()) => {
                 seed.insert(*id);
             }
             _ => {}
         }
     }
     for_each_block_dfs(body, &mut |b| {
-        mark_name_loads_multi(b, ivs, &mut seed);
+        collect_name_loads_in_block(b, ivs, &mut seed);
     });
     mark_small_factor_muls(all_defs, nonneg_loads, &HashMap::default(), &mut seed);
     for id in &seed {
@@ -609,7 +595,7 @@ pub(super) fn mark_bounded_arith_tree(
     }
 
     let allow_acc = bound <= NSW_ACC_BOUND_MAX;
-    let in_seed = |id: u32, seed: &HashSet<u32>, names: &HashSet<String>| {
+    let in_seed = |id: u32, seed: &HashSet<u32>, names: &HashSet<Sym>| {
         seed.contains(&id) || name_of(Local(id), all_defs).is_some_and(|n| names.contains(&n))
     };
     let mut changed = true;
@@ -690,7 +676,7 @@ fn tree_acc_slots(
     body: &Block,
     all_defs: &HashMap<u32, Value>,
     nsw: &HashSet<u32>,
-) -> HashSet<String> {
+) -> HashSet<Sym> {
     let mut assigns = HashMap::default();
     collect_assigns(body, &mut assigns);
     let mut out = HashSet::default();
@@ -726,19 +712,4 @@ fn tree_acc_slots(
         }
     }
     out
-}
-
-fn mark_name_loads_multi(block: &Block, names: &HashSet<String>, out: &mut HashSet<u32>) {
-    for op in &block.ops {
-        if let Op::Let {
-            local,
-            value: Value::Name(n),
-            ..
-        } = op
-        {
-            if names.contains(n) {
-                out.insert(local.0);
-            }
-        }
-    }
 }

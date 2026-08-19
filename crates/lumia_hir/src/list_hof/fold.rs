@@ -3,8 +3,9 @@
 use super::{list_accum, range_accum, resolve_binary_callback, with_fun_bind, BinaryCallback};
 use crate::ast::{Builtin, Expr};
 use crate::lower::LowerCtx;
+use crate::sym_util::synthetic;
 use crate::visit::free_vars_expr;
-use lumia_syntax::{BinOp, Span};
+use lumia_syntax::{BinOp, Span, Sym};
 
 pub(crate) fn lower_list_fold(ctx: &LowerCtx, list: Expr, init: Expr, f: Expr, span: Span) -> Expr {
     // `range(a,b).fold(...)` → counter loop (no HeapList materialization).
@@ -62,19 +63,19 @@ pub fn desugar_list_fold_sequential(list: Expr, init: Expr, f: Expr, span: Span)
 fn fold_callback_is_parallel_safe(ctx: &LowerCtx, f: &Expr) -> bool {
     match f {
         Expr::Lambda { params, body, .. } if params.len() == 2 => {
-            let bound: Vec<String> = params.clone();
+            let bound: Vec<String> = params.iter().map(|s| s.to_string()).collect();
             let frees = free_vars_expr(body, &bound);
             if !frees.iter().all(|n| ctx.is_toplevel_fun(n)) {
                 return false;
             }
-            fold_body_is_associative(body.as_ref(), &params[0], &params[1])
+            fold_body_is_associative(body.as_ref(), params[0].as_str(), params[1].as_str())
         }
         Expr::Var(n, _) => {
-            if !ctx.is_toplevel_fun(n) {
+            if !ctx.is_toplevel_fun(n.as_str()) {
                 return false;
             }
             // Resolve top-level lambda body when registered as a val/fun binding.
-            ctx.is_toplevel_fold_assoc(n)
+            ctx.is_toplevel_fold_assoc(n.as_str())
         }
         _ => false,
     }
@@ -98,7 +99,9 @@ impl FoldAssocExpr for Expr {
                 right,
                 ..
             } => match (left.as_ref(), right.as_ref()) {
-                (Expr::Var(l, _), Expr::Var(r, _)) => vars_are_fold_params(l, r, a, b),
+                (Expr::Var(l, _), Expr::Var(r, _)) => {
+                    vars_are_fold_params(l.as_str(), r.as_str(), a, b)
+                }
                 _ => false,
             },
             _ => false,
@@ -159,14 +162,18 @@ fn range_fold_inline(
     end: Expr,
     inclusive: bool,
     init: Expr,
-    acc: String,
+    acc: Sym,
     acc_ty: Option<String>,
-    x: String,
+    x: Sym,
     x_ty: Option<String>,
     body: Expr,
     span: Span,
 ) -> Expr {
-    let el = format!("{}{}", crate::desugar_slots::FOLD_ELEM_PREFIX, span.start.0);
+    let el = synthetic(format!(
+        "{}{}",
+        crate::desugar_slots::FOLD_ELEM_PREFIX,
+        span.start.0
+    ));
     let mut body = Expr::Let {
         name: x,
         value: Box::new(Expr::Var(el.clone(), span)),
@@ -176,7 +183,7 @@ fn range_fold_inline(
     };
     if let Some(ty) = acc_ty {
         body = Expr::Let {
-            name: format!("__fold_acc_ann_{}", span.start.0),
+            name: synthetic(format!("__fold_acc_ann_{}", span.start.0)),
             value: Box::new(Expr::Var(acc.clone(), span)),
             body: Box::new(body),
             mutable: false,
@@ -188,7 +195,7 @@ fn range_fold_inline(
         value: Box::new(body),
         span,
     };
-    range_accum(acc, init, &el, start, end, inclusive, step, span)
+    range_accum(acc, init, el.as_str(), start, end, inclusive, step, span)
 }
 
 fn range_fold_call(
@@ -197,9 +204,9 @@ fn range_fold_call(
     inclusive: bool,
     init: Expr,
     f: Expr,
-    f_name: String,
-    acc: String,
-    x: String,
+    f_name: Sym,
+    acc: Sym,
+    x: Sym,
     span: Span,
 ) -> Expr {
     let applied = Expr::Call {
@@ -214,21 +221,25 @@ fn range_fold_call(
     };
     with_fun_bind(
         Some((f_name, f)),
-        range_accum(acc, init, &x, start, end, inclusive, step, span),
+        range_accum(acc, init, x.as_str(), start, end, inclusive, step, span),
     )
 }
 
 fn lower_list_fold_inline(
     list: Expr,
     init: Expr,
-    acc: String,
+    acc: Sym,
     acc_ty: Option<String>,
-    x: String,
+    x: Sym,
     x_ty: Option<String>,
     body: Expr,
     span: Span,
 ) -> Expr {
-    let el = format!("{}{}", crate::desugar_slots::FOLD_ELEM_PREFIX, span.start.0);
+    let el = synthetic(format!(
+        "{}{}",
+        crate::desugar_slots::FOLD_ELEM_PREFIX,
+        span.start.0
+    ));
     let mut body = Expr::Let {
         name: x,
         value: Box::new(Expr::Var(el.clone(), span)),
@@ -238,7 +249,7 @@ fn lower_list_fold_inline(
     };
     if let Some(ty) = acc_ty {
         body = Expr::Let {
-            name: format!("__fold_acc_ann_{}", span.start.0),
+            name: synthetic(format!("__fold_acc_ann_{}", span.start.0)),
             value: Box::new(Expr::Var(acc.clone(), span)),
             body: Box::new(body),
             mutable: false,
@@ -250,16 +261,16 @@ fn lower_list_fold_inline(
         value: Box::new(body),
         span,
     };
-    list_accum(acc, init, &el, list, step, span)
+    list_accum(acc, init, el.as_str(), list, step, span)
 }
 
 fn lower_list_fold_call(
     list: Expr,
     init: Expr,
     f: Expr,
-    f_name: String,
-    acc: String,
-    x: String,
+    f_name: Sym,
+    acc: Sym,
+    x: Sym,
     span: Span,
 ) -> Expr {
     let applied = Expr::Call {
@@ -274,6 +285,6 @@ fn lower_list_fold_call(
     };
     with_fun_bind(
         Some((f_name, f)),
-        list_accum(acc, init, &x, list, step, span),
+        list_accum(acc, init, x.as_str(), list, step, span),
     )
 }

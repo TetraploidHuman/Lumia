@@ -11,7 +11,7 @@ pub(crate) fn format_expr(out: &mut String, e: &Expr, indent: usize) {
         Expr::Bool(b, _) => out.push_str(if *b { "true" } else { "false" }),
         Expr::String(s, _) => {
             out.push('"');
-            out.push_str(&escape_str(s));
+            out.push_str(&escape_str(s.as_str()));
             out.push('"');
         }
         Expr::Char(c, _) => {
@@ -31,7 +31,7 @@ pub(crate) fn format_expr(out: &mut String, e: &Expr, indent: usize) {
             out.push('"');
             for p in parts {
                 match p {
-                    InterpPart::Lit(s) => out.push_str(&escape_str(s)),
+                    InterpPart::Lit(s) => out.push_str(&escape_str(s.as_str())),
                     InterpPart::Expr(ex) => {
                         out.push_str("${");
                         format_expr(out, ex, indent);

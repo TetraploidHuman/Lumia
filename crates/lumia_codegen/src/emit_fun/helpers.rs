@@ -88,7 +88,7 @@ impl<'ctx> Codegen<'ctx> {
                 fun_ret_tys: &self.funs.fun_ret_tys,
                 fun_param_tys: &self.funs.fun_param_tys,
                 fun_param0_identity: &self.funs.fun_param0_identity,
-                funref_locals: &self.funs.funref_locals,
+                funref_locals: &self.funs.funref.locals,
                 local_int_consts: &self.frame.local_int_consts,
                 sum_max_arity: &self.funs.sum_max_arity,
                 channel_elem_hint: self.funs.channel_elem_hint.as_ref(),

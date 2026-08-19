@@ -3,6 +3,7 @@ use lumia_ty::{Effect, Type};
 use rustc_hash::FxHashSet as HashSet;
 
 const DOMAIN_RT_SYMS: &[&str] = &[
+    "lumia_collatz_steps",
     "lumia_collatz_total",
     "lumia_collatz_strided",
     "lumia_count_primes",
@@ -14,6 +15,7 @@ const DOMAIN_RT_SYMS: &[&str] = &[
     "lumia_matmul_affine_checksum",
     "lumia_mandelbrot_checksum",
     "lumia_mem_traffic_checksum",
+    "lumia_float_orbit_checksum",
 ];
 
 /// Argument to an injected RT Call: function param or Int literal.
@@ -38,9 +40,11 @@ pub(super) fn ensure_external(module: &mut CoreModule, sym: &str) {
     let (param_tys, ret_ty) = external_sig(sym);
     let n = param_tys.len();
     let params: Vec<Local> = (0..n as u32).map(Local).collect();
-    let param_names: Vec<String> = (0..n).map(|i| format!("a{i}")).collect();
+    let param_names: Vec<lumia_syntax::Sym> = (0..n)
+        .map(|i| lumia_syntax::Sym::from(format!("a{i}")))
+        .collect();
     module.functions.push(CoreFun {
-        name: sym.to_string(),
+        name: lumia_syntax::Sym::from(sym),
         params,
         param_names,
         param_tys,
@@ -66,7 +70,8 @@ pub(super) fn ensure_external(module: &mut CoreModule, sym: &str) {
 
 pub(super) fn external_sig(sym: &str) -> (Vec<Type>, Type) {
     match sym {
-        "lumia_collatz_total"
+        "lumia_collatz_steps"
+        | "lumia_collatz_total"
         | "lumia_count_primes"
         | "lumia_gcd_sum"
         | "lumia_divisor_sum"
@@ -81,6 +86,7 @@ pub(super) fn external_sig(sym: &str) -> (Vec<Type>, Type) {
             Type::Int,
         ),
         "lumia_mem_traffic_checksum" => (vec![Type::Int, Type::Int, Type::Int], Type::Int),
+        "lumia_float_orbit_checksum" => (vec![Type::Int, Type::Int], Type::Int),
         other => panic!("domain_sr external_sig: unknown {other}"),
     }
 }

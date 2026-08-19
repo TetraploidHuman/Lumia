@@ -65,5 +65,5 @@ fn outer_mut_load_is_captured() {
         result: None,
     };
     let (_, free_names) = analyze_captures(&body, &[Local(10)]);
-    assert_eq!(free_names, vec!["n".to_string()]);
+    assert_eq!(free_names, vec![lumia_syntax::Sym::from("n")]);
 }

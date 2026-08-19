@@ -2,6 +2,7 @@ use super::*;
 use lumia_core::{Block, CoreFun, CoreModule, FunKind, Local, MemoTf, Op, Value};
 use lumia_core::{CoreBinOp as BinOp, CoreUnOp as UnOp};
 use lumia_hir::Builtin;
+use lumia_syntax::Sym;
 use lumia_ty::{Effect, Type};
 
 use rustc_hash::FxHashSet as HashSet;
@@ -10,7 +11,7 @@ fn bare_fun(name: &str, params: Vec<Local>, body: Block) -> CoreFun {
     CoreFun {
         name: name.into(),
         params,
-        param_names: (0..n).map(|i| format!("p{i}")).collect(),
+        param_names: (0..n).map(|i| Sym::from(format!("p{i}"))).collect(),
         param_tys: vec![Type::Int; n],
         body,
         ret_ty: Type::Int,

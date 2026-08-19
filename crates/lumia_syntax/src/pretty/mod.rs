@@ -3,13 +3,21 @@
 mod expr;
 mod pat;
 
-use crate::{Expr, ImportNames, ImportedName, Item, Module, TypeKind, ValItem, VariantFields};
+use crate::{Expr, ImportNames, ImportedName, Item, Module, Sym, TypeKind, ValItem, VariantFields};
 use expr::{format_expr, format_stmt};
+
+fn syms_dot_join(path: &[Sym]) -> String {
+    path.iter().map(Sym::as_str).collect::<Vec<_>>().join(".")
+}
+
+fn syms_comma_join(path: &[Sym]) -> String {
+    path.iter().map(Sym::as_str).collect::<Vec<_>>().join(", ")
+}
 
 pub fn format_module_src(m: &Module) -> String {
     let mut out = String::new();
     out.push_str("module ");
-    out.push_str(&m.name);
+    out.push_str(m.name.as_str());
     out.push('\n');
     if !m.imports.is_empty() || !m.items.is_empty() {
         out.push('\n');
@@ -18,19 +26,19 @@ pub fn format_module_src(m: &Module) -> String {
         out.push_str("import ");
         match &imp.names {
             ImportNames::All => {
-                out.push_str(&imp.path.join("."));
+                out.push_str(&syms_dot_join(&imp.path));
                 out.push_str(".*");
             }
             ImportNames::Single(n) if imp.path.is_empty() => {
                 format_imported_name(&mut out, n);
             }
             ImportNames::Single(n) => {
-                out.push_str(&imp.path.join("."));
+                out.push_str(&syms_dot_join(&imp.path));
                 out.push('.');
                 format_imported_name(&mut out, n);
             }
             ImportNames::Selective(ns) => {
-                out.push_str(&imp.path.join("."));
+                out.push_str(&syms_dot_join(&imp.path));
                 out.push_str(".{");
                 for (i, n) in ns.iter().enumerate() {
                     if i > 0 {
@@ -126,7 +134,7 @@ pub fn format_module_src(m: &Module) -> String {
                 out.push_str(&t.name);
                 if !t.requires.is_empty() {
                     out.push_str(" requires ");
-                    out.push_str(&t.requires.join(", "));
+                    out.push_str(&syms_comma_join(&t.requires));
                 }
                 out.push_str(" {\n");
                 for m in &t.methods {

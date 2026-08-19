@@ -2,6 +2,25 @@
 use super::*;
 
 #[test]
+fn collatz_steps_oracle() {
+    fn naive(mut n: i64) -> i64 {
+        let mut s = 0i64;
+        while n > 1 {
+            if n % 2 == 0 {
+                n /= 2;
+            } else {
+                n = 3 * n + 1;
+            }
+            s += 1;
+        }
+        s
+    }
+    for n in [0i64, 1, 2, 3, 4, 5, 6, 7, 27, 100, 1_000, 50_000] {
+        assert_eq!(lumia_collatz_steps(n), naive(n), "steps({n})");
+    }
+}
+
+#[test]
 fn bench_cpu_collatz_checksum() {
     assert_eq!(lumia_collatz_total(250_000), 29_265_567);
 }

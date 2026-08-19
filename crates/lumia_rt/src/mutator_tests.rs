@@ -61,6 +61,45 @@ fn tls_lab_bump_pending_then_flush_survives_gc() {
 }
 
 #[test]
+fn swap_remove_root_drops_buried_slot() {
+    ensure_mutator_registered();
+    let mut a: *mut u8 = std::ptr::null_mut();
+    let mut b: *mut u8 = std::ptr::null_mut();
+    push_root(&mut a as *mut *mut u8);
+    push_root(&mut b as *mut *mut u8);
+    swap_remove_root(0);
+    let roots = take_local_roots();
+    assert_eq!(roots.len(), 1);
+    assert_eq!(roots[0], &mut b as *mut *mut u8);
+    set_local_roots(vec![]);
+}
+
+#[test]
+fn swap_removed_object_collectible() {
+    use crate::common::{is_heap_payload, TYPE_BYTES};
+    use crate::gc::{lumia_alloc, lumia_gc_collect, lumia_root_pop, lumia_root_push};
+
+    ensure_mutator_registered();
+    lumia_gc_collect();
+    let mut dead = lumia_alloc(32, TYPE_BYTES);
+    let mut live = lumia_alloc(32, TYPE_BYTES);
+    assert!(!dead.is_null() && !live.is_null());
+    let dead_ptr = dead;
+    unsafe { lumia_root_push(&mut dead as *mut *mut u8) };
+    unsafe { lumia_root_push(&mut live as *mut *mut u8) };
+    swap_remove_root(0);
+    lumia_gc_collect();
+    assert!(
+        !is_heap_payload(dead_ptr),
+        "buried root must become collectible after swap_remove"
+    );
+    assert!(is_heap_payload(live), "live object must stay rooted");
+    lumia_root_pop();
+    lumia_gc_collect();
+    assert!(!is_heap_payload(live));
+}
+
+#[test]
 fn push_pop_without_heap_lock_roundtrip() {
     ensure_mutator_registered();
     let mut a: *mut u8 = std::ptr::null_mut();

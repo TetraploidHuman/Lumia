@@ -26,6 +26,27 @@ fn cache_hit(cache: &[Step], xu: usize, lim: usize) -> bool {
     xu <= lim && (xu == 1 || unsafe { cache_get(cache, xu) } > 0)
 }
 
+/// Collatz step count for a single `n` (cttz-batched even runs).
+#[no_mangle]
+pub extern "C" fn lumia_collatz_steps(n: i64) -> i64 {
+    if n <= 1 {
+        return 0;
+    }
+    let mut x = n;
+    let mut steps = 0i64;
+    while x > 1 {
+        if x & 1 == 0 {
+            let k = x.trailing_zeros() as i64;
+            x >>= k;
+            steps += k;
+        } else {
+            x = x.wrapping_mul(3).wrapping_add(1);
+            steps += 1;
+        }
+    }
+    steps
+}
+
 /// Sum of Collatz step counts for `n = 1..=limit`.
 #[no_mangle]
 pub extern "C" fn lumia_collatz_total(limit: i64) -> i64 {

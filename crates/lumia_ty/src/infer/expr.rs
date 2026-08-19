@@ -28,9 +28,9 @@ impl Infer {
             Expr::Unit(_) => Ok((Type::Unit, Effect::pure())),
             Expr::Var(name, span) => {
                 let t = self
-                    .lookup(name)
+                    .lookup(name.as_str())
                     .ok_or_else(|| at(*span, format!("unbound variable `{name}`")))?;
-                self.check_name_visible(name, *span)?;
+                self.check_name_visible(name.as_str(), *span)?;
                 Ok((t, Effect::pure()))
             }
             Expr::Let {
@@ -39,8 +39,8 @@ impl Infer {
                 body,
                 mutable,
                 ty,
-            } => self.infer_let(name, value, body, *mutable, ty.as_deref()),
-            Expr::Assign { name, value, span } => self.infer_assign(name, value, *span),
+            } => self.infer_let(name.as_str(), value, body, *mutable, ty.as_deref()),
+            Expr::Assign { name, value, span } => self.infer_assign(name.as_str(), value, *span),
             Expr::Lambda {
                 params,
                 param_ann,
@@ -82,7 +82,7 @@ impl Infer {
                 variant,
                 args,
                 ..
-            } => self.infer_adt_new(adt_name, variant, args),
+            } => self.infer_adt_new(adt_name.as_str(), variant.as_str(), args),
             Expr::Seq { stmts, .. } => self.infer_seq(stmts),
         }
     }
@@ -90,7 +90,7 @@ impl Infer {
     fn infer_with(
         &mut self,
         base: &Expr,
-        fields: &[(String, Expr)],
+        fields: &[(lumia_syntax::Sym, Expr)],
         span: lumia_syntax::Span,
     ) -> Result<(Type, Effect), TypeError> {
         let mut seen_fields = rustc_hash::FxHashSet::default();
@@ -149,7 +149,7 @@ impl Infer {
             .ok_or_else(|| at(span, format!("unknown product type `{name}` in `with`")))?;
         let mut by_name: rustc_hash::FxHashMap<String, Type> = rustc_hash::FxHashMap::default();
         for (fname, e) in fields {
-            if !order.iter().any(|f| f == fname) {
+            if !order.iter().any(|f| f == fname.as_str()) {
                 return Err(at(
                     span,
                     format!("unknown field `{fname}` in `{name}` `with`"),
@@ -157,7 +157,7 @@ impl Infer {
             }
             let (t, e_eff) = self.infer_expr(e)?;
             eff = self.union_eff(eff, e_eff);
-            by_name.insert(fname.clone(), t);
+            by_name.insert(fname.to_string(), t);
         }
         let mut out_params = Vec::with_capacity(order.len());
         for (i, f) in order.iter().enumerate() {
@@ -278,7 +278,7 @@ impl Infer {
 
     fn infer_lambda(
         &mut self,
-        params: &[String],
+        params: &[lumia_syntax::Sym],
         param_ann: &[Option<String>],
         body: &Expr,
         span: lumia_syntax::Span,
@@ -292,7 +292,7 @@ impl Infer {
                 self.fresh()
             };
             pts.push(tv.clone());
-            self.bind(p.clone(), tv);
+            self.bind(p.to_string(), tv);
         }
         let ret_tv = self.fresh();
         self.ctrl.return_stack.push(ret_tv.clone());

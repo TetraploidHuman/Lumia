@@ -10,6 +10,10 @@
 //! Whole-function patterns become a single `Call` so Release inlining places the
 //! RT kernel at the call site (same shape as `extras.linalg` wrappers).
 //!
+//! List-out kernels share one dest protocol: `var out = dest` (`OutSlot`).
+//! Get/set peeps accept the slot load or an SSA alias of `dest`. `val out = dest`
+//! is not a write target (params/`val` are immutable).
+//!
 //! Covered: gemv/gemvT/addmm/axpy/sub/add/mul/clamp/scale/fill/copy/zeros,
 //! plus sumSq/mean/std/l2Norm/l2Normalize/softMax (scalar `sqrtF`/`expF` foreign
 //! calls unlock the latter norms).

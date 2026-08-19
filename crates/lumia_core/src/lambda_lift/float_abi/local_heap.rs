@@ -10,6 +10,7 @@ use crate::value_ty::{
     task_recv_ok, via_gated_recv, InferValueCtx,
 };
 use crate::{CoreBinOp as BinOp, CoreUnOp as UnOp};
+use lumia_syntax::Sym;
 use lumia_ty::{Effect, Type};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
@@ -73,7 +74,7 @@ pub(super) fn resolve_heap_arg_ty(
     fun_param_tys: &HashMap<String, Vec<Type>>,
     cap_tys: &HashMap<u32, Type>,
     seen: &mut HashSet<u32>,
-    seen_slots: &mut HashSet<String>,
+    seen_slots: &mut HashSet<Sym>,
 ) -> Type {
     if float_locals.contains(&id) {
         Type::Float
@@ -102,7 +103,7 @@ pub(super) fn mutator_recv_args(
     fun_param_tys: &HashMap<String, Vec<Type>>,
     cap_tys: &HashMap<u32, Type>,
     seen: &mut HashSet<u32>,
-    seen_slots: &mut HashSet<String>,
+    seen_slots: &mut HashSet<Sym>,
 ) -> (Option<Type>, Vec<Type>) {
     let recv = local_heap_ty(
         block,
@@ -142,12 +143,12 @@ pub(super) fn local_heap_ty(
     fun_param_tys: &HashMap<String, Vec<Type>>,
     cap_tys: &HashMap<u32, Type>,
     seen: &mut HashSet<u32>,
-    seen_slots: &mut HashSet<String>,
+    seen_slots: &mut HashSet<Sym>,
 ) -> Option<Type> {
     if !seen.insert(id) {
         return None;
     }
-    let value = super::helpers::let_value_dfs(block, id)?;
+    let value = crate::find_local_def(block, id)?;
     match value {
         Value::Local(Local(src)) => local_heap_ty(
             block,
@@ -484,13 +485,13 @@ pub(super) fn local_heap_ty(
         Value::Builtin { name, .. } if is_fixed_result_builtin(*name) => Some(
             heap_ty_via_builtin_value_ty(*name, &[], &HashMap::default()),
         ),
-        // MatchFail stays bottom (`block_result_is_bottom`) — not Unit via.
+        // MatchFail stays bottom ([`crate::block_result_is_bottom`]) — not Unit via.
         Value::Builtin {
             name: lumia_hir::Builtin::AdtField,
             args,
             ..
         } if args.len() >= 2 => {
-            let idx = match super::helpers::let_value_dfs(block, args[1].0) {
+            let idx = match crate::find_local_def(block, args[1].0) {
                 Some(Value::Int(i)) if *i >= 0 => Some(*i as i64),
                 _ => None,
             };
@@ -765,11 +766,12 @@ pub(super) fn local_heap_ty(
                     seen_slots,
                 )
             });
-            super::helpers::join_match_heap_tys(
+            crate::value_ty::join_if_arm_tys(
                 then_ty,
                 else_ty,
-                super::mark_float::block_result_is_bottom(then_block),
-                super::mark_float::block_result_is_bottom(else_block),
+                crate::block_result_is_bottom(then_block),
+                crate::block_result_is_bottom(else_block),
+                crate::value_ty::JoinAbiKind::Heap,
             )
         }
         _ => None,

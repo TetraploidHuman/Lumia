@@ -5,8 +5,10 @@ edition.workspace = true
 
 [features]
 # Prefer shared libLLVM over static archives (much faster link).
-# Linux CI (apt.llvm.org) and local Nix prefixes ship libLLVM.so; enable via
-# `--features lumia_codegen/llvm-dynamic`. Windows CI stays prefer-static.
+# Enabled by default through `lumia` (`default = […, "llvm-dynamic"]`).
+# Workspace `-p lumia_codegen` / `--workspace --exclude lumia` still need
+# `--features lumia_codegen/llvm-dynamic` on Linux (CI/`check.sh`).
+# Windows CI stays prefer-static (do not enable this feature).
 llvm-dynamic = ["inkwell/llvm21-1-force-dynamic"]
 # Domain / bench loop shape rewrites (collatz, floatOrbit).
 # Trial-div odd-step lives in lumia_opt. Default on; disable for a thinner

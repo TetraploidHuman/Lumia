@@ -2,6 +2,7 @@ use super::super::fun_index::FunIndex;
 use super::super::key::{materialize_mono_param_tys, types_mono_key, MonoKey};
 use crate::ir::{Block, CoreModule, Local, Op, Value};
 use lumia_hir::Builtin;
+use lumia_syntax::Sym;
 use lumia_ty::Type;
 use rustc_hash::FxHashMap as HashMap;
 
@@ -34,11 +35,11 @@ pub(super) fn rewrite_all_mono_call_sites(
         for (j, p) in fun.params.iter().enumerate() {
             local_tys.insert(p.0, fun.param_tys.get(j).cloned().unwrap_or(Type::Int));
         }
-        let mut slot_tys: HashMap<String, Type> = HashMap::default();
+        let mut slot_tys: HashMap<Sym, Type> = HashMap::default();
         let mut int_consts: HashMap<u32, i64> = HashMap::default();
         let mut bool_consts: HashMap<u32, bool> = HashMap::default();
-        let mut slot_list_funrefs: HashMap<String, FunrefSlots> = HashMap::default();
-        let mut slot_adt_funrefs: HashMap<String, FunrefSlots> = HashMap::default();
+        let mut slot_list_funrefs: HashMap<Sym, FunrefSlots> = HashMap::default();
+        let mut slot_adt_funrefs: HashMap<Sym, FunrefSlots> = HashMap::default();
         let mut list_funrefs: HashMap<u32, FunrefSlots> = HashMap::default();
         let mut adt_funrefs: HashMap<u32, FunrefSlots> = HashMap::default();
         let mut adt_tags: HashMap<u32, i64> = HashMap::default();
@@ -67,15 +68,15 @@ pub(super) fn rewrite_all_mono_call_sites(
 fn rewrite_mono_block(
     block: &mut Block,
     local_tys: &mut HashMap<u32, Type>,
-    slot_tys: &mut HashMap<String, Type>,
+    slot_tys: &mut HashMap<Sym, Type>,
     int_consts: &mut HashMap<u32, i64>,
     bool_consts: &mut HashMap<u32, bool>,
     adt_tags: &mut HashMap<u32, i64>,
     renames: &HashMap<(String, MonoKey), String>,
     parent_funrefs: &HashMap<u32, String>,
-    parent_slot_funrefs: &HashMap<String, String>,
-    slot_list_funrefs: &mut HashMap<String, FunrefSlots>,
-    slot_adt_funrefs: &mut HashMap<String, FunrefSlots>,
+    parent_slot_funrefs: &HashMap<Sym, String>,
+    slot_list_funrefs: &mut HashMap<Sym, FunrefSlots>,
+    slot_adt_funrefs: &mut HashMap<Sym, FunrefSlots>,
     list_funrefs: &mut HashMap<u32, FunrefSlots>,
     adt_funrefs: &mut HashMap<u32, FunrefSlots>,
     index: &FunIndex<'_>,
@@ -221,15 +222,15 @@ fn patch_funref_let(ops: &mut [Op], local: u32, new_name: &str) {
 fn rewrite_mono_value(
     value: &mut Value,
     local_tys: &mut HashMap<u32, Type>,
-    slot_tys: &mut HashMap<String, Type>,
+    slot_tys: &mut HashMap<Sym, Type>,
     int_consts: &mut HashMap<u32, i64>,
     bool_consts: &mut HashMap<u32, bool>,
     adt_tags: &mut HashMap<u32, i64>,
     renames: &HashMap<(String, MonoKey), String>,
     funref_of: &HashMap<u32, String>,
-    slot_funrefs: &HashMap<String, String>,
-    slot_list_funrefs: &mut HashMap<String, FunrefSlots>,
-    slot_adt_funrefs: &mut HashMap<String, FunrefSlots>,
+    slot_funrefs: &HashMap<Sym, String>,
+    slot_list_funrefs: &mut HashMap<Sym, FunrefSlots>,
+    slot_adt_funrefs: &mut HashMap<Sym, FunrefSlots>,
     list_funrefs: &mut HashMap<u32, FunrefSlots>,
     adt_funrefs: &mut HashMap<u32, FunrefSlots>,
     index: &FunIndex<'_>,
@@ -302,9 +303,9 @@ pub(super) fn track_funref_after_let(
     spawn_of: &mut HashMap<u32, String>,
     list_funrefs: &mut HashMap<u32, FunrefSlots>,
     adt_funrefs: &mut HashMap<u32, FunrefSlots>,
-    slot_funrefs: &HashMap<String, String>,
-    slot_list_funrefs: &HashMap<String, FunrefSlots>,
-    slot_adt_funrefs: &HashMap<String, FunrefSlots>,
+    slot_funrefs: &HashMap<Sym, String>,
+    slot_list_funrefs: &HashMap<Sym, FunrefSlots>,
+    slot_adt_funrefs: &HashMap<Sym, FunrefSlots>,
     int_consts: &HashMap<u32, i64>,
     bool_consts: &HashMap<u32, bool>,
     join_funrefs: Option<&HashMap<String, String>>,
@@ -648,7 +649,7 @@ fn rewrite_par_hof_funref(
 fn mono_value_ty_rewrite(
     value: &Value,
     local_tys: &HashMap<u32, Type>,
-    slot_tys: &HashMap<String, Type>,
+    slot_tys: &HashMap<Sym, Type>,
     int_consts: &HashMap<u32, i64>,
     renames: &HashMap<(String, MonoKey), String>,
     funref_of: &HashMap<u32, String>,

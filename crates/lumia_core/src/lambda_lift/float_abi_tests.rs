@@ -884,7 +884,7 @@ val main = {
     let fun_param_tys = &tables.fun_param_tys;
     let main = core.functions.iter().find(|f| f.name == "main").unwrap();
     let mut local_tys: HashMap<u32, Type> = HashMap::default();
-    let mut slot_tys: HashMap<String, Type> = HashMap::default();
+    let mut slot_tys: HashMap<lumia_syntax::Sym, Type> = HashMap::default();
     let fun_param0_identity = HashSet::default();
     let mut funref_locals: HashMap<u32, String> = HashMap::default();
     let local_int_consts: HashMap<u32, i64> = HashMap::default();
@@ -892,7 +892,7 @@ val main = {
     fn walk(
         ops: &[Op],
         local_tys: &mut HashMap<u32, Type>,
-        slot_tys: &mut HashMap<String, Type>,
+        slot_tys: &mut HashMap<lumia_syntax::Sym, Type>,
         funref_locals: &mut HashMap<u32, String>,
         fun_ret_tys: &HashMap<String, Type>,
         fun_param_tys: &HashMap<String, Vec<Type>>,

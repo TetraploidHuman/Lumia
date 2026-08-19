@@ -9,11 +9,13 @@
 
 use lumia_abi::INLINE_MAX_EXPAND_DEPTH;
 use lumia_core::{
-    block_calls, collect_defined_locals, collect_slot_names, count_ops, for_each_block_dfs,
-    has_early_return, max_local_in_fun, rewrite_block_locals, Block, CoreFun, CoreModule, Local,
-    Op, Value,
+    block_calls, collect_defined_locals, collect_slot_names, count_ops,
+    flat_map_top_level_ops_in_block, for_each_let, for_each_nested_block_mut,
+    for_each_top_level_op_in_block_mut, has_early_return, max_local_in_fun, rewrite_block_locals,
+    Block, CoreFun, CoreModule, Local, Op, Value,
 };
 use lumia_hir::{FOLD_ELEM_PREFIX, FOR_INDEX_PREFIX, FUSE_ACC_PREFIX, LIST_BUILDER_ACC_PREFIXES};
+use lumia_syntax::Sym;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::sync::Arc;
 
@@ -50,7 +52,7 @@ impl InlinePass {
 fn inline_module(module: &mut CoreModule) {
     let max_ops = inline_max_ops();
     // Index only — cache params + Arc<body> on first hit (see `ensure_inline_cached`).
-    let indices: HashMap<String, usize> = module
+    let indices: HashMap<Sym, usize> = module
         .functions
         .iter()
         .enumerate()
@@ -58,7 +60,7 @@ fn inline_module(module: &mut CoreModule) {
         .map(|(i, f)| (f.name.clone(), i))
         .collect();
     if std::env::var_os("LUMIA_INLINE_DUMP").is_some() {
-        let mut rows: Vec<(usize, String)> = module
+        let mut rows: Vec<(usize, Sym)> = module
             .functions
             .iter()
             .filter(|f| f.external.is_none() && !f.is_main)
@@ -87,7 +89,7 @@ fn inline_module(module: &mut CoreModule) {
     }
 
     let mut functions = std::mem::take(&mut module.functions);
-    let mut cache: HashMap<String, InlineCallee> = HashMap::default();
+    let mut cache: HashMap<Sym, InlineCallee> = HashMap::default();
 
     for i in 0..functions.len() {
         // Prefetch transitive inlineable callees while `functions` is shared.
@@ -110,37 +112,26 @@ fn inline_module(module: &mut CoreModule) {
 /// Walk direct `Call` / `FunRef` targets; cache reachable inlineables once.
 fn prefetch_inline_callees(
     block: &Block,
-    indices: &HashMap<String, usize>,
+    indices: &HashMap<Sym, usize>,
     functions: &[CoreFun],
-    cache: &mut HashMap<String, InlineCallee>,
+    cache: &mut HashMap<Sym, InlineCallee>,
 ) {
-    // Cache fill is order-independent — DFS is safe.
-    for_each_block_dfs(block, &mut |b| {
-        for op in &b.ops {
-            match op {
-                Op::Let {
-                    value: Value::Call { fun, .. },
-                    ..
-                } => {
-                    ensure_inline_cached(fun.as_str(), indices, functions, cache);
-                }
-                Op::Let {
-                    value: Value::FunRef(fun),
-                    ..
-                } => {
-                    ensure_inline_cached(fun, indices, functions, cache);
-                }
-                _ => {}
-            }
+    for_each_let(block, &mut |_b, _local, value| match value {
+        Value::Call { fun, .. } => {
+            ensure_inline_cached(fun.as_str(), indices, functions, cache);
         }
+        Value::FunRef(fun) => {
+            ensure_inline_cached(fun, indices, functions, cache);
+        }
+        _ => {}
     });
 }
 
 fn ensure_inline_cached(
     name: &str,
-    indices: &HashMap<String, usize>,
+    indices: &HashMap<Sym, usize>,
     functions: &[CoreFun],
-    cache: &mut HashMap<String, InlineCallee>,
+    cache: &mut HashMap<Sym, InlineCallee>,
 ) {
     if cache.contains_key(name) {
         return;
@@ -151,7 +142,7 @@ fn ensure_inline_cached(
     // Insert before recursing so mutual inlineables do not re-enter.
     let f = &functions[idx];
     cache.insert(
-        name.to_string(),
+        Sym::from(name),
         InlineCallee {
             params: f.params.clone(),
             body: Arc::new(f.body.clone()),
@@ -182,23 +173,21 @@ fn is_inlineable(f: &CoreFun) -> bool {
 
 fn inline_block(
     block: &mut Block,
-    inlineable: &HashMap<String, InlineCallee>,
+    inlineable: &HashMap<Sym, InlineCallee>,
     caller: &str,
     next: &mut u32,
-    expanding: &mut HashSet<String>,
+    expanding: &mut HashSet<Sym>,
     depth: usize,
 ) {
-    let mut out: Vec<Op> = Vec::with_capacity(block.ops.len());
     // Locals proven equal to `FunRef(name)` (SSA aliases) — enables IndirectCall expand.
     let mut funrefs: HashMap<u32, String> = HashMap::default();
-    for op in std::mem::take(&mut block.ops) {
+    flat_map_top_level_ops_in_block(block, &mut |op| {
         match op {
             Op::Let {
                 local,
-                value,
+                mut value,
                 pure_region,
             } => {
-                let mut value = value;
                 inline_value(&mut value, inlineable, caller, next, expanding, depth);
                 // Resolve FunRef / IndirectCall → direct Call when possible.
                 let expand_fun: Option<String> = match &value {
@@ -238,7 +227,7 @@ fn inline_block(
                                     ops: prelude,
                                     result: Some(result),
                                 };
-                                expanding.insert(fun.to_string());
+                                expanding.insert(Sym::from(fun));
                                 inline_block(
                                     &mut nested,
                                     inlineable,
@@ -250,61 +239,40 @@ fn inline_block(
                                 expanding.remove(fun);
                                 let result =
                                     nested.result.expect("inlined function must return a value");
-                                out.extend(nested.ops);
+                                funrefs.remove(&local.0);
+                                let mut out = nested.ops;
                                 out.push(Op::Let {
                                     local,
                                     value: Value::Local(result),
                                     pure_region,
                                 });
-                                funrefs.remove(&local.0);
-                                continue;
+                                return out;
                             }
                         }
                     }
                 }
-                out.push(Op::Let {
+                vec![Op::Let {
                     local,
                     value,
                     pure_region,
-                });
+                }]
             }
-            other => out.push(other),
+            other => vec![other],
         }
-    }
-    block.ops = out;
+    });
 }
 
 fn inline_value(
     value: &mut Value,
-    inlineable: &HashMap<String, InlineCallee>,
+    inlineable: &HashMap<Sym, InlineCallee>,
     caller: &str,
     next: &mut u32,
-    expanding: &mut HashSet<String>,
+    expanding: &mut HashSet<Sym>,
     depth: usize,
 ) {
-    match value {
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            inline_block(then_block, inlineable, caller, next, expanding, depth);
-            inline_block(else_block, inlineable, caller, next, expanding, depth);
-        }
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => {
-            inline_block(header, inlineable, caller, next, expanding, depth);
-            inline_block(body, inlineable, caller, next, expanding, depth);
-            inline_block(latch, inlineable, caller, next, expanding, depth);
-        }
-        Value::Lambda { body, .. } => {
-            inline_block(body, inlineable, caller, next, expanding, depth)
-        }
-        _ => {}
-    }
+    for_each_nested_block_mut(value, &mut |nested| {
+        inline_block(nested, inlineable, caller, next, expanding, depth);
+    });
 }
 
 /// Uniquify an inlined mutable slot using the Local id space.
@@ -352,16 +320,16 @@ fn materialize_inline(callee: &InlineCallee, args: &[Local], next: &mut u32) -> 
     rewrite_block_locals(&mut body, &remap);
 
     // Uniquify mutable slots from the same Local id counter (no `$inl{tag}_` protocol).
-    let mut slot_names: HashSet<String> = HashSet::default();
+    let mut slot_names: HashSet<Sym> = HashSet::default();
     collect_slot_names(&body, &mut slot_names);
     if !slot_names.is_empty() {
-        let name_remap: HashMap<String, String> = slot_names
+        let name_remap: HashMap<Sym, Sym> = slot_names
             .into_iter()
             .map(|n| {
                 let id = *next;
                 *next += 1;
-                let fresh = unique_inline_slot_name(&n, id);
-                (n, fresh)
+                let fresh = unique_inline_slot_name(n.as_str(), id);
+                (n, Sym::from(fresh))
             })
             .collect();
         rewrite_block_slot_names(&mut body, &name_remap);
@@ -374,52 +342,30 @@ fn materialize_inline(callee: &InlineCallee, args: &[Local], next: &mut u32) -> 
     (body.ops, result)
 }
 
-fn rewrite_block_slot_names(block: &mut Block, remap: &HashMap<String, String>) {
+fn rewrite_block_slot_names(block: &mut Block, remap: &HashMap<Sym, Sym>) {
     if remap.is_empty() {
         return;
     }
-    for op in &mut block.ops {
-        match op {
-            Op::Assign { name, .. } => {
-                if let Some(n) = remap.get(name) {
-                    *name = n.clone();
-                }
+    for_each_top_level_op_in_block_mut(block, &mut |op| match op {
+        Op::Assign { name, .. } => {
+            if let Some(n) = remap.get(name) {
+                *name = n.clone();
             }
-            Op::Let { value, .. } => {
-                rewrite_value_slot_names(value, remap);
-            }
-            _ => {}
         }
-    }
+        Op::Let { value, .. } => {
+            rewrite_value_slot_names(value, remap);
+        }
+        _ => {}
+    });
 }
 
-fn rewrite_value_slot_names(value: &mut Value, remap: &HashMap<String, String>) {
-    match value {
-        Value::Name(n) => {
-            if let Some(r) = remap.get(n) {
-                *n = r.clone();
-            }
+fn rewrite_value_slot_names(value: &mut Value, remap: &HashMap<Sym, Sym>) {
+    if let Value::Name(n) = value {
+        if let Some(r) = remap.get(n) {
+            *n = r.clone();
         }
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            rewrite_block_slot_names(then_block, remap);
-            rewrite_block_slot_names(else_block, remap);
-        }
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => {
-            rewrite_block_slot_names(header, remap);
-            rewrite_block_slot_names(body, remap);
-            rewrite_block_slot_names(latch, remap);
-        }
-        Value::Lambda { body, .. } => rewrite_block_slot_names(body, remap),
-        _ => {}
     }
+    for_each_nested_block_mut(value, &mut |nested| rewrite_block_slot_names(nested, remap));
 }
 
 #[cfg(test)]

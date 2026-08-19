@@ -5,6 +5,7 @@
 
 use crate::ops::{CoreBinOp, CoreUnOp};
 use lumia_hir::Builtin;
+use lumia_syntax::Sym;
 use lumia_ty::{Effect, Type};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
@@ -174,9 +175,9 @@ impl CoreModule {
 
 #[derive(Debug, Clone)]
 pub struct CoreFun {
-    pub name: String,
+    pub name: Sym,
     pub params: Vec<Local>,
-    pub param_names: Vec<String>,
+    pub param_names: Vec<Sym>,
     /// Parameter types (for float ABI / future typed SSA).
     pub param_tys: Vec<Type>,
     pub body: Block,
@@ -270,7 +271,7 @@ pub enum Op {
         pure_region: bool,
     },
     Assign {
-        name: String,
+        name: Sym,
         value: Local,
     },
     Break,
@@ -290,8 +291,8 @@ pub enum Value {
     Char(char),
     Unit,
     Local(Local),
-    /// Named mutable/immutable binding load
-    Name(String),
+    /// Named mutable binding load (`var` slot).
+    Name(Sym),
     Binary {
         op: CoreBinOp,
         left: Local,
@@ -446,7 +447,11 @@ pub fn format_module(m: &CoreModule) -> String {
         out.push_str(&format!(
             "\nfun {}({}) effect.io={} memo={:?} {{\n",
             f.name,
-            f.param_names.join(", "),
+            f.param_names
+                .iter()
+                .map(|n| n.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
             f.effect.has_io(),
             f.memo
         ));

@@ -82,8 +82,8 @@ impl<'ctx> Codegen<'ctx> {
         self.frame.locals.insert(local.0, v);
         self.frame.local_tys.insert(local.0, ty);
         self.note_int_const(local.0, value);
-        crate::funref::note_funref_local(
-            &mut self.funs.funref_locals,
+        crate::funref::note_funref_let(
+            &mut self.funs.funref,
             local.0,
             value,
             crate::funref::AllocClosureFunref::Ignore,
@@ -131,8 +131,8 @@ impl<'ctx> Codegen<'ctx> {
         self.frame.locals.insert(local.0, v);
         self.frame.local_tys.insert(local.0, ty);
         self.note_int_const(local.0, value);
-        crate::funref::note_funref_local(
-            &mut self.funs.funref_locals,
+        crate::funref::note_funref_let(
+            &mut self.funs.funref,
             local.0,
             value,
             crate::funref::AllocClosureFunref::Ignore,
@@ -184,11 +184,13 @@ impl<'ctx> Codegen<'ctx> {
         true
     }
 
-    /// `Let t = Name(xs)|Local(…)|fresh list` where `t` is only the receiver of
-    /// list/map get/set/append/… later in this block.
+    /// `Let t = Name(xs)|Local(…)|AdtField(rooted base,…)|fresh list` where `t` is only
+    /// the receiver of list/map get/set/append/… later in this block.
     ///
-    /// Alias forms are already rooted (mut slot / prior let). Fresh
-    /// `AllocList` / `range` / empty list may skip root only for non-allocating
+    /// Alias forms are already rooted (mut slot / prior let). `AdtField` with a shadow-stack
+    /// rooted base skips retain on the extract (parent ADT stays traced); only read-only
+    /// builtins are allowed on those extracts — mutating ops need a field retain for COW.
+    /// Fresh `AllocList` / `range` / empty list may skip root only for non-allocating
     /// receivers (`get`/`len`/`contains`) — append/concat can GC.
     pub(super) fn let_is_ephemeral_rooted_recv(
         &self,
@@ -197,7 +199,18 @@ impl<'ctx> Codegen<'ctx> {
         local: Local,
         value: &Value,
     ) -> bool {
-        let already_rooted = matches!(value, Value::Name(_) | Value::Local(_));
+        let alias_rooted = matches!(value, Value::Name(_) | Value::Local(_));
+        let adt_field_rooted = match value {
+            Value::Builtin {
+                name: Builtin::AdtField,
+                args,
+                ..
+            } => args
+                .first()
+                .copied()
+                .is_some_and(|base| self.local_is_gc_rooted(base)),
+            _ => false,
+        };
         let fresh_list = matches!(
             value,
             Value::AllocList { .. }
@@ -206,7 +219,7 @@ impl<'ctx> Codegen<'ctx> {
                     ..
                 }
         );
-        if !already_rooted && !fresh_list {
+        if !alias_rooted && !adt_field_rooted && !fresh_list {
             return false;
         }
         let ty = self.infer_value_ty(value);
@@ -216,51 +229,7 @@ impl<'ctx> Codegen<'ctx> {
         if block.result == Some(local) {
             return false;
         }
-        let mut uses = 0usize;
-        let mut only_recv = true;
-        for op in &block.ops[let_idx + 1..] {
-            if !Self::op_uses_local(op, local) {
-                continue;
-            }
-            uses += 1;
-            let ok = match op {
-                Op::Let {
-                    value: Value::Builtin { name, args, .. },
-                    ..
-                } => {
-                    let read_only = matches!(
-                        name,
-                        Builtin::ListGet | Builtin::ListLen | Builtin::Contains
-                    );
-                    let mutating = matches!(
-                        name,
-                        Builtin::ListAppend
-                            | Builtin::ListConcat
-                            | Builtin::ListTake
-                            | Builtin::ListSlice
-                            | Builtin::MapSet
-                            | Builtin::MapRemove
-                            | Builtin::SetInsert
-                            | Builtin::ListReverse
-                            | Builtin::ListSort
-                            | Builtin::ListSortByKeys
-                    );
-                    let recv_ok = if already_rooted {
-                        read_only || mutating
-                    } else {
-                        // Fresh producer: only ops that must not GC before `t` is dead.
-                        read_only
-                    };
-                    recv_ok && args.first() == Some(&local) && args[1..].iter().all(|a| *a != local)
-                }
-                _ => false,
-            };
-            if !ok {
-                only_recv = false;
-                break;
-            }
-        }
-        uses >= 1 && only_recv
+        block_uses_only_as_builtin_recv(block, let_idx + 1, local, alias_rooted)
     }
 
     /// `Let t = Name/Local` used only as a `Call`/`IndirectCall` argument.
@@ -289,28 +258,51 @@ impl<'ctx> Codegen<'ctx> {
         if block.result == Some(local) {
             return false;
         }
-        let mut uses = 0usize;
-        let mut only_arg = true;
-        for op in &block.ops[let_idx + 1..] {
-            if !Self::op_uses_local(op, local) {
-                continue;
-            }
-            uses += 1;
-            let ok = match op {
-                Op::Let { value, .. } => match value {
-                    Value::Call { args, .. } | Value::IndirectCall { args, .. } => {
-                        args.contains(&local)
-                    }
-                    _ => false,
-                },
-                _ => false,
-            };
-            if !ok {
-                only_arg = false;
-                break;
-            }
+        block_uses_only_as_call_arg(block, let_idx + 1, local)
+    }
+
+    /// `Let t = AdtField(base,…)` passed only to a call when `base` is already on
+    /// the shadow stack — skip retain+root on `t` (parent ADT stays traced via `base`).
+    pub(super) fn let_is_ephemeral_adt_field_call_arg(
+        &self,
+        block: &Block,
+        let_idx: usize,
+        local: Local,
+        value: &Value,
+    ) -> bool {
+        let Value::Builtin {
+            name: Builtin::AdtField,
+            args,
+            ..
+        } = value
+        else {
+            return false;
+        };
+        let Some(base) = args.first().copied() else {
+            return false;
+        };
+        let ty = self.infer_value_ty(value);
+        if !(Self::type_needs_cow_retain(&ty) || Self::type_may_heap(&ty)) {
+            return false;
         }
-        uses >= 1 && only_arg
+        if !self.local_is_gc_rooted(base) {
+            return false;
+        }
+        if block.result == Some(local) {
+            return false;
+        }
+        block_uses_only_as_call_arg(block, let_idx + 1, local)
+    }
+
+    fn local_is_gc_rooted(&self, local: Local) -> bool {
+        if self.frame.ssa_root_stack.iter().any(|r| r.local == local) {
+            return true;
+        }
+        match self.frame.leaf_defs.get(&local.0) {
+            Some(Value::Name(n)) => self.frame.rooted_slots.contains_key(n),
+            Some(Value::Local(src)) => self.local_is_gc_rooted(*src),
+            _ => false,
+        }
     }
 
     /// `Let t = AdtField(…)` used only as the receiver of further `AdtField`
@@ -451,38 +443,69 @@ impl<'ctx> Codegen<'ctx> {
             return;
         }
         let last_use = last_use_index(block, after, local);
+        let last_use_cross = cross_block_last_use(block, after, local);
         self.frame.ssa_root_stack.push(crate::state::SsaRoot {
+            local,
             last_use,
+            last_use_cross,
+            roots_index: (self.frame.root_depth - 1) as usize,
             depth: self.frame.root_depth,
         });
     }
 
-    /// Pop trailing unused SSA roots (`last_use == None`) that are the shadow-stack top.
-    pub(super) fn pop_unused_ssa_roots(&mut self, stack_base: usize) -> Result<()> {
-        while self.frame.ssa_root_stack.len() > stack_base {
-            let Some(top) = self.frame.ssa_root_stack.last() else {
+    /// Drop SSA roots whose last use ends at a cross-block control-flow exit.
+    pub(crate) fn pop_ssa_roots_cross_block(
+        &mut self,
+        site: crate::state::CrossBlockLastUse,
+    ) -> Result<()> {
+        loop {
+            let si = self
+                .frame
+                .ssa_root_stack
+                .iter()
+                .position(|e| e.last_use_cross == Some(site));
+            let Some(si) = si else {
                 break;
             };
-            if top.last_use.is_some() || self.frame.root_depth != top.depth {
-                break;
-            }
-            let new_depth = top.depth.saturating_sub(1);
-            self.root_pop_to(new_depth)?;
+            self.ssa_pop_tracked_root(si)?;
         }
         Ok(())
     }
 
-    /// Pop trailing dead SSA roots that are the current shadow-stack top.
-    pub(super) fn pop_dead_ssa_roots(&mut self, idx: usize, stack_base: usize) -> Result<()> {
-        while self.frame.ssa_root_stack.len() > stack_base {
-            let Some(top) = self.frame.ssa_root_stack.last() else {
-                break;
-            };
-            if top.last_use.is_some_and(|lu| lu > idx) || self.frame.root_depth != top.depth {
+    /// Pop trailing unused SSA roots (`last_use == None`), including buried entries.
+    pub(super) fn pop_unused_ssa_roots(&mut self, stack_base: usize) -> Result<()> {
+        loop {
+            let len = self.frame.ssa_root_stack.len();
+            if len <= stack_base {
                 break;
             }
-            let new_depth = top.depth.saturating_sub(1);
-            self.root_pop_to(new_depth)?;
+            let si = self.frame.ssa_root_stack[stack_base..]
+                .iter()
+                .position(|top| top.last_use.is_none())
+                .map(|p| stack_base + p);
+            let Some(si) = si else {
+                break;
+            };
+            self.ssa_pop_tracked_root(si)?;
+        }
+        Ok(())
+    }
+
+    /// Pop dead SSA roots (`last_use <= idx`), including non-LIFO tops via swap_remove.
+    pub(super) fn pop_dead_ssa_roots(&mut self, idx: usize, stack_base: usize) -> Result<()> {
+        loop {
+            let len = self.frame.ssa_root_stack.len();
+            if len <= stack_base {
+                break;
+            }
+            let si = self.frame.ssa_root_stack[stack_base..]
+                .iter()
+                .position(|e| e.last_use.is_none() || e.last_use.is_some_and(|lu| lu <= idx))
+                .map(|p| stack_base + p);
+            let Some(si) = si else {
+                break;
+            };
+            self.ssa_pop_tracked_root(si)?;
         }
         Ok(())
     }
@@ -522,14 +545,94 @@ impl<'ctx> Codegen<'ctx> {
     }
 }
 
+/// When the last use of `local` after `after` sits under one arm of the final-use
+/// `If` let, return that arm (enables early pop before the sibling arm runs).
+pub(crate) fn exclusive_if_arm_at_last_use(
+    block: &Block,
+    after: usize,
+    local: Local,
+) -> Option<crate::state::IfArmExclusive> {
+    use crate::state::IfArmExclusive;
+    let last = last_use_index(block, after, local)?;
+    let Op::Let {
+        value: Value::If {
+            then_block,
+            else_block,
+            ..
+        },
+        ..
+    } = &block.ops[last]
+    else {
+        return None;
+    };
+    let then = block_uses_local(then_block, local);
+    let else_ = block_uses_local(else_block, local);
+    match (then, else_) {
+        (true, false) => Some(IfArmExclusive::Then),
+        (false, true) => Some(IfArmExclusive::Else),
+        _ => None,
+    }
+}
+
+/// `true` when the last use of `local` after `after` is confined to a `Loop` let
+/// (no flat uses in the same block after the loop).
+pub(crate) fn last_use_confined_to_loop(block: &Block, after: usize, local: Local) -> bool {
+    let Some(last) = last_use_index(block, after, local) else {
+        return false;
+    };
+    matches!(
+        block.ops.get(last),
+        Some(Op::Let {
+            value: Value::Loop { .. },
+            ..
+        })
+    )
+}
+
+/// `true` when the last use of `local` after `after` is confined to a `Lambda` / `AllocClosure` let.
+pub(crate) fn last_use_confined_to_lambda(block: &Block, after: usize, local: Local) -> bool {
+    let Some(last) = last_use_index(block, after, local) else {
+        return false;
+    };
+    matches!(
+        block.ops.get(last),
+        Some(Op::Let {
+            value: Value::Lambda { .. } | Value::AllocClosure { .. },
+            ..
+        })
+    )
+}
+
+/// Cross-block last-use site for early shadow-stack pop at region exit.
+pub(crate) fn cross_block_last_use(
+    block: &Block,
+    after: usize,
+    local: Local,
+) -> Option<crate::state::CrossBlockLastUse> {
+    use crate::state::CrossBlockLastUse;
+    exclusive_if_arm_at_last_use(block, after, local)
+        .map(CrossBlockLastUse::IfArm)
+        .or_else(|| {
+            last_use_confined_to_loop(block, after, local).then_some(CrossBlockLastUse::Loop)
+        })
+        .or_else(|| {
+            last_use_confined_to_lambda(block, after, local).then_some(CrossBlockLastUse::Lambda)
+        })
+}
+
 /// Last op index in `block.ops[after..]` that uses `local` (nested If/Loop count
-/// as a use of the containing op). `None` if unused after `after`.
+/// as a use of the containing op). Treats `block.result == local` as live through
+/// the final op. `None` if unused after `after`.
 pub(crate) fn last_use_index(block: &Block, after: usize, local: Local) -> Option<usize> {
     let mut last = None;
     for (i, op) in block.ops.iter().enumerate().skip(after) {
         if op_uses_local(op, local) {
             last = Some(i);
         }
+    }
+    if block.result == Some(local) {
+        let end = block.ops.len().saturating_sub(1);
+        last = Some(last.map_or(end, |l| l.max(end)));
     }
     last
 }
@@ -553,29 +656,68 @@ pub(crate) fn live_range_skip_root_ok(block: &Block, let_idx: usize, local: Loca
     true
 }
 
-/// Simulated LIFO early-pop: after emitting op `idx`, drop trailing SSA roots
-/// whose last use is `None` (already dead) or `<= idx`, while they are the
-/// shadow-stack top.
+/// Simulated early-pop: after emitting op `idx`, drop SSA roots whose last use is
+/// `None` or `<= idx`, using swap_remove for buried dead roots.
 ///
-/// `stack_base` hides outer-block roots (nested If/Loop must not pop them).
+/// Tuple: `(last_use, depth, roots_index)`.
 pub(crate) fn pop_dead_ssa_roots_sim(
-    stack: &mut Vec<(Option<usize>, u32)>,
+    stack: &mut Vec<(Option<usize>, u32, usize)>,
     root_depth: &mut u32,
     idx: usize,
     stack_base: usize,
 ) {
-    while stack.len() > stack_base {
-        let Some(&(last_use, depth)) = stack.last() else {
+    loop {
+        if stack.len() <= stack_base {
+            break;
+        }
+        let si = stack[stack_base..]
+            .iter()
+            .position(|(lu, _, _)| lu.is_none() || lu.is_some_and(|l| l <= idx))
+            .map(|p| stack_base + p);
+        let Some(si) = si else {
             break;
         };
-        if last_use.is_some_and(|lu| lu > idx) {
+        let roots_index = stack[si].2;
+        let top = root_depth.saturating_sub(1) as usize;
+        if roots_index == top {
+            *root_depth -= 1;
+        } else {
+            *root_depth -= 1;
+        }
+        stack.remove(si);
+        for (_, _, ri) in &mut stack[si..] {
+            if *ri > roots_index {
+                *ri -= 1;
+            }
+        }
+    }
+}
+
+/// Like [`pop_dead_ssa_roots_sim`] but only for `last_use == None`.
+pub(crate) fn pop_unused_ssa_roots_sim(
+    stack: &mut Vec<(Option<usize>, u32, usize)>,
+    root_depth: &mut u32,
+    stack_base: usize,
+) {
+    loop {
+        if stack.len() <= stack_base {
             break;
         }
-        if *root_depth != depth {
+        let si = stack[stack_base..]
+            .iter()
+            .position(|(lu, _, _)| lu.is_none())
+            .map(|p| stack_base + p);
+        let Some(si) = si else {
             break;
-        }
+        };
+        let roots_index = stack[si].2;
         *root_depth -= 1;
-        stack.pop();
+        stack.remove(si);
+        for (_, _, ri) in &mut stack[si..] {
+            if *ri > roots_index {
+                *ri -= 1;
+            }
+        }
     }
 }
 
@@ -712,6 +854,134 @@ fn block_uses_local(block: &Block, local: Local) -> bool {
     block.ops.iter().any(|op| op_uses_local(op, local))
 }
 
+/// When `local` appears under a `Value::If`, return the sole arm block that mentions it.
+fn exclusive_if_arm_block<'a>(
+    then_block: &'a Block,
+    else_block: &'a Block,
+    local: Local,
+) -> Option<&'a Block> {
+    let then_u = block_uses_local(then_block, local);
+    let else_u = block_uses_local(else_block, local);
+    match (then_u, else_u) {
+        (true, false) => Some(then_block),
+        (false, true) => Some(else_block),
+        _ => None,
+    }
+}
+
+fn builtin_recv_use_ok(name: &Builtin, args: &[Local], local: Local, allow_mutating: bool) -> bool {
+    let read_only = matches!(
+        name,
+        Builtin::ListGet | Builtin::ListLen | Builtin::Contains
+    );
+    let mutating = matches!(
+        name,
+        Builtin::ListAppend
+            | Builtin::ListConcat
+            | Builtin::ListTake
+            | Builtin::ListSlice
+            | Builtin::MapSet
+            | Builtin::MapRemove
+            | Builtin::SetInsert
+            | Builtin::ListReverse
+            | Builtin::ListSort
+            | Builtin::ListSortByKeys
+    );
+    let recv_ok = if allow_mutating {
+        read_only || mutating
+    } else {
+        read_only
+    };
+    recv_ok && args.first() == Some(&local) && args[1..].iter().all(|a| *a != local)
+}
+
+/// `true` when every use of `local` in `block.ops[after..]` is as a `Call`/`IndirectCall` arg.
+pub(crate) fn block_uses_only_as_call_arg(block: &Block, after: usize, local: Local) -> bool {
+    if block.result == Some(local) {
+        return false;
+    }
+    block_ops_use_only_as_call_arg(&block.ops[after..], local)
+}
+
+fn block_ops_use_only_as_call_arg(ops: &[Op], local: Local) -> bool {
+    let mut uses = 0usize;
+    let mut only_arg = true;
+    for op in ops {
+        if !op_uses_local(op, local) {
+            continue;
+        }
+        uses += 1;
+        let ok = match op {
+            Op::Let { value, .. } => match value {
+                Value::Call { args, .. } | Value::IndirectCall { args, .. } => {
+                    args.contains(&local)
+                }
+                Value::If {
+                    then_block,
+                    else_block,
+                    ..
+                } => exclusive_if_arm_block(then_block, else_block, local)
+                    .is_some_and(|arm| block_uses_only_as_call_arg(arm, 0, local)),
+                _ => false,
+            },
+            _ => false,
+        };
+        if !ok {
+            only_arg = false;
+            break;
+        }
+    }
+    uses >= 1 && only_arg
+}
+
+/// `true` when every use of `local` in `block.ops[after..]` is as the receiver of an allowed
+/// container builtin. `allow_mutating` covers alias-rooted lets; AdtField extracts with a
+/// rooted parent may only use read-only receivers (no field retain for COW).
+pub(crate) fn block_uses_only_as_builtin_recv(
+    block: &Block,
+    after: usize,
+    local: Local,
+    allow_mutating: bool,
+) -> bool {
+    if block.result == Some(local) {
+        return false;
+    }
+    block_ops_use_only_as_builtin_recv(&block.ops[after..], local, allow_mutating)
+}
+
+fn block_ops_use_only_as_builtin_recv(ops: &[Op], local: Local, allow_mutating: bool) -> bool {
+    let mut uses = 0usize;
+    let mut only_recv = true;
+    for op in ops {
+        if !op_uses_local(op, local) {
+            continue;
+        }
+        uses += 1;
+        let ok = match op {
+            Op::Let {
+                value: Value::Builtin { name, args, .. },
+                ..
+            } => builtin_recv_use_ok(name, args, local, allow_mutating),
+            Op::Let {
+                value:
+                    Value::If {
+                        then_block,
+                        else_block,
+                        ..
+                    },
+                ..
+            } => exclusive_if_arm_block(then_block, else_block, local)
+                .is_some_and(|arm| block_uses_only_as_builtin_recv(arm, 0, local, allow_mutating)),
+            _ => false,
+        };
+        if !ok {
+            only_recv = false;
+            break;
+        }
+    }
+    uses >= 1 && only_recv
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -745,6 +1015,156 @@ mod tests {
             args: vec![xs],
             result_ty: None,
         }
+    }
+
+    fn adt_field(base: Local, idx: i64) -> Value {
+        Value::Builtin {
+            name: Builtin::AdtField,
+            args: vec![base, Local(99), Local(100)],
+            result_ty: None,
+        }
+    }
+
+    fn heap_call_arg(local: Local) -> Value {
+        Value::Call {
+            fun: "f".into(),
+            args: vec![local],
+        }
+    }
+
+    #[test]
+    fn block_uses_only_as_call_arg_accepts_single_call() {
+        let t = Local(1);
+        let block = Block {
+            ops: vec![
+                let_op(t, adt_field(Local(0), 0)),
+                let_op(Local(2), heap_call_arg(t)),
+            ],
+            result: Some(Local(2)),
+        };
+        assert!(block_uses_only_as_call_arg(&block, 1, t));
+    }
+
+    #[test]
+    fn block_uses_only_as_call_arg_rejects_non_call_use() {
+        let t = Local(1);
+        let block = Block {
+            ops: vec![
+                let_op(t, adt_field(Local(0), 0)),
+                let_op(Local(2), list_len(t)),
+            ],
+            result: Some(Local(2)),
+        };
+        assert!(!block_uses_only_as_call_arg(&block, 1, t));
+    }
+
+    #[test]
+    fn block_uses_only_as_call_arg_accepts_exclusive_if_then_arm() {
+        let t = Local(1);
+        let cond = Local(5);
+        let then_b = Block {
+            ops: vec![let_op(Local(2), heap_call_arg(t))],
+            result: Some(Local(2)),
+        };
+        let block = Block {
+            ops: vec![
+                let_op(t, adt_field(Local(0), 0)),
+                let_op(
+                    Local(3),
+                    Value::If {
+                        cond,
+                        then_block: Box::new(then_b),
+                        else_block: Box::new(empty_block(Some(Local(4)))),
+                    },
+                ),
+            ],
+            result: Some(Local(3)),
+        };
+        assert!(block_uses_only_as_call_arg(&block, 1, t));
+    }
+
+    #[test]
+    fn block_uses_only_as_call_arg_rejects_if_both_arms() {
+        let t = Local(1);
+        let cond = Local(5);
+        let then_b = Block {
+            ops: vec![let_op(Local(2), heap_call_arg(t))],
+            result: Some(Local(2)),
+        };
+        let else_b = Block {
+            ops: vec![let_op(Local(4), list_len(t))],
+            result: Some(Local(4)),
+        };
+        let block = Block {
+            ops: vec![
+                let_op(t, adt_field(Local(0), 0)),
+                let_op(
+                    Local(3),
+                    Value::If {
+                        cond,
+                        then_block: Box::new(then_b),
+                        else_block: Box::new(else_b),
+                    },
+                ),
+            ],
+            result: Some(Local(3)),
+        };
+        assert!(!block_uses_only_as_call_arg(&block, 1, t));
+    }
+
+    #[test]
+    fn block_uses_only_as_builtin_recv_accepts_exclusive_if_then_arm() {
+        let t = Local(1);
+        let cond = Local(5);
+        let then_b = Block {
+            ops: vec![let_op(Local(2), list_len(t))],
+            result: Some(Local(2)),
+        };
+        let block = Block {
+            ops: vec![
+                let_op(t, adt_field(Local(0), 0)),
+                let_op(
+                    Local(3),
+                    Value::If {
+                        cond,
+                        then_block: Box::new(then_b),
+                        else_block: Box::new(empty_block(Some(Local(4)))),
+                    },
+                ),
+            ],
+            result: Some(Local(3)),
+        };
+        assert!(block_uses_only_as_builtin_recv(&block, 1, t, false));
+    }
+
+    #[test]
+    fn block_uses_only_as_builtin_recv_read_only_without_mutating() {
+        let t = Local(1);
+        let block = Block {
+            ops: vec![
+                let_op(t, adt_field(Local(0), 0)),
+                let_op(Local(2), list_len(t)),
+            ],
+            result: Some(Local(2)),
+        };
+        assert!(block_uses_only_as_builtin_recv(&block, 1, t, false));
+        assert!(block_uses_only_as_builtin_recv(&block, 1, t, true));
+    }
+
+    #[test]
+    fn block_uses_only_as_builtin_recv_rejects_mutating_when_not_allowed() {
+        let t = Local(1);
+        let append = Value::Builtin {
+            name: Builtin::ListAppend,
+            args: vec![t, Local(3)],
+            result_ty: None,
+        };
+        let block = Block {
+            ops: vec![let_op(t, adt_field(Local(0), 0)), let_op(Local(2), append)],
+            result: Some(Local(2)),
+        };
+        assert!(!block_uses_only_as_builtin_recv(&block, 1, t, false));
+        assert!(block_uses_only_as_builtin_recv(&block, 1, t, true));
     }
 
     #[test]
@@ -982,14 +1402,233 @@ mod tests {
     }
 
     #[test]
-    fn early_pop_lifo_pops_top_then_uncovers_dead() {
-        // xs last_use=1, ys last_use=2; after 1 cannot pop xs (ys on top);
-        // after 2 pop ys then xs.
-        let mut stack = vec![(Some(1), 1u32), (Some(2), 2u32)];
+    fn last_use_index_counts_block_result() {
+        let xs = Local(0);
+        let block = Block {
+            ops: vec![let_op(xs, alloc_list(vec![]))],
+            result: Some(xs),
+        };
+        assert_eq!(last_use_index(&block, 0, xs), Some(0));
+    }
+
+    #[test]
+    fn exclusive_if_arm_then_only() {
+        use crate::state::IfArmExclusive;
+        let xs = Local(0);
+        let cond = Local(1);
+        let then_b = Block {
+            ops: vec![let_op(Local(2), list_len(xs))],
+            result: Some(Local(2)),
+        };
+        let block = Block {
+            ops: vec![
+                let_op(xs, alloc_list(vec![])),
+                let_op(
+                    Local(3),
+                    Value::If {
+                        cond,
+                        then_block: Box::new(then_b),
+                        else_block: Box::new(empty_block(Some(Local(4)))),
+                    },
+                ),
+            ],
+            result: Some(Local(3)),
+        };
+        assert_eq!(
+            exclusive_if_arm_at_last_use(&block, 1, xs),
+            Some(IfArmExclusive::Then)
+        );
+    }
+
+    #[test]
+    fn exclusive_if_arm_else_only() {
+        use crate::state::IfArmExclusive;
+        let xs = Local(0);
+        let cond = Local(1);
+        let else_b = Block {
+            ops: vec![let_op(Local(2), list_len(xs))],
+            result: Some(Local(2)),
+        };
+        let block = Block {
+            ops: vec![
+                let_op(xs, alloc_list(vec![])),
+                let_op(
+                    Local(3),
+                    Value::If {
+                        cond,
+                        then_block: Box::new(empty_block(Some(Local(4)))),
+                        else_block: Box::new(else_b),
+                    },
+                ),
+            ],
+            result: Some(Local(3)),
+        };
+        assert_eq!(
+            exclusive_if_arm_at_last_use(&block, 1, xs),
+            Some(IfArmExclusive::Else)
+        );
+    }
+
+    #[test]
+    fn exclusive_if_arm_none_when_both_or_after_if() {
+        use crate::state::IfArmExclusive;
+        let xs = Local(0);
+        let cond = Local(1);
+        let use_xs = || Block {
+            ops: vec![let_op(Local(9), list_len(xs))],
+            result: Some(Local(9)),
+        };
+        let both = Block {
+            ops: vec![
+                let_op(xs, alloc_list(vec![])),
+                let_op(
+                    Local(3),
+                    Value::If {
+                        cond,
+                        then_block: Box::new(use_xs()),
+                        else_block: Box::new(use_xs()),
+                    },
+                ),
+            ],
+            result: Some(Local(3)),
+        };
+        assert_eq!(exclusive_if_arm_at_last_use(&both, 1, xs), None);
+
+        let flat_after = Block {
+            ops: vec![
+                let_op(xs, alloc_list(vec![])),
+                let_op(
+                    Local(3),
+                    Value::If {
+                        cond,
+                        then_block: Box::new(use_xs()),
+                        else_block: Box::new(empty_block(Some(Local(4)))),
+                    },
+                ),
+                let_op(Local(5), list_len(xs)),
+            ],
+            result: Some(Local(5)),
+        };
+        assert_eq!(exclusive_if_arm_at_last_use(&flat_after, 1, xs), None);
+    }
+
+    #[test]
+    fn cross_block_last_use_loop_confined() {
+        use crate::state::CrossBlockLastUse;
+        let xs = Local(0);
+        let body = Block {
+            ops: vec![let_op(Local(1), list_len(xs))],
+            result: Some(Local(1)),
+        };
+        let block = Block {
+            ops: vec![
+                let_op(xs, alloc_list(vec![])),
+                let_op(
+                    Local(2),
+                    Value::Loop {
+                        header: Box::new(empty_block(Some(Local(3)))),
+                        body: Box::new(body),
+                        latch: Box::new(empty_block(None)),
+                    },
+                ),
+                let_op(
+                    Local(4),
+                    Value::Call {
+                        fun: "println".into(),
+                        args: vec![],
+                    },
+                ),
+            ],
+            result: Some(Local(2)),
+        };
+        assert_eq!(
+            cross_block_last_use(&block, 1, xs),
+            Some(CrossBlockLastUse::Loop)
+        );
+        assert!(!last_use_confined_to_loop(&block, 1, Local(4)));
+    }
+
+    #[test]
+    fn cross_block_last_use_lambda_confined() {
+        use crate::state::CrossBlockLastUse;
+        let xs = Local(0);
+        let body = Block {
+            ops: vec![let_op(Local(1), list_len(xs))],
+            result: Some(Local(1)),
+        };
+        let block = Block {
+            ops: vec![
+                let_op(xs, alloc_list(vec![])),
+                let_op(
+                    Local(2),
+                    Value::Lambda {
+                        params: vec![],
+                        body: Box::new(body),
+                    },
+                ),
+                let_op(
+                    Local(4),
+                    Value::Call {
+                        fun: "println".into(),
+                        args: vec![],
+                    },
+                ),
+            ],
+            result: Some(Local(2)),
+        };
+        assert_eq!(
+            cross_block_last_use(&block, 1, xs),
+            Some(CrossBlockLastUse::Lambda)
+        );
+        assert!(last_use_confined_to_lambda(&block, 1, xs));
+        assert!(!last_use_confined_to_lambda(&block, 1, Local(4)));
+    }
+
+    #[test]
+    fn cross_block_last_use_alloc_closure_confined() {
+        use crate::state::CrossBlockLastUse;
+        let xs = Local(0);
+        let block = Block {
+            ops: vec![
+                let_op(xs, alloc_list(vec![])),
+                let_op(
+                    Local(2),
+                    Value::AllocClosure {
+                        fun: "f".into(),
+                        captures: vec![xs],
+                    },
+                ),
+            ],
+            result: Some(Local(2)),
+        };
+        assert_eq!(
+            cross_block_last_use(&block, 1, xs),
+            Some(CrossBlockLastUse::Lambda)
+        );
+        assert!(last_use_confined_to_lambda(&block, 1, xs));
+    }
+
+    #[test]
+    fn early_pop_swap_removes_buried_dead() {
+        // xs last_use=1 @ roots 0, ys last_use=2 @ roots 1 — xs dies under ys.
+        let mut stack = vec![(Some(1), 1u32, 0usize), (Some(2), 2u32, 1usize)];
         let mut depth = 2u32;
         pop_dead_ssa_roots_sim(&mut stack, &mut depth, 1, 0);
-        assert_eq!(stack, vec![(Some(1), 1), (Some(2), 2)]);
-        assert_eq!(depth, 2);
+        assert_eq!(stack, vec![(Some(2), 2u32, 0usize)]);
+        assert_eq!(depth, 1);
+        pop_dead_ssa_roots_sim(&mut stack, &mut depth, 2, 0);
+        assert!(stack.is_empty());
+        assert_eq!(depth, 0);
+    }
+
+    #[test]
+    fn early_pop_lifo_pops_top_then_uncovers_dead() {
+        // Same shape; after idx=1 the buried xs is removed immediately.
+        let mut stack = vec![(Some(1), 1u32, 0usize), (Some(2), 2u32, 1usize)];
+        let mut depth = 2u32;
+        pop_dead_ssa_roots_sim(&mut stack, &mut depth, 1, 0);
+        assert_eq!(stack.len(), 1);
+        assert_eq!(depth, 1);
         pop_dead_ssa_roots_sim(&mut stack, &mut depth, 2, 0);
         assert!(stack.is_empty());
         assert_eq!(depth, 0);
@@ -997,19 +1636,28 @@ mod tests {
 
     #[test]
     fn early_pop_respects_nested_stack_base() {
-        let mut stack = vec![(Some(0), 1u32), (Some(0), 2u32)];
+        let mut stack = vec![(Some(0), 1u32, 0usize), (Some(0), 2u32, 1usize)];
         let mut depth = 2u32;
         pop_dead_ssa_roots_sim(&mut stack, &mut depth, 0, 1);
-        assert_eq!(stack, vec![(Some(0), 1)]);
+        assert_eq!(stack, vec![(Some(0), 1u32, 0usize)]);
         assert_eq!(depth, 1);
     }
 
     #[test]
     fn early_pop_unused_none_is_immediately_dead() {
-        let mut stack = vec![(None, 1u32)];
+        let mut stack = vec![(None, 1u32, 0usize)];
         let mut depth = 1u32;
         pop_dead_ssa_roots_sim(&mut stack, &mut depth, 0, 0);
         assert!(stack.is_empty());
         assert_eq!(depth, 0);
+    }
+
+    #[test]
+    fn unused_pop_swap_removes_buried() {
+        let mut stack = vec![(None, 1u32, 0usize), (Some(0), 2u32, 1usize)];
+        let mut depth = 2u32;
+        pop_unused_ssa_roots_sim(&mut stack, &mut depth, 0);
+        assert_eq!(stack, vec![(Some(0), 2u32, 0usize)]);
+        assert_eq!(depth, 1);
     }
 }

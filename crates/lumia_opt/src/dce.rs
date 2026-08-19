@@ -9,10 +9,11 @@
 //!
 //! Each block runs to a **fixed point**: dropping a dead Builtin can make its
 //! argument locals dead only on a subsequent seed/retain pass.
+use crate::builtin_effect::builtin_may_trap_or_effect;
 use crate::ir_util::collect_float_locals;
 use lumia_core::{
-    collect_ssa_live_refs, for_each_local, for_each_nested_block_mut, Block, CoreFun, CoreModule,
-    Op, Value,
+    collect_ssa_live_refs, for_each_ctrl_nested_in_block_mut, for_each_let_in_block,
+    for_each_local, Block, CoreFun, CoreModule, Op, Value,
 };
 use lumia_core::{CoreBinOp as BinOp, CoreUnOp as UnOp};
 use rustc_hash::FxHashSet as HashSet;
@@ -43,16 +44,7 @@ fn dce_fun(f: &mut CoreFun) {
 }
 
 fn dce_block(block: &mut Block, float_locals: &HashSet<u32>) {
-    for op in &mut block.ops {
-        match op {
-            Op::Let { value, .. } => {
-                for_each_nested_block_mut(value, &mut |nested| {
-                    dce_block(nested, float_locals);
-                });
-            }
-            _ => {}
-        }
-    }
+    for_each_ctrl_nested_in_block_mut(block, &mut |nested| dce_block(nested, float_locals));
 
     // Fixed point: dropping a dead Builtin (e.g. unused Range) can expose its
     // arg locals as dead only on the next seed pass (`collect_ssa_live_refs`
@@ -74,20 +66,18 @@ fn dce_block_once(block: &mut Block, float_locals: &HashSet<u32>) {
     let mut changed = true;
     while changed {
         changed = false;
-        for op in &block.ops {
-            if let Op::Let { local, value, .. } = op {
-                if must_keep(value, float_locals) && live.insert(local.0) {
+        for_each_let_in_block(block, &mut |local, value, _pure| {
+            if must_keep(value, float_locals) && live.insert(local.0) {
+                changed = true;
+            }
+            if live.contains(&local.0) {
+                let before = live.len();
+                mark_uses_shallow(value, &mut live);
+                if live.len() != before {
                     changed = true;
                 }
-                if live.contains(&local.0) {
-                    let before = live.len();
-                    mark_uses_shallow(value, &mut live);
-                    if live.len() != before {
-                        changed = true;
-                    }
-                }
             }
-        }
+        });
     }
 
     block.ops.retain(|op| match op {
@@ -121,7 +111,7 @@ fn must_keep(value: &Value, float_locals: &HashSet<u32>) -> bool {
             op: UnOp::Neg,
             operand,
         } => !float_locals.contains(&operand.0),
-        Value::Builtin { name, .. } => crate::memo::builtin_may_trap_or_effect(name),
+        Value::Builtin { name, .. } => builtin_may_trap_or_effect(name),
         _ => false,
     }
 }

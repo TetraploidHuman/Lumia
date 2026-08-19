@@ -1,6 +1,11 @@
-use lumia_core::{for_each_ctrl_nested_block_mut, Block, CoreModule, Local, Op, Value};
+use crate::builtin_effect::builtin_may_trap_or_effect;
+use lumia_core::{
+    for_each_ctrl_nested_block_mut, for_each_top_level_op_in_block_mut, Block, CoreModule, Local,
+    Op, Value,
+};
 use lumia_core::{CoreBinOp as BinOp, CoreUnOp as UnOp};
 use lumia_hir::Builtin;
+use lumia_syntax::Sym;
 use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
@@ -30,13 +35,13 @@ pub fn cse_module(module: &mut CoreModule) {
     // `foreign "C" pure` is an honor-system claim; libc calls like `getpid` /
     // `getenv` are not referentially transparent. Inline already skips `external`.
     // Also skip pure wrappers that return heap objects (`zeros` → shared buffer).
-    let pure_funs: HashSet<String> = module
+    let pure_funs: HashSet<Sym> = module
         .functions
         .iter()
         .filter(|f| f.effect.is_pure() && f.external.is_none() && ret_is_cse_safe(&f.ret_ty))
         .map(|f| f.name.clone())
         .collect();
-    let float_rets: HashSet<String> = module
+    let float_rets: HashSet<Sym> = module
         .functions
         .iter()
         .filter(|f| matches!(f.ret_ty, Type::Float))
@@ -57,49 +62,47 @@ pub fn cse_module(module: &mut CoreModule) {
 
 fn cse_block(
     block: &mut Block,
-    pure_funs: &HashSet<String>,
-    float_rets: &HashSet<String>,
+    pure_funs: &HashSet<Sym>,
+    float_rets: &HashSet<Sym>,
     float_locals: &mut HashSet<u32>,
 ) {
     let mut seen: HashMap<ExprKey, u32> = HashMap::default();
     let mut rewrite: HashMap<u32, u32> = HashMap::default();
 
-    for op in &mut block.ops {
-        match op {
-            Op::Let {
-                local,
-                value,
-                pure_region,
-            } if *pure_region => {
-                rewrite_value(value, &rewrite);
-                note_float_local(local.0, value, float_locals, float_rets);
-                if let Some(key) = expr_key(value, pure_funs, float_locals) {
-                    if let Some(&prev) = seen.get(&key) {
-                        rewrite.insert(local.0, prev);
-                        *value = Value::Local(Local(prev));
-                    } else {
-                        seen.insert(key, local.0);
-                    }
-                }
-                for_each_ctrl_nested_block_mut(value, &mut |nested| {
-                    cse_block(nested, pure_funs, float_rets, float_locals);
-                });
-            }
-            Op::Let { local, value, .. } => {
-                rewrite_value(value, &rewrite);
-                note_float_local(local.0, value, float_locals, float_rets);
-                for_each_ctrl_nested_block_mut(value, &mut |nested| {
-                    cse_block(nested, pure_funs, float_rets, float_locals);
-                });
-            }
-            Op::Assign { value, .. } | Op::Return { value } => {
-                if let Some(&r) = rewrite.get(&value.0) {
-                    *value = Local(r);
+    for_each_top_level_op_in_block_mut(block, &mut |op| match op {
+        Op::Let {
+            local,
+            value,
+            pure_region,
+        } if *pure_region => {
+            rewrite_value(value, &rewrite);
+            note_float_local(local.0, value, float_locals, float_rets);
+            if let Some(key) = expr_key(value, pure_funs, float_locals) {
+                if let Some(&prev) = seen.get(&key) {
+                    rewrite.insert(local.0, prev);
+                    *value = Value::Local(Local(prev));
+                } else {
+                    seen.insert(key, local.0);
                 }
             }
-            Op::Break | Op::Continue => {}
+            for_each_ctrl_nested_block_mut(value, &mut |nested| {
+                cse_block(nested, pure_funs, float_rets, float_locals);
+            });
         }
-    }
+        Op::Let { local, value, .. } => {
+            rewrite_value(value, &rewrite);
+            note_float_local(local.0, value, float_locals, float_rets);
+            for_each_ctrl_nested_block_mut(value, &mut |nested| {
+                cse_block(nested, pure_funs, float_rets, float_locals);
+            });
+        }
+        Op::Assign { value, .. } | Op::Return { value } => {
+            if let Some(&r) = rewrite.get(&value.0) {
+                *value = Local(r);
+            }
+        }
+        Op::Break | Op::Continue => {}
+    });
     if let Some(r) = block.result {
         if let Some(&nr) = rewrite.get(&r.0) {
             block.result = Some(Local(nr));
@@ -111,7 +114,7 @@ fn note_float_local(
     local: u32,
     value: &Value,
     float_locals: &mut HashSet<u32>,
-    float_rets: &HashSet<String>,
+    float_rets: &HashSet<Sym>,
 ) {
     let is_float = match value {
         Value::Float(_) => true,
@@ -135,7 +138,7 @@ fn note_float_local(
 
 fn expr_key(
     value: &Value,
-    pure_funs: &HashSet<String>,
+    pure_funs: &HashSet<Sym>,
     float_locals: &HashSet<u32>,
 ) -> Option<ExprKey> {
     match value {
@@ -183,7 +186,7 @@ fn expr_key(
 fn builtin_is_pure(b: &Builtin) -> bool {
     // Align with LICM: do not CSE traps / effects / parallel map (same key in
     // divergent control flow must not erase a failing path).
-    if super::licm::builtin_may_trap_or_effect(b) {
+    if builtin_may_trap_or_effect(b) {
         return false;
     }
     // Heap-returning builtins must not CSE: shared identity breaks under COW

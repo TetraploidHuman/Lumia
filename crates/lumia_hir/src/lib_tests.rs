@@ -1227,6 +1227,76 @@ val main = {
 }
 
 #[test]
+fn iota_let_map_len_and_gets_materializes() {
+    let src = r#"
+module M
+val main = {
+  val doubled = (1..5).map({ x -> x * 2 })
+  doubled.len()
+  doubled.get(0)
+  doubled.get(4)
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let body = hir
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Item::Fun(f) if f.name == "main" => Some(&f.body),
+            _ => None,
+        })
+        .expect("main");
+    let mut par_map = 0usize;
+    let mut fuse_seen = 0usize;
+    for_each_expr(body, &mut |e| match e {
+        Expr::Let { name, .. } if name.starts_with("__fuse_seen") => fuse_seen += 1,
+        Expr::BuiltinCall {
+            name: Builtin::ListParMap,
+            ..
+        } => par_map += 1,
+        _ => {}
+    });
+    assert_eq!(fuse_seen, 0, "len+gets on iota map must not shared-scan");
+    assert!(
+        par_map >= 1,
+        "len+gets on iota lone map must keep ListParMap (range_map golden)"
+    );
+}
+
+#[test]
+fn iota_let_filter_len_and_gets_builds() {
+    let src = r#"
+module M
+val main = {
+  val odds = (0..<10).filter({ x -> x % 2 == 1 })
+  odds.len()
+  odds.get(0)
+  odds.get(4)
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let body = hir
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Item::Fun(f) if f.name == "main" => Some(&f.body),
+            _ => None,
+        })
+        .expect("main");
+    let mut flt_acc = 0usize;
+    let mut fuse_seen = 0usize;
+    for_each_expr(body, &mut |e| match e {
+        Expr::Let { name, .. } if name.starts_with("__flt_acc") => flt_acc += 1,
+        Expr::Let { name, .. } if name.starts_with("__fuse_seen") => fuse_seen += 1,
+        _ => {}
+    });
+    assert_eq!(fuse_seen, 0, "len+gets on iota filter must not shared-scan");
+    assert_eq!(flt_acc, 1, "expected filter builder for range_map odds");
+}
+
+#[test]
 fn map_filter_drop_fuses_skip_builder() {
     let src = r#"
 module M
@@ -1649,6 +1719,177 @@ val main = {
     assert_eq!(take_n, 0, "literal take(0).isEmpty must constant-fold");
     assert_eq!(empty_acc, 0, "take(0).isEmpty must not scan");
     assert!(saw_true, "take(0).isEmpty lowers to true");
+}
+
+#[test]
+fn map_filter_drop_is_empty_short_circuits() {
+    let src = r#"
+module M
+val main = {
+  val xs = listOf(1, 2, 3, 4)
+  xs.map({ x -> x * 2 }).filter({ x -> x > 2 }).drop(1).isEmpty()
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let body = hir
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Item::Fun(f) if f.name == "main" => Some(&f.body),
+            _ => None,
+        })
+        .expect("main");
+    let mut map_acc = 0usize;
+    let mut empty_acc = 0usize;
+    let mut len_acc = 0usize;
+    let mut drop_k = 0usize;
+    for_each_expr(body, &mut |e| {
+        if let Expr::Let { name, .. } = e {
+            if name.starts_with("__map_acc") {
+                map_acc += 1;
+            }
+            if name.starts_with("__empty_acc") {
+                empty_acc += 1;
+            }
+            if name.starts_with("__len_acc") {
+                len_acc += 1;
+            }
+            if name.starts_with("__drop_k") {
+                drop_k += 1;
+            }
+        }
+    });
+    assert_eq!(map_acc, 0, "drop.isEmpty must not keep map builder");
+    assert_eq!(empty_acc, 1, "drop(n).isEmpty short-circuits after skip");
+    assert_eq!(len_acc, 0, "must not count remaining after drop");
+    assert_eq!(drop_k, 1, "expected fused drop skip");
+}
+
+#[test]
+fn map_filter_drop_drop_is_empty_short_circuits() {
+    let src = r#"
+module M
+val main = {
+  val xs = listOf(1, 2, 3, 4)
+  xs.map({ x -> x * 2 }).filter({ x -> x > 2 }).drop(1).drop(1).isEmpty()
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let body = hir
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Item::Fun(f) if f.name == "main" => Some(&f.body),
+            _ => None,
+        })
+        .expect("main");
+    let mut map_acc = 0usize;
+    let mut empty_acc = 0usize;
+    let mut len_acc = 0usize;
+    let mut drop_k = 0usize;
+    for_each_expr(body, &mut |e| {
+        if let Expr::Let { name, .. } = e {
+            if name.starts_with("__map_acc") {
+                map_acc += 1;
+            }
+            if name.starts_with("__empty_acc") {
+                empty_acc += 1;
+            }
+            if name.starts_with("__len_acc") {
+                len_acc += 1;
+            }
+            if name.starts_with("__drop_k") {
+                drop_k += 1;
+            }
+        }
+    });
+    assert_eq!(map_acc, 0, "drop.drop.isEmpty must not keep map builder");
+    assert_eq!(
+        empty_acc, 1,
+        "nested drop.isEmpty short-circuits after summed skip"
+    );
+    assert_eq!(len_acc, 0, "must not count remaining after nested drop");
+    assert_eq!(drop_k, 1, "nested drop must share one skip");
+}
+
+#[test]
+fn map_filter_take_drop_is_empty_short_circuits() {
+    let src = r#"
+module M
+val main = {
+  val xs = listOf(1, 2, 3, 4)
+  xs.map({ x -> x * 2 }).filter({ x -> x > 2 }).take(5).drop(1).isEmpty()
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let body = hir
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Item::Fun(f) if f.name == "main" => Some(&f.body),
+            _ => None,
+        })
+        .expect("main");
+    let mut map_acc = 0usize;
+    let mut empty_acc = 0usize;
+    let mut len_acc = 0usize;
+    let mut drop_k = 0usize;
+    for_each_expr(body, &mut |e| {
+        if let Expr::Let { name, .. } = e {
+            if name.starts_with("__map_acc") {
+                map_acc += 1;
+            }
+            if name.starts_with("__empty_acc") {
+                empty_acc += 1;
+            }
+            if name.starts_with("__len_acc") {
+                len_acc += 1;
+            }
+            if name.starts_with("__drop_k") {
+                drop_k += 1;
+            }
+        }
+    });
+    assert_eq!(map_acc, 0, "take.drop.isEmpty must not keep map builder");
+    assert_eq!(empty_acc, 1, "take.drop.isEmpty short-circuits after skip");
+    assert_eq!(len_acc, 0, "must not count remaining after take.drop");
+    assert_eq!(drop_k, 1, "expected fused drop skip");
+}
+
+#[test]
+fn map_filter_take_drop_exhausted_is_true() {
+    let src = r#"
+module M
+val main = {
+  val xs = listOf(1, 2, 3, 4)
+  xs.map({ x -> x * 2 }).filter({ x -> x > 2 }).take(1).drop(1).isEmpty()
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let body = hir
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Item::Fun(f) if f.name == "main" => Some(&f.body),
+            _ => None,
+        })
+        .expect("main");
+    let mut empty_acc = 0usize;
+    let mut len_acc = 0usize;
+    let mut saw_true = false;
+    for_each_expr(body, &mut |e| match e {
+        Expr::Let { name, .. } if name.starts_with("__empty_acc") => empty_acc += 1,
+        Expr::Let { name, .. } if name.starts_with("__len_acc") => len_acc += 1,
+        Expr::Bool(true, _) => saw_true = true,
+        _ => {}
+    });
+    assert_eq!(empty_acc, 0, "take(1).drop(1).isEmpty must not scan");
+    assert_eq!(len_acc, 0, "must not count");
+    assert!(saw_true, "take(n).drop(n).isEmpty lowers to true");
 }
 
 #[test]
@@ -2143,6 +2384,545 @@ val main = {
     });
     assert_eq!(map_acc, 0, "let contains must not materialize");
     assert_eq!(any_acc, 1, "expected fused any");
+}
+
+#[test]
+fn let_bound_any_deforests() {
+    let src = r#"
+module M
+val main = {
+  val xs = listOf(1, 2, 3, 4)
+  val ys = xs.map({ x -> x * 2 }).filter({ x -> x > 2 })
+  ys.any({ x -> x > 5 })
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let body = hir
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Item::Fun(f) if f.name == "main" => Some(&f.body),
+            _ => None,
+        })
+        .expect("main");
+    let mut map_acc = 0usize;
+    let mut any_acc = 0usize;
+    for_each_expr(body, &mut |e| {
+        if let Expr::Let { name, .. } = e {
+            if name.starts_with("__map_acc") {
+                map_acc += 1;
+            }
+            if name.starts_with("__any_acc") {
+                any_acc += 1;
+            }
+        }
+    });
+    assert_eq!(map_acc, 0, "let any must not materialize pipe");
+    assert_eq!(any_acc, 1, "expected fused any");
+}
+
+#[test]
+fn let_bound_all_deforests() {
+    let src = r#"
+module M
+val main = {
+  val xs = listOf(1, 2, 3, 4)
+  val ys = xs.map({ x -> x * 2 }).filter({ x -> x > 2 })
+  ys.all({ x -> x > 0 })
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let body = hir
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Item::Fun(f) if f.name == "main" => Some(&f.body),
+            _ => None,
+        })
+        .expect("main");
+    let mut map_acc = 0usize;
+    let mut all_acc = 0usize;
+    for_each_expr(body, &mut |e| {
+        if let Expr::Let { name, .. } = e {
+            if name.starts_with("__map_acc") {
+                map_acc += 1;
+            }
+            if name.starts_with("__all_acc") {
+                all_acc += 1;
+            }
+        }
+    });
+    assert_eq!(map_acc, 0, "let all must not materialize pipe");
+    assert_eq!(all_acc, 1, "expected fused all");
+}
+
+#[test]
+fn let_bound_find_deforests() {
+    let src = r#"
+module M
+val main = {
+  val xs = listOf(1, 2, 3, 4)
+  val ys = xs.map({ x -> x * 2 }).filter({ x -> x > 2 })
+  ys.find({ x -> x > 5 })
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let body = hir
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Item::Fun(f) if f.name == "main" => Some(&f.body),
+            _ => None,
+        })
+        .expect("main");
+    let mut map_acc = 0usize;
+    let mut find_acc = 0usize;
+    for_each_expr(body, &mut |e| {
+        if let Expr::Let { name, .. } = e {
+            if name.starts_with("__map_acc") {
+                map_acc += 1;
+            }
+            if name.starts_with("__find_acc") {
+                find_acc += 1;
+            }
+        }
+    });
+    assert_eq!(map_acc, 0, "let find must not materialize pipe");
+    assert_eq!(find_acc, 1, "expected fused find");
+}
+
+#[test]
+fn let_bound_fold_assoc_deforests() {
+    let src = r#"
+module M
+val main = {
+  val xs = listOf(1, 2, 3, 4)
+  val ys = xs.map({ x -> x * 2 }).filter({ x -> x > 2 })
+  ys.fold(0, { a, x -> a + x })
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let body = hir
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Item::Fun(f) if f.name == "main" => Some(&f.body),
+            _ => None,
+        })
+        .expect("main");
+    let mut map_acc = 0usize;
+    let mut fuse_x = 0usize;
+    let mut par_fold = 0usize;
+    for_each_expr(body, &mut |e| match e {
+        Expr::Let { name, .. } if name.starts_with("__map_acc") => map_acc += 1,
+        Expr::Let { name, .. } if name.starts_with("__fuse_x_") => fuse_x += 1,
+        Expr::BuiltinCall {
+            name: Builtin::ListParFold,
+            ..
+        } => par_fold += 1,
+        _ => {}
+    });
+    assert_eq!(map_acc, 0, "let fold must not materialize pipe");
+    assert_eq!(par_fold, 0, "let-bound pipe fold must not keep ListParFold");
+    assert!(fuse_x >= 1, "expected fused scan");
+}
+
+#[test]
+fn let_bound_take_fold_deforests() {
+    let src = r#"
+module M
+val main = {
+  val xs = listOf(1, 2, 3, 4)
+  val ys = xs.map({ x -> x * 2 }).filter({ x -> x > 2 })
+  ys.take(2).fold(0, { a, x -> a + x })
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let body = hir
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Item::Fun(f) if f.name == "main" => Some(&f.body),
+            _ => None,
+        })
+        .expect("main");
+    let mut map_acc = 0usize;
+    let mut par_fold = 0usize;
+    let mut fuse_x = 0usize;
+    for_each_expr(body, &mut |e| match e {
+        Expr::Let { name, .. } if name.starts_with("__map_acc") => map_acc += 1,
+        Expr::Let { name, .. } if name.starts_with("__fuse_x_") => fuse_x += 1,
+        Expr::BuiltinCall {
+            name: Builtin::ListParFold,
+            ..
+        } => par_fold += 1,
+        _ => {}
+    });
+    assert_eq!(map_acc, 0, "let take.fold must not materialize pipe");
+    assert_eq!(par_fold, 0, "must not keep ListParFold on take");
+    assert!(fuse_x >= 1, "expected fused scan");
+}
+
+#[test]
+fn let_bound_drop_drop_one_skip() {
+    let src = r#"
+module M
+val main = {
+  val xs = listOf(1, 2, 3, 4, 5)
+  val ys = xs.map({ x -> x }).filter({ x -> true })
+  ys.drop(1).drop(1)
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let body = hir
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Item::Fun(f) if f.name == "main" => Some(&f.body),
+            _ => None,
+        })
+        .expect("main");
+    let mut map_acc = 0usize;
+    let mut drop_k = 0usize;
+    for_each_expr(body, &mut |e| {
+        if let Expr::Let { name, .. } = e {
+            if name.starts_with("__map_acc") {
+                map_acc += 1;
+            }
+            if name.starts_with("__drop_k") {
+                drop_k += 1;
+            }
+        }
+    });
+    assert_eq!(map_acc, 1, "drop.drop keeps one skip builder");
+    assert_eq!(drop_k, 1, "nested drop must share one skip loop");
+}
+
+#[test]
+fn let_bound_take_take_one_fill() {
+    let src = r#"
+module M
+val main = {
+  val xs = listOf(1, 2, 3, 4, 5)
+  val ys = xs.map({ x -> x }).filter({ x -> true })
+  ys.take(3).take(1)
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let body = hir
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Item::Fun(f) if f.name == "main" => Some(&f.body),
+            _ => None,
+        })
+        .expect("main");
+    let mut map_acc = 0usize;
+    let mut take_k = 0usize;
+    for_each_expr(body, &mut |e| {
+        if let Expr::Let { name, .. } = e {
+            if name.starts_with("__map_acc") {
+                map_acc += 1;
+            }
+            if name.starts_with("__take_k") {
+                take_k += 1;
+            }
+        }
+    });
+    assert_eq!(map_acc, 1, "take.take keeps one fill builder");
+    assert_eq!(take_k, 1, "nested take must share one fill loop");
+}
+
+#[test]
+fn let_bound_drop_drop_is_empty_short_circuits() {
+    let src = r#"
+module M
+val main = {
+  val xs = listOf(1, 2, 3, 4)
+  val ys = xs.map({ x -> x * 2 }).filter({ x -> x > 2 })
+  ys.drop(1).drop(1).isEmpty()
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let body = hir
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Item::Fun(f) if f.name == "main" => Some(&f.body),
+            _ => None,
+        })
+        .expect("main");
+    let mut map_acc = 0usize;
+    let mut empty_acc = 0usize;
+    let mut drop_k = 0usize;
+    for_each_expr(body, &mut |e| {
+        if let Expr::Let { name, .. } = e {
+            if name.starts_with("__map_acc") {
+                map_acc += 1;
+            }
+            if name.starts_with("__empty_acc") {
+                empty_acc += 1;
+            }
+            if name.starts_with("__drop_k") {
+                drop_k += 1;
+            }
+        }
+    });
+    assert_eq!(map_acc, 0, "drop.drop.isEmpty must not build a list");
+    assert_eq!(empty_acc, 1, "expected fused isEmpty after summed skip");
+    assert_eq!(drop_k, 1, "nested drop must share one skip");
+}
+
+#[test]
+fn let_bound_take_drop_is_empty_short_circuits() {
+    let src = r#"
+module M
+val main = {
+  val xs = listOf(1, 2, 3, 4)
+  val ys = xs.map({ x -> x * 2 }).filter({ x -> x > 2 })
+  ys.take(5).drop(1).isEmpty()
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let body = hir
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Item::Fun(f) if f.name == "main" => Some(&f.body),
+            _ => None,
+        })
+        .expect("main");
+    let mut map_acc = 0usize;
+    let mut empty_acc = 0usize;
+    let mut len_acc = 0usize;
+    let mut drop_k = 0usize;
+    for_each_expr(body, &mut |e| {
+        if let Expr::Let { name, .. } = e {
+            if name.starts_with("__map_acc") {
+                map_acc += 1;
+            }
+            if name.starts_with("__empty_acc") {
+                empty_acc += 1;
+            }
+            if name.starts_with("__len_acc") {
+                len_acc += 1;
+            }
+            if name.starts_with("__drop_k") {
+                drop_k += 1;
+            }
+        }
+    });
+    assert_eq!(map_acc, 0, "take.drop.isEmpty must not build a list");
+    assert_eq!(empty_acc, 1, "expected fused isEmpty after skip");
+    assert_eq!(len_acc, 0, "must not count remaining after take.drop");
+    assert_eq!(drop_k, 1, "expected fused drop skip");
+}
+
+#[test]
+fn let_bound_take_drop_one_builder() {
+    let src = r#"
+module M
+val main = {
+  val xs = listOf(1, 2, 3, 4, 5)
+  val ys = xs.map({ x -> x }).filter({ x -> true })
+  ys.take(3).drop(1)
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let body = hir
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Item::Fun(f) if f.name == "main" => Some(&f.body),
+            _ => None,
+        })
+        .expect("main");
+    let mut map_acc = 0usize;
+    let mut drop_k = 0usize;
+    let mut take_k = 0usize;
+    for_each_expr(body, &mut |e| {
+        if let Expr::Let { name, .. } = e {
+            if name.starts_with("__map_acc") {
+                map_acc += 1;
+            }
+            if name.starts_with("__drop_k") {
+                drop_k += 1;
+            }
+            if name.starts_with("__take_k") {
+                take_k += 1;
+            }
+        }
+    });
+    assert_eq!(map_acc, 1, "take.drop keeps one skip+fill builder");
+    assert_eq!(drop_k, 1, "expected fused drop skip");
+    assert_eq!(take_k, 1, "expected fused take counter");
+}
+
+#[test]
+fn let_bound_is_empty_deforests() {
+    let src = r#"
+module M
+val main = {
+  val xs = listOf(1, 2, 3, 4)
+  val ys = xs.map({ x -> x * 2 }).filter({ x -> x > 100 })
+  ys.isEmpty()
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let body = hir
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Item::Fun(f) if f.name == "main" => Some(&f.body),
+            _ => None,
+        })
+        .expect("main");
+    let mut map_acc = 0usize;
+    let mut empty_acc = 0usize;
+    for_each_expr(body, &mut |e| {
+        if let Expr::Let { name, .. } = e {
+            if name.starts_with("__map_acc") {
+                map_acc += 1;
+            }
+            if name.starts_with("__empty_acc") {
+                empty_acc += 1;
+            }
+        }
+    });
+    assert_eq!(map_acc, 0, "let isEmpty must not materialize pipe");
+    assert_eq!(empty_acc, 1, "expected fused isEmpty short-circuit scan");
+}
+
+#[test]
+fn let_bound_take_is_empty_short_circuits() {
+    let src = r#"
+module M
+val main = {
+  val xs = listOf(1, 2, 3, 4)
+  val ys = xs.map({ x -> x * 2 }).filter({ x -> x > 2 })
+  ys.take(2).isEmpty()
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let body = hir
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Item::Fun(f) if f.name == "main" => Some(&f.body),
+            _ => None,
+        })
+        .expect("main");
+    let mut map_acc = 0usize;
+    let mut empty_acc = 0usize;
+    let mut len_acc = 0usize;
+    for_each_expr(body, &mut |e| {
+        if let Expr::Let { name, .. } = e {
+            if name.starts_with("__map_acc") {
+                map_acc += 1;
+            }
+            if name.starts_with("__empty_acc") {
+                empty_acc += 1;
+            }
+            if name.starts_with("__len_acc") {
+                len_acc += 1;
+            }
+        }
+    });
+    assert_eq!(map_acc, 0, "let take.isEmpty must not materialize pipe");
+    assert_eq!(empty_acc, 1, "take(k>0).isEmpty ≡ inner short-circuit scan");
+    assert_eq!(len_acc, 0, "must not count the take prefix");
+}
+
+#[test]
+fn let_bound_take0_is_empty_is_true() {
+    let src = r#"
+module M
+val main = {
+  val xs = listOf(1, 2, 3)
+  val ys = xs.map({ x -> x * 2 }).filter({ x -> x > 0 })
+  ys.take(0).isEmpty()
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let body = hir
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Item::Fun(f) if f.name == "main" => Some(&f.body),
+            _ => None,
+        })
+        .expect("main");
+    let mut map_acc = 0usize;
+    let mut empty_acc = 0usize;
+    let mut saw_true = false;
+    for_each_expr(body, &mut |e| match e {
+        Expr::Let { name, .. } if name.starts_with("__map_acc") => map_acc += 1,
+        Expr::Let { name, .. } if name.starts_with("__empty_acc") => empty_acc += 1,
+        Expr::Bool(true, _) => saw_true = true,
+        _ => {}
+    });
+    assert_eq!(map_acc, 0, "take(0).isEmpty must not materialize");
+    assert_eq!(empty_acc, 0, "literal take(0).isEmpty must not scan");
+    assert!(saw_true, "take(0).isEmpty lowers to true");
+}
+
+#[test]
+fn let_bound_drop_is_empty_deforests() {
+    let src = r#"
+module M
+val main = {
+  val xs = listOf(1, 2, 3, 4)
+  val ys = xs.map({ x -> x * 2 }).filter({ x -> x > 2 })
+  ys.drop(1).isEmpty()
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let body = hir
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Item::Fun(f) if f.name == "main" => Some(&f.body),
+            _ => None,
+        })
+        .expect("main");
+    let mut map_acc = 0usize;
+    let mut empty_acc = 0usize;
+    let mut len_acc = 0usize;
+    let mut drop_k = 0usize;
+    for_each_expr(body, &mut |e| {
+        if let Expr::Let { name, .. } = e {
+            if name.starts_with("__map_acc") {
+                map_acc += 1;
+            }
+            if name.starts_with("__empty_acc") {
+                empty_acc += 1;
+            }
+            if name.starts_with("__len_acc") {
+                len_acc += 1;
+            }
+            if name.starts_with("__drop_k") {
+                drop_k += 1;
+            }
+        }
+    });
+    assert_eq!(map_acc, 0, "let drop.isEmpty must not materialize pipe");
+    assert_eq!(empty_acc, 1, "drop(n).isEmpty short-circuits after skip");
+    assert_eq!(len_acc, 0, "must not count remaining after drop");
+    assert_eq!(drop_k, 1, "expected fused drop skip");
 }
 
 #[test]

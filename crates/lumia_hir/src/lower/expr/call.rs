@@ -144,9 +144,7 @@ pub(super) fn lower_call(
         // prefer that binding over `Builtin::from_method`. Method calls like
         // `s.trim()` still desugar through `lower_call_from_parts` → builtin,
         // so `val len = { xs -> xs.len() }` stays non-recursive.
-        if ctx.is_toplevel_fun(name) {
-            // Callee Var must use the ident span — sharing the Call span makes
-            // type_at record Fun then Unit on the same range (inlay/hover noise).
+        if ctx.is_toplevel_fun(name.as_str()) {
             return Expr::Call {
                 callee: Box::new(Expr::Var(name.clone(), *name_span)),
                 args: args.iter().map(|e| lower_expr(ctx, e)).collect(),

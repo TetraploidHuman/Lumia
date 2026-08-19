@@ -5,8 +5,10 @@
 #   $env:LLVM_SYS_211_PREFIX = "C:\Program Files\LLVM"
 #   . .\scripts\env.ps1
 #
-# Full build notes: docs/BUILD.md (Linux+Nix is the primary local path;
-# Windows CI installs the LLVM SDK separately).
+# Full build notes: docs/BUILD.md (Linux/Nix defaults to shared libLLVM via
+# `lumia`'s `llvm-dynamic`). On Windows use:
+#   cargo build -p lumia --no-default-features --features codegen
+# Windows CI installs the LLVM SDK separately.
 
 if (-not $env:LLVM_SYS_211_PREFIX) {
     Write-Host "Set LLVM_SYS_211_PREFIX to your LLVM 21 root, then re-run."

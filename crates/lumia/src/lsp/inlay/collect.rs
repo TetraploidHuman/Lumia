@@ -216,10 +216,10 @@ pub(super) fn collect_toplevel_hints(
                     continue;
                 }
                 let body_start = body_sp.start.0 as usize;
-                let scheme = a.typed.fun_schemes.get(&f.name);
+                let scheme = a.typed.fun_schemes.get(f.name.as_str());
                 let ty = scheme
                     .map(|s| &s.ty)
-                    .or_else(|| a.typed.fun_types.get(&f.name));
+                    .or_else(|| a.typed.fun_types.get(f.name.as_str()));
                 let num_vars: &[u32] = scheme.map(|s| s.num_vars.as_slice()).unwrap_or(&[]);
                 if let Some(ty) = ty {
                     // Last `name` before the body — definition, not an earlier call site.

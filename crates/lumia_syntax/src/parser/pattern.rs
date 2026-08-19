@@ -56,7 +56,7 @@ impl<'a> Parser<'a> {
             TokenKind::String(t) => {
                 let t = t.clone();
                 let s = self.bump().span;
-                Ok(Pattern::String(t, s))
+                Ok(Pattern::String(self.intern.intern(&t), s))
             }
             TokenKind::LBracket => {
                 self.bump();
@@ -107,9 +107,9 @@ impl<'a> Parser<'a> {
                     Ok(first)
                 }
             }
-            TokenKind::Ident(name) => {
-                let name = name.clone();
+            TokenKind::Ident => {
                 let s = self.bump().span;
+                let name = self.intern_span(s);
                 if self.at(&TokenKind::LParen) {
                     self.bump();
                     let mut args = vec![];
@@ -149,7 +149,7 @@ impl<'a> Parser<'a> {
     /// `x` | `x = 0` | `x = _` inside struct patterns.
     pub(super) fn parse_struct_pattern_fields(
         &mut self,
-    ) -> Result<Vec<(String, Pattern)>, ParseError> {
+    ) -> Result<Vec<(Sym, Pattern)>, ParseError> {
         let mut fields = vec![];
         if self.at(&TokenKind::RBrace) {
             return Ok(fields);

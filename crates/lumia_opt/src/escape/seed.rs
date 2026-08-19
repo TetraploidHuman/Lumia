@@ -1,35 +1,36 @@
 //! Seed escaping locals from returns, assigns, calls, and builtins.
 
 use super::EscapeSummaries;
-use lumia_core::{Block, Local, Op, Value};
+use lumia_core::{for_each_block_dfs, for_each_op_in_block, Block, Local, Op, Value};
 use lumia_hir::Builtin;
+use lumia_syntax::Sym;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 pub(super) fn seed_escaping(
     block: &Block,
     escaping: &mut HashSet<Local>,
     summaries: &EscapeSummaries,
-    assigns: &HashMap<String, Vec<Local>>,
+    assigns: &HashMap<Sym, Vec<Local>>,
 ) {
     // Order-independent set inserts — DFS is safe.
-    lumia_core::for_each_block_dfs(block, &mut |b| {
+    for_each_block_dfs(block, &mut |b| {
         if let Some(r) = b.result {
             escaping.insert(r);
         }
-        for op in &b.ops {
-            match op {
-                Op::Let { value, .. } => {
-                    seed_value_shallow(value, escaping, summaries, assigns);
-                }
-                Op::Assign { .. } => {
-                    // Not an automatic escape: short-lived `var xs = listOf(…)` can
-                    // stay Lit*. Escape via `Name` / return is handled in propagate.
-                }
-                Op::Return { value } => {
-                    escaping.insert(*value);
-                }
-                Op::Break | Op::Continue => {}
+    });
+    for_each_op_in_block(block, &mut |op| {
+        match op {
+            Op::Let { value, .. } => {
+                seed_value_shallow(value, escaping, summaries, assigns);
             }
+            Op::Assign { .. } => {
+                // Not an automatic escape: short-lived `var xs = listOf(…)` can
+                // stay Lit*. Escape via `Name` / return is handled in propagate.
+            }
+            Op::Return { value } => {
+                escaping.insert(*value);
+            }
+            Op::Break | Op::Continue => {}
         }
     });
 }
@@ -37,7 +38,7 @@ pub(super) fn seed_escaping(
 fn mark_name_assigns(
     name: &str,
     escaping: &mut HashSet<Local>,
-    assigns: &HashMap<String, Vec<Local>>,
+    assigns: &HashMap<Sym, Vec<Local>>,
 ) {
     if let Some(ls) = assigns.get(name) {
         for l in ls {
@@ -51,7 +52,7 @@ fn seed_value_shallow(
     value: &Value,
     escaping: &mut HashSet<Local>,
     summaries: &EscapeSummaries,
-    assigns: &HashMap<String, Vec<Local>>,
+    assigns: &HashMap<Sym, Vec<Local>>,
 ) {
     match value {
         Value::Call { fun, args } => {

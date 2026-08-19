@@ -7,6 +7,7 @@
 #![allow(clippy::type_complexity)]
 #![allow(clippy::collapsible_match)] // nested Op/Value in escape/memo/inline
 
+mod builtin_effect;
 mod concat_ident;
 mod copy_elim;
 mod dce;
@@ -34,8 +35,8 @@ use dce::DcePass;
 #[cfg(feature = "dense-f64-sr")]
 use dense_f64_sr::DenseF64SrPass;
 #[cfg(feature = "domain-sr")]
-use domain_sr::{DomainSrPass, TrialDivOddPass};
-use lumia_core::{CoreModule, MapRepr};
+use domain_sr::{CollatzStepsPass, DomainSrPass, FloatOrbitPass, TrialDivOddPass};
+use lumia_core::{resolve_module_call_fun_ids, CoreModule, MapRepr};
 use memo::cse_module;
 #[cfg(feature = "nsw-iv")]
 use nsw_iv::NswIvPass;
@@ -91,6 +92,10 @@ enum PipelinePass {
     DomainSr,
     #[cfg(feature = "domain-sr")]
     TrialDivOdd,
+    #[cfg(feature = "domain-sr")]
+    CollatzSteps,
+    #[cfg(feature = "domain-sr")]
+    FloatOrbit,
     Inline,
     ConcatIdent,
     ReprSelect,
@@ -114,6 +119,10 @@ impl PipelinePass {
             Self::DomainSr => "domain_sr",
             #[cfg(feature = "domain-sr")]
             Self::TrialDivOdd => "trial_div_odd",
+            #[cfg(feature = "domain-sr")]
+            Self::CollatzSteps => "collatz_steps",
+            #[cfg(feature = "domain-sr")]
+            Self::FloatOrbit => "float_orbit",
             Self::Inline => "inline",
             Self::ConcatIdent => "concat_ident",
             Self::ReprSelect => "repr_select",
@@ -137,6 +146,10 @@ impl PipelinePass {
             Self::DomainSr => DomainSrPass.run(module),
             #[cfg(feature = "domain-sr")]
             Self::TrialDivOdd => TrialDivOddPass.run(module),
+            #[cfg(feature = "domain-sr")]
+            Self::CollatzSteps => CollatzStepsPass.run(module),
+            #[cfg(feature = "domain-sr")]
+            Self::FloatOrbit => FloatOrbitPass.run(module),
             Self::Inline => InlinePass.run(module),
             Self::ConcatIdent => ConcatIdentPass.run(module),
             Self::ReprSelect => ReprSelect.run(module),
@@ -165,6 +178,12 @@ const DEBUG_PASSES: &[PipelinePass] = &[
     // Odd-step trial-div in Core so Debug codegen uses the generic loop emit.
     #[cfg(feature = "domain-sr")]
     PipelinePass::TrialDivOdd,
+    // collatzSteps → RT (replaces removed codegen cttz SR in Debug builds).
+    #[cfg(feature = "domain-sr")]
+    PipelinePass::CollatzSteps,
+    // floatOrbit → RT (replaces removed codegen `<4|8 x double>` loop IR SR).
+    #[cfg(feature = "domain-sr")]
+    PipelinePass::FloatOrbit,
     // DenseF64Sr is Release-only (or `dense_f64_sr` via CLI/`for_build`).
     PipelinePass::Escape,
     PipelinePass::ReprSelect,
@@ -249,15 +268,17 @@ const RELEASE_PASSES: &[PipelinePass] = &[
 ///
 /// **Not** a substitute for the CLI/`check_program` pipeline: this path uses
 /// [`lumia_core::compile_source_to_core*`] (single-buffer, no loader / `std.*` /
-/// package graph). Prefer `optimize(&mut CoreModule, …)` on IR built via the
-/// full check path when validating import/std/package behavior.
+/// package graph). Prefer `lumia::compile_program_to_optimized` (loader/std on)
+/// or `optimize(&mut CoreModule, …)` on IR built via the full check path when
+/// validating import/std/package behavior.
 pub fn compile_source_to_optimized(src: &str, opts: &OptOptions) -> Result<CoreModule, String> {
     compile_source_to_optimized_with_frontend(src, opts, &lumia_core::FrontendOptions::default())
 }
 
 /// Same as [`compile_source_to_optimized`] with explicit frontend options.
 ///
-/// Still skips loader/`std` — see that function's docs.
+/// Still skips loader/`std`; use `lumia::compile_program_to_optimized` for the
+/// real package/std path.
 pub fn compile_source_to_optimized_with_frontend(
     src: &str,
     opts: &OptOptions,
@@ -292,6 +313,10 @@ pub fn optimize(module: &mut CoreModule, opts: &OptOptions) {
         apply_memo_plan(module, plan);
     }
 
+    // Stamp CallTarget.id before any pass that reads direct-call edges; re-stamp
+    // after inline/specialize/domain_sr so codegen sees stable FunIds.
+    resolve_module_call_fun_ids(module);
+
     let passes = if opts.release {
         RELEASE_PASSES
     } else {
@@ -308,6 +333,8 @@ pub fn optimize(module: &mut CoreModule, opts: &OptOptions) {
         }
         p.run(module);
     }
+
+    resolve_module_call_fun_ids(module);
 }
 
 /// Named passes for tooling / diagnostics — order matches [`optimize`].
@@ -465,7 +492,11 @@ val main = { log(1) }
             "licm",
         ];
         #[cfg(feature = "domain-sr")]
-        debug_expected.push("trial_div_odd");
+        {
+            debug_expected.push("trial_div_odd");
+            debug_expected.push("collatz_steps");
+            debug_expected.push("float_orbit");
+        }
         debug_expected.extend(["escape", "repr_select", "copy_elim", "dce"]);
         #[cfg(feature = "nsw-iv")]
         debug_expected.push("nsw_iv");

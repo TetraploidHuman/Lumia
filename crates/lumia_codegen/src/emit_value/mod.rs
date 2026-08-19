@@ -1,16 +1,11 @@
 //! Value emission and closely related helpers.
 
 pub(crate) mod builtin;
-#[cfg(feature = "domain-sr")]
-mod collatz_sr;
 mod dense_f64_sr;
 mod emit_alloc;
 mod emit_arith;
 mod emit_calls;
 mod emit_control;
-#[cfg(feature = "domain-sr")]
-mod float_sr;
-mod sr_pattern;
 
 use super::Codegen;
 use anyhow::{bail, Result};
@@ -19,11 +14,6 @@ use lumia_core::{Block, Value};
 
 impl<'ctx> Codegen<'ctx> {
     /// Try registered loop shape rewrites, then fall back to generic loop emit.
-    ///
-    /// Order is significant (more specific patterns first). Append new `*_sr`
-    /// matchers to the array below — do not reintroduce an open if/else chain.
-    /// Gated by Cargo feature `domain-sr` (default on). Trial-div odd-step is
-    /// a Core rewrite in `lumia_opt` (`TrialDivOddPass`).
     fn emit_value_loop_with_srs(
         &mut self,
         header: &Block,
@@ -31,25 +21,6 @@ impl<'ctx> Codegen<'ctx> {
         latch: &Block,
         fv: FunctionValue<'ctx>,
     ) -> Result<BasicValueEnum<'ctx>> {
-        type EmitFn<'c> = fn(
-            &mut Codegen<'c>,
-            &Block,
-            &Block,
-            &Block,
-            FunctionValue<'c>,
-        ) -> Result<Option<BasicValueEnum<'c>>>;
-        #[cfg(feature = "domain-sr")]
-        let registry: &[EmitFn<'ctx>] = &[
-            Self::try_emit_float_orbit_loop,
-            Self::try_emit_collatz_loop,
-        ];
-        #[cfg(not(feature = "domain-sr"))]
-        let registry: &[EmitFn<'ctx>] = &[];
-        for emit in registry {
-            if let Some(v) = emit(self, header, body, latch, fv)? {
-                return Ok(v);
-            }
-        }
         self.emit_value_loop(header, body, latch, fv)
     }
 

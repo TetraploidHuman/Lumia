@@ -1,15 +1,14 @@
 //! Whole-fn bench checksums → RT (affine2 / number theory / range / matmul / mandelbrot).
 
 use super::externs::RtArg;
-use super::util::{
-    body_unit_incs_slot, first_loop, outer_le_param_or_const, outer_lt_param_or_const,
-    result_is_slot, slot_init_const,
-};
 use lumia_core::CoreBinOp as BinOp;
 use lumia_core::{
-    acc_add_rem_const_mod, add_name_other, body_assigns_const, const_of, for_each_block_dfs,
-    has_float_approx, has_float_binop_with_const, header_lt_bound, header_lt_const, is_unit_inc,
-    name_of, same_local, Block, CoreFun, Local, Op, Value,
+    acc_add_rem_const_mod, add_name_other, block_has_break, body_assigns_const,
+    body_assigns_unit_inc, const_of, first_direct_loop, for_each_assign_in_block, for_each_let,
+    for_each_let_in_block, for_each_pre_loop_let_in_block, has_float_approx,
+    has_float_binop_with_const, header_lt_bound, header_lt_const, is_unit_inc, name_of,
+    outer_le_param_or_const, outer_lt_param_or_const, result_is_slot, same_local, slot_init_const,
+    Block, CoreFun, Local, Value,
 };
 use lumia_hir::Builtin;
 use lumia_ty::Type;
@@ -58,16 +57,21 @@ fn match_poly_checksum(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<Matc
     if !slot_init_const(&fun.body, "s", 0, defs) || !slot_init_const(&fun.body, "i", 0, defs) {
         return None;
     }
-    let (header, body, latch) = first_loop(&fun.body)?;
+    let (header, body, latch) = first_direct_loop(&fun.body)?;
     if !latch.ops.is_empty() {
         return None;
     }
-    let (i, n_const) =
-        outer_lt_param_or_const(header, defs, param0(fun), fun.param_names.first(), 2)?;
+    let (i, n_const) = outer_lt_param_or_const(
+        header,
+        defs,
+        param0(fun),
+        fun.param_names.first().map(|s| s.as_str()),
+        2,
+    )?;
     if i != "i" {
         return None;
     }
-    let (ih, ib, il) = first_loop(body)?;
+    let (ih, ib, il) = first_direct_loop(body)?;
     if !il.ops.is_empty() {
         return None;
     }
@@ -89,20 +93,14 @@ fn match_poly_checksum(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<Matc
     }
     let mut coeffs = None;
     let mut saw_j = false;
-    for op in &ib.ops {
-        if let Op::Assign {
-            name,
-            value: Local(v),
-        } = op
-        {
-            if name == &j && is_unit_inc(*v, &j, defs) {
-                saw_j = true;
-            } else if let Some(t) = parse_acc_affine_rem(*v, name, &i, &j, defs) {
-                coeffs = Some(t);
-            }
+    for_each_assign_in_block(ib, &mut |name, v| {
+        if j == name && is_unit_inc(v.0, &j, defs) {
+            saw_j = true;
+        } else if let Some(t) = parse_acc_affine_rem(v.0, name, &i, &j, defs) {
+            coeffs = Some(t);
         }
-    }
-    if !saw_j || !body_unit_incs_slot(body, &i, defs) {
+    });
+    if !saw_j || !body_assigns_unit_inc(body, &i, defs) {
         return None;
     }
     if !result_is_slot(&fun.body, "s", defs) {
@@ -213,31 +211,42 @@ fn match_gcd_checksum(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<Match
     if !slot_init_const(&fun.body, "s", 0, defs) || !slot_init_const(&fun.body, "i", 1, defs) {
         return None;
     }
-    let (header, body, latch) = first_loop(&fun.body)?;
+    let (header, body, latch) = first_direct_loop(&fun.body)?;
     if !latch.ops.is_empty() {
         return None;
     }
-    let (i, n_const) =
-        outer_le_param_or_const(header, defs, param0(fun), fun.param_names.first(), 2)?;
+    let (i, n_const) = outer_le_param_or_const(
+        header,
+        defs,
+        param0(fun),
+        fun.param_names.first().map(|s| s.as_str()),
+        2,
+    )?;
     if i != "i" {
         return None;
     }
-    let (ih, ib, il) = first_loop(body)?;
+    let (ih, ib, il) = first_direct_loop(body)?;
     if !il.ops.is_empty() {
         return None;
     }
-    let (j, _) = outer_le_param_or_const(ih, defs, param0(fun), fun.param_names.first(), 2)
-        .or_else(|| {
-            let (j, c) = lumia_core::header_le_const(ih, defs)?;
-            (n_const == Some(c)).then_some((j, Some(c)))
-        })?;
+    let (j, _) = outer_le_param_or_const(
+        ih,
+        defs,
+        param0(fun),
+        fun.param_names.first().map(|s| s.as_str()),
+        2,
+    )
+    .or_else(|| {
+        let (j, c) = lumia_core::header_le_const(ih, defs)?;
+        (n_const == Some(c)).then_some((j, Some(c)))
+    })?;
     if j == i || !body_assigns_const(body, &j, 1, defs) {
         return None;
     }
     if !inner_has_gcd_or_euclid(ib, &i, &j, defs) {
         return None;
     }
-    if !body_unit_incs_slot(ib, &j, defs) || !body_unit_incs_slot(body, &i, defs) {
+    if !body_assigns_unit_inc(ib, &j, defs) || !body_assigns_unit_inc(body, &i, defs) {
         return None;
     }
     if !result_is_slot(&fun.body, "s", defs) {
@@ -247,38 +256,36 @@ fn match_gcd_checksum(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<Match
 }
 
 fn inner_has_gcd_or_euclid(body: &Block, i: &str, j: &str, defs: &HashMap<u32, Value>) -> bool {
-    for op in &body.ops {
-        if let Op::Let {
-            value: Value::Call { fun, args },
-            ..
-        } = op
-        {
-            if (fun == "gcd" || fun.starts_with("gcd$")) && args.len() == 2 {
-                let a = name_of(args[0], defs);
-                let b = name_of(args[1], defs);
-                if (a.as_deref() == Some(i) && b.as_deref() == Some(j))
-                    || (a.as_deref() == Some(j) && b.as_deref() == Some(i))
-                {
-                    return true;
+    let mut found = false;
+    for_each_let_in_block(body, &mut |_local, value, _pure| {
+        if found {
+            return;
+        }
+        match value {
+            Value::Call { fun, args } => {
+                if (fun == "gcd" || fun.starts_with("gcd$")) && args.len() == 2 {
+                    let a = name_of(args[0], defs);
+                    let b = name_of(args[1], defs);
+                    if (a.as_deref() == Some(i) && b.as_deref() == Some(j))
+                        || (a.as_deref() == Some(j) && b.as_deref() == Some(i))
+                    {
+                        found = true;
+                    }
                 }
             }
-        }
-        if let Op::Let {
-            value:
-                Value::Loop {
-                    header,
-                    body: eb,
-                    latch,
-                },
-            ..
-        } = op
-        {
-            if is_euclid_loop(header, eb, latch, defs) {
-                return true;
+            Value::Loop {
+                header,
+                body: eb,
+                latch,
+            } => {
+                if is_euclid_loop(header, eb, latch, defs) {
+                    found = true;
+                }
             }
+            _ => {}
         }
-    }
-    false
+    });
+    found
 }
 
 fn is_euclid_loop(header: &Block, body: &Block, latch: &Block, defs: &HashMap<u32, Value>) -> bool {
@@ -291,45 +298,40 @@ fn is_euclid_loop(header: &Block, body: &Block, latch: &Block, defs: &HashMap<u3
     if lumia_core::name_ne_zero(res, defs).is_none() {
         return false;
     }
-    body.ops.iter().any(|op| {
-        if let Op::Assign {
-            value: Local(v), ..
-        } = op
-        {
-            matches!(defs.get(v), Some(Value::Binary { op: BinOp::Rem, .. }))
-        } else {
-            false
+    let mut saw_rem = false;
+    for_each_assign_in_block(body, &mut |_name, v| {
+        if matches!(defs.get(&v.0), Some(Value::Binary { op: BinOp::Rem, .. })) {
+            saw_rem = true;
         }
-    })
+    });
+    saw_rem
 }
 
 fn match_divisor_sum(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<Match> {
     if !slot_init_const(&fun.body, "s", 0, defs) || !slot_init_const(&fun.body, "i", 1, defs) {
         return None;
     }
-    let (header, body, latch) = first_loop(&fun.body)?;
+    let (header, body, latch) = first_direct_loop(&fun.body)?;
     if !latch.ops.is_empty() {
         return None;
     }
-    let (i, n_const) =
-        outer_le_param_or_const(header, defs, param0(fun), fun.param_names.first(), 2)?;
+    let (i, n_const) = outer_le_param_or_const(
+        header,
+        defs,
+        param0(fun),
+        fun.param_names.first().map(|s| s.as_str()),
+        2,
+    )?;
     if i != "i" {
         return None;
     }
     let mut saw_div = false;
-    for op in &body.ops {
-        if let Op::Assign {
-            name,
-            value: Local(v),
-        } = op
-        {
-            if name != "i" && parse_acc_div_param_or_const(*v, name, &i, param0(fun), n_const, defs)
-            {
-                saw_div = true;
-            }
+    for_each_assign_in_block(body, &mut |name, v| {
+        if name != "i" && parse_acc_div_param_or_const(v.0, name, &i, param0(fun), n_const, defs) {
+            saw_div = true;
         }
-    }
-    if !saw_div || !body_unit_incs_slot(body, &i, defs) {
+    });
+    if !saw_div || !body_assigns_unit_inc(body, &i, defs) {
         return None;
     }
     if !result_is_slot(&fun.body, "s", defs) {
@@ -373,38 +375,43 @@ fn match_product_rem(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<Match>
     if !slot_init_const(&fun.body, "s", 0, defs) || !slot_init_const(&fun.body, "i", 0, defs) {
         return None;
     }
-    let (header, body, latch) = first_loop(&fun.body)?;
+    let (header, body, latch) = first_direct_loop(&fun.body)?;
     if !latch.ops.is_empty() {
         return None;
     }
-    let (i, n_const) =
-        outer_lt_param_or_const(header, defs, param0(fun), fun.param_names.first(), 2)?;
+    let (i, n_const) = outer_lt_param_or_const(
+        header,
+        defs,
+        param0(fun),
+        fun.param_names.first().map(|s| s.as_str()),
+        2,
+    )?;
     if i != "i" {
         return None;
     }
-    let (ih, ib, il) = first_loop(body)?;
+    let (ih, ib, il) = first_direct_loop(body)?;
     if !il.ops.is_empty() {
         return None;
     }
-    let (j, _) = outer_lt_param_or_const(ih, defs, param0(fun), fun.param_names.first(), 2)?;
+    let (j, _) = outer_lt_param_or_const(
+        ih,
+        defs,
+        param0(fun),
+        fun.param_names.first().map(|s| s.as_str()),
+        2,
+    )?;
     if j == i || !body_assigns_const(body, &j, 0, defs) {
         return None;
     }
     let mut m_val = None;
-    for op in &ib.ops {
-        if let Op::Assign {
-            name,
-            value: Local(v),
-        } = op
-        {
-            if name != &j {
-                if let Some(m) = parse_acc_ij1_rem(*v, name, &i, &j, defs) {
-                    m_val = Some(m);
-                }
+    for_each_assign_in_block(ib, &mut |name, v| {
+        if j != name {
+            if let Some(m) = parse_acc_ij1_rem(v.0, name, &i, &j, defs) {
+                m_val = Some(m);
             }
         }
-    }
-    if !body_unit_incs_slot(ib, &j, defs) || !body_unit_incs_slot(body, &i, defs) {
+    });
+    if !body_assigns_unit_inc(ib, &j, defs) || !body_assigns_unit_inc(body, &i, defs) {
         return None;
     }
     if !result_is_slot(&fun.body, "s", defs) {
@@ -463,49 +470,60 @@ fn match_matmul_checksum(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<Ma
     if !slot_init_const(&fun.body, "sum", 0, defs) || !slot_init_const(&fun.body, "i", 0, defs) {
         return None;
     }
-    let (header, body, latch) = first_loop(&fun.body)?;
+    let (header, body, latch) = first_direct_loop(&fun.body)?;
     if !latch.ops.is_empty() {
         return None;
     }
-    let (i, n_const) =
-        outer_lt_param_or_const(header, defs, param0(fun), fun.param_names.first(), 2)?;
+    let (i, n_const) = outer_lt_param_or_const(
+        header,
+        defs,
+        param0(fun),
+        fun.param_names.first().map(|s| s.as_str()),
+        2,
+    )?;
     if i != "i" {
         return None;
     }
     // Need nested j and k loops on same bound + Rem modulus on cell accumulate.
-    let (jh, jb, jl) = first_loop(body)?;
+    let (jh, jb, jl) = first_direct_loop(body)?;
     if !jl.ops.is_empty() {
         return None;
     }
-    let (j, _) = outer_lt_param_or_const(jh, defs, param0(fun), fun.param_names.first(), 2)?;
+    let (j, _) = outer_lt_param_or_const(
+        jh,
+        defs,
+        param0(fun),
+        fun.param_names.first().map(|s| s.as_str()),
+        2,
+    )?;
     if j == i {
         return None;
     }
-    let (kh, kb, kl) = first_loop(jb)?;
+    let (kh, kb, kl) = first_direct_loop(jb)?;
     if !kl.ops.is_empty() {
         return None;
     }
-    let (k, _) = outer_lt_param_or_const(kh, defs, param0(fun), fun.param_names.first(), 2)?;
+    let (k, _) = outer_lt_param_or_const(
+        kh,
+        defs,
+        param0(fun),
+        fun.param_names.first().map(|s| s.as_str()),
+        2,
+    )?;
     if k == i || k == j {
         return None;
     }
     let mut modulus = None;
-    for op in &jb.ops {
-        if let Op::Assign {
-            name,
-            value: Local(v),
-        } = op
-        {
-            if name == "sum" {
-                if let Some(m) = rem_modulus_of_acc(*v, "sum", defs) {
-                    modulus = Some(m);
-                }
+    for_each_assign_in_block(jb, &mut |name, v| {
+        if name == "sum" {
+            if let Some(m) = rem_modulus_of_acc(v.0, "sum", defs) {
+                modulus = Some(m);
             }
         }
-    }
-    if !body_unit_incs_slot(kb, &k, defs)
-        || !body_unit_incs_slot(jb, &j, defs)
-        || !body_unit_incs_slot(body, &i, defs)
+    });
+    if !body_assigns_unit_inc(kb, &k, defs)
+        || !body_assigns_unit_inc(jb, &j, defs)
+        || !body_assigns_unit_inc(body, &i, defs)
     {
         return None;
     }
@@ -536,27 +554,13 @@ fn match_range_fold(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<Match> 
     if !slot_init_const(&fun.body, "s", 0, defs) || !slot_init_const(&fun.body, "i", 0, defs) {
         return None;
     }
-    // Must build `range(0, n)` before the loop.
     let mut saw_range = false;
-    for op in &fun.body.ops {
-        if matches!(
-            op,
-            Op::Let {
-                value: Value::Loop { .. },
-                ..
-            }
-        ) {
-            break;
-        }
-        if let Op::Let {
-            value:
-                Value::Builtin {
-                    name: Builtin::Range,
-                    args,
-                    ..
-                },
+    for_each_pre_loop_let_in_block(&fun.body, &mut |_local, value| {
+        if let Value::Builtin {
+            name: Builtin::Range,
+            args,
             ..
-        } = op
+        } = value
         {
             if args.len() == 2
                 && const_of(args[0], defs) == Some(0)
@@ -566,34 +570,33 @@ fn match_range_fold(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<Match> 
                 saw_range = true;
             }
         }
-    }
+    });
     if !saw_range {
         return None;
     }
-    let (header, body, latch) = first_loop(&fun.body)?;
+    let (header, body, latch) = first_direct_loop(&fun.body)?;
     if !latch.ops.is_empty() {
         return None;
     }
-    let (i, n_const) =
-        outer_lt_param_or_const(header, defs, param0(fun), fun.param_names.first(), 2)?;
+    let (i, n_const) = outer_lt_param_or_const(
+        header,
+        defs,
+        param0(fun),
+        fun.param_names.first().map(|s| s.as_str()),
+        2,
+    )?;
     if i != "i" {
         return None;
     }
     let mut coeffs = None;
-    for op in &body.ops {
-        if let Op::Assign {
-            name,
-            value: Local(v),
-        } = op
-        {
-            if name != &i {
-                if let Some(t) = parse_acc_get_affine_rem(*v, name, &i, defs) {
-                    coeffs = Some(t);
-                }
+    for_each_assign_in_block(body, &mut |name, v| {
+        if i != name {
+            if let Some(t) = parse_acc_get_affine_rem(v.0, name, &i, defs) {
+                coeffs = Some(t);
             }
         }
-    }
-    if !body_unit_incs_slot(body, &i, defs) || !result_is_slot(&fun.body, "s", defs) {
+    });
+    if !body_assigns_unit_inc(body, &i, defs) || !result_is_slot(&fun.body, "s", defs) {
         return None;
     }
     let (a, c, m) = coeffs?;
@@ -691,7 +694,7 @@ fn match_mandelbrot(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<Match> 
     {
         return None;
     }
-    let (header, body, latch) = first_loop(&fun.body)?;
+    let (header, body, latch) = first_direct_loop(&fun.body)?;
     if !latch.ops.is_empty() {
         return None;
     }
@@ -699,7 +702,7 @@ fn match_mandelbrot(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<Match> 
     if h != 140 || y != "y" {
         return None;
     }
-    let (xh, xb, xl) = first_loop(body)?;
+    let (xh, xb, xl) = first_direct_loop(body)?;
     if !xl.ops.is_empty() {
         return None;
     }
@@ -707,7 +710,7 @@ fn match_mandelbrot(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<Match> 
     if w != 200 || x == y || !body_assigns_const(body, &x, 0, defs) {
         return None;
     }
-    let (th, tb, _tl) = first_loop(xb)?;
+    let (th, tb, _tl) = first_direct_loop(xb)?;
     let (_it, max_bound) = header_lt_bound(th, defs)?;
     let max_is_param = same_local(max_bound, param0(fun), defs)
         || matches!(defs.get(&max_bound.0), Some(Value::Name(nm)) if fun.param_names.first() == Some(nm));
@@ -715,17 +718,9 @@ fn match_mandelbrot(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<Match> 
     if !max_is_param && max_const.is_none() {
         return None;
     }
-    let mut saw_break = false;
-    for_each_block_dfs(tb, &mut |b| {
-        for op in &b.ops {
-            if matches!(op, Op::Break) {
-                saw_break = true;
-            }
-        }
-    });
-    if !saw_break
-        || !body_unit_incs_slot(body, &y, defs)
-        || !body_unit_incs_slot(xb, &x, defs)
+    if !block_has_break(tb)
+        || !body_assigns_unit_inc(body, &y, defs)
+        || !body_assigns_unit_inc(xb, &x, defs)
         || !result_is_slot(&fun.body, "acc", defs)
     {
         return None;
@@ -764,26 +759,20 @@ fn match_mem_traffic(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<Match>
     let mut saw_take = false;
     let mut saw_list_get = false;
     let mut saw_list_set = false;
-    for_each_block_dfs(&fun.body, &mut |b| {
-        for op in &b.ops {
-            if let Op::Let {
-                value: Value::Builtin { name, args, .. },
-                ..
-            } = op
-            {
-                match name {
-                    Builtin::Range if args.len() == 2 => {
-                        if const_of(args[0], defs) == Some(0) {
-                            saw_range = true;
-                            range_end = const_of(args[1], defs);
-                        }
+    for_each_let(&fun.body, &mut |_b, _local, value| {
+        if let Value::Builtin { name, args, .. } = value {
+            match name {
+                Builtin::Range if args.len() == 2 => {
+                    if const_of(args[0], defs) == Some(0) {
+                        saw_range = true;
+                        range_end = const_of(args[1], defs);
                     }
-                    Builtin::ListConcat => saw_concat = true,
-                    Builtin::ListTake => saw_take = true,
-                    Builtin::ListGet => saw_list_get = true,
-                    Builtin::MapSet => saw_list_set = true,
-                    _ => {}
                 }
+                Builtin::ListConcat => saw_concat = true,
+                Builtin::ListTake => saw_take = true,
+                Builtin::ListGet => saw_list_get = true,
+                Builtin::MapSet => saw_list_set = true,
+                _ => {}
             }
         }
     });
@@ -827,12 +816,8 @@ fn result_is_rem_of_name(
 /// Outer scan-pass bound and gather-steps bound (both const headers).
 fn mem_traffic_loop_bounds(body: &Block, defs: &HashMap<u32, Value>) -> Option<(i64, i64)> {
     let mut bounds = Vec::new();
-    for op in &body.ops {
-        if let Op::Let {
-            value: Value::Loop { header, .. },
-            ..
-        } = op
-        {
+    for_each_let_in_block(body, &mut |_local, value, _pure| {
+        if let Value::Loop { header, .. } = value {
             if let Some((_, c)) = header_lt_const(header, defs) {
                 bounds.push(c);
             } else if let Some((_, b)) = header_lt_bound(header, defs) {
@@ -841,7 +826,7 @@ fn mem_traffic_loop_bounds(body: &Block, defs: &HashMap<u32, Value>) -> Option<(
                 }
             }
         }
-    }
+    });
     // Expect scanPasses then gatherSteps as the two top-level const loops.
     if bounds.len() >= 2 {
         Some((bounds[0], bounds[1]))

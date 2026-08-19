@@ -1,0 +1,18 @@
+module TcoAliasSum
+
+import std.io.{println}
+
+/// Same closed form as `tco_sum`, but the recursive arm binds the tail call
+/// to a local before returning it — codegen must peel the SSA alias for musttail.
+val sumTo(n, acc) = {
+    if n == 0 {
+        acc
+    } else {
+        val t = sumTo(n - 1, acc + n)
+        t
+    }
+}
+
+val main = {
+    println(sumTo(2000000, 0))
+}

@@ -237,3 +237,14 @@ pub fn add_path_dep(manifest_path: &Path, name: &str, dep_path: &str) -> Result<
     write_manifest(manifest_path, &m)?;
     Ok(())
 }
+
+/// Remove a dependency from the manifest. Does not touch `Lumia.lock`
+/// (refresh it with [`super::write_lock_from_manifest`], same as [`add_path_dep`]).
+pub fn remove_dep(manifest_path: &Path, name: &str) -> Result<()> {
+    let mut m = load_manifest(manifest_path)?;
+    if m.dependencies.remove(name).is_none() {
+        bail!("dependency `{name}` is not in {}", manifest_path.display());
+    }
+    write_manifest(manifest_path, &m)?;
+    Ok(())
+}

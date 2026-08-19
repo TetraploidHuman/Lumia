@@ -1,7 +1,7 @@
 use super::*;
 
 impl<'a> Parser<'a> {
-    pub(super) fn parse_field_inits(&mut self) -> Result<Vec<(String, Expr)>, ParseError> {
+    pub(super) fn parse_field_inits(&mut self) -> Result<Vec<(Sym, Expr)>, ParseError> {
         let mut fields = vec![];
         if self.at(&TokenKind::RBrace) {
             return Ok(fields);
@@ -239,9 +239,13 @@ impl<'a> Parser<'a> {
         self.bump();
         let right = self.parse_add()?;
         let span = left.span().merge(right.span());
-        let name = if inclusive { "rangeInclusive" } else { "range" };
+        let name = if inclusive {
+            self.intern_word("rangeInclusive")
+        } else {
+            self.intern_word("range")
+        };
         Ok(Expr::Call {
-            callee: Box::new(Expr::Ident(name.into(), span)),
+            callee: Box::new(Expr::Ident(name, span)),
             args: vec![left, right],
             span,
         })
@@ -276,7 +280,7 @@ impl<'a> Parser<'a> {
             let right = self.parse_mul()?;
             let span = left.span().merge(right.span());
             left = Expr::Call {
-                callee: Box::new(Expr::Ident("to".into(), to_span)),
+                callee: Box::new(Expr::Ident(self.intern_word("to"), to_span)),
                 args: vec![left, right],
                 span,
             };
@@ -409,9 +413,9 @@ impl<'a> Parser<'a> {
             } else if self.at(&TokenKind::Dot) {
                 self.bump();
                 let (field, fspan) = match &self.cur.kind {
-                    TokenKind::Ident(s) => {
-                        let s = s.clone();
+                    TokenKind::Ident => {
                         let span = self.cur.span;
+                        let s = self.intern_span(span);
                         self.bump();
                         (s, span)
                     }
@@ -420,8 +424,8 @@ impl<'a> Parser<'a> {
                         if *n < 0 {
                             return Err(self.error("tuple field index must be non-negative"));
                         }
-                        let s = n.to_string();
                         let span = self.cur.span;
+                        let s = self.intern_word(&n.to_string());
                         self.bump();
                         (s, span)
                     }
@@ -445,7 +449,7 @@ impl<'a> Parser<'a> {
                 let span = expr.span().merge(end.span);
                 let get = Expr::Field {
                     base: Box::new(expr),
-                    field: "get".into(),
+                    field: self.intern_word("get"),
                     span,
                 };
                 expr = Expr::Call {
@@ -483,7 +487,7 @@ impl<'a> Parser<'a> {
             TokenKind::String(s) => {
                 let s = s.clone();
                 let sp = self.bump().span;
-                Ok(Expr::String(s, sp))
+                Ok(Expr::String(self.intern.intern(&s), sp))
             }
             TokenKind::InterpString(parts) => {
                 let parts = parts.clone();
@@ -503,15 +507,14 @@ impl<'a> Parser<'a> {
                 let s = self.bump().span;
                 Ok(Expr::Bool(false, s))
             }
-            TokenKind::Ident(name) => {
-                let name = name.clone();
+            TokenKind::Ident => {
                 let s = self.bump().span;
-                Ok(Expr::Ident(name, s))
+                Ok(Expr::Ident(self.intern_span(s), s))
             }
             // Hard keyword that still denotes the `to` pair constructor as a primary.
             TokenKind::To => {
                 let s = self.bump().span;
-                Ok(Expr::Ident("to".into(), s))
+                Ok(Expr::Ident(self.intern_word("to"), s))
             }
             TokenKind::If => self.parse_if(),
             TokenKind::Match => self.parse_match_cond(),
@@ -598,7 +601,7 @@ impl<'a> Parser<'a> {
                     self.bump();
                     let end = self.expect(TokenKind::RBracket)?;
                     return Ok(Expr::Call {
-                        callee: Box::new(Expr::Ident("mapOf".into(), start)),
+                        callee: Box::new(Expr::Ident(self.intern_word("mapOf"), start)),
                         args: vec![],
                         span: start.merge(end.span),
                     });
@@ -608,7 +611,7 @@ impl<'a> Parser<'a> {
                 if self.at(&TokenKind::Colon) {
                     self.bump();
                     let v0 = self.parse_expr()?;
-                    let mut args = vec![Self::map_pair_to(first, v0)];
+                    let mut args = vec![self.map_pair_to(first, v0)];
                     while self.at(&TokenKind::Comma) {
                         self.bump();
                         if self.at(&TokenKind::RBracket) {
@@ -617,11 +620,11 @@ impl<'a> Parser<'a> {
                         let k = self.parse_expr()?;
                         self.expect(TokenKind::Colon)?;
                         let v = self.parse_expr()?;
-                        args.push(Self::map_pair_to(k, v));
+                        args.push(self.map_pair_to(k, v));
                     }
                     let end = self.expect(TokenKind::RBracket)?;
                     return Ok(Expr::Call {
-                        callee: Box::new(Expr::Ident("mapOf".into(), start)),
+                        callee: Box::new(Expr::Ident(self.intern_word("mapOf"), start)),
                         args,
                         span: start.merge(end.span),
                     });
@@ -660,7 +663,7 @@ impl<'a> Parser<'a> {
                 }
                 let end = self.expect(TokenKind::RBrace)?;
                 Ok(Expr::Call {
-                    callee: Box::new(Expr::Ident("setOf".into(), start)),
+                    callee: Box::new(Expr::Ident(self.intern_word("setOf"), start)),
                     args,
                     span: start.merge(end.span),
                 })
@@ -671,10 +674,10 @@ impl<'a> Parser<'a> {
     }
 
     /// `k to v` call used by `[k : v]` map sugar.
-    pub(super) fn map_pair_to(k: Expr, v: Expr) -> Expr {
+    pub(super) fn map_pair_to(&mut self, k: Expr, v: Expr) -> Expr {
         let span = k.span().merge(v.span());
         Expr::Call {
-            callee: Box::new(Expr::Ident("to".into(), span)),
+            callee: Box::new(Expr::Ident(self.intern_word("to"), span)),
             args: vec![k, v],
             span,
         }
@@ -688,17 +691,15 @@ impl<'a> Parser<'a> {
         let mut out = Vec::new();
         for part in parts {
             match part {
-                StringPart::Lit(s) => out.push(InterpPart::Lit(s)),
-                StringPart::Ident { name, abs_start } => {
-                    let end = abs_start + name.len() as u32;
-                    out.push(InterpPart::Expr(Expr::Ident(
-                        name,
-                        Span::new(abs_start, end),
-                    )));
+                StringPart::Lit(s) => out.push(InterpPart::Lit(self.intern.intern(&s))),
+                StringPart::Ident { abs_start, abs_end } => {
+                    let span = Span::new(abs_start, abs_end);
+                    out.push(InterpPart::Expr(Expr::Ident(self.intern_span(span), span)));
                 }
-                StringPart::ExprSrc { src, abs_start } => {
-                    let lead = src.len() - src.trim_start().len();
-                    let trimmed = src.trim();
+                StringPart::ExprSrc { abs_start, abs_end } => {
+                    let raw = &self.src[abs_start as usize..abs_end as usize];
+                    let lead = raw.len() - raw.trim_start().len();
+                    let trimmed = raw.trim();
                     if trimmed.is_empty() {
                         return Err(ParseError {
                             message: "empty interpolation `${}`".into(),

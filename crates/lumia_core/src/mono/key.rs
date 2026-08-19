@@ -657,20 +657,6 @@ impl MonoKey {
         }
         binds
     }
-
-    /// Fill [`FunRefKey::id`] from the current function table (name fallback stays).
-    pub(crate) fn resolve_funref_ids(&mut self, functions: &[CoreFun]) {
-        for k in &mut self.0 {
-            if let MonoKind::FunRef(fr) = k {
-                if fr.id.is_none() {
-                    fr.id = functions
-                        .iter()
-                        .position(|f| f.name == fr.name)
-                        .map(|i| FunId(i as u32));
-                }
-            }
-        }
-    }
 }
 
 /// Bind type vars in `formal` from a ground `concrete` shape (mono key arg).

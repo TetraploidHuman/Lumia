@@ -4,9 +4,7 @@
 //! This Core pass only peels `xs.concat([])` / `[].concat(xs)` → `xs`.
 //! Build-side deforestation (`flatMap` materialize, fused views) is not here.
 
-use lumia_core::{
-    for_each_block_dfs, for_each_op_value_mut, Block, CoreFun, CoreModule, Local, Op, Value,
-};
+use lumia_core::{for_each_let, for_each_op_value_mut, Block, CoreFun, CoreModule, Local, Value};
 use lumia_hir::Builtin;
 use rustc_hash::FxHashSet as HashSet;
 
@@ -31,17 +29,10 @@ fn fuse_fun(f: &mut CoreFun) {
 }
 
 fn collect_empty_lists(block: &Block, empty: &mut HashSet<u32>) {
-    for_each_block_dfs(block, &mut |b| {
-        for op in &b.ops {
-            if let Op::Let {
-                local,
-                value: Value::AllocList { elems, .. },
-                ..
-            } = op
-            {
-                if elems.is_empty() {
-                    empty.insert(local.0);
-                }
+    for_each_let(block, &mut |_b, local, value| {
+        if let Value::AllocList { elems, .. } = value {
+            if elems.is_empty() {
+                empty.insert(local.0);
             }
         }
     });

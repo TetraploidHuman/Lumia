@@ -11,7 +11,7 @@
 //!
 //! Summaries are keyed by module-local [`FunId`] (function index). Direct
 //! [`Value::Call`] sites carry [`CallTarget::id`] after
-//! [`lumia_core::resolve_module_call_fun_ids`] (Escape resolves at pass entry).
+//! [`lumia_core::resolve_module_call_fun_ids`] (Escape + [`crate::optimize`] boundaries).
 //! Name fallback remains for unresolved / external-by-name callees.
 //!
 //! Interprocedural fixed-point is **worklist**-driven over the direct-Call
@@ -28,6 +28,7 @@ use propagate::propagate_block;
 use seed::seed_escaping;
 
 use lumia_core::{resolve_module_call_fun_ids, CallTarget, CoreFun, CoreModule, FunId, Local};
+use lumia_syntax::Sym;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// Per-function: which parameter indices escape from the callee.
@@ -39,7 +40,7 @@ pub(crate) type EscapeFunId = FunId;
 /// Call-site resolution for Escape: summaries by id + name→id fallback.
 pub(crate) struct EscapeSummaries {
     by_id: HashMap<EscapeFunId, ParamEscape>,
-    name_to_id: HashMap<String, EscapeFunId>,
+    name_to_id: HashMap<Sym, EscapeFunId>,
 }
 
 impl EscapeSummaries {
@@ -88,7 +89,7 @@ pub(crate) fn escaping_locals(fun: &CoreFun) -> HashSet<Local> {
 }
 
 fn escaping_locals_with(fun: &CoreFun, summaries: &EscapeSummaries) -> HashSet<Local> {
-    let mut assigns: HashMap<String, Vec<Local>> = HashMap::default();
+    let mut assigns: HashMap<Sym, Vec<Local>> = HashMap::default();
     collect_assigns(&fun.body, &mut assigns);
     let mut escaping: HashSet<Local> = HashSet::default();
     seed_escaping(&fun.body, &mut escaping, summaries, &assigns);

@@ -1,62 +1,25 @@
 //! Shared chase helpers for heap typing and HOF/callee result ABI.
 
-use crate::ir::{Block, Local, Op, Value};
+use crate::find_local_def;
+use crate::find_top_level_local_def;
+use crate::ir::{Block, Local, Value};
+use crate::value_ty::{fold_slot_assign_ty, JoinAssignKind};
+use lumia_syntax::Sym;
 use lumia_ty::{Effect, Type};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
-
-use super::prefer_concrete_heap_ty;
-
-pub(super) fn let_value_dfs<'a>(block: &'a Block, id: u32) -> Option<&'a Value> {
-    for op in &block.ops {
-        match op {
-            Op::Let { local, value, .. } => {
-                if local.0 == id {
-                    return Some(value);
-                }
-                if let Some(v) = let_value_in_nested(value, id) {
-                    return Some(v);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-pub(super) fn let_value_in_nested<'a>(value: &'a Value, id: u32) -> Option<&'a Value> {
-    match value {
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => let_value_dfs(then_block, id).or_else(|| let_value_dfs(else_block, id)),
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => let_value_dfs(header, id)
-            .or_else(|| let_value_dfs(body, id))
-            .or_else(|| let_value_dfs(latch, id)),
-        Value::Lambda { body, .. } => {
-            debug_assert!(false, "ICE: Value::Lambda after lift");
-            let_value_dfs(body, id)
-        }
-        _ => None,
-    }
-}
 
 /// Heap type of a mutable/immutable slot (`Name` / `Assign`), joining all writes.
 pub(super) fn slot_heap_ty(
     block: &Block,
-    name: &str,
+    name: &Sym,
     float_locals: &HashSet<u32>,
     fun_ret_tys: &HashMap<String, Type>,
     fun_param_tys: &HashMap<String, Vec<Type>>,
     cap_tys: &HashMap<u32, Type>,
     seen: &mut HashSet<u32>,
-    seen_slots: &mut HashSet<String>,
+    seen_slots: &mut HashSet<Sym>,
 ) -> Option<Type> {
-    if !seen_slots.insert(name.to_string()) {
+    if !seen_slots.insert(name.clone()) {
         return None;
     }
     let mut acc: Option<Type> = None;
@@ -78,130 +41,29 @@ pub(super) fn slot_heap_ty(
 pub(super) fn collect_slot_assigns(
     walk: &Block,
     defs_root: &Block,
-    name: &str,
+    name: &Sym,
     float_locals: &HashSet<u32>,
     fun_ret_tys: &HashMap<String, Type>,
     fun_param_tys: &HashMap<String, Vec<Type>>,
     cap_tys: &HashMap<u32, Type>,
     seen: &mut HashSet<u32>,
-    seen_slots: &mut HashSet<String>,
+    seen_slots: &mut HashSet<Sym>,
     acc: &mut Option<Type>,
 ) {
-    for op in &walk.ops {
-        match op {
-            Op::Assign {
-                name: n,
-                value: Local(src),
-            } if n == name => {
-                if let Some(t) = super::local_heap::local_heap_ty(
-                    defs_root,
-                    *src,
-                    float_locals,
-                    fun_ret_tys,
-                    fun_param_tys,
-                    cap_tys,
-                    seen,
-                    seen_slots,
-                ) {
-                    *acc = Some(match acc.take() {
-                        None => t,
-                        Some(prev) => prefer_concrete_heap_ty(prev, t),
-                    });
-                }
-            }
-            Op::Let { value, .. } => match value {
-                Value::If {
-                    then_block,
-                    else_block,
-                    ..
-                } => {
-                    collect_slot_assigns(
-                        then_block,
-                        defs_root,
-                        name,
-                        float_locals,
-                        fun_ret_tys,
-                        fun_param_tys,
-                        cap_tys,
-                        seen,
-                        seen_slots,
-                        acc,
-                    );
-                    collect_slot_assigns(
-                        else_block,
-                        defs_root,
-                        name,
-                        float_locals,
-                        fun_ret_tys,
-                        fun_param_tys,
-                        cap_tys,
-                        seen,
-                        seen_slots,
-                        acc,
-                    );
-                }
-                Value::Loop {
-                    header,
-                    body,
-                    latch,
-                } => {
-                    collect_slot_assigns(
-                        header,
-                        defs_root,
-                        name,
-                        float_locals,
-                        fun_ret_tys,
-                        fun_param_tys,
-                        cap_tys,
-                        seen,
-                        seen_slots,
-                        acc,
-                    );
-                    collect_slot_assigns(
-                        body,
-                        defs_root,
-                        name,
-                        float_locals,
-                        fun_ret_tys,
-                        fun_param_tys,
-                        cap_tys,
-                        seen,
-                        seen_slots,
-                        acc,
-                    );
-                    collect_slot_assigns(
-                        latch,
-                        defs_root,
-                        name,
-                        float_locals,
-                        fun_ret_tys,
-                        fun_param_tys,
-                        cap_tys,
-                        seen,
-                        seen_slots,
-                        acc,
-                    );
-                }
-                Value::Lambda { body, .. } => {
-                    debug_assert!(false, "ICE: Value::Lambda after lift");
-                    collect_slot_assigns(
-                        body,
-                        defs_root,
-                        name,
-                        float_locals,
-                        fun_ret_tys,
-                        fun_param_tys,
-                        cap_tys,
-                        seen,
-                        seen_slots,
-                        acc,
-                    );
-                }
-                _ => {}
-            },
-            _ => {}
+    crate::for_each_named_slot_assign_in_block(walk, name, &mut |Local(src)| {
+        if let Some(t) = super::local_heap::local_heap_ty(
+            defs_root,
+            src,
+            float_locals,
+            fun_ret_tys,
+            fun_param_tys,
+            cap_tys,
+            seen,
+            seen_slots,
+        ) {
+            fold_slot_assign_ty(acc, t, JoinAssignKind::Heap);
         }
-    }
+    });
 }
 
 pub(super) fn stamped_abi_is_authoritative(ty: &Type) -> bool {
@@ -230,33 +92,12 @@ pub(super) fn fun_ret_of_local(
     if !seen.insert(id) {
         return None;
     }
-    match let_value_dfs(block, id)? {
+    match find_local_def(block, id)? {
         Value::Local(Local(src)) => fun_ret_of_local(block, *src, fun_ret_tys, seen),
         Value::FunRef(name) | Value::AllocClosure { fun: name, .. } => {
             fun_ret_tys.get(name.as_str()).cloned()
         }
         _ => None,
-    }
-}
-
-pub(super) fn join_match_heap_tys(
-    then_ty: Option<Type>,
-    else_ty: Option<Type>,
-    then_bottom: bool,
-    else_bottom: bool,
-) -> Option<Type> {
-    if then_bottom {
-        return else_ty;
-    }
-    if else_bottom {
-        return then_ty;
-    }
-    match (then_ty, else_ty) {
-        (Some(a), Some(b)) => {
-            crate::value_ty::join_abi_tys(&a, &b, crate::value_ty::JoinAbiKind::Heap)
-        }
-        (Some(a), None) | (None, Some(a)) => Some(a),
-        (None, None) => None,
     }
 }
 
@@ -268,7 +109,7 @@ pub(super) fn alloc_elems_ty(
     fun_param_tys: &HashMap<String, Vec<Type>>,
     cap_tys: &HashMap<u32, Type>,
     seen: &mut HashSet<u32>,
-    seen_slots: &mut HashSet<String>,
+    seen_slots: &mut HashSet<Sym>,
 ) -> Type {
     if elems.is_empty() {
         return Type::Int;
@@ -293,10 +134,7 @@ pub(super) fn alloc_elems_ty(
             )
             .unwrap_or(Type::Int)
         };
-        acc = Some(match acc {
-            None => t,
-            Some(prev) => prefer_concrete_heap_ty(prev, t),
-        });
+        fold_slot_assign_ty(&mut acc, t, JoinAssignKind::Heap);
     }
     acc.unwrap_or(Type::Int)
 }
@@ -486,7 +324,7 @@ pub(super) fn resolve_icall(block: &Block, id: u32) -> Option<(u32, Vec<u32>)> {
         if !seen.insert(cur) {
             return None;
         }
-        match let_value(block, cur)? {
+        match find_top_level_local_def(block, cur)? {
             Value::Local(Local(src)) => cur = *src,
             Value::IndirectCall { callee, args } => {
                 return Some((callee.0, args.iter().map(|a| a.0).collect()));
@@ -514,17 +352,6 @@ pub(super) fn ret_ty_from_callee_table(t: &Type) -> Option<Type> {
     }
 }
 
-pub(super) fn let_value(block: &Block, id: u32) -> Option<&Value> {
-    for op in &block.ops {
-        if let Op::Let { local, value, .. } = op {
-            if local.0 == id {
-                return Some(value);
-            }
-        }
-    }
-    None
-}
-
 pub(super) fn local_aliases(block: &Block, id: u32, target: u32) -> bool {
     let mut seen = HashSet::default();
     let mut cur = id;
@@ -535,7 +362,7 @@ pub(super) fn local_aliases(block: &Block, id: u32, target: u32) -> bool {
         if !seen.insert(cur) {
             return false;
         }
-        match let_value(block, cur) {
+        match find_top_level_local_def(block, cur) {
             Some(Value::Local(Local(src))) => cur = *src,
             _ => return false,
         }
@@ -552,7 +379,7 @@ pub(super) fn local_fun_ty(
     if !seen.insert(id) {
         return None;
     }
-    match let_value(block, id)? {
+    match find_top_level_local_def(block, id)? {
         Value::Local(Local(src)) => local_fun_ty(block, *src, fun_ret_tys, fun_param_tys, seen),
         Value::FunRef(name) => {
             let ret = fun_ret_tys.get(name.as_str())?.clone();
@@ -588,7 +415,7 @@ pub(super) fn local_known_hof_ty(
     if !seen.insert(id) {
         return None;
     }
-    match let_value(block, id)? {
+    match find_top_level_local_def(block, id)? {
         Value::Local(Local(src)) => {
             local_known_hof_ty(block, *src, hof, fun_ret_tys, cap_funs, seen)
         }
@@ -623,7 +450,7 @@ pub(super) fn resolve_fun_name(
         if !seen.insert(cur) {
             return None;
         }
-        match let_value(block, cur)? {
+        match find_top_level_local_def(block, cur)? {
             Value::Local(Local(src)) => cur = *src,
             Value::FunRef(name) | Value::AllocClosure { fun: name, .. } => {
                 return Some(name.name.clone());
@@ -660,22 +487,13 @@ pub(super) fn local_callee_ty(
     if !seen.insert(id) {
         return None;
     }
-    for op in &block.ops {
-        let Op::Let { local, value, .. } = op else {
-            continue;
-        };
-        if local.0 != id {
-            continue;
-        }
-        return match value {
-            Value::Local(Local(src)) => local_callee_ty(block, *src, fun_ret_tys, seen),
-            Value::Call { fun, .. } => fun_ret_tys
-                .get(fun.as_str())
-                .and_then(ret_ty_from_callee_table),
-            _ => None,
-        };
+    match find_top_level_local_def(block, id)? {
+        Value::Local(Local(src)) => local_callee_ty(block, *src, fun_ret_tys, seen),
+        Value::Call { fun, .. } => fun_ret_tys
+            .get(fun.as_str())
+            .and_then(ret_ty_from_callee_table),
+        _ => None,
     }
-    None
 }
 
 pub(super) fn local_icall_cap_ty(
@@ -689,27 +507,18 @@ pub(super) fn local_icall_cap_ty(
     if !seen.insert(id) {
         return None;
     }
-    for op in &block.ops {
-        let Op::Let { local, value, .. } = op else {
-            continue;
-        };
-        if local.0 != id {
-            continue;
+    match find_top_level_local_def(block, id)? {
+        Value::Local(Local(src)) => {
+            local_icall_cap_ty(block, *src, cap_srcs, funref_locals, fun_ret_tys, seen)
         }
-        return match value {
-            Value::Local(Local(src)) => {
-                local_icall_cap_ty(block, *src, cap_srcs, funref_locals, fun_ret_tys, seen)
-            }
-            Value::IndirectCall { callee, .. } => {
-                let idx = closure_cap_index(block, callee.0, &mut HashSet::default())?;
-                let src = cap_srcs.get(idx as usize)?;
-                let name = funref_locals.get(&src.0)?;
-                fun_ret_tys.get(name).and_then(ret_ty_from_callee_table)
-            }
-            _ => None,
-        };
+        Value::IndirectCall { callee, .. } => {
+            let idx = closure_cap_index(block, callee.0, &mut HashSet::default())?;
+            let src = cap_srcs.get(idx as usize)?;
+            let name = funref_locals.get(&src.0)?;
+            fun_ret_tys.get(name).and_then(ret_ty_from_callee_table)
+        }
+        _ => None,
     }
-    None
 }
 
 pub(super) fn local_icall_cap_ty_by_index(
@@ -722,44 +531,26 @@ pub(super) fn local_icall_cap_ty_by_index(
     if !seen.insert(id) {
         return None;
     }
-    for op in &block.ops {
-        let Op::Let { local, value, .. } = op else {
-            continue;
-        };
-        if local.0 != id {
-            continue;
+    match find_top_level_local_def(block, id)? {
+        Value::Local(Local(src)) => {
+            local_icall_cap_ty_by_index(block, *src, cap_funs, fun_ret_tys, seen)
         }
-        return match value {
-            Value::Local(Local(src)) => {
-                local_icall_cap_ty_by_index(block, *src, cap_funs, fun_ret_tys, seen)
-            }
-            Value::IndirectCall { callee, .. } => {
-                let idx = closure_cap_index(block, callee.0, &mut HashSet::default())?;
-                let name = cap_funs.get(&idx)?;
-                fun_ret_tys.get(name).and_then(ret_ty_from_callee_table)
-            }
-            _ => None,
-        };
+        Value::IndirectCall { callee, .. } => {
+            let idx = closure_cap_index(block, callee.0, &mut HashSet::default())?;
+            let name = cap_funs.get(&idx)?;
+            fun_ret_tys.get(name).and_then(ret_ty_from_callee_table)
+        }
+        _ => None,
     }
-    None
 }
 
 pub(super) fn closure_cap_index(block: &Block, id: u32, seen: &mut HashSet<u32>) -> Option<u32> {
     if !seen.insert(id) {
         return None;
     }
-    for op in &block.ops {
-        let Op::Let { local, value, .. } = op else {
-            continue;
-        };
-        if local.0 != id {
-            continue;
-        }
-        return match value {
-            Value::Local(Local(src)) => closure_cap_index(block, *src, seen),
-            Value::ClosureCap { index, .. } => Some(*index),
-            _ => None,
-        };
+    match find_top_level_local_def(block, id)? {
+        Value::Local(Local(src)) => closure_cap_index(block, *src, seen),
+        Value::ClosureCap { index, .. } => Some(*index),
+        _ => None,
     }
-    None
 }

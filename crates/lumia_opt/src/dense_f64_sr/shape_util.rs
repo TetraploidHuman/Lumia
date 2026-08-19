@@ -1,4 +1,4 @@
-use lumia_core::{for_each_let_value_ctrl, Block, CoreFun, Local, Op, Value};
+use lumia_core::{CoreFun, Local, Value};
 use lumia_ty::Type;
 
 fn is_list_f64(t: &Type) -> bool {
@@ -21,65 +21,10 @@ pub(super) fn ret_list_f64(fun: &CoreFun) -> bool {
     is_list_f64(&fun.ret_ty)
 }
 
-pub(super) fn out_slot_for_list_param(body: &Block, src: Local) -> Option<String> {
-    if let Some(s) = first_assign_from_local(body, src) {
-        return Some(s);
-    }
-    // `val out = xs` SSA alias: matchers also accept `src` via `same_local`.
-    for op in &body.ops {
-        if let Op::Let {
-            value: Value::Local(l),
-            ..
-        } = op
-        {
-            if *l == src {
-                return Some(String::new());
-            }
-        }
-    }
-    None
-}
-
-pub(super) fn first_assign_from_local(body: &Block, src: Local) -> Option<String> {
-    for op in &body.ops {
-        if let Op::Assign { name, value } = op {
-            if *value == src {
-                return Some(name.clone());
-            }
-        }
-    }
-    None
-}
-
-pub(super) fn first_loop(body: &Block) -> Option<(&Block, &Block, &Block)> {
-    for op in &body.ops {
-        if let Op::Let {
-            value:
-                Value::Loop {
-                    header,
-                    body,
-                    latch,
-                },
-            ..
-        } = op
-        {
-            return Some((header, body, latch));
-        }
-    }
-    None
-}
-
-pub(super) fn body_calls_any(body: &Block, names: &[&str]) -> bool {
-    let mut found = false;
-    for_each_let_value_ctrl(body, &mut |_b, val| {
-        if let Value::Call { fun, .. } = val {
-            if names.iter().any(|n| fun == n) {
-                found = true;
-            }
-        }
-    });
-    found
-}
+pub(super) use lumia_core::{
+    block_calls_any as body_calls_any, first_direct_loop as first_loop, for_each_shape_value,
+    is_out_list, is_out_set, out_slot_for_list_param, OutSlot,
+};
 
 pub(super) fn mentions_local(v: &Value, target: Local) -> bool {
     match v {

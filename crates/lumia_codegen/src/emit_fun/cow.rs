@@ -97,7 +97,7 @@ impl<'ctx> Codegen<'ctx> {
         let_idx: usize,
         dest: Local,
         value: &Value,
-    ) -> Option<(String, Vec<(u32, Local)>)> {
+    ) -> Option<(lumia_hir::Sym, Vec<(u32, Local)>)> {
         let Value::AllocAdt { fields, .. } = value else {
             return None;
         };
@@ -131,7 +131,7 @@ impl<'ctx> Codegen<'ctx> {
     }
 
     /// `AdtField(Name(slot)|alias, idx)` → Some(idx).
-    fn adt_field_from_slot(&self, field: &Local, slot: &str) -> Option<i64> {
+    fn adt_field_from_slot(&self, field: &Local, slot: &lumia_hir::Sym) -> Option<i64> {
         let Value::Builtin {
             name: Builtin::AdtField,
             args,

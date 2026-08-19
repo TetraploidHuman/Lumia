@@ -14,7 +14,7 @@ pub fn classify_sum_field_recursive(adt: &AdtDef) -> HashMap<String, Vec<bool>> 
         return adt
             .variants
             .iter()
-            .map(|v| (v.name.clone(), vec![false; v.arity]))
+            .map(|v| (v.name.to_string(), vec![false; v.arity]))
             .collect();
     }
     let arities: Vec<usize> = adt.variants.iter().map(|v| v.arity).collect();
@@ -38,7 +38,7 @@ pub fn classify_sum_field_recursive(adt: &AdtDef) -> HashMap<String, Vec<bool>> 
             // `Either` / `Shape` / `Expr`: all parametric (concatenated slots).
             vec![false; v.arity]
         };
-        out.insert(v.name.clone(), rec);
+        out.insert(v.name.to_string(), rec);
     }
     out
 }

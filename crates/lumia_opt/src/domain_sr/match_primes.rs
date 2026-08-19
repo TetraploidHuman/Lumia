@@ -2,9 +2,10 @@
 
 use super::externs::RtArg;
 use lumia_core::{
-    body_assigns_unit_inc, const_of, first_direct_loop, header_le_bound, header_le_const,
-    header_name_sq_cmp, is_unit_inc, local_is_zero_or_false, name_of, rem_eq_zero_names,
-    rem_eq_zero_operands, same_local, Block, CoreFun, Local, Op, Value,
+    body_assigns_unit_inc, first_direct_loop, for_each_let_in_block,
+    for_each_top_level_op_in_block, header_name_sq_cmp, is_unit_inc, local_is_zero_or_false,
+    name_of, outer_le_param_or_const, rem_eq_zero_names, rem_eq_zero_operands, result_is_slot,
+    same_local, slot_init_const, slot_init_zero_name, Block, CoreFun, Local, Op, Value,
 };
 use lumia_ty::Type;
 use rustc_hash::FxHashMap as HashMap;
@@ -22,20 +23,26 @@ pub(super) fn match_count_primes_fun(
     if !slot_init_const(&fun.body, "n", 2, defs) {
         return None;
     }
-    let count_slot = count_slot_init_zero(&fun.body, defs)?;
+    let count_slot = slot_init_zero_name(&fun.body, defs)?;
     let (header, body, latch) = first_direct_loop(&fun.body)?;
     if !latch.ops.is_empty() {
         return None;
     }
     let p0 = fun.params.first().copied().unwrap_or(Local(u32::MAX));
-    let (n, limit) = outer_le_limit(header, defs, p0, fun.param_names.first())?;
+    let (n, limit) = outer_le_param_or_const(
+        header,
+        defs,
+        p0,
+        fun.param_names.first().map(|s| s.as_str()),
+        2,
+    )?;
     if n != "n" {
         return None;
     }
     if !body_has_trial_or_is_prime(body, &n, defs) {
         return None;
     }
-    if !body_unit_incs_slot(body, &n, defs) {
+    if !body_assigns_unit_inc(body, &n, defs) {
         return None;
     }
     if !body_has_count_inc(body, &n, &count_slot, defs) {
@@ -50,195 +57,89 @@ pub(super) fn match_count_primes_fun(
     })
 }
 
-/// `(iv_name, Some(const_limit))` or `(iv_name, None)` when bound is the param.
-fn outer_le_limit(
-    header: &Block,
-    defs: &HashMap<u32, Value>,
-    limit_param: Local,
-    param_name: Option<&String>,
-) -> Option<(String, Option<i64>)> {
-    if let Some((n, c)) = header_le_const(header, defs) {
-        if c >= 2 {
-            return Some((n, Some(c)));
-        }
-    }
-    let (n, bound) = header_le_bound(header, defs)?;
-    if same_local(bound, limit_param, defs) {
-        return Some((n, None));
-    }
-    if let Some(Value::Name(nm)) = defs.get(&bound.0) {
-        if param_name == Some(nm) {
-            return Some((n, None));
-        }
-    }
-    None
-}
-
-fn slot_init_const(body: &Block, slot: &str, expect: i64, defs: &HashMap<u32, Value>) -> bool {
-    for op in &body.ops {
-        if matches!(
-            op,
-            Op::Let {
-                value: Value::Loop { .. },
-                ..
-            }
-        ) {
-            break;
-        }
-        if let Op::Assign {
-            name,
-            value: Local(v),
-        } = op
-        {
-            if name == slot && const_of(Local(*v), defs) == Some(expect) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-fn count_slot_init_zero(body: &Block, defs: &HashMap<u32, Value>) -> Option<String> {
-    for op in &body.ops {
-        if matches!(
-            op,
-            Op::Let {
-                value: Value::Loop { .. },
-                ..
-            }
-        ) {
-            break;
-        }
-        if let Op::Assign {
-            name,
-            value: Local(v),
-        } = op
-        {
-            if const_of(Local(*v), defs) == Some(0) {
-                return Some(name.clone());
-            }
-        }
-    }
-    None
-}
-
-fn result_is_slot(body: &Block, slot: &str, defs: &HashMap<u32, Value>) -> bool {
-    let Some(r) = body.result else {
-        return false;
-    };
-    name_of(r, defs).as_deref() == Some(slot)
-}
-
-fn body_unit_incs_slot(body: &Block, slot: &str, defs: &HashMap<u32, Value>) -> bool {
-    for op in &body.ops {
-        if let Op::Assign {
-            name,
-            value: Local(v),
-        } = op
-        {
-            if name == slot && is_unit_inc(*v, slot, defs) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 fn body_has_count_inc(body: &Block, n: &str, count: &str, defs: &HashMap<u32, Value>) -> bool {
-    for op in &body.ops {
-        if let Op::Let {
-            value:
-                Value::If {
-                    then_block,
-                    else_block,
-                    ..
-                },
-            ..
-        } = op
-        {
-            if body_assigns_unit_inc(then_block, count, defs)
-                || body_assigns_unit_inc(else_block, count, defs)
-            {
-                return true;
-            }
-            if body_has_count_inc(then_block, n, count, defs)
-                || body_has_count_inc(else_block, n, count, defs)
-            {
-                return true;
-            }
+    let mut found = false;
+    for_each_let_in_block(body, &mut |_local, value, _pure| {
+        if found {
+            return;
         }
-        if let Op::Let {
-            value: Value::Loop { body: ib, .. },
-            ..
-        } = op
-        {
-            if body_has_count_inc(ib, n, count, defs) {
-                return true;
+        match value {
+            Value::If {
+                then_block,
+                else_block,
+                ..
+            } => {
+                if body_assigns_unit_inc(then_block, count, defs)
+                    || body_assigns_unit_inc(else_block, count, defs)
+                    || body_has_count_inc(then_block, n, count, defs)
+                    || body_has_count_inc(else_block, n, count, defs)
+                {
+                    found = true;
+                }
             }
-        }
-        if let Op::Assign {
-            name,
-            value: Local(v),
-        } = op
-        {
-            if name == count && is_unit_inc(*v, count, defs) {
-                return true;
+            Value::Loop { body: ib, .. } => {
+                if body_has_count_inc(ib, n, count, defs) {
+                    found = true;
+                }
             }
+            _ => {}
         }
+    });
+    if found {
+        return true;
     }
-    false
+    lumia_core::for_each_assign_in_block(body, &mut |name, v| {
+        if !found && name == count && is_unit_inc(v.0, count, defs) {
+            found = true;
+        }
+    });
+    found
 }
 
 fn body_has_trial_or_is_prime(body: &Block, n: &str, defs: &HashMap<u32, Value>) -> bool {
-    for op in &body.ops {
-        if let Op::Let {
-            value:
-                Value::Loop {
-                    header,
-                    body: ib,
-                    latch,
-                },
-            ..
-        } = op
-        {
-            if let Some(p) = match_trial_div_loop(header, ib, latch, defs) {
-                if p.n == n {
-                    return true;
+    let mut found = false;
+    for_each_let_in_block(body, &mut |_local, value, _pure| {
+        if found {
+            return;
+        }
+        match value {
+            Value::Loop {
+                header,
+                body: ib,
+                latch,
+            } => {
+                if let Some(p) = match_trial_div_loop(header, ib, latch, defs) {
+                    if p.n == n {
+                        found = true;
+                        return;
+                    }
+                }
+                if body_has_trial_or_is_prime(ib, n, defs) {
+                    found = true;
                 }
             }
-            if body_has_trial_or_is_prime(ib, n, defs) {
-                return true;
-            }
-        }
-        if let Op::Let {
-            value: Value::Call { fun, args },
-            ..
-        } = op
-        {
-            if is_is_prime_fun(fun.as_str()) && args.len() == 1 {
-                if name_of(args[0], defs).as_deref() == Some(n) {
-                    return true;
+            Value::Call { fun, args } => {
+                if is_is_prime_fun(fun.as_str()) && args.len() == 1 {
+                    if name_of(args[0], defs).as_deref() == Some(n) {
+                        found = true;
+                    }
                 }
             }
-        }
-        if let Op::Let {
-            value:
-                Value::If {
-                    then_block,
-                    else_block,
-                    ..
-                },
-            ..
-        } = op
-        {
-            if body_has_trial_or_is_prime(then_block, n, defs)
-                || body_has_trial_or_is_prime(else_block, n, defs)
-            {
-                return true;
+            Value::If {
+                then_block,
+                else_block,
+                ..
+            } => {
+                if body_has_trial_or_is_prime(then_block, n, defs)
+                    || body_has_trial_or_is_prime(else_block, n, defs)
+                {
+                    found = true;
+                }
             }
+            _ => {}
         }
-    }
-    false
+    });
+    found
 }
 
 fn is_is_prime_fun(name: &str) -> bool {
@@ -246,8 +147,8 @@ fn is_is_prime_fun(name: &str) -> bool {
 }
 
 pub(super) struct TrialDiv {
-    pub d: String,
-    pub n: String,
+    pub d: lumia_syntax::Sym,
+    pub n: lumia_syntax::Sym,
 }
 
 pub(super) fn match_trial_div_loop(
@@ -264,7 +165,7 @@ pub(super) fn match_trial_div_loop(
         return None;
     }
     // Bound is `Name(n)` after inline, or the `isPrime(n)` param local in Debug.
-    let n = name_of(bound, defs).unwrap_or_default();
+    let n = name_of(bound, defs).unwrap_or_else(|| lumia_syntax::Sym::from(""));
     let _ok = body_trial_parts(body, &d, bound, &n, defs)?;
     Some(TrialDiv { d, n })
 }
@@ -300,7 +201,11 @@ fn body_trial_parts(
     let mut ok_name: Option<String> = None;
     let mut saw_break = false;
     let mut saw_step = false;
-    for op in &body.ops {
+    let mut invalid = false;
+    for_each_top_level_op_in_block(body, &mut |op| {
+        if invalid {
+            return;
+        }
         match op {
             Op::Let {
                 value:
@@ -312,26 +217,23 @@ fn body_trial_parts(
                 ..
             } => {
                 if !rem_n_mod_d_zero(*cond, n_local, n_name, d, defs) {
-                    return None;
+                    invalid = true;
+                    return;
                 }
                 let mut then_defs = defs.clone();
-                for top in &then_block.ops {
-                    if let Op::Let { local, value, .. } = top {
-                        then_defs.insert(local.0, value.clone());
+                for_each_let_in_block(then_block, &mut |local, value, _pure| {
+                    then_defs.insert(local.0, value.clone());
+                });
+                for_each_top_level_op_in_block(then_block, &mut |top| match top {
+                    Op::Assign {
+                        name,
+                        value: Local(v),
+                    } if local_is_zero_or_false(Local(*v), &then_defs) => {
+                        ok_name = Some(name.to_string());
                     }
-                }
-                for top in &then_block.ops {
-                    match top {
-                        Op::Assign {
-                            name,
-                            value: Local(v),
-                        } if local_is_zero_or_false(Local(*v), &then_defs) => {
-                            ok_name = Some(name.clone());
-                        }
-                        Op::Break => saw_break = true,
-                        _ => {}
-                    }
-                }
+                    Op::Break => saw_break = true,
+                    _ => {}
+                });
                 if body_assigns_unit_inc(else_block, d, defs) {
                     saw_step = true;
                 }
@@ -344,6 +246,9 @@ fn body_trial_parts(
             }
             _ => {}
         }
+    });
+    if invalid {
+        return None;
     }
     if saw_break && saw_step {
         ok_name
