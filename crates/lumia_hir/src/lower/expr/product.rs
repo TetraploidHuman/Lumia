@@ -77,8 +77,8 @@ pub(super) fn lower_with(
 
 /// Expand `base with { … }` once the product type is known (lower or ty rewrite).
 pub fn expand_with_known(
-    products: &HashMap<String, Vec<String>>,
-    type_name: String,
+    products: &HashMap<Sym, Vec<Sym>>,
+    type_name: Sym,
     base: Expr,
     fields: Vec<(Sym, Expr)>,
     span: Span,
@@ -87,9 +87,9 @@ pub fn expand_with_known(
         return base;
     };
     let tmp = Sym::from(format!("__with_{}", span.start.0));
-    let mut by_name: HashMap<String, Expr> = HashMap::default();
+    let mut by_name: HashMap<Sym, Expr> = HashMap::default();
     for (f, e) in fields {
-        by_name.insert(f.to_string(), e);
+        by_name.insert(f, e);
     }
     let mut args = Vec::with_capacity(order.len());
     for (i, f) in order.iter().enumerate() {
@@ -101,7 +101,7 @@ pub fn expand_with_known(
                 args: vec![
                     Expr::Var(tmp.clone(), span),
                     Expr::Int(i as i64, span),
-                    Expr::String(Sym::from(type_name.clone()), span),
+                    Expr::String(type_name.clone(), span),
                 ],
                 span,
             });
@@ -111,7 +111,7 @@ pub fn expand_with_known(
         name: tmp,
         value: Box::new(base),
         body: Box::new(Expr::AdtNew {
-            adt_name: Sym::from(type_name),
+            adt_name: type_name,
             variant: Sym::from(""),
             tag: 0,
             args,

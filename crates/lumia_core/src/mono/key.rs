@@ -74,7 +74,7 @@ pub(crate) enum MonoKind {
     Map(Box<MonoKind>, Box<MonoKind>),
     Set(Box<MonoKind>),
     Adt {
-        name: String,
+        name: Sym,
         params: Vec<MonoKind>,
     },
     /// Named FunRef HOF argument (specialized + directized inside the clone).
@@ -107,7 +107,7 @@ impl MonoKind {
             MonoKind::Set(e) => format!("Set_{}", e.encode()),
             MonoKind::Adt { name, params } => {
                 if params.is_empty() {
-                    name.clone()
+                    name.to_string()
                 } else {
                     format!(
                         "{}_{}",

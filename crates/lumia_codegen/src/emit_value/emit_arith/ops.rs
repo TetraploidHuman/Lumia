@@ -186,7 +186,7 @@ impl<'ctx> Codegen<'ctx> {
             "mul"
         };
         let mangled = lumia_hir::mangle_trait_method("Num", &name, method);
-        if self.funs.functions.contains_key(&mangled) {
+        if self.funs.functions.contains_key(mangled.as_str()) {
             anyhow::bail!(
                 "ICE: Num Binary `{op:?}` on `{name}` survived to codegen \
                  (expected Call(`{mangled}`) after resolve_trait_method_calls)"
@@ -207,7 +207,7 @@ impl<'ctx> Codegen<'ctx> {
             if self
                 .funs
                 .functions
-                .contains_key(&lumia_hir::mangle_trait_method("Ord", &name, "less"))
+                .contains_key(lumia_hir::mangle_trait_method("Ord", &name, "less").as_str())
             {
                 // DESIGN less(self, other): a < b
                 let (left, right) = match op {

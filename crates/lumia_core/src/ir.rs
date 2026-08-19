@@ -370,7 +370,7 @@ pub enum Value {
     },
     /// Sum/product: `[tag:i64][field0]…` (`adt_name` for Show overrides / typing).
     AllocAdt {
-        adt_name: String,
+        adt_name: Sym,
         tag: i64,
         fields: Vec<Local>,
         repr: AdtRepr,

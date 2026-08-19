@@ -122,7 +122,7 @@ fn emit_llvm_module<'ctx>(
             );
             cg.llvm.module.add_function(&name, fn_ty, None)
         };
-        cg.funs.functions.insert(f.name.to_string(), fv);
+        cg.funs.functions.insert(f.name.clone(), fv);
         attrs::add_nounwind(context, fv);
     }
 

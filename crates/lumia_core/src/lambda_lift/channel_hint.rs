@@ -417,7 +417,7 @@ fn guess_local_ty(
 
 /// Constructor fields are not type params — rebuild Option[T] / Result[A,B] shape.
 fn adt_payload_ty(
-    adt_name: &str,
+    adt_name: &lumia_syntax::Sym,
     tag: i64,
     fields: &[Local],
     local_tys: &HashMap<u32, Type>,
@@ -431,7 +431,7 @@ fn adt_payload_ty(
         }
     };
     // Prelude tags from [`lumia_hir::OPTION`] / [`lumia_hir::RESULT`] injection order.
-    if adt_name == lumia_hir::OPTION.name {
+    if adt_name.as_str() == lumia_hir::OPTION.name {
         let none_tag = lumia_hir::OPTION.default_tag("None").unwrap_or(1);
         let param = if tag == none_tag || fields.is_empty() {
             // None — flexible param joined with Some(T) later.
@@ -440,11 +440,11 @@ fn adt_payload_ty(
             field_ty(&fields[0])
         };
         return Type::Adt {
-            name: adt_name.into(),
+            name: adt_name.clone(),
             params: vec![param],
         };
     }
-    if adt_name == lumia_hir::RESULT.name {
+    if adt_name.as_str() == lumia_hir::RESULT.name {
         let ok_tag = lumia_hir::RESULT.default_tag("Ok").unwrap_or(0);
         let payload = fields.first().map(field_ty).unwrap_or(Type::Int);
         let (ok, err) = if tag == ok_tag {
@@ -453,12 +453,12 @@ fn adt_payload_ty(
             (Type::Var(u32::MAX), payload)
         };
         return Type::Adt {
-            name: adt_name.into(),
+            name: adt_name.clone(),
             params: vec![ok, err],
         };
     }
     Type::Adt {
-        name: adt_name.into(),
+        name: adt_name.clone(),
         params: fields.iter().map(field_ty).collect(),
     }
 }

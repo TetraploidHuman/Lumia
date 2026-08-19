@@ -7,14 +7,14 @@ use crate::ast::AdtDef;
 use rustc_hash::FxHashMap as HashMap;
 
 /// Per-variant: `true` at field `i` ⇒ recursive spine (not a type parameter).
-pub fn classify_sum_field_recursive(adt: &AdtDef) -> HashMap<String, Vec<bool>> {
+pub fn classify_sum_field_recursive(adt: &AdtDef) -> HashMap<lumia_syntax::Sym, Vec<bool>> {
     // Prelude Option/Result keep parametric payloads (Result is also special-cased
     // in ty `infer_adt_new`). Treating `Some` like `Nat.S` would require `Some(3): Option`.
     if crate::is_option_or_result(&adt.name) {
         return adt
             .variants
             .iter()
-            .map(|v| (v.name.to_string(), vec![false; v.arity]))
+            .map(|v| (v.name.clone(), vec![false; v.arity]))
             .collect();
     }
     let arities: Vec<usize> = adt.variants.iter().map(|v| v.arity).collect();
@@ -38,7 +38,7 @@ pub fn classify_sum_field_recursive(adt: &AdtDef) -> HashMap<String, Vec<bool>> 
             // `Either` / `Shape` / `Expr`: all parametric (concatenated slots).
             vec![false; v.arity]
         };
-        out.insert(v.name.to_string(), rec);
+        out.insert(v.name.clone(), rec);
     }
     out
 }

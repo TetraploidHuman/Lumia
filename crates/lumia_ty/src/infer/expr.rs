@@ -147,7 +147,8 @@ impl Infer {
             .get(&name)
             .cloned()
             .ok_or_else(|| at(span, format!("unknown product type `{name}` in `with`")))?;
-        let mut by_name: rustc_hash::FxHashMap<String, Type> = rustc_hash::FxHashMap::default();
+        let mut by_name: rustc_hash::FxHashMap<lumia_syntax::Sym, Type> =
+            rustc_hash::FxHashMap::default();
         for (fname, e) in fields {
             if !order.iter().any(|f| f == fname.as_str()) {
                 return Err(at(
@@ -157,7 +158,7 @@ impl Infer {
             }
             let (t, e_eff) = self.infer_expr(e)?;
             eff = self.union_eff(eff, e_eff);
-            by_name.insert(fname.to_string(), t);
+            by_name.insert(fname.clone(), t);
         }
         let mut out_params = Vec::with_capacity(order.len());
         for (i, f) in order.iter().enumerate() {
@@ -188,10 +189,10 @@ impl Infer {
     }
 
     /// Product whose field set is the unique owner of every name in `fields`.
-    fn unique_product_for_fields(&self, fields: &[&str]) -> Option<String> {
+    fn unique_product_for_fields(&self, fields: &[&str]) -> Option<lumia_syntax::Sym> {
         let mut names = fields.iter().copied();
         let first = names.next()?;
-        let mut set: rustc_hash::FxHashSet<String> = self
+        let mut set: rustc_hash::FxHashSet<lumia_syntax::Sym> = self
             .products
             .products
             .iter()

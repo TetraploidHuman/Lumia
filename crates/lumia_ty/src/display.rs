@@ -118,7 +118,7 @@ pub fn pretty_type_with(ty: &Type, names: &HashMap<u32, String>) -> String {
         }
         Type::Adt { name, params } => {
             if params.is_empty() {
-                name.clone()
+                name.to_string()
             } else {
                 let inner = params
                     .iter()

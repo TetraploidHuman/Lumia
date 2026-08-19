@@ -328,29 +328,16 @@ fn infer_module_inner(
         .instances
         .iter()
         .filter(|(tr, _)| tr == "Ord")
-        .map(|(_, ty)| ty.to_string())
+        .map(|(_, ty)| ty.clone())
         .collect();
     inf.traits.num_instances = module
         .instances
         .iter()
         .filter(|(tr, _)| tr == "Num")
-        .map(|(_, ty)| ty.to_string())
+        .map(|(_, ty)| ty.clone())
         .collect();
-    inf.traits.trait_methods = module
-        .trait_methods
-        .iter()
-        .map(|((tr, ty), ms)| {
-            (
-                (tr.to_string(), ty.to_string()),
-                ms.iter().map(|m| m.to_string()).collect(),
-            )
-        })
-        .collect();
-    inf.traits.instances = module
-        .instances
-        .iter()
-        .map(|(a, b)| (a.to_string(), b.to_string()))
-        .collect();
+    inf.traits.trait_methods = module.trait_methods.clone();
+    inf.traits.instances = module.instances.clone();
     inf.traits.method_trait = module
         .method_traits
         .iter()
@@ -359,12 +346,7 @@ fn infer_module_inner(
     inf.products.products = module
         .products
         .iter()
-        .map(|p| {
-            (
-                p.name.to_string(),
-                p.fields.iter().map(|f| f.to_string()).collect(),
-            )
-        })
+        .map(|p| (p.name.clone(), p.fields.clone()))
         .collect();
     inf.products.sum_field_recursive = HashMap::default();
     inf.products.sum_max_arity = HashMap::default();
@@ -377,18 +359,18 @@ fn infer_module_inner(
             let rec = kinds.get(v.name.as_str()).cloned().unwrap_or_default();
             let parametric = rec.iter().filter(|r| !**r).count();
             inf.products.sum_ctors.insert(
-                v.name.to_string(),
-                (a.name.to_string(), v.arity, param_offset),
+                v.name.clone(),
+                (a.name.clone(), v.arity, param_offset),
             );
             inf.products
                 .sum_field_recursive
-                .insert(v.name.to_string(), rec);
+                .insert(v.name.clone(), rec);
             param_offset += parametric;
             total_params += parametric;
         }
         inf.products
             .sum_max_arity
-            .insert(a.name.to_string(), total_params);
+            .insert(a.name.clone(), total_params);
     }
     let mut fun_types: HashMap<String, Type> = HashMap::default();
     let mut fun_schemes: HashMap<String, Scheme> = HashMap::default();
@@ -612,6 +594,8 @@ fn infer_module_inner(
 
 /// Mark which sum-variant fields are recursive spines vs parametric payloads.
 /// See [`lumia_hir::classify_sum_field_recursive`].
-fn classify_sum_field_recursive(adt: &lumia_hir::AdtDef) -> HashMap<String, Vec<bool>> {
+fn classify_sum_field_recursive(
+    adt: &lumia_hir::AdtDef,
+) -> HashMap<lumia_syntax::Sym, Vec<bool>> {
     lumia_hir::classify_sum_field_recursive(adt)
 }

@@ -1,6 +1,7 @@
 //! Core type, effect, and scheme definitions.
 
 use lumia_hir::{Expr, Module};
+use lumia_syntax::Sym;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use thiserror::Error;
 
@@ -55,7 +56,7 @@ pub enum Type {
     Channel(Box<Type>),
     /// Nominal sum type, e.g. Option[T] → Adt("Option", [T]).
     Adt {
-        name: String,
+        name: Sym,
         params: Vec<Type>,
     },
     /// `(T1, T2, …)` — fixed arity.

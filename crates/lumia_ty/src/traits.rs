@@ -106,7 +106,7 @@ impl Infer {
         }
         match self.prune(recv_ty) {
             Type::Adt { name: ty_name, .. } => {
-                let key = (ty_name, method.to_string());
+                let key = (ty_name.clone(), lumia_syntax::Sym::from(method));
                 let cands = self
                     .traits
                     .trait_methods
@@ -116,7 +116,7 @@ impl Infer {
                 match cands.as_slice() {
                     [] => Ok(None),
                     [mangled] => {
-                        let ct = self.lookup(mangled).ok_or_else(|| {
+                        let ct = self.lookup(mangled.as_str()).ok_or_else(|| {
                             at(
                                 span,
                                 format!("trait method `{method}` for `{}` is not in scope", key.0),
@@ -169,7 +169,7 @@ impl Infer {
                     .cloned();
                 let ret = self.fresh();
                 let fun_eff = if let Some(sample) = sample {
-                    let ct = self.lookup(&sample).ok_or_else(|| {
+                    let ct = self.lookup(sample.as_str()).ok_or_else(|| {
                         at(span, format!("trait method `{method}` is not in scope"))
                     })?;
                     match self.prune(ct) {
@@ -338,7 +338,11 @@ impl Infer {
             }
             Type::Adt { name, .. } => {
                 for (tr, method) in preds {
-                    if !self.traits.instances.contains(&(tr.clone(), name.clone())) {
+                    if !self
+                        .traits
+                        .instances
+                        .contains(&(lumia_syntax::Sym::from(tr.as_str()), name.clone()))
+                    {
                         return Err(TypeError::Message(format!(
                             "no `instance {tr} for {name}` (required by `.{method}()`)"
                         )));
@@ -356,7 +360,7 @@ impl Infer {
 /// Rewrite UFCS `method(recv,…)` callees to mangled `__Trait_Type_method`.
 pub(crate) fn apply_ufcs_rewrites(
     module: &mut Module,
-    rewrites: &HashMap<lumia_syntax::Span, String>,
+    rewrites: &HashMap<lumia_syntax::Span, lumia_syntax::Sym>,
 ) {
     for item in &mut module.items {
         match item {
@@ -402,7 +406,7 @@ fn rewrite_join_in_expr(
 
 pub(crate) fn rewrite_ufcs_in_expr(
     expr: &mut Expr,
-    rewrites: &HashMap<lumia_syntax::Span, String>,
+    rewrites: &HashMap<lumia_syntax::Span, lumia_syntax::Sym>,
 ) {
     // Post-order: children first; then rewrite callee to mangled Fun name when deferred.
     for_each_expr_mut(expr, &mut |e| {
@@ -410,7 +414,7 @@ pub(crate) fn rewrite_ufcs_in_expr(
             return;
         };
         if let Some(mangled) = rewrites.get(span) {
-            **callee = Expr::Var(mangled.clone().into(), *span);
+            **callee = Expr::Var(mangled.clone(), *span);
         }
     });
 }

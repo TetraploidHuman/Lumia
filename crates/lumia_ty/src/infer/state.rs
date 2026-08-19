@@ -2,6 +2,7 @@
 
 use crate::alt::AltKind;
 use crate::types::{Effect, Scheme, Type};
+use lumia_syntax::Sym;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// Unification / substitution / Num var tracking.
@@ -50,13 +51,13 @@ impl Default for EnvState {
 /// Trait / instance / UFCS resolution tables.
 #[derive(Default)]
 pub(crate) struct TraitState {
-    pub(crate) ord_instances: HashSet<String>,
-    pub(crate) num_instances: HashSet<String>,
+    pub(crate) ord_instances: HashSet<Sym>,
+    pub(crate) num_instances: HashSet<Sym>,
     pub(crate) trait_vars: HashMap<u32, Vec<(String, String)>>,
-    pub(crate) instances: HashSet<(String, String)>,
-    pub(crate) trait_methods: HashMap<(String, String), Vec<String>>,
+    pub(crate) instances: HashSet<(Sym, Sym)>,
+    pub(crate) trait_methods: HashMap<(Sym, Sym), Vec<Sym>>,
     pub(crate) method_trait: HashMap<String, String>,
-    pub(crate) ufcs_rewrites: HashMap<lumia_syntax::Span, String>,
+    pub(crate) ufcs_rewrites: HashMap<lumia_syntax::Span, Sym>,
     /// `join(…)` Call spans → TaskJoin / ListJoin after receiver typing.
     pub(crate) join_rewrites: HashMap<lumia_syntax::Span, lumia_hir::Builtin>,
 }
@@ -64,14 +65,14 @@ pub(crate) struct TraitState {
 /// Product type field tables from HIR.
 #[derive(Default)]
 pub(crate) struct ProductState {
-    pub(crate) products: HashMap<String, Vec<String>>,
+    pub(crate) products: HashMap<Sym, Vec<Sym>>,
     /// Sum ADT name → number of **parametric** payload slots (recursive spines
     /// like `S(n)` / `Cons(_, t)` do not allocate a param).
-    pub(crate) sum_max_arity: HashMap<String, usize>,
+    pub(crate) sum_max_arity: HashMap<Sym, usize>,
     /// Sum variant name → (ADT name, arity, parametric-slot base offset).
-    pub(crate) sum_ctors: HashMap<String, (String, usize, usize)>,
+    pub(crate) sum_ctors: HashMap<Sym, (Sym, usize, usize)>,
     /// Sum variant name → per-field kind (`true` = recursive self type).
-    pub(crate) sum_field_recursive: HashMap<String, Vec<bool>>,
+    pub(crate) sum_field_recursive: HashMap<Sym, Vec<bool>>,
 }
 
 /// `return` / `alt` desugar bookkeeping.
@@ -85,7 +86,7 @@ pub(crate) struct AltReturnState {
     /// freezes Map/`Option` (for `getOr`); otherwise open `.get` stays List-shaped.
     pub(crate) alt_scrutinee_depth: u32,
     /// Ambiguous `.field` → (adt_name, idx) once receiver is known.
-    pub(crate) product_field_rewrites: HashMap<lumia_syntax::Span, (String, i64)>,
+    pub(crate) product_field_rewrites: HashMap<lumia_syntax::Span, (Sym, i64)>,
     /// Deferred `with` → product type name.
-    pub(crate) with_rewrites: HashMap<lumia_syntax::Span, String>,
+    pub(crate) with_rewrites: HashMap<lumia_syntax::Span, Sym>,
 }

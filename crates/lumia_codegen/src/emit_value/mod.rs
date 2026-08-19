@@ -99,7 +99,7 @@ impl<'ctx> Codegen<'ctx> {
                 tag,
                 fields,
                 repr,
-            } => self.emit_value_alloc_adt(adt_name, *tag, fields, *repr),
+            } => self.emit_value_alloc_adt(adt_name.as_str(), *tag, fields, *repr),
         }
     }
 }

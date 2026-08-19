@@ -25,7 +25,7 @@ pub(crate) struct LlvmTypes<'ctx> {
 /// [`lumia_core::ModuleTables`] at emit entry; this struct then owns LLVM
 /// handles and emit-only side tables (`closure_cap_tys`, `adt_show_kinds`, …).
 pub(crate) struct FunTables<'ctx> {
-    pub functions: HashMap<String, FunctionValue<'ctx>>,
+    pub functions: HashMap<Sym, FunctionValue<'ctx>>,
     pub fun_ret_tys: HashMap<Sym, Type>,
     pub fun_param_tys: HashMap<Sym, Vec<Type>>,
     pub fun_param0_identity: HashSet<Sym>,

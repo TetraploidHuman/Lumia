@@ -80,7 +80,7 @@ impl<'ctx> Codegen<'ctx> {
         call_name: &str,
     ) -> Result<Option<BasicValueEnum<'ctx>>> {
         let mangled = lumia_hir::mangle_trait_method(trait_name, type_name, method);
-        let Some(fv) = self.funs.functions.get(&mangled).copied() else {
+        let Some(fv) = self.funs.functions.get(mangled.as_str()).copied() else {
             return Ok(None);
         };
         let call = crate::error::llvm(self.llvm.builder.build_call(fv, args, call_name))?;
@@ -143,7 +143,7 @@ impl<'ctx> Codegen<'ctx> {
             .map(|v| v.into_int_value()))
     }
 
-    pub(crate) fn adt_method_name(left: &Type, right: &Type) -> Option<String> {
+    pub(crate) fn adt_method_name(left: &Type, right: &Type) -> Option<lumia_hir::Sym> {
         match (left, right) {
             (Type::Adt { name: a, .. }, Type::Adt { name: b, .. }) if a == b => Some(a.clone()),
             _ => None,

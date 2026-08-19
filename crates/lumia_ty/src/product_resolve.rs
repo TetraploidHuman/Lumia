@@ -1,27 +1,22 @@
 //! Resolve ambiguous product fields / deferred `with` after inference.
 
 use lumia_hir::{expand_with_known, for_each_expr_mut, Builtin, Expr, Item, Module};
-use lumia_syntax::Span;
+use lumia_syntax::{Span, Sym};
 use rustc_hash::FxHashMap as HashMap;
 
 /// Rewrite unresolved `AdtField(_, -1, field)` and deferred `Expr::With`.
 pub(crate) fn apply_product_field_rewrites(
     module: &mut Module,
-    field_rewrites: &HashMap<Span, (String, i64)>,
-    with_rewrites: &HashMap<Span, String>,
+    field_rewrites: &HashMap<Span, (Sym, i64)>,
+    with_rewrites: &HashMap<Span, Sym>,
 ) {
     if field_rewrites.is_empty() && with_rewrites.is_empty() {
         return;
     }
-    let products: HashMap<String, Vec<String>> = module
+    let products: HashMap<Sym, Vec<Sym>> = module
         .products
         .iter()
-        .map(|p| {
-            (
-                p.name.to_string(),
-                p.fields.iter().map(|f| f.to_string()).collect(),
-            )
-        })
+        .map(|p| (p.name.clone(), p.fields.clone()))
         .collect();
     for item in &mut module.items {
         match item {
@@ -33,9 +28,9 @@ pub(crate) fn apply_product_field_rewrites(
 
 fn rewrite_expr(
     expr: &mut Expr,
-    field_rewrites: &HashMap<Span, (String, i64)>,
-    with_rewrites: &HashMap<Span, String>,
-    products: &HashMap<String, Vec<String>>,
+    field_rewrites: &HashMap<Span, (Sym, i64)>,
+    with_rewrites: &HashMap<Span, Sym>,
+    products: &HashMap<Sym, Vec<Sym>>,
 ) {
     // Post-order: field/`with` payloads rewrite before the node itself expands.
     for_each_expr_mut(expr, &mut |e| {
@@ -45,9 +40,9 @@ fn rewrite_expr(
 
 fn apply_node_rewrite(
     expr: &mut Expr,
-    field_rewrites: &HashMap<Span, (String, i64)>,
-    with_rewrites: &HashMap<Span, String>,
-    products: &HashMap<String, Vec<String>>,
+    field_rewrites: &HashMap<Span, (Sym, i64)>,
+    with_rewrites: &HashMap<Span, Sym>,
+    products: &HashMap<Sym, Vec<Sym>>,
 ) {
     match expr {
         Expr::With { span, .. } => {
@@ -69,7 +64,7 @@ fn apply_node_rewrite(
             if let Some((adt, idx)) = field_rewrites.get(span) {
                 if matches!(&args[1], Expr::Int(-1, _)) {
                     args[1] = Expr::Int(*idx, *span);
-                    args[2] = Expr::String(adt.clone().into(), *span);
+                    args[2] = Expr::String(adt.clone(), *span);
                 }
             }
         }
