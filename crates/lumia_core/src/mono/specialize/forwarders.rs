@@ -1,15 +1,16 @@
 use crate::ir::{Block, CoreFun, CoreModule, Op, Value};
 use crate::visit::{for_each_top_level_op_in_block, for_each_top_level_op_in_block_mut};
+use lumia_syntax::Sym;
 use rustc_hash::FxHashMap as HashMap;
 
 /// Mono FunRef toehold: if a clone's result is `Call(target, params)` (pure
 /// forwarder), rewrite call sites to `target` so bodies are shared in practice.
 pub(super) fn elide_trivial_mono_forwarders(module: &mut CoreModule) {
-    let mut forward: HashMap<String, String> = HashMap::default();
+    let mut forward: HashMap<Sym, Sym> = HashMap::default();
     for f in &module.functions {
         if let Some(target) = trivial_param_forward_target(f) {
             if target != f.name {
-                forward.insert(f.name.to_string(), target);
+                forward.insert(f.name.clone(), target);
             }
         }
     }
@@ -17,7 +18,7 @@ pub(super) fn elide_trivial_mono_forwarders(module: &mut CoreModule) {
         return;
     }
     // Collapse chains A→B→C.
-    let keys: Vec<String> = forward.keys().cloned().collect();
+    let keys: Vec<Sym> = forward.keys().cloned().collect();
     for k in keys {
         let mut cur = forward.get(&k).cloned();
         let mut guard = 0;
@@ -41,7 +42,7 @@ pub(super) fn elide_trivial_mono_forwarders(module: &mut CoreModule) {
     }
 }
 
-fn trivial_param_forward_target(fun: &CoreFun) -> Option<String> {
+fn trivial_param_forward_target(fun: &CoreFun) -> Option<Sym> {
     fun.mono_of.as_ref()?;
     let result = fun.body.result?;
     let mut target = None;
@@ -59,13 +60,13 @@ fn trivial_param_forward_target(fun: &CoreFun) -> Option<String> {
         }
         // Exact forward of all formals (identity-shaped mono clone).
         if args.len() == fun.params.len() && args.iter().eq(fun.params.iter()) {
-            target = Some(callee.name.to_string());
+            target = Some(callee.name.clone());
         }
     });
     target
 }
 
-fn rewrite_forward_calls(block: &mut Block, forward: &HashMap<String, String>) {
+fn rewrite_forward_calls(block: &mut Block, forward: &HashMap<Sym, Sym>) {
     for_each_top_level_op_in_block_mut(block, &mut |op| {
         if let Op::Let { value, .. } = op {
             rewrite_forward_value(value, forward);
@@ -73,7 +74,7 @@ fn rewrite_forward_calls(block: &mut Block, forward: &HashMap<String, String>) {
     });
 }
 
-fn rewrite_forward_value(value: &mut Value, forward: &HashMap<String, String>) {
+fn rewrite_forward_value(value: &mut Value, forward: &HashMap<Sym, Sym>) {
     match value {
         Value::Call { fun, .. } => {
             if let Some(t) = forward.get(fun.as_str()) {

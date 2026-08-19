@@ -12,6 +12,7 @@ use crate::value_ty::{
 use crate::value_ty::{fold_slot_assign_ty, JoinAssignKind};
 use crate::{block_result_is_bottom, CoreBinOp as BinOp, CoreUnOp as UnOp};
 use lumia_hir::Builtin;
+use lumia_syntax::Sym;
 use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
@@ -124,7 +125,7 @@ pub(crate) fn refine_mono_container_ret(orig: &Type, inferred: &Type) -> Type {
 pub(crate) fn block_result_fixed_ty(
     block: &Block,
     index: &FunIndex<'_>,
-    trait_methods: &HashMap<(String, String), Vec<String>>,
+    trait_methods: &HashMap<(Sym, Sym), Vec<Sym>>,
     param_tys: &HashMap<u32, Type>,
 ) -> Option<Type> {
     let Local(r) = block.result?;
@@ -145,7 +146,7 @@ fn local_fixed_ty(
     block: &Block,
     id: u32,
     index: &FunIndex<'_>,
-    trait_methods: &HashMap<(String, String), Vec<String>>,
+    trait_methods: &HashMap<(Sym, Sym), Vec<Sym>>,
     param_tys: &HashMap<u32, Type>,
     seen: &mut HashSet<u32>,
     expanding: &mut HashSet<String>,
@@ -195,7 +196,7 @@ fn value_fixed_ty(
     block: &Block,
     value: &Value,
     index: &FunIndex<'_>,
-    trait_methods: &HashMap<(String, String), Vec<String>>,
+    trait_methods: &HashMap<(Sym, Sym), Vec<Sym>>,
     param_tys: &HashMap<u32, Type>,
     seen: &mut HashSet<u32>,
     expanding: &mut HashSet<String>,
@@ -669,7 +670,7 @@ fn value_fixed_ty(
             } else if lumia_hir::is_option(adt_name) && field_tys.is_empty() {
                 vec![Type::Int]
             } else {
-                pad_adt_params(field_tys, index.sum_max_arity.get(adt_name).copied())
+                pad_adt_params(field_tys, index.sum_max_arity.get(adt_name.as_str()).copied())
             };
             Some(Type::Adt {
                 name: adt_name.clone(),
@@ -779,7 +780,7 @@ fn slot_fixed_ty(
     block: &Block,
     name: &str,
     index: &FunIndex<'_>,
-    trait_methods: &HashMap<(String, String), Vec<String>>,
+    trait_methods: &HashMap<(Sym, Sym), Vec<Sym>>,
     param_tys: &HashMap<u32, Type>,
     seen: &mut HashSet<u32>,
     expanding: &mut HashSet<String>,
@@ -802,7 +803,7 @@ fn scan_slot_ty(
     block: &Block,
     name: &str,
     index: &FunIndex<'_>,
-    trait_methods: &HashMap<(String, String), Vec<String>>,
+    trait_methods: &HashMap<(Sym, Sym), Vec<Sym>>,
     param_tys: &HashMap<u32, Type>,
     seen: &mut HashSet<u32>,
     expanding: &mut HashSet<String>,
@@ -823,7 +824,7 @@ fn binary_fixed_ty(
     left: u32,
     right: u32,
     index: &FunIndex<'_>,
-    trait_methods: &HashMap<(String, String), Vec<String>>,
+    trait_methods: &HashMap<(Sym, Sym), Vec<Sym>>,
     param_tys: &HashMap<u32, Type>,
     seen: &mut HashSet<u32>,
     expanding: &mut HashSet<String>,
@@ -866,7 +867,7 @@ fn adt_field_fixed_ty(
     block: &Block,
     args: &[Local],
     index: &FunIndex<'_>,
-    trait_methods: &HashMap<(String, String), Vec<String>>,
+    trait_methods: &HashMap<(Sym, Sym), Vec<Sym>>,
     param_tys: &HashMap<u32, Type>,
     seen: &mut HashSet<u32>,
     expanding: &mut HashSet<String>,
@@ -895,7 +896,7 @@ fn mutator_fixed_seeded(
     name: Builtin,
     args: &[Local],
     index: &FunIndex<'_>,
-    trait_methods: &HashMap<(String, String), Vec<String>>,
+    trait_methods: &HashMap<(Sym, Sym), Vec<Sym>>,
     param_tys: &HashMap<u32, Type>,
     seen: &mut HashSet<u32>,
     expanding: &mut HashSet<String>,
@@ -938,7 +939,7 @@ fn int_const_in_block(block: &Block, id: u32) -> Option<i64> {
 fn block_result_fixed_ty_indexed(
     block: &Block,
     index: &FunIndex<'_>,
-    trait_methods: &HashMap<(String, String), Vec<String>>,
+    trait_methods: &HashMap<(Sym, Sym), Vec<Sym>>,
     param_tys: &HashMap<u32, Type>,
     expanding: &mut HashSet<String>,
 ) -> Option<Type> {

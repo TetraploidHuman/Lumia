@@ -2,6 +2,7 @@ use super::super::fun_index::FunIndex;
 use super::super::key::ground_open_vars;
 use super::super::ret_ty::{block_result_fixed_ty, param_ty_map, refine_mono_container_ret};
 use crate::ir::{CoreFun, CoreModule};
+use lumia_syntax::Sym;
 use lumia_ty::Type;
 use rustc_hash::FxHashMap as HashMap;
 
@@ -10,8 +11,8 @@ use rustc_hash::FxHashMap as HashMap;
 /// generic. Missed call-site rewrites then still get correct float arith in
 /// codegen (instead of `smul` on IEEE bits → `lumia_trap_overflow`).
 pub(super) fn upgrade_generic_param_tys_from_clones(module: &mut CoreModule) {
-    let upgrades: Vec<(String, Vec<Type>, Type)> = {
-        let mut best: HashMap<String, (Vec<Type>, Type)> = HashMap::default();
+    let upgrades: Vec<(Sym, Vec<Type>, Type)> = {
+        let mut best: HashMap<Sym, (Vec<Type>, Type)> = HashMap::default();
         for f in &module.functions {
             let Some(orig) = f.mono_of.as_ref() else {
                 continue;

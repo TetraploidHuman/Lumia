@@ -233,7 +233,7 @@ fn build_const_clone(tmpl: &ConstTemplate, args: &[i64], name: Sym) -> CoreFun {
         safe_divisor_locals: Default::default(),
         nonneg_iv_load_locals: Default::default(),
         scheme_poly: false,
-        mono_of: Some(tmpl.mono_of.to_string()),
+        mono_of: Some(tmpl.mono_of.clone()),
         kind: tmpl.kind,
     }
 }

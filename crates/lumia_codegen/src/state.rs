@@ -37,11 +37,11 @@ pub(crate) struct FunTables<'ctx> {
     pub current_fun: Sym,
     pub tco_peers: HashSet<Sym>,
     pub tco_sccs: HashMap<Sym, HashSet<Sym>>,
-    pub hash_adts: HashSet<String>,
+    pub hash_adts: HashSet<Sym>,
     /// Variant labels by ADT/product type name (tag → display name) for Show.
-    pub adt_variant_names: HashMap<String, Vec<String>>,
+    pub adt_variant_names: HashMap<Sym, Vec<String>>,
     /// Sum ADT name → max variant payload arity (shared typed params slots).
-    pub sum_max_arity: HashMap<String, usize>,
+    pub sum_max_arity: HashMap<Sym, usize>,
     /// When set, `ChannelNew`/`ChannelRecv` use this elem type (from Core sends).
     pub channel_elem_hint: Option<Type>,
     /// Per-`ChannelNew` local → payload (preferred over module hint when set).
@@ -49,7 +49,7 @@ pub(crate) struct FunTables<'ctx> {
     /// `(lifted_fun, capture_index) →` type of the captured local at AllocClosure sites.
     pub closure_cap_tys: HashMap<Sym, HashMap<u32, Type>>,
     /// Stable Show-kind ids (`≥ 1`) packed into ADT `type_id` for recursive `lumia_show`.
-    pub adt_show_kinds: HashMap<String, u16>,
+    pub adt_show_kinds: HashMap<Sym, u16>,
 }
 
 impl<'ctx> Default for FunTables<'ctx> {

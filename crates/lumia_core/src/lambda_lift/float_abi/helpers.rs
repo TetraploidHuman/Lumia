@@ -198,31 +198,31 @@ pub(crate) fn block_result_fun_ty(
 /// Known HOF shapes for spawn/icall Float ABI (apply / compose / id).
 #[derive(Default, Clone)]
 pub(crate) struct HofSets {
-    pub apply: HashSet<String>,
-    pub compose: HashSet<String>,
-    pub id: HashSet<String>,
+    pub apply: HashSet<Sym>,
+    pub compose: HashSet<Sym>,
+    pub id: HashSet<Sym>,
 }
 
 impl HofSets {
-    pub(crate) fn note(&mut self, name: &str, params: &[Local], body: &Block) {
+    pub(crate) fn note(&mut self, name: Sym, params: &[Local], body: &Block) {
         if is_apply_hof(params, body) {
-            self.apply.insert(name.to_string());
+            self.apply.insert(name.clone());
         }
         if is_compose_hof(params, body) {
-            self.compose.insert(name.to_string());
+            self.compose.insert(name.clone());
         }
         if is_id_hof(params, body) {
-            self.id.insert(name.to_string());
+            self.id.insert(name);
         }
     }
 
     pub(crate) fn from_module_funs<'a, I>(funs: I) -> Self
     where
-        I: IntoIterator<Item = (&'a str, &'a [Local], &'a Block)>,
+        I: IntoIterator<Item = (&'a Sym, &'a [Local], &'a Block)>,
     {
         let mut h = Self::default();
         for (name, params, body) in funs {
-            h.note(name, params, body);
+            h.note(name.clone(), params, body);
         }
         h
     }

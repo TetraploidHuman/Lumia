@@ -855,11 +855,11 @@ pub fn collect_alloc_closure_env_funs(block: &Block, out: &mut HashSet<Sym>) {
 }
 
 /// Collect Call targets that appear in `methods` (DFS-safe; enters Lambda bodies).
-pub fn collect_call_names_in(block: &Block, methods: &HashSet<String>, out: &mut HashSet<String>) {
+pub fn collect_call_names_in(block: &Block, methods: &HashSet<Sym>, out: &mut HashSet<Sym>) {
     for_each_let_value(block, &mut |_b, value| {
         if let Value::Call { fun, .. } = value {
             if methods.contains(fun.as_str()) {
-                out.insert(fun.name.to_string());
+                out.insert(fun.name.clone());
             }
         }
     });
@@ -1022,7 +1022,7 @@ pub fn block_result_is_bool_lit(block: &Block, expect: bool) -> bool {
 /// Used to mark lifted `__lam_*` [`crate::ir::CoreFun::effect`] so opt passes that
 /// trust `effect.is_pure()` (inline / CSE / const-specialize) do not treat IO
 /// thunks as pure. `io_callees` are known effectful top-level names.
-pub fn block_has_io(block: &Block, io_callees: &HashSet<String>) -> bool {
+pub fn block_has_io(block: &Block, io_callees: &HashSet<Sym>) -> bool {
     for op in &block.ops {
         match op {
             Op::Let {
@@ -1039,7 +1039,7 @@ pub fn block_has_io(block: &Block, io_callees: &HashSet<String>) -> bool {
     false
 }
 
-fn value_has_eager_io(value: &Value, io_callees: &HashSet<String>) -> bool {
+fn value_has_eager_io(value: &Value, io_callees: &HashSet<Sym>) -> bool {
     match value {
         Value::Call { fun, .. } if io_callees.contains(fun.as_str()) => true,
         Value::Builtin { name, .. } if name.is_io() => true,

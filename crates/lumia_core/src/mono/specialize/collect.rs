@@ -39,8 +39,8 @@ const MAX_MONO_CLONE_ROUNDS: usize = lumia_abi::MONO_CLONE_ROUNDS;
 /// them, repeat until the worklist is empty or [`MAX_MONO_CLONE_ROUNDS`] hits.
 pub(super) fn collect_mono_clones_until_fixed_point(
     module: &mut CoreModule,
-) -> HashMap<(String, MonoKey), String> {
-    let mut renames: HashMap<(String, MonoKey), String> = HashMap::default();
+) -> HashMap<(Sym, MonoKey), Sym> {
+    let mut renames: HashMap<(Sym, MonoKey), Sym> = HashMap::default();
     for _round in 0..MAX_MONO_CLONE_ROUNDS {
         if !specialize_mono_round(module, &mut renames) {
             break;
@@ -51,7 +51,7 @@ pub(super) fn collect_mono_clones_until_fixed_point(
 
 fn specialize_mono_round(
     module: &mut CoreModule,
-    renames: &mut HashMap<(String, MonoKey), String>,
+    renames: &mut HashMap<(Sym, MonoKey), Sym>,
 ) -> bool {
     let index = FunIndex::new(
         &module.functions,
@@ -59,7 +59,7 @@ fn specialize_mono_round(
         &module.trait_methods,
         module.channel_elem_hint.as_ref(),
     );
-    let mut needed: FxHashSet<(String, MonoKey)> = FxHashSet::default();
+    let mut needed: FxHashSet<(Sym, MonoKey)> = FxHashSet::default();
     for fun in &module.functions {
         let mut local_tys: HashMap<u32, Type> = HashMap::default();
         for (i, p) in fun.params.iter().enumerate() {
@@ -94,9 +94,9 @@ fn specialize_mono_round(
     }
 
     let mut clones = Vec::new();
-    let mut clone_names: FxHashSet<String> = FxHashSet::default();
+    let mut clone_names: FxHashSet<Sym> = FxHashSet::default();
     // One Arc<body> per original name this round — shared across many MonoKeys.
-    let mut body_arcs: HashMap<String, Arc<Block>> = HashMap::default();
+    let mut body_arcs: HashMap<Sym, Arc<Block>> = HashMap::default();
     for (name, key) in needed {
         if !key.worth_cloning() {
             continue;
@@ -119,9 +119,9 @@ fn specialize_mono_round(
         if orig.params.len() != key.0.len() {
             continue;
         }
-        let new_name = format!("{name}{}", key.suffix());
+        let new_name = Sym::from(format!("{name}{}", key.suffix()));
         if renames.contains_key(&(name.clone(), key.clone()))
-            || index.contains(&new_name)
+            || index.contains(new_name.as_str())
             || clone_names.contains(&new_name)
         {
             renames.insert((name, key), new_name);
@@ -154,7 +154,7 @@ fn specialize_mono_round(
                 .or_insert_with(|| Arc::new(orig.body.clone()))
                 .clone();
             let clone = CoreFun {
-                name: new_name.clone().into(),
+                name: new_name.clone(),
                 params: orig.params.clone(),
                 param_names: orig.param_names.clone(),
                 param_tys: param_tys.clone(),
@@ -188,7 +188,7 @@ fn specialize_mono_round(
         // `Call(dbl$Float, …)` whose ret is Float, not the erased Int FunRef.
         directize_block(&mut body, &binds);
         let mut clone = CoreFun {
-            name: new_name.clone().into(),
+            name: new_name.clone(),
             params: orig.params.clone(),
             param_names: orig.param_names.clone(),
             param_tys: param_tys.clone(),
@@ -224,7 +224,7 @@ fn scan_mono_block(
     int_consts: &mut HashMap<u32, i64>,
     bool_consts: &mut HashMap<u32, bool>,
     index: &FunIndex<'_>,
-    needed: &mut FxHashSet<(String, MonoKey)>,
+    needed: &mut FxHashSet<(Sym, MonoKey)>,
     parent_funrefs: &HashMap<u32, Sym>,
     parent_slot_funrefs: &HashMap<Sym, Sym>,
     slot_list_funrefs: &mut HashMap<Sym, FunrefSlots>,
@@ -409,7 +409,7 @@ fn walk_mono_nested_scan(
     int_consts: &mut HashMap<u32, i64>,
     bool_consts: &mut HashMap<u32, bool>,
     index: &FunIndex<'_>,
-    needed: &mut FxHashSet<(String, MonoKey)>,
+    needed: &mut FxHashSet<(Sym, MonoKey)>,
     funref_of: &HashMap<u32, Sym>,
     slot_funrefs: &HashMap<Sym, Sym>,
     slot_list_funrefs: &mut HashMap<Sym, FunrefSlots>,
@@ -447,7 +447,7 @@ fn note_mono_call(
     value: &Value,
     local_tys: &HashMap<u32, Type>,
     index: &FunIndex<'_>,
-    needed: &mut FxHashSet<(String, MonoKey)>,
+    needed: &mut FxHashSet<(Sym, MonoKey)>,
     funref_of: &HashMap<u32, Sym>,
 ) {
     match value {
@@ -556,7 +556,7 @@ fn note_needed_clone(
     key: MonoKey,
     f: &CoreFun,
     index: &FunIndex<'_>,
-    needed: &mut FxHashSet<(String, MonoKey)>,
+    needed: &mut FxHashSet<(Sym, MonoKey)>,
 ) {
     if !key.worth_cloning() {
         return;
@@ -570,7 +570,7 @@ fn note_needed_clone(
     if f.param_tys == param_tys && f.ret_ty == ret && key.funref_param_binds(&f.params).is_empty() {
         return;
     }
-    needed.insert((fun.to_string(), key));
+    needed.insert((Sym::from(fun), key));
 }
 
 pub(crate) fn mono_value_ty(

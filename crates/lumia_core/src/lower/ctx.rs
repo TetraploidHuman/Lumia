@@ -16,7 +16,7 @@ pub(super) struct CoreLowerCtx {
     /// Short trait-method names left unresolved until post-mono resolve.
     pub(super) trait_method_names: HashSet<String>,
     /// Top-level functions whose Fun type carries IO (named Call purity).
-    pub(super) io_funs: HashSet<String>,
+    pub(super) io_funs: HashSet<lumia_syntax::Sym>,
     /// Zonked expression types from [`lumia_ty::TypedModule::type_at`].
     pub(super) type_at: Rc<[(Span, Type)]>,
     /// `(path_label, source)` per [`Span::file`] for bare `assert(cond)` messages.
@@ -30,7 +30,7 @@ impl CoreLowerCtx {
         toplevel_funs: HashSet<String>,
         toplevel_vals: HashSet<String>,
         trait_method_names: HashSet<String>,
-        io_funs: HashSet<String>,
+        io_funs: HashSet<lumia_syntax::Sym>,
         type_at: Rc<[(Span, Type)]>,
         assert_files: Rc<[(String, String)]>,
     ) -> Self {

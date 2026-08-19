@@ -118,33 +118,33 @@ pub(super) fn constant_returned_funref_in_body(body: &Block) -> Option<Sym> {
 }
 
 /// Snapshot before rewrite — FunSig shadow has empty bodies; chase uses this map.
-pub(super) fn constant_funref_ret_map(functions: &[CoreFun]) -> HashMap<String, Sym> {
+pub(super) fn constant_funref_ret_map(functions: &[CoreFun]) -> HashMap<Sym, Sym> {
     let mut out = HashMap::default();
     for f in functions {
         if let Some(n) = constant_returned_funref_in_body(&f.body) {
-            out.insert(f.name.to_string(), n);
+            out.insert(f.name.clone(), n);
         }
     }
     out
 }
 
 /// Spawn bodies that return `listOf(fun, …)` — elem FunRefs for join→ListGet.
-pub(super) fn constant_list_funref_ret_map(functions: &[CoreFun]) -> HashMap<String, FunrefSlots> {
+pub(super) fn constant_list_funref_ret_map(functions: &[CoreFun]) -> HashMap<Sym, FunrefSlots> {
     let mut out = HashMap::default();
     for f in functions {
         if let Some(v) = constant_returned_list_funrefs_in_body(&f.body) {
-            out.insert(f.name.to_string(), v);
+            out.insert(f.name.clone(), v);
         }
     }
     out
 }
 
 /// Spawn bodies that return `Box { f = fun, … }` — field FunRefs for join→AdtField.
-pub(super) fn constant_adt_funref_ret_map(functions: &[CoreFun]) -> HashMap<String, FunrefSlots> {
+pub(super) fn constant_adt_funref_ret_map(functions: &[CoreFun]) -> HashMap<Sym, FunrefSlots> {
     let mut out = HashMap::default();
     for f in functions {
         if let Some(v) = constant_returned_adt_funrefs_in_body(&f.body) {
-            out.insert(f.name.to_string(), v);
+            out.insert(f.name.clone(), v);
         }
     }
     out

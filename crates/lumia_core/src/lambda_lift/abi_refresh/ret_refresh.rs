@@ -14,7 +14,7 @@ pub(super) fn refresh_lifted_lambda_rets(module: &mut CoreModule) {
         module
             .functions
             .iter()
-            .map(|f| (f.name.as_str(), f.params.as_slice(), &f.body)),
+            .map(|f| (&f.name, f.params.as_slice(), &f.body)),
     );
     // lam → (capture_index → callee fun name) from AllocClosure sites.
     let mut cap_funs: HashMap<Sym, HashMap<u32, Sym>> = HashMap::default();

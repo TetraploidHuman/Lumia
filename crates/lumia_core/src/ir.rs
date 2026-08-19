@@ -140,13 +140,14 @@ pub struct CoreModule {
     pub name: String,
     pub functions: Vec<CoreFun>,
     /// ADT/product type names with `instance Hash` (may use HashOrdered Map/Set).
-    pub hash_adts: HashSet<String>,
+    pub hash_adts: HashSet<Sym>,
     /// `(type, method)` → mangled `__Trait_Type_method` (for poly UFCS resolve after mono).
-    pub trait_methods: HashMap<(String, String), Vec<String>>,
+    pub trait_methods: HashMap<(Sym, Sym), Vec<Sym>>,
     /// Variant / product display names by type, indexed by tag (print/`Show` only).
-    pub adt_variant_names: HashMap<String, Vec<String>>,
+    /// Keys are ADT names (`Sym`); variant labels stay display `String`s.
+    pub adt_variant_names: HashMap<Sym, Vec<String>>,
     /// Sum ADT name → max variant payload arity (shared `Type::Adt` params slots).
-    pub sum_max_arity: HashMap<String, usize>,
+    pub sum_max_arity: HashMap<Sym, usize>,
     /// When every channel agrees on a ground payload (typed stamp and/or sends),
     /// module-wide hint for recv/join typing; else per-local map only.
     pub channel_elem_hint: Option<Type>,
@@ -220,7 +221,7 @@ pub struct CoreFun {
     pub scheme_poly: bool,
     /// When set, this function is a monomorphization clone of the named original.
     /// Prefer this over parsing `$` out of [`Self::name`].
-    pub mono_of: Option<String>,
+    pub mono_of: Option<Sym>,
     /// Structured identity — prefer over `__lam_` / `__val_` name prefixes.
     pub kind: FunKind,
 }

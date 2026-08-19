@@ -30,7 +30,7 @@ pub struct InferValueCtx<'a> {
     /// SSA locals bound to `Value::Int` (for `AdtField` index → `params[i]`).
     pub local_int_consts: Option<&'a HashMap<u32, i64>>,
     /// Sum ADT name → max variant payload arity (pad `AllocAdt` params).
-    pub sum_max_arity: Option<&'a HashMap<String, usize>>,
+    pub sum_max_arity: Option<&'a HashMap<Sym, usize>>,
     /// Module-wide `ChannelSend` payload when all sends agree (else erased Int).
     pub channel_elem_hint: Option<&'a Type>,
     /// Current fun's capture-index → ty (typed Float ABI).
@@ -46,7 +46,7 @@ pub struct CodegenTypeTables<'a> {
     pub fun_param0_identity: &'a HashSet<Sym>,
     pub funref_locals: &'a HashMap<u32, Sym>,
     pub local_int_consts: &'a HashMap<u32, i64>,
-    pub sum_max_arity: &'a HashMap<String, usize>,
+    pub sum_max_arity: &'a HashMap<Sym, usize>,
     pub channel_elem_hint: Option<&'a Type>,
 }
 
@@ -318,7 +318,7 @@ pub fn infer_value_ty_ctx(
                 .collect();
             let params = pad_adt_params(
                 params,
-                ctx.sum_max_arity.and_then(|m| m.get(adt_name).copied()),
+                ctx.sum_max_arity.and_then(|m| m.get(adt_name.as_str()).copied()),
             );
             Type::Adt {
                 name: adt_name.clone(),

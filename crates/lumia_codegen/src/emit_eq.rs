@@ -56,7 +56,7 @@ impl AdtFieldMaskKind {
 impl<'ctx> Codegen<'ctx> {
     pub(crate) fn key_type_has_hash(&self, ty: &Type) -> bool {
         match ty {
-            Type::Adt { name, .. } => self.funs.hash_adts.contains(name),
+            Type::Adt { name, .. } => self.funs.hash_adts.contains(name.as_str()),
             // Scalars / collections: structural hash always available.
             Type::Int
             | Type::Float
@@ -175,7 +175,7 @@ impl<'ctx> Codegen<'ctx> {
         if let Some(name) = Self::adt_method_name(lt, rt) {
             // Hash ADTs use `lumia_eq` for Map/Set keys — keep `==` on the same path
             // so a custom `__Eq_*_eq` cannot diverge from containment.
-            if !self.funs.hash_adts.contains(&name) {
+            if !self.funs.hash_adts.contains(name.as_str()) {
                 if let Some(eq) = self.emit_eq_override(&name, l, r)? {
                     return Ok(eq);
                 }

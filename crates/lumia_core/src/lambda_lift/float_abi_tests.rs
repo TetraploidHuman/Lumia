@@ -889,7 +889,7 @@ val main = {
     let fun_param0_identity = HashSet::default();
     let mut funref_locals: HashMap<u32, Sym> = HashMap::default();
     let local_int_consts: HashMap<u32, i64> = HashMap::default();
-    let sum_max_arity: HashMap<String, usize> = HashMap::default();
+    let sum_max_arity: HashMap<Sym, usize> = HashMap::default();
     fn walk(
         ops: &[Op],
         local_tys: &mut HashMap<u32, Type>,
@@ -899,7 +899,7 @@ val main = {
         fun_param_tys: &HashMap<Sym, Vec<Type>>,
         fun_param0_identity: &HashSet<Sym>,
         local_int_consts: &HashMap<u32, i64>,
-        sum_max_arity: &HashMap<String, usize>,
+        sum_max_arity: &HashMap<Sym, usize>,
         hint: Option<&Type>,
     ) {
         for op in ops {

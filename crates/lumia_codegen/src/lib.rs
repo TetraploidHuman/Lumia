@@ -38,6 +38,7 @@ use inkwell::types::BasicMetadataTypeEnum;
 use inkwell::values::FunctionValue;
 use inkwell::AddressSpace;
 use lumia_core::CoreModule;
+use lumia_hir::Sym;
 use lumia_ty::Type;
 use rustc_hash::FxHashMap as HashMap;
 use std::path::PathBuf;
@@ -230,8 +231,8 @@ fn emit_c_main<'ctx>(
     module: &LlvmModule<'ctx>,
     builder: &Builder<'ctx>,
     core: &CoreModule,
-    adt_show_kinds: &HashMap<String, u16>,
-    adt_variant_names: &HashMap<String, Vec<String>>,
+    adt_show_kinds: &HashMap<Sym, u16>,
+    adt_variant_names: &HashMap<Sym, Vec<String>>,
 ) {
     let i32_ty = context.i32_type();
     let main_ty = i32_ty.fn_type(&[], false);
@@ -247,8 +248,8 @@ fn emit_c_main<'ctx>(
 }
 
 /// Assign stable Show-kind ids (`1..`) for ADTs with known variant labels.
-fn assign_adt_show_kinds(names: &HashMap<String, Vec<String>>) -> HashMap<String, u16> {
-    let mut keys: Vec<&String> = names.keys().collect();
+fn assign_adt_show_kinds(names: &HashMap<Sym, Vec<String>>) -> HashMap<Sym, u16> {
+    let mut keys: Vec<&Sym> = names.keys().collect();
     keys.sort();
     let mut out = HashMap::default();
     for (i, k) in keys.into_iter().enumerate() {
@@ -264,8 +265,8 @@ fn emit_adt_show_registration<'ctx>(
     context: &'ctx Context,
     module: &LlvmModule<'ctx>,
     builder: &Builder<'ctx>,
-    kinds: &HashMap<String, u16>,
-    names: &HashMap<String, Vec<String>>,
+    kinds: &HashMap<Sym, u16>,
+    names: &HashMap<Sym, Vec<String>>,
 ) -> Result<()> {
     let Some(reg) = module.get_function("lumia_adt_register_show") else {
         return Ok(());
@@ -273,7 +274,7 @@ fn emit_adt_show_registration<'ctx>(
     let i32_ty = context.i32_type();
     let i64_ty = context.i64_type();
     let ptr_ty = context.ptr_type(AddressSpace::default());
-    let mut entries: Vec<(&String, u16)> = kinds.iter().map(|(k, &v)| (k, v)).collect();
+    let mut entries: Vec<(&Sym, u16)> = kinds.iter().map(|(k, &v)| (k, v)).collect();
     entries.sort_by_key(|(_, kind)| *kind);
     for (adt_name, kind) in entries {
         let Some(labels) = names.get(adt_name) else {

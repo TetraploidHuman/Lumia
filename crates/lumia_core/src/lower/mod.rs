@@ -54,10 +54,10 @@ pub fn lower_hir_with_schemes(
         .keys()
         .map(|(_, m)| m.to_string())
         .collect();
-    let io_funs: HashSet<String> = fun_types
+    let io_funs: HashSet<lumia_syntax::Sym> = fun_types
         .iter()
         .filter_map(|(n, ty)| match ty {
-            Type::Fun(_, _, e) if e.has_io() => Some(n.clone()),
+            Type::Fun(_, _, e) if e.has_io() => Some(lumia_syntax::Sym::from(n.as_str())),
             _ => None,
         })
         .collect();
@@ -186,13 +186,13 @@ pub fn lower_hir_with_schemes(
             }
         }
     }
-    let hash_adts: HashSet<String> = module
+    let hash_adts: HashSet<lumia_syntax::Sym> = module
         .instances
         .iter()
-        .filter(|(tr, _)| tr == "Hash")
-        .map(|(_, ty)| ty.to_string())
+        .filter(|(tr, _)| tr.as_str() == "Hash")
+        .map(|(_, ty)| ty.clone())
         .collect();
-    let mut adt_variant_names: HashMap<String, Vec<String>> = HashMap::default();
+    let mut adt_variant_names: HashMap<lumia_syntax::Sym, Vec<String>> = HashMap::default();
     for adt in &module.adts {
         let mut names = vec![String::new(); adt.variants.len()];
         for v in &adt.variants {
@@ -202,31 +202,23 @@ pub fn lower_hir_with_schemes(
             }
             names[idx] = v.name.to_string();
         }
-        adt_variant_names.insert(adt.name.to_string(), names);
+        adt_variant_names.insert(adt.name.clone(), names);
     }
     for prod in &module.products {
         // Products are tag-0 payloads; print the type name.
-        adt_variant_names.insert(prod.name.to_string(), vec![prod.name.to_string()]);
+        adt_variant_names.insert(prod.name.clone(), vec![prod.name.to_string()]);
     }
-    let sum_max_arity: HashMap<String, usize> = module
+    let sum_max_arity: HashMap<lumia_syntax::Sym, usize> = module
         .adts
         .iter()
         .map(|a| {
             // Match ty: parametric slots only (recursive spines are `Self`).
             let total = sum_parametric_arity(a);
-            (a.name.to_string(), total)
+            (a.name.clone(), total)
         })
         .collect();
-    let trait_methods: HashMap<(String, String), Vec<String>> = module
-        .trait_methods
-        .iter()
-        .map(|((tr, ty), ms)| {
-            (
-                (tr.to_string(), ty.to_string()),
-                ms.iter().map(|m| m.to_string()).collect(),
-            )
-        })
-        .collect();
+    let trait_methods: HashMap<(lumia_syntax::Sym, lumia_syntax::Sym), Vec<lumia_syntax::Sym>> =
+        module.trait_methods.clone();
     let mut core = CoreModule {
         name: module.name.to_string(),
         functions,

@@ -73,7 +73,7 @@ fn lambda_param_ret_tys(
     (param_tys, ret_ty)
 }
 
-fn lifted_effect(body: &Block, io_funs: &HashSet<String>) -> Effect {
+fn lifted_effect(body: &Block, io_funs: &HashSet<Sym>) -> Effect {
     if block_has_io(body, io_funs) {
         Effect::io()
     } else {
@@ -92,18 +92,18 @@ fn lift_lambdas_inner(module: &mut CoreModule) {
     let mut extras = Vec::new();
     let mut id = 0u32;
     let mut next_local = max_local_in_module(module).saturating_add(1);
-    let mut io_funs: HashSet<String> = module
+    let mut io_funs: HashSet<Sym> = module
         .functions
         .iter()
         .filter(|f| f.effect.has_io())
-        .map(|f| f.name.to_string())
+        .map(|f| f.name.clone())
         .collect();
     let (mut fun_ret_tys, mut fun_param_tys) = crate::ModuleTables::from_module(module).into_maps();
     let mut hof = HofSets::from_module_funs(
         module
             .functions
             .iter()
-            .map(|f| (f.name.as_str(), f.params.as_slice(), &f.body)),
+            .map(|f| (&f.name, f.params.as_slice(), &f.body)),
     );
     let mut float_cap_idxs: HashMap<Sym, HashSet<u32>> = HashMap::default();
     for fun in &mut module.functions {
@@ -163,7 +163,7 @@ fn lift_block(
     next_local: &mut u32,
     float_locals: &mut HashSet<u32>,
     float_slots: &mut HashSet<Sym>,
-    io_funs: &mut HashSet<String>,
+    io_funs: &mut HashSet<Sym>,
     fun_ret_tys: &mut HashMap<Sym, Type>,
     fun_param_tys: &mut HashMap<Sym, Vec<Type>>,
     hof: &mut HofSets,
@@ -229,7 +229,7 @@ fn lift_value(
     pure_region: bool,
     float_locals: &mut HashSet<u32>,
     float_slots: &mut HashSet<Sym>,
-    io_funs: &mut HashSet<String>,
+    io_funs: &mut HashSet<Sym>,
     fun_ret_tys: &mut HashMap<Sym, Type>,
     fun_param_tys: &mut HashMap<Sym, Vec<Type>>,
     hof: &mut HofSets,
@@ -296,12 +296,12 @@ fn lift_value(
                 );
                 let effect = lifted_effect(body, io_funs);
                 if effect.has_io() {
-                    io_funs.insert(name.to_string());
+                    io_funs.insert(name.clone());
                 }
                 fun_ret_tys.insert(name.clone(), ret_ty.clone());
                 fun_param_tys.insert(name.clone(), param_tys.clone());
                 float_cap_idxs.insert(name.clone(), HashSet::default());
-                hof.note(name.as_str(), params, body);
+                hof.note(name.clone(), params, body);
                 super::note_lifted_lambda_name(name.clone());
                 extras.push(CoreFun {
                     name: name.clone(),
@@ -404,13 +404,13 @@ fn lift_value(
             );
             let effect = lifted_effect(&new_body, io_funs);
             if effect.has_io() {
-                io_funs.insert(name.to_string());
+                io_funs.insert(name.clone());
             }
             let mut full_param_tys = vec![Type::Int]; // env pointer bits
             full_param_tys.extend(user_param_tys);
             fun_ret_tys.insert(name.clone(), ret_ty.clone());
             fun_param_tys.insert(name.clone(), full_param_tys.clone());
-            hof.note(name.as_str(), &fun_params, &new_body);
+            hof.note(name.clone(), &fun_params, &new_body);
             super::note_lifted_lambda_name(name.clone());
             extras.push(CoreFun {
                 name: name.clone(),

@@ -140,7 +140,7 @@ impl<'ctx> Codegen<'ctx> {
             Type::Adt { name, params } => {
                 if let Some(ptr) = self.emit_show_override(name, arg)? {
                     ShowForm::StrPtr(ptr)
-                } else if self.funs.adt_variant_names.contains_key(name)
+                } else if self.funs.adt_variant_names.contains_key(name.as_str())
                     || params.iter().any(|p| matches!(p, Type::Float | Type::Bool))
                 {
                     ShowForm::StrPtr(self.emit_typed_adt_show(name, arg, params)?)

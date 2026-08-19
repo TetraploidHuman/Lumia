@@ -18,10 +18,10 @@ pub struct ModuleTables {
     /// Functions whose body is a pure alias of param0 (identity forwarders).
     pub fun_param0_identity: HashSet<Sym>,
     /// Trait short-name → mangled impls (mono UFCS / stubs).
-    pub trait_methods: HashMap<(String, String), Vec<String>>,
-    pub hash_adts: HashSet<String>,
-    pub adt_variant_names: HashMap<String, Vec<String>>,
-    pub sum_max_arity: HashMap<String, usize>,
+    pub trait_methods: HashMap<(Sym, Sym), Vec<Sym>>,
+    pub hash_adts: HashSet<Sym>,
+    pub adt_variant_names: HashMap<Sym, Vec<String>>,
+    pub sum_max_arity: HashMap<Sym, usize>,
     pub channel_elem_hint: Option<Type>,
     pub channel_elem_by_local: HashMap<u32, Type>,
 }
@@ -144,12 +144,14 @@ mod tests {
             kind: FunKind::Normal,
         };
         let mut m = CoreModule::with_functions("M", vec![f, id]);
-        m.hash_adts.insert("Point".into());
-        m.sum_max_arity.insert("Option".into(), 1);
+        m.hash_adts.insert(Sym::from("Point"));
+        m.sum_max_arity.insert(Sym::from("Option"), 1);
         m.channel_elem_hint = Some(Type::Float);
         m.channel_elem_by_local.insert(3, Type::Int);
-        m.trait_methods
-            .insert(("Show".into(), "show".into()), vec!["Show$Int".into()]);
+        m.trait_methods.insert(
+            (Sym::from("Show"), Sym::from("show")),
+            vec![Sym::from("Show$Int")],
+        );
         let t = ModuleTables::from_module(&m);
         assert_eq!(t.fun_ret_tys.get("add"), Some(&Type::Int));
         assert_eq!(
@@ -161,8 +163,9 @@ mod tests {
         assert_eq!(t.channel_elem_hint, Some(Type::Float));
         assert_eq!(t.channel_elem_by_local.get(&3), Some(&Type::Int));
         assert_eq!(
-            t.trait_methods.get(&("Show".into(), "show".into())),
-            Some(&vec!["Show$Int".into()])
+            t.trait_methods
+                .get(&(Sym::from("Show"), Sym::from("show"))),
+            Some(&vec![Sym::from("Show$Int")])
         );
         assert!(t.fun_param0_identity.contains("id"));
         assert!(t.fun_param0_identity.contains("add")); // result = Local(0) = param0

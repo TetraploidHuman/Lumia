@@ -14,7 +14,7 @@ pub(crate) fn resolve_trait_method_calls(module: &mut CoreModule) {
     }
     let tables = crate::ModuleTables::from_module(module);
     let trait_methods = tables.trait_methods;
-    let method_names: FxHashSet<String> = trait_methods.keys().map(|(_, m)| m.clone()).collect();
+    let method_names: FxHashSet<Sym> = trait_methods.keys().map(|(_, m)| m.clone()).collect();
     let shadow = super::fun_index::SigShadow::from_module(module);
     let index = shadow.index();
     for fun in &mut module.functions {
@@ -41,8 +41,8 @@ fn resolve_trait_block(
     local_tys: &mut HashMap<u32, Type>,
     slot_tys: &mut HashMap<Sym, Type>,
     int_consts: &mut HashMap<u32, i64>,
-    trait_methods: &HashMap<(String, String), Vec<String>>,
-    method_names: &FxHashSet<String>,
+    trait_methods: &HashMap<(Sym, Sym), Vec<Sym>>,
+    method_names: &FxHashSet<Sym>,
     index: &FunIndex<'_>,
 ) {
     for_each_top_level_op_in_block_mut(block, &mut |op| match op {
@@ -78,8 +78,8 @@ fn resolve_trait_value(
     local_tys: &mut HashMap<u32, Type>,
     slot_tys: &mut HashMap<Sym, Type>,
     int_consts: &mut HashMap<u32, i64>,
-    trait_methods: &HashMap<(String, String), Vec<String>>,
-    method_names: &FxHashSet<String>,
+    trait_methods: &HashMap<(Sym, Sym), Vec<Sym>>,
+    method_names: &FxHashSet<Sym>,
     index: &FunIndex<'_>,
 ) {
     match value {
@@ -87,7 +87,7 @@ fn resolve_trait_value(
             if method_names.contains(fun.as_str()) {
                 if let Some(recv) = args.first() {
                     if let Some(Type::Adt { name, .. }) = local_tys.get(&recv.0) {
-                        if let Some(cands) = trait_methods.get(&(name.clone(), fun.name.to_string())) {
+                        if let Some(cands) = trait_methods.get(&(Sym::from(name.as_str()), fun.name.clone())) {
                             if let [mangled] = cands.as_slice() {
                                 *fun = mangled.clone().into();
                             }
@@ -109,7 +109,7 @@ fn resolve_trait_value(
                 (local_tys.get(&left.0), local_tys.get(&right.0))
             {
                 if n1 == n2 {
-                    if let Some(cands) = trait_methods.get(&(n1.clone(), method.to_string())) {
+                    if let Some(cands) = trait_methods.get(&(Sym::from(n1.as_str()), Sym::from(method))) {
                         if let [mangled] = cands.as_slice() {
                             *value = Value::Call {
                                 fun: mangled.clone().into(),
@@ -184,7 +184,7 @@ fn resolve_trait_value(
 /// Generic poly bodies may still mention short method names; emit trap stubs so
 /// codegen can link (specialized clones call mangled impls).
 pub(crate) fn ensure_trait_method_stubs(module: &mut CoreModule) {
-    let method_names: FxHashSet<String> = module
+    let method_names: FxHashSet<Sym> = module
         .trait_methods
         .keys()
         .map(|(_, m)| m.clone())
@@ -192,7 +192,7 @@ pub(crate) fn ensure_trait_method_stubs(module: &mut CoreModule) {
     if method_names.is_empty() {
         return;
     }
-    let mut referenced: FxHashSet<String> = FxHashSet::default();
+    let mut referenced: FxHashSet<Sym> = FxHashSet::default();
     for fun in &module.functions {
         crate::collect_call_names_in(&fun.body, &method_names, &mut referenced);
     }
@@ -211,7 +211,7 @@ pub(crate) fn ensure_trait_method_stubs(module: &mut CoreModule) {
         let sample = module
             .trait_methods
             .iter()
-            .find(|((_, m), _)| *m == name)
+            .find(|((_, m), _)| m.as_str() == name.as_str())
             .and_then(|(_, mangled)| mangled.first())
             .and_then(|m| index.get(m));
         let (nparams, ret_ty) = match sample {
@@ -223,7 +223,7 @@ pub(crate) fn ensure_trait_method_stubs(module: &mut CoreModule) {
         let param_tys = vec![Type::Int; nparams];
         let fail_local = Local(nparams as u32);
         stubs.push(CoreFun {
-            name: name.into(),
+            name: name.clone(),
             params,
             param_names,
             param_tys,

@@ -6,6 +6,7 @@
 //! `mem::replace` empty-Block dance).
 
 use crate::ir::{Block, CoreFun, CoreModule, FunId};
+use lumia_syntax::Sym;
 use lumia_ty::Type;
 use rustc_hash::FxHashMap as HashMap;
 
@@ -15,16 +16,16 @@ use super::key::MonoKey;
 pub(crate) struct FunIndex<'a> {
     funs: &'a [CoreFun],
     by_name: HashMap<&'a str, usize>,
-    pub(crate) sum_max_arity: &'a HashMap<String, usize>,
-    pub(crate) trait_methods: &'a HashMap<(String, String), Vec<String>>,
+    pub(crate) sum_max_arity: &'a HashMap<Sym, usize>,
+    pub(crate) trait_methods: &'a HashMap<(Sym, Sym), Vec<Sym>>,
     pub(crate) channel_elem_hint: Option<&'a Type>,
 }
 
 impl<'a> FunIndex<'a> {
     pub(crate) fn new(
         funs: &'a [CoreFun],
-        sum_max_arity: &'a HashMap<String, usize>,
-        trait_methods: &'a HashMap<(String, String), Vec<String>>,
+        sum_max_arity: &'a HashMap<Sym, usize>,
+        trait_methods: &'a HashMap<(Sym, Sym), Vec<Sym>>,
         channel_elem_hint: Option<&'a Type>,
     ) -> Self {
         let mut by_name = HashMap::with_capacity_and_hasher(funs.len(), Default::default());
@@ -102,8 +103,8 @@ pub(crate) fn signature_shadow(funs: &[CoreFun]) -> Vec<CoreFun> {
 /// Shadow + owned module tables for [`FunIndex`] across body mutation.
 pub(crate) struct SigShadow {
     pub funs: Vec<CoreFun>,
-    pub sum_max_arity: HashMap<String, usize>,
-    pub trait_methods: HashMap<(String, String), Vec<String>>,
+    pub sum_max_arity: HashMap<Sym, usize>,
+    pub trait_methods: HashMap<(Sym, Sym), Vec<Sym>>,
     pub channel_elem_hint: Option<Type>,
 }
 
