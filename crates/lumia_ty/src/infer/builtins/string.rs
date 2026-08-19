@@ -3,6 +3,7 @@
 use super::super::Infer;
 use crate::types::{Effect, Type, TypeError};
 use lumia_hir::{Builtin, Expr};
+use std::sync::Arc;
 
 impl Infer {
     pub(crate) fn infer_string_builtin(
@@ -23,7 +24,7 @@ impl Infer {
                 let (ct, ce) = self.infer_expr(&args[1])?;
                 self.unify_at(span, st, Type::String)?;
                 self.unify_at(span, ct, Type::Char)?;
-                Ok((Type::List(Box::new(Type::String)), self.union_eff(se, ce)))
+                Ok((Type::List(Arc::new(Type::String)), self.union_eff(se, ce)))
             }
             Builtin::StrSubstring => {
                 let (st, se) = self.infer_expr(&args[0])?;

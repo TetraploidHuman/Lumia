@@ -4,6 +4,7 @@ use crate::join_slot_assign_ty;
 use crate::ForeignAbi;
 use lumia_ty::{Effect, Type};
 use rustc_hash::FxHashSet as HashSet;
+use std::sync::Arc;
 
 #[test]
 fn param_ty_map_zips_params() {
@@ -60,10 +61,10 @@ fn refine_mono_container_fills_var_slots_only() {
     assert_eq!(refine_mono_container_ret(&orig_int, &inferred), orig_int);
     assert_eq!(
         refine_mono_container_ret(
-            &Type::List(Box::new(Type::Var(1))),
-            &Type::List(Box::new(Type::Float))
+            &Type::List(Arc::new(Type::Var(1))),
+            &Type::List(Arc::new(Type::Float))
         ),
-        Type::List(Box::new(Type::Float))
+        Type::List(Arc::new(Type::Float))
     );
 }
 
@@ -84,8 +85,8 @@ fn merge_slot_ty_heap_beats_float() {
         Type::String
     );
     assert_eq!(
-        join_slot_assign_ty(Some(Type::List(Box::new(Type::Int))), Type::Int),
-        Type::List(Box::new(Type::Int))
+        join_slot_assign_ty(Some(Type::List(Arc::new(Type::Int))), Type::Int),
+        Type::List(Arc::new(Type::Int))
     );
     // Int-only tuples are not heap pointers under `type_may_heap`.
     assert_eq!(
@@ -108,7 +109,7 @@ fn join_fixed_float_beats_string_and_bool() {
 #[test]
 fn join_fixed_keeps_fun_over_string() {
     use crate::join_fixed_ty;
-    let f = Type::Fun(vec![], Box::new(Type::Int), Effect::pure());
+    let f = Type::Fun(vec![], Arc::new(Type::Int), Effect::pure());
     assert_eq!(join_fixed_ty(&f, &Type::String), Some(f.clone()));
     assert_eq!(join_fixed_ty(&Type::String, &f), Some(f));
 }
@@ -118,10 +119,10 @@ fn join_fixed_merges_list_and_result_float() {
     use crate::join_fixed_ty;
     assert_eq!(
         join_fixed_ty(
-            &Type::List(Box::new(Type::Int)),
-            &Type::List(Box::new(Type::Float))
+            &Type::List(Arc::new(Type::Int)),
+            &Type::List(Arc::new(Type::Float))
         ),
-        Some(Type::List(Box::new(Type::Float)))
+        Some(Type::List(Arc::new(Type::Float)))
     );
     let a = Type::Adt {
         name: "Result".into(),
@@ -143,13 +144,13 @@ fn join_fixed_merges_list_and_result_float() {
 #[test]
 fn join_fixed_fun_fun_merges_rets() {
     use crate::join_fixed_ty;
-    let a = Type::Fun(vec![Type::Int], Box::new(Type::Int), Effect::pure());
-    let b = Type::Fun(vec![Type::Int], Box::new(Type::Float), Effect::pure());
+    let a = Type::Fun(vec![Type::Int], Arc::new(Type::Int), Effect::pure());
+    let b = Type::Fun(vec![Type::Int], Arc::new(Type::Float), Effect::pure());
     assert_eq!(
         join_fixed_ty(&a, &b),
         Some(Type::Fun(
             vec![Type::Int],
-            Box::new(Type::Float),
+            Arc::new(Type::Float),
             Effect::pure()
         ))
     );
@@ -161,7 +162,7 @@ fn via_task_join_rejects_channel_recv() {
     use crate::value_ty::via_gated_recv;
     use lumia_hir::Builtin;
     let args = [Local(0)];
-    let recv = Type::Channel(Box::new(Type::Int));
+    let recv = Type::Channel(Arc::new(Type::Int));
     assert!(via_gated_recv(Builtin::TaskJoin, &args, recv.clone(), |t| {
         matches!(t, Type::Task(_))
     })

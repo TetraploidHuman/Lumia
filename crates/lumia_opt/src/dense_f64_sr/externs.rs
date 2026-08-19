@@ -1,6 +1,7 @@
 use lumia_core::{max_local_in_fun, Block, CoreFun, CoreModule, FunKind, Local, Op, Value};
 use lumia_ty::{Effect, Type};
 use rustc_hash::FxHashSet as HashSet;
+use std::sync::Arc;
 
 pub(super) fn ensure_external(module: &mut CoreModule, sym: &str) {
     debug_assert!(
@@ -46,7 +47,7 @@ pub(super) fn ensure_external(module: &mut CoreModule, sym: &str) {
 }
 
 pub(super) fn external_sig(sym: &str) -> (Vec<Type>, Type) {
-    let lf = Type::List(Box::new(Type::Float));
+    let lf = Type::List(Arc::new(Type::Float));
     match sym {
         "lumia_f64_gemv" | "lumia_f64_gemv_t" => (
             vec![Type::Int, Type::Int, lf.clone(), lf.clone(), lf.clone()],

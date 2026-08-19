@@ -2,6 +2,7 @@ use super::super::key::{MonoKey, MonoKind};
 use crate::ir::{Block, CoreFun, ForeignAbi, FunKind, Local};
 use lumia_ty::{Effect, Type};
 use rustc_hash::FxHashSet as HashSet;
+use std::sync::Arc;
 
 #[test]
 fn args_mono_key_accepts_tuple_float() {
@@ -38,7 +39,7 @@ fn args_mono_key_rejects_fun_with_open_param() {
     // Open Fun param must not collapse to `Fun_Int_Float` via unwrap_or(Int).
     local_tys.insert(
         0,
-        Type::Fun(vec![Type::Var(0)], Box::new(Type::Float), Effect::pure()),
+        Type::Fun(vec![Type::Var(0)], Arc::new(Type::Float), Effect::pure()),
     );
     assert!(
         args_mono_key(&[Local(0)], &local_tys, &HashMap::default(), None).is_none(),
@@ -53,7 +54,7 @@ fn args_mono_key_accepts_ground_fun() {
     let mut local_tys = HashMap::default();
     local_tys.insert(
         0,
-        Type::Fun(vec![Type::Float], Box::new(Type::Float), Effect::pure()),
+        Type::Fun(vec![Type::Float], Arc::new(Type::Float), Effect::pure()),
     );
     let key =
         args_mono_key(&[Local(0)], &local_tys, &HashMap::default(), None).expect("ground Fun");
@@ -143,7 +144,7 @@ fn mono_key_ret_ty_prefers_list_over_trailing_float() {
         MonoKind::List(Box::new(MonoKind::Float)),
         MonoKind::Float,
     ]);
-    assert_eq!(key.ret_ty(&[], None), Type::List(Box::new(Type::Float)));
+    assert_eq!(key.ret_ty(&[], None), Type::List(Arc::new(Type::Float)));
 }
 
 #[test]

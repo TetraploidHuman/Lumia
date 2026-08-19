@@ -8,6 +8,7 @@ use lumia_core::{
 use lumia_hir::Sym;
 use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use std::sync::Arc;
 
 /// `(lifted_fun → capture_index → ty)` from every `AllocClosure` in `core`.
 pub(crate) fn collect_closure_cap_tys(core: &CoreModule) -> HashMap<Sym, HashMap<u32, Type>> {
@@ -111,7 +112,7 @@ fn walk_block(
                     }
                 ) {
                     if let Some(elem) = channel_elem_by_local.get(&local.0) {
-                        ty = Type::Channel(Box::new(elem.clone()));
+                        ty = Type::Channel(Arc::new(elem.clone()));
                     }
                 }
                 // `ClosureCap`: typed table from AllocClosure sites.

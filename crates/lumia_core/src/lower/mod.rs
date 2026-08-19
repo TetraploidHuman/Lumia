@@ -3,6 +3,7 @@
 //! Mid-end ABI refinement lives in [`crate::run_core_abi_pipeline`] — call it
 //! from compile entries after lower, not here.
 
+use std::sync::Arc;
 mod ctx;
 mod expr;
 
@@ -10,7 +11,7 @@ use crate::ir::{CoreFun, CoreModule, ForeignAbi, FunKind, ListRepr, MapRepr, Op,
 use ctx::CoreLowerCtx;
 use expr::lower_expr_block;
 use lumia_hir::{Item, Module as HirModule};
-use lumia_ty::{Effect, Type};
+use lumia_ty::{close_type, Effect, Type};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// Lower HIR using inferred types and HM schemes (scheme-driven monomorphization).
@@ -92,16 +93,18 @@ pub fn lower_hir_with_schemes(
                         } else {
                             Effect::pure()
                         },
-                        vec![Type::Int; f.params.len()],
+                        vec![Type::Unknown; f.params.len()],
                     ),
                 };
+                let param_tys: Vec<Type> = param_tys.iter().map(|t| close_type(t)).collect();
+                let ret_ty = close_type(&ret_ty);
                 let scheme_poly = fun_schemes
                     .get(f.name.as_str())
                     .map(|s| s.needs_mono())
                     .unwrap_or_else(|| {
                         type_is_open(&Type::Fun(
                             param_tys.clone(),
-                            Box::new(ret_ty.clone()),
+                            Arc::new(ret_ty.clone()),
                             effect,
                         ))
                     });
@@ -142,9 +145,9 @@ pub fn lower_hir_with_schemes(
                     .get(&getter)
                     .or_else(|| fun_types.get(name.as_str()))
                 {
-                    Some(Type::Fun(_, r, _)) => (**r).clone(),
-                    Some(t) => t.clone(),
-                    None => Type::Int,
+                    Some(Type::Fun(_, r, _)) => close_type(r),
+                    Some(t) => close_type(t),
+                    None => Type::Unknown,
                 };
                 let mut ctx = CoreLowerCtx::new(
                     toplevel_funs.clone(),
@@ -291,21 +294,21 @@ fn ensure_prelude_ctor_stubs(core: &mut CoreModule) {
                     elems: vec![],
                     repr: ListRepr::HeapList,
                 },
-                Type::List(Box::new(Type::Int)),
+                Type::List(Arc::new(Type::Int)),
             ),
             "__prelude_mapOf" => (
                 Value::AllocMap {
                     flat_pairs: vec![],
                     repr: MapRepr::HashOrdered,
                 },
-                Type::Map(Box::new(Type::Int), Box::new(Type::Int)),
+                Type::Map(Arc::new(Type::Int), Arc::new(Type::Int)),
             ),
             "__prelude_setOf" => (
                 Value::AllocSet {
                     elems: vec![],
                     repr: SetRepr::HeapSet,
                 },
-                Type::Set(Box::new(Type::Int)),
+                Type::Set(Arc::new(Type::Int)),
             ),
             _ => continue,
         };

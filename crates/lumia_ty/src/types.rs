@@ -3,6 +3,7 @@
 use lumia_hir::{Expr, Module};
 use lumia_syntax::Sym;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use std::sync::Arc;
 use thiserror::Error;
 
 /// Cross-file name visibility after import inlining (entry must not see `priv`).
@@ -34,7 +35,7 @@ impl NameVisibility {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
     Int,
     Float,
@@ -42,18 +43,21 @@ pub enum Type {
     String,
     Char,
     Unit,
-    Fun(Vec<Type>, Box<Type>, Effect),
+    /// Missing / untyped hole. Mid-end closed lattice uses this instead of
+    /// pretending the value is [`Type::Int`] (`unwrap_or(Int)` / `Var(u32::MAX)`).
+    Unknown,
+    Fun(Vec<Type>, Arc<Type>, Effect),
     Var(u32),
     /// List[T]
-    List(Box<Type>),
+    List(Arc<Type>),
     /// Map[K, V]
-    Map(Box<Type>, Box<Type>),
+    Map(Arc<Type>, Arc<Type>),
     /// Set[T]
-    Set(Box<Type>),
+    Set(Arc<Type>),
     /// Task[T] — fiber handle (Io concurrency).
-    Task(Box<Type>),
+    Task(Arc<Type>),
     /// Channel[T] — bounded message channel.
-    Channel(Box<Type>),
+    Channel(Arc<Type>),
     /// Nominal sum type, e.g. Option[T] → Adt("Option", [T]).
     Adt {
         name: Sym,
@@ -67,8 +71,62 @@ pub enum Type {
     TuplePrefix(Vec<Type>),
 }
 
+impl Type {
+    #[inline]
+    pub fn list(elem: Type) -> Self {
+        Type::List(Arc::new(elem))
+    }
+
+    #[inline]
+    pub fn set(elem: Type) -> Self {
+        Type::Set(Arc::new(elem))
+    }
+
+    #[inline]
+    pub fn map(k: Type, v: Type) -> Self {
+        Type::Map(Arc::new(k), Arc::new(v))
+    }
+
+    #[inline]
+    pub fn task(elem: Type) -> Self {
+        Type::Task(Arc::new(elem))
+    }
+
+    #[inline]
+    pub fn channel(elem: Type) -> Self {
+        Type::Channel(Arc::new(elem))
+    }
+
+    #[inline]
+    pub fn fun(params: Vec<Type>, ret: Type, eff: Effect) -> Self {
+        Type::Fun(params, Arc::new(ret), eff)
+    }
+
+    /// Move out of an interned child, cloning only when the `Arc` is shared.
+    #[inline]
+    pub fn unbox(t: Arc<Type>) -> Self {
+        Arc::unwrap_or_clone(t)
+    }
+
+    /// Open inference var or explicit hole (not a real `Int`).
+    #[inline]
+    pub fn is_open_hole(&self) -> bool {
+        matches!(self, Type::Var(_) | Type::Unknown)
+    }
+
+    /// Soft ABI scalar: `Int`, open var, or [`Type::Unknown`].
+    ///
+    /// Mid-end join / prefer historically treated `Int` as an erasure sentinel
+    /// alongside `Var`. `Unknown` is the explicit hole; `Int` stays in the set
+    /// so existing List/Int placeholders still yield to concrete heap types.
+    #[inline]
+    pub fn is_soft_scalar(&self) -> bool {
+        matches!(self, Type::Int | Type::Var(_) | Type::Unknown)
+    }
+}
+
 /// Effect set ε — empty = pure; `Var` is open during inference (zonked to Pure if unconstrained).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Effect {
     #[default]
     Pure,

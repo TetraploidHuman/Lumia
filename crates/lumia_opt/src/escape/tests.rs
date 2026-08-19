@@ -3,6 +3,7 @@ use lumia_core::{Block, CoreFun, FunKind, Local, Op, Value};
 use lumia_hir::Builtin;
 use lumia_ty::{Effect, Type};
 use rustc_hash::FxHashSet as HashSet;
+use std::sync::Arc;
 
 fn fun_with_body(body: Block) -> CoreFun {
     CoreFun {
@@ -115,7 +116,7 @@ fn known_pure_len_callee_does_not_escape_arg() {
         name: "len".into(),
         params: vec![Local(0)],
         param_names: vec!["xs".into()],
-        param_tys: vec![Type::List(Box::new(Type::Int))],
+        param_tys: vec![Type::List(Arc::new(Type::Int))],
         body: Block {
             ops: vec![Op::Let {
                 local: Local(1),
@@ -206,7 +207,7 @@ fn const_specialized_name_summary_hit_does_not_escape() {
         name: "len$c_0".into(),
         params: vec![Local(0)],
         param_names: vec!["xs".into()],
-        param_tys: vec![Type::List(Box::new(Type::Int))],
+        param_tys: vec![Type::List(Arc::new(Type::Int))],
         body: Block {
             ops: vec![Op::Let {
                 local: Local(1),
@@ -297,7 +298,7 @@ fn const_specialized_name_summary_miss_over_escapes() {
         name: "len$c_0".into(),
         params: vec![Local(0)],
         param_names: vec!["xs".into()],
-        param_tys: vec![Type::List(Box::new(Type::Int))],
+        param_tys: vec![Type::List(Arc::new(Type::Int))],
         body: Block {
             ops: vec![Op::Let {
                 local: Local(1),

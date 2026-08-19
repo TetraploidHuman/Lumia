@@ -3,6 +3,7 @@ use lumia_syntax::Sym;
 use lumia_ty::{Effect, Type};
 use rustc_hash::FxHashMap as HashMap;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 /// Named FunRef HOF argument. [`FunId`] is a lookup cache — Eq/Hash use `name` only
 /// so resolved vs unresolved keys still collide in `renames`.
@@ -156,9 +157,9 @@ impl MonoKind {
             MonoKind::Bool => Type::Bool,
             MonoKind::String => Type::String,
             MonoKind::Char => Type::Char,
-            MonoKind::List(e) => Type::List(Box::new(e.to_type())),
-            MonoKind::Map(k, v) => Type::Map(Box::new(k.to_type()), Box::new(v.to_type())),
-            MonoKind::Set(e) => Type::Set(Box::new(e.to_type())),
+            MonoKind::List(e) => Type::List(Arc::new(e.to_type())),
+            MonoKind::Map(k, v) => Type::Map(Arc::new(k.to_type()), Arc::new(v.to_type())),
+            MonoKind::Set(e) => Type::Set(Arc::new(e.to_type())),
             MonoKind::Adt { name, params } => Type::Adt {
                 name: name.clone(),
                 params: params.iter().map(MonoKind::to_type).collect(),
@@ -168,11 +169,11 @@ impl MonoKind {
             MonoKind::FunRef(_) => Type::Unit,
             MonoKind::Fun { params, ret } => Type::Fun(
                 params.iter().map(MonoKind::to_type).collect(),
-                Box::new(ret.to_type()),
+                Arc::new(ret.to_type()),
                 Effect::pure(),
             ),
-            MonoKind::Task(e) => Type::Task(Box::new(e.to_type())),
-            MonoKind::Channel(e) => Type::Channel(Box::new(e.to_type())),
+            MonoKind::Task(e) => Type::Task(Arc::new(e.to_type())),
+            MonoKind::Channel(e) => Type::Channel(Arc::new(e.to_type())),
             MonoKind::Tuple(es) => Type::Tuple(es.iter().map(MonoKind::to_type).collect()),
             MonoKind::Unit => Type::Unit,
         }
@@ -286,7 +287,7 @@ fn type_to_mono(t: &Type) -> Option<MonoKind> {
 /// May-heap placeholder or open scalar — not a ground Option/Result payload.
 fn is_erased_abi_ty(t: &Type) -> bool {
     match t {
-        Type::Int | Type::Var(_) => true,
+        Type::Int | Type::Var(_) | Type::Unknown => true,
         Type::List(e) if matches!(e.as_ref(), Type::Int) => true,
         _ => false,
     }
@@ -324,14 +325,14 @@ fn base_fun_name<'a>(name: &'a str, functions: &'a [CoreFun]) -> &'a str {
 /// Clone rets must be re-keyable (`type_to_mono`); open Vars block `unwrapOr` etc.
 pub(crate) fn ground_open_vars(t: Type) -> Type {
     match t {
-        Type::Var(_) => Type::Int,
-        Type::List(e) => Type::List(Box::new(ground_open_vars(*e))),
-        Type::Set(e) => Type::Set(Box::new(ground_open_vars(*e))),
-        Type::Task(e) => Type::Task(Box::new(ground_open_vars(*e))),
-        Type::Channel(e) => Type::Channel(Box::new(ground_open_vars(*e))),
+        Type::Var(_) | Type::Unknown => Type::Int,
+        Type::List(e) => Type::List(Arc::new(ground_open_vars(Type::unbox(e)))),
+        Type::Set(e) => Type::Set(Arc::new(ground_open_vars(Type::unbox(e)))),
+        Type::Task(e) => Type::Task(Arc::new(ground_open_vars(Type::unbox(e)))),
+        Type::Channel(e) => Type::Channel(Arc::new(ground_open_vars(Type::unbox(e)))),
         Type::Map(k, v) => Type::Map(
-            Box::new(ground_open_vars(*k)),
-            Box::new(ground_open_vars(*v)),
+            Arc::new(ground_open_vars(Type::unbox(k))),
+            Arc::new(ground_open_vars(Type::unbox(v))),
         ),
         Type::Tuple(ts) => Type::Tuple(ts.into_iter().map(ground_open_vars).collect()),
         Type::TuplePrefix(ts) => Type::TuplePrefix(ts.into_iter().map(ground_open_vars).collect()),
@@ -341,7 +342,7 @@ pub(crate) fn ground_open_vars(t: Type) -> Type {
         },
         Type::Fun(ps, r, e) => Type::Fun(
             ps.into_iter().map(ground_open_vars).collect(),
-            Box::new(ground_open_vars(*r)),
+            Arc::new(ground_open_vars(Type::unbox(r))),
             e,
         ),
         other => other,
@@ -425,7 +426,7 @@ impl MonoKey {
             .iter()
             .map(|k| match k {
                 MonoKind::FunRef(fr) => lookup_funref(functions, fr)
-                    .map(|f| Type::Fun(f.param_tys.clone(), Box::new(f.ret_ty.clone()), f.effect))
+                    .map(|f| Type::Fun(f.param_tys.clone(), Arc::new(f.ret_ty.clone()), f.effect))
                     // Missing name: Unit sentinel — not a fake 0-ary Fun.
                     .unwrap_or(Type::Unit),
                 other => other.to_type(),
@@ -468,7 +469,7 @@ impl MonoKey {
                             {
                                 params.remove(0);
                             }
-                            Type::Fun(params, Box::new(f.ret_ty.clone()), f.effect)
+                            Type::Fun(params, Arc::new(f.ret_ty.clone()), f.effect)
                         }),
                         Some(k) => Some(ground_open_vars(k.to_type())),
                         None => None,
@@ -524,7 +525,7 @@ impl MonoKey {
                     .map(|f| {
                         ground_open_vars(Type::Fun(
                             f.param_tys.clone(),
-                            Box::new(f.ret_ty.clone()),
+                            Arc::new(f.ret_ty.clone()),
                             f.effect,
                         ))
                     })
@@ -717,13 +718,13 @@ fn collect_mono_var_binds(formal: &Type, concrete: &Type, binds: &mut HashMap<u3
 fn apply_mono_var_binds(t: &Type, binds: &HashMap<u32, Type>) -> Type {
     match t {
         Type::Var(id) => binds.get(id).cloned().unwrap_or_else(|| Type::Var(*id)),
-        Type::List(e) => Type::List(Box::new(apply_mono_var_binds(e, binds))),
-        Type::Set(e) => Type::Set(Box::new(apply_mono_var_binds(e, binds))),
-        Type::Task(e) => Type::Task(Box::new(apply_mono_var_binds(e, binds))),
-        Type::Channel(e) => Type::Channel(Box::new(apply_mono_var_binds(e, binds))),
+        Type::List(e) => Type::List(Arc::new(apply_mono_var_binds(e, binds))),
+        Type::Set(e) => Type::Set(Arc::new(apply_mono_var_binds(e, binds))),
+        Type::Task(e) => Type::Task(Arc::new(apply_mono_var_binds(e, binds))),
+        Type::Channel(e) => Type::Channel(Arc::new(apply_mono_var_binds(e, binds))),
         Type::Map(k, v) => Type::Map(
-            Box::new(apply_mono_var_binds(k, binds)),
-            Box::new(apply_mono_var_binds(v, binds)),
+            Arc::new(apply_mono_var_binds(k, binds)),
+            Arc::new(apply_mono_var_binds(v, binds)),
         ),
         Type::Adt { name, params } => Type::Adt {
             name: name.clone(),
@@ -734,7 +735,7 @@ fn apply_mono_var_binds(t: &Type, binds: &HashMap<u32, Type>) -> Type {
         },
         Type::Fun(ps, r, e) => Type::Fun(
             ps.iter().map(|p| apply_mono_var_binds(p, binds)).collect(),
-            Box::new(apply_mono_var_binds(r, binds)),
+            Arc::new(apply_mono_var_binds(r, binds)),
             *e,
         ),
         Type::Tuple(ts) => Type::Tuple(ts.iter().map(|p| apply_mono_var_binds(p, binds)).collect()),

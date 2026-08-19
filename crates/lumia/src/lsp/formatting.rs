@@ -6,7 +6,7 @@
 //! on parse errors (`Err`, never empty edits).
 
 use super::cursor::byte_to_position;
-use super::state::state_lock;
+use super::state::{source_fingerprint, state_lock};
 use anyhow::{bail, Result};
 use lumia_syntax::{format_matches_source, format_module_src, parse_module, stamp_module};
 use serde_json::{json, Value};
@@ -49,7 +49,22 @@ pub(super) fn on_formatting(params: Option<&Value>) -> Result<Value> {
     let Some(text) = state.docs.get(uri) else {
         bail!("textDocument/formatting: document not open ({uri})");
     };
-    Ok(Value::Array(format_document(text)?))
+    let hash = source_fingerprint(text);
+    if let Some((cached_hash, edits)) = state.format_cache.get(uri) {
+        if *cached_hash == hash {
+            return Ok(Value::Array(edits.clone()));
+        }
+    }
+    let text = text.clone();
+    drop(st);
+    let edits = format_document(&text)?;
+    {
+        let mut st = state_lock();
+        if let Some(s) = st.as_mut() {
+            s.format_cache.insert(uri.to_string(), (hash, edits.clone()));
+        }
+    }
+    Ok(Value::Array(edits))
 }
 
 #[cfg(test)]

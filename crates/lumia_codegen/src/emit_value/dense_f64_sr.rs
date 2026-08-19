@@ -13,6 +13,7 @@ use lumia_ty::Type;
 
 use super::super::Codegen;
 use anyhow::{bail, Context as AnyhowContext, Result};
+use std::sync::Arc;
 
 impl<'ctx> Codegen<'ctx> {
     /// Frameless emit when the body is already a dense-f64 RT `Call`.
@@ -135,11 +136,11 @@ mod tests {
             param_tys: vec![
                 Type::Int,
                 Type::Int,
-                Type::List(Box::new(Type::Float)),
-                Type::List(Box::new(Type::Float)),
-                Type::List(Box::new(Type::Float)),
+                Type::List(Arc::new(Type::Float)),
+                Type::List(Arc::new(Type::Float)),
+                Type::List(Arc::new(Type::Float)),
             ],
-            ret_ty: Type::List(Box::new(Type::Float)),
+            ret_ty: Type::List(Arc::new(Type::Float)),
             effect: Effect::pure(),
             body: Block {
                 ops: vec![Op::Let {

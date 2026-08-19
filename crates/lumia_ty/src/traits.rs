@@ -4,6 +4,7 @@ use crate::infer::Infer;
 use crate::types::{at, Effect, Type, TypeError};
 use lumia_hir::{for_each_expr_mut, Expr, Item, Module};
 use rustc_hash::FxHashMap as HashMap;
+use std::sync::Arc;
 
 impl Infer {
     pub(crate) fn is_ord(&self, t: &Type) -> bool {
@@ -46,7 +47,8 @@ impl Infer {
                 }
                 true
             }
-            Type::Int | Type::Float | Type::Bool | Type::String | Type::Char | Type::Unit => true,
+            Type::Int | Type::Float | Type::Bool | Type::String | Type::Char | Type::Unit
+            | Type::Unknown => true,
         }
     }
 
@@ -65,7 +67,8 @@ impl Infer {
             | Type::Bool
             | Type::String
             | Type::Char
-            | Type::Unit => false,
+            | Type::Unit
+            | Type::Unknown => false,
         }
     }
 
@@ -127,7 +130,7 @@ impl Infer {
                             Type::Fun(_, _, e) => e,
                             _ => self.fresh_eff(),
                         };
-                        self.unify_at(span, ct, Type::Fun(ats, Box::new(ret.clone()), call_eff))?;
+                        self.unify_at(span, ct, Type::Fun(ats, Arc::new(ret.clone()), call_eff))?;
                         crate::span_facts::insert_unique_span_fact(
                             &mut self.traits.ufcs_rewrites,
                             span,

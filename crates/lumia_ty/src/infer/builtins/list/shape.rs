@@ -3,6 +3,7 @@
 use super::super::super::Infer;
 use crate::types::{at, Effect, Type, TypeError};
 use lumia_hir::{Builtin, Expr};
+use std::sync::Arc;
 
 impl Infer {
     pub(super) fn infer_list_shape(
@@ -65,25 +66,25 @@ impl Infer {
                 let (lt, le) = self.infer_expr(&args[0])?;
                 match self.prune(lt.clone()) {
                     Type::List(t) => {
-                        self.unify_at(span, *t, Type::Int)?;
+                        self.unify_at(span, Type::unbox(t), Type::Int)?;
                     }
                     Type::Var(_) => {
-                        self.unify_at(span, lt, Type::List(Box::new(Type::Int)))?;
+                        self.unify_at(span, lt, Type::List(Arc::new(Type::Int)))?;
                     }
                     other => {
                         return Err(at(span, format!("sort: expected List[Int], got {other:?}")));
                     }
                 }
-                Ok((Type::List(Box::new(Type::Int)), le))
+                Ok((Type::List(Arc::new(Type::Int)), le))
             }
             Builtin::ListJoin => {
                 let (lt, le) = self.infer_expr(&args[0])?;
                 let (st, se) = self.infer_expr(&args[1])?;
                 self.unify_at(span, st, Type::String)?;
                 match self.prune(lt.clone()) {
-                    Type::List(t) => self.unify_at(span, *t, Type::String)?,
+                    Type::List(t) => self.unify_at(span, Type::unbox(t), Type::String)?,
                     Type::Var(_) => {
-                        self.unify_at(span, lt, Type::List(Box::new(Type::String)))?;
+                        self.unify_at(span, lt, Type::List(Arc::new(Type::String)))?;
                     }
                     other => {
                         return Err(at(

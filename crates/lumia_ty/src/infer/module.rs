@@ -7,6 +7,7 @@ use crate::traits::{apply_join_rewrites, apply_ufcs_rewrites};
 use crate::types::{at, expr_span, Effect, NameVisibility, Scheme, Type, TypeError, TypedModule};
 use lumia_hir::{Fun, Item, Module};
 use rustc_hash::FxHashMap as HashMap;
+use std::sync::Arc;
 
 impl Infer {
     /// Resolve a surface ascription, expanding bare product/sum names to fresh field slots.
@@ -23,13 +24,13 @@ impl Infer {
 
     fn expand_nominal_ascription(&mut self, ty: Type) -> Result<Type, String> {
         match ty {
-            Type::List(e) => Ok(Type::List(Box::new(self.expand_nominal_ascription(*e)?))),
-            Type::Set(e) => Ok(Type::Set(Box::new(self.expand_nominal_ascription(*e)?))),
-            Type::Task(e) => Ok(Type::Task(Box::new(self.expand_nominal_ascription(*e)?))),
-            Type::Channel(e) => Ok(Type::Channel(Box::new(self.expand_nominal_ascription(*e)?))),
+            Type::List(e) => Ok(Type::List(Arc::new(self.expand_nominal_ascription(Type::unbox(e))?))),
+            Type::Set(e) => Ok(Type::Set(Arc::new(self.expand_nominal_ascription(Type::unbox(e))?))),
+            Type::Task(e) => Ok(Type::Task(Arc::new(self.expand_nominal_ascription(Type::unbox(e))?))),
+            Type::Channel(e) => Ok(Type::Channel(Arc::new(self.expand_nominal_ascription(Type::unbox(e))?))),
             Type::Map(k, v) => Ok(Type::Map(
-                Box::new(self.expand_nominal_ascription(*k)?),
-                Box::new(self.expand_nominal_ascription(*v)?),
+                Arc::new(self.expand_nominal_ascription(Type::unbox(k))?),
+                Arc::new(self.expand_nominal_ascription(Type::unbox(v))?),
             )),
             Type::Tuple(ts) => Ok(Type::Tuple(
                 ts.into_iter()
@@ -107,7 +108,7 @@ impl Infer {
             re
         };
         self.pop();
-        let ty = Type::Fun(pts, Box::new(ret_tv), re);
+        let ty = Type::Fun(pts, Arc::new(ret_tv), re);
         Ok((ty, re))
     }
 }
@@ -129,8 +130,8 @@ fn parse_type_name_trimmed(name: &str) -> Result<Type, TypeError> {
         "String" => Ok(Type::String),
         "Char" => Ok(Type::Char),
         // Flat aliases (foreign param syntax is a single ident).
-        "ListString" => Ok(Type::List(Box::new(Type::String))),
-        "ListFloat" => Ok(Type::List(Box::new(Type::Float))),
+        "ListString" => Ok(Type::List(Arc::new(Type::String))),
+        "ListFloat" => Ok(Type::List(Arc::new(Type::Float))),
         other => parse_type_name_compound(other),
     }
 }
@@ -142,14 +143,14 @@ fn parse_type_name_compound(name: &str) -> Result<Type, TypeError> {
             args.push(parse_type_name_trimmed(a)?);
         }
         return match head {
-            "List" if args.len() == 1 => Ok(Type::List(Box::new(args.pop().unwrap()))),
-            "Set" if args.len() == 1 => Ok(Type::Set(Box::new(args.pop().unwrap()))),
-            "Task" if args.len() == 1 => Ok(Type::Task(Box::new(args.pop().unwrap()))),
-            "Channel" if args.len() == 1 => Ok(Type::Channel(Box::new(args.pop().unwrap()))),
+            "List" if args.len() == 1 => Ok(Type::List(Arc::new(args.pop().unwrap()))),
+            "Set" if args.len() == 1 => Ok(Type::Set(Arc::new(args.pop().unwrap()))),
+            "Task" if args.len() == 1 => Ok(Type::Task(Arc::new(args.pop().unwrap()))),
+            "Channel" if args.len() == 1 => Ok(Type::Channel(Arc::new(args.pop().unwrap()))),
             "Map" if args.len() == 2 => {
                 let v = args.pop().unwrap();
                 let k = args.pop().unwrap();
-                Ok(Type::Map(Box::new(k), Box::new(v)))
+                Ok(Type::Map(Arc::new(k), Arc::new(v)))
             }
             "Tuple" if !args.is_empty() => Ok(Type::Tuple(args)),
             "Option" if args.len() == 1 => Ok(Type::Adt {
@@ -417,7 +418,7 @@ fn infer_module_inner(
                             } else {
                                 Effect::io()
                             };
-                            Ok((Type::Fun(ps, Box::new(r), eff), eff))
+                            Ok((Type::Fun(ps, Arc::new(r), eff), eff))
                         } else {
                             inf.infer_fun(f)
                         }
@@ -509,7 +510,7 @@ fn infer_module_inner(
                     inf.decls.insert(name.to_string(), *val_span);
                     fun_types.insert(
                         format!("__val_{name}"),
-                        Type::Fun(vec![], Box::new(ty), Effect::pure()),
+                        Type::Fun(vec![], Arc::new(ty), Effect::pure()),
                     );
                 }
             }

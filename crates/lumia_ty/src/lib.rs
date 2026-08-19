@@ -4,6 +4,7 @@
 #![allow(clippy::collapsible_match)]
 
 mod alt;
+mod core_ty;
 mod display;
 mod effects;
 mod infer;
@@ -14,6 +15,7 @@ mod traits;
 mod typecheck;
 mod types;
 
+pub use core_ty::{close_type, is_closed as core_ty_is_closed, CoreTy};
 pub use display::{display_type, pretty_type_with, subst_num_vars, var_names_for};
 pub use effects::check_effect_boundaries;
 pub use infer::{

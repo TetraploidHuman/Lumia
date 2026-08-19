@@ -3,6 +3,7 @@
 use super::Infer;
 use crate::types::{at, locate, Effect, Scheme, Type, TypeError};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use std::sync::Arc;
 
 impl Infer {
     pub(crate) fn free_ty_vars(&mut self, ty: Type) -> HashSet<u32> {
@@ -298,19 +299,19 @@ impl Infer {
                     ps.iter()
                         .map(|p| self.apply_scheme_subst(p, ty_map, eff_map))
                         .collect(),
-                    Box::new(self.apply_scheme_subst(r, ty_map, eff_map)),
+                    Arc::new(self.apply_scheme_subst(r, ty_map, eff_map)),
                     e,
                 )
             }
-            Type::List(t) => Type::List(Box::new(self.apply_scheme_subst(t, ty_map, eff_map))),
-            Type::Set(t) => Type::Set(Box::new(self.apply_scheme_subst(t, ty_map, eff_map))),
-            Type::Task(t) => Type::Task(Box::new(self.apply_scheme_subst(t, ty_map, eff_map))),
+            Type::List(t) => Type::List(Arc::new(self.apply_scheme_subst(t, ty_map, eff_map))),
+            Type::Set(t) => Type::Set(Arc::new(self.apply_scheme_subst(t, ty_map, eff_map))),
+            Type::Task(t) => Type::Task(Arc::new(self.apply_scheme_subst(t, ty_map, eff_map))),
             Type::Channel(t) => {
-                Type::Channel(Box::new(self.apply_scheme_subst(t, ty_map, eff_map)))
+                Type::Channel(Arc::new(self.apply_scheme_subst(t, ty_map, eff_map)))
             }
             Type::Map(k, v) => Type::Map(
-                Box::new(self.apply_scheme_subst(k, ty_map, eff_map)),
-                Box::new(self.apply_scheme_subst(v, ty_map, eff_map)),
+                Arc::new(self.apply_scheme_subst(k, ty_map, eff_map)),
+                Arc::new(self.apply_scheme_subst(v, ty_map, eff_map)),
             ),
             Type::Adt { name, params } => Type::Adt {
                 name: name.clone(),
@@ -335,6 +336,7 @@ impl Infer {
             Type::String => Type::String,
             Type::Char => Type::Char,
             Type::Unit => Type::Unit,
+            Type::Unknown => Type::Unknown,
         }
     }
 
@@ -367,17 +369,17 @@ impl Infer {
             }
             Type::Fun(ps, r, e) => Type::Fun(
                 ps.into_iter().map(|p| self.prune_rec(p, seen)).collect(),
-                Box::new(self.prune_rec(*r, seen)),
+                Arc::new(self.prune_rec(Type::unbox(r), seen)),
                 self.prune_eff(e),
             ),
-            Type::List(t) => Type::List(Box::new(self.prune_rec(*t, seen))),
+            Type::List(t) => Type::List(Arc::new(self.prune_rec(Type::unbox(t), seen))),
             Type::Map(k, v) => Type::Map(
-                Box::new(self.prune_rec(*k, seen)),
-                Box::new(self.prune_rec(*v, seen)),
+                Arc::new(self.prune_rec(Type::unbox(k), seen)),
+                Arc::new(self.prune_rec(Type::unbox(v), seen)),
             ),
-            Type::Set(t) => Type::Set(Box::new(self.prune_rec(*t, seen))),
-            Type::Task(t) => Type::Task(Box::new(self.prune_rec(*t, seen))),
-            Type::Channel(t) => Type::Channel(Box::new(self.prune_rec(*t, seen))),
+            Type::Set(t) => Type::Set(Arc::new(self.prune_rec(Type::unbox(t), seen))),
+            Type::Task(t) => Type::Task(Arc::new(self.prune_rec(Type::unbox(t), seen))),
+            Type::Channel(t) => Type::Channel(Arc::new(self.prune_rec(Type::unbox(t), seen))),
             Type::Adt { name, params } => Type::Adt {
                 name,
                 params: params
@@ -441,17 +443,17 @@ impl Infer {
                 ps.into_iter()
                     .map(|p| self.zonk_type_rec(p, seen))
                     .collect(),
-                Box::new(self.zonk_type_rec(*r, seen)),
+                Arc::new(self.zonk_type_rec(Type::unbox(r), seen)),
                 self.zonk_eff(e),
             ),
-            Type::List(t) => Type::List(Box::new(self.zonk_type_rec(*t, seen))),
+            Type::List(t) => Type::List(Arc::new(self.zonk_type_rec(Type::unbox(t), seen))),
             Type::Map(k, v) => Type::Map(
-                Box::new(self.zonk_type_rec(*k, seen)),
-                Box::new(self.zonk_type_rec(*v, seen)),
+                Arc::new(self.zonk_type_rec(Type::unbox(k), seen)),
+                Arc::new(self.zonk_type_rec(Type::unbox(v), seen)),
             ),
-            Type::Set(t) => Type::Set(Box::new(self.zonk_type_rec(*t, seen))),
-            Type::Task(t) => Type::Task(Box::new(self.zonk_type_rec(*t, seen))),
-            Type::Channel(t) => Type::Channel(Box::new(self.zonk_type_rec(*t, seen))),
+            Type::Set(t) => Type::Set(Arc::new(self.zonk_type_rec(Type::unbox(t), seen))),
+            Type::Task(t) => Type::Task(Arc::new(self.zonk_type_rec(Type::unbox(t), seen))),
+            Type::Channel(t) => Type::Channel(Arc::new(self.zonk_type_rec(Type::unbox(t), seen))),
             Type::Adt { name, params } => Type::Adt {
                 name: name.clone(),
                 params: params
@@ -553,23 +555,23 @@ impl Infer {
                     self.unify_at(span, x.clone(), y)?;
                     ps.push(self.prune(x));
                 }
-                let r = self.join_types(*ar, *br, span)?;
+                let r = self.join_types(Type::unbox(ar), Type::unbox(br), span)?;
                 let e = self.union_eff(ae, be);
-                Ok(Type::Fun(ps, Box::new(r), e))
+                Ok(Type::Fun(ps, Arc::new(r), e))
             }
             (Type::List(a), Type::List(b)) => {
-                Ok(Type::List(Box::new(self.join_types(*a, *b, span)?)))
+                Ok(Type::List(Arc::new(self.join_types(Type::unbox(a), Type::unbox(b), span)?)))
             }
-            (Type::Set(a), Type::Set(b)) => Ok(Type::Set(Box::new(self.join_types(*a, *b, span)?))),
+            (Type::Set(a), Type::Set(b)) => Ok(Type::Set(Arc::new(self.join_types(Type::unbox(a), Type::unbox(b), span)?))),
             (Type::Task(a), Type::Task(b)) => {
-                Ok(Type::Task(Box::new(self.join_types(*a, *b, span)?)))
+                Ok(Type::Task(Arc::new(self.join_types(Type::unbox(a), Type::unbox(b), span)?)))
             }
             (Type::Channel(a), Type::Channel(b)) => {
-                Ok(Type::Channel(Box::new(self.join_types(*a, *b, span)?)))
+                Ok(Type::Channel(Arc::new(self.join_types(Type::unbox(a), Type::unbox(b), span)?)))
             }
             (Type::Map(ak, av), Type::Map(bk, bv)) => Ok(Type::Map(
-                Box::new(self.join_types(*ak, *bk, span)?),
-                Box::new(self.join_types(*av, *bv, span)?),
+                Arc::new(self.join_types(Type::unbox(ak), Type::unbox(bk), span)?),
+                Arc::new(self.join_types(Type::unbox(av), Type::unbox(bv), span)?),
             )),
             (Type::Tuple(a), Type::Tuple(b)) => {
                 if a.len() != b.len() {
@@ -710,14 +712,15 @@ impl Infer {
             | (Type::Bool, Type::Bool)
             | (Type::String, Type::String)
             | (Type::Char, Type::Char)
-            | (Type::Unit, Type::Unit) => Ok(()),
-            (Type::List(a), Type::List(b)) => self.unify(*a, *b),
-            (Type::Set(a), Type::Set(b)) => self.unify(*a, *b),
-            (Type::Task(a), Type::Task(b)) => self.unify(*a, *b),
-            (Type::Channel(a), Type::Channel(b)) => self.unify(*a, *b),
+            | (Type::Unit, Type::Unit)
+            | (Type::Unknown, Type::Unknown) => Ok(()),
+            (Type::List(a), Type::List(b)) => self.unify(Type::unbox(a), Type::unbox(b)),
+            (Type::Set(a), Type::Set(b)) => self.unify(Type::unbox(a), Type::unbox(b)),
+            (Type::Task(a), Type::Task(b)) => self.unify(Type::unbox(a), Type::unbox(b)),
+            (Type::Channel(a), Type::Channel(b)) => self.unify(Type::unbox(a), Type::unbox(b)),
             (Type::Map(ak, av), Type::Map(bk, bv)) => {
-                self.unify(*ak, *bk)?;
-                self.unify(*av, *bv)
+                self.unify(Type::unbox(ak), Type::unbox(bk))?;
+                self.unify(Type::unbox(av), Type::unbox(bv))
             }
             (
                 Type::Adt {
@@ -787,7 +790,7 @@ impl Infer {
                 for (x, y) in a_ps.into_iter().zip(b_ps) {
                     self.unify(x, y)?;
                 }
-                self.unify(*a_r, *b_r)?;
+                self.unify(Type::unbox(a_r), Type::unbox(b_r))?;
                 self.unify_eff(a_e, b_e)
             }
             (a, b) => Err(TypeError::Message(self.type_mismatch_msg(&a, &b))),

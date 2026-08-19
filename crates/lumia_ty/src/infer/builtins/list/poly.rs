@@ -3,6 +3,7 @@
 use super::super::super::Infer;
 use crate::types::{at, Effect, Type, TypeError};
 use lumia_hir::{Builtin, Expr};
+use std::sync::Arc;
 
 impl Infer {
     pub(super) fn infer_list_poly(
@@ -38,17 +39,17 @@ impl Infer {
                 let elem = match lt_p {
                     Type::List(t) => {
                         self.unify_at(span, it, Type::Int)?;
-                        *t
+                        Type::unbox(t)
                     }
                     Type::Set(t) => {
                         self.unify_at(span, it, Type::Int)?;
-                        *t
+                        Type::unbox(t)
                     }
                     Type::Map(k, v) => {
-                        self.unify_at(span, it, *k)?;
+                        self.unify_at(span, it, Type::unbox(k.clone()))?;
                         Type::Adt {
                             name: lumia_hir::OPTION.name.into(),
-                            params: vec![*v],
+                            params: vec![Type::unbox(v.clone())],
                         }
                     }
                     Type::Var(_) => {
@@ -61,7 +62,7 @@ impl Infer {
                             self.unify_at(
                                 span,
                                 lt,
-                                Type::Map(Box::new(k.clone()), Box::new(v.clone())),
+                                Type::Map(Arc::new(k.clone()), Arc::new(v.clone())),
                             )?;
                             self.unify_at(span, it, k)?;
                             Type::Adt {
@@ -71,7 +72,7 @@ impl Infer {
                         } else {
                             self.unify_at(span, it, Type::Int)?;
                             let elem = self.fresh();
-                            self.unify_at(span, lt, Type::List(Box::new(elem.clone())))?;
+                            self.unify_at(span, lt, Type::List(Arc::new(elem.clone())))?;
                             elem
                         }
                     }
@@ -95,7 +96,7 @@ impl Infer {
                         // `.toList()` / for-in use Elems too.
                         self.uni.elems_vars.insert(v);
                         let e = self.fresh();
-                        Type::List(Box::new(e))
+                        Type::List(Arc::new(e))
                     }
                     other => {
                         return Err(at(

@@ -648,7 +648,7 @@ fn mono_value_ty_with_funrefs(
         {
             params.remove(0);
         }
-        return Type::Fun(params, Box::new(ret), Effect::pure());
+        return Type::Fun(params, Arc::new(ret), Effect::pure());
     }
     // Thread FunRef names so ListParMap can read callback ret via funref_locals.
     let mut fun_ret_tys: HashMap<Sym, Type> = HashMap::default();

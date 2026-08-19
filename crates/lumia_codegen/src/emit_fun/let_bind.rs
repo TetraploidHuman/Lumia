@@ -6,6 +6,7 @@ use inkwell::values::BasicValueEnum;
 use lumia_core::{Block, Local, Op, Value};
 use lumia_hir::Builtin;
 use lumia_ty::Type;
+use std::sync::Arc;
 
 impl<'ctx> Codegen<'ctx> {
     /// Best-effort expected type for empty container literals (Float tags).
@@ -54,7 +55,7 @@ impl<'ctx> Codegen<'ctx> {
             }
         ) {
             if let Some(elem) = self.funs.channel_elem_by_local.get(&local.0) {
-                ty = Type::Channel(Box::new(elem.clone()));
+                ty = Type::Channel(Arc::new(elem.clone()));
             }
         }
         // Captures keep the AllocClosure-site type (Channel[Float], Fun, …).
@@ -108,7 +109,7 @@ impl<'ctx> Codegen<'ctx> {
             }
         ) {
             if let Some(elem) = self.funs.channel_elem_by_local.get(&local.0) {
-                ty = Type::Channel(Box::new(elem.clone()));
+                ty = Type::Channel(Arc::new(elem.clone()));
             }
         }
         if let Value::ClosureCap { index, .. } = value {

@@ -72,7 +72,7 @@ pub fn resolve_tco_tail_call(
 /// callers `root_pop_to(0)` immediately before musttail. Closures stay out.
 fn tco_eligible_ty(t: &Type) -> bool {
     match t {
-        Type::Int | Type::Bool | Type::Float | Type::Var(_) => true,
+        Type::Int | Type::Bool | Type::Float | Type::Var(_) | Type::Unknown => true,
         Type::String | Type::Char | Type::Unit => true,
         Type::List(_)
         | Type::Set(_)

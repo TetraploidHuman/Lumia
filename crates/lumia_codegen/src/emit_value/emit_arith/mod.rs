@@ -7,6 +7,7 @@ mod ops;
 mod tests {
     use super::super::super::Codegen;
     use lumia_ty::Type;
+    use std::sync::Arc;
 
     #[test]
     fn bit_identity_scalars_are_int_bool_unit_only() {
@@ -16,7 +17,7 @@ mod tests {
         assert!(!Codegen::is_bit_identity_scalar(&Type::Float));
         assert!(!Codegen::is_bit_identity_scalar(&Type::String));
         assert!(!Codegen::is_bit_identity_scalar(&Type::Char));
-        assert!(!Codegen::is_bit_identity_scalar(&Type::List(Box::new(
+        assert!(!Codegen::is_bit_identity_scalar(&Type::List(Arc::new(
             Type::Int
         ))));
         assert!(!Codegen::is_bit_identity_scalar(&Type::Var(0)));

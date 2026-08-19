@@ -1,5 +1,6 @@
 //! Hindley–Milner inference engine.
 
+use std::sync::Arc;
 mod binding_order;
 mod builtins;
 mod calls;
@@ -58,7 +59,7 @@ impl Infer {
                         vec![a],
                         Type::Fun(
                             vec![],
-                            Box::new(Type::List(Box::new(Type::Var(a)))),
+                            Arc::new(Type::List(Arc::new(Type::Var(a)))),
                             Effect::pure(),
                         ),
                     )
@@ -72,7 +73,7 @@ impl Infer {
                         vec![k, v],
                         Type::Fun(
                             vec![],
-                            Box::new(Type::Map(Box::new(Type::Var(k)), Box::new(Type::Var(v)))),
+                            Arc::new(Type::Map(Arc::new(Type::Var(k)), Arc::new(Type::Var(v)))),
                             Effect::pure(),
                         ),
                     )
@@ -84,7 +85,7 @@ impl Infer {
                         vec![a],
                         Type::Fun(
                             vec![],
-                            Box::new(Type::Set(Box::new(Type::Var(a)))),
+                            Arc::new(Type::Set(Arc::new(Type::Var(a)))),
                             Effect::pure(),
                         ),
                     )

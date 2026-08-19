@@ -7,6 +7,7 @@ use lumia_hir::Builtin;
 use lumia_syntax::Sym;
 use lumia_ty::{Effect, Type};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use std::sync::Arc;
 
 /// Whether Lit* stack allocations count as heap for GC rooting / escape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,10 +182,10 @@ pub enum HeapMay {
 
 impl HeapMay {
     pub fn from_type(ty: &Type) -> Self {
-        if type_may_heap(ty) {
-            Self::Yes
-        } else {
-            Self::No
+        match ty {
+            Type::Unknown => Self::Unknown,
+            t if type_may_heap(t) => Self::Yes,
+            _ => Self::No,
         }
     }
 
@@ -342,7 +343,7 @@ pub fn infer_value_ty_ctx(
             name: Builtin::ListParMap,
             args,
             ..
-        } => Type::List(Box::new(list_par_map_result_elem(args, ctx))),
+        } => Type::List(Arc::new(list_par_map_result_elem(args, ctx))),
         Value::Builtin {
             name,
             args,
@@ -371,7 +372,7 @@ pub fn infer_value_ty_ctx(
                 .fun_param_tys
                 .and_then(|m| m.get(name.as_str()).cloned())
                 .unwrap_or_default();
-            Type::Fun(params, Box::new(ret), Effect::pure())
+            Type::Fun(params, Arc::new(ret), Effect::pure())
         }
         Value::If {
             then_block,
@@ -528,7 +529,7 @@ fn list_elem_preserved(args: &[Local], local_tys: &HashMap<u32, Type>) -> Type {
             return Type::List(elem.clone());
         }
     }
-    Type::List(Box::new(Type::Int))
+    Type::List(Arc::new(Type::Int))
 }
 
 /// `ListParMap` result element from callback ret + source list elem.
@@ -594,7 +595,7 @@ pub(crate) fn par_fold_float_abi_early(
 
 fn list_par_map_result_elem(args: &[Local], ctx: InferValueCtx<'_>) -> Type {
     let list_elem = match list_elem_preserved(args, ctx.local_tys) {
-        Type::List(elem) => *elem,
+        Type::List(elem) => Type::unbox(elem),
         other => other,
     };
     if let Some(fun_local) = args.get(1) {
@@ -647,15 +648,15 @@ pub(crate) fn lit_scalar_ty(value: &Value) -> Option<Type> {
 
 /// `AllocList` / `AllocSet` / `AllocMap` shape constructors (shared walkers).
 pub(crate) fn alloc_list_ty(elem: Type) -> Type {
-    Type::List(Box::new(elem))
+    Type::List(Arc::new(elem))
 }
 
 pub(crate) fn alloc_set_ty(elem: Type) -> Type {
-    Type::Set(Box::new(elem))
+    Type::Set(Arc::new(elem))
 }
 
 pub(crate) fn alloc_map_ty(k: Type, v: Type) -> Type {
-    Type::Map(Box::new(k), Box::new(v))
+    Type::Map(Arc::new(k), Arc::new(v))
 }
 
 pub(crate) fn alloc_map_from_pair(kv: Option<(Type, Type)>) -> Type {
@@ -735,10 +736,10 @@ mod tests {
     #[test]
     fn type_may_heap_covers_containers_not_scalars() {
         assert!(type_may_heap(&Type::String));
-        assert!(type_may_heap(&Type::List(Box::new(Type::Int))));
+        assert!(type_may_heap(&Type::List(Arc::new(Type::Int))));
         assert!(type_may_heap(&Type::Fun(
             vec![Type::Int],
-            Box::new(Type::Int),
+            Arc::new(Type::Int),
             Effect::pure()
         )));
         assert!(type_may_heap(&Type::Tuple(vec![Type::Int, Type::String])));
@@ -752,8 +753,8 @@ mod tests {
 
     #[test]
     fn heap_may_dual_projection() {
-        assert!(HeapMay::from_type(&Type::List(Box::new(Type::Int))).for_rooting());
-        assert!(HeapMay::from_type(&Type::List(Box::new(Type::Int))).for_slot_alloc());
+        assert!(HeapMay::from_type(&Type::List(Arc::new(Type::Int))).for_rooting());
+        assert!(HeapMay::from_type(&Type::List(Arc::new(Type::Int))).for_slot_alloc());
         assert!(!HeapMay::from_type(&Type::Int).for_rooting());
         assert!(!HeapMay::from_type(&Type::Int).for_slot_alloc());
         // Unknown: over-root for GC; under-size slots until typed.
@@ -766,20 +767,20 @@ mod tests {
         assert!(!builtin_result_may_heap(
             lumia_hir::Builtin::ListGet,
             Some(&Type::Int),
-            || Some(Type::List(Box::new(Type::Int)))
+            || Some(Type::List(Arc::new(Type::Int)))
         ));
         assert!(builtin_result_may_heap(
             lumia_hir::Builtin::ListGet,
             None,
-            || Some(Type::List(Box::new(Type::Int)))
+            || Some(Type::List(Arc::new(Type::Int)))
         ));
     }
 
     #[test]
     fn list_append_upgrades_int_elem_to_task() {
         let mut tys = HashMap::default();
-        tys.insert(0, Type::List(Box::new(Type::Int)));
-        tys.insert(1, Type::Task(Box::new(Type::Float)));
+        tys.insert(0, Type::List(Arc::new(Type::Int)));
+        tys.insert(1, Type::Task(Arc::new(Type::Float)));
         let t = infer_value_ty(
             &Value::Builtin {
                 name: lumia_hir::Builtin::ListAppend,
@@ -789,15 +790,15 @@ mod tests {
             &tys,
             |_, _| None,
         );
-        assert_eq!(t, Type::List(Box::new(Type::Task(Box::new(Type::Float)))));
+        assert_eq!(t, Type::List(Arc::new(Type::Task(Arc::new(Type::Float)))));
     }
 
     #[test]
     fn list_append_prefers_nested_float_list_elem() {
         // Soft Int-only upgrade would keep List[List[Int]]; prefer upgrades elems.
         let mut tys = HashMap::default();
-        tys.insert(0, Type::List(Box::new(Type::List(Box::new(Type::Int)))));
-        tys.insert(1, Type::List(Box::new(Type::Float)));
+        tys.insert(0, Type::List(Arc::new(Type::List(Arc::new(Type::Int)))));
+        tys.insert(1, Type::List(Arc::new(Type::Float)));
         let t = infer_value_ty(
             &Value::Builtin {
                 name: lumia_hir::Builtin::ListAppend,
@@ -809,7 +810,7 @@ mod tests {
         );
         assert_eq!(
             t,
-            Type::List(Box::new(Type::List(Box::new(Type::Float)))),
+            Type::List(Arc::new(Type::List(Arc::new(Type::Float)))),
             "ListAppend must prefer nested Float elems, got {t:?}"
         );
     }
@@ -819,7 +820,7 @@ mod tests {
         // Empty mapOf is Map[Int,Int]; `.set(true, false)` must become Map[Bool,Bool]
         // so println uses lumia_show_map_bool (not {1: 0}).
         let mut tys = HashMap::default();
-        tys.insert(0, Type::Map(Box::new(Type::Int), Box::new(Type::Int)));
+        tys.insert(0, Type::Map(Arc::new(Type::Int), Arc::new(Type::Int)));
         tys.insert(1, Type::Bool);
         tys.insert(2, Type::Bool);
         let t = infer_value_ty(
@@ -831,13 +832,13 @@ mod tests {
             &tys,
             |_, _| None,
         );
-        assert_eq!(t, Type::Map(Box::new(Type::Bool), Box::new(Type::Bool)));
+        assert_eq!(t, Type::Map(Arc::new(Type::Bool), Arc::new(Type::Bool)));
     }
 
     #[test]
     fn set_insert_upgrades_int_elem_to_bool() {
         let mut tys = HashMap::default();
-        tys.insert(0, Type::Set(Box::new(Type::Int)));
+        tys.insert(0, Type::Set(Arc::new(Type::Int)));
         tys.insert(1, Type::Bool);
         let t = infer_value_ty(
             &Value::Builtin {
@@ -848,7 +849,7 @@ mod tests {
             &tys,
             |_, _| None,
         );
-        assert_eq!(t, Type::Set(Box::new(Type::Bool)));
+        assert_eq!(t, Type::Set(Arc::new(Type::Bool)));
     }
 
     #[test]
@@ -856,11 +857,11 @@ mod tests {
         let args = [Local(0), Local(1)];
         assert_eq!(
             float_list_append_ty(&args, None, Type::Float),
-            Some(Type::List(Box::new(Type::Float)))
+            Some(Type::List(Arc::new(Type::Float)))
         );
         assert_eq!(
             float_list_append_ty(&args, None, Type::Int),
-            Some(Type::List(Box::new(Type::Int)))
+            Some(Type::List(Arc::new(Type::Int)))
         );
         // Non-List known recv passes through (no invent).
         assert_eq!(
@@ -875,17 +876,17 @@ mod tests {
         let args = [Local(0), Local(1), Local(2)];
         assert_eq!(
             float_map_set_ty(&args, None, Type::Int, Type::Float),
-            Some(Type::Map(Box::new(Type::Int), Box::new(Type::Float)))
+            Some(Type::Map(Arc::new(Type::Int), Arc::new(Type::Float)))
         );
         // Known List still via → List with preferred elem.
         assert_eq!(
             float_map_set_ty(
                 &args,
-                Some(Type::List(Box::new(Type::Int))),
+                Some(Type::List(Arc::new(Type::Int))),
                 Type::Int,
                 Type::Float
             ),
-            Some(Type::List(Box::new(Type::Float)))
+            Some(Type::List(Arc::new(Type::Float)))
         );
     }
 
@@ -894,7 +895,7 @@ mod tests {
         let args = [Local(0), Local(1)];
         assert_eq!(
             float_set_insert_ty(&args, None, Type::Float),
-            Some(Type::Set(Box::new(Type::Float)))
+            Some(Type::Set(Arc::new(Type::Float)))
         );
     }
 
@@ -903,12 +904,12 @@ mod tests {
         let args = [Local(0), Local(1)];
         assert_eq!(
             float_map_remove_ty(&args, None, Type::Float),
-            Some(Type::Map(Box::new(Type::Float), Box::new(Type::Int)))
+            Some(Type::Map(Arc::new(Type::Float), Arc::new(Type::Int)))
         );
         // Known Set stays Set (via prefer).
         assert_eq!(
-            float_map_remove_ty(&args, Some(Type::Set(Box::new(Type::Int))), Type::Float),
-            Some(Type::Set(Box::new(Type::Float)))
+            float_map_remove_ty(&args, Some(Type::Set(Arc::new(Type::Int))), Type::Float),
+            Some(Type::Set(Arc::new(Type::Float)))
         );
     }
 
@@ -917,8 +918,8 @@ mod tests {
         let args = [Local(0), Local(1)];
         // One side only: keep concrete List/String; never invent soft List[Int].
         assert_eq!(
-            float_list_concat_ty(&args, Some(Type::List(Box::new(Type::Float))), None),
-            Some(Type::List(Box::new(Type::Float)))
+            float_list_concat_ty(&args, Some(Type::List(Arc::new(Type::Float))), None),
+            Some(Type::List(Arc::new(Type::Float)))
         );
         assert_eq!(
             float_list_concat_ty(&args, None, Some(Type::String)),
@@ -929,14 +930,14 @@ mod tests {
         assert_eq!(
             float_list_concat_ty(
                 &args,
-                Some(Type::List(Box::new(Type::Int))),
-                Some(Type::List(Box::new(Type::Float))),
+                Some(Type::List(Arc::new(Type::Int))),
+                Some(Type::List(Arc::new(Type::Float))),
             ),
-            Some(Type::List(Box::new(Type::Float)))
+            Some(Type::List(Arc::new(Type::Float)))
         );
         // ret_ty gate: List×scalar → None (not float open policy).
         assert_eq!(
-            list_concat_both_known(&args, Type::List(Box::new(Type::Int)), Type::Int),
+            list_concat_both_known(&args, Type::List(Arc::new(Type::Int)), Type::Int),
             None
         );
     }
@@ -945,12 +946,12 @@ mod tests {
     fn list_concat_upgrades_int_acc_to_fun_elem() {
         // flatMap empty acc is List[Int]; chunk listOf({…}) is List[Fun].
         let mut tys = HashMap::default();
-        tys.insert(0, Type::List(Box::new(Type::Int)));
+        tys.insert(0, Type::List(Arc::new(Type::Int)));
         tys.insert(
             1,
-            Type::List(Box::new(Type::Fun(
+            Type::List(Arc::new(Type::Fun(
                 vec![Type::Float],
-                Box::new(Type::Float),
+                Arc::new(Type::Float),
                 Effect::pure(),
             ))),
         );
@@ -979,8 +980,8 @@ mod tests {
     fn list_concat_prefers_nested_float_over_int_list() {
         // Soft-only used to keep left List[List[Int]]; prefer upgrades elems.
         let mut tys = HashMap::default();
-        tys.insert(0, Type::List(Box::new(Type::List(Box::new(Type::Int)))));
-        tys.insert(1, Type::List(Box::new(Type::List(Box::new(Type::Float)))));
+        tys.insert(0, Type::List(Arc::new(Type::List(Arc::new(Type::Int)))));
+        tys.insert(1, Type::List(Arc::new(Type::List(Arc::new(Type::Float)))));
         let t = infer_value_ty(
             &Value::Builtin {
                 name: lumia_hir::Builtin::ListConcat,
@@ -992,7 +993,7 @@ mod tests {
         );
         assert_eq!(
             t,
-            Type::List(Box::new(Type::List(Box::new(Type::Float)))),
+            Type::List(Arc::new(Type::List(Arc::new(Type::Float)))),
             "List×List must prefer nested Float elems, got {t:?}"
         );
     }
@@ -1000,10 +1001,10 @@ mod tests {
     #[test]
     fn par_map_elem_ty_from_funref_ret() {
         let mut local_tys = HashMap::default();
-        local_tys.insert(0, Type::List(Box::new(Type::Int)));
+        local_tys.insert(0, Type::List(Arc::new(Type::Int)));
         local_tys.insert(
             1,
-            Type::Fun(vec![Type::Int], Box::new(Type::Float), Effect::pure()),
+            Type::Fun(vec![Type::Int], Arc::new(Type::Float), Effect::pure()),
         );
         let mut funref = HashMap::default();
         funref.insert(1, "dbl".into());
@@ -1031,10 +1032,10 @@ mod tests {
     fn par_map_elem_ty_concrete_int_on_float_list_stays_int() {
         // Auto-parallel used to soft-upgrade Int→Float and Show 1 as a denormal.
         let mut local_tys = HashMap::default();
-        local_tys.insert(0, Type::List(Box::new(Type::Float)));
+        local_tys.insert(0, Type::List(Arc::new(Type::Float)));
         local_tys.insert(
             1,
-            Type::Fun(vec![Type::Float], Box::new(Type::Int), Effect::pure()),
+            Type::Fun(vec![Type::Float], Arc::new(Type::Int), Effect::pure()),
         );
         let ctx = InferValueCtx {
             local_tys: &local_tys,
@@ -1054,10 +1055,10 @@ mod tests {
     #[test]
     fn par_map_elem_ty_open_var_on_float_list_stays_float() {
         let mut local_tys = HashMap::default();
-        local_tys.insert(0, Type::List(Box::new(Type::Float)));
+        local_tys.insert(0, Type::List(Arc::new(Type::Float)));
         local_tys.insert(
             1,
-            Type::Fun(vec![Type::Float], Box::new(Type::Var(0)), Effect::pure()),
+            Type::Fun(vec![Type::Float], Arc::new(Type::Var(0)), Effect::pure()),
         );
         let ctx = InferValueCtx {
             local_tys: &local_tys,
@@ -1160,7 +1161,7 @@ val main = {
             0,
             Type::Adt {
                 name: "Eco".into(),
-                params: vec![Type::Float, Type::Float, Type::List(Box::new(Type::Float))],
+                params: vec![Type::Float, Type::Float, Type::List(Arc::new(Type::Float))],
             },
         );
         local_tys.insert(1, Type::Int);
@@ -1187,6 +1188,6 @@ val main = {
             ctx,
             None,
         );
-        assert_eq!(t, Type::List(Box::new(Type::Float)));
+        assert_eq!(t, Type::List(Arc::new(Type::Float)));
     }
 }

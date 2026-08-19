@@ -3,6 +3,7 @@
 use super::super::super::Infer;
 use crate::types::{at, Effect, Type, TypeError};
 use lumia_hir::{Builtin, Expr};
+use std::sync::Arc;
 
 impl Infer {
     pub(super) fn infer_list_build(
@@ -17,12 +18,12 @@ impl Infer {
                 let (et, ee) = self.infer_expr(&args[1])?;
                 let list_ty = match self.prune(lt.clone()) {
                     Type::List(t) => {
-                        self.unify_at(span, et, *t.clone())?;
+                        self.unify_at(span, et, Type::unbox(t.clone()))?;
                         Type::List(t)
                     }
                     Type::Var(_) => {
-                        self.unify_at(span, lt, Type::List(Box::new(et.clone())))?;
-                        Type::List(Box::new(et))
+                        self.unify_at(span, lt, Type::List(Arc::new(et.clone())))?;
+                        Type::List(Arc::new(et))
                     }
                     other => {
                         return Err(at(span, format!("append: expected List, got {other:?}")));
@@ -46,7 +47,7 @@ impl Infer {
                     _ => {
                         let list_ty = match (lt.clone(), rt.clone()) {
                             (Type::List(a), Type::List(b)) => {
-                                self.unify_at(span, *a.clone(), *b)?;
+                                self.unify_at(span, Type::unbox(a.clone()), Type::unbox(b))?;
                                 Type::List(a)
                             }
                             (Type::List(a), Type::Var(_)) => {
@@ -85,7 +86,7 @@ impl Infer {
                     self.unify_at(span, t, Type::Int)?;
                     eff = self.union_eff(eff, e);
                 }
-                Ok((Type::List(Box::new(Type::Int)), eff))
+                Ok((Type::List(Arc::new(Type::Int)), eff))
             }
             _ => unreachable!("infer_list_build"),
         }

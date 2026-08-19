@@ -6,6 +6,7 @@ use crate::{
     block_result_is_bottom, find_top_level_local_def, for_each_top_level_op_in_block,
     peel_block_result, CoreBinOp as BinOp, CoreUnOp as UnOp,
 };
+use std::sync::Arc;
 use lumia_syntax::Sym;
 use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
@@ -454,7 +455,7 @@ pub(crate) fn block_result_channel_ty(
                     _ => None,
                 })
                 .unwrap_or(Type::Int);
-            Some(Type::Channel(Box::new(elem)))
+            Some(Type::Channel(Arc::new(elem)))
         }
         _ => None,
     }

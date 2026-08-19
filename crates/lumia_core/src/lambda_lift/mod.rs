@@ -5,6 +5,7 @@
 //! [`float_abi`] lattice / [`abi_refresh`] fixups). Prefer `abi_refine::*` at
 //! orchestration call sites.
 
+use std::sync::Arc;
 pub(crate) mod abi_refine;
 mod abi_refresh;
 mod captures;
@@ -82,7 +83,7 @@ pub(crate) fn fun_ty_from_tables(
     {
         params.remove(0);
     }
-    Some(Type::Fun(params, Box::new(ret), Effect::pure()))
+    Some(Type::Fun(params, Arc::new(ret), Effect::pure()))
 }
 
 /// Like [`fun_ty_from_tables`], using the set installed by [`with_lifted_lambda_names`].

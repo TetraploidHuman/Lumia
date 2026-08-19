@@ -1,9 +1,13 @@
 //! Shared LSP document state and cached analysis.
 
+use crate::check::PartialProgramCheck;
 use crate::load::SourceFile;
 use lumia_syntax::ParseOutcome;
 use lumia_ty::TypedModule;
 use rustc_hash::FxHashMap as HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Sender};
 use std::sync::Mutex;
 
@@ -62,6 +66,70 @@ pub(super) struct State {
     /// Per-URI analyze generation (debounce: latest wins). Kept inside [`State`]
     /// so gen and docs share one lock (no parallel `ANALYZE_GEN` mutex).
     pub(super) analyze_gen: HashMap<String, u64>,
+    /// Last successful multi-file check for `(ide_entry, overlay fingerprint)`.
+    pub(super) program_cache: Option<ProgramCache>,
+    /// uri → (source hash, format edits) — strict parse pretty-print cache.
+    pub(super) format_cache: HashMap<String, (u64, Vec<serde_json::Value>)>,
+}
+
+/// Cached load + typecheck for unchanged overlay sets (skip reload on debounce).
+pub(super) struct ProgramCache {
+    pub ide_entry: PathBuf,
+    pub overlay_fp: u64,
+    pub auto_parallel: bool,
+    pub partial: PartialProgramCheck,
+}
+
+/// Stable hash over overlay path + content pairs (sorted by path).
+pub(super) fn overlay_fingerprint(overlays: &HashMap<PathBuf, String>) -> u64 {
+    let mut pairs: Vec<_> = overlays.iter().collect();
+    pairs.sort_by_key(|(p, _)| p.as_os_str());
+    let mut h = DefaultHasher::new();
+    for (p, s) in pairs {
+        p.hash(&mut h);
+        s.hash(&mut h);
+    }
+    h.finish()
+}
+
+pub(super) fn source_fingerprint(text: &str) -> u64 {
+    let mut h = DefaultHasher::new();
+    text.hash(&mut h);
+    h.finish()
+}
+
+pub(super) fn invalidate_program_cache(state: &mut State) {
+    state.program_cache = None;
+}
+
+pub(super) fn program_cache_get<'a>(
+    state: &'a State,
+    ide_entry: &Path,
+    overlay_fp: u64,
+    auto_parallel: bool,
+) -> Option<&'a PartialProgramCheck> {
+    state.program_cache.as_ref().and_then(|c| {
+        if c.ide_entry == ide_entry && c.overlay_fp == overlay_fp && c.auto_parallel == auto_parallel {
+            Some(&c.partial)
+        } else {
+            None
+        }
+    })
+}
+
+pub(super) fn program_cache_put(
+    state: &mut State,
+    ide_entry: PathBuf,
+    overlay_fp: u64,
+    auto_parallel: bool,
+    partial: PartialProgramCheck,
+) {
+    state.program_cache = Some(ProgramCache {
+        ide_entry,
+        overlay_fp,
+        auto_parallel,
+        partial,
+    });
 }
 
 #[derive(Clone)]
@@ -111,6 +179,23 @@ pub(super) fn current_analyze_gen(uri: &str) -> u64 {
         .unwrap_or(0)
 }
 
+pub(super) fn default_state(analyze_tx: Option<Sender<AnalyzeReq>>) -> State {
+    State {
+        docs: HashMap::default(),
+        analysis: HashMap::default(),
+        analyze_tx,
+        auto_parallel: true,
+        client_supports_configuration: false,
+        next_req_id: 1,
+        pending_config_req: None,
+        last_diag_uris: HashMap::default(),
+        analyze_gen: HashMap::default(),
+        position_encoding: lumia_syntax::ColumnMetric::Utf16,
+        shut_down: false,
+        program_cache: None,
+        format_cache: HashMap::default(),
+    }
+}
 pub(super) fn spawn_analyze_worker() -> Sender<AnalyzeReq> {
     let (tx, rx) = mpsc::channel::<AnalyzeReq>();
     std::thread::Builder::new()

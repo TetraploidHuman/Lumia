@@ -3,6 +3,7 @@
 use super::Infer;
 use crate::types::{at, Effect, Type, TypeError};
 use lumia_hir::{Builtin, Expr};
+use std::sync::Arc;
 
 impl Infer {
     pub(crate) fn infer_call(
@@ -43,7 +44,7 @@ impl Infer {
             Type::Fun(_, _, e) => e,
             _ => self.fresh_eff(),
         };
-        self.unify_at(span, ct, Type::Fun(ats, Box::new(ret.clone()), call_eff))?;
+        self.unify_at(span, ct, Type::Fun(ats, Arc::new(ret.clone()), call_eff))?;
         let fun_eff = self.prune_eff(call_eff);
         Ok((self.prune(ret), self.union3_eff(ce, aes, fun_eff)))
     }
@@ -62,7 +63,7 @@ impl Infer {
                     Type::List(_) => Err(at(span, "List.join requires a separator: xs.join(sep)")),
                     Type::Task(_) | Type::Var(_) => {
                         let elem = self.fresh();
-                        self.unify_at(span, tt, Type::Task(Box::new(elem.clone())))?;
+                        self.unify_at(span, tt, Type::Task(Arc::new(elem.clone())))?;
                         crate::span_facts::insert_unique_span_fact(
                             &mut self.traits.join_rewrites,
                             span,
@@ -89,10 +90,10 @@ impl Infer {
                         return Err(at(span, "Task.join takes no separator (use t.join())"));
                     }
                     Type::List(t) => {
-                        self.unify_at(span, *t, Type::String)?;
+                        self.unify_at(span, Type::unbox(t), Type::String)?;
                     }
                     Type::Var(_) => {
-                        self.unify_at(span, lt, Type::List(Box::new(Type::String)))?;
+                        self.unify_at(span, lt, Type::List(Arc::new(Type::String)))?;
                     }
                     other => {
                         return Err(at(

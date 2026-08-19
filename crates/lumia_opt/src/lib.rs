@@ -7,6 +7,8 @@
 #![allow(clippy::type_complexity)]
 #![allow(clippy::collapsible_match)] // nested Op/Value in escape/memo/inline
 
+use std::sync::Arc;
+
 mod builtin_effect;
 mod concat_ident;
 mod copy_elim;
@@ -879,7 +881,7 @@ val main = { log(1) }
                     ],
                     result: Some(Local(1)),
                 },
-                ret_ty: Type::List(Box::new(Type::Int)),
+                ret_ty: Type::List(Arc::new(Type::Int)),
                 effect: Effect::pure(),
                 is_main: false,
                 memo: None,
@@ -1024,7 +1026,7 @@ val main = {
                     }],
                     result: Some(Local(0)),
                 },
-                ret_ty: Type::List(Box::new(Type::Int)),
+                ret_ty: Type::List(Arc::new(Type::Int)),
                 effect: Effect::pure(),
                 is_main: false,
                 memo: None,

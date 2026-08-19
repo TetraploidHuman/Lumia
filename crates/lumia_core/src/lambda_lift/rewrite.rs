@@ -7,6 +7,7 @@ use super::float_abi::{
     block_result_is_float_seeded, block_result_known_hof_ty, compute_float_locals_in_block,
     params_used_as_float_with_caps_seeded, HofSets,
 };
+use std::sync::Arc;
 use super::heap::block_result_may_heap_with_params;
 use crate::ir::{Block, CoreFun, CoreModule, ForeignAbi, FunKind, Local, Op, Value};
 use crate::visit::{
@@ -66,7 +67,7 @@ fn lambda_param_ret_tys(
         t
     } else if block_result_may_heap_with_params(body, params) {
         // Conservative heap marker so codegen roots the Call result (§GC).
-        Type::List(Box::new(Type::Int))
+        Type::List(Arc::new(Type::Int))
     } else {
         Type::Int
     };

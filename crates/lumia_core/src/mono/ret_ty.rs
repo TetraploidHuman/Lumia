@@ -9,6 +9,7 @@ use crate::value_ty::{
     list_par_fold_via, list_par_map_via, list_passthrough_ok, lit_scalar_ty, pad_adt_params,
     stamp_or_via, task_recv_ok, via_gated_recv, via_gated_recv_seeded, InferValueCtx, JoinAbiKind,
 };
+use std::sync::Arc;
 use crate::value_ty::{fold_slot_assign_ty, JoinAssignKind};
 use crate::{block_result_is_bottom, CoreBinOp as BinOp, CoreUnOp as UnOp};
 use lumia_hir::Builtin;
@@ -64,7 +65,7 @@ pub(crate) fn refine_mono_container_ret(orig: &Type, inferred: &Type) -> Type {
             Type::Float | Type::Bool | Type::Int | Type::String | Type::Char
                 if matches!(e.as_ref(), Type::Var(_)) =>
             {
-                Type::List(Box::new(inferred.clone()))
+                Type::List(Arc::new(inferred.clone()))
             }
             _ => orig.clone(),
         },
@@ -73,7 +74,7 @@ pub(crate) fn refine_mono_container_ret(orig: &Type, inferred: &Type) -> Type {
             Type::Float | Type::Bool | Type::Int | Type::String | Type::Char
                 if matches!(e.as_ref(), Type::Var(_)) =>
             {
-                Type::Set(Box::new(inferred.clone()))
+                Type::Set(Arc::new(inferred.clone()))
             }
             _ => orig.clone(),
         },
@@ -82,7 +83,7 @@ pub(crate) fn refine_mono_container_ret(orig: &Type, inferred: &Type) -> Type {
             Type::Float | Type::Bool | Type::Int | Type::String | Type::Char
                 if matches!(e.as_ref(), Type::Var(_)) =>
             {
-                Type::Task(Box::new(inferred.clone()))
+                Type::Task(Arc::new(inferred.clone()))
             }
             _ => orig.clone(),
         },
@@ -91,7 +92,7 @@ pub(crate) fn refine_mono_container_ret(orig: &Type, inferred: &Type) -> Type {
             Type::Float | Type::Bool | Type::Int | Type::String | Type::Char
                 if matches!(e.as_ref(), Type::Var(_)) =>
             {
-                Type::Channel(Box::new(inferred.clone()))
+                Type::Channel(Arc::new(inferred.clone()))
             }
             _ => orig.clone(),
         },
@@ -100,7 +101,7 @@ pub(crate) fn refine_mono_container_ret(orig: &Type, inferred: &Type) -> Type {
             Type::Float | Type::Bool | Type::Int | Type::String | Type::Char
                 if matches!(k.as_ref(), Type::Var(_)) =>
             {
-                Type::Map(Box::new(inferred.clone()), v.clone())
+                Type::Map(Arc::new(inferred.clone()), v.clone())
             }
             _ => orig.clone(),
         },
@@ -753,7 +754,7 @@ fn value_fixed_ty(
             let f = index.get(name.as_str())?;
             Some(Type::Fun(
                 f.param_tys.clone(),
-                Box::new(f.ret_ty.clone()),
+                Arc::new(f.ret_ty.clone()),
                 f.effect,
             ))
         }

@@ -1,5 +1,6 @@
 //! BuiltinCall typing — list family.
 
+use std::sync::Arc;
 mod build;
 mod hof;
 mod poly;
@@ -18,10 +19,10 @@ impl Infer {
         op: &str,
     ) -> Result<Type, TypeError> {
         match self.prune(ty.clone()) {
-            Type::List(t) => Ok(*t),
+            Type::List(t) => Ok(Type::unbox(t)),
             Type::Var(_) => {
                 let elem = self.fresh();
-                self.unify_at(span, ty, Type::List(Box::new(elem.clone())))?;
+                self.unify_at(span, ty, Type::List(Arc::new(elem.clone())))?;
                 Ok(elem)
             }
             other => Err(at(span, format!("{op}: expected List, got {other:?}"))),

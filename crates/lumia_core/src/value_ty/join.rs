@@ -4,6 +4,7 @@
 //! (Todo: Value→Type 三套 walker / prefer 近拷贝).
 
 use lumia_ty::{Effect, Type};
+use std::sync::Arc;
 
 /// Policy for If/alt joining.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -112,7 +113,7 @@ pub fn join_abi_tys(a: &Type, b: &Type, kind: JoinAbiKind) -> Option<Type> {
                 params.push(join_abi_tys(&x, &y, kind).unwrap_or(x));
             }
             let ret = join_abi_tys(r1, r2, kind).unwrap_or_else(|| (**r1).clone());
-            Some(Type::Fun(params, Box::new(ret), e1.union(*e2)))
+            Some(Type::Fun(params, Arc::new(ret), e1.union(*e2)))
         }
         // Fixed: upgrade only Bool/String/Char over soft Int (not arbitrary payloads).
         (Type::Bool, Type::Int | Type::Var(_)) | (Type::Int | Type::Var(_), Type::Bool)
@@ -157,24 +158,24 @@ pub fn join_abi_tys(a: &Type, b: &Type, kind: JoinAbiKind) -> Option<Type> {
                 params,
             })
         }
-        (Type::List(e1), Type::List(e2)) if containers => Some(Type::List(Box::new(
+        (Type::List(e1), Type::List(e2)) if containers => Some(Type::List(Arc::new(
             prefer_concrete_heap_ty(e1.as_ref().clone(), e2.as_ref().clone()),
         ))),
-        (Type::Set(e1), Type::Set(e2)) if containers => Some(Type::Set(Box::new(
+        (Type::Set(e1), Type::Set(e2)) if containers => Some(Type::Set(Arc::new(
             prefer_concrete_heap_ty(e1.as_ref().clone(), e2.as_ref().clone()),
         ))),
-        (Type::Task(e1), Type::Task(e2)) if containers => Some(Type::Task(Box::new(
+        (Type::Task(e1), Type::Task(e2)) if containers => Some(Type::Task(Arc::new(
             prefer_concrete_heap_ty(e1.as_ref().clone(), e2.as_ref().clone()),
         ))),
-        (Type::Channel(e1), Type::Channel(e2)) if containers => Some(Type::Channel(Box::new(
+        (Type::Channel(e1), Type::Channel(e2)) if containers => Some(Type::Channel(Arc::new(
             prefer_concrete_heap_ty(e1.as_ref().clone(), e2.as_ref().clone()),
         ))),
         (Type::Map(k1, v1), Type::Map(k2, v2)) if containers => Some(Type::Map(
-            Box::new(prefer_concrete_heap_ty(
+            Arc::new(prefer_concrete_heap_ty(
                 k1.as_ref().clone(),
                 k2.as_ref().clone(),
             )),
-            Box::new(prefer_concrete_heap_ty(
+            Arc::new(prefer_concrete_heap_ty(
                 v1.as_ref().clone(),
                 v2.as_ref().clone(),
             )),
@@ -203,7 +204,7 @@ pub fn prefer_concrete_heap_ty(x: Type, y: Type) -> Type {
             }
             Type::Fun(
                 params,
-                Box::new(prefer_concrete_heap_ty(
+                Arc::new(prefer_concrete_heap_ty(
                     r1.as_ref().clone(),
                     r2.as_ref().clone(),
                 )),
@@ -293,17 +294,17 @@ mod tests {
 
     #[test]
     fn join_heap_merges_list_float() {
-        let a = Type::List(Box::new(Type::Int));
-        let b = Type::List(Box::new(Type::Float));
+        let a = Type::List(Arc::new(Type::Int));
+        let b = Type::List(Arc::new(Type::Float));
         assert_eq!(
             join_abi_tys(&a, &b, JoinAbiKind::Heap),
-            Some(Type::List(Box::new(Type::Float)))
+            Some(Type::List(Arc::new(Type::Float)))
         );
     }
 
     #[test]
     fn join_value_keeps_fun_over_string() {
-        let f = Type::Fun(vec![Type::Int], Box::new(Type::Int), Effect::pure());
+        let f = Type::Fun(vec![Type::Int], Arc::new(Type::Int), Effect::pure());
         assert_eq!(
             join_abi_tys(&f, &Type::String, JoinAbiKind::Value),
             Some(f.clone())
@@ -322,7 +323,7 @@ mod tests {
 
     #[test]
     fn join_fixed_keeps_fun_over_string() {
-        let f = Type::Fun(vec![], Box::new(Type::Int), Effect::pure());
+        let f = Type::Fun(vec![], Arc::new(Type::Int), Effect::pure());
         assert_eq!(join_fixed_ty(&f, &Type::String), Some(f.clone()));
         assert_eq!(join_fixed_ty(&Type::String, &f), Some(f));
     }
@@ -331,10 +332,10 @@ mod tests {
     fn join_fixed_merges_list_and_result_float() {
         assert_eq!(
             join_fixed_ty(
-                &Type::List(Box::new(Type::Int)),
-                &Type::List(Box::new(Type::Float))
+                &Type::List(Arc::new(Type::Int)),
+                &Type::List(Arc::new(Type::Float))
             ),
-            Some(Type::List(Box::new(Type::Float)))
+            Some(Type::List(Arc::new(Type::Float)))
         );
         let a = Type::Adt {
             name: "Result".into(),
@@ -355,13 +356,13 @@ mod tests {
 
     #[test]
     fn join_fixed_fun_fun_merges_rets() {
-        let a = Type::Fun(vec![Type::Int], Box::new(Type::Int), Effect::pure());
-        let b = Type::Fun(vec![Type::Int], Box::new(Type::Float), Effect::pure());
+        let a = Type::Fun(vec![Type::Int], Arc::new(Type::Int), Effect::pure());
+        let b = Type::Fun(vec![Type::Int], Arc::new(Type::Float), Effect::pure());
         assert_eq!(
             join_fixed_ty(&a, &b),
             Some(Type::Fun(
                 vec![Type::Int],
-                Box::new(Type::Float),
+                Arc::new(Type::Float),
                 Effect::pure()
             ))
         );
@@ -371,15 +372,15 @@ mod tests {
     fn join_fixed_does_not_blanket_int_to_list() {
         // Value would yield List; Fixed must stay open (None).
         assert_eq!(
-            join_fixed_ty(&Type::Int, &Type::List(Box::new(Type::Float))),
+            join_fixed_ty(&Type::Int, &Type::List(Arc::new(Type::Float))),
             None
         );
     }
 
     #[test]
     fn prefer_list_int_placeholder_yields_to_map() {
-        let list = Type::List(Box::new(Type::Int));
-        let map = Type::Map(Box::new(Type::Int), Box::new(Type::Float));
+        let list = Type::List(Arc::new(Type::Int));
+        let map = Type::Map(Arc::new(Type::Int), Arc::new(Type::Float));
         assert_eq!(prefer_concrete_heap_ty(list, map.clone()), map);
     }
 
@@ -394,8 +395,8 @@ mod tests {
             Type::Char
         );
         assert_eq!(
-            join_slot_assign_ty(Some(Type::List(Box::new(Type::Int))), Type::Int),
-            Type::List(Box::new(Type::Int))
+            join_slot_assign_ty(Some(Type::List(Arc::new(Type::Int))), Type::Int),
+            Type::List(Arc::new(Type::Int))
         );
     }
 
@@ -431,13 +432,13 @@ mod tests {
     fn join_if_arm_tys_merges_heap_containers() {
         assert_eq!(
             join_if_arm_tys(
-                Some(Type::List(Box::new(Type::Int))),
-                Some(Type::List(Box::new(Type::Float))),
+                Some(Type::List(Arc::new(Type::Int))),
+                Some(Type::List(Arc::new(Type::Float))),
                 false,
                 false,
                 JoinAbiKind::Heap,
             ),
-            Some(Type::List(Box::new(Type::Float))),
+            Some(Type::List(Arc::new(Type::Float))),
         );
     }
 
@@ -446,15 +447,15 @@ mod tests {
         let mut acc = None;
         fold_slot_assign_ty(
             &mut acc,
-            Type::List(Box::new(Type::Int)),
+            Type::List(Arc::new(Type::Int)),
             JoinAssignKind::Heap,
         );
         fold_slot_assign_ty(
             &mut acc,
-            Type::List(Box::new(Type::Float)),
+            Type::List(Arc::new(Type::Float)),
             JoinAssignKind::Heap,
         );
-        assert_eq!(acc, Some(Type::List(Box::new(Type::Float))));
+        assert_eq!(acc, Some(Type::List(Arc::new(Type::Float))));
     }
 
     #[test]

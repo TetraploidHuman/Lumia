@@ -4,6 +4,7 @@ use super::Infer;
 use crate::types::{at, expr_span, Effect, Type, TypeError};
 use lumia_hir::Expr;
 use lumia_syntax::{BinOp, UnOp};
+use std::sync::Arc;
 
 impl Infer {
     pub(crate) fn infer_expr(&mut self, expr: &Expr) -> Result<(Type, Effect), TypeError> {
@@ -306,7 +307,7 @@ impl Infer {
         self.unify_at(span, rt, ret_tv.clone())?;
         self.ctrl.return_stack.pop();
         self.pop();
-        Ok((Type::Fun(pts, Box::new(ret_tv), re), Effect::pure()))
+        Ok((Type::Fun(pts, Arc::new(ret_tv), re), Effect::pure()))
     }
 
     fn infer_break_continue(

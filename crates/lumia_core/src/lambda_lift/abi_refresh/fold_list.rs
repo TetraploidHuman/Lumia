@@ -6,6 +6,7 @@ use lumia_hir::Builtin;
 use lumia_hir::Sym;
 use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use std::sync::Arc;
 
 /// `{ y -> xs.fold(y, { a, x -> a + x }) }` with captured `List[Float]`: lift left
 /// init/callback as Int; upgrade in place so codegen uses `fadd` (no mono clone
@@ -103,11 +104,11 @@ pub(super) fn upgrade_list_params_from_float_call_sites(module: &mut CoreModule)
         for &i in idxs {
             match fun.param_tys.get_mut(i) {
                 Some(Type::List(e)) if matches!(e.as_ref(), Type::Int | Type::Var(_)) => {
-                    *e = Box::new(Type::Float);
+                    *e = Arc::new(Type::Float);
                 }
                 // Capturing wrappers often type list params as bare `Int` (heap ptr).
                 Some(ty @ (Type::Int | Type::Var(_))) => {
-                    *ty = Type::List(Box::new(Type::Float));
+                    *ty = Type::List(Arc::new(Type::Float));
                 }
                 _ => {}
             }

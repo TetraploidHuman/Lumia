@@ -33,28 +33,15 @@ use formatting::on_formatting;
 use hover::on_hover;
 use inlay::on_inlay_hint;
 use protocol::{read_message, write_stdout};
-use rustc_hash::FxHashMap as HashMap;
 use semantic::{on_semantic_tokens, TOKEN_MODIFIERS, TOKEN_TYPES};
 use serde_json::{json, Value};
-use state::{spawn_analyze_worker, state_lock, State};
+use state::{default_state, invalidate_program_cache, spawn_analyze_worker, state_lock};
 use std::io;
 use symbols::on_document_symbol;
 
 pub fn run_lsp() -> Result<()> {
     let analyze_tx = spawn_analyze_worker();
-    *state_lock() = Some(State {
-        docs: HashMap::default(),
-        analysis: HashMap::default(),
-        analyze_tx: Some(analyze_tx),
-        auto_parallel: true,
-        client_supports_configuration: false,
-        next_req_id: 1,
-        pending_config_req: None,
-        last_diag_uris: HashMap::default(),
-        analyze_gen: HashMap::default(),
-        position_encoding: lumia_syntax::ColumnMetric::Utf16,
-        shut_down: false,
-    });
+    *state_lock() = Some(default_state(Some(analyze_tx)));
     let stdin = io::stdin();
     let mut stdin = stdin.lock();
     loop {
@@ -319,6 +306,9 @@ fn apply_auto_parallel(ap: bool) -> Result<()> {
     let docs: Vec<(String, String)> = {
         let mut st = state_lock();
         if let Some(s) = st.as_mut() {
+            if s.auto_parallel != ap {
+                invalidate_program_cache(s);
+            }
             s.auto_parallel = ap;
             s.docs.iter().map(|(u, t)| (u.clone(), t.clone())).collect()
         } else {
@@ -406,22 +396,9 @@ mod tests {
 
     #[test]
     fn shutdown_rejects_further_requests() {
-        use super::state::{state_lock, State};
-        use rustc_hash::FxHashMap as HashMap;
+        use super::state::{default_state, state_lock};
         let prev = state_lock().take();
-        *state_lock() = Some(State {
-            docs: HashMap::default(),
-            analysis: HashMap::default(),
-            analyze_tx: None,
-            auto_parallel: true,
-            client_supports_configuration: false,
-            next_req_id: 1,
-            pending_config_req: None,
-            last_diag_uris: HashMap::default(),
-            analyze_gen: HashMap::default(),
-            position_encoding: lumia_syntax::ColumnMetric::Utf16,
-            shut_down: false,
-        });
+        *state_lock() = Some(default_state(None));
         let shut = super::handle_message(serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,

@@ -9,6 +9,7 @@ use crate::value_ty::{
     list_get_recv_ok, list_passthrough_ok, lit_scalar_ty, stamp_or_via, stamp_or_via_gated_recv,
     task_recv_ok, via_gated_recv, InferValueCtx,
 };
+use std::sync::Arc;
 use crate::{CoreBinOp as BinOp, CoreUnOp as UnOp};
 use lumia_syntax::Sym;
 use lumia_ty::{Effect, Type};
@@ -597,7 +598,7 @@ pub(super) fn local_heap_ty(
             via_gated_recv(
                 lumia_hir::Builtin::TaskSpawn,
                 args,
-                Type::Fun(vec![], Box::new(elem), Effect::Pure),
+                Type::Fun(vec![], Arc::new(elem), Effect::Pure),
                 fun_recv_ok,
             )
         }
@@ -662,7 +663,7 @@ pub(super) fn local_heap_ty(
                         seen,
                         seen_slots,
                     ) {
-                        Some(Type::Fun(_, r, _)) => Some(*r),
+                        Some(Type::Fun(_, r, _)) => Some(Type::unbox(r)),
                         _ => None,
                     }
                 });
@@ -676,7 +677,7 @@ pub(super) fn local_heap_ty(
                 seen,
                 seen_slots,
             ) {
-                Some(Type::List(e)) => Some(*e),
+                Some(Type::List(e)) => Some(Type::unbox(e)),
                 _ => None,
             };
             let cb_fallback = if from_cb.is_none() {

@@ -2,6 +2,7 @@ use super::*;
 use lumia_core::{Block, CoreFun, CoreModule, FunKind, ListRepr, Op, Value};
 use lumia_ty::{Effect, Type};
 use rustc_hash::FxHashSet as HashSet;
+use std::sync::Arc;
 
 #[test]
 fn peels_concat_with_empty() {
@@ -47,7 +48,7 @@ fn peels_concat_with_empty() {
                 ],
                 result: Some(Local(3)),
             },
-            ret_ty: Type::List(Box::new(Type::Int)),
+            ret_ty: Type::List(Arc::new(Type::Int)),
             effect: Effect::pure(),
             is_main: false,
             memo: None,

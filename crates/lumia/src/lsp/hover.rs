@@ -86,29 +86,19 @@ pub(super) fn on_hover(params: Option<&Value>) -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::state::{state_lock, Analysis, State};
     use super::hover_for_analysis;
     use crate::check::check_source;
     use crate::lsp::cursor::byte_to_position;
+    use crate::lsp::state::{default_state, state_lock, Analysis};
     use lumia_syntax::ColumnMetric;
     use rustc_hash::FxHashMap as HashMap;
 
     fn with_encoding<R>(enc: ColumnMetric, f: impl FnOnce() -> R) -> R {
         let mut guard = state_lock();
         let prev = guard.take();
-        *guard = Some(State {
-            docs: HashMap::default(),
-            analysis: HashMap::default(),
-            analyze_tx: None,
-            auto_parallel: true,
-            client_supports_configuration: false,
-            next_req_id: 1,
-            pending_config_req: None,
-            last_diag_uris: HashMap::default(),
-            analyze_gen: HashMap::default(),
-            position_encoding: enc,
-            shut_down: false,
-        });
+        let mut st = default_state(None);
+        st.position_encoding = enc;
+        *guard = Some(st);
         drop(guard);
         let out = f();
         *state_lock() = prev;

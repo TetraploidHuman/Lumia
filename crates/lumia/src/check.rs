@@ -125,7 +125,7 @@ pub fn check_program_with_overlays_recovering(
 }
 
 /// Partial multi-file check (IDE): keep TypedModule when some items error.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PartialProgramCheck {
     pub loaded: LoadedProgram,
     pub typed: Option<TypedModule>,

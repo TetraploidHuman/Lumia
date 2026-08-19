@@ -85,26 +85,15 @@ pub(super) fn prefix_at(src: &str, byte: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::{ident_at, pos_to_byte, prefix_at};
-    use crate::lsp::state::{state_lock, State};
+    use crate::lsp::state::{default_state, state_lock};
     use lumia_syntax::ColumnMetric;
-    use rustc_hash::FxHashMap as HashMap;
 
     fn with_encoding<R>(enc: ColumnMetric, f: impl FnOnce() -> R) -> R {
         let mut guard = state_lock();
         let prev = guard.take();
-        *guard = Some(State {
-            docs: HashMap::default(),
-            analysis: HashMap::default(),
-            analyze_tx: None,
-            auto_parallel: true,
-            client_supports_configuration: false,
-            next_req_id: 1,
-            pending_config_req: None,
-            last_diag_uris: HashMap::default(),
-            analyze_gen: HashMap::default(),
-            position_encoding: enc,
-            shut_down: false,
-        });
+        let mut st = default_state(None);
+        st.position_encoding = enc;
+        *guard = Some(st);
         drop(guard);
         let out = f();
         *state_lock() = prev;

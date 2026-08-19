@@ -15,6 +15,7 @@ use lumia_hir::Builtin;
 use lumia_hir::Sym;
 use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use std::sync::Arc;
 
 pub(crate) fn refine_channel_elem_hint(module: &mut CoreModule) {
     let lifted = super::lifted_lambda_names(module);
@@ -319,7 +320,7 @@ fn guess_local_ty(
                 Some(Type::Fun(_, r, _)) => (**r).clone(),
                 _ => Type::Int,
             };
-            Type::Task(Box::new(elem))
+            Type::Task(Arc::new(elem))
         }
         Value::Binary { op, left, right } => match op {
             crate::CoreBinOp::Eq
@@ -359,16 +360,16 @@ fn guess_local_ty(
         }
         Value::AllocList { elems, .. } => {
             if !elems.is_empty() && elems.iter().all(|e| float_locals.contains(&e.0)) {
-                Type::List(Box::new(Type::Float))
+                Type::List(Arc::new(Type::Float))
             } else {
-                Type::List(Box::new(guess_elems_ty(elems, local_tys)))
+                Type::List(Arc::new(guess_elems_ty(elems, local_tys)))
             }
         }
         Value::AllocSet { elems, .. } => {
             if !elems.is_empty() && elems.iter().all(|e| float_locals.contains(&e.0)) {
-                Type::Set(Box::new(Type::Float))
+                Type::Set(Arc::new(Type::Float))
             } else {
-                Type::Set(Box::new(guess_elems_ty(elems, local_tys)))
+                Type::Set(Arc::new(guess_elems_ty(elems, local_tys)))
             }
         }
         Value::AllocMap { flat_pairs, .. } => {
@@ -394,7 +395,7 @@ fn guess_local_ty(
             } else {
                 (Type::Int, Type::Int)
             };
-            Type::Map(Box::new(k), Box::new(v))
+            Type::Map(Arc::new(k), Arc::new(v))
         }
         Value::AllocAdt {
             adt_name,
@@ -409,7 +410,7 @@ fn guess_local_ty(
         } => match result_ty {
             Some(Type::Channel(e)) => Type::Channel(e.clone()),
             Some(other) => other.clone(),
-            None => Type::Channel(Box::new(Type::Int)),
+            None => Type::Channel(Arc::new(Type::Int)),
         },
         _ => Type::Int,
     }
@@ -435,7 +436,7 @@ fn adt_payload_ty(
         let none_tag = lumia_hir::OPTION.default_tag("None").unwrap_or(1);
         let param = if tag == none_tag || fields.is_empty() {
             // None — flexible param joined with Some(T) later.
-            Type::Var(u32::MAX)
+            Type::Unknown
         } else {
             field_ty(&fields[0])
         };
@@ -448,9 +449,9 @@ fn adt_payload_ty(
         let ok_tag = lumia_hir::RESULT.default_tag("Ok").unwrap_or(0);
         let payload = fields.first().map(field_ty).unwrap_or(Type::Int);
         let (ok, err) = if tag == ok_tag {
-            (payload, Type::Var(u32::MAX))
+            (payload, Type::Unknown)
         } else {
-            (Type::Var(u32::MAX), payload)
+            (Type::Unknown, payload)
         };
         return Type::Adt {
             name: adt_name.clone(),
@@ -516,12 +517,12 @@ fn join_channel_payload(prev: &Type, new: &Type) -> Option<Type> {
 }
 
 fn is_flexible_ty(t: &Type) -> bool {
-    matches!(t, Type::Var(_) | Type::Int)
+    t.is_soft_scalar()
 }
 
 fn join_option_param(a: Option<&Type>, b: Option<&Type>) -> Option<Type> {
     match (a, b) {
-        (None, None) => Some(Type::Var(u32::MAX)),
+        (None, None) => Some(Type::Unknown),
         (Some(t), None) | (None, Some(t)) => Some(t.clone()),
         (Some(x), Some(y)) if x == y => Some(x.clone()),
         (Some(x), Some(y)) if is_flexible_ty(x) => Some(y.clone()),

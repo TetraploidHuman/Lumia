@@ -5,6 +5,7 @@ use crate::Local;
 use lumia_hir::Builtin;
 use lumia_ty::{Effect, Type};
 use rustc_hash::FxHashMap as HashMap;
+use std::sync::Arc;
 
 /// Fixed String/Int/Bool/Unit Builtin results (no recv chase).
 ///
@@ -146,11 +147,11 @@ pub(crate) fn float_list_par_map_ty(
         super::par_map_float_abi_early(list_elem.as_ref(), cb_ret.as_ref()),
         Some(Type::Float)
     ) {
-        return Some(Type::List(Box::new(Type::Float)));
+        return Some(Type::List(Arc::new(Type::Float)));
     }
-    let list = list_elem.map(|e| Type::List(Box::new(e)));
+    let list = list_elem.map(|e| Type::List(Arc::new(e)));
     let cb_seed = cb_ret
-        .map(|e| Type::Fun(vec![], Box::new(e), Effect::Pure))
+        .map(|e| Type::Fun(vec![], Arc::new(e), Effect::Pure))
         .or(cb_fallback);
     list_par_map_via(args, list, cb_seed)
 }
@@ -261,7 +262,7 @@ pub(crate) fn builtin_value_ty(name: Builtin, args: &[Local], ctx: InferValueCtx
         | Builtin::ScopeEnter
         | Builtin::ScopeLeave
         | Builtin::ScopeCancel => Type::Unit,
-        Builtin::ChannelNew => Type::Channel(Box::new(
+        Builtin::ChannelNew => Type::Channel(Arc::new(
             ctx.channel_elem_hint.cloned().unwrap_or(Type::Int),
         )),
         Builtin::ChannelRecv | Builtin::TaskJoin => args
@@ -325,7 +326,7 @@ pub(crate) fn builtin_value_ty(name: Builtin, args: &[Local], ctx: InferValueCtx
                 name: lumia_hir::OPTION.name.into(),
                 params: vec![Type::Int],
             }),
-        Builtin::TaskSpawn => Type::Task(Box::new(
+        Builtin::TaskSpawn => Type::Task(Arc::new(
             args.first()
                 .and_then(|a| local_tys.get(&a.0))
                 .and_then(|t| match t {
@@ -356,7 +357,7 @@ pub(crate) fn builtin_value_ty(name: Builtin, args: &[Local], ctx: InferValueCtx
             let list_ty = args
                 .first()
                 .and_then(|a| local_tys.get(&a.0).cloned())
-                .unwrap_or(Type::List(Box::new(Type::Int)));
+                .unwrap_or(Type::List(Arc::new(Type::Int)));
             // Prefer callback Fun ret when known (`map { x -> x + 1.0 }` → List[Float]).
             // Soft open-Var→Float on Float lists is [`super::par_map_result_elem_ty`] /
             // float_abi; concrete Int must stay Int.
@@ -372,18 +373,18 @@ pub(crate) fn builtin_value_ty(name: Builtin, args: &[Local], ctx: InferValueCtx
         | Builtin::ListSortByKeys => args
             .first()
             .and_then(|a| local_tys.get(&a.0).cloned())
-            .unwrap_or(Type::List(Box::new(Type::Int))),
+            .unwrap_or(Type::List(Arc::new(Type::Int))),
         Builtin::ListAppend => {
             let list_ty = args
                 .first()
                 .and_then(|a| local_tys.get(&a.0).cloned())
-                .unwrap_or(Type::List(Box::new(Type::Int)));
+                .unwrap_or(Type::List(Arc::new(Type::Int)));
             // Empty `listOf()` starts as List[Int]; appending a concrete elem
             // (Float / Task[…] / Fun / …) must upgrade so later ListGet /
             // join / println see the real ABI (`map { spawn {…} }` etc.).
             // Share [`prefer_concrete_heap_ty`] with float_abi (nested shapes).
             match (&list_ty, args.get(1).and_then(|a| local_tys.get(&a.0))) {
-                (Type::List(e), Some(elem)) => Type::List(Box::new(
+                (Type::List(e), Some(elem)) => Type::List(Arc::new(
                     super::prefer_concrete_heap_ty(e.as_ref().clone(), elem.clone()),
                 )),
                 _ => list_ty,
@@ -393,7 +394,7 @@ pub(crate) fn builtin_value_ty(name: Builtin, args: &[Local], ctx: InferValueCtx
             let a = args
                 .first()
                 .and_then(|a| local_tys.get(&a.0).cloned())
-                .unwrap_or(Type::List(Box::new(Type::Int)));
+                .unwrap_or(Type::List(Arc::new(Type::Int)));
             let b = args.get(1).and_then(|a| local_tys.get(&a.0));
             // flatMap: empty `listOf()` acc is List[Int]; concat a concrete chunk
             // (Float / Fun / …) must upgrade so later ListGet + icall / println
@@ -403,13 +404,13 @@ pub(crate) fn builtin_value_ty(name: Builtin, args: &[Local], ctx: InferValueCtx
             // (nested List/Fun shapes — not only soft Int/Var erase).
             match (&a, b) {
                 (Type::String, _) | (_, Some(Type::String)) => Type::String,
-                (Type::List(e1), Some(Type::List(e2))) => Type::List(Box::new(
+                (Type::List(e1), Some(Type::List(e2))) => Type::List(Arc::new(
                     super::prefer_concrete_heap_ty(e1.as_ref().clone(), e2.as_ref().clone()),
                 )),
                 (Type::List(e), _) | (_, Some(Type::List(e)))
                     if matches!(e.as_ref(), Type::Float) =>
                 {
-                    Type::List(Box::new(Type::Float))
+                    Type::List(Arc::new(Type::Float))
                 }
                 _ => a,
             }
@@ -417,24 +418,24 @@ pub(crate) fn builtin_value_ty(name: Builtin, args: &[Local], ctx: InferValueCtx
         Builtin::Elems => match args.first().and_then(|a| local_tys.get(&a.0)) {
             Some(Type::List(e) | Type::Set(e)) => Type::List(e.clone()),
             Some(Type::Map(k, _)) => Type::List(k.clone()),
-            _ => Type::List(Box::new(Type::Int)),
+            _ => Type::List(Arc::new(Type::Int)),
         },
         Builtin::MapKeys => match args.first().and_then(|a| local_tys.get(&a.0)) {
             Some(Type::Map(k, _)) => Type::List(k.clone()),
-            _ => Type::List(Box::new(Type::Int)),
+            _ => Type::List(Arc::new(Type::Int)),
         },
         Builtin::MapValues => match args.first().and_then(|a| local_tys.get(&a.0)) {
             Some(Type::Map(_, v)) => Type::List(v.clone()),
-            _ => Type::List(Box::new(Type::Int)),
+            _ => Type::List(Arc::new(Type::Int)),
         },
-        Builtin::Range | Builtin::RangeInclusive => Type::List(Box::new(Type::Int)),
+        Builtin::Range | Builtin::RangeInclusive => Type::List(Arc::new(Type::Int)),
         Builtin::MapItems => match args.first().and_then(|a| local_tys.get(&a.0)) {
-            Some(Type::Map(k, v)) => Type::List(Box::new(Type::Adt {
+            Some(Type::Map(k, v)) => Type::List(Arc::new(Type::Adt {
                 name: "__Tuple".into(),
                 params: vec![(**k).clone(), (**v).clone()],
             })),
             Some(Type::List(elem)) => Type::List(elem.clone()),
-            _ => Type::List(Box::new(Type::Adt {
+            _ => Type::List(Arc::new(Type::Adt {
                 name: "__Tuple".into(),
                 params: vec![Type::Int, Type::Int],
             })),
@@ -449,19 +450,19 @@ pub(crate) fn builtin_value_ty(name: Builtin, args: &[Local], ctx: InferValueCtx
                 .and_then(|a| local_tys.get(&a.0).cloned())
                 .unwrap_or(Type::Int);
             match args.first().and_then(|a| local_tys.get(&a.0)) {
-                Some(Type::List(e)) => Type::List(Box::new(super::prefer_concrete_heap_ty(
+                Some(Type::List(e)) => Type::List(Arc::new(super::prefer_concrete_heap_ty(
                     e.as_ref().clone(),
                     val_ty,
                 ))),
                 Some(Type::Map(k, v)) => Type::Map(
-                    Box::new(super::prefer_concrete_heap_ty(k.as_ref().clone(), key_ty)),
-                    Box::new(super::prefer_concrete_heap_ty(v.as_ref().clone(), val_ty)),
+                    Arc::new(super::prefer_concrete_heap_ty(k.as_ref().clone(), key_ty)),
+                    Arc::new(super::prefer_concrete_heap_ty(v.as_ref().clone(), val_ty)),
                 ),
                 // Free / poly: Int key ⇒ list index update (not Map).
                 _ if matches!(key_ty, Type::Int) => {
-                    Type::List(Box::new(super::prefer_concrete_heap_ty(Type::Int, val_ty)))
+                    Type::List(Arc::new(super::prefer_concrete_heap_ty(Type::Int, val_ty)))
                 }
-                _ => Type::Map(Box::new(key_ty), Box::new(val_ty)),
+                _ => Type::Map(Arc::new(key_ty), Arc::new(val_ty)),
             }
         }
         Builtin::MapRemove => {
@@ -471,15 +472,15 @@ pub(crate) fn builtin_value_ty(name: Builtin, args: &[Local], ctx: InferValueCtx
                 .unwrap_or(Type::Int);
             match args.first().and_then(|a| local_tys.get(&a.0)) {
                 Some(Type::List(e)) => Type::List(e.clone()),
-                Some(Type::Set(e)) => Type::Set(Box::new(super::prefer_concrete_heap_ty(
+                Some(Type::Set(e)) => Type::Set(Arc::new(super::prefer_concrete_heap_ty(
                     e.as_ref().clone(),
                     key_ty,
                 ))),
                 Some(Type::Map(k, v)) => Type::Map(
-                    Box::new(super::prefer_concrete_heap_ty(k.as_ref().clone(), key_ty)),
+                    Arc::new(super::prefer_concrete_heap_ty(k.as_ref().clone(), key_ty)),
                     v.clone(),
                 ),
-                _ => Type::Map(Box::new(key_ty), Box::new(Type::Int)),
+                _ => Type::Map(Arc::new(key_ty), Arc::new(Type::Int)),
             }
         }
         Builtin::SetInsert => {
@@ -488,11 +489,11 @@ pub(crate) fn builtin_value_ty(name: Builtin, args: &[Local], ctx: InferValueCtx
                 .and_then(|a| local_tys.get(&a.0).cloned())
                 .unwrap_or(Type::Int);
             match args.first().and_then(|a| local_tys.get(&a.0)) {
-                Some(Type::Set(e)) => Type::Set(Box::new(super::prefer_concrete_heap_ty(
+                Some(Type::Set(e)) => Type::Set(Arc::new(super::prefer_concrete_heap_ty(
                     e.as_ref().clone(),
                     elem_ty,
                 ))),
-                _ => Type::Set(Box::new(elem_ty)),
+                _ => Type::Set(Arc::new(elem_ty)),
             }
         }
     }
@@ -533,9 +534,9 @@ pub(crate) fn float_list_append_ty(args: &[Local], recv: Option<Type>, elem: Typ
         move |recv| match recv {
             Some(other) => Some(other),
             None if !matches!(elem_for_open, Type::Int | Type::Var(_)) => {
-                Some(Type::List(Box::new(elem_for_open)))
+                Some(Type::List(Arc::new(elem_for_open)))
             }
-            None => Some(Type::List(Box::new(Type::Int))),
+            None => Some(Type::List(Arc::new(Type::Int))),
         },
     )
 }
@@ -561,7 +562,7 @@ pub(crate) fn float_map_set_ty(
             tys.insert(a1, key);
             tys.insert(a2, val);
         },
-        move |_| Some(Type::Map(Box::new(key_open), Box::new(val_open))),
+        move |_| Some(Type::Map(Arc::new(key_open), Arc::new(val_open))),
     )
 }
 
@@ -581,7 +582,7 @@ pub(crate) fn float_set_insert_ty(args: &[Local], recv: Option<Type>, elem: Type
             via_gated_recv_seeded(
                 Builtin::SetInsert,
                 args,
-                Type::Set(Box::new(elem_open.clone())),
+                Type::Set(Arc::new(elem_open.clone())),
                 |_| true,
                 |tys| {
                     tys.insert(a1, elem_open);
@@ -627,7 +628,7 @@ pub(crate) fn float_map_remove_ty(args: &[Local], recv: Option<Type>, key: Type)
             };
             match projected {
                 Some(Type::Map(k, v)) => Some(Type::Map(k, v)),
-                _ => Some(Type::Map(Box::new(key_open), Box::new(Type::Int))),
+                _ => Some(Type::Map(Arc::new(key_open), Arc::new(Type::Int))),
             }
         },
     )

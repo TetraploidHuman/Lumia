@@ -8,6 +8,7 @@
 use super::Infer;
 use crate::types::{at, Effect, Type, TypeError};
 use lumia_hir::Expr;
+use std::sync::Arc;
 
 impl Infer {
     /// Returns `Some` when `name` is a prelude collection ctor.
@@ -37,7 +38,7 @@ impl Infer {
             aes = self.union_eff(aes, e);
             self.unify_at(span, elem.clone(), t)?;
         }
-        Ok((Type::List(Box::new(self.prune(elem))), aes))
+        Ok((Type::List(Arc::new(self.prune(elem))), aes))
     }
 
     fn infer_set_of(
@@ -52,7 +53,7 @@ impl Infer {
             aes = self.union_eff(aes, e);
             self.unify_at(span, elem.clone(), t)?;
         }
-        Ok((Type::Set(Box::new(self.prune(elem))), aes))
+        Ok((Type::Set(Arc::new(self.prune(elem))), aes))
     }
 
     fn infer_map_of(
@@ -77,7 +78,7 @@ impl Infer {
             self.unify_at(span, v.clone(), vt)?;
         }
         Ok((
-            Type::Map(Box::new(self.prune(k)), Box::new(self.prune(v))),
+            Type::Map(Arc::new(self.prune(k)), Arc::new(self.prune(v))),
             aes,
         ))
     }

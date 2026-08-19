@@ -3,6 +3,7 @@
 use super::super::Infer;
 use crate::types::{Effect, Type, TypeError};
 use lumia_hir::{Builtin, Expr};
+use std::sync::Arc;
 
 impl Infer {
     pub(crate) fn infer_task_builtin(
@@ -17,26 +18,26 @@ impl Infer {
                 let (ct, ce) = self.infer_expr(&args[0])?;
                 self.unify_at(span, ct, Type::Int)?;
                 let elem = self.fresh();
-                Ok((Type::Channel(Box::new(elem)), self.union_eff(io, ce)))
+                Ok((Type::Channel(Arc::new(elem)), self.union_eff(io, ce)))
             }
             Builtin::ChannelSend => {
                 let (cht, che) = self.infer_expr(&args[0])?;
                 let (vt, ve) = self.infer_expr(&args[1])?;
                 let elem = self.fresh();
-                self.unify_at(span, cht, Type::Channel(Box::new(elem.clone())))?;
+                self.unify_at(span, cht, Type::Channel(Arc::new(elem.clone())))?;
                 self.unify_at(span, vt, elem)?;
                 Ok((Type::Unit, self.union3_eff(io, che, ve)))
             }
             Builtin::ChannelRecv => {
                 let (cht, che) = self.infer_expr(&args[0])?;
                 let elem = self.fresh();
-                self.unify_at(span, cht, Type::Channel(Box::new(elem.clone())))?;
+                self.unify_at(span, cht, Type::Channel(Arc::new(elem.clone())))?;
                 Ok((elem, self.union_eff(io, che)))
             }
             Builtin::ChannelRecvOpt => {
                 let (cht, che) = self.infer_expr(&args[0])?;
                 let elem = self.fresh();
-                self.unify_at(span, cht, Type::Channel(Box::new(elem.clone())))?;
+                self.unify_at(span, cht, Type::Channel(Arc::new(elem.clone())))?;
                 Ok((
                     Type::Adt {
                         name: lumia_hir::OPTION.name.into(),
@@ -48,19 +49,19 @@ impl Infer {
             Builtin::ChannelClose => {
                 let (cht, che) = self.infer_expr(&args[0])?;
                 let elem = self.fresh();
-                self.unify_at(span, cht, Type::Channel(Box::new(elem)))?;
+                self.unify_at(span, cht, Type::Channel(Arc::new(elem)))?;
                 Ok((Type::Unit, self.union_eff(io, che)))
             }
             Builtin::TaskJoin => {
                 let (tt, te) = self.infer_expr(&args[0])?;
                 let elem = self.fresh();
-                self.unify_at(span, tt, Type::Task(Box::new(elem.clone())))?;
+                self.unify_at(span, tt, Type::Task(Arc::new(elem.clone())))?;
                 Ok((elem, self.union_eff(io, te)))
             }
             Builtin::TaskJoinOpt => {
                 let (tt, te) = self.infer_expr(&args[0])?;
                 let elem = self.fresh();
-                self.unify_at(span, tt, Type::Task(Box::new(elem.clone())))?;
+                self.unify_at(span, tt, Type::Task(Arc::new(elem.clone())))?;
                 Ok((
                     Type::Adt {
                         name: lumia_hir::OPTION.name.into(),
@@ -86,8 +87,8 @@ impl Infer {
                 let (ft, fe) = self.infer_expr(&args[0])?;
                 let ret = self.fresh();
                 let eff = self.fresh_eff();
-                self.unify_at(span, ft, Type::Fun(vec![], Box::new(ret.clone()), eff))?;
-                Ok((Type::Task(Box::new(ret)), self.union_eff(io, fe)))
+                self.unify_at(span, ft, Type::Fun(vec![], Arc::new(ret.clone()), eff))?;
+                Ok((Type::Task(Arc::new(ret)), self.union_eff(io, fe)))
             }
             Builtin::ScopeEnter => {
                 let (kt, ke) = self.infer_expr(&args[0])?;

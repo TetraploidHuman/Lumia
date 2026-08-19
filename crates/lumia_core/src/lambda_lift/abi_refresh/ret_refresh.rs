@@ -6,6 +6,7 @@ use crate::visit::collect_closure_cap_funrefs;
 use lumia_hir::Sym;
 use lumia_ty::Type;
 use rustc_hash::FxHashMap as HashMap;
+use std::sync::Arc;
 
 /// Upgrade `__lam_*` return types from callee tables / float locals after mono.
 pub(super) fn refresh_lifted_lambda_rets(module: &mut CoreModule) {
@@ -228,7 +229,7 @@ pub(super) fn refresh_alloc_closure_fun_rets_round(
                 if !interesting {
                     continue;
                 }
-                let candidate = Type::Fun(params.clone(), Box::new(ret.clone()), fun.effect);
+                let candidate = Type::Fun(params.clone(), Arc::new(ret.clone()), fun.effect);
                 let merged =
                     super::super::float_abi::prefer_concrete_heap_ty(fun.ret_ty.clone(), candidate);
                 if merged != fun.ret_ty {

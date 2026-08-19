@@ -7,6 +7,7 @@ use crate::value_ty::{fold_slot_assign_ty, JoinAssignKind};
 use lumia_syntax::Sym;
 use lumia_ty::{Effect, Type};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use std::sync::Arc;
 
 /// Heap type of a mutable/immutable slot (`Name` / `Assign`), joining all writes.
 pub(super) fn slot_heap_ty(
@@ -387,7 +388,7 @@ pub(super) fn local_fun_ty(
                 .get(name.as_str())
                 .cloned()
                 .unwrap_or_default();
-            Some(Type::Fun(params, Box::new(ret), Effect::pure()))
+            Some(Type::Fun(params, Arc::new(ret), Effect::pure()))
         }
         Value::AllocClosure { fun, .. } => {
             let ret = fun_ret_tys.get(fun.as_str())?.clone();
@@ -398,7 +399,7 @@ pub(super) fn local_fun_ty(
             } else {
                 Vec::new()
             };
-            Some(Type::Fun(params, Box::new(ret), Effect::pure()))
+            Some(Type::Fun(params, Arc::new(ret), Effect::pure()))
         }
         _ => None,
     }

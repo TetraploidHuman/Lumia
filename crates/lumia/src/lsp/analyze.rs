@@ -2,7 +2,10 @@
 
 use super::diagnostics::{diag_from_span, diag_json};
 use super::protocol::write_stdout;
-use super::state::{auto_parallel, next_analyze_gen, state_lock, Analysis, AnalyzeReq};
+use super::state::{
+    auto_parallel, invalidate_program_cache, next_analyze_gen, overlay_fingerprint,
+    program_cache_get, program_cache_put, state_lock, Analysis, AnalyzeReq,
+};
 use super::uri::{path_to_uri, uri_to_path};
 use crate::check::{
     check_program_with_overlays_recovering, check_source_recovering, OverlayCheckError,
@@ -112,6 +115,12 @@ pub(super) fn on_did_change_watched_files(params: &Value) -> Result<()> {
     }
     if !touched_lm {
         return Ok(());
+    }
+    {
+        let mut st = state_lock();
+        if let Some(s) = st.as_mut() {
+            invalidate_program_cache(s);
+        }
     }
     let open: Vec<(String, String)> = {
         let st = state_lock();
@@ -419,8 +428,29 @@ fn load_and_typecheck_recovering(
     ),
     Vec<(String, Vec<Value>)>,
 > {
-    match check_program_with_overlays_recovering(path, overlays, auto_parallel(), None) {
-        Ok(partial) => Ok((partial.loaded, partial.typed, partial.diagnostics)),
+    let ap = auto_parallel();
+    let overlay_fp = overlay_fingerprint(overlays);
+    if let Some(partial) = {
+        let st = state_lock();
+        st.as_ref()
+            .and_then(|s| program_cache_get(s, path, overlay_fp, ap))
+            .cloned()
+    } {
+        return Ok((partial.loaded, partial.typed, partial.diagnostics));
+    }
+    match check_program_with_overlays_recovering(path, overlays, ap, None) {
+        Ok(partial) => {
+            if let Some(s) = state_lock().as_mut() {
+                program_cache_put(
+                    s,
+                    path.to_path_buf(),
+                    overlay_fp,
+                    ap,
+                    partial.clone(),
+                );
+            }
+            Ok((partial.loaded, partial.typed, partial.diagnostics))
+        }
         Err(OverlayCheckError::Load(msg)) => {
             let entry_uri = path_to_uri(path);
             Err(vec![(
