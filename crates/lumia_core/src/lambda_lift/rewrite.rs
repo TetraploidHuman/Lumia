@@ -23,12 +23,12 @@ use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 fn lambda_param_ret_tys(
     params: &[Local],
     body: &Block,
-    fun_ret_tys: &HashMap<String, Type>,
-    fun_param_tys: &HashMap<String, Vec<Type>>,
+    fun_ret_tys: &HashMap<Sym, Type>,
+    fun_param_tys: &HashMap<Sym, Vec<Type>>,
     hof: &HofSets,
     cap_srcs: &[Local],
-    funref_locals: &HashMap<u32, String>,
-    float_cap_idxs: &HashMap<String, HashSet<u32>>,
+    funref_locals: &HashMap<u32, Sym>,
+    float_cap_idxs: &HashMap<Sym, HashSet<u32>>,
     seed_float_locals: &HashSet<u32>,
 ) -> (Vec<Type>, Type) {
     let float_params =
@@ -43,7 +43,7 @@ fn lambda_param_ret_tys(
             }
         })
         .collect();
-    let cap_funs: HashMap<u32, String> = cap_srcs
+    let cap_funs: HashMap<u32, Sym> = cap_srcs
         .iter()
         .enumerate()
         .filter_map(|(i, src)| funref_locals.get(&src.0).cloned().map(|n| (i as u32, n)))
@@ -105,7 +105,7 @@ fn lift_lambdas_inner(module: &mut CoreModule) {
             .iter()
             .map(|f| (f.name.as_str(), f.params.as_slice(), &f.body)),
     );
-    let mut float_cap_idxs: HashMap<String, HashSet<u32>> = HashMap::default();
+    let mut float_cap_idxs: HashMap<Sym, HashSet<u32>> = HashMap::default();
     for fun in &mut module.functions {
         let mut float_locals = compute_float_locals_in_block(&fun.body);
         for (i, ty) in fun.param_tys.iter().enumerate() {
@@ -164,11 +164,11 @@ fn lift_block(
     float_locals: &mut HashSet<u32>,
     float_slots: &mut HashSet<Sym>,
     io_funs: &mut HashSet<String>,
-    fun_ret_tys: &mut HashMap<String, Type>,
-    fun_param_tys: &mut HashMap<String, Vec<Type>>,
+    fun_ret_tys: &mut HashMap<Sym, Type>,
+    fun_param_tys: &mut HashMap<Sym, Vec<Type>>,
     hof: &mut HofSets,
     funref: &mut FunRefAliases,
-    float_cap_idxs: &mut HashMap<String, HashSet<u32>>,
+    float_cap_idxs: &mut HashMap<Sym, HashSet<u32>>,
 ) {
     flat_map_top_level_ops_in_block(block, &mut |mut op| {
         match &mut op {
@@ -230,11 +230,11 @@ fn lift_value(
     float_locals: &mut HashSet<u32>,
     float_slots: &mut HashSet<Sym>,
     io_funs: &mut HashSet<String>,
-    fun_ret_tys: &mut HashMap<String, Type>,
-    fun_param_tys: &mut HashMap<String, Vec<Type>>,
+    fun_ret_tys: &mut HashMap<Sym, Type>,
+    fun_param_tys: &mut HashMap<Sym, Vec<Type>>,
     hof: &mut HofSets,
     funref: &mut FunRefAliases,
-    float_cap_idxs: &mut HashMap<String, HashSet<u32>>,
+    float_cap_idxs: &mut HashMap<Sym, HashSet<u32>>,
 ) {
     match value {
         Value::Lambda { params, body } => {
@@ -254,7 +254,7 @@ fn lift_value(
             );
             let (free_locals, free_names) = analyze_captures(body, params);
             let assigned_names = collect_assigned_names(body);
-            let name = format!("__lam_{id}");
+            let name = Sym::from(format!("__lam_{id}"));
             *id += 1;
 
             let mut captures = Vec::new();
@@ -296,15 +296,15 @@ fn lift_value(
                 );
                 let effect = lifted_effect(body, io_funs);
                 if effect.has_io() {
-                    io_funs.insert(name.clone());
+                    io_funs.insert(name.to_string());
                 }
                 fun_ret_tys.insert(name.clone(), ret_ty.clone());
                 fun_param_tys.insert(name.clone(), param_tys.clone());
                 float_cap_idxs.insert(name.clone(), HashSet::default());
-                hof.note(&name, params, body);
+                hof.note(name.as_str(), params, body);
                 super::note_lifted_lambda_name(name.clone());
                 extras.push(CoreFun {
-                    name: name.clone().into(),
+                    name: name.clone(),
                     params: params.clone(),
                     param_names,
                     param_tys,
@@ -404,16 +404,16 @@ fn lift_value(
             );
             let effect = lifted_effect(&new_body, io_funs);
             if effect.has_io() {
-                io_funs.insert(name.clone());
+                io_funs.insert(name.to_string());
             }
             let mut full_param_tys = vec![Type::Int]; // env pointer bits
             full_param_tys.extend(user_param_tys);
             fun_ret_tys.insert(name.clone(), ret_ty.clone());
             fun_param_tys.insert(name.clone(), full_param_tys.clone());
-            hof.note(&name, &fun_params, &new_body);
+            hof.note(name.as_str(), &fun_params, &new_body);
             super::note_lifted_lambda_name(name.clone());
             extras.push(CoreFun {
-                name: name.clone().into(),
+                name: name.clone(),
                 params: fun_params,
                 param_names,
                 param_tys: full_param_tys,

@@ -19,7 +19,7 @@ enum ExprKey {
     Unary(UnOp, u32),
     Binary(BinOp, u32, u32),
     Builtin(Builtin, Vec<u32>),
-    Call(String, Vec<u32>),
+    Call(Sym, Vec<u32>),
 }
 
 fn ret_is_cse_safe(ty: &Type) -> bool {

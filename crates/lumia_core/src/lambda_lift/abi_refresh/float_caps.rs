@@ -15,9 +15,9 @@ pub(super) fn scan_alloc_closure_caps(
     block: &Block,
     local_tys: &mut HashMap<u32, Type>,
     slot_tys: &mut HashMap<Sym, Type>,
-    fun_ret_tys: &HashMap<String, Type>,
-    fun_param_tys: &HashMap<String, Vec<Type>>,
-    need_float: &mut HashSet<(String, u32)>,
+    fun_ret_tys: &HashMap<Sym, Type>,
+    fun_param_tys: &HashMap<Sym, Vec<Type>>,
+    need_float: &mut HashSet<(Sym, u32)>,
 ) {
     for_each_op_in_block(block, &mut |op| match op {
         Op::Let { local, value, .. } => {
@@ -41,7 +41,7 @@ pub(super) fn scan_alloc_closure_caps(
 pub(super) fn note_alloc_caps(
     value: &Value,
     local_tys: &HashMap<u32, Type>,
-    need_float: &mut HashSet<(String, u32)>,
+    need_float: &mut HashSet<(Sym, u32)>,
 ) {
     if let Value::AllocClosure { fun, captures } = value {
         for (i, cap) in captures.iter().enumerate() {

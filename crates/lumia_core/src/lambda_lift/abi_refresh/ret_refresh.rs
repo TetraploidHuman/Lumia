@@ -3,6 +3,7 @@
 use crate::find_top_level_local_def;
 use crate::ir::{Block, CoreModule, Value};
 use crate::visit::collect_closure_cap_funrefs;
+use lumia_hir::Sym;
 use lumia_ty::Type;
 use rustc_hash::FxHashMap as HashMap;
 
@@ -16,10 +17,10 @@ pub(super) fn refresh_lifted_lambda_rets(module: &mut CoreModule) {
             .map(|f| (f.name.as_str(), f.params.as_slice(), &f.body)),
     );
     // lam → (capture_index → callee fun name) from AllocClosure sites.
-    let mut cap_funs: HashMap<String, HashMap<u32, String>> = HashMap::default();
-    let mut lam_caps: HashMap<String, Vec<crate::Local>> = HashMap::default();
+    let mut cap_funs: HashMap<Sym, HashMap<u32, Sym>> = HashMap::default();
+    let mut lam_caps: HashMap<Sym, Vec<crate::Local>> = HashMap::default();
     for fun in &module.functions {
-        let mut funref_locals: HashMap<u32, String> = HashMap::default();
+        let mut funref_locals: HashMap<u32, Sym> = HashMap::default();
         collect_closure_cap_funrefs(&fun.body, &mut funref_locals, &mut cap_funs);
         crate::visit::collect_alloc_closure_caps(&fun.body, &mut lam_caps);
     }
@@ -167,7 +168,7 @@ pub(super) fn refresh_lifted_lambda_rets(module: &mut CoreModule) {
                     super::super::float_abi::prefer_concrete_heap_ty(fun.ret_ty.clone(), t);
                 if merged != fun.ret_ty {
                     fun.ret_ty = merged.clone();
-                    fun_ret_tys.insert(fun.name.to_string(), merged);
+                    fun_ret_tys.insert(fun.name.clone(), merged);
                     changed = true;
                 }
             }
@@ -188,9 +189,9 @@ pub(super) fn refresh_alloc_closure_fun_rets(module: &mut CoreModule) {
 /// Returns whether any function ret changed.
 pub(super) fn refresh_alloc_closure_fun_rets_round(
     module: &mut CoreModule,
-    fun_ret_tys: &mut HashMap<String, Type>,
+    fun_ret_tys: &mut HashMap<Sym, Type>,
 ) -> bool {
-    let lam_sig: HashMap<String, (Vec<Type>, Type)> = module
+    let lam_sig: HashMap<Sym, (Vec<Type>, Type)> = module
         .functions
         .iter()
         .filter(|f| f.is_lifted_lambda())
@@ -201,7 +202,7 @@ pub(super) fn refresh_alloc_closure_fun_rets_round(
             } else {
                 Vec::new()
             };
-            (f.name.to_string(), (params, f.ret_ty.clone()))
+            (f.name.clone(), (params, f.ret_ty.clone()))
         })
         .collect();
 
@@ -232,7 +233,7 @@ pub(super) fn refresh_alloc_closure_fun_rets_round(
                     super::super::float_abi::prefer_concrete_heap_ty(fun.ret_ty.clone(), candidate);
                 if merged != fun.ret_ty {
                     fun.ret_ty = merged.clone();
-                    fun_ret_tys.insert(fun.name.to_string(), merged);
+                    fun_ret_tys.insert(fun.name.clone(), merged);
                     changed = true;
                 }
             }
@@ -241,7 +242,7 @@ pub(super) fn refresh_alloc_closure_fun_rets_round(
     changed
 }
 
-pub(super) fn result_alloc_closure_fun(block: &Block) -> Option<String> {
+pub(super) fn result_alloc_closure_fun(block: &Block) -> Option<Sym> {
     let r = block.result?;
     match find_top_level_local_def(block, r.0)? {
         Value::AllocClosure { fun, .. } => Some(fun.name.clone()),

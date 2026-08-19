@@ -6,8 +6,8 @@
 
 use crate::ir::{Block, Local, Op, Value};
 use crate::visit::for_each_top_level_op_in_block;
-use rustc_hash::FxHashMap as HashMap;
 use lumia_hir::Sym;
+use rustc_hash::FxHashMap as HashMap;
 
 /// Whether [`Value::AllocClosure`] should alias its lifted fun name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,13 +21,13 @@ pub enum FunRefAlloc {
 /// Let-ordered FunRef aliases (definition order matters; not a DFS).
 #[derive(Clone, Debug, Default)]
 pub struct FunRefAliases {
-    pub locals: HashMap<u32, String>,
-    pub slots: HashMap<Sym, String>,
+    pub locals: HashMap<u32, Sym>,
+    pub slots: HashMap<Sym, Sym>,
 }
 
 impl FunRefAliases {
     pub fn resolve(&self, local: u32) -> Option<&str> {
-        self.locals.get(&local).map(String::as_str)
+        self.locals.get(&local).map(Sym::as_str)
     }
 
     pub fn note_let(
@@ -35,7 +35,7 @@ impl FunRefAliases {
         local: u32,
         value: &Value,
         alloc: FunRefAlloc,
-        cap_funs: Option<&HashMap<u32, String>>,
+        cap_funs: Option<&HashMap<u32, Sym>>,
     ) {
         match value {
             Value::FunRef(name) => {
@@ -87,7 +87,7 @@ impl FunRefAliases {
         &mut self,
         block: &Block,
         alloc: FunRefAlloc,
-        cap_funs: Option<&HashMap<u32, String>>,
+        cap_funs: Option<&HashMap<u32, Sym>>,
         on_value: &mut impl FnMut(&Value, &FunRefAliases),
     ) {
         for_each_top_level_op_in_block(block, &mut |op| match op {
@@ -127,13 +127,13 @@ impl FunRefAliases {
 }
 
 /// Direct callee names (`Call` + FunRef-resolved `IndirectCall`), slot aliases included.
-pub fn collect_funref_callees(block: &Block, out: &mut impl Extend<String>) {
+pub fn collect_funref_callees(block: &Block, out: &mut impl Extend<Sym>) {
     FunRefAliases::default().walk_block(block, FunRefAlloc::Ignore, None, &mut |value, aliases| {
         match value {
             Value::Call { fun, .. } => out.extend(std::iter::once(fun.name.clone())),
             Value::IndirectCall { callee, .. } => {
                 if let Some(n) = aliases.resolve(callee.0) {
-                    out.extend(std::iter::once(n.to_string()));
+                    out.extend(std::iter::once(Sym::from(n)));
                 }
             }
             _ => {}
@@ -186,6 +186,6 @@ mod tests {
         };
         let mut names = Vec::new();
         collect_funref_callees(&block, &mut names);
-        assert_eq!(names, vec!["odd".to_string()]);
+        assert_eq!(names, vec![Sym::from("odd")]);
     }
 }

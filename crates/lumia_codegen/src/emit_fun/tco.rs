@@ -15,7 +15,7 @@ impl<'ctx> Codegen<'ctx> {
         else {
             return Ok(false);
         };
-        if !self.funs.functions.contains_key(&tail.fun) {
+        if !self.funs.functions.contains_key(tail.fun.as_str()) {
             return Ok(false);
         }
         self.root_pop_to(0)?;

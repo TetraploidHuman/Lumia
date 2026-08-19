@@ -580,7 +580,7 @@ fn value_fixed_ty(
             // not Int (else later `addx` misses `$Box_*` clones).
             if ret_ty_needs_call_site_fix(&f.ret_ty) {
                 // Self-/mutual recursion: entering the callee body re-hits this Call.
-                if !expanding.insert(fun.name.clone()) {
+                if !expanding.insert(fun.name.to_string()) {
                     // Cycle: open generic `ret` is useless. Prefer a concrete
                     // call-site arg ABI (fold/acc Float) so `sumAt(xs,i,acc)`
                     // clones keep `ret=Float` instead of key's first-List.

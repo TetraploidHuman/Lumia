@@ -228,7 +228,7 @@ val main = {
                 _ => continue,
             };
             match v {
-                crate::ir::Value::Call { fun, .. } => calls.push(fun.name.clone()),
+                crate::ir::Value::Call { fun, .. } => calls.push(fun.name.to_string()),
                 crate::ir::Value::IndirectCall { .. } => *icalls += 1,
                 crate::ir::Value::If {
                     then_block,

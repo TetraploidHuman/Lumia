@@ -835,7 +835,7 @@ pub fn collect_ssa_live_refs(block: &Block, live: &mut HashSet<u32>) {
 /// Collect `AllocClosure` sites: lifted fun name → capture locals.
 ///
 /// Order-independent map inserts — safe for DFS (channel_hint / float_cap_fixup).
-pub fn collect_alloc_closure_caps(block: &Block, lam_caps: &mut HashMap<String, Vec<Local>>) {
+pub fn collect_alloc_closure_caps(block: &Block, lam_caps: &mut HashMap<Sym, Vec<Local>>) {
     for_each_let_value(block, &mut |_b, value| {
         if let Value::AllocClosure { fun, captures } = value {
             lam_caps.insert(fun.name.clone(), captures.clone());
@@ -844,7 +844,7 @@ pub fn collect_alloc_closure_caps(block: &Block, lam_caps: &mut HashMap<String, 
 }
 
 /// Collect lifted funs whose `AllocClosure` has a non-empty env (DFS-safe).
-pub fn collect_alloc_closure_env_funs(block: &Block, out: &mut HashSet<String>) {
+pub fn collect_alloc_closure_env_funs(block: &Block, out: &mut HashSet<Sym>) {
     for_each_let_value(block, &mut |_b, value| {
         if let Value::AllocClosure { fun, captures } = value {
             if !captures.is_empty() {
@@ -859,7 +859,7 @@ pub fn collect_call_names_in(block: &Block, methods: &HashSet<String>, out: &mut
     for_each_let_value(block, &mut |_b, value| {
         if let Value::Call { fun, .. } = value {
             if methods.contains(fun.as_str()) {
-                out.insert(fun.name.clone());
+                out.insert(fun.name.to_string());
             }
         }
     });
@@ -883,8 +883,8 @@ pub fn collect_assigns(block: &Block, assigns: &mut HashMap<Sym, Vec<Local>>) {
 /// Nested If/Loop inherit a clone; Lambda starts fresh (same as directize).
 pub fn collect_closure_cap_funrefs(
     block: &Block,
-    funref_locals: &mut HashMap<u32, String>,
-    cap_funs: &mut HashMap<String, HashMap<u32, String>>,
+    funref_locals: &mut HashMap<u32, Sym>,
+    cap_funs: &mut HashMap<Sym, HashMap<u32, Sym>>,
 ) {
     let mut aliases = crate::FunRefAliases {
         locals: std::mem::take(funref_locals),
@@ -901,7 +901,7 @@ pub fn collect_closure_cap_funrefs(
             let entry = cap_funs.entry(fun.name.clone()).or_default();
             for (i, cap) in captures.iter().enumerate() {
                 if let Some(n) = aliases.resolve(cap.0) {
-                    entry.insert(i as u32, n.to_string());
+                    entry.insert(i as u32, Sym::from(n));
                 }
             }
         },
@@ -1254,10 +1254,11 @@ pub fn for_each_op_value_mut(block: &mut Block, on_value: &mut dyn FnMut(&mut Va
 /// `None` until the next resolve; prefer clearing id when rewriting a callee name.
 pub fn resolve_module_call_fun_ids(module: &mut crate::CoreModule) {
     use crate::ir::FunId;
-    let mut by_name: HashMap<String, FunId> = HashMap::default();
+    use lumia_syntax::Sym;
+    let mut by_name: HashMap<Sym, FunId> = HashMap::default();
     by_name.reserve(module.functions.len());
     for (i, f) in module.functions.iter().enumerate() {
-        by_name.insert(f.name.to_string(), FunId(i as u32));
+        by_name.insert(f.name.clone(), FunId(i as u32));
     }
     for f in &mut module.functions {
         for_each_op_value_mut(&mut f.body, &mut |value| match value {

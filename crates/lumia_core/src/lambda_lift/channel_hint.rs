@@ -12,6 +12,7 @@ use super::float_abi::{collect_fun_cap_tys, compute_float_locals_in_block};
 use crate::ir::{Block, CoreModule, Local, Value};
 use crate::visit::{for_each_let, for_each_let_in_block};
 use lumia_hir::Builtin;
+use lumia_hir::Sym;
 use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
@@ -21,7 +22,7 @@ pub(crate) fn refine_channel_elem_hint(module: &mut CoreModule) {
 }
 
 fn refine_channel_elem_hint_inner(module: &mut CoreModule) {
-    let mut lam_caps: HashMap<String, Vec<Local>> = HashMap::default();
+    let mut lam_caps: HashMap<Sym, Vec<Local>> = HashMap::default();
     for fun in &module.functions {
         crate::visit::collect_alloc_closure_caps(&fun.body, &mut lam_caps);
     }
@@ -172,9 +173,9 @@ fn scan_block(
     poisoned_ch: &mut HashSet<u32>,
     conflicts: &mut Vec<(Type, Type)>,
     caps: Option<&[Local]>,
-    fun_ret_tys: &HashMap<String, Type>,
-    fun_param_tys: &HashMap<String, Vec<Type>>,
-    fun_cap_tys: &HashMap<String, HashMap<u32, Type>>,
+    fun_ret_tys: &HashMap<Sym, Type>,
+    fun_param_tys: &HashMap<Sym, Vec<Type>>,
+    fun_cap_tys: &HashMap<Sym, HashMap<u32, Type>>,
 ) {
     let float_locals = compute_float_locals_in_block(block);
     for_each_let_in_block(block, &mut |local, value, _pure| {
@@ -291,9 +292,9 @@ fn guess_local_ty(
     fun_name: &str,
     local_tys: &HashMap<u32, Type>,
     float_locals: &HashSet<u32>,
-    fun_ret_tys: &HashMap<String, Type>,
-    fun_param_tys: &HashMap<String, Vec<Type>>,
-    fun_cap_tys: &HashMap<String, HashMap<u32, Type>>,
+    fun_ret_tys: &HashMap<Sym, Type>,
+    fun_param_tys: &HashMap<Sym, Vec<Type>>,
+    fun_cap_tys: &HashMap<Sym, HashMap<u32, Type>>,
 ) -> Type {
     match value {
         Value::Float(_) => Type::Float,

@@ -87,7 +87,7 @@ fn resolve_trait_value(
             if method_names.contains(fun.as_str()) {
                 if let Some(recv) = args.first() {
                     if let Some(Type::Adt { name, .. }) = local_tys.get(&recv.0) {
-                        if let Some(cands) = trait_methods.get(&(name.clone(), fun.name.clone())) {
+                        if let Some(cands) = trait_methods.get(&(name.clone(), fun.name.to_string())) {
                             if let [mangled] = cands.as_slice() {
                                 *fun = mangled.clone().into();
                             }

@@ -180,7 +180,7 @@ fn inline_block(
     depth: usize,
 ) {
     // Locals proven equal to `FunRef(name)` (SSA aliases) — enables IndirectCall expand.
-    let mut funrefs: HashMap<u32, String> = HashMap::default();
+    let mut funrefs: HashMap<u32, Sym> = HashMap::default();
     flat_map_top_level_ops_in_block(block, &mut |op| {
         match op {
             Op::Let {
@@ -190,7 +190,7 @@ fn inline_block(
             } => {
                 inline_value(&mut value, inlineable, caller, next, expanding, depth);
                 // Resolve FunRef / IndirectCall → direct Call when possible.
-                let expand_fun: Option<String> = match &value {
+                let expand_fun: Option<Sym> = match &value {
                     Value::Call { fun, .. } => Some(fun.name.clone()),
                     Value::IndirectCall { callee, .. } => funrefs.get(&callee.0).cloned(),
                     Value::FunRef(name) => {
@@ -209,14 +209,14 @@ fn inline_block(
                     }
                 };
 
-                if let Some(fun) = expand_fun.as_deref() {
+                if let Some(fun) = expand_fun.as_ref() {
                     let args: Option<Vec<Local>> = match &value {
                         Value::Call { args, .. } | Value::IndirectCall { args, .. } => {
                             Some(args.clone())
                         }
                         _ => None,
                     };
-                    let can_expand = fun != caller
+                    let can_expand = fun.as_str() != caller
                         && depth < INLINE_MAX_EXPAND_DEPTH
                         && !expanding.contains(fun);
                     if can_expand {
@@ -227,11 +227,11 @@ fn inline_block(
                                     ops: prelude,
                                     result: Some(result),
                                 };
-                                expanding.insert(Sym::from(fun));
+                                expanding.insert(fun.clone());
                                 inline_block(
                                     &mut nested,
                                     inlineable,
-                                    fun,
+                                    fun.as_str(),
                                     next,
                                     expanding,
                                     depth + 1,

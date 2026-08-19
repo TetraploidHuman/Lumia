@@ -7,6 +7,7 @@ use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum};
 use inkwell::{AddressSpace, IntPredicate};
 use lumia_abi::TYPE_CLOSURE;
 use lumia_core::Local;
+use lumia_hir::Sym;
 use lumia_ty::Type;
 use rustc_hash::FxHashMap as HashMap;
 
@@ -362,7 +363,7 @@ impl<'ctx> Codegen<'ctx> {
                 }
             }
             if !cap_tys.is_empty() {
-                self.funs.closure_cap_tys.insert(fun.to_string(), cap_tys);
+                self.funs.closure_cap_tys.insert(Sym::from(fun), cap_tys);
             }
         }
         for (i, e) in captures.iter().enumerate() {

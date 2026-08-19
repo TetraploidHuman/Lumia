@@ -212,7 +212,7 @@ impl<'ctx> Codegen<'ctx> {
     pub(crate) fn root_register_slot(
         &mut self,
         slot: PointerValue<'ctx>,
-        name: &str,
+        name: &Sym,
     ) -> Result<()> {
         if self.frame.rooted_slots.contains_key(name) {
             return Ok(());
@@ -222,7 +222,7 @@ impl<'ctx> Codegen<'ctx> {
         self.frame.root_depth += 1;
         self.frame
             .rooted_slots
-            .insert(Sym::from(name), self.frame.root_depth);
+            .insert(name.clone(), self.frame.root_depth);
         Ok(())
     }
 

@@ -13,8 +13,8 @@ pub(super) fn slot_heap_ty(
     block: &Block,
     name: &Sym,
     float_locals: &HashSet<u32>,
-    fun_ret_tys: &HashMap<String, Type>,
-    fun_param_tys: &HashMap<String, Vec<Type>>,
+    fun_ret_tys: &HashMap<Sym, Type>,
+    fun_param_tys: &HashMap<Sym, Vec<Type>>,
     cap_tys: &HashMap<u32, Type>,
     seen: &mut HashSet<u32>,
     seen_slots: &mut HashSet<Sym>,
@@ -43,8 +43,8 @@ pub(super) fn collect_slot_assigns(
     defs_root: &Block,
     name: &Sym,
     float_locals: &HashSet<u32>,
-    fun_ret_tys: &HashMap<String, Type>,
-    fun_param_tys: &HashMap<String, Vec<Type>>,
+    fun_ret_tys: &HashMap<Sym, Type>,
+    fun_param_tys: &HashMap<Sym, Vec<Type>>,
     cap_tys: &HashMap<u32, Type>,
     seen: &mut HashSet<u32>,
     seen_slots: &mut HashSet<Sym>,
@@ -86,7 +86,7 @@ pub(super) fn abi_ty_is_ground(t: &Type) -> bool {
 pub(super) fn fun_ret_of_local(
     block: &Block,
     id: u32,
-    fun_ret_tys: &HashMap<String, Type>,
+    fun_ret_tys: &HashMap<Sym, Type>,
     seen: &mut HashSet<u32>,
 ) -> Option<Type> {
     if !seen.insert(id) {
@@ -105,8 +105,8 @@ pub(super) fn alloc_elems_ty(
     block: &Block,
     elems: &[Local],
     float_locals: &HashSet<u32>,
-    fun_ret_tys: &HashMap<String, Type>,
-    fun_param_tys: &HashMap<String, Vec<Type>>,
+    fun_ret_tys: &HashMap<Sym, Type>,
+    fun_param_tys: &HashMap<Sym, Vec<Type>>,
     cap_tys: &HashMap<u32, Type>,
     seen: &mut HashSet<u32>,
     seen_slots: &mut HashSet<Sym>,
@@ -143,7 +143,7 @@ pub(super) fn alloc_elems_ty(
 /// post-mono callee tables), so `spawn { dbl(1.5) }.join()` keeps Float ABI.
 pub(crate) fn block_result_callee_ty(
     block: &Block,
-    fun_ret_tys: &HashMap<String, Type>,
+    fun_ret_tys: &HashMap<Sym, Type>,
 ) -> Option<Type> {
     let Local(r) = block.result?;
     local_callee_ty(block, r, fun_ret_tys, &mut HashSet::default())
@@ -154,8 +154,8 @@ pub(crate) fn block_result_callee_ty(
 pub(crate) fn block_result_icall_cap_ty(
     block: &Block,
     cap_srcs: &[Local],
-    funref_locals: &HashMap<u32, String>,
-    fun_ret_tys: &HashMap<String, Type>,
+    funref_locals: &HashMap<u32, Sym>,
+    fun_ret_tys: &HashMap<Sym, Type>,
 ) -> Option<Type> {
     let Local(r) = block.result?;
     local_icall_cap_ty(
@@ -171,8 +171,8 @@ pub(crate) fn block_result_icall_cap_ty(
 /// Resolve `IndirectCall` → `ClosureCap(index)` → captured fun name → ret.
 pub(crate) fn block_result_icall_cap_ty_by_index(
     block: &Block,
-    cap_funs: &HashMap<u32, String>,
-    fun_ret_tys: &HashMap<String, Type>,
+    cap_funs: &HashMap<u32, Sym>,
+    fun_ret_tys: &HashMap<Sym, Type>,
 ) -> Option<Type> {
     let Local(r) = block.result?;
     local_icall_cap_ty_by_index(block, r, cap_funs, fun_ret_tys, &mut HashSet::default())
@@ -182,8 +182,8 @@ pub(crate) fn block_result_icall_cap_ty_by_index(
 /// `spawn { { x -> x * 2.0 } }.join()(1.5)` uses Float icall ABI.
 pub(crate) fn block_result_fun_ty(
     block: &Block,
-    fun_ret_tys: &HashMap<String, Type>,
-    fun_param_tys: &HashMap<String, Vec<Type>>,
+    fun_ret_tys: &HashMap<Sym, Type>,
+    fun_param_tys: &HashMap<Sym, Vec<Type>>,
 ) -> Option<Type> {
     let Local(r) = block.result?;
     local_fun_ty(
@@ -232,8 +232,8 @@ impl HofSets {
 pub(crate) fn block_result_known_hof_ty(
     block: &Block,
     hof: &HofSets,
-    fun_ret_tys: &HashMap<String, Type>,
-    cap_funs: Option<&HashMap<u32, String>>,
+    fun_ret_tys: &HashMap<Sym, Type>,
+    cap_funs: Option<&HashMap<u32, Sym>>,
 ) -> Option<Type> {
     let Local(r) = block.result?;
     local_known_hof_ty(
@@ -372,8 +372,8 @@ pub(super) fn local_aliases(block: &Block, id: u32, target: u32) -> bool {
 pub(super) fn local_fun_ty(
     block: &Block,
     id: u32,
-    fun_ret_tys: &HashMap<String, Type>,
-    fun_param_tys: &HashMap<String, Vec<Type>>,
+    fun_ret_tys: &HashMap<Sym, Type>,
+    fun_param_tys: &HashMap<Sym, Vec<Type>>,
     seen: &mut HashSet<u32>,
 ) -> Option<Type> {
     if !seen.insert(id) {
@@ -408,8 +408,8 @@ pub(super) fn local_known_hof_ty(
     block: &Block,
     id: u32,
     hof: &HofSets,
-    fun_ret_tys: &HashMap<String, Type>,
-    cap_funs: Option<&HashMap<u32, String>>,
+    fun_ret_tys: &HashMap<Sym, Type>,
+    cap_funs: Option<&HashMap<u32, Sym>>,
     seen: &mut HashSet<u32>,
 ) -> Option<Type> {
     if !seen.insert(id) {
@@ -421,16 +421,16 @@ pub(super) fn local_known_hof_ty(
         }
         Value::IndirectCall { callee, args } => {
             let cal = resolve_fun_name(block, callee.0, cap_funs, hof)?;
-            if hof.apply.contains(&cal) {
+            if hof.apply.contains(cal.as_str()) {
                 let farg = args.first()?;
                 let fname = resolve_fun_name(block, farg.0, cap_funs, hof)?;
-                return fun_ret_tys.get(&fname).and_then(ret_ty_from_callee_table);
+                return fun_ret_tys.get(fname.as_str()).and_then(ret_ty_from_callee_table);
             }
-            if hof.compose.contains(&cal) && args.len() >= 2 {
+            if hof.compose.contains(cal.as_str()) && args.len() >= 2 {
                 // andThen(f, g, x): result type is g's return.
                 let g_arg = &args[args.len() - 2];
                 let fname = resolve_fun_name(block, g_arg.0, cap_funs, hof)?;
-                return fun_ret_tys.get(&fname).and_then(ret_ty_from_callee_table);
+                return fun_ret_tys.get(fname.as_str()).and_then(ret_ty_from_callee_table);
             }
             None
         }
@@ -441,9 +441,9 @@ pub(super) fn local_known_hof_ty(
 pub(super) fn resolve_fun_name(
     block: &Block,
     id: u32,
-    cap_funs: Option<&HashMap<u32, String>>,
+    cap_funs: Option<&HashMap<u32, Sym>>,
     hof: &HofSets,
-) -> Option<String> {
+) -> Option<Sym> {
     let mut seen = HashSet::default();
     let mut cur = id;
     loop {
@@ -461,12 +461,12 @@ pub(super) fn resolve_fun_name(
             Value::IndirectCall { callee, args } => {
                 let cal = resolve_fun_name(block, callee.0, cap_funs, hof)?;
                 // id(f) → f; apply returning a Fun is uncommon — treat first arg.
-                if hof.id.contains(&cal) {
+                if hof.id.contains(cal.as_str()) {
                     let farg = args.first()?;
                     cur = farg.0;
                     continue;
                 }
-                if hof.apply.contains(&cal) {
+                if hof.apply.contains(cal.as_str()) {
                     let farg = args.first()?;
                     cur = farg.0;
                     continue;
@@ -481,7 +481,7 @@ pub(super) fn resolve_fun_name(
 pub(super) fn local_callee_ty(
     block: &Block,
     id: u32,
-    fun_ret_tys: &HashMap<String, Type>,
+    fun_ret_tys: &HashMap<Sym, Type>,
     seen: &mut HashSet<u32>,
 ) -> Option<Type> {
     if !seen.insert(id) {
@@ -500,8 +500,8 @@ pub(super) fn local_icall_cap_ty(
     block: &Block,
     id: u32,
     cap_srcs: &[Local],
-    funref_locals: &HashMap<u32, String>,
-    fun_ret_tys: &HashMap<String, Type>,
+    funref_locals: &HashMap<u32, Sym>,
+    fun_ret_tys: &HashMap<Sym, Type>,
     seen: &mut HashSet<u32>,
 ) -> Option<Type> {
     if !seen.insert(id) {
@@ -524,8 +524,8 @@ pub(super) fn local_icall_cap_ty(
 pub(super) fn local_icall_cap_ty_by_index(
     block: &Block,
     id: u32,
-    cap_funs: &HashMap<u32, String>,
-    fun_ret_tys: &HashMap<String, Type>,
+    cap_funs: &HashMap<u32, Sym>,
+    fun_ret_tys: &HashMap<Sym, Type>,
     seen: &mut HashSet<u32>,
 ) -> Option<Type> {
     if !seen.insert(id) {

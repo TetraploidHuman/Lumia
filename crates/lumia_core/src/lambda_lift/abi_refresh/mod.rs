@@ -29,7 +29,7 @@ fn fixup_closure_float_caps_inner(module: &mut CoreModule) {
     let fun_param_tys = &tables.fun_param_tys;
 
     // (lifted_fun, capture_index) → must be float (from AllocClosure-site tys)
-    let mut need_float: HashSet<(String, u32)> = HashSet::default();
+    let mut need_float: HashSet<(Sym, u32)> = HashSet::default();
     for fun in &module.functions {
         let mut local_tys: HashMap<u32, Type> = HashMap::default();
         for (p, ty) in fun.params.iter().zip(fun.param_tys.iter()) {

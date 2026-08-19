@@ -19,18 +19,19 @@ pub(crate) use abi_refine::{fixup_closure_float_caps, refine_channel_elem_hint};
 pub(crate) use rewrite::lift_lambdas;
 
 use crate::ir::CoreModule;
+use lumia_syntax::Sym;
 use lumia_ty::{Effect, Type};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::cell::RefCell;
 
 thread_local! {
     /// FunKind-lifted names for table-only [`fun_ty_from_tables`] (no CoreFun).
-    static LIFTED_LAMBDA_NAMES: RefCell<HashSet<String>> = RefCell::new(HashSet::default());
+    static LIFTED_LAMBDA_NAMES: RefCell<HashSet<Sym>> = RefCell::new(HashSet::default());
 }
 
 /// Run `f` with FunKind-derived lifted names visible to float_abi / channel_hint
 /// table lookups (replaces `__lam_*` key recovery).
-pub(crate) fn with_lifted_lambda_names<R>(lifted: HashSet<String>, f: impl FnOnce() -> R) -> R {
+pub(crate) fn with_lifted_lambda_names<R>(lifted: HashSet<Sym>, f: impl FnOnce() -> R) -> R {
     LIFTED_LAMBDA_NAMES.with(|cell| {
         let prev = std::mem::replace(&mut *cell.borrow_mut(), lifted);
         let out = f();
@@ -40,23 +41,23 @@ pub(crate) fn with_lifted_lambda_names<R>(lifted: HashSet<String>, f: impl FnOnc
 }
 
 /// Record a newly lifted lambda while [`with_lifted_lambda_names`] is active.
-pub(crate) fn note_lifted_lambda_name(name: String) {
+pub(crate) fn note_lifted_lambda_name(name: impl Into<Sym>) {
     LIFTED_LAMBDA_NAMES.with(|cell| {
-        cell.borrow_mut().insert(name);
+        cell.borrow_mut().insert(name.into());
     });
 }
 
-fn current_lifted_lambda_names<R>(f: impl FnOnce(&HashSet<String>) -> R) -> R {
+fn current_lifted_lambda_names<R>(f: impl FnOnce(&HashSet<Sym>) -> R) -> R {
     LIFTED_LAMBDA_NAMES.with(|cell| f(&cell.borrow()))
 }
 
 /// Names of lifted lambdas ([`crate::CoreFun::is_lifted_lambda`]).
-pub(crate) fn lifted_lambda_names(module: &CoreModule) -> HashSet<String> {
+pub(crate) fn lifted_lambda_names(module: &CoreModule) -> HashSet<Sym> {
     module
         .functions
         .iter()
         .filter(|f| f.is_lifted_lambda())
-        .map(|f| f.name.to_string())
+        .map(|f| f.name.clone())
         .collect()
 }
 
@@ -66,13 +67,13 @@ pub(crate) fn lifted_lambda_names(module: &CoreModule) -> HashSet<String> {
 /// `lifted` must come from [`lifted_lambda_names`] (FunKind), not name prefixes.
 pub(crate) fn fun_ty_from_tables(
     name: &str,
-    fun_ret_tys: &HashMap<String, Type>,
-    fun_param_tys: &HashMap<String, Vec<Type>>,
-    lifted: &HashSet<String>,
+    fun_ret_tys: &HashMap<Sym, Type>,
+    fun_param_tys: &HashMap<Sym, Vec<Type>>,
+    lifted: &HashSet<Sym>,
 ) -> Option<Type> {
     let ret = fun_ret_tys.get(name)?.clone();
     let mut params = fun_param_tys.get(name).cloned().unwrap_or_default();
-    let is_lifted = lifted.contains(name);
+    let is_lifted = lifted.contains(&Sym::from(name));
     if is_lifted
         && params
             .first()
@@ -87,8 +88,8 @@ pub(crate) fn fun_ty_from_tables(
 /// Like [`fun_ty_from_tables`], using the set installed by [`with_lifted_lambda_names`].
 pub(crate) fn fun_ty_from_tables_tls(
     name: &str,
-    fun_ret_tys: &HashMap<String, Type>,
-    fun_param_tys: &HashMap<String, Vec<Type>>,
+    fun_ret_tys: &HashMap<Sym, Type>,
+    fun_param_tys: &HashMap<Sym, Vec<Type>>,
 ) -> Option<Type> {
     current_lifted_lambda_names(|lifted| {
         fun_ty_from_tables(name, fun_ret_tys, fun_param_tys, lifted)

@@ -73,20 +73,20 @@ fn rewrite_mono_block(
     bool_consts: &mut HashMap<u32, bool>,
     adt_tags: &mut HashMap<u32, i64>,
     renames: &HashMap<(String, MonoKey), String>,
-    parent_funrefs: &HashMap<u32, String>,
-    parent_slot_funrefs: &HashMap<Sym, String>,
+    parent_funrefs: &HashMap<u32, Sym>,
+    parent_slot_funrefs: &HashMap<Sym, Sym>,
     slot_list_funrefs: &mut HashMap<Sym, FunrefSlots>,
     slot_adt_funrefs: &mut HashMap<Sym, FunrefSlots>,
     list_funrefs: &mut HashMap<u32, FunrefSlots>,
     adt_funrefs: &mut HashMap<u32, FunrefSlots>,
     index: &FunIndex<'_>,
-    join_funrefs: &HashMap<String, String>,
+    join_funrefs: &HashMap<String, Sym>,
     join_list_funrefs: &HashMap<String, FunrefSlots>,
     join_adt_funrefs: &HashMap<String, FunrefSlots>,
 ) {
     let mut funref_of = parent_funrefs.clone();
     let mut slot_funrefs = parent_slot_funrefs.clone();
-    let mut spawn_of: HashMap<u32, String> = HashMap::default();
+    let mut spawn_of: HashMap<u32, Sym> = HashMap::default();
     for i in 0..block.ops.len() {
         let (before, rest) = block.ops.split_at_mut(i);
         let op = &mut rest[0];
@@ -114,7 +114,7 @@ fn rewrite_mono_block(
                 );
                 if let Some((cb_local, new_name)) = patch {
                     patch_funref_let(before, cb_local, &new_name);
-                    funref_of.insert(cb_local, new_name);
+                    funref_of.insert(cb_local, new_name.into());
                 }
                 let ty = mono_value_ty_rewrite(
                     value, local_tys, slot_tys, int_consts, renames, &funref_of, index,
@@ -168,7 +168,7 @@ fn par_hof_funref_patch(
     value: &Value,
     local_tys: &HashMap<u32, Type>,
     renames: &HashMap<(String, MonoKey), String>,
-    funref_of: &HashMap<u32, String>,
+    funref_of: &HashMap<u32, Sym>,
 ) -> Option<(u32, String)> {
     match value {
         Value::Builtin {
@@ -227,14 +227,14 @@ fn rewrite_mono_value(
     bool_consts: &mut HashMap<u32, bool>,
     adt_tags: &mut HashMap<u32, i64>,
     renames: &HashMap<(String, MonoKey), String>,
-    funref_of: &HashMap<u32, String>,
-    slot_funrefs: &HashMap<Sym, String>,
+    funref_of: &HashMap<u32, Sym>,
+    slot_funrefs: &HashMap<Sym, Sym>,
     slot_list_funrefs: &mut HashMap<Sym, FunrefSlots>,
     slot_adt_funrefs: &mut HashMap<Sym, FunrefSlots>,
     list_funrefs: &mut HashMap<u32, FunrefSlots>,
     adt_funrefs: &mut HashMap<u32, FunrefSlots>,
     index: &FunIndex<'_>,
-    join_funrefs: &HashMap<String, String>,
+    join_funrefs: &HashMap<String, Sym>,
     join_list_funrefs: &HashMap<String, FunrefSlots>,
     join_adt_funrefs: &HashMap<String, FunrefSlots>,
 ) {
@@ -245,7 +245,7 @@ fn rewrite_mono_value(
             }
             let formals = index.get(fun.as_str()).map(|f| f.param_tys.as_slice());
             if let Some(key) = args_mono_key_idx(args, local_tys, funref_of, formals, index) {
-                if let Some(new) = renames.get(&(fun.name.clone(), key)) {
+                if let Some(new) = renames.get(&(fun.name.to_string(), key)) {
                     *fun = new.clone().into();
                 }
             }
@@ -261,7 +261,7 @@ fn rewrite_mono_value(
                 .get(&name)
                 .and_then(|f| mono_icall_formals(f, args.len()));
             if let Some(key) = args_mono_key_idx(args, local_tys, funref_of, formals, index) {
-                if let Some(new) = renames.get(&(name, key)) {
+                if let Some(new) = renames.get(&(name.to_string(), key)) {
                     *value = Value::Call {
                         fun: new.clone().into(),
                         args: args.clone(),
@@ -299,16 +299,16 @@ fn rewrite_mono_value(
 pub(super) fn track_funref_after_let(
     local: u32,
     value: &Value,
-    funref_of: &mut HashMap<u32, String>,
-    spawn_of: &mut HashMap<u32, String>,
+    funref_of: &mut HashMap<u32, Sym>,
+    spawn_of: &mut HashMap<u32, Sym>,
     list_funrefs: &mut HashMap<u32, FunrefSlots>,
     adt_funrefs: &mut HashMap<u32, FunrefSlots>,
-    slot_funrefs: &HashMap<Sym, String>,
+    slot_funrefs: &HashMap<Sym, Sym>,
     slot_list_funrefs: &HashMap<Sym, FunrefSlots>,
     slot_adt_funrefs: &HashMap<Sym, FunrefSlots>,
     int_consts: &HashMap<u32, i64>,
     bool_consts: &HashMap<u32, bool>,
-    join_funrefs: Option<&HashMap<String, String>>,
+    join_funrefs: Option<&HashMap<String, Sym>>,
     join_list_funrefs: Option<&HashMap<String, FunrefSlots>>,
     join_adt_funrefs: Option<&HashMap<String, FunrefSlots>>,
     index: Option<&FunIndex<'_>>,
@@ -588,8 +588,8 @@ pub(super) fn track_funref_after_let(
             let spawned = spawn_of.get(&args[0].0).cloned();
             let joined = spawned.as_ref().and_then(|s| {
                 join_funrefs
-                    .and_then(|m| m.get(s).cloned())
-                    .or_else(|| index.and_then(|idx| constant_returned_funref(s, idx)))
+                    .and_then(|m| m.get(s.as_str()).cloned())
+                    .or_else(|| index.and_then(|idx| constant_returned_funref(s.as_str(), idx)))
             });
             if let Some(inner) = joined {
                 funref_of.insert(local, inner);
@@ -598,8 +598,8 @@ pub(super) fn track_funref_after_let(
             }
             let list = spawned.as_ref().and_then(|s| {
                 join_list_funrefs
-                    .and_then(|m| m.get(s).cloned())
-                    .or_else(|| index.and_then(|idx| constant_returned_list_funrefs(s, idx)))
+                    .and_then(|m| m.get(s.as_str()).cloned())
+                    .or_else(|| index.and_then(|idx| constant_returned_list_funrefs(s.as_str(), idx)))
             });
             if let Some(v) = list {
                 list_funrefs.insert(local, v);
@@ -608,8 +608,8 @@ pub(super) fn track_funref_after_let(
             }
             let adt = spawned.as_ref().and_then(|s| {
                 join_adt_funrefs
-                    .and_then(|m| m.get(s).cloned())
-                    .or_else(|| index.and_then(|idx| constant_returned_adt_funrefs(s, idx)))
+                    .and_then(|m| m.get(s.as_str()).cloned())
+                    .or_else(|| index.and_then(|idx| constant_returned_adt_funrefs(s.as_str(), idx)))
             });
             if let Some(v) = adt {
                 adt_funrefs.insert(local, v);
@@ -638,11 +638,11 @@ fn rewrite_par_hof_funref(
     cb_local: u32,
     cb_param_tys: &[Type],
     renames: &HashMap<(String, MonoKey), String>,
-    funref_of: &HashMap<u32, String>,
+    funref_of: &HashMap<u32, Sym>,
 ) -> Option<(u32, String)> {
     let cb = funref_of.get(&cb_local)?;
     let key = types_mono_key(cb_param_tys)?;
-    let new = renames.get(&(cb.clone(), key))?;
+    let new = renames.get(&(cb.to_string(), key))?;
     Some((cb_local, new.clone()))
 }
 
@@ -652,7 +652,7 @@ fn mono_value_ty_rewrite(
     slot_tys: &HashMap<Sym, Type>,
     int_consts: &HashMap<u32, i64>,
     renames: &HashMap<(String, MonoKey), String>,
-    funref_of: &HashMap<u32, String>,
+    funref_of: &HashMap<u32, Sym>,
     index: &FunIndex<'_>,
 ) -> Type {
     let funs = index.funs();
@@ -664,7 +664,7 @@ fn mono_value_ty_rewrite(
             let formals = index.get(fun.as_str()).map(|f| f.param_tys.as_slice());
             if let Some(key) = args_mono_key_idx(args, local_tys, funref_of, formals, index) {
                 let inferred = key.ret_ty(funs, Some(fun.as_str()));
-                let renamed = renames.get(&(fun.name.clone(), key.clone()));
+                let renamed = renames.get(&(fun.name.to_string(), key.clone()));
                 let already_clone = renames.iter().any(|(_, n)| n.as_str() == fun.as_str())
                     || callee_is_mono_clone(fun.as_str(), index);
                 if renamed.is_some() || already_clone || key.worth_cloning() {

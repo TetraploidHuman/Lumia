@@ -1,4 +1,5 @@
 use crate::ir::{CoreFun, FunId, Local};
+use lumia_syntax::Sym;
 use lumia_ty::{Effect, Type};
 use rustc_hash::FxHashMap as HashMap;
 use std::hash::{Hash, Hasher};
@@ -7,7 +8,7 @@ use std::hash::{Hash, Hasher};
 /// so resolved vs unresolved keys still collide in `renames`.
 #[derive(Clone, Debug)]
 pub(crate) struct FunRefKey {
-    pub name: String,
+    pub name: Sym,
     pub id: Option<FunId>,
 }
 
@@ -36,6 +37,15 @@ impl From<&str> for FunRefKey {
 
 impl From<String> for FunRefKey {
     fn from(name: String) -> Self {
+        Self {
+            name: name.into(),
+            id: None,
+        }
+    }
+}
+
+impl From<Sym> for FunRefKey {
+    fn from(name: Sym) -> Self {
         Self { name, id: None }
     }
 }
@@ -646,7 +656,7 @@ impl MonoKey {
         })
     }
 
-    pub(crate) fn funref_param_binds(&self, params: &[Local]) -> HashMap<u32, String> {
+    pub(crate) fn funref_param_binds(&self, params: &[Local]) -> HashMap<u32, Sym> {
         let mut binds = HashMap::default();
         for (i, k) in self.0.iter().enumerate() {
             if let MonoKind::FunRef(fr) = k {
@@ -782,7 +792,7 @@ fn type_has_open_var(t: &Type) -> bool {
 pub(crate) fn args_mono_key(
     args: &[Local],
     local_tys: &HashMap<u32, Type>,
-    funref_of: &HashMap<u32, String>,
+    funref_of: &HashMap<u32, Sym>,
     formals: Option<&[Type]>,
 ) -> Option<MonoKey> {
     let mut kinds = Vec::with_capacity(args.len());

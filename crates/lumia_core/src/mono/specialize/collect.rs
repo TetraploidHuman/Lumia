@@ -19,7 +19,7 @@ use super::rewrite::track_funref_after_let;
 pub(super) fn args_mono_key_idx(
     args: &[Local],
     local_tys: &HashMap<u32, Type>,
-    funref_of: &HashMap<u32, String>,
+    funref_of: &HashMap<u32, Sym>,
     formals: Option<&[Type]>,
     index: &FunIndex<'_>,
 ) -> Option<MonoKey> {
@@ -225,8 +225,8 @@ fn scan_mono_block(
     bool_consts: &mut HashMap<u32, bool>,
     index: &FunIndex<'_>,
     needed: &mut FxHashSet<(String, MonoKey)>,
-    parent_funrefs: &HashMap<u32, String>,
-    parent_slot_funrefs: &HashMap<Sym, String>,
+    parent_funrefs: &HashMap<u32, Sym>,
+    parent_slot_funrefs: &HashMap<Sym, Sym>,
     slot_list_funrefs: &mut HashMap<Sym, FunrefSlots>,
     slot_adt_funrefs: &mut HashMap<Sym, FunrefSlots>,
     list_funrefs: &mut HashMap<u32, FunrefSlots>,
@@ -236,7 +236,7 @@ fn scan_mono_block(
     let mut funref_of = parent_funrefs.clone();
     let mut slot_funrefs = parent_slot_funrefs.clone();
     // Task local → spawned FunRef/AllocClosure name (for join → FunRef chase).
-    let mut spawn_of: HashMap<u32, String> = HashMap::default();
+    let mut spawn_of: HashMap<u32, Sym> = HashMap::default();
     for_each_top_level_op_in_block(block, &mut |op| match op {
         Op::Let { local, value, .. } => {
             // Nested If/Loop arms first so `If` result can join arm locals
@@ -410,8 +410,8 @@ fn walk_mono_nested_scan(
     bool_consts: &mut HashMap<u32, bool>,
     index: &FunIndex<'_>,
     needed: &mut FxHashSet<(String, MonoKey)>,
-    funref_of: &HashMap<u32, String>,
-    slot_funrefs: &HashMap<Sym, String>,
+    funref_of: &HashMap<u32, Sym>,
+    slot_funrefs: &HashMap<Sym, Sym>,
     slot_list_funrefs: &mut HashMap<Sym, FunrefSlots>,
     slot_adt_funrefs: &mut HashMap<Sym, FunrefSlots>,
     list_funrefs: &mut HashMap<u32, FunrefSlots>,
@@ -448,7 +448,7 @@ fn note_mono_call(
     local_tys: &HashMap<u32, Type>,
     index: &FunIndex<'_>,
     needed: &mut FxHashSet<(String, MonoKey)>,
-    funref_of: &HashMap<u32, String>,
+    funref_of: &HashMap<u32, Sym>,
 ) {
     match value {
         Value::Call { fun, args } => {
@@ -596,7 +596,7 @@ fn mono_value_ty_with_funrefs(
     slot_tys: &HashMap<Sym, Type>,
     int_consts: &HashMap<u32, i64>,
     index: &FunIndex<'_>,
-    funref_of: &HashMap<u32, String>,
+    funref_of: &HashMap<u32, Sym>,
 ) -> Type {
     let funs = index.funs();
     let mut call_ret = |fun: &str, args: &[Local]| -> Option<Type> {
@@ -651,8 +651,8 @@ fn mono_value_ty_with_funrefs(
         return Type::Fun(params, Box::new(ret), Effect::pure());
     }
     // Thread FunRef names so ListParMap can read callback ret via funref_locals.
-    let mut fun_ret_tys: HashMap<String, Type> = HashMap::default();
-    let mut funref_locals: HashMap<u32, String> = HashMap::default();
+    let mut fun_ret_tys: HashMap<Sym, Type> = HashMap::default();
+    let mut funref_locals: HashMap<u32, Sym> = HashMap::default();
     for (loc, name) in funref_of {
         funref_locals.insert(*loc, name.clone());
         if let Some(f) = index.get(name) {

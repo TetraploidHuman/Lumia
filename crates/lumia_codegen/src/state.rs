@@ -24,20 +24,19 @@ pub(crate) struct LlvmTypes<'ctx> {
 /// ABI types and Core analysis side tables are seeded from
 /// [`lumia_core::ModuleTables`] at emit entry; this struct then owns LLVM
 /// handles and emit-only side tables (`closure_cap_tys`, `adt_show_kinds`, …).
-#[derive(Default)]
 pub(crate) struct FunTables<'ctx> {
     pub functions: HashMap<String, FunctionValue<'ctx>>,
-    pub fun_ret_tys: HashMap<String, Type>,
-    pub fun_param_tys: HashMap<String, Vec<Type>>,
-    pub fun_param0_identity: HashSet<String>,
+    pub fun_ret_tys: HashMap<Sym, Type>,
+    pub fun_param_tys: HashMap<Sym, Vec<Type>>,
+    pub fun_param0_identity: HashSet<Sym>,
     pub external_funs: HashSet<String>,
     /// `foreign` symbols that use the `lumia_rt` object ABI (no String↔cstr).
     pub runtime_external_funs: HashSet<String>,
     /// FunRef SSA + named-slot aliases (shared protocol with core directize / TCO).
     pub funref: FunRefAliases,
-    pub current_fun: String,
-    pub tco_peers: HashSet<String>,
-    pub tco_sccs: HashMap<String, HashSet<String>>,
+    pub current_fun: Sym,
+    pub tco_peers: HashSet<Sym>,
+    pub tco_sccs: HashMap<Sym, HashSet<Sym>>,
     pub hash_adts: HashSet<String>,
     /// Variant labels by ADT/product type name (tag → display name) for Show.
     pub adt_variant_names: HashMap<String, Vec<String>>,
@@ -48,9 +47,33 @@ pub(crate) struct FunTables<'ctx> {
     /// Per-`ChannelNew` local → payload (preferred over module hint when set).
     pub channel_elem_by_local: HashMap<u32, Type>,
     /// `(lifted_fun, capture_index) →` type of the captured local at AllocClosure sites.
-    pub closure_cap_tys: HashMap<String, HashMap<u32, Type>>,
+    pub closure_cap_tys: HashMap<Sym, HashMap<u32, Type>>,
     /// Stable Show-kind ids (`≥ 1`) packed into ADT `type_id` for recursive `lumia_show`.
     pub adt_show_kinds: HashMap<String, u16>,
+}
+
+impl<'ctx> Default for FunTables<'ctx> {
+    fn default() -> Self {
+        Self {
+            functions: HashMap::default(),
+            fun_ret_tys: HashMap::default(),
+            fun_param_tys: HashMap::default(),
+            fun_param0_identity: HashSet::default(),
+            external_funs: HashSet::default(),
+            runtime_external_funs: HashSet::default(),
+            funref: FunRefAliases::default(),
+            current_fun: Sym::from(""),
+            tco_peers: HashSet::default(),
+            tco_sccs: HashMap::default(),
+            hash_adts: HashSet::default(),
+            adt_variant_names: HashMap::default(),
+            sum_max_arity: HashMap::default(),
+            channel_elem_hint: None,
+            channel_elem_by_local: HashMap::default(),
+            closure_cap_tys: HashMap::default(),
+            adt_show_kinds: HashMap::default(),
+        }
+    }
 }
 
 impl FunTables<'_> {

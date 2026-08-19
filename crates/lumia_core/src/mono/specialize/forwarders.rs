@@ -59,7 +59,7 @@ fn trivial_param_forward_target(fun: &CoreFun) -> Option<String> {
         }
         // Exact forward of all formals (identity-shaped mono clone).
         if args.len() == fun.params.len() && args.iter().eq(fun.params.iter()) {
-            target = Some(callee.name.clone());
+            target = Some(callee.name.to_string());
         }
     });
     target

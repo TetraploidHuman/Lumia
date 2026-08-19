@@ -23,10 +23,10 @@ pub enum HeapPolicy {
 pub struct InferValueCtx<'a> {
     pub local_tys: &'a HashMap<u32, Type>,
     pub slot_tys: Option<&'a HashMap<Sym, Type>>,
-    pub fun_ret_tys: Option<&'a HashMap<String, Type>>,
-    pub fun_param_tys: Option<&'a HashMap<String, Vec<Type>>>,
-    pub fun_param0_identity: Option<&'a HashSet<String>>,
-    pub funref_locals: Option<&'a HashMap<u32, String>>,
+    pub fun_ret_tys: Option<&'a HashMap<Sym, Type>>,
+    pub fun_param_tys: Option<&'a HashMap<Sym, Vec<Type>>>,
+    pub fun_param0_identity: Option<&'a HashSet<Sym>>,
+    pub funref_locals: Option<&'a HashMap<u32, Sym>>,
     /// SSA locals bound to `Value::Int` (for `AdtField` index → `params[i]`).
     pub local_int_consts: Option<&'a HashMap<u32, i64>>,
     /// Sum ADT name → max variant payload arity (pad `AllocAdt` params).
@@ -41,10 +41,10 @@ pub struct InferValueCtx<'a> {
 #[derive(Clone, Copy)]
 pub struct CodegenTypeTables<'a> {
     pub slot_tys: &'a HashMap<Sym, Type>,
-    pub fun_ret_tys: &'a HashMap<String, Type>,
-    pub fun_param_tys: &'a HashMap<String, Vec<Type>>,
-    pub fun_param0_identity: &'a HashSet<String>,
-    pub funref_locals: &'a HashMap<u32, String>,
+    pub fun_ret_tys: &'a HashMap<Sym, Type>,
+    pub fun_param_tys: &'a HashMap<Sym, Vec<Type>>,
+    pub fun_param0_identity: &'a HashSet<Sym>,
+    pub funref_locals: &'a HashMap<u32, Sym>,
     pub local_int_consts: &'a HashMap<u32, i64>,
     pub sum_max_arity: &'a HashMap<String, usize>,
     pub channel_elem_hint: Option<&'a Type>,
@@ -92,8 +92,8 @@ impl<'a> InferValueCtx<'a> {
     pub fn with_fun_abi(
         local_tys: &'a HashMap<u32, Type>,
         slot_tys: Option<&'a HashMap<Sym, Type>>,
-        fun_ret_tys: &'a HashMap<String, Type>,
-        fun_param_tys: &'a HashMap<String, Vec<Type>>,
+        fun_ret_tys: &'a HashMap<Sym, Type>,
+        fun_param_tys: &'a HashMap<Sym, Vec<Type>>,
     ) -> Self {
         Self {
             local_tys,

@@ -16,8 +16,8 @@ use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 pub(crate) fn block_result_heap_ty(
     block: &Block,
-    fun_ret_tys: &HashMap<String, Type>,
-    fun_param_tys: &HashMap<String, Vec<Type>>,
+    fun_ret_tys: &HashMap<Sym, Type>,
+    fun_param_tys: &HashMap<Sym, Vec<Type>>,
 ) -> Option<Type> {
     block_result_heap_ty_caps(block, fun_ret_tys, fun_param_tys, &HashMap::default())
 }
@@ -28,8 +28,8 @@ pub(crate) fn block_result_heap_ty(
 /// (or go through [`collect_fun_cap_tys`] / lift / fixup entry points).
 pub(crate) fn block_result_heap_ty_caps(
     block: &Block,
-    fun_ret_tys: &HashMap<String, Type>,
-    fun_param_tys: &HashMap<String, Vec<Type>>,
+    fun_ret_tys: &HashMap<Sym, Type>,
+    fun_param_tys: &HashMap<Sym, Vec<Type>>,
     cap_tys: &HashMap<u32, Type>,
 ) -> Option<Type> {
     let Local(r) = block.result?;
@@ -70,8 +70,8 @@ pub(super) fn resolve_heap_arg_ty(
     block: &Block,
     id: u32,
     float_locals: &HashSet<u32>,
-    fun_ret_tys: &HashMap<String, Type>,
-    fun_param_tys: &HashMap<String, Vec<Type>>,
+    fun_ret_tys: &HashMap<Sym, Type>,
+    fun_param_tys: &HashMap<Sym, Vec<Type>>,
     cap_tys: &HashMap<u32, Type>,
     seen: &mut HashSet<u32>,
     seen_slots: &mut HashSet<Sym>,
@@ -99,8 +99,8 @@ pub(super) fn mutator_recv_args(
     args: &[Local],
     arg_idxs: &[usize],
     float_locals: &HashSet<u32>,
-    fun_ret_tys: &HashMap<String, Type>,
-    fun_param_tys: &HashMap<String, Vec<Type>>,
+    fun_ret_tys: &HashMap<Sym, Type>,
+    fun_param_tys: &HashMap<Sym, Vec<Type>>,
     cap_tys: &HashMap<u32, Type>,
     seen: &mut HashSet<u32>,
     seen_slots: &mut HashSet<Sym>,
@@ -139,8 +139,8 @@ pub(super) fn local_heap_ty(
     block: &Block,
     id: u32,
     float_locals: &HashSet<u32>,
-    fun_ret_tys: &HashMap<String, Type>,
-    fun_param_tys: &HashMap<String, Vec<Type>>,
+    fun_ret_tys: &HashMap<Sym, Type>,
+    fun_param_tys: &HashMap<Sym, Vec<Type>>,
     cap_tys: &HashMap<u32, Type>,
     seen: &mut HashSet<u32>,
     seen_slots: &mut HashSet<Sym>,

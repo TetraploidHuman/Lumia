@@ -6,16 +6,17 @@
 //! [`crate::CodegenTypeTables`] / [`crate::InferValueCtx`].
 
 use crate::ir::{CoreFun, CoreModule, Local, Op, Value};
+use lumia_syntax::Sym;
 use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// Snapshot of per-function ABI types plus Core analysis side tables.
 #[derive(Clone, Debug, Default)]
 pub struct ModuleTables {
-    pub fun_ret_tys: HashMap<String, Type>,
-    pub fun_param_tys: HashMap<String, Vec<Type>>,
+    pub fun_ret_tys: HashMap<Sym, Type>,
+    pub fun_param_tys: HashMap<Sym, Vec<Type>>,
     /// Functions whose body is a pure alias of param0 (identity forwarders).
-    pub fun_param0_identity: HashSet<String>,
+    pub fun_param0_identity: HashSet<Sym>,
     /// Trait short-name → mangled impls (mono UFCS / stubs).
     pub trait_methods: HashMap<(String, String), Vec<String>>,
     pub hash_adts: HashSet<String>,
@@ -63,10 +64,10 @@ impl ModuleTables {
         fun_ret_tys.reserve(module.functions.len());
         fun_param_tys.reserve(module.functions.len());
         for f in &module.functions {
-            fun_ret_tys.insert(f.name.to_string(), f.ret_ty.clone());
-            fun_param_tys.insert(f.name.to_string(), f.param_tys.clone());
+            fun_ret_tys.insert(f.name.clone(), f.ret_ty.clone());
+            fun_param_tys.insert(f.name.clone(), f.param_tys.clone());
             if core_fun_is_param0_identity(f) {
-                fun_param0_identity.insert(f.name.to_string());
+                fun_param0_identity.insert(f.name.clone());
             }
         }
         Self {
@@ -83,7 +84,7 @@ impl ModuleTables {
     }
 
     /// Consume into owned maps for passes that insert lifted/`$` clones in place.
-    pub fn into_maps(self) -> (HashMap<String, Type>, HashMap<String, Vec<Type>>) {
+    pub fn into_maps(self) -> (HashMap<Sym, Type>, HashMap<Sym, Vec<Type>>) {
         (self.fun_ret_tys, self.fun_param_tys)
     }
 }

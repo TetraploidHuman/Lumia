@@ -35,7 +35,7 @@ pub(crate) fn params_used_as_float_seeded(
 pub(crate) fn params_used_as_float_with_caps_seeded(
     block: &Block,
     params: &[Local],
-    float_cap_idxs: &HashMap<String, HashSet<u32>>,
+    float_cap_idxs: &HashMap<Sym, HashSet<u32>>,
     seed_float_locals: &HashSet<u32>,
 ) -> HashSet<u32> {
     let param_set: HashSet<u32> = params.iter().map(|p| p.0).collect();
@@ -56,7 +56,7 @@ pub(super) fn mark_float_uses(
     params: &HashSet<u32>,
     float_locals: &mut HashSet<u32>,
     used: &mut HashSet<u32>,
-    float_cap_idxs: &HashMap<String, HashSet<u32>>,
+    float_cap_idxs: &HashMap<Sym, HashSet<u32>>,
 ) {
     let mut defs: HashMap<u32, Value> = HashMap::default();
     for_each_top_level_op_in_block(block, &mut |op| {
@@ -75,7 +75,7 @@ pub(super) fn mark_float_in_value(
     params: &HashSet<u32>,
     float_locals: &mut HashSet<u32>,
     used: &mut HashSet<u32>,
-    float_cap_idxs: &HashMap<String, HashSet<u32>>,
+    float_cap_idxs: &HashMap<Sym, HashSet<u32>>,
     defs: &HashMap<u32, Value>,
 ) {
     match v {
@@ -632,7 +632,7 @@ pub(super) fn adt_local_field_is_float(
     }
 }
 
-pub(crate) fn block_result_is_float(block: &Block, fun_ret_tys: &HashMap<String, Type>) -> bool {
+pub(crate) fn block_result_is_float(block: &Block, fun_ret_tys: &HashMap<Sym, Type>) -> bool {
     block_result_is_float_seeded(block, fun_ret_tys, &HashSet::default())
 }
 
@@ -640,7 +640,7 @@ pub(crate) fn block_result_is_float(block: &Block, fun_ret_tys: &HashMap<String,
 /// (lift / post-mono fixup — Float caps are not flagged on `ClosureCap`).
 pub(crate) fn block_result_is_float_seeded(
     block: &Block,
-    fun_ret_tys: &HashMap<String, Type>,
+    fun_ret_tys: &HashMap<Sym, Type>,
     seed_float_locals: &HashSet<u32>,
 ) -> bool {
     let Some(Local(r)) = block.result else {
@@ -676,7 +676,7 @@ pub(super) fn list_get_float_result(
     block: &Block,
     id: u32,
     float_locals: &HashSet<u32>,
-    fun_ret_tys: &HashMap<String, Type>,
+    fun_ret_tys: &HashMap<Sym, Type>,
     seen: &mut HashSet<u32>,
 ) -> bool {
     if !seen.insert(id) {
@@ -741,7 +741,7 @@ pub(super) fn list_elem_is_float(
     block: &Block,
     id: u32,
     float_locals: &HashSet<u32>,
-    fun_ret_tys: &HashMap<String, Type>,
+    fun_ret_tys: &HashMap<Sym, Type>,
     seen: &mut HashSet<u32>,
 ) -> bool {
     if !seen.insert(id) {
@@ -831,7 +831,7 @@ pub(super) fn list_fold_float_result(
     block: &Block,
     id: u32,
     float_locals: &HashSet<u32>,
-    fun_ret_tys: &HashMap<String, Type>,
+    fun_ret_tys: &HashMap<Sym, Type>,
     seen: &mut HashSet<u32>,
 ) -> bool {
     if !seen.insert(id) {
@@ -856,7 +856,7 @@ pub(super) fn list_fold_float_result(
 pub(super) fn funref_ret_is_float(
     block: &Block,
     id: u32,
-    fun_ret_tys: &HashMap<String, Type>,
+    fun_ret_tys: &HashMap<Sym, Type>,
     seen: &mut HashSet<u32>,
 ) -> bool {
     if !seen.insert(id) {
@@ -987,9 +987,9 @@ pub(super) fn compute_float_locals_from(
 /// nested ones.
 pub(crate) fn collect_fun_cap_tys(
     module: &crate::ir::CoreModule,
-    fun_ret_tys: &HashMap<String, Type>,
-    fun_param_tys: &HashMap<String, Vec<Type>>,
-) -> HashMap<String, HashMap<u32, Type>> {
+    fun_ret_tys: &HashMap<Sym, Type>,
+    fun_param_tys: &HashMap<Sym, Vec<Type>>,
+) -> HashMap<Sym, HashMap<u32, Type>> {
     super::super::with_lifted_lambda_names(super::super::lifted_lambda_names(module), || {
         collect_fun_cap_tys_inner(module, fun_ret_tys, fun_param_tys)
     })
@@ -997,12 +997,12 @@ pub(crate) fn collect_fun_cap_tys(
 
 pub(super) fn collect_fun_cap_tys_inner(
     module: &crate::ir::CoreModule,
-    fun_ret_tys: &HashMap<String, Type>,
-    fun_param_tys: &HashMap<String, Vec<Type>>,
-) -> HashMap<String, HashMap<u32, Type>> {
+    fun_ret_tys: &HashMap<Sym, Type>,
+    fun_param_tys: &HashMap<Sym, Vec<Type>>,
+) -> HashMap<Sym, HashMap<u32, Type>> {
     let by_local = &module.channel_elem_by_local;
     let module_hint = module.channel_elem_hint.as_ref();
-    let mut out: HashMap<String, HashMap<u32, Type>> = HashMap::default();
+    let mut out: HashMap<Sym, HashMap<u32, Type>> = HashMap::default();
     for _ in 0..16 {
         let before: usize = out.values().map(|m| m.len()).sum();
         for fun in &module.functions {
@@ -1013,7 +1013,7 @@ pub(super) fn collect_fun_cap_tys_inner(
             }
             // Caps already known for this fun (from outer AllocClosure sites).
             let outer = out
-                .get(fun.name.as_str())
+                .get(&fun.name)
                 .cloned()
                 .unwrap_or_default();
             collect_fun_cap_tys_in_block(
@@ -1040,14 +1040,14 @@ pub(super) fn collect_fun_cap_tys_inner(
 pub(super) fn collect_fun_cap_tys_in_block(
     block: &Block,
     float_locals: &HashSet<u32>,
-    fun_ret_tys: &HashMap<String, Type>,
-    fun_param_tys: &HashMap<String, Vec<Type>>,
+    fun_ret_tys: &HashMap<Sym, Type>,
+    fun_param_tys: &HashMap<Sym, Vec<Type>>,
     outer_caps: &HashMap<u32, Type>,
     param_locals: &HashMap<u32, Type>,
     channel_by_local: &HashMap<u32, Type>,
     channel_module_hint: Option<&Type>,
     outer_lam_caps: Option<&[crate::Local]>,
-    out: &mut HashMap<String, HashMap<u32, Type>>,
+    out: &mut HashMap<Sym, HashMap<u32, Type>>,
 ) {
     // Prefer merges are order-tolerant for concrete lattice; DFS is safe.
     crate::visit::for_each_block_dfs(block, &mut |b| {
@@ -1057,7 +1057,7 @@ pub(super) fn collect_fun_cap_tys_in_block(
                 ..
             } = op
             {
-                let entry = out.entry(fun.name.to_string()).or_default();
+                let entry = out.entry(fun.name.clone()).or_default();
                 for (i, c) in captures.iter().enumerate() {
                     let t = if float_locals.contains(&c.0) {
                         Some(Type::Float)

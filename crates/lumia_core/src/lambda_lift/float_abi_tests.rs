@@ -864,7 +864,8 @@ val main = {
 fn map_spawn_join_list_append_task_float() {
     use crate::value_ty::{infer_value_ty_ctx, CodegenTypeTables, InferValueCtx};
     use crate::Op;
-    use lumia_ty::Type;
+    use lumia_hir::Sym;
+use lumia_ty::Type;
     use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
     let core = compile_source_to_core(
         r#"
@@ -886,17 +887,17 @@ val main = {
     let mut local_tys: HashMap<u32, Type> = HashMap::default();
     let mut slot_tys: HashMap<lumia_syntax::Sym, Type> = HashMap::default();
     let fun_param0_identity = HashSet::default();
-    let mut funref_locals: HashMap<u32, String> = HashMap::default();
+    let mut funref_locals: HashMap<u32, Sym> = HashMap::default();
     let local_int_consts: HashMap<u32, i64> = HashMap::default();
     let sum_max_arity: HashMap<String, usize> = HashMap::default();
     fn walk(
         ops: &[Op],
         local_tys: &mut HashMap<u32, Type>,
         slot_tys: &mut HashMap<lumia_syntax::Sym, Type>,
-        funref_locals: &mut HashMap<u32, String>,
-        fun_ret_tys: &HashMap<String, Type>,
-        fun_param_tys: &HashMap<String, Vec<Type>>,
-        fun_param0_identity: &HashSet<String>,
+        funref_locals: &mut HashMap<u32, Sym>,
+        fun_ret_tys: &HashMap<Sym, Type>,
+        fun_param_tys: &HashMap<Sym, Vec<Type>>,
+        fun_param0_identity: &HashSet<Sym>,
         local_int_consts: &HashMap<u32, i64>,
         sum_max_arity: &HashMap<String, usize>,
         hint: Option<&Type>,

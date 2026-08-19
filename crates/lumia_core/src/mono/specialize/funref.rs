@@ -1,12 +1,12 @@
 use super::super::fun_index::FunIndex;
 use crate::ir::{Block, CoreFun, Local, Op, Value};
-use lumia_hir::Builtin;
+use lumia_hir::{Builtin, Sym};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet};
 
 /// Nested Fun-in-container snapshot for ListGet / AdtField / TaskJoin.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum FunrefElem {
-    Fun(String),
+    Fun(Sym),
     List(Vec<Option<FunrefElem>>),
     Adt(Vec<Option<FunrefElem>>),
 }
@@ -15,7 +15,7 @@ pub(super) type FunrefSlots = Vec<Option<FunrefElem>>;
 
 pub(super) fn funref_elem_of_local(
     id: u32,
-    funref_of: &HashMap<u32, String>,
+    funref_of: &HashMap<u32, Sym>,
     list_funrefs: &HashMap<u32, FunrefSlots>,
     adt_funrefs: &HashMap<u32, FunrefSlots>,
 ) -> Option<FunrefElem> {
@@ -34,7 +34,7 @@ pub(super) fn funref_elem_of_local(
 pub(super) fn apply_funref_elem(
     local: u32,
     elem: Option<FunrefElem>,
-    funref_of: &mut HashMap<u32, String>,
+    funref_of: &mut HashMap<u32, Sym>,
     list_funrefs: &mut HashMap<u32, FunrefSlots>,
     adt_funrefs: &mut HashMap<u32, FunrefSlots>,
 ) {
@@ -88,12 +88,12 @@ pub(super) fn homogeneous_funref_elem(slots: &FunrefSlots) -> Option<FunrefElem>
 }
 
 /// If `fun`'s result is a constant `FunRef` / `AllocClosure`, return that name.
-pub(super) fn constant_returned_funref(fun: &str, index: &FunIndex<'_>) -> Option<String> {
+pub(super) fn constant_returned_funref(fun: &str, index: &FunIndex<'_>) -> Option<Sym> {
     let f = index.get(fun)?;
     constant_returned_funref_in_body(&f.body)
 }
 
-pub(super) fn constant_returned_funref_in_body(body: &Block) -> Option<String> {
+pub(super) fn constant_returned_funref_in_body(body: &Block) -> Option<Sym> {
     let Local(mut cur) = body.result?;
     let mut seen = FxHashSet::default();
     loop {
@@ -118,7 +118,7 @@ pub(super) fn constant_returned_funref_in_body(body: &Block) -> Option<String> {
 }
 
 /// Snapshot before rewrite — FunSig shadow has empty bodies; chase uses this map.
-pub(super) fn constant_funref_ret_map(functions: &[CoreFun]) -> HashMap<String, String> {
+pub(super) fn constant_funref_ret_map(functions: &[CoreFun]) -> HashMap<String, Sym> {
     let mut out = HashMap::default();
     for f in functions {
         if let Some(n) = constant_returned_funref_in_body(&f.body) {
@@ -227,7 +227,7 @@ pub(super) fn def_of(body: &Block, id: u32) -> Option<&Value> {
     None
 }
 
-pub(super) fn chase_local_funref(body: &Block, id: u32) -> Option<String> {
+pub(super) fn chase_local_funref(body: &Block, id: u32) -> Option<Sym> {
     match chase_local_funref_elem(body, id)? {
         FunrefElem::Fun(n) => Some(n),
         _ => None,
@@ -298,10 +298,10 @@ pub(super) fn result_def_is_adt_field(body: &Block) -> bool {
 pub(super) fn chase_arm_funref(
     body: &Block,
     id: u32,
-    funref_of: &HashMap<u32, String>,
+    funref_of: &HashMap<u32, Sym>,
     adt_funrefs: &HashMap<u32, FunrefSlots>,
     int_consts: &HashMap<u32, i64>,
-) -> Option<String> {
+) -> Option<Sym> {
     let mut cur = id;
     let mut seen = FxHashSet::default();
     for _ in 0..16 {

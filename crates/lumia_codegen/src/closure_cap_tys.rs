@@ -10,12 +10,12 @@ use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// `(lifted_fun → capture_index → ty)` from every `AllocClosure` in `core`.
-pub(crate) fn collect_closure_cap_tys(core: &CoreModule) -> HashMap<String, HashMap<u32, Type>> {
+pub(crate) fn collect_closure_cap_tys(core: &CoreModule) -> HashMap<Sym, HashMap<u32, Type>> {
     let tables = lumia_core::ModuleTables::from_module(core);
     let fun_ret_tys = &tables.fun_ret_tys;
     let fun_param_tys = &tables.fun_param_tys;
     let fun_param0_identity = &tables.fun_param0_identity;
-    let mut out: HashMap<String, HashMap<u32, Type>> = HashMap::default();
+    let mut out: HashMap<Sym, HashMap<u32, Type>> = HashMap::default();
     // Change-flag fixpoint (capped): outer AllocClosure may depend on inner
     // ClosureCap typing from a prior round.
     for _ in 0..lumia_abi::CLOSURE_CAP_TY_ROUNDS {
@@ -55,18 +55,18 @@ pub(crate) fn collect_closure_cap_tys(core: &CoreModule) -> HashMap<String, Hash
 
 fn walk_block(
     block: &Block,
-    current_fun: &str,
+    current_fun: &Sym,
     local_tys: &mut HashMap<u32, Type>,
     slot_tys: &mut HashMap<Sym, Type>,
     funref: &mut FunRefAliases,
-    fun_ret_tys: &HashMap<String, Type>,
-    fun_param_tys: &HashMap<String, Vec<Type>>,
-    fun_param0_identity: &HashSet<String>,
+    fun_ret_tys: &HashMap<Sym, Type>,
+    fun_param_tys: &HashMap<Sym, Vec<Type>>,
+    fun_param0_identity: &HashSet<Sym>,
     local_int_consts: &HashMap<u32, i64>,
     sum_max_arity: &HashMap<String, usize>,
     channel_elem_hint: Option<&Type>,
     channel_elem_by_local: &HashMap<u32, Type>,
-    out: &mut HashMap<String, HashMap<u32, Type>>,
+    out: &mut HashMap<Sym, HashMap<u32, Type>>,
 ) {
     for op in &block.ops {
         match op {
@@ -150,18 +150,18 @@ fn walk_block(
 
 fn walk_value_nested(
     value: &Value,
-    current_fun: &str,
+    current_fun: &Sym,
     local_tys: &mut HashMap<u32, Type>,
     slot_tys: &mut HashMap<Sym, Type>,
     funref: &mut FunRefAliases,
-    fun_ret_tys: &HashMap<String, Type>,
-    fun_param_tys: &HashMap<String, Vec<Type>>,
-    fun_param0_identity: &HashSet<String>,
+    fun_ret_tys: &HashMap<Sym, Type>,
+    fun_param_tys: &HashMap<Sym, Vec<Type>>,
+    fun_param0_identity: &HashSet<Sym>,
     local_int_consts: &HashMap<u32, i64>,
     sum_max_arity: &HashMap<String, usize>,
     channel_elem_hint: Option<&Type>,
     channel_elem_by_local: &HashMap<u32, Type>,
-    out: &mut HashMap<String, HashMap<u32, Type>>,
+    out: &mut HashMap<Sym, HashMap<u32, Type>>,
 ) {
     lumia_core::for_each_nested_block(value, &mut |b| {
         walk_block(

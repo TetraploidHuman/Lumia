@@ -62,7 +62,7 @@ impl<'ctx> Codegen<'ctx> {
         self.frame.emit_dest = None;
         self.frame.expect_alloc_ty = None;
         self.frame.install_nsw_from_fun(fun);
-        self.funs.current_fun = fun.name.to_string();
+        self.funs.current_fun = fun.name.clone();
         self.memo.current_memo = fun.memo;
         self.funs.tco_peers = self
             .funs

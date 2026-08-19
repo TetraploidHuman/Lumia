@@ -2,17 +2,17 @@
 
 use crate::ir::{Block, CoreModule, Op, Value};
 use crate::visit::{collect_closure_cap_funrefs, for_each_top_level_op_in_block_mut};
-use rustc_hash::{FxHashMap as HashMap, FxHashSet};
 use lumia_hir::Sym;
+use rustc_hash::{FxHashMap as HashMap, FxHashSet};
 
 pub(crate) fn directize_funref_calls(module: &mut CoreModule) {
     // AllocClosure capture index → FunRef name, so spawn thunks that capture
     // a FunRef still directize `icall` → `Call` (mono can specialize Float).
     // Do **not** directize when the captured value is itself a closure with an
     // env (`{ x -> g(x) }` under spawn): `Call(__lam_env, [x])` drops the env.
-    let mut cap_funs: HashMap<String, HashMap<u32, String>> = HashMap::default();
+    let mut cap_funs: HashMap<Sym, HashMap<u32, Sym>> = HashMap::default();
     for fun in &module.functions {
-        let mut funref_locals: HashMap<u32, String> = HashMap::default();
+        let mut funref_locals: HashMap<u32, Sym> = HashMap::default();
         collect_closure_cap_funrefs(&fun.body, &mut funref_locals, &mut cap_funs);
     }
     let with_env = funs_with_closure_env(module);
@@ -23,9 +23,9 @@ pub(crate) fn directize_funref_calls(module: &mut CoreModule) {
             .get(fun.name.as_str())
             .cloned()
             .unwrap_or_default();
-        let caps: HashMap<u32, String> = caps
+        let caps: HashMap<u32, Sym> = caps
             .into_iter()
-            .filter(|(_, name)| !with_env.contains(name))
+            .filter(|(_, name)| !with_env.contains(name.as_str()))
             .collect();
         directize_block_with_slots(&mut fun.body, &empty_funrefs, &empty_slots, &caps);
     }
@@ -33,7 +33,7 @@ pub(crate) fn directize_funref_calls(module: &mut CoreModule) {
 
 /// Names of `__lam_*` / funs that are allocated with a non-empty capture list
 /// (first param is the env pointer; must stay `IndirectCall`).
-fn funs_with_closure_env(module: &CoreModule) -> FxHashSet<String> {
+fn funs_with_closure_env(module: &CoreModule) -> FxHashSet<Sym> {
     let mut out = FxHashSet::default();
     for fun in &module.functions {
         crate::collect_alloc_closure_env_funs(&fun.body, &mut out);
@@ -41,7 +41,7 @@ fn funs_with_closure_env(module: &CoreModule) -> FxHashSet<String> {
     out
 }
 
-pub(crate) fn directize_block(block: &mut Block, parent_funrefs: &HashMap<u32, String>) {
+pub(crate) fn directize_block(block: &mut Block, parent_funrefs: &HashMap<u32, Sym>) {
     directize_block_with_slots(
         block,
         parent_funrefs,
@@ -52,9 +52,9 @@ pub(crate) fn directize_block(block: &mut Block, parent_funrefs: &HashMap<u32, S
 
 fn directize_block_with_slots(
     block: &mut Block,
-    parent_funrefs: &HashMap<u32, String>,
-    parent_slot_funrefs: &HashMap<Sym, String>,
-    cap_funs: &HashMap<u32, String>,
+    parent_funrefs: &HashMap<u32, Sym>,
+    parent_slot_funrefs: &HashMap<Sym, Sym>,
+    cap_funs: &HashMap<u32, Sym>,
 ) {
     // Inherit FunRef bindings from the enclosing block so `val f = g; if … { f(x) }`
     // inside nested If/Loop still becomes a direct `Call`.
@@ -75,9 +75,9 @@ fn directize_block_with_slots(
 
 fn walk_nested_blocks_directize(
     value: &mut Value,
-    funref_of: &HashMap<u32, String>,
-    slot_funrefs: &HashMap<Sym, String>,
-    cap_funs: &HashMap<u32, String>,
+    funref_of: &HashMap<u32, Sym>,
+    slot_funrefs: &HashMap<Sym, Sym>,
+    cap_funs: &HashMap<u32, Sym>,
 ) {
     match value {
         Value::If {
@@ -109,7 +109,7 @@ fn walk_nested_blocks_directize(
     }
 }
 
-fn directize_value(value: &mut Value, funref_of: &HashMap<u32, String>) {
+fn directize_value(value: &mut Value, funref_of: &HashMap<u32, Sym>) {
     let Value::IndirectCall { callee, args } = value else {
         return;
     };

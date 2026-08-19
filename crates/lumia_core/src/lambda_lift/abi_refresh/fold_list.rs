@@ -3,6 +3,7 @@
 use super::local_lookup::{funref_name_of_local, infer_local_fun_ty, local_def};
 use crate::ir::{Block, CoreModule, Value};
 use lumia_hir::Builtin;
+use lumia_hir::Sym;
 use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
@@ -23,8 +24,8 @@ pub(super) fn upgrade_captured_list_fold_float(module: &mut CoreModule) {
     let by_local = &module.channel_elem_by_local;
     let module_hint = module.channel_elem_hint.as_ref();
 
-    let mut float_cbs: HashSet<String> = HashSet::default();
-    let mut float_outers: HashSet<String> = HashSet::default();
+    let mut float_cbs: HashSet<Sym> = HashSet::default();
+    let mut float_outers: HashSet<Sym> = HashSet::default();
     for fun in &module.functions {
         if !fun.is_lifted_lambda() {
             continue;
@@ -46,7 +47,7 @@ pub(super) fn upgrade_captured_list_fold_float(module: &mut CoreModule) {
     }
 
     for fun in &mut module.functions {
-        if float_cbs.contains(fun.name.as_str()) {
+        if float_cbs.contains(&fun.name) {
             for ty in &mut fun.param_tys {
                 if matches!(ty, Type::Int | Type::Var(_)) {
                     *ty = Type::Float;
@@ -54,7 +55,7 @@ pub(super) fn upgrade_captured_list_fold_float(module: &mut CoreModule) {
             }
             fun.ret_ty = Type::Float;
         }
-        if float_outers.contains(fun.name.as_str()) {
+        if float_outers.contains(&fun.name) {
             // Env (params[0]) stays; user params (fold init) → Float.
             for i in 1..fun.param_tys.len() {
                 if matches!(fun.param_tys[i], Type::Int | Type::Var(_)) {
@@ -82,7 +83,7 @@ pub(super) fn upgrade_list_params_from_float_call_sites(module: &mut CoreModule)
     let lifted = super::super::lifted_lambda_names(module);
     let empty = HashMap::default();
 
-    let mut need: HashMap<String, HashSet<usize>> = HashMap::default();
+    let mut need: HashMap<Sym, HashSet<usize>> = HashMap::default();
     for fun in &module.functions {
         let caps = fun_cap_tys.get(fun.name.as_str()).unwrap_or(&empty);
         collect_float_list_call_args(
@@ -96,7 +97,7 @@ pub(super) fn upgrade_list_params_from_float_call_sites(module: &mut CoreModule)
     }
 
     for fun in &mut module.functions {
-        let Some(idxs) = need.get(fun.name.as_str()) else {
+        let Some(idxs) = need.get(&fun.name) else {
             continue;
         };
         for &i in idxs {
@@ -117,17 +118,17 @@ pub(super) fn upgrade_list_params_from_float_call_sites(module: &mut CoreModule)
 pub(super) fn collect_float_list_call_args(
     block: &Block,
     caps: &HashMap<u32, Type>,
-    fun_ret_tys: &HashMap<String, Type>,
-    fun_param_tys: &HashMap<String, Vec<Type>>,
-    lifted: &HashSet<String>,
-    need: &mut HashMap<String, HashSet<usize>>,
+    fun_ret_tys: &HashMap<Sym, Type>,
+    fun_param_tys: &HashMap<Sym, Vec<Type>>,
+    lifted: &HashSet<Sym>,
+    need: &mut HashMap<Sym, HashSet<usize>>,
 ) {
     // Order-independent map inserts — DFS via for_each_let_value.
     crate::for_each_let_value(block, &mut |b, value| match value {
         Value::Call { fun, args } => {
             note_float_list_args(
                 b,
-                fun.as_str(),
+                &fun.name,
                 args,
                 caps,
                 fun_ret_tys,
@@ -156,13 +157,13 @@ pub(super) fn collect_float_list_call_args(
 
 pub(super) fn note_float_list_args(
     block: &Block,
-    fun: &str,
+    fun: &Sym,
     args: &[crate::Local],
     caps: &HashMap<u32, Type>,
-    fun_ret_tys: &HashMap<String, Type>,
-    fun_param_tys: &HashMap<String, Vec<Type>>,
-    lifted: &HashSet<String>,
-    need: &mut HashMap<String, HashSet<usize>>,
+    fun_ret_tys: &HashMap<Sym, Type>,
+    fun_param_tys: &HashMap<Sym, Vec<Type>>,
+    lifted: &HashSet<Sym>,
+    need: &mut HashMap<Sym, HashSet<usize>>,
 ) {
     let params = fun_param_tys.get(fun).map(|p| p.as_slice()).unwrap_or(&[]);
     // Closure env is params[0]; user args align to params[1..] when present.
@@ -173,7 +174,7 @@ pub(super) fn note_float_list_args(
     };
     for (i, a) in args.iter().enumerate() {
         if arg_is_float_list(block, a.0, caps, fun_ret_tys, fun_param_tys) {
-            need.entry(fun.to_string()).or_default().insert(i + offset);
+            need.entry(fun.clone()).or_default().insert(i + offset);
         }
     }
 }
@@ -182,8 +183,8 @@ pub(super) fn arg_is_float_list(
     block: &Block,
     id: u32,
     caps: &HashMap<u32, Type>,
-    fun_ret_tys: &HashMap<String, Type>,
-    fun_param_tys: &HashMap<String, Vec<Type>>,
+    fun_ret_tys: &HashMap<Sym, Type>,
+    fun_param_tys: &HashMap<Sym, Vec<Type>>,
 ) -> bool {
     fold_list_arg_is_float_list(
         block,
@@ -199,14 +200,14 @@ pub(super) fn arg_is_float_list(
 pub(super) fn collect_list_fold_float_upgrade(
     block: &Block,
     caps: &HashMap<u32, Type>,
-    fun_ret_tys: &HashMap<String, Type>,
-    fun_param_tys: &HashMap<String, Vec<Type>>,
+    fun_ret_tys: &HashMap<Sym, Type>,
+    fun_param_tys: &HashMap<Sym, Vec<Type>>,
     channel_by_local: &HashMap<u32, Type>,
     channel_module_hint: Option<&Type>,
-    outer_name: &str,
+    outer_name: &Sym,
     fold_acc_ret: bool,
-    float_cbs: &mut HashSet<String>,
-    float_outers: &mut HashSet<String>,
+    float_cbs: &mut HashSet<Sym>,
+    float_outers: &mut HashSet<Sym>,
 ) {
     // Order-independent set inserts — DFS via for_each_let_value.
     crate::for_each_let_value(block, &mut |b, value| {
@@ -234,7 +235,7 @@ pub(super) fn collect_list_fold_float_upgrade(
                         channel_module_hint,
                     ))) =>
             {
-                float_outers.insert(outer_name.to_string());
+                float_outers.insert(outer_name.clone());
                 if let Some(cb) = funref_name_of_local(b, args[2].0) {
                     float_cbs.insert(cb);
                 }
@@ -259,7 +260,7 @@ pub(super) fn collect_list_fold_float_upgrade(
                     channel_module_hint,
                 ) =>
             {
-                float_outers.insert(outer_name.to_string());
+                float_outers.insert(outer_name.clone());
             }
             _ => {}
         }
@@ -289,8 +290,8 @@ pub(super) fn is_scalar_fold_acc_slot(name: &str) -> bool {
 pub(super) fn block_has_elems_of_float_list(
     block: &Block,
     caps: &HashMap<u32, Type>,
-    fun_ret_tys: &HashMap<String, Type>,
-    fun_param_tys: &HashMap<String, Vec<Type>>,
+    fun_ret_tys: &HashMap<Sym, Type>,
+    fun_param_tys: &HashMap<Sym, Vec<Type>>,
     channel_by_local: &HashMap<u32, Type>,
     channel_module_hint: Option<&Type>,
 ) -> bool {
@@ -327,8 +328,8 @@ pub(super) fn fold_list_arg_is_float_list(
     block: &Block,
     id: u32,
     caps: &HashMap<u32, Type>,
-    fun_ret_tys: &HashMap<String, Type>,
-    fun_param_tys: &HashMap<String, Vec<Type>>,
+    fun_ret_tys: &HashMap<Sym, Type>,
+    fun_param_tys: &HashMap<Sym, Vec<Type>>,
     channel_by_local: &HashMap<u32, Type>,
     channel_module_hint: Option<&Type>,
 ) -> bool {
@@ -504,8 +505,8 @@ pub(super) fn map_values_are_float_list(
     block: &Block,
     id: u32,
     caps: &HashMap<u32, Type>,
-    fun_ret_tys: &HashMap<String, Type>,
-    fun_param_tys: &HashMap<String, Vec<Type>>,
+    fun_ret_tys: &HashMap<Sym, Type>,
+    fun_param_tys: &HashMap<Sym, Vec<Type>>,
     channel_by_local: &HashMap<u32, Type>,
     channel_module_hint: Option<&Type>,
 ) -> bool {

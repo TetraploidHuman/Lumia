@@ -5,13 +5,14 @@
 
 use crate::ir::{Block, CoreModule, Local, Value};
 use crate::{collect_funref_callees, find_top_level_local_def, FunRefAliases};
+use lumia_syntax::Sym;
 use lumia_ty::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// Resolved tail-position recursive call for musttail emission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TcoTailCall {
-    pub fun: String,
+    pub fun: Sym,
     pub args: Vec<Local>,
 }
 
@@ -23,17 +24,17 @@ pub struct TcoTailCall {
 pub fn resolve_tco_callee(
     block: &Block,
     value: &Value,
-    peers: &HashSet<String>,
+    peers: &HashSet<Sym>,
     aliases: &FunRefAliases,
     seen_locals: &mut HashSet<u32>,
-) -> Option<(String, Vec<Local>)> {
+) -> Option<(Sym, Vec<Local>)> {
     match value {
         Value::Call { fun, args } if peers.contains(fun.as_str()) => {
             Some((fun.name.clone(), args.clone()))
         }
         Value::IndirectCall { callee, args } => {
-            let fun = aliases.resolve(callee.0)?.to_string();
-            peers.contains(&fun).then(|| (fun, args.clone()))
+            let fun = Sym::from(aliases.resolve(callee.0)?);
+            peers.contains(fun.as_str()).then(|| (fun, args.clone()))
         }
         Value::Local(Local(id)) => {
             if !seen_locals.insert(*id) {
@@ -50,9 +51,9 @@ pub fn resolve_tco_callee(
 pub fn resolve_tco_callee_fresh(
     block: &Block,
     value: &Value,
-    peers: &HashSet<String>,
+    peers: &HashSet<Sym>,
     aliases: &FunRefAliases,
-) -> Option<(String, Vec<Local>)> {
+) -> Option<(Sym, Vec<Local>)> {
     resolve_tco_callee(block, value, peers, aliases, &mut HashSet::default())
 }
 
@@ -60,7 +61,7 @@ pub fn resolve_tco_callee_fresh(
 pub fn resolve_tco_tail_call(
     block: &Block,
     value: &Value,
-    peers: &HashSet<String>,
+    peers: &HashSet<Sym>,
     aliases: &FunRefAliases,
 ) -> Option<TcoTailCall> {
     resolve_tco_callee_fresh(block, value, peers, aliases)
@@ -86,8 +87,8 @@ fn tco_eligible_ty(t: &Type) -> bool {
 }
 
 /// Map each TCO-eligible function name to its full mutual-recursion peer set.
-pub fn compute_tco_sccs(core: &CoreModule) -> HashMap<String, HashSet<String>> {
-    let eligible: HashSet<String> = core
+pub fn compute_tco_sccs(core: &CoreModule) -> HashMap<Sym, HashSet<Sym>> {
+    let eligible: HashSet<Sym> = core
         .functions
         .iter()
         .filter(|f| {
@@ -99,12 +100,12 @@ pub fn compute_tco_sccs(core: &CoreModule) -> HashMap<String, HashSet<String>> {
                 && tco_eligible_ty(&f.ret_ty)
                 && f.param_tys.iter().all(tco_eligible_ty)
         })
-        .map(|f| f.name.to_string())
+        .map(|f| f.name.clone())
         .collect();
     if eligible.is_empty() {
         return HashMap::default();
     }
-    let mut graph: HashMap<String, HashSet<String>> = HashMap::default();
+    let mut graph: HashMap<Sym, HashSet<Sym>> = HashMap::default();
     for name in &eligible {
         graph.insert(name.clone(), HashSet::default());
     }
@@ -115,8 +116,8 @@ pub fn compute_tco_sccs(core: &CoreModule) -> HashMap<String, HashSet<String>> {
         let mut callees = HashSet::default();
         collect_funref_callees(&f.body, &mut callees);
         for c in callees {
-            if eligible.contains(&c) {
-                graph.entry(f.name.to_string()).or_default().insert(c);
+            if eligible.contains(c.as_str()) {
+                graph.entry(f.name.clone()).or_default().insert(c);
             }
         }
     }
@@ -124,31 +125,31 @@ pub fn compute_tco_sccs(core: &CoreModule) -> HashMap<String, HashSet<String>> {
 }
 
 fn tarjan_sccs(
-    graph: &HashMap<String, HashSet<String>>,
-    eligible: &HashSet<String>,
-) -> HashMap<String, HashSet<String>> {
+    graph: &HashMap<Sym, HashSet<Sym>>,
+    eligible: &HashSet<Sym>,
+) -> HashMap<Sym, HashSet<Sym>> {
     let mut index = 0u32;
-    let mut stack: Vec<String> = Vec::new();
-    let mut on_stack: HashSet<String> = HashSet::default();
-    let mut indices: HashMap<String, u32> = HashMap::default();
-    let mut lowlink: HashMap<String, u32> = HashMap::default();
-    let mut sccs: Vec<HashSet<String>> = Vec::new();
+    let mut stack: Vec<Sym> = Vec::new();
+    let mut on_stack: HashSet<Sym> = HashSet::default();
+    let mut indices: HashMap<Sym, u32> = HashMap::default();
+    let mut lowlink: HashMap<Sym, u32> = HashMap::default();
+    let mut sccs: Vec<HashSet<Sym>> = Vec::new();
 
     fn strongconnect(
-        v: &str,
-        graph: &HashMap<String, HashSet<String>>,
+        v: &Sym,
+        graph: &HashMap<Sym, HashSet<Sym>>,
         index: &mut u32,
-        stack: &mut Vec<String>,
-        on_stack: &mut HashSet<String>,
-        indices: &mut HashMap<String, u32>,
-        lowlink: &mut HashMap<String, u32>,
-        sccs: &mut Vec<HashSet<String>>,
+        stack: &mut Vec<Sym>,
+        on_stack: &mut HashSet<Sym>,
+        indices: &mut HashMap<Sym, u32>,
+        lowlink: &mut HashMap<Sym, u32>,
+        sccs: &mut Vec<HashSet<Sym>>,
     ) {
-        indices.insert(v.to_string(), *index);
-        lowlink.insert(v.to_string(), *index);
+        indices.insert(v.clone(), *index);
+        lowlink.insert(v.clone(), *index);
         *index += 1;
-        stack.push(v.to_string());
-        on_stack.insert(v.to_string());
+        stack.push(v.clone());
+        on_stack.insert(v.clone());
         if let Some(ns) = graph.get(v) {
             for w in ns {
                 if !indices.contains_key(w) {
@@ -159,7 +160,7 @@ fn tarjan_sccs(
                     let lv = *lowlink
                         .get(v)
                         .expect("ICE: Tarjan lowlink missing for current");
-                    lowlink.insert(v.to_string(), lv.min(lw));
+                    lowlink.insert(v.clone(), lv.min(lw));
                 } else if on_stack.contains(w) {
                     let iw = *indices
                         .get(w)
@@ -167,7 +168,7 @@ fn tarjan_sccs(
                     let lv = *lowlink
                         .get(v)
                         .expect("ICE: Tarjan lowlink missing for current");
-                    lowlink.insert(v.to_string(), lv.min(iw));
+                    lowlink.insert(v.clone(), lv.min(iw));
                 }
             }
         }
@@ -177,7 +178,7 @@ fn tarjan_sccs(
                 let w = stack.pop().expect("ICE: Tarjan SCC pop on empty stack");
                 on_stack.remove(&w);
                 comp.insert(w.clone());
-                if w == v {
+                if &w == v {
                     break;
                 }
             }
@@ -446,7 +447,7 @@ val main = { sumTo(10.0, 0.0) }
 
     #[test]
     fn resolve_tco_callee_peels_local_alias_to_call() {
-        let peers: HashSet<String> = ["sum".into()].into_iter().collect();
+        let peers: HashSet<Sym> = [Sym::from("sum")].into_iter().collect();
         let block = Block {
             ops: vec![
                 Op::Let {
@@ -468,13 +469,13 @@ val main = { sumTo(10.0, 0.0) }
         let tail = find_top_level_local_def(&block, 3).expect("tail def");
         let (fun, args) =
             resolve_tco_callee_fresh(&block, tail, &peers, &FunRefAliases::default()).expect("tco");
-        assert_eq!(fun, "sum");
+        assert_eq!(fun.as_str(), "sum");
         assert_eq!(args, vec![Local(0), Local(2)]);
     }
 
     #[test]
     fn resolve_tco_callee_indirect_via_slot() {
-        let peers: HashSet<String> = ["odd".into()].into_iter().collect();
+        let peers: HashSet<Sym> = [Sym::from("odd")].into_iter().collect();
         let mut aliases = FunRefAliases::default();
         aliases.note_let(0, &Value::FunRef("odd".into()), FunRefAlloc::Ignore, None);
         aliases.note_assign(lumia_hir::Sym::from("next"), Local(0));
@@ -492,12 +493,12 @@ val main = { sumTo(10.0, 0.0) }
         };
         let tail = find_top_level_local_def(&block, 2).expect("tail");
         let (fun, _) = resolve_tco_callee_fresh(&block, tail, &peers, &aliases).expect("tco");
-        assert_eq!(fun, "odd");
+        assert_eq!(fun.as_str(), "odd");
     }
 
     #[test]
     fn resolve_tco_tail_call_via_return_local() {
-        let peers: HashSet<String> = ["sum".into()].into_iter().collect();
+        let peers: HashSet<Sym> = [Sym::from("sum")].into_iter().collect();
         let block = Block {
             ops: vec![
                 Op::Let {
@@ -613,6 +614,6 @@ val main = { sum(10, 0) }
         let (fun, _) =
             resolve_tco_callee_fresh(else_block, tail, &peers, &FunRefAliases::default())
                 .expect("alias tail must resolve to sum");
-        assert_eq!(fun, "sum");
+        assert_eq!(fun.as_str(), "sum");
     }
 }

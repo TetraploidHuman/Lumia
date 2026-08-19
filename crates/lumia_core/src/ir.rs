@@ -23,14 +23,14 @@ pub struct FunId(pub u32);
 /// Callee of a direct [`Value::Call`]: name always present; id when resolved.
 #[derive(Debug, Clone)]
 pub struct CallTarget {
-    pub name: String,
+    pub name: Sym,
     /// [`FunId`] into the current module, or `None` if unknown / not yet resolved.
     pub id: Option<FunId>,
 }
 
 impl CallTarget {
     #[inline]
-    pub fn named(name: impl Into<String>) -> Self {
+    pub fn named(name: impl Into<Sym>) -> Self {
         Self {
             name: name.into(),
             id: None,
@@ -39,7 +39,7 @@ impl CallTarget {
 
     #[inline]
     pub fn as_str(&self) -> &str {
-        &self.name
+        self.name.as_str()
     }
 }
 
@@ -52,6 +52,12 @@ impl From<&str> for CallTarget {
 impl From<String> for CallTarget {
     fn from(s: String) -> Self {
         Self::named(s)
+    }
+}
+
+impl From<Sym> for CallTarget {
+    fn from(name: Sym) -> Self {
+        Self::named(name)
     }
 }
 
@@ -69,13 +75,19 @@ impl PartialEq<&str> for CallTarget {
 
 impl PartialEq<String> for CallTarget {
     fn eq(&self, other: &String) -> bool {
+        self.name == *other
+    }
+}
+
+impl PartialEq<Sym> for CallTarget {
+    fn eq(&self, other: &Sym) -> bool {
         &self.name == other
     }
 }
 
 impl PartialEq<CallTarget> for String {
     fn eq(&self, other: &CallTarget) -> bool {
-        self == &other.name
+        self.as_str() == other.name.as_str()
     }
 }
 
@@ -85,22 +97,28 @@ impl PartialEq<CallTarget> for str {
     }
 }
 
+impl PartialEq<CallTarget> for Sym {
+    fn eq(&self, other: &CallTarget) -> bool {
+        self == &other.name
+    }
+}
+
 impl AsRef<str> for CallTarget {
     fn as_ref(&self) -> &str {
-        &self.name
+        self.name.as_str()
     }
 }
 
 impl std::ops::Deref for CallTarget {
     type Target = str;
     fn deref(&self) -> &str {
-        &self.name
+        self.name.as_str()
     }
 }
 
 impl std::fmt::Display for CallTarget {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.name)
+        f.write_str(self.name.as_str())
     }
 }
 
