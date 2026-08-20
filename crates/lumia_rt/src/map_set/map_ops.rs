@@ -17,9 +17,10 @@ use crate::list::force_heap_list;
 
 use super::map_core::{
     alloc_adt_none_immortal, alloc_adt_with_meta, linear_grow_cap, map_alloc_hash_tid,
-    map_alloc_overlay, map_clone_hash_upsert, map_find, map_from_linear_to_hash, map_hash_find_slot,
-    map_hash_put_new, map_is_hash, map_is_overlay, map_linear_nbytes, map_linear_pair_capacity,
-    map_lookup_val, map_materialize, map_overlay_dn, map_overlay_parent, map_pair_at, MAP_SMALL_MAX,
+    map_alloc_overlay, map_clone_hash_upsert, map_find, map_from_linear_to_hash,
+    map_hash_compact_order_window, map_hash_find_slot, map_hash_put_new, map_is_hash, map_is_overlay,
+    map_linear_nbytes, map_linear_pair_capacity, map_lookup_val, map_materialize, map_overlay_dn,
+    map_overlay_parent, map_pair_at_unguarded, MAP_SMALL_MAX,
 };
 use super::overlay::{overlay_compact_entries, overlay_entry_capacity, MAP_OVERLAY_MAX};
 use super::tid::{key_eq, map_float_keys, map_float_vals, map_is_assoc, map_tid};
@@ -190,7 +191,8 @@ pub unsafe extern "C" fn lumia_map_set(map: *mut u8, key: i64, val: i64) -> *mut
         if map_rc_is_unique(map) {
             let base = map as *mut i64;
             let n = *base;
-            let cap = *base.add(1) as usize;
+            let meta = *base.add(1);
+            let cap = super::open_hash_cap(meta);
             if let Some(slot) = map_hash_find_slot(map, key) {
                 let cell = base.add(2 + cap + slot * 3);
                 *cell.add(1) = val;
@@ -200,6 +202,7 @@ pub unsafe extern "C" fn lumia_map_set(map: *mut u8, key: i64, val: i64) -> *mut
                 return map;
             }
             if (n as usize + 1) * 2 <= cap {
+                map_hash_compact_order_window(map);
                 map_hash_put_new(map, key, val, n as usize);
                 *base = n + 1;
                 return map;
@@ -278,7 +281,9 @@ pub unsafe extern "C" fn lumia_map_remove(map: *mut u8, key: i64) -> *mut u8 {
         if map_is_hash(map) {
             let base = map as *const i64;
             let n = *base;
-            let cap = *base.add(1) as usize;
+            let meta = *base.add(1);
+            let cap = super::open_hash_cap(meta);
+            let start = super::open_hash_order_start(meta);
             let Some(slot) = map_hash_find_slot(map, key) else {
                 return map;
             };
@@ -292,13 +297,14 @@ pub unsafe extern "C" fn lumia_map_remove(map: *mut u8, key: i64) -> *mut u8 {
             }
             if map_rc_is_unique(map) {
                 if n2 > MAP_SMALL_MAX {
-                    super::open_hash_remove_slot(map as *mut i64, cap, slot, n, 3, 2);
+                    super::open_hash_remove_slot(map as *mut i64, slot, n, 3, 2);
                 } else {
                     super::open_hash_demote_linear_in_place(
                         map,
                         slot,
                         n,
                         cap,
+                        start,
                         3,
                         2,
                         lumia_abi::tid_without_hash(tid),
@@ -314,7 +320,7 @@ pub unsafe extern "C" fn lumia_map_remove(map: *mut u8, key: i64) -> *mut u8 {
                 *dst = n2;
                 let mut w = 0usize;
                 for i in 0..n as usize {
-                    let s = *base.add(2 + i) as usize;
+                    let s = *base.add(2 + start + i) as usize;
                     if s == slot {
                         continue;
                     }
@@ -328,7 +334,7 @@ pub unsafe extern "C" fn lumia_map_remove(map: *mut u8, key: i64) -> *mut u8 {
             let dest = map_alloc_hash_tid(cap, n2, tid);
             let mut w = 0usize;
             for i in 0..n as usize {
-                let s = *base.add(2 + i) as usize;
+                let s = *base.add(2 + start + i) as usize;
                 if s == slot {
                     continue;
                 }
@@ -433,7 +439,7 @@ pub unsafe extern "C" fn lumia_map_keys(map: *mut u8) -> *mut u8 {
         *dst = n;
         if !map.is_null() {
             for i in 0..n as usize {
-                let (k, _) = map_pair_at(map, i);
+                let (k, _) = map_pair_at_unguarded(map, i);
                 *dst.add(1 + i) = k;
             }
         }
@@ -466,7 +472,7 @@ pub unsafe extern "C" fn lumia_map_values(map: *mut u8) -> *mut u8 {
         *dst = n;
         if !map.is_null() {
             for i in 0..n as usize {
-                let (_, v) = map_pair_at(map, i);
+                let (_, v) = map_pair_at_unguarded(map, i);
                 *dst.add(1 + i) = v;
             }
         }
@@ -519,7 +525,7 @@ pub unsafe extern "C" fn lumia_map_items(map: *mut u8, bool_mask: i64) -> *mut u
             }
             let pair_bmask = (bool_mask as u64) & 0b11;
             for i in 0..n as usize {
-                let (k, v) = map_pair_at(map, i);
+                let (k, v) = map_pair_at_unguarded(map, i);
                 let pair = alloc_adt_with_meta(0, &[k, v], 0, pair_fmask, pair_bmask);
                 *dst.add(1 + i) = pair as i64;
             }

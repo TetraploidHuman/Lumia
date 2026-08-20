@@ -64,6 +64,27 @@ fn map_overlay_set_avoids_full_clone() {
 }
 
 #[test]
+fn map_unique_hash_prefix_remove_keeps_order() {
+    let mut m: *mut u8 = ptr::null_mut();
+    unsafe { lumia_root_push(&mut m as *mut *mut u8) };
+    for i in 0..32 {
+        m = unsafe { lumia_map_set(m, i, i * 10) };
+    }
+    assert!(map_is_hash(m));
+    for i in 0..16 {
+        m = unsafe { lumia_map_remove(m, i) };
+    }
+    assert_eq!(map_count(m), 16);
+    assert_eq!(unsafe { lumia_map_contains(m, 0) }, 0);
+    assert_eq!(unsafe { lumia_map_contains(m, 16) }, 1);
+    let (k0, v0) = unsafe { map_pair_at(m, 0) };
+    assert_eq!((k0, v0), (16, 160));
+    let (k15, v15) = unsafe { map_pair_at(m, 15) };
+    assert_eq!((k15, v15), (31, 310));
+    lumia_root_pop();
+}
+
+#[test]
 fn map_unique_hash_inserts_in_place() {
     let mut m: *mut u8 = ptr::null_mut();
     unsafe { lumia_root_push(&mut m as *mut *mut u8) };

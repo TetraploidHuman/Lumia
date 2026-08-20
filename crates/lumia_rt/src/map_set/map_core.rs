@@ -143,7 +143,7 @@ pub(crate) unsafe fn map_lookup_val(map: *mut u8, key: i64) -> Option<i64> {
     match map_find(map, key) {
         Some(i) if map_is_hash(map) => {
             let base = map as *const i64;
-            let cap = *base.add(1) as usize;
+            let cap = super::open_hash_cap(*base.add(1));
             let cell = base.add(2 + cap + i * 3);
             Some(*cell.add(1))
         }
@@ -170,7 +170,7 @@ pub(crate) unsafe fn map_materialize(map: *mut u8) -> *mut u8 {
     let total = parent_n + dn;
     if map_is_hash(parent) || total as i64 > MAP_SMALL_MAX {
         let mut cap = if map_is_hash(parent) {
-            *(parent as *const i64).add(1) as usize
+            super::open_hash_cap(*(parent as *const i64).add(1))
         } else {
             16
         };
@@ -180,9 +180,11 @@ pub(crate) unsafe fn map_materialize(map: *mut u8) -> *mut u8 {
         let dest = map_alloc_hash_tid(cap, 0, map_tid(parent));
         if map_is_hash(parent) {
             let pbase = parent as *const i64;
+            let pmeta = *pbase.add(1);
+            let pcap = super::open_hash_cap(pmeta);
+            let pstart = super::open_hash_order_start(pmeta);
             for i in 0..parent_n {
-                let s = *pbase.add(2 + i) as usize;
-                let pcap = *pbase.add(1) as usize;
+                let s = *pbase.add(2 + pstart + i) as usize;
                 let cell = pbase.add(2 + pcap + s * 3);
                 map_hash_put_new(dest, *cell, *cell.add(1), i);
             }
@@ -309,20 +311,21 @@ pub(crate) fn map_mark_payload(
             return;
         }
         let n = n0 as usize;
-        let cap = *base.add(1);
-        if cap <= 0 {
+        let meta = *base.add(1);
+        let cap = super::open_hash_cap(meta);
+        let start = super::open_hash_order_start(meta);
+        if cap == 0 {
             return;
         }
-        let cap = cap as usize;
-        // Layout: [n][cap][order×cap][cells×cap×3] — words after the two headers.
+        // Layout: [n][meta][order×cap][cells×cap×3] — words after the two headers.
         let words = size / 8;
         if words < 2 + cap + cap * 3 {
             return;
         }
-        let max_n = n.min(cap).min(words.saturating_sub(2 + cap));
+        let max_n = n.min(cap.saturating_sub(start)).min(words.saturating_sub(2 + cap));
         let order = base.add(2);
         for i in 0..max_n {
-            let slot = *order.add(i);
+            let slot = *order.add(start + i);
             if slot < 0 {
                 continue;
             }
@@ -387,6 +390,11 @@ pub(crate) fn map_eq(a: *mut u8, b: *mut u8) -> i64 {
 /// i-th pair in insertion order.
 pub(crate) unsafe fn map_pair_at(map: *mut u8, i: usize) -> (i64, i64) {
     let _gc = GcInhibitGuard::enter();
+    map_pair_at_unguarded(map, i)
+}
+
+/// Like [`map_pair_at`] but caller already holds [`GcInhibitGuard`] / flattened map.
+pub(crate) unsafe fn map_pair_at_unguarded(map: *mut u8, i: usize) -> (i64, i64) {
     let map = if map_is_overlay(map) {
         map_materialize(map)
     } else {
@@ -394,8 +402,10 @@ pub(crate) unsafe fn map_pair_at(map: *mut u8, i: usize) -> (i64, i64) {
     };
     let base = map as *const i64;
     if map_is_hash(map) {
-        let cap = *base.add(1) as usize;
-        let slot = *base.add(2 + i) as usize;
+        let meta = *base.add(1);
+        let cap = super::open_hash_cap(meta);
+        let start = super::open_hash_order_start(meta);
+        let slot = *base.add(2 + start + i) as usize;
         let cell = base.add(2 + cap + slot * 3);
         (*cell, *cell.add(1))
     } else {
@@ -406,9 +416,27 @@ pub(crate) unsafe fn map_pair_at(map: *mut u8, i: usize) -> (i64, i64) {
 pub(crate) unsafe fn map_hash_find_slot(map: *mut u8, key: i64) -> Option<usize> {
     let float_keys = map_float_keys(map);
     let base = map as *const i64;
-    let cap = *base.add(1) as usize;
+    let cap = super::open_hash_cap(*base.add(1));
     // Map cell: (key, val, state) — stride 3, state at +2.
     super::open_hash_find_slot(base, cap, key, float_keys, 3, 2)
+}
+
+/// Slide the order window back to index 0 when inserts would run past `cap`.
+pub(crate) unsafe fn map_hash_compact_order_window(map: *mut u8) {
+    let base = map as *mut i64;
+    let n = *base as usize;
+    let meta = *base.add(1);
+    let cap = super::open_hash_cap(meta);
+    let start = super::open_hash_order_start(meta);
+    if start == 0 || start + n < cap {
+        return;
+    }
+    let order = base.add(2);
+    ptr::copy(order.add(start), order, n);
+    for i in n..(start + n).min(cap) {
+        *order.add(i) = -1;
+    }
+    *base.add(1) = super::open_hash_pack_meta(cap, 0);
 }
 
 /// Map payload helpers — linear or HashOrdered (see above).
@@ -519,7 +547,9 @@ pub(crate) unsafe fn map_alloc_hash_tid(cap: usize, count: i64, tid: u32) -> *mu
 pub(crate) unsafe fn map_hash_put_new(dest: *mut u8, key: i64, val: i64, order_i: usize) {
     let float_keys = map_float_keys(dest);
     let base = dest as *mut i64;
-    let cap = *base.add(1) as usize;
+    let meta = *base.add(1);
+    let cap = super::open_hash_cap(meta);
+    let start = super::open_hash_order_start(meta);
     // Map cell: (key, val, state) — stride 3, state at +2.
     let (idx, cell) = super::open_hash_claim_slot_or_trap(
         base,
@@ -537,14 +567,14 @@ pub(crate) unsafe fn map_hash_put_new(dest: *mut u8, key: i64, val: i64, order_i
     if !map_float_vals(dest) {
         unsafe { crate::lumia_write_barrier(dest, order_i as u32, val as *mut u8) };
     }
-    *base.add(2 + order_i) = idx as i64;
+    *base.add(2 + start + order_i) = idx as i64;
 }
 
 /// Insert or replace during hash-table build. Returns true if a new key was added.
 pub(crate) unsafe fn map_hash_upsert_build(dest: *mut u8, key: i64, val: i64) -> bool {
     if let Some(slot) = map_hash_find_slot(dest, key) {
         let base = dest as *mut i64;
-        let cap = *base.add(1) as usize;
+        let cap = super::open_hash_cap(*base.add(1));
         let cell = base.add(2 + cap + slot * 3);
         *cell.add(1) = val; // last wins
         if !map_float_vals(dest) {
@@ -582,7 +612,9 @@ pub(crate) unsafe fn map_from_linear_to_hash(
 pub(crate) unsafe fn map_clone_hash_upsert(src: *mut u8, key: i64, val: i64) -> *mut u8 {
     let base = src as *const i64;
     let n = *base;
-    let cap = *base.add(1) as usize;
+    let meta = *base.add(1);
+    let cap = super::open_hash_cap(meta);
+    let start = super::open_hash_order_start(meta);
     let replace = map_hash_find_slot(src, key);
     let n2 = if replace.is_some() { n } else { n + 1 };
     let need_grow = replace.is_none() && (n2 as usize * 2 > cap);
@@ -590,7 +622,7 @@ pub(crate) unsafe fn map_clone_hash_upsert(src: *mut u8, key: i64, val: i64) -> 
     let dest = map_alloc_hash_tid(new_cap, n2, map_tid(src));
     let mut w = 0usize;
     for i in 0..n as usize {
-        let slot = *base.add(2 + i) as usize;
+        let slot = *base.add(2 + start + i) as usize;
         let cell = base.add(2 + cap + slot * 3);
         let k = *cell;
         let v = if replace == Some(slot) {

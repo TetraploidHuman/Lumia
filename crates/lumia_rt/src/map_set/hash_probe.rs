@@ -5,10 +5,30 @@
 
 use super::tid::{key_eq, key_hash};
 use crate::common::{header_from_payload, trap_abort};
+use std::ptr;
 
 pub(crate) const OPEN_HASH_ST_EMPTY: i64 = 0;
 pub(crate) const OPEN_HASH_ST_FULL: i64 = 1;
 pub(crate) const OPEN_HASH_ST_TOMB: i64 = 2;
+
+/// Capacity in the low 32 bits of the HashOrdered meta word (`base[1]`).
+#[inline]
+pub(crate) fn open_hash_cap(meta: i64) -> usize {
+    (meta as u64 & 0xffff_ffff) as usize
+}
+
+/// Logical order window start (high 32 bits). Non-zero after prefix deletes.
+#[inline]
+pub(crate) fn open_hash_order_start(meta: i64) -> usize {
+    ((meta as u64) >> 32) as usize
+}
+
+#[inline]
+pub(crate) fn open_hash_pack_meta(cap: usize, order_start: usize) -> i64 {
+    debug_assert!(cap <= u32::MAX as usize);
+    debug_assert!(order_start <= u32::MAX as usize);
+    ((order_start as u64) << 32 | (cap as u64)) as i64
+}
 
 /// Linear-probe find in a HashOrdered table whose cells start at `base + 2 + cap`.
 ///
@@ -69,32 +89,50 @@ pub(crate) unsafe fn open_hash_claim_slot(
     None
 }
 
-/// Tombstone `slot` and compact insertion-order `[0, n)` so live count is `n-1`.
+/// Tombstone `slot` and drop it from the insertion-order window.
 ///
-/// Probe chains stay intact (`TOMB` ≠ `EMPTY`). Caller must keep `n-1 > 0`
-/// (empty tables become the immortal singleton, not a zero-count hash).
+/// Prefix deletes (`order[start] == slot`) only bump `order_start` (O(1)).
+/// Middle deletes shift the tail of the window (O(n)). Probe chains stay
+/// intact (`TOMB` ≠ `EMPTY`). Caller must keep `n-1 > 0`.
 pub(crate) unsafe fn open_hash_remove_slot(
     base: *mut i64,
-    cap: usize,
     slot: usize,
     n: i64,
     cell_stride: usize,
     state_off: usize,
 ) {
     debug_assert!(n > 1);
+    let meta = *base.add(1);
+    let cap = open_hash_cap(meta);
+    let start = open_hash_order_start(meta);
     debug_assert!(slot < cap);
+    debug_assert!(start + n as usize <= cap);
     let cell = base.add(2 + cap + slot * cell_stride);
     *cell.add(state_off) = OPEN_HASH_ST_TOMB;
-    let mut w = 0usize;
+    let order = base.add(2);
+    let mut idx = None;
     for i in 0..n as usize {
-        let s = *base.add(2 + i);
-        if s == slot as i64 {
-            continue;
+        if *order.add(start + i) == slot as i64 {
+            idx = Some(i);
+            break;
         }
-        *base.add(2 + w) = s;
-        w += 1;
     }
-    debug_assert_eq!(w as i64, n - 1);
+    let Some(idx) = idx else {
+        trap_abort("lumia: hash order missing removed slot");
+    };
+    if idx == 0 {
+        // Pop front of the order window — hot path for deleting insertion prefix.
+        *order.add(start) = -1;
+        *base.add(1) = open_hash_pack_meta(cap, start + 1);
+        *base = n - 1;
+        return;
+    }
+    let phys = start + idx;
+    let tail = n as usize - idx - 1;
+    if tail > 0 {
+        ptr::copy(order.add(phys + 1), order.add(phys), tail);
+    }
+    *order.add(start + n as usize - 1) = -1;
     *base = n - 1;
 }
 
@@ -108,6 +146,7 @@ pub(crate) unsafe fn open_hash_demote_linear_in_place(
     skip_slot: usize,
     n: i64,
     cap: usize,
+    order_start: usize,
     cell_stride: usize,
     entry_words: usize,
     linear_tid: u32,
@@ -120,7 +159,7 @@ pub(crate) unsafe fn open_hash_demote_linear_in_place(
     let mut buf = [0i64; lumia_abi::SMALL_CONTAINER_MAX * 2];
     let mut w = 0usize;
     for i in 0..n as usize {
-        let slot = *base.add(2 + i) as usize;
+        let slot = *base.add(2 + order_start + i) as usize;
         if slot == skip_slot {
             continue;
         }

@@ -151,20 +151,21 @@ pub(crate) fn set_mark_payload(h: &mut Heap, payload: *mut u8, size: usize, floa
             return;
         }
         let n = n0 as usize;
-        let cap = *base.add(1);
-        if cap <= 0 {
+        let meta = *base.add(1);
+        let cap = super::open_hash_cap(meta);
+        let start = super::open_hash_order_start(meta);
+        if cap == 0 {
             return;
         }
-        let cap = cap as usize;
-        // Layout: [n][cap][order×cap][cells×cap×2].
+        // Layout: [n][meta][order×cap][cells×cap×2].
         let words = size / 8;
         if words < 2 + cap + cap * 2 {
             return;
         }
-        let max_n = n.min(cap).min(words.saturating_sub(2 + cap));
+        let max_n = n.min(cap.saturating_sub(start)).min(words.saturating_sub(2 + cap));
         let order = base.add(2);
         for i in 0..max_n {
-            let slot = *order.add(i);
+            let slot = *order.add(start + i);
             if slot < 0 {
                 continue;
             }
@@ -223,8 +224,10 @@ pub(crate) unsafe fn set_elem_at(set: *mut u8, i: usize) -> i64 {
     };
     let base = set as *const i64;
     if set_is_hash(set) {
-        let cap = *base.add(1) as usize;
-        let slot = *base.add(2 + i) as usize;
+        let meta = *base.add(1);
+        let cap = super::open_hash_cap(meta);
+        let start = super::open_hash_order_start(meta);
+        let slot = *base.add(2 + start + i) as usize;
         *base.add(2 + cap + slot * 2)
     } else {
         *base.add(1 + i)
@@ -234,7 +237,7 @@ pub(crate) unsafe fn set_elem_at(set: *mut u8, i: usize) -> i64 {
 pub(crate) unsafe fn set_hash_find_slot(set: *mut u8, elem: i64) -> Option<usize> {
     let float_elems = set_float_elems(set);
     let base = set as *const i64;
-    let cap = *base.add(1) as usize;
+    let cap = super::open_hash_cap(*base.add(1));
     // Set cell: (elem, state) — stride 2, state at +1.
     super::open_hash_find_slot(base, cap, elem, float_elems, 2, 1)
 }
@@ -417,7 +420,7 @@ unsafe fn set_clone_insert_no_overlay(set: *mut u8, elem: i64) -> *mut u8 {
     }
     let base = set as *const i64;
     let n = *base;
-    let cap = *base.add(1) as usize;
+    let cap = super::open_hash_cap(*base.add(1));
     let n2 = n + 1;
     let need_grow = (n2 as usize * 2) > cap;
     let new_cap = if need_grow { cap * 2 } else { cap };
@@ -429,10 +432,29 @@ unsafe fn set_clone_insert_no_overlay(set: *mut u8, elem: i64) -> *mut u8 {
     dest
 }
 
+unsafe fn set_hash_compact_order_window(set: *mut u8) {
+    let base = set as *mut i64;
+    let n = *base as usize;
+    let meta = *base.add(1);
+    let cap = super::open_hash_cap(meta);
+    let start = super::open_hash_order_start(meta);
+    if start == 0 || start + n < cap {
+        return;
+    }
+    let order = base.add(2);
+    ptr::copy(order.add(start), order, n);
+    for i in n..(start + n).min(cap) {
+        *order.add(i) = -1;
+    }
+    *base.add(1) = super::open_hash_pack_meta(cap, 0);
+}
+
 pub(crate) unsafe fn set_hash_put_new(dest: *mut u8, elem: i64, order_i: usize) {
     let float_elems = set_float_elems(dest);
     let base = dest as *mut i64;
-    let cap = *base.add(1) as usize;
+    let meta = *base.add(1);
+    let cap = super::open_hash_cap(meta);
+    let start = super::open_hash_order_start(meta);
     // Set cell: (elem, state) — stride 2, state at +1.
     let (idx, _cell) = super::open_hash_claim_slot_or_trap(
         base,
@@ -446,7 +468,7 @@ pub(crate) unsafe fn set_hash_put_new(dest: *mut u8, elem: i64, order_i: usize) 
     if !float_elems {
         unsafe { crate::lumia_write_barrier(dest, order_i as u32, elem as *mut u8) };
     }
-    *base.add(2 + order_i) = idx as i64;
+    *base.add(2 + start + order_i) = idx as i64;
 }
 
 /// Insert during hash build; skip if already present. Returns true if newly added.
@@ -561,8 +583,9 @@ pub unsafe extern "C" fn lumia_set_insert(set: *mut u8, elem: i64) -> *mut u8 {
         if map_rc_is_unique(set) {
             let base = set as *mut i64;
             let n = *base;
-            let cap = *base.add(1) as usize;
+            let cap = super::open_hash_cap(*base.add(1));
             if (n as usize + 1) * 2 <= cap {
+                set_hash_compact_order_window(set);
                 set_hash_put_new(set, elem, n as usize);
                 *base = n + 1;
                 return set;
@@ -641,7 +664,9 @@ pub unsafe extern "C" fn lumia_set_remove(set: *mut u8, elem: i64) -> *mut u8 {
         if set_is_hash(set) {
             let base = set as *const i64;
             let n = *base;
-            let cap = *base.add(1) as usize;
+            let meta = *base.add(1);
+            let cap = super::open_hash_cap(meta);
+            let start = super::open_hash_order_start(meta);
             let Some(slot) = set_hash_find_slot(set, elem) else {
                 return set;
             };
@@ -655,13 +680,14 @@ pub unsafe extern "C" fn lumia_set_remove(set: *mut u8, elem: i64) -> *mut u8 {
             }
             if map_rc_is_unique(set) {
                 if n2 > SET_SMALL_MAX {
-                    super::open_hash_remove_slot(set as *mut i64, cap, slot, n, 2, 1);
+                    super::open_hash_remove_slot(set as *mut i64, slot, n, 2, 1);
                 } else {
                     super::open_hash_demote_linear_in_place(
                         set,
                         slot,
                         n,
                         cap,
+                        start,
                         2,
                         1,
                         lumia_abi::tid_without_hash(tid),
@@ -678,7 +704,7 @@ pub unsafe extern "C" fn lumia_set_remove(set: *mut u8, elem: i64) -> *mut u8 {
                 *dst = n2;
                 let mut w = 0usize;
                 for i in 0..n as usize {
-                    let s = *base.add(2 + i) as usize;
+                    let s = *base.add(2 + start + i) as usize;
                     if s == slot {
                         continue;
                     }
@@ -690,7 +716,7 @@ pub unsafe extern "C" fn lumia_set_remove(set: *mut u8, elem: i64) -> *mut u8 {
             let dest = set_alloc_hash_tid(cap, n2, tid);
             let mut w = 0usize;
             for i in 0..n as usize {
-                let s = *base.add(2 + i) as usize;
+                let s = *base.add(2 + start + i) as usize;
                 if s == slot {
                     continue;
                 }

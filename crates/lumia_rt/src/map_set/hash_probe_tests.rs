@@ -73,8 +73,9 @@ fn remove_slot_tombs_and_compacts_order() {
     words[2 + cap + 4] = 30;
     words[2 + cap + 5] = OPEN_HASH_ST_FULL;
     unsafe {
-        open_hash_remove_slot(words.as_mut_ptr(), cap, 1, 3, 2, 1);
+        open_hash_remove_slot(words.as_mut_ptr(), 1, 3, 2, 1);
         assert_eq!(words[0], 2);
+        // Middle delete shifts the window; order becomes [0, 2].
         assert_eq!(&words[2..4], &[0, 2]);
         assert_eq!(words[2 + cap + 3], OPEN_HASH_ST_TOMB);
         assert_eq!(words[2 + cap + 2], 20);
