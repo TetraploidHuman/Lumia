@@ -410,7 +410,16 @@ impl<'ctx> Codegen<'ctx> {
         let b_i = self.coerce_i64(self.local(args[1])?)?;
         let a = self.i64_as_ptr(a_i, "a")?;
         let bb = self.i64_as_ptr(b_i, "b")?;
-        if as_i64_ptr && matches!(b, Builtin::ListConcat | Builtin::ListSortByKeys) {
+        if as_i64_ptr
+            && matches!(
+                b,
+                Builtin::ListConcat
+                    | Builtin::ListSortByKeys
+                    | Builtin::SetUnion
+                    | Builtin::SetIntersect
+                    | Builtin::SetDiff
+            )
+        {
             self.cow_retain_mutator_args(a_i, None)?;
         }
         let sym = if as_i64_ptr {

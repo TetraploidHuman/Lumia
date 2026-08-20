@@ -111,102 +111,25 @@ pub(crate) fn lower_to_map(_ctx: &LowerCtx, pairs: Expr, span: Span) -> Expr {
 }
 
 pub(crate) fn lower_set_union(_ctx: &LowerCtx, a: Expr, b: Expr, span: Span) -> Expr {
-    let acc = synthetic(format!(
-        "{}_{}",
-        crate::desugar_slots::UNION_ACC_PREFIX,
-        span.start.0
-    ));
-    let x = synthetic(format!("__union_x_{}", span.start.0));
-    let step = Expr::Assign {
-        name: acc.clone(),
-        value: Box::new(Expr::BuiltinCall {
-            name: Builtin::SetInsert,
-            args: vec![Expr::Var(acc.clone(), span), Expr::Var(x.clone(), span)],
-            span,
-        }),
+    Expr::BuiltinCall {
+        name: Builtin::SetUnion,
+        args: vec![a, b],
         span,
-    };
-    Expr::Let {
-        name: acc.clone(),
-        value: Box::new(a),
-        body: Box::new(Expr::Seq {
-            stmts: vec![list_for_in(x.as_str(), b, step, span), Expr::Var(acc, span)],
-            span,
-        }),
-        mutable: true,
-        ty: None,
     }
 }
 
 pub(crate) fn lower_set_intersect(_ctx: &LowerCtx, a: Expr, b: Expr, span: Span) -> Expr {
-    let acc = synthetic(format!(
-        "{}_{}",
-        crate::desugar_slots::ISECT_ACC_PREFIX,
-        span.start.0
-    ));
-    let other = synthetic(format!("__isect_b_{}", span.start.0));
-    let x = synthetic(format!("__isect_x_{}", span.start.0));
-    let insert = Expr::Assign {
-        name: acc.clone(),
-        value: Box::new(Expr::BuiltinCall {
-            name: Builtin::SetInsert,
-            args: vec![Expr::Var(acc.clone(), span), Expr::Var(x.clone(), span)],
-            span,
-        }),
+    Expr::BuiltinCall {
+        name: Builtin::SetIntersect,
+        args: vec![a, b],
         span,
-    };
-    let step = Expr::If {
-        cond: Box::new(Expr::BuiltinCall {
-            name: Builtin::Contains,
-            args: vec![Expr::Var(other.clone(), span), Expr::Var(x.clone(), span)],
-            span,
-        }),
-        then_branch: Box::new(insert),
-        else_branch: Box::new(Expr::Unit(span)),
-        span,
-    };
-    Expr::Let {
-        name: other,
-        value: Box::new(b),
-        body: Box::new(Expr::Let {
-            name: acc.clone(),
-            value: Box::new(empty_set(span)),
-            body: Box::new(Expr::Seq {
-                stmts: vec![list_for_in(x.as_str(), a, step, span), Expr::Var(acc, span)],
-                span,
-            }),
-            mutable: true,
-            ty: None,
-        }),
-        mutable: false,
-        ty: None,
     }
 }
 
 pub(crate) fn lower_set_diff(_ctx: &LowerCtx, a: Expr, b: Expr, span: Span) -> Expr {
-    let acc = synthetic(format!(
-        "{}_{}",
-        crate::desugar_slots::DIFF_ACC_PREFIX,
-        span.start.0
-    ));
-    let x = synthetic(format!("__diff_x_{}", span.start.0));
-    let step = Expr::Assign {
-        name: acc.clone(),
-        value: Box::new(Expr::BuiltinCall {
-            name: Builtin::MapRemove,
-            args: vec![Expr::Var(acc.clone(), span), Expr::Var(x.clone(), span)],
-            span,
-        }),
+    Expr::BuiltinCall {
+        name: Builtin::SetDiff,
+        args: vec![a, b],
         span,
-    };
-    Expr::Let {
-        name: acc.clone(),
-        value: Box::new(a),
-        body: Box::new(Expr::Seq {
-            stmts: vec![list_for_in(x.as_str(), b, step, span), Expr::Var(acc, span)],
-            span,
-        }),
-        mutable: true,
-        ty: None,
     }
 }

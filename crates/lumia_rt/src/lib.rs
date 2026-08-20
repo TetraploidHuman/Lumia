@@ -146,8 +146,8 @@ pub use map_set::{
     lumia_ensure_map_bool, lumia_ensure_map_f64, lumia_ensure_map_vbool, lumia_ensure_map_vf64,
     lumia_ensure_set_bool, lumia_ensure_set_f64, lumia_map_contains, lumia_map_empty,
     lumia_map_finish, lumia_map_get, lumia_map_items, lumia_map_keys, lumia_map_remove,
-    lumia_map_set, lumia_map_values, lumia_set_contains, lumia_set_empty, lumia_set_finish,
-    lumia_set_insert, lumia_set_remove,
+    lumia_map_set, lumia_map_values, lumia_set_contains, lumia_set_diff, lumia_set_empty,
+    lumia_set_finish, lumia_set_insert, lumia_set_intersect, lumia_set_remove, lumia_set_union,
 };
 #[cfg(feature = "domain-sr-rt")]
 pub use mem_traffic::lumia_mem_traffic_checksum;

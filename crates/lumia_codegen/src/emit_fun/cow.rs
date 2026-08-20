@@ -15,6 +15,9 @@ pub(crate) fn is_cow_container_mutator(b: Builtin) -> bool {
             | Builtin::ListAppend
             | Builtin::ListConcat
             | Builtin::SetInsert
+            | Builtin::SetUnion
+            | Builtin::SetIntersect
+            | Builtin::SetDiff
             | Builtin::MapRemove
             | Builtin::ListReverse
             | Builtin::ListSort

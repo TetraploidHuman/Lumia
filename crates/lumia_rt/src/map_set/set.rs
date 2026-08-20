@@ -739,3 +739,153 @@ pub unsafe extern "C" fn lumia_set_remove(set: *mut u8, elem: i64) -> *mut u8 {
         dest
     }
 }
+
+unsafe fn set_flatten(set: *mut u8) -> *mut u8 {
+    if set_is_overlay(set) {
+        set_materialize(set)
+    } else {
+        set
+    }
+}
+
+fn set_hash_cap_for(n: usize) -> usize {
+    let mut cap = 16usize;
+    while n * 2 > cap {
+        cap = cap.saturating_mul(2).max(16);
+    }
+    cap
+}
+
+unsafe fn set_alloc_sized(tid: u32, n: usize) -> *mut u8 {
+    if n as i64 <= SET_SMALL_MAX {
+        let dest = lumia_alloc(set_linear_nbytes(n as i64) as u64, tid);
+        *(dest as *mut i64) = 0;
+        dest
+    } else {
+        set_alloc_hash_tid(set_hash_cap_for(n), 0, tid)
+    }
+}
+
+unsafe fn set_put_all_new(dest: *mut u8, src: *mut u8) {
+    let n = set_count(src) as usize;
+    if set_is_hash(dest) {
+        let base = dest as *mut i64;
+        let start = *base as usize;
+        for i in 0..n {
+            set_hash_put_new(dest, set_elem_at(src, i), start + i);
+        }
+        *base = (start + n) as i64;
+    } else {
+        let base = dest as *mut i64;
+        let start = *base as usize;
+        for i in 0..n {
+            *base.add(1 + start + i) = set_elem_at(src, i);
+        }
+        *base = (start + n) as i64;
+    }
+}
+
+unsafe fn set_push_new(dest: *mut u8, elem: i64) {
+    if set_is_hash(dest) {
+        set_hash_insert_build(dest, elem);
+        return;
+    }
+    if lumia_set_contains(dest, elem) != 0 {
+        return;
+    }
+    let base = dest as *mut i64;
+    let n = *base;
+    *base.add(1 + n as usize) = elem;
+    *base = n + 1;
+}
+
+/// Immutable union: elements of `a` then `b` (insertion order; `b` dups skipped).
+///
+/// # Safety
+/// `a`/`b` null or valid Set payloads.
+#[no_mangle]
+pub unsafe extern "C" fn lumia_set_union(a: *mut u8, b: *mut u8) -> *mut u8 {
+    let _gc = GcInhibitGuard::enter();
+    let a = set_flatten(a);
+    let b = set_flatten(b);
+    let na = set_count(a);
+    let nb = set_count(b);
+    if nb == 0 {
+        return if a.is_null() {
+            lumia_set_empty()
+        } else {
+            a
+        };
+    }
+    if na == 0 {
+        return b;
+    }
+    let tid = set_tid(a);
+    let dest = set_alloc_sized(tid, (na + nb) as usize);
+    set_put_all_new(dest, a);
+    for i in 0..nb as usize {
+        set_push_new(dest, set_elem_at(b, i));
+    }
+    dest
+}
+
+/// Immutable intersection: elems of `a` that are in `b` (order of `a`).
+///
+/// # Safety
+/// `a`/`b` null or valid Set payloads.
+#[no_mangle]
+pub unsafe extern "C" fn lumia_set_intersect(a: *mut u8, b: *mut u8) -> *mut u8 {
+    let _gc = GcInhibitGuard::enter();
+    let a = set_flatten(a);
+    let b = set_flatten(b);
+    let na = set_count(a);
+    let nb = set_count(b);
+    if na == 0 || nb == 0 {
+        return lumia_set_empty();
+    }
+    let tid = set_tid(a);
+    let dest = set_alloc_sized(tid, na.min(nb) as usize);
+    for i in 0..na as usize {
+        let e = set_elem_at(a, i);
+        if lumia_set_contains(b, e) != 0 {
+            set_push_new(dest, e);
+        }
+    }
+    if set_count(dest) == 0 {
+        lumia_set_empty()
+    } else {
+        dest
+    }
+}
+
+/// Immutable difference: elems of `a` not in `b` (order of `a`).
+///
+/// # Safety
+/// `a`/`b` null or valid Set payloads.
+#[no_mangle]
+pub unsafe extern "C" fn lumia_set_diff(a: *mut u8, b: *mut u8) -> *mut u8 {
+    let _gc = GcInhibitGuard::enter();
+    let a = set_flatten(a);
+    let b = set_flatten(b);
+    let na = set_count(a);
+    let nb = set_count(b);
+    if na == 0 {
+        return lumia_set_empty();
+    }
+    if nb == 0 {
+        return a;
+    }
+    let tid = set_tid(a);
+    let dest = set_alloc_sized(tid, na as usize);
+    for i in 0..na as usize {
+        let e = set_elem_at(a, i);
+        if lumia_set_contains(b, e) == 0 {
+            set_push_new(dest, e);
+        }
+    }
+    if set_count(dest) == 0 {
+        lumia_set_empty()
+    } else {
+        dest
+    }
+}

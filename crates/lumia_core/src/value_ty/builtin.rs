@@ -496,6 +496,20 @@ pub(crate) fn builtin_value_ty(name: Builtin, args: &[Local], ctx: InferValueCtx
                 _ => Type::Set(Arc::new(elem_ty)),
             }
         }
+        Builtin::SetUnion | Builtin::SetIntersect | Builtin::SetDiff => {
+            let a = args
+                .first()
+                .and_then(|a| local_tys.get(&a.0).cloned())
+                .unwrap_or(Type::Set(Arc::new(Type::Int)));
+            let b = args.get(1).and_then(|a| local_tys.get(&a.0));
+            match (&a, b) {
+                (Type::Set(e1), Some(Type::Set(e2))) => Type::Set(Arc::new(
+                    super::prefer_concrete_heap_ty(e1.as_ref().clone(), e2.as_ref().clone()),
+                )),
+                (Type::Set(e), _) | (_, Some(Type::Set(e))) => Type::Set(e.clone()),
+                _ => a,
+            }
+        }
     }
 }
 

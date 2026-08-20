@@ -885,6 +885,9 @@ fn builtin_recv_use_ok(name: &Builtin, args: &[Local], local: Local, allow_mutat
             | Builtin::MapSet
             | Builtin::MapRemove
             | Builtin::SetInsert
+            | Builtin::SetUnion
+            | Builtin::SetIntersect
+            | Builtin::SetDiff
             | Builtin::ListReverse
             | Builtin::ListSort
             | Builtin::ListSortByKeys

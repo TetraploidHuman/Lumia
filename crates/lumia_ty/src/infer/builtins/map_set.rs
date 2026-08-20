@@ -121,6 +121,28 @@ impl Infer {
                     other => Err(at(span, format!("insert: expected Set, got {other:?}"))),
                 }
             }
+            Builtin::SetUnion | Builtin::SetIntersect | Builtin::SetDiff => {
+                let (at0, ae) = self.infer_expr(&args[0])?;
+                let (bt, be) = self.infer_expr(&args[1])?;
+                let op = match name {
+                    Builtin::SetUnion => "union",
+                    Builtin::SetIntersect => "intersect",
+                    _ => "diff",
+                };
+                let elem = match self.prune(at0.clone()) {
+                    Type::Set(e) => Type::unbox(e),
+                    Type::Var(_) => {
+                        let e = self.fresh();
+                        self.unify_at(span, at0, Type::Set(Arc::new(e.clone())))?;
+                        e
+                    }
+                    other => {
+                        return Err(at(span, format!("{op}: expected Set, got {other:?}")));
+                    }
+                };
+                self.unify_at(span, bt, Type::Set(Arc::new(elem.clone())))?;
+                Ok((Type::Set(Arc::new(elem)), self.union_eff(ae, be)))
+            }
             Builtin::MapKeys => {
                 let (mt, me) = self.infer_expr(&args[0])?;
                 let (k, _) = self.map_kv_from_receiver(mt, span, "keys")?;

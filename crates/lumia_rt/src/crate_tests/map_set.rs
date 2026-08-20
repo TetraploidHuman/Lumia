@@ -244,6 +244,41 @@ fn set_overlay_insert_avoids_full_clone() {
 }
 
 #[test]
+fn set_algebra_union_intersect_diff() {
+    let mut a: *mut u8 = ptr::null_mut();
+    let mut b: *mut u8 = ptr::null_mut();
+    let mut u: *mut u8 = ptr::null_mut();
+    let mut inter: *mut u8 = ptr::null_mut();
+    let mut d: *mut u8 = ptr::null_mut();
+    unsafe { lumia_root_push(&mut a as *mut *mut u8) };
+    unsafe { lumia_root_push(&mut b as *mut *mut u8) };
+    unsafe { lumia_root_push(&mut u as *mut *mut u8) };
+    unsafe { lumia_root_push(&mut inter as *mut *mut u8) };
+    unsafe { lumia_root_push(&mut d as *mut *mut u8) };
+    for i in 0..20 {
+        a = unsafe { lumia_set_insert(a, i) };
+    }
+    for i in 10..30 {
+        b = unsafe { lumia_set_insert(b, i) };
+    }
+    u = unsafe { lumia_set_union(a, b) };
+    assert_eq!(set_count(u), 30);
+    assert_eq!(unsafe { lumia_set_contains(u, 0) }, 1);
+    assert_eq!(unsafe { lumia_set_contains(u, 29) }, 1);
+    inter = unsafe { lumia_set_intersect(a, b) };
+    assert_eq!(set_count(inter), 10);
+    assert_eq!(unsafe { lumia_set_contains(inter, 10) }, 1);
+    assert_eq!(unsafe { lumia_set_contains(inter, 9) }, 0);
+    d = unsafe { lumia_set_diff(a, b) };
+    assert_eq!(set_count(d), 10);
+    assert_eq!(unsafe { lumia_set_contains(d, 0) }, 1);
+    assert_eq!(unsafe { lumia_set_contains(d, 10) }, 0);
+    for _ in 0..5 {
+        lumia_root_pop();
+    }
+}
+
+#[test]
 fn show_list_formats_elems() {
     let p = lumia_alloc(list_payload_bytes(2), TYPE_LIST);
     unsafe {

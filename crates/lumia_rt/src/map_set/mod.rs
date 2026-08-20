@@ -20,7 +20,8 @@ pub use map_ops::{
 pub(crate) use overlay::{overlay_delta_len, MAP_OVERLAY_MARK, SET_OVERLAY_MARK};
 pub(crate) use set::*;
 pub use set::{
-    lumia_set_contains, lumia_set_empty, lumia_set_finish, lumia_set_insert, lumia_set_remove,
+    lumia_set_contains, lumia_set_diff, lumia_set_empty, lumia_set_finish, lumia_set_insert,
+    lumia_set_intersect, lumia_set_remove, lumia_set_union,
 };
 pub(crate) use tid::*;
 pub use tid::{

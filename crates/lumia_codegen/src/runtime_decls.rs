@@ -161,6 +161,9 @@ const MAP_SET_DECLS: &[RtDecl] = &[
     rt!(MapSet, "lumia_map_values",   Ptr, [Ptr]),
     rt!(MapSet, "lumia_map_items",    Ptr, [Ptr, I64]),
     rt!(MapSet, "lumia_set_insert",   Ptr, [Ptr, I64]),
+    rt!(MapSet, "lumia_set_union",    Ptr, [Ptr, Ptr]),
+    rt!(MapSet, "lumia_set_intersect",Ptr, [Ptr, Ptr]),
+    rt!(MapSet, "lumia_set_diff",     Ptr, [Ptr, Ptr]),
     rt!(MapSet, "lumia_set_contains", I64, [Ptr, I64]),
     rt!(MapSet, "lumia_set_remove",   Ptr, [Ptr, I64]),
     // Generic collection ops dispatched by type tag.

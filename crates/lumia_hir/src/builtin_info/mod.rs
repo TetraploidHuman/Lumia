@@ -176,7 +176,8 @@ impl Builtin {
             ListLen | ListGet | ListSlice | ListAppend | ListConcat | ListTake | ListReverse
             | ListSort | ListSortByKeys | ListParMap | ListParFold | ListJoin | Elems | Range
             | RangeInclusive => info_list(self),
-            Contains | MapSet | MapRemove | SetInsert | MapKeys | MapValues | MapItems => {
+            Contains | MapSet | MapRemove | SetInsert | SetUnion | SetIntersect | SetDiff
+            | MapKeys | MapValues | MapItems => {
                 info_map_set(self)
             }
             StrTrim | StrSplit | StrSubstring | StrToLower | StrToUpper | StrStartsWith
@@ -241,6 +242,9 @@ impl Builtin {
         Builtin::MapSet,
         Builtin::MapRemove,
         Builtin::SetInsert,
+        Builtin::SetUnion,
+        Builtin::SetIntersect,
+        Builtin::SetDiff,
         Builtin::MapKeys,
         Builtin::MapValues,
         Builtin::MapItems,

@@ -221,6 +221,12 @@ pub enum Builtin {
     MapRemove,
     /// Immutable set add: `s.insert(x)` → new Set (no-op if already present).
     SetInsert,
+    /// `a.union(b)` → new Set.
+    SetUnion,
+    /// `a.intersect(b)` → new Set.
+    SetIntersect,
+    /// `a.diff(b)` → new Set.
+    SetDiff,
     MapKeys,
     MapValues,
     MapItems,
