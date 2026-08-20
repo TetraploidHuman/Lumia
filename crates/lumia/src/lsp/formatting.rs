@@ -6,7 +6,7 @@
 //! on parse errors (`Err`, never empty edits).
 
 use super::cursor::byte_to_position;
-use super::state::{source_fingerprint, state_lock};
+use super::state::{source_fingerprint, state_lock, FormatCacheResult};
 use anyhow::{bail, Result};
 use lumia_syntax::{format_matches_source, format_module_src, parse_module, stamp_module};
 use serde_json::{json, Value};
@@ -50,21 +50,30 @@ pub(super) fn on_formatting(params: Option<&Value>) -> Result<Value> {
         bail!("textDocument/formatting: document not open ({uri})");
     };
     let hash = source_fingerprint(text);
-    if let Some((cached_hash, edits)) = state.format_cache.get(uri) {
+    if let Some((cached_hash, cached)) = state.format_cache.get(uri) {
         if *cached_hash == hash {
-            return Ok(Value::Array(edits.clone()));
+            return match cached {
+                FormatCacheResult::Ok(edits) => Ok(Value::Array(edits.clone())),
+                FormatCacheResult::Err(msg) => bail!("{msg}"),
+            };
         }
     }
     let text = text.clone();
     drop(st);
-    let edits = format_document(&text)?;
+    let result = match format_document(&text) {
+        Ok(edits) => FormatCacheResult::Ok(edits),
+        Err(err) => FormatCacheResult::Err(err.to_string()),
+    };
     {
         let mut st = state_lock();
         if let Some(s) = st.as_mut() {
-            s.format_cache.insert(uri.to_string(), (hash, edits.clone()));
+            s.format_cache.insert(uri.to_string(), (hash, result.clone()));
         }
     }
-    Ok(Value::Array(edits))
+    match result {
+        FormatCacheResult::Ok(edits) => Ok(Value::Array(edits)),
+        FormatCacheResult::Err(msg) => bail!("{msg}"),
+    }
 }
 
 #[cfg(test)]

@@ -1,4 +1,5 @@
 //! Shared chase helpers for heap typing and HOF/callee result ABI.
+#![allow(clippy::too_many_arguments)]
 
 use crate::find_local_def;
 use crate::find_top_level_local_def;

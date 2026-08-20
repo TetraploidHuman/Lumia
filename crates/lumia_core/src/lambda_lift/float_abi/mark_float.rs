@@ -1,4 +1,5 @@
 //! Float use scanning and float/bool/channel result lattice.
+#![allow(clippy::too_many_arguments)]
 
 use crate::ir::{Block, Local, Op, Value};
 use crate::value_ty::{builtin_value_ty, InferValueCtx};

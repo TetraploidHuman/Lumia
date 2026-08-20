@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Compare Lumia CN triad-forward microbench vs CogniNucleus PyTorch CPU agent.
 #
-# Lumia: examples/bench_cn_forward_{kernel,naive}.lm (dense skeleton).
+# Lumia: examples/bench/bench_cn_forward_{kernel,naive}.lm (dense skeleton).
 # Torch: FreeEnergyAgent triad+EFE (hip/amy off), default strict_pe+cluster.
 #   LEGACY=1  → pass --legacy to the Python harness
 #   BOTH=1    → time strict and legacy
@@ -42,8 +42,8 @@ echo "CN_ROOT=$CN_ROOT"
 echo
 
 echo "== Lumia build =="
-"$LUMIA" build --release examples/bench_cn_forward_kernel.lm -o "$OUT_DIR/lumia_kernel"
-"$LUMIA" build --release examples/bench_cn_forward_naive.lm -o "$OUT_DIR/lumia_naive"
+"$LUMIA" build --release examples/bench/bench_cn_forward_kernel.lm -o "$OUT_DIR/lumia_kernel"
+"$LUMIA" build --release examples/bench/bench_cn_forward_naive.lm -o "$OUT_DIR/lumia_naive"
 
 echo "== Lumia wall time =="
 k_stats="$(bench_measure_runs "$OUT_DIR/lumia_kernel")"

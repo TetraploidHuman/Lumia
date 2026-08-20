@@ -294,6 +294,90 @@ val main = {
 }
 
 #[test]
+fn recover_recovers_bad_expr_inside_block_keeps_later_stmt() {
+    let src = r#"
+module Main
+val main = {
+    1
+    1 + )
+    2
+}
+"#;
+    let out = crate::parse_module_recovering(src);
+    assert!(!out.errors.is_empty(), "expected parse error on bad expr");
+
+    let v = out
+        .module
+        .items
+        .iter()
+        .find_map(|i| match i {
+            crate::Item::Val(v) => Some(v),
+            _ => None,
+        })
+        .expect("expected main val");
+
+    let Expr::Block { stmts, tail, .. } = &v.body else {
+        panic!("expected block body, got {:?}", v.body);
+    };
+
+    assert_eq!(stmts.len(), 2);
+    assert!(matches!(stmts[0], Stmt::Expr(Expr::Int(1, _))));
+
+    // The broken `1 + )` is replaced by a hole expression, but later statements
+    // (the final `2`) are still parsed and preserved as the block tail.
+    if let Stmt::Expr(Expr::Ident(s, _)) = &stmts[1] {
+        assert_eq!(s.as_str(), "__parse_hole");
+    } else {
+        panic!("expected hole expr stmt");
+    }
+    assert!(tail.as_ref().is_some_and(|e| matches!(e.as_ref(), Expr::Int(2, _))));
+}
+
+#[test]
+fn recover_recovers_bad_match_arm_body_keeps_later_arms() {
+    let src = r#"
+module M
+val main = {
+    n match {
+        0 -> 0
+        1 -> )
+        _ -> 2
+    }
+}
+"#;
+
+    let out = crate::parse_module_recovering(src);
+    assert!(!out.errors.is_empty(), "expected parse error on bad match arm body");
+
+    let v = out
+        .module
+        .items
+        .iter()
+        .find_map(|i| match i {
+            crate::Item::Val(v) => Some(v),
+            _ => None,
+        })
+        .expect("expected main val");
+
+    let Expr::Block { tail, .. } = &v.body else {
+        panic!("expected block tail");
+    };
+
+    let Expr::Match { arms, .. } = tail.as_ref().expect("expected match tail").as_ref() else {
+        panic!("expected match expr tail");
+    };
+
+    assert_eq!(arms.len(), 3);
+    assert!(matches!(arms[0].body, Expr::Int(0, _)));
+    if let Expr::Ident(s, _) = &arms[1].body {
+        assert_eq!(s.as_str(), "__parse_hole");
+    } else {
+        panic!("expected hole match arm body");
+    }
+    assert!(matches!(arms[2].body, Expr::Int(2, _)));
+}
+
+#[test]
 fn parse_kotlin_style_ranges() {
     let incl = parse_expr_str("1..5").expect("inclusive");
     match incl {

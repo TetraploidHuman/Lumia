@@ -1,31 +1,31 @@
-e2e_reject!(e2e_bad_alt_int_rejected, "examples/bad_alt_int.lm", "alt");
+e2e_reject!(e2e_bad_alt_int_rejected, "examples/reject/bad_alt_int.lm", "alt");
 
 e2e_reject!(
     e2e_bad_spawn_in_pure_rejected,
-    "examples/bad_spawn_in_pure.lm",
+    "examples/reject/bad_spawn_in_pure.lm",
     "pure"
 );
 e2e_reject!(
     e2e_bad_spawn_capture_var_rejected,
-    "examples/bad_spawn_capture_var.lm",
+    "examples/reject/bad_spawn_capture_var.lm",
     "mutable"
 );
 e2e_reject!(
     e2e_bad_ascription_rejected,
-    "examples/bad_ascription.lm",
+    "examples/reject/bad_ascription.lm",
     "mismatch"
 );
 
 e2e_reject!(
     e2e_bad_return_toplevel_rejected,
-    "examples/bad_return_toplevel.lm",
+    "examples/reject/bad_return_toplevel.lm",
     "`return` is only allowed"
 );
 
 #[test]
 fn e2e_bad_trait_poly_rejected() {
     run_check(
-        "examples/bad_trait_poly.lm",
+        "examples/reject/bad_trait_poly.lm",
         true,
         &[],
         &["ToInt", "instance"],
@@ -35,7 +35,7 @@ fn e2e_bad_trait_poly_rejected() {
 #[test]
 fn e2e_bad_import_as_original_rejected() {
     run_check(
-        "examples/bad_import_as_original.lm",
+        "examples/reject/bad_import_as_original.lm",
         true,
         &[],
         &["private or not imported", "`add`"],
@@ -45,7 +45,7 @@ fn e2e_bad_import_as_original_rejected() {
 #[test]
 fn e2e_bad_let_destructure_rejected() {
     run_check(
-        "examples/bad_let_destructure.lm",
+        "examples/reject/bad_let_destructure.lm",
         true,
         &[],
         &["irrefutable", "match"],
@@ -54,13 +54,13 @@ fn e2e_bad_let_destructure_rejected() {
 
 #[test]
 fn e2e_bad_import_priv_rejected() {
-    run_check("examples/bad_import_priv.lm", true, &["private"], &[]);
+    run_check("examples/reject/bad_import_priv.lm", true, &["private"], &[]);
 }
 
 #[test]
 fn e2e_priv_leak_rejected() {
     let root = workspace_root();
-    let src = root.join("examples/priv_leak_test.lm");
+    let src = root.join("examples/guide/priv_leak_test.lm");
     let out = Command::new(lumia_bin())
         .current_dir(&root)
         .args(["check", src.to_str().unwrap()])
@@ -83,7 +83,7 @@ fn e2e_priv_leak_rejected() {
 
 e2e_reject!(
     e2e_bad_nested_match_rejected,
-    "examples/bad_nested_match.lm",
+    "examples/reject/bad_nested_match.lm",
     "non-exhaustive",
     "bad_nested_match.lm:",
     ": lower:"
@@ -92,7 +92,7 @@ e2e_reject!(
 #[test]
 fn e2e_bad_int_match_rejected() {
     run_check(
-        "examples/bad_int_match.lm",
+        "examples/reject/bad_int_match.lm",
         true,
         &["non-exhaustive", "Int", "bad_int_match.lm:", "^"],
         &[],
@@ -102,7 +102,7 @@ fn e2e_bad_int_match_rejected() {
 #[test]
 fn e2e_bad_empty_match_rejected() {
     run_check(
-        "examples/bad_empty_match.lm",
+        "examples/reject/bad_empty_match.lm",
         true,
         &["non-exhaustive"],
         &[],
@@ -111,13 +111,13 @@ fn e2e_bad_empty_match_rejected() {
 
 #[test]
 fn e2e_bad_guard_only_match_rejected() {
-    run_check("examples/bad_guard_only.lm", true, &["non-exhaustive"], &[]);
+    run_check("examples/reject/bad_guard_only.lm", true, &["non-exhaustive"], &[]);
 }
 
 #[test]
 fn e2e_bad_list_match_rejected() {
     run_check(
-        "examples/bad_list_match.lm",
+        "examples/reject/bad_list_match.lm",
         true,
         &["non-exhaustive", "List", "bad_list_match.lm:"],
         &[],
@@ -127,7 +127,7 @@ fn e2e_bad_list_match_rejected() {
 #[test]
 fn e2e_bad_assert_aborts() {
     let root = workspace_root();
-    let src = root.join("examples/bad_assert.lm");
+    let src = root.join("examples/reject/bad_assert.lm");
     let bin = e2e_exe("bad_assert");
     let status = Command::new(lumia_bin())
         .current_dir(&root)
@@ -175,7 +175,7 @@ fn build_and_expect_trap(rel: &str, stem: &str, needle: &str) {
 #[test]
 fn e2e_trap_overflow_aborts() {
     build_and_expect_trap(
-        "examples/trap_overflow.lm",
+        "examples/guide/trap_overflow.lm",
         "trap_overflow",
         "integer overflow",
     );
@@ -183,13 +183,13 @@ fn e2e_trap_overflow_aborts() {
 
 #[test]
 fn e2e_trap_div0_aborts() {
-    build_and_expect_trap("examples/trap_div0.lm", "trap_div0", "division by zero");
+    build_and_expect_trap("examples/guide/trap_div0.lm", "trap_div0", "division by zero");
 }
 
 #[test]
 fn e2e_trap_neg_overflow_aborts() {
     build_and_expect_trap(
-        "examples/trap_neg_overflow.lm",
+        "examples/guide/trap_neg_overflow.lm",
         "trap_neg_overflow",
         "integer overflow",
     );
@@ -198,7 +198,7 @@ fn e2e_trap_neg_overflow_aborts() {
 #[test]
 fn e2e_bad_import_type_points_at_dep() {
     run_check(
-        "examples/bad_import_type.lm",
+        "examples/reject/bad_import_type.lm",
         true,
         &["bad_dep.lm:", "type mismatch"],
         &[],
@@ -208,7 +208,7 @@ fn e2e_bad_import_type_points_at_dep() {
 #[test]
 fn e2e_bad_dep_rejected() {
     run_check(
-        "examples/bad_dep.lm",
+        "examples/reject/bad_dep.lm",
         true,
         &["bad_dep.lm:", "type mismatch"],
         &[],
@@ -217,7 +217,7 @@ fn e2e_bad_dep_rejected() {
 
 e2e_reject!(
     e2e_bad_foreign_pure_rejected,
-    "examples/bad_foreign_pure.lm",
+    "examples/reject/bad_foreign_pure.lm",
     "trust-foreign-pure",
     "pure"
 );
@@ -225,7 +225,7 @@ e2e_reject!(
 #[test]
 fn e2e_unknown_std_module_rejected() {
     let root = workspace_root();
-    let src = root.join("examples/bad_std_import.lm");
+    let src = root.join("examples/reject/bad_std_import.lm");
     let out = Command::new(lumia_bin())
         .current_dir(&root)
         .args(["check", src.to_str().unwrap()])
@@ -248,7 +248,7 @@ fn e2e_unknown_std_module_rejected() {
 #[test]
 fn e2e_bad_field_proj_rejected() {
     run_check(
-        "examples/bad_field_proj.lm",
+        "examples/reject/bad_field_proj.lm",
         true,
         &[],
         &["expects type", "field projection", "cannot resolve"],
@@ -258,7 +258,7 @@ fn e2e_bad_field_proj_rejected() {
 #[test]
 fn e2e_bad_tuple_proj_rejected() {
     run_check(
-        "examples/bad_tuple_proj.lm",
+        "examples/reject/bad_tuple_proj.lm",
         true,
         &[],
         &["tuple", "mismatch", "type mismatch"],
@@ -268,7 +268,7 @@ fn e2e_bad_tuple_proj_rejected() {
 #[test]
 fn e2e_unknown_trait_rejected() {
     let root = workspace_root();
-    let src = root.join("examples/bad_trait.lm");
+    let src = root.join("examples/reject/bad_trait.lm");
     let out = Command::new(lumia_bin())
         .current_dir(&root)
         .args(["check", src.to_str().unwrap()])
@@ -289,7 +289,7 @@ fn e2e_unknown_trait_rejected() {
 #[test]
 fn e2e_int_literal_overflow_rejected() {
     let root = workspace_root();
-    let src = root.join("examples/bad_int_overflow.lm");
+    let src = root.join("examples/reject/bad_int_overflow.lm");
     let out = Command::new(lumia_bin())
         .current_dir(&root)
         .args(["check", src.to_str().unwrap()])
@@ -310,7 +310,7 @@ fn e2e_int_literal_overflow_rejected() {
 #[test]
 fn e2e_bad_val_assign_rejected() {
     run_check(
-        "examples/bad_val_assign.lm",
+        "examples/reject/bad_val_assign.lm",
         true,
         &[],
         &["immutable", "cannot assign"],
@@ -320,7 +320,7 @@ fn e2e_bad_val_assign_rejected() {
 #[test]
 fn e2e_bad_struct_match_rejected() {
     run_check(
-        "examples/bad_struct_match.lm",
+        "examples/reject/bad_struct_match.lm",
         true,
         &[],
         &["expects type", "Point", "Rect"],
@@ -330,7 +330,7 @@ fn e2e_bad_struct_match_rejected() {
 #[test]
 fn e2e_bad_ok_arity_rejected() {
     run_check(
-        "examples/bad_ok_arity.lm",
+        "examples/reject/bad_ok_arity.lm",
         true,
         &[],
         &["expects", "field", "lower"],
@@ -340,7 +340,7 @@ fn e2e_bad_ok_arity_rejected() {
 #[test]
 fn e2e_bad_struct_field_match_rejected() {
     run_check(
-        "examples/bad_struct_field_match.lm",
+        "examples/reject/bad_struct_field_match.lm",
         true,
         &[],
         &["unknown field"],
@@ -350,31 +350,31 @@ fn e2e_bad_struct_field_match_rejected() {
 #[test]
 fn e2e_bad_par_map_io_demoted() {
     // IO List.map must type-check after auto-parallel demotion to sequential.
-    run_check("examples/bad_par_map_io.lm", false, &[], &[]);
+    run_check("examples/reject/bad_par_map_io.lm", false, &[], &[]);
 }
 
 e2e_reject!(
     e2e_bad_with_cross_product_rejected,
-    "examples/bad_with_cross_product.lm",
+    "examples/reject/bad_with_cross_product.lm",
     "unknown field"
 );
 
 e2e_reject!(
     e2e_bad_tuple_prefix_short_rejected,
-    "examples/bad_tuple_prefix_short.lm",
+    "examples/reject/bad_tuple_prefix_short.lm",
     "tuple"
 );
 
 e2e_reject!(
     e2e_bad_ord_poly_list_rejected,
-    "examples/bad_ord_poly_list.lm",
+    "examples/reject/bad_ord_poly_list.lm",
     "Ord"
 );
 
 #[test]
 fn e2e_bad_std_star_ffi_rejected() {
     run_check(
-        "examples/bad_std_star_ffi.lm",
+        "examples/reject/bad_std_star_ffi.lm",
         true,
         &[],
         &["lumia_list_f64_zeros", "private or not imported"],
@@ -383,55 +383,55 @@ fn e2e_bad_std_star_ffi_rejected() {
 
 e2e_reject!(
     e2e_bad_eq_fun_rejected,
-    "examples/bad_eq_fun.lm",
+    "examples/reject/bad_eq_fun.lm",
     "Eq",
     "function"
 );
 
 e2e_reject!(
     e2e_bad_eq_poly_fun_rejected,
-    "examples/bad_eq_poly_fun.lm",
+    "examples/reject/bad_eq_poly_fun.lm",
     "function"
 );
 
 e2e_reject!(
     e2e_bad_with_dup_field_rejected,
-    "examples/bad_with_dup_field.lm",
+    "examples/reject/bad_with_dup_field.lm",
     "duplicate"
 );
 
 e2e_reject!(
     e2e_bad_ord_poly_set_rejected,
-    "examples/bad_ord_poly_set.lm",
+    "examples/reject/bad_ord_poly_set.lm",
     "Ord"
 );
 
 e2e_reject!(
     e2e_bad_with_open_ambiguous_rejected,
-    "examples/bad_with_open_ambiguous.lm",
+    "examples/reject/bad_with_open_ambiguous.lm",
     "uniquely"
 );
 
 e2e_reject!(
     e2e_bad_eq_adt_fun_rejected,
-    "examples/bad_eq_adt_fun.lm",
+    "examples/reject/bad_eq_adt_fun.lm",
     "function"
 );
 
 e2e_reject!(
     e2e_bad_eq_list_fun_rejected,
-    "examples/bad_eq_list_fun.lm",
+    "examples/reject/bad_eq_list_fun.lm",
     "function"
 );
 
 e2e_reject!(
     e2e_bad_list_rest_nested_rejected,
-    "examples/bad_list_rest_nested.lm",
+    "examples/reject/bad_list_rest_nested.lm",
     "non-exhaustive"
 );
 
 e2e_reject!(
     e2e_bad_tuple_diag_rejected,
-    "examples/bad_tuple_diag.lm",
+    "examples/reject/bad_tuple_diag.lm",
     "non-exhaustive"
 );

@@ -19,6 +19,54 @@ use rustc_hash::FxHashMap as HashMap;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
+fn apply_content_changes(
+    prev: &str,
+    changes: &[Value],
+    metric: lumia_syntax::ColumnMetric,
+) -> String {
+    let mut text = prev.to_string();
+    for ch in changes {
+        let new_text = ch.get("text").and_then(|v| v.as_str()).unwrap_or("");
+        let Some(range) = ch.get("range") else {
+            text = new_text.to_string();
+            continue;
+        };
+        let sl = range
+            .get("start")
+            .and_then(|v| v.get("line"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
+        let sc = range
+            .get("start")
+            .and_then(|v| v.get("character"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
+        let el = range
+            .get("end")
+            .and_then(|v| v.get("line"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(sl as u64) as u32;
+        let ec = range
+            .get("end")
+            .and_then(|v| v.get("character"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(sc as u64) as u32;
+        let start = lumia_syntax::pos_to_byte_metric(&text, sl, sc, metric) as usize;
+        let end = lumia_syntax::pos_to_byte_metric(&text, el, ec, metric) as usize;
+        if start > end
+            || end > text.len()
+            || !text.is_char_boundary(start)
+            || !text.is_char_boundary(end)
+        {
+            // Malformed incremental range: degrade gracefully to the payload body.
+            text = new_text.to_string();
+            continue;
+        }
+        text.replace_range(start..end, new_text);
+    }
+    text
+}
+
 pub(super) fn on_did_open(params: &Value) -> Result<()> {
     let doc = &params["textDocument"];
     let uri = doc["uri"].as_str().unwrap_or("").to_string();
@@ -38,13 +86,22 @@ pub(super) fn on_did_change(params: &Value) -> Result<()> {
         .as_str()
         .unwrap_or("")
         .to_string();
-    let text = params["contentChanges"]
+    let changes = params["contentChanges"]
         .as_array()
-        .and_then(|a| a.last())
-        .and_then(|c| c.get("text"))
-        .and_then(|t| t.as_str())
-        .unwrap_or("")
-        .to_string();
+        .cloned()
+        .unwrap_or_default();
+    let text = {
+        let st = state_lock();
+        let prev = st
+            .as_ref()
+            .and_then(|s| s.docs.get(&uri).cloned())
+            .unwrap_or_default();
+        let metric = st
+            .as_ref()
+            .map(|s| s.position_encoding)
+            .unwrap_or(lumia_syntax::ColumnMetric::Utf16);
+        apply_content_changes(&prev, &changes, metric)
+    };
     {
         let mut st = state_lock();
         if let Some(s) = st.as_mut() {
@@ -73,6 +130,7 @@ pub(super) fn on_did_close(params: &Value) -> Result<()> {
         if let Some(s) = st.as_mut() {
             s.docs.remove(&uri);
             s.analysis.remove(&uri);
+            s.format_cache.remove(&uri);
             s.last_diag_uris.remove(&uri).unwrap_or_default()
         } else {
             Vec::new()
@@ -366,11 +424,15 @@ fn partial_to_lsp(
     path: &Path,
     partial: PartialCheck,
 ) -> (Vec<Value>, Option<Analysis>) {
-    let diags: Vec<Value> = partial
+    let uri = path_to_uri(path);
+    let mut diags: Vec<Value> = partial
         .diagnostics
         .iter()
         .map(|d| diag_from_span(text, d.span, d.kind, &d.message))
         .collect();
+    for d in &mut diags {
+        fill_related_info_location_uri(d, &uri);
+    }
     let analysis = partial.typed.map(|typed| {
         Analysis::from_typed(
             typed,
@@ -383,6 +445,23 @@ fn partial_to_lsp(
         )
     });
     (diags, analysis)
+}
+
+fn fill_related_info_location_uri(diag: &mut Value, uri: &str) {
+    // `relatedInformation[].location.uri` is useful for clients, but we only
+    // know the URI at the batching stage (where we remap per-file `Span.file`).
+    let Some(related) = diag.get_mut("relatedInformation") else {
+        return;
+    };
+    let Some(arr) = related.as_array_mut() else {
+        return;
+    };
+    for item in arr {
+        let Some(loc) = item.get_mut("location") else {
+            continue;
+        };
+        loc["uri"] = json!(uri);
+    }
 }
 
 /// Empty diagnostic batches for the entry URI and every loaded source file.
@@ -495,10 +574,12 @@ fn diagnostics_to_uri_batches(
             Some(f) => (path_to_uri(&f.path), f.src.as_str()),
             None => continue,
         };
+        let mut diag = diag_from_span(src, d.span, d.kind, &d.message);
+        fill_related_info_location_uri(&mut diag, &uri);
         by_uri
             .entry(uri)
             .or_default()
-            .push(diag_from_span(src, d.span, d.kind, &d.message));
+            .push(diag);
     }
     let entry_uri = loaded
         .files
@@ -597,7 +678,8 @@ fn parse_line_col_prefix(line: &str) -> Option<(u32, u32, &str)> {
 #[cfg(test)]
 mod tests {
     use super::{
-        analyze_buffer, clear_batches_for_program, merge_diag_batches, parse_line_col_prefix,
+        analyze_buffer, apply_content_changes, clear_batches_for_program, merge_diag_batches,
+        parse_line_col_prefix,
     };
     use crate::check::check_source_recovering;
     use crate::load::SourceFile;
@@ -701,5 +783,40 @@ val main: Int = log(1)
         assert_eq!(merged[1].0, "file:///import.lm");
         assert!(merged[1].1.is_empty());
         let _ = err;
+    }
+
+    #[test]
+    fn apply_content_changes_supports_incremental_ascii() {
+        let prev = "module T\nval x = 1\n";
+        let out = apply_content_changes(
+            prev,
+            &[json!({
+                "range": {
+                    "start": {"line": 1, "character": 8},
+                    "end": {"line": 1, "character": 9}
+                },
+                "text": "2"
+            })],
+            lumia_syntax::ColumnMetric::Utf16,
+        );
+        assert_eq!(out, "module T\nval x = 2\n");
+    }
+
+    #[test]
+    fn apply_content_changes_supports_incremental_utf16_cjk() {
+        let prev = "val 你好 = x\n";
+        // UTF-16 columns: "val " (4) + "你"(1) + "好"(1) + " = "(3) => x at col 9.
+        let out = apply_content_changes(
+            prev,
+            &[json!({
+                "range": {
+                    "start": {"line": 0, "character": 9},
+                    "end": {"line": 0, "character": 10}
+                },
+                "text": "y"
+            })],
+            lumia_syntax::ColumnMetric::Utf16,
+        );
+        assert_eq!(out, "val 你好 = y\n");
     }
 }

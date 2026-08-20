@@ -3,11 +3,13 @@
 //! **Sole owner of whole-function rewrites** for these shapes. Trial-div odd-step
 //! is a Core rewrite ([`TrialDivOddPass`]); `collatzSteps` → RT runs in Debug+Release
 //! via [`CollatzStepsPass`]; `floatOrbitChecksum` → RT via [`FloatOrbitPass`] (Debug+Release)
-//! and [`DomainSrPass`] (Release, before/after specialize).
+//! and [`DomainSrPass`] (Release, before/after specialize). `memTrafficChecksum`
+//! rewrites via [`MemTrafficPass`] in Debug+Release.
 
 mod collatz_steps;
 mod externs;
 mod float_orbit;
+mod mem_traffic;
 mod match_bench;
 mod match_collatz;
 mod match_float_orbit;
@@ -16,6 +18,7 @@ mod trial_div_odd;
 
 pub(crate) use collatz_steps::CollatzStepsPass;
 pub(crate) use float_orbit::FloatOrbitPass;
+pub(crate) use mem_traffic::MemTrafficPass;
 pub(crate) use trial_div_odd::TrialDivOddPass;
 
 use externs::{ensure_external, rewrite_body_to_call, rewrite_body_to_rt};

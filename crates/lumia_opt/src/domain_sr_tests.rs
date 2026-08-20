@@ -46,7 +46,7 @@ fn assert_rewritten(core: &lumia_core::CoreModule, name: &str, sym: &str) {
 #[test]
 fn rewrites_collatz_and_primes_helpers() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/opt_sr_correctness.lm");
+        .join("../../examples/guide/opt_sr_correctness.lm");
     let src = std::fs::read_to_string(&path).unwrap();
     let mut core = lumia_core::compile_source_to_core(&src).unwrap();
     optimize(&mut core, &OptOptions::for_build(true));
@@ -63,7 +63,7 @@ fn rewrites_collatz_and_primes_helpers() {
 #[test]
 fn rewrites_bench_checksum_helpers() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/opt_sr_correctness.lm");
+        .join("../../examples/guide/opt_sr_correctness.lm");
     let src = std::fs::read_to_string(&path).unwrap();
     let mut core = lumia_core::compile_source_to_core(&src).unwrap();
     optimize(&mut core, &OptOptions::for_build(true));
@@ -102,7 +102,7 @@ fn rewrites_const_specialized_matmul_clone() {
     // (see INLINE_MAX_OPS=64 × bench_cpu: inlining an unmatched `$c_2000` triple-loop
     // into a huge main defeated LLVM SCEV and caused ~7× slowdown).
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/opt_sr_correctness.lm");
+        .join("../../examples/guide/opt_sr_correctness.lm");
     let src = std::fs::read_to_string(&path).unwrap();
     let mut core = lumia_core::compile_source_to_core(&src).unwrap();
     optimize(&mut core, &OptOptions::for_build(true));
@@ -125,7 +125,7 @@ fn rewrites_const_specialized_matmul_clone() {
 #[test]
 fn rewrites_const_specialized_primes_and_collatz_clones() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/opt_sr_correctness.lm");
+        .join("../../examples/guide/opt_sr_correctness.lm");
     let src = std::fs::read_to_string(&path).unwrap();
     let mut core = lumia_core::compile_source_to_core(&src).unwrap();
     optimize(&mut core, &OptOptions::for_build(true));
@@ -152,7 +152,7 @@ fn rewrites_const_specialized_primes_and_collatz_clones() {
 
 #[test]
 fn rewrites_float_orbit_from_bench_cpu() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/bench_cpu.lm");
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/bench/bench_cpu.lm");
     let src = std::fs::read_to_string(&path).unwrap();
     let mut core = lumia_core::compile_source_to_core(&src).unwrap();
     optimize(&mut core, &OptOptions::for_build(true));
@@ -173,7 +173,7 @@ fn rewrites_float_orbit_from_bench_cpu() {
 
 #[test]
 fn rewrites_mem_traffic_from_bench_cpu() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/bench_cpu.lm");
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/bench/bench_cpu.lm");
     let src = std::fs::read_to_string(&path).unwrap();
     let mut core = lumia_core::compile_source_to_core(&src).unwrap();
     optimize(&mut core, &OptOptions::for_build(true));

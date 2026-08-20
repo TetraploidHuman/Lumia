@@ -135,6 +135,7 @@ fn tarjan_sccs(
     let mut lowlink: HashMap<Sym, u32> = HashMap::default();
     let mut sccs: Vec<HashSet<Sym>> = Vec::new();
 
+    #[allow(clippy::too_many_arguments)]
     fn strongconnect(
         v: &Sym,
         graph: &HashMap<Sym, HashSet<Sym>>,
@@ -219,6 +220,7 @@ mod tests {
     use crate::ir::{Block, CoreFun, FunKind, Local, Op, Value};
     use crate::{find_top_level_local_def, FunRefAliases, FunRefAlloc};
     use lumia_ty::{Effect, Type};
+    use std::sync::Arc;
 
     fn fun(
         name: &str,
@@ -615,5 +617,108 @@ val main = { sum(10, 0) }
             resolve_tco_callee_fresh(else_block, tail, &peers, &FunRefAliases::default())
                 .expect("alias tail must resolve to sum");
         assert_eq!(fun.as_str(), "sum");
+    }
+
+    #[test]
+    fn tco_scc_excludes_fun_typed_ret() {
+        let mut core = CoreModule::empty("M");
+        core.functions.push(CoreFun {
+            name: "sum".into(),
+            params: vec![Local(0)],
+            param_names: vec!["n".into()],
+            param_tys: vec![Type::Int],
+            body: Block {
+                ops: vec![],
+                result: Some(Local(0)),
+            },
+            // `Type::Fun` is intentionally ineligible for pure TCO SCCs.
+            ret_ty: Type::Fun(vec![Type::Int], Arc::new(Type::Int), Effect::pure()),
+            effect: Effect::pure(),
+            is_main: false,
+            memo: None,
+            external: None,
+            foreign_abi: crate::ForeignAbi::C,
+            escaping: HashSet::default(),
+            nsw_binop_locals: Default::default(),
+            safe_divisor_locals: Default::default(),
+            nonneg_iv_load_locals: Default::default(),
+            scheme_poly: false,
+            mono_of: None,
+            kind: FunKind::Normal,
+        });
+
+        let sccs = compute_tco_sccs(&core);
+        assert!(
+            sccs.is_empty(),
+            "fun-typed return must be excluded from TCO SCCs: {sccs:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_tco_callee_rejects_local_alias_cycle() {
+        let peers: HashSet<Sym> = [Sym::from("sum")].into_iter().collect();
+        let block = Block {
+            ops: vec![
+                Op::Let {
+                    local: Local(1),
+                    value: Value::Local(Local(2)),
+                    pure_region: true,
+                },
+                Op::Let {
+                    local: Local(2),
+                    value: Value::Local(Local(1)),
+                    pure_region: true,
+                },
+            ],
+            result: Some(Local(1)),
+        };
+
+        let tail = Value::Local(Local(1));
+        let out = resolve_tco_callee_fresh(
+            &block,
+            &tail,
+            &peers,
+            &FunRefAliases::default(),
+        );
+        assert!(out.is_none(), "local alias cycle must yield None");
+    }
+
+    #[test]
+    fn resolve_tco_tail_call_indirect_via_local_alias_chain() {
+        let peers: HashSet<Sym> = [Sym::from("odd")].into_iter().collect();
+        let mut aliases = FunRefAliases::default();
+        aliases.note_let(0, &Value::FunRef("odd".into()), FunRefAlloc::Ignore, None);
+        aliases.note_assign(lumia_hir::Sym::from("next"), Local(0));
+        aliases.note_let(1, &Value::Name("next".into()), FunRefAlloc::Ignore, None);
+
+        let block = Block {
+            ops: vec![
+                Op::Let {
+                    local: Local(2),
+                    value: Value::IndirectCall {
+                        callee: Local(1),
+                        args: vec![Local(0)],
+                    },
+                    pure_region: true,
+                },
+                // Extra SSA alias hop: result is Local(3) but Local(3) aliases Local(2).
+                Op::Let {
+                    local: Local(3),
+                    value: Value::Local(Local(2)),
+                    pure_region: true,
+                },
+            ],
+            result: Some(Local(3)),
+        };
+
+        let out = resolve_tco_tail_call(
+            &block,
+            &Value::Local(Local(3)),
+            &peers,
+            &aliases,
+        )
+        .expect("tail must resolve to odd");
+        assert_eq!(out.fun.as_str(), "odd");
+        assert_eq!(out.args, vec![Local(0)]);
     }
 }

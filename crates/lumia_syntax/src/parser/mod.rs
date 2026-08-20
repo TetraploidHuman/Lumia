@@ -55,6 +55,10 @@ struct Parser<'a> {
     lexer: Lexer<'a>,
     cur: Token,
     intern: StringInterner,
+    /// Recoverable parse errors for IDE/LSP pipelines.
+    /// In strict pipelines we still return `Err` if this is non-empty, but
+    /// expression-level recovery can still construct a best-effort AST.
+    errors: Vec<ParseError>,
     /// When false, `{` is not consumed as a trailing closure (e.g. `for x in xs {`).
     allow_trailing_closure: bool,
 }
@@ -82,6 +86,7 @@ impl<'a> Parser<'a> {
             lexer,
             cur,
             intern: StringInterner::default(),
+            errors: Vec::new(),
             allow_trailing_closure: true,
         }
     }
@@ -219,6 +224,95 @@ impl<'a> Parser<'a> {
         }
         let line_start = self.src[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
         self.src[line_start..start].is_empty()
+    }
+
+    fn hole_expr(&mut self, span: Span) -> Expr {
+        Expr::Ident(self.intern_word("__parse_hole"), span)
+    }
+
+    fn is_expr_start_token(&self) -> bool {
+        matches!(
+            self.cur.kind,
+            TokenKind::Error(_)
+                | TokenKind::Int(_)
+                | TokenKind::Float(_)
+                | TokenKind::String(_)
+                | TokenKind::InterpString(_)
+                | TokenKind::Char(_)
+                | TokenKind::True
+                | TokenKind::False
+                | TokenKind::Ident
+                | TokenKind::To
+                | TokenKind::If
+                | TokenKind::Match
+                | TokenKind::Return
+                | TokenKind::Effect
+                | TokenKind::Spawn
+                | TokenKind::Scope
+                | TokenKind::Not
+                | TokenKind::Minus
+                | TokenKind::LBrace
+                | TokenKind::LParen
+                | TokenKind::LBracket
+                | TokenKind::Hash
+                | TokenKind::For
+        )
+    }
+
+    fn is_match_pattern_start_token(&self) -> bool {
+        matches!(
+            self.cur.kind,
+            TokenKind::Underscore
+                | TokenKind::Int(_)
+                | TokenKind::Float(_)
+                | TokenKind::Minus
+                | TokenKind::True
+                | TokenKind::False
+                | TokenKind::Char(_)
+                | TokenKind::String(_)
+                | TokenKind::LBracket
+                | TokenKind::LParen
+                | TokenKind::Ident
+        )
+    }
+
+    /// Skip tokens inside a `{ ... }` block after we fail to parse a sub-expression.
+    ///
+    /// Goal: avoid swallowing the rest of the block/item; best-effort recovery is
+    /// enough for IDE recovery.
+    fn synchronize_block_stmt(&mut self, stop_at_column0_item: bool) {
+        while !self.at(&TokenKind::Eof) {
+            if self.at(&TokenKind::RBrace) {
+                return;
+            }
+            if stop_at_column0_item && self.at_column0_item_start() {
+                // Lambda body ends early (missing `}` case): let outer parse handle it.
+                return;
+            }
+            // Statement starters (including bare expression starts).
+            if self.at(&TokenKind::Val)
+                || self.at(&TokenKind::Var)
+                || self.at(&TokenKind::For)
+                || self.at(&TokenKind::Break)
+                || self.at(&TokenKind::Continue)
+                || self.at_ident()
+                || self.is_expr_start_token()
+            {
+                return;
+            }
+            self.bump();
+        }
+    }
+
+    /// Skip tokens until we likely reached the next `match { ... }` arm pattern
+    /// (or `}`), after recovering a failed arm body/guard expression.
+    fn synchronize_match_arms(&mut self) {
+        while !self.at(&TokenKind::Eof) {
+            if self.at(&TokenKind::RBrace) || self.is_match_pattern_start_token() {
+                return;
+            }
+            self.bump();
+        }
     }
 
     /// Skip junk until the next item/import starter (or EOF).

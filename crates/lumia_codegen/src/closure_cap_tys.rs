@@ -1,5 +1,6 @@
 //! Pre-collect capture types at `AllocClosure` sites so callees can type
 //! `ClosureCap` even when the callee body is emitted before its callers.
+#![allow(clippy::too_many_arguments)]
 
 use lumia_core::{
     infer_value_ty_ctx, Block, CodegenTypeTables, CoreModule, FunRefAliases, InferValueCtx, Op,

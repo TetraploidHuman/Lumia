@@ -86,18 +86,21 @@ pub(super) fn prefix_at(src: &str, byte: u32) -> String {
 mod tests {
     use super::{ident_at, pos_to_byte, prefix_at};
     use crate::lsp::state::{default_state, state_lock};
+    use crate::lsp::test_support::with_test_lock;
     use lumia_syntax::ColumnMetric;
 
     fn with_encoding<R>(enc: ColumnMetric, f: impl FnOnce() -> R) -> R {
-        let mut guard = state_lock();
-        let prev = guard.take();
-        let mut st = default_state(None);
-        st.position_encoding = enc;
-        *guard = Some(st);
-        drop(guard);
-        let out = f();
-        *state_lock() = prev;
-        out
+        with_test_lock(|| {
+            let mut guard = state_lock();
+            let prev = guard.take();
+            let mut st = default_state(None);
+            st.position_encoding = enc;
+            *guard = Some(st);
+            drop(guard);
+            let out = f();
+            *state_lock() = prev;
+            out
+        })
     }
 
     #[test]

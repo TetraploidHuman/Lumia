@@ -72,6 +72,7 @@ pub(super) fn binding_sccs(module: &Module) -> Vec<Vec<usize>> {
     let mut lowlink: HashMap<usize, usize> = HashMap::default();
     let mut sccs: Vec<Vec<usize>> = Vec::new();
 
+    #[allow(clippy::too_many_arguments)]
     fn strongconnect(
         v: usize,
         succ: &HashMap<usize, Vec<usize>>,

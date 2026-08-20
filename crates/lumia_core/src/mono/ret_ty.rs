@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 use super::fun_index::FunIndex;
 use crate::find_top_level_local_def;
 use crate::for_each_named_slot_assign_in_block;
@@ -141,6 +143,108 @@ pub(crate) fn block_result_fixed_ty(
         &mut seen,
         &mut expanding,
     )
+}
+
+/// Merge the fixed body result with the inferred mono key result.
+///
+/// This lives in `ret_ty` so `mono/specialize` can share the same "ret lattice"
+/// decision logic when upgrading erased Int/Option/... results.
+pub(super) fn merge_mono_ret_with_inferred(body: Type, inferred: &Type) -> Type {
+    match (&body, inferred) {
+        (
+            Type::Adt {
+                name: bn,
+                params: bp,
+            },
+            Type::Adt {
+                name: inan,
+                params: ip,
+            },
+        ) if bn == inan && lumia_hir::is_option_or_result(bn) => {
+            let body_payload = bp.first();
+            let inf_payload = ip.first();
+            if option_result_payload_weaker(body_payload, inf_payload) {
+                return inferred.clone();
+            }
+            refine_mono_container_ret(&body, inferred)
+        }
+        (Type::Int | Type::Var(_), _) => match inferred {
+            // Soft/`Var` body may still need scalar upgrades from the MonoKey
+            // (Float ABI, bool, …). **Concrete Int must not** — otherwise
+            // `{ x -> 1 }` specialized at Float (`__lam$Float`) gets `ret=Float`
+            // and auto-parallel map tags Int `1` as IEEE (denormal Show).
+            Type::Float | Type::Bool | Type::String | Type::Char | Type::Fun(_, _, _)
+                if matches!(body, Type::Var(_)) =>
+            {
+                inferred.clone()
+            }
+            // Do **not** promote body `Int` to List/Map/ADT from the MonoKey.
+            // `{ xs -> xs.len() }` body is Int while the key is `$List_Int`;
+            // preferring List made Call results look heap-ish (retain on `3`).
+            Type::Adt { .. }
+            | Type::List(_)
+            | Type::Map(_, _)
+            | Type::Set(_)
+            | Type::Task(_)
+            | Type::Channel(_)
+                if matches!(body, Type::Var(_)) =>
+            {
+                inferred.clone()
+            }
+            _ => body,
+        },
+        (
+            Type::Adt { .. }
+            | Type::List(_)
+            | Type::Map(_, _)
+            | Type::Set(_)
+            | Type::Task(_)
+            | Type::Channel(_),
+            _,
+        ) => refine_mono_container_ret(&body, inferred),
+        _ => body,
+    }
+}
+
+fn option_result_payload_weaker(body: Option<&Type>, inferred: Option<&Type>) -> bool {
+    let Some(inf) = inferred else {
+        return false;
+    };
+    // Inferred must be a concrete payload worth preferring.
+    match inf {
+        Type::Int | Type::Var(_) => return false,
+        Type::List(e) if matches!(e.as_ref(), Type::Int | Type::Var(_)) => return false,
+        _ => {}
+    }
+    match body {
+        None => true,
+        // Scalar body from `AdtField(Some(inner))` is concrete. Do not prefer a
+        // nested `Option`/`Result` MonoKey shape (`flatten(Some(Some(3)))`
+        // inferred `Option[Option[Int]]` over body `Option[Int]`).
+        Some(Type::Int | Type::Var(_)) => matches!(
+            inf,
+            Type::Float | Type::Bool | Type::String | Type::Char | Type::Fun(_, _, _)
+        ),
+        Some(Type::List(e)) if matches!(e.as_ref(), Type::Int | Type::Var(_)) => {
+            matches!(
+                inf,
+                Type::Float
+                    | Type::Bool
+                    | Type::String
+                    | Type::Char
+                    | Type::Fun(_, _, _)
+                    | Type::List(_)
+            )
+        }
+        // `Option[Option[Int]]` vs `Option[Float]` from nested andThen join.
+        Some(Type::Adt { name, params }) if lumia_hir::is_option_or_result(name) => {
+            params
+                .first()
+                .is_none_or(|p| matches!(p, Type::Int | Type::Var(_)))
+                || !matches!(inf, Type::Adt { name: n, .. } if lumia_hir::is_option_or_result(n))
+        }
+        _ => false,
+    }
 }
 
 fn local_fixed_ty(
@@ -958,5 +1062,5 @@ fn block_result_fixed_ty_indexed(
 }
 
 #[cfg(test)]
-#[path = "ret_ty_tests.rs"]
+#[path = "tests/ret_ty_tests.rs"]
 mod tests;

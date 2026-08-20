@@ -102,3 +102,7 @@ fn rewrite_forward_value(value: &mut Value, forward: &HashMap<Sym, Sym>) {
         _ => {}
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/specialize_forwarders_near.rs"]
+mod tests;

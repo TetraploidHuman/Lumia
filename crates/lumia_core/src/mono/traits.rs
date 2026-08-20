@@ -256,3 +256,7 @@ pub(crate) fn ensure_trait_method_stubs(module: &mut CoreModule) {
     }
     module.functions.append(&mut stubs);
 }
+
+#[cfg(test)]
+#[path = "tests/traits_near.rs"]
+mod tests;

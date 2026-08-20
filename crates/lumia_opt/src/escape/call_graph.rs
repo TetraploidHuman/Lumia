@@ -47,6 +47,7 @@ impl EscapeCallGraph {
         let mut lowlink = vec![0usize; n];
         let mut out: Vec<Vec<EscapeFunId>> = Vec::new();
 
+        #[allow(clippy::too_many_arguments)]
         fn strongconnect(
             v: EscapeFunId,
             graph: &EscapeCallGraph,

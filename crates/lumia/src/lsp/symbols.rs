@@ -148,6 +148,7 @@ mod tests {
     use super::super::state::Analysis;
     use super::symbols_for_analysis;
     use crate::check::check_source;
+    use crate::lsp::test_support::imported_alias_analysis;
 
     #[test]
     fn document_symbols_include_module_and_vals() {
@@ -162,16 +163,7 @@ mod tests {
 
     #[test]
     fn document_symbols_imported_alias_via_loader() {
-        // Import aliases need loader+std; check_source leaves `log` unbound.
-        use crate::lsp::analyze::analyze_buffer;
-        use rustc_hash::FxHashMap as HashMap;
-        let src = r#"
-module Main
-import std.io.{println as log}
-val main = { log(1) }
-"#;
-        let (_, analysis) = analyze_buffer("untitled:Symbols-1", src, &HashMap::default());
-        let a = analysis.expect("loader must typecheck untitled std import");
+        let a = imported_alias_analysis("untitled:Symbols-1");
         assert!(
             a.typed.fun_types.contains_key("log"),
             "imported alias must bind under loader"

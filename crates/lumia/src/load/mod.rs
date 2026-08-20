@@ -189,6 +189,18 @@ pub fn load_program_with_overlays(
     let mut link_args = Vec::new();
     let mut trust_foreign_pure = false;
     if let Some(manifest_path) = crate::pkg::find_manifest(&entry) {
+        // Add the manifest (package) root as a search root so that modules placed
+        // in subdirectories can still import shared sibling modules that live
+        // directly under the package root (e.g. examples/guide/ imports math.lm
+        // from examples/).
+        if let Some(manifest_dir) = manifest_path.parent() {
+            let manifest_dir = manifest_dir
+                .canonicalize()
+                .unwrap_or_else(|_| manifest_dir.to_path_buf());
+            if !search_roots.iter().any(|x| x == &manifest_dir) {
+                search_roots.push(manifest_dir);
+            }
+        }
         let m = crate::pkg::load_manifest(&manifest_path)
             .with_context(|| format!("load {}", manifest_path.display()))?;
         let lock_path = manifest_path

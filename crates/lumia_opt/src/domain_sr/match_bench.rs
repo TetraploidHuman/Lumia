@@ -1,4 +1,5 @@
 //! Whole-fn bench checksums → RT (affine2 / number theory / range / matmul / mandelbrot).
+#![allow(clippy::collapsible_match)]
 
 use super::externs::RtArg;
 use lumia_core::CoreBinOp as BinOp;
@@ -20,19 +21,17 @@ pub(super) fn match_bench_domain_fun(fun: &CoreFun, defs: &HashMap<u32, Value>) 
     if fun.ret_ty != Type::Int {
         return None;
     }
-    match_mem_traffic(fun, defs).or_else(|| {
-        // Unary checksums, or fully const-specialized `$c_` clones (`params` empty).
-        if fun.params.len() > 1 {
-            return None;
-        }
-        match_poly_checksum(fun, defs)
-            .or_else(|| match_gcd_checksum(fun, defs))
-            .or_else(|| match_divisor_sum(fun, defs))
-            .or_else(|| match_product_rem(fun, defs))
-            .or_else(|| match_matmul_checksum(fun, defs))
-            .or_else(|| match_range_fold(fun, defs))
-            .or_else(|| match_mandelbrot(fun, defs))
-    })
+    // Unary checksums, or fully const-specialized `$c_` clones (`params` empty).
+    if fun.params.len() > 1 {
+        return None;
+    }
+    match_poly_checksum(fun, defs)
+        .or_else(|| match_gcd_checksum(fun, defs))
+        .or_else(|| match_divisor_sum(fun, defs))
+        .or_else(|| match_product_rem(fun, defs))
+        .or_else(|| match_matmul_checksum(fun, defs))
+        .or_else(|| match_range_fold(fun, defs))
+        .or_else(|| match_mandelbrot(fun, defs))
 }
 
 /// `params[0]` when present; else a sentinel that never aliases a real SSA local
@@ -790,6 +789,14 @@ fn match_mem_traffic(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<Match>
         vec![RtArg::Param(0), RtArg::Param(1), RtArg::Param(2)]
     };
     Some(("lumia_mem_traffic_checksum", args))
+}
+
+pub(super) fn match_mem_traffic_checksum_fun(
+    fun: &CoreFun,
+    defs: &HashMap<u32, Value>,
+) -> Option<Vec<RtArg>> {
+    let (sym, args) = match_mem_traffic(fun, defs)?;
+    (sym == "lumia_mem_traffic_checksum").then_some(args)
 }
 
 fn result_is_rem_of_name(

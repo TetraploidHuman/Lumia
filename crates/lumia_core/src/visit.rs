@@ -1022,6 +1022,7 @@ pub fn block_result_is_bool_lit(block: &Block, expect: bool) -> bool {
 /// Used to mark lifted `__lam_*` [`crate::ir::CoreFun::effect`] so opt passes that
 /// trust `effect.is_pure()` (inline / CSE / const-specialize) do not treat IO
 /// thunks as pure. `io_callees` are known effectful top-level names.
+#[allow(clippy::collapsible_match)]
 pub fn block_has_io(block: &Block, io_callees: &HashSet<Sym>) -> bool {
     for op in &block.ops {
         match op {

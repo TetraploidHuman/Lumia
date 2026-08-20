@@ -7,8 +7,8 @@ Rust compiler + Core IR（树形 ANF / 伪 SSA）+ LLVM 21 codegen + generationa
 ```bash
 source scripts/env.sh          # sets LLVM_SYS_211_PREFIX + shared lib paths
 cargo build -p lumia          # default: shared libLLVM (llvm-dynamic)
-cargo run -p lumia -- check examples/hello.lm
-cargo run -p lumia -- build examples/hello.lm -o /tmp/hello
+cargo run -p lumia -- check examples/guide/hello.lm
+cargo run -p lumia -- build examples/guide/hello.lm -o /tmp/hello
 /tmp/hello                     # prints 42
 ```
 

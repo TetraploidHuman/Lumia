@@ -163,6 +163,7 @@ fn param_ok_for_const_scalar(t: &lumia_ty::Type) -> bool {
             | lumia_ty::Type::Char
             | lumia_ty::Type::Float
             | lumia_ty::Type::Var(_)
+            | lumia_ty::Type::Unknown
     )
 }
 

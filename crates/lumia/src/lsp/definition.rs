@@ -52,22 +52,10 @@ mod tests {
     use crate::check::check_source;
     use crate::load::SourceFile;
     use crate::lsp::cursor::byte_to_position;
-    use crate::lsp::state::{default_state, state_lock, Analysis};
+    use crate::lsp::state::Analysis;
+    use crate::lsp::test_support::{imported_alias_analysis, with_encoding, IMPORTED_ALIAS_SRC};
     use lumia_syntax::ColumnMetric;
-    use rustc_hash::FxHashMap as HashMap;
     use std::path::PathBuf;
-
-    fn with_encoding<R>(enc: ColumnMetric, f: impl FnOnce() -> R) -> R {
-        let mut guard = state_lock();
-        let prev = guard.take();
-        let mut st = default_state(None);
-        st.position_encoding = enc;
-        *guard = Some(st);
-        drop(guard);
-        let out = f();
-        *state_lock() = prev;
-        out
-    }
 
     fn analysis(src: &str) -> Analysis {
         let typed = check_source(src, true).expect("typecheck");
@@ -119,17 +107,10 @@ val main = {
 
     #[test]
     fn definition_imported_alias_via_loader() {
-        // Import aliases need loader+std; check_source leaves `log` unbound.
-        use crate::lsp::analyze::analyze_buffer;
         with_encoding(ColumnMetric::Utf16, || {
-            let src = r#"
-module Main
-import std.io.{println as log}
-val main = { log(1) }
-"#;
+            let src = IMPORTED_ALIAS_SRC;
             let uri = "untitled:Def-1";
-            let (_, analysis) = analyze_buffer(uri, src, &HashMap::default());
-            let a = analysis.expect("loader must typecheck untitled std import");
+            let a = imported_alias_analysis(uri);
             let use_byte = src.find("log(1)").expect("use") as u32;
             let (line, col) = byte_to_position(src, use_byte);
             let loc = definition_for_analysis(&a, uri, line, col);

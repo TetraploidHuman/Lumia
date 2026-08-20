@@ -6,14 +6,23 @@ use lumia_syntax::Span;
 use serde_json::{json, Value};
 
 pub(super) fn diag_from_span(src: &str, span: Span, kind: DiagnosticKind, msg: &str) -> Value {
+    let range = span_to_range(src, span);
     let mut d = json!({
-        "range": span_to_range(src, span),
+        "range": range.clone(),
         "severity": kind.lsp_severity(),
         "source": "lumia",
         "message": kind.format_message(msg)
     });
     if let Some(c) = kind.lsp_code() {
         d["code"] = json!(c);
+    }
+    if kind == DiagnosticKind::Warning {
+        // LSP soft/advisory diagnostics: mark as unnecessary and attach a hint.
+        d["tags"] = json!(["Unnecessary"]);
+        d["relatedInformation"] = json!([{
+            "message": "Advisory only: does not fail check/build.",
+            "location": { "range": range }
+        }]);
     }
     d
 }
@@ -27,17 +36,25 @@ pub(super) fn diag_json(
     msg: &str,
 ) -> Value {
     let message = kind.format_message(msg);
+    let range = json!({
+        "start": { "line": line.saturating_sub(1), "character": col.saturating_sub(1) },
+        "end": { "line": eline.saturating_sub(1), "character": ecol.saturating_sub(1) }
+    });
     let mut d = json!({
-        "range": {
-            "start": { "line": line.saturating_sub(1), "character": col.saturating_sub(1) },
-            "end": { "line": eline.saturating_sub(1), "character": ecol.saturating_sub(1) }
-        },
+        "range": range.clone(),
         "severity": kind.lsp_severity(),
         "source": "lumia",
         "message": message
     });
     if let Some(c) = kind.lsp_code() {
         d["code"] = json!(c);
+    }
+    if kind == DiagnosticKind::Warning {
+        d["tags"] = json!(["Unnecessary"]);
+        d["relatedInformation"] = json!([{
+            "message": "Advisory only: does not fail check/build.",
+            "location": { "range": range }
+        }]);
     }
     d
 }
@@ -46,21 +63,9 @@ pub(super) fn diag_json(
 mod tests {
     use super::{diag_from_span, diag_json};
     use crate::diag::DiagnosticKind;
-    use crate::lsp::state::{default_state, state_lock};
+    use crate::lsp::test_support::{analyze_loader, with_encoding};
     use lumia_syntax::{BytePos, ColumnMetric, Span};
-    use rustc_hash::FxHashMap as HashMap;
-
-    fn with_encoding<R>(enc: ColumnMetric, f: impl FnOnce() -> R) -> R {
-        let mut guard = state_lock();
-        let prev = guard.take();
-        let mut st = default_state(None);
-        st.position_encoding = enc;
-        *guard = Some(st);
-        drop(guard);
-        let out = f();
-        *state_lock() = prev;
-        out
-    }
+    use serde_json::json;
 
     #[test]
     fn diag_json_sets_code_from_kind() {
@@ -81,6 +86,11 @@ mod tests {
         assert_eq!(d["severity"], 2);
         assert_eq!(d["code"], "warning");
         assert_eq!(d["message"], "warning: trust advisory");
+        assert_eq!(d["tags"], json!(["Unnecessary"]));
+        assert!(
+            d.get("relatedInformation").is_some(),
+            "warning diagnostics should include relatedInformation"
+        );
     }
 
     #[test]
@@ -122,13 +132,12 @@ mod tests {
     #[test]
     fn diagnostics_imported_alias_type_error_via_loader() {
         // Type errors on loader-resolved imports need analyze_buffer (not check_source).
-        use crate::lsp::analyze::analyze_buffer;
         let src = r#"
 module Main
 import std.io.{println as log}
 val main: Int = log(1)
 "#;
-        let (batches, analysis) = analyze_buffer("untitled:Diag-1", src, &HashMap::default());
+        let (batches, analysis) = analyze_loader("untitled:Diag-1", src);
         assert!(
             analysis.is_some(),
             "loader must typecheck untitled std import enough to emit typed diags"

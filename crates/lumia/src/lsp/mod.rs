@@ -13,13 +13,18 @@
 
 mod analyze;
 mod completion;
+#[cfg(test)]
+mod test_support;
 mod cursor;
 mod definition;
 mod diagnostics;
 mod formatting;
 mod hover;
 mod inlay;
+mod signature_help;
 mod protocol;
+mod code_action;
+mod references;
 mod semantic;
 mod state;
 mod symbols;
@@ -28,19 +33,28 @@ mod uri;
 use analyze::{on_did_change, on_did_change_watched_files, on_did_close, on_did_open};
 use anyhow::Result;
 use completion::on_completion;
+use code_action::on_code_action;
 use definition::on_definition;
 use formatting::on_formatting;
 use hover::on_hover;
 use inlay::on_inlay_hint;
+use signature_help::on_signature_help;
 use protocol::{read_message, write_stdout};
+use references::{on_references, on_rename};
 use semantic::{on_semantic_tokens, TOKEN_MODIFIERS, TOKEN_TYPES};
 use serde_json::{json, Value};
-use state::{default_state, invalidate_program_cache, spawn_analyze_worker, state_lock};
+use state::{
+    create_session_state, default_state, invalidate_program_cache, set_session_state,
+    spawn_analyze_worker, state_lock,
+};
 use std::io;
 use symbols::on_document_symbol;
+use uri::uri_to_path;
 
 pub fn run_lsp() -> Result<()> {
-    let analyze_tx = spawn_analyze_worker();
+    let session_state = create_session_state();
+    set_session_state(session_state);
+    let analyze_tx = spawn_analyze_worker(session_state);
     *state_lock() = Some(default_state(Some(analyze_tx)));
     let stdin = io::stdin();
     let mut stdin = stdin.lock();
@@ -95,6 +109,7 @@ fn handle_message(msg: Value) -> Result<Option<Value>> {
                 .and_then(|w| w.get("configuration"))
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
+            let workspace_folders = parse_workspace_folders(params);
             // Prefer utf-8 when the client offers it; otherwise LSP default utf-16.
             let position_encoding = negotiate_position_encoding(params);
             let position_encoding_str = match position_encoding {
@@ -105,6 +120,7 @@ fn handle_message(msg: Value) -> Result<Option<Value>> {
                 s.auto_parallel = ap;
                 s.client_supports_configuration = supports_config;
                 s.position_encoding = position_encoding;
+                s.workspace_folders = workspace_folders;
             }
             Ok(Some(json!({
                 "jsonrpc": "2.0",
@@ -112,9 +128,20 @@ fn handle_message(msg: Value) -> Result<Option<Value>> {
                 "result": {
                     "capabilities": {
                         "positionEncoding": position_encoding_str,
-                        "textDocumentSync": 1,
+                        "textDocumentSync": {
+                            "openClose": true,
+                            "change": 2
+                        },
                         "hoverProvider": true,
                         "definitionProvider": true,
+                        "signatureHelpProvider": {
+                            "triggerCharacters": [",", "("]
+                        },
+                        "referencesProvider": true,
+                        "renameProvider": true,
+                        "codeActionProvider": {
+                            "codeActionKinds": ["quickfix"]
+                        },
                         "completionProvider": {
                             "triggerCharacters": [".", "("],
                             "resolveProvider": false
@@ -134,8 +161,8 @@ fn handle_message(msg: Value) -> Result<Option<Value>> {
                             // Client may push `workspace/didChangeConfiguration`; we also
                             // pull via `workspace/configuration` after `initialized`.
                             "workspaceFolders": {
-                                "supported": false,
-                                "changeNotifications": false
+                                "supported": true,
+                                "changeNotifications": true
                             }
                         }
                     },
@@ -197,6 +224,10 @@ fn handle_message(msg: Value) -> Result<Option<Value>> {
             }
             Ok(None)
         }
+        Some("workspace/didChangeWorkspaceFolders") => {
+            apply_workspace_folder_change(msg.get("params"))?;
+            Ok(None)
+        }
         Some("textDocument/documentSymbol") => {
             let result = on_document_symbol(msg.get("params"))?;
             Ok(Some(
@@ -223,6 +254,30 @@ fn handle_message(msg: Value) -> Result<Option<Value>> {
         }
         Some("textDocument/definition") => {
             let result = on_definition(msg.get("params"))?;
+            Ok(Some(
+                json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+            ))
+        }
+        Some("textDocument/signatureHelp") => {
+            let result = on_signature_help(msg.get("params"))?;
+            Ok(Some(
+                json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+            ))
+        }
+        Some("textDocument/references") => {
+            let result = on_references(msg.get("params"))?;
+            Ok(Some(
+                json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+            ))
+        }
+        Some("textDocument/rename") => {
+            let result = on_rename(msg.get("params"))?;
+            Ok(Some(
+                json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+            ))
+        }
+        Some("textDocument/codeAction") => {
+            let result = on_code_action(msg.get("params"))?;
             Ok(Some(
                 json!({ "jsonrpc": "2.0", "id": id, "result": result }),
             ))
@@ -300,6 +355,81 @@ fn parse_auto_parallel_settings(settings: Option<&Value>) -> Option<bool> {
             .or_else(|| s.get("auto_parallel"))
             .and_then(|v| v.as_bool())
     })
+}
+
+fn parse_workspace_folders(params: Option<&Value>) -> Vec<std::path::PathBuf> {
+    let mut folders = parse_workspace_folder_list(params.and_then(|p| p.get("workspaceFolders")));
+    if folders.is_empty() {
+        if let Some(root_uri) = params
+            .and_then(|p| p.get("rootUri"))
+            .and_then(|v| v.as_str())
+        {
+            folders.push(uri_to_path(root_uri));
+        } else if let Some(root_path) = params
+            .and_then(|p| p.get("rootPath"))
+            .and_then(|v| v.as_str())
+        {
+            folders.push(std::path::PathBuf::from(root_path));
+        }
+    }
+    normalize_workspace_folders(folders)
+}
+
+fn parse_workspace_folder_list(v: Option<&Value>) -> Vec<std::path::PathBuf> {
+    v.and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| item.get("uri").and_then(|u| u.as_str()))
+                .map(uri_to_path)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn normalize_workspace_folders(mut folders: Vec<std::path::PathBuf>) -> Vec<std::path::PathBuf> {
+    folders.sort_by(|a, b| a.as_os_str().cmp(b.as_os_str()));
+    folders.dedup();
+    folders
+}
+
+fn apply_workspace_folder_change(params: Option<&Value>) -> Result<()> {
+    let added = parse_workspace_folder_list(
+        params
+            .and_then(|p| p.get("event"))
+            .and_then(|e| e.get("added")),
+    );
+    let removed = parse_workspace_folder_list(
+        params
+            .and_then(|p| p.get("event"))
+            .and_then(|e| e.get("removed")),
+    );
+    if added.is_empty() && removed.is_empty() {
+        return Ok(());
+    }
+    let docs: Vec<(String, String)> = {
+        let mut st = state_lock();
+        let Some(s) = st.as_mut() else {
+            return Ok(());
+        };
+        let mut folders = s.workspace_folders.clone();
+        folders.retain(|p| !removed.iter().any(|r| r == p));
+        for a in added {
+            if !folders.iter().any(|p| p == &a) {
+                folders.push(a);
+            }
+        }
+        folders = normalize_workspace_folders(folders);
+        if folders == s.workspace_folders {
+            return Ok(());
+        }
+        s.workspace_folders = folders;
+        invalidate_program_cache(s);
+        s.docs.iter().map(|(u, t)| (u.clone(), t.clone())).collect()
+    };
+    for (uri, text) in docs {
+        let _ = analyze::publish_diagnostics_for(&uri, &text);
+    }
+    Ok(())
 }
 
 fn apply_auto_parallel(ap: bool) -> Result<()> {
@@ -397,25 +527,74 @@ mod tests {
     #[test]
     fn shutdown_rejects_further_requests() {
         use super::state::{default_state, state_lock};
-        let prev = state_lock().take();
-        *state_lock() = Some(default_state(None));
-        let shut = super::handle_message(serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "shutdown"
-        }))
-        .expect("shutdown");
-        assert_eq!(shut.unwrap()["result"], serde_json::Value::Null);
-        assert!(state_lock().as_ref().unwrap().shut_down);
-        let rejected = super::handle_message(serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/hover",
-            "params": {}
-        }))
-        .expect("hover after shutdown");
-        let err = rejected.unwrap();
-        assert_eq!(err["error"]["code"], -32600);
-        *state_lock() = prev;
+        crate::lsp::test_support::with_test_lock(|| {
+            let prev = state_lock().take();
+            *state_lock() = Some(default_state(None));
+            let shut = super::handle_message(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "shutdown"
+            }))
+            .expect("shutdown");
+            assert_eq!(shut.unwrap()["result"], serde_json::Value::Null);
+            assert!(state_lock().as_ref().unwrap().shut_down);
+            let rejected = super::handle_message(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "textDocument/hover",
+                "params": {}
+            }))
+            .expect("hover after shutdown");
+            let err = rejected.unwrap();
+            assert_eq!(err["error"]["code"], -32600);
+            *state_lock() = prev;
+        });
+    }
+
+    #[test]
+    fn parse_workspace_folders_prefers_workspace_folders_then_root_uri() {
+        let from_folders = serde_json::json!({
+            "workspaceFolders": [
+                { "uri": "file:///tmp/ws-b" },
+                { "uri": "file:///tmp/ws-a" }
+            ],
+            "rootUri": "file:///tmp/root"
+        });
+        let got = super::parse_workspace_folders(Some(&from_folders));
+        assert_eq!(got.len(), 2);
+        assert!(got.iter().any(|p| p.to_string_lossy().contains("/tmp/ws-a")));
+        assert!(got.iter().any(|p| p.to_string_lossy().contains("/tmp/ws-b")));
+
+        let from_root = serde_json::json!({
+            "rootUri": "file:///tmp/root-only"
+        });
+        let got = super::parse_workspace_folders(Some(&from_root));
+        assert_eq!(got.len(), 1);
+        assert!(got[0].to_string_lossy().contains("/tmp/root-only"));
+    }
+
+    #[test]
+    fn workspace_folder_change_updates_state() {
+        use super::state::{default_state, state_lock};
+        crate::lsp::test_support::with_test_lock(|| {
+            let prev = state_lock().take();
+            let mut st = default_state(None);
+            st.workspace_folders = vec![std::path::PathBuf::from("/tmp/ws-a")];
+            *state_lock() = Some(st);
+            let _ = super::handle_message(serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "workspace/didChangeWorkspaceFolders",
+                "params": {
+                    "event": {
+                        "added": [{ "uri": "file:///tmp/ws-b" }],
+                        "removed": [{ "uri": "file:///tmp/ws-a" }]
+                    }
+                }
+            }))
+            .expect("workspace folder change");
+            let now = state_lock().as_ref().unwrap().workspace_folders.clone();
+            assert_eq!(now, vec![std::path::PathBuf::from("/tmp/ws-b")]);
+            *state_lock() = prev;
+        });
     }
 }

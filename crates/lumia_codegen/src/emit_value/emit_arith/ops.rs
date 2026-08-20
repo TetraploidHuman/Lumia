@@ -59,32 +59,11 @@ impl<'ctx> Codegen<'ctx> {
         // `resolve_trait_method_calls`; residual Binary is an ICE.
         self.reject_residual_num_binary(op, &lt, &rt)?;
         let v = match op {
-            BinOp::Add if self.dest_is_nsw_safe() => {
-                self.emit_nsw_binop(l, r, left, right, "add")?
+            BinOp::Add | BinOp::Sub | BinOp::Mul => {
+                self.emit_int_add_sub_mul(op, l, r, left, right, fv)?
             }
-            BinOp::Sub if self.dest_is_nsw_safe() => self.emit_nsw_binop_sub(l, r, "sub")?,
-            BinOp::Mul if self.dest_is_nsw_safe() => {
-                self.emit_nsw_binop_mul(l, r, left, right, "mul")?
-            }
-            BinOp::Add => self.emit_checked_binop(l, r, fv, "sadd")?,
-            BinOp::Sub => self.emit_checked_binop(l, r, fv, "ssub")?,
-            BinOp::Mul => self.emit_checked_binop(l, r, fv, "smul")?,
-            BinOp::Div => {
-                if self.frame.safe_divisor_locals.contains(&right.0) {
-                    let unsigned = self.dividend_nonneg(left);
-                    self.emit_unchecked_div_rem(l, r, false, unsigned)?
-                } else {
-                    self.emit_checked_div_rem(l, r, fv, false)?
-                }
-            }
-            BinOp::Rem => {
-                if self.frame.safe_divisor_locals.contains(&right.0) {
-                    let unsigned = self.dividend_nonneg(left);
-                    self.emit_unchecked_div_rem(l, r, true, unsigned)?
-                } else {
-                    self.emit_checked_div_rem(l, r, fv, true)?
-                }
-            }
+            BinOp::Div => self.emit_int_div_rem(l, r, left, right, fv, false)?,
+            BinOp::Rem => self.emit_int_div_rem(l, r, left, right, fv, true)?,
             BinOp::Eq => self.emit_value_eq(&lt, &rt, l, r)?,
             BinOp::Ne => {
                 let eq = self.emit_value_eq(&lt, &rt, l, r)?;
@@ -109,6 +88,59 @@ impl<'ctx> Codegen<'ctx> {
             }
         };
         Ok(v.into())
+    }
+
+    fn emit_int_add_sub_mul(
+        &mut self,
+        op: &BinOp,
+        l: IntValue<'ctx>,
+        r: IntValue<'ctx>,
+        left: &Local,
+        right: &Local,
+        fv: FunctionValue<'ctx>,
+    ) -> Result<IntValue<'ctx>> {
+        let nsw_safe = self.dest_is_nsw_safe();
+        match op {
+            BinOp::Add => {
+                if nsw_safe {
+                    self.emit_nsw_binop(l, r, left, right, "add")
+                } else {
+                    self.emit_checked_binop(l, r, fv, "sadd")
+                }
+            }
+            BinOp::Sub => {
+                if nsw_safe {
+                    self.emit_nsw_binop_sub(l, r, "sub")
+                } else {
+                    self.emit_checked_binop(l, r, fv, "ssub")
+                }
+            }
+            BinOp::Mul => {
+                if nsw_safe {
+                    self.emit_nsw_binop_mul(l, r, left, right, "mul")
+                } else {
+                    self.emit_checked_binop(l, r, fv, "smul")
+                }
+            }
+            _ => unreachable!("emit_int_add_sub_mul only matches Add/Sub/Mul"),
+        }
+    }
+
+    fn emit_int_div_rem(
+        &mut self,
+        l: IntValue<'ctx>,
+        r: IntValue<'ctx>,
+        left: &Local,
+        right: &Local,
+        fv: FunctionValue<'ctx>,
+        is_rem: bool,
+    ) -> Result<IntValue<'ctx>> {
+        if self.frame.safe_divisor_locals.contains(&right.0) {
+            let unsigned = self.dividend_nonneg(left);
+            self.emit_unchecked_div_rem(l, r, is_rem, unsigned)
+        } else {
+            self.emit_checked_div_rem(l, r, fv, is_rem)
+        }
     }
 
     fn emit_float_binary(

@@ -86,7 +86,7 @@ fn build_and_run(rel: &str, release: bool) -> Vec<String> {
 /// Full `bench_cpu.lm` Release fingerprints (same as `scripts/bench_cpu.sh`).
 #[test]
 fn bench_cpu_release_fingerprints() {
-    let got = build_and_run("examples/bench_cpu.lm", true);
+    let got = build_and_run("examples/bench/bench_cpu.lm", true);
     let expect = [
         "63951",
         "1998964270721",
@@ -116,7 +116,7 @@ fn bench_cpu_release_fingerprints() {
 /// Medium SR suite fingerprints (Release).
 #[test]
 fn opt_sr_correctness_release_fingerprints() {
-    let got = build_and_run("examples/opt_sr_correctness.lm", true);
+    let got = build_and_run("examples/guide/opt_sr_correctness.lm", true);
     let expect = [
         "2262",
         "3205658583",
@@ -150,8 +150,8 @@ fn opt_sr_correctness_release_fingerprints() {
 /// Debug and Release must agree on every checksum (opts must be semantics-preserving).
 #[test]
 fn opt_sr_correctness_debug_matches_release() {
-    let rel = build_and_run("examples/opt_sr_correctness.lm", true);
-    let dbg = build_and_run("examples/opt_sr_correctness.lm", false);
+    let rel = build_and_run("examples/guide/opt_sr_correctness.lm", true);
+    let dbg = build_and_run("examples/guide/opt_sr_correctness.lm", false);
     assert_eq!(
         dbg, rel,
         "Debug/Release divergence in opt_sr_correctness\n debug: {dbg:?}\n release: {rel:?}"
@@ -161,8 +161,8 @@ fn opt_sr_correctness_debug_matches_release() {
 /// Cross-check selected Release lines against RT / reference oracles.
 #[test]
 fn opt_sr_correctness_matches_rt_oracles() {
-    let got = build_and_run("examples/opt_sr_correctness.lm", true);
-    // Indices aligned with `examples/opt_sr_correctness.lm` main.
+    let got = build_and_run("examples/guide/opt_sr_correctness.lm", true);
+    // Indices aligned with `examples/guide/opt_sr_correctness.lm` main.
     assert_eq!(
         got[0].parse::<i64>().unwrap(),
         lumia_rt::lumia_count_primes(20_000)

@@ -1,7 +1,4 @@
 //! LLVM codegen via inkwell (LLVM 21). Links against `lumia_rt`.
-#![allow(clippy::too_many_arguments)]
-#![allow(clippy::type_complexity)]
-#![allow(clippy::collapsible_match)]
 
 mod attrs;
 mod closure_cap_tys;

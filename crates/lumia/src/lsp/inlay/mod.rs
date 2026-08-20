@@ -223,16 +223,8 @@ val main = {
 
     #[test]
     fn inlay_imported_alias_via_loader() {
-        // Import aliases need loader+std; check_source leaves `log` unbound.
-        use crate::lsp::analyze::analyze_buffer;
-        use rustc_hash::FxHashMap as HashMap;
-        let src = r#"
-module Main
-import std.io.{println as log}
-val main = { log(1) }
-"#;
-        let (_, analysis) = analyze_buffer("untitled:Inlay-1", src, &HashMap::default());
-        let a = analysis.expect("loader must typecheck untitled std import");
+        use crate::lsp::test_support::imported_alias_analysis;
+        let a = imported_alias_analysis("untitled:Inlay-1");
         assert!(
             a.typed.fun_types.contains_key("log"),
             "imported alias `log` must be bound via loader"

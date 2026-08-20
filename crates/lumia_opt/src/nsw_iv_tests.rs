@@ -187,7 +187,7 @@ val main = {
 
 #[test]
 fn marks_matmul_iv_increments() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/bench_cpu.lm");
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/bench/bench_cpu.lm");
     let src = std::fs::read_to_string(&path).unwrap();
     let core =
         crate::compile_source_to_optimized(&src, &crate::OptOptions::for_build(true)).unwrap();
@@ -289,7 +289,7 @@ i = i + 1
 
 #[test]
 fn marks_is_prime_d_as_safe_divisor() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/bench_cpu.lm");
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/bench/bench_cpu.lm");
     let src = std::fs::read_to_string(&path).unwrap();
     let core =
         crate::compile_source_to_optimized(&src, &crate::OptOptions::for_build(true)).unwrap();

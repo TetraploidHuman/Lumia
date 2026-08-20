@@ -1,4 +1,5 @@
 //! Whole-function `countPrimes(limit)` matcher.
+#![allow(clippy::collapsible_match)]
 
 use super::externs::RtArg;
 use lumia_core::{

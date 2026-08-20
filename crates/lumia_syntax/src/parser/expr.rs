@@ -108,13 +108,40 @@ impl<'a> Parser<'a> {
             self.bump();
             None
         } else {
-            Some(self.parse_expr()?)
+            match self.parse_expr() {
+                Ok(e) => Some(e),
+                Err(e) => {
+                    let span = e.span;
+                    self.errors.push(e);
+                    // Skip until the arm arrow so we can keep parsing this arm's body.
+                    while !self.at(&TokenKind::Eof) && !self.at(&TokenKind::Arrow) {
+                        self.bump();
+                    }
+                    Some(self.hole_expr(span))
+                }
+            }
         };
         self.expect(TokenKind::Arrow)?;
         let body = if self.at(&TokenKind::LBrace) {
-            self.parse_block_expr()?
+            match self.parse_block_expr() {
+                Ok(b) => b,
+                Err(e) => {
+                    let span = e.span;
+                    self.errors.push(e);
+                    self.synchronize_match_arms();
+                    self.hole_expr(span)
+                }
+            }
         } else {
-            self.parse_expr()?
+            match self.parse_expr() {
+                Ok(b) => b,
+                Err(e) => {
+                    let span = e.span;
+                    self.errors.push(e);
+                    self.synchronize_match_arms();
+                    self.hole_expr(span)
+                }
+            }
         };
         Ok(MatchCondArm {
             cond,
@@ -146,16 +173,43 @@ impl<'a> Parser<'a> {
         };
         let guard = if self.at(&TokenKind::If) {
             self.bump();
-            Some(self.parse_expr()?)
+            match self.parse_expr() {
+                Ok(g) => Some(g),
+                Err(e) => {
+                    let span = e.span;
+                    self.errors.push(e);
+                    // Skip until the arm arrow so we can keep parsing this arm's body.
+                    while !self.at(&TokenKind::Eof) && !self.at(&TokenKind::Arrow) {
+                        self.bump();
+                    }
+                    Some(self.hole_expr(span))
+                }
+            }
         } else {
             None
         };
         self.expect(TokenKind::Arrow)?;
         // Arm body: `{ ... }` block, or a single expression (braces optional).
         let body = if self.at(&TokenKind::LBrace) {
-            self.parse_block_expr()?
+            match self.parse_block_expr() {
+                Ok(b) => b,
+                Err(e) => {
+                    let span = e.span;
+                    self.errors.push(e);
+                    self.synchronize_match_arms();
+                    self.hole_expr(span)
+                }
+            }
         } else {
-            self.parse_expr()?
+            match self.parse_expr() {
+                Ok(b) => b,
+                Err(e) => {
+                    let span = e.span;
+                    self.errors.push(e);
+                    self.synchronize_match_arms();
+                    self.hole_expr(span)
+                }
+            }
         };
         Ok(MatchArm {
             pattern,

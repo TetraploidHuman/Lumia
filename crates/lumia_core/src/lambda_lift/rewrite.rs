@@ -1,5 +1,5 @@
-
 //! Rewrite nested `Value::Lambda` into top-level `__lam_N` functions.
+#![allow(clippy::too_many_arguments)]
 
 use super::captures::analyze_captures;
 use super::float_abi::{

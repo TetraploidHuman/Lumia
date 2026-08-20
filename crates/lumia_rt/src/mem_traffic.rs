@@ -8,7 +8,7 @@ use crate::i64_simd::{fill_iota_i64, sum_i64};
 const LCG_A: i64 = 1_103_515_245;
 const LCG_C: i64 = 12345;
 
-/// Matches `examples/bench_cpu.lm` `memTrafficChecksum(n, scanPasses, gatherSteps)`.
+/// Matches `examples/bench/bench_cpu.lm` `memTrafficChecksum(n, scanPasses, gatherSteps)`.
 #[no_mangle]
 pub extern "C" fn lumia_mem_traffic_checksum(n: i64, scan_passes: i64, gather_steps: i64) -> i64 {
     if n <= 0 {

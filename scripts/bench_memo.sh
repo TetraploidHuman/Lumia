@@ -11,7 +11,7 @@ source "$ROOT/scripts/bench_measure.sh"
 cd "$ROOT"
 cargo build -q -p lumia --release
 LUMIA="$ROOT/target/release/lumia"
-SRC=examples/bench_memo.lm
+SRC=examples/bench/bench_memo.lm
 OUT_DIR="${TMPDIR:-/tmp}/lumia_bench_memo"
 mkdir -p "$OUT_DIR"
 WITH="$OUT_DIR/with_memo"

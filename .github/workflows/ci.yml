@@ -205,5 +205,5 @@ jobs:
             echo "slim binary unexpectedly exposes build" >&2
             exit 1
           fi
-          "$SLIM" check examples/hello.lm
+          "$SLIM" check examples/guide/hello.lm
           "$SLIM" lsp --help >/dev/null

@@ -312,7 +312,7 @@ impl<'ctx> Codegen<'ctx> {
     ///
     /// **Not** applied to `Name`/`Local` (`load p` / `val snap = p`): those
     /// retains feed COW — both snapshots and the with-temp that
-    /// `ensure_unique_consume` drops (`examples/adt_with_alias.lm`).
+    /// `ensure_unique_consume` drops (`examples/guide/adt_with_alias.lm`).
     pub(super) fn let_is_ephemeral_adt_field_base(
         &self,
         block: &Block,
@@ -341,6 +341,7 @@ impl<'ctx> Codegen<'ctx> {
                 continue;
             }
             uses += 1;
+            #[allow(clippy::collapsible_match)]
             let ok = match op {
                 Op::Let { value, .. } => match value {
                     Value::Builtin {

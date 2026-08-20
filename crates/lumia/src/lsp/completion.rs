@@ -121,6 +121,7 @@ pub(super) fn on_completion(params: Option<&Value>) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::completion_items;
+    use crate::lsp::test_support::imported_alias_analysis;
 
     #[test]
     fn completion_includes_keywords_without_analysis() {
@@ -154,16 +155,7 @@ mod tests {
 
     #[test]
     fn completion_imported_alias_via_loader() {
-        // Import aliases need loader+std; check_source alone leaves `log` unbound.
-        use crate::lsp::analyze::analyze_buffer;
-        use rustc_hash::FxHashMap as HashMap;
-        let src = r#"
-module Main
-import std.io.{println as log}
-val main = { log(1) }
-"#;
-        let (_, analysis) = analyze_buffer("untitled:Completion-1", src, &HashMap::default());
-        let a = analysis.expect("loader must typecheck untitled std import");
+        let a = imported_alias_analysis("untitled:Completion-1");
         let items = completion_items(Some(&a), "lo");
         let labels: Vec<&str> = items.iter().filter_map(|v| v["label"].as_str()).collect();
         assert!(

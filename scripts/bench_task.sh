@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Task / Channel coroutine microbench (Release).
 #
-# Scenarios in examples/bench_task.lm:
+# Scenarios in examples/bench/bench_task.lm:
 #   fan_in(256), join_many(256), pingpong(500)
 # Checksums must match under LUMIA_SCHED_WORKERS=0|1|2.
 #
@@ -19,7 +19,7 @@ source "$ROOT/scripts/bench_measure.sh"
 cd "$ROOT"
 cargo build -q -p lumia --release
 LUMIA="$ROOT/target/release/lumia"
-SRC=examples/bench_task.lm
+SRC=examples/bench/bench_task.lm
 OUT_DIR="${TMPDIR:-/tmp}/lumia_bench_task"
 mkdir -p "$OUT_DIR"
 BIN="$OUT_DIR/bench_task"

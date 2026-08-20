@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 use super::super::directize::directize_block;
 use super::super::fun_index::FunIndex;
 use super::super::key::{

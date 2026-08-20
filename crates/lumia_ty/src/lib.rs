@@ -1,7 +1,4 @@
 //! Hindley-Milner style type inference + effect sets.
-#![allow(clippy::too_many_arguments)]
-#![allow(clippy::type_complexity)]
-#![allow(clippy::collapsible_match)]
 
 mod alt;
 mod core_ty;

@@ -1,7 +1,4 @@
 //! Core IR — 树形 ANF / 伪 SSA，供优化与 codegen 使用（非真 CFG）。
-#![allow(clippy::too_many_arguments)] // HOF / ABI walkers
-#![allow(clippy::type_complexity)] // InferValueCtx callback types
-#![allow(clippy::collapsible_match)] // nested Op/Value arms
 
 mod abi_pipeline;
 mod funref_alias;

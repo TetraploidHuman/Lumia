@@ -89,21 +89,9 @@ mod tests {
     use super::hover_for_analysis;
     use crate::check::check_source;
     use crate::lsp::cursor::byte_to_position;
-    use crate::lsp::state::{default_state, state_lock, Analysis};
+    use crate::lsp::state::Analysis;
+    use crate::lsp::test_support::{imported_alias_analysis, with_encoding, IMPORTED_ALIAS_SRC};
     use lumia_syntax::ColumnMetric;
-    use rustc_hash::FxHashMap as HashMap;
-
-    fn with_encoding<R>(enc: ColumnMetric, f: impl FnOnce() -> R) -> R {
-        let mut guard = state_lock();
-        let prev = guard.take();
-        let mut st = default_state(None);
-        st.position_encoding = enc;
-        *guard = Some(st);
-        drop(guard);
-        let out = f();
-        *state_lock() = prev;
-        out
-    }
 
     #[test]
     fn hover_matches_inlay_num_defaulting() {
@@ -131,16 +119,9 @@ val add = { x, y -> x + y }
 
     #[test]
     fn hover_imported_alias_via_loader() {
-        // Hover on import aliases needs loader+std; check_source alone leaves `log` unbound.
-        use crate::lsp::analyze::analyze_buffer;
         with_encoding(ColumnMetric::Utf16, || {
-            let src = r#"
-module Main
-import std.io.{println as log}
-val main = { log(1) }
-"#;
-            let (_, analysis) = analyze_buffer("untitled:Hover-1", src, &HashMap::default());
-            let a = analysis.expect("loader must typecheck untitled std import");
+            let src = IMPORTED_ALIAS_SRC;
+            let a = imported_alias_analysis("untitled:Hover-1");
             let byte = src.find("log(1)").expect("log call") as u32;
             let (line, character) = byte_to_position(src, byte);
             let hover = hover_for_analysis(&a, line, character);

@@ -34,7 +34,7 @@ fn emit_example(rel: &str, release: bool) -> String {
 
 #[test]
 fn emit_tco_sum_has_musttail() {
-    let ir = emit_example("examples/tco_sum.lm", false);
+    let ir = emit_example("examples/task/tco_sum.lm", false);
     assert!(
         ir.contains("musttail") || ir.contains("tailcc") || ir.contains("tail "),
         "expected musttail-related IR in tco_sum; ir snip:\n{}",
@@ -44,7 +44,7 @@ fn emit_tco_sum_has_musttail() {
 
 #[test]
 fn emit_memo_tf_has_lookup_and_store() {
-    let ir = emit_example("examples/memo_tf.lm", true);
+    let ir = emit_example("examples/guide/memo_tf.lm", true);
     // C ABI symbols stay `lumia_memo_l2_*` (frozen); planner name is `T_f`.
     assert!(
         ir.contains("lumia_memo_l2_lookup"),
@@ -58,7 +58,7 @@ fn emit_memo_tf_has_lookup_and_store() {
 
 #[test]
 fn emit_hof_float_apply_keeps_f64_ret() {
-    let ir = emit_example("examples/hof_float_apply.lm", false);
+    let ir = emit_example("examples/guide/hof_float_apply.lm", false);
     assert!(
         ir.contains("dbl$Float") || ir.contains("apply$"),
         "expected mono Float/HOF clone names in IR; snip:\n{}",
@@ -74,7 +74,7 @@ fn emit_hof_float_apply_keeps_f64_ret() {
 
 #[test]
 fn emit_trait_poly_show_has_show_symbol() {
-    let ir = emit_example("examples/trait_poly_show.lm", false);
+    let ir = emit_example("examples/guide/trait_poly_show.lm", false);
     assert!(
         ir.contains("show") || ir.contains("Show") || ir.contains("__Show"),
         "expected Show-related symbol in trait_poly_show IR"
@@ -83,12 +83,12 @@ fn emit_trait_poly_show_has_show_symbol() {
 
 #[test]
 fn emit_hello_verifies() {
-    let _ir = emit_example("examples/hello.lm", false);
+    let _ir = emit_example("examples/guide/hello.lm", false);
 }
 
 #[test]
 fn emit_float_map_keys_verifies() {
-    let ir = emit_example("examples/float_map_keys.lm", false);
+    let ir = emit_example("examples/guide/float_map_keys.lm", false);
     assert!(
         ir.contains("lumia_ensure_map_f64") || ir.contains("lumia_map"),
         "expected float-map runtime symbols; snip:\n{}",
@@ -98,12 +98,12 @@ fn emit_float_map_keys_verifies() {
 
 #[test]
 fn emit_poly_option_map_verifies() {
-    let _ir = emit_example("examples/poly_option_map.lm", false);
+    let _ir = emit_example("examples/guide/poly_option_map.lm", false);
 }
 
 #[test]
 fn emit_par_map_verifies() {
-    let ir = emit_example("examples/par_map.lm", false);
+    let ir = emit_example("examples/guide/par_map.lm", false);
     assert!(
         ir.contains("lumia_list_par_map") || ir.contains("par_map") || ir.contains("ListParMap"),
         "expected parallel map-related IR; snip:\n{}",

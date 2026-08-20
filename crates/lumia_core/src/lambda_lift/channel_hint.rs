@@ -1,4 +1,5 @@
 //! Infer channel payload hints from `ChannelSend` sites.
+#![allow(clippy::too_many_arguments)]
 //!
 //! Prefer ground `Channel[T]` stamped onto `ChannelNew` from HIR `type_at`.
 //! When a stamp is missing, recover payload from agreeing `ChannelSend` sites

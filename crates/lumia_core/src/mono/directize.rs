@@ -124,5 +124,5 @@ fn directize_value(value: &mut Value, funref_of: &HashMap<u32, Sym>) {
 }
 
 #[cfg(test)]
-#[path = "directize_tests.rs"]
+#[path = "tests/directize_tests.rs"]
 mod tests;

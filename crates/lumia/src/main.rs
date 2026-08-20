@@ -2,9 +2,8 @@
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
-#[cfg(not(feature = "codegen"))]
-use lumia::check::check_program;
 use lumia::load::path_label;
+use lumia::options::CompileOptions;
 use lumia::pkg;
 use lumia::{doc, lsp};
 use lumia_syntax::{format_diagnostic, format_matches_source, parse_module, stamp_module};
@@ -76,20 +75,20 @@ fn parse_llvm_opt(s: &str) -> Result<lumia::LlvmOptLevel, String> {
 
 #[cfg(feature = "codegen")]
 impl SharedBuildArgs {
-    fn compile_options(&self, show_ir: bool, emit_llvm: bool) -> Result<lumia::CompileOptions> {
+    fn compile_options(&self, show_ir: bool, emit_llvm: bool) -> Result<CompileOptions> {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let mut link = Vec::with_capacity(self.link.len());
         for a in &self.link {
             link.push(pkg::validate_cli_link_arg(&cwd, a)?);
         }
-        Ok(lumia::CompileOptions {
+        Ok(CompileOptions {
             release: self.release,
             memo_tf: !self.no_memo,
             auto_parallel: !self.shared.no_parallel,
             dense_f64_sr: !self.no_dense_f64_sr,
             trust_foreign_pure: self.shared.trust_foreign_pure_override(),
-            link_args: link,
             show_ir,
+            link_args: link,
             emit_llvm,
             llvm_opt: self.llvm_opt,
         })
@@ -204,23 +203,13 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
         Commands::Check { file, shared } => {
-            #[cfg(feature = "codegen")]
-            lumia::build::check_file(
-                &file,
-                &lumia::build::CompileOptions {
-                    auto_parallel: !shared.no_parallel,
-                    trust_foreign_pure: shared.trust_foreign_pure_override(),
-                    ..lumia::build::CompileOptions::default()
-                },
-            )?;
-            #[cfg(not(feature = "codegen"))]
-            {
-                let _ = check_program(
-                    &file,
-                    !shared.no_parallel,
-                    shared.trust_foreign_pure_override(),
-                )?;
-            }
+            let opts = CompileOptions {
+                auto_parallel: !shared.no_parallel,
+                trust_foreign_pure: shared.trust_foreign_pure_override(),
+                ..CompileOptions::default()
+            };
+            let (auto_parallel, trust) = opts.check_knobs();
+            let _ = lumia::check::check_program(&file, auto_parallel, trust)?;
             println!("ok");
             Ok(())
         }

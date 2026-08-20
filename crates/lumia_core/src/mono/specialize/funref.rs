@@ -273,6 +273,10 @@ pub(super) fn chase_local_funref_elem(body: &Block, id: u32) -> Option<FunrefEle
     None
 }
 
+#[cfg(test)]
+#[path = "../tests/specialize_funref_near.rs"]
+mod tests;
+
 pub(super) fn result_def_is_adt_field(body: &Block) -> bool {
     let Some(Local(mut cur)) = body.result else {
         return false;

@@ -2,98 +2,12 @@
 
 use crate::check::check_program;
 use crate::compile::compile_program_to_optimized;
+use crate::options::CompileOptions;
 use anyhow::{Context, Result};
-use lumia_codegen::{compile_module, find_runtime_lib_prefer, CodegenOptions};
+use lumia_codegen::{compile_module, find_runtime_lib_prefer};
 use lumia_core::format_module;
-use lumia_opt::OptOptions;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-
-pub use lumia_codegen::LlvmOptLevel;
-
-/// Unified flags for the native compile pipeline (CLI / IDE Run share this).
-///
-/// Mid-end and codegen still take [`OptOptions`] / [`CodegenOptions`]; this type
-/// is the single place that maps user-facing knobs onto those crates (Todo:
-/// 编译选项仍四散). LLVM level is [`Self::llvm_opt`] → [`CodegenOptions::llvm_opt`].
-#[derive(Clone, Debug)]
-pub struct CompileOptions {
-    pub release: bool,
-    /// Transparent Memo `T_f`; effective only when [`Self::release`].
-    pub memo_tf: bool,
-    pub auto_parallel: bool,
-    pub dense_f64_sr: bool,
-    pub trust_foreign_pure: Option<bool>,
-    pub link_args: Vec<String>,
-    pub show_ir: bool,
-    pub emit_llvm: bool,
-    /// LLVM new-PM override. `None` → [`LlvmOptLevel::from_release`] (`O1` Debug / `O3` Release).
-    pub llvm_opt: Option<LlvmOptLevel>,
-}
-
-impl Default for CompileOptions {
-    fn default() -> Self {
-        Self {
-            release: false,
-            memo_tf: true,
-            auto_parallel: true,
-            dense_f64_sr: false,
-            trust_foreign_pure: None,
-            link_args: Vec::new(),
-            show_ir: false,
-            emit_llvm: false,
-            llvm_opt: None,
-        }
-    }
-}
-
-impl CompileOptions {
-    pub fn opt(&self) -> OptOptions {
-        OptOptions {
-            release: self.release,
-            memo_tf: self.release && self.memo_tf,
-            dense_f64_sr: self.dense_f64_sr,
-            domain_sr: self.release && cfg!(feature = "codegen"),
-        }
-    }
-
-    /// Frontend check knobs (`auto_parallel` + optional trust override).
-    ///
-    /// Kept as a pair so `check_program` can still resolve package
-    /// `trust_foreign_pure` when the override is `None`.
-    pub fn check_knobs(&self) -> (bool, Option<bool>) {
-        (self.auto_parallel, self.trust_foreign_pure)
-    }
-
-    pub fn codegen(
-        &self,
-        output: PathBuf,
-        runtime_lib: PathBuf,
-        package_link: &[String],
-    ) -> CodegenOptions {
-        let mut link = self.link_args.clone();
-        for a in package_link {
-            if !link.iter().any(|x| x == a) {
-                link.push(a.clone());
-            }
-        }
-        CodegenOptions {
-            release: self.release,
-            llvm_opt: self.resolved_llvm_opt(),
-            output,
-            runtime_lib,
-            emit_ir: self.emit_llvm,
-            dense_f64_sr: self.dense_f64_sr,
-            link_args: link,
-        }
-    }
-
-    /// Effective LLVM level: explicit `--llvm-opt`, else Debug O1 / Release O3.
-    pub fn resolved_llvm_opt(&self) -> LlvmOptLevel {
-        self.llvm_opt
-            .unwrap_or_else(|| LlvmOptLevel::from_release(self.release))
-    }
-}
 
 /// Typecheck a Lumia source file (same frontend knobs as [`build_file`]).
 pub fn check_file(file: &Path, opts: &CompileOptions) -> Result<()> {
@@ -104,8 +18,7 @@ pub fn check_file(file: &Path, opts: &CompileOptions) -> Result<()> {
 
 /// Compile a Lumia source file to a native executable.
 pub fn build_file(file: &Path, output: &Path, opts: &CompileOptions) -> Result<()> {
-    let (auto_parallel, trust) = opts.check_knobs();
-    let (core, loaded) = compile_program_to_optimized(file, auto_parallel, trust, &opts.opt())?;
+    let (core, loaded) = compile_program_to_optimized(file, opts)?;
     if opts.show_ir {
         print!("{}", format_module(&core));
     }
@@ -174,6 +87,7 @@ pub fn ensure_runtime_built(release: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::options::LlvmOptLevel;
 
     #[test]
     fn compile_options_opt_gates_memo_on_release() {

@@ -130,7 +130,16 @@ impl<'a> Parser<'a> {
                     None
                 };
                 self.expect(TokenKind::Eq)?;
-                let expr = self.parse_expr()?;
+                let expr = match self.parse_expr() {
+                    Ok(expr) => expr,
+                    Err(e) => {
+                        let span = e.span;
+                        self.errors.push(e);
+                        // Consume until a new statement/expression boundary.
+                        self.synchronize_block_stmt(stop_at_column0_item);
+                        self.hole_expr(span)
+                    }
+                };
                 stmts.push(Stmt::Val {
                     pat,
                     ty,
@@ -143,7 +152,15 @@ impl<'a> Parser<'a> {
                 let (name, _) = self.expect_ident()?;
                 let ty = self.parse_optional_type_ann()?;
                 self.expect(TokenKind::Eq)?;
-                let expr = self.parse_expr()?;
+                let expr = match self.parse_expr() {
+                    Ok(expr) => expr,
+                    Err(e) => {
+                        let span = e.span;
+                        self.errors.push(e);
+                        self.synchronize_block_stmt(stop_at_column0_item);
+                        self.hole_expr(span)
+                    }
+                };
                 stmts.push(Stmt::Var {
                     name,
                     ty,
@@ -151,7 +168,16 @@ impl<'a> Parser<'a> {
                     expr,
                 });
             } else if self.at(&TokenKind::For) {
-                stmts.push(self.parse_for_stmt()?);
+                let stmt = match self.parse_for_stmt() {
+                    Ok(s) => s,
+                    Err(e) => {
+                        let span = e.span;
+                        self.errors.push(e);
+                        self.synchronize_block_stmt(stop_at_column0_item);
+                        Stmt::Expr(self.hole_expr(span))
+                    }
+                };
+                stmts.push(stmt);
             } else if self.at(&TokenKind::Break) {
                 let s = self.bump().span;
                 stmts.push(Stmt::Break(s));
@@ -164,7 +190,15 @@ impl<'a> Parser<'a> {
                 let (name, nspan) = self.expect_ident()?;
                 if self.at(&TokenKind::Eq) {
                     self.bump();
-                    let expr = self.parse_expr()?;
+                    let expr = match self.parse_expr() {
+                        Ok(expr) => expr,
+                        Err(e) => {
+                            let span = e.span;
+                            self.errors.push(e);
+                            self.synchronize_block_stmt(stop_at_column0_item);
+                            self.hole_expr(span)
+                        }
+                    };
                     stmts.push(Stmt::Assign {
                         name,
                         span: nspan.merge(expr.span()),
@@ -172,7 +206,15 @@ impl<'a> Parser<'a> {
                     });
                 } else {
                     self.restore(cp);
-                    let expr = self.parse_expr()?;
+                    let expr = match self.parse_expr() {
+                        Ok(expr) => expr,
+                        Err(e) => {
+                            let span = e.span;
+                            self.errors.push(e);
+                            self.synchronize_block_stmt(stop_at_column0_item);
+                            self.hole_expr(span)
+                        }
+                    };
                     // If next is `}` this is tail; else stmt
                     if self.at(&TokenKind::RBrace) {
                         tail = Some(Box::new(expr));
@@ -182,7 +224,15 @@ impl<'a> Parser<'a> {
                     }
                 }
             } else {
-                let expr = self.parse_expr()?;
+                let expr = match self.parse_expr() {
+                    Ok(expr) => expr,
+                    Err(e) => {
+                        let span = e.span;
+                        self.errors.push(e);
+                        self.synchronize_block_stmt(stop_at_column0_item);
+                        self.hole_expr(span)
+                    }
+                };
                 if self.at(&TokenKind::RBrace) {
                     tail = Some(Box::new(expr));
                     break;

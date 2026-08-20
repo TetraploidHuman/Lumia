@@ -2,17 +2,16 @@ use super::*;
 
 impl<'a> Parser<'a> {
     pub(super) fn parse_module_recovering(&mut self) -> ParseOutcome {
-        let mut errors = Vec::new();
+        self.errors.clear();
         let start = self.cur.span;
 
         let full = match self.parse_module_header() {
             Ok(name) => name,
             Err(e) => {
-                errors.push(e);
+                self.errors.push(e);
                 self.synchronize_item();
                 // Header failed: still try imports/items if the cursor landed on them.
-                let (imports, items, more) = self.parse_imports_and_items_recovering();
-                errors.extend(more);
+                let (imports, items) = self.parse_imports_and_items_recovering();
                 return ParseOutcome {
                     module: Module {
                         name: self.intern_word(""),
@@ -20,13 +19,12 @@ impl<'a> Parser<'a> {
                         imports,
                         items,
                     },
-                    errors,
+                    errors: std::mem::take(&mut self.errors),
                 };
             }
         };
 
-        let (imports, items, more) = self.parse_imports_and_items_recovering();
-        errors.extend(more);
+        let (imports, items) = self.parse_imports_and_items_recovering();
 
         ParseOutcome {
             module: Module {
@@ -35,7 +33,7 @@ impl<'a> Parser<'a> {
                 imports,
                 items,
             },
-            errors,
+            errors: std::mem::take(&mut self.errors),
         }
     }
 
@@ -52,8 +50,7 @@ impl<'a> Parser<'a> {
         Ok(self.intern.intern(&full))
     }
 
-    fn parse_imports_and_items_recovering(&mut self) -> (Vec<Import>, Vec<Item>, Vec<ParseError>) {
-        let mut errors = Vec::new();
+    fn parse_imports_and_items_recovering(&mut self) -> (Vec<Import>, Vec<Item>) {
         let mut imports = vec![];
         let mut last_err_pos: Option<u32> = None;
 
@@ -65,7 +62,7 @@ impl<'a> Parser<'a> {
                 }
                 Err(e) => {
                     let pos = self.cur.span.start.0;
-                    errors.push(e);
+                    self.errors.push(e);
                     if last_err_pos == Some(pos) && !self.at(&TokenKind::Eof) {
                         self.bump();
                     }
@@ -78,14 +75,14 @@ impl<'a> Parser<'a> {
         let mut items = vec![];
         last_err_pos = None;
         while !self.at(&TokenKind::Eof) {
-            match self.parse_item_resilient(&mut errors) {
+            match self.parse_item_resilient() {
                 Ok(item) => {
                     last_err_pos = None;
                     items.push(item);
                 }
                 Err(e) => {
                     let pos = self.cur.span.start.0;
-                    errors.push(e);
+                    self.errors.push(e);
                     if last_err_pos == Some(pos) && !self.at(&TokenKind::Eof) {
                         self.bump();
                     }
@@ -95,13 +92,13 @@ impl<'a> Parser<'a> {
             }
         }
 
-        (imports, items, errors)
+        (imports, items)
     }
 
     /// Like [`parse_item`], but a failed `val` body still emits a stub item so
     /// later items can be parsed. The stub body is an unbound hole (not an
     /// identity lambda) so recovering typecheck does not false-green call sites.
-    fn parse_item_resilient(&mut self, errors: &mut Vec<ParseError>) -> Result<Item, ParseError> {
+    fn parse_item_resilient(&mut self) -> Result<Item, ParseError> {
         let is_priv = if self.at(&TokenKind::Priv) {
             self.bump();
             true
@@ -115,7 +112,7 @@ impl<'a> Parser<'a> {
             return self.parse_foreign_item();
         }
         if self.at(&TokenKind::Val) {
-            let mut v = self.parse_val_item_resilient(errors)?;
+            let mut v = self.parse_val_item_resilient()?;
             v.is_priv = is_priv;
             Ok(Item::Val(v))
         } else if self.at(&TokenKind::Type) {
@@ -139,10 +136,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_val_item_resilient(
-        &mut self,
-        errors: &mut Vec<ParseError>,
-    ) -> Result<ValItem, ParseError> {
+    fn parse_val_item_resilient(&mut self) -> Result<ValItem, ParseError> {
         let start = self.bump().span; // val
         let (name, _) = self.expect_ident()?;
         let ty = self.parse_optional_type_ann()?;
@@ -178,7 +172,7 @@ impl<'a> Parser<'a> {
                 })
             }
             Err(e) => {
-                errors.push(e);
+                self.errors.push(e);
                 self.synchronize_item();
                 let span = start.merge(self.cur.span);
                 // Keep the item so later decls still parse, but do **not** inject an

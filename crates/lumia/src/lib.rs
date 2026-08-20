@@ -4,11 +4,16 @@
 
 #[cfg(feature = "codegen")]
 pub mod build;
-#[cfg(feature = "codegen")]
-pub use build::{check_file, CompileOptions, LlvmOptLevel};
 pub mod check;
 #[cfg(any(feature = "codegen", feature = "codegen-slim"))]
 pub mod compile;
+pub mod options;
+
+pub use options::CompileOptions;
+#[cfg(feature = "codegen")]
+pub use options::LlvmOptLevel;
+#[cfg(feature = "codegen")]
+pub use build::check_file;
 pub mod diag;
 pub mod doc;
 pub mod exports;

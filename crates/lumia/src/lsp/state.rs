@@ -5,11 +5,13 @@ use crate::load::SourceFile;
 use lumia_syntax::ParseOutcome;
 use lumia_ty::TypedModule;
 use rustc_hash::FxHashMap as HashMap;
+use serde_json::Value;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Sender};
 use std::sync::Mutex;
+use std::{cell::Cell, ptr};
 
 pub(super) struct Analysis {
     pub(super) typed: TypedModule,
@@ -53,6 +55,8 @@ pub(super) struct State {
     pub(super) client_supports_configuration: bool,
     /// Negotiated LSP position encoding (`utf-8` or `utf-16`).
     pub(super) position_encoding: lumia_syntax::ColumnMetric,
+    /// Current workspace folders advertised by the client (multi-root support).
+    pub(super) workspace_folders: Vec<PathBuf>,
     /// Set after successful `shutdown` request (LSP lifecycle).
     pub(super) shut_down: bool,
     /// Next server→client request id.
@@ -68,8 +72,15 @@ pub(super) struct State {
     pub(super) analyze_gen: HashMap<String, u64>,
     /// Last successful multi-file check for `(ide_entry, overlay fingerprint)`.
     pub(super) program_cache: Option<ProgramCache>,
-    /// uri → (source hash, format edits) — strict parse pretty-print cache.
-    pub(super) format_cache: HashMap<String, (u64, Vec<serde_json::Value>)>,
+    /// uri → (source hash, strict format result) — strict parse pretty-print cache.
+    /// Caches both success and parse failure for identical source snapshots.
+    pub(super) format_cache: HashMap<String, (u64, FormatCacheResult)>,
+}
+
+#[derive(Clone)]
+pub(super) enum FormatCacheResult {
+    Ok(Vec<Value>),
+    Err(String),
 }
 
 /// Cached load + typecheck for unchanged overlay sets (skip reload on debounce).
@@ -139,10 +150,38 @@ pub(super) struct AnalyzeReq {
     pub(super) gen: u64,
 }
 
-static STATE: Mutex<Option<State>> = Mutex::new(None);
+thread_local! {
+    // Each LSP "session" (main thread + analyze worker threads) sets its own
+    // pointer so multiple LSP servers can coexist in the same process without
+    // sharing the same mutable State.
+    static SESSION_STATE_PTR: Cell<*const Mutex<Option<State>>> = Cell::new(ptr::null());
+}
+
+pub(super) fn create_session_state() -> &'static Mutex<Option<State>> {
+    // Leaked per-session: the server runs until process exit. This keeps the
+    // returned reference lifetime stable for MutexGuard.
+    Box::leak(Box::new(Mutex::new(None)))
+}
+
+pub(super) fn set_session_state(state: &'static Mutex<Option<State>>) {
+    SESSION_STATE_PTR.with(|c| c.set(state as *const _));
+}
+
+fn get_session_state() -> &'static Mutex<Option<State>> {
+    SESSION_STATE_PTR.with(|c| {
+        let ptr = c.get();
+        if ptr.is_null() {
+            let st = create_session_state();
+            c.set(st as *const _);
+            st
+        } else {
+            unsafe { &*ptr }
+        }
+    })
+}
 
 pub(super) fn state_lock() -> std::sync::MutexGuard<'static, Option<State>> {
-    STATE.lock().unwrap_or_else(|e| e.into_inner())
+    get_session_state().lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// Current auto-parallel flag (default true when state is unset).
@@ -191,16 +230,20 @@ pub(super) fn default_state(analyze_tx: Option<Sender<AnalyzeReq>>) -> State {
         last_diag_uris: HashMap::default(),
         analyze_gen: HashMap::default(),
         position_encoding: lumia_syntax::ColumnMetric::Utf16,
+        workspace_folders: Vec::new(),
         shut_down: false,
         program_cache: None,
         format_cache: HashMap::default(),
     }
 }
-pub(super) fn spawn_analyze_worker() -> Sender<AnalyzeReq> {
+pub(super) fn spawn_analyze_worker(
+    state: &'static Mutex<Option<State>>,
+) -> Sender<AnalyzeReq> {
     let (tx, rx) = mpsc::channel::<AnalyzeReq>();
     std::thread::Builder::new()
         .name("lumia-lsp-analyze".into())
         .spawn(move || {
+            set_session_state(state);
             use super::analyze::publish_diagnostics_for;
             use std::time::{Duration, Instant};
             let debounce = Duration::from_millis(120);

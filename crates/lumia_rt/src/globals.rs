@@ -19,6 +19,7 @@
 //! | `OnceLock<T>` | [`par_worker_count`], [`fiber_stack_bytes`], host parallelism | Init once; readers see published value |
 //! | `AtomicU8` + `Relaxed` | [`simd_f64_available`] CPU probe (`0` unknown / `1` no / `2` yes) | Probe is idempotent; `Relaxed` is enough |
 //! | `AtomicBool` + `Release`/`Acquire` | GC soft pressure / full-mark mirrors in [`crate::gc::pressure`]; [`note_task_runtime_used`] / [`task_runtime_used_latched`] (Task/Channel latch) | Updated under heap lock or one-shot latch; hot paths load without Mutex |
+//! | `AtomicUsize` + `Relaxed` | Nursery lock-free membership probes: `NURSERY_BASE` / `NURSERY_END` / `NURSERY_CURSOR` (in [`crate::gc::nursery`]) | Used only for lock-free “may be in-range” checks; readers may false-negative under concurrent bump/rewind, callers requiring exact membership take the heap lock. Writers publish under STW or when the nursery state is updated (`publish_range` / bump / rewind); `Relaxed` is sufficient for correctness. |
 //! | `Mutex<Option<(usize, usize)>>` | `SCHED_ENV` in `task/sched_env.rs` (`LUMIA_SCHED_WORKERS` / `LUMIA_SCHED_IO`) | Write-once in production; tests call `reload_sched_env_for_test` |
 //! | `AtomicU64` + `Relaxed` | [`note_par_task_demotion`] / [`par_task_demotions`] (list-par demotion counter) | Diagnostics / tests only |
 //! | Env parse (no cache) | [`parse_gc_incremental_env`] / `LUMIA_GC_INCREMENTAL` via [`crate::gc::limits`] | Read each collect decision; unknown tokens → keep heap default |

@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 use super::shape_util::{for_each_shape_value, is_out_list, is_out_set, mentions_local, OutSlot};
 use lumia_core::CoreBinOp as BinOp;
 use lumia_core::{

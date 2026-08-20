@@ -4,9 +4,10 @@
 
 use crate::check::check_program;
 use crate::load::{path_label, LoadedProgram};
+use crate::options::CompileOptions;
 use anyhow::Result;
 use lumia_core::{compile_typed_to_core, CoreModule};
-use lumia_opt::{optimize, OptOptions};
+use lumia_opt::optimize;
 use lumia_ty::TypedModule;
 use std::path::Path;
 
@@ -25,10 +26,10 @@ pub fn typed_program_to_core(typed: &TypedModule, loaded: &LoadedProgram) -> Res
 /// Full loader-aware frontend → Core pipeline (imports/std/package graph on).
 pub fn compile_program_to_core(
     file: &Path,
-    auto_parallel: bool,
-    trust_foreign_pure: Option<bool>,
+    opts: &CompileOptions,
 ) -> Result<(CoreModule, LoadedProgram)> {
-    let (typed, loaded) = check_program(file, auto_parallel, trust_foreign_pure)?;
+    let (auto_parallel, trust) = opts.check_knobs();
+    let (typed, loaded) = check_program(file, auto_parallel, trust)?;
     let core = typed_program_to_core(&typed, &loaded)?;
     Ok((core, loaded))
 }
@@ -36,12 +37,10 @@ pub fn compile_program_to_core(
 /// Full loader-aware frontend → Core → optimize pipeline.
 pub fn compile_program_to_optimized(
     file: &Path,
-    auto_parallel: bool,
-    trust_foreign_pure: Option<bool>,
-    opts: &OptOptions,
+    opts: &CompileOptions,
 ) -> Result<(CoreModule, LoadedProgram)> {
-    let (mut core, loaded) = compile_program_to_core(file, auto_parallel, trust_foreign_pure)?;
-    optimize(&mut core, opts);
+    let (mut core, loaded) = compile_program_to_core(file, opts)?;
+    optimize(&mut core, &opts.opt());
     Ok((core, loaded))
 }
 
@@ -60,13 +59,14 @@ mod tests {
 
     #[test]
     fn compile_program_to_core_uses_loader_for_import_aliases() {
-        let path = workspace_root().join("examples/import_as.lm");
+        let path = workspace_root().join("examples/guide/import_as.lm");
         assert!(
             compile_file_to_core(&path).is_err(),
             "single-buffer helper should still skip loader/std"
         );
+        let opts = CompileOptions::default();
         let (core, loaded) =
-            compile_program_to_core(&path, true, None).expect("loader-backed core compile");
+            compile_program_to_core(&path, &opts).expect("loader-backed core compile");
         assert!(
             loaded.files.len() >= 2,
             "expected entry + loaded std files, got {}",
@@ -80,8 +80,8 @@ mod tests {
 
     #[test]
     fn compile_program_to_optimized_uses_loader_for_import_aliases() {
-        let path = workspace_root().join("examples/import_as.lm");
-        let (core, _) = compile_program_to_optimized(&path, true, None, &OptOptions::default())
+        let path = workspace_root().join("examples/guide/import_as.lm");
+        let (core, _) = compile_program_to_optimized(&path, &CompileOptions::default())
             .expect("loader-backed optimize");
         let ir = format_module(&core);
         assert!(

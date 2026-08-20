@@ -19,8 +19,8 @@ mkdir -p "$OUT_DIR"
 RUNS="${RUNS:-5}"
 
 echo "== build =="
-"$LUMIA" build --release examples/bench_cn_forward_kernel.lm -o "$OUT_DIR/kernel"
-"$LUMIA" build --release examples/bench_cn_forward_naive.lm -o "$OUT_DIR/naive"
+"$LUMIA" build --release examples/bench/bench_cn_forward_kernel.lm -o "$OUT_DIR/kernel"
+"$LUMIA" build --release examples/bench/bench_cn_forward_naive.lm -o "$OUT_DIR/naive"
 
 echo "== checksum parity =="
 k_out="$("$OUT_DIR/kernel")"

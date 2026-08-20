@@ -1,4 +1,5 @@
 //! List-fold / float-list param upgrade after mono.
+#![allow(clippy::too_many_arguments)]
 
 use super::local_lookup::{funref_name_of_local, infer_local_fun_ty, local_def};
 use crate::ir::{Block, CoreModule, Value};

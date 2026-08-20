@@ -63,7 +63,7 @@ if echo "$HELP" | grep -qE '(^| )build( |$)'; then
   echo "slim binary unexpectedly exposes build" >&2
   exit 1
 fi
-"$SLIM" check "$ROOT/examples/hello.lm"
+"$SLIM" check "$ROOT/examples/guide/hello.lm"
 "$SLIM" lsp --help >/dev/null
 
 echo "OK: check passed"

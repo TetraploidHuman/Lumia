@@ -243,6 +243,7 @@ pub fn infer_value_ty(
 }
 
 /// Extended inference with slot / function tables (codegen) or per-call lookup (mono).
+#[allow(clippy::type_complexity)]
 pub fn infer_value_ty_ctx(
     value: &Value,
     ctx: InferValueCtx<'_>,

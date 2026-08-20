@@ -3,9 +3,6 @@
 //! Transparent result reuse lives in [`memo`] (DESIGN §7.5):
 //! local CSE/fold/LICM + runtime `T_f` (`memo_tf`).
 //! Escape analysis + small pure inlining live in [`escape`] / [`inline`].
-#![allow(clippy::too_many_arguments)]
-#![allow(clippy::type_complexity)]
-#![allow(clippy::collapsible_match)] // nested Op/Value in escape/memo/inline
 
 use std::sync::Arc;
 
@@ -37,7 +34,7 @@ use dce::DcePass;
 #[cfg(feature = "dense-f64-sr")]
 use dense_f64_sr::DenseF64SrPass;
 #[cfg(feature = "domain-sr")]
-use domain_sr::{CollatzStepsPass, DomainSrPass, FloatOrbitPass, TrialDivOddPass};
+use domain_sr::{CollatzStepsPass, DomainSrPass, FloatOrbitPass, MemTrafficPass, TrialDivOddPass};
 use lumia_core::{resolve_module_call_fun_ids, CoreModule, MapRepr};
 use memo::cse_module;
 #[cfg(feature = "nsw-iv")]
@@ -98,6 +95,8 @@ enum PipelinePass {
     CollatzSteps,
     #[cfg(feature = "domain-sr")]
     FloatOrbit,
+    #[cfg(feature = "domain-sr")]
+    MemTraffic,
     Inline,
     ConcatIdent,
     ReprSelect,
@@ -125,6 +124,8 @@ impl PipelinePass {
             Self::CollatzSteps => "collatz_steps",
             #[cfg(feature = "domain-sr")]
             Self::FloatOrbit => "float_orbit",
+            #[cfg(feature = "domain-sr")]
+            Self::MemTraffic => "mem_traffic",
             Self::Inline => "inline",
             Self::ConcatIdent => "concat_ident",
             Self::ReprSelect => "repr_select",
@@ -152,6 +153,8 @@ impl PipelinePass {
             Self::CollatzSteps => CollatzStepsPass.run(module),
             #[cfg(feature = "domain-sr")]
             Self::FloatOrbit => FloatOrbitPass.run(module),
+            #[cfg(feature = "domain-sr")]
+            Self::MemTraffic => MemTrafficPass.run(module),
             Self::Inline => InlinePass.run(module),
             Self::ConcatIdent => ConcatIdentPass.run(module),
             Self::ReprSelect => ReprSelect.run(module),
@@ -186,6 +189,8 @@ const DEBUG_PASSES: &[PipelinePass] = &[
     // floatOrbit → RT (replaces removed codegen `<4|8 x double>` loop IR SR).
     #[cfg(feature = "domain-sr")]
     PipelinePass::FloatOrbit,
+    #[cfg(feature = "domain-sr")]
+    PipelinePass::MemTraffic,
     // DenseF64Sr is Release-only (or `dense_f64_sr` via CLI/`for_build`).
     PipelinePass::Escape,
     PipelinePass::ReprSelect,
@@ -203,6 +208,8 @@ const RELEASE_PASSES: &[PipelinePass] = &[
     // `$c_` variants (those clones must then be re-matched; early SR makes clones thin).
     #[cfg(feature = "domain-sr")]
     PipelinePass::DomainSr,
+    #[cfg(feature = "domain-sr")]
+    PipelinePass::MemTraffic,
     // Bake Int/Bool/Char call-site constants into leaf clones before inline/PE.
     PipelinePass::SpecializeConst,
     PipelinePass::ConstFold,
@@ -210,11 +217,15 @@ const RELEASE_PASSES: &[PipelinePass] = &[
     PipelinePass::DenseF64Sr,
     #[cfg(feature = "domain-sr")]
     PipelinePass::DomainSr,
+    #[cfg(feature = "domain-sr")]
+    PipelinePass::MemTraffic,
     PipelinePass::Inline,
     // Inlined nests / composed helpers — second SR before fold/specialize.
     PipelinePass::DenseF64Sr,
     #[cfg(feature = "domain-sr")]
     PipelinePass::DomainSr,
+    #[cfg(feature = "domain-sr")]
+    PipelinePass::MemTraffic,
     // After last whole-fn SR: leftover `isPrime` loops (must not run before
     // DomainSr, which matches inlined `d+=1` trial-div).
     #[cfg(feature = "domain-sr")]
@@ -241,14 +252,20 @@ const RELEASE_PASSES: &[PipelinePass] = &[
     PipelinePass::ConstFold,
     #[cfg(feature = "domain-sr")]
     PipelinePass::DomainSr,
+    #[cfg(feature = "domain-sr")]
+    PipelinePass::MemTraffic,
     PipelinePass::SpecializeConst,
     PipelinePass::ConstFold,
     PipelinePass::Licm,
     #[cfg(feature = "domain-sr")]
     PipelinePass::DomainSr,
+    #[cfg(feature = "domain-sr")]
+    PipelinePass::MemTraffic,
     PipelinePass::Inline,
     #[cfg(feature = "domain-sr")]
     PipelinePass::DomainSr,
+    #[cfg(feature = "domain-sr")]
+    PipelinePass::MemTraffic,
     #[cfg(feature = "domain-sr")]
     PipelinePass::TrialDivOdd,
     PipelinePass::Cse,
@@ -433,6 +450,8 @@ val main = { log(1) }
         #[cfg(feature = "domain-sr")]
         {
             assert!(pass_names(true).contains(&"domain_sr"));
+            assert!(pass_names(true).contains(&"mem_traffic"));
+            assert!(pass_names(false).contains(&"mem_traffic"));
             assert!(!pass_names(false).contains(&"domain_sr"));
             assert!(pass_names(true).contains(&"trial_div_odd"));
             assert!(pass_names(false).contains(&"trial_div_odd"));
@@ -498,6 +517,7 @@ val main = { log(1) }
             debug_expected.push("trial_div_odd");
             debug_expected.push("collatz_steps");
             debug_expected.push("float_orbit");
+            debug_expected.push("mem_traffic");
         }
         debug_expected.extend(["escape", "repr_select", "copy_elim", "dce"]);
         #[cfg(feature = "nsw-iv")]
@@ -518,14 +538,17 @@ val main = { log(1) }
                         "cse",
                         "const_fold",
                         "domain_sr",
+                        "mem_traffic",
                         "specialize_const",
                         "const_fold",
                         "licm",
                         "dense_f64_sr",
                         "domain_sr",
+                        "mem_traffic",
                         "inline",
                         "dense_f64_sr",
                         "domain_sr",
+                        "mem_traffic",
                         "trial_div_odd",
                         "cse",
                         "const_fold",
@@ -578,14 +601,17 @@ val main = { log(1) }
                         "cse",
                         "const_fold",
                         "domain_sr",
+                        "mem_traffic",
                         "specialize_const",
                         "const_fold",
                         "licm",
                         "dense_f64_sr",
                         "domain_sr",
+                        "mem_traffic",
                         "inline",
                         "dense_f64_sr",
                         "domain_sr",
+                        "mem_traffic",
                         "trial_div_odd",
                         "cse",
                         "const_fold",
@@ -636,12 +662,15 @@ val main = { log(1) }
                         "cse",
                         "const_fold",
                         "domain_sr",
+                        "mem_traffic",
                         "specialize_const",
                         "const_fold",
                         "licm",
                         "domain_sr",
+                        "mem_traffic",
                         "inline",
                         "domain_sr",
+                        "mem_traffic",
                         "trial_div_odd",
                         "cse",
                         "const_fold",
@@ -692,12 +721,15 @@ val main = { log(1) }
                         "cse",
                         "const_fold",
                         "domain_sr",
+                        "mem_traffic",
                         "specialize_const",
                         "const_fold",
                         "licm",
                         "domain_sr",
+                        "mem_traffic",
                         "inline",
                         "domain_sr",
+                        "mem_traffic",
                         "trial_div_odd",
                         "cse",
                         "const_fold",

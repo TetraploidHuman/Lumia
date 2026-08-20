@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 use super::super::fun_index::FunIndex;
 use super::super::key::{materialize_mono_param_tys, types_mono_key, MonoKey};
 use crate::ir::{Block, CoreModule, Local, Op, Value};
@@ -693,3 +695,7 @@ fn mono_value_ty_rewrite(
         other => mono_value_ty(other, local_tys, slot_tys, int_consts, index),
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/specialize_rewrite_near.rs"]
+mod tests;

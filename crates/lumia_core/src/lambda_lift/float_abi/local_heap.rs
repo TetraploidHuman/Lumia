@@ -1,4 +1,5 @@
 //! Local heap-type inference (`local_heap_ty` and Builtin arms).
+#![allow(clippy::too_many_arguments)]
 
 use crate::ir::{Block, Local, Value};
 use crate::value_ty::{

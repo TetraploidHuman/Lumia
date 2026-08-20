@@ -1,4 +1,5 @@
 //! Whole-function Collatz total / strided / steps matchers.
+#![allow(clippy::collapsible_match)]
 
 use super::externs::RtArg;
 use lumia_core::{

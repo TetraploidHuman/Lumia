@@ -59,6 +59,7 @@
 mod adt_show;
 mod affine2;
 mod cn_kernels;
+#[cfg(feature = "domain-sr-rt")]
 mod collatz;
 mod common;
 mod concurrency_policy;
@@ -70,6 +71,7 @@ mod efe;
 mod ensure;
 mod eq;
 mod f64_simd;
+#[cfg(feature = "domain-sr-rt")]
 mod float_kernels;
 mod gc;
 mod globals;
@@ -78,6 +80,7 @@ mod heap;
 mod i64_simd;
 mod list;
 mod map_set;
+#[cfg(feature = "domain-sr-rt")]
 mod mem_traffic;
 mod memo;
 mod mutator;
@@ -105,6 +108,7 @@ pub use cn_kernels::{
     lumia_cn_hebbian, lumia_cn_learn_generative, lumia_cn_nucleus_step, lumia_cn_project_clamp,
     lumia_cn_update_state,
 };
+#[cfg(feature = "domain-sr-rt")]
 pub use collatz::{lumia_collatz_steps, lumia_collatz_strided, lumia_collatz_total};
 pub use dense_f64::{
     lumia_f64_add, lumia_f64_addmm, lumia_f64_atan2, lumia_f64_axpy, lumia_f64_checksum,
@@ -124,6 +128,7 @@ pub use efe::{
     lumia_efe_action_scores, lumia_efe_apply_embodied_reflexes, lumia_efe_embodied_action_scores,
 };
 pub use eq::{lumia_adt_eq, lumia_eq};
+#[cfg(feature = "domain-sr-rt")]
 pub use float_kernels::{lumia_float_orbit_checksum, lumia_mandelbrot_checksum};
 pub use hash_ord::{
     lumia_adt_ensure_unique, lumia_adt_ensure_unique_consume, lumia_adt_ensure_unique_consume_mask,
@@ -144,6 +149,7 @@ pub use map_set::{
     lumia_map_set, lumia_map_values, lumia_set_contains, lumia_set_empty, lumia_set_finish,
     lumia_set_insert, lumia_set_remove,
 };
+#[cfg(feature = "domain-sr-rt")]
 pub use mem_traffic::lumia_mem_traffic_checksum;
 pub use memo::{
     lumia_memo_idx_hits, lumia_memo_idx_lookup, lumia_memo_idx_misses, lumia_memo_idx_reset,
