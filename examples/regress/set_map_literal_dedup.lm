@@ -1,0 +1,12 @@
+/// setOf/mapOf literals dedupe Int/String/Bool/ADT keys (and map last-wins).
+module main
+type P { P }
+
+val main = {
+    println(setOf(1, 1, 2).len())
+    println(setOf("a", "a").len())
+    println(setOf(true, true, false).len())
+    println(mapOf(1, 10, 1, 20).len())
+    println(mapOf(1, 10, 1, 20).get(1) alt -1)
+    println(setOf(P, P).len())
+}

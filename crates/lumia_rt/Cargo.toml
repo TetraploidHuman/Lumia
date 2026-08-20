@@ -6,9 +6,14 @@ edition.workspace = true
 [lib]
 crate-type = ["staticlib", "rlib"]
 
+[features]
+default = ["domain-sr-rt"]
+domain-sr-rt = []
+
 [dependencies]
 lumia_abi.workspace = true
 rustc-hash.workspace = true
+corosensei.workspace = true
 
 [lints]
 workspace = true

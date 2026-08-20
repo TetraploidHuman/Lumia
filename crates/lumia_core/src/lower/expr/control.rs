@@ -18,8 +18,10 @@ pub(super) fn lower_control(
             else_branch,
             ..
         } => {
-            let c = lower_expr(ctx, cond, ops, pure_region)
-                .expect("ICE: if condition lowered to Unit; type checker should reject");
+            let Some(c) = lower_expr(ctx, cond, ops, pure_region) else {
+                ctx.note_ice("ICE: if condition lowered to Unit; type checker should reject");
+                return None;
+            };
             // Isolate arm bindings so `val`/`var` inside then/else cannot leak.
             let saved = ctx.save_bindings();
             let (then_block, _) = lower_expr_block(ctx, then_branch);
@@ -53,7 +55,6 @@ pub(super) fn lower_control(
                 b
             } else {
                 Block {
-                    params: vec![],
                     ops: vec![],
                     result: None,
                 }
@@ -85,11 +86,17 @@ pub(super) fn lower_control(
             }
             None
         }
-        HirExpr::Alt { .. } => {
-            panic!("lumia: Alt reached Core lower; expected typecheck desugar");
+        HirExpr::Alt { span, .. } => {
+            ctx.note_ice(format!(
+                "ICE: Alt reached Core lower at {span:?}; expected typecheck desugar"
+            ));
+            None
         }
-        HirExpr::With { .. } => {
-            panic!("lumia: With reached Core lower; expected typecheck rewrite");
+        HirExpr::With { span, .. } => {
+            ctx.note_ice(format!(
+                "ICE: With reached Core lower at {span:?}; expected typecheck rewrite"
+            ));
+            None
         }
         _ => unreachable!("lower_control: unexpected expr"),
     }

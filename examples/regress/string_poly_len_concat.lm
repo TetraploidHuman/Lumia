@@ -1,0 +1,30 @@
+/// Polymorphic `.len()` / `.concat` must not bias open receivers to List
+/// (String / List[String] cat / Option[String] match).
+module main
+
+import std.option.{andThen}
+
+val lenOf = { o ->
+    o match {
+        Some(s) -> s.len()
+        None -> 0
+    }
+}
+
+val cat = { xs ->
+    xs match {
+        [] -> ""
+        [h, ..t] -> h.concat(cat(t))
+    }
+}
+
+val main = {
+    println(Some("hi") match {
+        Some(s) -> s.len()
+        None -> 0
+    })
+    println(lenOf(Some("hi")))
+    println(lenOf(Some(listOf(1, 2, 3))))
+    println(andThen(Some("hi"), { s -> Some(s.len()) }))
+    println(cat(listOf("a", "b", "c")))
+}

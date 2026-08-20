@@ -22,7 +22,14 @@ impl Builtin {
             ("take", 2) => ListTake,
             ("reverse", 1) => ListReverse,
             ("sort", 1) => ListSort,
-            ("join", 2) => ListJoin,
+            // `join` is overloaded (Task.join / List.join(sep)) — resolved in ty
+            // from the receiver, not arity (arity alone false-greens / misdiagnoses).
+            ("joinOpt", 1) => TaskJoinOpt,
+            ("send", 2) => ChannelSend,
+            ("recv", 1) => ChannelRecv,
+            ("recvOpt", 1) => ChannelRecvOpt,
+            ("close", 1) => ChannelClose,
+            ("cancelScope", 0) => ScopeCancel,
             ("trim", 1) => StrTrim,
             ("split", 2) => StrSplit,
             ("substring", 3) => StrSubstring,
@@ -66,6 +73,9 @@ impl Builtin {
             MapSet => "set",
             MapRemove => "remove",
             SetInsert => "insert",
+            SetUnion => "union",
+            SetIntersect => "intersect",
+            SetDiff => "diff",
             MapKeys => "keys",
             MapValues => "values",
             MapItems => "items",
@@ -78,6 +88,17 @@ impl Builtin {
             StrEndsWith => "endsWith",
             AdtTag => "adtTag",
             AdtField => "adtField",
+            ChannelNew => "channel",
+            ChannelSend => "send",
+            ChannelRecv => "recv",
+            ChannelRecvOpt => "recvOpt",
+            ChannelClose => "close",
+            TaskJoin => "join",
+            TaskJoinOpt => "joinOpt",
+            TaskSpawn => "spawn",
+            ScopeEnter => "scopeEnter",
+            ScopeLeave => "scopeLeave",
+            ScopeCancel => "cancelScope",
         }
     }
 
@@ -87,8 +108,11 @@ impl Builtin {
     pub fn surface_role(self) -> Option<SurfaceRole> {
         use Builtin::*;
         match self {
-            Println | Assert | ReadStdin | Range | RangeInclusive => Some(SurfaceRole::Free),
-            MatchFail | AdtTag | AdtField | ListParMap | ListParFold => None,
+            Println | Assert | ReadStdin | Range | RangeInclusive | ChannelNew | ScopeCancel => {
+                Some(SurfaceRole::Free)
+            }
+            MatchFail | AdtTag | AdtField | ListParMap | ListParFold | TaskSpawn | ScopeEnter
+            | ScopeLeave => None,
             _ => Some(SurfaceRole::Method),
         }
     }

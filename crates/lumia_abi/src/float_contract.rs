@@ -65,6 +65,14 @@ pub const ENSURE_MAP_VF64: &str = "lumia_ensure_map_vf64";
 pub const ENSURE_SET_F64: &str = "lumia_ensure_set_f64";
 /// Runtime symbol for Float-elem tagging on a list.
 pub const ENSURE_LIST_F64: &str = "lumia_ensure_list_f64";
+/// Runtime symbol for Bool-key tagging on a map.
+pub const ENSURE_MAP_BOOL: &str = "lumia_ensure_map_bool";
+/// Runtime symbol for Bool-value tagging on a map.
+pub const ENSURE_MAP_VBOOL: &str = "lumia_ensure_map_vbool";
+/// Runtime symbol for Bool-elem tagging on a set.
+pub const ENSURE_SET_BOOL: &str = "lumia_ensure_set_bool";
+/// Runtime symbol for Bool-elem tagging on a list.
+pub const ENSURE_LIST_BOOL: &str = "lumia_ensure_list_bool";
 
 /// True if `tid` is a container that may carry Float-tagged slots.
 #[inline]

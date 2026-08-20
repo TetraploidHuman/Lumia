@@ -12,10 +12,7 @@
   ],
   "activationEvents": [
     "onLanguage:lumia",
-    "workspaceContains:Cargo.toml",
     "workspaceContains:Lumia.toml",
-    "workspaceContains:std/*.lm",
-    "workspaceContains:examples/*.lm",
     "onCommand:lumia.run",
     "onCommand:lumia.buildRun",
     "onCommand:lumia.checkFile",
@@ -140,6 +137,11 @@
           "type": "boolean",
           "default": true,
           "description": "Enable the Lumia language server."
+        },
+        "lumia.autoParallel": {
+          "type": "boolean",
+          "default": true,
+          "description": "Allow auto List.map / List.fold parallelization in the language server (mirrors CLI; set false like --no-parallel)."
         }
       }
     },

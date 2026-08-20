@@ -3,209 +3,76 @@
 //! Codegen emits these `type_id` values into object headers; `lumia_rt` interprets
 //! them. Memo caps must match between the opt planner and the runtime tables.
 //!
-//! Float / container tagging rules: [`float_contract`].
+//! Modules:
+//! - [`type_id`] — object `TYPE_*` / tid packing / classifiers
+//! - [`memo`] — `MEMO_TF_*` / `SMALL_CONTAINER_MAX`
+//! - [`opt_caps`] — specialize / inline thresholds
+//! - [`fixpoint`] — shared change-flag / mono / closure-cap round caps
+//! - [`dense_f64`] — trampoline symbol table
+//! - [`scheduler`] — `scope` scheduler kind ints
+//! - [`float_contract`] — float / container tagging rules
+//!
+//! Prefer extending the matching module over a third copy in codegen/opt.
 //!
 //! # Container `type_id` packing
 //!
-//! Bases occupy bits `[7:0]` (dense 1..=9). Float / AssocList flags live in
-//! bits `[10:8]` so List/Map/Set no longer need a combinatorial ID matrix:
+//! Bases occupy bits `[7:0]` (dense 1..=9). Scalar / AssocList / Hash flags live
+//! above the base so List/Map/Set no longer need a combinatorial ID matrix:
 //!
 //! - bit 8 `TID_F_KEY` — List: float elems; Set: float elems; Map: float keys
 //! - bit 9 `TID_F_VAL` — Map: float values
 //! - bit 10 `TID_ASSOC` — Map/Set: AssocList (never hash-promote)
+//! - bit 11 `TID_HASH` — Map/Set: open-addressing hash table (vs linear payload)
+//! - bit 12 `TID_B_KEY` — List/Set elems or Map keys are Bool
+//! - bit 13 `TID_B_VAL` — Map values are Bool
+//! - bit 14 `TID_LIST_PATCH` — List sparse overlay (`[len][parent][dn][i][v]…`)
+//! - bit 15 `TID_LIST_INT` — List elems are unboxed Int (GC shade skip)
+//!
+//! Float and Bool tags are mutually exclusive per slot (Float wins if both set).
 
-use std::path::{Path, PathBuf};
-
+mod dense_f64;
+mod fixpoint;
 mod float_contract;
-pub use float_contract::{
-    float_roles, gc_skip_float_slot, is_float_capable_container, FloatRoles, ENSURE_LIST_F64,
-    ENSURE_MAP_F64, ENSURE_MAP_VF64, ENSURE_SET_F64,
+mod memo;
+mod opt_caps;
+mod scheduler;
+mod type_id;
+
+pub use dense_f64::{is_dense_f64_trampoline, DENSE_F64_TRAMPOLINE_SYMS};
+pub use fixpoint::{
+    FixpointCaps, CHANGE_FLAG_ROUNDS, CLOSURE_CAP_TY_ROUNDS, FLOAT_MONO_ROUNDS, MONO_CLONE_ROUNDS,
 };
-
-/// Object header type ids — **bases** (bits `[7:0]`).
-pub const TYPE_BYTES: u32 = 1;
-pub const TYPE_STRING: u32 = 2;
-pub const TYPE_LIST: u32 = 3;
-pub const TYPE_MAP: u32 = 4;
-pub const TYPE_SET: u32 = 5;
-pub const TYPE_ADT: u32 = 6;
-pub const TYPE_CHAR: u32 = 7;
-/// Heap closure: `[fn_ptr:i64][cap0:i64]…`
-pub const TYPE_CLOSURE: u32 = 8;
-/// Virtual Int range list: payload `[start:i64][end_exclusive:i64]` (DESIGN §3.5 Iota).
-pub const TYPE_LIST_IOTA: u32 = 9;
-
-/// Mask / flags for packed container `type_id`s.
-pub const TID_BASE_MASK: u32 = 0xFF;
-/// List elems / Set elems / Map keys are unboxed Float bits (IEEE eq/hash).
-pub const TID_F_KEY: u32 = 1 << 8;
-/// Map values are unboxed Float bits.
-pub const TID_F_VAL: u32 = 1 << 9;
-/// Map/Set without Hash — linear forever (DESIGN AssocList).
-pub const TID_ASSOC: u32 = 1 << 10;
-
-/// ADT Show-kind occupies bits `[31:16]` (0 = anonymous / `#tag` fallback).
-pub const TID_ADT_KIND_SHIFT: u32 = 16;
-pub const TID_ADT_KIND_MASK: u32 = 0xFFFF << TID_ADT_KIND_SHIFT;
-
-/// Historical names as packed aliases (prefer constructors / flag helpers).
-pub const TYPE_LIST_F64: u32 = TYPE_LIST | TID_F_KEY;
-pub const TYPE_MAP_F64: u32 = TYPE_MAP | TID_F_KEY;
-pub const TYPE_SET_F64: u32 = TYPE_SET | TID_F_KEY;
-pub const TYPE_MAP_ASSOC: u32 = TYPE_MAP | TID_ASSOC;
-pub const TYPE_SET_ASSOC: u32 = TYPE_SET | TID_ASSOC;
-pub const TYPE_MAP_VF64: u32 = TYPE_MAP | TID_F_VAL;
-pub const TYPE_MAP_F64V: u32 = TYPE_MAP | TID_F_KEY | TID_F_VAL;
-pub const TYPE_MAP_ASSOC_VF64: u32 = TYPE_MAP | TID_ASSOC | TID_F_VAL;
-pub const TYPE_MAP_ASSOC_F64: u32 = TYPE_MAP | TID_ASSOC | TID_F_KEY;
-pub const TYPE_MAP_ASSOC_F64V: u32 = TYPE_MAP | TID_ASSOC | TID_F_KEY | TID_F_VAL;
-
-/// Transparent memo (`T_f`) hard caps — must stay in sync across opt planner and rt.
-///
-/// C ABI entry points remain `lumia_memo_l2_*` (frozen). Use `MEMO_TF_*` in Rust.
-pub const MEMO_TF_MAX_FUNS: usize = 64;
-pub const MEMO_TF_SLOTS: usize = 4;
-pub const MEMO_TF_MAX_ARGS: usize = 4;
-pub const MEMO_PROCESS_BYTE_CAP: usize = 2 * 1024 * 1024;
-pub const MEMO_IDX_MAX_FUNS: usize = 16;
-/// Keys outside `0..MEMO_IDX_CAP` are never cached (DESIGN §7.5 hard bound).
-pub const MEMO_IDX_CAP: usize = 4096;
-pub const MEMO_IDX_TABLE_BYTES: usize = MEMO_IDX_CAP * (1 + 8);
-pub const MEMO_SLOTS_TABLE_BYTES: usize = MEMO_TF_SLOTS * (1 + MEMO_TF_MAX_ARGS * 8 + 8);
-
-/// Repo root given a workspace crate's `CARGO_MANIFEST_DIR` (`crates/<name>` → `…/Lumia`).
-#[inline]
-pub fn workspace_root(manifest_dir: impl AsRef<Path>) -> PathBuf {
-    manifest_dir.as_ref().join("../..")
-}
-
-/// Like [`workspace_root`], but `canonicalize`s when the path exists.
-#[inline]
-pub fn workspace_root_canonical(manifest_dir: impl AsRef<Path>) -> PathBuf {
-    let p = workspace_root(manifest_dir);
-    p.canonicalize().unwrap_or(p)
-}
-
-/// Scalar classification for container element/key tagging.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ScalarKind {
-    Int,
-    Float,
-}
-
-#[inline]
-pub fn tid_base(tid: u32) -> u32 {
-    tid & TID_BASE_MASK
-}
-
-#[inline]
-pub fn tid_f_key(tid: u32) -> bool {
-    tid & TID_F_KEY != 0
-}
-
-#[inline]
-pub fn tid_f_val(tid: u32) -> bool {
-    tid & TID_F_VAL != 0
-}
-
-#[inline]
-pub fn tid_assoc(tid: u32) -> bool {
-    tid & TID_ASSOC != 0
-}
-
-/// OR `TID_F_KEY` onto an existing packed container `type_id` (empty-shell retag).
-#[inline]
-pub fn tid_with_f_key(tid: u32) -> u32 {
-    tid | TID_F_KEY
-}
-
-/// OR `TID_F_VAL` onto an existing packed map `type_id` (empty-shell retag).
-#[inline]
-pub fn tid_with_f_val(tid: u32) -> u32 {
-    tid | TID_F_VAL
-}
-
-/// Pack ADT base with a Show-kind id (`0` = no registered names).
-#[inline]
-pub fn adt_type_id(show_kind: u16) -> u32 {
-    TYPE_ADT | ((show_kind as u32) << TID_ADT_KIND_SHIFT)
-}
-
-/// Extract Show-kind from an ADT `type_id` (`0` if unset / not an ADT).
-#[inline]
-pub fn adt_show_kind(tid: u32) -> u16 {
-    if tid_base(tid) != TYPE_ADT {
-        return 0;
-    }
-    ((tid & TID_ADT_KIND_MASK) >> TID_ADT_KIND_SHIFT) as u16
-}
-
-/// Heap list `type_id` from element scalar kind.
-pub fn list_type_id(elem_is_float: bool) -> u32 {
-    TYPE_LIST | if elem_is_float { TID_F_KEY } else { 0 }
-}
-
-/// Heap set `type_id` from element scalar kind and Hash availability.
-pub fn set_type_id(elem_is_float: bool, assoc: bool) -> u32 {
-    TYPE_SET | if elem_is_float { TID_F_KEY } else { 0 } | if assoc { TID_ASSOC } else { 0 }
-}
-
-/// Heap map `type_id` from key/value scalar kinds and Hash availability.
-pub fn map_type_id(key_is_float: bool, val_is_float: bool, assoc: bool) -> u32 {
-    TYPE_MAP
-        | if key_is_float { TID_F_KEY } else { 0 }
-        | if val_is_float { TID_F_VAL } else { 0 }
-        | if assoc { TID_ASSOC } else { 0 }
-}
-
-/// True if `tid` is any heap Map representation.
-#[inline]
-pub fn is_map_tid(tid: u32) -> bool {
-    tid_base(tid) == TYPE_MAP
-}
-
-/// True if `tid` is any heap Set representation.
-#[inline]
-pub fn is_set_tid(tid: u32) -> bool {
-    tid_base(tid) == TYPE_SET
-}
-
-/// True if `tid` is a list (dense or Float-tagged or iota).
-#[inline]
-pub fn is_list_tid(tid: u32) -> bool {
-    matches!(tid_base(tid), TYPE_LIST | TYPE_LIST_IOTA)
-}
-
-#[inline]
-pub fn map_key_is_float(tid: u32) -> bool {
-    is_map_tid(tid) && tid_f_key(tid)
-}
-
-#[inline]
-pub fn map_val_is_float(tid: u32) -> bool {
-    is_map_tid(tid) && tid_f_val(tid)
-}
-
-#[inline]
-pub fn map_tid_is_assoc(tid: u32) -> bool {
-    is_map_tid(tid) && tid_assoc(tid)
-}
-
-#[inline]
-pub fn set_elem_is_float(tid: u32) -> bool {
-    is_set_tid(tid) && tid_f_key(tid)
-}
-
-#[inline]
-pub fn set_tid_is_assoc(tid: u32) -> bool {
-    is_set_tid(tid) && tid_assoc(tid)
-}
-
-/// List elems are unboxed Float bits.
-#[inline]
-pub fn list_elem_is_float(tid: u32) -> bool {
-    tid_base(tid) == TYPE_LIST && tid_f_key(tid)
-}
+pub use float_contract::{
+    float_roles, gc_skip_float_slot, is_float_capable_container, FloatRoles, ENSURE_LIST_BOOL,
+    ENSURE_LIST_F64, ENSURE_MAP_BOOL, ENSURE_MAP_F64, ENSURE_MAP_VBOOL, ENSURE_MAP_VF64,
+    ENSURE_SET_BOOL, ENSURE_SET_F64,
+};
+pub use memo::{
+    MEMO_IDX_CAP, MEMO_IDX_MAX_FUNS, MEMO_IDX_TABLE_BYTES, MEMO_PROCESS_BYTE_CAP,
+    MEMO_SLOTS_TABLE_BYTES, MEMO_TF_MAX_ARGS, MEMO_TF_MAX_FUNS, MEMO_TF_SLOTS, SMALL_CONTAINER_MAX,
+};
+pub use opt_caps::{
+    INLINE_MAX_EXPAND_DEPTH, SPECIALIZE_CONST_MAX_CLONES_PER_FUN, SPECIALIZE_CONST_MAX_OPS,
+    SPECIALIZE_CONST_MAX_TOTAL_CLONES,
+};
+pub use scheduler::{SCHEDULER_IO, SCHEDULER_WORKER};
+pub use type_id::{
+    adt_show_kind, adt_type_id, is_list_tid, is_map_tid, is_set_tid, list_elem_is_bool,
+    list_elem_is_float, list_elem_is_int, list_elem_skip_gc_mark, list_type_id, list_type_id_flags,
+    list_type_id_int, map_key_is_bool, map_key_is_float, map_tid_is_assoc, map_type_id,
+    map_type_id_flags, map_val_is_bool, map_val_is_float, set_elem_is_bool, set_elem_is_float,
+    set_tid_is_assoc, set_type_id, set_type_id_flags, tid_assoc, tid_b_key, tid_b_val, tid_base,
+    tid_f_key, tid_f_val, tid_hash, tid_list_int, tid_list_patch, tid_with_b_key, tid_with_b_val,
+    tid_with_f_key, tid_with_f_val, tid_with_hash, tid_without_hash, ScalarKind, ADT_SET_BOOL_MASK,
+    ADT_SET_FLOAT_MASK, FUNREF_TAG, OBJECT_HEADER_BYTES, OBJECT_HEADER_WORDS, TID_ADT_KIND_MASK,
+    TID_ADT_KIND_SHIFT, TID_ASSOC, TID_BASE_MASK, TID_B_KEY, TID_B_VAL, TID_F_KEY, TID_F_VAL,
+    TID_HASH, TID_LIST_INT, TID_LIST_PATCH, TRAIT_EQ, TRAIT_HASH, TRAIT_NUM, TRAIT_ORD, TRAIT_SHOW,
+    TYPE_ADT, TYPE_BYTES, TYPE_CHANNEL, TYPE_CHAR, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_BOOL,
+    TYPE_LIST_F64, TYPE_LIST_INT, TYPE_LIST_IOTA, TYPE_LIST_PATCH, TYPE_MAP, TYPE_MAP_ASSOC,
+    TYPE_MAP_ASSOC_F64, TYPE_MAP_ASSOC_F64V, TYPE_MAP_ASSOC_VF64, TYPE_MAP_BOOL, TYPE_MAP_BOOLV,
+    TYPE_MAP_F64, TYPE_MAP_F64V, TYPE_MAP_VBOOL, TYPE_MAP_VF64, TYPE_SET, TYPE_SET_ASSOC,
+    TYPE_SET_BOOL, TYPE_SET_F64, TYPE_STRING, TYPE_TASK,
+};
 
 #[cfg(test)]
 mod tests {
@@ -223,6 +90,8 @@ mod tests {
             TYPE_CHAR,
             TYPE_CLOSURE,
             TYPE_LIST_IOTA,
+            TYPE_TASK,
+            TYPE_CHANNEL,
         ];
         let mut sorted = ids;
         sorted.sort_unstable();
@@ -230,10 +99,55 @@ mod tests {
             assert_ne!(w[0], w[1], "duplicate type base");
         }
         assert_eq!(sorted[0], 1);
-        assert_eq!(*sorted.last().unwrap(), TYPE_LIST_IOTA);
+        assert_eq!(*sorted.last().unwrap(), TYPE_CHANNEL);
         assert_eq!(TID_F_KEY & TID_BASE_MASK, 0);
         assert_eq!(TID_F_VAL & TID_BASE_MASK, 0);
         assert_eq!(TID_ASSOC & TID_BASE_MASK, 0);
+        assert_eq!(TID_HASH & TID_BASE_MASK, 0);
+        assert_eq!(TID_HASH & (TID_F_KEY | TID_F_VAL | TID_ASSOC), 0);
+        assert_eq!(TID_B_KEY & TID_BASE_MASK, 0);
+        assert_eq!(TID_B_VAL & TID_BASE_MASK, 0);
+        assert_eq!(TID_LIST_PATCH & TID_BASE_MASK, 0);
+        assert_eq!(TID_LIST_INT & TID_BASE_MASK, 0);
+        assert_eq!(
+            TID_B_KEY
+                & (TID_F_KEY
+                    | TID_F_VAL
+                    | TID_ASSOC
+                    | TID_HASH
+                    | TID_B_VAL
+                    | TID_LIST_PATCH
+                    | TID_LIST_INT),
+            0
+        );
+        assert_eq!(
+            TID_LIST_PATCH
+                & (TID_F_KEY
+                    | TID_F_VAL
+                    | TID_ASSOC
+                    | TID_HASH
+                    | TID_B_KEY
+                    | TID_B_VAL
+                    | TID_LIST_INT),
+            0
+        );
+        assert_eq!(
+            TID_LIST_INT
+                & (TID_F_KEY
+                    | TID_F_VAL
+                    | TID_ASSOC
+                    | TID_HASH
+                    | TID_B_KEY
+                    | TID_B_VAL
+                    | TID_LIST_PATCH),
+            0
+        );
+        assert_eq!(SCHEDULER_WORKER, 1);
+        assert_eq!(SCHEDULER_IO, 2);
+        assert!(tid_hash(tid_with_hash(TYPE_MAP)));
+        assert!(!tid_hash(TYPE_MAP));
+        assert!(!tid_hash(tid_without_hash(tid_with_hash(TYPE_SET))));
+        assert_eq!(tid_without_hash(tid_with_hash(TYPE_MAP)), TYPE_MAP);
         assert_eq!(adt_type_id(0), TYPE_ADT);
         assert_eq!(adt_show_kind(adt_type_id(0)), 0);
         assert_eq!(adt_show_kind(adt_type_id(42)), 42);
@@ -257,11 +171,34 @@ mod tests {
     fn list_and_set_type_ids() {
         assert_eq!(list_type_id(false), TYPE_LIST);
         assert_eq!(list_type_id(true), TYPE_LIST_F64);
+        assert_eq!(list_type_id_flags(false, true), TYPE_LIST_BOOL);
         assert_eq!(set_type_id(false, false), TYPE_SET);
         assert_eq!(set_type_id(false, true), TYPE_SET_ASSOC);
         assert_eq!(set_type_id(true, false), TYPE_SET_F64);
+        assert_eq!(set_type_id_flags(false, true, false), TYPE_SET_BOOL);
         // Packed: Float + Assoc coexist (old matrix dropped Assoc when Float).
         assert_eq!(set_type_id(true, true), TYPE_SET | TID_F_KEY | TID_ASSOC);
+    }
+
+    #[test]
+    fn bool_map_type_ids_and_classifiers() {
+        assert_eq!(
+            map_type_id_flags(false, false, true, false, false),
+            TYPE_MAP_BOOL
+        );
+        assert_eq!(
+            map_type_id_flags(false, false, false, true, false),
+            TYPE_MAP_VBOOL
+        );
+        assert_eq!(
+            map_type_id_flags(false, false, true, true, false),
+            TYPE_MAP_BOOLV
+        );
+        assert!(list_elem_is_bool(TYPE_LIST_BOOL));
+        assert!(!list_elem_is_bool(TYPE_LIST_F64));
+        assert!(map_key_is_bool(TYPE_MAP_BOOL));
+        assert!(map_val_is_bool(TYPE_MAP_VBOOL));
+        assert!(set_elem_is_bool(TYPE_SET_BOOL));
     }
 
     #[test]

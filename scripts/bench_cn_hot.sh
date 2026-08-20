@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # CogniNucleus-shaped dense-float hot-path microbench (Release).
 #
-# Compares nested Lumia List[Float] loops (auto-SR'd to RT kernels) vs
-# std.linalg wrappers (same fingerprints). Reports wall time and peak RSS.
+# Compares:
+#   kernel  — `extras.linalg` → `lumia_f64_*`
+#   naive   — nested List[Float] loops with `--no-dense-f64-sr` (scalar get/set)
+#
+# With SR on, naive loops rewrite to the same RT calls as kernel (parity ≈ 1.0×);
+# this bench measures the real SR win vs a scalar baseline.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck disable=SC1091
@@ -18,44 +22,20 @@ mkdir -p "$OUT_DIR"
 RUNS="${RUNS:-5}"
 
 echo "== build =="
-"$LUMIA" build --release examples/bench_cn_hot_kernel.lm -o "$OUT_DIR/kernel"
-"$LUMIA" build --release examples/bench_cn_hot_naive.lm -o "$OUT_DIR/naive"
+"$LUMIA" build --release examples/bench/bench_cn_hot_kernel.lm -o "$OUT_DIR/kernel"
+"$LUMIA" build --release --no-dense-f64-sr examples/bench/bench_cn_hot_naive.lm -o "$OUT_DIR/naive"
 
 echo "== checksum parity =="
 k_out="$("$OUT_DIR/kernel")"
 n_out="$("$OUT_DIR/naive")"
-echo "kernel:"
-echo "$k_out"
-echo "naive:"
-echo "$n_out"
-if [[ "$k_out" != "$n_out" ]]; then
-  echo "ERROR: checksum mismatch" >&2
-  exit 1
-fi
-
-measure_bin() {
-  local bin=$1
-  local samples="" i
-  for ((i = 0; i < RUNS; i++)); do
-    samples+="$(bench_measure "$bin")"$'\n'
-  done
-  printf '%s' "$samples" | bench_measure_stats
-}
+bench_checksum_parity "$k_out" "$n_out" "naive (--no-dense-f64-sr)"
 
 echo "== wall time + peak RSS  RUNS=$RUNS  STEPS=100000 =="
-k_stats="$(measure_bin "$OUT_DIR/kernel")"
-n_stats="$(measure_bin "$OUT_DIR/naive")"
+k_stats="$(bench_measure_runs "$OUT_DIR/kernel")"
+n_stats="$(bench_measure_runs "$OUT_DIR/naive")"
 bench_print_stats "kernel" "$k_stats"
-bench_print_stats "naive" "$n_stats"
-python3 - "$k_stats" "$n_stats" <<'PY'
-import sys
-k = sys.argv[1].split()
-n = sys.argv[2].split()
-kt, nt = float(k[1]), float(n[1])
-kr, nr = float(k[4]), float(n[4])
-print(f"speedup  {nt/kt:.2f}x  (naive_med_time / kernel_med_time)")
-print(f"rss_ratio {nr/kr:.2f}x  (naive_med_rss / kernel_med_rss)")
-PY
+bench_print_stats "naive_nosr" "$n_stats"
+bench_print_speedup_pair "$k_stats" "$n_stats" "naive_nosr"
 
 if python3 -c 'import torch' 2>/dev/null; then
   echo "== torch reference =="

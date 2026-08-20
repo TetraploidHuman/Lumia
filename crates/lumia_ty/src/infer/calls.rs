@@ -1,8 +1,9 @@
 //! Call expression inference (including UFCS dispatch).
 
 use super::Infer;
-use crate::types::{Effect, Type, TypeError};
-use lumia_hir::Expr;
+use crate::types::{at, Effect, Type, TypeError};
+use lumia_hir::{Builtin, Expr};
+use std::sync::Arc;
 
 impl Infer {
     pub(crate) fn infer_call(
@@ -13,13 +14,17 @@ impl Infer {
     ) -> Result<(Type, Effect), TypeError> {
         if let Expr::Var(name, _) = callee {
             // Prelude ctors (`listOf`/`setOf`/`mapOf`) — see `prelude_ctors`.
-            if let Some(result) = self.try_infer_prelude_ctor(name, args, span)? {
+            if let Some(result) = self.try_infer_prelude_ctor(name.as_str(), args, span)? {
                 return Ok(result);
+            }
+            // Overload `join`: Task.join() vs List.join(sep) — pick by receiver.
+            if name == "join" && self.lookup(name.as_str()).is_none() {
+                return self.infer_join_surface(args, span);
             }
             // UFCS trait method: unbound `method(recv, …)` → mangled instance fun.
             // Free top-level `method` wins when bound (checked below via lookup).
-            if self.lookup(name).is_none() && !args.is_empty() {
-                if let Some(result) = self.try_infer_trait_ufcs(name, args, span)? {
+            if self.lookup(name.as_str()).is_none() && !args.is_empty() {
+                if let Some(result) = self.try_infer_trait_ufcs(name.as_str(), args, span)? {
                     return Ok(result);
                 }
             }
@@ -39,8 +44,79 @@ impl Infer {
             Type::Fun(_, _, e) => e,
             _ => self.fresh_eff(),
         };
-        self.unify_at(span, ct, Type::Fun(ats, Box::new(ret.clone()), call_eff))?;
+        self.unify_at(span, ct, Type::Fun(ats, Arc::new(ret.clone()), call_eff))?;
         let fun_eff = self.prune_eff(call_eff);
         Ok((self.prune(ret), self.union3_eff(ce, aes, fun_eff)))
+    }
+
+    /// Surface `join` / `.join(…)`: arity alone cannot distinguish Task vs List.
+    fn infer_join_surface(
+        &mut self,
+        args: &[Expr],
+        span: lumia_syntax::Span,
+    ) -> Result<(Type, Effect), TypeError> {
+        let io = Effect::io();
+        match args.len() {
+            1 => {
+                let (tt, te) = self.infer_expr(&args[0])?;
+                match self.prune(tt.clone()) {
+                    Type::List(_) => Err(at(span, "List.join requires a separator: xs.join(sep)")),
+                    Type::Task(_) | Type::Var(_) => {
+                        let elem = self.fresh();
+                        self.unify_at(span, tt, Type::Task(Arc::new(elem.clone())))?;
+                        crate::span_facts::insert_unique_span_fact(
+                            &mut self.traits.join_rewrites,
+                            span,
+                            Builtin::TaskJoin,
+                            "join",
+                        )?;
+                        Ok((elem, self.union_eff(io, te)))
+                    }
+                    other => Err(at(
+                        span,
+                        format!(
+                            "join: expected Task[T], got {}",
+                            crate::display::display_type(&other, &[])
+                        ),
+                    )),
+                }
+            }
+            2 => {
+                let (lt, le) = self.infer_expr(&args[0])?;
+                let (st, se) = self.infer_expr(&args[1])?;
+                self.unify_at(span, st, Type::String)?;
+                match self.prune(lt.clone()) {
+                    Type::Task(_) => {
+                        return Err(at(span, "Task.join takes no separator (use t.join())"));
+                    }
+                    Type::List(t) => {
+                        self.unify_at(span, Type::unbox(t), Type::String)?;
+                    }
+                    Type::Var(_) => {
+                        self.unify_at(span, lt, Type::List(Arc::new(Type::String)))?;
+                    }
+                    other => {
+                        return Err(at(
+                            span,
+                            format!(
+                                "join: expected List[String], got {}",
+                                crate::display::display_type(&other, &[])
+                            ),
+                        ));
+                    }
+                }
+                crate::span_facts::insert_unique_span_fact(
+                    &mut self.traits.join_rewrites,
+                    span,
+                    Builtin::ListJoin,
+                    "join",
+                )?;
+                Ok((Type::String, self.union_eff(le, se)))
+            }
+            n => Err(at(
+                span,
+                format!("join: expected 1 or 2 arguments, got {n}"),
+            )),
+        }
     }
 }

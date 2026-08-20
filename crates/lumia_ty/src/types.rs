@@ -1,37 +1,41 @@
 //! Core type, effect, and scheme definitions.
 
 use lumia_hir::{Expr, Module};
+use lumia_syntax::Sym;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use std::sync::Arc;
 use thiserror::Error;
 
 /// Cross-file name visibility after import inlining (entry must not see `priv`).
 #[derive(Debug, Clone, Default)]
 pub struct NameVisibility {
     pub name_origin: HashMap<String, u32>,
-    pub cross_file_visible: HashSet<String>,
+    /// Names each file may resolve across files (its imports). Same-file names
+    /// use [`Self::name_origin`] instead.
+    pub imports_by_file: HashMap<u32, HashSet<String>>,
     pub entry_file: u32,
 }
 
 impl NameVisibility {
-    /// Entry module may only name locally declared or explicitly imported symbols.
-    /// Dependency modules (inlined for linking) may use the full inlined namespace
-    /// so public APIs can call their private/sibling helpers.
+    /// A name is visible from `from_file` when it is declared in that file, or
+    /// explicitly imported into that file. Dependency modules no longer see the
+    /// whole inlined namespace (that false-greened cross-dep references).
     pub fn allows(&self, name: &str, from_file: u32) -> bool {
         if self.name_origin.is_empty() {
             return true;
         }
-        if from_file != self.entry_file {
-            return true;
-        }
         match self.name_origin.get(name) {
             Some(&origin) if origin == from_file => true,
-            Some(_) => self.cross_file_visible.contains(name),
+            Some(_) => self
+                .imports_by_file
+                .get(&from_file)
+                .is_some_and(|s| s.contains(name)),
             None => true,
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
     Int,
     Float,
@@ -39,17 +43,24 @@ pub enum Type {
     String,
     Char,
     Unit,
-    Fun(Vec<Type>, Box<Type>, Effect),
+    /// Missing / untyped hole. Mid-end closed lattice uses this instead of
+    /// pretending the value is [`Type::Int`] (`unwrap_or(Int)` / `Var(u32::MAX)`).
+    Unknown,
+    Fun(Vec<Type>, Arc<Type>, Effect),
     Var(u32),
     /// List[T]
-    List(Box<Type>),
+    List(Arc<Type>),
     /// Map[K, V]
-    Map(Box<Type>, Box<Type>),
+    Map(Arc<Type>, Arc<Type>),
     /// Set[T]
-    Set(Box<Type>),
+    Set(Arc<Type>),
+    /// Task[T] — fiber handle (Io concurrency).
+    Task(Arc<Type>),
+    /// Channel[T] — bounded message channel.
+    Channel(Arc<Type>),
     /// Nominal sum type, e.g. Option[T] → Adt("Option", [T]).
     Adt {
-        name: String,
+        name: Sym,
         params: Vec<Type>,
     },
     /// `(T1, T2, …)` — fixed arity.
@@ -60,8 +71,62 @@ pub enum Type {
     TuplePrefix(Vec<Type>),
 }
 
+impl Type {
+    #[inline]
+    pub fn list(elem: Type) -> Self {
+        Type::List(Arc::new(elem))
+    }
+
+    #[inline]
+    pub fn set(elem: Type) -> Self {
+        Type::Set(Arc::new(elem))
+    }
+
+    #[inline]
+    pub fn map(k: Type, v: Type) -> Self {
+        Type::Map(Arc::new(k), Arc::new(v))
+    }
+
+    #[inline]
+    pub fn task(elem: Type) -> Self {
+        Type::Task(Arc::new(elem))
+    }
+
+    #[inline]
+    pub fn channel(elem: Type) -> Self {
+        Type::Channel(Arc::new(elem))
+    }
+
+    #[inline]
+    pub fn fun(params: Vec<Type>, ret: Type, eff: Effect) -> Self {
+        Type::Fun(params, Arc::new(ret), eff)
+    }
+
+    /// Move out of an interned child, cloning only when the `Arc` is shared.
+    #[inline]
+    pub fn unbox(t: Arc<Type>) -> Self {
+        Arc::unwrap_or_clone(t)
+    }
+
+    /// Open inference var or explicit hole (not a real `Int`).
+    #[inline]
+    pub fn is_open_hole(&self) -> bool {
+        matches!(self, Type::Var(_) | Type::Unknown)
+    }
+
+    /// Soft ABI scalar: `Int`, open var, or [`Type::Unknown`].
+    ///
+    /// Mid-end join / prefer historically treated `Int` as an erasure sentinel
+    /// alongside `Var`. `Unknown` is the explicit hole; `Int` stays in the set
+    /// so existing List/Int placeholders still yield to concrete heap types.
+    #[inline]
+    pub fn is_soft_scalar(&self) -> bool {
+        matches!(self, Type::Int | Type::Var(_) | Type::Unknown)
+    }
+}
+
 /// Effect set ε — empty = pure; `Var` is open during inference (zonked to Pure if unconstrained).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Effect {
     #[default]
     Pure,
@@ -197,11 +262,13 @@ impl std::fmt::Display for Type {
     }
 }
 
-/// Hindley–Milner type scheme `∀ vars eff_vars. ty` (DESIGN §3.1 let-polymorphism).
+/// Hindley–Milner type scheme `∀ vars. ty` (DESIGN §3.1 let-polymorphism).
+///
+/// Effect polymorphism is not quantified here (effects stay monomorphic /
+/// fresh at use sites; see Todo «效应三套»).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scheme {
     pub vars: Vec<u32>,
-    pub eff_vars: Vec<u32>,
     pub ty: Type,
     /// Quantified vars that appeared in arithmetic (Num MVP: Int|Float only).
     pub num_vars: Vec<u32>,
@@ -209,6 +276,18 @@ pub struct Scheme {
     pub ord_vars: Vec<u32>,
     /// Quantified vars used in `==`/`!=` (must not become Fun).
     pub eq_vars: Vec<u32>,
+    /// Quantified vars used with `.len()` (List/Set/Map/String).
+    pub len_vars: Vec<u32>,
+    /// Quantified vars used with open `.concat` (List or String).
+    pub concat_vars: Vec<u32>,
+    /// Quantified vars used with `.contains` (Map/Set/String).
+    pub contains_vars: Vec<u32>,
+    /// Quantified vars used with open `.set` (List or Map).
+    pub set_vars: Vec<u32>,
+    /// Quantified vars used with `Elems` / `.toList` (List/Set/Map).
+    pub elems_vars: Vec<u32>,
+    /// Quantified vars used with open `.take` / `.drop` / `.reverse` (List or String).
+    pub take_vars: Vec<u32>,
     /// Quantified vars that require `instance Trait` (deferred UFCS on poly params).
     /// Entries: (var, trait_name, method_name).
     pub trait_preds: Vec<(u32, String, String)>,
@@ -218,11 +297,16 @@ impl Scheme {
     pub fn mono(ty: Type) -> Self {
         Self {
             vars: Vec::new(),
-            eff_vars: Vec::new(),
             ty,
             num_vars: Vec::new(),
             ord_vars: Vec::new(),
             eq_vars: Vec::new(),
+            len_vars: Vec::new(),
+            concat_vars: Vec::new(),
+            contains_vars: Vec::new(),
+            set_vars: Vec::new(),
+            elems_vars: Vec::new(),
+            take_vars: Vec::new(),
             trait_preds: Vec::new(),
         }
     }
@@ -233,6 +317,12 @@ impl Scheme {
             || !self.num_vars.is_empty()
             || !self.ord_vars.is_empty()
             || !self.eq_vars.is_empty()
+            || !self.len_vars.is_empty()
+            || !self.concat_vars.is_empty()
+            || !self.contains_vars.is_empty()
+            || !self.set_vars.is_empty()
+            || !self.elems_vars.is_empty()
+            || !self.take_vars.is_empty()
             || !self.trait_preds.is_empty()
     }
 }

@@ -1,0 +1,23 @@
+module NestedMapItemsShow
+
+import std.io.{println}
+
+/// RT `map_items` pairs must carry float/bool `_pad` (and typed `__Tuple`
+/// call-site masks) so nested Auto show prints scalars correctly.
+type Box {
+    val o
+}
+
+val main = {
+    var mb = mapOf()
+    mb = mb.set(true, false)
+    println(mb)
+    println(mb.items())
+    println(Box { o = mb.items() })
+    println(listOf(mb.items().get(0)))
+
+    var mf = mapOf()
+    mf = mf.set(1.5, 2.5)
+    println(mf.items())
+    println(Box { o = mf.items() })
+}

@@ -9,7 +9,6 @@ fn const_fold_folds_list_len_get() {
             "f",
             vec![],
             Block {
-                params: vec![],
                 ops: vec![
                     Op::Let {
                         local: Local(0),
@@ -34,6 +33,7 @@ fn const_fold_folds_list_len_get() {
                         value: Value::Builtin {
                             name: Builtin::ListLen,
                             args: vec![Local(2)],
+                            result_ty: None,
                         },
                         pure_region: true,
                     },
@@ -47,6 +47,7 @@ fn const_fold_folds_list_len_get() {
                         value: Value::Builtin {
                             name: Builtin::ListGet,
                             args: vec![Local(2), Local(4)],
+                            result_ty: None,
                         },
                         pure_region: true,
                     },
@@ -81,7 +82,6 @@ fn const_fold_folds_list_concat() {
             "f",
             vec![],
             Block {
-                params: vec![],
                 ops: vec![
                     Op::Let {
                         local: Local(0),
@@ -114,6 +114,7 @@ fn const_fold_folds_list_concat() {
                         value: Value::Builtin {
                             name: Builtin::ListConcat,
                             args: vec![Local(2), Local(3)],
+                            result_ty: None,
                         },
                         pure_region: true,
                     },
@@ -122,6 +123,7 @@ fn const_fold_folds_list_concat() {
                         value: Value::Builtin {
                             name: Builtin::ListLen,
                             args: vec![Local(4)],
+                            result_ty: None,
                         },
                         pure_region: true,
                     },
@@ -163,7 +165,6 @@ fn const_fold_list_take_slice_reverse() {
             "f",
             vec![],
             Block {
-                params: vec![],
                 ops: vec![
                     Op::Let {
                         local: Local(0),
@@ -198,6 +199,7 @@ fn const_fold_list_take_slice_reverse() {
                         value: Value::Builtin {
                             name: Builtin::ListTake,
                             args: vec![Local(3), Local(4)],
+                            result_ty: None,
                         },
                         pure_region: true,
                     },
@@ -211,6 +213,7 @@ fn const_fold_list_take_slice_reverse() {
                         value: Value::Builtin {
                             name: Builtin::ListSlice,
                             args: vec![Local(3), Local(6)],
+                            result_ty: None,
                         },
                         pure_region: true,
                     },
@@ -219,6 +222,7 @@ fn const_fold_list_take_slice_reverse() {
                         value: Value::Builtin {
                             name: Builtin::ListReverse,
                             args: vec![Local(3)],
+                            result_ty: None,
                         },
                         pure_region: true,
                     },

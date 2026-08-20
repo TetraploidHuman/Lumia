@@ -3,6 +3,7 @@
 use super::super::super::Infer;
 use crate::types::{at, expr_span, Effect, Type, TypeError};
 use lumia_hir::{Builtin, Expr};
+use std::sync::Arc;
 
 impl Infer {
     pub(super) fn infer_list_hof(
@@ -18,7 +19,7 @@ impl Infer {
                 let elem = self.expect_list_elem(vt, span, "sortBy")?;
                 match self.prune(kt) {
                     Type::List(t) => {
-                        let t = self.prune(*t);
+                        let t = self.prune(Type::unbox(t));
                         match t {
                             Type::Int | Type::String | Type::Char => {}
                             Type::Var(_) => {}
@@ -37,7 +38,7 @@ impl Infer {
                         ));
                     }
                 }
-                Ok((Type::List(Box::new(elem)), self.union_eff(ve, ke)))
+                Ok((Type::List(Arc::new(elem)), self.union_eff(ve, ke)))
             }
             Builtin::ListParMap => {
                 let (lt, le) = self.infer_expr(&args[0])?;
@@ -48,12 +49,12 @@ impl Infer {
                 self.unify_at(
                     span,
                     ft,
-                    Type::Fun(vec![elem], Box::new(out.clone()), cb_eff),
+                    Type::Fun(vec![elem], Arc::new(out.clone()), cb_eff),
                 )?;
                 let out = self.prune(out);
                 let eff = self.union_eff(fe, cb_eff);
                 let eff = self.union_eff(le, eff);
-                Ok((Type::List(Box::new(out)), eff))
+                Ok((Type::List(Arc::new(out)), eff))
             }
             Builtin::ListParFold => {
                 let (lt, le) = self.infer_expr(&args[0])?;
@@ -68,13 +69,13 @@ impl Infer {
                         ..
                     } if params.len() == 2 => {
                         self.push();
-                        self.bind(params[0].clone(), acc.clone());
-                        self.bind(params[1].clone(), elem.clone());
+                        self.bind(params[0].to_string(), acc.clone());
+                        self.bind(params[1].to_string(), elem.clone());
                         let (rt, re) = self.infer_expr(body)?;
                         self.pop();
                         self.unify_at(*lsp, rt, acc.clone())?;
                         let ft =
-                            Type::Fun(vec![acc.clone(), elem.clone()], Box::new(acc.clone()), re);
+                            Type::Fun(vec![acc.clone(), elem.clone()], Arc::new(acc.clone()), re);
                         self.type_at.push((expr_span(&args[2]), ft.clone()));
                         (ft, Effect::pure())
                     }
@@ -84,7 +85,7 @@ impl Infer {
                 self.unify_at(
                     span,
                     ft,
-                    Type::Fun(vec![acc.clone(), elem], Box::new(acc.clone()), cb_eff),
+                    Type::Fun(vec![acc.clone(), elem], Arc::new(acc.clone()), cb_eff),
                 )?;
                 let acc = self.prune(acc);
                 let eff = self.union_eff(fe, cb_eff);

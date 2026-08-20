@@ -3,13 +3,21 @@
 mod expr;
 mod pat;
 
-use crate::{Expr, ImportNames, ImportedName, Item, Module, TypeKind, ValItem, VariantFields};
+use crate::{Expr, ImportNames, ImportedName, Item, Module, Sym, TypeKind, ValItem, VariantFields};
 use expr::{format_expr, format_stmt};
+
+fn syms_dot_join(path: &[Sym]) -> String {
+    path.iter().map(Sym::as_str).collect::<Vec<_>>().join(".")
+}
+
+fn syms_comma_join(path: &[Sym]) -> String {
+    path.iter().map(Sym::as_str).collect::<Vec<_>>().join(", ")
+}
 
 pub fn format_module_src(m: &Module) -> String {
     let mut out = String::new();
     out.push_str("module ");
-    out.push_str(&m.name);
+    out.push_str(m.name.as_str());
     out.push('\n');
     if !m.imports.is_empty() || !m.items.is_empty() {
         out.push('\n');
@@ -18,19 +26,19 @@ pub fn format_module_src(m: &Module) -> String {
         out.push_str("import ");
         match &imp.names {
             ImportNames::All => {
-                out.push_str(&imp.path.join("."));
+                out.push_str(&syms_dot_join(&imp.path));
                 out.push_str(".*");
             }
             ImportNames::Single(n) if imp.path.is_empty() => {
                 format_imported_name(&mut out, n);
             }
             ImportNames::Single(n) => {
-                out.push_str(&imp.path.join("."));
+                out.push_str(&syms_dot_join(&imp.path));
                 out.push('.');
                 format_imported_name(&mut out, n);
             }
             ImportNames::Selective(ns) => {
-                out.push_str(&imp.path.join("."));
+                out.push_str(&syms_dot_join(&imp.path));
                 out.push_str(".{");
                 for (i, n) in ns.iter().enumerate() {
                     if i > 0 {
@@ -73,15 +81,13 @@ pub fn format_module_src(m: &Module) -> String {
                             out.push_str(&v.name);
                             match &v.fields {
                                 VariantFields::Unit => {}
-                                VariantFields::Positional(n) => {
-                                    // AST keeps arity only; emit stable placeholder idents.
+                                VariantFields::Positional(names) => {
                                     out.push('(');
-                                    for i in 0..*n {
+                                    for (i, name) in names.iter().enumerate() {
                                         if i > 0 {
                                             out.push_str(", ");
                                         }
-                                        out.push('v');
-                                        out.push_str(&i.to_string());
+                                        out.push_str(name);
                                     }
                                     out.push(')');
                                 }
@@ -128,7 +134,7 @@ pub fn format_module_src(m: &Module) -> String {
                 out.push_str(&t.name);
                 if !t.requires.is_empty() {
                     out.push_str(" requires ");
-                    out.push_str(&t.requires.join(", "));
+                    out.push_str(&syms_comma_join(&t.requires));
                 }
                 out.push_str(" {\n");
                 for m in &t.methods {
@@ -153,6 +159,22 @@ pub fn format_module_src(m: &Module) -> String {
         out.push('\n');
     }
     out
+}
+
+/// Whether `src` is already in `format_module_src` form.
+///
+/// Only normalizes a **missing final `\n`** (pretty-printer always emits one).
+/// Does **not** strip trailing spaces — those must fail `fmt --check` and
+/// produce an LSP edit (CLI used to `trim_end`, which falsely greened them).
+pub fn format_matches_source(src: &str, formatted: &str) -> bool {
+    fn with_final_newline(s: &str) -> std::borrow::Cow<'_, str> {
+        if s.ends_with('\n') {
+            std::borrow::Cow::Borrowed(s)
+        } else {
+            std::borrow::Cow::Owned(format!("{s}\n"))
+        }
+    }
+    with_final_newline(src) == with_final_newline(formatted)
 }
 
 fn format_imported_name(out: &mut String, n: &ImportedName) {
@@ -226,25 +248,12 @@ pub(crate) fn format_block_contents(out: &mut String, e: &Expr, indent: usize) {
     }
 }
 
+pub(crate) use crate::escape::escape_str;
+
 pub(crate) fn pad(out: &mut String, n: usize) {
     for _ in 0..n {
         out.push_str("    ");
     }
-}
-
-pub(crate) fn escape_str(s: &str) -> String {
-    let mut o = String::new();
-    for c in s.chars() {
-        match c {
-            '\\' => o.push_str("\\\\"),
-            '"' => o.push_str("\\\""),
-            '\n' => o.push_str("\\n"),
-            '\t' => o.push_str("\\t"),
-            '$' => o.push_str("\\$"),
-            c => o.push(c),
-        }
-    }
-    o
 }
 
 #[cfg(test)]
@@ -320,6 +329,18 @@ mod tests {
     }
 
     #[test]
+    fn format_matches_source_ignores_only_missing_final_newline() {
+        let src = "module T\n\nval x = 1\n";
+        let m = parse_module(src).unwrap();
+        let formatted = format_module_src(&m);
+        assert!(format_matches_source(src, &formatted));
+        assert!(format_matches_source(src.trim_end(), &formatted));
+        // Trailing spaces on a line are a real drift (CLI check used to miss these).
+        let dirty = "module T\n\nval x = 1  \n";
+        assert!(!format_matches_source(dirty, &formatted));
+    }
+
+    #[test]
     fn fmt_not_keyword_not_bang() {
         let src = r#"
 module T
@@ -344,6 +365,19 @@ val main = {
 module T
 import foo.{bar as baz, qux}
 import math.add as plus
+val main = 0
+"#,
+        );
+    }
+
+    #[test]
+    fn fmt_string_and_char_cr_roundtrip() {
+        // Lexer accepts `\r`; pretty must emit it or fmt→parse loses CR.
+        roundtrip(
+            r#"
+module T
+val s = "a\rb"
+val c = '\r'
 val main = 0
 "#,
         );
@@ -392,6 +426,73 @@ val main = {
     }
 
     #[test]
+    fn fmt_range_and_to_surface_sugar() {
+        let src = r#"
+module T
+val main = {
+    val a = 1..3
+    val b = 1..<3
+    val c = 1 to 3
+    a.len() + b.len() + c.len()
+}
+"#;
+        let m = parse_module(src).expect("parse");
+        let formatted = format_module_src(&m);
+        assert!(
+            formatted.contains("1..3")
+                && formatted.contains("1..<3")
+                && formatted.contains("1 to 3"),
+            "expected surface range/to sugar, got:\n{formatted}"
+        );
+        assert!(
+            !formatted.contains("rangeInclusive") && !formatted.contains("range("),
+            "should not print desugared call form:\n{formatted}"
+        );
+        roundtrip(src);
+    }
+
+    #[test]
+    fn fmt_bare_it_surface_sugar() {
+        let src = r#"
+module T
+val main = {
+    val xs = [1, 2, 3]
+    xs.map { it + 1 }
+}
+"#;
+        let m = parse_module(src).expect("parse");
+        let formatted = format_module_src(&m);
+        assert!(
+            formatted.contains("it + 1"),
+            "expected bare it body, got:\n{formatted}"
+        );
+        assert!(
+            !formatted.contains("it ->"),
+            "should not invent explicit `it ->`:\n{formatted}"
+        );
+        assert!(
+            formatted.contains("map {") && !formatted.contains("map({"),
+            "expected trailing-closure form, got:\n{formatted}"
+        );
+        // Explicit `{ it -> … }` must still print the arrow.
+        let explicit = r#"
+module T
+val main = {
+    val xs = [1, 2, 3]
+    xs.map { it -> it + 1 }
+}
+"#;
+        let m2 = parse_module(explicit).expect("parse explicit");
+        let out2 = format_module_src(&m2);
+        assert!(
+            out2.contains("it ->"),
+            "explicit it param must keep arrow:\n{out2}"
+        );
+        roundtrip(src);
+        roundtrip(explicit);
+    }
+
+    #[test]
     fn fmt_match_and_list() {
         roundtrip(
             r#"
@@ -419,8 +520,8 @@ type Point {
 val main = 0
 "#,
         );
-        // Positional field names are not stored in the AST — fmt uses v0,v1,…
-        roundtrip_opts(
+        // Positional binder names are preserved (`Some(value)` stays `value`).
+        roundtrip(
             r#"
 module T
 type Option {
@@ -429,7 +530,6 @@ type Option {
 }
 val main = 0
 "#,
-            false,
         );
     }
 }

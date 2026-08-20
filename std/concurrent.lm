@@ -1,0 +1,15 @@
+/// Concurrent scheduling hints (`import std.concurrent.{Scheduler}`).
+///
+/// `Scheduler.worker` / `Scheduler.io` are Int kind tags for `scope(…) { … }`.
+/// Default `scope { … }` uses kind `0`. Runtime maps worker/io to OS pools
+/// (BUILD §7.7-D; `LUMIA_SCHED_WORKERS` / `LUMIA_SCHED_IO`, default 1).
+///
+/// Structured cancel: `cancelScope()` cancels children of the current scope;
+/// observe with `t.joinOpt()` (None) instead of trapping `t.join()`.
+///
+/// @exports Scheduler
+module concurrent
+
+type SchedulerKind { val worker, val io }
+
+val Scheduler = SchedulerKind { worker = 1, io = 2 }

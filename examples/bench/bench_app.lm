@@ -1,0 +1,100 @@
+module BenchApp
+
+import std.io.{println}
+
+/// Production-shaped application workloads (Release via `scripts/bench_app.sh`).
+/// Each printed line is a stable checksum so Debug/Release and reruns stay comparable.
+///
+/// Scenario mix (apps / containers — not single-kernel microbenches):
+///   1. word_freq — DESIGN §14-style histogram (hot vocab, get/set + sortBy)
+///   2. pipe_hof  — map/filter/fold over a large range (HOF / fusion pressure)
+///   3. map_bulk  — bulk set / items scan / remove (Map hash + COW traffic)
+///   4. set_churn — insert / contains / union / intersect at scale
+///
+/// String surface lives in `bench_str.lm` (separate process — avoids GC crosstalk).
+
+/// Hot-vocabulary word frequency (flagship app shape; checksum over sorted pairs).
+val word_freq_checksum = { n, vocab_n ->
+    var counts = mapOf()
+    var i = 0
+    for i < n {
+        val w = i % vocab_n
+        counts = counts.get(w) match {
+            Some(c) -> counts.set(w, c + 1)
+            None -> counts.set(w, 1)
+        }
+        i = i + 1
+    }
+    var h = counts.len()
+    for (word, c) in counts.items().sortBy({ p -> p.0 }) {
+        h = (h * 131 + word * 17 + c) % 1000000007
+    }
+    h
+}
+
+/// Large range → map → filter → fold (materialize vs fused paths).
+val pipe_hof_checksum = { n ->
+    (0..<n)
+        .map({ x -> x * 3 + 1 })
+        .filter({ x -> x % 5 != 0 })
+        .fold(0, { acc, x -> (acc + x * 17) % 1000000007 })
+}
+
+/// Bulk Map load + full items scan + shrink (no interleaved get/set upsert).
+val map_bulk_checksum = { n, remove_n ->
+    var m = mapOf()
+    var i = 0
+    for i < n {
+        m = m.set(i, (i * 17) % 10007)
+        i = i + 1
+    }
+    var h = m.len()
+    for (k, v) in m.items() {
+        h = (h + k * 131 + v) % 1000000007
+    }
+    var r = 0
+    for r < remove_n {
+        m = m.remove(r)
+        r = r + 1
+    }
+    h = (h + m.len()) % 1000000007
+    for (k, v) in m.items() {
+        h = (h + k + v) % 1000000007
+    }
+    h
+}
+
+/// Set insert / contains / algebra under growing cardinality.
+val set_churn_checksum = { n ->
+    var a = #{}
+    var b = #{}
+    var i = 0
+    for i < n {
+        a = a.insert(i % (n / 2 + 1))
+        b = b.insert((i * 3) % (n / 2 + 1))
+        i = i + 1
+    }
+    val u = a.union(b)
+    val inter = a.intersect(b)
+    val d = a.diff(b)
+    var h = u.len() * 17 + inter.len() * 13 + d.len() * 11
+    var k = 0
+    for k < n {
+        if a.contains(k) {
+            h = h + 1
+        }
+        if b.contains(k) {
+            h = h + 3
+        }
+        k = k + (n / 32 + 1)
+    }
+    h % 1000000007
+}
+
+val main = {
+    // Sized for ~0.3–1.5s Release on a modern laptop (whole suite).
+    println(word_freq_checksum(20000, 8))
+    println(pipe_hof_checksum(2000000))
+    println(map_bulk_checksum(20000, 10000))
+    println(set_churn_checksum(100000))
+}

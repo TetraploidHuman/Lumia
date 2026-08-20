@@ -112,3 +112,50 @@ val main = {
         "toplevel-only lambda map should stay ListParMap"
     );
 }
+
+#[test]
+fn parallel_map_inside_spawn_demoted() {
+    let src = r#"
+module ParSpawn
+val double(x) = x * 2
+val main = {
+    scope {
+        spawn {
+            listOf(1, 2, 3).map(double)
+        }.join()
+    }
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let mut typed = infer_module(&hir).expect("infer");
+    // Before finalize, spawn body may still carry ListParMap.
+    assert!(
+        contains_list_par_map(
+            typed
+                .module
+                .items
+                .iter()
+                .find_map(|i| match i {
+                    Item::Fun(f) if f.is_main => Some(&f.body),
+                    _ => None,
+                })
+                .unwrap()
+        ),
+        "expected ListParMap candidate inside spawn before finalize"
+    );
+    finalize_auto_parallel(&mut typed, true);
+    let main_body = typed
+        .module
+        .items
+        .iter()
+        .find_map(|i| match i {
+            Item::Fun(f) if f.is_main => Some(&f.body),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        !contains_list_par_map(main_body),
+        "ListParMap under spawn/scope must demote (no silent RT sequential)"
+    );
+}

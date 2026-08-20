@@ -1,0 +1,14 @@
+/// spawn Option/List/Tuple with Bool payload must keep Bool ABI.
+module main
+
+val main = {
+    scope {
+        val o = spawn { Some(true) }.join()
+        println(o)
+        val xs = spawn { listOf(true, false) }.join()
+        println(xs)
+        val t = spawn { (true, 1.5) }.join()
+        println(t.0)
+        println(t.1)
+    }
+}

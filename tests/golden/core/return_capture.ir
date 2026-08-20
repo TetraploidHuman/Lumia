@@ -9,7 +9,6 @@ fun __lam_0(env, p0) effect.io=false memo=None {
 }
 
 fun main() effect.io=true memo=None {
-  %0 = i64 42  // pure
   %1 = call make$c_42()  // pure
   %2 = i64 0  // pure
   %3 = icall %1(%2)  // effect

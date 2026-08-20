@@ -1,0 +1,13 @@
+module main
+
+type Box {
+    val f
+}
+
+val main = {
+    scope {
+        val b = spawn { Box { f = { x -> x } } }.join()
+        val g = b.f
+        println(g(2.5))
+    }
+}

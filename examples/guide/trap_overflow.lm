@@ -1,0 +1,7 @@
+module TrapOverflow
+
+/// Runtime checked add: `i64::MAX + 1` must trap (not wrap).
+val main = {
+    val a = 9223372036854775807
+    a + 1
+}

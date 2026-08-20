@@ -1,10 +1,9 @@
 //! textDocument/definition.
 
-use super::cursor::{ident_at, pos_to_byte};
+use super::cursor::{ident_at, pos_to_byte, span_to_range};
 use super::state::{state_lock, Analysis};
 use super::uri::path_to_uri;
 use anyhow::Result;
-use lumia_syntax::{byte_to_line_col, line_starts};
 use serde_json::{json, Value};
 
 pub(super) fn definition_for_analysis(a: &Analysis, uri: &str, line: u32, character: u32) -> Value {
@@ -19,9 +18,6 @@ pub(super) fn definition_for_analysis(a: &Analysis, uri: &str, line: u32, charac
         .files
         .get(span.file as usize)
         .unwrap_or_else(|| a.files.first().expect("analysis files"));
-    let starts = line_starts(&file.src);
-    let (sl, sc) = byte_to_line_col(&starts, span.start);
-    let (el, ec) = byte_to_line_col(&starts, span.end);
     let target_uri = if file.path.as_os_str().is_empty() {
         uri.to_string()
     } else {
@@ -29,10 +25,7 @@ pub(super) fn definition_for_analysis(a: &Analysis, uri: &str, line: u32, charac
     };
     json!({
         "uri": target_uri,
-        "range": {
-            "start": { "line": sl.saturating_sub(1), "character": sc.saturating_sub(1) },
-            "end": { "line": el.saturating_sub(1), "character": ec.saturating_sub(1) }
-        }
+        "range": span_to_range(&file.src, *span)
     })
 }
 
@@ -58,64 +51,73 @@ mod tests {
     use super::definition_for_analysis;
     use crate::check::check_source;
     use crate::load::SourceFile;
+    use crate::lsp::cursor::byte_to_position;
     use crate::lsp::state::Analysis;
-    use lumia_syntax::line_starts;
+    use crate::lsp::test_support::{imported_alias_analysis, with_encoding, IMPORTED_ALIAS_SRC};
+    use lumia_syntax::ColumnMetric;
     use std::path::PathBuf;
 
     fn analysis(src: &str) -> Analysis {
         let typed = check_source(src, true).expect("typecheck");
-        Analysis {
+        Analysis::from_typed(
             typed,
-            src: src.to_string(),
-            files: vec![SourceFile {
+            src.to_string(),
+            vec![SourceFile {
                 path: PathBuf::new(),
                 src: src.to_string(),
             }],
-        }
-    }
-
-    fn line_col_of(src: &str, needle: &str) -> (u32, u32) {
-        let byte = src.find(needle).expect("needle") as u32;
-        let starts = line_starts(src);
-        let (line, col) = lumia_syntax::byte_to_line_col(&starts, lumia_syntax::BytePos(byte));
-        (line.saturating_sub(1), col.saturating_sub(1))
+            0,
+        )
     }
 
     #[test]
     fn definition_jumps_to_binding() {
-        let src = r#"
+        with_encoding(ColumnMetric::Utf16, || {
+            let src = r#"
 module Demo
 val add = { x, y -> x + y }
 val main = {
     add(1, 2)
 }
 "#;
-        let a = analysis(src);
-        // Use site of `add` inside main.
-        let use_byte = src.rfind("add").expect("use site");
-        let starts = line_starts(src);
-        let (line, col) =
-            lumia_syntax::byte_to_line_col(&starts, lumia_syntax::BytePos(use_byte as u32));
-        let loc = definition_for_analysis(
-            &a,
-            "file:///demo.lm",
-            line.saturating_sub(1),
-            col.saturating_sub(1),
-        );
-        assert!(!loc.is_null(), "expected Location for add use-site");
-        let (def_line, _) = line_col_of(src, "val add");
-        assert_eq!(
-            loc["range"]["start"]["line"].as_u64().unwrap(),
-            def_line as u64,
-            "definition should point at `val add`, got {loc}"
-        );
+            let a = analysis(src);
+            let use_byte = src.rfind("add").expect("use site") as u32;
+            let (line, col) = byte_to_position(src, use_byte);
+            let loc = definition_for_analysis(&a, "file:///demo.lm", line, col);
+            assert!(!loc.is_null(), "expected Location for add use-site");
+            let def_byte = src.find("val add").expect("def") as u32;
+            let (def_line, _) = byte_to_position(src, def_byte);
+            assert_eq!(
+                loc["range"]["start"]["line"].as_u64().unwrap(),
+                def_line as u64,
+                "definition should point at `val add`, got {loc}"
+            );
+        });
     }
 
     #[test]
     fn definition_unknown_ident_is_null() {
-        let src = "module Demo\nval main = { 1 }\n";
-        let a = analysis(src);
-        let loc = definition_for_analysis(&a, "file:///demo.lm", 1, 0);
-        assert!(loc.is_null());
+        with_encoding(ColumnMetric::Utf16, || {
+            let src = "module Demo\nval main = { 1 }\n";
+            let a = analysis(src);
+            let loc = definition_for_analysis(&a, "file:///demo.lm", 1, 0);
+            assert!(loc.is_null());
+        });
+    }
+
+    #[test]
+    fn definition_imported_alias_via_loader() {
+        with_encoding(ColumnMetric::Utf16, || {
+            let src = IMPORTED_ALIAS_SRC;
+            let uri = "untitled:Def-1";
+            let a = imported_alias_analysis(uri);
+            let use_byte = src.find("log(1)").expect("use") as u32;
+            let (line, col) = byte_to_position(src, use_byte);
+            let loc = definition_for_analysis(&a, uri, line, col);
+            assert!(
+                !loc.is_null(),
+                "definition on imported alias must resolve via loader, got {loc}"
+            );
+        });
     }
 }

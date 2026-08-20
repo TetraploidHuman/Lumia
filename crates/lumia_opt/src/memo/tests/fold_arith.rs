@@ -8,7 +8,6 @@ fn const_fold_arith() {
             "f",
             vec![],
             Block {
-                params: vec![],
                 ops: vec![
                     Op::Let {
                         local: Local(0),
@@ -52,7 +51,6 @@ fn const_fold_folds_cmp_to_bool() {
             "f",
             vec![],
             Block {
-                params: vec![],
                 ops: vec![
                     Op::Let {
                         local: Local(0),

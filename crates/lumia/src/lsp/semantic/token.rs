@@ -1,6 +1,6 @@
 //! Semantic token legend, absolute spans, and LSP delta encoding.
 
-use lumia_syntax::{byte_to_line_col, line_starts};
+use crate::lsp::cursor::{byte_to_position, token_length};
 
 /// Legend token types (index = `token_type`). Keep aligned with common editor themes.
 pub const TOKEN_TYPES: &[&str] = &[
@@ -42,7 +42,6 @@ pub(super) struct AbsToken {
 }
 
 pub(super) fn encode_deltas(src: &str, abs: &[AbsToken]) -> Vec<u32> {
-    let starts = line_starts(src);
     let mut out = Vec::with_capacity(abs.len() * 5);
     let mut prev_line = 0u32;
     let mut prev_start = 0u32;
@@ -50,10 +49,8 @@ pub(super) fn encode_deltas(src: &str, abs: &[AbsToken]) -> Vec<u32> {
         if t.end <= t.start || t.end > src.len() {
             continue;
         }
-        let (line, col) = byte_to_line_col(&starts, lumia_syntax::BytePos(t.start as u32));
-        let line = line.saturating_sub(1);
-        let col = col.saturating_sub(1);
-        let length = (t.end - t.start) as u32;
+        let (line, col) = byte_to_position(src, t.start as u32);
+        let length = token_length(src, t.start, t.end);
         let delta_line = line.saturating_sub(prev_line);
         let delta_start = if delta_line == 0 {
             col.saturating_sub(prev_start)

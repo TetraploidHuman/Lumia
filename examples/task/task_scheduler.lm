@@ -1,0 +1,10 @@
+module task_scheduler
+import std.io.{println}
+import std.concurrent.{Scheduler}
+
+val main = {
+    scope(Scheduler.worker) {
+        val t = spawn { 7 }
+        println(t.join())
+    }
+}

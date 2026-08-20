@@ -1,0 +1,29 @@
+module task_stress
+import std.io.{println}
+import std.concurrent.{Scheduler}
+
+/// Many cooperative tasks + channel fan-in; worker/io kinds only label queues (single OS thread).
+val main = {
+    val ch = channel(64)
+    scope(Scheduler.worker) {
+        for i in 1..32 {
+            spawn {
+                ch.send(i)
+                0
+            }
+        }
+        scope(Scheduler.io) {
+            for i in 33..64 {
+                spawn {
+                    ch.send(i)
+                    0
+                }
+            }
+            var sum = 0
+            for n in 1..64 {
+                sum = sum + ch.recv()
+            }
+            println(sum)
+        }
+    }
+}

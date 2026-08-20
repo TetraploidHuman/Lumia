@@ -1,5 +1,6 @@
 use super::{
-    bi, BuiltinEffect, BuiltinEmit, BuiltinInfo, ResultHeap, ENS_MAP_SET, ENS_SET_INSERT, NO_F,
+    bi, BuiltinEffect, BuiltinEmit, BuiltinInfo, ResultHeap, ENS_MAP_SET, ENS_MAP_SET_BOOL,
+    ENS_SET_INSERT, ENS_SET_INSERT_BOOL, NO_F,
 };
 use crate::ast::{Builtin, BuiltinFamily};
 
@@ -31,7 +32,9 @@ pub(crate) fn info_map_set(b: Builtin) -> BuiltinInfo {
             ObjI64I64Ptr,
             true,
             Always,
-        ),
+        )
+        .with_list_receiver_rt("lumia_list_set")
+        .with_bool_ensures(ENS_MAP_SET_BOOL),
         MapRemove => bi(
             f,
             2,
@@ -51,6 +54,40 @@ pub(crate) fn info_map_set(b: Builtin) -> BuiltinInfo {
             Some("lumia_set_insert"),
             ENS_SET_INSERT,
             ObjI64Ptr,
+            true,
+            Always,
+        )
+        .with_bool_ensures(ENS_SET_INSERT_BOOL),
+        SetUnion => bi(
+            f,
+            2,
+            2,
+            pure,
+            Some("lumia_set_union"),
+            NO_F,
+            ObjObjPtr,
+            true,
+            Always,
+        ),
+        SetIntersect => bi(
+            f,
+            2,
+            2,
+            pure,
+            Some("lumia_set_intersect"),
+            NO_F,
+            ObjObjPtr,
+            true,
+            Always,
+        ),
+        SetDiff => bi(
+            f,
+            2,
+            2,
+            pure,
+            Some("lumia_set_diff"),
+            NO_F,
+            ObjObjPtr,
             true,
             Always,
         ),
@@ -83,7 +120,7 @@ pub(crate) fn info_map_set(b: Builtin) -> BuiltinInfo {
             pure,
             Some("lumia_map_items"),
             NO_F,
-            UnaryObjPtr,
+            UnaryObjBoolMask,
             true,
             Always,
         ),

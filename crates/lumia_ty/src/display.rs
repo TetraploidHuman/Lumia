@@ -2,11 +2,12 @@
 
 use super::Type;
 use rustc_hash::FxHashMap as HashMap;
+use std::sync::Arc;
 
 fn collect_vars(ty: &Type, out: &mut Vec<u32>) {
     match ty {
         Type::Var(v) => out.push(*v),
-        Type::List(t) | Type::Set(t) => collect_vars(t, out),
+        Type::List(t) | Type::Set(t) | Type::Task(t) | Type::Channel(t) => collect_vars(t, out),
         Type::Map(k, v) => {
             collect_vars(k, out);
             collect_vars(v, out);
@@ -27,7 +28,8 @@ fn collect_vars(ty: &Type, out: &mut Vec<u32>) {
             }
             collect_vars(r, out);
         }
-        Type::Int | Type::Float | Type::Bool | Type::String | Type::Char | Type::Unit => {}
+        Type::Int | Type::Float | Type::Bool | Type::String | Type::Char | Type::Unit
+        | Type::Unknown => {}
     }
 }
 
@@ -36,11 +38,13 @@ pub fn subst_num_vars(ty: &Type, num_vars: &[u32]) -> Type {
     match ty {
         Type::Var(v) if num_vars.contains(v) => Type::Int,
         Type::Var(v) => Type::Var(*v),
-        Type::List(t) => Type::List(Box::new(subst_num_vars(t, num_vars))),
-        Type::Set(t) => Type::Set(Box::new(subst_num_vars(t, num_vars))),
+        Type::List(t) => Type::List(Arc::new(subst_num_vars(t, num_vars))),
+        Type::Set(t) => Type::Set(Arc::new(subst_num_vars(t, num_vars))),
+        Type::Task(t) => Type::Task(Arc::new(subst_num_vars(t, num_vars))),
+        Type::Channel(t) => Type::Channel(Arc::new(subst_num_vars(t, num_vars))),
         Type::Map(k, v) => Type::Map(
-            Box::new(subst_num_vars(k, num_vars)),
-            Box::new(subst_num_vars(v, num_vars)),
+            Arc::new(subst_num_vars(k, num_vars)),
+            Arc::new(subst_num_vars(v, num_vars)),
         ),
         Type::Tuple(ts) => Type::Tuple(ts.iter().map(|t| subst_num_vars(t, num_vars)).collect()),
         Type::TuplePrefix(ts) => {
@@ -52,7 +56,7 @@ pub fn subst_num_vars(ty: &Type, num_vars: &[u32]) -> Type {
         },
         Type::Fun(ps, r, e) => Type::Fun(
             ps.iter().map(|t| subst_num_vars(t, num_vars)).collect(),
-            Box::new(subst_num_vars(r, num_vars)),
+            Arc::new(subst_num_vars(r, num_vars)),
             *e,
         ),
         other => other.clone(),
@@ -89,8 +93,11 @@ pub fn pretty_type_with(ty: &Type, names: &HashMap<u32, String>) -> String {
         Type::String => "String".into(),
         Type::Char => "Char".into(),
         Type::Unit => "Unit".into(),
+        Type::Unknown => "?".into(),
         Type::List(t) => format!("List[{}]", pretty_type_with(t, names)),
         Type::Set(t) => format!("Set[{}]", pretty_type_with(t, names)),
+        Type::Task(t) => format!("Task[{}]", pretty_type_with(t, names)),
+        Type::Channel(t) => format!("Channel[{}]", pretty_type_with(t, names)),
         Type::Map(k, v) => format!(
             "Map[{}, {}]",
             pretty_type_with(k, names),
@@ -114,7 +121,7 @@ pub fn pretty_type_with(ty: &Type, names: &HashMap<u32, String>) -> String {
         }
         Type::Adt { name, params } => {
             if params.is_empty() {
-                name.clone()
+                name.to_string()
             } else {
                 let inner = params
                     .iter()
@@ -152,7 +159,7 @@ mod tests {
     fn display_grounds_num_vars_and_names_rest() {
         let ty = Type::Fun(
             vec![Type::Var(0), Type::Var(1)],
-            Box::new(Type::Var(0)),
+            Arc::new(Type::Var(0)),
             Effect::pure(),
         );
         assert_eq!(display_type(&ty, &[0]), "(Int, T) -> Int");

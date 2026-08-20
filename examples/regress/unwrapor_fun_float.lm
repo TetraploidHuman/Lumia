@@ -1,0 +1,8 @@
+/// unwrapOr(Some(Float→Float Fun)) then call.
+module main
+import std.option.unwrapOr
+
+val main = {
+    val f = unwrapOr(Some({ x -> x + 1.0 }), { x -> x })
+    println(f(1.5))
+}

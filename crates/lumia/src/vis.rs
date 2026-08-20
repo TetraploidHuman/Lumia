@@ -1,8 +1,8 @@
 //! Cross-file `priv` / import visibility helpers.
 //!
 //! Dependency modules are fully inlined so private callees of public APIs remain
-//! linkable; [`lumia_ty::NameVisibility`] then blocks entry code from naming
-//! non-imported / `priv` symbols.
+//! linkable; [`lumia_ty::NameVisibility`] then allows each file only its own
+//! declarations plus names it imported (entry and deps alike).
 
 use lumia_syntax::{ImportNames, Item};
 use lumia_ty::NameVisibility;
@@ -26,7 +26,7 @@ pub fn item_is_priv(it: &Item) -> bool {
     }
 }
 
-fn item_file(it: &Item) -> u32 {
+pub fn item_file(it: &Item) -> u32 {
     match it {
         Item::Val(v) => v.span.file,
         Item::Type(t) => t.span.file,
@@ -48,7 +48,7 @@ pub fn import_visible_names(items: &[Item], names: &ImportNames) -> HashSet<Stri
     match names {
         ImportNames::All => pubs,
         ImportNames::Single(n) => {
-            if pubs.contains(&n.name) {
+            if pubs.contains(n.name.as_str()) {
                 [n.local().to_string()].into_iter().collect()
             } else {
                 HashSet::default()
@@ -56,7 +56,7 @@ pub fn import_visible_names(items: &[Item], names: &ImportNames) -> HashSet<Stri
         }
         ImportNames::Selective(ns) => ns
             .iter()
-            .filter(|n| pubs.contains(&n.name))
+            .filter(|n| pubs.contains(n.name.as_str()))
             .map(|n| n.local().to_string())
             .collect(),
     }
@@ -64,10 +64,10 @@ pub fn import_visible_names(items: &[Item], names: &ImportNames) -> HashSet<Stri
 
 fn set_item_name(it: &mut Item, name: &str) {
     match it {
-        Item::Val(v) => v.name = name.to_string(),
-        Item::Type(t) => t.name = name.to_string(),
-        Item::Foreign(f) => f.name = name.to_string(),
-        Item::Trait(t) => t.name = name.to_string(),
+        Item::Val(v) => v.name = name.to_string().into(),
+        Item::Type(t) => t.name = name.to_string().into(),
+        Item::Foreign(f) => f.name = name.to_string().into(),
+        Item::Trait(t) => t.name = name.to_string().into(),
         Item::Instance(_) => {}
     }
 }
@@ -86,7 +86,7 @@ pub fn apply_import_aliases(mut items: Vec<Item>, names: &ImportNames) -> Vec<It
     let renames: Vec<(String, String)> = match names {
         ImportNames::All => return items,
         ImportNames::Single(n) => match &n.alias {
-            Some(a) if a != &n.name => vec![(n.name.clone(), a.clone())],
+            Some(a) if a != &n.name => vec![(n.name.to_string(), a.to_string())],
             _ => return items,
         },
         ImportNames::Selective(ns) => ns
@@ -95,7 +95,7 @@ pub fn apply_import_aliases(mut items: Vec<Item>, names: &ImportNames) -> Vec<It
                 n.alias
                     .as_ref()
                     .filter(|a| *a != &n.name)
-                    .map(|a| (n.name.clone(), a.clone()))
+                    .map(|a| (n.name.to_string(), a.to_string()))
             })
             .collect(),
     };
@@ -117,11 +117,12 @@ pub fn apply_import_aliases(mut items: Vec<Item>, names: &ImportNames) -> Vec<It
     items
 }
 
-/// Record declaring file for each name; optionally expand entry-visible set.
+/// Record declaring file for each name; record `newly_visible` as imports of `importer_file`.
 pub fn extend_visibility(
     vis: &mut NameVisibility,
     items: &[Item],
     newly_visible: &HashSet<String>,
+    importer_file: u32,
 ) {
     for it in items {
         if let Some(name) = item_name(it) {
@@ -130,7 +131,11 @@ pub fn extend_visibility(
                 .or_insert_with(|| item_file(it));
         }
     }
-    for n in newly_visible {
-        vis.cross_file_visible.insert(n.clone());
+    if newly_visible.is_empty() {
+        return;
     }
+    vis.imports_by_file
+        .entry(importer_file)
+        .or_default()
+        .extend(newly_visible.iter().cloned());
 }

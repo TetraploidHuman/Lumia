@@ -9,21 +9,13 @@ fun main() effect.io=true memo=None {
   %5 = f64 2  // pure
   %6 = %4 * %5  // pure
   %7 = builtin Println(%6)  // effect
-  %8 = %0  // pure
-  %9 = %5  // pure
   %10 = %0 < %5  // pure
   %13 = if ...  // pure
   %14 = builtin Println(%13)  // effect
-  %15 = %0  // pure
   %16 = Neg %0  // pure
   %17 = builtin Println(%16)  // effect
-  %18 = %0  // pure
   %19 = f64 2.5  // pure
   %20 = alloc_list[LitList](n=2)  // pure
-  %21 = i64 0  // pure
-  %22 = %0  // pure
-  %23 = i64 1  // pure
-  %24 = %19  // pure
   %25 = %0 + %19  // pure
   %26 = builtin Println(%25)  // effect
   return %26

@@ -3,8 +3,9 @@
 use super::{append_assign, list_accum, resolve_unary_callback, with_fun_bind, UnaryCallback};
 use crate::ast::{Builtin, Expr};
 use crate::lower::{empty_list, LowerCtx};
+use crate::sym_util::synthetic;
 use crate::visit::free_vars_expr;
-use lumia_syntax::Span;
+use lumia_syntax::{Span, Sym};
 
 /// `xs.map(f)` → `ListParMap` when FunRef-safe; else sequential accumulate.
 /// Type checking may demote `ListParMap` back to sequential (IO / non-scalar).
@@ -16,18 +17,18 @@ pub(crate) fn lower_list_map(ctx: &LowerCtx, list: Expr, f: Expr, span: Span) ->
             span,
         };
     }
-    desugar_list_map_sequential(ctx, list, f, span)
+    desugar_list_map_sequential(list, f, span)
 }
 
 /// Sequential `map` loop (also used when auto-parallel demotes `ListParMap`).
-pub fn desugar_list_map_sequential(ctx: &LowerCtx, list: Expr, f: Expr, span: Span) -> Expr {
+pub fn desugar_list_map_sequential(list: Expr, f: Expr, span: Span) -> Expr {
     match resolve_unary_callback(f, span, "map") {
         UnaryCallback::Inline {
             param,
             param_ty,
             body,
-        } => lower_list_map_inline(ctx, list, param, param_ty, body, span),
-        UnaryCallback::Bound { f, f_name, x } => lower_list_map_call(ctx, list, f, f_name, x, span),
+        } => lower_list_map_inline(list, param, param_ty, body, span),
+        UnaryCallback::Bound { f, f_name, x } => lower_list_map_call(list, f, f_name, x, span),
     }
 }
 
@@ -36,19 +37,19 @@ pub fn desugar_list_map_sequential(ctx: &LowerCtx, list: Expr, f: Expr, span: Sp
 fn map_callback_is_parallel_safe(ctx: &LowerCtx, f: &Expr) -> bool {
     match f {
         Expr::Lambda { params, body, .. } => {
-            let bound: Vec<String> = params.clone();
+            let bound: Vec<String> = params.iter().map(|s| s.to_string()).collect();
             let frees = free_vars_expr(body, &bound);
             frees.iter().all(|n| ctx.is_toplevel_fun(n))
         }
-        Expr::Var(n, _) => ctx.is_toplevel_fun(n),
+        Expr::Var(n, _) => ctx.is_toplevel_fun(n.as_str()),
         _ => false,
     }
 }
 
 /// `xs.sortBy(f)` — key must be Int / String / Char; stable permute of elements.
 pub(crate) fn lower_list_sort_by(ctx: &LowerCtx, list: Expr, f: Expr, span: Span) -> Expr {
-    let xs = format!("__sby_xs_{}", span.start.0);
-    let keys = format!("__sby_keys_{}", span.start.0);
+    let xs = synthetic(format!("__sby_xs_{}", span.start.0));
+    let keys = synthetic(format!("__sby_keys_{}", span.start.0));
     Expr::Let {
         name: xs.clone(),
         value: Box::new(list),
@@ -69,15 +70,18 @@ pub(crate) fn lower_list_sort_by(ctx: &LowerCtx, list: Expr, f: Expr, span: Span
 }
 
 fn lower_list_map_inline(
-    ctx: &LowerCtx,
     list: Expr,
-    param: String,
+    param: Sym,
     param_ty: Option<String>,
     body: Expr,
     span: Span,
 ) -> Expr {
-    let acc = format!("__map_acc_{}", span.start.0);
-    let x = format!("__map_x_{}", span.start.0);
+    let acc = synthetic(format!(
+        "{}_{}",
+        crate::desugar_slots::MAP_ACC_PREFIX,
+        span.start.0
+    ));
+    let x = synthetic(format!("__map_x_{}", span.start.0));
     let mapped = Expr::Let {
         name: param,
         value: Box::new(Expr::Var(x.clone(), span)),
@@ -86,18 +90,15 @@ fn lower_list_map_inline(
         ty: param_ty,
     };
     let step = append_assign(&acc, mapped, span);
-    list_accum(ctx, acc, empty_list(span), &x, list, step, span)
+    list_accum(acc, empty_list(span), x.as_str(), list, step, span)
 }
 
-fn lower_list_map_call(
-    ctx: &LowerCtx,
-    list: Expr,
-    f: Expr,
-    f_name: String,
-    x: String,
-    span: Span,
-) -> Expr {
-    let acc = format!("__map_acc_{}", span.start.0);
+fn lower_list_map_call(list: Expr, f: Expr, f_name: Sym, x: Sym, span: Span) -> Expr {
+    let acc = synthetic(format!(
+        "{}_{}",
+        crate::desugar_slots::MAP_ACC_PREFIX,
+        span.start.0
+    ));
     let mapped = Expr::Call {
         callee: Box::new(Expr::Var(f_name.clone(), span)),
         args: vec![Expr::Var(x.clone(), span)],
@@ -106,6 +107,6 @@ fn lower_list_map_call(
     let step = append_assign(&acc, mapped, span);
     with_fun_bind(
         Some((f_name, f)),
-        list_accum(ctx, acc, empty_list(span), &x, list, step, span),
+        list_accum(acc, empty_list(span), x.as_str(), list, step, span),
     )
 }

@@ -212,6 +212,40 @@ val main = { f(Some(1)) }
 }
 
 #[test]
+fn alt_option_rhs_must_be_payload() {
+    let err = infer_err(
+        r#"
+module M
+type Option { Some(v) None }
+val main = {
+    println(None alt Some(7.5))
+}
+"#,
+    );
+    assert!(
+        err.contains("payload") || err.contains("alt"),
+        "unexpected: {err}"
+    );
+}
+
+#[test]
+fn channel_recv_alt_shares_elem_ty() {
+    // Channel elem must not be generalized: send(Some) and recv().alt share α.
+    let src = r#"
+module M
+import std.io.{println}
+val main = {
+  scope {
+    val ch = channel(1)
+    spawn { ch.send(Some(1.5)) }
+    println(ch.recv() alt 0.0)
+  }
+}
+"#;
+    infer_ok(src);
+}
+
+#[test]
 fn num_poly_rejects_string_after_float() {
     let err = infer_err(
         r#"
@@ -230,7 +264,7 @@ val main = {
 }
 
 #[test]
-fn occurs_adt_and_tuple_unit() {
+fn occurs_adt_equi_recursive_tuple_still_rigid() {
     use crate::infer::Infer;
     use crate::types::Type;
     let mut inf = Infer::new(crate::types::NameVisibility::default());
@@ -244,15 +278,15 @@ fn occurs_adt_and_tuple_unit() {
         },
     )
     .unwrap();
-    assert!(inf
-        .unify(
-            Type::Var(b),
-            Type::Adt {
-                name: "Box".into(),
-                params: vec![Type::Var(a)],
-            },
-        )
-        .is_err());
+    // Equi-recursive ADT (`μX. Box[Box[X]]`) is allowed.
+    inf.unify(
+        Type::Var(b),
+        Type::Adt {
+            name: "Box".into(),
+            params: vec![Type::Var(a)],
+        },
+    )
+    .expect("Adt cycle should be equi-recursive");
 
     let mut inf = Infer::new(crate::types::NameVisibility::default());
     let Type::Var(a) = inf.fresh() else { panic!() };

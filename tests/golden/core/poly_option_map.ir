@@ -30,14 +30,12 @@ fun main() effect.io=true memo=None {
   %20 = funref dbl  // pure
   %21 = call optMap$Option_Float_Fn_dbl(%19, %20)  // pure
   %22 = builtin AdtTag(%21)  // pure
-  %23 = %5  // pure
   %24 = %22 == %5  // pure
   %35 = if ...  // pure
   %36 = alloc_adt(Option, tag=1, n=0)  // pure
   %37 = funref dbl  // pure
   %38 = call optMap$Option_Int_Fn_dbl(%36, %37)  // pure
   %39 = builtin AdtTag(%38)  // pure
-  %40 = %5  // pure
   %41 = %39 == %5  // pure
   %53 = if ...  // pure
   %54 = str "hi"  // pure
@@ -45,7 +43,6 @@ fun main() effect.io=true memo=None {
   %56 = funref bang  // pure
   %57 = call optMap$Option_String_Fn_bang(%55, %56)  // pure
   %58 = builtin AdtTag(%57)  // pure
-  %59 = %5  // pure
   %60 = %58 == %5  // pure
   %71 = if ...  // pure
   return %71

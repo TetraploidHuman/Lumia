@@ -1,0 +1,17 @@
+module ParMapFloatToInt
+
+import std.io.{println}
+
+/// Auto-parallel `List[Float].map` to Int must keep Int ABI (not Float TID).
+/// Regression: result was tagged Float and Show printed Int `1` as a denormal.
+val main = {
+    val xs = listOf(1.5, 2.5).map({ x -> 1 })
+    println(xs)
+    println(xs.get(0))
+    val one = { x: Float -> 1 }
+    val ys = listOf(3.0).map(one)
+    println(ys)
+    // Identity / Float ret still specialize.
+    println(listOf(1.5, 2.5).map({ x -> x }))
+    println(listOf(1.5, 2.5).map({ x -> x + 1.0 }))
+}

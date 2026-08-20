@@ -5,52 +5,63 @@
 //! call site. We clone `f` as `f$c_1_2`, bake constants into the body, and
 //! rewrite the call to `f$c_1_2()` so later `const_fold` / `inline` can PE it.
 
-use lumia_core::{
-    block_calls, count_ops, has_early_return, rewrite_block_locals, Block, CoreFun, CoreModule,
-    Local, Op, Value,
+use lumia_abi::{
+    SPECIALIZE_CONST_MAX_CLONES_PER_FUN, SPECIALIZE_CONST_MAX_OPS,
+    SPECIALIZE_CONST_MAX_TOTAL_CLONES,
 };
+use lumia_core::{
+    block_calls, count_ops, for_each_let_in_block, for_each_let_in_block_mut,
+    for_each_nested_block, for_each_nested_block_mut, has_early_return, max_local_in_fun,
+    rewrite_block_locals, Block, CoreFun, CoreModule, Local, Op, Value,
+};
+use lumia_syntax::Sym;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use std::sync::Arc;
 
-/// Cap clones per original function (avoid combinatorial blow-up).
-const MAX_CLONES_PER_FUN: usize = 16;
-/// Global safety fuse for one optimize run.
-const MAX_TOTAL_CLONES: usize = 64;
-/// Allow specializing mid-size pure leaves (e.g. matmulChecksum) so const
-/// bounds reach NSW / PE; still below pathological blow-up.
-const MAX_OPS: usize = 256;
+/// Shared template for `$c_` clones of one original (body cloned once into Arc).
+struct ConstTemplate {
+    params: Vec<Local>,
+    param_tys: Vec<lumia_ty::Type>,
+    ret_ty: lumia_ty::Type,
+    effect: lumia_ty::Effect,
+    foreign_abi: lumia_core::ForeignAbi,
+    kind: lumia_core::FunKind,
+    mono_of: Sym,
+    body: Arc<Block>,
+    /// `max_local_in_fun` of the original — bake remaps from here.
+    max_local: u32,
+}
 
 pub struct SpecializeConstPass;
 
-impl crate::Pass for SpecializeConstPass {
-    fn name(&self) -> &str {
-        "specialize_const"
-    }
-    fn run(&self, module: &mut CoreModule) {
+impl SpecializeConstPass {
+    pub(crate) fn run(self, module: &mut CoreModule) {
         specialize_const_calls(module);
     }
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct ConstKey {
-    fun: String,
+    fun: Sym,
     args: Vec<i64>,
 }
 
 fn specialize_const_calls(module: &mut CoreModule) {
-    let candidates: HashMap<String, CoreFun> = module
+    // Arity index only — clone bodies when emitting `$c_` clones.
+    let candidate_arity: HashMap<Sym, usize> = module
         .functions
         .iter()
         .filter(|f| is_specializeable(f))
-        .map(|f| (f.name.clone(), f.clone()))
+        .map(|f| (f.name.clone(), f.params.len()))
         .collect();
-    if candidates.is_empty() {
+    if candidate_arity.is_empty() {
         return;
     }
 
     let mut needed: HashSet<ConstKey> = HashSet::default();
     for fun in &module.functions {
-        collect_const_calls(&fun.body, &candidates, &mut needed);
-        if needed.len() >= MAX_TOTAL_CLONES {
+        collect_const_calls(&fun.body, &candidate_arity, &mut needed);
+        if needed.len() >= SPECIALIZE_CONST_MAX_TOTAL_CLONES {
             break;
         }
     }
@@ -59,40 +70,64 @@ fn specialize_const_calls(module: &mut CoreModule) {
     }
 
     // Bound per-function clone count.
-    let mut per_fun: HashMap<String, usize> = HashMap::default();
+    let mut per_fun: HashMap<Sym, usize> = HashMap::default();
     let mut ordered: Vec<ConstKey> = Vec::new();
     for key in needed {
         let n = per_fun.entry(key.fun.clone()).or_insert(0);
-        if *n >= MAX_CLONES_PER_FUN || ordered.len() >= MAX_TOTAL_CLONES {
+        if *n >= SPECIALIZE_CONST_MAX_CLONES_PER_FUN
+            || ordered.len() >= SPECIALIZE_CONST_MAX_TOTAL_CLONES
+        {
             continue;
         }
         *n += 1;
         ordered.push(key);
     }
 
-    let mut renames: HashMap<(String, Vec<i64>), String> = HashMap::default();
+    let fun_index: HashMap<Sym, usize> = module
+        .functions
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.name.clone(), i))
+        .collect();
+
+    let mut renames: HashMap<(Sym, Vec<i64>), Sym> = HashMap::default();
     let mut new_funs: Vec<CoreFun> = Vec::new();
+    let mut templates: HashMap<Sym, ConstTemplate> = HashMap::default();
     for key in &ordered {
-        let Some(orig) = candidates.get(&key.fun) else {
+        let Some(&idx) = fun_index.get(&key.fun) else {
             continue;
         };
+        let orig = &module.functions[idx];
         if key.args.len() != orig.params.len() {
             continue;
         }
-        let mangled = mangle_const_clone(&key.fun, &key.args);
+        let mangled = Sym::from(mangle_const_clone(key.fun.as_str(), &key.args));
         if module.functions.iter().any(|f| f.name == mangled)
             || new_funs.iter().any(|f| f.name == mangled)
         {
             renames.insert((key.fun.clone(), key.args.clone()), mangled);
             continue;
         }
-        new_funs.push(build_const_clone(orig, &key.args, mangled.clone()));
+        let tmpl = templates
+            .entry(key.fun.clone())
+            .or_insert_with(|| ConstTemplate {
+                params: orig.params.clone(),
+                param_tys: orig.param_tys.clone(),
+                ret_ty: orig.ret_ty.clone(),
+                effect: orig.effect,
+                foreign_abi: orig.foreign_abi,
+                kind: orig.kind,
+                mono_of: orig.name.clone(),
+                max_local: max_local_in_fun(orig),
+                body: Arc::new(orig.body.clone()),
+            });
+        new_funs.push(build_const_clone(tmpl, &key.args, mangled.clone()));
         renames.insert((key.fun.clone(), key.args.clone()), mangled);
     }
     module.functions.extend(new_funs);
 
     for fun in &mut module.functions {
-        rewrite_const_calls(&mut fun.body, &renames, &candidates);
+        rewrite_const_calls(&mut fun.body, &renames, &candidate_arity);
     }
 }
 
@@ -104,7 +139,7 @@ fn is_specializeable(f: &CoreFun) -> bool {
     if !f.effect.is_pure() || f.params.is_empty() {
         return false;
     }
-    if count_ops(&f.body) > MAX_OPS {
+    if count_ops(&f.body) > SPECIALIZE_CONST_MAX_OPS {
         return false;
     }
     if block_calls(&f.body, &f.name) {
@@ -128,6 +163,7 @@ fn param_ok_for_const_scalar(t: &lumia_ty::Type) -> bool {
             | lumia_ty::Type::Char
             | lumia_ty::Type::Float
             | lumia_ty::Type::Var(_)
+            | lumia_ty::Type::Unknown
     )
 }
 
@@ -156,17 +192,18 @@ fn bake_const_value(ty: &lumia_ty::Type, n: i64) -> Value {
     }
 }
 
-fn build_const_clone(orig: &CoreFun, args: &[i64], name: String) -> CoreFun {
-    let mut body = orig.body.clone();
+fn build_const_clone(tmpl: &ConstTemplate, args: &[i64], name: Sym) -> CoreFun {
+    // Deep-clone from shared Arc only when emitting this `$c_` variant.
+    let mut body = (*tmpl.body).clone();
     // Remap original params to fresh locals, then bind them to scalar constants
     // at the top of the body so SSA uses stay valid.
-    let base = lumia_core::max_local_in_fun(orig).saturating_add(1);
+    let base = tmpl.max_local.saturating_add(1);
     let mut remap: HashMap<u32, u32> = HashMap::default();
     let mut preamble = Vec::with_capacity(args.len());
-    for (i, p) in orig.params.iter().enumerate() {
+    for (i, p) in tmpl.params.iter().enumerate() {
         let fresh = Local(base + i as u32);
         remap.insert(p.0, fresh.0);
-        let ty = orig
+        let ty = tmpl
             .param_tys
             .get(i)
             .cloned()
@@ -186,259 +223,97 @@ fn build_const_clone(orig: &CoreFun, args: &[i64], name: String) -> CoreFun {
         param_names: vec![],
         param_tys: vec![],
         body,
-        ret_ty: orig.ret_ty.clone(),
-        effect: orig.effect,
+        ret_ty: tmpl.ret_ty.clone(),
+        effect: tmpl.effect,
         is_main: false,
         memo: None,
         external: None,
+        foreign_abi: tmpl.foreign_abi,
         escaping: HashSet::default(),
+        nsw_binop_locals: Default::default(),
+        safe_divisor_locals: Default::default(),
+        nonneg_iv_load_locals: Default::default(),
         scheme_poly: false,
-        mono_of: Some(orig.name.clone()),
+        mono_of: Some(tmpl.mono_of.clone()),
+        kind: tmpl.kind,
     }
 }
 
 fn collect_const_calls(
     block: &Block,
-    candidates: &HashMap<String, CoreFun>,
+    candidate_arity: &HashMap<Sym, usize>,
     needed: &mut HashSet<ConstKey>,
 ) {
     let mut known = crate::ir_util::KnownScalars::new();
-    for op in &block.ops {
-        match op {
-            Op::Let {
-                local,
-                value,
-                pure_region,
-            } if *pure_region => {
-                known.track(local.0, value);
-                if let Value::Call { fun, args } = value {
-                    if let Some(c) = candidates.get(fun) {
-                        if c.params.len() == args.len() {
-                            if let Some(consts) = known.resolve_all(args) {
-                                needed.insert(ConstKey {
-                                    fun: fun.clone(),
-                                    args: consts,
-                                });
-                            }
+    for_each_let_in_block(block, &mut |local, value, pure_region| {
+        if pure_region {
+            known.track(local.0, value);
+            if let Value::Call { fun, args } = value {
+                if let Some(&arity) = candidate_arity.get(fun.as_str()) {
+                    if arity == args.len() {
+                        if let Some(consts) = known.resolve_all(args) {
+                            needed.insert(ConstKey {
+                                fun: Sym::from(fun.name.as_str()),
+                                args: consts,
+                            });
                         }
                     }
                 }
-                walk_nested_collect(value, candidates, needed);
             }
-            Op::Let { value, .. } | Op::Effect { value } => {
-                walk_nested_collect(value, candidates, needed);
-            }
-            _ => {}
         }
-        if needed.len() >= MAX_TOTAL_CLONES {
+        walk_nested_collect(value, candidate_arity, needed);
+        if needed.len() >= SPECIALIZE_CONST_MAX_TOTAL_CLONES {
             return;
         }
-    }
+    });
 }
 
 fn walk_nested_collect(
     value: &Value,
-    candidates: &HashMap<String, CoreFun>,
+    candidate_arity: &HashMap<Sym, usize>,
     needed: &mut HashSet<ConstKey>,
 ) {
-    match value {
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            collect_const_calls(then_block, candidates, needed);
-            collect_const_calls(else_block, candidates, needed);
-        }
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => {
-            collect_const_calls(header, candidates, needed);
-            collect_const_calls(body, candidates, needed);
-            collect_const_calls(latch, candidates, needed);
-        }
-        Value::Lambda { body, .. } => collect_const_calls(body, candidates, needed),
-        _ => {}
-    }
+    for_each_nested_block(value, &mut |b| {
+        collect_const_calls(b, candidate_arity, needed);
+    });
 }
 
 fn rewrite_const_calls(
     block: &mut Block,
-    renames: &HashMap<(String, Vec<i64>), String>,
-    candidates: &HashMap<String, CoreFun>,
+    renames: &HashMap<(Sym, Vec<i64>), Sym>,
+    candidate_arity: &HashMap<Sym, usize>,
 ) {
     let mut known = crate::ir_util::KnownScalars::new();
-    for op in &mut block.ops {
-        match op {
-            Op::Let {
-                local,
-                value,
-                pure_region,
-            } if *pure_region => {
-                if let Value::Call { fun, args } = value {
-                    if candidates.contains_key(fun) {
-                        if let Some(consts) = known.resolve_all(args) {
-                            if let Some(mangled) = renames.get(&(fun.clone(), consts)) {
-                                *value = Value::Call {
-                                    fun: mangled.clone(),
-                                    args: vec![],
-                                };
-                            }
+    for_each_let_in_block_mut(block, &mut |local, value, pure_region| {
+        if pure_region {
+            if let Value::Call { fun, args } = value {
+                if candidate_arity.contains_key(fun.as_str()) {
+                    if let Some(consts) = known.resolve_all(args) {
+                        if let Some(mangled) = renames.get(&(Sym::from(fun.name.as_str()), consts)) {
+                            *value = Value::Call {
+                                fun: mangled.as_str().into(),
+                                args: vec![],
+                            };
                         }
                     }
                 }
-                known.track(local.0, value);
-                walk_nested_rewrite(value, renames, candidates);
             }
-            Op::Let { value, .. } | Op::Effect { value } => {
-                walk_nested_rewrite(value, renames, candidates);
-            }
-            _ => {}
+            known.track(local.0, value);
         }
-    }
+        walk_nested_rewrite(value, renames, candidate_arity);
+    });
 }
 
 fn walk_nested_rewrite(
     value: &mut Value,
-    renames: &HashMap<(String, Vec<i64>), String>,
-    candidates: &HashMap<String, CoreFun>,
+    renames: &HashMap<(Sym, Vec<i64>), Sym>,
+    candidate_arity: &HashMap<Sym, usize>,
 ) {
-    match value {
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            rewrite_const_calls(then_block, renames, candidates);
-            rewrite_const_calls(else_block, renames, candidates);
-        }
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => {
-            rewrite_const_calls(header, renames, candidates);
-            rewrite_const_calls(body, renames, candidates);
-            rewrite_const_calls(latch, renames, candidates);
-        }
-        Value::Lambda { body, .. } => rewrite_const_calls(body, renames, candidates),
-        _ => {}
-    }
+    for_each_nested_block_mut(value, &mut |b| {
+        rewrite_const_calls(b, renames, candidate_arity);
+    });
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{compile_source_to_optimized, OptOptions, Pass};
-
-    #[test]
-    fn specialize_const_clones_pure_int_call() {
-        // Isolate specialize (full release pipeline may inline the clone away).
-        let src = r#"
-module M
-val add1 = { x -> x + 1 }
-val main = {
-    add1(41)
-}
-"#;
-        let mut core = lumia_core::compile_source_to_core(src).expect("core");
-        crate::ConstFoldPass.run(&mut core);
-        SpecializeConstPass.run(&mut core);
-        assert!(
-            core.functions.iter().any(|f| f.name == "add1$c_41"),
-            "expected const-specialized clone, funs={:?}",
-            core.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
-        );
-        let main = core.functions.iter().find(|f| f.is_main).expect("main");
-        let calls_clone = main.body.ops.iter().any(|op| match op {
-            Op::Let {
-                value: Value::Call { fun, args },
-                ..
-            } => fun == "add1$c_41" && args.is_empty(),
-            _ => false,
-        });
-        assert!(calls_clone, "main should call specialized clone");
-    }
-
-    #[test]
-    fn specialize_const_clones_pure_bool_call() {
-        let src = r#"
-module M
-val flip = { b -> if b { false } else { true } }
-val main = {
-    flip(false)
-}
-"#;
-        let mut core = lumia_core::compile_source_to_core(src).expect("core");
-        crate::ConstFoldPass.run(&mut core);
-        SpecializeConstPass.run(&mut core);
-        assert!(
-            core.functions
-                .iter()
-                .any(|f| f.name.starts_with("flip$c_") || f.name.contains("flip$c_")),
-            "expected bool const clone, funs={:?}",
-            core.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn specialize_const_clones_pure_float_call() {
-        let src = r#"
-module M
-val add1f = { x -> x + 1.0 }
-val main = {
-    add1f(41.0)
-}
-"#;
-        let mut core = lumia_core::compile_source_to_core(src).expect("core");
-        crate::ConstFoldPass.run(&mut core);
-        SpecializeConstPass.run(&mut core);
-        assert!(
-            core.functions
-                .iter()
-                .any(|f| f.name.starts_with("add1f$c_") || f.name.contains("add1f$c_")),
-            "expected float const clone, funs={:?}",
-            core.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn specialize_const_pe_result_visible_in_ir() {
-        // After specialize + fold + inline, the call should collapse toward 42.
-        let core = compile_source_to_optimized(
-            r#"
-module M
-val add1 = { x -> x + 1 }
-val main = add1(41)
-"#,
-            &OptOptions::for_build(true),
-        )
-        .expect("opt");
-        let main = core.functions.iter().find(|f| f.is_main).expect("main");
-        let has_42 = main.body.ops.iter().any(|op| {
-            matches!(
-                op,
-                Op::Let {
-                    value: Value::Int(42),
-                    ..
-                }
-            )
-        }) || matches!(
-            main.body.result.and_then(|r| {
-                main.body.ops.iter().rev().find_map(|op| match op {
-                    Op::Let { local, value, .. } if *local == r => Some(value),
-                    _ => None,
-                })
-            }),
-            Some(Value::Int(42)) | Some(Value::Local(_))
-        );
-        // Soft check: either Int(42) appears or a specialized clone exists.
-        let has_clone = core.functions.iter().any(|f| f.name.contains("add1$c_"));
-        assert!(
-            has_42 || has_clone,
-            "expected PE of add1(41) or a const clone"
-        );
-    }
-}
+#[path = "specialize_const_tests.rs"]
+mod tests;

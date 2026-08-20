@@ -1,0 +1,22 @@
+module NestedMapGetShow
+
+import std.io.{println}
+
+/// RT `map_get` Options must carry Show-kind + bool/float `_pad` so nested
+/// Auto show prints `Some(…)` with correct scalar formatting.
+type Box {
+    val o
+}
+
+val main = {
+    var mf = mapOf()
+    mf = mf.set(1, 2.5)
+    println(mf.get(1))
+    println(Box { o = mf.get(1) })
+    println(listOf(mf.get(1)))
+
+    var mb = mapOf()
+    mb = mb.set(1, true)
+    println(Box { o = mb.get(1) })
+    println(listOf(mb.get(1)))
+}

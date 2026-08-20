@@ -26,7 +26,6 @@ fun __lam_0$Point_Int_Int(p0) effect.io=false memo=None {
 }
 
 fun main() effect.io=true memo=None {
-  %2 = funref __lam_0  // pure
   %3 = i64 1  // pure
   %4 = i64 2  // pure
   %5 = alloc_adt(Point, tag=0, n=2)  // pure

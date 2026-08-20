@@ -1,0 +1,16 @@
+module MutMapSetBoolShow
+
+import std.io.{println}
+
+/// Empty `mapOf`/`setOf` start as Int placeholders; `.set`/`.insert(true)` must
+/// upgrade so println uses Bool show (not `0`/`1`).
+val main = {
+    var m = mapOf()
+    m = m.set(true, false)
+    m = m.set(false, true)
+    println(m)
+    var s = setOf()
+    s = s.insert(true)
+    s = s.insert(false)
+    println(s)
+}

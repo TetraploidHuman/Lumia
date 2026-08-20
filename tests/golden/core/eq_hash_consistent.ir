@@ -8,19 +8,16 @@ fun __Eq_Key_eq(self, other) effect.io=false memo=None {
 fun main() effect.io=true memo=None {
   %0 = i64 1  // pure
   %1 = alloc_adt(Key, tag=0, n=1)  // pure
-  %2 = %0  // pure
   %3 = alloc_adt(Key, tag=0, n=1)  // pure
   %4 = %1 == %3  // pure
   %7 = if ...  // pure
   %8 = builtin Println(%7)  // effect
   %9 = i64 10  // pure
-  %10 = alloc_map[SmallMap](n=1)  // pure
-  %11 = %0  // pure
+  %10 = alloc_map[HashOrdered](n=1)  // pure
   %12 = alloc_adt(Key, tag=0, n=1)  // pure
   %13 = builtin Contains(%10, %12)  // pure
   %16 = if ...  // pure
   %17 = builtin Println(%16)  // effect
-  %18 = %0  // pure
   %19 = alloc_adt(Key, tag=0, n=1)  // pure
   %20 = builtin ListGet(%10, %19)  // pure
   %21 = builtin AdtTag(%20)  // pure

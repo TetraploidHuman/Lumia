@@ -1,0 +1,12 @@
+/// String `.len` / `substring` use Unicode scalars (not bytes).
+module main
+import std.string.{substring}
+
+val main = {
+    println("你好".len())
+    println(substring("你好", 0, 1))
+    println(substring("你好", 0, 2))
+    println(substring("你好", 1, 2))
+    println("a😀b".len())
+    println(substring("a😀b", 1, 2))
+}

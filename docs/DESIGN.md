@@ -2,7 +2,8 @@
 
 > **版本**: 0.12.14-draft  
 > **状态**: 设计阶段，不妥协版  
-> **最后更新**: 2026-08-07  
+> **最后更新**: 2026-08-16  
+> **新鲜度**: 实现进度与已知债以 [Todo.md](../Todo.md) / 代码为准；大改语义时再戳本日期。  
 > **本修订**: §7.5 透明结果复用收束为「局部消重 + 有界 `T_f`」；废除 L0～L4 主叙事
 
 ---
@@ -17,9 +18,9 @@ Lumia 是一门 **以人类思维为表面语法、以编译器证明为性能�
 2. **函数式是默认，不是选项** —— 一等函数、代数数据类型、模式匹配、不可变优先；但不强迫用户学习范畴论。
 3. **完全类型推断** —— 用户代码 **无需** 写任何类型注解；类型存在于编译器与错误信息中，不存在于日常书写中。
 4. **严格求值** —— 执行顺序与直觉一致，拒绝全局惰性带来的空间泄漏与调试地狱。
-5. **性能优化对用户零可见** —— 公共子表达式消除、逃逸分析、管道融合、按需物化、写时复制，全部由编译器完成；语言不提供 `pure`、`lazy`、`Stream`/`Array`、`HashMap`/`TreeMap` 等让用户操心性能的开关。
+5. **性能优化对用户零可见** —— 公共子表达式消除、逃逸分析、管道融合、按需物化、写时复制，全部由编译器完成；语言不提供用户面的 `pure`/`lazy`/`Stream`/`Array`/`HashMap`/`TreeMap` 等性能开关。（例外：`foreign "C" pure` 是 **FFI 荣誉制信任注解**，默认 foreign 为 IO，需 `--trust-foreign-pure` / `package.trust_foreign_pure`；见 [BUILD.md](BUILD.md)。）
 6. **可观测语义最小化** —— 用户只能依赖 **值的相等性** 与 **效应语句的执行顺序**；不能依赖分配时机、求值次数、内存地址、中间结构是否物化。
-7. **效应由编译器认，不由用户标** —— 无强制 `pure`/`IO`/`effect` 注解；`main` 隐式可做 I/O；日常直接写 `println`，不包 `effect { }`。
+7. **效应由编译器认，不由用户标** —— 无强制用户函数 `pure`/`IO`/`effect` 注解；`main` 隐式可做 I/O；日常直接写 `println`，不包 `effect { }`。
 
 ### 1.2 非目标
 
@@ -136,16 +137,18 @@ val add = { a: Int, b: Int ->
 
 ### 3.3 基本类型（编译器内部；用户通常不写）
 
+MVP 实现面（`lumia_ty::Type`）为单一宽度：
+
 ```
-Int, Int8, Int16, Int32, Int64
-UInt, UInt8, ...
-Float32, Float64
+Int, Float
 Bool, Char, String, Unit
 ```
 
-- `Int` 为平台字长或有界语义（实现阶段定，文档层假设 64-bit）。
+- `Int` / `Float` 为平台字长浮点（当前实现按 64-bit 语义）。
+- 更细的尺寸变体（`Int8`…`Int64`、`UInt*`、`Float32`/`Float64`）为规划，尚未进入类型系统。
 - `String` 为 UTF-8 不可变文本；内部实现可变宽优化，对用户不可见。
-- 数字字面量默认推断为 `Int` / `Float64`；过载由类型类与使用上下文消歧。
+- 用户面 `.len()` / `substring` / `.take` / `.drop` / `.reverse` 按 **Unicode 标量（码点）** 计数与切片，不按字节；禁止切断多字节序列。`toLower` / `toUpper` 为 Unicode case fold（非仅 ASCII）。
+- 数字字面量默认推断为 `Int` / `Float`；过载由类型类与使用上下文消歧。
 
 ### 3.4 复合类型
 
@@ -189,12 +192,12 @@ xs match {
 编译器内部对 `List` 使用 **多重表示（multi-representation）**：
 
 ```
-LitList      // 常量折叠
-Iota         // start..end / range
-Fused        // map/filter 融合视图
-Slice        // 子视图
-HeapList     // 物化堆数组
-COWList      // 写时复制缓冲
+LitList      // 已落地：空→永生单例；小未逃逸→栈
+HeapList     // 已落地：默认堆数组 + COW
+Iota         // 规划：start..end / range 视图（运行时 TYPE_LIST_IOTA 另径）
+Fused        // 规划：map/filter 融合视图
+Slice        // 规划：子视图
+COWList      // 规划：独立表示枚举（当前 COW 行为挂在 HeapList 上）
 ```
 
 表示之间的转换由 **逃逸分析** 与 **使用模式分析** 自动插入，用户无感。  
@@ -299,14 +302,14 @@ for x in s { ... }
 #### 编译器多重表示（用户无感）
 
 ```
-EmptyMap / EmptySet     // 空
-LitMap / LitSet         // 常量折叠
-SmallMap / SmallSet     // 内联 ≤ N 对/元（线性；N 实现自定，典型 4～8）
-AssocList               // 未建索引的配对列表（构建中、或仅 Eq）
-Overlay                 // 父结构 + 小差分（COW 更新）
-HashOrdered             // 插入序哈希（默认大表路径）
-SortedTree              // 仅当 Ord 可用且分析认为更优（如大量按键有序扫描）
-BuildFused              // 从 List 管道 / fold 构建的延迟视图
+EmptyMap / EmptySet     // 已落地：空 → null
+SmallMap / SmallSet     // 规划：独立小表线性布局（代码已删 `SmallMap` 变体；非 Assoc → `HashOrdered`）
+AssocList               // 已落地：无 Hash 键，永不建哈希
+Overlay                 // 已落地：父结构 + 小差分（COW 更新）
+HashOrdered             // 已落地：插入序哈希（默认大表路径；含小字面量非 Assoc）
+LitMap / LitSet         // 规划/PE 标签：常量折叠提示；发射仍为堆+finish（非栈布局）
+SortedTree              // 规划：仅当 Ord 可用且分析认为更优
+BuildFused              // 规划：从 List 管道 / fold 构建的延迟视图
 ```
 
 `Set` 在实现上可共享 `Map[T, Unit]` 引擎，但 **用户类型仍是 `Set[T]`**（API 与错误信息更清楚）。
@@ -317,7 +320,7 @@ BuildFused              // 从 List 管道 / fold 构建的延迟视图
 |------|------|
 | `Map` | `HashOrdered` + COW / `Overlay`（插入序哈希；写时按共享决定拷贝或差分） |
 | `Set` | 同上引擎 |
-| 字面量很小且未逃逸 | 可直接 `SmallMap`/`SmallSet`（尺寸常量可见 ⇒ 算「能证」） |
+| 字面量很小且未逃逸 | 仍走 `HashOrdered`（`SmallMap`/`SmallSet` 为规划；尺寸可见时也不得改语义） |
 
 `AssocList` / `BuildFused` / `SortedTree` 等 **仅当分析能证明更优或等价且更省** 时启用（§7.1.1）；禁止靠弱启发在默认与特化之间来回赌。
 
@@ -343,7 +346,7 @@ val v = m.get("only")
 ```
 
 - **语义**：与先建完整映射再查找相同（含重复键覆盖规则）。
-- **实现**：若 `m` 不逃逸且只有少数 `get`，可在 `AssocList` / `BuildFused` 上查找或短路扫描，**永不建全量哈希表**；若逃逸或查找密集，再升为 `HashOrdered` 或 `SmallMap`。
+- **实现**：若 `m` 不逃逸且只有少数 `get`，可在 `AssocList` / `BuildFused` 上查找或短路扫描，**永不建全量哈希表**；若逃逸或查找密集，再升为 `HashOrdered`（规划中的 `SmallMap` 未落地）。
 
 ```lumia
 var m = [:]
@@ -352,7 +355,7 @@ m = m.set("b", 2)
 println(m.get("a"))
 ```
 
-- **实现**：可为 `Overlay` 链或直接 `SmallMap`；逃逸后再压成紧凑表示。
+- **实现**：可为 `Overlay` 链或直接 `HashOrdered`（规划中的紧凑 `SmallMap` 未落地）；逃逸后再压成紧凑表示。
 
 ```lumia
 val m = lines
@@ -1664,7 +1667,7 @@ Lumia 取的是 Kotlin 的 `**val`/`var`、块、推断、集合管道**，不�
 ```
 Source
   → AST + 效应推断 + 类型检查
-  → Core IR（ANF / SSA）
+  → Core IR（树形 ANF / 伪 SSA；规划真 CFG）
   → 纯分析（逃逸、效应、别名、常量）
   → 优化 Pass 管道
   → Lowering（表示选择；纪律见 §7.1.1）
@@ -1693,7 +1696,7 @@ Source
 
 | 值 | 默认 |
 |----|------|
-| 逃逸或通用 `List` | `HeapList` / `COWList`（连续缓冲 + COW） |
+| 逃逸或通用 `List` | `HeapList`（连续缓冲 + COW；独立 `COWList` 枚举为规划） |
 | 通用 `Map` / `Set` | `HashOrdered` + COW / `Overlay` |
 | 透明 Memo | 默认 `T_f` 容量 0 或极小；有证据才增大；硬顶内择优表示（能下标则不下哈希）；见 §7.5 |
 
@@ -1705,7 +1708,7 @@ Source
 
 #### 特化路径（证明后才离开默认）
 
-`Lit*` / `Iota` / `Fused` / `Slice` / `AssocList` / `BuildFused` / `SortedTree` / 栈上 SROA 等：
+`Lit*`（List/ADT 栈路径已落地；Map/Set 的 Lit* 仅为 PE 标签）/ `Iota` / `Fused` / `Slice` / `AssocList` / `BuildFused` / `SortedTree` / 栈上 SROA 等（未标注已落地者多为**规划**）：
 
 - 仅当证明 **不劣于默认的可观测语义** 且 **预期资源更省或同样可预期**；  
 - Debug 可少做特化，但语义仍与 Release 一致；  
@@ -1726,8 +1729,8 @@ Source
 | **Transparent Memo**              | 对选中的纯函数挂有界 `T_f` 做跨调用结果复用（用户无语法；见 §7.5）  |
 | **DCE**                           | 删除不影响可观测结果的纯计算                 |
 | **Escape Analysis**               | 决定栈/堆、是否物化 `List`/`Map`/`Set`        |
-| **List Representation Selection** | Lit / Iota / Fused / Heap 自动选择      |
-| **Map/Set Representation Selection** | Empty / Lit / Small / Assoc / Overlay / HashOrdered / Sorted / BuildFused |
+| **List Representation Selection** | Lit / Heap 已落地；Iota / Fused 等为规划 |
+| **Map/Set Representation Selection** | Empty(null) / Assoc / Overlay / HashOrdered 已落地；**Small** / Sorted / BuildFused / 栈 Lit 为规划（见 §3.5；无独立 `SmallMap` 变体） |
 | **Deforestation / Fusion**        | `map`/`filter`/`fold` 管道融合；含 `toMap`/`toSet` 延迟建索引 |
 | **Partial Evaluation**            | 常量索引、常量范围折叠、常量键查找折叠                 |
 | **Copy Elimination**              | 未逃逸值避免物理复制                     |
@@ -1771,7 +1774,7 @@ val v = m.get(key)
 ```
 
 **语义：** 与物化完整 `Map` 后 `get` 相同（含重复键覆盖）。  
-**实现：** 不逃逸且单次查找 → 可在过滤后的配对流上线性定位；多次查找或逃逸 → `SmallMap` / `HashOrdered`。
+**实现：** 不逃逸且单次查找 → 可在过滤后的配对流上线性定位；多次查找或逃逸 → `HashOrdered`（`SmallMap` 为规划）。
 
 **用户写：**
 
@@ -2043,19 +2046,52 @@ import a.{b as bee, c}  // 多选中的别名
 
 ---
 
-## 11. 并发与并行（预留）
+## 11. 并发与并行
 
 ### 11.1 纯并行
 
 - 编译器 / 运行时对 **证明无数据竞争的纯 `map`/`fold`** 自动并行。
 - 用户不写 `parMap`。
 
-### 11.2 效应并发
+### 11.2 效应并发（Task / Channel）
 
-- 后期引入 `Task`、`Channel`、`Async` effect。
-- **无共享可变**；跨任务状态只通过 message passing。
+有栈纤程协程：每个 `Task` 独立栈；在 `send` / `recv` / `join` 等运行时点挂起。跨任务 **无共享可变**；只通过消息传递。并发操作在效应系统中归入 **Io**（用户不写注解）。
 
-（0.1 可不实现；设计位保留。）
+**表面语法：**
+
+```lumia
+scope { … }
+scope(Scheduler.worker) { … }
+scope(Scheduler.io) { … }
+
+spawn { … }          // → Task[T]，块尾值为结果
+t.join()             // 挂起直到完成；取消则 trap
+t.joinOpt()          // 取消 → None
+cancelScope()        // 取消当前 scope 子任务（可恢复）
+
+val ch = channel(8)
+ch.send(x)           // 自挂起
+val x = ch.recv()    // 自挂起；关闭且空 → trap
+ch.recvOpt()         // 关闭且空 → None
+ch.close()
+```
+
+| 规则 | 说明 |
+| --- | --- |
+| `scope` | 结构化并发；离开前 await 子任务；`cancelScope()` 取消当前 scope 子任务（可恢复） |
+| `spawn` | 立即返回 `Task[T]`；调度器继承当前 `scope` |
+| `Scheduler` | 默认省略；`worker` / `io` 标签继承到子 `Task`；**OS 池**（BUILD §7.7-D；`LUMIA_SCHED_WORKERS`/`IO`） |
+| Channel | 有界，`capacity >= 1`；元素为普通值 |
+| 效应顺序 | 同一 Task 内按源码顺序；跨 Task 仅经 Channel / `join` 建立因果 |
+| `Task.join` / `joinOpt` | `join` 遇取消或 **join 自身** trap；`joinOpt` → `Option`（可恢复） |
+| `Task.join` vs `List.join` | 靠接收者类型与元数区分 |
+| `spawn` 与 `scope` | `spawn` 必须在开着的 `scope` 内；离开前 await 子任务（已取消的跳过） |
+| `spawn` 捕获 | 禁止捕获外层 `var`（无共享可变）；先 `val` 快照再 spawn |
+| 与 `ListParMap` | 禁止混用：par worker 上不可调 Task/Channel；有活跃 scope/纤程时不可 `parMap`/`parFold` |
+
+运行时：进程级堆与调度表（§7.7）+ 每纤程/线程 shadow-stack 根；`Scheduler.worker`/`.io` 由 OS 池线程首次 resume 并钉住有栈纤程。取消时：未 resume → `Drop`；已在 RT `suspend` 挂起 → `force_reset` 回收栈（不可 `force_unwind` 穿 `extern "C"` TaskFn）。
+
+**线程池**：见 BUILD §7.7-D。Default kind 仍本机协作；`LUMIA_SCHED_WORKERS=0` 且 `LUMIA_SCHED_IO=0` 时退回单线程偷取全部队列。
 
 ---
 
@@ -2125,7 +2161,7 @@ val main = {
 ```
 
 用户心智：逐行读、拆分、计数、排序、打印。  
-编译器：`normalize` 管道可融合；`fold` 进 `Map` 可走 `SmallMap` → `HashOrdered` / `Overlay`；**语义 never 变**。
+编译器：`normalize` 管道可融合；`fold` 进 `Map` 可走 `HashOrdered` / `Overlay`（`SmallMap` 为规划）；**语义 never 变**。
 （若只要内容相等、不要求打印序，亦可直接 `for (word, n) in counts`——为插入序。）
 
 ---

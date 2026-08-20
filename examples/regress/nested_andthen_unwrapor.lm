@@ -1,0 +1,8 @@
+/// nested option.andThen then unwrapOr.
+module main
+import std.option.{andThen, unwrapOr}
+
+val main = {
+    val o = andThen(Some(1), { x -> andThen(Some(x + 1), { y -> Some(y * 2) }) })
+    println(unwrapOr(o, -1))
+}

@@ -1,0 +1,25 @@
+/// Same channel may carry Option/Result variants (Some+None, Ok+Err) without mixed-type reject.
+module main
+
+val main = {
+    scope {
+        val ch = channel(2)
+        spawn {
+            ch.send(Some(1.5))
+            ch.send(None)
+        }
+        println(ch.recv() alt 0.0)
+        println(ch.recv() alt -1.0)
+
+        val ch2 = channel(2)
+        spawn {
+            ch2.send(Ok(1.5))
+            ch2.send(Err("e"))
+        }
+        println(ch2.recv())
+        ch2.recv() match {
+            Ok(x) -> println(x)
+            Err(s) -> println(s)
+        }
+    }
+}

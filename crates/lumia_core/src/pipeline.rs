@@ -1,14 +1,15 @@
 //! Shared frontend→Core pipeline for tests and tooling.
 //!
-//! Multi-file load, import visibility, and assert-message annotation remain
-//! CLI-only ([`lumia`] crate). Effect-boundary checks mirror the CLI via
-//! [`lumia_ty::typecheck_hir`].
+//! Multi-file load and import visibility remain CLI-only ([`lumia`] crate).
+//! Bare `assert(cond)` messages are injected at Core lower (single-file label
+//! `"<input>"`). Effect-boundary checks mirror the CLI via [`lumia_ty::typecheck_hir`].
 
 use crate::ir::CoreModule;
 use crate::lower::lower_hir_with_schemes;
+use crate::run_core_abi_pipeline;
 use lumia_hir::lower_module;
 use lumia_syntax::parse_module;
-use lumia_ty::{typecheck_hir, NameVisibility, TypecheckOptions};
+use lumia_ty::{typecheck_hir, NameVisibility, TypecheckOptions, TypedModule};
 
 /// Options for the test/tooling frontend — same as the shared typecheck path.
 pub type FrontendOptions = TypecheckOptions;
@@ -21,7 +22,7 @@ fn stage<T, E: std::fmt::Display>(name: &str, r: Result<T, E>) -> Result<T, Stri
 /// Parse → HIR → [`typecheck_hir`] → Core (incl. mono).
 ///
 /// Mirrors the CLI path up to (but not including) `lumia_opt::optimize`,
-/// without multi-file load / visibility / assert annotation.
+/// without multi-file load / visibility.
 pub fn compile_source_to_core(src: &str) -> Result<CoreModule, String> {
     compile_source_to_core_with_options(src, &FrontendOptions::default())
 }
@@ -48,11 +49,27 @@ pub fn compile_source_to_core_with_options(
         "typecheck",
         typecheck_hir(&hir, NameVisibility::default(), opts),
     )?;
-    Ok(lower_hir_with_schemes(
+    compile_typed_to_core(&typed, &[("<input>", src)])
+}
+
+/// Lower an already-typed module to Core, then run the shared Core ABI/channel
+/// pipeline used by both fixture helpers and the CLI loader path.
+pub fn compile_typed_to_core(
+    typed: &TypedModule,
+    assert_files: &[(&str, &str)],
+) -> Result<CoreModule, String> {
+    let mut core = lower_hir_with_schemes(
         &typed.module,
         &typed.fun_types,
         &typed.fun_schemes,
-    ))
+        &typed.type_at,
+        assert_files,
+    )
+    .map_err(|e| format!("core: {e}"))?;
+    run_core_abi_pipeline(&mut core);
+    core.check_channel_elem_conflicts()
+        .map_err(|e| format!("channel: {e}"))?;
+    Ok(core)
 }
 
 /// Read a `.lm` file and compile through to Core.
@@ -70,7 +87,7 @@ mod tests {
     fn has_builtin(core: &CoreModule, b: Builtin) -> bool {
         core.functions.iter().any(|f| {
             f.body.ops.iter().any(|op| match op {
-                Op::Let { value, .. } | Op::Effect { value } => {
+                Op::Let { value, .. } => {
                     matches!(value, Value::Builtin { name, .. } if *name == b)
                 }
                 _ => false,
@@ -142,5 +159,40 @@ import std.io.{println}
 val main = { println(1) }
 "#;
         compile_source_to_core(ok).expect("main may perform IO");
+    }
+
+    #[test]
+    fn bare_assert_gets_file_line_message() {
+        let src = "module M\nval main = { assert(false) }\n";
+        let core = compile_source_to_core(src).expect("core");
+        let main = core.functions.iter().find(|f| f.is_main).expect("main");
+        let assert_args = main.body.ops.iter().find_map(|op| match op {
+            Op::Let {
+                value:
+                    Value::Builtin {
+                        name: Builtin::Assert,
+                        args,
+                        ..
+                    },
+                ..
+            } => Some(args.as_slice()),
+            _ => None,
+        });
+        let args = assert_args.expect("Assert builtin");
+        assert_eq!(args.len(), 2, "cond + message");
+        let msg_local = args[1].0;
+        let msg = main.body.ops.iter().find_map(|op| match op {
+            Op::Let {
+                local,
+                value: Value::String(s),
+                ..
+            } if local.0 == msg_local => Some(s.as_str()),
+            _ => None,
+        });
+        let msg = msg.expect("assert message string");
+        assert!(
+            msg.contains("<input>:") && msg.contains("assert failed"),
+            "unexpected message: {msg}"
+        );
     }
 }

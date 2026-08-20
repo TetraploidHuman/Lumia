@@ -5,13 +5,23 @@ use anyhow::{Context as AnyhowContext, Result};
 use inkwell::basic_block::BasicBlock;
 use inkwell::values::{FunctionValue, IntValue};
 use inkwell::IntPredicate;
+use lumia_abi::MEMO_TF_MAX_ARGS;
 use lumia_core::CoreFun;
 
+// `lumia_memo_l2_{lookup,store}` C ABI is fixed at four i64 key slots.
+const _: () = assert!(MEMO_TF_MAX_ARGS == 4);
+
 impl<'ctx> Codegen<'ctx> {
-    fn memo_arg_values(&self) -> Result<[IntValue<'ctx>; 4]> {
+    fn memo_arg_values(&self) -> Result<[IntValue<'ctx>; MEMO_TF_MAX_ARGS]> {
         let z = self.llvm.i64_ty.const_int(0, false);
-        let mut out = [z; 4];
-        for (i, slot) in self.memo.memo_arg_slots.iter().enumerate().take(4) {
+        let mut out = [z; MEMO_TF_MAX_ARGS];
+        for (i, slot) in self
+            .memo
+            .memo_arg_slots
+            .iter()
+            .enumerate()
+            .take(MEMO_TF_MAX_ARGS)
+        {
             out[i] = crate::error::llvm(self.llvm.builder.build_load(
                 self.llvm.i64_ty,
                 *slot,
@@ -33,7 +43,7 @@ impl<'ctx> Codegen<'ctx> {
         let out_alloca =
             crate::error::llvm(self.llvm.builder.build_alloca(self.llvm.i64_ty, "memo_out"))?;
         self.memo.memo_arg_slots.clear();
-        for (i, p) in fun.params.iter().enumerate().take(4) {
+        for (i, p) in fun.params.iter().enumerate().take(MEMO_TF_MAX_ARGS) {
             let slot = crate::error::llvm(
                 self.llvm
                     .builder
@@ -46,7 +56,7 @@ impl<'ctx> Codegen<'ctx> {
         let nargs = self
             .llvm
             .i64_ty
-            .const_int(fun.params.len().min(4) as u64, false);
+            .const_int(fun.params.len().min(MEMO_TF_MAX_ARGS) as u64, false);
         let args = self.memo_arg_values()?;
         let lookup = self.runtime_fn("lumia_memo_l2_lookup")?;
         let __call1 = crate::error::llvm(self.llvm.builder.build_call(

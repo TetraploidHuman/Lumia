@@ -1,12 +1,13 @@
 //! Syntax-level AST types.
 
 use crate::span::Span;
+use crate::sym::Sym;
 use std::fmt;
 
 /// Parsed module AST (syntax level).
 #[derive(Debug, Clone)]
 pub struct Module {
-    pub name: String,
+    pub name: Sym,
     pub span: Span,
     pub imports: Vec<Import>,
     pub items: Vec<Item>,
@@ -14,7 +15,7 @@ pub struct Module {
 
 #[derive(Debug, Clone)]
 pub struct Import {
-    pub path: Vec<String>,
+    pub path: Vec<Sym>,
     pub names: ImportNames,
     pub span: Span,
 }
@@ -23,20 +24,20 @@ pub struct Import {
 #[derive(Debug, Clone)]
 pub struct ImportedName {
     /// Name as exported by the source module.
-    pub name: String,
+    pub name: Sym,
     /// Local name in the importer; `None` means same as `name`.
-    pub alias: Option<String>,
+    pub alias: Option<Sym>,
 }
 
 impl ImportedName {
-    pub fn new(name: impl Into<String>) -> Self {
+    pub fn new(name: impl Into<Sym>) -> Self {
         Self {
             name: name.into(),
             alias: None,
         }
     }
 
-    pub fn with_alias(name: impl Into<String>, alias: impl Into<String>) -> Self {
+    pub fn with_alias(name: impl Into<Sym>, alias: impl Into<Sym>) -> Self {
         Self {
             name: name.into(),
             alias: Some(alias.into()),
@@ -73,8 +74,8 @@ pub enum Item {
 
 #[derive(Debug, Clone)]
 pub struct TraitItem {
-    pub name: String,
-    pub requires: Vec<String>,
+    pub name: Sym,
+    pub requires: Vec<Sym>,
     /// Optional default method bodies (`val name = …`).
     pub methods: Vec<ValItem>,
     pub span: Span,
@@ -82,8 +83,8 @@ pub struct TraitItem {
 
 #[derive(Debug, Clone)]
 pub struct InstanceItem {
-    pub trait_name: String,
-    pub type_name: String,
+    pub trait_name: Sym,
+    pub type_name: Sym,
     /// Method overrides (`val show = { self -> … }`).
     pub methods: Vec<ValItem>,
     pub span: Span,
@@ -92,8 +93,8 @@ pub struct InstanceItem {
 #[derive(Debug, Clone)]
 pub struct ForeignItem {
     pub abi: String,
-    pub name: String,
-    pub params: Vec<(String, String)>,
+    pub name: Sym,
+    pub params: Vec<(Sym, String)>,
     pub ret: String,
     /// `foreign "C" pure fn` — Pure only with `--trust-foreign-pure`.
     pub is_pure: bool,
@@ -102,11 +103,11 @@ pub struct ForeignItem {
 
 #[derive(Debug, Clone)]
 pub struct ValItem {
-    pub name: String,
+    pub name: Sym,
     /// Optional ascription on the binding (`val x: Int = …`).
     pub ty: Option<String>,
     /// Optional paren params; each may carry `name: Type`.
-    pub params: Option<Vec<(String, Option<String>)>>,
+    pub params: Option<Vec<(Sym, Option<String>)>>,
     pub body: Expr,
     pub span: Span,
     /// `priv val` — not re-exported via import.
@@ -115,7 +116,7 @@ pub struct ValItem {
 
 #[derive(Debug, Clone)]
 pub struct TypeItem {
-    pub name: String,
+    pub name: Sym,
     pub kind: TypeKind,
     pub span: Span,
     pub is_priv: bool,
@@ -124,22 +125,23 @@ pub struct TypeItem {
 #[derive(Debug, Clone)]
 pub enum TypeKind {
     /// Product: `val` fields
-    Product(Vec<String>),
+    Product(Vec<Sym>),
     /// Sum: variants
     Sum(Vec<Variant>),
 }
 
 #[derive(Debug, Clone)]
 pub struct Variant {
-    pub name: String,
+    pub name: Sym,
     pub fields: VariantFields,
 }
 
 #[derive(Debug, Clone)]
 pub enum VariantFields {
     Unit,
-    Positional(usize),
-    Named(Vec<String>),
+    /// Positional payloads keep binder names from source (`Some(value)` → `["value"]`).
+    Positional(Vec<Sym>),
+    Named(Vec<Sym>),
 }
 
 #[derive(Debug, Clone)]
@@ -147,25 +149,28 @@ pub enum Expr {
     Int(i64, Span),
     Float(f64, Span),
     Bool(bool, Span),
-    String(String, Span),
+    String(Sym, Span),
     /// Desugared interpolation: `"a${x}b"` → parts lit/expr alternating.
     Interp {
         parts: Vec<InterpPart>,
         span: Span,
     },
     Char(char, Span),
-    Ident(String, Span),
+    Ident(Sym, Span),
     /// Block: statements + optional trailing expr value
     Block {
         stmts: Vec<Stmt>,
         tail: Option<Box<Expr>>,
         span: Span,
     },
-    /// `{ a, b -> body }` or `{ a: Int, b: Int -> body }` or `{ body }`
+    /// `{ a, b -> body }` or `{ a: Int, b: Int -> body }` or bare `{ it + 1 }`
+    /// (desugared to params=`["it"]` with `bare_it`).
     Lambda {
-        params: Vec<String>,
+        params: Vec<Sym>,
         /// Parallel to `params`; `None` = infer. Empty vec means all inferred.
         param_tys: Vec<Option<String>>,
+        /// Written as `{ …it… }` without `it ->` (parser invented the param).
+        bare_it: bool,
         body: Box<Expr>,
         span: Span,
     },
@@ -215,7 +220,7 @@ pub enum Expr {
     },
     Field {
         base: Box<Expr>,
-        field: String,
+        field: Sym,
         span: Span,
     },
     ListLit {
@@ -234,21 +239,32 @@ pub enum Expr {
     },
     /// `Point { x = 1, y = 2 }`
     StructLit {
-        name: String,
-        fields: Vec<(String, Expr)>,
+        name: Sym,
+        fields: Vec<(Sym, Expr)>,
         span: Span,
     },
     /// `p with { x = 10 }`
     With {
         base: Box<Expr>,
-        fields: Vec<(String, Expr)>,
+        fields: Vec<(Sym, Expr)>,
+        span: Span,
+    },
+    /// `scope { body }` / `scope(schedulerExpr) { body }` — structured concurrency.
+    Scope {
+        scheduler: Option<Box<Expr>>,
+        body: Box<Expr>,
+        span: Span,
+    },
+    /// `spawn { body }` — start a task; block tail is the task result.
+    Spawn {
+        body: Box<Expr>,
         span: Span,
     },
 }
 
 #[derive(Debug, Clone)]
 pub enum InterpPart {
-    Lit(String),
+    Lit(Sym),
     Expr(Expr),
 }
 
@@ -276,17 +292,17 @@ pub enum Pattern {
     /// `true` / `false` constant patterns (DESIGN § match 常量模式).
     Bool(bool, Span),
     Char(char, Span),
-    String(String, Span),
-    Ident(String, Span),
+    String(Sym, Span),
+    Ident(Sym, Span),
     Variant {
-        name: String,
+        name: Sym,
         args: Vec<Pattern>,
         span: Span,
     },
     /// `Point { x, y }` / `Point { x, y = 0 }`
     Struct {
-        name: String,
-        fields: Vec<(String, Pattern)>,
+        name: Sym,
+        fields: Vec<(Sym, Pattern)>,
         span: Span,
     },
     Tuple {
@@ -295,7 +311,7 @@ pub enum Pattern {
     },
     List {
         elems: Vec<Pattern>,
-        rest: Option<String>,
+        rest: Option<Sym>,
         span: Span,
     },
     Or(Vec<Pattern>, Span),
@@ -313,13 +329,13 @@ pub enum Stmt {
     },
     /// `var x = e` / `var x: Int = e` (name binding only; destructure not allowed on `var`).
     Var {
-        name: String,
+        name: Sym,
         ty: Option<String>,
         expr: Expr,
         span: Span,
     },
     Assign {
-        name: String,
+        name: Sym,
         expr: Expr,
         span: Span,
     },
@@ -342,8 +358,8 @@ pub enum Stmt {
 /// `for x in …` or `for (k, v) in …` (Map pairs / List of pairs).
 #[derive(Debug, Clone, PartialEq)]
 pub enum ForBinding {
-    Name(String),
-    Pair(String, String),
+    Name(Sym),
+    Pair(Sym, Sym),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -394,7 +410,9 @@ impl Expr {
             | Expr::Pipeline { span, .. }
             | Expr::StructLit { span, .. }
             | Expr::With { span, .. }
-            | Expr::TupleLit { span, .. } => *span,
+            | Expr::TupleLit { span, .. }
+            | Expr::Scope { span, .. }
+            | Expr::Spawn { span, .. } => *span,
         }
     }
 }

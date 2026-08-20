@@ -1,15 +1,21 @@
 //! Expression inference.
 
-use super::module::parse_type_name;
 use super::Infer;
 use crate::types::{at, expr_span, Effect, Type, TypeError};
 use lumia_hir::Expr;
 use lumia_syntax::{BinOp, UnOp};
+use std::sync::Arc;
 
 impl Infer {
     pub(crate) fn infer_expr(&mut self, expr: &Expr) -> Result<(Type, Effect), TypeError> {
         let (t, e) = self.infer_expr_inner(expr)?;
-        self.type_at.push((expr_span(expr), t.clone()));
+        // `Let` has no own span; `expr_span` falls through to the value. Pushing
+        // the body's type there would clobber the value's entry (e.g. `channel(1)`
+        // becoming `Unit` after `val ch = channel(1); …`). Value and body already
+        // record their own spans when inferred.
+        if !matches!(expr, Expr::Let { .. }) {
+            self.type_at.push((expr_span(expr), t.clone()));
+        }
         Ok((t, e))
     }
 
@@ -23,9 +29,9 @@ impl Infer {
             Expr::Unit(_) => Ok((Type::Unit, Effect::pure())),
             Expr::Var(name, span) => {
                 let t = self
-                    .lookup(name)
+                    .lookup(name.as_str())
                     .ok_or_else(|| at(*span, format!("unbound variable `{name}`")))?;
-                self.check_name_visible(name, *span)?;
+                self.check_name_visible(name.as_str(), *span)?;
                 Ok((t, Effect::pure()))
             }
             Expr::Let {
@@ -34,8 +40,8 @@ impl Infer {
                 body,
                 mutable,
                 ty,
-            } => self.infer_let(name, value, body, *mutable, ty.as_deref()),
-            Expr::Assign { name, value, span } => self.infer_assign(name, value, *span),
+            } => self.infer_let(name.as_str(), value, body, *mutable, ty.as_deref()),
+            Expr::Assign { name, value, span } => self.infer_assign(name.as_str(), value, *span),
             Expr::Lambda {
                 params,
                 param_ann,
@@ -63,7 +69,8 @@ impl Infer {
                 step,
                 span,
             } => self.infer_loop(cond, body, step.as_deref(), *span),
-            Expr::Break(_) | Expr::Continue(_) => Ok((Type::Unit, Effect::pure())),
+            Expr::Break(span) => self.infer_break_continue("break", *span),
+            Expr::Continue(span) => self.infer_break_continue("continue", *span),
             Expr::Return { value, span } => self.infer_return(value, *span),
             Expr::Alt {
                 scrutinee,
@@ -76,7 +83,7 @@ impl Infer {
                 variant,
                 args,
                 ..
-            } => self.infer_adt_new(adt_name, variant, args),
+            } => self.infer_adt_new(adt_name.as_str(), variant.as_str(), args),
             Expr::Seq { stmts, .. } => self.infer_seq(stmts),
         }
     }
@@ -84,7 +91,7 @@ impl Infer {
     fn infer_with(
         &mut self,
         base: &Expr,
-        fields: &[(String, Expr)],
+        fields: &[(lumia_syntax::Sym, Expr)],
         span: lumia_syntax::Span,
     ) -> Result<(Type, Effect), TypeError> {
         let mut seen_fields = rustc_hash::FxHashSet::default();
@@ -141,9 +148,10 @@ impl Infer {
             .get(&name)
             .cloned()
             .ok_or_else(|| at(span, format!("unknown product type `{name}` in `with`")))?;
-        let mut by_name: rustc_hash::FxHashMap<String, Type> = rustc_hash::FxHashMap::default();
+        let mut by_name: rustc_hash::FxHashMap<lumia_syntax::Sym, Type> =
+            rustc_hash::FxHashMap::default();
         for (fname, e) in fields {
-            if !order.iter().any(|f| f == fname) {
+            if !order.iter().any(|f| f == fname.as_str()) {
                 return Err(at(
                     span,
                     format!("unknown field `{fname}` in `{name}` `with`"),
@@ -166,7 +174,12 @@ impl Infer {
                 out_params.push(self.fresh());
             }
         }
-        self.ctrl.with_rewrites.insert(span, name.clone());
+        crate::span_facts::insert_unique_span_fact(
+            &mut self.ctrl.with_rewrites,
+            span,
+            name.clone(),
+            "with",
+        )?;
         Ok((
             Type::Adt {
                 name,
@@ -177,10 +190,10 @@ impl Infer {
     }
 
     /// Product whose field set is the unique owner of every name in `fields`.
-    fn unique_product_for_fields(&self, fields: &[&str]) -> Option<String> {
+    fn unique_product_for_fields(&self, fields: &[&str]) -> Option<lumia_syntax::Sym> {
         let mut names = fields.iter().copied();
         let first = names.next()?;
-        let mut set: rustc_hash::FxHashSet<String> = self
+        let mut set: rustc_hash::FxHashSet<lumia_syntax::Sym> = self
             .products
             .products
             .iter()
@@ -218,12 +231,11 @@ impl Infer {
     ) -> Result<(Type, Effect), TypeError> {
         let (vt, ve) = self.infer_expr(value)?;
         let vt = if let Some(ann) = ann {
-            let expect = parse_type_name(ann).map_err(|e| {
-                at(
-                    expr_span(value),
-                    format!("in type ascription for `{name}`: {}", e.message()),
-                )
-            })?;
+            let expect = self.resolve_type_ann(
+                ann,
+                expr_span(value),
+                &format!("in type ascription for `{name}`"),
+            )?;
             self.unify_at(expr_span(value), vt, expect.clone())?;
             expect
         } else {
@@ -268,7 +280,7 @@ impl Infer {
 
     fn infer_lambda(
         &mut self,
-        params: &[String],
+        params: &[lumia_syntax::Sym],
         param_ann: &[Option<String>],
         body: &Expr,
         span: lumia_syntax::Span,
@@ -277,25 +289,36 @@ impl Infer {
         let mut pts = vec![];
         for (i, p) in params.iter().enumerate() {
             let tv = if let Some(Some(ann)) = param_ann.get(i) {
-                parse_type_name(ann).map_err(|e| {
-                    at(
-                        span,
-                        format!("in type ascription for `{p}`: {}", e.message()),
-                    )
-                })?
+                self.resolve_type_ann(ann, span, &format!("in type ascription for `{p}`"))?
             } else {
                 self.fresh()
             };
             pts.push(tv.clone());
-            self.bind(p.clone(), tv);
+            self.bind(p.to_string(), tv);
         }
         let ret_tv = self.fresh();
         self.ctrl.return_stack.push(ret_tv.clone());
-        let (rt, re) = self.infer_expr(body)?;
+        // `break`/`continue` must not cross a lambda (same as other languages).
+        let saved_loop = self.ctrl.loop_depth;
+        self.ctrl.loop_depth = 0;
+        let body_result = self.infer_expr(body);
+        self.ctrl.loop_depth = saved_loop;
+        let (rt, re) = body_result?;
         self.unify_at(span, rt, ret_tv.clone())?;
         self.ctrl.return_stack.pop();
         self.pop();
-        Ok((Type::Fun(pts, Box::new(ret_tv), re), Effect::pure()))
+        Ok((Type::Fun(pts, Arc::new(ret_tv), re), Effect::pure()))
+    }
+
+    fn infer_break_continue(
+        &self,
+        kw: &str,
+        span: lumia_syntax::Span,
+    ) -> Result<(Type, Effect), TypeError> {
+        if self.ctrl.loop_depth == 0 {
+            return Err(at(span, format!("`{kw}` is only allowed inside a loop")));
+        }
+        Ok((Type::Unit, Effect::pure()))
     }
 
     fn infer_binary(
@@ -391,11 +414,10 @@ impl Infer {
                     ))
                 }
             }
-            BinOp::And | BinOp::Or => {
-                self.unify_at(span, lt, Type::Bool)?;
-                self.unify_at(span, rt, Type::Bool)?;
-                Ok((Type::Bool, eff))
-            }
+            BinOp::And | BinOp::Or => Err(at(
+                span,
+                "`and`/`or` should have been desugared to `if` before typing",
+            )),
         }
     }
 
@@ -450,15 +472,20 @@ impl Infer {
         step: Option<&Expr>,
         span: lumia_syntax::Span,
     ) -> Result<(Type, Effect), TypeError> {
-        let (ct, ce) = self.infer_expr(cond)?;
-        self.unify_at(span, ct, Type::Bool)?;
-        let (_, be) = self.infer_expr(body)?;
-        let se = if let Some(s) = step {
-            self.infer_expr(s)?.1
-        } else {
-            Effect::pure()
-        };
-        Ok((Type::Unit, self.union3_eff(ce, be, se)))
+        self.ctrl.loop_depth += 1;
+        let result = (|| {
+            let (ct, ce) = self.infer_expr(cond)?;
+            self.unify_at(span, ct, Type::Bool)?;
+            let (_, be) = self.infer_expr(body)?;
+            let se = if let Some(s) = step {
+                self.infer_expr(s)?.1
+            } else {
+                Effect::pure()
+            };
+            Ok((Type::Unit, self.union3_eff(ce, be, se)))
+        })();
+        self.ctrl.loop_depth -= 1;
+        result
     }
 
     fn infer_return(
@@ -485,25 +512,61 @@ impl Infer {
         span: lumia_syntax::Span,
     ) -> Result<(Type, Effect), TypeError> {
         use crate::alt::AltKind;
+        self.ctrl.alt_scrutinee_depth += 1;
         let (st, se) = self.infer_expr(scrutinee)?;
+        self.ctrl.alt_scrutinee_depth -= 1;
         let st = self.prune(st);
         match st {
-            Type::Adt { name, params } if name == "Option" && params.len() == 1 => {
-                self.ctrl.alt_kinds.insert(span, AltKind::Option);
+            Type::Adt { name, params } if lumia_hir::is_option(&name) && params.len() == 1 => {
+                crate::span_facts::insert_unique_span_fact(
+                    &mut self.ctrl.alt_kinds,
+                    span,
+                    AltKind::Option,
+                    "alt",
+                )?;
                 let payload = params[0].clone();
-                let (at, ae) = self.infer_expr(alt)?;
-                self.unify_at(span, at, payload.clone())?;
+                let (rhs_ty, ae) = self.infer_expr(alt)?;
+                let rhs_p = self.prune(rhs_ty.clone());
+                // DESIGN §8.1: rhs is the success payload `T`, not another Option.
+                // `None alt Some(x)` used to unify Option into an open payload Var,
+                // so the desugar else-arm returned an ADT while the type said `T`
+                // (Float → println IEEE bits; Int → accidental Show of Some).
+                if matches!(&rhs_p, Type::Adt { name, .. } if lumia_hir::is_option(name)) {
+                    return Err(at(
+                        span,
+                        format!(
+                            "`alt` rhs must be the Option payload type, got {}",
+                            self.zonk_type(rhs_p)
+                        ),
+                    ));
+                }
+                self.unify_at(span, rhs_ty, payload.clone())?;
                 Ok((payload, self.union_eff(se, ae)))
             }
-            Type::Adt { name, params } if name == "Result" && params.len() == 2 => {
-                self.ctrl.alt_kinds.insert(span, AltKind::Result);
+            Type::Adt { name, params } if lumia_hir::is_result(&name) && params.len() == 2 => {
+                crate::span_facts::insert_unique_span_fact(
+                    &mut self.ctrl.alt_kinds,
+                    span,
+                    AltKind::Result,
+                    "alt",
+                )?;
                 let ok_ty = params[0].clone();
                 let err_ty = params[1].clone();
                 self.push();
                 self.bind("err".into(), err_ty);
-                let (at, ae) = self.infer_expr(alt)?;
+                let (rhs_ty, ae) = self.infer_expr(alt)?;
                 self.pop();
-                self.unify_at(span, at, ok_ty.clone())?;
+                let rhs_p = self.prune(rhs_ty.clone());
+                if matches!(&rhs_p, Type::Adt { name, .. } if lumia_hir::is_result(name)) {
+                    return Err(at(
+                        span,
+                        format!(
+                            "`alt` rhs must be the Result Ok payload type, got {}",
+                            self.zonk_type(rhs_p)
+                        ),
+                    ));
+                }
+                self.unify_at(span, rhs_ty, ok_ty.clone())?;
                 Ok((ok_ty, self.union_eff(se, ae)))
             }
             other => Err(at(
@@ -533,27 +596,47 @@ impl Infer {
             return Ok((Type::Tuple(arg_tys), eff));
         }
         // Result[T, E]: Ok fills T (E fresh); Err fills E (T fresh).
-        let params = if adt_name == "Result" {
+        let params = if lumia_hir::is_result(adt_name) {
             match (variant, arg_tys.as_slice()) {
                 ("Ok", [t]) => vec![t.clone(), self.fresh()],
                 ("Err", [e]) => vec![self.fresh(), e.clone()],
                 _ if arg_tys.is_empty() => vec![self.fresh(), self.fresh()],
                 _ => arg_tys,
             }
-        } else {
-            // Product / sum: payload types as params. Sum variants pad to the
-            // ADT's max arity so `Circle(r)` and `Rect(w, h)` share Shape[_, _].
-            let max = self
+        } else if self.products.sum_max_arity.contains_key(adt_name) {
+            // User/prelude sums: parametric slots only; recursive spines are `Self`.
+            let nparams = self.products.sum_max_arity[adt_name];
+            let rec = self
                 .products
-                .sum_max_arity
-                .get(adt_name)
-                .copied()
-                .unwrap_or(arg_tys.len());
-            let mut params = arg_tys;
-            while params.len() < max {
-                params.push(self.fresh());
+                .sum_field_recursive
+                .get(variant)
+                .cloned()
+                .unwrap_or_else(|| vec![false; arg_tys.len()]);
+            let base = self
+                .products
+                .sum_ctors
+                .get(variant)
+                .map(|(_, _, off)| *off)
+                .unwrap_or(0);
+            let mut params: Vec<Type> = (0..nparams).map(|_| self.fresh()).collect();
+            let self_ty = Type::Adt {
+                name: adt_name.into(),
+                params: params.clone(),
+            };
+            let mut pslot = base;
+            for (i, t) in arg_tys.into_iter().enumerate() {
+                if rec.get(i).copied().unwrap_or(false) {
+                    self.unify(t, self_ty.clone())?;
+                } else if pslot < params.len() {
+                    self.unify(t, params[pslot].clone())?;
+                    pslot += 1;
+                }
             }
+            params = params.into_iter().map(|p| self.prune(p)).collect();
             params
+        } else {
+            // Products: payload types are the params.
+            arg_tys
         };
         Ok((
             Type::Adt {

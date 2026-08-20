@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::Arc;
 
 #[test]
 fn open_product_field_rejects_wrong_receiver() {
@@ -127,7 +128,7 @@ val main = { f(true, (1,)) }
 }
 
 #[test]
-fn occurs_check_follows_subst_through_adt() {
+fn occurs_check_allows_equi_recursive_adt() {
     use crate::infer::Infer;
     use crate::types::Type;
     let mut inf = Infer::new(crate::types::NameVisibility::default());
@@ -141,14 +142,14 @@ fn occurs_check_follows_subst_through_adt() {
         },
     )
     .expect("first bind");
-    let r = inf.unify(
+    inf.unify(
         Type::Var(b),
         Type::Adt {
             name: "Option".into(),
             params: vec![Type::Var(a)],
         },
-    );
-    assert!(r.is_err(), "occurs through Adt must fail; got Ok(())");
+    )
+    .expect("equi-recursive Adt cycle should be allowed");
 }
 
 #[test]
@@ -171,9 +172,9 @@ fn occurs_check_must_follow_substitution_list() {
     let mut inf = Infer::new(crate::types::NameVisibility::default());
     let Type::Var(a) = inf.fresh() else { panic!() };
     let Type::Var(b) = inf.fresh() else { panic!() };
-    inf.unify(Type::Var(a), Type::List(Box::new(Type::Var(b))))
+    inf.unify(Type::Var(a), Type::List(Arc::new(Type::Var(b))))
         .expect("first bind");
-    let r = inf.unify(Type::Var(b), Type::List(Box::new(Type::Var(a))));
+    let r = inf.unify(Type::Var(b), Type::List(Arc::new(Type::Var(a))));
     assert!(
         r.is_err(),
         "occurs must follow subst: β~List[α] with α=List[β] is infinite; got Ok(())"

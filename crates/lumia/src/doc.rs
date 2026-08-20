@@ -9,12 +9,9 @@ use std::path::Path;
 pub fn render_file(path: &Path) -> Result<String> {
     let src = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     let module = parse_module(&src).map_err(|e| {
-        anyhow::anyhow!(
-            "{}:{}: parse: {}",
-            path.display(),
-            e.span.start.0,
-            e.message
-        )
+        let starts = lumia_syntax::line_starts(&src);
+        let (line, col) = lumia_syntax::byte_to_line_col(&starts, e.span.start);
+        anyhow::anyhow!("{}:{}:{}: parse: {}", path.display(), line, col, e.message)
     })?;
     Ok(render_module(&src, &module, path))
 }
@@ -27,17 +24,17 @@ fn render_module(src: &str, module: &Module, path: &Path) -> String {
             .unwrap_or("module")
             .to_string()
     } else {
-        module.name.clone()
+        module.name.to_string()
     };
     out.push_str(&format!("# Module `{title}`\n\n"));
 
     let mut mod_docs = preceding_doc_lines(src, module.span.start.0 as usize);
-    let exports = take_exports_line(&mut mod_docs);
+    let exports = crate::exports::take_exports_from_doc_lines(&mut mod_docs);
     if !mod_docs.is_empty() {
         out.push_str(&mod_docs.join("\n"));
         out.push_str("\n\n");
     }
-    if let Some(ex) = exports {
+    if let Some(ref ex) = exports {
         out.push_str("**Exports:** ");
         out.push_str(
             &ex.iter()
@@ -51,20 +48,33 @@ fn render_module(src: &str, module: &Module, path: &Path) -> String {
     if !module.imports.is_empty() {
         out.push_str("## Imports\n\n");
         for imp in &module.imports {
-            let path_s = imp.path.join(".");
+            let path_s = imp
+                .path
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(".");
             out.push_str(&format!("- `import {path_s}`\n"));
         }
         out.push('\n');
     }
+
+    // When `@exports` is present, document only that public surface (still honor `priv`).
+    let exported = |name: &str| -> bool {
+        match &exports {
+            Some(ex) => ex.iter().any(|e| e == name),
+            None => true,
+        }
+    };
 
     let mut types = Vec::new();
     let mut vals = Vec::new();
     let mut foreigns = Vec::new();
     for item in &module.items {
         match item {
-            Item::Type(t) if !t.is_priv => types.push(t),
-            Item::Val(v) if !v.is_priv => vals.push(v),
-            Item::Foreign(f) => foreigns.push(f),
+            Item::Type(t) if !t.is_priv && exported(&t.name) => types.push(t),
+            Item::Val(v) if !v.is_priv && exported(&v.name) => vals.push(v),
+            Item::Foreign(f) if exported(&f.name) => foreigns.push(f),
             Item::Trait(_) | Item::Instance(_) => {}
             _ => {}
         }
@@ -97,12 +107,21 @@ fn render_module(src: &str, module: &Module, path: &Path) -> String {
                             VariantFields::Unit => {
                                 out.push_str(&format!("- `{}`\n", v.name));
                             }
-                            VariantFields::Positional(n) => {
-                                let holes = vec!["_"; *n].join(", ");
+                            VariantFields::Positional(names) => {
+                                let holes = names
+                                    .iter()
+                                    .map(|n| n.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
                                 out.push_str(&format!("- `{}`({holes})\n", v.name));
                             }
                             VariantFields::Named(fields) => {
-                                out.push_str(&format!("- `{}`({})\n", v.name, fields.join(", ")));
+                                let holes = fields
+                                    .iter()
+                                    .map(|n| n.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                                out.push_str(&format!("- `{}`({})\n", v.name, holes));
                             }
                         }
                     }
@@ -142,7 +161,7 @@ fn render_module(src: &str, module: &Module, path: &Path) -> String {
                     let names: Vec<&str> = ps.iter().map(|(n, _)| n.as_str()).collect();
                     format!("{}({})", v.name, names.join(", "))
                 }
-                _ => v.name.clone(),
+                _ => v.name.to_string(),
             };
             out.push_str(&format!("### `{sig}`\n\n"));
             let docs = preceding_doc_lines(src, v.span.start.0 as usize);
@@ -183,30 +202,6 @@ fn preceding_doc_lines(src: &str, byte_offset: usize) -> Vec<String> {
     docs
 }
 
-/// Pull `@exports a, b` out of module doc lines (loader convention).
-fn take_exports_line(docs: &mut Vec<String>) -> Option<Vec<String>> {
-    let idx = docs.iter().position(|l| {
-        l.trim_start()
-            .strip_prefix("@exports")
-            .is_some_and(|r| r.is_empty() || r.starts_with(char::is_whitespace))
-    })?;
-    let line = docs.remove(idx);
-    let list = line
-        .trim_start()
-        .strip_prefix("@exports")
-        .unwrap_or("")
-        .trim();
-    if list.is_empty() {
-        return Some(vec![]);
-    }
-    Some(
-        list.split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect(),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,7 +211,7 @@ mod tests {
         let src = r#"
 /// Module blurb.
 ///
-/// @exports foo
+/// @exports inc, main
 module Demo
 
 import std.io.{println}
@@ -234,11 +229,28 @@ val main = {
         let md = render_module(src, &m, Path::new("demo.lm"));
         assert!(md.contains("# Module `Demo`"));
         assert!(md.contains("Module blurb."));
-        assert!(md.contains("**Exports:** `foo`"));
+        assert!(md.contains("**Exports:** `inc`, `main`"));
         assert!(md.contains("### `inc(x)`"));
         assert!(md.contains("Adds one."));
         assert!(!md.contains("hidden"));
         assert!(md.contains("### `main`"));
+    }
+
+    #[test]
+    fn exports_hides_non_exported_public_vals() {
+        let src = r#"
+/// @exports onlyPublic
+module DocVis
+val hiddenHelper = 1
+val onlyPublic = 2
+priv val secret = 3
+"#;
+        let m = parse_module(src).unwrap();
+        let md = render_module(src, &m, Path::new("doc_vis.lm"));
+        assert!(md.contains("**Exports:** `onlyPublic`"));
+        assert!(md.contains("### `onlyPublic`"));
+        assert!(!md.contains("hiddenHelper"));
+        assert!(!md.contains("secret"));
     }
 
     #[test]

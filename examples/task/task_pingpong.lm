@@ -1,0 +1,28 @@
+module task_pingpong
+import std.io.{println}
+
+/// Client/echo over req+resp (avoids single-channel self-recv).
+/// Sum 1..100 = 5050.
+val main = {
+    val req = channel(1)
+    val resp = channel(1)
+    scope {
+        val echo = spawn {
+            for i in 1..100 {
+                val x = req.recv()
+                resp.send(x)
+            }
+            0
+        }
+        val client = spawn {
+            var sum = 0
+            for i in 1..100 {
+                req.send(i)
+                sum = sum + resp.recv()
+            }
+            sum
+        }
+        val _ = echo.join()
+        println(client.join())
+    }
+}

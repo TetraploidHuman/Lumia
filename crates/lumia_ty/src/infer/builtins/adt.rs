@@ -104,9 +104,12 @@ impl Infer {
                         format!("field `{field}` index {idx} out of range for `{name}`"),
                     )
                 })?;
-                self.ctrl
-                    .product_field_rewrites
-                    .insert(span, (name, idx as i64));
+                crate::span_facts::insert_unique_span_fact(
+                    &mut self.ctrl.product_field_rewrites,
+                    span,
+                    (name, idx as i64),
+                    "product field",
+                )?;
                 Ok((elem, eff))
             }
             Type::Var(_) => Err(at(
@@ -134,7 +137,7 @@ impl Infer {
         if let Some(want) = expect_adt {
             // Variant patterns pass ctor name (`Ok`/`Err`/`Some`);
             // product patterns / field proj pass the ADT name.
-            if name == "Result" && (want == "Ok" || want == "Err") {
+            if lumia_hir::is_result(name) && (want == "Ok" || want == "Err") {
                 if idx != 0 {
                     return Err(at(
                         span,
@@ -149,7 +152,7 @@ impl Infer {
                     )
                 });
             }
-            if name == "Option" && want == "Some" {
+            if lumia_hir::is_option(name) && want == "Some" {
                 if idx != 0 {
                     return Err(at(
                         span,
@@ -163,7 +166,7 @@ impl Infer {
             }
             if name != want {
                 // Sum variant patterns pass the ctor name (`Circle`), not the ADT.
-                if let Some((adt, arity)) = self.products.sum_ctors.get(want) {
+                if let Some((adt, arity, offset)) = self.products.sum_ctors.get(want) {
                     if adt != name {
                         return Err(at(
                             span,
@@ -178,6 +181,39 @@ impl Infer {
                             ),
                         ));
                     }
+                    // Recursive spines are the ADT itself; parametric fields use
+                    // concatenated slots (skipping recursive indices).
+                    let rec = self
+                        .products
+                        .sum_field_recursive
+                        .get(want)
+                        .and_then(|v| v.get(idx).copied())
+                        .unwrap_or(false);
+                    if rec {
+                        return Ok(Type::Adt {
+                            name: name.into(),
+                            params: params.to_vec(),
+                        });
+                    }
+                    let local = (0..idx)
+                        .filter(|&i| {
+                            !self
+                                .products
+                                .sum_field_recursive
+                                .get(want)
+                                .and_then(|v| v.get(i).copied())
+                                .unwrap_or(false)
+                        })
+                        .count();
+                    return params.get(offset + local).cloned().ok_or_else(|| {
+                        at(
+                            span,
+                            format!(
+                                "field index {idx} out of range for `{name}` (arity {})",
+                                params.len()
+                            ),
+                        )
+                    });
                 } else {
                     return Err(at(
                         span,
@@ -242,7 +278,13 @@ impl Infer {
         match recv_ty {
             Type::Var(v) => {
                 if occurs(v, &extended) {
-                    return Err(at(span, "infinite type"));
+                    return Err(at(
+                        span,
+                        format!(
+                            "recursive type: a type variable occurs inside {}",
+                            crate::display::display_type(&extended, &[])
+                        ),
+                    ));
                 }
                 self.uni.subst.insert(v, extended);
             }
@@ -269,7 +311,7 @@ impl Infer {
                     span,
                     recv_ty,
                     Type::Adt {
-                        name: "Result".into(),
+                        name: lumia_hir::RESULT.name.into(),
                         params: vec![t.clone(), e.clone()],
                     },
                 )?;
@@ -281,13 +323,13 @@ impl Infer {
                     span,
                     recv_ty,
                     Type::Adt {
-                        name: "Option".into(),
+                        name: lumia_hir::OPTION.name.into(),
                         params: vec![t.clone()],
                     },
                 )?;
                 return Ok(t);
             }
-            if let Some((adt, var_arity)) = self.products.sum_ctors.get(want).cloned() {
+            if let Some((adt, var_arity, offset)) = self.products.sum_ctors.get(want).cloned() {
                 if idx >= var_arity {
                     return Err(at(
                         span,
@@ -296,16 +338,42 @@ impl Infer {
                         ),
                     ));
                 }
-                let max = self
+                let rec = self
                     .products
-                    .sum_max_arity
-                    .get(&adt)
-                    .copied()
-                    .unwrap_or(var_arity)
-                    .max(idx + 1);
-                let params: Vec<Type> = (0..max).map(|_| self.fresh()).collect();
-                let field_ty = params[idx].clone();
-                self.unify_at(span, recv_ty, Type::Adt { name: adt, params })?;
+                    .sum_field_recursive
+                    .get(want)
+                    .and_then(|v| v.get(idx).copied())
+                    .unwrap_or(false);
+                let total = self.products.sum_max_arity.get(&adt).copied().unwrap_or(0);
+                let params: Vec<Type> = (0..total).map(|_| self.fresh()).collect();
+                let adt_ty = Type::Adt {
+                    name: adt.clone(),
+                    params: params.clone(),
+                };
+                if rec {
+                    self.unify_at(span, recv_ty, adt_ty.clone())?;
+                    return Ok(adt_ty);
+                }
+                let local = (0..idx)
+                    .filter(|&i| {
+                        !self
+                            .products
+                            .sum_field_recursive
+                            .get(want)
+                            .and_then(|v| v.get(i).copied())
+                            .unwrap_or(false)
+                    })
+                    .count();
+                let slot = offset + local;
+                let field_ty = params.get(slot).cloned().ok_or_else(|| {
+                    at(
+                        span,
+                        format!(
+                            "variant `{want}` field #{idx} has no type parameter slot on `{adt}`"
+                        ),
+                    )
+                })?;
+                self.unify_at(span, recv_ty, adt_ty)?;
                 return Ok(field_ty);
             }
             let arity = self

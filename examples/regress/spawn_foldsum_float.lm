@@ -1,0 +1,11 @@
+/// spawn sum of two Float folds — join println must print Float.
+module main
+
+val main = {
+    scope {
+        val xs = listOf(1.0, 2.0, 3.0)
+        val ys = listOf(1.0, 2.0)
+        val s = spawn { xs.fold(0.0, { a, b -> a + b }) + ys.fold(0.0, { a, b -> a + b }) }.join()
+        println(s)
+    }
+}

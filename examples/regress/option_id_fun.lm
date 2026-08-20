@@ -1,0 +1,6 @@
+module main
+val main = {
+    val o = Some({ x -> x })
+    val f = o alt { x -> x }
+    println(f(2.5))
+}

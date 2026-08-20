@@ -1,8 +1,11 @@
 //! Hindley–Milner inference engine.
 
+use std::sync::Arc;
+mod binding_order;
 mod builtins;
 mod calls;
 mod expr;
+mod free_vars;
 mod module;
 mod prelude_ctors;
 mod state;
@@ -14,7 +17,6 @@ pub use module::{
 };
 
 use crate::types::{at, Effect, NameVisibility, Scheme, Type, TypeError};
-use lumia_hir::Builtin;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use state::{AltReturnState, EnvState, ProductState, SubstState, TraitState};
 
@@ -32,42 +34,75 @@ pub(crate) struct Infer {
 }
 
 impl Infer {
-    pub(crate) fn new(vis: NameVisibility) -> Self {
+    pub(crate) fn try_new(vis: NameVisibility) -> Result<Self, TypeError> {
         let mut builtins = HashMap::default();
-        // Free IO builtin kept as a Var for first-class / import-alias use.
-        builtins.insert(
-            Builtin::Println.display_name().into(),
-            Scheme::mono(Type::Fun(
-                vec![Type::Int],
-                Box::new(Type::Unit),
-                Effect::io(),
-            )),
-        );
-        // Collection ctors: [`lumia_hir::PRELUDE_CTORS`]; arity specialized in
-        // `prelude_ctors` (not Builtin / BuiltinInfo — lower to Core Alloc*).
+        // Do **not** seed `println` / `assert` / `readStdin` here: free *calls*
+        // lower to `BuiltinCall` (typed via `infer_builtin_call`); first-class use
+        // requires `import std.io.{…}` (see std/io.lm). Seeding `println` made
+        // `val f = println` check-ok on a lone library file while codegen failed
+        // (`unbound mutable`) and multi-file package check correctly rejected it.
+        // Collection ctors: [`lumia_hir::PRELUDE_CTORS`]; call sites specialize in
+        // `prelude_ctors`. First-class / alias use needs ∀ schemes (not Int stubs).
+        // Quantified ids must stay below `next_var` so they never collide with `fresh()`.
+        let mut next_var = 0u32;
+        let poly = |vars: Vec<u32>, ty: Type| -> Scheme {
+            let mut sch = Scheme::mono(ty);
+            sch.vars = vars;
+            sch
+        };
         for sn in lumia_hir::PRELUDE_CTORS {
-            let ty = match sn.name {
-                "listOf" => Type::Fun(
-                    vec![],
-                    Box::new(Type::List(Box::new(Type::Int))),
-                    Effect::pure(),
-                ),
-                "mapOf" => Type::Fun(
-                    vec![],
-                    Box::new(Type::Map(Box::new(Type::Int), Box::new(Type::Int))),
-                    Effect::pure(),
-                ),
-                "setOf" => Type::Fun(
-                    vec![],
-                    Box::new(Type::Set(Box::new(Type::Int))),
-                    Effect::pure(),
-                ),
-                other => panic!("lumia: unhandled PRELUDE_CTOR `{other}`"),
+            let sch = match sn.name {
+                "listOf" => {
+                    let a = next_var;
+                    next_var += 1;
+                    poly(
+                        vec![a],
+                        Type::Fun(
+                            vec![],
+                            Arc::new(Type::List(Arc::new(Type::Var(a)))),
+                            Effect::pure(),
+                        ),
+                    )
+                }
+                "mapOf" => {
+                    let k = next_var;
+                    next_var += 1;
+                    let v = next_var;
+                    next_var += 1;
+                    poly(
+                        vec![k, v],
+                        Type::Fun(
+                            vec![],
+                            Arc::new(Type::Map(Arc::new(Type::Var(k)), Arc::new(Type::Var(v)))),
+                            Effect::pure(),
+                        ),
+                    )
+                }
+                "setOf" => {
+                    let a = next_var;
+                    next_var += 1;
+                    poly(
+                        vec![a],
+                        Type::Fun(
+                            vec![],
+                            Arc::new(Type::Set(Arc::new(Type::Var(a)))),
+                            Effect::pure(),
+                        ),
+                    )
+                }
+                other => {
+                    return Err(TypeError::Message(format!(
+                        "internal: unhandled PRELUDE_CTOR `{other}` (keep in sync with PRELUDE_CTORS)"
+                    )));
+                }
             };
-            builtins.insert(sn.name.into(), Scheme::mono(ty));
+            builtins.insert(sn.name.into(), sch);
         }
-        Self {
-            uni: SubstState::default(),
+        Ok(Self {
+            uni: SubstState {
+                next_var,
+                ..SubstState::default()
+            },
             scopes: EnvState {
                 env: vec![builtins],
                 mutables: vec![HashSet::default()],
@@ -79,7 +114,13 @@ impl Infer {
             decls: HashMap::default(),
             vis,
             current_file: 0,
-        }
+        })
+    }
+
+    /// Prefer [`Self::try_new`] from recovering pipelines; this panics on ICE.
+    #[allow(dead_code)]
+    pub(crate) fn new(vis: NameVisibility) -> Self {
+        Self::try_new(vis).unwrap_or_else(|e| panic!("lumia ICE seeding Infer: {}", e.message()))
     }
 
     pub(crate) fn check_name_visible(

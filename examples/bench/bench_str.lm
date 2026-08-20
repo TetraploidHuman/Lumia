@@ -1,0 +1,25 @@
+module BenchStr
+
+import std.io.{println}
+
+/// String-surface app microbench (Release via `scripts/bench_app.sh`).
+/// Kept as its own process: heavy Map/Set churn in `bench_app.lm` can leave the
+/// nursery hostile to subsequent string alloc (GC crosstalk).
+
+/// Many short lines through trim / toLower / split / join.
+val str_pipeline_checksum = { lines ->
+    var h = 0
+    var i = 0
+    for i < lines {
+        val raw = "  Word${i % 10} TAG${i % 7}  "
+        val t = raw.trim().toLower()
+        val parts = t.split(' ')
+        h = (h + parts.len() * 19 + parts.join("-").len()) % 1000000007
+        i = i + 1
+    }
+    h
+}
+
+val main = {
+    println(str_pipeline_checksum(8000))
+}

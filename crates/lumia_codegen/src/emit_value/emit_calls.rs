@@ -7,7 +7,9 @@ use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum};
 use inkwell::{AddressSpace, IntPredicate};
 use lumia_abi::TYPE_CLOSURE;
 use lumia_core::Local;
+use lumia_hir::Sym;
 use lumia_ty::Type;
+use rustc_hash::FxHashMap as HashMap;
 
 impl<'ctx> Codegen<'ctx> {
     pub(crate) fn emit_value_call(
@@ -104,16 +106,31 @@ impl<'ctx> Codegen<'ctx> {
         // Float return ABI must come from the callee's Fun type — never
         // from "any arg is float" (that breaks Float→Int HOFs).
         let float_ret = match self.frame.local_tys.get(&callee.0) {
-            Some(Type::Fun(_, ret, _)) => matches!(ret.as_ref(), Type::Float),
+            Some(Type::Fun(ps, ret, _)) => {
+                let open_id_ret = match ret.as_ref() {
+                    Type::Int | Type::Var(_) => true,
+                    Type::List(e) if matches!(e.as_ref(), Type::Int) => true,
+                    _ => false,
+                };
+                matches!(ret.as_ref(), Type::Float)
+                    || (open_id_ret
+                        && ps.len() == 1
+                        && matches!(ps[0], Type::Int | Type::Var(_))
+                        && args.len() == 1
+                        && matches!(self.frame.local_tys.get(&args[0].0), Some(Type::Float)))
+            }
             _ => self
                 .funs
-                .funref_locals
-                .get(&callee.0)
+                .funref
+                .resolve(callee.0)
                 .and_then(|name| self.funs.fun_ret_tys.get(name))
                 .is_some_and(|ty| matches!(ty, Type::Float)),
         };
         let cal_i = self.coerce_i64(self.local(*callee)?)?;
-        let one = self.llvm.i64_ty.const_int(1, false);
+        let one = self
+            .llvm
+            .i64_ty
+            .const_int(lumia_abi::FUNREF_TAG as u64, false);
         let tagged = crate::error::llvm(self.llvm.builder.build_and(cal_i, one, "ic_tag"))?;
         let is_funref = crate::error::llvm(self.llvm.builder.build_int_compare(
             IntPredicate::EQ,
@@ -168,7 +185,10 @@ impl<'ctx> Codegen<'ctx> {
         inkwell::values::IntValue<'ctx>,
         inkwell::basic_block::BasicBlock<'ctx>,
     )> {
-        let one = self.llvm.i64_ty.const_int(1, false);
+        let one = self
+            .llvm
+            .i64_ty
+            .const_int(lumia_abi::FUNREF_TAG as u64, false);
         let not_one = crate::error::llvm(self.llvm.builder.build_not(one, "not1"))?;
         let fn_i = crate::error::llvm(self.llvm.builder.build_and(cal_i, not_one, "fn_clear"))?;
         let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
@@ -279,11 +299,15 @@ impl<'ctx> Codegen<'ctx> {
             "funref_i64",
         ))?;
         // Tag low bit so IndirectCall can tell FunRef from heap closure.
-        let tagged = crate::error::llvm(self.llvm.builder.build_or(
-            as_i,
-            self.llvm.i64_ty.const_int(1, false),
-            "funref_tag",
-        ))?;
+        let tagged = crate::error::llvm(
+            self.llvm.builder.build_or(
+                as_i,
+                self.llvm
+                    .i64_ty
+                    .const_int(lumia_abi::FUNREF_TAG as u64, false),
+                "funref_tag",
+            ),
+        )?;
         Ok(tagged.into())
     }
 
@@ -331,6 +355,17 @@ impl<'ctx> Codegen<'ctx> {
             ))?
         };
         crate::error::llvm(self.llvm.builder.build_store(fn_slot, fn_as_i))?;
+        {
+            let mut cap_tys = HashMap::default();
+            for (i, e) in captures.iter().enumerate() {
+                if let Some(ty) = self.frame.local_tys.get(&e.0).cloned() {
+                    cap_tys.insert(i as u32, ty);
+                }
+            }
+            if !cap_tys.is_empty() {
+                self.funs.closure_cap_tys.insert(Sym::from(fun), cap_tys);
+            }
+        }
         for (i, e) in captures.iter().enumerate() {
             let v = self.coerce_i64(self.local(*e)?)?;
             let slot = unsafe {
@@ -361,7 +396,6 @@ impl<'ctx> Codegen<'ctx> {
         &mut self,
         env: &Local,
         index: u32,
-        as_float: bool,
     ) -> Result<BasicValueEnum<'ctx>> {
         let env_i = self.coerce_i64(self.local(*env)?)?;
         let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
@@ -377,7 +411,14 @@ impl<'ctx> Codegen<'ctx> {
         };
         let loaded =
             crate::error::llvm(self.llvm.builder.build_load(self.llvm.i64_ty, slot, "cap"))?;
-        if as_float {
+        let typed_float = matches!(
+            self.funs
+                .closure_cap_tys
+                .get(&self.funs.current_fun)
+                .and_then(|m| m.get(&index)),
+            Some(Type::Float)
+        );
+        if typed_float {
             crate::error::llvm(self.llvm.builder.build_bit_cast(
                 loaded.into_int_value(),
                 self.llvm.context.f64_type(),

@@ -1,9 +1,10 @@
 //! textDocument/documentSymbol — outline from typed module items.
 
+use super::cursor::span_to_range;
 use super::state::{state_lock, Analysis};
 use anyhow::Result;
 use lumia_hir::Item;
-use lumia_syntax::{byte_to_line_col, line_starts, BytePos, Span};
+use lumia_syntax::{BytePos, Span};
 use serde_json::{json, Value};
 
 /// LSP SymbolKind constants used by outline views.
@@ -18,13 +19,7 @@ mod kind {
 }
 
 fn range_json(src: &str, span: Span) -> Value {
-    let starts = line_starts(src);
-    let (sl, sc) = byte_to_line_col(&starts, span.start);
-    let (el, ec) = byte_to_line_col(&starts, span.end);
-    json!({
-        "start": { "line": sl.saturating_sub(1), "character": sc.saturating_sub(1) },
-        "end": { "line": el.saturating_sub(1), "character": ec.saturating_sub(1) }
-    })
+    span_to_range(src, span)
 }
 
 fn symbol(name: &str, kind: i32, src: &str, span: Span) -> Value {
@@ -45,16 +40,24 @@ fn span_for_name(a: &Analysis, name: &str) -> Span {
     if let Some(pos) = a.src.find(name) {
         let start = pos as u32;
         return Span {
-            file: 0,
+            file: primary_file_id(a),
             start: BytePos(start),
             end: BytePos(start + name.len() as u32),
         };
     }
     Span {
-        file: 0,
+        file: primary_file_id(a),
         start: BytePos(0),
         end: BytePos(0),
     }
+}
+
+fn primary_file_id(a: &Analysis) -> u32 {
+    a.buffer_file
+}
+
+fn span_in_primary(a: &Analysis, span: Span) -> bool {
+    span.file == primary_file_id(a)
 }
 
 pub(super) fn symbols_for_analysis(a: &Analysis) -> Vec<Value> {
@@ -70,6 +73,9 @@ pub(super) fn symbols_for_analysis(a: &Analysis) -> Vec<Value> {
     for item in &m.items {
         match item {
             Item::Fun(f) => {
+                if !span_in_primary(a, f.span) {
+                    continue;
+                }
                 out.push(symbol(
                     &f.name,
                     kind::FUNCTION,
@@ -77,7 +83,10 @@ pub(super) fn symbols_for_analysis(a: &Analysis) -> Vec<Value> {
                     span_for_name(a, &f.name),
                 ));
             }
-            Item::Val { name, .. } => {
+            Item::Val { name, span, .. } => {
+                if !span_in_primary(a, *span) {
+                    continue;
+                }
                 out.push(symbol(name, kind::VARIABLE, src, span_for_name(a, name)));
             }
         }
@@ -100,7 +109,7 @@ pub(super) fn symbols_for_analysis(a: &Analysis) -> Vec<Value> {
     }
     for trait_name in m.method_traits.values() {
         // method_traits maps method → trait; emit each trait once.
-        if out.iter().any(|s| s["name"] == *trait_name) {
+        if out.iter().any(|s| s["name"].as_str() == Some(trait_name.as_str())) {
             continue;
         }
         out.push(symbol(
@@ -139,19 +148,31 @@ mod tests {
     use super::super::state::Analysis;
     use super::symbols_for_analysis;
     use crate::check::check_source;
+    use crate::lsp::test_support::imported_alias_analysis;
 
     #[test]
     fn document_symbols_include_module_and_vals() {
         let src = "module Demo\n\nval main = {\n    1\n}\n";
         let typed = check_source(src, true).expect("typecheck");
-        let a = Analysis {
-            typed,
-            src: src.to_string(),
-            files: vec![],
-        };
+        let a = Analysis::from_typed(typed, src.to_string(), vec![], 0);
         let syms = symbols_for_analysis(&a);
         let names: Vec<&str> = syms.iter().filter_map(|s| s["name"].as_str()).collect();
         assert!(names.contains(&"Demo"));
         assert!(names.contains(&"main"));
+    }
+
+    #[test]
+    fn document_symbols_imported_alias_via_loader() {
+        let a = imported_alias_analysis("untitled:Symbols-1");
+        assert!(
+            a.typed.fun_types.contains_key("log"),
+            "imported alias must bind under loader"
+        );
+        let syms = symbols_for_analysis(&a);
+        let names: Vec<&str> = syms.iter().filter_map(|s| s["name"].as_str()).collect();
+        assert!(
+            names.contains(&"Main") && names.contains(&"main"),
+            "expected module/main symbols via loader, got {names:?}"
+        );
     }
 }

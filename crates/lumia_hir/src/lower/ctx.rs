@@ -12,36 +12,19 @@ pub type LowerError = LocatedError;
 pub struct LowerCtx {
     pub(crate) ctors: HashMap<String, CtorInfo>,
     pub(crate) product_fields: HashMap<String, (String, usize)>,
-    #[allow(dead_code)] // retained for ambiguous-field diagnostics / future lower
-    pub(crate) product_field_owners: HashMap<String, Vec<(String, usize)>>,
     pub(crate) ambiguous_product_fields: HashSet<String>,
     pub(crate) products: HashMap<String, Vec<String>>,
-    err: RefCell<Option<LowerError>>,
+    /// Accumulated lower diagnostics (block lower is inside-out; must not keep only the last).
+    errs: RefCell<Vec<LowerError>>,
     pub(crate) toplevel_funs: HashSet<String>,
     pub(crate) toplevel_fold_assoc: HashSet<String>,
 }
 
 impl LowerCtx {
-    /// Empty context for post-lower desugars (e.g. demoting `ListParMap` in ty).
-    /// Loop skeletons do not consult ctor/product tables.
-    pub fn empty() -> Self {
-        Self {
-            ctors: HashMap::default(),
-            products: HashMap::default(),
-            product_fields: HashMap::default(),
-            product_field_owners: HashMap::default(),
-            ambiguous_product_fields: HashSet::default(),
-            err: RefCell::new(None),
-            toplevel_funs: HashSet::default(),
-            toplevel_fold_assoc: HashSet::default(),
-        }
-    }
-
     pub(crate) fn new(
         ctors: HashMap<String, CtorInfo>,
         products: HashMap<String, Vec<String>>,
         product_fields: HashMap<String, (String, usize)>,
-        product_field_owners: HashMap<String, Vec<(String, usize)>>,
         ambiguous_product_fields: HashSet<String>,
         toplevel_funs: HashSet<String>,
         toplevel_fold_assoc: HashSet<String>,
@@ -50,23 +33,29 @@ impl LowerCtx {
             ctors,
             products,
             product_fields,
-            product_field_owners,
             ambiguous_product_fields,
-            err: RefCell::new(None),
+            errs: RefCell::new(Vec::new()),
             toplevel_funs,
             toplevel_fold_assoc,
         }
     }
 
     pub(crate) fn set_err(&self, msg: String, span: Span) {
-        let mut slot = self.err.borrow_mut();
-        if slot.is_none() {
-            *slot = Some(LowerError { message: msg, span });
-        }
+        self.errs
+            .borrow_mut()
+            .push(LowerError { message: msg, span });
     }
 
-    pub(crate) fn take_err(&self) -> Option<LowerError> {
-        self.err.borrow_mut().take()
+    pub(crate) fn take_errs(&self) -> Vec<LowerError> {
+        let mut errs = std::mem::take(&mut *self.errs.borrow_mut());
+        errs.sort_by(|a, b| {
+            (a.span.file, a.span.start.0, a.span.end.0).cmp(&(
+                b.span.file,
+                b.span.start.0,
+                b.span.end.0,
+            ))
+        });
+        errs
     }
 
     pub(crate) fn lookup_ctor(&self, name: &str) -> Option<CtorInfo> {

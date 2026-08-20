@@ -1,0 +1,17 @@
+/// Open-receiver UFCS: getOr (Map), set (List|Map), contains, toList.
+module main
+
+val getOr = { m, k, d -> m.get(k) alt d }
+val setAt = { xs, i, v -> xs.set(i, v) }
+val has = { c, x -> c.contains(x) }
+val toL = { x -> x.toList() }
+
+val main = {
+    println(getOr(mapOf(1, 10), 1, 0))
+    println(setAt(listOf(1, 2, 3), 1, 9).get(1))
+    println(setAt(mapOf(1, 10), 1, 99).get(1) alt 0)
+    println(has(setOf(1, 2), 1))
+    println(has("ab", "a"))
+    println(toL(setOf(1, 2)).len())
+    println(toL(mapOf(1, 10)).len())
+}

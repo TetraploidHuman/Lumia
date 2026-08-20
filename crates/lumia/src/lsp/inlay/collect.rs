@@ -1,9 +1,10 @@
 //! Collect binding / param / call-return inlay hints from typed analysis.
 
 use super::source::{find_word_end_before, in_range, lambda_param_ends, param_ends_in_window};
+use crate::lsp::cursor::byte_to_position;
 use crate::lsp::state::Analysis;
 use lumia_hir::{for_each_expr, Expr, Item};
-use lumia_syntax::{byte_to_line_col, line_starts, Span};
+use lumia_syntax::Span;
 use lumia_ty::{display_type, expr_span, pretty_type_with, subst_num_vars, var_names_for, Type};
 use serde_json::{json, Value};
 
@@ -11,11 +12,10 @@ use serde_json::{json, Value};
 const KIND_TYPE: i32 = 1;
 
 fn pos_json(src: &str, byte: u32) -> Value {
-    let starts = line_starts(src);
-    let (line, col) = byte_to_line_col(&starts, lumia_syntax::BytePos(byte));
+    let (line, character) = byte_to_position(src, byte);
     json!({
-        "line": line.saturating_sub(1),
-        "character": col.saturating_sub(1)
+        "line": line,
+        "character": character
     })
 }
 
@@ -216,10 +216,10 @@ pub(super) fn collect_toplevel_hints(
                     continue;
                 }
                 let body_start = body_sp.start.0 as usize;
-                let scheme = a.typed.fun_schemes.get(&f.name);
+                let scheme = a.typed.fun_schemes.get(f.name.as_str());
                 let ty = scheme
                     .map(|s| &s.ty)
-                    .or_else(|| a.typed.fun_types.get(&f.name));
+                    .or_else(|| a.typed.fun_types.get(f.name.as_str()));
                 let num_vars: &[u32] = scheme.map(|s| s.num_vars.as_slice()).unwrap_or(&[]);
                 if let Some(ty) = ty {
                     // Last `name` before the body — definition, not an earlier call site.
@@ -241,7 +241,9 @@ pub(super) fn collect_toplevel_hints(
                 }
                 collect_expr_hints(&f.body, src, type_at, out, range);
             }
-            Item::Val { name, body, ty: _ } => {
+            Item::Val {
+                name, body, ty: _, ..
+            } => {
                 let body_sp = expr_span(body);
                 if body_sp.file != 0 {
                     continue;

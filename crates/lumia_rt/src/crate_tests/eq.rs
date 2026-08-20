@@ -25,7 +25,9 @@ fn object_header_pad_list_rc_vs_adt_float_mask() {
         assert_eq!((*header_from_payload(adt)).rc, 1);
         assert_eq!((*header_from_payload(adt))._pad, 0);
     }
-    lumia_adt_set_float_mask(adt, 0b1);
+    unsafe {
+        lumia_adt_set_float_mask(adt, 0b1);
+    }
     unsafe {
         assert_eq!((*header_from_payload(adt))._pad, 0b1);
         assert_eq!((*header_from_payload(adt)).rc, 1);
@@ -91,7 +93,7 @@ fn adt_float_mask_nested_eq_and_hash() {
             *(p as *mut i64) = 0; // tag Some
             *((p as *mut i64).add(1)) = bits;
         }
-        lumia_adt_set_float_mask(p, 1); // field0 is Float
+        unsafe { lumia_adt_set_float_mask(p, 1) }; // field0 is Float
         p as i64
     };
     let a = mk(pos0);
@@ -120,26 +122,48 @@ fn adt_float_mask_nested_eq_and_hash() {
 
 #[test]
 fn adt_float_mask_high_bit_skips_gc_mark() {
-    // Field index 37 (past the old u32 mask) must be skippable as Float.
+    // Field index 31 (top of packed float half) must be skippable as Float.
     let bits = 1.25f64.to_bits() as i64;
-    let nbytes = (1 + 38) * 8;
+    let nbytes = (1 + 32) * 8;
     let mut adt = lumia_alloc(nbytes, TYPE_ADT);
     unsafe {
         let base = adt as *mut i64;
         *base = 0;
-        for i in 1..=37 {
+        for i in 1..=31 {
             *base.add(i) = 0;
         }
-        *base.add(38) = bits;
+        *base.add(32) = bits;
     }
-    lumia_adt_set_float_mask(adt, 1u64 << 37);
-    lumia_root_push(&mut adt as *mut *mut u8);
+    unsafe {
+        lumia_adt_set_float_mask(adt, 1u64 << 31);
+    }
+    unsafe { lumia_root_push(&mut adt as *mut *mut u8) };
     lumia_gc_collect();
     unsafe {
-        assert_eq!((*(adt as *const i64).add(38)), bits);
-        assert_eq!((*header_from_payload(adt))._pad, 1u64 << 37);
+        assert_eq!((*(adt as *const i64).add(32)), bits);
+        assert_eq!(
+            crate::common::adt_float_mask((*header_from_payload(adt))._pad),
+            1u64 << 31
+        );
     }
     lumia_root_pop();
+}
+
+#[test]
+fn adt_bool_mask_packs_high_half_preserves_float() {
+    let adt = crate::map_set::alloc_adt_with_meta(0, &[1, 0], 0, 0, 0);
+    unsafe {
+        lumia_adt_set_float_mask(adt, 0b1);
+    }
+    unsafe {
+        lumia_adt_set_bool_mask(adt, 0b10);
+    }
+    unsafe {
+        let pad = (*header_from_payload(adt))._pad;
+        assert_eq!(crate::common::adt_float_mask(pad), 0b1);
+        assert_eq!(crate::common::adt_bool_mask(pad), 0b10);
+        assert_eq!(pad, crate::common::adt_pack_field_masks(0b1, 0b10));
+    }
 }
 
 #[test]
@@ -154,7 +178,9 @@ fn adt_float_mask_sanitizes_heap_pointer_slots() {
         *(adt as *mut i64) = 0;
         *((adt as *mut i64).add(1)) = list as i64;
     }
-    lumia_adt_set_float_mask(adt, 0b1);
+    unsafe {
+        lumia_adt_set_float_mask(adt, 0b1);
+    }
     unsafe {
         assert_eq!(
             (*header_from_payload(adt))._pad,
@@ -165,8 +191,10 @@ fn adt_float_mask_sanitizes_heap_pointer_slots() {
 }
 
 #[test]
-fn adt_mistagged_float_mask_still_marks_list() {
-    // Even if `_pad` wrongly tags a List field as Float, hybrid GC must keep it.
+fn adt_mistagged_float_mask_skips_mark_trust_sanitize() {
+    // `lumia_adt_set_float_mask` sanitizes heap-pointer slots. Bypass sanitize
+    // (force `_pad`) is undefined for GC: Float-tagged words are not marked.
+    // Production paths must not mistag; this locks the skip-without-probe contract.
     let list = lumia_alloc(8, TYPE_LIST);
     unsafe {
         *(list as *mut i64) = 0;
@@ -176,14 +204,13 @@ fn adt_mistagged_float_mask_still_marks_list() {
     unsafe {
         *(adt as *mut i64) = 0;
         *((adt as *mut i64).add(1)) = list_bits;
-        // Bypass sanitize: force a bad mask.
         (*header_from_payload(adt))._pad = 0b1;
     }
-    lumia_root_push(&mut adt as *mut *mut u8);
+    unsafe { lumia_root_push(&mut adt as *mut *mut u8) };
     lumia_gc_collect();
     assert!(
-        crate::common::is_heap_payload(list_bits as *mut u8),
-        "List behind mistagged Float mask must survive GC"
+        !crate::common::is_heap_payload(list_bits as *mut u8),
+        "mistagged Float slot is not marked (trust sanitize; do not bypass _pad)"
     );
     lumia_root_pop();
 }
@@ -199,12 +226,12 @@ fn adt_ensure_unique_consume_drops_with_alias() {
         *b.add(2) = 2;
         (*header_from_payload(adt)).rc = 2;
     }
-    let out = lumia_adt_ensure_unique_consume(adt);
+    let out = unsafe { lumia_adt_ensure_unique_consume(adt) };
     assert_eq!(out, adt);
     unsafe {
         assert_eq!((*header_from_payload(adt)).rc, 1);
     }
-    lumia_adt_set_field(adt, 0, 9);
+    unsafe { lumia_adt_set_field(adt, 0, 9) };
     unsafe {
         assert_eq!(*(adt as *const i64).add(1), 9);
         assert_eq!(*(adt as *const i64).add(2), 2);
@@ -221,7 +248,7 @@ fn adt_ensure_unique_clones_when_shared() {
         *b.add(2) = 2;
         (*header_from_payload(adt)).rc = 2;
     }
-    let out = lumia_adt_ensure_unique(adt);
+    let out = unsafe { lumia_adt_ensure_unique(adt) };
     assert_ne!(out as usize, adt as usize);
     unsafe {
         assert_eq!((*header_from_payload(out)).rc, 1);
@@ -242,7 +269,7 @@ fn adt_ensure_unique_consume_clones_when_shared() {
         *b.add(2) = 2;
         (*header_from_payload(adt)).rc = 3;
     }
-    let out = lumia_adt_ensure_unique_consume(adt);
+    let out = unsafe { lumia_adt_ensure_unique_consume(adt) };
     assert_ne!(out as usize, adt as usize);
     unsafe {
         assert_eq!((*header_from_payload(out)).rc, 1);
@@ -265,7 +292,7 @@ fn adt_set_field_retains_nested_adt() {
         *((outer as *mut i64).add(1)) = 0;
         *((outer as *mut i64).add(2)) = 0;
     }
-    lumia_adt_set_field(outer, 0, inner as i64);
+    unsafe { lumia_adt_set_field(outer, 0, inner as i64) };
     unsafe {
         assert_eq!((*header_from_payload(inner)).rc, 2);
     }
@@ -274,7 +301,7 @@ fn adt_set_field_retains_nested_adt() {
         *(inner2 as *mut i64) = 0;
         *((inner2 as *mut i64).add(1)) = 8;
     }
-    lumia_adt_set_field(outer, 0, inner2 as i64);
+    unsafe { lumia_adt_set_field(outer, 0, inner2 as i64) };
     unsafe {
         assert_eq!((*header_from_payload(inner)).rc, 1);
         assert_eq!((*header_from_payload(inner2)).rc, 2);
@@ -297,7 +324,7 @@ fn adt_clone_retains_nested_field() {
         (*header_from_payload(inner)).rc = 2;
         (*header_from_payload(outer)).rc = 2;
     }
-    let cloned = lumia_adt_ensure_unique(outer);
+    let cloned = unsafe { lumia_adt_ensure_unique(outer) };
     assert_ne!(cloned as usize, outer as usize);
     unsafe {
         // Clone retains nested Inner once more.
@@ -322,7 +349,7 @@ fn adt_clone_overwrite_mask_skips_nested_retain() {
         (*header_from_payload(outer)).rc = 2;
     }
     // Field 0 will be overwritten — do not bump inner RC on clone.
-    let cloned = lumia_adt_ensure_unique_mask(outer, 1);
+    let cloned = unsafe { lumia_adt_ensure_unique_mask(outer, 1) };
     assert_ne!(cloned as usize, outer as usize);
     unsafe {
         assert_eq!((*header_from_payload(inner)).rc, 2);
@@ -334,7 +361,7 @@ fn adt_clone_overwrite_mask_skips_nested_retain() {
         *(replacement as *mut i64) = 0;
         *((replacement as *mut i64).add(1)) = 9;
     }
-    lumia_adt_set_field(cloned, 0, replacement as i64);
+    unsafe { lumia_adt_set_field(cloned, 0, replacement as i64) };
     unsafe {
         assert_eq!((*header_from_payload(inner)).rc, 2);
         assert_eq!((*header_from_payload(replacement)).rc, 2);

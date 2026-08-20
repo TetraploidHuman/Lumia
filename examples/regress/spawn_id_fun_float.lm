@@ -1,0 +1,11 @@
+/// spawn-returned identity Fun applied to Float must keep Float ABI.
+module main
+
+val main = {
+    scope {
+        val f = spawn { { x -> x } }.join()
+        println(f(1.5))
+        val g = spawn { { x -> x + 1.0 } }.join()
+        println(g(1.5))
+    }
+}

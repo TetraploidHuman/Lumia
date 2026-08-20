@@ -1,0 +1,324 @@
+module OptSrCorrectness
+
+import std.io.{println}
+
+/// Correctness harness for SR / perf opts (Debug≡Release + RT oracles).
+/// Each printed line is a checksum so Debug/Release and reruns stay comparable.
+///
+/// Sized for ~0.5–2s shielded Release on a modern laptop (not tens of ms), so
+/// timing noise and process overhead do not dominate.
+///
+/// Scenario mix (deliberately not one-trick / not only SR hits):
+///   1. trial-division primes — classic `d+=1` loop (SR may odd-step / sieve RT)
+///   2. dense integer matmul — nested IV / NSW pressure
+///   3. Mandelbrot escape-time — float + early break
+///   4. Collatz dense total `1..N` — may hit total-memo recognition
+///   5. Collatz strided sum — same inner steps, outer stride ≠ 1 (no total memo)
+///   6. naive recursive fib — call-tree / memo
+///   7. nested affine rem accumulate — may hit affine2 period RT
+///   8. Euclidean gcd nested sum — rem chains, not affine-rem shape
+///   9. harmonic divisor sum `Σ n/i` — dense signed division
+///  10. product rem `(i*j+1)%m` — nested rem, not `a*i+b*j+c` affine2
+///  11. float recurrence — dense f64 mul/add, no escape-time break
+///  12. range list fold — alloc / get / HOF-ish iteration pressure
+///  13. heap mem traffic — scan + gather get, sparse set (DRAM / LLC pressure)
+
+val isPrime(n) = {
+    if n < 2 {
+        false
+    } else {
+        var d = 2
+        var ok = true
+        for d * d <= n {
+            if n % d == 0 {
+                ok = false
+                break
+            }
+            d = d + 1
+        }
+        ok
+    }
+}
+
+val countPrimes(limit) = {
+    var n = 2
+    var c = 0
+    for n <= limit {
+        if isPrime(n) {
+            c = c + 1
+        }
+        n = n + 1
+    }
+    c
+}
+
+/// C[i][j] = sum_k A[i][k]*B[k][j] with A[i][k]=i*n+k+1, B[k][j]=k*n+j+1.
+val matmulChecksum(n) = {
+    var sum = 0
+    var i = 0
+    for i < n {
+        var j = 0
+        for j < n {
+            var k = 0
+            var cell = 0
+            for k < n {
+                cell = cell + (i * n + k + 1) * (k * n + j + 1)
+                k = k + 1
+            }
+            sum = sum + (cell % 1000003)
+            j = j + 1
+        }
+        i = i + 1
+    }
+    sum
+}
+
+/// Escape-time Mandelbrot on a fixed 200×140 grid over [-2.5,1]×[-1,1].
+val mandelbrotChecksum(maxIt) = {
+    val w = 200
+    val h = 140
+    val dx = 3.5 / 200.0
+    val dy = 2.0 / 140.0
+    var cy = 0.0 - 1.0
+    var y = 0
+    var acc = 0
+    for y < h {
+        var cx = 0.0 - 2.5
+        var x = 0
+        for x < w {
+            var zx = 0.0
+            var zy = 0.0
+            var it = 0
+            var escaped = false
+            for it < maxIt {
+                val zx2 = zx * zx
+                val zy2 = zy * zy
+                if zx2 + zy2 > 4.0 {
+                    escaped = true
+                    break
+                }
+                val nzy = 2.0 * zx * zy + cy
+                zx = zx2 - zy2 + cx
+                zy = nzy
+                it = it + 1
+            }
+            if escaped {
+                acc = acc + it
+            } else {
+                acc = acc + maxIt
+            }
+            cx = cx + dx
+            x = x + 1
+        }
+        cy = cy + dy
+        y = y + 1
+    }
+    acc
+}
+
+val collatzSteps(n) = {
+    var x = n
+    var steps = 0
+    for x > 1 {
+        if x % 2 == 0 {
+            x = x / 2
+        } else {
+            x = 3 * x + 1
+        }
+        steps = steps + 1
+    }
+    steps
+}
+
+/// Dense `sum_{n=1}^{limit} steps(n)` — outer shape may be recognized.
+val collatzTotal(limit) = {
+    var n = 1
+    var total = 0
+    for n <= limit {
+        total = total + collatzSteps(n)
+        n = n + 1
+    }
+    total
+}
+
+/// Strided Collatz sum: same inner loop, outer `n += stride` (not total-memo shape).
+val collatzStrided(start, limit, stride) = {
+    var n = start
+    var total = 0
+    for n <= limit {
+        total = total + collatzSteps(n)
+        n = n + stride
+    }
+    total
+}
+
+val fib(n) = {
+    n match {
+        0 -> 0
+        1 -> 1
+        _ -> fib(n - 1) + fib(n - 2)
+    }
+}
+
+/// Nested affine rem accumulate (codegen may recognize → period RT).
+val polyChecksum(n) = {
+    var s = 0
+    var i = 0
+    for i < n {
+        var j = 0
+        for j < n {
+            s = s + ((i * 131 + j * 17 + 1) % 10007)
+            j = j + 1
+        }
+        i = i + 1
+    }
+    s
+}
+
+val gcd(a, b) = {
+    var x = a
+    var y = b
+    for y != 0 {
+        val t = y
+        y = x % y
+        x = t
+    }
+    x
+}
+
+/// `sum_{i=1}^{n} sum_{j=1}^{n} gcd(i,j)` — Euclidean rem chains (not affine2).
+val gcdChecksum(n) = {
+    var s = 0
+    var i = 1
+    for i <= n {
+        var j = 1
+        for j <= n {
+            s = s + gcd(i, j)
+            j = j + 1
+        }
+        i = i + 1
+    }
+    s
+}
+
+/// `sum_{i=1}^{n} (n / i)` — dense integer division, floor harmonics.
+val divisorSum(n) = {
+    var s = 0
+    var i = 1
+    for i <= n {
+        s = s + (n / i)
+        i = i + 1
+    }
+    s
+}
+
+/// Nested `(i * j + 1) % m` — rem hotspot that is not `a*i + b*j + c`.
+val productRemChecksum(n) = {
+    var s = 0
+    var i = 0
+    for i < n {
+        var j = 0
+        for j < n {
+            s = s + ((i * j + 1) % 10007)
+            j = j + 1
+        }
+        i = i + 1
+    }
+    s
+}
+
+/// Dense float recurrence (logistic-like; no Mandelbrot early exit).
+/// Mixes Int into Float (sitofp); Int checksum from threshold hits.
+val floatOrbitChecksum(n, iters) = {
+    var h = 0
+    var i = 0
+    for i < n {
+        var x = 0.1 + 0.00000001 * i
+        var k = 0
+        for k < iters {
+            x = 3.7 * x * (1.0 - x)
+            if x > 0.5 {
+                h = h + 1
+            }
+            k = k + 1
+        }
+        i = i + 1
+    }
+    h
+}
+
+/// Build `range(0, n)` and fold — list alloc + indexed traversal.
+val rangeFoldChecksum(n) = {
+    val xs = range(0, n)
+    var s = 0
+    var i = 0
+    for i < n {
+        val v = xs.get(i)
+        s = s + ((v * 131 + 17) % 10007)
+        i = i + 1
+    }
+    s
+}
+
+/// Heap memory traffic (not SR'd): materialize a large list, scan it, then
+/// gather with an LCG index (cache-unfriendly reads). One `set` per scan pass
+/// copies the whole buffer (write traffic); per-element `set` would be O(n²).
+val memTrafficChecksum(n, scanPasses, gatherSteps) = {
+    var xs = range(0, n)
+    xs = xs.concat(listOf(0)).take(n)
+    var p = 0
+    var s = 0
+    for p < scanPasses {
+        var i = 0
+        for i < n {
+            s = s + xs.get(i)
+            i = i + 1
+        }
+        val mid = n / 2
+        xs = xs.set(mid, (xs.get(mid) * 131 + 17) % 10007)
+        p = p + 1
+    }
+    var i = 1
+    var k = 0
+    for k < gatherSteps {
+        s = s + xs.get(i)
+        i = (i * 1103515245 + 12345) % n
+        if i < 0 {
+            i = 0 - i
+        }
+        k = k + 1
+    }
+    s % 1000000007
+}
+
+val main = {
+    // Scaled-down SR hits (still match codegen recognizers).
+    println(countPrimes(20000))
+    println(matmulChecksum(80))
+    println(mandelbrotChecksum(40))
+    println(mandelbrotChecksum(450))
+    println(collatzTotal(20000))
+    println(collatzStrided(1, 30000, 3))
+    println(fib(20))
+    println(polyChecksum(400))
+    println(gcdChecksum(200))
+    println(divisorSum(100000))
+    println(productRemChecksum(200))
+    // productRem n>m grouping path (m hardcoded 10007 in the kernel).
+    println(productRemChecksum(12000))
+    // floatOrbit: x4 path (n%4==0) and scalar remainder path.
+    println(floatOrbitChecksum(2000, 20))
+    println(floatOrbitChecksum(100000, 50))
+    println(floatOrbitChecksum(1001, 15))
+    println(rangeFoldChecksum(20000))
+    println(memTrafficChecksum(5000, 2, 8000))
+    // Degenerate / edge inputs that must stay stable under opts.
+    println(countPrimes(1))
+    println(matmulChecksum(0))
+    println(mandelbrotChecksum(0))
+    println(mandelbrotChecksum(0 - 1))
+    println(collatzTotal(0))
+    println(floatOrbitChecksum(0, 50))
+    println(floatOrbitChecksum(4, 0))
+    println(productRemChecksum(0))
+}

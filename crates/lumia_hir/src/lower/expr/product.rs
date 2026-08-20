@@ -3,28 +3,28 @@
 use super::super::ctx::LowerCtx;
 use super::lower_expr;
 use crate::ast::{Builtin, Expr};
-use lumia_syntax::Span;
+use lumia_syntax::{Span, Sym};
 use rustc_hash::FxHashMap as HashMap;
 
 pub(super) fn lower_struct_lit(
     ctx: &LowerCtx,
-    name: &str,
-    fields: &[(String, lumia_syntax::Expr)],
+    name: &Sym,
+    fields: &[(Sym, lumia_syntax::Expr)],
     span: Span,
 ) -> Expr {
-    let Some(order) = ctx.lookup_product(name) else {
-        // Unknown product — leave as call-shaped fallback
+    let name_s = name.as_str();
+    let Some(order) = ctx.lookup_product(name_s) else {
         return Expr::Call {
-            callee: Box::new(Expr::Var(name.into(), span)),
+            callee: Box::new(Expr::Var(name.clone(), span)),
             args: fields.iter().map(|(_, e)| lower_expr(ctx, e)).collect(),
             span,
         };
     };
     let mut by_name: HashMap<String, Expr> = HashMap::default();
     for (f, e) in fields {
-        if by_name.insert(f.clone(), lower_expr(ctx, e)).is_some() {
+        if by_name.insert(f.to_string(), lower_expr(ctx, e)).is_some() {
             ctx.set_err(
-                format!("duplicate field `{f}` in `{name}` struct literal"),
+                format!("duplicate field `{f}` in `{name_s}` struct literal"),
                 span,
             );
         }
@@ -35,22 +35,21 @@ pub(super) fn lower_struct_lit(
             args.push(e);
         } else {
             ctx.set_err(
-                format!("missing field `{f}` in `{name}` struct literal"),
+                format!("missing field `{f}` in `{name_s}` struct literal"),
                 span,
             );
-            // Placeholder; `lower_module` aborts on LOWER_ERR.
             args.push(Expr::Int(0, span));
         }
     }
     if let Some((extra, _)) = by_name.iter().next() {
         ctx.set_err(
-            format!("unknown field `{extra}` in `{name}` struct literal"),
+            format!("unknown field `{extra}` in `{name_s}` struct literal"),
             span,
         );
     }
     Expr::AdtNew {
-        adt_name: name.into(),
-        variant: name.into(),
+        adt_name: name.clone(),
+        variant: name.clone(),
         tag: 0,
         args,
         span,
@@ -60,15 +59,12 @@ pub(super) fn lower_struct_lit(
 pub(super) fn lower_with(
     ctx: &LowerCtx,
     base: &lumia_syntax::Expr,
-    fields: &[(String, lumia_syntax::Expr)],
+    fields: &[(Sym, lumia_syntax::Expr)],
     span: Span,
 ) -> Expr {
     if fields.is_empty() {
         return lower_expr(ctx, base);
     }
-    // Always defer: field-set unique matching (e.g. `{ x, w }` → Rect) ignores the
-    // receiver and can rewrite `Point with { x, w }` into a Rect. Ty resolves from
-    // the concrete base product via `infer_with` + `with_rewrites`.
     Expr::With {
         base: Box::new(lower_expr(ctx, base)),
         fields: fields
@@ -81,17 +77,17 @@ pub(super) fn lower_with(
 
 /// Expand `base with { … }` once the product type is known (lower or ty rewrite).
 pub fn expand_with_known(
-    products: &HashMap<String, Vec<String>>,
-    type_name: String,
+    products: &HashMap<Sym, Vec<Sym>>,
+    type_name: Sym,
     base: Expr,
-    fields: Vec<(String, Expr)>,
+    fields: Vec<(Sym, Expr)>,
     span: Span,
 ) -> Expr {
     let Some(order) = products.get(&type_name) else {
         return base;
     };
-    let tmp = format!("__with_{}", span.start.0);
-    let mut by_name: HashMap<String, Expr> = HashMap::default();
+    let tmp = Sym::from(format!("__with_{}", span.start.0));
+    let mut by_name: HashMap<Sym, Expr> = HashMap::default();
     for (f, e) in fields {
         by_name.insert(f, e);
     }
@@ -116,7 +112,7 @@ pub fn expand_with_known(
         value: Box::new(base),
         body: Box::new(Expr::AdtNew {
             adt_name: type_name,
-            variant: String::new(),
+            variant: Sym::from(""),
             tag: 0,
             args,
             span,

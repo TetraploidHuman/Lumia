@@ -1,0 +1,15 @@
+/// Recursive list ADT: parametric head, Self-typed tail.
+module main
+type UList { Nil Cons(h, t) }
+
+val sum = { xs ->
+    xs match {
+        Nil -> 0
+        Cons(h, t) -> h + sum(t)
+    }
+}
+
+val main = {
+    println(sum(Nil))
+    println(sum(Cons(1, Cons(2, Cons(3, Nil)))))
+}

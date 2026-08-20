@@ -47,7 +47,7 @@ impl<'ctx> Codegen<'ctx> {
                         ptr_ty,
                         "assert_msg",
                     ))?;
-                    let len_f = self.runtime_fn("lumia_str_len")?;
+                    let len_f = self.runtime_fn("lumia_str_byte_len")?;
                     let call = crate::error::llvm(self.llvm.builder.build_call(
                         len_f,
                         &[msg_ptr.into()],

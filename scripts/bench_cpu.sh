@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # CPU compute-intensive microbench (Release).
-# Kernels / scenarios — see examples/bench_cpu.lm:
+# Kernels / scenarios — see examples/bench/bench_cpu.lm:
 #   primes, matmul, Mandelbrot, Collatz dense+strided, fib, poly,
 #   gcd, divisorSum, productRem, floatOrbit, rangeFold, memTraffic
 #
@@ -52,9 +52,9 @@ stats_min_med_max() {
 }
 
 cd "$ROOT"
-cargo build -q -p lumia
-LUMIA="$ROOT/target/debug/lumia"
-SRC=examples/bench_cpu.lm
+cargo build -q -p lumia --release
+LUMIA="$ROOT/target/release/lumia"
+SRC=examples/bench/bench_cpu.lm
 OUT_DIR="${TMPDIR:-/tmp}/lumia_bench_cpu"
 mkdir -p "$OUT_DIR"
 BIN="$OUT_DIR/bench_cpu"

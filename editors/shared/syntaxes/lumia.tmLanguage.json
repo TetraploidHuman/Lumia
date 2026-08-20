@@ -49,7 +49,7 @@
       "patterns": [
         {
           "name": "keyword.control.lumia",
-          "match": "\\b(if|else|match|for|in|break|continue|return|alt)\\b"
+          "match": "\\b(if|else|match|for|in|break|continue|return|alt|scope|spawn|to)\\b"
         },
         {
           "name": "keyword.declaration.lumia",

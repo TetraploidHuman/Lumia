@@ -3,7 +3,7 @@
 use super::{short_and, short_or};
 use crate::ast::{Builtin, Expr};
 use crate::lower::LowerCtx;
-use lumia_syntax::{BinOp, Pattern, Span};
+use lumia_syntax::{BinOp, Pattern, Span, Sym};
 
 /// Last-arm elision: only `_` / binders (and all-irrefutable `or`) may skip the
 /// tag test + `MatchFail`. Nullary ctor names like `None` are refutable — same
@@ -11,7 +11,7 @@ use lumia_syntax::{BinOp, Pattern, Span};
 pub(crate) fn pattern_irrefutable(ctx: &LowerCtx, pat: &Pattern) -> bool {
     match pat {
         Pattern::Wildcard(_) => true,
-        Pattern::Ident(name, _) => ctx.lookup_ctor(name).is_none_or(|c| c.arity != 0),
+        Pattern::Ident(name, _) => ctx.lookup_ctor(name.as_str()).is_none_or(|c| c.arity != 0),
         Pattern::Or(ps, _) => !ps.is_empty() && ps.iter().all(|p| pattern_irrefutable(ctx, p)),
         Pattern::Tuple { elems, .. } => elems.iter().all(|p| pattern_irrefutable(ctx, p)),
         Pattern::Struct { fields, .. } => fields.iter().all(|(_, p)| pattern_irrefutable(ctx, p)),
@@ -27,10 +27,10 @@ fn bind_or_nest(
     field: Expr,
     span: Span,
     cond: &mut Expr,
-    binds: &mut Vec<(String, Expr)>,
+    binds: &mut Vec<(Sym, Expr)>,
 ) {
     match sub {
-        Pattern::Ident(n, _) if ctx.lookup_ctor(n).is_none_or(|c| c.arity != 0) => {
+        Pattern::Ident(n, _) if ctx.lookup_ctor(n.as_str()).is_none_or(|c| c.arity != 0) => {
             binds.push((n.clone(), field));
         }
         Pattern::Wildcard(_) => {}
@@ -42,7 +42,7 @@ fn bind_or_nest(
     }
 }
 
-fn lit_eq(scrut: &Expr, right: Expr, span: Span) -> (Expr, Vec<(String, Expr)>) {
+fn lit_eq(scrut: &Expr, right: Expr, span: Span) -> (Expr, Vec<(Sym, Expr)>) {
     (
         Expr::Binary {
             op: BinOp::Eq,
@@ -60,7 +60,7 @@ fn pattern_cond_variant(
     args: &[Pattern],
     scrut: &Expr,
     span: Span,
-) -> (Expr, Vec<(String, Expr)>) {
+) -> (Expr, Vec<(Sym, Expr)>) {
     let Some(c) = ctx.lookup_ctor(name) else {
         ctx.set_err(format!("unknown variant `{name}` in pattern"), span);
         return (Expr::Bool(false, span), vec![]);
@@ -108,10 +108,10 @@ fn pattern_cond_variant(
 fn pattern_cond_struct(
     ctx: &LowerCtx,
     name: &str,
-    fields: &[(String, Pattern)],
+    fields: &[(lumia_syntax::Sym, Pattern)],
     scrut: &Expr,
     span: Span,
-) -> (Expr, Vec<(String, Expr)>) {
+) -> (Expr, Vec<(Sym, Expr)>) {
     let Some(order) = ctx.lookup_product(name) else {
         ctx.set_err(
             format!("unknown product type `{name}` in struct pattern"),
@@ -122,9 +122,10 @@ fn pattern_cond_struct(
     let mut cond = Expr::Bool(true, span);
     let mut binds = vec![];
     for (fname, sub) in fields {
-        let Some(idx) = order.iter().position(|f| f == fname) else {
+        let fname_s = fname.as_str();
+        let Some(idx) = order.iter().position(|f| f == fname_s) else {
             ctx.set_err(
-                format!("unknown field `{fname}` in `{name}` struct pattern"),
+                format!("unknown field `{fname_s}` in `{name}` struct pattern"),
                 span,
             );
             continue;
@@ -149,7 +150,7 @@ fn pattern_cond_tuple(
     elems: &[Pattern],
     scrut: &Expr,
     span: Span,
-) -> (Expr, Vec<(String, Expr)>) {
+) -> (Expr, Vec<(Sym, Expr)>) {
     let mut cond = Expr::Bool(true, span);
     let mut binds = vec![];
     for (i, ep) in elems.iter().enumerate() {
@@ -166,16 +167,39 @@ fn pattern_cond_tuple(
 fn pattern_cond_list(
     ctx: &LowerCtx,
     elems: &[Pattern],
-    rest: &Option<String>,
+    rest: &Option<lumia_syntax::Sym>,
     scrut: &Expr,
     span: Span,
-) -> (Expr, Vec<(String, Expr)>) {
+) -> (Expr, Vec<(Sym, Expr)>) {
     let len = Expr::BuiltinCall {
         name: Builtin::ListLen,
         args: vec![scrut.clone()],
         span,
     };
     let min = elems.len() as i64;
+    // Open `ListGet` defaults to Map (UFCS `getOr`); list patterns must pin the
+    // scrutinee to `List` first. Prefer `concat` with `listOf()` over `take`
+    // (open take uses `take_vars` and no longer forces List).
+    let empty = Expr::Call {
+        callee: Box::new(Expr::Var("listOf".into(), span)),
+        args: vec![],
+        span,
+    };
+    let force_list = Expr::BuiltinCall {
+        name: Builtin::ListConcat,
+        args: vec![scrut.clone(), empty],
+        span,
+    };
+    let force_ok = Expr::Binary {
+        op: BinOp::Ge,
+        left: Box::new(Expr::BuiltinCall {
+            name: Builtin::ListLen,
+            args: vec![force_list],
+            span,
+        }),
+        right: Box::new(Expr::Int(0, span)),
+        span,
+    };
     let mut cond = if rest.is_some() {
         Expr::Binary {
             op: BinOp::Ge,
@@ -191,15 +215,10 @@ fn pattern_cond_list(
             span,
         }
     };
+    // Must use `short_and` (If), not `BinOp::And` — ty rejects leftover And/Or.
+    cond = short_and(force_ok, cond, span);
     let mut binds = vec![];
-    for (i, ep) in elems.iter().enumerate() {
-        let get = Expr::BuiltinCall {
-            name: Builtin::ListGet,
-            args: vec![scrut.clone(), Expr::Int(i as i64, span)],
-            span,
-        };
-        bind_or_nest(ctx, ep, get, span, &mut cond, &mut binds);
-    }
+    // Rest slice before element gets so typing sees List before open Get.
     if let Some(rname) = rest {
         let slice = Expr::BuiltinCall {
             name: Builtin::ListSlice,
@@ -207,6 +226,14 @@ fn pattern_cond_list(
             span,
         };
         binds.push((rname.clone(), slice));
+    }
+    for (i, ep) in elems.iter().enumerate() {
+        let get = Expr::BuiltinCall {
+            name: Builtin::ListGet,
+            args: vec![scrut.clone(), Expr::Int(i as i64, span)],
+            span,
+        };
+        bind_or_nest(ctx, ep, get, span, &mut cond, &mut binds);
     }
     (cond, binds)
 }
@@ -218,7 +245,7 @@ pub(crate) fn pattern_cond(
     pat: &Pattern,
     scrut: &Expr,
     span: Span,
-) -> (Expr, Vec<(String, Expr)>) {
+) -> (Expr, Vec<(Sym, Expr)>) {
     match pat {
         Pattern::Wildcard(_) => (Expr::Bool(true, span), vec![]),
         Pattern::Int(n, s) => lit_eq(scrut, Expr::Int(*n, *s), span),
@@ -227,7 +254,7 @@ pub(crate) fn pattern_cond(
         Pattern::Char(c, s) => lit_eq(scrut, Expr::Char(*c, *s), span),
         Pattern::String(t, s) => lit_eq(scrut, Expr::String(t.clone(), *s), span),
         Pattern::Ident(name, _) => {
-            if let Some(c) = ctx.lookup_ctor(name) {
+            if let Some(c) = ctx.lookup_ctor(name.as_str()) {
                 if c.arity == 0 {
                     let tag = Expr::BuiltinCall {
                         name: Builtin::AdtTag,
@@ -267,8 +294,12 @@ pub(crate) fn pattern_cond(
             }
             (cond, binds)
         }
-        Pattern::Variant { name, args, .. } => pattern_cond_variant(ctx, name, args, scrut, span),
-        Pattern::Struct { name, fields, .. } => pattern_cond_struct(ctx, name, fields, scrut, span),
+        Pattern::Variant { name, args, .. } => {
+            pattern_cond_variant(ctx, name.as_str(), args, scrut, span)
+        }
+        Pattern::Struct { name, fields, .. } => {
+            pattern_cond_struct(ctx, name.as_str(), fields, scrut, span)
+        }
         Pattern::Tuple { elems, .. } => pattern_cond_tuple(ctx, elems, scrut, span),
         Pattern::List { elems, rest, .. } => pattern_cond_list(ctx, elems, rest, scrut, span),
     }

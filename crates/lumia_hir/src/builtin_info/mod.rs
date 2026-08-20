@@ -7,6 +7,7 @@ mod io;
 mod list;
 mod map_set;
 mod string;
+mod task;
 
 #[cfg(test)]
 mod tests;
@@ -16,6 +17,7 @@ pub(crate) use io::info_io;
 pub(crate) use list::info_list;
 pub(crate) use map_set::info_map_set;
 pub(crate) use string::info_string;
+pub(crate) use task::info_task;
 
 /// Default effect for a builtin (actual call effect also unions argument effects).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +53,8 @@ pub enum BuiltinEmit {
     I64I64Ptr,
     /// `(obj ptr, i64, i64)` → ptr→i64.
     ObjI64I64Ptr,
+    /// `(obj ptr)` + codegen bool field mask → ptr→i64 (`lumia_map_items`).
+    UnaryObjBoolMask,
     /// `(obj ptr, i64)` + codegen Option some/none tags → scalar i64 (`lumia_get`).
     ObjI64OptionTags,
 }
@@ -81,6 +85,8 @@ pub struct BuiltinInfo {
     /// When `args[arg_idx]` is Float, call `ensure_sym` on the container (`args[0]`)
     /// before the runtime call (List/Map/Set IEEE tagging).
     pub float_ensures: &'static [(u8, &'static str)],
+    /// Like [`Self::float_ensures`], but when the arg is Bool (List/Map/Set TID_B_*).
+    pub bool_ensures: &'static [(u8, &'static str)],
     pub emit: BuiltinEmit,
     /// Escape analysis: whether arguments may be retained by the runtime
     /// (collections / IO). Pure projections (len/get/tag) are `false`.
@@ -89,20 +95,48 @@ pub struct BuiltinInfo {
     pub may_capture: bool,
     /// Codegen GC rooting for the *result* (not args). See [`ResultHeap`].
     pub result_heap: ResultHeap,
+    /// When the receiver is typed `String`, emit this RT symbol instead of
+    /// [`Self::runtime_symbol`] (list-family methods overloaded on String).
+    pub string_receiver_rt: Option<&'static str>,
+    /// When the receiver is a known `List`, emit this monomorphic list RT symbol
+    /// instead of the polymorphic map/container entry.
+    pub list_receiver_rt: Option<&'static str>,
 }
 
 impl BuiltinInfo {
     pub fn float_sensitive(self) -> bool {
         !self.float_ensures.is_empty()
     }
+
+    pub fn with_string_receiver_rt(mut self, sym: &'static str) -> Self {
+        self.string_receiver_rt = Some(sym);
+        self
+    }
+
+    pub fn with_list_receiver_rt(mut self, sym: &'static str) -> Self {
+        self.list_receiver_rt = Some(sym);
+        self
+    }
+
+    pub fn with_bool_ensures(mut self, ens: &'static [(u8, &'static str)]) -> Self {
+        self.bool_ensures = ens;
+        self
+    }
 }
 
 pub(crate) const NO_F: &[(u8, &str)] = &[];
+pub(crate) const NO_B: &[(u8, &str)] = &[];
 pub(crate) const ENS_LIST_APPEND: &[(u8, &str)] = &[(1, lumia_abi::ENSURE_LIST_F64)];
+pub(crate) const ENS_LIST_APPEND_BOOL: &[(u8, &str)] = &[(1, lumia_abi::ENSURE_LIST_BOOL)];
 pub(crate) const ENS_SET_INSERT: &[(u8, &str)] = &[(1, lumia_abi::ENSURE_SET_F64)];
+pub(crate) const ENS_SET_INSERT_BOOL: &[(u8, &str)] = &[(1, lumia_abi::ENSURE_SET_BOOL)];
 pub(crate) const ENS_MAP_SET: &[(u8, &str)] = &[
     (1, lumia_abi::ENSURE_MAP_F64),
     (2, lumia_abi::ENSURE_MAP_VF64),
+];
+pub(crate) const ENS_MAP_SET_BOOL: &[(u8, &str)] = &[
+    (1, lumia_abi::ENSURE_MAP_BOOL),
+    (2, lumia_abi::ENSURE_MAP_VBOOL),
 ];
 
 #[inline]
@@ -124,9 +158,12 @@ pub(crate) fn bi(
         effect,
         runtime_symbol,
         float_ensures,
+        bool_ensures: NO_B,
         emit,
         may_capture,
         result_heap,
+        string_receiver_rt: None,
+        list_receiver_rt: None,
     }
 }
 
@@ -139,12 +176,15 @@ impl Builtin {
             ListLen | ListGet | ListSlice | ListAppend | ListConcat | ListTake | ListReverse
             | ListSort | ListSortByKeys | ListParMap | ListParFold | ListJoin | Elems | Range
             | RangeInclusive => info_list(self),
-            Contains | MapSet | MapRemove | SetInsert | MapKeys | MapValues | MapItems => {
+            Contains | MapSet | MapRemove | SetInsert | SetUnion | SetIntersect | SetDiff
+            | MapKeys | MapValues | MapItems => {
                 info_map_set(self)
             }
             StrTrim | StrSplit | StrSubstring | StrToLower | StrToUpper | StrStartsWith
             | StrEndsWith => info_string(self),
             AdtTag | AdtField => info_adt(self),
+            ChannelNew | ChannelSend | ChannelRecv | ChannelRecvOpt | ChannelClose | TaskJoin
+            | TaskJoinOpt | TaskSpawn | ScopeEnter | ScopeLeave | ScopeCancel => info_task(self),
         }
     }
 
@@ -178,6 +218,18 @@ impl Builtin {
         self.info().runtime_symbol
     }
 
+    /// When the receiver is typed `String`, use the dedicated String RT entry
+    /// instead of the polymorphic / list symbol in [`Self::runtime_symbol`].
+    pub fn string_receiver_rt_override(self) -> Option<&'static str> {
+        self.info().string_receiver_rt
+    }
+
+    /// When the receiver is a known `List`, use the monomorphic list RT entry
+    /// instead of the polymorphic map/container symbol.
+    pub fn list_receiver_rt_override(self) -> Option<&'static str> {
+        self.info().list_receiver_rt
+    }
+
     /// Exhaustive list of builtins — keep in sync when adding a variant.
     pub const ALL: &[Builtin] = &[
         Builtin::Println,
@@ -190,6 +242,9 @@ impl Builtin {
         Builtin::MapSet,
         Builtin::MapRemove,
         Builtin::SetInsert,
+        Builtin::SetUnion,
+        Builtin::SetIntersect,
+        Builtin::SetDiff,
         Builtin::MapKeys,
         Builtin::MapValues,
         Builtin::MapItems,
@@ -216,5 +271,16 @@ impl Builtin {
         Builtin::ListJoin,
         Builtin::AdtTag,
         Builtin::AdtField,
+        Builtin::ChannelNew,
+        Builtin::ChannelSend,
+        Builtin::ChannelRecv,
+        Builtin::ChannelRecvOpt,
+        Builtin::ChannelClose,
+        Builtin::TaskJoin,
+        Builtin::TaskJoinOpt,
+        Builtin::TaskSpawn,
+        Builtin::ScopeEnter,
+        Builtin::ScopeLeave,
+        Builtin::ScopeCancel,
     ];
 }

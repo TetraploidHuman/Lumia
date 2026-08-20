@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Compare Lumia CN triad-forward microbench vs CogniNucleus PyTorch CPU agent.
 #
-# Lumia: examples/bench_cn_forward_{kernel,naive}.lm (dense skeleton).
+# Lumia: examples/bench/bench_cn_forward_{kernel,naive}.lm (dense skeleton).
 # Torch: FreeEnergyAgent triad+EFE (hip/amy off), default strict_pe+cluster.
 #   LEGACY=1  → pass --legacy to the Python harness
 #   BOTH=1    → time strict and legacy
@@ -42,21 +42,12 @@ echo "CN_ROOT=$CN_ROOT"
 echo
 
 echo "== Lumia build =="
-"$LUMIA" build --release examples/bench_cn_forward_kernel.lm -o "$OUT_DIR/lumia_kernel"
-"$LUMIA" build --release examples/bench_cn_forward_naive.lm -o "$OUT_DIR/lumia_naive"
-
-measure_bin() {
-  local bin=$1
-  local samples="" i
-  for ((i = 0; i < RUNS; i++)); do
-    samples+="$(bench_measure "$bin")"$'\n'
-  done
-  printf '%s' "$samples" | bench_measure_stats
-}
+"$LUMIA" build --release examples/bench/bench_cn_forward_kernel.lm -o "$OUT_DIR/lumia_kernel"
+"$LUMIA" build --release examples/bench/bench_cn_forward_naive.lm -o "$OUT_DIR/lumia_naive"
 
 echo "== Lumia wall time =="
-k_stats="$(measure_bin "$OUT_DIR/lumia_kernel")"
-n_stats="$(measure_bin "$OUT_DIR/lumia_naive")"
+k_stats="$(bench_measure_runs "$OUT_DIR/lumia_kernel")"
+n_stats="$(bench_measure_runs "$OUT_DIR/lumia_naive")"
 bench_print_stats "lumia_kernel" "$k_stats"
 bench_print_stats "lumia_naive" "$n_stats"
 

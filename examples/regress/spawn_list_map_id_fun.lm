@@ -1,0 +1,12 @@
+/// spawn List/Map of identity Float Fun — get/alt then call keep Float ABI.
+module main
+
+val main = {
+    scope {
+        val xs = spawn { listOf({ x -> x }) }.join()
+        println(xs.get(0)(2.5))
+        val m = spawn { mapOf(1 to { x -> x }) }.join()
+        val f = m.get(1) alt { x -> x }
+        println(f(3.5))
+    }
+}

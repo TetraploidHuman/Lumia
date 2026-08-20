@@ -1,6 +1,67 @@
-use crate::ir::{CoreFun, Local};
+use crate::ir::{CoreFun, FunId, Local};
+use lumia_syntax::Sym;
 use lumia_ty::{Effect, Type};
 use rustc_hash::FxHashMap as HashMap;
+use std::hash::{Hash, Hasher};
+use std::sync::Arc;
+
+/// Named FunRef HOF argument. [`FunId`] is a lookup cache — Eq/Hash use `name` only
+/// so resolved vs unresolved keys still collide in `renames`.
+#[derive(Clone, Debug)]
+pub(crate) struct FunRefKey {
+    pub name: Sym,
+    pub id: Option<FunId>,
+}
+
+impl PartialEq for FunRefKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
+impl Eq for FunRefKey {}
+
+impl Hash for FunRefKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+    }
+}
+
+impl From<&str> for FunRefKey {
+    fn from(s: &str) -> Self {
+        Self {
+            name: s.into(),
+            id: None,
+        }
+    }
+}
+
+impl From<String> for FunRefKey {
+    fn from(name: String) -> Self {
+        Self {
+            name: name.into(),
+            id: None,
+        }
+    }
+}
+
+impl From<Sym> for FunRefKey {
+    fn from(name: Sym) -> Self {
+        Self { name, id: None }
+    }
+}
+
+/// Resolve a FunRef against the current module table (id if still valid, else name).
+pub(crate) fn lookup_funref<'a>(functions: &'a [CoreFun], fr: &FunRefKey) -> Option<&'a CoreFun> {
+    if let Some(FunId(i)) = fr.id {
+        if let Some(f) = functions.get(i as usize) {
+            if f.name == fr.name {
+                return Some(f);
+            }
+        }
+    }
+    functions.iter().find(|f| f.name == fr.name)
+}
 
 /// Ground type key for monomorphization (Hash-friendly; no open Vars).
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -14,11 +75,24 @@ pub(crate) enum MonoKind {
     Map(Box<MonoKind>, Box<MonoKind>),
     Set(Box<MonoKind>),
     Adt {
-        name: String,
+        name: Sym,
         params: Vec<MonoKind>,
     },
     /// Named FunRef HOF argument (specialized + directized inside the clone).
-    FunRef(String),
+    FunRef(FunRefKey),
+    /// Structural Fun (e.g. `Option[Fun(Float)→Float]` for unwrapOr).
+    Fun {
+        params: Vec<MonoKind>,
+        ret: Box<MonoKind>,
+    },
+    /// `Task[T]` — needed so `unwrapTask(spawn { 1.5 })` clones Float ABI.
+    Task(Box<MonoKind>),
+    /// `Channel[T]` — same Float/heap payload specialization as Task.
+    Channel(Box<MonoKind>),
+    /// Structural tuple / tuple-prefix (HIR also uses `__Tuple` Adt; both must key).
+    Tuple(Vec<MonoKind>),
+    /// `()` — so `ignore(unit, 1.5)` can still specialize the Float result path.
+    Unit,
 }
 
 impl MonoKind {
@@ -34,7 +108,7 @@ impl MonoKind {
             MonoKind::Set(e) => format!("Set_{}", e.encode()),
             MonoKind::Adt { name, params } => {
                 if params.is_empty() {
-                    name.clone()
+                    name.to_string()
                 } else {
                     format!(
                         "{}_{}",
@@ -47,9 +121,10 @@ impl MonoKind {
                     )
                 }
             }
-            MonoKind::FunRef(n) => {
+            MonoKind::FunRef(fr) => {
                 // Sanitize so `$` / path separators do not break the clone name.
-                let safe: String = n
+                let safe: String = fr
+                    .name
                     .chars()
                     .map(|c| {
                         if c.is_ascii_alphanumeric() || c == '_' {
@@ -61,36 +136,62 @@ impl MonoKind {
                     .collect();
                 format!("Fn_{safe}")
             }
+            MonoKind::Fun { params, ret } => {
+                let ps: Vec<_> = params.iter().map(MonoKind::encode).collect();
+                format!("Fun_{}_{}", ps.join("_"), ret.encode())
+            }
+            MonoKind::Task(e) => format!("Task_{}", e.encode()),
+            MonoKind::Channel(e) => format!("Channel_{}", e.encode()),
+            MonoKind::Tuple(es) => {
+                let parts: Vec<_> = es.iter().map(MonoKind::encode).collect();
+                format!("Tuple_{}", parts.join("_"))
+            }
+            MonoKind::Unit => "Unit".into(),
         }
     }
 
-    fn to_type(&self) -> Type {
+    pub(crate) fn to_type(&self) -> Type {
         match self {
             MonoKind::Int => Type::Int,
             MonoKind::Float => Type::Float,
             MonoKind::Bool => Type::Bool,
             MonoKind::String => Type::String,
             MonoKind::Char => Type::Char,
-            MonoKind::List(e) => Type::List(Box::new(e.to_type())),
-            MonoKind::Map(k, v) => Type::Map(Box::new(k.to_type()), Box::new(v.to_type())),
-            MonoKind::Set(e) => Type::Set(Box::new(e.to_type())),
+            MonoKind::List(e) => Type::List(Arc::new(e.to_type())),
+            MonoKind::Map(k, v) => Type::Map(Arc::new(k.to_type()), Arc::new(v.to_type())),
+            MonoKind::Set(e) => Type::Set(Arc::new(e.to_type())),
             MonoKind::Adt { name, params } => Type::Adt {
                 name: name.clone(),
                 params: params.iter().map(MonoKind::to_type).collect(),
             },
-            // Opaque Fun slot — clone body directizes to a named Call.
-            MonoKind::FunRef(_) => Type::Fun(vec![], Box::new(Type::Int), Effect::pure()),
+            // Opaque FunRef — never a fake `Fun([], Int)`. Resolve the named
+            // function via `param_tys` / `ret_ty` (they take `&[CoreFun]`).
+            MonoKind::FunRef(_) => Type::Unit,
+            MonoKind::Fun { params, ret } => Type::Fun(
+                params.iter().map(MonoKind::to_type).collect(),
+                Arc::new(ret.to_type()),
+                Effect::pure(),
+            ),
+            MonoKind::Task(e) => Type::Task(Arc::new(e.to_type())),
+            MonoKind::Channel(e) => Type::Channel(Arc::new(e.to_type())),
+            MonoKind::Tuple(es) => Type::Tuple(es.iter().map(MonoKind::to_type).collect()),
+            MonoKind::Unit => Type::Unit,
         }
     }
 }
 
-fn type_is_heap_structure(t: &Type) -> bool {
+fn type_is_mono_container(t: &Type) -> bool {
+    // ABI-erased *containers* restored from Int keys — not the full GC lattice
+    // ([`crate::type_may_heap`]): String/Char/Fun keep dedicated MonoKinds and
+    // must not be rewritten from Int formals here.
     matches!(
         t,
         Type::Adt { .. }
             | Type::List(_)
             | Type::Map(_, _)
             | Type::Set(_)
+            | Type::Task(_)
+            | Type::Channel(_)
             | Type::Tuple(_)
             | Type::TuplePrefix(_)
     )
@@ -118,10 +219,16 @@ fn type_to_mono(t: &Type) -> Option<MonoKind> {
             Box::new(type_to_mono(v)?),
         )),
         Type::Set(e) => type_to_mono(e).map(|k| MonoKind::Set(Box::new(k))),
-        Type::Adt { name, params } if name == "Option" || name == "Result" => {
+        Type::Adt { name, params } if lumia_hir::is_option_or_result(name) => {
             // Polymorphic payloads must appear in the key (map/andThen/…).
+            // Open Vars are not ground — returning `Int` here created premature
+            // `unwrapOr$Option_Int_Float` clones that blocked a later Float key
+            // (call already rewritten to the Int clone).
             let mut ps = Vec::with_capacity(params.len());
             for p in params {
+                if matches!(p, Type::Var(_)) {
+                    return None;
+                }
                 ps.push(type_to_mono(p)?);
             }
             Some(MonoKind::Adt {
@@ -148,8 +255,97 @@ fn type_to_mono(t: &Type) -> Option<MonoKind> {
                 params: ps,
             })
         }
-        // Unit / Fun / Var: FunRef args use `MonoKind::FunRef` via funref map.
+        // Structural Fun so `unwrapOr(Some(floatFun), …)` can specialize.
+        // Open / unkeyable params or ret → whole key fails (same as List/Map/Adt),
+        // never silently `unwrap_or(Int)` into a fake `$Fun_Int_…` clone.
+        Type::Fun(ps, r, _) => {
+            let mut pks = Vec::with_capacity(ps.len());
+            for p in ps {
+                pks.push(type_to_mono(p)?);
+            }
+            let rk = type_to_mono(r)?;
+            Some(MonoKind::Fun {
+                params: pks,
+                ret: Box::new(rk),
+            })
+        }
+        Type::Task(e) => type_to_mono(e).map(|k| MonoKind::Task(Box::new(k))),
+        Type::Channel(e) => type_to_mono(e).map(|k| MonoKind::Channel(Box::new(k))),
+        Type::Tuple(ts) | Type::TuplePrefix(ts) => {
+            let mut ks = Vec::with_capacity(ts.len());
+            for t in ts {
+                ks.push(type_to_mono(t)?);
+            }
+            Some(MonoKind::Tuple(ks))
+        }
+        Type::Unit => Some(MonoKind::Unit),
+        // Open Var: FunRef args use `MonoKind::FunRef` via funref map.
         _ => None,
+    }
+}
+
+/// May-heap placeholder or open scalar — not a ground Option/Result payload.
+fn is_erased_abi_ty(t: &Type) -> bool {
+    match t {
+        Type::Int | Type::Var(_) | Type::Unknown => true,
+        Type::List(e) if matches!(e.as_ref(), Type::Int) => true,
+        _ => false,
+    }
+}
+
+fn is_erased_option_ret(t: &Type) -> bool {
+    matches!(
+        t,
+        Type::Adt { name, params }
+            if lumia_hir::is_option(name) && params.first().is_some_and(is_erased_abi_ty)
+    )
+}
+
+fn is_erased_result_ret(t: &Type) -> bool {
+    matches!(
+        t,
+        Type::Adt { name, params }
+            if lumia_hir::is_result(name) && params.first().is_some_and(is_erased_abi_ty)
+    )
+}
+
+pub(crate) fn strip_mono_suffix(name: &str) -> &str {
+    name.split('$').next().unwrap_or(name)
+}
+
+/// Prefer [`CoreFun::mono_of`] / [`CoreFun::base_name`] when the callee is in `functions`.
+fn base_fun_name<'a>(name: &'a str, functions: &'a [CoreFun]) -> &'a str {
+    functions
+        .iter()
+        .find(|f| f.name == name)
+        .map(|f| f.base_name())
+        .unwrap_or_else(|| strip_mono_suffix(name))
+}
+
+/// Clone rets must be re-keyable (`type_to_mono`); open Vars block `unwrapOr` etc.
+pub(crate) fn ground_open_vars(t: Type) -> Type {
+    match t {
+        Type::Var(_) | Type::Unknown => Type::Int,
+        Type::List(e) => Type::List(Arc::new(ground_open_vars(Type::unbox(e)))),
+        Type::Set(e) => Type::Set(Arc::new(ground_open_vars(Type::unbox(e)))),
+        Type::Task(e) => Type::Task(Arc::new(ground_open_vars(Type::unbox(e)))),
+        Type::Channel(e) => Type::Channel(Arc::new(ground_open_vars(Type::unbox(e)))),
+        Type::Map(k, v) => Type::Map(
+            Arc::new(ground_open_vars(Type::unbox(k))),
+            Arc::new(ground_open_vars(Type::unbox(v))),
+        ),
+        Type::Tuple(ts) => Type::Tuple(ts.into_iter().map(ground_open_vars).collect()),
+        Type::TuplePrefix(ts) => Type::TuplePrefix(ts.into_iter().map(ground_open_vars).collect()),
+        Type::Adt { name, params } => Type::Adt {
+            name,
+            params: params.into_iter().map(ground_open_vars).collect(),
+        },
+        Type::Fun(ps, r, e) => Type::Fun(
+            ps.into_iter().map(ground_open_vars).collect(),
+            Arc::new(ground_open_vars(Type::unbox(r))),
+            e,
+        ),
+        other => other,
     }
 }
 
@@ -160,7 +356,7 @@ pub(crate) fn restore_mono_param_ty(key_ty: &mut Type, formal: Option<&Type>) {
         return;
     };
     match (&*key_ty, formal) {
-        (Type::Int, t) if type_is_heap_structure(t) => {
+        (Type::Int, t) if type_is_mono_container(t) => {
             *key_ty = t.clone();
         }
         (
@@ -229,75 +425,225 @@ impl MonoKey {
         self.0
             .iter()
             .map(|k| match k {
-                MonoKind::FunRef(n) => functions
-                    .iter()
-                    .find(|f| f.name == *n)
-                    .map(|f| Type::Fun(f.param_tys.clone(), Box::new(f.ret_ty.clone()), f.effect))
-                    .unwrap_or_else(|| k.to_type()),
+                MonoKind::FunRef(fr) => lookup_funref(functions, fr)
+                    .map(|f| Type::Fun(f.param_tys.clone(), Arc::new(f.ret_ty.clone()), f.effect))
+                    // Missing name: Unit sentinel — not a fake 0-ary Fun.
+                    .unwrap_or(Type::Unit),
                 other => other.to_type(),
             })
             .collect()
     }
 
-    /// Return type: HOF Option/Result map·andThen; else all-same / last-arg.
-    pub(crate) fn ret_ty(&self, functions: &[CoreFun]) -> Type {
-        if let Some(t) = self.hof_ret_ty(functions) {
-            return t;
+    /// Return type: HOF Option/Result map·andThen; else all-same / container /
+    /// last-arg.
+    ///
+    /// `callee` (base name before `$…` suffix) distinguishes `mapErr` from
+    /// `resultMap` — both are `Result + FunRef` keys with different Ok/Err flow.
+    pub(crate) fn ret_ty(&self, functions: &[CoreFun], callee: Option<&str>) -> Type {
+        if let Some(t) = self.hof_ret_ty(functions, callee) {
+            return ground_open_vars(t);
         }
         let kinds = &self.0;
         if kinds.is_empty() {
             return Type::Int;
         }
+        let base = callee.map(|c| base_fun_name(c, functions)).unwrap_or("");
+        // `unwrapOr(opt, default)` returns the payload / default type — never the
+        // Option/Result wrapper. When `default` is a FunRef, "last data arg" is
+        // only the ADT and would wrongly keep `Option[Fun…]` (icall then uses
+        // Int ABI on a Fun value).
+        if base == "unwrapOr" {
+            if let Some(MonoKind::Adt { name, params }) = kinds.first() {
+                if lumia_hir::is_option_or_result(name) && !params.is_empty() {
+                    let payload = ground_open_vars(params[0].to_type());
+                    // FunRef default is the real ABI for `unwrapOr(None/Err, {…})`
+                    // and must not be filtered out (that left Option_Int → Int icall).
+                    let default_ty = match kinds.get(1) {
+                        Some(MonoKind::FunRef(fr)) => lookup_funref(functions, fr).map(|f| {
+                            let mut params = f.param_tys.clone();
+                            if f.is_lifted_lambda()
+                                && params
+                                    .first()
+                                    .is_some_and(|p| matches!(p, Type::Int | Type::Var(_)))
+                                && params.len() > 1
+                            {
+                                params.remove(0);
+                            }
+                            Type::Fun(params, Arc::new(f.ret_ty.clone()), f.effect)
+                        }),
+                        Some(k) => Some(ground_open_vars(k.to_type())),
+                        None => None,
+                    };
+                    // Bare `None` / `Err("e")` often mistag the Ok/Some slot as
+                    // Int or the Err String; the default carries the real ABI.
+                    if let Some(def_ty) = default_ty {
+                        let mistagged_payload =
+                            matches!(payload, Type::Int | Type::Var(_) | Type::String);
+                        let concrete_default = matches!(
+                            def_ty,
+                            Type::Float
+                                | Type::Bool
+                                | Type::Fun(_, _, _)
+                                | Type::List(_)
+                                | Type::Map(_, _)
+                                | Type::Set(_)
+                                | Type::Adt { .. }
+                                | Type::Char
+                        );
+                        if mistagged_payload && concrete_default {
+                            return def_ty;
+                        }
+                        if matches!(payload, Type::Int | Type::Var(_))
+                            && !matches!(def_ty, Type::Int | Type::Var(_))
+                        {
+                            return def_ty;
+                        }
+                        // `unwrapOr(Some(fun), defaultFun)` — prefer Fun payload.
+                        if matches!(payload, Type::Fun(_, _, _)) {
+                            return payload;
+                        }
+                        if matches!(def_ty, Type::Fun(_, _, _))
+                            && matches!(payload, Type::Int | Type::Var(_) | Type::String)
+                        {
+                            return def_ty;
+                        }
+                    }
+                    return payload;
+                }
+            }
+        }
+        // Instantiate generic ret from key formals (after unwrapOr / HOF specials).
+        // `unwrapTask: Task[a]→a` must not keep homogeneous `Task(Float)` as ret.
+        if let Some(f) = functions.iter().find(|f| f.name == base) {
+            if let Some(inst) = instantiate_ret_from_mono_key(f, self, functions) {
+                return ground_open_vars(inst);
+            }
+        }
         if kinds.iter().all(|k| k == &kinds[0]) {
-            return kinds[0].to_type();
+            if let MonoKind::FunRef(fr) = &kinds[0] {
+                return lookup_funref(functions, fr)
+                    .map(|f| {
+                        ground_open_vars(Type::Fun(
+                            f.param_tys.clone(),
+                            Arc::new(f.ret_ty.clone()),
+                            f.effect,
+                        ))
+                    })
+                    .unwrap_or(Type::Unit);
+            }
+            return ground_open_vars(kinds[0].to_type());
+        }
+        // `l2Normalize(xs, eps)` / `keep(xs, eps)`: first List/Map/Set is the
+        // value being transformed; last-arg would wrongly yield the scalar eps.
+        // Only for the 2-arg shape — `sumAt(xs, i, acc)` is List+Int+Float and
+        // must keep last-arg Float (fold/acc), not the list.
+        let n_containers = kinds
+            .iter()
+            .filter(|k| {
+                matches!(
+                    k,
+                    MonoKind::List(_) | MonoKind::Map(_, _) | MonoKind::Set(_)
+                )
+            })
+            .count();
+        if n_containers == 1 && kinds.len() == 2 {
+            if let Some(k) = kinds.iter().find(|k| {
+                matches!(
+                    k,
+                    MonoKind::List(_) | MonoKind::Map(_, _) | MonoKind::Set(_)
+                )
+            }) {
+                return ground_open_vars(k.to_type());
+            }
         }
         // Skip FunRef when taking "last data arg" (unwrap_or / defaults).
-        kinds
-            .iter()
-            .rev()
-            .find(|k| !matches!(k, MonoKind::FunRef(_)))
-            .map(MonoKind::to_type)
-            .unwrap_or(Type::Int)
+        ground_open_vars(
+            kinds
+                .iter()
+                .rev()
+                .find(|k| !matches!(k, MonoKind::FunRef(_)))
+                .map(MonoKind::to_type)
+                .unwrap_or(Type::Int),
+        )
     }
 
-    /// `map` / `andThen` / `apply` shaped keys with a FunRef callback.
-    pub(crate) fn hof_ret_ty(&self, functions: &[CoreFun]) -> Option<Type> {
+    /// `map` / `andThen` / `mapErr` shaped keys with a FunRef callback.
+    pub(crate) fn hof_ret_ty(&self, functions: &[CoreFun], callee: Option<&str>) -> Option<Type> {
+        let base = callee.map(|c| base_fun_name(c, functions)).unwrap_or("");
+        // `unwrapOr(opt, defaultFun)` also has Option+FunRef but FunRef is the
+        // default value, not a mapper — must not wrap as `Option[…]`.
+        if !matches!(
+            base,
+            "optionMap" | "resultMap" | "andThen" | "mapErr" | "map" | "flatMap" | "filterMap"
+        ) {
+            return None;
+        }
         let fun_ret = self.0.iter().find_map(|k| match k {
-            MonoKind::FunRef(n) => functions
-                .iter()
-                .find(|f| f.name == *n)
-                .map(|f| f.ret_ty.clone()),
+            MonoKind::FunRef(fr) => lookup_funref(functions, fr).map(|f| f.ret_ty.clone()),
             _ => None,
         })?;
-        // Shared Fun bodies often keep erased `Int` / heap-marker ret; for
-        // Option/Result map, the payload kind is the best U when ret is erased.
+        // Shared Fun bodies often keep erased `Int` / may-heap `List(Int)` ret;
+        // for Option/Result map, the data-arg payload is the best U then.
+        // Also treat erased `Option[Var]` / `Result[Var,_]` as non-payload so
+        // andThen does not wrap them into `Option[Option[Int]]`.
         let payload = match &fun_ret {
-            Type::Int | Type::Var(_) => None,
+            t if is_erased_abi_ty(t) || is_erased_option_ret(t) || is_erased_result_ret(t) => None,
             other => Some(other.clone()),
         };
         let data = self.0.iter().find(|k| !matches!(k, MonoKind::FunRef(_)))?;
         match data {
-            MonoKind::Adt { name, params } if name == "Option" => {
+            MonoKind::Adt { name, params } if lumia_hir::is_option(name) => {
                 // `andThen` / `flatMap`: callback already returns `Option[U]`.
                 // `map`: callback returns `U` → wrap as `Option[U]`.
-                if matches!(&fun_ret, Type::Adt { name: n, .. } if n == "Option") {
-                    return Some(fun_ret);
+                if matches!(&fun_ret, Type::Adt { name: n, .. } if lumia_hir::is_option(n))
+                    && !is_erased_option_ret(&fun_ret)
+                {
+                    return Some(ground_open_vars(fun_ret));
                 }
-                let inner = payload.or_else(|| params.first().map(MonoKind::to_type))?;
+                let inner = payload
+                    .filter(|t| !is_erased_abi_ty(t))
+                    .or_else(|| params.first().map(MonoKind::to_type))?;
                 Some(Type::Adt {
-                    name: "Option".into(),
-                    params: vec![inner],
+                    name: lumia_hir::OPTION.name.into(),
+                    params: vec![ground_open_vars(inner)],
                 })
             }
-            MonoKind::Adt { name, params } if name == "Result" => {
-                if matches!(&fun_ret, Type::Adt { name: n, .. } if n == "Result") {
-                    return Some(fun_ret);
+            MonoKind::Adt { name, params } if lumia_hir::is_result(name) => {
+                // Always emit Result[Ok, Err] (two params). Callback rets often
+                // carry only the Ok slot (`Result[Float]`); leaving an open Err
+                // Var after refine blocks `type_to_mono` → no `unwrapOr$` clone.
+                let data_err = params.get(1).map(MonoKind::to_type).unwrap_or(Type::Int);
+                // `mapErr`: Ok stays data Ok; callback ret is the new Err.
+                if base == "mapErr" {
+                    let ok = params.first().map(MonoKind::to_type).unwrap_or(Type::Int);
+                    let err = payload
+                        .filter(|t| !is_erased_abi_ty(t))
+                        .or_else(|| params.get(1).map(MonoKind::to_type))
+                        .unwrap_or(Type::Int);
+                    return Some(Type::Adt {
+                        name: lumia_hir::RESULT.name.into(),
+                        params: vec![ground_open_vars(ok), ground_open_vars(err)],
+                    });
                 }
-                let ok = payload.or_else(|| params.first().map(MonoKind::to_type))?;
-                let err = params.get(1).map(MonoKind::to_type).unwrap_or(Type::Int);
+                if matches!(&fun_ret, Type::Adt { name: n, .. } if lumia_hir::is_result(n))
+                    && !is_erased_result_ret(&fun_ret)
+                {
+                    let Type::Adt { params: fun_ps, .. } = &fun_ret else {
+                        unreachable!()
+                    };
+                    let ok = fun_ps.first().cloned().unwrap_or(Type::Int);
+                    let err = fun_ps.get(1).cloned().unwrap_or(data_err);
+                    return Some(Type::Adt {
+                        name: lumia_hir::RESULT.name.into(),
+                        params: vec![ground_open_vars(ok), ground_open_vars(err)],
+                    });
+                }
+                let ok = payload
+                    .filter(|t| !is_erased_abi_ty(t))
+                    .or_else(|| params.first().map(MonoKind::to_type))?;
                 Some(Type::Adt {
-                    name: "Result".into(),
-                    params: vec![ok, err],
+                    name: lumia_hir::RESULT.name.into(),
+                    params: vec![ground_open_vars(ok), ground_open_vars(data_err)],
                 })
             }
             _ => None,
@@ -306,21 +652,136 @@ impl MonoKey {
 
     /// Clone when any arg is non-Int or a FunRef (HOF).
     pub(crate) fn worth_cloning(&self) -> bool {
-        self.0
-            .iter()
-            .any(|k| matches!(k, MonoKind::FunRef(_)) || !matches!(k, MonoKind::Int))
+        self.0.iter().any(|k| {
+            matches!(k, MonoKind::FunRef(_) | MonoKind::Fun { .. }) || !matches!(k, MonoKind::Int)
+        })
     }
 
-    pub(crate) fn funref_param_binds(&self, params: &[Local]) -> HashMap<u32, String> {
+    pub(crate) fn funref_param_binds(&self, params: &[Local]) -> HashMap<u32, Sym> {
         let mut binds = HashMap::default();
         for (i, k) in self.0.iter().enumerate() {
-            if let MonoKind::FunRef(n) = k {
+            if let MonoKind::FunRef(fr) = k {
                 if let Some(p) = params.get(i) {
-                    binds.insert(p.0, n.clone());
+                    binds.insert(p.0, fr.name.clone());
                 }
             }
         }
         binds
+    }
+}
+
+/// Bind type vars in `formal` from a ground `concrete` shape (mono key arg).
+fn collect_mono_var_binds(formal: &Type, concrete: &Type, binds: &mut HashMap<u32, Type>) {
+    match (formal, concrete) {
+        (Type::Var(id), c) if !matches!(c, Type::Var(_)) => {
+            binds.entry(*id).or_insert_with(|| c.clone());
+        }
+        (Type::List(fe), Type::List(ce))
+        | (Type::Set(fe), Type::Set(ce))
+        | (Type::Task(fe), Type::Task(ce))
+        | (Type::Channel(fe), Type::Channel(ce)) => {
+            collect_mono_var_binds(fe, ce, binds);
+        }
+        (Type::Map(fk, fv), Type::Map(ck, cv)) => {
+            collect_mono_var_binds(fk, ck, binds);
+            collect_mono_var_binds(fv, cv, binds);
+        }
+        (
+            Type::Adt {
+                name: n1,
+                params: p1,
+            },
+            Type::Adt {
+                name: n2,
+                params: p2,
+            },
+        ) if n1 == n2 => {
+            for (a, b) in p1.iter().zip(p2.iter()) {
+                collect_mono_var_binds(a, b, binds);
+            }
+        }
+        (Type::Fun(fps, fr, _), Type::Fun(cps, cr, _)) => {
+            for (a, b) in fps.iter().zip(cps.iter()) {
+                collect_mono_var_binds(a, b, binds);
+            }
+            collect_mono_var_binds(fr, cr, binds);
+        }
+        (Type::Tuple(fts), Type::Tuple(cts)) | (Type::TuplePrefix(fts), Type::TuplePrefix(cts)) => {
+            for (a, b) in fts.iter().zip(cts.iter()) {
+                collect_mono_var_binds(a, b, binds);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn apply_mono_var_binds(t: &Type, binds: &HashMap<u32, Type>) -> Type {
+    match t {
+        Type::Var(id) => binds.get(id).cloned().unwrap_or_else(|| Type::Var(*id)),
+        Type::List(e) => Type::List(Arc::new(apply_mono_var_binds(e, binds))),
+        Type::Set(e) => Type::Set(Arc::new(apply_mono_var_binds(e, binds))),
+        Type::Task(e) => Type::Task(Arc::new(apply_mono_var_binds(e, binds))),
+        Type::Channel(e) => Type::Channel(Arc::new(apply_mono_var_binds(e, binds))),
+        Type::Map(k, v) => Type::Map(
+            Arc::new(apply_mono_var_binds(k, binds)),
+            Arc::new(apply_mono_var_binds(v, binds)),
+        ),
+        Type::Adt { name, params } => Type::Adt {
+            name: name.clone(),
+            params: params
+                .iter()
+                .map(|p| apply_mono_var_binds(p, binds))
+                .collect(),
+        },
+        Type::Fun(ps, r, e) => Type::Fun(
+            ps.iter().map(|p| apply_mono_var_binds(p, binds)).collect(),
+            Arc::new(apply_mono_var_binds(r, binds)),
+            *e,
+        ),
+        Type::Tuple(ts) => Type::Tuple(ts.iter().map(|p| apply_mono_var_binds(p, binds)).collect()),
+        Type::TuplePrefix(ts) => {
+            Type::TuplePrefix(ts.iter().map(|p| apply_mono_var_binds(p, binds)).collect())
+        }
+        other => other.clone(),
+    }
+}
+
+/// Instantiate `fun.ret_ty` from mono key arg shapes vs generic formals.
+/// Returns `None` when the result still has open Vars (fall back to heuristics).
+fn instantiate_ret_from_mono_key(
+    fun: &CoreFun,
+    key: &MonoKey,
+    functions: &[CoreFun],
+) -> Option<Type> {
+    if fun.param_tys.len() != key.0.len() {
+        return None;
+    }
+    // Skip when ret is already ground and not a Var-carrying shape we refine —
+    // still allow Var / Task[Var] / etc.
+    let mut binds = HashMap::default();
+    let concretes = key.param_tys(functions);
+    for (formal, concrete) in fun.param_tys.iter().zip(concretes.iter()) {
+        collect_mono_var_binds(formal, concrete, &mut binds);
+    }
+    if binds.is_empty() {
+        return None;
+    }
+    let inst = apply_mono_var_binds(&fun.ret_ty, &binds);
+    if type_has_open_var(&inst) {
+        return None;
+    }
+    Some(inst)
+}
+
+fn type_has_open_var(t: &Type) -> bool {
+    match t {
+        Type::Var(_) => true,
+        Type::List(e) | Type::Set(e) | Type::Task(e) | Type::Channel(e) => type_has_open_var(e),
+        Type::Map(k, v) => type_has_open_var(k) || type_has_open_var(v),
+        Type::Adt { params, .. } => params.iter().any(type_has_open_var),
+        Type::Fun(ps, r, _) => ps.iter().any(type_has_open_var) || type_has_open_var(r),
+        Type::Tuple(ts) | Type::TuplePrefix(ts) => ts.iter().any(type_has_open_var),
+        _ => false,
     }
 }
 
@@ -332,24 +793,24 @@ impl MonoKey {
 pub(crate) fn args_mono_key(
     args: &[Local],
     local_tys: &HashMap<u32, Type>,
-    funref_of: &HashMap<u32, String>,
+    funref_of: &HashMap<u32, Sym>,
     formals: Option<&[Type]>,
 ) -> Option<MonoKey> {
     let mut kinds = Vec::with_capacity(args.len());
     for (i, a) in args.iter().enumerate() {
         if let Some(name) = funref_of.get(&a.0) {
-            kinds.push(MonoKind::FunRef(name.clone()));
+            kinds.push(MonoKind::FunRef(name.clone().into()));
             continue;
         }
         let mut ty = local_tys.get(&a.0)?.clone();
         if matches!(ty, Type::Int) {
             if let Some(formal) = formals.and_then(|f| f.get(i)) {
-                if type_is_heap_structure(formal) {
+                if type_is_mono_container(formal) {
                     // ABI-erased product: key by ADT name only so Int field
                     // guesses never enter the clone layout; materialize restores
                     // the generic formals. Call-site Adt{…, [Float,…]} keeps params.
                     ty = match formal {
-                        Type::Adt { name, .. } if name != "Option" && name != "Result" => {
+                        Type::Adt { name, .. } if !lumia_hir::is_option_or_result(name) => {
                             Type::Adt {
                                 name: name.clone(),
                                 params: vec![],
@@ -364,3 +825,7 @@ pub(crate) fn args_mono_key(
     }
     Some(MonoKey(kinds))
 }
+
+#[cfg(test)]
+#[path = "tests/key_near_tests.rs"]
+mod tests;

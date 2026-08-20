@@ -1,9 +1,12 @@
-//! Shared program typecheck + assert annotation for CLI and LSP.
+//! Shared program typecheck for CLI and LSP.
 
-use crate::load::{load_program, load_program_with_overlays, LoadedProgram, SourceFile};
+use crate::diag::{Diagnostic, DiagnosticKind};
+use crate::load::{
+    load_program, load_program_with_overlays, path_label, LoadedProgram, SourceFile,
+};
 use anyhow::Result;
-use lumia_hir::lower_module;
-use lumia_syntax::{parse_module_recovering, stamp_module, Span};
+use lumia_hir::{lower_module, lower_module_recovering};
+use lumia_syntax::{parse_module_recovering, stamp_module, LocatedError, Span};
 use lumia_ty::{
     typecheck_hir, typecheck_hir_recovering, NameVisibility, TypeError, TypecheckOptions,
     TypedModule,
@@ -11,21 +14,52 @@ use lumia_ty::{
 use rustc_hash::FxHashMap as HashMap;
 use std::path::{Path, PathBuf};
 
+/// Resolve whether to honor `foreign "C" pure`.
+///
+/// - `Some(v)` — CLI / caller override (`--trust-foreign-pure` / `--no-trust-foreign-pure`)
+/// - `None` — use `Lumia.toml` `package.trust_foreign_pure` (default false)
+pub fn resolve_trust_foreign_pure(override_: Option<bool>, package: bool) -> bool {
+    override_.unwrap_or(package)
+}
+
+enum AnalyzeError {
+    Lower(LocatedError),
+    Type(TypeError),
+}
+
+/// Lower + typecheck an already-loaded program (shared by CLI and overlay paths).
+fn typecheck_loaded(
+    loaded: &LoadedProgram,
+    auto_parallel: bool,
+    trust_foreign_pure: Option<bool>,
+) -> Result<TypedModule, AnalyzeError> {
+    let hir = lower_module(&loaded.module).map_err(AnalyzeError::Lower)?;
+    let opts = TypecheckOptions {
+        auto_parallel,
+        trust_foreign_pure: resolve_trust_foreign_pure(
+            trust_foreign_pure,
+            loaded.trust_foreign_pure,
+        ),
+    };
+    typecheck_hir(&hir, loaded.visibility.clone(), &opts).map_err(AnalyzeError::Type)
+}
+
 /// Load a program from disk and typecheck it (CLI `check` / `build` path).
+///
+/// `trust_foreign_pure`: `Some` overrides the package setting; `None` uses it.
 pub fn check_program(
     file: &Path,
     auto_parallel: bool,
-    trust_foreign_pure: bool,
+    trust_foreign_pure: Option<bool>,
 ) -> Result<(TypedModule, LoadedProgram)> {
     let loaded = load_program(file)?;
-    let hir =
-        lower_module(&loaded.module).map_err(|e| diag_err(&loaded, e.span, "lower", &e.message))?;
-    let opts = TypecheckOptions {
-        auto_parallel,
-        trust_foreign_pure: trust_foreign_pure || loaded.trust_foreign_pure,
+    let typed = match typecheck_loaded(&loaded, auto_parallel, trust_foreign_pure) {
+        Ok(t) => t,
+        Err(AnalyzeError::Lower(e)) => {
+            return Err(diag_err(&loaded, e.span, "lower", &e.message));
+        }
+        Err(AnalyzeError::Type(e)) => return Err(type_err(&loaded, e)),
     };
-    let typed =
-        typecheck_hir(&hir, loaded.visibility.clone(), &opts).map_err(|e| type_err(&loaded, e))?;
     Ok((typed, loaded))
 }
 
@@ -35,33 +69,114 @@ pub enum OverlayCheckError {
     Load(String),
     Analyze {
         loaded: Box<LoadedProgram>,
+        kind: DiagnosticKind,
         err: TypeError,
     },
 }
 
 /// Load with editor overlays and typecheck (LSP multi-file path).
+///
+/// `trust_foreign_pure`: `Some` overrides the package setting; `None` uses it
+/// (same policy as CLI without `--trust-foreign-pure` / `--no-trust-foreign-pure`).
+///
+/// Fail-fast: first lower/type error only (CLI-style). Prefer
+/// [`check_program_with_overlays_recovering`] for IDE multi-diagnostic.
 pub fn check_program_with_overlays(
     path: &Path,
     overlays: &HashMap<PathBuf, String>,
     auto_parallel: bool,
-    trust_foreign_pure: bool,
+    trust_foreign_pure: Option<bool>,
 ) -> Result<(LoadedProgram, TypedModule), OverlayCheckError> {
+    let partial =
+        check_program_with_overlays_recovering(path, overlays, auto_parallel, trust_foreign_pure)?;
+    if let Some(typed) = partial.typed {
+        if !partial.diagnostics.iter().any(|d| d.kind.is_error()) {
+            return Ok((partial.loaded, typed));
+        }
+    }
+    match partial.diagnostics.into_iter().find(|d| d.kind.is_error()) {
+        Some(d) => Err(OverlayCheckError::Analyze {
+            loaded: Box::new(partial.loaded),
+            kind: d.kind,
+            err: LocatedError {
+                message: d.message,
+                span: d.span,
+            }
+            .into(),
+        }),
+        None => Err(OverlayCheckError::Load("analysis failed".into())),
+    }
+}
+
+/// Multi-file load + lower/typecheck with recovery (all soft diagnostics).
+pub fn check_program_with_overlays_recovering(
+    path: &Path,
+    overlays: &HashMap<PathBuf, String>,
+    auto_parallel: bool,
+    trust_foreign_pure: Option<bool>,
+) -> Result<PartialProgramCheck, OverlayCheckError> {
     let loaded = load_program_with_overlays(path, overlays)
         .map_err(|e| OverlayCheckError::Load(format!("{e}")))?;
-    let hir = lower_module(&loaded.module).map_err(|e| OverlayCheckError::Analyze {
-        loaded: Box::new(loaded.clone()),
-        err: e.into(),
-    })?;
+    Ok(typecheck_loaded_recovering(
+        loaded,
+        auto_parallel,
+        trust_foreign_pure,
+    ))
+}
+
+/// Partial multi-file check (IDE): keep TypedModule when some items error.
+#[derive(Debug, Clone)]
+pub struct PartialProgramCheck {
+    pub loaded: LoadedProgram,
+    pub typed: Option<TypedModule>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+fn typecheck_loaded_recovering(
+    loaded: LoadedProgram,
+    auto_parallel: bool,
+    trust_foreign_pure: Option<bool>,
+) -> PartialProgramCheck {
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+    // Package honor-system: surface as LSP Warning (CLI load still eprintln! Once).
+    let effective = resolve_trust_foreign_pure(trust_foreign_pure, loaded.trust_foreign_pure);
+    if loaded.trust_foreign_pure && effective {
+        diagnostics.push(Diagnostic::new(
+            Span::dummy(),
+            DiagnosticKind::Warning,
+            "package.trust_foreign_pure=true honors unverified `foreign \"C\" pure` \
+             (same trust surface as --trust-foreign-pure; override with --no-trust-foreign-pure)",
+        ));
+    }
+    let (hir_opt, lower_errs) = lower_module_recovering(&loaded.module);
+    diagnostics.extend(
+        lower_errs
+            .into_iter()
+            .map(|e| Diagnostic::new(e.span, DiagnosticKind::Lower, e.message)),
+    );
+    let Some(hir) = hir_opt else {
+        return PartialProgramCheck {
+            loaded,
+            typed: None,
+            diagnostics,
+        };
+    };
     let opts = TypecheckOptions {
         auto_parallel,
-        trust_foreign_pure: trust_foreign_pure || loaded.trust_foreign_pure,
+        trust_foreign_pure: effective,
     };
-    match typecheck_hir(&hir, loaded.visibility.clone(), &opts) {
-        Ok(typed) => Ok((loaded, typed)),
-        Err(err) => Err(OverlayCheckError::Analyze {
-            loaded: Box::new(loaded),
-            err,
-        }),
+    let (typed, ty_errs) = typecheck_hir_recovering(&hir, loaded.visibility.clone(), &opts);
+    for e in ty_errs {
+        diagnostics.push(Diagnostic::new(
+            e.span().unwrap_or_default(),
+            DiagnosticKind::Type,
+            e.message().to_string(),
+        ));
+    }
+    PartialProgramCheck {
+        loaded,
+        typed,
+        diagnostics,
     }
 }
 
@@ -69,14 +184,14 @@ pub fn check_program_with_overlays(
 pub fn check_source(text: &str, auto_parallel: bool) -> Result<TypedModule, (Span, String)> {
     let partial = check_source_recovering(text, auto_parallel);
     if let Some(typed) = partial.typed {
-        if partial.diagnostics.is_empty() {
+        if !partial.diagnostics.iter().any(|d| d.kind.is_error()) {
             return Ok(typed);
         }
         // Recovered parse errors: treat as failure for strict callers, but keep
-        // the first diagnostic (CLI-style).
+        // the first hard diagnostic (CLI-style).
     }
-    match partial.diagnostics.into_iter().next() {
-        Some(d) => Err(d),
+    match partial.diagnostics.into_iter().find(|d| d.kind.is_error()) {
+        Some(d) => Err((d.span, d.display_message())),
         None => Err((Span::dummy(), "analysis failed".into())),
     }
 }
@@ -85,16 +200,16 @@ pub fn check_source(text: &str, auto_parallel: bool) -> Result<TypedModule, (Spa
 #[derive(Debug, Default)]
 pub struct PartialCheck {
     pub typed: Option<TypedModule>,
-    pub diagnostics: Vec<(Span, String)>,
+    pub diagnostics: Vec<Diagnostic>,
 }
 
 /// Parse with recovery, then lower/typecheck whatever items survived.
 pub fn check_source_recovering(text: &str, auto_parallel: bool) -> PartialCheck {
     let outcome = parse_module_recovering(text);
-    let mut diagnostics: Vec<(Span, String)> = outcome
+    let mut diagnostics: Vec<Diagnostic> = outcome
         .errors
         .into_iter()
-        .map(|e| (e.span, format!("parse: {}", e.message)))
+        .map(|e| Diagnostic::new(e.span, DiagnosticKind::Parse, e.message))
         .collect();
 
     if outcome.module.name.is_empty() && outcome.module.items.is_empty() {
@@ -106,15 +221,15 @@ pub fn check_source_recovering(text: &str, auto_parallel: bool) -> PartialCheck 
 
     let mut m = outcome.module;
     stamp_module(&mut m, 0);
-    let hir = match lower_module(&m) {
-        Ok(h) => h,
-        Err(e) => {
-            diagnostics.push((e.span, format!("lower: {}", e.message)));
-            return PartialCheck {
-                typed: None,
-                diagnostics,
-            };
-        }
+    let (hir_opt, lower_errs) = lower_module_recovering(&m);
+    for e in lower_errs {
+        diagnostics.push(Diagnostic::new(e.span, DiagnosticKind::Lower, e.message));
+    }
+    let Some(hir) = hir_opt else {
+        return PartialCheck {
+            typed: None,
+            diagnostics,
+        };
     };
     let opts = TypecheckOptions {
         auto_parallel,
@@ -122,119 +237,24 @@ pub fn check_source_recovering(text: &str, auto_parallel: bool) -> PartialCheck 
     };
     let (typed, ty_errs) = typecheck_hir_recovering(&hir, NameVisibility::default(), &opts);
     for e in ty_errs {
-        diagnostics.push((e.span().unwrap_or_default(), e.message().to_string()));
+        diagnostics.push(Diagnostic::new(
+            e.span().unwrap_or_default(),
+            DiagnosticKind::Type,
+            e.message().to_string(),
+        ));
     }
     PartialCheck { typed, diagnostics }
 }
 
-/// Inject `assert` failure messages (`file:line: assert failed`) before Core lower.
-pub fn annotate_assert_messages(module: &mut lumia_hir::Module, loaded: &LoadedProgram) {
-    for item in &mut module.items {
-        match item {
-            lumia_hir::Item::Fun(f) => annotate_assert_expr(&mut f.body, loaded),
-            lumia_hir::Item::Val { body, .. } => annotate_assert_expr(body, loaded),
-        }
-    }
-}
-
-fn annotate_assert_expr(e: &mut lumia_hir::Expr, loaded: &LoadedProgram) {
-    use lumia_hir::{Builtin, Expr};
-    match e {
-        Expr::BuiltinCall {
-            name: Builtin::Assert,
-            args,
-            span,
-        } => {
-            for a in args.iter_mut() {
-                annotate_assert_expr(a, loaded);
-            }
-            if args.len() == 1 {
-                let file = loaded.file(span.file);
-                let starts = lumia_syntax::line_starts(&file.src);
-                let (line, _) = lumia_syntax::byte_to_line_col(&starts, span.start);
-                let msg = format!("{}:{}: assert failed", path_label(&file.path), line);
-                args.push(Expr::String(msg, *span));
-            }
-        }
-        Expr::BuiltinCall { args, .. } | Expr::Call { args, .. } | Expr::AdtNew { args, .. } => {
-            for a in args {
-                annotate_assert_expr(a, loaded);
-            }
-        }
-        Expr::Let { value, body, .. } => {
-            annotate_assert_expr(value, loaded);
-            annotate_assert_expr(body, loaded);
-        }
-        Expr::If {
-            cond,
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            annotate_assert_expr(cond, loaded);
-            annotate_assert_expr(then_branch, loaded);
-            annotate_assert_expr(else_branch, loaded);
-        }
-        Expr::Loop {
-            cond, body, step, ..
-        } => {
-            annotate_assert_expr(cond, loaded);
-            annotate_assert_expr(body, loaded);
-            if let Some(s) = step {
-                annotate_assert_expr(s, loaded);
-            }
-        }
-        Expr::Binary { left, right, .. } => {
-            annotate_assert_expr(left, loaded);
-            annotate_assert_expr(right, loaded);
-        }
-        Expr::Unary { expr, .. } => annotate_assert_expr(expr, loaded),
-        Expr::Lambda { body, .. } => annotate_assert_expr(body, loaded),
-        Expr::Seq { stmts, .. } => {
-            for s in stmts {
-                annotate_assert_expr(s, loaded);
-            }
-        }
-        Expr::Assign { value, .. } | Expr::Return { value, .. } => {
-            annotate_assert_expr(value, loaded)
-        }
-        Expr::Alt { scrutinee, alt, .. } => {
-            annotate_assert_expr(scrutinee, loaded);
-            annotate_assert_expr(alt, loaded);
-        }
-        Expr::With { base, fields, .. } => {
-            annotate_assert_expr(base, loaded);
-            for (_, e) in fields {
-                annotate_assert_expr(e, loaded);
-            }
-        }
-        Expr::Var(_, _)
-        | Expr::Int(_, _)
-        | Expr::Float(_, _)
-        | Expr::Bool(_, _)
-        | Expr::String(_, _)
-        | Expr::Char(_, _)
-        | Expr::Unit(_)
-        | Expr::Break(_)
-        | Expr::Continue(_) => {}
-    }
-}
-
-fn path_label(path: &Path) -> String {
-    path.file_name()
-        .and_then(|s| s.to_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| path.display().to_string())
-}
-
 fn diag_err(loaded: &LoadedProgram, span: Span, kind: &str, message: &str) -> anyhow::Error {
-    let file = loaded.file(span.file);
-    anyhow::anyhow!(lumia_syntax::format_diagnostic(
-        &path_label(&file.path),
-        &file.src,
-        span,
-        kind,
-        message,
+    let labels: Vec<String> = loaded.files.iter().map(|f| path_label(&f.path)).collect();
+    let table: Vec<(&str, &str)> = labels
+        .iter()
+        .zip(loaded.files.iter())
+        .map(|(lab, f)| (lab.as_str(), f.src.as_str()))
+        .collect();
+    anyhow::anyhow!(lumia_syntax::format_diagnostic_files(
+        &table, span, kind, message,
     ))
 }
 
@@ -268,9 +288,46 @@ pub fn loaded_from_source(path: &str, src: &str) -> LoadedProgram {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lumia_hir::{Builtin, Expr, Item, Module as HirModule};
-    use lumia_syntax::Span;
-    use rustc_hash::{FxHashMap, FxHashSet};
+
+    #[test]
+    fn trust_foreign_pure_override_beats_package() {
+        assert!(!resolve_trust_foreign_pure(Some(false), true));
+        assert!(resolve_trust_foreign_pure(Some(true), false));
+        assert!(resolve_trust_foreign_pure(None, true));
+        assert!(!resolve_trust_foreign_pure(None, false));
+    }
+
+    #[test]
+    fn package_trust_foreign_pure_emits_warning_not_error() {
+        let mut loaded = loaded_from_source("Main.lm", "module Main\nval main = 0\n");
+        loaded.trust_foreign_pure = true;
+        let partial = typecheck_loaded_recovering(loaded, true, None);
+        assert!(partial.typed.is_some());
+        assert!(
+            partial
+                .diagnostics
+                .iter()
+                .any(|d| d.kind == DiagnosticKind::Warning
+                    && d.message.contains("trust_foreign_pure")),
+            "expected trust Warning, got {:?}",
+            partial.diagnostics
+        );
+        assert!(
+            !partial.diagnostics.iter().any(|d| d.kind.is_error()),
+            "trust Warning must not be a hard error"
+        );
+        // CLI force-off: no advisory.
+        let mut loaded2 = loaded_from_source("Main.lm", "module Main\nval main = 0\n");
+        loaded2.trust_foreign_pure = true;
+        let partial2 = typecheck_loaded_recovering(loaded2, true, Some(false));
+        assert!(
+            !partial2
+                .diagnostics
+                .iter()
+                .any(|d| d.kind == DiagnosticKind::Warning),
+            " --no-trust-foreign-pure should suppress Warning"
+        );
+    }
 
     #[test]
     fn recovering_keeps_later_item_types() {
@@ -293,46 +350,114 @@ val main = {
     }
 
     #[test]
-    fn annotate_assert_adds_file_line_message() {
-        let src = "module M\nval main = { assert(false) }\n";
-        let loaded = loaded_from_source("t.lm", src);
-        let start = src.find("assert").expect("assert") as u32;
-        let end = (src.find(')').expect(")") as u32) + 1;
-        let assert_span = Span::new(start, end);
-        let mut module = HirModule {
-            name: "M".into(),
-            items: vec![Item::Val {
-                name: "main".into(),
-                body: Expr::BuiltinCall {
-                    name: Builtin::Assert,
-                    args: vec![Expr::Bool(false, assert_span)],
-                    span: assert_span,
-                },
-                ty: None,
-            }],
-            adts: Vec::new(),
-            products: Vec::new(),
-            instances: FxHashSet::default(),
-            show_methods: FxHashMap::default(),
-            trait_methods: FxHashMap::default(),
-            method_traits: FxHashMap::default(),
-        };
-        annotate_assert_messages(&mut module, &loaded);
-        let Item::Val { body, .. } = &module.items[0] else {
-            panic!("expected val");
-        };
-        let Expr::BuiltinCall { args, .. } = body else {
-            panic!("expected builtin");
-        };
-        assert_eq!(args.len(), 2);
-        match &args[1] {
-            Expr::String(msg, _) => {
-                assert!(
-                    msg.contains("t.lm:2: assert failed"),
-                    "unexpected message: {msg}"
-                );
-            }
-            other => panic!("expected string message, got {other:?}"),
+    fn recovering_parse_hole_does_not_false_green_calls() {
+        let src = r#"
+module Main
+val broken = { a, b -> a +
+val ok = broken(1, 2)
+"#;
+        let partial = check_source_recovering(src, true);
+        assert!(
+            partial
+                .diagnostics
+                .iter()
+                .any(|d| matches!(d.kind, DiagnosticKind::Parse)),
+            "expected parse diagnostic, got {:?}",
+            partial.diagnostics
+        );
+        let typed = partial.typed.expect("partial typed module");
+        assert!(
+            !typed.fun_schemes.contains_key("broken"),
+            "broken must not get an identity scheme, got {:?}",
+            typed.fun_schemes.get("broken")
+        );
+        assert!(
+            partial.diagnostics.iter().any(|d| {
+                matches!(d.kind, DiagnosticKind::Type)
+                    && (d.message.contains("broken") || d.message.contains("__parse_hole"))
+            }),
+            "expected type diagnostic for hole/use, got {:?}",
+            partial.diagnostics
+        );
+    }
+
+    #[test]
+    fn recovering_reports_multiple_lower_errors() {
+        let src = r#"
+module Main
+type Opt { Some(v) None }
+val main = {
+  val BadCtor(x) = None
+  val AlsoBad(y) = None
+  0
+}
+"#;
+        let partial = check_source_recovering(src, true);
+        let lower = partial
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.kind, DiagnosticKind::Lower))
+            .collect::<Vec<_>>();
+        assert_eq!(lower.len(), 2, "diags={:?}", partial.diagnostics);
+    }
+
+    #[test]
+    fn recovering_reports_multiple_type_errors() {
+        let src = r#"
+module Main
+val a: Int = "x"
+val b: Int = "y"
+val main = 0
+"#;
+        let partial = check_source_recovering(src, true);
+        let types = partial
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.kind, DiagnosticKind::Type))
+            .collect::<Vec<_>>();
+        assert!(
+            types.len() >= 2,
+            "expected ≥2 type diags, got {:?}",
+            partial.diagnostics
+        );
+    }
+
+    #[test]
+    fn overlays_recovering_collects_multiple_type_errors() {
+        let dir = std::env::temp_dir().join(format!("lumia_ov_multi_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("Main.lm");
+        std::fs::write(
+            &main,
+            r#"
+module Main
+val a: Int = "x"
+val b: Int = "y"
+val main = 0
+"#,
+        )
+        .unwrap();
+        let partial =
+            check_program_with_overlays_recovering(&main, &HashMap::default(), true, None)
+                .expect("load");
+        let types = partial
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.kind, DiagnosticKind::Type))
+            .collect::<Vec<_>>();
+        assert!(
+            types.len() >= 2,
+            "expected ≥2 type diags, got {:?}",
+            partial.diagnostics
+        );
+        // Fail-fast wrapper still surfaces a single Analyze error.
+        let err = check_program_with_overlays(&main, &HashMap::default(), true, None)
+            .expect_err("expected type error");
+        match err {
+            OverlayCheckError::Analyze { .. } => {}
+            OverlayCheckError::Load(m) => panic!("unexpected load: {m}"),
         }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

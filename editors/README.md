@@ -18,9 +18,11 @@ lumia lsp
 
 ```bash
 source scripts/env.sh
-cargo build -p lumia --release
+cargo build -p lumia --release   # default: shared libLLVM (llvm-dynamic)
 export PATH="$PWD/target/release:$PATH"
 ```
+
+Windows: `cargo build -p lumia --release --no-default-features --features codegen`.
 
 2. Confirm the server starts:
 

@@ -1,18 +1,22 @@
 //! Heap reachability for lifted-lambda ABI (`ret_ty` rooting).
+//!
+//! Uses shared [`value_alloc_may_heap`] / [`builtin_result_may_heap`] /
+//! [`type_may_heap`] so Typed builtins follow the same lattice as codegen roots.
+//! Unstamped `ChannelRecv` / `TaskJoin` stay non-heap (scalar-common; channel/task
+//! fixup still refines when HIR did not stamp a ground payload).
 
-use crate::ir::{Block, Local, Op, Value};
-use crate::value_ty::{value_alloc_may_heap, HeapPolicy};
-use lumia_hir::Builtin;
+use crate::find_top_level_local_def;
+use crate::ir::{Block, Local, Value};
+use crate::value_ty::{builtin_result_may_heap, value_alloc_may_heap, HeapPolicy};
 use rustc_hash::FxHashSet as HashSet;
 
 /// Whether the block result may be a heap pointer. `extra_params` covers lambda
-/// formals that live on `Value::Lambda.params` rather than `body.params`.
+/// formals on `Value::Lambda.params` / `CoreFun.params` (blocks have no params).
 pub(super) fn block_result_may_heap_with_params(block: &Block, extra_params: &[Local]) -> bool {
     let Some(Local(r)) = block.result else {
         return false;
     };
-    let mut params: HashSet<u32> = block.params.iter().map(|p| p.0).collect();
-    params.extend(extra_params.iter().map(|p| p.0));
+    let params: HashSet<u32> = extra_params.iter().map(|p| p.0).collect();
     local_may_heap(block, r, &params, &mut HashSet::default())
 }
 
@@ -25,14 +29,10 @@ fn local_may_heap(block: &Block, id: u32, params: &HashSet<u32>, seen: &mut Hash
     if params.contains(&id) {
         return true;
     }
-    for op in &block.ops {
-        if let Op::Let { local, value, .. } = op {
-            if local.0 == id {
-                return value_may_heap(block, value, params, seen);
-            }
-        }
-    }
-    false
+    let Some(value) = find_top_level_local_def(block, id) else {
+        return false;
+    };
+    value_may_heap(block, value, params, seen)
 }
 
 fn value_may_heap(
@@ -46,10 +46,9 @@ fn value_may_heap(
     }
     match v {
         Value::Local(Local(id)) => local_may_heap(block, *id, params, seen),
-        Value::Builtin { name, .. } => !matches!(
-            name,
-            Builtin::ListLen | Builtin::Contains | Builtin::Println | Builtin::Assert
-        ),
+        Value::Builtin {
+            name, result_ty, ..
+        } => builtin_result_may_heap(*name, result_ty.as_ref(), || None),
         Value::Call { .. } | Value::IndirectCall { .. } => true,
         Value::If {
             then_block,
@@ -68,7 +67,9 @@ fn result_may_heap_inherited(block: &Block, inherited: &HashSet<u32>) -> bool {
     let Some(Local(r)) = block.result else {
         return false;
     };
-    let mut params = inherited.clone();
-    params.extend(block.params.iter().map(|p| p.0));
-    local_may_heap(block, r, &params, &mut HashSet::default())
+    local_may_heap(block, r, inherited, &mut HashSet::default())
 }
+
+#[cfg(test)]
+#[path = "heap_tests.rs"]
+mod tests;

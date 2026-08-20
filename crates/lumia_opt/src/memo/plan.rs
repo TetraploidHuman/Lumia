@@ -1,14 +1,21 @@
-use lumia_core::{block_calls, Block, CoreFun, CoreModule, Local, MemoTf, Op, Value};
-use lumia_syntax::BinOp;
+use lumia_abi::{
+    MEMO_IDX_TABLE_BYTES, MEMO_PROCESS_BYTE_CAP, MEMO_SLOTS_TABLE_BYTES, MEMO_TF_MAX_ARGS,
+};
+use lumia_core::CoreBinOp as BinOp;
+use lumia_core::{
+    block_calls, body_weight, for_each_let_in_block_ctrl, Block, CoreFun, CoreModule, Local,
+    MemoTf, Value,
+};
 use lumia_ty::Type;
+use lumia_syntax::Sym;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
-use super::{
-    MEMO_IDX_MAX_FUNS, MEMO_IDX_TABLE_BYTES, MEMO_PROCESS_BYTE_CAP, MEMO_SLOTS_TABLE_BYTES,
-    MEMO_TF_MAX_ARGS, MEMO_TF_MAX_FUNS_U32,
-};
+use super::{MEMO_IDX_MAX_FUNS, MEMO_TF_MAX_FUNS_U32};
 
-pub fn plan_memo_tf(module: &CoreModule) -> HashMap<String, MemoTf> {
+pub fn plan_memo_tf(module: &CoreModule) -> HashMap<Sym, MemoTf> {
+    // One module walk for const-arg reuse (Slots hit-rate proxy); avoid
+    // rescanning all bodies per candidate (§7.5.2 / Todo memo plan O(n²)).
+    let const_arg_reuse = max_const_arg_reuse_by_fun(module);
     let mut next_slots = 0u32;
     let mut next_dense = 0u32;
     let mut bytes_used: usize = 0;
@@ -23,7 +30,7 @@ pub fn plan_memo_tf(module: &CoreModule) -> HashMap<String, MemoTf> {
             bytes_used += MEMO_IDX_TABLE_BYTES;
             continue;
         }
-        if slots_cost_ok(f, module)
+        if slots_cost_ok(f, &const_arg_reuse)
             && next_slots < MEMO_TF_MAX_FUNS_U32
             && bytes_used + MEMO_SLOTS_TABLE_BYTES <= MEMO_PROCESS_BYTE_CAP
         {
@@ -35,7 +42,7 @@ pub fn plan_memo_tf(module: &CoreModule) -> HashMap<String, MemoTf> {
     plan
 }
 
-pub fn apply_memo_plan(module: &mut CoreModule, plan: &HashMap<String, MemoTf>) {
+pub fn apply_memo_plan(module: &mut CoreModule, plan: &HashMap<Sym, MemoTf>) {
     for f in &mut module.functions {
         if f.memo.is_none() {
             if let Some(m) = plan.get(&f.name) {
@@ -49,7 +56,10 @@ fn eligible_dense(f: &CoreFun) -> bool {
     if f.is_main || !f.effect.is_pure() || f.external.is_some() {
         return false;
     }
-    if f.param_names.first().map(|s| s.as_str()) == Some("env") {
+    // Closures carry an env / FunRef payload — not user Int recursion. Use
+    // FunKind, not the synthetic first param name `"env"` (that false-excluded
+    // ordinary `{ env -> … }` bindings).
+    if f.is_lifted_lambda() {
         return false;
     }
     if f.params.len() != 1 {
@@ -77,6 +87,7 @@ fn structural_int_self_recursion(f: &CoreFun) -> bool {
         fun: &f.name,
         is_param,
         smaller: HashSet::default(),
+        self_funrefs: HashSet::default(),
         known_int: crate::ir_util::KnownScalars::new(),
         self_calls: 0,
         bad_self: false,
@@ -89,84 +100,75 @@ struct StructRec<'a> {
     fun: &'a str,
     is_param: HashSet<u32>,
     smaller: HashSet<u32>,
+    /// Locals proven equal to `FunRef(self)` (SSA aliases included).
+    self_funrefs: HashSet<u32>,
     known_int: crate::ir_util::KnownScalars,
     self_calls: usize,
     bad_self: bool,
 }
 
+fn note_self_call(st: &mut StructRec<'_>, args: &[Local]) {
+    st.self_calls += 1;
+    let ok = args.len() == 1 && st.smaller.contains(&args[0].0);
+    if !ok {
+        st.bad_self = true;
+    }
+}
+
 fn walk_struct_rec(block: &Block, st: &mut StructRec<'_>) {
-    for op in &block.ops {
-        match op {
-            Op::Let { local, value, .. } => match value {
-                Value::Int(_) | Value::Bool(_) | Value::Char(_) => {
-                    st.known_int.track(local.0, value);
+    let fork = clone_struct_env;
+    let merge_if = merge_struct_rec;
+    let merge_loop = |dst: &mut StructRec<'_>, h: StructRec<'_>| {
+        dst.self_calls += h.self_calls;
+        dst.bad_self |= h.bad_self;
+    };
+    let mut on_control = |_: Local, _: &Value, _: &mut StructRec<'_>| {};
+    for_each_let_in_block_ctrl(
+        block,
+        st,
+        &fork,
+        &mut |local, value, st| match value {
+            Value::Int(_) | Value::Bool(_) | Value::Char(_) => {
+                st.known_int.track(local.0, value);
+            }
+            Value::Local(Local(src)) => {
+                if st.is_param.contains(src) {
+                    st.is_param.insert(local.0);
                 }
-                Value::Local(Local(src)) => {
-                    if st.is_param.contains(src) {
-                        st.is_param.insert(local.0);
-                    }
-                    if st.smaller.contains(src) {
-                        st.smaller.insert(local.0);
-                    }
-                    st.known_int.track(local.0, value);
+                if st.smaller.contains(src) {
+                    st.smaller.insert(local.0);
                 }
-                Value::Binary {
-                    op: BinOp::Sub,
-                    left,
-                    right,
-                } => {
-                    let left_ok = st.is_param.contains(&left.0) || st.smaller.contains(&left.0);
-                    let k = st.known_int.get(right.0);
-                    if left_ok && matches!(k, Some(n) if n > 0) {
-                        st.smaller.insert(local.0);
-                    }
+                if st.self_funrefs.contains(src) {
+                    st.self_funrefs.insert(local.0);
                 }
-                Value::Call { fun, args } if fun == st.fun => {
-                    st.self_calls += 1;
-                    let ok = args.len() == 1 && st.smaller.contains(&args[0].0);
-                    if !ok {
-                        st.bad_self = true;
-                    }
-                }
-                Value::If {
-                    then_block,
-                    else_block,
-                    ..
-                } => {
-                    let mut t = clone_struct_env(st);
-                    let mut e = clone_struct_env(st);
-                    walk_struct_rec(then_block, &mut t);
-                    walk_struct_rec(else_block, &mut e);
-                    merge_struct_rec(st, t, e);
-                }
-                Value::Loop {
-                    header,
-                    body,
-                    latch,
-                } => {
-                    let mut h = clone_struct_env(st);
-                    walk_struct_rec(header, &mut h);
-                    walk_struct_rec(body, &mut h);
-                    walk_struct_rec(latch, &mut h);
-                    st.self_calls += h.self_calls;
-                    st.bad_self |= h.bad_self;
-                }
-                _ => {}
-            },
-            Op::Effect { value } => {
-                if let Value::Call { fun, args } = value {
-                    if fun == st.fun {
-                        st.self_calls += 1;
-                        let ok = args.len() == 1 && st.smaller.contains(&args[0].0);
-                        if !ok {
-                            st.bad_self = true;
-                        }
-                    }
+                st.known_int.track(local.0, value);
+            }
+            Value::FunRef(name) if name == st.fun => {
+                st.self_funrefs.insert(local.0);
+            }
+            Value::Binary {
+                op: BinOp::Sub,
+                left,
+                right,
+            } => {
+                let left_ok = st.is_param.contains(&left.0) || st.smaller.contains(&left.0);
+                let k = st.known_int.get(right.0);
+                if left_ok && matches!(k, Some(n) if n > 0) {
+                    st.smaller.insert(local.0);
                 }
             }
+            Value::Call { fun, args } if fun == st.fun => {
+                note_self_call(st, args);
+            }
+            Value::IndirectCall { callee, args } if st.self_funrefs.contains(&callee.0) => {
+                note_self_call(st, args);
+            }
             _ => {}
-        }
-    }
+        },
+        &mut on_control,
+        &merge_if,
+        &merge_loop,
+    );
 }
 
 fn clone_struct_env<'a>(st: &StructRec<'a>) -> StructRec<'a> {
@@ -174,6 +176,7 @@ fn clone_struct_env<'a>(st: &StructRec<'a>) -> StructRec<'a> {
         fun: st.fun,
         is_param: st.is_param.clone(),
         smaller: st.smaller.clone(),
+        self_funrefs: st.self_funrefs.clone(),
         known_int: st.known_int.clone(),
         self_calls: 0,
         bad_self: false,
@@ -185,11 +188,11 @@ fn merge_struct_rec(dst: &mut StructRec<'_>, a: StructRec<'_>, b: StructRec<'_>)
     dst.bad_self |= a.bad_self || b.bad_self;
 }
 
-fn slots_cost_ok(f: &CoreFun, module: &CoreModule) -> bool {
+fn slots_cost_ok(f: &CoreFun, const_arg_reuse: &HashMap<Sym, usize>) -> bool {
     if f.is_main || !f.effect.is_pure() || f.external.is_some() {
         return false;
     }
-    if f.param_names.first().map(|s| s.as_str()) == Some("env") {
+    if f.is_lifted_lambda() {
         return false;
     }
     let n = f.params.len();
@@ -211,7 +214,7 @@ fn slots_cost_ok(f: &CoreFun, module: &CoreModule) -> bool {
     // body (e.g. collatzSteps(1..N)) thrash a 4-slot table. Structural Int
     // recursion takes the DenseInt path instead.
     let _ = recursive;
-    let h_proxy = if const_arg_reuse_count(module, &f.name) >= 2 {
+    let h_proxy = if const_arg_reuse.get(&f.name).copied().unwrap_or(0) >= 2 {
         2
     } else {
         0
@@ -219,99 +222,55 @@ fn slots_cost_ok(f: &CoreFun, module: &CoreModule) -> bool {
     h_proxy > 0 && c_body * h_proxy >= 4
 }
 
-/// How many times the most-common fully-constant argument tuple is used at
-/// direct call sites of `fun` (module-wide).
-fn const_arg_reuse_count(module: &CoreModule, fun: &str) -> usize {
-    let mut freq: HashMap<Vec<i64>, usize> = HashMap::default();
+/// Per callee: how often the most-common fully-constant argument tuple appears
+/// at direct call sites (module-wide). Built in one pass over all bodies.
+fn max_const_arg_reuse_by_fun(module: &CoreModule) -> HashMap<Sym, usize> {
+    let mut freq: HashMap<Sym, HashMap<Vec<i64>, usize>> = HashMap::default();
     for f in &module.functions {
-        collect_const_calls(
-            &f.body,
-            fun,
-            &mut crate::ir_util::KnownScalars::new(),
-            &mut freq,
-        );
+        collect_const_calls(&f.body, &mut crate::ir_util::KnownScalars::new(), &mut freq);
     }
-    freq.values().copied().max().unwrap_or(0)
+    let mut out = HashMap::default();
+    out.reserve(freq.len());
+    for (fun, counts) in freq {
+        out.insert(fun, counts.values().copied().max().unwrap_or(0));
+    }
+    out
 }
 
 fn collect_const_calls(
     block: &Block,
-    fun: &str,
     known: &mut crate::ir_util::KnownScalars,
-    freq: &mut HashMap<Vec<i64>, usize>,
+    freq: &mut HashMap<Sym, HashMap<Vec<i64>, usize>>,
 ) {
-    for op in &block.ops {
-        match op {
-            Op::Let { local, value, .. } => match value {
-                Value::Int(_) | Value::Bool(_) | Value::Char(_) | Value::Local(_) => {
-                    known.track(local.0, value);
-                }
-                Value::Call { fun: callee, args } if callee == fun => {
-                    if let Some(key) = known.resolve_all(args) {
-                        *freq.entry(key).or_default() += 1;
-                    }
-                    known.remove(local.0);
-                }
-                Value::If {
-                    then_block,
-                    else_block,
-                    ..
-                } => {
-                    collect_const_calls(then_block, fun, &mut known.clone(), freq);
-                    collect_const_calls(else_block, fun, &mut known.clone(), freq);
-                    known.remove(local.0);
-                }
-                Value::Loop {
-                    header,
-                    body,
-                    latch,
-                } => {
-                    collect_const_calls(header, fun, &mut known.clone(), freq);
-                    collect_const_calls(body, fun, &mut known.clone(), freq);
-                    collect_const_calls(latch, fun, &mut known.clone(), freq);
-                    known.remove(local.0);
-                }
-                _ => {
-                    known.remove(local.0);
-                }
-            },
-            Op::Effect { value } => {
-                if let Value::Call { fun: callee, args } = value {
-                    if callee == fun {
-                        if let Some(key) = known.resolve_all(args) {
-                            *freq.entry(key).or_default() += 1;
-                        }
-                    }
-                }
+    let fork = |k: &crate::ir_util::KnownScalars| k.clone();
+    let merge_if = |_dst: &mut crate::ir_util::KnownScalars, _t, _e| {};
+    let merge_loop = |_dst: &mut crate::ir_util::KnownScalars, _h| {};
+    let mut on_control =
+        |local: Local, _: &Value, known: &mut crate::ir_util::KnownScalars| known.remove(local.0);
+    for_each_let_in_block_ctrl(
+        block,
+        known,
+        &fork,
+        &mut |local, value, known| match value {
+            Value::Int(_) | Value::Bool(_) | Value::Char(_) | Value::Local(_) => {
+                known.track(local.0, value);
             }
-            _ => {}
-        }
-    }
-}
-
-fn body_weight(block: &Block) -> usize {
-    let mut n = block.ops.len();
-    for op in &block.ops {
-        if let Op::Let { value, .. } = op {
-            n += value_weight(value);
-        }
-    }
-    n
-}
-
-fn value_weight(v: &Value) -> usize {
-    match v {
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => 1 + body_weight(then_block) + body_weight(else_block),
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => 1 + body_weight(header) + body_weight(body) + body_weight(latch),
-        Value::Call { .. } | Value::IndirectCall { .. } | Value::Builtin { .. } => 1,
-        _ => 0,
-    }
+            Value::Call { fun: callee, args } => {
+                if let Some(key) = known.resolve_all(args) {
+                    *freq
+                        .entry(Sym::from(callee.name.as_str()))
+                        .or_default()
+                        .entry(key)
+                        .or_default() += 1;
+                }
+                known.remove(local.0);
+            }
+            _ => {
+                known.remove(local.0);
+            }
+        },
+        &mut on_control,
+        &merge_if,
+        &merge_loop,
+    );
 }

@@ -2,8 +2,9 @@
 
 use crate::infer::Infer;
 use crate::types::{at, Effect, Type, TypeError};
-use lumia_hir::{Expr, Item, Module};
+use lumia_hir::{for_each_expr_mut, Expr, Item, Module};
 use rustc_hash::FxHashMap as HashMap;
+use std::sync::Arc;
 
 impl Infer {
     pub(crate) fn is_ord(&self, t: &Type) -> bool {
@@ -24,7 +25,7 @@ impl Infer {
         match self.prune(t.clone()) {
             Type::Fun(_, _, _) => false,
             Type::Var(_) => true,
-            Type::List(e) | Type::Set(e) => self.is_eq(&e),
+            Type::List(e) | Type::Set(e) | Type::Task(e) | Type::Channel(e) => self.is_eq(&e),
             Type::Map(k, v) => {
                 let ek = self.is_eq(&k);
                 let ev = self.is_eq(&v);
@@ -46,14 +47,17 @@ impl Infer {
                 }
                 true
             }
-            Type::Int | Type::Float | Type::Bool | Type::String | Type::Char | Type::Unit => true,
+            Type::Int | Type::Float | Type::Bool | Type::String | Type::Char | Type::Unit
+            | Type::Unknown => true,
         }
     }
 
     pub(crate) fn type_mentions_fun(t: &Type) -> bool {
         match t {
             Type::Fun(_, _, _) => true,
-            Type::List(e) | Type::Set(e) => Self::type_mentions_fun(e),
+            Type::List(e) | Type::Set(e) | Type::Task(e) | Type::Channel(e) => {
+                Self::type_mentions_fun(e)
+            }
             Type::Map(k, v) => Self::type_mentions_fun(k) || Self::type_mentions_fun(v),
             Type::Adt { params, .. } => params.iter().any(Self::type_mentions_fun),
             Type::Tuple(ts) | Type::TuplePrefix(ts) => ts.iter().any(Self::type_mentions_fun),
@@ -63,7 +67,8 @@ impl Infer {
             | Type::Bool
             | Type::String
             | Type::Char
-            | Type::Unit => false,
+            | Type::Unit
+            | Type::Unknown => false,
         }
     }
 
@@ -104,7 +109,7 @@ impl Infer {
         }
         match self.prune(recv_ty) {
             Type::Adt { name: ty_name, .. } => {
-                let key = (ty_name, method.to_string());
+                let key = (ty_name.clone(), lumia_syntax::Sym::from(method));
                 let cands = self
                     .traits
                     .trait_methods
@@ -114,7 +119,7 @@ impl Infer {
                 match cands.as_slice() {
                     [] => Ok(None),
                     [mangled] => {
-                        let ct = self.lookup(mangled).ok_or_else(|| {
+                        let ct = self.lookup(mangled.as_str()).ok_or_else(|| {
                             at(
                                 span,
                                 format!("trait method `{method}` for `{}` is not in scope", key.0),
@@ -125,8 +130,13 @@ impl Infer {
                             Type::Fun(_, _, e) => e,
                             _ => self.fresh_eff(),
                         };
-                        self.unify_at(span, ct, Type::Fun(ats, Box::new(ret.clone()), call_eff))?;
-                        self.traits.ufcs_rewrites.insert(span, mangled.clone());
+                        self.unify_at(span, ct, Type::Fun(ats, Arc::new(ret.clone()), call_eff))?;
+                        crate::span_facts::insert_unique_span_fact(
+                            &mut self.traits.ufcs_rewrites,
+                            span,
+                            mangled.clone(),
+                            "UFCS",
+                        )?;
                         let fun_eff = self.prune_eff(call_eff);
                         Ok(Some((self.prune(ret), self.union_eff(aes, fun_eff))))
                     }
@@ -162,7 +172,7 @@ impl Infer {
                     .cloned();
                 let ret = self.fresh();
                 let fun_eff = if let Some(sample) = sample {
-                    let ct = self.lookup(&sample).ok_or_else(|| {
+                    let ct = self.lookup(sample.as_str()).ok_or_else(|| {
                         at(span, format!("trait method `{method}` is not in scope"))
                     })?;
                     match self.prune(ct) {
@@ -237,6 +247,84 @@ impl Infer {
         Ok(())
     }
 
+    pub(crate) fn check_len_bind(&mut self, v: u32, t: &Type) -> Result<(), TypeError> {
+        self.check_open_receiver_bind(
+            self.uni.len_vars.contains(&v),
+            t,
+            |t| {
+                matches!(
+                    t,
+                    Type::List(_) | Type::Set(_) | Type::Map(_, _) | Type::String
+                )
+            },
+            |other| format!("len: expected List/Set/Map/String, got {other:?}"),
+        )
+    }
+
+    pub(crate) fn check_concat_bind(&mut self, v: u32, t: &Type) -> Result<(), TypeError> {
+        self.check_open_receiver_bind(
+            self.uni.concat_vars.contains(&v),
+            t,
+            |t| matches!(t, Type::List(_) | Type::String),
+            |other| format!("concat: expected List or String, got {other:?}"),
+        )
+    }
+
+    pub(crate) fn check_contains_bind(&mut self, v: u32, t: &Type) -> Result<(), TypeError> {
+        self.check_open_receiver_bind(
+            self.uni.contains_vars.contains(&v),
+            t,
+            |t| matches!(t, Type::Map(_, _) | Type::Set(_) | Type::String),
+            |other| format!("contains: expected Map, Set, or String, got {other:?}"),
+        )
+    }
+
+    pub(crate) fn check_set_bind(&mut self, v: u32, t: &Type) -> Result<(), TypeError> {
+        self.check_open_receiver_bind(
+            self.uni.set_vars.contains(&v),
+            t,
+            |t| matches!(t, Type::List(_) | Type::Map(_, _)),
+            |other| format!("set: expected Map or List, got {other:?}"),
+        )
+    }
+
+    pub(crate) fn check_elems_bind(&mut self, v: u32, t: &Type) -> Result<(), TypeError> {
+        self.check_open_receiver_bind(
+            self.uni.elems_vars.contains(&v),
+            t,
+            |t| matches!(t, Type::List(_) | Type::Set(_) | Type::Map(_, _)),
+            |other| format!("elems/toList: expected List, Set, or Map, got {other:?}"),
+        )
+    }
+
+    pub(crate) fn check_take_bind(&mut self, v: u32, t: &Type) -> Result<(), TypeError> {
+        self.check_open_receiver_bind(
+            self.uni.take_vars.contains(&v),
+            t,
+            |t| matches!(t, Type::List(_) | Type::String),
+            |other| format!("take/drop/reverse: expected List or String, got {other:?}"),
+        )
+    }
+
+    /// Shared gate for open-method `*_vars` binds (len/concat/…): Var always OK.
+    fn check_open_receiver_bind(
+        &mut self,
+        active: bool,
+        t: &Type,
+        accepts: impl FnOnce(&Type) -> bool,
+        err: impl FnOnce(&Type) -> String,
+    ) -> Result<(), TypeError> {
+        if !active {
+            return Ok(());
+        }
+        let t = self.prune(t.clone());
+        if matches!(t, Type::Var(_)) || accepts(&t) {
+            Ok(())
+        } else {
+            Err(TypeError::Message(err(&t)))
+        }
+    }
+
     pub(crate) fn check_trait_bind(&mut self, v: u32, t: &Type) -> Result<(), TypeError> {
         let Some(preds) = self.traits.trait_vars.get(&v).cloned() else {
             return Ok(());
@@ -253,7 +341,11 @@ impl Infer {
             }
             Type::Adt { name, .. } => {
                 for (tr, method) in preds {
-                    if !self.traits.instances.contains(&(tr.clone(), name.clone())) {
+                    if !self
+                        .traits
+                        .instances
+                        .contains(&(lumia_syntax::Sym::from(tr.as_str()), name.clone()))
+                    {
                         return Err(TypeError::Message(format!(
                             "no `instance {tr} for {name}` (required by `.{method}()`)"
                         )));
@@ -271,7 +363,7 @@ impl Infer {
 /// Rewrite UFCS `method(recv,…)` callees to mangled `__Trait_Type_method`.
 pub(crate) fn apply_ufcs_rewrites(
     module: &mut Module,
-    rewrites: &HashMap<lumia_syntax::Span, String>,
+    rewrites: &HashMap<lumia_syntax::Span, lumia_syntax::Sym>,
 ) {
     for item in &mut module.items {
         match item {
@@ -281,81 +373,51 @@ pub(crate) fn apply_ufcs_rewrites(
     }
 }
 
+/// Rewrite deferred `join(…)` calls to [`Builtin::TaskJoin`] / [`Builtin::ListJoin`].
+pub(crate) fn apply_join_rewrites(
+    module: &mut Module,
+    rewrites: &HashMap<lumia_syntax::Span, lumia_hir::Builtin>,
+) {
+    for item in &mut module.items {
+        match item {
+            Item::Fun(f) => rewrite_join_in_expr(&mut f.body, rewrites),
+            Item::Val { body, .. } => rewrite_join_in_expr(body, rewrites),
+        }
+    }
+}
+
+fn rewrite_join_in_expr(
+    expr: &mut Expr,
+    rewrites: &HashMap<lumia_syntax::Span, lumia_hir::Builtin>,
+) {
+    // Post-order: rewrite nested calls before promoting this Call to BuiltinCall.
+    for_each_expr_mut(expr, &mut |e| {
+        let Expr::Call { args, span, .. } = e else {
+            return;
+        };
+        if let Some(b) = rewrites.get(span).copied() {
+            let args = std::mem::take(args);
+            let span = *span;
+            *e = Expr::BuiltinCall {
+                name: b,
+                args,
+                span,
+            };
+        }
+    });
+}
+
 pub(crate) fn rewrite_ufcs_in_expr(
     expr: &mut Expr,
-    rewrites: &HashMap<lumia_syntax::Span, String>,
+    rewrites: &HashMap<lumia_syntax::Span, lumia_syntax::Sym>,
 ) {
-    match expr {
-        Expr::Call { callee, args, span } => {
-            for a in args.iter_mut() {
-                rewrite_ufcs_in_expr(a, rewrites);
-            }
-            if let Some(mangled) = rewrites.get(span) {
-                **callee = Expr::Var(mangled.clone(), *span);
-            } else {
-                rewrite_ufcs_in_expr(callee, rewrites);
-            }
+    // Post-order: children first; then rewrite callee to mangled Fun name when deferred.
+    for_each_expr_mut(expr, &mut |e| {
+        let Expr::Call { callee, span, .. } = e else {
+            return;
+        };
+        if let Some(mangled) = rewrites.get(span) {
+            **callee = Expr::Var(mangled.clone(), *span);
         }
-        Expr::BuiltinCall { args, .. } | Expr::AdtNew { args, .. } => {
-            for a in args {
-                rewrite_ufcs_in_expr(a, rewrites);
-            }
-        }
-        Expr::Let { value, body, .. } => {
-            rewrite_ufcs_in_expr(value, rewrites);
-            rewrite_ufcs_in_expr(body, rewrites);
-        }
-        Expr::Assign { value, .. } | Expr::Unary { expr: value, .. } => {
-            rewrite_ufcs_in_expr(value, rewrites);
-        }
-        Expr::Lambda { body, .. } => rewrite_ufcs_in_expr(body, rewrites),
-        Expr::Binary { left, right, .. } => {
-            rewrite_ufcs_in_expr(left, rewrites);
-            rewrite_ufcs_in_expr(right, rewrites);
-        }
-        Expr::If {
-            cond,
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            rewrite_ufcs_in_expr(cond, rewrites);
-            rewrite_ufcs_in_expr(then_branch, rewrites);
-            rewrite_ufcs_in_expr(else_branch, rewrites);
-        }
-        Expr::Loop {
-            cond, body, step, ..
-        } => {
-            rewrite_ufcs_in_expr(cond, rewrites);
-            rewrite_ufcs_in_expr(body, rewrites);
-            if let Some(s) = step {
-                rewrite_ufcs_in_expr(s, rewrites);
-            }
-        }
-        Expr::Seq { stmts, .. } => {
-            for s in stmts {
-                rewrite_ufcs_in_expr(s, rewrites);
-            }
-        }
-        Expr::Return { value, .. } => rewrite_ufcs_in_expr(value, rewrites),
-        Expr::Alt { scrutinee, alt, .. } => {
-            rewrite_ufcs_in_expr(scrutinee, rewrites);
-            rewrite_ufcs_in_expr(alt, rewrites);
-        }
-        Expr::With { base, fields, .. } => {
-            rewrite_ufcs_in_expr(base, rewrites);
-            for (_, e) in fields {
-                rewrite_ufcs_in_expr(e, rewrites);
-            }
-        }
-        Expr::Var(_, _)
-        | Expr::Int(_, _)
-        | Expr::Float(_, _)
-        | Expr::Bool(_, _)
-        | Expr::String(_, _)
-        | Expr::Char(_, _)
-        | Expr::Unit(_)
-        | Expr::Break(_)
-        | Expr::Continue(_) => {}
-    }
+    });
 }

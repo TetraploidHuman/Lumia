@@ -81,18 +81,21 @@ impl<'ctx> Codegen<'ctx> {
 
     /// Codegen tables for [`lumia_core::infer_value_ty_ctx`] / ParMap elem typing.
     pub(crate) fn infer_ctx(&self) -> lumia_core::InferValueCtx<'_> {
-        lumia_core::InferValueCtx::full(
+        let mut ctx = lumia_core::InferValueCtx::full(
             &self.frame.local_tys,
             lumia_core::CodegenTypeTables {
                 slot_tys: &self.frame.slot_tys,
                 fun_ret_tys: &self.funs.fun_ret_tys,
                 fun_param_tys: &self.funs.fun_param_tys,
                 fun_param0_identity: &self.funs.fun_param0_identity,
-                funref_locals: &self.funs.funref_locals,
+                funref_locals: &self.funs.funref.locals,
                 local_int_consts: &self.frame.local_int_consts,
                 sum_max_arity: &self.funs.sum_max_arity,
+                channel_elem_hint: self.funs.channel_elem_hint.as_ref(),
             },
-        )
+        );
+        ctx.closure_cap_tys = self.funs.closure_cap_tys.get(&self.funs.current_fun);
+        ctx
     }
 
     /// FunRef values are tagged with the low bit; refuse heap closures for par_* workers.
@@ -103,7 +106,10 @@ impl<'ctx> Codegen<'ctx> {
     ) -> Result<inkwell::values::PointerValue<'ctx>> {
         use inkwell::{AddressSpace, IntPredicate};
         let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
-        let one = self.llvm.i64_ty.const_int(1, false);
+        let one = self
+            .llvm
+            .i64_ty
+            .const_int(lumia_abi::FUNREF_TAG as u64, false);
         let tagged = crate::error::llvm(self.llvm.builder.build_and(
             fun_i,
             one,
@@ -202,31 +208,8 @@ impl<'ctx> Codegen<'ctx> {
         Ok(())
     }
 
-    /// Record a possible old→young edge after storing a pointer-sized field.
-    /// No-op at runtime when `obj` is young / `new` is not a young heap ptr.
-    /// Remembered-set barrier for old→young pointer stores.
-    ///
-    /// List/Map/Set mutations emit barriers inside the RT. Direct field stores
-    /// from codegen (if added) should call this; alloc-init stores skip it
-    /// because `lumia_alloc` returns a young object.
-    #[allow(dead_code)]
-    pub(crate) fn emit_write_barrier(
-        &self,
-        obj: inkwell::values::PointerValue<'ctx>,
-        field: u32,
-        new_i64: inkwell::values::IntValue<'ctx>,
-    ) -> Result<()> {
-        let field_v = self.llvm.context.i32_type().const_int(field as u64, false);
-        let ptr_ty = self.llvm.context.ptr_type(inkwell::AddressSpace::default());
-        let new_ptr = crate::error::llvm(
-            self.llvm
-                .builder
-                .build_int_to_ptr(new_i64, ptr_ty, "wb_new"),
-        )?;
-        self.call_rt_void(
-            "lumia_write_barrier",
-            &[obj.into(), field_v.into(), new_ptr.into()],
-            "wb",
-        )
-    }
+    // Write barriers: List/Map/Set mutations call `lumia_write_barrier` inside
+    // the RT. Codegen does not emit barriers for alloc-init stores (`lumia_alloc`
+    // returns young objects). Any future direct pointer-field stores must call
+    // `lumia_write_barrier` explicitly.
 }

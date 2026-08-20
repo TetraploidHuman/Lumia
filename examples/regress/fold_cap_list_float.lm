@@ -1,0 +1,8 @@
+/// Captured List[Float] fold with param init must stay Float ABI.
+module main
+
+val main = {
+    val xs = listOf(1.0, 2.0)
+    val f = { y -> xs.fold(y, { a, x -> a + x }) }
+    println(f(0.0))
+}

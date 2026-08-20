@@ -32,13 +32,13 @@ fn markdown_code(text: &str) -> Value {
     })
 }
 
-pub(super) fn hover_for_analysis(a: &Analysis, line: u32, character: u32) -> Value {
+pub(crate) fn hover_for_analysis(a: &Analysis, line: u32, character: u32) -> Value {
     let byte = pos_to_byte(&a.src, line, character);
     // Prefer tightest spanning type_at entry.
     let mut best: Option<&(Span, Type)> = None;
     for entry in &a.typed.type_at {
         let (sp, _) = entry;
-        if sp.file == 0 && sp.start.0 <= byte && byte < sp.end.0.max(sp.start.0 + 1) {
+        if sp.file == a.buffer_file && sp.start.0 <= byte && byte < sp.end.0.max(sp.start.0 + 1) {
             match best {
                 None => best = Some(entry),
                 Some((bsp, _)) => {
@@ -86,40 +86,51 @@ pub(super) fn on_hover(params: Option<&Value>) -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::state::Analysis;
     use super::hover_for_analysis;
     use crate::check::check_source;
-    use lumia_syntax::line_starts;
-
-    fn line_col_of(src: &str, needle: &str) -> (u32, u32) {
-        let byte = src.find(needle).expect("needle") as u32;
-        let starts = line_starts(src);
-        let (line, col) = lumia_syntax::byte_to_line_col(&starts, lumia_syntax::BytePos(byte));
-        (line.saturating_sub(1), col.saturating_sub(1))
-    }
+    use crate::lsp::cursor::byte_to_position;
+    use crate::lsp::state::Analysis;
+    use crate::lsp::test_support::{imported_alias_analysis, with_encoding, IMPORTED_ALIAS_SRC};
+    use lumia_syntax::ColumnMetric;
 
     #[test]
     fn hover_matches_inlay_num_defaulting() {
-        let src = r#"
+        with_encoding(ColumnMetric::Utf16, || {
+            let src = r#"
 module Demo
 val add = { x, y -> x + y }
 "#;
-        let typed = check_source(src, true).expect("typecheck");
-        let a = Analysis {
-            typed,
-            src: src.to_string(),
-            files: vec![],
-        };
-        let (line, character) = line_col_of(src, "add");
-        let hover = hover_for_analysis(&a, line, character);
-        let md = hover["contents"]["value"].as_str().unwrap_or("");
-        assert!(
-            md.contains("(Int, Int) -> Int"),
-            "hover should ground Num like inlay, got {md:?}"
-        );
-        assert!(
-            !md.contains('?'),
-            "hover must not show raw ?N vars, got {md:?}"
-        );
+            let typed = check_source(src, true).expect("typecheck");
+            let a = Analysis::from_typed(typed, src.to_string(), vec![], 0);
+            let byte = src.find("add").expect("add") as u32;
+            let (line, character) = byte_to_position(src, byte);
+            let hover = hover_for_analysis(&a, line, character);
+            let md = hover["contents"]["value"].as_str().unwrap_or("");
+            assert!(
+                md.contains("(Int, Int) -> Int"),
+                "hover should ground Num like inlay, got {md:?}"
+            );
+            assert!(
+                !md.contains('?'),
+                "hover must not show raw ?N vars, got {md:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn hover_imported_alias_via_loader() {
+        with_encoding(ColumnMetric::Utf16, || {
+            let src = IMPORTED_ALIAS_SRC;
+            let a = imported_alias_analysis("untitled:Hover-1");
+            let byte = src.find("log(1)").expect("log call") as u32;
+            let (line, character) = byte_to_position(src, byte);
+            let hover = hover_for_analysis(&a, line, character);
+            assert!(!hover.is_null(), "hover on imported `log` must not be null");
+            let md = hover["contents"]["value"].as_str().unwrap_or("");
+            assert!(
+                !md.is_empty(),
+                "hover markdown for imported alias must be non-empty, got {hover:?}"
+            );
+        });
     }
 }

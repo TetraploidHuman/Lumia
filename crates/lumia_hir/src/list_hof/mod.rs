@@ -7,7 +7,8 @@ mod search;
 
 use crate::ast::Expr;
 use crate::lower::{counter_for_in, for_each_elem, LowerCtx};
-use lumia_syntax::Span;
+use crate::sym_util::synthetic;
+use lumia_syntax::{Span, Sym};
 
 pub(crate) use filter::{lower_list_filter, lower_list_flat_map};
 pub use fold::desugar_list_fold_sequential;
@@ -17,8 +18,7 @@ pub(crate) use map::{lower_list_map, lower_list_sort_by};
 pub(crate) use search::{lower_list_all, lower_list_any, lower_list_find};
 
 pub(crate) fn list_accum(
-    ctx: &LowerCtx,
-    acc: String,
+    acc: Sym,
     init: Expr,
     x: &str,
     list: Expr,
@@ -29,10 +29,7 @@ pub(crate) fn list_accum(
         name: acc.clone(),
         value: Box::new(init),
         body: Box::new(Expr::Seq {
-            stmts: vec![
-                for_each_elem(ctx, x, list, step, span),
-                Expr::Var(acc, span),
-            ],
+            stmts: vec![for_each_elem(x, list, step, span), Expr::Var(acc, span)],
             span,
         }),
         mutable: true,
@@ -42,8 +39,7 @@ pub(crate) fn list_accum(
 
 /// Shared accumulate-over-range skeleton: `let mut acc = init; for x in start..end { step }; acc`.
 pub(crate) fn range_accum(
-    ctx: &LowerCtx,
-    acc: String,
+    acc: Sym,
     init: Expr,
     x: &str,
     start: Expr,
@@ -57,7 +53,7 @@ pub(crate) fn range_accum(
         value: Box::new(init),
         body: Box::new(Expr::Seq {
             stmts: vec![
-                counter_for_in(ctx, x, start, end, inclusive, step, span),
+                counter_for_in(x, start, end, inclusive, step, span),
                 Expr::Var(acc, span),
             ],
             span,
@@ -68,7 +64,7 @@ pub(crate) fn range_accum(
 }
 
 /// Optional `let f = … in body` when the callback is not a lambda.
-pub(crate) fn with_fun_bind(f_bind: Option<(String, Expr)>, body: Expr) -> Expr {
+pub(crate) fn with_fun_bind(f_bind: Option<(Sym, Expr)>, body: Expr) -> Expr {
     match f_bind {
         Some((name, val)) => Expr::Let {
             name,
@@ -84,14 +80,14 @@ pub(crate) fn with_fun_bind(f_bind: Option<(String, Expr)>, body: Expr) -> Expr 
 /// Unary callback: inline lambda body vs bound function call.
 pub(crate) enum UnaryCallback {
     Inline {
-        param: String,
+        param: Sym,
         param_ty: Option<String>,
         body: Expr,
     },
     Bound {
         f: Expr,
-        f_name: String,
-        x: String,
+        f_name: Sym,
+        x: Sym,
     },
 }
 
@@ -108,8 +104,8 @@ pub(crate) fn resolve_unary_callback(f: Expr, span: Span, prefix: &str) -> Unary
             body: *body,
         },
         f => {
-            let f_name = format!("__{prefix}_f_{}", span.start.0);
-            let x = format!("__{prefix}_x_{}", span.start.0);
+            let f_name = synthetic(format!("__{prefix}_f_{}", span.start.0));
+            let x = synthetic(format!("__{prefix}_x_{}", span.start.0));
             UnaryCallback::Bound { f, f_name, x }
         }
     }
@@ -118,17 +114,17 @@ pub(crate) fn resolve_unary_callback(f: Expr, span: Span, prefix: &str) -> Unary
 /// Binary callback: inline lambda body vs bound function call.
 pub(crate) enum BinaryCallback {
     Inline {
-        acc: String,
+        acc: Sym,
         acc_ty: Option<String>,
-        x: String,
+        x: Sym,
         x_ty: Option<String>,
         body: Expr,
     },
     Bound {
         f: Expr,
-        f_name: String,
-        acc: String,
-        x: String,
+        f_name: Sym,
+        acc: Sym,
+        x: Sym,
     },
 }
 
@@ -147,9 +143,9 @@ pub(crate) fn resolve_binary_callback(f: Expr, span: Span, prefix: &str) -> Bina
             body: *body,
         },
         f => {
-            let f_name = format!("__{prefix}_f_{}", span.start.0);
-            let x = format!("__{prefix}_x_{}", span.start.0);
-            let acc = format!("__{prefix}_acc_{}", span.start.0);
+            let f_name = synthetic(format!("__{prefix}_f_{}", span.start.0));
+            let x = synthetic(format!("__{prefix}_x_{}", span.start.0));
+            let acc = synthetic(format!("__{prefix}_acc_{}", span.start.0));
             BinaryCallback::Bound { f, f_name, acc, x }
         }
     }
@@ -190,24 +186,24 @@ pub(crate) fn option_none(ctx: &LowerCtx, span: Span) -> Expr {
 }
 
 /// Bind non-lambda `f` to a temp; lambdas stay inline.
-pub(crate) fn bind_fun(f: Expr, span: Span) -> (Option<(String, Expr)>, Expr) {
+pub(crate) fn bind_fun(f: Expr, span: Span) -> (Option<(Sym, Expr)>, Expr) {
     match &f {
         Expr::Lambda { .. } => (None, f),
         _ => {
-            let name = format!("__pred_f_{}", span.start.0);
+            let name = synthetic(format!("__pred_f_{}", span.start.0));
             (Some((name.clone(), f)), Expr::Var(name, span))
         }
     }
 }
 
 /// `acc = ListAppend(acc, elem)` assign used by map/filter desugars.
-pub(crate) fn append_assign(acc: &str, elem: Expr, span: Span) -> Expr {
+pub(crate) fn append_assign(acc: &Sym, elem: Expr, span: Span) -> Expr {
     use crate::ast::Builtin;
     Expr::Assign {
-        name: acc.to_string(),
+        name: acc.clone(),
         value: Box::new(Expr::BuiltinCall {
             name: Builtin::ListAppend,
-            args: vec![Expr::Var(acc.to_string(), span), elem],
+            args: vec![Expr::Var(acc.clone(), span), elem],
             span,
         }),
         span,
@@ -215,13 +211,13 @@ pub(crate) fn append_assign(acc: &str, elem: Expr, span: Span) -> Expr {
 }
 
 /// `acc = ListConcat(acc, chunk)` assign used by flatMap.
-pub(crate) fn concat_assign(acc: &str, chunk: Expr, span: Span) -> Expr {
+pub(crate) fn concat_assign(acc: &Sym, chunk: Expr, span: Span) -> Expr {
     use crate::ast::Builtin;
     Expr::Assign {
-        name: acc.to_string(),
+        name: acc.clone(),
         value: Box::new(Expr::BuiltinCall {
             name: Builtin::ListConcat,
-            args: vec![Expr::Var(acc.to_string(), span), chunk],
+            args: vec![Expr::Var(acc.clone(), span), chunk],
             span,
         }),
         span,

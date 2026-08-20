@@ -83,3 +83,51 @@ bench_print_stats() {
     "$name" "$r_min" "$r_med" "$r_max" \
     "$(bench_fmt_rss_kb "$r_min")" "$(bench_fmt_rss_kb "$r_med")" "$(bench_fmt_rss_kb "$r_max")"
 }
+
+# Run `bench_measure` RUNS times against one binary → stats line.
+# Usage: bench_measure_runs <bin> [runs]
+# Env: RUNS (default 5) when runs omitted.
+bench_measure_runs() {
+  local bin=$1
+  local runs=${2:-${RUNS:-5}}
+  local samples="" i
+  for ((i = 0; i < runs; i++)); do
+    samples+="$(bench_measure "$bin")"$'\n'
+  done
+  printf '%s' "$samples" | bench_measure_stats
+}
+
+# Compare two command stdout dumps; exit 1 on mismatch.
+# Usage: bench_checksum_parity <kernel_out> <naive_out> [naive_label]
+bench_checksum_parity() {
+  local k_out=$1
+  local n_out=$2
+  local naive_label=${3:-naive}
+  echo "kernel:"
+  echo "$k_out"
+  echo "${naive_label}:"
+  echo "$n_out"
+  if [[ "$k_out" != "$n_out" ]]; then
+    echo "ERROR: checksum mismatch" >&2
+    return 1
+  fi
+}
+
+# Print speedup / rss_ratio from two stats lines (med time index 1, med rss index 4).
+# Usage: bench_print_speedup_pair <kernel_stats> <naive_stats> [naive_label]
+bench_print_speedup_pair() {
+  local k_stats=$1
+  local n_stats=$2
+  local naive_label=${3:-naive}
+  python3 - "$k_stats" "$n_stats" "$naive_label" <<'PY'
+import sys
+k = sys.argv[1].split()
+n = sys.argv[2].split()
+label = sys.argv[3]
+kt, nt = float(k[1]), float(n[1])
+kr, nr = float(k[4]), float(n[4])
+print(f"speedup  {nt/kt:.2f}x  ({label}_med_time / kernel_med_time)")
+print(f"rss_ratio {nr/kr:.2f}x  ({label}_med_rss / kernel_med_rss)")
+PY
+}
+

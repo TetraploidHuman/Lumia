@@ -1,0 +1,21 @@
+module task_cancel_siblings
+import std.io.{println}
+
+/// From a fiber, `cancelScope` cancels siblings only — the caller still finishes.
+val main = {
+    scope {
+        val ch = channel(1)
+        val blocked = spawn {
+            ch.recv()
+        }
+        val killer = spawn {
+            cancelScope()
+            7
+        }
+        println(killer.join())
+        blocked.joinOpt() match {
+            None -> println(0)
+            Some(x) -> println(x)
+        }
+    }
+}

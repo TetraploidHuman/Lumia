@@ -1,0 +1,23 @@
+module VarFunReassign
+import std.io.{println}
+
+/// Mut `Fun` slots hold FunRef (low-bit tagged) or heap closures; reassign must
+/// not `adt_release` a FunRef as if it were a heap object.
+val add1 = { x -> x + 1 }
+val mul2 = { x -> x * 2 }
+
+val main = {
+    var f = add1
+    f = mul2
+    println(f(3))
+
+    val k = 2
+    f = { x -> x * k }
+    println(f(3))
+    f = add1
+    println(f(10))
+
+    var g = { x -> x + 1.0 }
+    g = { x -> x * 2.0 }
+    println(g(1.5))
+}

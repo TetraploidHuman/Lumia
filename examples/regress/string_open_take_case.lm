@@ -1,0 +1,13 @@
+/// Open `.take` / `.reverse` accept String (not default List); Unicode case fold.
+module main
+import std.string.{toLower, toUpper}
+
+val takeN = { s, n -> s.take(n) }
+val rev = { s -> s.reverse() }
+
+val main = {
+    println(takeN("你好世界", 2))
+    println(rev("ab好"))
+    println(toLower("ÄBC"))
+    println(toUpper("café"))
+}

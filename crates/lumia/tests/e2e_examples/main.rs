@@ -12,6 +12,7 @@ use crate::harness::{
 use std::process::Command;
 
 include!("basic.rs");
+include!("task.rs");
 include!("tco.rs");
 include!("traits.rs");
 include!("poly.rs");

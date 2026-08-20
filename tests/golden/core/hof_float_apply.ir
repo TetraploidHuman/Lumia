@@ -31,7 +31,6 @@ fun main() effect.io=true memo=None {
   %1 = call dbl$Float$c_x3ff8000000000000()  // pure
   %2 = builtin Println(%1)  // effect
   %3 = funref dbl  // pure
-  %4 = %0  // pure
   %5 = call apply$Fn_dbl_Float(%3, %0)  // pure
   %6 = builtin Println(%5)  // effect
   %7 = funref dbl  // pure

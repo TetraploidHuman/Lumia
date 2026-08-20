@@ -1,13 +1,15 @@
 //! Keyword / free-builtin span overlays (shared with TextMate surface names).
 
 use super::token::{push, AbsToken, MOD_DEFAULT_LIB, TY_FUNCTION, TY_KEYWORD};
+use lumia_syntax::TokenKind;
 
-/// Surface keywords shared with TextMate (also painted by semantic overlay).
-pub(super) const KEYWORDS: &[&str] = &[
-    "if", "else", "match", "for", "in", "break", "continue", "return", "alt", "module", "import",
-    "val", "var", "type", "trait", "instance", "requires", "with", "effect", "foreign", "priv",
-    "as", "pure", "fn", "and", "or", "not", "true", "false",
-];
+/// Real lexer keywords + surface soft (`pure`/`fn`) for highlight parity with TextMate.
+pub(super) fn highlight_keywords() -> impl Iterator<Item = &'static str> {
+    TokenKind::KEYWORDS
+        .iter()
+        .copied()
+        .chain(TokenKind::SURFACE_SOFT.iter().copied())
+}
 
 pub(super) fn is_ident_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'

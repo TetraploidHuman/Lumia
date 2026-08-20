@@ -1,0 +1,67 @@
+module BenchCnFuseKernel
+
+/// Same PC + Hebbian workload as `bench_cn_fuse_naive.lm`, via `extras.cn`.
+import std.io.{println}
+import extras.linalg.{zeros, copy, checksum}
+import extras.cn.{nucleusStep, hebbian}
+
+val SIZE = 32
+val FROM = 16
+val TO = 32
+val STEPS = 50000
+val LR = 0.05
+val STATE_LR = 0.1
+val PI = 1.0
+val MU_CLIP = 10.0
+val W_CLIP = 5.0
+val DECAY = 0.0001
+val EPS = 0.001
+
+val main = {
+    var mu = zeros(SIZE)
+    var enc = zeros(SIZE * SIZE)
+    var predW = zeros(SIZE * SIZE)
+    var bu = zeros(SIZE)
+    var td = zeros(SIZE)
+    var err = zeros(SIZE)
+    var pred = zeros(SIZE)
+    var w = zeros(FROM * TO)
+    var mask = zeros(FROM * TO)
+    var u = zeros(FROM)
+    var v = zeros(TO)
+
+    var i = 0
+    for i < SIZE {
+        mu = mu.set(i, (0.0 + i) * 0.001)
+        bu = bu.set(i, (0.0 + i) * 0.01)
+        td = td.set(i, (0.0 + i) * 0.005)
+        enc = enc.set(i * SIZE + i, 1.0)
+        predW = predW.set(i * SIZE + i, 1.0)
+        i = i + 1
+    }
+    i = 0
+    for i < FROM {
+        u = u.set(i, (0.0 + i) * 0.02)
+        i = i + 1
+    }
+    i = 0
+    for i < FROM * TO {
+        mask = mask.set(i, 1.0)
+        w = w.set(i, (0.0 + (i % 17)) * 0.001)
+        i = i + 1
+    }
+
+    var t = 0
+    for t < STEPS {
+        bu = bu.set(t % SIZE, (0.0 + (t % 32)) * 0.001)
+        mu = nucleusStep(mu, enc, predW, bu, td, err, pred, SIZE, STATE_LR, PI, MU_CLIP)
+        td = copy(td, pred)
+        v = copy(v, err)
+        w = hebbian(w, u, v, mask, FROM, TO, LR, W_CLIP, DECAY, EPS)
+        t = t + 1
+    }
+
+    println(checksum(mu))
+    println(checksum(w))
+    println(checksum(pred))
+}

@@ -1,30 +1,37 @@
 //! textDocument/formatting.
+//!
+//! **Contract:** format always uses a *strict* `parse_module` tree (pretty-print
+//! authority). Do **not** reuse `Analysis.surface` (recovering AST with holes) —
+//! semantic tokens may paint from recovering surface; format must fail closed
+//! on parse errors (`Err`, never empty edits).
 
-use super::state::state_lock;
-use anyhow::Result;
-use lumia_syntax::{format_module_src, line_starts, parse_module, stamp_module};
+use super::cursor::byte_to_position;
+use super::state::{source_fingerprint, state_lock, FormatCacheResult};
+use anyhow::{bail, Result};
+use lumia_syntax::{format_matches_source, format_module_src, parse_module, stamp_module};
 use serde_json::{json, Value};
 
-pub(super) fn format_document(text: &str) -> Vec<Value> {
-    let mut m = match parse_module(text) {
-        Ok(m) => m,
-        Err(_) => return vec![],
-    };
+/// Pretty-print `text`. Returns `Ok([])` when already formatted.
+/// Parse failures are `Err` (callers must not treat them as "no edits").
+pub(super) fn format_document(text: &str) -> Result<Vec<Value>> {
+    let mut m = parse_module(text).map_err(|e| anyhow::anyhow!("parse failed: {e}"))?;
     stamp_module(&mut m, 0);
     let formatted = format_module_src(&m);
-    if formatted == text {
-        return vec![];
+    if format_matches_source(text, &formatted) {
+        return Ok(vec![]);
     }
-    let starts = line_starts(text);
-    let last_line = starts.len().saturating_sub(1) as u32;
-    let last_col = text.lines().last().map(|l| l.len() as u32).unwrap_or(0);
-    vec![json!({
+    // EOF position — do not use `str::lines().last()` (drops a trailing empty line).
+    let (eline, ecol) = byte_to_position(text, text.len() as u32);
+    Ok(vec![json!({
         "range": {
             "start": { "line": 0, "character": 0 },
-            "end": { "line": last_line, "character": last_col }
+            "end": {
+                "line": eline,
+                "character": ecol
+            }
         },
         "newText": formatted
-    })]
+    })])
 }
 
 pub(super) fn on_formatting(params: Option<&Value>) -> Result<Value> {
@@ -32,14 +39,41 @@ pub(super) fn on_formatting(params: Option<&Value>) -> Result<Value> {
         return Ok(json!([]));
     };
     let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
+    if uri.is_empty() {
+        bail!("textDocument/formatting: missing textDocument.uri");
+    }
     let st = state_lock();
     let Some(state) = st.as_ref() else {
-        return Ok(json!([]));
+        bail!("textDocument/formatting: LSP state not initialized");
     };
     let Some(text) = state.docs.get(uri) else {
-        return Ok(json!([]));
+        bail!("textDocument/formatting: document not open ({uri})");
     };
-    Ok(Value::Array(format_document(text)))
+    let hash = source_fingerprint(text);
+    if let Some((cached_hash, cached)) = state.format_cache.get(uri) {
+        if *cached_hash == hash {
+            return match cached {
+                FormatCacheResult::Ok(edits) => Ok(Value::Array(edits.clone())),
+                FormatCacheResult::Err(msg) => bail!("{msg}"),
+            };
+        }
+    }
+    let text = text.clone();
+    drop(st);
+    let result = match format_document(&text) {
+        Ok(edits) => FormatCacheResult::Ok(edits),
+        Err(err) => FormatCacheResult::Err(err.to_string()),
+    };
+    {
+        let mut st = state_lock();
+        if let Some(s) = st.as_mut() {
+            s.format_cache.insert(uri.to_string(), (hash, result.clone()));
+        }
+    }
+    match result {
+        FormatCacheResult::Ok(edits) => Ok(Value::Array(edits)),
+        FormatCacheResult::Err(msg) => bail!("{msg}"),
+    }
 }
 
 #[cfg(test)]
@@ -49,7 +83,7 @@ mod tests {
     #[test]
     fn format_document_pretty_prints_snippet() {
         let messy = "module T\nval x=1\n";
-        let edits = format_document(messy);
+        let edits = format_document(messy).expect("format");
         assert_eq!(edits.len(), 1);
         let new_text = edits[0]["newText"].as_str().unwrap();
         assert!(new_text.contains("val x = 1"));
@@ -58,7 +92,66 @@ mod tests {
     #[test]
     fn format_document_no_edit_when_already_formatted() {
         let src = "module T\n\nval x = 1\n";
-        let edits = format_document(src);
+        let edits = format_document(src).expect("format");
         assert!(edits.is_empty());
+    }
+
+    #[test]
+    fn format_document_edits_trailing_spaces() {
+        // Shared with CLI `fmt --check`: trailing spaces are not ignored.
+        let dirty = "module T\n\nval x = 1  \n";
+        let edits = format_document(dirty).expect("format");
+        assert_eq!(edits.len(), 1);
+        let new_text = edits[0]["newText"].as_str().unwrap();
+        assert!(!new_text.contains("1  \n"), "got {new_text:?}");
+    }
+
+    #[test]
+    fn format_document_no_edit_when_only_missing_final_newline() {
+        let src = "module T\n\nval x = 1";
+        let edits = format_document(src).expect("format");
+        assert!(
+            edits.is_empty(),
+            "missing final newline should match: {edits:?}"
+        );
+    }
+
+    #[test]
+    fn format_range_end_accounts_for_trailing_newline() {
+        let messy = "module T\nval x=1\n";
+        let edits = format_document(messy).expect("format");
+        assert_eq!(edits.len(), 1);
+        // Two content lines + trailing `\n` → EOF on empty line 2 (0-based), col 0.
+        // (`str::lines().last()` would wrongly report col = len("val x=1").)
+        assert_eq!(edits[0]["range"]["end"]["line"], 2);
+        assert_eq!(edits[0]["range"]["end"]["character"], 0);
+    }
+
+    #[test]
+    fn format_document_parse_error_is_err_not_empty() {
+        let bad = "module T\nval =\n";
+        let err = format_document(bad).expect_err("should fail");
+        assert!(err.to_string().contains("parse failed"), "got: {err}");
+    }
+
+    #[test]
+    fn format_imported_alias_via_loader_surface() {
+        // Format uses strict parse (not recovering Analysis). Import aliases must
+        // still pretty-print without inventing unbound names.
+        let src = r#"module Main
+import std.io.{println as log}
+val main={log(1)}
+"#;
+        let edits = format_document(src).expect("import alias must parse for format");
+        assert_eq!(edits.len(), 1);
+        let pretty = edits[0]["newText"].as_str().unwrap();
+        assert!(
+            pretty.contains("println as log"),
+            "expected import alias preserved, got {pretty:?}"
+        );
+        assert!(
+            pretty.contains("log(1)") || pretty.contains("log (1)"),
+            "expected alias call, got {pretty:?}"
+        );
     }
 }

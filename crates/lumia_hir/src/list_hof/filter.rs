@@ -5,31 +5,36 @@ use super::{
 };
 use crate::ast::Expr;
 use crate::lower::{empty_list, LowerCtx};
-use lumia_syntax::Span;
+use crate::sym_util::synthetic;
+use lumia_syntax::{Span, Sym};
 
-pub(crate) fn lower_list_filter(ctx: &LowerCtx, list: Expr, f: Expr, span: Span) -> Expr {
+pub(crate) fn lower_list_filter(_ctx: &LowerCtx, list: Expr, f: Expr, span: Span) -> Expr {
     match resolve_unary_callback(f, span, "flt") {
         UnaryCallback::Inline {
             param,
             param_ty,
             body,
-        } => lower_list_filter_inline(ctx, list, param, param_ty, body, span),
+        } => lower_list_filter_inline(_ctx, list, param, param_ty, body, span),
         UnaryCallback::Bound { f, f_name, x } => {
-            lower_list_filter_call(ctx, list, f, f_name, x, span)
+            lower_list_filter_call(_ctx, list, f, f_name, x, span)
         }
     }
 }
 
 fn lower_list_filter_inline(
-    ctx: &LowerCtx,
+    _ctx: &LowerCtx,
     list: Expr,
-    param: String,
+    param: Sym,
     param_ty: Option<String>,
     body: Expr,
     span: Span,
 ) -> Expr {
-    let acc = format!("__flt_acc_{}", span.start.0);
-    let x = format!("__flt_x_{}", span.start.0);
+    let acc = synthetic(format!(
+        "{}_{}",
+        crate::desugar_slots::FLT_ACC_PREFIX,
+        span.start.0
+    ));
+    let x = synthetic(format!("__flt_x_{}", span.start.0));
     let pred = Expr::Let {
         name: param,
         value: Box::new(Expr::Var(x.clone(), span)),
@@ -44,18 +49,22 @@ fn lower_list_filter_inline(
         else_branch: Box::new(Expr::Unit(span)),
         span,
     };
-    list_accum(ctx, acc, empty_list(span), &x, list, step, span)
+    list_accum(acc, empty_list(span), x.as_str(), list, step, span)
 }
 
 fn lower_list_filter_call(
-    ctx: &LowerCtx,
+    _ctx: &LowerCtx,
     list: Expr,
     f: Expr,
-    f_name: String,
-    x: String,
+    f_name: Sym,
+    x: Sym,
     span: Span,
 ) -> Expr {
-    let acc = format!("__flt_acc_{}", span.start.0);
+    let acc = synthetic(format!(
+        "{}_{}",
+        crate::desugar_slots::FLT_ACC_PREFIX,
+        span.start.0
+    ));
     let pred = Expr::Call {
         callee: Box::new(Expr::Var(f_name.clone(), span)),
         args: vec![Expr::Var(x.clone(), span)],
@@ -70,7 +79,7 @@ fn lower_list_filter_call(
     };
     with_fun_bind(
         Some((f_name, f)),
-        list_accum(ctx, acc, empty_list(span), &x, list, step, span),
+        list_accum(acc, empty_list(span), x.as_str(), list, step, span),
     )
 }
 
@@ -97,15 +106,19 @@ pub(crate) fn apply_pred(f: &Expr, x: Expr, span: Span) -> Expr {
 }
 
 /// `xs.flatMap(f)` where `f: T -> List[U]` → concat mapped lists.
-pub(crate) fn lower_list_flat_map(ctx: &LowerCtx, list: Expr, f: Expr, span: Span) -> Expr {
-    let acc = format!("__fmap_acc_{}", span.start.0);
+pub(crate) fn lower_list_flat_map(_ctx: &LowerCtx, list: Expr, f: Expr, span: Span) -> Expr {
+    let acc = synthetic(format!(
+        "{}_{}",
+        crate::desugar_slots::FMAP_ACC_PREFIX,
+        span.start.0
+    ));
     match resolve_unary_callback(f, span, "fmap") {
         UnaryCallback::Inline {
             param,
             param_ty,
             body,
         } => {
-            let x = format!("__fmap_x_{}", span.start.0);
+            let x = synthetic(format!("__fmap_x_{}", span.start.0));
             let mapped = Expr::Let {
                 name: param,
                 value: Box::new(Expr::Var(x.clone(), span)),
@@ -114,7 +127,7 @@ pub(crate) fn lower_list_flat_map(ctx: &LowerCtx, list: Expr, f: Expr, span: Spa
                 ty: param_ty,
             };
             let step = concat_assign(&acc, mapped, span);
-            list_accum(ctx, acc, empty_list(span), &x, list, step, span)
+            list_accum(acc, empty_list(span), x.as_str(), list, step, span)
         }
         UnaryCallback::Bound { f, f_name, x } => {
             let mapped = Expr::Call {
@@ -125,7 +138,7 @@ pub(crate) fn lower_list_flat_map(ctx: &LowerCtx, list: Expr, f: Expr, span: Spa
             let step = concat_assign(&acc, mapped, span);
             with_fun_bind(
                 Some((f_name, f)),
-                list_accum(ctx, acc, empty_list(span), &x, list, step, span),
+                list_accum(acc, empty_list(span), x.as_str(), list, step, span),
             )
         }
     }

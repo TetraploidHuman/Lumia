@@ -10,7 +10,8 @@
     <br/>Build the compiler: <code>source scripts/env.sh &amp;&amp; cargo build -p lumia --release</code>
   ]]></description>
 
-  <idea-version since-build="262" until-build="262.*"/>
+  <!-- Language plugin: track a few IDE majors; not tied to Cargo workspace 0.1.0. -->
+  <idea-version since-build="241" until-build="269.*"/>
 
   <depends>com.intellij.modules.platform</depends>
   <depends>com.intellij.modules.ultimate</depends>

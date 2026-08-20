@@ -12,16 +12,11 @@ fun main() effect.io=true memo=None {
   %7 = builtin Elems(%5)  // pure
   %8 = builtin ListLen(%7)  // pure
   __i_101 := %6
-  %14 = i64 2  // pure
-  %16 = i64 4  // pure
   %24 = loop ...  // effect
   %25 = load __fuse_acc_101  // pure
   %26 = builtin Println(%25)  // effect
   __fuse_acc_206 := %6
   __i_206 := %6
-  %33 = i64 1  // pure
-  %35 = i64 2  // pure
-  %37 = i64 0  // pure
   %45 = loop ...  // effect
   %46 = load __fuse_acc_206  // pure
   %47 = builtin Println(%46)  // effect

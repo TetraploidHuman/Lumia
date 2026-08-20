@@ -2,9 +2,14 @@
 //!
 //! Mirrors `cogninucleus/efe.py`: kinematic one-step imagination + scalar G(a),
 //! with optional two-step lookahead. All work stays in f64 buffers (no host sync).
+//!
+//! # Safety (FFI)
+//! List buffers are null or valid `TYPE_LIST_F64` / Float-elem layouts.
+
+#![deny(clippy::not_unsafe_ptr_arg_deref)]
 
 use crate::common::{trap_abort, GcInhibitGuard};
-use crate::list::list_len_of;
+use crate::list::{f64_elems, f64_elems_mut, list_len_of, require_len};
 use std::ptr;
 
 /// Match GridWorld.ACTIONS: up, down, left, right.
@@ -13,8 +18,10 @@ const ACTION_DELTAS: [(f64, f64); 4] = [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0
 /// `scores[a] = G(a)` (lower better). Writes `scores` (len `n_actions`). Returns `scores`.
 ///
 /// Parameters mirror `efe_action_scores` in CogniNucleus (`threat_gain=0` disables threat).
+/// # Safety
+/// Caller must pass null or valid `TYPE_LIST_F64` / Float-elem list buffers as required by the kernel contract.
 #[no_mangle]
-pub extern "C" fn lumia_efe_action_scores(
+pub unsafe extern "C" fn lumia_efe_action_scores(
     obs: *mut u8,
     pred: *mut u8,
     scores: *mut u8,
@@ -122,8 +129,10 @@ pub extern "C" fn lumia_efe_action_scores(
 
 /// Embodied MiniEcoWorld EFE (`imagine_embodied_obs_after_action` + G(a)).
 /// Extra params: `turn_angle`, `fov_range`, `hunger_explore_gain`. Obs dim ≤ 64.
+/// # Safety
+/// Caller must pass null or valid `TYPE_LIST_F64` / Float-elem list buffers as required by the kernel contract.
 #[no_mangle]
-pub extern "C" fn lumia_efe_embodied_action_scores(
+pub unsafe extern "C" fn lumia_efe_embodied_action_scores(
     obs: *mut u8,
     pred: *mut u8,
     scores: *mut u8,
@@ -525,8 +534,10 @@ fn expected_free_energy(
 /// steering (B6) is omitted until hippocampal goal memory is ported.
 ///
 /// Mutates `logits` (len ≥ 4). Returns `logits`.
+/// # Safety
+/// Caller must pass null or valid `TYPE_LIST_F64` / Float-elem list buffers as required by the kernel contract.
 #[no_mangle]
-pub extern "C" fn lumia_efe_apply_embodied_reflexes(
+pub unsafe extern "C" fn lumia_efe_apply_embodied_reflexes(
     logits: *mut u8,
     plan_obs: *mut u8,
     obs: *mut u8,
@@ -745,70 +756,6 @@ fn ensure_unique_f64(list: *mut u8) -> *mut u8 {
     }
 }
 
-fn require_len(list: *mut u8, expect: i64, what: &str) {
-    let n = list_len_of(list);
-    if n != expect {
-        trap_abort(&format!("lumia: {what} len {n} != {expect}"));
-    }
-}
-
-unsafe fn f64_elems(list: *mut u8) -> (*const f64, usize) {
-    let n = *(list as *const i64) as usize;
-    ((list as *const i64).add(1) as *const f64, n)
-}
-
-unsafe fn f64_elems_mut(list: *mut u8) -> (*mut f64, usize) {
-    let n = *(list as *const i64) as usize;
-    ((list as *mut i64).add(1) as *mut f64, n)
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::dense_f64::lumia_list_f64_zeros;
-    use crate::list::lumia_list_get;
-
-    fn bits(f: f64) -> i64 {
-        f.to_bits() as i64
-    }
-
-    fn from_slice(xs: &[f64]) -> *mut u8 {
-        let p = lumia_list_f64_zeros(xs.len() as i64);
-        unsafe {
-            let (dst, _) = f64_elems_mut(p);
-            for (i, &v) in xs.iter().enumerate() {
-                *dst.add(i) = v;
-            }
-        }
-        p
-    }
-
-    #[test]
-    fn efe_horizon1_finite() {
-        // 16-dim obs: agent at (0.5,0.5), rel goal (0.25,0), clear blockers.
-        let mut o = vec![0.0; 16];
-        o[0] = 0.5;
-        o[1] = 0.5;
-        o[4] = 0.25;
-        o[11] = 0.1;
-        o[13] = 0.2;
-        let obs = from_slice(&o);
-        let mut p = o.clone();
-        p[4] = 0.15;
-        let pred = from_slice(&p);
-        let scores = lumia_list_f64_zeros(4);
-        let scores = lumia_efe_action_scores(
-            obs, pred, scores, 4, 2, 4, 11, 0.25, 1.2, 0.28, 3.2, 0.8, 2.0, 0.1,
-        );
-        for a in 0..4 {
-            let v = f64::from_bits(lumia_list_get(scores, a) as u64);
-            assert!(v.is_finite(), "score[{a}]={v}");
-        }
-        // Oracle (Python f64 twin of cogninucleus/efe.py): ~[1.392, -0.113, 1.322, 1.322]
-        let s0 = f64::from_bits(lumia_list_get(scores, 0) as u64);
-        let s1 = f64::from_bits(lumia_list_get(scores, 1) as u64);
-        assert!((s0 - 1.3921016919911855).abs() < 1e-9, "s0={s0}");
-        assert!((s1 - -0.11301180377457948).abs() < 1e-9, "s1={s1}");
-        let _ = bits(0.0);
-    }
-}
+#[path = "efe_tests.rs"]
+mod tests;

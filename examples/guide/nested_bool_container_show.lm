@@ -1,0 +1,37 @@
+module NestedBoolContainerShow
+
+import std.io.{println}
+
+/// Nested Auto Show must read TID_B_* (typed println already used call-site bool).
+type Box {
+    val o
+}
+
+val main = {
+    println(listOf(true, false))
+    println(Box { o = listOf(true, false) })
+
+    // Default auto-parallel map must keep TID_B_KEY for nested Auto Show.
+    val mapped = listOf(1, 2).map { it -> true }
+    println(mapped)
+    println(Box { o = mapped })
+
+    var mb = mapOf()
+    mb = mb.set(true, false)
+    println(mb)
+    println(Box { o = mb })
+    println(mb.keys())
+    println(Box { o = mb.keys() })
+    println(mb.values())
+    println(Box { o = mb.values() })
+
+    var s = setOf()
+    s = s.insert(true)
+    s = s.insert(false)
+    println(s)
+    println(Box { o = s })
+
+    var mf = mapOf()
+    mf = mf.set(1.5, 2.5)
+    println(Box { o = mf.keys() })
+}

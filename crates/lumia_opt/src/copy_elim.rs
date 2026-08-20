@@ -1,18 +1,15 @@
 //! Copy elimination: collapse `let x = y` aliases (SSA copy-prop).
 
-use crate::Pass;
 use lumia_core::{
-    for_each_block_dfs, for_each_nested_block_mut, Block, CoreFun, CoreModule, Local, Op, Value,
+    for_each_ctrl_nested_in_block_mut, for_each_let, for_each_top_level_op_in_block_mut, Block,
+    CoreFun, CoreModule, Local, Op, Value,
 };
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// Copy elimination: collapse `let x = y` aliases (SSA copy-prop).
 pub(crate) struct CopyElimPass;
-impl Pass for CopyElimPass {
-    fn name(&self) -> &str {
-        "copy_elim"
-    }
-    fn run(&self, module: &mut CoreModule) {
+impl CopyElimPass {
+    pub(crate) fn run(self, module: &mut CoreModule) {
         for f in &mut module.functions {
             elim_copies_in_fun(f);
         }
@@ -43,16 +40,9 @@ fn elim_copies_in_fun(f: &mut CoreFun) {
 }
 
 fn collect_copy_aliases(block: &Block, remap: &mut HashMap<u32, u32>) {
-    for_each_block_dfs(block, &mut |b| {
-        for op in &b.ops {
-            if let Op::Let {
-                local,
-                value: Value::Local(src),
-                ..
-            } = op
-            {
-                remap.insert(local.0, src.0);
-            }
+    for_each_let(block, &mut |_b, local, value| {
+        if let Value::Local(src) = value {
+            remap.insert(local.0, src.0);
         }
     });
 }
@@ -66,23 +56,21 @@ fn apply_local_remap(block: &mut Block, remap: &HashMap<u32, u32>) {
     if let Some(r) = &mut block.result {
         map_l(r);
     }
-    for op in &mut block.ops {
-        match op {
-            Op::Let { value, .. } | Op::Effect { value, .. } => {
-                lumia_core::map_value_locals(
-                    value,
-                    &mut |l| {
-                        if let Some(&r) = remap.get(&l.0) {
-                            *l = Local(r);
-                        }
-                    },
-                    &mut |b| apply_local_remap(b, remap),
-                );
-            }
-            Op::Assign { value, .. } | Op::Return { value } => map_l(value),
-            Op::Break | Op::Continue => {}
+    for_each_top_level_op_in_block_mut(block, &mut |op| match op {
+        Op::Let { value, .. } => {
+            lumia_core::map_value_locals(
+                value,
+                &mut |l| {
+                    if let Some(&r) = remap.get(&l.0) {
+                        *l = Local(r);
+                    }
+                },
+                &mut |b| apply_local_remap(b, remap),
+            );
         }
-    }
+        Op::Assign { value, .. } | Op::Return { value } => map_l(value),
+        Op::Break | Op::Continue => {}
+    });
 }
 
 fn strip_identity_lets(block: &mut Block, aliases: &HashMap<u32, u32>) {
@@ -92,14 +80,9 @@ fn strip_identity_lets(block: &mut Block, aliases: &HashMap<u32, u32>) {
             Op::Let { local, .. } if aliases.contains_key(&local.0)
         )
     });
-    for op in &mut block.ops {
-        match op {
-            Op::Let { value, .. } | Op::Effect { value } => {
-                for_each_nested_block_mut(value, &mut |nested| {
-                    strip_identity_lets(nested, aliases);
-                });
-            }
-            _ => {}
-        }
-    }
+    for_each_ctrl_nested_in_block_mut(block, &mut |nested| strip_identity_lets(nested, aliases));
 }
+
+#[cfg(test)]
+#[path = "copy_elim_tests.rs"]
+mod tests;

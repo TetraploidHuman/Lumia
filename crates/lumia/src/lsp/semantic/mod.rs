@@ -9,17 +9,16 @@ pub use token::{TOKEN_MODIFIERS, TOKEN_TYPES};
 use super::state::{state_lock, Analysis};
 use anyhow::Result;
 use lumia_hir::{surface_names, SurfaceRole};
-use lumia_syntax::parse_module_recovering;
-use overlay::{push_free_builtin_spans, push_keyword_spans, KEYWORDS};
+use overlay::{highlight_keywords, push_free_builtin_spans, push_keyword_spans};
 use serde_json::{json, Value};
 use token::encode_deltas;
 use walk::collect_module;
 
 pub(super) fn tokens_for_analysis(a: &Analysis) -> Vec<u32> {
     let mut abs = Vec::new();
-    let parsed = parse_module_recovering(&a.src);
-    collect_module(a, &parsed.module, &a.src, &mut abs);
-    for kw in KEYWORDS {
+    // Use cached surface parse from analysis (avoid a second parse_module_*).
+    collect_module(a, &a.surface.module, &a.src, &mut abs);
+    for kw in highlight_keywords() {
         push_keyword_spans(&a.src, kw, &mut abs);
     }
     for sn in surface_names() {
@@ -69,11 +68,7 @@ val main = {
 }
 "#;
         let typed = check_source(src, true).expect("typecheck");
-        let a = Analysis {
-            typed,
-            src: src.to_string(),
-            files: vec![],
-        };
+        let a = Analysis::from_typed(typed, src.to_string(), vec![], 0);
         let data = tokens_for_analysis(&a);
         assert!(
             !data.is_empty() && data.len().is_multiple_of(5),
@@ -102,11 +97,7 @@ import std.io.{println as log}
 val main = { 1 }
 "#;
         let typed = check_source(src, true).expect("typecheck");
-        let a = Analysis {
-            typed,
-            src: src.to_string(),
-            files: vec![],
-        };
+        let a = Analysis::from_typed(typed, src.to_string(), vec![], 0);
         let data = tokens_for_analysis(&a);
         assert!(!data.is_empty() && data.len().is_multiple_of(5));
         let types: Vec<u32> = data.chunks(5).map(|c| c[3]).collect();
@@ -117,6 +108,24 @@ val main = { 1 }
         assert!(
             types.contains(&0),
             "imported local name should paint as function: {types:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_imported_alias_call_via_loader() {
+        // With loader, `log` is a typed callable; call-site paint must see fun_types.
+        use crate::lsp::test_support::imported_alias_analysis;
+        let a = imported_alias_analysis("untitled:Semantic-1");
+        assert!(
+            a.typed.fun_types.contains_key("log"),
+            "imported alias must bind under loader"
+        );
+        let data = tokens_for_analysis(&a);
+        assert!(!data.is_empty() && data.len().is_multiple_of(5));
+        let types: Vec<u32> = data.chunks(5).map(|c| c[3]).collect();
+        assert!(
+            types.contains(&0),
+            "typed import alias / call should paint as function: {types:?}"
         );
     }
 }

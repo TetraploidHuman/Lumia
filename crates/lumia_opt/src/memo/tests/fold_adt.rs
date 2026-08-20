@@ -9,7 +9,6 @@ fn const_fold_adt_tag() {
             "f",
             vec![],
             Block {
-                params: vec![],
                 ops: vec![
                     Op::Let {
                         local: Local(0),
@@ -26,6 +25,7 @@ fn const_fold_adt_tag() {
                         value: Value::Builtin {
                             name: Builtin::AdtTag,
                             args: vec![Local(0)],
+                            result_ty: None,
                         },
                         pure_region: true,
                     },

@@ -1,13 +1,16 @@
 //! Import path resolution and recursive module loading.
 
-use super::std_mod::{is_std, std_exports, std_module, validate_std_import, workspace_std_dir};
+use super::std_mod::{
+    bundled_exports, extras_module, is_extras, is_std, std_module, validate_bundled_import,
+    workspace_extras_dir, workspace_std_dir,
+};
 use super::{append_items_unique, check_no_duplicate_toplevel, SourceFile};
 use crate::vis::{
     apply_import_aliases, extend_visibility, import_visible_names, item_is_priv, item_name,
 };
 use anyhow::{bail, Context, Result};
 use lumia_syntax::{
-    format_diagnostic, parse_module, stamp_module, Import, ImportNames, Item, Module,
+    format_diagnostic_files, parse_module, stamp_module, Import, ImportNames, Item, Module,
 };
 use lumia_ty::NameVisibility;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
@@ -174,9 +177,14 @@ pub(super) fn load_module_file_uncached(
         src: src.clone(),
     });
     let mut m = parse_module(&src).map_err(|e| {
-        anyhow::anyhow!(format_diagnostic(
-            &path_label(path),
-            &src,
+        let labels: Vec<String> = files.iter().map(|f| path_label(&f.path)).collect();
+        let table: Vec<(&str, &str)> = labels
+            .iter()
+            .zip(files.iter())
+            .map(|(lab, f)| (lab.as_str(), f.src.as_str()))
+            .collect();
+        anyhow::anyhow!(format_diagnostic_files(
+            &table,
             e.span.with_file(file_id),
             "parse",
             &e.message,
@@ -195,10 +203,14 @@ pub(super) fn load_module_file_uncached(
 
     let mut imported_items = Vec::new();
     for imp in &m.imports {
-        if is_std(&imp.path) {
-            validate_std_import(imp)?;
-            let rel = std_module(&imp.path)?;
-            let file = workspace_std_dir().join(rel);
+        if is_std(&imp.path) || is_extras(&imp.path) {
+            validate_bundled_import(imp)?;
+            let (dir, rel) = if is_std(&imp.path) {
+                (workspace_std_dir(), std_module(&imp.path)?)
+            } else {
+                (workspace_extras_dir(), extras_module(&imp.path)?)
+            };
+            let file = dir.join(rel);
             let file = file.canonicalize().unwrap_or(file);
             let dep = load_module_file(
                 &file,
@@ -210,11 +222,12 @@ pub(super) fn load_module_file_uncached(
                 visibility,
                 false,
             )?;
-            // `import std.foo.*` must still honor `@exports` (hide raw FFI like
-            // `lumia_list_f64_zeros`). Selective/single already validated above.
+            // `import std.foo.*` / `extras.foo.*` must still honor `@exports`
+            // (hide raw FFI). Selective/single already validated above.
             let visible = match &imp.names {
                 ImportNames::All => {
-                    let exports: HashSet<String> = std_exports(&imp.path)?.into_iter().collect();
+                    let exports: HashSet<String> =
+                        bundled_exports(&imp.path)?.into_iter().collect();
                     import_visible_names(&dep.items, &imp.names)
                         .into_iter()
                         .filter(|n| exports.contains(n))
@@ -223,12 +236,8 @@ pub(super) fn load_module_file_uncached(
                 _ => import_visible_names(&dep.items, &imp.names),
             };
             let filtered = filter_items(dep.items, &imp.names)?;
-            if is_entry {
-                extend_visibility(visibility, &filtered, &visible);
-            } else {
-                let empty = HashSet::default();
-                extend_visibility(visibility, &filtered, &empty);
-            }
+            // Record imports for this importer (entry or nested dep).
+            extend_visibility(visibility, &filtered, &visible, file_id);
             append_items_unique(&mut imported_items, filtered);
             continue;
         }
@@ -256,31 +265,16 @@ pub(super) fn load_module_file_uncached(
         let visible = import_visible_names(&dep.items, &imp.names);
         // Apply `as` renames before recording origins so aliases get `name_origin`.
         let filtered = filter_items(dep.items, &imp.names)?;
-        // Only the entry module's imports expand the user-facing scope.
-        if is_entry {
-            extend_visibility(visibility, &filtered, &visible);
-        } else {
-            // Nested deps: record origins only (no new entry-visible names).
-            let empty = HashSet::default();
-            extend_visibility(visibility, &filtered, &empty);
-        }
+        extend_visibility(visibility, &filtered, &visible, file_id);
         append_items_unique(&mut imported_items, filtered);
     }
 
     // Std modules are inlined; drop their import nodes from the entry AST.
-    m.imports.retain(|i| !is_std(&i.path));
-    // Record this file's declarations (entry or dep). Entry names are visible
-    // via same-file origin; deps rely on import_visible_names above.
-    let local_visible: HashSet<String> = if is_entry {
-        m.items
-            .iter()
-            .filter_map(item_name)
-            .map(|s| s.to_string())
-            .collect()
-    } else {
-        HashSet::default()
-    };
-    extend_visibility(visibility, &m.items, &local_visible);
+    m.imports
+        .retain(|i| !is_std(&i.path) && !is_extras(&i.path));
+    // Record this file's declarations (same-file visibility via name_origin).
+    let empty = HashSet::default();
+    extend_visibility(visibility, &m.items, &empty, file_id);
 
     append_items_unique(&mut imported_items, std::mem::take(&mut m.items));
     check_no_duplicate_toplevel(&imported_items, files)?;
@@ -289,7 +283,7 @@ pub(super) fn load_module_file_uncached(
     Ok(m)
 }
 
-pub(super) fn path_label(path: &Path) -> String {
+pub fn path_label(path: &Path) -> String {
     path.file_name()
         .and_then(|s| s.to_str())
         .map(|s| s.to_string())
@@ -406,6 +400,60 @@ mod tests {
         fs::write(&entry, "module Main\nimport a.{a}\nval main = a\n").unwrap();
         let err = load_program(&entry).unwrap_err().to_string();
         assert!(err.contains("cyclic import"), "got {err}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dep_cannot_see_sibling_import_without_own_import() {
+        // A references `stolen` from C but does not import C. Loading via Main
+        // must not false-green (deps used to see the whole inlined namespace).
+        let dir = std::env::temp_dir().join(format!("lumia_vis_fg_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("lib")).unwrap();
+        fs::write(dir.join("lib/c.lm"), "module C\nval stolen = 42\n").unwrap();
+        fs::write(dir.join("lib/a.lm"), "module A\nval exposed = stolen\n").unwrap();
+        let entry = dir.join("main.lm");
+        fs::write(
+            &entry,
+            "module Main\nimport lib.c.{stolen}\nimport lib.a.{exposed}\nval main = { exposed }\n",
+        )
+        .unwrap();
+        let err = crate::check::check_program(&entry, true, None)
+            .expect_err("must reject")
+            .to_string();
+        assert!(
+            err.contains("stolen")
+                && (err.contains("not imported")
+                    || err.contains("private")
+                    || err.contains("unbound")),
+            "expected visibility error, got {err}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lone_lib_first_class_println_is_unbound() {
+        // Opening a dep file as entry used to check-ok (`println` seeded in Infer)
+        // while build failed and package-entry check rejected the same body.
+        let dir = std::env::temp_dir().join(format!("lumia_println_fc_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let lib = dir.join("Lib.lm");
+        fs::write(&lib, "module Lib\nval leak = println\n").unwrap();
+        let err = crate::check::check_program(&lib, true, None)
+            .expect_err("first-class println needs import")
+            .to_string();
+        assert!(
+            err.contains("unbound") || err.contains("println"),
+            "got {err}"
+        );
+        let main = dir.join("Main.lm");
+        fs::write(
+            &main,
+            "module Main\nimport std.io.{println}\nval f = println\nval main = { f(1) }\n",
+        )
+        .unwrap();
+        crate::check::check_program(&main, true, None).expect("imported first-class println");
         let _ = fs::remove_dir_all(&dir);
     }
 }

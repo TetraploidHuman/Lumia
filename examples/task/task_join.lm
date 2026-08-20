@@ -1,0 +1,9 @@
+module task_join
+import std.io.{println}
+
+val main = {
+    scope {
+        val t = spawn { 1 + 2 }
+        println(t.join())
+    }
+}

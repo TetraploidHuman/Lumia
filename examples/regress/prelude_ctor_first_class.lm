@@ -1,0 +1,12 @@
+module prelude_ctor_first_class
+import std.io.{println}
+
+val main = {
+    val lo = listOf
+    val mo = mapOf
+    val so = setOf
+    val xs = lo().concat(listOf(1.5))
+    println(xs.get(0))
+    println(mo().set(1.0, 2.0).get(1.0) alt 0.0)
+    println(so().insert(3).contains(3))
+}

@@ -3,7 +3,27 @@
 use super::ctx::LowerCtx;
 use super::expr::lower_expr;
 use crate::ast::{Builtin, Expr};
-use lumia_syntax::{BinOp, Span};
+use crate::sym_util::synthetic;
+use lumia_syntax::{BinOp, Span, Sym};
+use std::sync::atomic::{AtomicU32, Ordering};
+
+/// Nested `list_for_in` / `counter_for_in` often share one HIR `span` (HOF fusion).
+/// Span-only temps collide: the inner mutable index overwrites the outer and the
+/// outer loop exits early (e.g. `flatMap(...).len()` counting only one chunk).
+static FOR_TEMP_SEQ: AtomicU32 = AtomicU32::new(0);
+
+fn next_for_temp_id() -> u32 {
+    FOR_TEMP_SEQ.fetch_add(1, Ordering::Relaxed)
+}
+
+fn for_index_sym(span: Span) -> Sym {
+    synthetic(format!(
+        "{}{}_{}",
+        crate::desugar_slots::FOR_INDEX_PREFIX,
+        span.start.0,
+        next_for_temp_id()
+    ))
+}
 
 pub(crate) fn lower_for_in(
     ctx: &LowerCtx,
@@ -27,7 +47,7 @@ pub(crate) fn lower_for_in(
                     span,
                 }
             };
-            let pair = format!("__kv_{}", span.start.0);
+            let pair = synthetic(format!("__kv_{}", span.start.0));
             let bind_k = Expr::Let {
                 name: k.clone(),
                 value: Box::new(Expr::BuiltinCall {
@@ -49,7 +69,7 @@ pub(crate) fn lower_for_in(
                 mutable: false,
                 ty: None,
             };
-            list_for_in(ctx, &pair, items, bind_k, span)
+            list_for_in(&pair, items, bind_k, span)
         }
         lumia_syntax::ForBinding::Name(name) => {
             let lowered_iter = lower_expr(ctx, iter);
@@ -57,8 +77,7 @@ pub(crate) fn lower_for_in(
                 if matches!(b, Builtin::Range | Builtin::RangeInclusive) && args.len() == 2 {
                     let inclusive = matches!(b, Builtin::RangeInclusive);
                     return counter_for_in(
-                        ctx,
-                        name,
+                        name.as_str(),
                         args[0].clone(),
                         args[1].clone(),
                         inclusive,
@@ -67,7 +86,7 @@ pub(crate) fn lower_for_in(
                     );
                 }
             }
-            list_for_in(ctx, name, lowered_iter, body_e, span)
+            list_for_in(name.as_str(), lowered_iter, body_e, span)
         }
     }
 }
@@ -88,7 +107,6 @@ fn expr_already_pair_list(e: &Expr) -> bool {
 }
 
 pub(crate) fn counter_for_in(
-    _ctx: &LowerCtx,
     binding: &str,
     start: Expr,
     end: Expr,
@@ -96,7 +114,7 @@ pub(crate) fn counter_for_in(
     body: Expr,
     span: Span,
 ) -> Expr {
-    let i = format!("__i_{}", span.start.0);
+    let i = for_index_sym(span);
     let cmp = if inclusive { BinOp::Le } else { BinOp::Lt };
     let cond = Expr::Binary {
         op: cmp,
@@ -160,16 +178,16 @@ pub(crate) fn counter_for_in(
     }
 }
 
-pub(crate) fn list_for_in(
-    _ctx: &LowerCtx,
-    binding: &str,
-    list: Expr,
-    body: Expr,
-    span: Span,
-) -> Expr {
-    let xs = format!("__xs_{}", span.start.0);
-    let i = format!("__i_{}", span.start.0);
-    let n = format!("__n_{}", span.start.0);
+pub(crate) fn list_for_in(binding: &str, list: Expr, body: Expr, span: Span) -> Expr {
+    let tid = next_for_temp_id();
+    let xs = synthetic(format!("__xs_{}_{}", span.start.0, tid));
+    let i = synthetic(format!(
+        "{}{}_{}",
+        crate::desugar_slots::FOR_INDEX_PREFIX,
+        span.start.0,
+        tid
+    ));
+    let n = synthetic(format!("__n_{}_{}", span.start.0, tid));
     // Map is key-addressed; normalize to an indexable List (keys) first.
     let list = Expr::BuiltinCall {
         name: Builtin::Elems,
@@ -236,22 +254,14 @@ pub(crate) fn list_for_in(
 }
 
 /// Iterate with a custom per-element step, using either a counter (range) or indexed get.
-pub(crate) fn for_each_elem(ctx: &LowerCtx, x: &str, list: Expr, step: Expr, span: Span) -> Expr {
+pub(crate) fn for_each_elem(x: &str, list: Expr, step: Expr, span: Span) -> Expr {
     if let Expr::BuiltinCall { name, args, .. } = &list {
         if matches!(name, Builtin::Range | Builtin::RangeInclusive) && args.len() == 2 {
             let inclusive = matches!(name, Builtin::RangeInclusive);
-            return counter_for_in(
-                ctx,
-                x,
-                args[0].clone(),
-                args[1].clone(),
-                inclusive,
-                step,
-                span,
-            );
+            return counter_for_in(x, args[0].clone(), args[1].clone(), inclusive, step, span);
         }
     }
-    list_for_in(ctx, x, list, step, span)
+    list_for_in(x, list, step, span)
 }
 
 pub(crate) fn empty_list(span: Span) -> Expr {

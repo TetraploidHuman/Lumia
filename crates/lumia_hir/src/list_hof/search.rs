@@ -4,6 +4,7 @@ use super::filter::apply_pred;
 use super::{bind_fun, list_accum, option_none, option_some, with_fun_bind};
 use crate::ast::Expr;
 use crate::lower::LowerCtx;
+use crate::sym_util::synthetic;
 use lumia_syntax::Span;
 
 enum ListSearchKind {
@@ -19,8 +20,8 @@ fn list_search(ctx: &LowerCtx, list: Expr, f: Expr, span: Span, kind: ListSearch
         ListSearchKind::All => ("all", Expr::Bool(true, span)),
         ListSearchKind::Find => ("find", option_none(ctx, span)),
     };
-    let acc = format!("__{prefix}_acc_{}", span.start.0);
-    let x = format!("__{prefix}_x_{}", span.start.0);
+    let acc = synthetic(format!("__{prefix}_acc_{}", span.start.0));
+    let x = synthetic(format!("__{prefix}_x_{}", span.start.0));
     let (f_bind, pred_f) = bind_fun(f, span);
     let pred = apply_pred(&pred_f, Expr::Var(x.clone(), span), span);
     let step = match kind {
@@ -73,7 +74,7 @@ fn list_search(ctx: &LowerCtx, list: Expr, f: Expr, span: Span, kind: ListSearch
             span,
         },
     };
-    with_fun_bind(f_bind, list_accum(ctx, acc, init, &x, list, step, span))
+    with_fun_bind(f_bind, list_accum(acc, init, x.as_str(), list, step, span))
 }
 
 pub(crate) fn lower_list_any(ctx: &LowerCtx, list: Expr, f: Expr, span: Span) -> Expr {

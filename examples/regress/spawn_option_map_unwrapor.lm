@@ -1,0 +1,10 @@
+/// spawn optionMap(Float) then unwrapOr after join.
+module main
+import std.option.{optionMap, unwrapOr}
+
+val main = {
+    scope {
+        val o = spawn { optionMap(Some(1.5), { x -> x * 3.0 }) }.join()
+        println(unwrapOr(o, 0.0))
+    }
+}

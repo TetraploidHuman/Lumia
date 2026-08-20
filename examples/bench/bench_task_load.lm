@@ -1,0 +1,114 @@
+module BenchTaskLoad
+
+import std.io.{println}
+import std.concurrent.{Scheduler}
+
+/// Production-scale Task/Channel load (Release via `scripts/bench_task_load.sh`).
+/// Larger than `bench_task.lm` micro scenarios; checksums stable across WORKERS.
+///
+/// Scenarios:
+///   1. fan_in_wide   — many producers → one channel (backlog / buffer pressure)
+///   2. join_tree     — layered spawn/join tree (scheduler depth)
+///   3. pipeline      — staged channel pipeline (producer → worker → sink)
+///   4. pingpong_long — long req/resp rounds (context-switch / handoff)
+
+val fan_in_wide = { n, buf ->
+    val ch = channel(buf)
+    scope(Scheduler.worker) {
+        for i in 1..n {
+            spawn {
+                ch.send(i)
+                0
+            }
+        }
+        var sum = 0
+        for k in 1..n {
+            sum = sum + ch.recv()
+        }
+        sum
+    }
+}
+
+/// Two-level join: outer fans out `groups`, each group joins `per` children.
+val join_tree = { groups, per ->
+    scope {
+        var sum = 0
+        for g in 1..groups {
+            val t = spawn {
+                scope {
+                    var local = 0
+                    for i in 1..per {
+                        val child = spawn { g * 1000 + i }
+                        local = local + child.join()
+                    }
+                    local
+                }
+            }
+            sum = sum + t.join()
+        }
+        sum
+    }
+}
+
+/// Three-stage pipeline: gen → map → sink over `n` messages.
+val pipeline = { n, buf ->
+    val a = channel(buf)
+    val b = channel(buf)
+    scope {
+        val gen = spawn {
+            for i in 1..n {
+                a.send(i)
+            }
+            0
+        }
+        val map = spawn {
+            for i in 1..n {
+                val x = a.recv()
+                b.send(x * 2 + 1)
+            }
+            0
+        }
+        val sink = spawn {
+            var sum = 0
+            for i in 1..n {
+                sum = sum + b.recv()
+            }
+            sum
+        }
+        val _ = gen.join()
+        val _ = map.join()
+        sink.join()
+    }
+}
+
+val pingpong_long = { rounds ->
+    val req = channel(1)
+    val resp = channel(1)
+    scope {
+        val echo = spawn {
+            for i in 1..rounds {
+                val x = req.recv()
+                resp.send(x)
+            }
+            0
+        }
+        val client = spawn {
+            var sum = 0
+            for i in 1..rounds {
+                req.send(i)
+                sum = sum + resp.recv()
+            }
+            sum
+        }
+        val _ = echo.join()
+        client.join()
+    }
+}
+
+val main = {
+    // fan_in 2048 = n(n+1)/2; join_tree groups=32 per=16; pipeline 4000; pingpong 4000
+    println(fan_in_wide(2048, 64))
+    println(join_tree(32, 16))
+    println(pipeline(4000, 32))
+    println(pingpong_long(4000))
+}

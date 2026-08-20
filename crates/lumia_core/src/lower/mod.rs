@@ -1,35 +1,44 @@
-//! HIR → Core lowering.
+//! HIR → Core lowering (pure translation).
+//!
+//! Mid-end ABI refinement lives in [`crate::run_core_abi_pipeline`] — call it
+//! from compile entries after lower, not here.
 
+use std::sync::Arc;
 mod ctx;
 mod expr;
 
-use crate::ir::{CoreFun, CoreModule};
-use crate::lambda_lift::{fixup_closure_float_caps, lift_lambdas};
-use crate::mono::{
-    directize_funref_calls, ensure_trait_method_stubs, resolve_trait_method_calls,
-    specialize_mono_calls,
-};
+use crate::ir::{CoreFun, CoreModule, ForeignAbi, FunKind, ListRepr, MapRepr, Op, SetRepr, Value};
 use ctx::CoreLowerCtx;
 use expr::lower_expr_block;
 use lumia_hir::{Item, Module as HirModule};
-use lumia_ty::{Effect, Type};
+use lumia_ty::{close_type, Effect, Type};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
-pub fn lower_hir(module: &HirModule, fun_types: &HashMap<String, Type>) -> CoreModule {
-    lower_hir_with_schemes(module, fun_types, &HashMap::default())
-}
-
 /// Lower HIR using inferred types and HM schemes (scheme-driven monomorphization).
+///
+/// `type_at` is the zonked expression-type table from typecheck; used to stamp
+/// ground builtin results (e.g. `Channel[T]`) onto Core values.
+///
+/// `assert_files[span.file]` is `(path_label, source)` for injecting default
+/// messages on bare `assert(cond)` — HIR stays as typed (1 arg).
 pub fn lower_hir_with_schemes(
     module: &HirModule,
     fun_types: &HashMap<String, Type>,
     fun_schemes: &HashMap<String, lumia_ty::Scheme>,
-) -> CoreModule {
+    type_at: &[(lumia_syntax::Span, Type)],
+    assert_files: &[(&str, &str)],
+) -> Result<CoreModule, String> {
+    let type_at: std::rc::Rc<[(lumia_syntax::Span, Type)]> = std::rc::Rc::from(type_at);
+    let assert_files: std::rc::Rc<[(String, String)]> = assert_files
+        .iter()
+        .map(|(p, s)| ((*p).to_string(), (*s).to_string()))
+        .collect::<Vec<_>>()
+        .into();
     let toplevel_funs: HashSet<String> = module
         .items
         .iter()
         .filter_map(|item| match item {
-            Item::Fun(f) => Some(f.name.clone()),
+            Item::Fun(f) => Some(f.name.to_string()),
             _ => None,
         })
         .collect();
@@ -37,19 +46,19 @@ pub fn lower_hir_with_schemes(
         .items
         .iter()
         .filter_map(|item| match item {
-            Item::Val { name, .. } => Some(name.clone()),
+            Item::Val { name, .. } => Some(name.to_string()),
             _ => None,
         })
         .collect();
     let trait_method_names: HashSet<String> = module
         .trait_methods
         .keys()
-        .map(|(_, m)| m.clone())
+        .map(|(_, m)| m.to_string())
         .collect();
-    let io_funs: HashSet<String> = fun_types
+    let io_funs: HashSet<lumia_syntax::Sym> = fun_types
         .iter()
         .filter_map(|(n, ty)| match ty {
-            Type::Fun(_, _, e) if e.has_io() => Some(n.clone()),
+            Type::Fun(_, _, e) if e.has_io() => Some(lumia_syntax::Sym::from(n.as_str())),
             _ => None,
         })
         .collect();
@@ -62,15 +71,20 @@ pub fn lower_hir_with_schemes(
                     toplevel_vals.clone(),
                     trait_method_names.clone(),
                     io_funs.clone(),
+                    type_at.clone(),
+                    assert_files.clone(),
                 );
                 let mut params = vec![];
                 for p in &f.params {
                     let l = ctx.fresh();
-                    ctx.bind_name(p.clone(), l);
+                    ctx.bind_name(p.to_string(), l);
                     params.push(l);
                 }
                 let (body, _) = lower_expr_block(&mut ctx, &f.body);
-                let (ret_ty, effect, param_tys) = match fun_types.get(&f.name) {
+                if let Some(msg) = ctx.ice {
+                    return Err(msg);
+                }
+                let (ret_ty, effect, param_tys) = match fun_types.get(f.name.as_str()) {
                     Some(Type::Fun(ps, r, e)) => ((**r).clone(), *e, ps.clone()),
                     _ => (
                         Type::Unit,
@@ -79,16 +93,18 @@ pub fn lower_hir_with_schemes(
                         } else {
                             Effect::pure()
                         },
-                        vec![Type::Int; f.params.len()],
+                        vec![Type::Unknown; f.params.len()],
                     ),
                 };
+                let param_tys: Vec<Type> = param_tys.iter().map(|t| close_type(t)).collect();
+                let ret_ty = close_type(&ret_ty);
                 let scheme_poly = fun_schemes
-                    .get(&f.name)
+                    .get(f.name.as_str())
                     .map(|s| s.needs_mono())
                     .unwrap_or_else(|| {
                         type_is_open(&Type::Fun(
                             param_tys.clone(),
-                            Box::new(ret_ty.clone()),
+                            Arc::new(ret_ty.clone()),
                             effect,
                         ))
                     });
@@ -102,35 +118,56 @@ pub fn lower_hir_with_schemes(
                     effect,
                     is_main: f.is_main,
                     memo: None,
-                    external: f.external.clone(),
+                    external: f.external.as_ref().map(|s| s.to_string()),
+                    // Surface `foreign "C"` is always the platform C ABI, even if
+                    // the symbol happens to look like `lumia_*`.
+                    foreign_abi: if f.external.is_some() {
+                        ForeignAbi::C
+                    } else {
+                        ForeignAbi::default()
+                    },
                     escaping: HashSet::default(),
+                    nsw_binop_locals: Default::default(),
+                    safe_divisor_locals: Default::default(),
+                    nonneg_iv_load_locals: Default::default(),
                     scheme_poly,
                     mono_of: None,
+                    kind: FunKind::Normal,
                 });
             }
-            Item::Val { name, body, ty: _ } => {
+            Item::Val {
+                name, body, ty: _, ..
+            } => {
                 // Module-level `val` → zero-arg getter `__val_<name>` (pure).
                 // Ret type must match inference so codegen roots heap returns.
                 let getter = format!("__val_{name}");
-                let ret_ty = match fun_types.get(&getter).or_else(|| fun_types.get(name)) {
-                    Some(Type::Fun(_, r, _)) => (**r).clone(),
-                    Some(t) => t.clone(),
-                    None => Type::Int,
+                let ret_ty = match fun_types
+                    .get(&getter)
+                    .or_else(|| fun_types.get(name.as_str()))
+                {
+                    Some(Type::Fun(_, r, _)) => close_type(r),
+                    Some(t) => close_type(t),
+                    None => Type::Unknown,
                 };
                 let mut ctx = CoreLowerCtx::new(
                     toplevel_funs.clone(),
                     toplevel_vals.clone(),
                     trait_method_names.clone(),
                     io_funs.clone(),
+                    type_at.clone(),
+                    assert_files.clone(),
                 );
                 let (body, _) = lower_expr_block(&mut ctx, body);
+                if let Some(msg) = ctx.ice {
+                    return Err(msg);
+                }
                 // Getters are nullary; poly lives on the value's Fun scheme / lifted body.
                 let scheme_poly = fun_schemes
-                    .get(name)
+                    .get(name.as_str())
                     .map(|s| s.needs_mono())
                     .unwrap_or(false);
                 functions.push(CoreFun {
-                    name: getter,
+                    name: getter.into(),
                     params: vec![],
                     param_names: vec![],
                     param_tys: vec![],
@@ -140,20 +177,25 @@ pub fn lower_hir_with_schemes(
                     is_main: false,
                     memo: None,
                     external: None,
+                    foreign_abi: ForeignAbi::C,
                     escaping: HashSet::default(),
+                    nsw_binop_locals: Default::default(),
+                    safe_divisor_locals: Default::default(),
+                    nonneg_iv_load_locals: Default::default(),
                     scheme_poly,
                     mono_of: None,
+                    kind: FunKind::ValGetter,
                 });
             }
         }
     }
-    let hash_adts: HashSet<String> = module
+    let hash_adts: HashSet<lumia_syntax::Sym> = module
         .instances
         .iter()
-        .filter(|(tr, _)| tr == "Hash")
+        .filter(|(tr, _)| tr.as_str() == "Hash")
         .map(|(_, ty)| ty.clone())
         .collect();
-    let mut adt_variant_names: HashMap<String, Vec<String>> = HashMap::default();
+    let mut adt_variant_names: HashMap<lumia_syntax::Sym, Vec<String>> = HashMap::default();
     for adt in &module.adts {
         let mut names = vec![String::new(); adt.variants.len()];
         for v in &adt.variants {
@@ -161,48 +203,142 @@ pub fn lower_hir_with_schemes(
             if idx >= names.len() {
                 names.resize(idx + 1, String::new());
             }
-            names[idx] = v.name.clone();
+            names[idx] = v.name.to_string();
         }
         adt_variant_names.insert(adt.name.clone(), names);
     }
     for prod in &module.products {
         // Products are tag-0 payloads; print the type name.
-        adt_variant_names.insert(prod.name.clone(), vec![prod.name.clone()]);
+        adt_variant_names.insert(prod.name.clone(), vec![prod.name.to_string()]);
     }
-    let sum_max_arity: HashMap<String, usize> = module
+    let sum_max_arity: HashMap<lumia_syntax::Sym, usize> = module
         .adts
         .iter()
         .map(|a| {
-            let max = a.variants.iter().map(|v| v.arity).max().unwrap_or(0);
-            (a.name.clone(), max)
+            // Match ty: parametric slots only (recursive spines are `Self`).
+            let total = sum_parametric_arity(a);
+            (a.name.clone(), total)
         })
         .collect();
+    let trait_methods: HashMap<(lumia_syntax::Sym, lumia_syntax::Sym), Vec<lumia_syntax::Sym>> =
+        module.trait_methods.clone();
     let mut core = CoreModule {
-        name: module.name.clone(),
+        name: module.name.to_string(),
         functions,
         hash_adts,
-        trait_methods: module.trait_methods.clone(),
+        trait_methods,
         adt_variant_names,
         sum_max_arity,
+        channel_elem_hint: None,
+        channel_elem_by_local: Default::default(),
+        channel_elem_conflicts: Vec::new(),
     };
-    lift_lambdas(&mut core);
-    directize_funref_calls(&mut core);
-    specialize_mono_calls(&mut core);
-    fixup_closure_float_caps(&mut core);
-    resolve_trait_method_calls(&mut core);
-    ensure_trait_method_stubs(&mut core);
-    core
+    ensure_prelude_ctor_stubs(&mut core);
+    Ok(core)
 }
 
 fn type_is_open(t: &Type) -> bool {
     match t {
         Type::Var(_) => true,
         Type::Fun(ps, r, _) => ps.iter().any(type_is_open) || type_is_open(r),
-        Type::List(e) | Type::Set(e) => type_is_open(e),
+        Type::List(e) | Type::Set(e) | Type::Task(e) | Type::Channel(e) => type_is_open(e),
         Type::Map(k, v) => type_is_open(k) || type_is_open(v),
         Type::Tuple(ts) | Type::TuplePrefix(ts) | Type::Adt { params: ts, .. } => {
             ts.iter().any(type_is_open)
         }
         _ => false,
+    }
+}
+
+/// Count type parameters for a sum ADT — see [`lumia_hir::sum_parametric_arity`].
+fn sum_parametric_arity(adt: &lumia_hir::AdtDef) -> usize {
+    lumia_hir::sum_parametric_arity(adt)
+}
+
+/// Nullary empty-container stubs for first-class `listOf` / `mapOf` / `setOf`.
+fn ensure_prelude_ctor_stubs(core: &mut CoreModule) {
+    let mut needed: HashSet<&'static str> = HashSet::default();
+    for f in &core.functions {
+        crate::visit::for_each_block_dfs(&f.body, &mut |b| {
+            for op in &b.ops {
+                if let Op::Let {
+                    value: Value::FunRef(n),
+                    ..
+                } = op
+                {
+                    match n.as_str() {
+                        "__prelude_listOf" => {
+                            needed.insert("__prelude_listOf");
+                        }
+                        "__prelude_mapOf" => {
+                            needed.insert("__prelude_mapOf");
+                        }
+                        "__prelude_setOf" => {
+                            needed.insert("__prelude_setOf");
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        });
+    }
+    let existing: HashSet<String> =
+        core.functions.iter().map(|f| f.name.to_string()).collect();
+    for name in needed {
+        if existing.contains(name) {
+            continue;
+        }
+        let (alloc, ret_ty) = match name {
+            "__prelude_listOf" => (
+                Value::AllocList {
+                    elems: vec![],
+                    repr: ListRepr::HeapList,
+                },
+                Type::List(Arc::new(Type::Int)),
+            ),
+            "__prelude_mapOf" => (
+                Value::AllocMap {
+                    flat_pairs: vec![],
+                    repr: MapRepr::HashOrdered,
+                },
+                Type::Map(Arc::new(Type::Int), Arc::new(Type::Int)),
+            ),
+            "__prelude_setOf" => (
+                Value::AllocSet {
+                    elems: vec![],
+                    repr: SetRepr::HeapSet,
+                },
+                Type::Set(Arc::new(Type::Int)),
+            ),
+            _ => continue,
+        };
+        let local = crate::ir::Local(0);
+        core.functions.push(CoreFun {
+            name: name.into(),
+            params: vec![],
+            param_names: vec![],
+            param_tys: vec![],
+            body: crate::ir::Block {
+                ops: vec![Op::Let {
+                    local,
+                    value: alloc,
+                    pure_region: true,
+                }],
+                result: Some(local),
+            },
+            ret_ty,
+            effect: Effect::pure(),
+            is_main: false,
+            memo: None,
+            external: None,
+            foreign_abi: ForeignAbi::C,
+            escaping: HashSet::default(),
+            nsw_binop_locals: Default::default(),
+            safe_divisor_locals: Default::default(),
+            nonneg_iv_load_locals: Default::default(),
+            scheme_poly: false,
+            mono_of: None,
+            kind: FunKind::Normal,
+        });
     }
 }

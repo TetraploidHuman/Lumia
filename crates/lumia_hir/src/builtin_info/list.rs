@@ -1,4 +1,7 @@
-use super::{bi, BuiltinEffect, BuiltinEmit, BuiltinInfo, ResultHeap, ENS_LIST_APPEND, NO_F};
+use super::{
+    bi, BuiltinEffect, BuiltinEmit, BuiltinInfo, ResultHeap, ENS_LIST_APPEND, ENS_LIST_APPEND_BOOL,
+    NO_F,
+};
 use crate::ast::{Builtin, BuiltinFamily};
 
 pub(crate) fn info_list(b: Builtin) -> BuiltinInfo {
@@ -18,7 +21,8 @@ pub(crate) fn info_list(b: Builtin) -> BuiltinInfo {
             UnaryObjScalar,
             false,
             Never,
-        ),
+        )
+        .with_list_receiver_rt("lumia_list_len"),
         ListGet => bi(
             f,
             2,
@@ -29,7 +33,8 @@ pub(crate) fn info_list(b: Builtin) -> BuiltinInfo {
             ObjI64OptionTags,
             false,
             Typed,
-        ),
+        )
+        .with_list_receiver_rt("lumia_list_get"),
         ListSlice => bi(
             f,
             2,
@@ -41,7 +46,8 @@ pub(crate) fn info_list(b: Builtin) -> BuiltinInfo {
             // Escape only when the slice result escapes (propagate), not every use.
             false,
             Always,
-        ),
+        )
+        .with_string_receiver_rt("lumia_str_slice"),
         ListAppend => bi(
             f,
             2,
@@ -52,7 +58,8 @@ pub(crate) fn info_list(b: Builtin) -> BuiltinInfo {
             ObjI64Ptr,
             true,
             Always,
-        ),
+        )
+        .with_bool_ensures(ENS_LIST_APPEND_BOOL),
         ListConcat => bi(
             f,
             2,
@@ -63,7 +70,8 @@ pub(crate) fn info_list(b: Builtin) -> BuiltinInfo {
             ObjObjPtr,
             true,
             Always,
-        ),
+        )
+        .with_string_receiver_rt("lumia_str_concat"),
         ListTake => bi(
             f,
             2,
@@ -75,7 +83,8 @@ pub(crate) fn info_list(b: Builtin) -> BuiltinInfo {
             // Same as ListSlice: copy elem pointers only if result escapes.
             false,
             Always,
-        ),
+        )
+        .with_string_receiver_rt("lumia_str_take"),
         ListReverse => bi(
             f,
             1,
@@ -86,7 +95,8 @@ pub(crate) fn info_list(b: Builtin) -> BuiltinInfo {
             UnaryObjPtr,
             true,
             Always,
-        ),
+        )
+        .with_string_receiver_rt("lumia_str_reverse"),
         ListSort => bi(
             f,
             1,

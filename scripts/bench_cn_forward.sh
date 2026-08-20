@@ -2,8 +2,8 @@
 # CogniNucleus strict-PE triad forward microbench (Release).
 #
 # Vis→pfc→mot with clusterRates, projectError, updateState lateral,
-# learnGenerative, Hebbian μ⊗ε, EFE + argmax. Kernel uses std.cn fused ops;
-# naive composes the new pieces via std.linalg.
+# learnGenerative, Hebbian μ⊗ε, EFE + argmax. Kernel uses extras.cn fused ops;
+# naive composes the new pieces via extras.linalg.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck disable=SC1091
@@ -19,42 +19,18 @@ mkdir -p "$OUT_DIR"
 RUNS="${RUNS:-5}"
 
 echo "== build =="
-"$LUMIA" build --release examples/bench_cn_forward_kernel.lm -o "$OUT_DIR/kernel"
-"$LUMIA" build --release examples/bench_cn_forward_naive.lm -o "$OUT_DIR/naive"
+"$LUMIA" build --release examples/bench/bench_cn_forward_kernel.lm -o "$OUT_DIR/kernel"
+"$LUMIA" build --release examples/bench/bench_cn_forward_naive.lm -o "$OUT_DIR/naive"
 
 echo "== checksum parity =="
 k_out="$("$OUT_DIR/kernel")"
 n_out="$("$OUT_DIR/naive")"
-echo "kernel:"
-echo "$k_out"
-echo "naive:"
-echo "$n_out"
-if [[ "$k_out" != "$n_out" ]]; then
-  echo "ERROR: checksum mismatch" >&2
-  exit 1
-fi
-
-measure_bin() {
-  local bin=$1
-  local samples="" i
-  for ((i = 0; i < RUNS; i++)); do
-    samples+="$(bench_measure "$bin")"$'\n'
-  done
-  printf '%s' "$samples" | bench_measure_stats
-}
+bench_checksum_parity "$k_out" "$n_out" "naive"
 
 echo "== wall time + peak RSS  RUNS=$RUNS  STEPS=20000 triad+EFE =="
-k_stats="$(measure_bin "$OUT_DIR/kernel")"
-n_stats="$(measure_bin "$OUT_DIR/naive")"
+k_stats="$(bench_measure_runs "$OUT_DIR/kernel")"
+n_stats="$(bench_measure_runs "$OUT_DIR/naive")"
 bench_print_stats "kernel" "$k_stats"
 bench_print_stats "naive" "$n_stats"
-python3 - "$k_stats" "$n_stats" <<'PY'
-import sys
-k = sys.argv[1].split()
-n = sys.argv[2].split()
-kt, nt = float(k[1]), float(n[1])
-kr, nr = float(k[4]), float(n[4])
-print(f"speedup  {nt/kt:.2f}x  (naive_med_time / kernel_med_time)")
-print(f"rss_ratio {nr/kr:.2f}x  (naive_med_rss / kernel_med_rss)")
-PY
+bench_print_speedup_pair "$k_stats" "$n_stats" "naive"
 echo "OK"

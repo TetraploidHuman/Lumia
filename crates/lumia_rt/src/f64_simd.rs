@@ -4,26 +4,9 @@
 //! ops use 8-wide (2×YMM) FMA chunks plus a 4-wide tail. Association can differ
 //! slightly from pure scalar.
 
-#![allow(dead_code)]
-
 #[inline(always)]
 fn simd_f64() -> bool {
-    #[cfg(target_arch = "x86_64")]
-    {
-        use std::sync::atomic::{AtomicU8, Ordering};
-        static CACHED: AtomicU8 = AtomicU8::new(0); // 0 unknown, 1 no, 2 yes
-        let v = CACHED.load(Ordering::Relaxed);
-        if v != 0 {
-            return v == 2;
-        }
-        let yes = is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma");
-        CACHED.store(if yes { 2 } else { 1 }, Ordering::Relaxed);
-        yes
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        false
-    }
+    crate::globals::simd_f64_available()
 }
 
 #[inline(always)]
@@ -519,38 +502,5 @@ unsafe fn hebbian_row_avx2(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn dot_and_axpy_match_scalar() {
-        let a = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
-        let b = [0.5; 9];
-        let d = dot_f64(a.as_ptr(), b.as_ptr(), 9);
-        assert!((d - 22.5).abs() < 1e-9, "d={d}");
-        let mut y = [0.0; 9];
-        let x = [1.0; 9];
-        axpy_scale_f64(y.as_mut_ptr(), x.as_ptr(), 2.0, 9);
-        assert!(y.iter().all(|&v| (v - 2.0).abs() < 1e-12));
-    }
-
-    #[test]
-    fn elementwise_and_clamp() {
-        let a = [1.0, 2.0, 3.0, 4.0, 5.0];
-        let b = [5.0, 4.0, 3.0, 2.0, 1.0];
-        let mut out = [0.0; 5];
-        add_f64(out.as_mut_ptr(), a.as_ptr(), b.as_ptr(), 5);
-        assert!(out.iter().all(|&v| (v - 6.0).abs() < 1e-12));
-        sub_f64(out.as_mut_ptr(), a.as_ptr(), b.as_ptr(), 5);
-        assert!((out[0] + 4.0).abs() < 1e-12);
-        fill_f64(out.as_mut_ptr(), 5, 9.0);
-        assert!(out.iter().all(|&v| v == 9.0));
-        scale_f64(out.as_mut_ptr(), 5, 0.5);
-        assert!(out.iter().all(|&v| (v - 4.5).abs() < 1e-12));
-        clamp_f64(out.as_mut_ptr(), 5, 0.0, 1.0);
-        assert!(out.iter().all(|&v| (v - 1.0).abs() < 1e-12));
-        let mut y = [1.0; 5];
-        axpy_clamp_f64(y.as_mut_ptr(), a.as_ptr(), 1.0, 5, 0.0, 3.0);
-        assert_eq!(y, [2.0, 3.0, 3.0, 3.0, 3.0]);
-    }
-}
+#[path = "f64_simd_tests.rs"]
+mod tests;

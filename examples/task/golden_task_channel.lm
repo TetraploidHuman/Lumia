@@ -1,0 +1,14 @@
+module golden_task_channel
+
+val main = {
+    val ch = channel(2)
+    scope {
+        spawn {
+            ch.send(10)
+            ch.send(20)
+            ch.close()
+        }
+        println(ch.recv())
+        println(ch.recv())
+    }
+}

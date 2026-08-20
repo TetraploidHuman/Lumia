@@ -14,10 +14,13 @@ class LumiaLspClientDescriptor(project: Project) :
     override fun getLanguageId(file: VirtualFile): String = "lumia"
 
     override fun createCommandLine(): GeneralCommandLine {
-        val path = LumiaPaths.resolveLumia()
+        val path = LumiaPaths.resolveLumiaLsp()
         return GeneralCommandLine(path, "lsp")
             .withCharset(Charsets.UTF_8)
             .withParentEnvironmentType(GeneralCommandLine.ParentEnvironmentType.CONSOLE)
             .withEnvironment("PATH", LumiaPaths.pathWithExtras())
     }
+
+    override fun createInitializationOptions(): Any =
+        mapOf("autoParallel" to LumiaSettings.getInstance().autoParallel)
 }

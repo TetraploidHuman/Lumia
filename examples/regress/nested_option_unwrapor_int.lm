@@ -1,0 +1,18 @@
+/// Nested Option → scalar via unwrapOr (flatten / andThen / optionMap len).
+module main
+import std.option.{optionMap, andThen, unwrapOr}
+
+val flatten = { o ->
+    o match {
+        None -> None
+        Some(inner) -> inner
+    }
+}
+
+val main = {
+    println(unwrapOr(flatten(Some(Some(3))), 0))
+    println(unwrapOr(andThen(Some(Some(3)), { x -> x }), 0))
+    val nested = Some(Some(3))
+    println(unwrapOr(flatten(nested), 0))
+    println(unwrapOr(optionMap(Some(listOf(1, 2, 3)), { xs -> xs.len() }), 0))
+}

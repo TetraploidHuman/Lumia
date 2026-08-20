@@ -25,8 +25,8 @@ lumia_syntax = { path = "crates/lumia_syntax" }
 lumia_hir = { path = "crates/lumia_hir" }
 lumia_ty = { path = "crates/lumia_ty" }
 lumia_core = { path = "crates/lumia_core" }
-lumia_opt = { path = "crates/lumia_opt" }
-lumia_codegen = { path = "crates/lumia_codegen" }
+lumia_opt = { path = "crates/lumia_opt", default-features = false }
+lumia_codegen = { path = "crates/lumia_codegen", default-features = false }
 lumia_rt = { path = "crates/lumia_rt" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
@@ -36,11 +36,24 @@ serde_json = "1"
 toml = "0.8"
 inkwell = { version = "0.10", default-features = false, features = ["llvm21-1", "target-x86"] }
 rustc-hash = "2"
+corosensei = "0.3.4"
 
 [workspace.lints.clippy]
-# Helpers shared across HOF / TCO analysis naturally take many parameters.
-too_many_arguments = "allow"
-# Dyn FnMut callbacks in infer_value_ty_ctx are intentional.
-type_complexity = "allow"
-# Nested Op/Value matches are clearer than deeply nested patterns in opt/memo.
-collapsible_match = "allow"
+# Intentionally empty at workspace scope — god-function allows live on the
+# crates that need them (`lumia_core` / `lumia_opt` / `lumia_codegen` / `lumia_ty`).
+# Do not re-widen here (Todo: 工作区级 clippy allow 仍宽).
+
+# Shipped `lumia` CLI + `lumia_rt`: thin LTO for code quality; RT gets one CGU
+# for denser domain kernels. Dev (`cargo build`) stays unaffected.
+[profile.release]
+lto = "thin"
+strip = "debuginfo"
+
+# Domain kernels (`collatz` / dense f64 / …) are clang-linked via `liblumia_rt.a`
+# (no cross-language LTO). Keep this package fully optimized — a stale/unopt
+# staticlib has shown ~2–3× `bench_cpu` regressions that look like algorithm
+# bugs. `cargo clean -p lumia_rt` alone does **not** remove release artifacts;
+# use `cargo clean -p lumia_rt --release`.
+[profile.release.package.lumia_rt]
+codegen-units = 1
+opt-level = 3

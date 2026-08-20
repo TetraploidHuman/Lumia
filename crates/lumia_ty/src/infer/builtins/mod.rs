@@ -5,6 +5,7 @@ mod io;
 mod list;
 mod map_set;
 mod string;
+mod task;
 
 use super::Infer;
 use crate::types::{at, Effect, Type, TypeError};
@@ -39,6 +40,7 @@ impl Infer {
             BuiltinFamily::MapSet => self.infer_map_set_builtin(name, args, span),
             BuiltinFamily::String => self.infer_string_builtin(name, args, span),
             BuiltinFamily::Adt => self.infer_adt_builtin(name, args, span),
+            BuiltinFamily::Task => self.infer_task_builtin(name, args, span),
         }
     }
 }

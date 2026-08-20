@@ -3,6 +3,18 @@ name = "lumia_opt"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = ["dense-f64-sr", "nsw-iv", "domain-sr"]
+# Nest rewrite to lumia_f64_* (Release / CLI). Off for codegen-slim builds.
+dense-f64-sr = []
+# Induction-variable NSW marking (overflow-checked Int arith peeps).
+# Off for codegen-slim; codegen only reads CoreFun sidecar sets.
+nsw-iv = []
+# Whole-fn Collatz total/strided + countPrimes → RT Call (Release / CLI).
+# Trial-div odd-step Core rewrite (Debug + Release). Off for codegen-slim;
+# codegen keeps only steps/floatOrbit loop emits.
+domain-sr = []
+
 [dependencies]
 lumia_abi.workspace = true
 lumia_core.workspace = true
@@ -10,6 +22,8 @@ lumia_hir.workspace = true
 lumia_syntax.workspace = true
 lumia_ty.workspace = true
 rustc-hash = { workspace = true }
+
+[dev-dependencies]
 
 [lints]
 workspace = true

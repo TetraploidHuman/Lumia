@@ -7,22 +7,22 @@ fn list_append_cow_unique_grows_and_alias_copies() {
     };
     let mut xs = lumia_list_empty();
     let mut ys: *mut u8 = ptr::null_mut();
-    lumia_root_push(&mut xs as *mut *mut u8);
-    lumia_root_push(&mut ys as *mut *mut u8);
-    xs = lumia_list_append(xs, 1);
+    unsafe { lumia_root_push(&mut xs as *mut *mut u8) };
+    unsafe { lumia_root_push(&mut ys as *mut *mut u8) };
+    xs = unsafe { lumia_list_append(xs, 1) };
     for i in 2..=64 {
-        xs = lumia_list_append(xs, i);
+        xs = unsafe { lumia_list_append(xs, i) };
     }
-    assert_eq!(lumia_list_len(xs), 64);
-    assert_eq!(lumia_list_get(xs, 0), 1);
-    assert_eq!(lumia_list_get(xs, 63), 64);
+    assert_eq!(unsafe { lumia_list_len(xs) }, 64);
+    assert_eq!(unsafe { lumia_list_get(xs, 0) }, 1);
+    assert_eq!(unsafe { lumia_list_get(xs, 63) }, 64);
     // Alias then append — old snapshot must stay length 64.
-    lumia_list_retain(xs);
+    unsafe { lumia_list_retain(xs) };
     ys = xs;
-    xs = lumia_list_append(xs, 65);
-    assert_eq!(lumia_list_len(ys), 64);
-    assert_eq!(lumia_list_len(xs), 65);
-    assert_eq!(lumia_list_get(xs, 64), 65);
+    xs = unsafe { lumia_list_append(xs, 65) };
+    assert_eq!(unsafe { lumia_list_len(ys) }, 64);
+    assert_eq!(unsafe { lumia_list_len(xs) }, 65);
+    assert_eq!(unsafe { lumia_list_get(xs, 64) }, 65);
     lumia_root_pop();
     lumia_root_pop();
 }
@@ -36,16 +36,20 @@ fn list_set_preserves_old_binding() {
     // Shared RC (retain) → set must copy so the old binding keeps its value.
     let mut xs = lumia_list_empty();
     let mut ys = ptr::null_mut();
-    lumia_root_push(&mut xs as *mut *mut u8);
-    lumia_root_push(&mut ys as *mut *mut u8);
-    xs = lumia_list_append(xs, 1);
-    xs = lumia_list_append(xs, 2);
-    xs = lumia_list_append(xs, 3);
-    lumia_list_retain(xs);
-    ys = lumia_list_set(xs, 1, 99);
-    assert_eq!(lumia_list_len(xs), 3);
-    assert_eq!(lumia_list_get(xs, 1), 2, "xs must keep old elem after set");
-    assert_eq!(lumia_list_get(ys, 1), 99);
+    unsafe { lumia_root_push(&mut xs as *mut *mut u8) };
+    unsafe { lumia_root_push(&mut ys as *mut *mut u8) };
+    xs = unsafe { lumia_list_append(xs, 1) };
+    xs = unsafe { lumia_list_append(xs, 2) };
+    xs = unsafe { lumia_list_append(xs, 3) };
+    unsafe { lumia_list_retain(xs) };
+    ys = unsafe { lumia_list_set(xs, 1, 99) };
+    assert_eq!(unsafe { lumia_list_len(xs) }, 3);
+    assert_eq!(
+        unsafe { lumia_list_get(xs, 1) },
+        2,
+        "xs must keep old elem after set"
+    );
+    assert_eq!(unsafe { lumia_list_get(ys, 1) }, 99);
     assert_ne!(xs, ys, "shared set must return a distinct list");
     lumia_root_pop();
     lumia_root_pop();
@@ -55,14 +59,14 @@ fn list_set_preserves_old_binding() {
 fn list_set_unique_writes_in_place() {
     use crate::list::{lumia_list_append, lumia_list_empty, lumia_list_get, lumia_list_set};
     let mut xs = lumia_list_empty();
-    lumia_root_push(&mut xs as *mut *mut u8);
-    xs = lumia_list_append(xs, 1);
-    xs = lumia_list_append(xs, 2);
-    xs = lumia_list_append(xs, 3);
+    unsafe { lumia_root_push(&mut xs as *mut *mut u8) };
+    xs = unsafe { lumia_list_append(xs, 1) };
+    xs = unsafe { lumia_list_append(xs, 2) };
+    xs = unsafe { lumia_list_append(xs, 3) };
     let before = xs;
-    xs = lumia_list_set(xs, 1, 99);
+    xs = unsafe { lumia_list_set(xs, 1, 99) };
     assert_eq!(xs, before, "unique set should reuse the buffer");
-    assert_eq!(lumia_list_get(xs, 1), 99);
+    assert_eq!(unsafe { lumia_list_get(xs, 1) }, 99);
     lumia_root_pop();
 }
 
@@ -74,32 +78,32 @@ fn list_set_cow_stress_alternating_alias() {
     };
     let mut xs = lumia_list_empty();
     let mut snap = ptr::null_mut();
-    lumia_root_push(&mut xs as *mut *mut u8);
-    lumia_root_push(&mut snap as *mut *mut u8);
+    unsafe { lumia_root_push(&mut xs as *mut *mut u8) };
+    unsafe { lumia_root_push(&mut snap as *mut *mut u8) };
     for i in 0..256 {
-        xs = lumia_list_append(xs, i);
+        xs = unsafe { lumia_list_append(xs, i) };
     }
     // Unique in-place updates.
     for i in 0..256 {
         let before = xs;
-        xs = lumia_list_set(xs, i, i * 3 + 1);
+        xs = unsafe { lumia_list_set(xs, i, i * 3 + 1) };
         assert_eq!(xs, before);
-        assert_eq!(lumia_list_get(xs, i), i * 3 + 1);
+        assert_eq!(unsafe { lumia_list_get(xs, i) }, i * 3 + 1);
     }
     // Shared: snapshot must freeze, then unique path resumes.
-    lumia_list_retain(xs);
+    unsafe { lumia_list_retain(xs) };
     snap = xs;
-    xs = lumia_list_set(xs, 0, -1);
+    xs = unsafe { lumia_list_set(xs, 0, -1) };
     assert_ne!(xs, snap);
-    assert_eq!(lumia_list_get(snap, 0), 1);
-    assert_eq!(lumia_list_get(xs, 0), -1);
-    assert_eq!(lumia_list_len(snap), 256);
-    assert_eq!(lumia_list_len(xs), 256);
+    assert_eq!(unsafe { lumia_list_get(snap, 0) }, 1);
+    assert_eq!(unsafe { lumia_list_get(xs, 0) }, -1);
+    assert_eq!(unsafe { lumia_list_len(snap) }, 256);
+    assert_eq!(unsafe { lumia_list_len(xs) }, 256);
     let before = xs;
-    xs = lumia_list_set(xs, 128, 42);
+    xs = unsafe { lumia_list_set(xs, 128, 42) };
     assert_eq!(xs, before);
-    assert_eq!(lumia_list_get(xs, 128), 42);
-    assert_eq!(lumia_list_get(snap, 128), 128 * 3 + 1);
+    assert_eq!(unsafe { lumia_list_get(xs, 128) }, 42);
+    assert_eq!(unsafe { lumia_list_get(snap, 128) }, 128 * 3 + 1);
     lumia_root_pop();
     lumia_root_pop();
 }
@@ -112,18 +116,21 @@ fn range_is_iota_not_materialized() {
         assert_eq!((*header_from_payload(r)).type_id, TYPE_LIST_IOTA);
         assert_eq!((*header_from_payload(r)).size, 16);
     }
-    assert_eq!(lumia_list_len(r), 1_000_000);
-    assert_eq!(lumia_list_get(r, 0), 0);
-    assert_eq!(lumia_list_get(r, 999_999), 999_999);
+    assert_eq!(unsafe { lumia_list_len(r) }, 1_000_000);
+    assert_eq!(unsafe { lumia_list_get(r, 0) }, 0);
+    assert_eq!(unsafe { lumia_list_get(r, 999_999) }, 999_999);
     // Content-equal to a small heap list of the same prefix.
     let h = lumia_range(10, 13);
     let forced = force_heap_list(h);
     unsafe {
-        assert_eq!((*header_from_payload(forced)).type_id, TYPE_LIST);
+        assert!(
+            lumia_abi::list_elem_is_int((*header_from_payload(forced)).type_id),
+            "forced iota must stamp List[Int]"
+        );
     }
     assert_eq!(lumia_eq(h as i64, forced as i64), 1);
-    assert_eq!(lumia_list_len(lumia_list_take(r, 3)), 3);
-    assert_eq!(lumia_list_get(lumia_list_slice(r, 5), 0), 5);
+    assert_eq!(unsafe { lumia_list_len(lumia_list_take(r, 3)) }, 3);
+    assert_eq!(unsafe { lumia_list_get(lumia_list_slice(r, 5), 0) }, 5);
 }
 
 #[test]
@@ -144,6 +151,13 @@ fn list_payload_bytes_rejects_overflow() {
 #[test]
 #[should_panic(expected = "parallel map worker")]
 fn par_worker_alloc_is_forbidden() {
+    struct ResetParWorker;
+    impl Drop for ResetParWorker {
+        fn drop(&mut self) {
+            PAR_WORKER.with(|c| c.set(false));
+        }
+    }
+    let _reset = ResetParWorker;
     PAR_WORKER.with(|c| c.set(true));
     // Call Rust path (not `extern "C"`) so the panic can unwind for should_panic.
     let _ = MarkSweep.alloc(8, TYPE_LIST);

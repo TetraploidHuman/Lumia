@@ -36,8 +36,21 @@ pub(crate) fn check_module_matches(
     products: &HashMap<String, Vec<String>>,
 ) -> Result<(), LowerError> {
     for item in &m.items {
-        if let lumia_syntax::Item::Val(v) = item {
-            check_expr_matches(&v.body, ctors, adts, products)?;
+        match item {
+            lumia_syntax::Item::Val(v) => {
+                check_expr_matches(&v.body, ctors, adts, products)?;
+            }
+            lumia_syntax::Item::Trait(t) => {
+                for method in &t.methods {
+                    check_expr_matches(&method.body, ctors, adts, products)?;
+                }
+            }
+            lumia_syntax::Item::Instance(i) => {
+                for method in &i.methods {
+                    check_expr_matches(&method.body, ctors, adts, products)?;
+                }
+            }
+            lumia_syntax::Item::Type(_) | lumia_syntax::Item::Foreign(_) => {}
         }
     }
     Ok(())
@@ -167,6 +180,17 @@ pub(crate) fn check_expr_matches(
                     check_expr_matches(e, ctors, adts, products)?;
                 }
             }
+        }
+        S::Scope {
+            scheduler, body, ..
+        } => {
+            if let Some(s) = scheduler {
+                check_expr_matches(s, ctors, adts, products)?;
+            }
+            check_expr_matches(body, ctors, adts, products)?;
+        }
+        S::Spawn { body, .. } => {
+            check_expr_matches(body, ctors, adts, products)?;
         }
     }
     Ok(())

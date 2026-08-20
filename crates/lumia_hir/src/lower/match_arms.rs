@@ -4,6 +4,7 @@ use super::ctx::LowerCtx;
 use super::expr::lower_expr;
 use crate::ast::{Builtin, Expr};
 use crate::match_check::{pattern_cond, pattern_irrefutable, short_and};
+use crate::sym_util::synthetic;
 use lumia_syntax::{Pattern, Span};
 
 pub(crate) fn lower_match_cond(
@@ -42,9 +43,13 @@ pub(crate) fn lower_match(
     arms: &[lumia_syntax::MatchArm],
     span: Span,
 ) -> Expr {
-    let scrut = "__match_s".to_string();
+    let scrut = synthetic("__match_s");
+    // Must not reuse `span` (the match expr): AdtField receivers are
+    // `Var(__match_s, span)` and would collide with the match result in
+    // `type_at` (often Unit from `println` arms), breaking Core stamps.
+    let scrut_span = scrutinee.span();
     let expanded = expand_or_arms(arms);
-    let body = fold_match_arms(ctx, &expanded, &scrut, span);
+    let body = fold_match_arms(ctx, &expanded, scrut.as_str(), scrut_span, span);
     Expr::Let {
         name: scrut,
         value: Box::new(lower_expr(ctx, scrutinee)),
@@ -79,6 +84,7 @@ fn fold_match_arms(
     ctx: &LowerCtx,
     arms: &[lumia_syntax::MatchArm],
     scrut: &str,
+    scrut_span: Span,
     span: Span,
 ) -> Expr {
     if arms.is_empty() {
@@ -88,7 +94,7 @@ fn fold_match_arms(
             span,
         };
     }
-    let scrut_e = Expr::Var(scrut.into(), span);
+    let scrut_e = Expr::Var(scrut.into(), scrut_span);
     let (arm, rest) = arms.split_first().unwrap();
     let (pat_cond, binds) = pattern_cond(ctx, &arm.pattern, &scrut_e, span);
     let cond = if let Some(g) = &arm.guard {
@@ -134,7 +140,7 @@ fn fold_match_arms(
             span,
         };
     }
-    let else_body = fold_match_arms(ctx, rest, scrut, span);
+    let else_body = fold_match_arms(ctx, rest, scrut, scrut_span, span);
     Expr::If {
         cond: Box::new(cond),
         then_branch: Box::new(then_body),

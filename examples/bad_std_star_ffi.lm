@@ -1,6 +1,0 @@
-module BadStdStarFfi
-import std.linalg.*
-val main = {
-    lumia_list_f64_zeros(1)
-    0
-}

@@ -1,0 +1,22 @@
+module task_join_opt
+import std.io.{println}
+
+/// Recoverable cancel: `cancelScope` + `joinOpt` → None; live task → Some.
+val main = {
+    scope {
+        val ch = channel(1)
+        val blocked = spawn {
+            ch.recv()
+        }
+        cancelScope()
+        blocked.joinOpt() match {
+            None -> println(0)
+            Some(x) -> println(x)
+        }
+        val ok = spawn { 40 + 2 }
+        ok.joinOpt() match {
+            None -> println(0)
+            Some(x) -> println(x)
+        }
+    }
+}

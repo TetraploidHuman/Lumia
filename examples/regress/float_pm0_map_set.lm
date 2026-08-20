@@ -1,0 +1,13 @@
+/// mapOf/setOf literals must merge ±0 Float keys (same as `.set` / `.insert`).
+module main
+
+val main = {
+    val m = mapOf(0.0 to 1, -0.0 to 2)
+    println(m.len())
+    println(m[0.0] alt 0)
+    println(m[-0.0] alt 0)
+    val s = setOf(0.0, -0.0)
+    println(s.len())
+    println(s.contains(0.0))
+    println(s.contains(-0.0))
+}

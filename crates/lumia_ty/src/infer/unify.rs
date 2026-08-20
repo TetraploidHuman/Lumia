@@ -3,6 +3,7 @@
 use super::Infer;
 use crate::types::{at, locate, Effect, Scheme, Type, TypeError};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use std::sync::Arc;
 
 impl Infer {
     pub(crate) fn free_ty_vars(&mut self, ty: Type) -> HashSet<u32> {
@@ -13,34 +14,94 @@ impl Infer {
     }
 
     pub(crate) fn collect_ty_vars(&mut self, ty: &Type, acc: &mut HashSet<u32>) {
+        self.collect_ty_vars_rec(ty, acc, &mut HashSet::default());
+    }
+
+    fn collect_ty_vars_rec(&mut self, ty: &Type, acc: &mut HashSet<u32>, seen: &mut HashSet<u32>) {
         match ty {
             Type::Var(v) => {
                 if let Some(t) = self.uni.subst.get(v).cloned() {
-                    let t = self.prune(t);
-                    self.collect_ty_vars(&t, acc);
+                    if !seen.insert(*v) {
+                        return;
+                    }
+                    // Walk the binding directly (do not prune — cyclic prune
+                    // returns `Var(v)` and would stop collection too early).
+                    self.collect_ty_vars_rec(&t, acc, seen);
+                    seen.remove(v);
                 } else {
                     acc.insert(*v);
                 }
             }
             Type::Fun(ps, r, _) => {
                 for p in ps {
-                    self.collect_ty_vars(p, acc);
+                    self.collect_ty_vars_rec(p, acc, seen);
                 }
-                self.collect_ty_vars(r, acc);
+                self.collect_ty_vars_rec(r, acc, seen);
             }
-            Type::List(t) | Type::Set(t) => self.collect_ty_vars(t, acc),
+            Type::List(t) | Type::Set(t) | Type::Task(t) | Type::Channel(t) => {
+                self.collect_ty_vars_rec(t, acc, seen);
+            }
             Type::Map(k, v) => {
-                self.collect_ty_vars(k, acc);
-                self.collect_ty_vars(v, acc);
+                self.collect_ty_vars_rec(k, acc, seen);
+                self.collect_ty_vars_rec(v, acc, seen);
+            }
+            Type::Adt { params, .. } | Type::Tuple(params) | Type::TuplePrefix(params) => {
+                for p in params {
+                    self.collect_ty_vars_rec(p, acc, seen);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Vars under `Channel[…]` must stay monomorphic (value restriction).
+    /// Otherwise `val ch = channel(1)` generalizes to `∀α. Channel[α]`, so
+    /// `send(Some(x))` and `recv() alt …` see different α and alt rejects Var.
+    pub(crate) fn channel_escaping_ty_vars(&mut self, ty: Type) -> HashSet<u32> {
+        let ty = self.prune(ty);
+        let mut acc = HashSet::default();
+        self.collect_channel_escaping_ty_vars(&ty, &mut acc, &mut HashSet::default());
+        acc
+    }
+
+    fn collect_channel_escaping_ty_vars(
+        &mut self,
+        ty: &Type,
+        acc: &mut HashSet<u32>,
+        seen: &mut HashSet<u32>,
+    ) {
+        match ty {
+            Type::Var(v) => {
+                if let Some(t) = self.uni.subst.get(v).cloned() {
+                    if !seen.insert(*v) {
+                        return;
+                    }
+                    self.collect_channel_escaping_ty_vars(&t, acc, seen);
+                    seen.remove(v);
+                }
+            }
+            Type::Channel(t) => self.collect_ty_vars(t, acc),
+            Type::Fun(ps, r, _) => {
+                for p in ps {
+                    self.collect_channel_escaping_ty_vars(p, acc, seen);
+                }
+                self.collect_channel_escaping_ty_vars(r, acc, seen);
+            }
+            Type::List(t) | Type::Set(t) | Type::Task(t) => {
+                self.collect_channel_escaping_ty_vars(t, acc, seen)
+            }
+            Type::Map(k, v) => {
+                self.collect_channel_escaping_ty_vars(k, acc, seen);
+                self.collect_channel_escaping_ty_vars(v, acc, seen);
             }
             Type::Adt { params, .. } => {
                 for p in params {
-                    self.collect_ty_vars(p, acc);
+                    self.collect_channel_escaping_ty_vars(p, acc, seen);
                 }
             }
             Type::Tuple(ts) | Type::TuplePrefix(ts) => {
                 for t in ts {
-                    self.collect_ty_vars(t, acc);
+                    self.collect_channel_escaping_ty_vars(t, acc, seen);
                 }
             }
             _ => {}
@@ -69,10 +130,11 @@ impl Infer {
     pub(crate) fn generalize(&mut self, ty: Type) -> Scheme {
         let ty = self.prune(ty);
         let env_fvs = self.env_free_ty_vars();
+        let channel_fvs = self.channel_escaping_ty_vars(ty.clone());
         let mut vars: Vec<u32> = self
             .free_ty_vars(ty.clone())
             .into_iter()
-            .filter(|v| !env_fvs.contains(v))
+            .filter(|v| !env_fvs.contains(v) && !channel_fvs.contains(v))
             .collect();
         vars.sort_unstable();
         // Leave effect vars free (not quantified): module-level HOF use can still
@@ -96,6 +158,42 @@ impl Infer {
             .filter(|v| self.uni.eq_vars.contains(v))
             .collect();
         eq_vars.sort_unstable();
+        let mut len_vars: Vec<u32> = vars
+            .iter()
+            .copied()
+            .filter(|v| self.uni.len_vars.contains(v))
+            .collect();
+        len_vars.sort_unstable();
+        let mut concat_vars: Vec<u32> = vars
+            .iter()
+            .copied()
+            .filter(|v| self.uni.concat_vars.contains(v))
+            .collect();
+        concat_vars.sort_unstable();
+        let mut contains_vars: Vec<u32> = vars
+            .iter()
+            .copied()
+            .filter(|v| self.uni.contains_vars.contains(v))
+            .collect();
+        contains_vars.sort_unstable();
+        let mut set_vars: Vec<u32> = vars
+            .iter()
+            .copied()
+            .filter(|v| self.uni.set_vars.contains(v))
+            .collect();
+        set_vars.sort_unstable();
+        let mut elems_vars: Vec<u32> = vars
+            .iter()
+            .copied()
+            .filter(|v| self.uni.elems_vars.contains(v))
+            .collect();
+        elems_vars.sort_unstable();
+        let mut take_vars: Vec<u32> = vars
+            .iter()
+            .copied()
+            .filter(|v| self.uni.take_vars.contains(v))
+            .collect();
+        take_vars.sort_unstable();
         let mut trait_preds: Vec<(u32, String, String)> = Vec::new();
         for &v in &vars {
             if let Some(preds) = self.traits.trait_vars.get(&v) {
@@ -107,11 +205,16 @@ impl Infer {
         trait_preds.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
         Scheme {
             vars,
-            eff_vars: Vec::new(),
             ty,
             num_vars,
             ord_vars,
             eq_vars,
+            len_vars,
+            concat_vars,
+            contains_vars,
+            set_vars,
+            elems_vars,
+            take_vars,
             trait_preds,
         }
     }
@@ -133,6 +236,36 @@ impl Infer {
                 self.uni.eq_vars.insert(*n);
             }
         }
+        for &old in &scheme.len_vars {
+            if let Some(Type::Var(n)) = ty_map.get(&old) {
+                self.uni.len_vars.insert(*n);
+            }
+        }
+        for &old in &scheme.concat_vars {
+            if let Some(Type::Var(n)) = ty_map.get(&old) {
+                self.uni.concat_vars.insert(*n);
+            }
+        }
+        for &old in &scheme.contains_vars {
+            if let Some(Type::Var(n)) = ty_map.get(&old) {
+                self.uni.contains_vars.insert(*n);
+            }
+        }
+        for &old in &scheme.set_vars {
+            if let Some(Type::Var(n)) = ty_map.get(&old) {
+                self.uni.set_vars.insert(*n);
+            }
+        }
+        for &old in &scheme.elems_vars {
+            if let Some(Type::Var(n)) = ty_map.get(&old) {
+                self.uni.elems_vars.insert(*n);
+            }
+        }
+        for &old in &scheme.take_vars {
+            if let Some(Type::Var(n)) = ty_map.get(&old) {
+                self.uni.take_vars.insert(*n);
+            }
+        }
         for (old, tr, method) in &scheme.trait_preds {
             if let Some(Type::Var(n)) = ty_map.get(old) {
                 self.traits
@@ -142,11 +275,7 @@ impl Infer {
                     .push((tr.clone(), method.clone()));
             }
         }
-        let eff_map: HashMap<u32, Effect> = scheme
-            .eff_vars
-            .iter()
-            .map(|&v| (v, self.fresh_eff()))
-            .collect();
+        let eff_map: HashMap<u32, Effect> = HashMap::default();
         self.apply_scheme_subst(&scheme.ty, &ty_map, &eff_map)
     }
 
@@ -170,15 +299,19 @@ impl Infer {
                     ps.iter()
                         .map(|p| self.apply_scheme_subst(p, ty_map, eff_map))
                         .collect(),
-                    Box::new(self.apply_scheme_subst(r, ty_map, eff_map)),
+                    Arc::new(self.apply_scheme_subst(r, ty_map, eff_map)),
                     e,
                 )
             }
-            Type::List(t) => Type::List(Box::new(self.apply_scheme_subst(t, ty_map, eff_map))),
-            Type::Set(t) => Type::Set(Box::new(self.apply_scheme_subst(t, ty_map, eff_map))),
+            Type::List(t) => Type::List(Arc::new(self.apply_scheme_subst(t, ty_map, eff_map))),
+            Type::Set(t) => Type::Set(Arc::new(self.apply_scheme_subst(t, ty_map, eff_map))),
+            Type::Task(t) => Type::Task(Arc::new(self.apply_scheme_subst(t, ty_map, eff_map))),
+            Type::Channel(t) => {
+                Type::Channel(Arc::new(self.apply_scheme_subst(t, ty_map, eff_map)))
+            }
             Type::Map(k, v) => Type::Map(
-                Box::new(self.apply_scheme_subst(k, ty_map, eff_map)),
-                Box::new(self.apply_scheme_subst(v, ty_map, eff_map)),
+                Arc::new(self.apply_scheme_subst(k, ty_map, eff_map)),
+                Arc::new(self.apply_scheme_subst(v, ty_map, eff_map)),
             ),
             Type::Adt { name, params } => Type::Adt {
                 name: name.clone(),
@@ -203,35 +336,62 @@ impl Infer {
             Type::String => Type::String,
             Type::Char => Type::Char,
             Type::Unit => Type::Unit,
+            Type::Unknown => Type::Unknown,
         }
     }
 
     pub(crate) fn prune(&mut self, ty: Type) -> Type {
+        self.prune_rec(ty, &mut HashSet::default())
+    }
+
+    fn prune_rec(&mut self, ty: Type, seen: &mut HashSet<u32>) -> Type {
         match ty {
             Type::Var(v) => {
                 if let Some(t) = self.uni.subst.get(&v).cloned() {
-                    let t = self.prune(t);
-                    self.uni.subst.insert(v, t.clone());
-                    t
+                    if !seen.insert(v) {
+                        // Equi-recursive Adt binding: stop expanding the cycle.
+                        return Type::Var(v);
+                    }
+                    let t = self.prune_rec(t, seen);
+                    seen.remove(&v);
+                    if occurs(v, &t) {
+                        // Keep the μ-binder as `Var(v)`. Returning the unfolded
+                        // `Adt[…, Var(v), …]` here would re-expand on every prune
+                        // of a parent Adt and blow the stack (`Expr { Lit Add }`).
+                        Type::Var(v)
+                    } else {
+                        self.uni.subst.insert(v, t.clone());
+                        t
+                    }
                 } else {
                     Type::Var(v)
                 }
             }
             Type::Fun(ps, r, e) => Type::Fun(
-                ps.into_iter().map(|p| self.prune(p)).collect(),
-                Box::new(self.prune(*r)),
+                ps.into_iter().map(|p| self.prune_rec(p, seen)).collect(),
+                Arc::new(self.prune_rec(Type::unbox(r), seen)),
                 self.prune_eff(e),
             ),
-            Type::List(t) => Type::List(Box::new(self.prune(*t))),
-            Type::Map(k, v) => Type::Map(Box::new(self.prune(*k)), Box::new(self.prune(*v))),
-            Type::Set(t) => Type::Set(Box::new(self.prune(*t))),
+            Type::List(t) => Type::List(Arc::new(self.prune_rec(Type::unbox(t), seen))),
+            Type::Map(k, v) => Type::Map(
+                Arc::new(self.prune_rec(Type::unbox(k), seen)),
+                Arc::new(self.prune_rec(Type::unbox(v), seen)),
+            ),
+            Type::Set(t) => Type::Set(Arc::new(self.prune_rec(Type::unbox(t), seen))),
+            Type::Task(t) => Type::Task(Arc::new(self.prune_rec(Type::unbox(t), seen))),
+            Type::Channel(t) => Type::Channel(Arc::new(self.prune_rec(Type::unbox(t), seen))),
             Type::Adt { name, params } => Type::Adt {
                 name,
-                params: params.into_iter().map(|p| self.prune(p)).collect(),
+                params: params
+                    .into_iter()
+                    .map(|p| self.prune_rec(p, seen))
+                    .collect(),
             },
-            Type::Tuple(ts) => Type::Tuple(ts.into_iter().map(|t| self.prune(t)).collect()),
+            Type::Tuple(ts) => {
+                Type::Tuple(ts.into_iter().map(|t| self.prune_rec(t, seen)).collect())
+            }
             Type::TuplePrefix(ts) => {
-                Type::TuplePrefix(ts.into_iter().map(|t| self.prune(t)).collect())
+                Type::TuplePrefix(ts.into_iter().map(|t| self.prune_rec(t, seen)).collect())
             }
             other => other,
         }
@@ -261,25 +421,65 @@ impl Infer {
     }
 
     pub(crate) fn zonk_type(&mut self, ty: Type) -> Type {
-        match self.prune(ty) {
+        self.zonk_type_rec(ty, &mut HashSet::default())
+    }
+
+    fn zonk_type_rec(&mut self, ty: Type, seen: &mut HashSet<u32>) -> Type {
+        if let Type::Var(v) = ty {
+            if let Some(t) = self.uni.subst.get(&v).cloned() {
+                if !seen.insert(v) {
+                    // Cycle: leave a named knot; parent Adt arm rewrites these
+                    // into a finite `Adt { params: [] }` stub below.
+                    return Type::Var(v);
+                }
+                let t = self.zonk_type_rec(t, seen);
+                seen.remove(&v);
+                return t;
+            }
+            return Type::Var(v);
+        }
+        match ty {
             Type::Fun(ps, r, e) => Type::Fun(
-                ps.into_iter().map(|p| self.zonk_type(p)).collect(),
-                Box::new(self.zonk_type(*r)),
+                ps.into_iter()
+                    .map(|p| self.zonk_type_rec(p, seen))
+                    .collect(),
+                Arc::new(self.zonk_type_rec(Type::unbox(r), seen)),
                 self.zonk_eff(e),
             ),
-            Type::List(t) => Type::List(Box::new(self.zonk_type(*t))),
-            Type::Map(k, v) => {
-                Type::Map(Box::new(self.zonk_type(*k)), Box::new(self.zonk_type(*v)))
-            }
-            Type::Set(t) => Type::Set(Box::new(self.zonk_type(*t))),
+            Type::List(t) => Type::List(Arc::new(self.zonk_type_rec(Type::unbox(t), seen))),
+            Type::Map(k, v) => Type::Map(
+                Arc::new(self.zonk_type_rec(Type::unbox(k), seen)),
+                Arc::new(self.zonk_type_rec(Type::unbox(v), seen)),
+            ),
+            Type::Set(t) => Type::Set(Arc::new(self.zonk_type_rec(Type::unbox(t), seen))),
+            Type::Task(t) => Type::Task(Arc::new(self.zonk_type_rec(Type::unbox(t), seen))),
+            Type::Channel(t) => Type::Channel(Arc::new(self.zonk_type_rec(Type::unbox(t), seen))),
             Type::Adt { name, params } => Type::Adt {
-                name,
-                params: params.into_iter().map(|p| self.zonk_type(p)).collect(),
+                name: name.clone(),
+                params: params
+                    .into_iter()
+                    .map(|p| match p {
+                        // Fold equi-recursive spines to a finite stub so schemes
+                        // do not export dangling cycle vars after subst drops.
+                        Type::Var(u) if seen.contains(&u) => Type::Adt {
+                            name: name.clone(),
+                            params: vec![],
+                        },
+                        other => self.zonk_type_rec(other, seen),
+                    })
+                    .collect(),
             },
-            Type::Tuple(ts) => Type::Tuple(ts.into_iter().map(|t| self.zonk_type(t)).collect()),
-            Type::TuplePrefix(ts) => {
-                Type::TuplePrefix(ts.into_iter().map(|t| self.zonk_type(t)).collect())
-            }
+            Type::Tuple(ts) => Type::Tuple(
+                ts.into_iter()
+                    .map(|t| self.zonk_type_rec(t, seen))
+                    .collect(),
+            ),
+            Type::TuplePrefix(ts) => Type::TuplePrefix(
+                ts.into_iter()
+                    .map(|t| self.zonk_type_rec(t, seen))
+                    .collect(),
+            ),
+            Type::Var(_) => unreachable!("handled above"),
             other => other,
         }
     }
@@ -355,17 +555,23 @@ impl Infer {
                     self.unify_at(span, x.clone(), y)?;
                     ps.push(self.prune(x));
                 }
-                let r = self.join_types(*ar, *br, span)?;
+                let r = self.join_types(Type::unbox(ar), Type::unbox(br), span)?;
                 let e = self.union_eff(ae, be);
-                Ok(Type::Fun(ps, Box::new(r), e))
+                Ok(Type::Fun(ps, Arc::new(r), e))
             }
             (Type::List(a), Type::List(b)) => {
-                Ok(Type::List(Box::new(self.join_types(*a, *b, span)?)))
+                Ok(Type::List(Arc::new(self.join_types(Type::unbox(a), Type::unbox(b), span)?)))
             }
-            (Type::Set(a), Type::Set(b)) => Ok(Type::Set(Box::new(self.join_types(*a, *b, span)?))),
+            (Type::Set(a), Type::Set(b)) => Ok(Type::Set(Arc::new(self.join_types(Type::unbox(a), Type::unbox(b), span)?))),
+            (Type::Task(a), Type::Task(b)) => {
+                Ok(Type::Task(Arc::new(self.join_types(Type::unbox(a), Type::unbox(b), span)?)))
+            }
+            (Type::Channel(a), Type::Channel(b)) => {
+                Ok(Type::Channel(Arc::new(self.join_types(Type::unbox(a), Type::unbox(b), span)?)))
+            }
             (Type::Map(ak, av), Type::Map(bk, bv)) => Ok(Type::Map(
-                Box::new(self.join_types(*ak, *bk, span)?),
-                Box::new(self.join_types(*av, *bv, span)?),
+                Arc::new(self.join_types(Type::unbox(ak), Type::unbox(bk), span)?),
+                Arc::new(self.join_types(Type::unbox(av), Type::unbox(bv), span)?),
             )),
             (Type::Tuple(a), Type::Tuple(b)) => {
                 if a.len() != b.len() {
@@ -427,12 +633,20 @@ impl Infer {
         match (a, b) {
             (Type::Var(v), Type::Var(u)) if v == u => Ok(()),
             (Type::Var(v), t) | (t, Type::Var(v)) => {
-                if occurs(v, &t) {
-                    return Err(TypeError::Message("infinite type".into()));
+                // Allow equi-recursive ADTs (`α ~ Expr[α]`); still reject
+                // cycles through List/Fun/Tuple/Map/etc.
+                if occurs_rigid(v, &t) {
+                    return Err(TypeError::Message(self.occurs_check_msg(&t)));
                 }
                 self.check_num_bind(v, &t)?;
                 self.check_ord_bind(v, &t)?;
                 self.check_eq_bind(v, &t)?;
+                self.check_len_bind(v, &t)?;
+                self.check_concat_bind(v, &t)?;
+                self.check_contains_bind(v, &t)?;
+                self.check_set_bind(v, &t)?;
+                self.check_elems_bind(v, &t)?;
+                self.check_take_bind(v, &t)?;
                 self.check_trait_bind(v, &t)?;
                 if let Type::Var(u) = &t {
                     if self.uni.num_vars.contains(&v) {
@@ -453,6 +667,42 @@ impl Infer {
                     if self.uni.eq_vars.contains(u) {
                         self.uni.eq_vars.insert(v);
                     }
+                    if self.uni.len_vars.contains(&v) {
+                        self.uni.len_vars.insert(*u);
+                    }
+                    if self.uni.len_vars.contains(u) {
+                        self.uni.len_vars.insert(v);
+                    }
+                    if self.uni.concat_vars.contains(&v) {
+                        self.uni.concat_vars.insert(*u);
+                    }
+                    if self.uni.concat_vars.contains(u) {
+                        self.uni.concat_vars.insert(v);
+                    }
+                    if self.uni.contains_vars.contains(&v) {
+                        self.uni.contains_vars.insert(*u);
+                    }
+                    if self.uni.contains_vars.contains(u) {
+                        self.uni.contains_vars.insert(v);
+                    }
+                    if self.uni.set_vars.contains(&v) {
+                        self.uni.set_vars.insert(*u);
+                    }
+                    if self.uni.set_vars.contains(u) {
+                        self.uni.set_vars.insert(v);
+                    }
+                    if self.uni.elems_vars.contains(&v) {
+                        self.uni.elems_vars.insert(*u);
+                    }
+                    if self.uni.elems_vars.contains(u) {
+                        self.uni.elems_vars.insert(v);
+                    }
+                    if self.uni.take_vars.contains(&v) {
+                        self.uni.take_vars.insert(*u);
+                    }
+                    if self.uni.take_vars.contains(u) {
+                        self.uni.take_vars.insert(v);
+                    }
                 }
                 self.uni.subst.insert(v, t);
                 Ok(())
@@ -462,12 +712,15 @@ impl Infer {
             | (Type::Bool, Type::Bool)
             | (Type::String, Type::String)
             | (Type::Char, Type::Char)
-            | (Type::Unit, Type::Unit) => Ok(()),
-            (Type::List(a), Type::List(b)) => self.unify(*a, *b),
-            (Type::Set(a), Type::Set(b)) => self.unify(*a, *b),
+            | (Type::Unit, Type::Unit)
+            | (Type::Unknown, Type::Unknown) => Ok(()),
+            (Type::List(a), Type::List(b)) => self.unify(Type::unbox(a), Type::unbox(b)),
+            (Type::Set(a), Type::Set(b)) => self.unify(Type::unbox(a), Type::unbox(b)),
+            (Type::Task(a), Type::Task(b)) => self.unify(Type::unbox(a), Type::unbox(b)),
+            (Type::Channel(a), Type::Channel(b)) => self.unify(Type::unbox(a), Type::unbox(b)),
             (Type::Map(ak, av), Type::Map(bk, bv)) => {
-                self.unify(*ak, *bk)?;
-                self.unify(*av, *bv)
+                self.unify(Type::unbox(ak), Type::unbox(bk))?;
+                self.unify(Type::unbox(av), Type::unbox(bv))
             }
             (
                 Type::Adt {
@@ -480,8 +733,15 @@ impl Infer {
                 },
             ) => {
                 if a != b || ap.len() != bp.len() {
-                    return Err(TypeError::Message(format!(
-                        "type mismatch: Adt({a}) vs Adt({b})"
+                    return Err(TypeError::Message(self.type_mismatch_msg(
+                        &Type::Adt {
+                            name: a,
+                            params: ap,
+                        },
+                        &Type::Adt {
+                            name: b,
+                            params: bp,
+                        },
                     )));
                 }
                 for (x, y) in ap.into_iter().zip(bp) {
@@ -530,11 +790,35 @@ impl Infer {
                 for (x, y) in a_ps.into_iter().zip(b_ps) {
                     self.unify(x, y)?;
                 }
-                self.unify(*a_r, *b_r)?;
+                self.unify(Type::unbox(a_r), Type::unbox(b_r))?;
                 self.unify_eff(a_e, b_e)
             }
-            (a, b) => Err(TypeError::Message(format!("type mismatch: {a:?} vs {b:?}"))),
+            (a, b) => Err(TypeError::Message(self.type_mismatch_msg(&a, &b))),
         }
+    }
+
+    /// User-facing unify failure (DESIGN §3.2): `display_type`, not `Debug` / `?N`.
+    fn type_mismatch_msg(&self, a: &Type, b: &Type) -> String {
+        let nums = self.display_num_vars();
+        format!(
+            "type mismatch: {} vs {}",
+            crate::display::display_type(a, &nums),
+            crate::display::display_type(b, &nums)
+        )
+    }
+
+    fn occurs_check_msg(&self, ty: &Type) -> String {
+        let nums = self.display_num_vars();
+        format!(
+            "recursive type: a type variable occurs inside {}",
+            crate::display::display_type(ty, &nums)
+        )
+    }
+
+    fn display_num_vars(&self) -> Vec<u32> {
+        let mut nums: Vec<u32> = self.uni.num_vars.iter().copied().collect();
+        nums.sort_unstable();
+        nums
     }
 
     pub(crate) fn unify_at(
@@ -551,11 +835,33 @@ pub(crate) fn occurs(v: u32, ty: &Type) -> bool {
     match ty {
         Type::Var(u) => *u == v,
         Type::Fun(ps, r, _) => ps.iter().any(|p| occurs(v, p)) || occurs(v, r),
-        Type::List(t) => occurs(v, t),
-        Type::Set(t) => occurs(v, t),
+        Type::List(t) | Type::Set(t) | Type::Task(t) | Type::Channel(t) => occurs(v, t),
         Type::Map(k, t) => occurs(v, k) || occurs(v, t),
         Type::Adt { params, .. } => params.iter().any(|p| occurs(v, p)),
         Type::Tuple(ts) | Type::TuplePrefix(ts) => ts.iter().any(|p| occurs(v, p)),
         _ => false,
+    }
+}
+
+/// Occurs check that still rejects infinite List/Fun/Tuple/… types, but allows
+/// a type variable to appear under `Adt` constructors (equi-recursive trees).
+fn occurs_rigid(v: u32, ty: &Type) -> bool {
+    match ty {
+        Type::Var(u) => *u == v,
+        Type::Adt { params, .. } => params.iter().any(|p| occurs_rigid_in_adt_arg(v, p)),
+        Type::Fun(ps, r, _) => ps.iter().any(|p| occurs(v, p)) || occurs(v, r),
+        Type::List(t) | Type::Set(t) | Type::Task(t) | Type::Channel(t) => occurs(v, t),
+        Type::Map(k, t) => occurs(v, k) || occurs(v, t),
+        Type::Tuple(ts) | Type::TuplePrefix(ts) => ts.iter().any(|p| occurs(v, p)),
+        _ => false,
+    }
+}
+
+fn occurs_rigid_in_adt_arg(v: u32, ty: &Type) -> bool {
+    match ty {
+        // `α` as an ADT type argument is the equi-recursive spine.
+        Type::Var(_) => false,
+        Type::Adt { params, .. } => params.iter().any(|p| occurs_rigid_in_adt_arg(v, p)),
+        other => occurs(v, other),
     }
 }

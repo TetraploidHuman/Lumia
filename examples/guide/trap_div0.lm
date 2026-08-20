@@ -1,0 +1,7 @@
+module TrapDiv0
+
+/// Runtime checked division by zero must trap.
+val main = {
+    val z = 0
+    1 / z
+}

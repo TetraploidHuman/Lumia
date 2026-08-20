@@ -1,7 +1,7 @@
 use super::*;
 
 impl<'a> Parser<'a> {
-    pub(super) fn parse_field_inits(&mut self) -> Result<Vec<(String, Expr)>, ParseError> {
+    pub(super) fn parse_field_inits(&mut self) -> Result<Vec<(Sym, Expr)>, ParseError> {
         let mut fields = vec![];
         if self.at(&TokenKind::RBrace) {
             return Ok(fields);
@@ -29,7 +29,7 @@ impl<'a> Parser<'a> {
 
     pub(super) fn parse_pipeline(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.parse_or()?;
-        while self.at(&TokenKind::PipePipe) {
+        while self.at(&TokenKind::GtGt) {
             let _ = self.bump();
             let right = self.parse_or()?;
             let span = left.span().merge(right.span());
@@ -108,13 +108,40 @@ impl<'a> Parser<'a> {
             self.bump();
             None
         } else {
-            Some(self.parse_expr()?)
+            match self.parse_expr() {
+                Ok(e) => Some(e),
+                Err(e) => {
+                    let span = e.span;
+                    self.errors.push(e);
+                    // Skip until the arm arrow so we can keep parsing this arm's body.
+                    while !self.at(&TokenKind::Eof) && !self.at(&TokenKind::Arrow) {
+                        self.bump();
+                    }
+                    Some(self.hole_expr(span))
+                }
+            }
         };
         self.expect(TokenKind::Arrow)?;
         let body = if self.at(&TokenKind::LBrace) {
-            self.parse_block_expr()?
+            match self.parse_block_expr() {
+                Ok(b) => b,
+                Err(e) => {
+                    let span = e.span;
+                    self.errors.push(e);
+                    self.synchronize_match_arms();
+                    self.hole_expr(span)
+                }
+            }
         } else {
-            self.parse_expr()?
+            match self.parse_expr() {
+                Ok(b) => b,
+                Err(e) => {
+                    let span = e.span;
+                    self.errors.push(e);
+                    self.synchronize_match_arms();
+                    self.hole_expr(span)
+                }
+            }
         };
         Ok(MatchCondArm {
             cond,
@@ -146,16 +173,43 @@ impl<'a> Parser<'a> {
         };
         let guard = if self.at(&TokenKind::If) {
             self.bump();
-            Some(self.parse_expr()?)
+            match self.parse_expr() {
+                Ok(g) => Some(g),
+                Err(e) => {
+                    let span = e.span;
+                    self.errors.push(e);
+                    // Skip until the arm arrow so we can keep parsing this arm's body.
+                    while !self.at(&TokenKind::Eof) && !self.at(&TokenKind::Arrow) {
+                        self.bump();
+                    }
+                    Some(self.hole_expr(span))
+                }
+            }
         } else {
             None
         };
         self.expect(TokenKind::Arrow)?;
         // Arm body: `{ ... }` block, or a single expression (braces optional).
         let body = if self.at(&TokenKind::LBrace) {
-            self.parse_block_expr()?
+            match self.parse_block_expr() {
+                Ok(b) => b,
+                Err(e) => {
+                    let span = e.span;
+                    self.errors.push(e);
+                    self.synchronize_match_arms();
+                    self.hole_expr(span)
+                }
+            }
         } else {
-            self.parse_expr()?
+            match self.parse_expr() {
+                Ok(b) => b,
+                Err(e) => {
+                    let span = e.span;
+                    self.errors.push(e);
+                    self.synchronize_match_arms();
+                    self.hole_expr(span)
+                }
+            }
         };
         Ok(MatchArm {
             pattern,
@@ -239,9 +293,13 @@ impl<'a> Parser<'a> {
         self.bump();
         let right = self.parse_add()?;
         let span = left.span().merge(right.span());
-        let name = if inclusive { "rangeInclusive" } else { "range" };
+        let name = if inclusive {
+            self.intern_word("rangeInclusive")
+        } else {
+            self.intern_word("range")
+        };
         Ok(Expr::Call {
-            callee: Box::new(Expr::Ident(name.into(), span)),
+            callee: Box::new(Expr::Ident(name, span)),
             args: vec![left, right],
             span,
         })
@@ -271,12 +329,12 @@ impl<'a> Parser<'a> {
     /// Infix `a to b` → `to(a, b)` (DESIGN §3.5.2 mapOf sugar).
     pub(super) fn parse_to(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.parse_mul()?;
-        while matches!(self.peek(), TokenKind::Ident(name) if name == "to") {
+        while self.at(&TokenKind::To) {
             let to_span = self.bump().span;
             let right = self.parse_mul()?;
             let span = left.span().merge(right.span());
             left = Expr::Call {
-                callee: Box::new(Expr::Ident("to".into(), to_span)),
+                callee: Box::new(Expr::Ident(self.intern_word("to"), to_span)),
                 args: vec![left, right],
                 span,
             };
@@ -409,9 +467,9 @@ impl<'a> Parser<'a> {
             } else if self.at(&TokenKind::Dot) {
                 self.bump();
                 let (field, fspan) = match &self.cur.kind {
-                    TokenKind::Ident(s) => {
-                        let s = s.clone();
+                    TokenKind::Ident => {
                         let span = self.cur.span;
+                        let s = self.intern_span(span);
                         self.bump();
                         (s, span)
                     }
@@ -420,8 +478,8 @@ impl<'a> Parser<'a> {
                         if *n < 0 {
                             return Err(self.error("tuple field index must be non-negative"));
                         }
-                        let s = n.to_string();
                         let span = self.cur.span;
+                        let s = self.intern_word(&n.to_string());
                         self.bump();
                         (s, span)
                     }
@@ -445,7 +503,7 @@ impl<'a> Parser<'a> {
                 let span = expr.span().merge(end.span);
                 let get = Expr::Field {
                     base: Box::new(expr),
-                    field: "get".into(),
+                    field: self.intern_word("get"),
                     span,
                 };
                 expr = Expr::Call {
@@ -483,7 +541,7 @@ impl<'a> Parser<'a> {
             TokenKind::String(s) => {
                 let s = s.clone();
                 let sp = self.bump().span;
-                Ok(Expr::String(s, sp))
+                Ok(Expr::String(self.intern.intern(&s), sp))
             }
             TokenKind::InterpString(parts) => {
                 let parts = parts.clone();
@@ -503,10 +561,14 @@ impl<'a> Parser<'a> {
                 let s = self.bump().span;
                 Ok(Expr::Bool(false, s))
             }
-            TokenKind::Ident(name) => {
-                let name = name.clone();
+            TokenKind::Ident => {
                 let s = self.bump().span;
-                Ok(Expr::Ident(name, s))
+                Ok(Expr::Ident(self.intern_span(s), s))
+            }
+            // Hard keyword that still denotes the `to` pair constructor as a primary.
+            TokenKind::To => {
+                let s = self.bump().span;
+                Ok(Expr::Ident(self.intern_word("to"), s))
             }
             TokenKind::If => self.parse_if(),
             TokenKind::Match => self.parse_match_cond(),
@@ -523,6 +585,35 @@ impl<'a> Parser<'a> {
             TokenKind::Effect => {
                 self.bump();
                 self.parse_lambda_or_block()
+            }
+            // `spawn { … }` — task body (DESIGN §11.2).
+            TokenKind::Spawn => {
+                let start = self.bump().span;
+                let body = self.parse_lambda_or_block()?;
+                let span = start.merge(body.span());
+                Ok(Expr::Spawn {
+                    body: Box::new(body),
+                    span,
+                })
+            }
+            // `scope { … }` / `scope(sched) { … }` — structured concurrency (DESIGN §11.2).
+            TokenKind::Scope => {
+                let start = self.bump().span;
+                let scheduler = if self.at(&TokenKind::LParen) {
+                    self.bump();
+                    let e = self.parse_expr()?;
+                    self.expect(TokenKind::RParen)?;
+                    Some(Box::new(e))
+                } else {
+                    None
+                };
+                let body = self.parse_lambda_or_block()?;
+                let span = start.merge(body.span());
+                Ok(Expr::Scope {
+                    scheduler,
+                    body: Box::new(body),
+                    span,
+                })
             }
             TokenKind::Trait | TokenKind::Instance | TokenKind::Requires => Err(self.error(
                 "expected expression (`trait` / `instance` / `requires` are item-level only)",
@@ -564,7 +655,7 @@ impl<'a> Parser<'a> {
                     self.bump();
                     let end = self.expect(TokenKind::RBracket)?;
                     return Ok(Expr::Call {
-                        callee: Box::new(Expr::Ident("mapOf".into(), start)),
+                        callee: Box::new(Expr::Ident(self.intern_word("mapOf"), start)),
                         args: vec![],
                         span: start.merge(end.span),
                     });
@@ -574,7 +665,7 @@ impl<'a> Parser<'a> {
                 if self.at(&TokenKind::Colon) {
                     self.bump();
                     let v0 = self.parse_expr()?;
-                    let mut args = vec![Self::map_pair_to(first, v0)];
+                    let mut args = vec![self.map_pair_to(first, v0)];
                     while self.at(&TokenKind::Comma) {
                         self.bump();
                         if self.at(&TokenKind::RBracket) {
@@ -583,11 +674,11 @@ impl<'a> Parser<'a> {
                         let k = self.parse_expr()?;
                         self.expect(TokenKind::Colon)?;
                         let v = self.parse_expr()?;
-                        args.push(Self::map_pair_to(k, v));
+                        args.push(self.map_pair_to(k, v));
                     }
                     let end = self.expect(TokenKind::RBracket)?;
                     return Ok(Expr::Call {
-                        callee: Box::new(Expr::Ident("mapOf".into(), start)),
+                        callee: Box::new(Expr::Ident(self.intern_word("mapOf"), start)),
                         args,
                         span: start.merge(end.span),
                     });
@@ -626,24 +717,21 @@ impl<'a> Parser<'a> {
                 }
                 let end = self.expect(TokenKind::RBrace)?;
                 Ok(Expr::Call {
-                    callee: Box::new(Expr::Ident("setOf".into(), start)),
+                    callee: Box::new(Expr::Ident(self.intern_word("setOf"), start)),
                     args,
                     span: start.merge(end.span),
                 })
             }
             TokenKind::For => self.parse_for_as_expr(),
-            _ => Err(self.error(format!(
-                "unexpected token in expression: {:?}",
-                self.cur.kind
-            ))),
+            _ => Err(self.error(format!("unexpected token in expression: {}", self.cur.kind))),
         }
     }
 
     /// `k to v` call used by `[k : v]` map sugar.
-    pub(super) fn map_pair_to(k: Expr, v: Expr) -> Expr {
+    pub(super) fn map_pair_to(&mut self, k: Expr, v: Expr) -> Expr {
         let span = k.span().merge(v.span());
         Expr::Call {
-            callee: Box::new(Expr::Ident("to".into(), span)),
+            callee: Box::new(Expr::Ident(self.intern_word("to"), span)),
             args: vec![k, v],
             span,
         }
@@ -657,22 +745,30 @@ impl<'a> Parser<'a> {
         let mut out = Vec::new();
         for part in parts {
             match part {
-                StringPart::Lit(s) => out.push(InterpPart::Lit(s)),
-                StringPart::Ident(name) => {
-                    out.push(InterpPart::Expr(Expr::Ident(name, span)));
+                StringPart::Lit(s) => out.push(InterpPart::Lit(self.intern.intern(&s))),
+                StringPart::Ident { abs_start, abs_end } => {
+                    let span = Span::new(abs_start, abs_end);
+                    out.push(InterpPart::Expr(Expr::Ident(self.intern_span(span), span)));
                 }
-                StringPart::ExprSrc(src) => {
-                    let trimmed = src.trim();
+                StringPart::ExprSrc { abs_start, abs_end } => {
+                    let raw = &self.src[abs_start as usize..abs_end as usize];
+                    let lead = raw.len() - raw.trim_start().len();
+                    let trimmed = raw.trim();
                     if trimmed.is_empty() {
                         return Err(ParseError {
                             message: "empty interpolation `${}`".into(),
-                            span,
+                            span: Span::new(
+                                abs_start.saturating_sub(2),
+                                abs_start.saturating_add(1),
+                            ),
                         });
                     }
-                    let e = parse_expr_str(trimmed).map_err(|e| ParseError {
+                    let base = abs_start + lead as u32;
+                    let mut e = parse_expr_str(trimmed).map_err(|e| ParseError {
                         message: format!("interpolation expression: {}", e.message),
-                        span,
+                        span: e.span.shift(base),
                     })?;
+                    crate::stamp::offset_expr(&mut e, base);
                     out.push(InterpPart::Expr(e));
                 }
             }

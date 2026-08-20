@@ -11,7 +11,8 @@ pub(crate) fn link_executable(
     extra: &[String],
     release: bool,
 ) -> Result<()> {
-    let mut cmd = Command::new("clang");
+    let linker = std::env::var("LUMIA_LINKER").unwrap_or_else(|_| "clang".into());
+    let mut cmd = Command::new(&linker);
     cmd.arg(obj).arg(runtime).arg("-o").arg(output);
     // `lumia_rt` is a Rust staticlib: pull in the host libs Rust std needs.
     // (Matches `cargo rustc -p lumia_rt -- --print=native-static-libs`.)
@@ -31,13 +32,15 @@ pub(crate) fn link_executable(
             .arg("-lm")
             .arg("-lrt")
             .arg("-lutil");
-        // Drop unused `lumia_rt` / Rust-std objects. Cuts Release text ~3× and
-        // peak RSS ~0.7MiB on Linux hello; no effect on hot-path code that stays live.
-        if release {
-            if cfg!(target_os = "macos") {
-                cmd.arg("-Wl,-dead_strip");
-            } else {
-                cmd.arg("-Wl,--gc-sections");
+        // Drop unused `lumia_rt` / Rust-std objects on all profiles (not only
+        // Release). Cuts Debug binary size when domain kernels are unused.
+        // Target OS is Linux + Windows (BUILD); macOS `-dead_strip` is kept only
+        // as an experimental host escape hatch — not a supported product path.
+        if cfg!(target_os = "macos") {
+            cmd.arg("-Wl,-dead_strip");
+        } else {
+            cmd.arg("-Wl,--gc-sections");
+            if release {
                 cmd.arg("-Wl,-s");
             }
         }
@@ -45,11 +48,21 @@ pub(crate) fn link_executable(
     for a in extra {
         cmd.arg(a);
     }
-    let status = cmd.status().context("invoke clang linker")?;
+    let status = cmd
+        .status()
+        .with_context(|| format!("invoke linker `{linker}`"))?;
     if !status.success() {
-        bail!("link failed with {status}");
+        bail!("link failed with {status} (driver `{linker}`)");
     }
     Ok(())
+}
+
+/// Drop the intermediate object after a successful link unless `LUMIA_KEEP_OBJ` is set.
+pub(crate) fn remove_link_object_unless_kept(obj: &Path) {
+    if std::env::var_os("LUMIA_KEEP_OBJ").is_some() {
+        return;
+    }
+    let _ = std::fs::remove_file(obj);
 }
 
 /// Locate `liblumia_rt.a` / `lumia_rt.lib` in target dir.
@@ -82,17 +95,53 @@ pub fn find_runtime_lib_prefer(target_dir: &Path, release: bool) -> Result<PathB
         }
     }
     if let Some(c) = found_fallback {
-        eprintln!(
-            "warning: linking {} lumia_rt into a {} build ({}); run `cargo build -p lumia_rt{}` for a matching runtime",
-            fallback,
-            preferred,
+        if std::env::var_os("LUMIA_ALLOW_CROSS_PROFILE_RT").is_some() {
+            eprintln!(
+                "warning: linking {} lumia_rt into a {} build ({}); set only when intentional",
+                fallback,
+                preferred,
+                c.display(),
+            );
+            return Ok(c);
+        }
+        bail!(
+            "liblumia_rt for profile `{preferred}` not found under {} (found {fallback} at {}); \
+             run `cargo build -p lumia_rt{}` or set LUMIA_ALLOW_CROSS_PROFILE_RT=1 to override",
+            target_dir.display(),
             c.display(),
             if release { " --release" } else { "" },
         );
-        return Ok(c);
     }
     bail!(
         "liblumia_rt.a / lumia_rt.lib not found under {} — run `cargo build -p lumia_rt` first",
         target_dir.display()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::remove_link_object_unless_kept;
+    use std::io::Write;
+
+    #[test]
+    fn remove_link_object_deletes_by_default() {
+        let dir = std::env::temp_dir().join(format!("lumia_keep_obj_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let obj = dir.join("t.o");
+        {
+            let mut f = std::fs::File::create(&obj).expect("create");
+            f.write_all(b"x").expect("write");
+        }
+        assert!(obj.exists());
+        // Ensure keep flag is off for this process (tests run serially in CI for rt, but
+        // codegen tests may parallel — only assert delete when unset).
+        if std::env::var_os("LUMIA_KEEP_OBJ").is_none() {
+            remove_link_object_unless_kept(&obj);
+            assert!(
+                !obj.exists(),
+                "intermediate .o should be removed after link"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

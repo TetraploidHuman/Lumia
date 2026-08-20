@@ -1,0 +1,15 @@
+/// Either with independent Left/Right payload types.
+module main
+type Either { Left(a) Right(b) }
+
+val num = { e ->
+    e match {
+        Left(s) -> s.len()
+        Right(n) -> n
+    }
+}
+
+val main = {
+    println(num(Left("hi")))
+    println(num(Right(3)))
+}

@@ -1,17 +1,18 @@
 //! Shared runtime primitives: headers, TLS, traps, float-key helpers.
 
-use rustc_hash::FxHashSet;
 use std::alloc::Layout;
 use std::cell::{Cell, RefCell};
 use std::ffi::CStr;
 
+use crate::heap::with_heap;
+
 pub use lumia_abi::{
     list_elem_is_float, tid_base, tid_f_key, tid_f_val, MEMO_IDX_CAP, MEMO_IDX_MAX_FUNS,
     MEMO_IDX_TABLE_BYTES, MEMO_PROCESS_BYTE_CAP, MEMO_TF_MAX_ARGS, MEMO_TF_MAX_FUNS, MEMO_TF_SLOTS,
-    TYPE_ADT, TYPE_BYTES, TYPE_CHAR, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_F64, TYPE_LIST_IOTA,
-    TYPE_MAP, TYPE_MAP_ASSOC, TYPE_MAP_ASSOC_F64, TYPE_MAP_ASSOC_F64V, TYPE_MAP_ASSOC_VF64,
-    TYPE_MAP_F64, TYPE_MAP_F64V, TYPE_MAP_VF64, TYPE_SET, TYPE_SET_ASSOC, TYPE_SET_F64,
-    TYPE_STRING,
+    TYPE_ADT, TYPE_BYTES, TYPE_CHANNEL, TYPE_CHAR, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_F64,
+    TYPE_LIST_IOTA, TYPE_MAP, TYPE_MAP_ASSOC, TYPE_MAP_ASSOC_F64, TYPE_MAP_ASSOC_F64V,
+    TYPE_MAP_ASSOC_VF64, TYPE_MAP_F64, TYPE_MAP_F64V, TYPE_MAP_VF64, TYPE_SET, TYPE_SET_ASSOC,
+    TYPE_SET_F64, TYPE_STRING, TYPE_TASK,
 };
 
 /// Object header placed before payload (24 bytes).
@@ -19,10 +20,11 @@ pub use lumia_abi::{
 /// Stack Lit* layouts must use **3** `i64` header words so `header_from_payload` matches:
 /// word0 = `type_id|size`, word1 = `marked|rc`, word2 = `_pad`.
 ///
-/// - `rc`: COW refcount for `TYPE_LIST` / `TYPE_LIST_F64` / `TYPE_ADT`
+/// - `rc`: COW refcount for `TYPE_LIST` / `TYPE_MAP` / `TYPE_SET` / `TYPE_ADT`
 ///   (`RC_SHARED` = immortal; alloc starts at 1). Other type_ids leave `rc` at 0.
 /// - `_pad`: **type_id-dependent**
-///   - `TYPE_ADT`: 64-bit per-field Float layout mask (bit `i` ⇒ field `i` is Float)
+///   - `TYPE_ADT`: packed field masks — low 32 = Float, high 32 = Bool
+///     (bit `i` in each half ⇒ field `i`)
 ///   - All other type_ids: initialized to 0 (lists no longer store RC here)
 #[repr(C)]
 pub struct ObjectHeader {
@@ -31,19 +33,27 @@ pub struct ObjectHeader {
     pub marked: u32,
     /// COW refcount for List / ADT (see struct contract).
     pub rc: u32,
-    /// ADT float-field mask; otherwise 0.
+    /// ADT packed float/bool field masks; otherwise 0.
     pub _pad: u64,
 }
 
-const _: () = assert!(std::mem::size_of::<ObjectHeader>() == 24);
+const _: () = assert!(std::mem::size_of::<ObjectHeader>() == lumia_abi::OBJECT_HEADER_BYTES);
 
 /// Max frames retained for trap backtraces (DESIGN §2 / error table).
 const CALL_STACK_CAP: usize = 256;
 
 /// Fatal runtime error. Linked into user programs as abort (no FFI unwind).
 /// Prints the Lumia call stack (pushed by codegen) then aborts.
-/// Under `cfg(test)` panics so `#[should_panic]` unit tests can observe the message.
+///
+/// **Dual mode (explicit):**
+/// - Production (`not(test)`): `process::abort` after printing (no Drop unwind).
+/// - Unit tests (`cfg(test)`): `panic!` so `#[should_panic]` can observe the message.
+///   Production abort behavior is covered by linked user binaries / e2e traps, not
+///   by flipping an env var inside the RT test harness (that would abort the suite).
 pub(crate) fn trap_abort(msg: &str) -> ! {
+    if let Some(h) = crate::globals::before_trap_hook() {
+        h();
+    }
     let trace = format_call_stack();
     #[cfg(test)]
     {
@@ -100,42 +110,10 @@ pub(crate) fn frame_pop() {
 }
 
 thread_local! {
-    /// Nursery (young generation). New allocations land here.
-    pub(crate) static HEAP_YOUNG: RefCell<Vec<*mut ObjectHeader>> =
-        const { RefCell::new(Vec::new()) };
-    /// Tenured objects that survived at least one minor collection.
-    pub(crate) static HEAP_OLD: RefCell<Vec<*mut ObjectHeader>> =
-        const { RefCell::new(Vec::new()) };
-    /// O(1) "is tenured" for the write barrier / minor mark.
-    pub(crate) static HEAP_OLD_SET: RefCell<FxHashSet<*mut ObjectHeader>> =
-        RefCell::new(FxHashSet::default());
-    /// Old objects that may hold young pointers (remembered set / card table).
-    pub(crate) static REMEMBERED: RefCell<FxHashSet<*mut ObjectHeader>> =
-        RefCell::new(FxHashSet::default());
-    /// O(1) membership for `is_heap_payload` (Int bits vs real headers).
-    pub(crate) static HEAP_SET: RefCell<FxHashSet<*mut ObjectHeader>> =
-        RefCell::new(FxHashSet::default());
-    pub(crate) static ROOTS: RefCell<Vec<*mut *mut u8>> = const { RefCell::new(Vec::new()) };
-    /// Immortal payloads (empty-list singleton, …) — always marked.
-    pub(crate) static PERM_OBJECTS: RefCell<Vec<*mut u8>> = const { RefCell::new(Vec::new()) };
-    /// Approximate live payload bytes in the nursery.
-    pub(crate) static BYTES_YOUNG: RefCell<usize> = const { RefCell::new(0) };
-    /// Approximate live payload bytes in the old generation.
-    pub(crate) static BYTES_OLD: RefCell<usize> = const { RefCell::new(0) };
-    /// Nestable: RT helpers that allocate multiple objects before they are reachable
-    /// from roots must hold this to avoid soft-threshold GC UAF.
-    pub(crate) static GC_INHIBIT: Cell<u32> = const { Cell::new(0) };
-    /// Parallel map workers use a separate TLS heap; allocations there would leak /
-    /// never be marked on the main heap. Forbid them (scalar Int/Bool/Float only).
+    /// Parallel map workers must not touch the process heap (scalar Int/Bool/Float only).
     pub(crate) static PAR_WORKER: Cell<bool> = const { Cell::new(false) };
     /// Lumia-managed call stack for trap backtraces (nul-terminated name pointers).
-    static CALL_STACK: RefCell<Vec<*const u8>> = const { RefCell::new(Vec::new()) };
-    /// Soft threshold on young-generation live payload (triggers minor STW).
-    /// TLS so parallel crate tests with different limits do not race.
-    /// Sized for CN-scale dense float weight clones (was 64KiB — too eager STW).
-    pub(crate) static YOUNG_LIMIT: Cell<usize> = const { Cell::new(1024 * 1024) };
-    /// Soft threshold on old-generation live payload (triggers full STW).
-    pub(crate) static HEAP_LIMIT: Cell<usize> = const { Cell::new(8 * 1024 * 1024) };
+    pub(crate) static CALL_STACK: RefCell<Vec<*const u8>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Refcount sentinel: immortal / permanently shared (empty-list singleton).
@@ -158,15 +136,23 @@ pub(crate) fn list_rc_is_unique(payload: *mut u8) -> bool {
     cow_rc_is_unique(payload, /*adt_ok=*/ false)
 }
 
+/// Map/Set COW uniqueness (same RC discipline as lists once allocated).
+#[inline]
+pub(crate) fn map_rc_is_unique(payload: *mut u8) -> bool {
+    cow_rc_is_unique(payload, /*adt_ok=*/ false)
+}
+
 #[inline]
 fn cow_tid_ok(tid: u32, adt_ok: bool) -> bool {
     let b = tid_base(tid);
-    b == TYPE_LIST || (adt_ok && b == TYPE_ADT)
+    b == TYPE_LIST || b == TYPE_MAP || b == TYPE_SET || (adt_ok && b == TYPE_ADT)
 }
 
 #[inline]
 pub(crate) fn cow_rc_retain(payload: *mut u8, adt_ok: bool) {
-    if payload.is_null() || !is_heap_payload(payload) {
+    // Trust typed List/ADT pointers (same as `list_len_of`); skip process-heap
+    // membership. Stack Lit* keep rc==0 / wrong tid and no-op via cow_tid_ok.
+    if payload.is_null() {
         return;
     }
     unsafe {
@@ -183,7 +169,7 @@ pub(crate) fn cow_rc_retain(payload: *mut u8, adt_ok: bool) {
 
 #[inline]
 pub(crate) fn cow_rc_release(payload: *mut u8, adt_ok: bool) {
-    if payload.is_null() || !is_heap_payload(payload) {
+    if payload.is_null() {
         return;
     }
     unsafe {
@@ -200,20 +186,47 @@ pub(crate) fn cow_rc_release(payload: *mut u8, adt_ok: bool) {
 
 #[inline]
 pub(crate) fn cow_rc_is_unique(payload: *mut u8, adt_ok: bool) -> bool {
-    if payload.is_null() || !is_heap_payload(payload) {
+    // Trust typed List/ADT pointers (same as retain/release).
+    if payload.is_null() {
         return false;
     }
     unsafe {
         let h = header_from_payload(payload);
-        // Fast reject shared / wrong-type after membership (avoid UB on immediates).
         cow_tid_ok((*h).type_id, adt_ok) && (*h).rc == 1
     }
 }
 
-/// Bit `i` of an ADT float mask — only fields `0..64` are representable.
+/// Bit `i` of an ADT **float** field mask (low 32 bits of header `_pad`).
+///
+/// `_pad` packing: bits `0..31` = Float mask, bits `32..63` = Bool mask.
+#[inline]
+pub(crate) fn adt_float_mask(pad: u64) -> u64 {
+    pad & 0xFFFF_FFFF
+}
+
+/// Bit `i` of an ADT **bool** field mask (high 32 bits of header `_pad`).
+#[inline]
+pub(crate) fn adt_bool_mask(pad: u64) -> u64 {
+    pad >> 32
+}
+
+/// Pack float (lo) + bool (hi) field masks into ADT `_pad`.
+#[inline]
+pub(crate) fn adt_pack_field_masks(float_m: u64, bool_m: u64) -> u64 {
+    (float_m & 0xFFFF_FFFF) | ((bool_m & 0xFFFF_FFFF) << 32)
+}
+
+/// Bit `i` of a float field mask (also accepts packed `_pad` — uses low half).
 #[inline]
 pub(crate) fn adt_float_slot(mask: u64, field_index: usize) -> bool {
-    field_index < 64 && (mask & (1u64 << field_index)) != 0
+    let m = adt_float_mask(mask);
+    field_index < 32 && (m & (1u64 << field_index)) != 0
+}
+
+/// Bit `i` of an **unpacked** bool field mask (bits `0..31`).
+#[inline]
+pub(crate) fn adt_bool_slot(bool_mask: u64, field_index: usize) -> bool {
+    field_index < 32 && (bool_mask & (1u64 << field_index)) != 0
 }
 
 /// Drop one alias retain when `rc > 1` (no-op if unique or immortal).
@@ -221,7 +234,7 @@ pub(crate) fn adt_float_slot(mask: u64, field_index: usize) -> bool {
 /// `Let tmp = Name(p)` which retains, while the mut slot does not.
 #[inline]
 pub(crate) fn cow_rc_drop_alias(payload: *mut u8, adt_ok: bool) {
-    if payload.is_null() || !is_heap_payload(payload) {
+    if payload.is_null() {
         return;
     }
     unsafe {
@@ -250,17 +263,15 @@ pub(crate) fn value_rc_release(payload: *mut u8) {
 /// Retain a field word if it points at a heap List/ADT (skip floats / immediates).
 #[inline]
 pub(crate) fn value_rc_retain_bits(bits: i64) {
-    let p = bits as *mut u8;
-    if is_heap_payload(p) {
-        value_rc_retain(p);
+    if is_heap_payload_bits(bits) {
+        value_rc_retain(bits as *mut u8);
     }
 }
 
 #[inline]
 pub(crate) fn value_rc_release_bits(bits: i64) {
-    let p = bits as *mut u8;
-    if is_heap_payload(p) {
-        value_rc_release(p);
+    if is_heap_payload_bits(bits) {
+        value_rc_release(bits as *mut u8);
     }
 }
 
@@ -301,16 +312,10 @@ pub(crate) fn header_from_payload(payload: *mut u8) -> *mut ObjectHeader {
     unsafe { payload.sub(std::mem::size_of::<ObjectHeader>()) as *mut ObjectHeader }
 }
 
-/// MmBackend trait — swap mark-sweep for semispace etc. behind same ABI.
-pub trait MmBackend {
-    fn alloc(&mut self, nbytes: usize, type_id: u32) -> *mut u8;
-    fn collect(&mut self);
-    fn write_barrier(&mut self, obj: *mut u8, _field: u32, new_ptr: *mut u8) {
-        remember_old_to_young(obj, new_ptr as i64);
-    }
-}
-
-/// Non-moving generational mark-sweep (young nursery + old tenure).
+/// Generational mark-sweep (young list + old tenure; process-global `Heap`).
+/// ZST facade: all mutable state lives under `with_heap`. Pluggable ARC/`--mm`
+/// backends remain a future option (see Todo); do not reintroduce a TLS
+/// "backend" cell that only forwards to the process heap.
 pub struct MarkSweep;
 
 /// Heap generation of a live payload (absent ⇒ not a managed heap object).
@@ -320,92 +325,117 @@ pub(crate) enum HeapGen {
     Old,
 }
 
-/// Single membership probe: `HEAP_SET` then `HEAP_OLD_SET` (at most two lookups).
+/// Single membership probe against the process heap.
+///
+/// Nursery addresses use range + `live_set`; system/old objects use `heap_set`.
 pub(crate) fn heap_gen(payload: *mut u8) -> Option<HeapGen> {
     if payload.is_null() {
         return None;
     }
     let h = header_from_payload(payload);
-    if !HEAP_SET.with(|set| set.borrow().contains(&h)) {
-        return None;
-    }
-    if HEAP_OLD_SET.with(|set| set.borrow().contains(&h)) {
-        Some(HeapGen::Old)
-    } else {
-        Some(HeapGen::Young)
-    }
+    with_heap(|heap| {
+        if !heap.contains_header(h) {
+            return None;
+        }
+        if heap.is_old_header(h) {
+            Some(HeapGen::Old)
+        } else {
+            Some(HeapGen::Young)
+        }
+    })
 }
 
+/// True when `payload` is a live managed heap object (young or old).
+///
+/// Membership only — does **not** probe `old_set` (unlike [`heap_gen`]).
+/// Published nursery range + cursor + FREE sentinel may answer without the heap
+/// Mutex; otherwise falls back to the locked `contains_header`.
+#[inline]
 pub(crate) fn is_heap_payload(payload: *mut u8) -> bool {
-    heap_gen(payload).is_some()
+    if payload.is_null() {
+        return false;
+    }
+    let h = header_from_payload(payload);
+    match crate::gc::nursery::nursery_probe_live_header(h) {
+        Some(live) => live,
+        None => with_heap(|heap| heap.contains_header(h)),
+    }
 }
 
-pub(crate) fn is_old_header(h: *mut ObjectHeader) -> bool {
-    HEAP_OLD_SET.with(|set| set.borrow().contains(&h))
+/// Cheap filter before [`is_heap_payload`]: managed payloads are non-null and
+/// 8-byte aligned (header + payload from `alloc`). FunRef low-bit tags and most
+/// small Int/Bool immediates fail this without taking the heap Mutex.
+#[inline]
+pub(crate) fn may_be_heap_payload_bits(bits: i64) -> bool {
+    let u = bits as usize;
+    u != 0 && u.is_multiple_of(8)
+}
+
+/// [`may_be_heap_payload_bits`] then [`is_heap_payload`] — prefer for i64 field words.
+#[inline]
+pub(crate) fn is_heap_payload_bits(bits: i64) -> bool {
+    may_be_heap_payload_bits(bits) && is_heap_payload(bits as *mut u8)
+}
+
+/// Two membership probes under **one** heap lock (eq / ord / adt_eq hot path).
+#[inline]
+pub(crate) fn is_heap_payload_pair(a: *mut u8, b: *mut u8) -> (bool, bool) {
+    if a.is_null() && b.is_null() {
+        return (false, false);
+    }
+    let ha = if a.is_null() {
+        None
+    } else {
+        Some(header_from_payload(a))
+    };
+    let hb = if b.is_null() {
+        None
+    } else {
+        Some(header_from_payload(b))
+    };
+    with_heap(|heap| {
+        (
+            ha.is_some_and(|h| heap.contains_header(h)),
+            hb.is_some_and(|h| heap.contains_header(h)),
+        )
+    })
+}
+
+/// Pair form of [`is_heap_payload_bits`] — skips the Mutex when neither side may be heap.
+#[inline]
+pub(crate) fn is_heap_payload_bits_pair(a: i64, b: i64) -> (bool, bool) {
+    let ma = may_be_heap_payload_bits(a);
+    let mb = may_be_heap_payload_bits(b);
+    if !ma && !mb {
+        return (false, false);
+    }
+    if !ma {
+        return (false, is_heap_payload(b as *mut u8));
+    }
+    if !mb {
+        return (is_heap_payload(a as *mut u8), false);
+    }
+    is_heap_payload_pair(a as *mut u8, b as *mut u8)
 }
 
 pub(crate) fn is_young_payload(payload: *mut u8) -> bool {
     matches!(heap_gen(payload), Some(HeapGen::Young))
 }
 
-#[inline]
-pub(crate) fn is_old_payload(payload: *mut u8) -> bool {
-    matches!(heap_gen(payload), Some(HeapGen::Old))
-}
-
-/// Record a possible old→young edge (remembered set).
-pub(crate) fn remember_old_to_young(obj_payload: *mut u8, new_bits: i64) {
-    // Two gen probes max (obj + new); avoids the old 4× HashSet path.
-    if !is_old_payload(obj_payload) {
-        return;
-    }
-    let new_p = new_bits as *mut u8;
-    if !is_young_payload(new_p) {
-        return;
-    }
-    let h = header_from_payload(obj_payload);
-    REMEMBERED.with(|r| {
-        r.borrow_mut().insert(h);
-    });
-}
-
-#[cfg(test)]
-pub(crate) fn set_gc_limits_for_test(young: usize, old: usize) {
-    YOUNG_LIMIT.with(|c| c.set(young));
-    HEAP_LIMIT.with(|c| c.set(old));
-}
-
-#[cfg(test)]
-pub(crate) fn gc_live_bytes_for_test() -> (usize, usize) {
-    (
-        BYTES_YOUNG.with(|y| *y.borrow()),
-        BYTES_OLD.with(|o| *o.borrow()),
-    )
-}
-
-#[cfg(test)]
-pub(crate) fn gc_heap_lens_for_test() -> (usize, usize) {
-    (
-        HEAP_YOUNG.with(|h| h.borrow().len()),
-        HEAP_OLD.with(|h| h.borrow().len()),
-    )
-}
-
-#[cfg(test)]
-pub(crate) fn gc_remembered_len_for_test() -> usize {
-    REMEMBERED.with(|r| r.borrow().len())
-}
-
 pub(crate) struct GcInhibitGuard;
 impl GcInhibitGuard {
     pub(crate) fn enter() -> Self {
-        GC_INHIBIT.set(GC_INHIBIT.get().saturating_add(1));
+        crate::heap::with_heap(|h| {
+            h.gc_inhibit = h.gc_inhibit.saturating_add(1);
+        });
         Self
     }
 }
 impl Drop for GcInhibitGuard {
     fn drop(&mut self) {
-        GC_INHIBIT.set(GC_INHIBIT.get().saturating_sub(1));
+        crate::heap::with_heap(|h| {
+            h.gc_inhibit = h.gc_inhibit.saturating_sub(1);
+        });
     }
 }
 

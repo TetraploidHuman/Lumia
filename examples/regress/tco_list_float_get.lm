@@ -1,0 +1,11 @@
+/// Self-recursive List[Float].get / indexed fold must keep Float ABI (not IEEE-as-Int).
+module main
+
+val sumAt = { xs, i, acc ->
+    if i >= xs.len() { acc }
+    else { sumAt(xs, i + 1, acc + xs.get(i)) }
+}
+
+val main = {
+    println(sumAt(listOf(1.0, 2.0, 3.0), 0, 0.0))
+}

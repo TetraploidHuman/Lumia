@@ -4,7 +4,9 @@ use super::super::super::Codegen;
 use anyhow::{bail, Context as AnyhowContext, Result};
 use inkwell::values::BasicValueEnum;
 use inkwell::AddressSpace;
-use lumia_abi::{adt_type_id, list_type_id, map_type_id, set_type_id};
+use lumia_abi::{
+    adt_type_id, list_type_id_flags, list_type_id_int, map_type_id_flags, set_type_id_flags,
+};
 use lumia_core::Local;
 use lumia_ty::Type;
 
@@ -26,7 +28,36 @@ impl<'ctx> Codegen<'ctx> {
                     Some(Type::List(e)) if matches!(e.as_ref(), Type::Float)
                 )
             });
-        let list_tid = list_type_id(float_elems);
+        let bool_elems = !float_elems
+            && elems
+                .first()
+                .and_then(|e| self.frame.local_tys.get(&e.0).cloned())
+                .map(|t| matches!(t, Type::Bool))
+                .unwrap_or_else(|| {
+                    matches!(
+                        &self.frame.expect_alloc_ty,
+                        Some(Type::List(e)) if matches!(e.as_ref(), Type::Bool)
+                    )
+                });
+        let int_elems = !float_elems
+            && !bool_elems
+            && elems
+                .first()
+                .and_then(|e| self.frame.local_tys.get(&e.0).cloned())
+                .map(|t| matches!(t, Type::Int))
+                .unwrap_or_else(|| {
+                    matches!(
+                        &self.frame.expect_alloc_ty,
+                        Some(Type::List(e)) if matches!(e.as_ref(), Type::Int)
+                    )
+                });
+        let list_tid = if float_elems || bool_elems {
+            list_type_id_flags(float_elems, bool_elems)
+        } else if int_elems {
+            list_type_id_int()
+        } else {
+            list_type_id_flags(false, false)
+        };
         if elems.is_empty() {
             if float_elems {
                 let ens = self.runtime_fn(lumia_abi::ENSURE_LIST_F64)?;
@@ -57,6 +88,33 @@ impl<'ctx> Codegen<'ctx> {
                 ))?
                 .into());
             }
+            if bool_elems {
+                let ens = self.runtime_fn(lumia_abi::ENSURE_LIST_BOOL)?;
+                let f = self.runtime_fn("lumia_list_empty")?;
+                let empty_call =
+                    crate::error::llvm(self.llvm.builder.build_call(f, &[], "list_empty"))?;
+                let empty = empty_call
+                    .try_as_basic_value()
+                    .basic()
+                    .context("call return value")?
+                    .into_pointer_value();
+                let ens_call = crate::error::llvm(self.llvm.builder.build_call(
+                    ens,
+                    &[empty.into()],
+                    "ens_lbool",
+                ))?;
+                let ptr = ens_call
+                    .try_as_basic_value()
+                    .basic()
+                    .context("call return value")?
+                    .into_pointer_value();
+                return Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
+                    ptr,
+                    self.llvm.i64_ty,
+                    "empty_bool_i64",
+                ))?
+                .into());
+            }
             let f = self.runtime_fn("lumia_list_empty")?;
             let __call3 = crate::error::llvm(self.llvm.builder.build_call(f, &[], "list_empty"))?;
 
@@ -81,8 +139,53 @@ impl<'ctx> Codegen<'ctx> {
     pub(crate) fn emit_value_alloc_set(
         &mut self,
         elems: &[Local],
-        repr: lumia_core::SetRepr,
+        _repr: lumia_core::SetRepr,
     ) -> Result<BasicValueEnum<'ctx>> {
+        // Empty Set → immortal singleton (like `listOf()`); null still accepted by RT.
+        if elems.is_empty() {
+            let f = self.runtime_fn("lumia_set_empty")?;
+            let empty_call = crate::error::llvm(self.llvm.builder.build_call(f, &[], "set_empty"))?;
+            let mut ptr = empty_call
+                .try_as_basic_value()
+                .basic()
+                .context("call return value")?
+                .into_pointer_value();
+            let elem_ty = match &self.frame.expect_alloc_ty {
+                Some(Type::Set(e)) => e.as_ref().clone(),
+                _ => Type::Int,
+            };
+            if matches!(elem_ty, Type::Float) {
+                let ens = self.runtime_fn(lumia_abi::ENSURE_SET_F64)?;
+                let c = crate::error::llvm(self.llvm.builder.build_call(
+                    ens,
+                    &[ptr.into()],
+                    "ens_sf64",
+                ))?;
+                ptr = c
+                    .try_as_basic_value()
+                    .basic()
+                    .context("call return value")?
+                    .into_pointer_value();
+            } else if matches!(elem_ty, Type::Bool) {
+                let ens = self.runtime_fn(lumia_abi::ENSURE_SET_BOOL)?;
+                let c = crate::error::llvm(self.llvm.builder.build_call(
+                    ens,
+                    &[ptr.into()],
+                    "ens_sbool",
+                ))?;
+                ptr = c
+                    .try_as_basic_value()
+                    .basic()
+                    .context("call return value")?
+                    .into_pointer_value();
+            }
+            return Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
+                ptr,
+                self.llvm.i64_ty,
+                "empty_set_i64",
+            ))?
+            .into());
+        }
         let elem_ty = elems
             .first()
             .and_then(|e| self.frame.local_tys.get(&e.0).cloned())
@@ -92,35 +195,29 @@ impl<'ctx> Codegen<'ctx> {
             })
             .unwrap_or(Type::Int);
         let float_elems = matches!(elem_ty, Type::Float);
+        let bool_elems = matches!(elem_ty, Type::Bool);
         let no_hash = !self.key_type_has_hash(&elem_ty);
-        let tid = set_type_id(float_elems, no_hash);
-        if !elems.is_empty() && matches!(repr, lumia_core::SetRepr::LitSet) {
-            return self.emit_stack_array(elems, tid as u64);
-        }
+        let tid = set_type_id_flags(float_elems, bool_elems, no_hash);
+        // `SetRepr::LitSet` is a PE/hint tag only — never a stack layout. Always
+        // heap+finish so `lumia_set_finish` can compact via `key_eq`.
         let v = self.emit_heap_array(elems, tid as u64)?;
-        if elems.len() > 8 && !no_hash {
-            let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
-            let bits = self.coerce_i64(v)?;
-            let p =
-                crate::error::llvm(self.llvm.builder.build_int_to_ptr(bits, ptr_ty, "set_lin"))?;
-            let f = self.runtime_fn("lumia_set_finish")?;
-            let __call4 =
-                crate::error::llvm(self.llvm.builder.build_call(f, &[p.into()], "set_fin"))?;
+        let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
+        let bits = self.coerce_i64(v)?;
+        let p = crate::error::llvm(self.llvm.builder.build_int_to_ptr(bits, ptr_ty, "set_lin"))?;
+        let f = self.runtime_fn("lumia_set_finish")?;
+        let __call4 = crate::error::llvm(self.llvm.builder.build_call(f, &[p.into()], "set_fin"))?;
 
-            let out = __call4
-                .try_as_basic_value()
-                .basic()
-                .context("call return value")?
-                .into_pointer_value();
-            Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
-                out,
-                self.llvm.i64_ty,
-                "set_i64",
-            ))?
-            .into())
-        } else {
-            Ok(v)
-        }
+        let out = __call4
+            .try_as_basic_value()
+            .basic()
+            .context("call return value")?
+            .into_pointer_value();
+        Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
+            out,
+            self.llvm.i64_ty,
+            "set_i64",
+        ))?
+        .into())
     }
 
     pub(crate) fn emit_value_alloc_map(
@@ -152,15 +249,84 @@ impl<'ctx> Codegen<'ctx> {
         };
         let float_keys = matches!(key_ty, Type::Float);
         let float_vals = matches!(val_ty, Type::Float);
+        let bool_keys = matches!(key_ty, Type::Bool);
+        let bool_vals = matches!(val_ty, Type::Bool);
         let no_hash =
             matches!(repr, lumia_core::MapRepr::AssocList) || !self.key_type_has_hash(&key_ty);
+        // Empty Map → immortal singleton (like `listOf()`); null still accepted by RT.
+        if flat_pairs.is_empty() {
+            let f = self.runtime_fn("lumia_map_empty")?;
+            let empty_call = crate::error::llvm(self.llvm.builder.build_call(f, &[], "map_empty"))?;
+            let mut ptr = empty_call
+                .try_as_basic_value()
+                .basic()
+                .context("call return value")?
+                .into_pointer_value();
+            if float_keys {
+                let ens = self.runtime_fn(lumia_abi::ENSURE_MAP_F64)?;
+                let c = crate::error::llvm(self.llvm.builder.build_call(
+                    ens,
+                    &[ptr.into()],
+                    "ens_mf64",
+                ))?;
+                ptr = c
+                    .try_as_basic_value()
+                    .basic()
+                    .context("call return value")?
+                    .into_pointer_value();
+            }
+            if float_vals {
+                let ens = self.runtime_fn(lumia_abi::ENSURE_MAP_VF64)?;
+                let c = crate::error::llvm(self.llvm.builder.build_call(
+                    ens,
+                    &[ptr.into()],
+                    "ens_mvf64",
+                ))?;
+                ptr = c
+                    .try_as_basic_value()
+                    .basic()
+                    .context("call return value")?
+                    .into_pointer_value();
+            }
+            if bool_keys {
+                let ens = self.runtime_fn(lumia_abi::ENSURE_MAP_BOOL)?;
+                let c = crate::error::llvm(self.llvm.builder.build_call(
+                    ens,
+                    &[ptr.into()],
+                    "ens_mbool",
+                ))?;
+                ptr = c
+                    .try_as_basic_value()
+                    .basic()
+                    .context("call return value")?
+                    .into_pointer_value();
+            }
+            if bool_vals {
+                let ens = self.runtime_fn(lumia_abi::ENSURE_MAP_VBOOL)?;
+                let c = crate::error::llvm(self.llvm.builder.build_call(
+                    ens,
+                    &[ptr.into()],
+                    "ens_mvbool",
+                ))?;
+                ptr = c
+                    .try_as_basic_value()
+                    .basic()
+                    .context("call return value")?
+                    .into_pointer_value();
+            }
+            return Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
+                ptr,
+                self.llvm.i64_ty,
+                "empty_map_i64",
+            ))?
+            .into());
+        }
         // Float-value tags win over Assoc for IEEE value ==; Assoc is for
         // key Hash absence (linear forever) when values are not Float.
         // AssocList (+ Float tags) stays linear forever; Hash maps use 4/10/15/16.
-        let tid = map_type_id(float_keys, float_vals, no_hash);
-        if n_pairs > 0 && matches!(repr, lumia_core::MapRepr::LitMap) {
-            return self.emit_stack_map(flat_pairs, tid as u64);
-        }
+        let tid = map_type_id_flags(float_keys, float_vals, bool_keys, bool_vals, no_hash);
+        // `MapRepr::LitMap` is a PE/hint tag only — never a stack layout. Always
+        // heap+finish so `lumia_map_finish` can compact (Float ±0 included).
         let nbytes = self
             .llvm
             .i64_ty
@@ -210,7 +376,7 @@ impl<'ctx> Codegen<'ctx> {
             }
             // Young alloc: init stores need no write barrier.
         }
-        let ptr = if !no_hash && (n_pairs > 8 || matches!(repr, lumia_core::MapRepr::HashOrdered)) {
+        let ptr = if n_pairs > 0 {
             let f = self.runtime_fn("lumia_map_finish")?;
             crate::error::llvm(self.llvm.builder.build_call(f, &[ptr.into()], "map_fin"))?
                 .try_as_basic_value()
@@ -294,21 +460,8 @@ impl<'ctx> Codegen<'ctx> {
             }
             // Young alloc: init stores need no write barrier.
         }
-        // After fields are live: set mask, clearing bits that actually hold heap ptrs.
-        let float_mask = self.adt_float_mask_from_fields(fields);
-        if float_mask != 0 {
-            let setm = self
-                .llvm
-                .module
-                .get_function("lumia_adt_set_float_mask")
-                .context("module function")?;
-            let m = self.llvm.i64_ty.const_int(float_mask, false);
-            crate::error::llvm(self.llvm.builder.build_call(
-                setm,
-                &[ptr.into(), m.into()],
-                "adt_fmask",
-            ))?;
-        }
+        // After fields are live: set masks, clearing bits that actually hold heap ptrs.
+        self.emit_adt_field_masks_from_fields(ptr, fields)?;
         Ok(crate::error::llvm(self.llvm.builder.build_ptr_to_int(
             ptr,
             self.llvm.i64_ty,
@@ -320,7 +473,7 @@ impl<'ctx> Codegen<'ctx> {
     /// Unique / COW path for `slot = slot with { … }` (heap products only).
     fn emit_adt_with_inplace(
         &mut self,
-        slot: &str,
+        slot: &lumia_hir::Sym,
         updates: &[(u32, Local)],
     ) -> Result<BasicValueEnum<'ctx>> {
         let loaded = self.load_slot(slot)?;
@@ -331,9 +484,10 @@ impl<'ctx> Codegen<'ctx> {
         // Overwrite mask: skip nested retain on fields we rewrite (brother buffers).
         let mut overwrite_mask = 0u64;
         for &(idx, _) in updates {
-            if idx < 64 {
-                overwrite_mask |= 1u64 << idx;
+            if idx >= 64 {
+                bail!("ICE: ADT field index {idx} exceeds 64-bit overwrite mask (with-update)");
             }
+            overwrite_mask |= 1u64 << idx;
         }
         let ensure = self.runtime_fn("lumia_adt_ensure_unique_consume_mask")?;
         let mask_v = self.llvm.i64_ty.const_int(overwrite_mask, false);

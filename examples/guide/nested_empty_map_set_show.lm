@@ -1,0 +1,19 @@
+module NestedEmptyMapSetShow
+
+import std.io.{println}
+
+/// Empty Map/Set must stay distinguishable from Int 0 under nested Auto Show.
+type Box {
+    val o
+}
+
+val main = {
+    println(mapOf())
+    println(Some(mapOf()))
+    println(listOf(mapOf()))
+    println(Box { o = mapOf() })
+    println(Some(setOf()))
+    println(Box { o = setOf() })
+    println(mapOf(1, 2).remove(1))
+    println(Some(mapOf(1, 2).remove(1)))
+}

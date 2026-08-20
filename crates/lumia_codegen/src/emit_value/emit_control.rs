@@ -5,8 +5,27 @@ use anyhow::{Context as AnyhowContext, Result};
 use inkwell::values::{BasicValueEnum, FunctionValue};
 use inkwell::IntPredicate;
 use lumia_core::Local;
+use lumia_hir::Sym;
+use rustc_hash::FxHashMap;
+use crate::state::CrossBlockLastUse;
 
 impl<'ctx> Codegen<'ctx> {
+    /// Restore compile-time shadow-stack bookkeeping to the if-entry snapshot.
+    ///
+    /// Musttail arms call `root_pop_to(0)` and clear `rooted_slots`; restore
+    /// before emitting the sibling arm and again before merge. Slot maps are
+    /// small (mut params + locals), so a full clone beats Rc COW heuristics.
+    fn restore_root_checkpoint(
+        &mut self,
+        entry_depth: u32,
+        entry_slots: &FxHashMap<Sym, u32>,
+        entry_ssa: &[crate::state::SsaRoot],
+    ) {
+        self.frame.root_depth = entry_depth;
+        self.frame.rooted_slots = entry_slots.clone();
+        self.frame.ssa_root_stack = entry_ssa.to_vec();
+    }
+
     pub(crate) fn emit_value_if(
         &mut self,
         cond: &Local,
@@ -14,6 +33,11 @@ impl<'ctx> Codegen<'ctx> {
         else_block: &lumia_core::Block,
         fv: FunctionValue<'ctx>,
     ) -> Result<BasicValueEnum<'ctx>> {
+        use crate::state::{CrossBlockLastUse, IfArmExclusive};
+
+        let entry_depth = self.frame.root_depth;
+        let entry_slots = self.frame.rooted_slots.clone();
+        let mut entry_ssa = self.frame.ssa_root_stack.clone();
         let c = self.as_i64(self.local(*cond)?)?;
         let zero = self.llvm.i64_ty.const_int(0, false);
         let cond_i1 = crate::error::llvm(self.llvm.builder.build_int_compare(
@@ -44,6 +68,10 @@ impl<'ctx> Codegen<'ctx> {
         let mut then_incoming_i = None;
         let mut then_incoming_f = None;
         if !then_terminated {
+            // Then-only SSA roots must be dropped *before* branching to merge —
+            // emitting `root_pop` after `br` leaves instructions past a terminator
+            // (LLVM verify: "Basic Block … does not have terminator").
+            self.pop_ssa_roots_cross_block(CrossBlockLastUse::IfArm(IfArmExclusive::Then))?;
             let then_bb_end = self
                 .llvm
                 .builder
@@ -54,6 +82,11 @@ impl<'ctx> Codegen<'ctx> {
             crate::error::llvm(self.llvm.builder.build_unconditional_branch(merge_bb))?;
         }
         let then_is_float = matches!(then_raw, BasicValueEnum::FloatValue(_));
+        // Refresh the checkpoint so `restore` below does not resurrect then-only
+        // roots through the else arm (cross-block last-use).
+        entry_ssa = self.frame.ssa_root_stack.clone();
+        // Sibling arm must not see musttail / nested pops from `then`.
+        self.restore_root_checkpoint(entry_depth, &entry_slots, &entry_ssa);
 
         self.llvm.builder.position_at_end(else_bb);
         let else_raw = self
@@ -68,6 +101,7 @@ impl<'ctx> Codegen<'ctx> {
         let mut else_incoming_i = None;
         let mut else_incoming_f = None;
         if !else_terminated {
+            self.pop_ssa_roots_cross_block(CrossBlockLastUse::IfArm(IfArmExclusive::Else))?;
             let else_bb_end = self
                 .llvm
                 .builder
@@ -78,6 +112,11 @@ impl<'ctx> Codegen<'ctx> {
             crate::error::llvm(self.llvm.builder.build_unconditional_branch(merge_bb))?;
         }
         let float_merge = then_is_float || matches!(else_raw, BasicValueEnum::FloatValue(_));
+
+        // Else-only roots die before merge; refresh so merge checkpoint stays slim.
+        entry_ssa = self.frame.ssa_root_stack.clone();
+        // Merge is only reached from non-tail arms which left roots at entry.
+        self.restore_root_checkpoint(entry_depth, &entry_slots, &entry_ssa);
 
         self.llvm.builder.position_at_end(merge_bb);
         if float_merge {
@@ -177,6 +216,9 @@ impl<'ctx> Codegen<'ctx> {
 
         self.frame.loop_stack.pop();
         self.llvm.builder.position_at_end(exit_bb);
+        // Loop-confined roots (parent lets used only under this loop) die at exit
+        // (normal header-false and `break` both land here after `root_pop_to`).
+        self.pop_ssa_roots_cross_block(CrossBlockLastUse::Loop)?;
         Ok(self.llvm.i64_ty.const_int(0, false).into())
     }
 }

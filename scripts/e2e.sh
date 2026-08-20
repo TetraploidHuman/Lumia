@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Quick end-to-end smoke: build compiler/runtime, then run the cargo e2e suite.
-# Full coverage lives in `cargo test -p lumia --test e2e_examples` (not duplicated here).
+# Informal smoke only — NOT part of CI / scripts/check.sh.
+# Gate: `cargo test -p lumia --tests` (wider than e2e_examples alone).
+# Full coverage lives in `cargo test -p lumia --test e2e_examples` plus other
+# integration tests under crates/lumia/tests/.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=env.sh
@@ -10,4 +12,4 @@ cd "$ROOT"
 cargo build -p lumia -p lumia_rt
 cargo test -p lumia --test e2e_examples
 
-echo "OK: e2e smoke passed"
+echo "OK: informal e2e smoke passed (use ./scripts/check.sh for the real gate)"

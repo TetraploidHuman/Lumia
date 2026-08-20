@@ -4,6 +4,7 @@ use super::super::ctx::CoreLowerCtx;
 use super::lower_expr;
 use crate::ir::{AdtRepr, ListRepr, Local, MapRepr, Op, SetRepr, Value};
 use lumia_hir::{Builtin, Expr as HirExpr};
+use lumia_ty::{expr_span, Type};
 
 pub(super) fn lower_call_like(
     ctx: &mut CoreLowerCtx,
@@ -15,15 +16,19 @@ pub(super) fn lower_call_like(
         HirExpr::Binary {
             op, left, right, ..
         } => {
-            let l = lower_expr(ctx, left, ops, pure_region)
-                .expect("ICE: binary operand lowered to Unit; type checker should reject");
-            let r = lower_expr(ctx, right, ops, pure_region)
-                .expect("ICE: binary operand lowered to Unit; type checker should reject");
+            let Some(l) = lower_expr(ctx, left, ops, pure_region) else {
+                ctx.note_ice("ICE: binary operand lowered to Unit; type checker should reject");
+                return None;
+            };
+            let Some(r) = lower_expr(ctx, right, ops, pure_region) else {
+                ctx.note_ice("ICE: binary operand lowered to Unit; type checker should reject");
+                return None;
+            };
             let dest = ctx.fresh();
             ops.push(Op::Let {
                 local: dest,
                 value: Value::Binary {
-                    op: *op,
+                    op: (*op).into(),
                     left: l,
                     right: r,
                 },
@@ -32,13 +37,15 @@ pub(super) fn lower_call_like(
             Some(dest)
         }
         HirExpr::Unary { op, expr, .. } => {
-            let o = lower_expr(ctx, expr, ops, pure_region)
-                .expect("ICE: unary operand lowered to Unit; type checker should reject");
+            let Some(o) = lower_expr(ctx, expr, ops, pure_region) else {
+                ctx.note_ice("ICE: unary operand lowered to Unit; type checker should reject");
+                return None;
+            };
             let dest = ctx.fresh();
             ops.push(Op::Let {
                 local: dest,
                 value: Value::Unary {
-                    op: *op,
+                    op: (*op).into(),
                     operand: o,
                 },
                 pure_region,
@@ -83,7 +90,7 @@ pub(super) fn lower_call_like(
                     let io = ctx.io_funs.contains(n);
                     (
                         Value::Call {
-                            fun: n.to_string(),
+                            fun: n.into(),
                             args: arg_locals,
                         },
                         pure_region && !io,
@@ -91,15 +98,12 @@ pub(super) fn lower_call_like(
                 }
                 _ => {
                     // Local / expression callee → indirect call (first-class fn).
-                    let cal = lower_expr(ctx, callee, ops, pure_region).unwrap_or_else(|| {
-                        let l = ctx.fresh();
-                        ops.push(Op::Let {
-                            local: l,
-                            value: Value::Int(0),
-                            pure_region,
-                        });
-                        l
-                    });
+                    let Some(cal) = lower_expr(ctx, callee, ops, pure_region) else {
+                        ctx.note_ice(
+                            "ICE: failed to lower call callee (would have poisoned with Int(0))",
+                        );
+                        return None;
+                    };
                     (
                         Value::IndirectCall {
                             callee: cal,
@@ -117,7 +121,7 @@ pub(super) fn lower_call_like(
             });
             Some(dest)
         }
-        HirExpr::BuiltinCall { name, args, .. } => {
+        HirExpr::BuiltinCall { name, args, span } => {
             let mut arg_locals = vec![];
             // Product field checks carry an expected-ADT name as a 3rd HIR arg;
             // Core/runtime only need (obj, index).
@@ -131,13 +135,27 @@ pub(super) fn lower_call_like(
                     arg_locals.push(l);
                 }
             }
+            // Bare `assert(cond)` → inject `path:line` message at Core (typed HIR stays 1-arg).
+            if matches!(name, Builtin::Assert) && arg_locals.len() == 1 {
+                if let Some(msg) = ctx.assert_fail_message(*span) {
+                    let msg_local = ctx.fresh();
+                    ops.push(Op::Let {
+                        local: msg_local,
+                        value: Value::String(msg),
+                        pure_region: true,
+                    });
+                    arg_locals.push(msg_local);
+                }
+            }
             let is_io = name.is_io();
             let dest = ctx.fresh();
+            let result_ty = stamp_builtin_result_ty(ctx, *name, expr);
             ops.push(Op::Let {
                 local: dest,
                 value: Value::Builtin {
                     name: *name,
                     args: arg_locals,
+                    result_ty,
                 },
                 pure_region: !is_io,
             });
@@ -169,5 +187,179 @@ pub(super) fn lower_call_like(
             Some(dest)
         }
         _ => unreachable!("lower_call_like: unexpected expr"),
+    }
+}
+
+/// Stamp ground builtin results from HIR typecheck (`type_at`).
+fn stamp_builtin_result_ty(ctx: &CoreLowerCtx, name: Builtin, expr: &HirExpr) -> Option<Type> {
+    match name {
+        // Channel[T] from send/recv typing — avoid erased Int elem.
+        Builtin::ChannelNew => {
+            let ty = ctx.type_of_span(expr_span(expr))?;
+            match ty {
+                Type::Channel(ref e) if type_is_ground(e) => Some(ty),
+                _ => None,
+            }
+        }
+        // Payload of recv / join — lift heap lattice uses `type_may_heap` on the stamp
+        // (same Typed path as codegen roots) instead of hardcoding non-heap.
+        Builtin::ChannelRecv | Builtin::TaskJoin => {
+            let ty = ctx.type_of_span(expr_span(expr))?;
+            type_is_ground(&ty).then_some(ty)
+        }
+        // Match `Ok`/`Err`/`Some`: derive from receiver + ctor hint (not the
+        // AdtField expr's type_at — those spans collide with arm bodies).
+        Builtin::AdtField => stamp_adt_field_result_ty(ctx, expr),
+        _ => None,
+    }
+}
+
+fn stamp_adt_field_result_ty(ctx: &CoreLowerCtx, expr: &HirExpr) -> Option<Type> {
+    let HirExpr::BuiltinCall {
+        name: Builtin::AdtField,
+        args,
+        ..
+    } = expr
+    else {
+        return None;
+    };
+    if args.len() != 3 {
+        return None;
+    }
+    let HirExpr::Int(idx, _) = &args[1] else {
+        return None;
+    };
+    if *idx < 0 {
+        return None;
+    }
+    let idx = *idx as usize;
+    let HirExpr::String(ctor, _) = &args[2] else {
+        return None;
+    };
+    let recv = ctx.type_of_span(expr_span(&args[0]))?;
+    let Type::Adt { name, params } = &recv else {
+        return None;
+    };
+    let ty = if name == lumia_hir::RESULT.name && (ctor == "Ok" || ctor == "Err") {
+        if idx != 0 {
+            return None;
+        }
+        let pi = if ctor == "Ok" { 0 } else { 1 };
+        params.get(pi).cloned()?
+    } else if name == lumia_hir::OPTION.name && ctor == "Some" {
+        if idx != 0 {
+            return None;
+        }
+        params.first().cloned()?
+    } else if name.as_str() == ctor.as_str() {
+        params.get(idx).cloned()?
+    } else {
+        params.get(idx).cloned()?
+    };
+    match &ty {
+        Type::Unit | Type::Var(_) => None,
+        t if type_is_ground(t) => Some(ty),
+        _ => None,
+    }
+}
+
+fn type_is_ground(t: &Type) -> bool {
+    match t {
+        Type::Var(_) => false,
+        Type::Fun(ps, r, _) => ps.iter().all(type_is_ground) && type_is_ground(r),
+        Type::List(e) | Type::Set(e) | Type::Task(e) | Type::Channel(e) => type_is_ground(e),
+        Type::Map(k, v) => type_is_ground(k) && type_is_ground(v),
+        Type::Tuple(ts) | Type::TuplePrefix(ts) | Type::Adt { params: ts, .. } => {
+            ts.iter().all(type_is_ground)
+        }
+        _ => true,
+    }
+}
+
+#[cfg(test)]
+mod stamp_tests {
+    use crate::compile_source_to_core;
+    use crate::ir::{Op, Value};
+    use crate::visit::for_each_block_dfs;
+    use lumia_hir::Builtin;
+    use lumia_ty::Type;
+
+    #[test]
+    fn adt_field_err_string_stamped_when_ok_is_float() {
+        let core = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+val main = {
+  val r = if false { Ok(1.5) } else { Err("e") }
+  r match {
+    Ok(x) -> println(x)
+    Err(s) -> println(s)
+  }
+}
+"#,
+        )
+        .expect("core");
+        let mut found_string = false;
+        let mut found_float = false;
+        for fun in &core.functions {
+            for_each_block_dfs(&fun.body, &mut |b| {
+                for op in &b.ops {
+                    if let Op::Let {
+                        value:
+                            Value::Builtin {
+                                name: Builtin::AdtField,
+                                result_ty: Some(ty),
+                                ..
+                            },
+                        ..
+                    } = op
+                    {
+                        found_string |= matches!(ty, Type::String);
+                        found_float |= matches!(ty, Type::Float);
+                    }
+                }
+            });
+        }
+        assert!(
+            found_string && found_float,
+            "expected Ok→Float and Err→String AdtField stamps"
+        );
+    }
+
+    #[test]
+    fn channel_recv_list_payload_stamped_ground() {
+        let core = compile_source_to_core(
+            r#"
+module M
+import std.io.{println}
+val main = {
+  val ch = channel(1)
+  spawn { ch.send(listOf(1, 2)) }
+  println(ch.recv())
+}
+"#,
+        )
+        .expect("core");
+        let mut found = false;
+        for fun in &core.functions {
+            for_each_block_dfs(&fun.body, &mut |b| {
+                for op in &b.ops {
+                    if let Op::Let {
+                        value:
+                            Value::Builtin {
+                                name: Builtin::ChannelRecv,
+                                result_ty: Some(Type::List(_)),
+                                ..
+                            },
+                        ..
+                    } = op
+                    {
+                        found = true;
+                    }
+                }
+            });
+        }
+        assert!(found, "expected ChannelRecv stamped List payload");
     }
 }

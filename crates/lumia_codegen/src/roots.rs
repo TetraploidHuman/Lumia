@@ -5,22 +5,14 @@ use anyhow::{Context as AnyhowContext, Result};
 use inkwell::types::{BasicTypeEnum, IntType};
 use inkwell::values::{IntValue, PointerValue};
 use inkwell::AddressSpace;
-use lumia_core::{Block, Op, Value};
+use lumia_core::{builtin_result_may_heap, Block, HeapMay, Op, Value};
+use lumia_hir::Sym;
 use lumia_ty::Type;
 
 impl<'ctx> Codegen<'ctx> {
+    /// Whether a type may be a heap pointer — shared [`lumia_core::type_may_heap`].
     pub(crate) fn type_may_heap(ty: &Type) -> bool {
-        match ty {
-            Type::String
-            | Type::Char
-            | Type::List(_)
-            | Type::Map(_, _)
-            | Type::Set(_)
-            | Type::Adt { .. }
-            | Type::Fun(_, _, _) => true,
-            Type::Tuple(ts) | Type::TuplePrefix(ts) => ts.iter().any(Self::type_may_heap),
-            _ => false,
-        }
+        lumia_core::type_may_heap(ty)
     }
 
     pub(crate) fn value_may_heap(&self, v: &Value) -> bool {
@@ -40,14 +32,15 @@ impl<'ctx> Codegen<'ctx> {
             Value::Call { fun, .. } => self
                 .funs
                 .fun_ret_tys
-                .get(fun)
-                .map(Self::type_may_heap)
-                .unwrap_or(true),
-            Value::Builtin { name, .. } => match name.result_heap() {
-                lumia_hir::ResultHeap::Never => false,
-                lumia_hir::ResultHeap::Always => true,
-                lumia_hir::ResultHeap::Typed => Self::type_may_heap(&self.infer_value_ty(v)),
-            },
+                .get(fun.as_str())
+                .map(HeapMay::from_type)
+                .unwrap_or(HeapMay::Unknown)
+                .for_rooting(),
+            Value::Builtin {
+                name, result_ty, ..
+            } => {
+                builtin_result_may_heap(*name, result_ty.as_ref(), || Some(self.infer_value_ty(v)))
+            }
             _ => false,
         }
     }
@@ -121,6 +114,52 @@ impl<'ctx> Codegen<'ctx> {
         self.call_rt_void("lumia_adt_release", &[p.into()], "adt_release")
     }
 
+    /// Release a `Fun` mut-slot value: skip FunRef (low bit tagged code ptr);
+    /// heap `AllocClosure` env pointers are released like other COW objects.
+    pub(crate) fn fun_release_i64(&mut self, bits: IntValue<'ctx>) -> Result<()> {
+        let zero = self.llvm.i64_ty.const_int(0, false);
+        let one = self
+            .llvm
+            .i64_ty
+            .const_int(lumia_abi::FUNREF_TAG as u64, false);
+        let is_null = crate::error::llvm(self.llvm.builder.build_int_compare(
+            inkwell::IntPredicate::EQ,
+            bits,
+            zero,
+            "fun_rel_null",
+        ))?;
+        let tag = crate::error::llvm(self.llvm.builder.build_and(bits, one, "fun_rel_tag"))?;
+        let is_funref = crate::error::llvm(self.llvm.builder.build_int_compare(
+            inkwell::IntPredicate::EQ,
+            tag,
+            one,
+            "fun_rel_is_ref",
+        ))?;
+        let skip = crate::error::llvm(self.llvm.builder.build_or(
+            is_null,
+            is_funref,
+            "fun_rel_skip",
+        ))?;
+        let cur = self
+            .llvm
+            .builder
+            .get_insert_block()
+            .context("fun_release insert")?;
+        let parent = cur.get_parent().context("fun_release parent")?;
+        let rel_bb = self.llvm.context.append_basic_block(parent, "fun_rel_heap");
+        let cont_bb = self.llvm.context.append_basic_block(parent, "fun_rel_cont");
+        crate::error::llvm(
+            self.llvm
+                .builder
+                .build_conditional_branch(skip, cont_bb, rel_bb),
+        )?;
+        self.llvm.builder.position_at_end(rel_bb);
+        self.adt_release_i64(bits)?;
+        crate::error::llvm(self.llvm.builder.build_unconditional_branch(cont_bb))?;
+        self.llvm.builder.position_at_end(cont_bb);
+        Ok(())
+    }
+
     /// Heap COW types that need retain on alias / extract.
     pub(crate) fn type_needs_cow_retain(ty: &Type) -> bool {
         matches!(
@@ -173,7 +212,7 @@ impl<'ctx> Codegen<'ctx> {
     pub(crate) fn root_register_slot(
         &mut self,
         slot: PointerValue<'ctx>,
-        name: &str,
+        name: &Sym,
     ) -> Result<()> {
         if self.frame.rooted_slots.contains_key(name) {
             return Ok(());
@@ -183,7 +222,7 @@ impl<'ctx> Codegen<'ctx> {
         self.frame.root_depth += 1;
         self.frame
             .rooted_slots
-            .insert(name.to_string(), self.frame.root_depth);
+            .insert(name.clone(), self.frame.root_depth);
         Ok(())
     }
 
@@ -198,6 +237,47 @@ impl<'ctx> Codegen<'ctx> {
             self.frame.root_depth -= 1;
         }
         self.frame.rooted_slots.retain(|_, d| *d <= depth);
+        self.frame.ssa_root_stack.retain(|e| e.depth <= depth);
+        Ok(())
+    }
+
+    pub(crate) fn root_pop_one(&mut self) -> Result<()> {
+        debug_assert!(self.frame.root_depth > 0);
+        let pop = self.runtime_fn("lumia_root_pop")?;
+        crate::error::llvm(self.llvm.builder.build_call(pop, &[], ""))?;
+        self.frame.root_depth -= 1;
+        Ok(())
+    }
+
+    pub(crate) fn root_swap_remove(&mut self, index: usize) -> Result<()> {
+        debug_assert!(self.frame.root_depth > 0);
+        debug_assert!(index < self.frame.root_depth as usize);
+        let rm = self.runtime_fn("lumia_root_swap_remove")?;
+        let idx = self.llvm.i64_ty.const_int(index as u64, false);
+        crate::error::llvm(self.llvm.builder.build_call(rm, &[idx.into()], ""))?;
+        self.frame.root_depth -= 1;
+        Ok(())
+    }
+
+    fn ssa_remove_root_entry(&mut self, si: usize, roots_index: usize) {
+        self.frame.ssa_root_stack.remove(si);
+        for e in &mut self.frame.ssa_root_stack[si..] {
+            if e.roots_index > roots_index {
+                e.roots_index -= 1;
+            }
+        }
+    }
+
+    /// Drop one dead/unused SSA root metadata entry and fix surviving indices.
+    pub(crate) fn ssa_pop_tracked_root(&mut self, si: usize) -> Result<()> {
+        let roots_index = self.frame.ssa_root_stack[si].roots_index;
+        let top = self.frame.root_depth as usize - 1;
+        if roots_index == top {
+            self.root_pop_one()?;
+        } else {
+            self.root_swap_remove(roots_index)?;
+        }
+        self.ssa_remove_root_entry(si, roots_index);
         Ok(())
     }
 
@@ -241,6 +321,23 @@ impl<'ctx> Codegen<'ctx> {
     }
 
     pub(crate) fn emit_return_i64(&mut self, ret: IntValue<'ctx>) -> Result<()> {
+        // Pin heap-capable returns in SchedCore before clearing shadow roots.
+        // Scalar Int/Float/Bool/Unit leaves skip the heap+sched Mutex pair.
+        let may_heap = self
+            .funs
+            .fun_ret_tys
+            .get(&self.funs.current_fun)
+            .map(HeapMay::from_type)
+            .unwrap_or(HeapMay::Unknown)
+            .for_rooting();
+        if may_heap {
+            let handoff = self.runtime_fn("lumia_abi_handoff_set")?;
+            crate::error::llvm(self.llvm.builder.build_call(
+                handoff,
+                &[ret.into()],
+                "abi_handoff",
+            ))?;
+        }
         self.emit_root_epilogue()?;
         self.emit_frame_pop()?;
         crate::error::llvm(self.llvm.builder.build_return(Some(&ret)))?;

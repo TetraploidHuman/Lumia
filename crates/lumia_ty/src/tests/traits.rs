@@ -178,3 +178,45 @@ val main = {
         err.message()
     );
 }
+
+#[test]
+fn dump_num_vec2_add_ty() {
+    use crate::{display_type, infer_module};
+    use lumia_hir::lower_module;
+    use lumia_syntax::parse_module;
+    let src = r#"
+module M
+type Vec2 { val x val y }
+trait Num {
+    val add = { self, other -> self }
+}
+instance Num for Vec2 {
+    val add = { self, other ->
+        Vec2 { x = self.x + other.x, y = self.y + other.y }
+    }
+}
+val main = {
+    val a = Vec2 { x = 1.5, y = 2.0 }
+    val b = Vec2 { x = 0.5, y = 1.0 }
+    val s = a + b
+    s
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("hir");
+    let typed = infer_module(&hir).expect("ty");
+    let t = typed.fun_types.get("__Num_Vec2_add").cloned().expect("fun");
+    let sch = typed.fun_schemes.get("__Num_Vec2_add").cloned();
+    println!("ty = {}", display_type(&t, &[]));
+    println!("ty dbg = {:?}", t);
+    println!("scheme = {:?}", sch);
+    if let Some(s) = &sch {
+        println!(
+            "needs_mono={} num_vars={:?} vars={:?}",
+            s.needs_mono(),
+            s.num_vars,
+            s.vars
+        );
+        println!("scheme ty = {}", display_type(&s.ty, &s.num_vars));
+    }
+}

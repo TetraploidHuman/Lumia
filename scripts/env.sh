@@ -3,7 +3,8 @@
 #   source scripts/env.sh
 
 if [[ -z "${LLVM_SYS_211_PREFIX:-}" ]]; then
-  for p in /nix/store/*-llvm-21.1.8-dev; do
+  # Prefer the historically pinned patch build; fall back to any llvm-21*-dev.
+  for p in /nix/store/*-llvm-21.1.8-dev /nix/store/*-llvm-21*-dev; do
     if [[ -x "$p/bin/llvm-config" ]]; then
       export LLVM_SYS_211_PREFIX="$p"
       break
@@ -28,6 +29,7 @@ _add_lib() {
 
 for p in \
   /nix/store/*-llvm-21.1.8-lib/lib \
+  /nix/store/*-llvm-21*-lib/lib \
   /nix/store/*-libffi-*/lib \
   /nix/store/*-zlib-*/lib \
   /nix/store/*-libxml2-*/lib \

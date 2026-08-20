@@ -57,7 +57,7 @@ val main = 0
         ImportNames::Single(n) => {
             assert_eq!(n.name, "add");
             assert_eq!(n.alias.as_deref(), Some("plus"));
-            assert_eq!(m.imports[1].path, vec!["math".to_string()]);
+            assert_eq!(m.imports[1].path, vec![crate::Sym::from("math")]);
         }
         other => panic!("expected single, got {other:?}"),
     }
@@ -294,6 +294,90 @@ val main = {
 }
 
 #[test]
+fn recover_recovers_bad_expr_inside_block_keeps_later_stmt() {
+    let src = r#"
+module Main
+val main = {
+    1
+    1 + )
+    2
+}
+"#;
+    let out = crate::parse_module_recovering(src);
+    assert!(!out.errors.is_empty(), "expected parse error on bad expr");
+
+    let v = out
+        .module
+        .items
+        .iter()
+        .find_map(|i| match i {
+            crate::Item::Val(v) => Some(v),
+            _ => None,
+        })
+        .expect("expected main val");
+
+    let Expr::Block { stmts, tail, .. } = &v.body else {
+        panic!("expected block body, got {:?}", v.body);
+    };
+
+    assert_eq!(stmts.len(), 2);
+    assert!(matches!(stmts[0], Stmt::Expr(Expr::Int(1, _))));
+
+    // The broken `1 + )` is replaced by a hole expression, but later statements
+    // (the final `2`) are still parsed and preserved as the block tail.
+    if let Stmt::Expr(Expr::Ident(s, _)) = &stmts[1] {
+        assert_eq!(s.as_str(), "__parse_hole");
+    } else {
+        panic!("expected hole expr stmt");
+    }
+    assert!(tail.as_ref().is_some_and(|e| matches!(e.as_ref(), Expr::Int(2, _))));
+}
+
+#[test]
+fn recover_recovers_bad_match_arm_body_keeps_later_arms() {
+    let src = r#"
+module M
+val main = {
+    n match {
+        0 -> 0
+        1 -> )
+        _ -> 2
+    }
+}
+"#;
+
+    let out = crate::parse_module_recovering(src);
+    assert!(!out.errors.is_empty(), "expected parse error on bad match arm body");
+
+    let v = out
+        .module
+        .items
+        .iter()
+        .find_map(|i| match i {
+            crate::Item::Val(v) => Some(v),
+            _ => None,
+        })
+        .expect("expected main val");
+
+    let Expr::Block { tail, .. } = &v.body else {
+        panic!("expected block tail");
+    };
+
+    let Expr::Match { arms, .. } = tail.as_ref().expect("expected match tail").as_ref() else {
+        panic!("expected match expr tail");
+    };
+
+    assert_eq!(arms.len(), 3);
+    assert!(matches!(arms[0].body, Expr::Int(0, _)));
+    if let Expr::Ident(s, _) = &arms[1].body {
+        assert_eq!(s.as_str(), "__parse_hole");
+    } else {
+        panic!("expected hole match arm body");
+    }
+    assert!(matches!(arms[2].body, Expr::Int(2, _)));
+}
+
+#[test]
 fn parse_kotlin_style_ranges() {
     let incl = parse_expr_str("1..5").expect("inclusive");
     match incl {
@@ -317,4 +401,101 @@ fn parse_kotlin_style_ranges() {
         "expected helpful ..= error, got {}",
         err.message
     );
+}
+
+#[test]
+fn interp_expr_spans_are_absolute() {
+    let src = r#""hi${1+2}""#;
+    let m = parse_module(&format!("module M\nval x = {src}\n")).expect("parse");
+    let crate::Item::Val(v) = &m.items[0] else {
+        panic!("expected val");
+    };
+    match &v.body {
+        Expr::Interp { parts, .. } => {
+            let e = match &parts[1] {
+                crate::InterpPart::Expr(e) => e,
+                other => panic!("expected expr part, got {other:?}"),
+            };
+            let Expr::Binary {
+                left, right, span, ..
+            } = e
+            else {
+                panic!("expected binary in interp, got {e:?}");
+            };
+            assert!(
+                span.start.0 > 0,
+                "interp binary span should be absolute, got {span:?}"
+            );
+            match (left.as_ref(), right.as_ref()) {
+                (Expr::Int(1, ls), Expr::Int(2, rs)) => {
+                    assert_eq!(rs.start.0, ls.start.0 + 2, "1+2 layout: {ls:?} {rs:?}");
+                }
+                other => panic!("expected 1+2, got {other:?}"),
+            }
+        }
+        other => panic!("expected Interp, got {other:?}"),
+    }
+}
+
+#[test]
+fn interp_parse_error_uses_absolute_span() {
+    let src = "module M\nval x = \"a${)}}\"\n";
+    let err = parse_module(src).expect_err("bad interp");
+    assert!(
+        err.message.contains("interpolation") || err.message.contains("expected"),
+        "{}",
+        err.message
+    );
+    assert!(
+        err.span.start.0 > 10,
+        "expected absolute span inside string, got {:?}",
+        err.span
+    );
+}
+
+#[test]
+fn nested_bare_it_lambda_does_not_capture_enclosing_block() {
+    // `val main = { xs.map { it + 1 } }` must stay a 0-arg block, not `main(it)`.
+    let src = r#"
+module M
+val main = {
+    listOf(1).map { it + 1 }
+}
+"#;
+    let m = parse_module(src).expect("parse");
+    let crate::Item::Val(v) = &m.items[0] else {
+        panic!("expected val");
+    };
+    match &v.body {
+        Expr::Block { .. } => {}
+        Expr::Lambda { params, .. } => panic!("main body became lambda with params {params:?}"),
+        other => panic!("unexpected main body {other:?}"),
+    }
+    // Bare `{ it + 1 }` alone still becomes a 1-arg lambda.
+    let lam = parse_expr_str("{ it + 1 }").expect("bare it");
+    match lam {
+        Expr::Lambda { params, .. } => assert_eq!(params, vec![crate::Sym::from("it")]),
+        other => panic!("expected it-lambda, got {other:?}"),
+    }
+}
+
+#[test]
+fn duplicate_string_literals_share_sym() {
+    use std::sync::Arc;
+    let src = "module M\nval x = \"hello\" + \"hello\"\n";
+    let m = parse_module(src).expect("parse");
+    let crate::Item::Val(v) = &m.items[0] else {
+        panic!("expected val");
+    };
+    let Expr::Binary { left, right, .. } = &v.body else {
+        panic!("expected + on two strings, got {:?}", v.body);
+    };
+    let Expr::String(a, _) = left.as_ref() else {
+        panic!("expected string lhs");
+    };
+    let Expr::String(b, _) = right.as_ref() else {
+        panic!("expected string rhs");
+    };
+    assert_eq!(a, b);
+    assert!(Arc::ptr_eq(a.arc(), b.arc()));
 }

@@ -2,9 +2,11 @@
 
 use super::super::ctx::LowerCtx;
 use super::super::for_loops::lower_for_in;
+use super::super::hof_fuse::{try_deforest_hof_let, try_fuse_hof_for_in};
 use super::lower_expr;
 use crate::ast::Expr;
 use crate::match_check::{pattern_cond, pattern_irrefutable};
+use crate::sym_util::synthetic;
 use lumia_syntax::Span;
 
 pub(super) fn lower_block(
@@ -116,7 +118,15 @@ pub(super) fn lower_block(
                 body,
                 span: s,
             } => {
-                let loop_e = lower_for_in(ctx, binding, iter, body, *s);
+                let loop_e = match binding {
+                    lumia_syntax::ForBinding::Name(name) => {
+                        try_fuse_hof_for_in(ctx, name, iter, body, *s)
+                            .unwrap_or_else(|| lower_for_in(ctx, binding, iter, body, *s))
+                    }
+                    lumia_syntax::ForBinding::Pair(_, _) => {
+                        lower_for_in(ctx, binding, iter, body, *s)
+                    }
+                };
                 let rest_e = fold(ctx, rest, tail, span);
                 Expr::Seq {
                     stmts: vec![loop_e, rest_e],
@@ -139,7 +149,11 @@ pub(super) fn lower_val_pat(
 ) -> Expr {
     // Fast path: `val x = e` / `val x: T = e`
     if let lumia_syntax::Pattern::Ident(name, _) = pat {
-        if ctx.lookup_ctor(name).is_none_or(|c| c.arity != 0) {
+        if ctx.lookup_ctor(name.as_str()).is_none_or(|c| c.arity != 0) {
+            // DESIGN §7.3: `val ys = pipe.map/filter…` used only via get/len → deforest.
+            if let Some(deforested) = try_deforest_hof_let(ctx, name.as_str(), expr, &body, span) {
+                return deforested;
+            }
             return Expr::Let {
                 name: name.clone(),
                 value: Box::new(lower_expr(ctx, expr)),
@@ -163,7 +177,7 @@ pub(super) fn lower_val_pat(
         );
         return body;
     }
-    let scrut_name = format!("__valpat_{}", span.start.0);
+    let scrut_name = synthetic(format!("__valpat_{}", span.start.0));
     let scrut = Expr::Var(scrut_name.clone(), span);
     let (_cond, binds) = pattern_cond(ctx, pat, &scrut, span);
     let mut nested = body;

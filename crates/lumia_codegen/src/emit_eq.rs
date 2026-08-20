@@ -1,16 +1,62 @@
 //! Show / Eq / Ord overrides and typed ADT helpers.
 
+use super::emit_value::builtin::show::{SHOW_ADT, SHOW_ADT_NAMED};
 use super::Codegen;
-use anyhow::{Context as AnyhowContext, Result};
-use inkwell::values::{BasicValueEnum, IntValue, PointerValue};
+use anyhow::{bail, Context as AnyhowContext, Result};
+use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum, IntValue, PointerValue};
 use inkwell::AddressSpace;
 use lumia_core::Local;
 use lumia_ty::Type;
 
+/// Eq RT symbols referenced from codegen. Keep in sync with `runtime_decls`.
+pub(crate) const EQ_GENERIC: &str = "lumia_eq";
+pub(crate) const EQ_ADT: &str = "lumia_adt_eq";
+
+/// Lock-in table for `runtime_decls` tests (production uses `EQ_*` consts directly).
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) const SPECIALIZED_EQ_RT: &[&str] = &[EQ_GENERIC, EQ_ADT];
+
+/// Which ADT `_pad` half to build / emit (float low 32 / bool high 32).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AdtFieldMaskKind {
+    Float,
+    Bool,
+}
+
+impl AdtFieldMaskKind {
+    fn matches(self, ty: &Type) -> bool {
+        match self {
+            Self::Float => matches!(ty, Type::Float),
+            Self::Bool => matches!(ty, Type::Bool),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Float => "float",
+            Self::Bool => "bool",
+        }
+    }
+
+    fn set_rt(self) -> &'static str {
+        match self {
+            Self::Float => lumia_abi::ADT_SET_FLOAT_MASK,
+            Self::Bool => lumia_abi::ADT_SET_BOOL_MASK,
+        }
+    }
+
+    fn set_label(self) -> &'static str {
+        match self {
+            Self::Float => "adt_fmask",
+            Self::Bool => "adt_bmask",
+        }
+    }
+}
+
 impl<'ctx> Codegen<'ctx> {
     pub(crate) fn key_type_has_hash(&self, ty: &Type) -> bool {
         match ty {
-            Type::Adt { name, .. } => self.funs.hash_adts.contains(name),
+            Type::Adt { name, .. } => self.funs.hash_adts.contains(name.as_str()),
             // Scalars / collections: structural hash always available.
             Type::Int
             | Type::Float
@@ -24,23 +70,40 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
+    /// Shared Show/Eq/Ord instance call (`__{Trait}_{T}_{method}`).
+    fn call_trait_override(
+        &mut self,
+        trait_name: &str,
+        type_name: &str,
+        method: &str,
+        args: &[BasicMetadataValueEnum<'ctx>],
+        call_name: &str,
+    ) -> Result<Option<BasicValueEnum<'ctx>>> {
+        let mangled = lumia_hir::mangle_trait_method(trait_name, type_name, method);
+        let Some(fv) = self.funs.functions.get(mangled.as_str()).copied() else {
+            return Ok(None);
+        };
+        let call = crate::error::llvm(self.llvm.builder.build_call(fv, args, call_name))?;
+        Ok(Some(
+            call.try_as_basic_value()
+                .basic()
+                .context("call return value")?,
+        ))
+    }
+
     /// Call `__Show_{T}_show` when an instance provided a custom Show method.
     pub(crate) fn emit_show_override(
         &mut self,
         adt_name: &str,
         arg: BasicValueEnum<'ctx>,
     ) -> Result<Option<PointerValue<'ctx>>> {
-        let mangled = lumia_hir::mangle_trait_method("Show", adt_name, "show");
-        let Some(fv) = self.funs.functions.get(&mangled).copied() else {
+        let i = self.coerce_i64(arg)?;
+        let Some(bits) =
+            self.call_trait_override("Show", adt_name, "show", &[i.into()], "show_ov")?
+        else {
             return Ok(None);
         };
-        let i = self.coerce_i64(arg)?;
-        let call = crate::error::llvm(self.llvm.builder.build_call(fv, &[i.into()], "show_ov"))?;
-        let bits = call
-            .try_as_basic_value()
-            .basic()
-            .context("call return value")?
-            .into_int_value();
+        let bits = bits.into_int_value();
         let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
         let ptr = crate::error::llvm(self.llvm.builder.build_int_to_ptr(
             bits,
@@ -57,21 +120,9 @@ impl<'ctx> Codegen<'ctx> {
         left: IntValue<'ctx>,
         right: IntValue<'ctx>,
     ) -> Result<Option<IntValue<'ctx>>> {
-        let mangled = lumia_hir::mangle_trait_method("Eq", adt_name, "eq");
-        let Some(fv) = self.funs.functions.get(&mangled).copied() else {
-            return Ok(None);
-        };
-        let call = crate::error::llvm(self.llvm.builder.build_call(
-            fv,
-            &[left.into(), right.into()],
-            "eq_ov",
-        ))?;
-        Ok(Some(
-            call.try_as_basic_value()
-                .basic()
-                .context("call return value")?
-                .into_int_value(),
-        ))
+        Ok(self
+            .call_trait_override("Eq", adt_name, "eq", &[left.into(), right.into()], "eq_ov")?
+            .map(|v| v.into_int_value()))
     }
 
     /// Call `__Ord_{T}_less(a,b) -> Bool` when present.
@@ -81,24 +132,18 @@ impl<'ctx> Codegen<'ctx> {
         left: IntValue<'ctx>,
         right: IntValue<'ctx>,
     ) -> Result<Option<IntValue<'ctx>>> {
-        let mangled = lumia_hir::mangle_trait_method("Ord", adt_name, "less");
-        let Some(fv) = self.funs.functions.get(&mangled).copied() else {
-            return Ok(None);
-        };
-        let call = crate::error::llvm(self.llvm.builder.build_call(
-            fv,
-            &[left.into(), right.into()],
-            "less_ov",
-        ))?;
-        Ok(Some(
-            call.try_as_basic_value()
-                .basic()
-                .context("call return value")?
-                .into_int_value(),
-        ))
+        Ok(self
+            .call_trait_override(
+                "Ord",
+                adt_name,
+                "less",
+                &[left.into(), right.into()],
+                "less_ov",
+            )?
+            .map(|v| v.into_int_value()))
     }
 
-    pub(crate) fn adt_method_name(left: &Type, right: &Type) -> Option<String> {
+    pub(crate) fn adt_method_name(left: &Type, right: &Type) -> Option<lumia_hir::Sym> {
         match (left, right) {
             (Type::Adt { name: a, .. }, Type::Adt { name: b, .. }) if a == b => Some(a.clone()),
             _ => None,
@@ -130,20 +175,23 @@ impl<'ctx> Codegen<'ctx> {
         if let Some(name) = Self::adt_method_name(lt, rt) {
             // Hash ADTs use `lumia_eq` for Map/Set keys — keep `==` on the same path
             // so a custom `__Eq_*_eq` cannot diverge from containment.
-            if !self.funs.hash_adts.contains(&name) {
+            if !self.funs.hash_adts.contains(name.as_str()) {
                 if let Some(eq) = self.emit_eq_override(&name, l, r)? {
                     return Ok(eq);
                 }
             }
-            if let (Type::Adt { params: lp, .. }, Type::Adt { params: rp, .. }) = (lt, rt) {
+            if let (Type::Adt { name, params: lp }, Type::Adt { params: rp, .. }) = (lt, rt) {
                 if lp.iter().any(|p| matches!(p, Type::Float))
                     || rp.iter().any(|p| matches!(p, Type::Float))
+                    || !self.adt_call_site_field_masks_ok(name)
                 {
-                    return self.emit_typed_adt_eq(l, r, lp, rp);
+                    // Concatenated sums / Result: mask 0 → per-object `_pad`.
+                    // Option/products with Float: call-site mask bits.
+                    return self.emit_typed_adt_eq(name, l, r, lp, rp);
                 }
             }
         }
-        let f = self.runtime_fn("lumia_eq")?;
+        let f = self.runtime_fn(EQ_GENERIC)?;
         Ok(
             crate::error::llvm(self.llvm.builder.build_call(f, &[l.into(), r.into()], "eq"))?
                 .try_as_basic_value()
@@ -153,42 +201,193 @@ impl<'ctx> Codegen<'ctx> {
         )
     }
 
-    /// Bit `i` set ⇒ field `i` uses IEEE eq/show (union of both sides' params).
-    pub(crate) fn adt_float_field_mask(lp: &[Type], rp: &[Type]) -> u64 {
-        let n = lp.len().max(rp.len()).min(64);
+    /// Call-site `params[i] → field i` masks are sound only when every constructor
+    /// uses the same param index as its field index (Option; products).
+    ///
+    /// Concatenated sums (`Result`, `Either`, `Shape`, …) pack distinct variant
+    /// payloads into one `params` vector — `params[i]` is **not** field `i` of
+    /// every ctor. Those must use AllocAdt `_pad` only (mask `0` at the call site).
+    pub(crate) fn adt_call_site_field_masks_ok(&self, adt_name: &str) -> bool {
+        if lumia_hir::is_option(adt_name) {
+            return true;
+        }
+        if lumia_hir::is_result(adt_name) {
+            return false;
+        }
+        // MapItems pairs: synthetic `__Tuple` — field i ≡ params[i].
+        if adt_name == "__Tuple" {
+            return true;
+        }
+        // Products: one Show label (type name). Multi-variant user sums: refuse.
+        match self.funs.adt_variant_names.get(adt_name) {
+            Some(names) if names.len() <= 1 => true,
+            Some(_) => false,
+            // Unknown ADT shape — prefer `_pad` over a wrong call-site mask.
+            None => false,
+        }
+    }
+
+    /// Bit `i` set ⇒ field `i` matches `kind` (union of both sides' params).
+    ///
+    /// Runtime stores the mask in a `u64` header word — ADTs with more than 32
+    /// fields cannot be represented and are rejected at emit time.
+    pub(crate) fn adt_field_mask(kind: AdtFieldMaskKind, lp: &[Type], rp: &[Type]) -> Result<u64> {
+        let n = lp.len().max(rp.len());
+        if n > 32 {
+            bail!(
+                "ICE: ADT {} field mask needs {n} bits; packed `_pad` supports at most 32 {} fields",
+                kind.label(),
+                kind.label()
+            );
+        }
         let mut mask = 0u64;
         for i in 0..n {
-            let lf = matches!(lp.get(i), Some(Type::Float));
-            let rf = matches!(rp.get(i), Some(Type::Float));
-            if lf || rf {
+            let l = lp.get(i).is_some_and(|t| kind.matches(t));
+            let r = rp.get(i).is_some_and(|t| kind.matches(t));
+            if l || r {
                 mask |= 1u64 << i;
             }
         }
-        mask
+        Ok(mask)
+    }
+
+    pub(crate) fn adt_float_field_mask(lp: &[Type], rp: &[Type]) -> Result<u64> {
+        Self::adt_field_mask(AdtFieldMaskKind::Float, lp, rp)
+    }
+
+    pub(crate) fn adt_bool_field_mask(lp: &[Type], rp: &[Type]) -> Result<u64> {
+        Self::adt_field_mask(AdtFieldMaskKind::Bool, lp, rp)
+    }
+
+    /// Call-site mask, or `0` when param index ≠ ctor field index.
+    pub(crate) fn adt_call_site_mask(
+        &self,
+        kind: AdtFieldMaskKind,
+        adt_name: &str,
+        lp: &[Type],
+        rp: &[Type],
+    ) -> Result<u64> {
+        if self.adt_call_site_field_masks_ok(adt_name) {
+            Self::adt_field_mask(kind, lp, rp)
+        } else {
+            Ok(0)
+        }
+    }
+
+    pub(crate) fn adt_float_call_site_mask(
+        &self,
+        adt_name: &str,
+        lp: &[Type],
+        rp: &[Type],
+    ) -> Result<u64> {
+        self.adt_call_site_mask(AdtFieldMaskKind::Float, adt_name, lp, rp)
+    }
+
+    pub(crate) fn adt_bool_call_site_mask(
+        &self,
+        adt_name: &str,
+        lp: &[Type],
+        rp: &[Type],
+    ) -> Result<u64> {
+        self.adt_call_site_mask(AdtFieldMaskKind::Bool, adt_name, lp, rp)
+    }
+
+    /// Float+Bool call-site masks for Show (named ADT or structural Tuple).
+    pub(crate) fn adt_call_site_fb_masks(
+        &self,
+        adt_name: Option<&str>,
+        params: &[Type],
+    ) -> Result<(u64, u64)> {
+        match adt_name {
+            Some(name) => Ok((
+                self.adt_float_call_site_mask(name, params, &[])?,
+                self.adt_bool_call_site_mask(name, params, &[])?,
+            )),
+            None => Ok((
+                Self::adt_float_field_mask(params, &[])?,
+                Self::adt_bool_field_mask(params, &[])?,
+            )),
+        }
     }
 
     /// Layout mask from concrete field SSA types at an `AllocAdt` site.
-    /// Bits beyond 63 are dropped (runtime header stores a `u64` mask).
-    pub(crate) fn adt_float_mask_from_fields(&self, fields: &[Local]) -> u64 {
+    pub(crate) fn adt_mask_from_fields(
+        &self,
+        kind: AdtFieldMaskKind,
+        fields: &[Local],
+    ) -> Result<u64> {
+        if fields.len() > 32 {
+            bail!(
+                "ICE: AllocAdt has {} fields; packed {} mask supports at most 32",
+                fields.len(),
+                kind.label()
+            );
+        }
         let mut mask = 0u64;
-        for (i, f) in fields.iter().enumerate().take(64) {
-            if matches!(self.frame.local_tys.get(&f.0), Some(Type::Float)) {
+        for (i, f) in fields.iter().enumerate() {
+            if self
+                .frame
+                .local_tys
+                .get(&f.0)
+                .is_some_and(|t| kind.matches(t))
+            {
                 mask |= 1u64 << i;
             }
         }
-        mask
+        Ok(mask)
+    }
+
+    /// Call ADT set-mask RT when `mask != 0` (no-op otherwise).
+    pub(crate) fn emit_adt_set_mask(
+        &self,
+        kind: AdtFieldMaskKind,
+        payload: inkwell::values::PointerValue<'ctx>,
+        mask: u64,
+    ) -> Result<()> {
+        if mask == 0 {
+            return Ok(());
+        }
+        let m = self.llvm.i64_ty.const_int(mask, false);
+        self.call_rt_void(kind.set_rt(), &[payload.into(), m.into()], kind.set_label())
+    }
+
+    /// Set Float/Bool field-0 masks when `field_ty` is a scalar of that kind.
+    pub(crate) fn emit_adt_payload_masks_for_ty(
+        &self,
+        payload: inkwell::values::PointerValue<'ctx>,
+        field_ty: &Type,
+    ) -> Result<()> {
+        for kind in [AdtFieldMaskKind::Float, AdtFieldMaskKind::Bool] {
+            if kind.matches(field_ty) {
+                self.emit_adt_set_mask(kind, payload, 1)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Stamp both float and bool `_pad` halves from AllocAdt field SSA types.
+    pub(crate) fn emit_adt_field_masks_from_fields(
+        &self,
+        payload: inkwell::values::PointerValue<'ctx>,
+        fields: &[Local],
+    ) -> Result<()> {
+        let float_mask = self.adt_mask_from_fields(AdtFieldMaskKind::Float, fields)?;
+        self.emit_adt_set_mask(AdtFieldMaskKind::Float, payload, float_mask)?;
+        let bool_mask = self.adt_mask_from_fields(AdtFieldMaskKind::Bool, fields)?;
+        self.emit_adt_set_mask(AdtFieldMaskKind::Bool, payload, bool_mask)
     }
 
     /// Structural ADT `==` via runtime size (safe for sum None/Ok arity ≠ type params).
     pub(crate) fn emit_typed_adt_eq(
         &mut self,
+        adt_name: &str,
         left: IntValue<'ctx>,
         right: IntValue<'ctx>,
         lp: &[Type],
         rp: &[Type],
     ) -> Result<IntValue<'ctx>> {
-        let mask = Self::adt_float_field_mask(lp, rp);
-        let f = self.runtime_fn("lumia_adt_eq")?;
+        let mask = self.adt_float_call_site_mask(adt_name, lp, rp)?;
+        let f = self.runtime_fn(EQ_ADT)?;
         Ok(crate::error::llvm(self.llvm.builder.build_call(
             f,
             &[
@@ -212,15 +411,18 @@ impl<'ctx> Codegen<'ctx> {
         params: &[Type],
     ) -> Result<PointerValue<'ctx>> {
         let i = self.coerce_i64(arg)?;
-        let mask = Self::adt_float_field_mask(params, &[]);
-        let mask_v = self.llvm.i64_ty.const_int(mask, false);
+        // Option/products: call-site masks (field index ≡ param index).
+        // Concatenated sums: mask 0 — AllocAdt `_pad` is authoritative.
+        let (fmask, bmask) = self.adt_call_site_fb_masks(Some(adt_name), params)?;
+        let fmask_v = self.llvm.i64_ty.const_int(fmask, false);
+        let bmask_v = self.llvm.i64_ty.const_int(bmask, false);
         if let Some(names) = self.funs.adt_variant_names.get(adt_name).cloned() {
-            return self.emit_show_adt_named(i, mask_v, &names);
+            return self.emit_show_adt_named(i, fmask_v, bmask_v, &names);
         }
-        let f = self.runtime_fn("lumia_show_adt")?;
+        let f = self.runtime_fn(SHOW_ADT)?;
         let call = crate::error::llvm(self.llvm.builder.build_call(
             f,
-            &[i.into(), mask_v.into()],
+            &[i.into(), fmask_v.into(), bmask_v.into()],
             "show_adt",
         ))?;
         Ok(call
@@ -230,11 +432,12 @@ impl<'ctx> Codegen<'ctx> {
             .into_pointer_value())
     }
 
-    /// `lumia_show_adt_named(obj, mask, names_ptr, n)`.
+    /// `lumia_show_adt_named(obj, float_mask, bool_mask, names_ptr, n)`.
     pub(crate) fn emit_show_adt_named(
         &mut self,
         obj: IntValue<'ctx>,
-        mask: IntValue<'ctx>,
+        float_mask: IntValue<'ctx>,
+        bool_mask: IntValue<'ctx>,
         names: &[String],
     ) -> Result<PointerValue<'ctx>> {
         use inkwell::AddressSpace;
@@ -264,10 +467,16 @@ impl<'ctx> Codegen<'ctx> {
             "adt_names_ptr",
         ))?;
         let n = self.llvm.i64_ty.const_int(names.len() as u64, false);
-        let f = self.runtime_fn("lumia_show_adt_named")?;
+        let f = self.runtime_fn(SHOW_ADT_NAMED)?;
         let call = crate::error::llvm(self.llvm.builder.build_call(
             f,
-            &[obj.into(), mask.into(), names_ptr.into(), n.into()],
+            &[
+                obj.into(),
+                float_mask.into(),
+                bool_mask.into(),
+                names_ptr.into(),
+                n.into(),
+            ],
             "show_adt_named",
         ))?;
         Ok(call
@@ -275,5 +484,54 @@ impl<'ctx> Codegen<'ctx> {
             .basic()
             .context("call return value")?
             .into_pointer_value())
+    }
+}
+
+#[cfg(test)]
+mod mask_tests {
+    use super::Codegen;
+    use lumia_ty::Type;
+
+    #[test]
+    fn float_mask_rejects_more_than_32_fields() {
+        let params: Vec<Type> = (0..33).map(|_| Type::Int).collect();
+        let err = Codegen::adt_float_field_mask(&params, &[]).unwrap_err();
+        assert!(err.to_string().contains("at most 32"), "got: {err}");
+    }
+
+    #[test]
+    fn float_mask_sets_bits_within_32() {
+        let lp = [Type::Int, Type::Float, Type::Bool];
+        let mask = Codegen::adt_float_field_mask(&lp, &[]).unwrap();
+        assert_eq!(mask, 1u64 << 1);
+    }
+
+    #[test]
+    fn bool_mask_sets_bits_within_32() {
+        let lp = [Type::Int, Type::Float, Type::Bool];
+        let mask = Codegen::adt_bool_field_mask(&lp, &[]).unwrap();
+        assert_eq!(mask, 1u64 << 2);
+    }
+
+    #[test]
+    fn call_site_masks_ok_option_and_result() {
+        // Static policy without a full Codegen: Option yes, Result no.
+        assert!(lumia_hir::is_option("Option"));
+        assert!(!lumia_hir::is_result("Option"));
+        assert!(lumia_hir::is_result("Result"));
+    }
+}
+
+#[cfg(test)]
+mod specialized_eq_rt_tests {
+    use super::SPECIALIZED_EQ_RT;
+    use crate::runtime_decls::runtime_decl_names_for_test;
+
+    #[test]
+    fn specialized_eq_rt_symbols_are_declared() {
+        let decls = runtime_decl_names_for_test();
+        for sym in SPECIALIZED_EQ_RT {
+            assert!(decls.contains(sym), "{sym} missing from RUNTIME_DECLS");
+        }
     }
 }

@@ -1,0 +1,37 @@
+/// Captured List/Map/Set[Float] after intermediate HOF / channel / joinOpt,
+/// then param-init `fold(y, +)` must stay Float ABI.
+module main
+
+val id = { x -> x }
+
+val main = {
+    val xs = listOf(1.0, 2.0, 3.0)
+    val m = mapOf(1, 1.0, 2, 2.0)
+    val s = setOf(1.0, 2.0)
+
+    val byCap = { ys -> { y -> ys.fold(y, { a, b -> a + b }) } }
+    println(byCap(xs)(0.0))
+
+    val byFilter = { y -> xs.filter({ x -> true }).fold(y, { a, b -> a + b }) }
+    println(byFilter(0.0))
+
+    val byId = { ys -> { y -> id(ys).fold(y, { a, b -> a + b }) } }
+    println(byId(xs)(0.0))
+
+    val byValues = { y -> m.values().fold(y, { a, b -> a + b }) }
+    println(byValues(0.0))
+
+    val bySet = { y -> s.toList().fold(y, { a, b -> a + b }) }
+    println(bySet(0.0))
+
+    scope {
+        val ch = channel(1)
+        spawn { ch.send(xs) }
+        val ys = ch.recv()
+        println({ y -> ys.fold(y, { a, b -> a + b }) }(0.0))
+
+        val t = spawn { listOf(1.0, 2.0, 3.0) }
+        val zs = t.joinOpt() alt listOf()
+        println({ y -> zs.fold(y, { a, b -> a + b }) }(0.0))
+    }
+}

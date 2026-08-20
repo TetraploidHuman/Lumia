@@ -8,7 +8,7 @@ Language support for Lumia (`.lm`): TextMate highlighting, snippets, and a Langu
 - Diagnostics, hover, go-to-definition, completion, formatting, outline, inlay hints (via LSP)
 - Snippets (`module`, `val`, `match`, `trait`, …)
 - Commands: Run, Build & Run, Check File, Restart Language Server
-- Settings: `lumia.lsp.path`, `lumia.lsp.enabled`
+- Settings: `lumia.lsp.path`, `lumia.lsp.enabled`, `lumia.autoParallel`
 
 ## Prerequisites
 
@@ -28,8 +28,8 @@ export PATH="$PWD/target/release:$PATH"
 cd editors/vscode
 npm install
 npx vsce package --allow-missing-repository
-cursor --install-extension lumia-0.3.5.vsix
-# or: code --install-extension lumia-0.3.5.vsix
+cursor --install-extension lumia-0.3.9.vsix
+# or: code --install-extension lumia-0.3.9.vsix
 ```
 
 Also install / refresh the CLI (ships a slim `lumia-lsp` without LLVM):
@@ -47,5 +47,6 @@ The extension entry is `extension.js` (no TypeScript compile step).
 
 | Setting | Default | Meaning |
 |---------|---------|---------|
-| `lumia.lsp.path` | `lumia` | Path to the `lumia` binary (`lsp` / `build` / `check`) |
+| `lumia.lsp.path` | *(empty → auto-detect)* | Path to the `lumia` / `lumia-lsp` binary |
 | `lumia.lsp.enabled` | `true` | Enable the Lumia language server |
+| `lumia.autoParallel` | `true` | Allow auto `List.map` / `List.fold` parallelization in LSP (like CLI; `false` ≈ `--no-parallel`) |

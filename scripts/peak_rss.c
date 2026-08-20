@@ -1,5 +1,7 @@
 /* Tiny fork+exec parent for wall time + child peak RSS.
  *
+ * Linux-only (fork / wait4 / RUSAGE). Not used on Windows benches.
+ *
  * Python subprocess fork COW briefly inherits the interpreter's RSS into
  * ru_maxrss before exec; measuring from a small C parent avoids that.
  *

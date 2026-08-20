@@ -9,12 +9,10 @@ fn licm_hoists_not_but_not_trapping_add() {
             "f",
             vec![Local(0)],
             Block {
-                params: vec![],
                 ops: vec![Op::Let {
                     local: Local(10),
                     value: Value::Loop {
                         header: Box::new(Block {
-                            params: vec![],
                             ops: vec![Op::Let {
                                 local: Local(2),
                                 value: Value::Bool(true),
@@ -23,7 +21,6 @@ fn licm_hoists_not_but_not_trapping_add() {
                             result: Some(Local(2)),
                         }),
                         body: Box::new(Block {
-                            params: vec![],
                             ops: vec![
                                 Op::Let {
                                     local: Local(3),
@@ -46,7 +43,6 @@ fn licm_hoists_not_but_not_trapping_add() {
                             result: Some(Local(4)),
                         }),
                         latch: Box::new(Block {
-                            params: vec![],
                             ops: vec![],
                             result: None,
                         }),

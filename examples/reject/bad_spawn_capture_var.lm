@@ -1,0 +1,11 @@
+module bad_spawn_capture_var
+import std.io.{println}
+
+/// DESIGN §11.2: spawn must not capture outer `var` (no shared mutability).
+val main = {
+    scope {
+        var n = 1
+        spawn { n + 1 }
+        println(n)
+    }
+}

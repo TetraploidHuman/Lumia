@@ -1,0 +1,15 @@
+module task_nested_scope
+import std.io.{println}
+
+/// Nested scopes join inner children before outer; values compose.
+val main = {
+    scope {
+        val outer = spawn {
+            scope {
+                val inner = spawn { 3 }
+                inner.join() * 2
+            }
+        }
+        println(outer.join() + 1)
+    }
+}

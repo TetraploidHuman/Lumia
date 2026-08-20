@@ -7,25 +7,18 @@ fun main() effect.io=true memo=None {
   %3 = i64 20  // pure
   %4 = i64 3  // pure
   %5 = i64 30  // pure
-  %6 = alloc_map[LitMap](n=3)  // pure
+  %6 = alloc_map[HashOrdered](n=3)  // pure
   %7 = i64 3  // pure
   %8 = builtin Println(%7)  // effect
-  %9 = %2  // pure
   %10 = bool true  // pure
   %11 = builtin Println(%10)  // effect
-  %12 = i64 9  // pure
   %13 = bool false  // pure
   %14 = builtin Println(%13)  // effect
-  %15 = %0  // pure
-  %16 = %2  // pure
-  %17 = %4  // pure
-  %18 = alloc_set[LitSet](n=3)  // pure
+  %18 = alloc_set[HeapSet](n=3)  // pure
   %19 = i64 3  // pure
   %20 = builtin Println(%19)  // effect
-  %21 = %2  // pure
   %22 = bool true  // pure
   %23 = builtin Println(%22)  // effect
-  %24 = i64 8  // pure
   %25 = bool false  // pure
   %26 = builtin Println(%25)  // effect
   return %26

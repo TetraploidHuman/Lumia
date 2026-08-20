@@ -1,0 +1,64 @@
+module bench_task
+import std.io.{println}
+import std.concurrent.{Scheduler}
+
+/// Task/Channel microbench scenarios (Release via scripts/bench_task.sh).
+/// Prints one checksum line per scenario (stable across WORKERS=0/1/2).
+
+val fan_in = { n ->
+    val ch = channel(64)
+    scope(Scheduler.worker) {
+        for i in 1..n {
+            spawn {
+                ch.send(i)
+                0
+            }
+        }
+        var sum = 0
+        for k in 1..n {
+            sum = sum + ch.recv()
+        }
+        sum
+    }
+}
+
+val join_many = { n ->
+    scope {
+        var sum = 0
+        for i in 1..n {
+            val t = spawn { i }
+            sum = sum + t.join()
+        }
+        sum
+    }
+}
+
+val pingpong = { rounds ->
+    val req = channel(1)
+    val resp = channel(1)
+    scope {
+        val echo = spawn {
+            for i in 1..rounds {
+                val x = req.recv()
+                resp.send(x)
+            }
+            0
+        }
+        val client = spawn {
+            var sum = 0
+            for i in 1..rounds {
+                req.send(i)
+                sum = sum + resp.recv()
+            }
+            sum
+        }
+        val _ = echo.join()
+        client.join()
+    }
+}
+
+val main = {
+    println(fan_in(256))
+    println(join_many(256))
+    println(pingpong(500))
+}

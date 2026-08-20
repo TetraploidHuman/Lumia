@@ -4,6 +4,8 @@ use super::ctx::{LowerCtx, LowerError};
 use super::expr::push_lowered_val;
 use crate::ast::{AdtDef, AdtVariant, CtorInfo, Expr, Fun, Item, Module, ProductDef};
 use crate::match_check::check_module_matches;
+use crate::sym_util::synthetic;
+use lumia_syntax::Sym;
 use lumia_syntax::VariantFields;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
@@ -61,7 +63,6 @@ struct TypeScan {
     ctors: HashMap<String, CtorInfo>,
     product_map: HashMap<String, Vec<String>>,
     product_fields: HashMap<String, (String, usize)>,
-    product_field_owners: HashMap<String, Vec<(String, usize)>>,
     ambiguous_product_fields: HashSet<String>,
 }
 
@@ -71,7 +72,6 @@ fn scan_type_decls(m: &lumia_syntax::Module) -> TypeScan {
     let mut ctors = HashMap::default();
     let mut product_map = HashMap::default();
     let mut product_fields = HashMap::default();
-    let mut product_field_owners: HashMap<String, Vec<(String, usize)>> = HashMap::default();
     let mut ambiguous_product_fields: HashSet<String> = HashSet::default();
     for item in &m.items {
         if let lumia_syntax::Item::Type(t) = item {
@@ -81,11 +81,11 @@ fn scan_type_decls(m: &lumia_syntax::Module) -> TypeScan {
                     for (tag, v) in variants.iter().enumerate() {
                         let arity = match &v.fields {
                             VariantFields::Unit => 0,
-                            VariantFields::Positional(n) => *n,
+                            VariantFields::Positional(names) => names.len(),
                             VariantFields::Named(fs) => fs.len(),
                         };
                         ctors.insert(
-                            v.name.clone(),
+                            v.name.to_string(),
                             CtorInfo {
                                 adt_name: t.name.clone(),
                                 tag: tag as i64,
@@ -105,23 +105,21 @@ fn scan_type_decls(m: &lumia_syntax::Module) -> TypeScan {
                 }
                 lumia_syntax::TypeKind::Product(fields) => {
                     for (i, f) in fields.iter().enumerate() {
-                        product_field_owners
-                            .entry(f.clone())
-                            .or_default()
-                            .push((t.name.clone(), i));
-                        match product_fields.get(f) {
+                        match product_fields.get(f.as_str()) {
                             Some((prev, _)) if prev != &t.name => {
-                                // Same field name on two products → resolve via receiver/`with` base type.
-                                ambiguous_product_fields.insert(f.clone());
+                                ambiguous_product_fields.insert(f.to_string());
                             }
                             None => {
-                                product_fields.insert(f.clone(), (t.name.clone(), i));
+                                product_fields.insert(f.to_string(), (t.name.to_string(), i));
                             }
-                            Some(_) => {} // same type re-decl shouldn't happen
+                            Some(_) => {}
                         }
                     }
-                    let fields = fields.clone();
-                    product_map.insert(t.name.clone(), fields.clone());
+                    let fields: Vec<Sym> = fields.clone();
+                    product_map.insert(
+                        t.name.to_string(),
+                        fields.iter().map(|s| s.to_string()).collect(),
+                    );
                     products.push(ProductDef {
                         name: t.name.clone(),
                         fields,
@@ -131,15 +129,16 @@ fn scan_type_decls(m: &lumia_syntax::Module) -> TypeScan {
         }
     }
     // Prelude ADTs: inject Option / Result when the module does not declare them.
-    ensure_prelude_adt(&mut adts, &mut ctors, "Option", &[("Some", 1), ("None", 0)]);
-    ensure_prelude_adt(&mut adts, &mut ctors, "Result", &[("Ok", 1), ("Err", 1)]);
+    for adt in crate::langitem::PRELUDE_ADTS {
+        let variants = adt.variant_arities();
+        ensure_prelude_adt(&mut adts, &mut ctors, adt.name, &variants);
+    }
     TypeScan {
         adts,
         products,
         ctors,
         product_map,
         product_fields,
-        product_field_owners,
         ambiguous_product_fields,
     }
 }
@@ -149,60 +148,65 @@ fn collect_instances(
     adts: &[AdtDef],
     product_map: &HashMap<String, Vec<String>>,
     trait_requires: &mut HashMap<String, Vec<String>>,
-) -> Result<HashSet<(String, String)>, LowerError> {
-    let mut instances: HashSet<(String, String)> = HashSet::default();
+) -> Result<HashSet<(Sym, Sym)>, LowerError> {
+    let mut instances: HashSet<(Sym, Sym)> = HashSet::default();
+    // Pass 1: register all traits (order vs `instance` must not matter; `type` already is).
     for item in &m.items {
-        match item {
-            lumia_syntax::Item::Trait(t) => {
-                trait_requires.insert(t.name.clone(), t.requires.clone());
+        if let lumia_syntax::Item::Trait(t) = item {
+            trait_requires.insert(
+                t.name.to_string(),
+                t.requires.iter().map(|r| r.to_string()).collect(),
+            );
+        }
+    }
+    // Pass 2: validate instances against known types + traits.
+    for item in &m.items {
+        if let lumia_syntax::Item::Instance(i) = item {
+            let known_type = product_map.contains_key(i.type_name.as_str())
+                || adts.iter().any(|a| a.name == i.type_name);
+            if !known_type {
+                return Err(LowerError {
+                    message: format!(
+                        "instance {} for {}: unknown type `{}`",
+                        i.trait_name, i.type_name, i.type_name
+                    ),
+                    span: i.span,
+                });
             }
-            lumia_syntax::Item::Instance(i) => {
-                let known_type = product_map.contains_key(&i.type_name)
-                    || adts.iter().any(|a| a.name == i.type_name);
-                if !known_type {
-                    return Err(LowerError {
-                        message: format!(
-                            "instance {} for {}: unknown type `{}`",
-                            i.trait_name, i.type_name, i.type_name
-                        ),
-                        span: i.span,
-                    });
-                }
-                if !trait_requires.contains_key(&i.trait_name) {
-                    return Err(LowerError {
-                        message: format!(
-                            "instance for unknown trait `{}` (declare `trait {} {{ }}` first)",
-                            i.trait_name, i.trait_name
-                        ),
-                        span: i.span,
-                    });
-                }
-                instances.insert((i.trait_name.clone(), i.type_name.clone()));
+            if !trait_requires.contains_key(i.trait_name.as_str()) {
+                return Err(LowerError {
+                    message: format!(
+                        "instance for unknown trait `{}` (no `trait {}` in this module)",
+                        i.trait_name, i.trait_name
+                    ),
+                    span: i.span,
+                });
             }
-            _ => {}
+            instances.insert((i.trait_name.clone(), i.type_name.clone()));
         }
     }
     // Auto-derive Eq / Show for products and sums (DESIGN §3.6).
     // Hash / Ord / Num stay opt-in: Hash gates Map/Set hash tables; Ord/Num are stronger claims.
     for name in product_map
         .keys()
-        .cloned()
+        .map(|s| Sym::from(s.as_str()))
         .chain(adts.iter().map(|a| a.name.clone()))
     {
         for tr in ["Eq", "Show"] {
-            instances.insert((tr.into(), name.clone()));
+            instances.insert((Sym::from(tr), name.clone()));
         }
     }
     for (tr, ty) in &instances {
-        if let Some(reqs) = trait_requires.get(tr) {
+        if let Some(reqs) = trait_requires.get(tr.as_str()) {
             for req in reqs {
-                if !instances.contains(&(req.clone(), ty.clone())) {
+                if !instances.contains(&(Sym::from(req.as_str()), ty.clone())) {
                     let span = m
                         .items
                         .iter()
                         .find_map(|it| match it {
                             lumia_syntax::Item::Instance(i)
-                                if i.trait_name == *tr && i.type_name == *ty =>
+                                if i.trait_name.as_str() == tr.as_str()
+                                    && i.type_name.as_str() == ty.as_str() =>
                             {
                                 Some(i.span)
                             }
@@ -236,11 +240,11 @@ fn collect_toplevel_funs(m: &lumia_syntax::Module) -> HashSet<String> {
                         lumia_syntax::Expr::Lambda { .. } | lumia_syntax::Expr::Block { .. }
                     );
                 if is_fun {
-                    toplevel_funs.insert(v.name.clone());
+                    toplevel_funs.insert(v.name.to_string());
                 }
             }
             lumia_syntax::Item::Foreign(f) => {
-                toplevel_funs.insert(f.name.clone());
+                toplevel_funs.insert(f.name.to_string());
             }
             _ => {}
         }
@@ -256,19 +260,21 @@ fn collect_fold_assoc(m: &lumia_syntax::Module) -> HashSet<String> {
                 if params.len() == 2
                     && crate::list_hof::syntax_fold_body_is_associative(
                         &v.body,
-                        &params[0].0,
-                        &params[1].0,
+                        &params[0].0.as_str(),
+                        &params[1].0.as_str(),
                     )
                 {
-                    toplevel_fold_assoc.insert(v.name.clone());
+                    toplevel_fold_assoc.insert(v.name.to_string());
                 }
             } else if let lumia_syntax::Expr::Lambda { params, body, .. } = &v.body {
                 if params.len() == 2
                     && crate::list_hof::syntax_fold_body_is_associative(
-                        body, &params[0], &params[1],
+                        body,
+                        &params[0].as_str(),
+                        &params[1].as_str(),
                     )
                 {
-                    toplevel_fold_assoc.insert(v.name.clone());
+                    toplevel_fold_assoc.insert(v.name.to_string());
                 }
             }
         }
@@ -277,13 +283,30 @@ fn collect_fold_assoc(m: &lumia_syntax::Module) -> HashSet<String> {
 }
 
 pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
+    let (module, errs) = lower_module_collecting(m)?;
+    match errs.into_iter().next() {
+        Some(e) => Err(e),
+        None => Ok(module),
+    }
+}
+
+/// Lower even when soft diagnostics were recorded (keeps the module for IDE recovery).
+pub fn lower_module_recovering(m: &lumia_syntax::Module) -> (Option<Module>, Vec<LowerError>) {
+    match lower_module_collecting(m) {
+        Ok((module, errs)) => (Some(module), errs),
+        Err(e) => (None, vec![e]),
+    }
+}
+
+fn lower_module_collecting(
+    m: &lumia_syntax::Module,
+) -> Result<(Module, Vec<LowerError>), LowerError> {
     let TypeScan {
         adts,
         products,
         ctors,
         product_map,
         mut product_fields,
-        product_field_owners,
         ambiguous_product_fields,
     } = scan_type_decls(m);
 
@@ -299,10 +322,9 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
         product_fields.remove(f);
     }
     // trait name → (method name → default body)
-    let mut trait_defaults: HashMap<String, HashMap<String, lumia_syntax::ValItem>> =
-        HashMap::default();
+    let mut trait_defaults: HashMap<Sym, HashMap<Sym, lumia_syntax::ValItem>> = HashMap::default();
     // method → trait (reject duplicate short names across traits at lower time).
-    let mut method_traits: HashMap<String, String> = HashMap::default();
+    let mut method_traits: HashMap<Sym, Sym> = HashMap::default();
     for item in &m.items {
         if let lumia_syntax::Item::Trait(t) = item {
             let mut ms = HashMap::default();
@@ -335,32 +357,24 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
         ctors,
         product_map,
         product_fields,
-        product_field_owners,
         ambiguous_product_fields,
         toplevel_funs,
         toplevel_fold_assoc,
     );
 
     let mut items = Vec::new();
-    let mut show_methods = HashMap::default();
     // (type, method) → mangled `__Trait_Type_method` (may be multi-trait).
-    let mut trait_methods: HashMap<(String, String), Vec<String>> = HashMap::default();
+    let mut trait_methods: HashMap<(Sym, Sym), Vec<Sym>> = HashMap::default();
     let mut lowered_methods: HashSet<String> = HashSet::default();
-    let note_method =
-        |tr: &str,
-         ty: &str,
-         method: &str,
-         mangled: String,
-         show_methods: &mut HashMap<String, String>,
-         trait_methods: &mut HashMap<(String, String), Vec<String>>| {
-            trait_methods
-                .entry((ty.to_string(), method.to_string()))
-                .or_default()
-                .push(mangled.clone());
-            if tr == "Show" && method == "show" {
-                show_methods.insert(ty.to_string(), mangled);
-            }
-        };
+    let note_method = |ty: &Sym,
+                       method: &Sym,
+                       mangled: &str,
+                       trait_methods: &mut HashMap<(Sym, Sym), Vec<Sym>>| {
+        trait_methods
+            .entry((ty.clone(), method.clone()))
+            .or_default()
+            .push(synthetic(mangled));
+    };
     for item in &m.items {
         match item {
             lumia_syntax::Item::Val(v) => {
@@ -371,16 +385,9 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
                 for method in &i.methods {
                     let mangled =
                         crate::mangle_trait_method(&i.trait_name, &i.type_name, &method.name);
-                    push_lowered_val(&ctx, &mut items, method, &mangled);
+                    push_lowered_val(&ctx, &mut items, method, &synthetic(&mangled));
                     lowered_methods.insert(mangled.clone());
-                    note_method(
-                        &i.trait_name,
-                        &i.type_name,
-                        &method.name,
-                        mangled,
-                        &mut show_methods,
-                        &mut trait_methods,
-                    );
+                    note_method(&i.type_name, &method.name, &mangled, &mut trait_methods);
                 }
                 if let Some(defaults) = trait_defaults.get(&i.trait_name) {
                     for (method_name, default) in defaults {
@@ -389,14 +396,12 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
                         if lowered_methods.contains(&mangled) {
                             continue;
                         }
-                        push_lowered_val(&ctx, &mut items, default, &mangled);
+                        push_lowered_val(&ctx, &mut items, default, &synthetic(&mangled));
                         lowered_methods.insert(mangled.clone());
                         note_method(
-                            &i.trait_name,
                             &i.type_name,
-                            method_name,
-                            mangled,
-                            &mut show_methods,
+                            &Sym::from(method_name.as_str()),
+                            &mangled,
                             &mut trait_methods,
                         );
                     }
@@ -409,7 +414,7 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
                         f.span,
                     );
                 }
-                let params: Vec<String> = f.params.iter().map(|(n, _)| n.clone()).collect();
+                let params: Vec<Sym> = f.params.iter().map(|(n, _)| n.clone()).collect();
                 let param_tys: Vec<String> = f.params.iter().map(|(_, t)| t.clone()).collect();
                 items.push(Item::Fun(Fun {
                     name: f.name.clone(),
@@ -417,10 +422,12 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
                     param_ann: vec![],
                     ret_ann: None,
                     body: Expr::Unit(f.span),
+                    span: f.span,
                     is_main: false,
                     external: Some(f.name.clone()),
                     foreign_sig: Some((param_tys, f.ret.clone())),
                     foreign_pure: f.is_pure,
+                    is_priv: false,
                 }));
             }
         }
@@ -431,12 +438,63 @@ pub fn lower_module(m: &lumia_syntax::Module) -> Result<Module, LowerError> {
         adts,
         products,
         instances,
-        show_methods,
         trait_methods,
-        method_traits,
+        method_traits: method_traits
+            .into_iter()
+            .map(|(k, v)| (Sym::from(k.as_str()), Sym::from(v.as_str())))
+            .collect(),
     };
-    if let Some(err) = ctx.take_err() {
-        return Err(err);
+    Ok((module, ctx.take_errs()))
+}
+
+#[cfg(test)]
+mod lower_err_tests {
+    use super::{lower_module, lower_module_recovering};
+    use lumia_syntax::parse_module;
+
+    #[test]
+    fn lower_reports_source_order_first_error() {
+        let src = r#"
+module Main
+type Opt { Some(v) None }
+val main = {
+  val BadCtor(x) = None
+  val AlsoBad(y) = None
+  0
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let err = lower_module(&ast).expect_err("expected lower error");
+        assert!(
+            err.message.contains("irrefutable"),
+            "unexpected: {}",
+            err.message
+        );
+        // Source-order: BadCtor before AlsoBad (inside-out lower used to keep AlsoBad).
+        let also_bad = src.find("AlsoBad").expect("AlsoBad in source") as u32;
+        assert!(
+            err.span.start.0 < also_bad,
+            "expected BadCtor span before AlsoBad@{also_bad}, got {:?}",
+            err.span
+        );
     }
-    Ok(module)
+
+    #[test]
+    fn lower_recovering_collects_both_irrefutable_errors() {
+        let src = r#"
+module Main
+type Opt { Some(v) None }
+val main = {
+  val BadCtor(x) = None
+  val AlsoBad(y) = None
+  0
+}
+"#;
+        let ast = parse_module(src).unwrap();
+        let (module, errs) = lower_module_recovering(&ast);
+        assert!(module.is_some());
+        assert_eq!(errs.len(), 2, "errs={errs:?}");
+        assert!(errs.iter().all(|e| e.message.contains("irrefutable")));
+        assert!(errs[0].span.start.0 < errs[1].span.start.0);
+    }
 }
