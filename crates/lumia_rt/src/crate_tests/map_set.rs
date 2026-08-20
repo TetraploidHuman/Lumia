@@ -130,6 +130,42 @@ fn map_unique_hash_demote_is_in_place() {
 }
 
 #[test]
+fn set_unique_hash_grows_without_overlay() {
+    let mut s: *mut u8 = ptr::null_mut();
+    unsafe { lumia_root_push(&mut s as *mut *mut u8) };
+    for i in 0..64 {
+        s = unsafe { lumia_set_insert(s, i) };
+        assert!(
+            !set_is_overlay(s),
+            "unique set builder must grow hash in place, not overlay (i={i})"
+        );
+    }
+    assert!(set_is_hash(s));
+    assert_eq!(set_count(s), 64);
+    for i in 0..64 {
+        assert_eq!(unsafe { lumia_set_contains(s, i) }, 1);
+    }
+    lumia_root_pop();
+}
+
+#[test]
+fn map_unique_hash_grows_without_overlay() {
+    let mut m: *mut u8 = ptr::null_mut();
+    unsafe { lumia_root_push(&mut m as *mut *mut u8) };
+    for i in 0..64 {
+        m = unsafe { lumia_map_set(m, i, i * 3) };
+        assert!(
+            !map_is_overlay(m),
+            "unique map builder must grow hash in place, not overlay (i={i})"
+        );
+    }
+    assert!(map_is_hash(m));
+    assert_eq!(map_count(m), 64);
+    assert_eq!(unsafe { lumia_map_contains(m, 63) }, 1);
+    lumia_root_pop();
+}
+
+#[test]
 fn set_unique_hash_remove_is_in_place() {
     let mut s: *mut u8 = ptr::null_mut();
     unsafe { lumia_root_push(&mut s as *mut *mut u8) };

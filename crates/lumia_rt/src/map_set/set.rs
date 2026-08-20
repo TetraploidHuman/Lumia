@@ -346,36 +346,44 @@ pub(crate) unsafe fn set_materialize(set: *mut u8) -> *mut u8 {
     let parent = set_materialize(set_overlay_parent(set));
     let dn = set_overlay_dn(set) as usize;
     let base = set as *const i64;
-    let mut dest = if set_is_hash(parent) || set_count(parent) + dn as i64 > SET_SMALL_MAX {
-        if set_is_hash(parent) {
-            let pbase = parent as *const i64;
-            let n = *pbase;
-            let cap = *pbase.add(1) as usize;
-            let out = set_alloc_hash_tid(cap, 0, set_tid(parent));
-            for i in 0..n as usize {
-                set_hash_put_new(out, set_elem_at(parent, i), i);
-            }
-            *(out as *mut i64) = n;
-            out
+    let parent_n = set_count(parent) as usize;
+    // Worst-case size if every delta is new (dups are skipped by insert_build).
+    let total = parent_n + dn;
+    if set_is_hash(parent) || total as i64 > SET_SMALL_MAX {
+        let mut cap = if set_is_hash(parent) {
+            *(parent as *const i64).add(1) as usize
         } else {
-            set_from_linear_to_hash(parent, None)
+            16
+        };
+        while total * 2 > cap {
+            cap = cap.saturating_mul(2).max(16);
         }
+        let dest = set_alloc_hash_tid(cap, 0, set_tid(parent));
+        for i in 0..parent_n {
+            set_hash_put_new(dest, set_elem_at(parent, i), i);
+        }
+        *(dest as *mut i64) = parent_n as i64;
+        for i in 0..dn {
+            set_hash_insert_build(dest, *base.add(3 + i));
+        }
+        dest
     } else {
-        let n = set_count(parent);
-        let nbytes = set_linear_nbytes(n) as u64;
-        let out = lumia_alloc(nbytes, set_tid(parent));
-        if !parent.is_null() {
-            ptr::copy_nonoverlapping(parent, out, nbytes as usize);
-        } else {
-            *(out as *mut i64) = 0;
+        let mut dest = {
+            let nbytes = set_linear_nbytes(parent_n as i64) as u64;
+            let out = lumia_alloc(nbytes, set_tid(parent));
+            if !parent.is_null() {
+                ptr::copy_nonoverlapping(parent, out, nbytes as usize);
+            } else {
+                *(out as *mut i64) = 0;
+            }
+            out
+        };
+        for i in 0..dn {
+            let e = *base.add(3 + i);
+            dest = set_clone_insert_no_overlay(dest, e);
         }
-        out
-    };
-    for i in 0..dn {
-        let e = *base.add(3 + i);
-        dest = set_clone_insert_no_overlay(dest, e);
+        dest
     }
-    dest
 }
 
 /// Insert without creating a new overlay (used while materializing).
@@ -547,7 +555,9 @@ pub unsafe extern "C" fn lumia_set_insert(set: *mut u8, elem: i64) -> *mut u8 {
             *dst.add(1 + n as usize) = elem;
             return dest;
         }
-        // Unique HashOrdered: insert in place while load factor allows.
+        // Unique HashOrdered: insert in place, or grow+rehash once when full.
+        // Spilling unique-but-full to Overlay forces materialize's multi-rehash path
+        // on every subsequent insert (disastrous for large unique builders).
         if map_rc_is_unique(set) {
             let base = set as *mut i64;
             let n = *base;
@@ -557,8 +567,9 @@ pub unsafe extern "C" fn lumia_set_insert(set: *mut u8, elem: i64) -> *mut u8 {
                 *base = n + 1;
                 return set;
             }
+            return set_clone_insert_no_overlay(set, elem);
         }
-        // Shared (or unique-but-full) HashOrdered → Overlay.
+        // Shared HashOrdered → Overlay (avoid full table clone on persist).
         set_alloc_overlay(set, &[elem])
     }
 }

@@ -12,7 +12,7 @@ use crate::common::{
 };
 use crate::gc::{list_payload_bytes, lumia_alloc};
 use crate::list::{force_heap_list, list_len_of};
-use crate::map_set::{map_count, set_count, set_elem_at};
+use crate::map_set::{map_count, set_count, set_elem_at, set_is_overlay, set_materialize};
 use lumia_abi::{is_list_tid, is_map_tid, is_set_tid};
 
 /// # Safety
@@ -91,7 +91,13 @@ pub unsafe extern "C" fn lumia_elems(obj: *mut u8) -> *mut u8 {
         tid if tid_base(tid) == TYPE_LIST => obj,
         TYPE_LIST_IOTA => force_heap_list(obj),
         tid if is_set_tid(tid) => unsafe {
-            let n = set_count(obj);
+            // Materialize overlays once — `set_elem_at` would re-flatten per index.
+            let flat = if set_is_overlay(obj) {
+                set_materialize(obj)
+            } else {
+                obj
+            };
+            let n = set_count(flat);
             let nbytes = list_payload_bytes(n);
             let dest_tid = lumia_abi::list_type_id_flags(
                 lumia_abi::set_elem_is_float(tid),
@@ -101,7 +107,7 @@ pub unsafe extern "C" fn lumia_elems(obj: *mut u8) -> *mut u8 {
             let dst = dest as *mut i64;
             *dst = n;
             for i in 0..n as usize {
-                *dst.add(1 + i) = set_elem_at(obj, i);
+                *dst.add(1 + i) = set_elem_at(flat, i);
             }
             dest
         },

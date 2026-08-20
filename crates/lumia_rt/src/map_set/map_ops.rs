@@ -17,9 +17,9 @@ use crate::list::force_heap_list;
 
 use super::map_core::{
     alloc_adt_none_immortal, alloc_adt_with_meta, linear_grow_cap, map_alloc_hash_tid,
-    map_alloc_overlay, map_find, map_from_linear_to_hash, map_hash_find_slot, map_hash_put_new,
-    map_is_hash, map_is_overlay, map_linear_nbytes, map_linear_pair_capacity, map_lookup_val,
-    map_materialize, map_overlay_dn, map_overlay_parent, map_pair_at, MAP_SMALL_MAX,
+    map_alloc_overlay, map_clone_hash_upsert, map_find, map_from_linear_to_hash, map_hash_find_slot,
+    map_hash_put_new, map_is_hash, map_is_overlay, map_linear_nbytes, map_linear_pair_capacity,
+    map_lookup_val, map_materialize, map_overlay_dn, map_overlay_parent, map_pair_at, MAP_SMALL_MAX,
 };
 use super::overlay::{overlay_compact_entries, overlay_entry_capacity, MAP_OVERLAY_MAX};
 use super::tid::{key_eq, map_float_keys, map_float_vals, map_is_assoc, map_tid};
@@ -186,7 +186,7 @@ pub unsafe extern "C" fn lumia_map_set(map: *mut u8, key: i64, val: i64) -> *mut
             *dst.add(2 + n as usize * 2) = val;
             return dest;
         }
-        // Unique HashOrdered: update / insert in place while load factor allows.
+        // Unique HashOrdered: update / insert in place, or grow+rehash once when full.
         if map_rc_is_unique(map) {
             let base = map as *mut i64;
             let n = *base;
@@ -204,8 +204,9 @@ pub unsafe extern "C" fn lumia_map_set(map: *mut u8, key: i64, val: i64) -> *mut
                 *base = n + 1;
                 return map;
             }
+            return map_clone_hash_upsert(map, key, val);
         }
-        // Shared (or unique-but-full) HashOrdered → Overlay (avoid full table clone).
+        // Shared HashOrdered → Overlay (avoid full table clone on persist).
         map_alloc_overlay(map, &[(key, val)])
     }
 }

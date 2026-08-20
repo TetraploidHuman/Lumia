@@ -156,6 +156,7 @@ pub(crate) unsafe fn map_lookup_val(map: *mut u8, key: i64) -> Option<i64> {
 }
 
 /// Flatten overlay (and nested overlays) into a HashOrdered or linear map.
+/// Flatten overlay (and nested overlays) into HashOrdered or linear.
 pub(crate) unsafe fn map_materialize(map: *mut u8) -> *mut u8 {
     // Multi-alloc helper: keep intermediates alive across soft-threshold GC.
     let _gc = GcInhibitGuard::enter();
@@ -165,37 +166,59 @@ pub(crate) unsafe fn map_materialize(map: *mut u8) -> *mut u8 {
     let parent = map_materialize(map_overlay_parent(map));
     let dn = map_overlay_dn(map) as usize;
     let base = map as *const i64;
-    let mut dest = if map_is_hash(parent) || map_count(parent) + dn as i64 > MAP_SMALL_MAX {
-        // Start from hash clone of parent
+    let parent_n = map_count(parent) as usize;
+    let total = parent_n + dn;
+    if map_is_hash(parent) || total as i64 > MAP_SMALL_MAX {
+        let mut cap = if map_is_hash(parent) {
+            *(parent as *const i64).add(1) as usize
+        } else {
+            16
+        };
+        while total * 2 > cap {
+            cap = cap.saturating_mul(2).max(16);
+        }
+        let dest = map_alloc_hash_tid(cap, 0, map_tid(parent));
         if map_is_hash(parent) {
             let pbase = parent as *const i64;
-            let n = *pbase;
-            let cap = *pbase.add(1) as usize;
-            let out = map_alloc_hash_tid(cap, 0, map_tid(parent));
-            for i in 0..n as usize {
+            for i in 0..parent_n {
                 let s = *pbase.add(2 + i) as usize;
-                let cell = pbase.add(2 + cap + s * 3);
-                map_hash_put_new(out, *cell, *cell.add(1), i);
+                let pcap = *pbase.add(1) as usize;
+                let cell = pbase.add(2 + pcap + s * 3);
+                map_hash_put_new(dest, *cell, *cell.add(1), i);
             }
-            *(out as *mut i64) = n;
-            out
         } else {
-            map_from_linear_to_hash(parent, None)
+            let pbase = parent as *const i64;
+            for i in 0..parent_n {
+                map_hash_put_new(
+                    dest,
+                    *pbase.add(1 + i * 2),
+                    *pbase.add(2 + i * 2),
+                    i,
+                );
+            }
         }
+        *(dest as *mut i64) = parent_n as i64;
+        for i in 0..dn {
+            let k = *base.add(3 + i * 2);
+            let v = *base.add(4 + i * 2);
+            map_hash_upsert_build(dest, k, v);
+        }
+        dest
     } else {
-        // Stay linear: copy parent then apply deltas via set path below
-        let n = map_count(parent);
-        let nbytes = map_linear_nbytes(n) as u64;
-        let out = lumia_alloc(nbytes, map_tid(parent));
-        ptr::copy_nonoverlapping(parent, out, nbytes as usize);
-        out
-    };
-    for i in 0..dn {
-        let k = *base.add(3 + i * 2);
-        let v = *base.add(4 + i * 2);
-        dest = map_clone_hash_upsert_or_linear(dest, k, v);
+        let nbytes = map_linear_nbytes(parent_n as i64) as u64;
+        let mut dest = lumia_alloc(nbytes, map_tid(parent));
+        if !parent.is_null() {
+            ptr::copy_nonoverlapping(parent, dest, nbytes as usize);
+        } else {
+            *(dest as *mut i64) = 0;
+        }
+        for i in 0..dn {
+            let k = *base.add(3 + i * 2);
+            let v = *base.add(4 + i * 2);
+            dest = map_clone_hash_upsert_or_linear(dest, k, v);
+        }
+        dest
     }
-    dest
 }
 
 pub(crate) unsafe fn map_clone_hash_upsert_or_linear(map: *mut u8, key: i64, val: i64) -> *mut u8 {
