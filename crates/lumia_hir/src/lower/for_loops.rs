@@ -4,7 +4,26 @@ use super::ctx::LowerCtx;
 use super::expr::lower_expr;
 use crate::ast::{Builtin, Expr};
 use crate::sym_util::synthetic;
-use lumia_syntax::{BinOp, Span};
+use lumia_syntax::{BinOp, Span, Sym};
+use std::sync::atomic::{AtomicU32, Ordering};
+
+/// Nested `list_for_in` / `counter_for_in` often share one HIR `span` (HOF fusion).
+/// Span-only temps collide: the inner mutable index overwrites the outer and the
+/// outer loop exits early (e.g. `flatMap(...).len()` counting only one chunk).
+static FOR_TEMP_SEQ: AtomicU32 = AtomicU32::new(0);
+
+fn next_for_temp_id() -> u32 {
+    FOR_TEMP_SEQ.fetch_add(1, Ordering::Relaxed)
+}
+
+fn for_index_sym(span: Span) -> Sym {
+    synthetic(format!(
+        "{}{}_{}",
+        crate::desugar_slots::FOR_INDEX_PREFIX,
+        span.start.0,
+        next_for_temp_id()
+    ))
+}
 
 pub(crate) fn lower_for_in(
     ctx: &LowerCtx,
@@ -95,11 +114,7 @@ pub(crate) fn counter_for_in(
     body: Expr,
     span: Span,
 ) -> Expr {
-    let i = synthetic(format!(
-        "{}{}",
-        crate::desugar_slots::FOR_INDEX_PREFIX,
-        span.start.0
-    ));
+    let i = for_index_sym(span);
     let cmp = if inclusive { BinOp::Le } else { BinOp::Lt };
     let cond = Expr::Binary {
         op: cmp,
@@ -164,13 +179,15 @@ pub(crate) fn counter_for_in(
 }
 
 pub(crate) fn list_for_in(binding: &str, list: Expr, body: Expr, span: Span) -> Expr {
-    let xs = synthetic(format!("__xs_{}", span.start.0));
+    let tid = next_for_temp_id();
+    let xs = synthetic(format!("__xs_{}_{}", span.start.0, tid));
     let i = synthetic(format!(
-        "{}{}",
+        "{}{}_{}",
         crate::desugar_slots::FOR_INDEX_PREFIX,
-        span.start.0
+        span.start.0,
+        tid
     ));
-    let n = synthetic(format!("__n_{}", span.start.0));
+    let n = synthetic(format!("__n_{}_{}", span.start.0, tid));
     // Map is key-addressed; normalize to an indexable List (keys) first.
     let list = Expr::BuiltinCall {
         name: Builtin::Elems,

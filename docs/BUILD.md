@@ -219,7 +219,8 @@ Codegen 与当前 `MarkSweep`（进程堆）共用；换收集器时优先只改
 - Dense float（热路径）：`scripts/bench_cn_hot.sh` / `bench_cn_step.sh`（`extras.linalg` vs `--no-dense-f64-sr` 标量循环；SR 开启时两边 LLVM 等价 ≈1.0×）。
 - Dense float（整步）：`scripts/bench_cn_step.sh`（sensory fill/scale/add + gate mul + decay + PC/Hebbian；扩展 SR 面）。
 - EFE action scores：`scripts/bench_cn_efe.sh`（imagine+G(a) naive vs fused `lumia_efe_action_scores`）。
-- **聚合回归**：`scripts/bench_all.sh` 依次跑 cpu / memo / cn_* / **task**（改调度/GC 时应用此入口）。
+- **应用级 / 生产形**：`scripts/bench_app.sh`（`bench_app.lm`：word_freq / pipe_hof / map_bulk / set_churn；另进程 `bench_str.lm` 字符串管线）、`scripts/bench_gc.sh`（list/map churn + nest/COW retain）、`scripts/bench_task_load.sh`（宽 fan-in / join 树 / pipeline / 长 pingpong）、`scripts/bench_compile.sh`（`check`/`build --release` 墙钟+RSS）。
+- **聚合回归**：`scripts/bench_all.sh` 依次跑 cpu / memo / cn_* / task / **app / gc / task_load / compile**（改调度/GC/前端时应用此入口；可用 `SKIP_APP` / `SKIP_GC` / `SKIP_TASK_LOAD` / `SKIP_COMPILE` 裁剪）。
 - Task/Channel：`scripts/bench_task.sh`（`bench_task.lm` checksum + WORKERS=0/1/2 时间/RSS + RT `task::stress`）。
 - **峰值 RSS**：`scripts/bench_measure.sh` 经小型 C 父进程 `wait4`（`scripts/peak_rss.c`，**Linux-only**）取样；勿用大 RSS 的 Python `subprocess` fork——COW 会把解释器常驻内存算进子进程 `ru_maxrss`。Release 链接加 `--gc-sections` 丢掉未引用的 `lumia_rt`/Rust-std 目标文件，降低基线 RSS（macOS `-dead_strip` 仅为实验宿主逃生舱，非产品目标）。
 - **纪律（DESIGN §7.1.1）**：分析能证明 → 特化；不能证明 → **默认稳定路径**：
@@ -301,6 +302,11 @@ cargo run -p lumia -- build examples/guide/memo_local.lm -o /tmp/memo_local && /
 #   ./scripts/bench_all.sh
 # Task/Channel (WORKERS=0/1/2 + RT stress):
 #   ./scripts/bench_task.sh
+# Production-shaped (app / GC / task load / compile latency):
+#   ./scripts/bench_app.sh
+#   ./scripts/bench_gc.sh
+#   ./scripts/bench_task_load.sh
+#   ./scripts/bench_compile.sh
 cargo run -p lumia -- build examples/guide/mapset.lm -o /tmp/ms && /tmp/ms
 ```
 
@@ -315,7 +321,7 @@ cargo run -p lumia -- build examples/guide/mapset.lm -o /tmp/ms && /tmp/ms
 | Scope / 取消 | 进程 `scopes` + park；`reclaim_home`；`force_reset` 仅 RT suspend |
 | Task/Channel GC | result unpin；spawn/`channel_new` 写 `abi_handoff`；`try_reap_task`；handle 写回前校验仍为堆指针 |
 | e2e | `task_*` + `task_pingpong`（req/resp） / `task_join_tree` / `task_stress_wide`；coop/multi-worker；`bench_task.lm` checksum |
-| 压测 | RT `task::stress::*`；`./scripts/bench_task.sh`（WORKERS=0/1/2 时间+RSS；并入 `bench_all`） |
+| 压测 | RT `task::stress::*`；`./scripts/bench_task.sh` + `./scripts/bench_task_load.sh`（宽负载；WORKERS=0/1/2 时间+RSS；并入 `bench_all`） |
 
 **真线程池**：§7.7-D 已落地。取消已启动纤程：在 RT `suspend` 点用 corosensei `force_reset` 回收栈（不变式：yield 路径无 Rust `Drop` 局部）。
 

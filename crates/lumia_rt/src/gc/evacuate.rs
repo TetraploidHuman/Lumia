@@ -22,10 +22,43 @@ use lumia_abi::{
     tid_list_patch,
 };
 
+/// True when `payload` bits may legally be passed to [`follow_fwd_payload`].
+///
+/// Small Int/Bool immediates are often 8-byte aligned (`8`, `16`, …) and pass
+/// [`may_be_heap_payload_bits`], but must **not** be dereferenced as headers.
+/// Nursery FWD stamps are forgotten from `live_set` before field rewrite, so
+/// plain [`crate::common::is_heap_payload`] would miss them — accept FWD by tid.
+#[inline]
+unsafe fn payload_bits_are_followable(payload: *mut u8) -> bool {
+    if payload.is_null() || !may_be_heap_payload_bits(payload as i64) {
+        return false;
+    }
+    let h = header_from_payload(payload);
+    if super::nursery::nursery_range_contains_header(h) {
+        // SAFETY: `h` is an aligned address inside the process nursery slab
+        // (still mapped until [`Nursery::rewind`] after field rewrite).
+        let tid = unsafe { (*h).type_id };
+        if tid == TYPE_NURSERY_FWD {
+            return true;
+        }
+        if tid == TYPE_NURSERY_FREE || tid == 0 {
+            return false;
+        }
+        return matches!(super::nursery::nursery_probe_live_header(h), Some(true));
+    }
+    crate::heap::with_heap(|heap| heap.contains_header(h))
+}
+
 /// Follow a nursery forwarding stamp (identity if not forwarded).
+///
+/// Non-heap immediates that sneak past alignment filters are returned unchanged
+/// (see [`payload_bits_are_followable`]).
 #[inline]
 pub(crate) unsafe fn follow_fwd_payload(payload: *mut u8) -> *mut u8 {
     if payload.is_null() {
+        return payload;
+    }
+    if !payload_bits_are_followable(payload) {
         return payload;
     }
     let h = header_from_payload(payload);
@@ -46,6 +79,9 @@ unsafe fn rewrite_i64_slot(slot: *mut i64) {
         return;
     }
     let p = bits as *mut u8;
+    if !payload_bits_are_followable(p) {
+        return;
+    }
     let q = follow_fwd_payload(p);
     if q != p {
         *slot = q as i64;

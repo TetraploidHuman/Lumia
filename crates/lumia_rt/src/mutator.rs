@@ -237,13 +237,16 @@ pub(crate) fn swap_remove_root(index: usize) {
     ensure_mutator_registered();
     ROOTS.with(|r| {
         let mut g = lock_roots(r);
-        let last = g.len().wrapping_sub(1);
+        let len = g.len();
+        if index >= len {
+            // Stale / double-pop from codegen must not panic the process.
+            return;
+        }
+        let last = len - 1;
         if index < last {
             g.swap(index, last);
         }
-        if !g.is_empty() {
-            g.pop();
-        }
+        g.pop();
     });
 }
 

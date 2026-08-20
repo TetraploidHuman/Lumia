@@ -833,6 +833,39 @@ val main = {
 }
 
 #[test]
+fn nested_for_in_temps_unique_under_flatmap_len_fuse() {
+    // flatMap.len nests two list_for_in with the same span; index slots must not collide.
+    let src = r#"
+module M
+val main = {
+  listOf(1, 2).flatMap({ x -> listOf(x, x * 10) }).len()
+}
+"#;
+    let ast = parse_module(src).unwrap();
+    let hir = lower_module(&ast).expect("lower");
+    let body = hir
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Item::Fun(f) if f.name == "main" => Some(&f.body),
+            _ => None,
+        })
+        .expect("main");
+    let mut indices = std::collections::BTreeSet::new();
+    for_each_expr(body, &mut |e| {
+        if let Expr::Let { name, mutable: true, .. } = e {
+            if name.starts_with(crate::desugar_slots::FOR_INDEX_PREFIX) {
+                indices.insert(name.clone());
+            }
+        }
+    });
+    assert!(
+        indices.len() >= 2,
+        "expected distinct nested __i_ temps, got {indices:?}"
+    );
+}
+
+#[test]
 fn flatmap_any_fuses_no_builder() {
     let src = r#"
 module M

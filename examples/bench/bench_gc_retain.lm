@@ -1,0 +1,66 @@
+module BenchGcRetain
+
+import std.io.{println}
+
+/// GC retain / COW soak (Release via `scripts/bench_gc.sh`).
+/// Separate from `bench_gc.lm` churn so nursery state stays honest across collects.
+///
+/// Scenarios:
+///   1. nest_retain — nested list-of-maps that must survive evacuations
+///   2. cow_traffic — unique/shared list updates (COW + patch paths)
+
+val nest_retain_checksum = { outer, inner ->
+    var root = listOf()
+    var i = 0
+    for i < outer {
+        var m = mapOf()
+        var j = 0
+        for j < inner {
+            m = m.set(j, i * inner + j)
+            j = j + 1
+        }
+        root = root.concat(listOf(m))
+        i = i + 1
+    }
+    var junk_rounds = 0
+    var h = root.len()
+    for junk_rounds < outer * 4 {
+        val junk = listOf(junk_rounds, junk_rounds + 1, junk_rounds + 2)
+        h = h + junk.len()
+        junk_rounds = junk_rounds + 1
+    }
+    var k = 0
+    for k < outer {
+        val m = root.get(k)
+        for (kk, v) in m.items() {
+            if kk == 0 {
+                h = h + v
+            }
+            if kk == inner - 1 {
+                h = h + v
+            }
+        }
+        k = k + 1
+    }
+    h % 1000000007
+}
+
+val cow_traffic_checksum = { n, updates ->
+    var xs = range(0, n)
+    xs = xs.concat(listOf(0)).take(n)
+    val shared = xs
+    var h = shared.get(0) + shared.get(n - 1)
+    var u = 0
+    for u < updates {
+        val idx = (u * 7919) % n
+        xs = xs.set(idx, (xs.get(idx) + u + 1) % 10007)
+        h = h + shared.get(idx) + xs.get(idx)
+        u = u + 1
+    }
+    (h + xs.len() + shared.len()) % 1000000007
+}
+
+val main = {
+    println(nest_retain_checksum(120, 16))
+    println(cow_traffic_checksum(100000, 20000))
+}

@@ -68,6 +68,10 @@ impl<'ctx> Codegen<'ctx> {
         let mut then_incoming_i = None;
         let mut then_incoming_f = None;
         if !then_terminated {
+            // Then-only SSA roots must be dropped *before* branching to merge —
+            // emitting `root_pop` after `br` leaves instructions past a terminator
+            // (LLVM verify: "Basic Block … does not have terminator").
+            self.pop_ssa_roots_cross_block(CrossBlockLastUse::IfArm(IfArmExclusive::Then))?;
             let then_bb_end = self
                 .llvm
                 .builder
@@ -78,9 +82,8 @@ impl<'ctx> Codegen<'ctx> {
             crate::error::llvm(self.llvm.builder.build_unconditional_branch(merge_bb))?;
         }
         let then_is_float = matches!(then_raw, BasicValueEnum::FloatValue(_));
-        // Then-only roots die here; refresh the checkpoint so `restore` below does
-        // not resurrect them through the else arm (cross-block last-use).
-        self.pop_ssa_roots_cross_block(CrossBlockLastUse::IfArm(IfArmExclusive::Then))?;
+        // Refresh the checkpoint so `restore` below does not resurrect then-only
+        // roots through the else arm (cross-block last-use).
         entry_ssa = self.frame.ssa_root_stack.clone();
         // Sibling arm must not see musttail / nested pops from `then`.
         self.restore_root_checkpoint(entry_depth, &entry_slots, &entry_ssa);
@@ -98,6 +101,7 @@ impl<'ctx> Codegen<'ctx> {
         let mut else_incoming_i = None;
         let mut else_incoming_f = None;
         if !else_terminated {
+            self.pop_ssa_roots_cross_block(CrossBlockLastUse::IfArm(IfArmExclusive::Else))?;
             let else_bb_end = self
                 .llvm
                 .builder
@@ -110,7 +114,6 @@ impl<'ctx> Codegen<'ctx> {
         let float_merge = then_is_float || matches!(else_raw, BasicValueEnum::FloatValue(_));
 
         // Else-only roots die before merge; refresh so merge checkpoint stays slim.
-        self.pop_ssa_roots_cross_block(CrossBlockLastUse::IfArm(IfArmExclusive::Else))?;
         entry_ssa = self.frame.ssa_root_stack.clone();
         // Merge is only reached from non-tail arms which left roots at entry.
         self.restore_root_checkpoint(entry_depth, &entry_slots, &entry_ssa);

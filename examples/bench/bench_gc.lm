@@ -1,0 +1,66 @@
+module BenchGc
+
+import std.io.{println}
+
+/// GC / heap soak — allocation churn (Release via `scripts/bench_gc.sh`).
+/// Nest/retain + COW traffic live in `bench_gc_retain.lm` (separate process).
+///
+/// Scenarios:
+///   1. list_churn — short-lived lists under a long-lived root (nursery pressure)
+///   2. map_churn  — grow / shrink maps across many GC cycles
+
+/// Keep an early root live while allocating junk that trips soft GC.
+val list_churn_checksum = { rounds, junk_len ->
+    val keep = listOf(1, 2, 3, 5, 8, 13)
+    var h = keep.get(0)
+    var i = 0
+    for i < rounds {
+        var junk = listOf()
+        var j = 0
+        for j < junk_len {
+            junk = junk.concat(listOf(i + j))
+            j = j + 1
+        }
+        h = (h + junk.get(junk_len / 2) + junk.len()) % 1000000007
+        i = i + 1
+    }
+    (h + keep.len() + keep.get(5)) % 1000000007
+}
+
+/// Alternate grow and shrink so Overlay / Hash demote paths stay warm.
+val map_churn_checksum = { n, cycles ->
+    var h = 0
+    var c = 0
+    for c < cycles {
+        var m = mapOf()
+        var i = 0
+        for i < n {
+            m = m.set(i, i * 3 + c)
+            i = i + 1
+        }
+        h = h + m.len()
+        for (k, v) in m.items() {
+            if k % 16 == 0 {
+                h = h + v
+            }
+        }
+        var j = 0
+        for j < n {
+            if j % 2 == 0 {
+                m = m.remove(j)
+            }
+            j = j + 1
+        }
+        h = h + m.len()
+        for (k, v) in m.items() {
+            h = h + k + v
+        }
+        c = c + 1
+    }
+    h % 1000000007
+}
+
+val main = {
+    println(list_churn_checksum(8000, 32))
+    println(map_churn_checksum(4000, 6))
+}
