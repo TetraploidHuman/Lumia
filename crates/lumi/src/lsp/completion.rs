@@ -111,8 +111,9 @@ mod tests {
         assert!(labels.contains(&"listOf"), "{labels:?}");
         assert!(labels.contains(&"setOf"), "{labels:?}");
         assert!(labels.contains(&"mapOf"), "{labels:?}");
-        assert!(labels.contains(&"println"), "{labels:?}");
         assert!(labels.contains(&"len"), "{labels:?}");
+        assert!(!labels.contains(&"println"), "{labels:?}");
+        assert!(!labels.contains(&"__println"), "{labels:?}");
         assert!(!labels.contains(&"adtTag"), "{labels:?}");
     }
 }

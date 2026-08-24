@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 
 use resolve::{load_module_file, path_label};
 
+pub use resolve::apply_default_stdlib_to_module;
+
 pub(super) fn item_file_id(it: &Item) -> u32 {
     match it {
         Item::Val(v) => v.span.file,

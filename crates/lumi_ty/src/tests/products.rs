@@ -20,6 +20,7 @@ val main = { getx(1) }
 fn shared_product_field_resolves_from_receiver() {
     let src = r#"
 module M
+val println(x) = { __println(x) }
 type Point { val x val y }
 type Rect { val x val w }
 val main = {

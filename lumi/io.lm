@@ -1,12 +1,11 @@
 /// Standard I/O surface (`import lumi.io.{println, …}`).
 ///
-/// Entry modules auto-import `lumi.io.*` (Kotlin-style). Explicit imports
-/// override defaults. Bodies lower to compiler builtins (`println` / `assert` /
-/// `readStdin`) so polymorphic show / assert messages stay intact.
+/// Entry modules auto-import `lumi.io.*` (Kotlin-style). User code calls these
+/// vals; bodies lower to compiler intrinsics (`__println`, …).
 ///
 /// @exports println, readStdin, assert
 module io
 
-val readStdin = { readStdin() }
-val println(x) = { println(x) }
-val assert(c) = { assert(c) }
+val readStdin = { __readStdin() }
+val println(x) = { __println(x) }
+val assert(c) = { __assert(c) }

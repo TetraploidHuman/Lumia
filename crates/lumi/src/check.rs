@@ -106,6 +106,14 @@ pub fn check_source_recovering(text: &str, auto_parallel: bool) -> PartialCheck 
 
     let mut m = outcome.module;
     stamp_module(&mut m, 0);
+    let mut visibility = NameVisibility::default();
+    if let Err(e) = crate::load::apply_default_stdlib_to_module(&mut m, &mut visibility) {
+        diagnostics.push((Span::dummy(), format!("stdlib: {e}")));
+        return PartialCheck {
+            typed: None,
+            diagnostics,
+        };
+    }
     let hir = match lower_module(&m) {
         Ok(h) => h,
         Err(e) => {
@@ -120,7 +128,7 @@ pub fn check_source_recovering(text: &str, auto_parallel: bool) -> PartialCheck 
         auto_parallel,
         trust_foreign_pure: false,
     };
-    let (typed, ty_errs) = typecheck_hir_recovering(&hir, NameVisibility::default(), &opts);
+    let (typed, ty_errs) = typecheck_hir_recovering(&hir, visibility, &opts);
     for e in ty_errs {
         diagnostics.push((e.span().unwrap_or_default(), e.message().to_string()));
     }

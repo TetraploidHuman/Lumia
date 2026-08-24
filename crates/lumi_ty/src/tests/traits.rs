@@ -104,7 +104,7 @@ val main = {
 fn arith_poly_rejects_string() {
     let src = r#"
 module M
-import lumi.io.{println}
+val println(x) = { __println(x) }
 val main = {
     val add1 = { x -> x + 1 }
     println(add1("hi"))
@@ -124,7 +124,7 @@ val main = {
 fn toplevel_num_poly_dbl() {
     let src = r#"
 module M
-import lumi.io.{println}
+val println(x) = { __println(x) }
 val dbl = { x -> x + x }
 val main = {
     println(dbl(1))
@@ -140,7 +140,7 @@ val main = {
 fn trait_poly_method_infers() {
     let src = r#"
 module M
-import lumi.io.{println}
+val println(x) = { __println(x) }
 type Point { val x val y }
 type Box { val n }
 trait ToInt { val toInt = { self -> 0 } }
@@ -161,7 +161,7 @@ val main = {
 fn trait_poly_method_rejects_missing_instance() {
     let src = r#"
 module M
-import lumi.io.{println}
+val println(x) = { __println(x) }
 type Point { val x }
 trait ToInt { val toInt = { self -> 0 } }
 val main = {

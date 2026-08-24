@@ -2,7 +2,8 @@
 
 use super::std_mod::{
     default_std_imports, drop_entry_shadowed, is_lumi, is_synthetic_std_import, lumi_exports,
-    lumi_module, merge_std_imports, validate_lumi_import, workspace_lumi_dir,
+    lumi_module, merge_std_imports, validate_lumi_import, wants_default_std_imports,
+    workspace_lumi_dir,
 };
 use super::{append_items_unique, check_no_duplicate_toplevel, SourceFile};
 use crate::vis::{
@@ -196,17 +197,14 @@ pub(super) fn load_module_file_uncached(
         visibility.entry_file = file_id;
     }
 
-    let entry_local_names: HashSet<String> = if is_entry {
-        m.items
-            .iter()
-            .filter_map(item_name)
-            .map(str::to_string)
-            .collect()
-    } else {
-        HashSet::default()
-    };
+    let local_names: HashSet<String> = m
+        .items
+        .iter()
+        .filter_map(item_name)
+        .map(str::to_string)
+        .collect();
 
-    let merged_imports = if is_entry {
+    let merged_imports = if wants_default_std_imports(path) {
         merge_std_imports(default_std_imports(), std::mem::take(&mut m.imports))
     } else {
         std::mem::take(&mut m.imports)
@@ -242,18 +240,14 @@ pub(super) fn load_module_file_uncached(
                 _ => import_visible_names(&dep.items, &imp.names),
             };
             let filtered = filter_items(dep.items, &imp.names)?;
-            let filtered = if is_entry && is_synthetic_std_import(imp) {
-                drop_entry_shadowed(filtered, &entry_local_names)
+            let filtered = if is_synthetic_std_import(imp) {
+                drop_entry_shadowed(filtered, &local_names)
             } else {
                 filtered
             };
             let visible: HashSet<String> = visible
                 .into_iter()
-                .filter(|n| {
-                    !(is_entry
-                        && is_synthetic_std_import(imp)
-                        && entry_local_names.contains(n))
-                })
+                .filter(|n| !(is_synthetic_std_import(imp) && local_names.contains(n)))
                 .collect();
             if is_entry {
                 extend_visibility(visibility, &filtered, &visible);
@@ -319,6 +313,80 @@ pub(super) fn load_module_file_uncached(
     m.items = imported_items;
     done.insert(path_key.to_path_buf(), m.clone());
     Ok(m)
+}
+
+/// Inline default + `lumi.*` imports for a single-buffer check (LSP / `check_source`).
+pub fn apply_default_stdlib_to_module(
+    m: &mut Module,
+    visibility: &mut NameVisibility,
+) -> Result<()> {
+    use super::std_mod::{default_std_imports, is_stdlib_module_name, merge_std_imports};
+
+    visibility.entry_file = 0;
+    if is_stdlib_module_name(&m.name) {
+        return Ok(());
+    }
+    let local_names: HashSet<String> = m
+        .items
+        .iter()
+        .filter_map(item_name)
+        .map(str::to_string)
+        .collect();
+    let merged = merge_std_imports(default_std_imports(), std::mem::take(&mut m.imports));
+    let mut imported = inline_lumi_imports_buffer(&merged, &local_names, visibility)?;
+    let local = std::mem::take(&mut m.items);
+    append_items_unique(&mut imported, local);
+    m.items = imported;
+    Ok(())
+}
+
+fn load_std_module_items(path: &[String], file_id: u32) -> Result<Vec<Item>> {
+    let rel = lumi_module(path)?;
+    let file = workspace_lumi_dir().join(rel);
+    let src = fs::read_to_string(&file).with_context(|| format!("read {}", file.display()))?;
+    let mut dep = parse_module(&src).with_context(|| format!("parse {}", file.display()))?;
+    stamp_module(&mut dep, file_id);
+    Ok(dep.items)
+}
+
+fn inline_lumi_imports_buffer(
+    imports: &[Import],
+    local_names: &HashSet<String>,
+    visibility: &mut NameVisibility,
+) -> Result<Vec<Item>> {
+    let mut out = Vec::new();
+    let mut file_id = 1u32;
+    for imp in imports {
+        if !is_lumi(&imp.path) {
+            continue;
+        }
+        validate_lumi_import(imp)?;
+        let dep_items = load_std_module_items(&imp.path, file_id)?;
+        file_id += 1;
+        let visible: HashSet<String> = match &imp.names {
+            ImportNames::All => {
+                let exports: HashSet<String> = lumi_exports(&imp.path)?.into_iter().collect();
+                import_visible_names(&dep_items, &imp.names)
+                    .into_iter()
+                    .filter(|n| exports.contains(n))
+                    .collect()
+            }
+            _ => import_visible_names(&dep_items, &imp.names),
+        };
+        let filtered = filter_items(dep_items, &imp.names)?;
+        let filtered = if is_synthetic_std_import(imp) {
+            drop_entry_shadowed(filtered, local_names)
+        } else {
+            filtered
+        };
+        let visible: HashSet<String> = visible
+            .into_iter()
+            .filter(|n| !(is_synthetic_std_import(imp) && local_names.contains(n)))
+            .collect();
+        extend_visibility(visibility, &filtered, &visible);
+        append_items_unique(&mut out, filtered);
+    }
+    Ok(out)
 }
 
 pub(super) fn path_label(path: &Path) -> String {

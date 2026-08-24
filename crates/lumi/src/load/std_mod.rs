@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 use lumi_syntax::{Import, ImportNames, Item, Span};
 use rustc_hash::FxHashSet as HashSet;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::vis::item_name;
 
@@ -25,17 +25,10 @@ pub(super) fn default_std_imports() -> Vec<Import> {
         .collect()
 }
 
-/// Prepend default stdlib imports; skip a default when the user imports the same path.
+/// Prepend default stdlib imports, then apply explicit user `lumi.*` imports
+/// (selective imports add aliases without hiding other default exports).
 pub(super) fn merge_std_imports(defaults: Vec<Import>, user: Vec<Import>) -> Vec<Import> {
-    let user_lumi: HashSet<&[String]> = user
-        .iter()
-        .filter(|i| is_lumi(&i.path))
-        .map(|i| i.path.as_slice())
-        .collect();
-    let mut out: Vec<Import> = defaults
-        .into_iter()
-        .filter(|d| !user_lumi.contains(d.path.as_slice()))
-        .collect();
+    let mut out = defaults;
     out.extend(user);
     out
 }
@@ -79,6 +72,17 @@ pub(super) fn lumi_exports(path: &[String]) -> Result<Vec<String>> {
 pub(super) fn workspace_lumi_dir() -> PathBuf {
     // crates/lumi -> workspace root
     lumi_abi::workspace_root(env!("CARGO_MANIFEST_DIR")).join("lumi")
+}
+
+pub(super) fn is_stdlib_module_name(name: &str) -> bool {
+    LUMI_STD_SUBMODULES.contains(&name)
+}
+
+/// User modules get default std imports; stdlib sources under `lumi/` do not.
+pub(super) fn wants_default_std_imports(path: &Path) -> bool {
+    let std_dir = workspace_lumi_dir().canonicalize().ok();
+    let canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    !std_dir.is_some_and(|d| canon.starts_with(d))
 }
 
 pub(super) fn parse_lumi_exports(src: &str) -> Result<Vec<String>> {

@@ -101,7 +101,7 @@ val main = { add(1, 2) }
     fn auto_parallel_off_demotes_list_par_map() {
         let src = r#"
 module M
-import lumi.io.{println}
+val println(x) = { __println(x) }
 val main = {
     println(listOf(1, 2, 3).map({ x -> x + 1 }).len())
 }
@@ -127,7 +127,7 @@ val main = {
     fn effect_boundaries_run_on_default_pipeline() {
         let bad = r#"
 module Bad
-import lumi.io.{println}
+val println(x) = { __println(x) }
 val xs = println(1)
 val main = { 0 }
 "#;
@@ -138,7 +138,7 @@ val main = { 0 }
         );
         let ok = r#"
 module Ok
-import lumi.io.{println}
+val println(x) = { __println(x) }
 val main = { println(1) }
 "#;
         compile_source_to_core(ok).expect("main may perform IO");

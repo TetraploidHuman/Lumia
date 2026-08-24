@@ -20,36 +20,13 @@ pub(super) fn lower_call(
     span: Span,
 ) -> Expr {
     if let lumi_syntax::Expr::Ident(name, name_span) = callee {
-        if name == "println" {
-            return Expr::BuiltinCall {
-                name: Builtin::Println,
-                args: args.iter().map(|e| lower_expr(ctx, e)).collect(),
-                span,
-            };
-        }
-        if name == "assert" {
-            return Expr::BuiltinCall {
-                name: Builtin::Assert,
-                args: args.iter().map(|e| lower_expr(ctx, e)).collect(),
-                span,
-            };
-        }
-        if name == "readStdin" {
-            return Expr::BuiltinCall {
-                name: Builtin::ReadStdin,
-                args: args.iter().map(|e| lower_expr(ctx, e)).collect(),
-                span,
-            };
-        }
         if name == "fold" && args.len() == 3 {
             if let Some(fused) = try_fuse_hof_fold(ctx, &args[0], &args[1], &args[2], span) {
                 return fused;
             }
         }
-        // Free call to a top-level `val`/`foreign` (e.g. `trim(s)`, `>> trim`):
-        // prefer that binding over `Builtin::from_method`. Method calls like
-        // `s.trim()` still desugar through `lower_call_from_parts` → builtin,
-        // so `val len = { xs -> xs.len() }` stays non-recursive.
+        // Free call to a top-level `val`/`foreign` (e.g. `trim(s)`, `println`, `>> trim`):
+        // prefer that binding over builtins / method desugar.
         if ctx.is_toplevel_fun(name) {
             // Callee Var must use the ident span — sharing the Call span makes
             // type_at record Fun then Unit on the same range (inlay/hover noise).
@@ -233,6 +210,13 @@ pub(super) fn lower_call_from_parts(
                     span,
                 };
             }
+        }
+        if let Some(b) = Builtin::from_intrinsic(name, args.len()) {
+            return Expr::BuiltinCall {
+                name: b,
+                args,
+                span,
+            };
         }
         if let Some(b) = Builtin::from_method(name, args.len()) {
             return Expr::BuiltinCall {

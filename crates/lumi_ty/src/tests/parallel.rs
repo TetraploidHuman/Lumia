@@ -4,7 +4,7 @@ use super::*;
 fn parallel_map_io_demoted_to_sequential() {
     let src = r#"
 module ParIo
-import lumi.io.{println}
+val println(x) = { __println(x) }
 val boom(x) = {
     println(x + 0)
     x + 1

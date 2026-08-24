@@ -146,7 +146,7 @@ val main = {
         let core = compile_source_to_core(
             r#"
 module M
-import lumi.io.{println}
+val println(x) = { __println(x) }
 val log = { x -> println(x) }
 val main = {
     val f = { -> log(1) }

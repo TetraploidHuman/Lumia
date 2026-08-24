@@ -14,7 +14,6 @@ pub use module::{
 };
 
 use crate::types::{at, Effect, NameVisibility, Scheme, Type, TypeError};
-use lumi_hir::Builtin;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use state::{AltReturnState, EnvState, ProductState, SubstState, TraitState};
 
@@ -34,15 +33,6 @@ pub(crate) struct Infer {
 impl Infer {
     pub(crate) fn new(vis: NameVisibility) -> Self {
         let mut builtins = HashMap::default();
-        // Free IO builtin kept as a Var for first-class / import-alias use.
-        builtins.insert(
-            Builtin::Println.display_name().into(),
-            Scheme::mono(Type::Fun(
-                vec![Type::Int],
-                Box::new(Type::Unit),
-                Effect::io(),
-            )),
-        );
         // Collection ctors: [`lumi_hir::PRELUDE_CTORS`]; arity specialized in
         // `prelude_ctors` (not Builtin / BuiltinInfo — lower to Core Alloc*).
         for sn in lumi_hir::PRELUDE_CTORS {

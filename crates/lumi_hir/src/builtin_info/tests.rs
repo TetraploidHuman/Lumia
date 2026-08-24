@@ -170,7 +170,6 @@ fn surface_from_method_roundtrips_display_name() {
         Builtin::StrToUpper,
         Builtin::StrStartsWith,
         Builtin::StrEndsWith,
-        Builtin::ReadStdin,
         Builtin::ListConcat,
         Builtin::Range,
         Builtin::RangeInclusive,
@@ -209,6 +208,19 @@ fn surface_from_method_roundtrips_display_name() {
 }
 
 #[test]
+fn io_intrinsics_roundtrip() {
+    for (name, arity, b) in [
+        ("__println", 1, Builtin::Println),
+        ("__assert", 1, Builtin::Assert),
+        ("__readStdin", 0, Builtin::ReadStdin),
+    ] {
+        assert_eq!(Builtin::from_intrinsic(name, arity), Some(b));
+    }
+    assert_eq!(Builtin::from_method("println", 1), None);
+    assert_eq!(Builtin::from_method("readStdin", 0), None);
+}
+
+#[test]
 fn result_heap_projections_are_typed_not_capture() {
     assert_eq!(Builtin::ListGet.result_heap(), ResultHeap::Typed);
     assert_eq!(Builtin::AdtField.result_heap(), ResultHeap::Typed);
@@ -224,9 +236,11 @@ fn result_heap_projections_are_typed_not_capture() {
 #[test]
 fn surface_names_cover_prelude_and_common_methods() {
     let names: Vec<&str> = crate::surface_names().map(|s| s.name).collect();
-    for n in ["listOf", "setOf", "mapOf", "println", "len", "map", "drop"] {
+    for n in ["listOf", "setOf", "mapOf", "len", "map", "drop"] {
         assert!(names.contains(&n), "missing surface name {n}");
     }
+    assert!(!names.contains(&"println"));
+    assert!(!names.contains(&"__println"));
     assert!(!names.contains(&"adtTag"));
     assert!(!names.contains(&"matchFail"));
 }

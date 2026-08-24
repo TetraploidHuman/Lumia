@@ -3,6 +3,17 @@
 use super::ast::Builtin;
 
 impl Builtin {
+    /// Compiler intrinsics backing `lumi.io` (`__println`, …). Not user-facing.
+    pub fn from_intrinsic(name: &str, arity: usize) -> Option<Builtin> {
+        use Builtin::*;
+        Some(match (name, arity) {
+            ("__println", 1) => Println,
+            ("__assert", 1) => Assert,
+            ("__readStdin", 0) => ReadStdin,
+            _ => return None,
+        })
+    }
+
     /// Resolve a surface method / free-function name + arity to a direct
     /// [`Builtin`] (no HOF desugar). Single table for HIR call lowering.
     pub fn from_method(name: &str, arity: usize) -> Option<Builtin> {
@@ -30,7 +41,6 @@ impl Builtin {
             ("toUpper", 1) => StrToUpper,
             ("startsWith", 2) => StrStartsWith,
             ("endsWith", 2) => StrEndsWith,
-            ("readStdin", 0) => ReadStdin,
             ("concat", 2) => ListConcat,
             ("range", 2) => Range,
             ("rangeInclusive", 2) => RangeInclusive,
@@ -87,8 +97,9 @@ impl Builtin {
     pub fn surface_role(self) -> Option<SurfaceRole> {
         use Builtin::*;
         match self {
-            Println | Assert | ReadStdin | Range | RangeInclusive => Some(SurfaceRole::Free),
-            MatchFail | AdtTag | AdtField | ListParMap | ListParFold => None,
+            Range | RangeInclusive => Some(SurfaceRole::Free),
+            MatchFail | AdtTag | AdtField | ListParMap | ListParFold | Println | Assert
+            | ReadStdin => None,
             _ => Some(SurfaceRole::Method),
         }
     }
