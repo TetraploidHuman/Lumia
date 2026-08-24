@@ -5,4 +5,4 @@ pluginManagement {
     }
 }
 
-rootProject.name = "lumia-idea"
+rootProject.name = "lumi-idea"

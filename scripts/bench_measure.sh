@@ -13,7 +13,7 @@
 # Resolve repo root even when this file is sourced.
 _BENCH_MEASURE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _BENCH_PEAK_RSS_SRC="$_BENCH_MEASURE_DIR/peak_rss.c"
-_BENCH_PEAK_RSS_BIN="${LUMIA_PEAK_RSS_BIN:-$(cd "$_BENCH_MEASURE_DIR/.." && pwd)/target/bench_peak_rss}"
+_BENCH_PEAK_RSS_BIN="${LUMI_PEAK_RSS_BIN:-$(cd "$_BENCH_MEASURE_DIR/.." && pwd)/target/bench_peak_rss}"
 
 bench_ensure_peak_rss() {
   if [[ -x "$_BENCH_PEAK_RSS_BIN" ]] \

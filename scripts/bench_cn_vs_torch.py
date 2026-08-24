@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Time CogniNucleus FreeEnergyAgent vs Lumia triad-forward shape (CPU).
+"""Time CogniNucleus FreeEnergyAgent vs Lumi triad-forward shape (CPU).
 
 Not bit-identical to `bench_cn_forward.lm` — that is a dense-float skeleton of
 the strict-PE triad (cluster rates, projectError, updateState lateral,
@@ -21,7 +21,7 @@ from time import perf_counter
 
 import torch
 
-# CogniNucleus repo root (sibling of Lumia by default).
+# CogniNucleus repo root (sibling of Lumi by default).
 CN_ROOT = os.environ.get(
     "COGNINUCLEUS_ROOT",
     os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "CogniNucleus")),

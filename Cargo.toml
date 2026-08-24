@@ -1,33 +1,33 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/lumia",
-    "crates/lumia_abi",
-    "crates/lumia_syntax",
-    "crates/lumia_hir",
-    "crates/lumia_ty",
-    "crates/lumia_core",
-    "crates/lumia_opt",
-    "crates/lumia_codegen",
-    "crates/lumia_rt",
+    "crates/lumi",
+    "crates/lumi_abi",
+    "crates/lumi_syntax",
+    "crates/lumi_hir",
+    "crates/lumi_ty",
+    "crates/lumi_core",
+    "crates/lumi_opt",
+    "crates/lumi_codegen",
+    "crates/lumi_rt",
 ]
-default-members = ["crates/lumia"]
+default-members = ["crates/lumi"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/TetraploidHuman/Lumia"
+repository = "https://github.com/TetraploidHuman/Lumi"
 
 [workspace.dependencies]
-lumia_abi = { path = "crates/lumia_abi" }
-lumia_syntax = { path = "crates/lumia_syntax" }
-lumia_hir = { path = "crates/lumia_hir" }
-lumia_ty = { path = "crates/lumia_ty" }
-lumia_core = { path = "crates/lumia_core" }
-lumia_opt = { path = "crates/lumia_opt" }
-lumia_codegen = { path = "crates/lumia_codegen" }
-lumia_rt = { path = "crates/lumia_rt" }
+lumi_abi = { path = "crates/lumi_abi" }
+lumi_syntax = { path = "crates/lumi_syntax" }
+lumi_hir = { path = "crates/lumi_hir" }
+lumi_ty = { path = "crates/lumi_ty" }
+lumi_core = { path = "crates/lumi_core" }
+lumi_opt = { path = "crates/lumi_opt" }
+lumi_codegen = { path = "crates/lumi_codegen" }
+lumi_rt = { path = "crates/lumi_rt" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 thiserror = "2"

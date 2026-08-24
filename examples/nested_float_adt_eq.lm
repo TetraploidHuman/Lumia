@@ -8,7 +8,7 @@ type Option {
 }
 
 /// Nested Float ADTs must use IEEE via layout mask stored on the object
-/// (list/set membership goes through `lumia_eq`, not typed `lumia_adt_eq`).
+/// (list/set membership goes through `lumi_eq`, not typed `lumi_adt_eq`).
 val main = {
     println(if listOf(Some(0.0)) == listOf(Some(-0.0)) { 1 } else { 0 })
     val nan = 0.0 / 0.0

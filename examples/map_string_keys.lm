@@ -3,7 +3,7 @@ module MapStringKeys
 import std.io.{println}
 
 val main = {
-    // Distinct string literals → content-equal keys via lumia_eq.
+    // Distinct string literals → content-equal keys via lumi_eq.
     val m = mapOf("a" to 1, "b" to 2)
     println(m.len())
     println(m.contains("a"))

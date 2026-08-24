@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Source this before building/running Lumia on NixOS.
+# Source this before building/running Lumi on NixOS.
 #   source scripts/env.sh
 
 if [[ -z "${LLVM_SYS_211_PREFIX:-}" ]]; then
@@ -67,4 +67,4 @@ else
   export LD_LIBRARY_PATH="$(_filter_path "$_JOINED")"
 fi
 
-echo "Lumia env: LLVM_SYS_211_PREFIX=${LLVM_SYS_211_PREFIX:-unset}"
+echo "Lumi env: LLVM_SYS_211_PREFIX=${LLVM_SYS_211_PREFIX:-unset}"

@@ -1,0 +1,13 @@
+[package]
+name = "lumi_ty"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+lumi_syntax.workspace = true
+lumi_hir.workspace = true
+thiserror.workspace = true
+rustc-hash = { workspace = true }
+
+[lints]
+workspace = true

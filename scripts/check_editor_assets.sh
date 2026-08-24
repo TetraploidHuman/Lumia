@@ -11,14 +11,14 @@ check() {
     fail=1
   fi
 }
-check "$root/editors/shared/snippets/lumia.json" \
-  "$root/editors/vscode/snippets/lumia.json"
-check "$root/editors/shared/syntaxes/lumia.tmLanguage.json" \
-  "$root/editors/vscode/syntaxes/lumia.tmLanguage.json"
+check "$root/editors/shared/snippets/lumi.json" \
+  "$root/editors/vscode/snippets/lumi.json"
+check "$root/editors/shared/syntaxes/lumi.tmLanguage.json" \
+  "$root/editors/vscode/syntaxes/lumi.tmLanguage.json"
 check "$root/editors/shared/language-configuration.json" \
   "$root/editors/vscode/language-configuration.json"
 # Duplicate JSON object keys (e.g. two "alt" snippets) — last wins silently.
-python3 - "$root/editors/vscode/snippets/lumia.json" <<'PY'
+python3 - "$root/editors/vscode/snippets/lumi.json" <<'PY'
 import json, sys
 path = sys.argv[1]
 raw = open(path, encoding="utf-8").read()

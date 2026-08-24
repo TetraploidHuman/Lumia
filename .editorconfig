@@ -1,4 +1,4 @@
-# Lumia sources — keep in sync with IDEA LumiaLanguageCodeStyleSettingsProvider
+# Lumi sources — keep in sync with IDEA LumiLanguageCodeStyleSettingsProvider
 # and editors/shared/language-configuration.json comment prefixes
 # (see scripts/check_editor_assets.sh).
 root = true

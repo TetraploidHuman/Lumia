@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # CogniNucleus fused nucleus+Hebbian microbench (Release).
 #
-# Compares composed Lumia loops vs `std.cn.{nucleusStep,hebbian}`.
+# Compares composed Lumi loops vs `std.cn.{nucleusStep,hebbian}`.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck disable=SC1091
@@ -10,15 +10,15 @@ source "$ROOT/scripts/env.sh"
 source "$ROOT/scripts/bench_measure.sh"
 
 cd "$ROOT"
-cargo build -q -p lumia --release
-LUMIA="$ROOT/target/release/lumia"
-OUT_DIR="${TMPDIR:-/tmp}/lumia_bench_cn_fuse"
+cargo build -q -p lumi --release
+LUMI="$ROOT/target/release/lumi"
+OUT_DIR="${TMPDIR:-/tmp}/lumi_bench_cn_fuse"
 mkdir -p "$OUT_DIR"
 RUNS="${RUNS:-5}"
 
 echo "== build =="
-"$LUMIA" build --release examples/bench_cn_fuse_kernel.lm -o "$OUT_DIR/kernel"
-"$LUMIA" build --release examples/bench_cn_fuse_naive.lm -o "$OUT_DIR/naive"
+"$LUMI" build --release examples/bench_cn_fuse_kernel.lm -o "$OUT_DIR/kernel"
+"$LUMI" build --release examples/bench_cn_fuse_naive.lm -o "$OUT_DIR/naive"
 
 echo "== checksum parity =="
 k_out="$("$OUT_DIR/kernel")"

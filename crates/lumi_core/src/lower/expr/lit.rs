@@ -1,0 +1,102 @@
+//! Literals and variable references.
+
+use super::super::ctx::CoreLowerCtx;
+use crate::ir::{Local, Op, Value};
+use lumi_hir::Expr as HirExpr;
+
+pub(super) fn lower_lit(
+    ctx: &mut CoreLowerCtx,
+    expr: &HirExpr,
+    ops: &mut Vec<Op>,
+    pure_region: bool,
+) -> Option<Local> {
+    match expr {
+        HirExpr::Int(n, _) => {
+            let l = ctx.fresh();
+            ops.push(Op::Let {
+                local: l,
+                value: Value::Int(*n),
+                pure_region,
+            });
+            Some(l)
+        }
+        HirExpr::Float(n, _) => {
+            let l = ctx.fresh();
+            ops.push(Op::Let {
+                local: l,
+                value: Value::Float(*n),
+                pure_region,
+            });
+            Some(l)
+        }
+        HirExpr::Bool(b, _) => {
+            let l = ctx.fresh();
+            ops.push(Op::Let {
+                local: l,
+                value: Value::Bool(*b),
+                pure_region,
+            });
+            Some(l)
+        }
+        HirExpr::String(s, _) => {
+            let l = ctx.fresh();
+            ops.push(Op::Let {
+                local: l,
+                value: Value::String(s.clone()),
+                pure_region,
+            });
+            Some(l)
+        }
+        HirExpr::Char(c, _) => {
+            let l = ctx.fresh();
+            ops.push(Op::Let {
+                local: l,
+                value: Value::Char(*c),
+                pure_region,
+            });
+            Some(l)
+        }
+        HirExpr::Unit(_) => None,
+        HirExpr::Var(name, _) => {
+            if ctx.mutables.contains(name) {
+                let l = ctx.fresh();
+                ops.push(Op::Let {
+                    local: l,
+                    value: Value::Name(name.clone()),
+                    pure_region,
+                });
+                Some(l)
+            } else if let Some(l) = ctx.name_to_local.get(name) {
+                Some(*l)
+            } else if ctx.toplevel_funs.contains(name) {
+                let l = ctx.fresh();
+                ops.push(Op::Let {
+                    local: l,
+                    value: Value::FunRef(name.clone()),
+                    pure_region,
+                });
+                Some(l)
+            } else if ctx.toplevel_vals.contains(name) {
+                let l = ctx.fresh();
+                ops.push(Op::Let {
+                    local: l,
+                    value: Value::Call {
+                        fun: format!("__val_{name}"),
+                        args: vec![],
+                    },
+                    pure_region,
+                });
+                Some(l)
+            } else {
+                let l = ctx.fresh();
+                ops.push(Op::Let {
+                    local: l,
+                    value: Value::Name(name.clone()),
+                    pure_region,
+                });
+                Some(l)
+            }
+        }
+        _ => unreachable!("lower_lit: non-literal"),
+    }
+}

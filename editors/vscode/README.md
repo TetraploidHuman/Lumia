@@ -1,6 +1,6 @@
-# Lumia VS Code extension
+# Lumi VS Code extension
 
-Language support for Lumia (`.lm`): TextMate highlighting, snippets, and a Language Client for `lumia lsp`.
+Language support for Lumi (`.lm`): TextMate highlighting, snippets, and a Language Client for `lumi lsp`.
 
 ## Features
 
@@ -8,15 +8,15 @@ Language support for Lumia (`.lm`): TextMate highlighting, snippets, and a Langu
 - Diagnostics, hover, go-to-definition, completion, formatting, outline, inlay hints (via LSP)
 - Snippets (`module`, `val`, `match`, `trait`, …)
 - Commands: Run, Build & Run, Check File, Restart Language Server
-- Settings: `lumia.lsp.path`, `lumia.lsp.enabled`
+- Settings: `lumi.lsp.path`, `lumi.lsp.enabled`
 
 ## Prerequisites
 
-1. Build the Lumia CLI and put it on `PATH` (or set `lumia.lsp.path`):
+1. Build the Lumi CLI and put it on `PATH` (or set `lumi.lsp.path`):
 
 ```bash
 source scripts/env.sh
-cargo build -p lumia --release
+cargo build -p lumi --release
 export PATH="$PWD/target/release:$PATH"
 ```
 
@@ -28,18 +28,18 @@ export PATH="$PWD/target/release:$PATH"
 cd editors/vscode
 npm install
 npx vsce package --allow-missing-repository
-cursor --install-extension lumia-0.3.5.vsix
-# or: code --install-extension lumia-0.3.5.vsix
+cursor --install-extension lumi-0.3.5.vsix
+# or: code --install-extension lumi-0.3.5.vsix
 ```
 
-Also install / refresh the CLI (ships a slim `lumia-lsp` without LLVM):
+Also install / refresh the CLI (ships a slim `lumi-lsp` without LLVM):
 
 ```bash
 ./scripts/install.sh
 ```
 
-After upgrading the extension, **Reload Window**. Check Output → “Lumia Language Server” for:
-`[lumia] LSP command: …/lumia-lsp lsp` (should be the 3.6MB binary, not the 140MB compiler).
+After upgrading the extension, **Reload Window**. Check Output → “Lumi Language Server” for:
+`[lumi] LSP command: …/lumi-lsp lsp` (should be the 3.6MB binary, not the 140MB compiler).
 
 The extension entry is `extension.js` (no TypeScript compile step).
 
@@ -47,5 +47,5 @@ The extension entry is `extension.js` (no TypeScript compile step).
 
 | Setting | Default | Meaning |
 |---------|---------|---------|
-| `lumia.lsp.path` | `lumia` | Path to the `lumia` binary (`lsp` / `build` / `check`) |
-| `lumia.lsp.enabled` | `true` | Enable the Lumia language server |
+| `lumi.lsp.path` | `lumi` | Path to the `lumi` binary (`lsp` / `build` / `check`) |
+| `lumi.lsp.enabled` | `true` | Enable the Lumi language server |

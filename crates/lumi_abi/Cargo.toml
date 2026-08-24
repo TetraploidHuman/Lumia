@@ -1,0 +1,11 @@
+[package]
+name = "lumi_abi"
+version.workspace = true
+edition.workspace = true
+description = "Shared C ABI constants for lumi_rt / codegen / opt (type_ids, memo caps)"
+
+[lib]
+path = "src/lib.rs"
+
+[lints]
+workspace = true

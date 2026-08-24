@@ -16,7 +16,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck disable=SC1091
 source "$ROOT/scripts/bench_affinity.sh"
 
-CG="${LUMIA_BENCH_CGROUP:-/sys/fs/cgroup/lumia_bench}"
+CG="${LUMI_BENCH_CGROUP:-/sys/fs/cgroup/lumi_bench}"
 CORES_ARG=""
 CPUS_ARG=""
 CMD=()

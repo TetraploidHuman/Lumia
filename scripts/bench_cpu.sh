@@ -52,10 +52,10 @@ stats_min_med_max() {
 }
 
 cd "$ROOT"
-cargo build -q -p lumia
-LUMIA="$ROOT/target/debug/lumia"
+cargo build -q -p lumi
+LUMI="$ROOT/target/debug/lumi"
 SRC=examples/bench_cpu.lm
-OUT_DIR="${TMPDIR:-/tmp}/lumia_bench_cpu"
+OUT_DIR="${TMPDIR:-/tmp}/lumi_bench_cpu"
 mkdir -p "$OUT_DIR"
 BIN="$OUT_DIR/bench_cpu"
 RUNS="${RUNS:-11}"
@@ -94,7 +94,7 @@ else
 fi
 
 echo "== build Release =="
-"$LUMIA" build --release "$SRC" -o "$BIN"
+"$LUMI" build --release "$SRC" -o "$BIN"
 
 echo "== checksums (single run) =="
 mapfile -t LINES < <(bench_run "$BIN")
@@ -189,7 +189,7 @@ printf '(%s scenarios: primes + matmul + mandel + collatz×2 + fib + poly + gcd 
 if [[ "${COMPARE_DEBUG:-0}" == "1" ]]; then
   DBG="$OUT_DIR/bench_cpu_debug"
   echo "== build Debug =="
-  "$LUMIA" build "$SRC" -o "$DBG"
+  "$LUMI" build "$SRC" -o "$DBG"
   out_d="$(bench_run "$DBG")"
   out_r="$(printf '%s\n' "${LINES[@]}")"
   if [[ "$out_d" != "$out_r" ]]; then

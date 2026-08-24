@@ -1,14 +1,14 @@
 <idea-plugin>
-  <id>org.lumia.idea</id>
-  <name>Lumia</name>
+  <id>org.lumi.idea</id>
+  <name>Lumi</name>
   <version>0.3.4</version>
-  <vendor>Lumia</vendor>
+  <vendor>Lumi</vendor>
   <description><![CDATA[
-    Lumia language support: syntax highlighting, Check / Build &amp; Run configurations,
-    New Project / New Lumia Project (Lumia.toml + src/main.lm), New File, live templates,
+    Lumi language support: syntax highlighting, Check / Build &amp; Run configurations,
+    New Project / New Lumi Project (Lumi.toml + src/main.lm), New File, live templates,
     and LSP (diagnostics, completion, hover, go-to-definition, formatting, outline)
-    via <code>lumia lsp</code>.
-    <br/>Build the compiler: <code>source scripts/env.sh &amp;&amp; cargo build -p lumia --release</code>
+    via <code>lumi lsp</code>.
+    <br/>Build the compiler: <code>source scripts/env.sh &amp;&amp; cargo build -p lumi --release</code>
   ]]></description>
 
   <idea-version since-build="262" until-build="262.*"/>
@@ -19,99 +19,99 @@
 
   <extensions defaultExtensionNs="com.intellij">
     <fileType
-        name="Lumia"
-        implementationClass="org.lumia.idea.LumiaFileType"
+        name="Lumi"
+        implementationClass="org.lumi.idea.LumiFileType"
         fieldName="INSTANCE"
-        language="Lumia"
+        language="Lumi"
         extensions="lm"/>
     <lang.parserDefinition
-        language="Lumia"
-        implementationClass="org.lumia.idea.LumiaParserDefinition"/>
+        language="Lumi"
+        implementationClass="org.lumi.idea.LumiParserDefinition"/>
     <lang.syntaxHighlighterFactory
-        language="Lumia"
-        implementationClass="org.lumia.idea.LumiaSyntaxHighlighterFactory"/>
-    <lang.braceMatcher language="Lumia" implementationClass="org.lumia.idea.LumiaBraceMatcher"/>
-    <lang.quoteHandler language="Lumia" implementationClass="org.lumia.idea.LumiaQuoteHandler"/>
+        language="Lumi"
+        implementationClass="org.lumi.idea.LumiSyntaxHighlighterFactory"/>
+    <lang.braceMatcher language="Lumi" implementationClass="org.lumi.idea.LumiBraceMatcher"/>
+    <lang.quoteHandler language="Lumi" implementationClass="org.lumi.idea.LumiQuoteHandler"/>
     <lang.LanguageCodeStyleSettingsProvider
-        implementation="org.lumia.idea.LumiaLanguageCodeStyleSettingsProvider"/>
+        implementation="org.lumi.idea.LumiLanguageCodeStyleSettingsProvider"/>
 
-    <internalFileTemplate name="Lumia File"/>
-    <defaultLiveTemplates file="/liveTemplates/Lumia.xml"/>
+    <internalFileTemplate name="Lumi File"/>
+    <defaultLiveTemplates file="/liveTemplates/Lumi.xml"/>
     <liveTemplateContext
-        contextId="Lumia"
-        implementation="org.lumia.idea.LumiaContextType"/>
+        contextId="Lumi"
+        implementation="org.lumi.idea.LumiContextType"/>
 
     <applicationConfigurable
         parentId="language"
-        instance="org.lumia.idea.LumiaSettingsConfigurable"
-        id="org.lumia.idea.settings"
-        displayName="Lumia"/>
-    <applicationService serviceImplementation="org.lumia.idea.LumiaSettings"/>
+        instance="org.lumi.idea.LumiSettingsConfigurable"
+        id="org.lumi.idea.settings"
+        displayName="Lumi"/>
+    <applicationService serviceImplementation="org.lumi.idea.LumiSettings"/>
 
     <platform.lsp.integrationProvider
-        implementation="org.lumia.idea.LumiaLspServerSupportProvider"/>
-    <postStartupActivity implementation="org.lumia.idea.LumiaProjectActivity"/>
+        implementation="org.lumi.idea.LumiLspServerSupportProvider"/>
+    <postStartupActivity implementation="org.lumi.idea.LumiProjectActivity"/>
 
-    <newProjectWizard.languageGenerator implementation="org.lumia.idea.LumiaLanguageProjectWizard"/>
+    <newProjectWizard.languageGenerator implementation="org.lumi.idea.LumiLanguageProjectWizard"/>
 
-    <configurationType implementation="org.lumia.idea.LumiaRunConfigurationType"/>
-    <runConfigurationProducer implementation="org.lumia.idea.LumiaCheckConfigurationProducer"/>
-    <runConfigurationProducer implementation="org.lumia.idea.LumiaBuildConfigurationProducer"/>
+    <configurationType implementation="org.lumi.idea.LumiRunConfigurationType"/>
+    <runConfigurationProducer implementation="org.lumi.idea.LumiCheckConfigurationProducer"/>
+    <runConfigurationProducer implementation="org.lumi.idea.LumiBuildConfigurationProducer"/>
   </extensions>
 
   <actions>
     <action
-        id="Lumia.CreateProject"
-        class="org.lumia.idea.LumiaCreateProjectAction"
-        text="New Lumia Project…"
-        description="Create a Lumia package (Lumia.toml + src/main.lm) and open it"
-        icon="org.lumia.idea.LumiaIcons.FILE">
+        id="Lumi.CreateProject"
+        class="org.lumi.idea.LumiCreateProjectAction"
+        text="New Lumi Project…"
+        description="Create a Lumi package (Lumi.toml + src/main.lm) and open it"
+        icon="org.lumi.idea.LumiIcons.FILE">
       <add-to-group group-id="WelcomeScreen.QuickStart" anchor="last"/>
       <add-to-group group-id="FileMenu" anchor="before" relative-to-action="Exit"/>
     </action>
     <action
-        id="Lumia.InitProject"
-        class="org.lumia.idea.LumiaInitProjectAction"
-        text="Lumia Project"
-        description="Create Lumia.toml and src/main.lm in the project root"
-        icon="org.lumia.idea.LumiaIcons.FILE">
+        id="Lumi.InitProject"
+        class="org.lumi.idea.LumiInitProjectAction"
+        text="Lumi Project"
+        description="Create Lumi.toml and src/main.lm in the project root"
+        icon="org.lumi.idea.LumiIcons.FILE">
       <add-to-group group-id="NewGroup" anchor="before" relative-to-action="Kotlin.NewScript"/>
     </action>
     <action
-        id="Lumia.NewFile"
-        class="org.lumia.idea.LumiaNewFileAction"
-        text="Lumia File"
-        description="Create a new Lumia (.lm) file"
-        icon="org.lumia.idea.LumiaIcons.FILE">
-      <add-to-group group-id="NewGroup" anchor="after" relative-to-action="Lumia.InitProject"/>
+        id="Lumi.NewFile"
+        class="org.lumi.idea.LumiNewFileAction"
+        text="Lumi File"
+        description="Create a new Lumi (.lm) file"
+        icon="org.lumi.idea.LumiIcons.FILE">
+      <add-to-group group-id="NewGroup" anchor="after" relative-to-action="Lumi.InitProject"/>
     </action>
-    <group id="Lumia.Menu" text="Lumia" popup="true">
+    <group id="Lumi.Menu" text="Lumi" popup="true">
       <add-to-group group-id="ToolsMenu" anchor="last"/>
       <action
-          id="Lumia.InitProjectTools"
-          class="org.lumia.idea.LumiaInitProjectAction"
-          text="New Lumia Project"
-          description="Create Lumia.toml and src/main.lm in the project root"/>
+          id="Lumi.InitProjectTools"
+          class="org.lumi.idea.LumiInitProjectAction"
+          text="New Lumi Project"
+          description="Create Lumi.toml and src/main.lm in the project root"/>
       <action
-          id="Lumia.CheckFile"
-          class="org.lumia.idea.LumiaCheckFileAction"
+          id="Lumi.CheckFile"
+          class="org.lumi.idea.LumiCheckFileAction"
           text="Check File"
-          description="Run lumia check on the current file"/>
+          description="Run lumi check on the current file"/>
       <action
-          id="Lumia.BuildFile"
-          class="org.lumia.idea.LumiaBuildFileAction"
+          id="Lumi.BuildFile"
+          class="org.lumi.idea.LumiBuildFileAction"
           text="Build File"
-          description="Run lumia build on the current file"/>
+          description="Run lumi build on the current file"/>
       <action
-          id="Lumia.FormatFile"
-          class="org.lumia.idea.LumiaFormatFileAction"
+          id="Lumi.FormatFile"
+          class="org.lumi.idea.LumiFormatFileAction"
           text="Format File"
-          description="Format the current Lumia file"/>
+          description="Format the current Lumi file"/>
       <action
-          id="Lumia.RestartLsp"
-          class="org.lumia.idea.LumiaRestartLspAction"
+          id="Lumi.RestartLsp"
+          class="org.lumi.idea.LumiRestartLspAction"
           text="Restart Language Server"
-          description="Restart lumia lsp for this project"/>
+          description="Restart lumi lsp for this project"/>
     </group>
   </actions>
 </idea-plugin>

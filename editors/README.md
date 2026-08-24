@@ -1,9 +1,9 @@
-# Lumia editor plugins
+# Lumi editor plugins
 
-Full IDE clients for Lumia (`.lm`), backed by the compiler’s built-in language server:
+Full IDE clients for Lumi (`.lm`), backed by the compiler’s built-in language server:
 
 ```bash
-lumia lsp
+lumi lsp
 ```
 
 | Editor | Path | Notes |
@@ -18,14 +18,14 @@ lumia lsp
 
 ```bash
 source scripts/env.sh
-cargo build -p lumia --release
+cargo build -p lumi --release
 export PATH="$PWD/target/release:$PATH"
 ```
 
 2. Confirm the server starts:
 
 ```bash
-echo '{}' | lumia lsp   # will wait on stdin — Ctrl-C is fine after process starts
+echo '{}' | lumi lsp   # will wait on stdin — Ctrl-C is fine after process starts
 ```
 
 LSP features today: diagnostics, hover, go-to-definition, completion (`.` trigger, with type `detail`), formatting, document symbols (outline), inlay hints (bindings / params / call returns), semantic tokens (type-aware highlighting), `didClose` cleanup.
@@ -36,12 +36,12 @@ LSP features today: diagnostics, hover, go-to-definition, completion (`.` trigge
 cd editors/vscode
 npm install
 npx vsce package --no-dependencies
-code --install-extension lumia-0.3.3.vsix
+code --install-extension lumi-0.3.3.vsix
 ```
 
 Or open `editors/vscode` and press F5 to launch an Extension Development Host.
 
-Settings: `lumia.lsp.path`, `lumia.lsp.enabled`.
+Settings: `lumi.lsp.path`, `lumi.lsp.enabled`.
 
 ## IntelliJ IDEA
 
@@ -50,12 +50,12 @@ Requires an IDE with the JetBrains LSP module (IntelliJ IDEA 2026.2 / Ultimate-s
 ```bash
 cd editors/idea
 ./gradlew buildPlugin
-# Install build/distributions/lumia-idea-0.3.0.zip via Plugins → Install from Disk
+# Install build/distributions/lumi-idea-0.3.0.zip via Plugins → Install from Disk
 ```
 
-Configure **Settings → Languages & Frameworks → Lumia** if `lumia` is not on `PATH`.
+Configure **Settings → Languages & Frameworks → Lumi** if `lumi` is not on `PATH`.
 
-**File → New → Project → Lumia** appears in the left sidebar (with Java/Kotlin). It creates `Lumia.toml` + `src/main.lm` using the name/location fields from the wizard.
+**File → New → Project → Lumi** appears in the left sidebar (with Java/Kotlin). It creates `Lumi.toml` + `src/main.lm` using the name/location fields from the wizard.
 
 Community-only IDEs without LSP: use the VS Code extension instead.
 
@@ -64,11 +64,11 @@ Community-only IDEs without LSP: use the VS Code extension instead.
 After editing [shared/](shared/), copy into the VS Code extension:
 
 ```bash
-cp editors/shared/syntaxes/lumia.tmLanguage.json editors/vscode/syntaxes/
+cp editors/shared/syntaxes/lumi.tmLanguage.json editors/vscode/syntaxes/
 cp editors/shared/language-configuration.json editors/vscode/
-cp editors/shared/snippets/lumia.json editors/vscode/snippets/
+cp editors/shared/snippets/lumi.json editors/vscode/snippets/
 ```
 
 Or verify with `./scripts/check_editor_assets.sh` (also run from `./scripts/check.sh`).
 
-The IntelliJ plugin uses a hand-written lexer aligned with the same keywords (see `LumiaLexer.kt`).
+The IntelliJ plugin uses a hand-written lexer aligned with the same keywords (see `LumiLexer.kt`).

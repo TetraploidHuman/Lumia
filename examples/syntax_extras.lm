@@ -45,7 +45,7 @@ val main = {
     })
 
     // String interpolation ($x and ${...})
-    val name = "Lumia"
+    val name = "Lumi"
     val n = 7
     println("$name")
     println("n=${n}")

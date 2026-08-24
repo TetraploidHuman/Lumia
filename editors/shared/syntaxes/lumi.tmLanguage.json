@@ -1,0 +1,105 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Lumi",
+  "scopeName": "source.lumi",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#keywords" },
+    { "include": "#constants" },
+    { "include": "#numbers" },
+    { "include": "#operators" },
+    { "include": "#types" },
+    { "include": "#identifiers" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.lumi",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.block.lumi",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.lumi",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.lumi",
+          "match": "\\\\."
+        },
+        {
+          "name": "meta.interpolation.lumi",
+          "begin": "\\$\\{",
+          "end": "\\}",
+          "patterns": [
+            { "include": "$self" }
+          ]
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.lumi",
+          "match": "\\b(if|else|match|for|in|break|continue|return|alt)\\b"
+        },
+        {
+          "name": "keyword.declaration.lumi",
+          "match": "\\b(module|import|val|var|type|trait|instance|requires|with|effect|foreign|priv|as|pure|fn)\\b"
+        },
+        {
+          "name": "keyword.operator.logical.lumi",
+          "match": "\\b(and|or|not)\\b"
+        }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.lumi",
+          "match": "\\b(true|false)\\b"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.lumi",
+          "match": "\\b\\d+(\\.\\d+)?\\b"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.lumi",
+          "match": "(>>|==|!=|<=|>=|->|=>|[+\\-*/%<>=!])"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "entity.name.type.lumi",
+          "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+        }
+      ]
+    },
+    "identifiers": {
+      "patterns": [
+        {
+          "name": "variable.other.lumi",
+          "match": "\\b[a-z_][A-Za-z0-9_]*\\b"
+        }
+      ]
+    }
+  }
+}

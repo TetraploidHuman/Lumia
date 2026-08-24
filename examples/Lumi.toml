@@ -1,0 +1,6 @@
+[package]
+name = "lumi-examples"
+version = "0.1.0"
+
+[dependencies]
+demo_lib = { path = "deps/demo_lib", version = "1.2.3" }

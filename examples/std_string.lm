@@ -3,7 +3,7 @@ module StdString
 import std.io.{println}
 import std.string.{trim, toLower, split, join, startsWith}
 
-/// Exercise `std.string` Source wrappers (runtime `lumia_str_*` via foreign).
+/// Exercise `std.string` Source wrappers (runtime `lumi_str_*` via foreign).
 val main = {
     val t = trim("  Hello  ")
     println(t)

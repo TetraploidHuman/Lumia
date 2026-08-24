@@ -1,0 +1,27 @@
+[package]
+name = "lumi_codegen"
+version.workspace = true
+edition.workspace = true
+
+[features]
+# Prefer shared libLLVM over static archives (much faster link).
+# Linux CI (apt.llvm.org) and local Nix prefixes ship libLLVM.so; enable via
+# `--features lumi_codegen/llvm-dynamic`. Windows CI stays prefer-static.
+llvm-dynamic = ["inkwell/llvm21-1-force-dynamic"]
+
+[dependencies]
+lumi_abi.workspace = true
+lumi_syntax.workspace = true
+lumi_hir.workspace = true
+lumi_core.workspace = true
+lumi_ty.workspace = true
+inkwell.workspace = true
+anyhow.workspace = true
+rustc-hash = { workspace = true }
+thiserror.workspace = true
+
+[dev-dependencies]
+lumi_opt.workspace = true
+
+[lints]
+workspace = true

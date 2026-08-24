@@ -3,7 +3,7 @@ module StringInterp
 import std.io.{println}
 
 val main = {
-    val name = "Lumia"
+    val name = "Lumi"
     val n = 42
     println("hello ${name}")
     println("n=$n")

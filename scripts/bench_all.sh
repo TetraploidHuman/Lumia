@@ -19,7 +19,7 @@ export BENCH_SHIELD="${BENCH_SHIELD:-0}"
 CPU_RUNS="${BENCH_CPU_RUNS:-${RUNS:-5}}"
 CN_RUNS="${RUNS:-5}"
 
-echo "======== lumia bench_all (Release) ========"
+echo "======== lumi bench_all (Release) ========"
 echo "RUNS(cn/memo)=$CN_RUNS  BENCH_CPU_RUNS=$CPU_RUNS  BENCH_SHIELD=$BENCH_SHIELD"
 echo
 

@@ -217,19 +217,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "lumia"
+name = "lumi"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "lumia_abi",
- "lumia_codegen",
- "lumia_core",
- "lumia_hir",
- "lumia_opt",
- "lumia_rt",
- "lumia_syntax",
- "lumia_ty",
+ "lumi_abi",
+ "lumi_codegen",
+ "lumi_core",
+ "lumi_hir",
+ "lumi_opt",
+ "lumi_rt",
+ "lumi_syntax",
+ "lumi_ty",
  "rustc-hash",
  "serde",
  "serde_json",
@@ -238,78 +238,78 @@ dependencies = [
 ]
 
 [[package]]
-name = "lumia_abi"
+name = "lumi_abi"
 version = "0.1.0"
 
 [[package]]
-name = "lumia_codegen"
+name = "lumi_codegen"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "inkwell",
- "lumia_abi",
- "lumia_core",
- "lumia_hir",
- "lumia_opt",
- "lumia_syntax",
- "lumia_ty",
+ "lumi_abi",
+ "lumi_core",
+ "lumi_hir",
+ "lumi_opt",
+ "lumi_syntax",
+ "lumi_ty",
  "rustc-hash",
  "thiserror",
 ]
 
 [[package]]
-name = "lumia_core"
+name = "lumi_core"
 version = "0.1.0"
 dependencies = [
- "lumia_hir",
- "lumia_syntax",
- "lumia_ty",
+ "lumi_hir",
+ "lumi_syntax",
+ "lumi_ty",
  "rustc-hash",
 ]
 
 [[package]]
-name = "lumia_hir"
+name = "lumi_hir"
 version = "0.1.0"
 dependencies = [
- "lumia_abi",
- "lumia_syntax",
+ "lumi_abi",
+ "lumi_syntax",
  "rustc-hash",
  "thiserror",
 ]
 
 [[package]]
-name = "lumia_opt"
+name = "lumi_opt"
 version = "0.1.0"
 dependencies = [
- "lumia_abi",
- "lumia_core",
- "lumia_hir",
- "lumia_syntax",
- "lumia_ty",
+ "lumi_abi",
+ "lumi_core",
+ "lumi_hir",
+ "lumi_syntax",
+ "lumi_ty",
  "rustc-hash",
 ]
 
 [[package]]
-name = "lumia_rt"
+name = "lumi_rt"
 version = "0.1.0"
 dependencies = [
- "lumia_abi",
+ "lumi_abi",
  "rustc-hash",
 ]
 
 [[package]]
-name = "lumia_syntax"
+name = "lumi_syntax"
 version = "0.1.0"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
-name = "lumia_ty"
+name = "lumi_ty"
 version = "0.1.0"
 dependencies = [
- "lumia_hir",
- "lumia_syntax",
+ "lumi_hir",
+ "lumi_syntax",
  "rustc-hash",
  "thiserror",
 ]

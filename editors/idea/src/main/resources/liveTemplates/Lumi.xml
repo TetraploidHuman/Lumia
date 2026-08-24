@@ -1,0 +1,74 @@
+<templateSet group="Lumi">
+  <template name="module" value="module $NAME$&#10;&#10;$END$" description="Module declaration" toReformat="true" toShortenFQNames="true">
+    <variable name="NAME" expression="&quot;Main&quot;" defaultValue="" alwaysStopAt="true"/>
+    <context>
+      <option name="Lumi" value="true"/>
+    </context>
+  </template>
+  <template name="import" value="import $PATH$.{$NAMES$}" description="Import selective names" toReformat="true" toShortenFQNames="true">
+    <variable name="PATH" expression="&quot;std.io&quot;" defaultValue="" alwaysStopAt="true"/>
+    <variable name="NAMES" expression="&quot;println&quot;" defaultValue="" alwaysStopAt="true"/>
+    <context>
+      <option name="Lumi" value="true"/>
+    </context>
+  </template>
+  <template name="val" value="val $NAME$ = {&#10;    $PARAMS$ -&gt; $END$&#10;}" description="Function / value binding" toReformat="true" toShortenFQNames="true">
+    <variable name="NAME" expression="&quot;name&quot;" defaultValue="" alwaysStopAt="true"/>
+    <variable name="PARAMS" expression="&quot;x&quot;" defaultValue="" alwaysStopAt="true"/>
+    <context>
+      <option name="Lumi" value="true"/>
+    </context>
+  </template>
+  <template name="match" value="$SCRUT$ match {&#10;    $PAT$ -&gt; $EXPR$&#10;    _ -&gt; $END$&#10;}" description="Match expression" toReformat="true" toShortenFQNames="true">
+    <variable name="SCRUT" expression="&quot;x&quot;" defaultValue="" alwaysStopAt="true"/>
+    <variable name="PAT" expression="&quot;0&quot;" defaultValue="" alwaysStopAt="true"/>
+    <variable name="EXPR" expression="&quot;1&quot;" defaultValue="" alwaysStopAt="true"/>
+    <context>
+      <option name="Lumi" value="true"/>
+    </context>
+  </template>
+  <template name="for" value="for $X$ in $XS$ {&#10;    $END$&#10;}" description="For loop" toReformat="true" toShortenFQNames="true">
+    <variable name="X" expression="&quot;x&quot;" defaultValue="" alwaysStopAt="true"/>
+    <variable name="XS" expression="&quot;xs&quot;" defaultValue="" alwaysStopAt="true"/>
+    <context>
+      <option name="Lumi" value="true"/>
+    </context>
+  </template>
+  <template name="type" value="type $NAME$ {&#10;    val $FIELD$&#10;}" description="Product type" toReformat="true" toShortenFQNames="true">
+    <variable name="NAME" expression="&quot;Point&quot;" defaultValue="" alwaysStopAt="true"/>
+    <variable name="FIELD" expression="&quot;x&quot;" defaultValue="" alwaysStopAt="true"/>
+    <context>
+      <option name="Lumi" value="true"/>
+    </context>
+  </template>
+  <template name="trait" value="trait $NAME$ {&#10;    val $METHOD$ = { self -&gt; $END$ }&#10;}" description="Trait definition" toReformat="true" toShortenFQNames="true">
+    <variable name="NAME" expression="&quot;Show&quot;" defaultValue="" alwaysStopAt="true"/>
+    <variable name="METHOD" expression="&quot;show&quot;" defaultValue="" alwaysStopAt="true"/>
+    <context>
+      <option name="Lumi" value="true"/>
+    </context>
+  </template>
+  <template name="instance" value="instance $TRAIT$ for $TYPE$ {&#10;    val $METHOD$ = { self -&gt; $END$ }&#10;}" description="Trait instance" toReformat="true" toShortenFQNames="true">
+    <variable name="TRAIT" expression="&quot;Show&quot;" defaultValue="" alwaysStopAt="true"/>
+    <variable name="TYPE" expression="&quot;Point&quot;" defaultValue="" alwaysStopAt="true"/>
+    <variable name="METHOD" expression="&quot;show&quot;" defaultValue="" alwaysStopAt="true"/>
+    <context>
+      <option name="Lumi" value="true"/>
+    </context>
+  </template>
+  <template name="foreign" value="foreign &quot;C&quot; pure fn $NAME$($PARAM$: $PTY$) -&gt; $RTY$" description="Foreign C function" toReformat="true" toShortenFQNames="true">
+    <variable name="NAME" expression="&quot;strlen&quot;" defaultValue="" alwaysStopAt="true"/>
+    <variable name="PARAM" expression="&quot;s&quot;" defaultValue="" alwaysStopAt="true"/>
+    <variable name="PTY" expression="&quot;String&quot;" defaultValue="" alwaysStopAt="true"/>
+    <variable name="RTY" expression="&quot;Int&quot;" defaultValue="" alwaysStopAt="true"/>
+    <context>
+      <option name="Lumi" value="true"/>
+    </context>
+  </template>
+  <template name="main" value="module $NAME$&#10;&#10;import std.io.{println}&#10;&#10;val main = {&#10;    $END$&#10;}" description="Hello-style main module" toReformat="true" toShortenFQNames="true">
+    <variable name="NAME" expression="&quot;Main&quot;" defaultValue="" alwaysStopAt="true"/>
+    <context>
+      <option name="Lumi" value="true"/>
+    </context>
+  </template>
+</templateSet>

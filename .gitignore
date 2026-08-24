@@ -15,3 +15,4 @@ editors/**/*.vsix
 editors/idea/.gradle/
 editors/idea/.kotlin/
 editors/idea/.intellijPlatform/
+crates/*/target/

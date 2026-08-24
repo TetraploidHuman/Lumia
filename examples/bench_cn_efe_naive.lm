@@ -1,6 +1,6 @@
 module BenchCnEfeNaive
 
-/// CogniNucleus EFE action scores in pure Lumia (imagine + G(a), horizon 2).
+/// CogniNucleus EFE action scores in pure Lumi (imagine + G(a), horizon 2).
 /// Compared against `std.efe.actionScores` RT kernel in `bench_cn_efe_kernel.lm`.
 import std.io.{println}
 import std.linalg.{zeros, copy, checksum, l2Norm, sub}

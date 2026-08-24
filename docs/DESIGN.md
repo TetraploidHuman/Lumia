@@ -1,4 +1,4 @@
-# Lumia 语言设计文档
+# Lumi 语言设计文档
 
 > **版本**: 0.12.14-draft  
 > **状态**: 设计阶段，不妥协版  
@@ -9,7 +9,7 @@
 
 ## 1. 设计宣言
 
-Lumia 是一门 **以人类思维为表面语法、以编译器证明为性能基础** 的编程语言。
+Lumi 是一门 **以人类思维为表面语法、以编译器证明为性能基础** 的编程语言。
 
 ### 1.1 核心命题
 
@@ -42,11 +42,11 @@ Lumia 是一门 **以人类思维为表面语法、以编译器证明为性能�
 
 ## 2. 可观测语义契约
 
-这是 Lumia 与用户之间的 **唯一合同**。所有优化必须保持下列可观测行为不变。
+这是 Lumi 与用户之间的 **唯一合同**。所有优化必须保持下列可观测行为不变。
 
 ### 2.1 值语义
 
-- 两个 Lumia 值 **相等**，当且仅当它们在语言定义的 `==` 下相等。
+- 两个 Lumi 值 **相等**，当且仅当它们在语言定义的 `==` 下相等。
 - `==` 是 **结构相等**（递归比较内容），不是引用相等。
 - 语言 **不提供** 引用相等运算符（无 `===`、无 `is` 指同一性、无 `identityHashCode` 作为语言特性）。
 - 浮点数相等遵循 IEEE 754；`NaN` 与自身不等。
@@ -72,7 +72,7 @@ Lumia 是一门 **以人类思维为表面语法、以编译器证明为性能�
 
 ### 2.3 求值语义
 
-- Lumia 采用 **严格求值（call-by-value）**。
+- Lumi 采用 **严格求值（call-by-value）**。
 - 函数参数在传入前完全求值。
 - `val` / `var` 绑定在右侧表达式求值完成后绑定。
 - `match`、`if` 的分支选择遵循严格语义：被选分支求值，未选分支不求值。
@@ -116,7 +116,7 @@ Lumia 是一门 **以人类思维为表面语法、以编译器证明为性能�
 - 函数参数、返回值、`val`/`var`、闭包捕获、泛型、ADT 变体 —— **全部推断**。
 - 类型注解是 **可选逃生舱**，几乎永远不写；实在要写形如 `**名字: 类型`**：
 
-```lumia
+```lumi
 val x: Int = 1
 val add = { a: Int, b: Int ->
     a + b
@@ -164,7 +164,7 @@ Fn[A, B, ...]           // 一等函数（多参）
 
 用户对 `List` 只感知下列操作：
 
-```lumia
+```lumi
 listOf()                   // 空列表（正规构造）
 listOf(1, 2, 3)
 []                          // 糖 → listOf()
@@ -211,7 +211,7 @@ COWList      // 写时复制缓冲
 
 #### 用户视图
 
-```lumia
+```lumi
 mapOf()                                 // 空 Map（正规构造）
 mapOf("a" to 1, "b" to 2)               // 首选：中缀 to
 mapOf(("a", 1), ("b", 2))               // 等价：显式元组
@@ -337,7 +337,7 @@ BuildFused              // 从 List 管道 / fold 构建的延迟视图
 | 差分更新 | 多次 `set` / `insert` | `Overlay` / 小表；而非每次拷整表 |
 | 管道融合 | `.map(...).filter(...).toMap()` | 与 `List` 融合合流，按消费方式再物化 |
 
-```lumia
+```lumi
 val m = pairs.toMap()
 val v = m.get("only")
 ```
@@ -345,7 +345,7 @@ val v = m.get("only")
 - **语义**：与先建完整映射再查找相同（含重复键覆盖规则）。
 - **实现**：若 `m` 不逃逸且只有少数 `get`，可在 `AssocList` / `BuildFused` 上查找或短路扫描，**永不建全量哈希表**；若逃逸或查找密集，再升为 `HashOrdered` 或 `SmallMap`。
 
-```lumia
+```lumi
 var m = [:]
 m = m.set("a", 1)
 m = m.set("b", 2)
@@ -354,7 +354,7 @@ println(m.get("a"))
 
 - **实现**：可为 `Overlay` 链或直接 `SmallMap`；逃逸后再压成紧凑表示。
 
-```lumia
+```lumi
 val m = lines
     .map(parsePair)
     .filter(valid)
@@ -397,7 +397,7 @@ val m = lines
 
 完整写法示例（标准库内部风格；用户可选阅读）：
 
-```lumia
+```lumi
 // 「能显示成字符串」
 trait Show {
     val show = { self ->
@@ -465,7 +465,7 @@ val f : Fn[A] -> B / ε
 
 函数级 `ε` 是 **边界标签**；体内粒度更细。
 
-```lumia
+```lumi
 val mixed = {
     // 前段：纯计算（IR 中为纯区域）
     val a = heavy_pure(xs)
@@ -483,7 +483,7 @@ val mixed = {
 - `heavy_pure` / `map` / `filter` / `len` 等无效应子计算：纯分析后可做 CSE、融合、DCE、局部消重等（§7.2、§7.5.1-A）。
 - 编译器 **不保证** 把前段/后段自动 outline 成用户可见的独立纯函数；需要跨调用复用或在纯上下文调用时，用户应自行拆出纯函数：
 
-```lumia
+```lumi
 val compute = { xs -> xs.map(f).filter(p) }   // ε = ∅
 
 val report = {
@@ -501,7 +501,7 @@ val main = {
 
 ### 4.0 注释与字符串
 
-```lumia
+```lumi
 // 单行注释
 
 /* 多行
@@ -540,7 +540,7 @@ val t = "hello $name"     // 简单标识符插值
 - `var` 换绑 **不是 I/O 效应**；纯块内允许 `var`（编译器 SSA 化后仍可证明纯度）。
 - 对 `List` 的“改元素”仍用值语义：`xs = xs.set(i, v)`。
 
-```lumia
+```lumi
 val add = { a, b ->
     a + b
 }
@@ -551,7 +551,7 @@ n = n + 1
 
 ### 4.2 程序结构
 
-```lumia
+```lumi
 module MyApp
 
 import std.io.{println}
@@ -587,28 +587,28 @@ val main = {
 
 #### 形式 A：参数写在名字后（推荐 / 标准库写法）
 
-```lumia
+```lumi
 val add(a, b) = {
     a + b
 }
 ```
 
 - 参数在左侧，块内 **不再** 写 `{ a, b ->`。
-- 函数体相对 `{` **缩进 4 个空格**（`lumia fmt` 强制；禁止 Tab）。
+- 函数体相对 `{` **缩进 4 个空格**（`lumi fmt` 强制；禁止 Tab）。
 - **最后一行表达式** 为返回值；亦可用有限 `return expr`（见 §4.3、§8）。
 - 参数、返回类型 **完全推断**。
 - **`std/` 标准库**一律用此形式。
 
 单行 / 无花括号短形式：
 
-```lumia
+```lumi
 val add(a, b) = { a + b }
 val add(a, b) = a + b
 ```
 
 - **顶层零参**：`val name() = { ... }`，或省略括号的 `val name = { ... }`（块内无 `->`，也不是 `{ -> ... }`）等价。例如：
 
-```lumia
+```lumi
 val answer() = { return 42 }
 val report = {
     println("hi")
@@ -620,7 +620,7 @@ val report = {
 
 #### 形式 B：参数写在块头（可选，多用于局部闭包）
 
-```lumia
+```lumi
 val add = { a, b ->
     a + b
 }
@@ -631,13 +631,13 @@ val add = { a, b ->
 
 单行形式：
 
-```lumia
+```lumi
 val add = { a, b -> a + b }
 ```
 
 #### 匿名函数 / 高阶
 
-```lumia
+```lumi
 // 完整写法：闭包作为普通参数
 val ys = xs.map({ x ->
     x * x
@@ -650,7 +650,7 @@ val ys2 = xs.map({ x -> x * x })
 
 若函数的 **最后一个参数是函数**，允许把该闭包写在 **调用括号外面**（Kotlin / Swift 同款）：
 
-```lumia
+```lumi
 // 推荐：尾随闭包
 val ys = xs.map { x ->
     x * x
@@ -684,7 +684,7 @@ run {
 | 链式     | 每环都可以尾随：`xs.map { ... }.filter { ... }` |
 
 
-```lumia
+```lumi
 // 等价三组
 xs.map({ x -> x * x })
 xs.map { x -> x * x }
@@ -693,13 +693,13 @@ xs.fold(0, { acc, x -> acc + x })
 xs.fold(0) { acc, x -> acc + x }
 ```
 
-官方风格（`lumia fmt`）：**最后一个参数是闭包时，优先写成尾随形式。**
+官方风格（`lumi fmt`）：**最后一个参数是闭包时，优先写成尾随形式。**
 
 #### 短闭包：单参可用 `it`（Kotlin 式）
 
 闭包 **恰好一个参数** 时，可省略参数列表，用隐式名字 `**it`**：
 
-```lumia
+```lumi
 xs.map { it * it }
 xs.filter { it > 100 }
 xs >> map { it.toLower() }
@@ -718,7 +718,7 @@ xs >> map { it.toLower() }
 
 **与 `match` 无冲突**：`match` 是 **中缀**。优先级：**先 `>>`，再 `match`**：
 
-```lumia
+```lumi
 findIndex(xs) { it > 0 } match {
     Some(i) -> i
     None -> -1
@@ -740,7 +740,7 @@ xs >> filter { it > 0 } match {
 
 数据从左流向右，送入下一个函数（学 Elixir/`|>` 的语义，**符号定为 `>>`**）：
 
-```lumia
+```lumi
 // x >> f          等于  f(x)
 // x >> f >> g     等于  g(f(x))
 
@@ -763,7 +763,7 @@ val result = raw
 | 与 `match` | `**>>` 优先于 `match`**：`x >> f match { ... }` ≡ `(x >> f) match { ... }` |
 
 
-```lumia
+```lumi
 // 三种等价风格（官方不强制唯一）
 xs.map { x -> x * 2 }.filter { y -> y > 10 }
 
@@ -780,7 +780,7 @@ map(xs) { x -> x * 2 }.filter { y -> y > 10 }
 
 同模块内 `val` 可相互递归；编译器做递归绑定组分析：
 
-```lumia
+```lumi
 val fib(n) = {
     n match {
         0 -> 0
@@ -810,7 +810,7 @@ val fib(n) = {
 
 #### 基本形式
 
-```lumia
+```lumi
 if cond {
     ...
 } else if cond2 {
@@ -827,7 +827,7 @@ if cond {
 
 #### 作为值使用
 
-```lumia
+```lumi
 val max = if a > b { a } else { b }
 
 val grade = if score >= 90 {
@@ -854,7 +854,7 @@ val abs = { x ->
 | `if` 只做效应 / 只改 `var`，结果丢掉       | `else` 可省略；类型为 `Unit`                |
 
 
-```lumia
+```lumi
 // 合法：当语句用，无 else
 if ready {
     println("go")
@@ -880,7 +880,7 @@ val y = if x > 0 { x }    // 错误：缺 else
 | 先拆开再带条件        | 中缀 `match` + 守卫 `pattern if cond -> ...` |
 
 
-```lumia
+```lumi
 // 布尔多路 —— 无主体 match（学 Kotlin when { }）
 val msg = match {
     n == 0 -> "zero"
@@ -900,7 +900,7 @@ val msg2 = n match {
 
 #### 不支持的写法
 
-```lumia
+```lumi
 if (cond) stmt;           // 无括号条件也可以，但分支必须是块
 if cond then a else b     // 不使用 then
 cond ? a : b              // 不使用三元；用 if 表达式
@@ -919,7 +919,7 @@ cond ? a : b              // 不使用三元；用 if 表达式
 | 移位          | 不用 `<<` `>>`；`>>` 专属管道；移位用函数名                 |
 
 
-```lumia
+```lumi
 if x > 0 and not done {
     ...
 }
@@ -930,7 +930,7 @@ if a or b {
 
 ### 4.6 块语义：最后一行返回
 
-```lumia
+```lumi
 val abs(x) = {
     var r = x
     if x < 0 {
@@ -950,7 +950,7 @@ val abs(x) = {
 
 `match` 作 **中缀**：先写被匹配的值，再写 `match { 臂 }`。`match` 须与主体 **同一行**（换行后的 `match {` 是无主体形式）。
 
-```lumia
+```lumi
 expr match {
     pattern -> expr
     pattern if guard -> expr
@@ -964,7 +964,7 @@ expr match {
 
 #### 无主体（学 Kotlin `when { }`）：布尔多路
 
-```lumia
+```lumi
 match {
     n > 0 -> "pos"
     n == 0 -> "zero"
@@ -984,7 +984,7 @@ match {
 - 臂语法：`**模式 [if 守卫] -> 表达式`** 或 `**模式 [if 守卫] -> { 块 }`**。
 - **或模式**：同一臂多个模式用 **逗号** 隔开（匹配任一即可）：
 
-```lumia
+```lumi
 n match {
     0, 1 -> "small"
     _ -> "big"
@@ -1006,7 +1006,7 @@ opt match {
 
 #### 完整示例
 
-```lumia
+```lumi
 module MatchDemo
 
 import std.io.{println}
@@ -1163,7 +1163,7 @@ val main = {
 
 #### 禁止写法
 
-```lumia
+```lumi
 x match {
     when n > 0 -> ...         // 非法：不用 when
 }
@@ -1179,7 +1179,7 @@ match x {                     // 非法：不用前缀 match；应为 x match { 
 
 #### 形式 A：`for x in xs { }` —— 遍历（首选）
 
-```lumia
+```lumi
 for i in 1..10 {
     println(i)
 }
@@ -1200,7 +1200,7 @@ for i in 1..n {
 - 需要累加时用外层 `var`。
 - 支持 `**break`**（跳出循环）与 `**continue`**（进入下一轮）。
 
-```lumia
+```lumi
 for x in xs {
     if x < 0 {
         continue
@@ -1214,7 +1214,7 @@ for x in xs {
 
 #### 形式 B：`for cond { }` —— 条件循环（替代 `while`）
 
-```lumia
+```lumi
 var i = 1
 var acc = 0
 for i <= n {
@@ -1227,7 +1227,7 @@ for i <= n {
 - 条件必须是 `Bool`。
 - 能写成范围时 **优先** `for i in ...`，更清晰：
 
-```lumia
+```lumi
 // 推荐
 for i in 1..n { acc = acc + i }   // 若不需要手动步进
 
@@ -1239,7 +1239,7 @@ for connected == false {
 
 #### 不支持
 
-```lumia
+```lumi
 while cond { ... }     // 无 while
 for (i = 0; i < n; i++) // 无 C 风格 for
 ```
@@ -1273,7 +1273,7 @@ for (i = 0; i < n; i++) // 无 C 风格 for
 - 结构体字段 **只允许 `val`，不允许 `var`**（见下）。
 - 枚举变体 **不写** `val`/`var`。
 
-```lumia
+```lumi
 // 积：一捆字段 —— 用 val 声明
 type Point {
     val x
@@ -1308,7 +1308,7 @@ type Expr {
 
 可变留在 **绑定** 上，不留在 **字段** 上：
 
-```lumia
+```lumi
 var p = Point { x = 1, y = 2 }
 p = p with { x = 3 }          // 换绑整个值 —— 正确
 // p.x = 3                   // 禁止：字段级赋值 = 对象可变，已拒绝
@@ -1331,7 +1331,7 @@ p = p with { x = 3 }          // 换绑整个值 —— 正确
 | 比较   | `==`                      | `p == Point { x = 1, y = 2 }`       |
 
 
-```lumia
+```lumi
 type Point {
     val x
     val y
@@ -1355,7 +1355,7 @@ p match {
 
 禁止：
 
-```lumia
+```lumi
 p.x = 3                       // 字段赋值 —— 非法
 Point { val x = 1, val y = 2 }  // 构造时不写 val —— 非法
 ```
@@ -1374,7 +1374,7 @@ Point { val x = 1, val y = 2 }  // 构造时不写 val —— 非法
 | 比较       | `==`                  | `Some(1) == Some(1)`    |
 
 
-```lumia
+```lumi
 type Option {
     Some(value)
     None
@@ -1413,14 +1413,14 @@ m match {
 
 禁止：
 
-```lumia
+```lumi
 b.value                        // 不经 match 就读变体字段 —— 非法
 Some { value = 1 }              // 位置载荷变体不用 {} 构造（除非声明成命名载荷）
 ```
 
 **对照（同一套语言手感）**
 
-```lumia
+```lumi
 // 声明
 type Point { val x, val y }     // 有 val → 积
 type Option { Some(value), None } // 无 val → 和
@@ -1451,7 +1451,7 @@ p with { x = 3 }                 // 积：更新
 
 变体载荷 **两种都支持**：
 
-```lumia
+```lumi
 // 内联积：字段写在变体里（一次性形状）
 type Msg {
     Move { val x, val y }
@@ -1472,7 +1472,7 @@ type Msg2 {
 
 使用：
 
-```lumia
+```lumi
 val a = Move { x = 1, y = 2 }
 val b = Move(Point { x = 1, y = 2 })
 
@@ -1507,7 +1507,7 @@ b match {
 
 ### 4.10 `var` 换绑与循环示例
 
-```lumia
+```lumi
 val sum_to(n) = {
     var acc = 0
     for i in 1..n {
@@ -1539,7 +1539,7 @@ val main = {
 
 ### 4.11 范围语法
 
-```lumia
+```lumi
 1..10      // 包含两端          [1, 10]   （Kotlin 同形）
 1..<10     // 包含 1，不包含 10  [1, 10)
 10..1 step -1
@@ -1593,7 +1593,7 @@ val main = {
 | 回调里更新     | 回调返回 delta / 新状态，由所有者写回 |
 
 
-```lumia
+```lumi
 val bump = { n ->
     n + 1
 }
@@ -1615,7 +1615,7 @@ val main = {
 #### 人要“对象”时，真正想要的是什么
 
 
-| 直觉需求       | Lumia 对应                                            |
+| 直觉需求       | Lumi 对应                                            |
 | ---------- | --------------------------------------------------- |
 | 一捆相关字段     | `type` + `val` 字段（积类型）                              |
 | 几种不同形状     | `type` + 变体 + `match`（和类型）                          |
@@ -1624,7 +1624,7 @@ val main = {
 | 封装隐藏细节     | 模块 `pub` / 非 `pub`，不是 `private` 字段继承树               |
 
 
-```lumia
+```lumi
 type Point {
     val x
     val y
@@ -1655,13 +1655,13 @@ val p2 = p.move(1, 2)    // 语法糖，等同 move(p, 1, 2)
 #### 和 Kotlin 的边界
 
 Kotlin 的 class 舒服，是因为 JVM 生态与可变对象模型。  
-Lumia 取的是 Kotlin 的 `**val`/`var`、块、推断、集合管道**，不取 **class 继承体系**。
+Lumi 取的是 Kotlin 的 `**val`/`var`、块、推断、集合管道**，不取 **class 继承体系**。
 
 ---
 
 ## 7. 编译器优化架构
 
-优化是 Lumia **语言设计的一部分**，不是事后附加。
+优化是 Lumi **语言设计的一部分**，不是事后附加。
 
 ### 7.1 编译流水线
 
@@ -1677,7 +1677,7 @@ Source
 
 ### 7.1.1 表示选择纪律 —— 能证则特化，否则默认
 
-针对「编译期很难次次选对、性能又不宜乱飘」，Lumia 采用：
+针对「编译期很难次次选对、性能又不宜乱飘」，Lumi 采用：
 
 > **分析能清楚证明时，由编译器走特化表示；不能证明时，走默认稳定路径。**  
 > 不在「可能更快」上赌博。
@@ -1742,7 +1742,7 @@ Source
 
 **用户写：**
 
-```lumia
+```lumi
 val ys = (1..1_000_000).map(f).filter(p)
 val z = ys[100] + ys[200]
 ```
@@ -1752,7 +1752,7 @@ val z = ys[100] + ys[200]
 
 **用户写：**
 
-```lumia
+```lumi
 var xs = 1..100
 xs = xs.set(3, 99)
 println(xs[3])
@@ -1765,7 +1765,7 @@ println(xs[3])
 
 **用户写：**
 
-```lumia
+```lumi
 val m = pairs
     .filter { p ->
         p.1 > 0
@@ -1779,7 +1779,7 @@ val v = m.get(key)
 
 **用户写：**
 
-```lumia
+```lumi
 var counts = [:]
 for w in words {
     counts = counts.get(w) match {
@@ -1974,7 +1974,7 @@ H · C_body  >  C_key + C_lookup + amortized(C_mem)
 - **传播**：显式 `alt return Err(err)` / `alt return None`（不自动包装、无裸 `alt return`）。
 - **`?` 后缀传播：搁置**。
 
-```lumia
+```lumi
 val load = { path ->
     val s = readFile(path) alt return Err(err)
     val n = parseInt(s) alt return Err(err)
@@ -2007,7 +2007,7 @@ val port = m["port"] alt 8080
 
 - **必须** 显式 `module` 声明（文件顶或约定位置）；不靠「文件名即模块」偷懒。
 
-```lumia
+```lumi
 module math.vector
 ```
 
@@ -2017,7 +2017,7 @@ module math.vector
 - 需要隐藏时用 `**priv`**（或实现阶段定名的私有关键字）标模块私有。
 - 不强制在公开 API 上写类型签名。
 
-```lumia
+```lumi
 module math.vector
 
 val dot = { a, b ->        // 默认公开
@@ -2029,7 +2029,7 @@ priv val helper = { ... }  // 仅本模块可见
 
 ### 9.3 导入
 
-```lumia
+```lumi
 import a.b              // 导入单个
 import a.{b, c}         // 导入多个
 import a.*              // 导入全部
@@ -2075,11 +2075,11 @@ import a.{b as bee, c}  // 多选中的别名
 
 | 工具                | 说明                                                   |
 | ----------------- | ---------------------------------------------------- |
-| `lumia build`     | Release / Debug                                      |
-| `lumia check`     | 仅类型与效应检查                                             |
-| `lumia fmt`       | 官方格式化：**4 空格缩进**；尾随闭包优先；`{ a, b ->` / `match` 臂 `->` |
-| `lumia doc`       | 文档生成                                                 |
-| `lumia --show-ir` | 开发者查看 Core IR（非用户常规）                                 |
+| `lumi build`     | Release / Debug                                      |
+| `lumi check`     | 仅类型与效应检查                                             |
+| `lumi fmt`       | 官方格式化：**4 空格缩进**；尾随闭包优先；`{ a, b ->` / `match` 臂 `->` |
+| `lumi doc`       | 文档生成                                                 |
+| `lumi --show-ir` | 开发者查看 Core IR（非用户常规）                                 |
 | LSP               | 推断、跳转、穷尽匹配提示                                         |
 
 
@@ -2087,7 +2087,7 @@ import a.{b as bee, c}  // 多选中的别名
 
 ## 14. 示例：完整程序
 
-```lumia
+```lumi
 module WordCount
 
 import std.io.{readStdin, println}
@@ -2212,11 +2212,11 @@ val main = {
 
 ## 17. 总结
 
-Lumia 不要求用户在 **惰性/严格、Stream/Array、HashMap/TreeMap、pure/effect、栈/堆、类型注解** 之间做选择。效应由编译器推断：`main` 里直接写 I/O，无需手写 `effect`。
+Lumi 不要求用户在 **惰性/严格、Stream/Array、HashMap/TreeMap、pure/effect、栈/堆、类型注解** 之间做选择。效应由编译器推断：`main` 里直接写 I/O，无需手写 `effect`。
 
 用户写：
 
-```lumia
+```lumi
 val add = { a, b ->
     a + b
 }
@@ -2234,4 +2234,4 @@ n = n + 1
 - 要了命令式的 `**val`/`var`、书写顺序与 Debug 直觉**
 - 不要 C/Java 的 **引用语义与实现细节泄漏**
 
-**Lumia：写你所想，编译器证明其余。类型存在，但你不必写。**
+**Lumi：写你所想，编译器证明其余。类型存在，但你不必写。**

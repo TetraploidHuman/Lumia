@@ -19,7 +19,7 @@ instance Eq for Key {
 
 val main = {
     val k = Mk(1)
-    // `==` must match Map/Set (`lumia_eq`), not the diverging `__Eq_Key_eq`.
+    // `==` must match Map/Set (`lumi_eq`), not the diverging `__Eq_Key_eq`.
     println(if k == Mk(1) { 1 } else { 0 })
     val m = mapOf(k, 10)
     println(if m.contains(Mk(1)) { 1 } else { 0 })

@@ -3,7 +3,7 @@ module StringMore
 import std.io.{println}
 
 val main = {
-    val s = "  Hello Lumia  "
+    val s = "  Hello Lumi  "
     val t = s.trim()
     println(t.len())
     println(t)

@@ -7,6 +7,6 @@ foreign "C" fn getenv(s: String) -> String
 val main = {
     val p = getenv("PATH")
     println(p.len() > 0)
-    val missing = getenv("LUMIA_NO_SUCH_ENV_VAR_XYZ")
+    val missing = getenv("LUMI_NO_SUCH_ENV_VAR_XYZ")
     println(missing.len())
 }

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Install `lumia` for NixOS:
-#   ~/.local/lib/lumia/lumia      — full compiler (LLVM)
-#   ~/.local/lib/lumia/lumia-lsp  — slim LSP (no LLVM; fast cold start)
-#   ~/.local/bin/lumia           — wrapper with baked library paths
+# Install `lumi` for NixOS:
+#   ~/.local/lib/lumi/lumi      — full compiler (LLVM)
+#   ~/.local/lib/lumi/lumi-lsp  — slim LSP (no LLVM; fast cold start)
+#   ~/.local/bin/lumi           — wrapper with baked library paths
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=env.sh
@@ -24,31 +24,31 @@ case "$PROFILE" in
     ;;
 esac
 
-echo "== build slim lumia-lsp (no codegen / LLVM) =="
-cargo build -p lumia --no-default-features "${CARGO_FLAGS[@]}" --manifest-path "$ROOT/Cargo.toml"
-LSP_SRC="$ROOT/target/$OUT_DIR/lumia"
+echo "== build slim lumi-lsp (no codegen / LLVM) =="
+cargo build -p lumi --no-default-features "${CARGO_FLAGS[@]}" --manifest-path "$ROOT/Cargo.toml"
+LSP_SRC="$ROOT/target/$OUT_DIR/lumi"
 if [[ ! -x "$LSP_SRC" ]]; then
   echo "missing $LSP_SRC" >&2
   exit 1
 fi
-# Preserve slim binary before the full rebuild overwrites target/*/lumia.
-cp -f "$LSP_SRC" /tmp/lumia-lsp-build.$$
-trap 'rm -f /tmp/lumia-lsp-build.$$' EXIT
+# Preserve slim binary before the full rebuild overwrites target/*/lumi.
+cp -f "$LSP_SRC" /tmp/lumi-lsp-build.$$
+trap 'rm -f /tmp/lumi-lsp-build.$$' EXIT
 
-echo "== build full lumia (codegen) =="
-cargo build -p lumia "${CARGO_FLAGS[@]}" --manifest-path "$ROOT/Cargo.toml"
-BIN_SRC="$ROOT/target/$OUT_DIR/lumia"
+echo "== build full lumi (codegen) =="
+cargo build -p lumi "${CARGO_FLAGS[@]}" --manifest-path "$ROOT/Cargo.toml"
+BIN_SRC="$ROOT/target/$OUT_DIR/lumi"
 if [[ ! -x "$BIN_SRC" ]]; then
   echo "missing $BIN_SRC" >&2
   exit 1
 fi
 
-LIBEXEC="${HOME}/.local/lib/lumia"
-BIN_WRAP="${HOME}/.local/bin/lumia"
+LIBEXEC="${HOME}/.local/lib/lumi"
+BIN_WRAP="${HOME}/.local/bin/lumi"
 mkdir -p "$LIBEXEC" "$(dirname "$BIN_WRAP")"
-cp -f "$BIN_SRC" "$LIBEXEC/lumia"
-cp -f /tmp/lumia-lsp-build.$$ "$LIBEXEC/lumia-lsp"
-chmod +x "$LIBEXEC/lumia" "$LIBEXEC/lumia-lsp"
+cp -f "$BIN_SRC" "$LIBEXEC/lumi"
+cp -f /tmp/lumi-lsp-build.$$ "$LIBEXEC/lumi-lsp"
+chmod +x "$LIBEXEC/lumi" "$LIBEXEC/lumi-lsp"
 
 # Resolve shared-lib dirs once at install time (avoid /nix/store globs on every launch).
 _LIB_DIRS=()
@@ -90,13 +90,13 @@ LIBEXEC_ABS="$(cd "$LIBEXEC" && pwd)"
   echo "LIBEXEC=\"${LIBEXEC_ABS}\""
   cat << 'WRAP'
 if [[ "${1:-}" == "lsp" ]]; then
-  exec "$LIBEXEC/lumia-lsp" "$@"
+  exec "$LIBEXEC/lumi-lsp" "$@"
 fi
-exec "$LIBEXEC/lumia" "$@"
+exec "$LIBEXEC/lumi" "$@"
 WRAP
 } > "$BIN_WRAP"
 chmod +x "$BIN_WRAP"
 
 echo "installed: $BIN_WRAP"
-echo "  compiler: $LIBEXEC/lumia ($(du -h "$LIBEXEC/lumia" | cut -f1))"
-echo "  lsp:      $LIBEXEC/lumia-lsp ($(du -h "$LIBEXEC/lumia-lsp" | cut -f1))"
+echo "  compiler: $LIBEXEC/lumi ($(du -h "$LIBEXEC/lumi" | cut -f1))"
+echo "  lsp:      $LIBEXEC/lumi-lsp ($(du -h "$LIBEXEC/lumi-lsp" | cut -f1))"

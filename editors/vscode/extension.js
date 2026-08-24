@@ -18,29 +18,29 @@ let client;
  */
 function activate(context) {
   context.subscriptions.push(
-    commands.registerCommand("lumia.run", (uri) => runFile(uri, false)),
-    commands.registerCommand("lumia.buildRun", (uri) => runFile(uri, true)),
-    commands.registerCommand("lumia.checkFile", (uri) => checkFile(uri)),
-    commands.registerCommand("lumia.restartServer", () => restartLsp(context))
+    commands.registerCommand("lumi.run", (uri) => runFile(uri, false)),
+    commands.registerCommand("lumi.buildRun", (uri) => runFile(uri, true)),
+    commands.registerCommand("lumi.checkFile", (uri) => checkFile(uri)),
+    commands.registerCommand("lumi.restartServer", () => restartLsp(context))
   );
 
   const runBtn = window.createStatusBarItem(StatusBarAlignment.Left, 100);
-  runBtn.command = "lumia.run";
-  runBtn.text = "$(play) Lumia Run";
+  runBtn.command = "lumi.run";
+  runBtn.text = "$(play) Lumi Run";
   runBtn.tooltip = "Build and run the current .lm file";
   context.subscriptions.push(runBtn);
 
   const buildBtn = window.createStatusBarItem(StatusBarAlignment.Left, 99);
-  buildBtn.command = "lumia.buildRun";
-  buildBtn.text = "$(tools) Lumia Build";
-  buildBtn.tooltip = "Build the current .lm file to target/lumia/";
+  buildBtn.command = "lumi.buildRun";
+  buildBtn.text = "$(tools) Lumi Build";
+  buildBtn.tooltip = "Build the current .lm file to target/lumi/";
   context.subscriptions.push(buildBtn);
 
   const refreshStatus = () => {
     const editor = window.activeTextEditor;
     const isLm =
       editor &&
-      (editor.document.languageId === "lumia" ||
+      (editor.document.languageId === "lumi" ||
         editor.document.fileName.endsWith(".lm"));
     if (isLm) {
       runBtn.show();
@@ -63,13 +63,13 @@ function activate(context) {
  * @param {import("vscode").ExtensionContext} context
  */
 function startLsp(context) {
-  const config = workspace.getConfiguration("lumia");
+  const config = workspace.getConfiguration("lumi");
   if (!config.get("lsp.enabled", true)) {
     return;
   }
 
   const t0 = Date.now();
-  const command = resolveLumiaLsp();
+  const command = resolveLumiLsp();
   const lspEnv = { ...process.env, PATH: pathEnvWithCargo() };
   // Executable without `transport` uses stdio pipes; do NOT set TransportKind.stdio
   // or the client appends a bare `--stdio` argv that older binaries rejected.
@@ -80,16 +80,16 @@ function startLsp(context) {
   };
 
   const clientOptions = {
-    documentSelector: [{ scheme: "file", language: "lumia" }],
+    documentSelector: [{ scheme: "file", language: "lumi" }],
     synchronize: {
       fileEvents: workspace.createFileSystemWatcher("**/*.lm"),
     },
-    outputChannelName: "Lumia Language Server",
+    outputChannelName: "Lumi Language Server",
   };
 
   client = new LanguageClient(
-    "lumia",
-    "Lumia Language Server",
+    "lumi",
+    "Lumi Language Server",
     serverOptions,
     clientOptions
   );
@@ -105,7 +105,7 @@ function startLsp(context) {
   const ch = client.outputChannel;
   if (ch) {
     ch.appendLine(
-      `[lumia] starting LSP: ${command} lsp (activate+${Date.now() - t0}ms)`
+      `[lumi] starting LSP: ${command} lsp (activate+${Date.now() - t0}ms)`
     );
   }
 
@@ -114,13 +114,13 @@ function startLsp(context) {
     .then(() => {
       if (ch) {
         ch.appendLine(
-          `[lumia] LSP ready in ${Date.now() - t0}ms (command: ${command})`
+          `[lumi] LSP ready in ${Date.now() - t0}ms (command: ${command})`
         );
       }
     })
     .catch((err) => {
       window.showErrorMessage(
-        `Lumia LSP failed to start (${command} lsp). Set lumia.lsp.path or add lumia to PATH. (${err})`
+        `Lumi LSP failed to start (${command} lsp). Set lumi.lsp.path or add lumi to PATH. (${err})`
       );
     });
 }
@@ -138,19 +138,19 @@ async function restartLsp(context) {
     client = undefined;
   }
   startLsp(context);
-  window.showInformationMessage("Lumia language server restarted.");
+  window.showInformationMessage("Lumi language server restarted.");
 }
 
-function resolveLumia() {
+function resolveLumi() {
   const configured = workspace
-    .getConfiguration("lumia")
+    .getConfiguration("lumi")
     .get("lsp.path", "")
     .trim();
   const home = os.homedir();
   const candidates = [
     configured,
-    path.join(home, ".local", "bin", "lumia"),
-    path.join(home, ".cargo", "bin", "lumia"),
+    path.join(home, ".local", "bin", "lumi"),
+    path.join(home, ".cargo", "bin", "lumi"),
   ];
   for (const c of candidates) {
     if (c && looksLikePath(c) && isExecutableFile(c)) {
@@ -160,25 +160,25 @@ function resolveLumia() {
   if (configured && !looksLikePath(configured)) {
     return configured;
   }
-  return path.join(home, ".local", "bin", "lumia");
+  return path.join(home, ".local", "bin", "lumi");
 }
 
 /** Prefer the slim no-LLVM LSP binary for fast cold start. */
-function resolveLumiaLsp() {
+function resolveLumiLsp() {
   const home = os.homedir();
-  const slim = path.join(home, ".local", "lib", "lumia", "lumia-lsp");
+  const slim = path.join(home, ".local", "lib", "lumi", "lumi-lsp");
   const configured = workspace
-    .getConfiguration("lumia")
+    .getConfiguration("lumi")
     .get("lsp.path", "")
     .trim();
 
-  // Wrapper / PATH name `lumia` still routes to the fat binary for `build`;
+  // Wrapper / PATH name `lumi` still routes to the fat binary for `build`;
   // for LSP always prefer the slim binary when present.
   const looksLikeWrapper =
     !configured ||
-    configured === "lumia" ||
-    configured.endsWith(`${path.sep}bin${path.sep}lumia`) ||
-    configured.endsWith("/bin/lumia");
+    configured === "lumi" ||
+    configured.endsWith(`${path.sep}bin${path.sep}lumi`) ||
+    configured.endsWith("/bin/lumi");
   if (looksLikeWrapper && isExecutableFile(slim)) {
     return slim;
   }
@@ -194,7 +194,7 @@ function resolveLumiaLsp() {
   if (isExecutableFile(slim)) {
     return slim;
   }
-  return resolveLumia();
+  return resolveLumi();
 }
 
 /** @param {string} p */
@@ -243,7 +243,7 @@ async function runFile(uri, buildOnly) {
     return;
   }
 
-  const lumia = resolveLumia();
+  const lumi = resolveLumi();
   const cwd =
     workspace.getWorkspaceFolder(Uri.file(filePath))?.uri.fsPath ||
     path.dirname(filePath);
@@ -251,12 +251,12 @@ async function runFile(uri, buildOnly) {
   const stem =
     path.basename(filePath, path.extname(filePath)).replace(/[^A-Za-z0-9_]/g, "_") ||
     "out";
-  const outAbs = path.join(path.dirname(filePath), "target", "lumia", stem);
+  const outAbs = path.join(path.dirname(filePath), "target", "lumi", stem);
 
   const term =
-    window.terminals.find((t) => t.name === "Lumia") ||
+    window.terminals.find((t) => t.name === "Lumi") ||
     window.createTerminal({
-      name: "Lumia",
+      name: "Lumi",
       cwd,
       env: { ...process.env, PATH: pathEnvWithCargo() },
     });
@@ -264,7 +264,7 @@ async function runFile(uri, buildOnly) {
 
   const mkdir = `mkdir -p ${shellQuote(path.dirname(outAbs))}`;
   const build = [
-    shellQuote(lumia),
+    shellQuote(lumi),
     "build",
     shellQuote(filePath),
     "-o",
@@ -285,19 +285,19 @@ async function checkFile(uri) {
     window.showErrorMessage("Open a .lm file first.");
     return;
   }
-  const lumia = resolveLumia();
+  const lumi = resolveLumi();
   const cwd =
     workspace.getWorkspaceFolder(Uri.file(filePath))?.uri.fsPath ||
     path.dirname(filePath);
   const term =
-    window.terminals.find((t) => t.name === "Lumia") ||
+    window.terminals.find((t) => t.name === "Lumi") ||
     window.createTerminal({
-      name: "Lumia",
+      name: "Lumi",
       cwd,
       env: { ...process.env, PATH: pathEnvWithCargo() },
     });
   term.show(true);
-  const quoted = [lumia, "check", filePath].map(shellQuote).join(" ");
+  const quoted = [lumi, "check", filePath].map(shellQuote).join(" ");
   term.sendText(`cd ${shellQuote(cwd)} && ${quoted}`);
 }
 
@@ -312,7 +312,7 @@ async function resolveLmPath(uri) {
   const editor = window.activeTextEditor;
   if (
     editor &&
-    (editor.document.languageId === "lumia" ||
+    (editor.document.languageId === "lumi" ||
       editor.document.fileName.endsWith(".lm"))
   ) {
     if (editor.document.isDirty) {

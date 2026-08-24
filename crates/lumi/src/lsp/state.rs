@@ -1,0 +1,86 @@
+//! Shared LSP document state and cached analysis.
+
+use crate::load::SourceFile;
+use lumi_ty::TypedModule;
+use rustc_hash::FxHashMap as HashMap;
+use std::sync::mpsc::{self, Sender};
+use std::sync::{LazyLock, Mutex};
+
+pub(super) struct Analysis {
+    pub(super) typed: TypedModule,
+    /// Primary document source (for hover/completion cursor).
+    pub(super) src: String,
+    pub(super) files: Vec<SourceFile>,
+}
+
+pub(super) struct State {
+    pub(super) docs: HashMap<String, String>,
+    /// uri → last successful analysis
+    pub(super) analysis: HashMap<String, Analysis>,
+    /// Debounced re-analyze requests (didChange).
+    pub(super) analyze_tx: Option<Sender<AnalyzeReq>>,
+}
+
+#[derive(Clone)]
+pub(super) struct AnalyzeReq {
+    pub(super) uri: String,
+    pub(super) text: String,
+    pub(super) gen: u64,
+}
+
+static STATE: Mutex<Option<State>> = Mutex::new(None);
+static ANALYZE_GEN: LazyLock<Mutex<HashMap<String, u64>>> =
+    LazyLock::new(|| Mutex::new(HashMap::default()));
+
+pub(super) fn state_lock() -> std::sync::MutexGuard<'static, Option<State>> {
+    STATE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Bump per-uri generation and return the new value (latest wins for debounce).
+pub(super) fn next_analyze_gen(uri: &str) -> u64 {
+    let mut g = ANALYZE_GEN.lock().unwrap_or_else(|e| e.into_inner());
+    let e = g.entry(uri.to_string()).or_insert(0);
+    *e += 1;
+    *e
+}
+
+pub(super) fn current_analyze_gen(uri: &str) -> u64 {
+    let g = ANALYZE_GEN.lock().unwrap_or_else(|e| e.into_inner());
+    g.get(uri).copied().unwrap_or(0)
+}
+
+pub(super) fn spawn_analyze_worker() -> Sender<AnalyzeReq> {
+    let (tx, rx) = mpsc::channel::<AnalyzeReq>();
+    std::thread::Builder::new()
+        .name("lumi-lsp-analyze".into())
+        .spawn(move || {
+            use super::analyze::publish_diagnostics_for;
+            use std::time::{Duration, Instant};
+            let debounce = Duration::from_millis(120);
+            let mut pending: Option<AnalyzeReq> = None;
+            let mut deadline = Instant::now();
+            loop {
+                let timeout = if pending.is_some() {
+                    deadline.saturating_duration_since(Instant::now())
+                } else {
+                    Duration::from_secs(3600)
+                };
+                match rx.recv_timeout(timeout) {
+                    Ok(req) => {
+                        pending = Some(req);
+                        deadline = Instant::now() + debounce;
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        if let Some(req) = pending.take() {
+                            if req.gen == current_analyze_gen(&req.uri) {
+                                let _ = publish_diagnostics_for(&req.uri, &req.text);
+                            }
+                        }
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            }
+        })
+        .expect("spawn lsp analyze worker");
+    tx
+}

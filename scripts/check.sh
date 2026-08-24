@@ -11,17 +11,17 @@ echo "== scripts/check_editor_assets.sh =="
 echo "== cargo fmt --all -- --check =="
 cargo fmt --all -- --check
 
-echo "== cargo clippy --workspace --exclude lumia --lib -- -D warnings =="
-cargo clippy --workspace --exclude lumia --lib -- -D warnings
+echo "== cargo clippy --workspace --exclude lumi --lib -- -D warnings =="
+cargo clippy --workspace --exclude lumi --lib -- -D warnings
 
-echo "== cargo test --workspace --exclude lumia --lib =="
-cargo test --workspace --exclude lumia --lib
+echo "== cargo test --workspace --exclude lumi --lib =="
+cargo test --workspace --exclude lumi --lib
 
 # Integration tests that live outside --lib (Core IR goldens, etc.)
-echo "== cargo test -p lumia_opt --tests =="
-cargo test -p lumia_opt --tests
+echo "== cargo test -p lumi_opt --tests =="
+cargo test -p lumi_opt --tests
 
-echo "== cargo test -p lumia --tests (e2e + opt_correctness fingerprints) =="
-cargo test -p lumia --tests
+echo "== cargo test -p lumi --tests (e2e + opt_correctness fingerprints) =="
+cargo test -p lumi --tests
 
 echo "OK: check passed"

@@ -9,24 +9,24 @@ source "$ROOT/scripts/env.sh"
 source "$ROOT/scripts/bench_measure.sh"
 
 cd "$ROOT"
-cargo build -q -p lumia
-LUMIA="$ROOT/target/debug/lumia"
+cargo build -q -p lumi
+LUMI="$ROOT/target/debug/lumi"
 SRC=examples/bench_memo.lm
-OUT_DIR="${TMPDIR:-/tmp}/lumia_bench_memo"
+OUT_DIR="${TMPDIR:-/tmp}/lumi_bench_memo"
 mkdir -p "$OUT_DIR"
 WITH="$OUT_DIR/with_memo"
 WITHOUT="$OUT_DIR/without_memo"
 RUNS="${RUNS:-5}"
 
 echo "== build Release + Memo T_f =="
-"$LUMIA" build --release "$SRC" -o "$WITH"
+"$LUMI" build --release "$SRC" -o "$WITH"
 echo "== build Release + --no-memo =="
-"$LUMIA" build --release --no-memo "$SRC" -o "$WITHOUT"
+"$LUMI" build --release --no-memo "$SRC" -o "$WITHOUT"
 
 # Confirm Slots T_f attached / skipped (IR: memo=Some(Slots …) / memo=None)
 echo "== IR memo flag =="
-"$LUMIA" build --release "$SRC" -o /dev/null --show-ir 2>/dev/null | grep -E 'fun heavy|memo=' | head -3 || true
-"$LUMIA" build --release --no-memo "$SRC" -o /dev/null --show-ir 2>/dev/null | grep -E 'fun heavy|memo=' | head -3 || true
+"$LUMI" build --release "$SRC" -o /dev/null --show-ir 2>/dev/null | grep -E 'fun heavy|memo=' | head -3 || true
+"$LUMI" build --release --no-memo "$SRC" -o /dev/null --show-ir 2>/dev/null | grep -E 'fun heavy|memo=' | head -3 || true
 
 out_with="$("$WITH")"
 out_without="$("$WITHOUT")"

@@ -1,9 +1,9 @@
 {
-  "name": "lumia",
-  "displayName": "Lumia",
-  "description": "Lumia language support — syntax highlight, LSP, run/build",
+  "name": "lumi",
+  "displayName": "Lumi",
+  "description": "Lumi language support — syntax highlight, LSP, run/build",
   "version": "0.3.9",
-  "publisher": "lumia",
+  "publisher": "lumi",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -11,24 +11,24 @@
     "Programming Languages"
   ],
   "activationEvents": [
-    "onLanguage:lumia",
+    "onLanguage:lumi",
     "workspaceContains:Cargo.toml",
-    "workspaceContains:Lumia.toml",
+    "workspaceContains:Lumi.toml",
     "workspaceContains:std/*.lm",
     "workspaceContains:examples/*.lm",
-    "onCommand:lumia.run",
-    "onCommand:lumia.buildRun",
-    "onCommand:lumia.checkFile",
-    "onCommand:lumia.restartServer"
+    "onCommand:lumi.run",
+    "onCommand:lumi.buildRun",
+    "onCommand:lumi.checkFile",
+    "onCommand:lumi.restartServer"
   ],
   "main": "./extension.js",
   "contributes": {
     "languages": [
       {
-        "id": "lumia",
+        "id": "lumi",
         "aliases": [
-          "Lumia",
-          "lumia"
+          "Lumi",
+          "lumi"
         ],
         "extensions": [
           ".lm"
@@ -38,113 +38,113 @@
     ],
     "grammars": [
       {
-        "language": "lumia",
-        "scopeName": "source.lumia",
-        "path": "./syntaxes/lumia.tmLanguage.json"
+        "language": "lumi",
+        "scopeName": "source.lumi",
+        "path": "./syntaxes/lumi.tmLanguage.json"
       }
     ],
     "snippets": [
       {
-        "language": "lumia",
-        "path": "./snippets/lumia.json"
+        "language": "lumi",
+        "path": "./snippets/lumi.json"
       }
     ],
     "commands": [
       {
-        "command": "lumia.run",
-        "title": "Lumia: Run",
-        "category": "Lumia",
+        "command": "lumi.run",
+        "title": "Lumi: Run",
+        "category": "Lumi",
         "icon": "$(play)",
-        "enablement": "resourceExtname == .lm || editorLangId == lumia"
+        "enablement": "resourceExtname == .lm || editorLangId == lumi"
       },
       {
-        "command": "lumia.buildRun",
-        "title": "Lumia: Build & Run",
-        "category": "Lumia",
+        "command": "lumi.buildRun",
+        "title": "Lumi: Build & Run",
+        "category": "Lumi",
         "icon": "$(tools)",
-        "enablement": "resourceExtname == .lm || editorLangId == lumia"
+        "enablement": "resourceExtname == .lm || editorLangId == lumi"
       },
       {
-        "command": "lumia.checkFile",
-        "title": "Lumia: Check File",
-        "category": "Lumia"
+        "command": "lumi.checkFile",
+        "title": "Lumi: Check File",
+        "category": "Lumi"
       },
       {
-        "command": "lumia.restartServer",
-        "title": "Lumia: Restart Language Server",
-        "category": "Lumia"
+        "command": "lumi.restartServer",
+        "title": "Lumi: Restart Language Server",
+        "category": "Lumi"
       }
     ],
     "menus": {
       "editor/title": [
         {
-          "command": "lumia.run",
+          "command": "lumi.run",
           "when": "resourceExtname == .lm",
           "group": "navigation@1"
         },
         {
-          "command": "lumia.buildRun",
+          "command": "lumi.buildRun",
           "when": "resourceExtname == .lm",
           "group": "navigation@2"
         }
       ],
       "editor/context": [
         {
-          "command": "lumia.run",
+          "command": "lumi.run",
           "when": "resourceExtname == .lm",
-          "group": "lumia@1"
+          "group": "lumi@1"
         },
         {
-          "command": "lumia.buildRun",
+          "command": "lumi.buildRun",
           "when": "resourceExtname == .lm",
-          "group": "lumia@2"
+          "group": "lumi@2"
         },
         {
-          "command": "lumia.checkFile",
+          "command": "lumi.checkFile",
           "when": "resourceExtname == .lm",
-          "group": "lumia@3"
+          "group": "lumi@3"
         }
       ],
       "explorer/context": [
         {
-          "command": "lumia.run",
+          "command": "lumi.run",
           "when": "resourceExtname == .lm",
           "group": "navigation@10"
         },
         {
-          "command": "lumia.buildRun",
+          "command": "lumi.buildRun",
           "when": "resourceExtname == .lm",
           "group": "navigation@11"
         }
       ],
       "commandPalette": [
         {
-          "command": "lumia.run",
-          "when": "resourceExtname == .lm || editorLangId == lumia"
+          "command": "lumi.run",
+          "when": "resourceExtname == .lm || editorLangId == lumi"
         },
         {
-          "command": "lumia.buildRun",
-          "when": "resourceExtname == .lm || editorLangId == lumia"
+          "command": "lumi.buildRun",
+          "when": "resourceExtname == .lm || editorLangId == lumi"
         }
       ]
     },
     "configuration": {
-      "title": "Lumia",
+      "title": "Lumi",
       "properties": {
-        "lumia.lsp.path": {
+        "lumi.lsp.path": {
           "type": "string",
           "default": "",
-          "description": "Path to the lumia binary (or lumia-lsp). Empty = auto-detect ~/.local/lib/lumia/lumia-lsp then PATH."
+          "description": "Path to the lumi binary (or lumi-lsp). Empty = auto-detect ~/.local/lib/lumi/lumi-lsp then PATH."
         },
-        "lumia.lsp.enabled": {
+        "lumi.lsp.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Enable the Lumia language server."
+          "description": "Enable the Lumi language server."
         }
       }
     },
     "configurationDefaults": {
-      "[lumia]": {
+      "[lumi]": {
         "editor.inlayHints.enabled": "on",
         "editor.semanticHighlighting.enabled": true
       }

@@ -4,7 +4,7 @@ plugins {
     id("org.jetbrains.intellij.platform") version "2.6.0"
 }
 
-group = "org.lumia"
+group = "org.lumi"
 version = "0.3.4"
 
 repositories {
@@ -28,13 +28,13 @@ kotlin {
 intellijPlatform {
     buildSearchableOptions = false
     pluginConfiguration {
-        id = "org.lumia.idea"
-        name = "Lumia"
+        id = "org.lumi.idea"
+        name = "Lumi"
         version = project.version.toString()
         description = """
-            Lumia language support powered by <code>lumia lsp</code>:
+            Lumi language support powered by <code>lumi lsp</code>:
             diagnostics, completion, hover, go-to-definition, formatting, and outline.
-            <br/>Build the CLI first: <code>source scripts/env.sh &amp;&amp; cargo build -p lumia --release</code>
+            <br/>Build the CLI first: <code>source scripts/env.sh &amp;&amp; cargo build -p lumi --release</code>
         """.trimIndent()
 
         ideaVersion {
@@ -43,7 +43,7 @@ intellijPlatform {
         }
 
         vendor {
-            name = "Lumia"
+            name = "Lumi"
         }
     }
 }

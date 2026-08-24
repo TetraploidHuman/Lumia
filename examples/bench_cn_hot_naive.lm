@@ -1,8 +1,8 @@
 module BenchCnHotNaive
 
 /// Same algorithm as `bench_cn_hot_kernel.lm`, with GEMV/addmm/axpy/sub/clamp
-/// as nested Lumia `List[Float]` get/set loops (linalg only for L2 + checksum).
-/// Codegen should SR these helpers to `lumia_f64_*` RT kernels.
+/// as nested Lumi `List[Float]` get/set loops (linalg only for L2 + checksum).
+/// Codegen should SR these helpers to `lumi_f64_*` RT kernels.
 import std.io.{println}
 import std.linalg.{checksum, l2Normalize}
 

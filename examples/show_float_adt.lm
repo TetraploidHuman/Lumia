@@ -8,6 +8,6 @@ type Vec2 {
 }
 
 val main = {
-    // Typed structural Show: Float fields via lumia_show_float.
+    // Typed structural Show: Float fields via lumi_show_float.
     println(Vec2 { x = 1.5, y = 2.25 })
 }
