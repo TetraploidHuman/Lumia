@@ -15,18 +15,23 @@ impl<'a> Parser<'a> {
 
     pub(super) fn parse_lambda_or_block(&mut self) -> Result<Expr, ParseError> {
         let start = self.expect(TokenKind::LBrace)?.span;
-        self.parse_block_after_lbrace(start)
+        self.parse_block_after_lbrace(start, false)
     }
 
     pub(super) fn parse_block_expr(&mut self) -> Result<Expr, ParseError> {
         if self.at(&TokenKind::LBrace) {
-            self.parse_lambda_or_block()
+            let start = self.expect(TokenKind::LBrace)?.span;
+            self.parse_block_after_lbrace(start, true)
         } else {
             Err(self.error("expected `{` block"))
         }
     }
 
-    pub(super) fn parse_block_after_lbrace(&mut self, start: Span) -> Result<Expr, ParseError> {
+    pub(super) fn parse_block_after_lbrace(
+        &mut self,
+        start: Span,
+        function_body: bool,
+    ) -> Result<Expr, ParseError> {
         // Check lambda header using temporary collection of first tokens
         let checkpoint = self.checkpoint();
         let is_lambda = self.try_parse_lambda_params().is_ok();
@@ -61,6 +66,14 @@ impl<'a> Parser<'a> {
                     tail,
                     span,
                 }),
+                span,
+            })
+        } else if !function_body && stmts.is_empty() {
+            // Expression-context zero-arg lambda: `{ body }` (no `->`).
+            Ok(Expr::Lambda {
+                params: vec![],
+                param_tys: vec![],
+                body: Box::new(Expr::Block { stmts, tail, span }),
                 span,
             })
         } else {

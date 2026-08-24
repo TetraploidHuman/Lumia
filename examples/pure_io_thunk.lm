@@ -4,7 +4,7 @@ import std.io.{println}
 
 /// Constructing an IO closure is pure; calling it is effectful (DESIGN §3.7).
 val makePrinter = {
-    { -> println(7) }
+    { println(7) }
 }
 
 val main = {

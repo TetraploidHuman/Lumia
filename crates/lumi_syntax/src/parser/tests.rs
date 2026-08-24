@@ -318,3 +318,53 @@ fn parse_kotlin_style_ranges() {
         err.message
     );
 }
+
+#[test]
+fn parse_zero_arg_lambda_without_arrow() {
+    let m = parse_module(
+        r#"
+module T
+import std.io.{println}
+val make = {
+    { println(1) }
+}
+val side(x) = {
+    println(x)
+}
+val block = {
+    val x = 1
+    x
+}
+val main = { make()() }
+"#,
+    )
+    .expect("parse");
+    let Item::Val(make) = &m.items[0] else {
+        panic!("expected val make");
+    };
+    let Expr::Block { tail: Some(inner), .. } = &make.body else {
+        panic!("expected block body for make, got {:?}", make.body);
+    };
+    assert!(
+        matches!(inner.as_ref(), Expr::Lambda { .. }),
+        "expected inner zero-arg lambda, got {:?}",
+        inner
+    );
+    let Item::Val(side) = &m.items[1] else {
+        panic!("expected val side");
+    };
+    assert!(
+        matches!(side.body, Expr::Block { .. }),
+        "function body must stay Block, got {:?}",
+        side.body
+    );
+    let Item::Val(block) = &m.items[2] else {
+        panic!("expected val block");
+    };
+    assert!(
+        matches!(block.body, Expr::Block { .. }),
+        "expected block with locals, got {:?}",
+        block.body
+    );
+}
+

@@ -165,7 +165,12 @@ impl<'a> Parser<'a> {
             None
         };
         self.expect(TokenKind::Eq)?;
-        match self.parse_expr() {
+        let body_result = if self.at(&TokenKind::LBrace) {
+            self.parse_block_expr()
+        } else {
+            self.parse_expr()
+        };
+        match body_result {
             Ok(body) => {
                 let span = start.merge(body.span());
                 Ok(ValItem {
@@ -405,7 +410,11 @@ impl<'a> Parser<'a> {
             None
         };
         self.expect(TokenKind::Eq)?;
-        let body = self.parse_expr()?;
+        let body = if self.at(&TokenKind::LBrace) {
+            self.parse_block_expr()?
+        } else {
+            self.parse_expr()?
+        };
         let span = start.merge(body.span());
         Ok(ValItem {
             name,

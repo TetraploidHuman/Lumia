@@ -35,9 +35,9 @@ pub(crate) fn push_lowered_val(
     } else {
         body
     };
-    // DESIGN §4.4: peel a surface lambda (`val f = { x -> … }` / `{ -> … }`) or
+    // DESIGN §4.4: peel a surface lambda (`val f = { x -> … }` / `{ … }` zero-arg) or
     // a `val f(params) = …` wrapper into Item::Fun. Do **not** peel a Lambda that
-    // is merely the *value* of a block (`val f = { { -> body } }` must stay a
+    // is merely the *value* of a block (`val f = { { println(7) } }` must stay a
     // zero-arg Fun that *returns* a thunk).
     let peel_lambda = matches!(v.body, lumi_syntax::Expr::Lambda { .. }) || v.params.is_some();
     match body {
