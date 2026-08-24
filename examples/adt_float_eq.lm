@@ -13,8 +13,8 @@ type Result {
 }
 
 /// Wrappers must keep ADT return types after `$Float` monomorphization.
-val mkOk = { x -> Ok(x) }
-val mkSome = { x -> Some(x) }
+val mkOk(x) = { Ok(x) }
+val mkSome(x) = { Some(x) }
 
 val main = {
     // Direct constructors: IEEE ±0 / NaN

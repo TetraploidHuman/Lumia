@@ -1,5 +1,5 @@
 module BadTuplePrefixShort
-val use = { t ->
+val use(t) = {
     val a = t.0
     val b = t.1
     a + b

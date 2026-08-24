@@ -2,7 +2,7 @@ module mono_list
 import std.io.{println}
 import std.linalg.{zeros}
 
-val head = { xs ->
+val head(xs) = {
     xs.get(0)
 }
 

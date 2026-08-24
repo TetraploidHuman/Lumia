@@ -43,7 +43,7 @@ type Wide {
     val steps
 }
 
-val bump = { w, reward ->
+val bump(w, reward) = {
     Wide {
         f0 = w.f0, f1 = w.f1, f2 = w.f2, f3 = w.f3, f4 = w.f4, f5 = w.f5, f6 = w.f6, f7 = w.f7,
         f8 = w.f8, f9 = w.f9, f10 = w.f10, f11 = w.f11, f12 = w.f12, f13 = w.f13, f14 = w.f14, f15 = w.f15,

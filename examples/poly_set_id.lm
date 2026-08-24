@@ -3,7 +3,7 @@ module PolySetId
 import std.io.{println}
 
 /// Identity at Set[Int] / Set[String] → `$Set_*` clones.
-val id = { s -> s }
+val id(s) = { s }
 
 val main = {
     val a = id(setOf(1, 2, 3))

@@ -9,7 +9,7 @@ type Eco {
     val ecoObs
 }
 
-val nearest = { eco, pts, n ->
+val nearest(eco, pts, n) = {
     var best = 0.0
     var i = 0
     for i < n {
@@ -19,7 +19,7 @@ val nearest = { eco, pts, n ->
     best
 }
 
-val nearestIn = { eco, n ->
+val nearestIn(eco, n) = {
     var best = 0.0
     var i = 0
     for i < n {

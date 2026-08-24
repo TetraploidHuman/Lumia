@@ -2,11 +2,11 @@ module mono_list2
 import std.io.{println}
 import std.linalg.{zeros}
 
-val headAt = { xs, i ->
+val headAt(xs, i) = {
     xs.get(i)
 }
 
-val headSum = { xs, n ->
+val headSum(xs, n) = {
     var s = 0.0
     var i = 0
     for i < n {

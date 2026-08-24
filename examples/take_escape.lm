@@ -7,7 +7,7 @@ type Point {
 }
 
 /// Regression: escaping `take(k)` must not leave LitAdt/LitList on the stack.
-val build = { n, k ->
+val build(n, k) = {
     if n <= 0 {
         val p = Point { x = 42 }
         val xs = listOf(p)

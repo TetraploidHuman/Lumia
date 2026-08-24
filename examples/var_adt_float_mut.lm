@@ -7,12 +7,12 @@ type SeedBox {
     val seed
 }
 
-val lcgNext = { s ->
+val lcgNext(s) = {
     ((s % 46340.0) * 48271.0 + 11.0) % 2147483647.0
 }
 
 /// Body large enough that PE does not fold the ADT field into a float const.
-val firstUniform = { box ->
+val firstUniform(box) = {
     var s = box.seed
     var i = 0
     var acc = 0.0

@@ -7,7 +7,7 @@ type Option {
     None
 }
 
-val unwrap_or_zero = { opt ->
+val unwrap_or_zero(opt) = {
     opt match {
         None -> 0
         Some(n) -> n

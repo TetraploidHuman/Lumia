@@ -2,7 +2,7 @@ module ListMatch
 
 import std.io.{println}
 
-val head_or_zero = { xs ->
+val head_or_zero(xs) = {
     xs match {
         [] -> 0
         [h, ..rest] -> h

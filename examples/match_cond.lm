@@ -2,7 +2,7 @@ module MatchCond
 
 import std.io.{println}
 
-val classify = { n ->
+val classify(n) = {
     match {
         n > 0 -> 1
         n == 0 -> 0

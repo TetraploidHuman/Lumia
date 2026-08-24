@@ -1,13 +1,13 @@
 module MathPriv
 
-val add = { a, b ->
+val add(a, b) = {
     a + b
 }
 
-priv val helper = { x ->
+priv val helper(x) = {
     x + 1
 }
 
-val inc = { x ->
+val inc(x) = {
     helper(x)
 }

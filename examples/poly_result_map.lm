@@ -7,14 +7,14 @@ type Result {
     Err(error)
 }
 
-val resultMap = { r, f ->
+val resultMap(r, f) = {
     r match {
         Ok(x) -> Ok(f(x))
         Err(e) -> Err(e)
     }
 }
 
-val dbl = { x -> x + x }
+val dbl(x) = { x + x }
 
 val main = {
     resultMap(Ok(21), dbl) match {

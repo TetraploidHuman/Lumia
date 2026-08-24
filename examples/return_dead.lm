@@ -3,7 +3,7 @@ module ReturnDead
 import std.io.{println}
 
 /// Code after `return` is unreachable; must not run or change the result.
-val f = { n ->
+val f(n) = {
     if n > 0 {
         return n
         n + 1
@@ -12,7 +12,7 @@ val f = { n ->
     }
 }
 
-val g = { n ->
+val g(n) = {
     return n * 2
     n + 999
 }

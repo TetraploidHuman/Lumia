@@ -5,7 +5,7 @@ import std.io.{println}
 type Point { val x, val y }
 type Color { Red, Green, Blue }
 
-val abs = { n ->
+val abs(n) = {
     if n < 0 { 0 - n } else { n }
 }
 

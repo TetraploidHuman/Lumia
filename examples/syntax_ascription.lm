@@ -4,7 +4,7 @@ import std.io.{println}
 /// Optional type ascription (DESIGN §3.1 escape hatch).
 val k: Int = 42
 
-val add = { a: Int, b: Int ->
+val add(a: Int, b: Int) = {
     a + b
 }
 

@@ -15,11 +15,11 @@ foreign "C" pure fn lumia_str_starts_with(s: String, prefix: String) -> Int
 foreign "C" pure fn lumia_str_ends_with(s: String, suffix: String) -> Int
 foreign "C" pure fn lumia_list_join(xs: ListString, sep: String) -> String
 
-val trim = { s -> lumia_str_trim(s) }
-val split = { s, sep -> lumia_str_split(s, sep) }
-val substring = { s, start, end -> lumia_str_substring(s, start, end) }
-val toLower = { s -> lumia_str_to_lower(s) }
-val toUpper = { s -> lumia_str_to_upper(s) }
-val startsWith = { s, prefix -> lumia_str_starts_with(s, prefix) != 0 }
-val endsWith = { s, suffix -> lumia_str_ends_with(s, suffix) != 0 }
-val join = { xs, sep -> lumia_list_join(xs, sep) }
+val trim(s) = { lumia_str_trim(s) }
+val split(s, sep) = { lumia_str_split(s, sep) }
+val substring(s, start, end) = { lumia_str_substring(s, start, end) }
+val toLower(s) = { lumia_str_to_lower(s) }
+val toUpper(s) = { lumia_str_to_upper(s) }
+val startsWith(s, prefix) = { lumia_str_starts_with(s, prefix) != 0 }
+val endsWith(s, suffix) = { lumia_str_ends_with(s, suffix) != 0 }
+val join(xs, sep) = { lumia_list_join(xs, sep) }

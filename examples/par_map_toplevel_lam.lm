@@ -2,7 +2,7 @@ module ParMapToplevelLam
 
 import std.io.{println}
 
-val double = { x ->
+val double(x) = {
     x * 2
 }
 

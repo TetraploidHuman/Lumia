@@ -3,8 +3,8 @@ module StdOption
 import std.io.{println}
 import std.option.{unwrapOr, optionMap, andThen, isSome, isNone}
 
-val dbl = { x -> x + x }
-val half = { n ->
+val dbl(x) = { x + x }
+val half(n) = {
     if n % 2 == 0 {
         Some(n / 2)
     } else {

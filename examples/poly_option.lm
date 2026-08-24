@@ -8,7 +8,7 @@ type Option {
 }
 
 /// Identity at Option[Int] / Option[Float] → `$Option_Int` / `$Option_Float`.
-val id = { x -> x }
+val id(x) = { x }
 
 val main = {
     id(Some(7)) match {

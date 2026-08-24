@@ -8,7 +8,7 @@ type Eco {
     val ecoThreats
 }
 
-val nearest = { pts, n ->
+val nearest(pts, n) = {
     println(pts.get(0))
     pts.get(0) + pts.get(1)
 }

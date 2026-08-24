@@ -7,13 +7,13 @@ type Point {
     val y
 }
 
-val sum_xy = { p ->
+val sum_xy(p) = {
     p match {
         Point { x, y } -> x + y
     }
 }
 
-val on_axis = { p ->
+val on_axis(p) = {
     p match {
         Point { x, y = 0 } -> x
         Point { x = 0, y } -> y

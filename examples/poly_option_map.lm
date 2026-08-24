@@ -9,15 +9,15 @@ type Option {
 
 /// HOF mono: FunRef callback directized inside `$Option_*_Fn_*` clones.
 /// (Bare `map` is List.map sugar — use a distinct name.)
-val optMap = { opt, f ->
+val optMap(opt, f) = {
     opt match {
         None -> None
         Some(x) -> Some(f(x))
     }
 }
 
-val dbl = { x -> x + x }
-val bang = { s -> s.concat("!") }
+val dbl(x) = { x + x }
+val bang(s) = { s.concat("!") }
 
 val main = {
     optMap(Some(21), dbl) match {

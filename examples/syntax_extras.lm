@@ -8,7 +8,7 @@ type Opt {
     No
 }
 
-val classify = { n ->
+val classify(n) = {
     match {
         n < 0 -> 0 - 1
         n == 0 -> 0

@@ -7,14 +7,14 @@ type Option {
     None
 }
 
-val optAndThen = { opt, f ->
+val optAndThen(opt, f) = {
     opt match {
         None -> None
         Some(x) -> f(x)
     }
 }
 
-val half = { n ->
+val half(n) = {
     if n % 2 == 0 {
         Some(n / 2)
     } else {

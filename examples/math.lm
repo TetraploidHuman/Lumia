@@ -1,9 +1,9 @@
 module Math
 
-val add = { a, b ->
+val add(a, b) = {
     a + b
 }
 
-val double = { x ->
+val double(x) = {
     x + x
 }

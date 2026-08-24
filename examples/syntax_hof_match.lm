@@ -8,7 +8,7 @@ type Shape {
     Rect(w, h)
 }
 
-val area = { s ->
+val area(s) = {
     s match {
         Circle(r) -> r * r
         Rect(w, h) -> w * h

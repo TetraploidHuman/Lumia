@@ -2,7 +2,7 @@ module ClosureCapture
 
 import std.io.{println}
 
-val make_adder = { n ->
+val make_adder(n) = {
     { x ->
         x + n
     }

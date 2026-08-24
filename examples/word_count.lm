@@ -3,7 +3,7 @@ module WordCount
 import std.io.{println}
 
 /// DESIGN §14 flagship: read stdin, count words, print sorted by word.
-val normalize = { line ->
+val normalize(line) = {
     line
         >> trim
         >> split(' ')
@@ -15,7 +15,7 @@ val normalize = { line ->
         })
 }
 
-val count_words = { lines ->
+val count_words(lines) = {
     lines
         .flatMap(normalize)
         .fold([:], { acc, word ->

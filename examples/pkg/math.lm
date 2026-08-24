@@ -2,10 +2,10 @@ module PkgMath
 
 import pkg.helpers.{twice}
 
-val mul = { a, b ->
+val mul(a, b) = {
     a * b
 }
 
-val double = { x ->
+val double(x) = {
     twice(x)
 }

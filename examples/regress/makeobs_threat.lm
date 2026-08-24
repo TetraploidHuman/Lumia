@@ -11,7 +11,7 @@ type Eco {
 
 type Bearing { val bearX, val bearY, val bearI }
 
-val nearest = { eco, pts, n ->
+val nearest(eco, pts, n) = {
     println(pts.get(0))
     println(pts.get(1))
     var bestBx = 0.0
@@ -37,7 +37,7 @@ val nearest = { eco, pts, n ->
     Bearing { bearX = bestBx, bearY = bestBy, bearI = bestI }
 }
 
-val makeObs = { eco ->
+val makeObs(eco) = {
     var obs = fill(eco.ecoObs, 0.0)
     obs = obs.set(0, eco.ecoX)
     obs = obs.set(1, eco.ecoY)

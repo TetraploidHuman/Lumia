@@ -3,9 +3,9 @@ module PolyStr
 import std.io.{println}
 
 /// Top-level poly fun — String sites get `{name}$String`; Int stays shared body.
-val wrap = { s -> "[${s}]" }
+val wrap(s) = { "[${s}]" }
 
-val id = { x -> x }
+val id(x) = { x }
 
 val main = {
     println(wrap("hi"))

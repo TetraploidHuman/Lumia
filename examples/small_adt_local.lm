@@ -8,8 +8,8 @@ type Point {
 }
 
 /// Field projection through a non-capturing callee keeps `Point` non-escaping → LitAdt.
-val getx = { p -> p.x }
-val gety = { p -> p.y }
+val getx(p) = { p.x }
+val gety(p) = { p.y }
 
 val main = {
     val p = Point { x = 10, y = 20 }

@@ -1,5 +1,5 @@
 module BadOrdPolySet
-val cmp = { a, b -> a < b }
+val cmp(a, b) = { a < b }
 val main = {
     println(cmp(setOf(1), setOf(2)))
 }

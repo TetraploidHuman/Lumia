@@ -7,7 +7,7 @@ type Point {
 }
 
 /// Open param + `with` must stay a named product (not TuplePrefix).
-val bumpX = { p ->
+val bumpX(p) = {
     p with { x = 10 }
 }
 

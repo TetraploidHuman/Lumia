@@ -3,7 +3,7 @@ module PolyBool
 import std.io.{println}
 
 /// Top-level poly fun — Bool call sites get `{name}$Bool`.
-val id = { x -> x }
+val id(x) = { x }
 
 val main = {
     println(id(1))

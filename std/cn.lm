@@ -24,44 +24,44 @@ foreign "C" pure fn lumia_cn_learn_generative(encW: ListFloat, predW: ListFloat,
 foreign "C" pure fn lumia_cn_update_state(mu: ListFloat, encW: ListFloat, err: ListFloat, size: Int, stateLr: Float, precision: Float, muClip: Float) -> ListFloat
 foreign "C" pure fn lumia_ptr_eq(a: ListFloat, b: ListFloat) -> Int
 
-val nucleusStep = { mu, encW, predW, bottomUp, topDown, err, pred, size, stateLr, precision, muClip ->
+val nucleusStep(mu, encW, predW, bottomUp, topDown, err, pred, size, stateLr, precision, muClip) = {
     lumia_cn_nucleus_step(mu, encW, predW, bottomUp, topDown, err, pred, size, stateLr, precision, muClip)
 }
 
-val hebbian = { w, u, v, mask, fromSize, toSize, lr, weightClip, weightDecay, eps ->
+val hebbian(w, u, v, mask, fromSize, toSize, lr, weightClip, weightDecay, eps) = {
     lumia_cn_hebbian(w, u, v, mask, fromSize, toSize, lr, weightClip, weightDecay, eps)
 }
 
-val projectClamp = { fromSize, toSize, w, x, y, clip ->
+val projectClamp(fromSize, toSize, w, x, y, clip) = {
     lumia_cn_project_clamp(fromSize, toSize, w, x, y, clip)
 }
 
 /// Strict-PE bottom-up: same matvec as `projectClamp` (`Connection.project_error`).
-val projectError = { fromSize, toSize, w, x, y, clip ->
+val projectError(fromSize, toSize, w, x, y, clip) = {
     lumia_cn_project_clamp(fromSize, toSize, w, x, y, clip)
 }
 
-val backprojClamp = { m, n, w, x, y, clip ->
+val backprojClamp(m, n, w, x, y, clip) = {
     lumia_cn_backproj_clamp(m, n, w, x, y, clip)
 }
 
-val axpyClamp = { y, alpha, x, clip ->
+val axpyClamp(y, alpha, x, clip) = {
     lumia_cn_axpy_clamp(y, alpha, x, clip)
 }
 
-val argMax = { xs -> lumia_cn_argmax(xs) }
+val argMax(xs) = { lumia_cn_argmax(xs) }
 
-val clusterRates = { potential, input, output, size, nClusters, decay, threshold ->
+val clusterRates(potential, input, output, size, nClusters, decay, threshold) = {
     lumia_cn_cluster_rates(potential, input, output, size, nClusters, decay, threshold)
 }
 
-val learnGenerative = { encW, predW, mu, err, size, lr, weightClip, weightDecay, precision ->
+val learnGenerative(encW, predW, mu, err, size, lr, weightClip, weightDecay, precision) = {
     lumia_cn_learn_generative(encW, predW, mu, err, size, lr, weightClip, weightDecay, precision)
 }
 
-val updateState = { mu, encW, err, size, stateLr, precision, muClip ->
+val updateState(mu, encW, err, size, stateLr, precision, muClip) = {
     lumia_cn_update_state(mu, encW, err, size, stateLr, precision, muClip)
 }
 
 /// 1 if heap pointers are identical (in-place kernel result).
-val ptrEq = { a, b -> lumia_ptr_eq(a, b) }
+val ptrEq(a, b) = { lumia_ptr_eq(a, b) }

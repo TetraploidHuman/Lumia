@@ -1,5 +1,5 @@
 module PkgHelpers
 
-val twice = { x ->
+val twice(x) = {
     x + x
 }

@@ -5,7 +5,7 @@ import std.linalg.{zeros}
 type Wrap { val pts }
 
 /// Same shape as eco.nearest(eco, eco.ecoThreats, n): field load as arg.
-val sumPts = { pts, n ->
+val sumPts(pts, n) = {
     var s = 0.0
     var i = 0
     for i < n {

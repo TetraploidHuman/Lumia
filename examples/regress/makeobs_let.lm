@@ -11,7 +11,7 @@ type Eco {
 
 type Bearing { val bearX, val bearY, val bearI }
 
-val nearest = { eco, pts, n ->
+val nearest(eco, pts, n) = {
     var bestBx = 0.0
     var bestBy = 0.0
     var bestI = 0.0

@@ -5,35 +5,35 @@
 /// @exports unwrapOr, optionMap, andThen, isSome, isNone
 module option
 
-val unwrapOr = { opt, default ->
+val unwrapOr(opt, default) = {
     opt match {
         Some(x) -> x
         None -> default
     }
 }
 
-val optionMap = { opt, f ->
+val optionMap(opt, f) = {
     opt match {
         None -> None
         Some(x) -> Some(f(x))
     }
 }
 
-val andThen = { opt, f ->
+val andThen(opt, f) = {
     opt match {
         None -> None
         Some(x) -> f(x)
     }
 }
 
-val isSome = { opt ->
+val isSome(opt) = {
     opt match {
         Some(_) -> true
         None -> false
     }
 }
 
-val isNone = { opt ->
+val isNone(opt) = {
     opt match {
         Some(_) -> false
         None -> true

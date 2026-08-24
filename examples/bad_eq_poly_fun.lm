@@ -1,5 +1,5 @@
 module BadEqPolyFun
-val eq = { a, b -> a == b }
+val eq(a, b) = { a == b }
 val main = {
     println(eq({ x -> 1 }, { x -> 2 }))
 }

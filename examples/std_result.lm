@@ -3,15 +3,15 @@ module StdResult
 import std.io.{println}
 import std.result.{unwrapOr, resultMap, andThen, mapErr, isOk, isErr}
 
-val dbl = { x -> x + x }
-val parseEven = { n ->
+val dbl(x) = { x + x }
+val parseEven(n) = {
     if n % 2 == 0 {
         Ok(n / 2)
     } else {
         Err("odd")
     }
 }
-val bang = { s -> s.concat("!") }
+val bang(s) = { s.concat("!") }
 
 val main = {
     println(unwrapOr(Ok(42), 0))

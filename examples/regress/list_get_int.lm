@@ -2,12 +2,12 @@ module list_get_int
 import std.io.{println}
 import std.linalg.{zeros}
 
-val nearest = { pts, n ->
+val nearest(pts, n) = {
     println(pts.get(0))
     pts.get(0) + pts.get(1)
 }
 
-val headSum = { xs, n ->
+val headSum(xs, n) = {
     var s = 0.0
     var i = 0
     for i < n {

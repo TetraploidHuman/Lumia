@@ -7,14 +7,14 @@ type Result {
     Err(error)
 }
 
-val unwrap_or = { r, d ->
+val unwrap_or(r, d) = {
     r match {
         Ok(v) -> v
         Err(_) -> d
     }
 }
 
-val div = { a, b ->
+val div(a, b) = {
     match {
         b == 0 -> Err(1)
         _ -> Ok(a / b)

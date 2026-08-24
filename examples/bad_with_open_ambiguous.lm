@@ -7,7 +7,7 @@ type Rect {
     val x
     val w
 }
-val bump = { p -> p with { x = 1 } }
+val bump(p) = { p with { x = 1 } }
 val main = {
     bump(Point { x = 0, y = 0 })
     0

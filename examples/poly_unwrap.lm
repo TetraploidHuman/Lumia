@@ -8,7 +8,7 @@ type Option {
 }
 
 /// Multi-arg mono: `(Option[T], T)` → `$Option_Int_Int` / `$Option_String_String`.
-val unwrap_or = { opt, d ->
+val unwrap_or(opt, d) = {
     opt match {
         None -> d
         Some(n) -> n
