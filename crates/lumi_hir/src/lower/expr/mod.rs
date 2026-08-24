@@ -35,16 +35,18 @@ pub(crate) fn push_lowered_val(
     } else {
         body
     };
-    // DESIGN §4.4: `val f = { ... }` (no `->`) is a zero-arg function, not a
-    // block value. Same for `main`. `{ x -> ... }` / `{ -> ... }` already lower
-    // as Lambda above. Plain `val x = 1` stays Item::Val.
+    // DESIGN §4.4: peel a surface lambda (`val f = { x -> … }` / `{ -> … }`) or
+    // a `val f(params) = …` wrapper into Item::Fun. Do **not** peel a Lambda that
+    // is merely the *value* of a block (`val f = { { -> body } }` must stay a
+    // zero-arg Fun that *returns* a thunk).
+    let peel_lambda = matches!(v.body, lumi_syntax::Expr::Lambda { .. }) || v.params.is_some();
     match body {
         Expr::Lambda {
             params,
             param_ann,
             body,
             span: _,
-        } => {
+        } if peel_lambda => {
             items.push(Item::Fun(Fun {
                 name: name.to_string(),
                 params,

@@ -2,7 +2,7 @@ module CorrectnessFixes
 
 import std.io.{println}
 
-val side() = {
+val side = {
     println(99)
     true
 }

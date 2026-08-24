@@ -7,6 +7,6 @@
 /// @exports println, readStdin, assert
 module io
 
-val readStdin() = { readStdin() }
+val readStdin = { readStdin() }
 val println(x) = { println(x) }
 val assert(c) = { assert(c) }

@@ -228,8 +228,8 @@ fn collect_toplevel_funs(m: &lumi_syntax::Module) -> HashSet<String> {
     for item in &m.items {
         match item {
             lumi_syntax::Item::Val(v) => {
-                // Keep in sync with `push_lowered_val`: bare `{ ... }` (no `->`)
-                // is a zero-arg Fun (DESIGN §4.4), not only `main`.
+                // Keep in sync with `push_lowered_val`: bare `{ ... }` block
+                // (and surface lambdas / `name(params)`) are top-level Funs.
                 let is_fun = v.params.is_some()
                     || matches!(
                         v.body,

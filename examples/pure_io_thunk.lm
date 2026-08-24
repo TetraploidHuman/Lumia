@@ -3,7 +3,7 @@ module PureIoThunk
 import std.io.{println}
 
 /// Constructing an IO closure is pure; calling it is effectful (DESIGN §3.7).
-val makePrinter() = {
+val makePrinter = {
     { -> println(7) }
 }
 
