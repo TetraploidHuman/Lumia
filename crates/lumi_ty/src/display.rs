@@ -131,18 +131,23 @@ fn pretty_type_with_effect(ty: &Type, names: &HashMap<u32, String>, emit_effect:
             }
         }
         Type::Fun(ps, r, _) => {
-            let args = ps
-                .iter()
-                .map(|t| pretty_type_with_effect(t, names, false))
-                .collect::<Vec<_>>()
-                .join(", ");
             let ret = pretty_type_with_effect(r, names, false);
             let eff = if emit_effect && fun_chain_has_io(ty) {
                 " / IO"
             } else {
                 ""
             };
-            format!("({args}) -> {ret}{eff}")
+            let args_paren = if ps.is_empty() {
+                "( )".into()
+            } else {
+                let args = ps
+                    .iter()
+                    .map(|t| pretty_type_with_effect(t, names, false))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("({args})")
+            };
+            format!("{args_paren} -> {ret}{eff}")
         }
     }
 }
@@ -183,9 +188,9 @@ mod tests {
             Effect::io(),
         );
         let outer = Type::Fun(vec![], Box::new(inner), Effect::io());
-        assert_eq!(display_type(&outer, &[]), "() -> (T) -> Unit / IO");
+        assert_eq!(display_type(&outer, &[]), "( ) -> (T) -> Unit / IO");
 
         let inner_only = Type::Fun(vec![], Box::new(Type::Unit), Effect::io());
-        assert_eq!(display_type(&inner_only, &[]), "() -> Unit / IO");
+        assert_eq!(display_type(&inner_only, &[]), "( ) -> Unit / IO");
     }
 }

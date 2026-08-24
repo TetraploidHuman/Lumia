@@ -78,8 +78,8 @@ val main = {
         );
         // Params x, y
         assert!(
-            labels.iter().filter(|l| *l == ": Int").count() >= 2,
-            "expected param/local : Int hints, got {labels:?}"
+            labels.iter().filter(|l| *l == "Int").count() >= 2,
+            "expected param/local Int hints, got {labels:?}"
         );
     }
 
@@ -125,8 +125,8 @@ val fun(a, b) = {
             "expected fun binding type, got {by_line:?}"
         );
         assert!(
-            by_line.iter().filter(|(_, lab)| *lab == ": Int").count() >= 2,
-            "expected a/b : Int on val fun(a, b), got {by_line:?}"
+            by_line.iter().filter(|(_, lab)| *lab == "Int").count() >= 2,
+            "expected a/b Int on val fun(a, b), got {by_line:?}"
         );
     }
 
@@ -179,7 +179,7 @@ val main = {
         let hints = hints_for_analysis(&a, None);
         let labels: Vec<_> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
         assert!(
-            labels.iter().all(|l| *l != ": ()" && !l.ends_with(": ()")),
+            labels.iter().all(|l| *l != "Unit" && *l != "( )" && !l.ends_with("Unit")),
             "Unit call results must not appear as hints, got {labels:?}"
         );
         // Bare `id` is not a Call — but if a Call returned Fun it must be filtered.
@@ -187,7 +187,7 @@ val main = {
         assert!(
             labels
                 .iter()
-                .any(|l| l.contains("->") || *l == ": Int" || l.starts_with(' ')),
+                .any(|l| l.contains("->") || *l == "Int" || l.starts_with(' ')),
             "expected nested lambda hints, got {labels:?}"
         );
     }
@@ -213,7 +213,7 @@ val outer = { x ->
             .filter_map(|h| h["label"].as_str().map(|s| s.to_string()))
             .collect();
         assert!(
-            labels.iter().filter(|l| *l == ": Int").count() >= 2,
+            labels.iter().filter(|l| *l == "Int").count() >= 2,
             "expected x and y param hints, got {labels:?}"
         );
     }
@@ -240,7 +240,7 @@ val main = {
         let hints = hints_for_analysis(&a, None);
         let labels: Vec<_> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
         assert!(
-            labels.contains(&": Int"),
+            labels.contains(&"Int"),
             "expected Int hint on field/call, got {labels:?}"
         );
     }

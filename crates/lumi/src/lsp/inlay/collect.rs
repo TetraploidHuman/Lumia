@@ -86,7 +86,7 @@ fn push_type_hint_nums(
         out,
         src,
         byte,
-        format!(": {}", display_type(ty, num_vars)),
+        display_type(ty, num_vars),
         padding_left,
         range,
     );
@@ -111,8 +111,8 @@ fn push_fun_param_hints(
                 out,
                 src,
                 *pend as u32,
-                format!(": {}", pretty_type_with(pt, &names)),
-                false,
+                pretty_type_with(pt, &names),
+                true,
                 range,
             );
         }
@@ -165,7 +165,7 @@ fn collect_expr_hints(
             };
             let before = expr_span(value).start.0 as usize;
             if let Some(end) = find_word_end_before(src, name, before) {
-                push_type_hint(out, src, end as u32, ty, false, range);
+                push_type_hint(out, src, end as u32, ty, true, range);
             }
         }
         Expr::Lambda { span, .. } => {
@@ -224,7 +224,7 @@ pub(super) fn collect_toplevel_hints(
                 if let Some(ty) = ty {
                     // Last `name` before the body — definition, not an earlier call site.
                     if let Some(name_end) = find_word_end_before(src, &f.name, body_start) {
-                        push_type_hint_nums(out, src, name_end as u32, ty, num_vars, false, range);
+                        push_type_hint_nums(out, src, name_end as u32, ty, num_vars, true, range);
                         if matches!(ty, Type::Fun(..)) {
                             // `val f(a, b) =` and/or `{ a, b ->`
                             let mut found =
@@ -249,7 +249,7 @@ pub(super) fn collect_toplevel_hints(
                 let body_start = body_sp.start.0 as usize;
                 if let Some(ty) = type_of_span(type_at, body_sp) {
                     if let Some(end) = find_word_end_before(src, name, body_start) {
-                        push_type_hint(out, src, end as u32, ty, false, range);
+                        push_type_hint(out, src, end as u32, ty, true, range);
                     }
                 }
                 collect_expr_hints(body, src, type_at, out, range);
