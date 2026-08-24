@@ -1,7 +1,7 @@
 <idea-plugin>
   <id>org.lumi.idea</id>
   <name>Lumi</name>
-  <version>0.3.4</version>
+  <version>0.3.5</version>
   <vendor>Lumi</vendor>
   <description><![CDATA[
     Lumi language support: syntax highlighting, Check / Build &amp; Run configurations,
@@ -32,6 +32,8 @@
         implementationClass="org.lumi.idea.LumiSyntaxHighlighterFactory"/>
     <lang.braceMatcher language="Lumi" implementationClass="org.lumi.idea.LumiBraceMatcher"/>
     <lang.quoteHandler language="Lumi" implementationClass="org.lumi.idea.LumiQuoteHandler"/>
+    <lang.lineIndentProvider language="Lumi" implementationClass="org.lumi.idea.LumiLineIndentProvider"/>
+    <enterHandlerDelegate implementation="org.lumi.idea.LumiEnterBetweenBracesHandler"/>
     <lang.LanguageCodeStyleSettingsProvider
         implementation="org.lumi.idea.LumiLanguageCodeStyleSettingsProvider"/>
 
