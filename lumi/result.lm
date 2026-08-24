@@ -2,10 +2,10 @@
 ///
 /// Bare `map` remains List sugar — use `resultMap` here.
 ///
-/// @exports unwrapOr, resultMap, andThen, mapErr, isOk, isErr
+/// @exports resultUnwrapOr, resultMap, resultAndThen, mapErr, isOk, isErr
 module result
 
-val unwrapOr(r, default) = {
+val resultUnwrapOr(r, default) = {
     r match {
         Ok(x) -> x
         Err(_) -> default
@@ -19,7 +19,7 @@ val resultMap(r, f) = {
     }
 }
 
-val andThen(r, f) = {
+val resultAndThen(r, f) = {
     r match {
         Ok(x) -> f(x)
         Err(e) -> Err(e)

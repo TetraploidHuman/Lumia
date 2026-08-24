@@ -1,6 +1,9 @@
 //! Import path resolution and recursive module loading.
 
-use super::std_mod::{is_lumi, lumi_exports, lumi_module, validate_lumi_import, workspace_lumi_dir};
+use super::std_mod::{
+    default_std_imports, drop_entry_shadowed, is_lumi, is_synthetic_std_import, lumi_exports,
+    lumi_module, merge_std_imports, validate_lumi_import, workspace_lumi_dir,
+};
 use super::{append_items_unique, check_no_duplicate_toplevel, SourceFile};
 use crate::vis::{
     apply_import_aliases, extend_visibility, import_visible_names, item_is_priv, item_name,
@@ -193,8 +196,24 @@ pub(super) fn load_module_file_uncached(
         visibility.entry_file = file_id;
     }
 
+    let entry_local_names: HashSet<String> = if is_entry {
+        m.items
+            .iter()
+            .filter_map(item_name)
+            .map(str::to_string)
+            .collect()
+    } else {
+        HashSet::default()
+    };
+
+    let merged_imports = if is_entry {
+        merge_std_imports(default_std_imports(), std::mem::take(&mut m.imports))
+    } else {
+        std::mem::take(&mut m.imports)
+    };
+
     let mut imported_items = Vec::new();
-    for imp in &m.imports {
+    for imp in &merged_imports {
         if is_lumi(&imp.path) {
             validate_lumi_import(imp)?;
             let rel = lumi_module(&imp.path)?;
@@ -223,6 +242,19 @@ pub(super) fn load_module_file_uncached(
                 _ => import_visible_names(&dep.items, &imp.names),
             };
             let filtered = filter_items(dep.items, &imp.names)?;
+            let filtered = if is_entry && is_synthetic_std_import(imp) {
+                drop_entry_shadowed(filtered, &entry_local_names)
+            } else {
+                filtered
+            };
+            let visible: HashSet<String> = visible
+                .into_iter()
+                .filter(|n| {
+                    !(is_entry
+                        && is_synthetic_std_import(imp)
+                        && entry_local_names.contains(n))
+                })
+                .collect();
             if is_entry {
                 extend_visibility(visibility, &filtered, &visible);
             } else {
@@ -392,6 +424,21 @@ mod tests {
             err.contains("duplicate top-level name") && err.contains("conflict"),
             "got {err}"
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn default_std_imports_allow_unqualified_io() {
+        let dir = std::env::temp_dir().join(format!("lumi_prelude_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("main.lm");
+        fs::write(
+            &entry,
+            "module Main\nval main = {\n    println(42)\n    0\n}\n",
+        )
+        .unwrap();
+        load_program(&entry).expect("entry module should resolve println via default std import");
         let _ = fs::remove_dir_all(&dir);
     }
 

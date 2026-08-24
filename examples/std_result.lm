@@ -1,7 +1,7 @@
 module StdResult
 
 import lumi.io.{println}
-import lumi.result.{unwrapOr, resultMap, andThen, mapErr, isOk, isErr}
+import lumi.result.{resultUnwrapOr, resultMap, resultAndThen, mapErr, isOk, isErr}
 
 val dbl(x) = { x + x }
 val parseEven(n) = {
@@ -14,17 +14,17 @@ val parseEven(n) = {
 val bang(s) = { s.concat("!") }
 
 val main = {
-    println(unwrapOr(Ok(42), 0))
-    println(unwrapOr(Err("x"), -1))
+    println(resultUnwrapOr(Ok(42), 0))
+    println(resultUnwrapOr(Err("x"), -1))
     resultMap(Ok(1.5), dbl) match {
         Ok(n) -> println(n)
         Err(_) -> println(0.0)
     }
-    andThen(Ok(10), parseEven) match {
+    resultAndThen(Ok(10), parseEven) match {
         Ok(n) -> println(n)
         Err(e) -> println(e)
     }
-    andThen(Ok(7), parseEven) match {
+    resultAndThen(Ok(7), parseEven) match {
         Ok(n) -> println(n)
         Err(e) -> println(e)
     }

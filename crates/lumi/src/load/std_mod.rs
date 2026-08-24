@@ -1,10 +1,44 @@
 //! `lumi.*` standard library module loading and `@exports` validation.
 
 use anyhow::{bail, Context, Result};
-use lumi_syntax::{Import, ImportNames};
+use lumi_syntax::{Import, ImportNames, Item, Span};
 use rustc_hash::FxHashSet as HashSet;
 use std::fs;
 use std::path::PathBuf;
+
+use crate::vis::item_name;
+
+/// Submodules auto-imported into every entry module (Kotlin-style core stdlib).
+/// Domain modules (`linalg`, `cn`, `efe`) use explicit `import` — their short
+/// names (`add`, `mul`, …) would collide with user packages.
+pub(super) const LUMI_STD_SUBMODULES: &[&str] = &["io", "string", "option", "result"];
+
+/// Synthetic `import lumi.<mod>.*` for each known stdlib submodule.
+pub(super) fn default_std_imports() -> Vec<Import> {
+    LUMI_STD_SUBMODULES
+        .iter()
+        .map(|m| Import {
+            path: vec!["lumi".into(), (*m).into()],
+            names: ImportNames::All,
+            span: Span::dummy(),
+        })
+        .collect()
+}
+
+/// Prepend default stdlib imports; skip a default when the user imports the same path.
+pub(super) fn merge_std_imports(defaults: Vec<Import>, user: Vec<Import>) -> Vec<Import> {
+    let user_lumi: HashSet<&[String]> = user
+        .iter()
+        .filter(|i| is_lumi(&i.path))
+        .map(|i| i.path.as_slice())
+        .collect();
+    let mut out: Vec<Import> = defaults
+        .into_iter()
+        .filter(|d| !user_lumi.contains(d.path.as_slice()))
+        .collect();
+    out.extend(user);
+    out
+}
 
 pub(super) fn is_lumi(path: &[String]) -> bool {
     path.first().map(|s| s.as_str() == "lumi").unwrap_or(false)
@@ -69,6 +103,21 @@ pub(super) fn parse_lumi_exports(src: &str) -> Result<Vec<String>> {
         return Ok(names);
     }
     bail!("missing `/// @exports …` line in standard module source")
+}
+
+pub(super) fn is_synthetic_std_import(imp: &Import) -> bool {
+    imp.span == Span::dummy()
+}
+
+/// Drop auto-imported std names that the entry module defines locally (Kotlin-style shadowing).
+pub(super) fn drop_entry_shadowed(items: Vec<Item>, reserved: &HashSet<String>) -> Vec<Item> {
+    if reserved.is_empty() {
+        return items;
+    }
+    items
+        .into_iter()
+        .filter(|it| item_name(it).is_none_or(|n| !reserved.contains(n)))
+        .collect()
 }
 
 pub(super) fn validate_lumi_import(imp: &Import) -> Result<()> {
