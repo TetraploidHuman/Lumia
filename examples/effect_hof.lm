@@ -1,6 +1,6 @@
 module EffectHof
 
-import std.io.{println}
+import lumi.io.{println}
 
 /// Higher-order `apply` picks up IO from an effectful callback.
 val apply(f, x) = f(x)

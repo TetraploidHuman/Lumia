@@ -9,7 +9,7 @@ use super::lower_expr;
 use crate::ast::{Builtin, Expr};
 use crate::list_hof::{
     lower_list_all, lower_list_any, lower_list_filter, lower_list_find, lower_list_flat_map,
-    lower_list_fold, lower_list_map, lower_list_sort_by,
+    lower_list_fold, lower_list_for_each, lower_list_map, lower_list_sort_by,
 };
 use lumi_syntax::{BinOp, Span};
 
@@ -148,6 +148,10 @@ fn lower_desugar_method(ctx: &LowerCtx, name: &str, args: Vec<Expr>, span: Span)
         ("find", 2) => {
             let (xs, f) = take2(args);
             lower_list_find(ctx, xs, f, span)
+        }
+        ("forEach", 2) => {
+            let (xs, f) = take2(args);
+            lower_list_for_each(ctx, xs, f, span)
         }
         ("sortBy", 2) => {
             let (xs, f) = take2(args);

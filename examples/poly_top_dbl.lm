@@ -1,6 +1,6 @@
 module PolyTopDbl
 
-import std.io.{println}
+import lumi.io.{println}
 
 /// Top-level named poly fun — Float call sites get `dbl$Float` (BUILD mono MVP).
 val dbl(x) = { x + x }

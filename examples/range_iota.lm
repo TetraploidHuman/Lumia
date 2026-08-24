@@ -1,6 +1,6 @@
 module RangeIota
 
-import std.io.{println}
+import lumi.io.{println}
 
 val main = {
     // Million-element range stays Iota (O(1) alloc); len/get do not materialize.

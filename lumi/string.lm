@@ -1,4 +1,4 @@
-/// Standard string surface (`import std.string.{trim, split, …}`).
+/// Standard string surface (`import lumi.string.{trim, split, …}`).
 ///
 /// Thin wrappers over `lumi_rt` (`foreign "C"` + `lumi_*` symbols use the
 /// runtime object ABI — String/List as heap pointers, not C `cstr`).

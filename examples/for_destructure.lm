@@ -1,6 +1,6 @@
 module ForDestructure
 
-import std.io.{println}
+import lumi.io.{println}
 
 /// `for (k, v) in` on Map and on List of pairs.
 val main = {

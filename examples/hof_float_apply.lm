@@ -1,6 +1,6 @@
 module HofFloatApply
 
-import std.io.{println}
+import lumi.io.{println}
 
 val dbl(x) = x + x
 val apply(f, x) = f(x)

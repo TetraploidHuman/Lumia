@@ -1,6 +1,6 @@
 module PolySetId
 
-import std.io.{println}
+import lumi.io.{println}
 
 /// Identity at Set[Int] / Set[String] → `$Set_*` clones.
 val id(s) = { s }

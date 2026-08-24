@@ -1,6 +1,6 @@
 module BoolPrint
 
-import std.io.{println}
+import lumi.io.{println}
 
 val main = {
     println(true)

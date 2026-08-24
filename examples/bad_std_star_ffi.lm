@@ -1,5 +1,5 @@
 module BadStdStarFfi
-import std.linalg.*
+import lumi.linalg.*
 val main = {
     lumi_list_f64_zeros(1)
     0

@@ -1,5 +1,5 @@
 module println_float
-import std.io.{println}
+import lumi.io.{println}
 type Box { val f }
 val main = {
     println(2106498180.0)

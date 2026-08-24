@@ -1,6 +1,6 @@
 module EscapePureLen
 
-import std.io.{println}
+import lumi.io.{println}
 
 /// Pure projection callee must not force the list to escape → LitList.
 val len(xs) = { xs.len() }

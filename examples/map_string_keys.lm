@@ -1,6 +1,6 @@
 module MapStringKeys
 
-import std.io.{println}
+import lumi.io.{println}
 
 val main = {
     // Distinct string literals → content-equal keys via lumi_eq.

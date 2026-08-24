@@ -1,6 +1,6 @@
 module ForPairList
 
-import std.io.{println}
+import lumi.io.{println}
 
 // Regression: `for (k,v) in` must work on a List of pairs, not only Map.
 val main = {

@@ -1,6 +1,6 @@
 module SetOps
 
-import std.io.{println}
+import lumi.io.{println}
 
 val main = {
     val s0 = setOf()

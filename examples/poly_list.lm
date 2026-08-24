@@ -1,6 +1,6 @@
 module PolyList
 
-import std.io.{println}
+import lumi.io.{println}
 
 /// Identity at List[Int] / List[Float] → `$List_Int` / `$List_Float`.
 val id(x) = { x }

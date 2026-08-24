@@ -1,6 +1,6 @@
 module StringEq
 
-import std.io.{println}
+import lumi.io.{println}
 
 val main = {
     val a = "ab"

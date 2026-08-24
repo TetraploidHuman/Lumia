@@ -1,6 +1,6 @@
 module PolyId
 
-import std.io.{println}
+import lumi.io.{println}
 
 /// Let-polymorphic identity used at Int / Float / String call sites.
 val main = {

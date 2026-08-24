@@ -1,5 +1,5 @@
 module float_map_overlay_keys
-import std.io.{println}
+import lumi.io.{println}
 
 /// After HashOrdered promotion, overlay lookup must treat ±0 as the same Float key.
 val main = {

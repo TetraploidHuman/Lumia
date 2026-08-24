@@ -1,6 +1,6 @@
 module ImportAs
 
-import std.io.{println as log}
+import lumi.io.{println as log}
 import math.{add as plus, double}
 
 val main = {

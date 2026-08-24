@@ -1,8 +1,8 @@
 module BenchCnFuseNaive
 
-/// Composed PC nucleus + Hebbian via `std.linalg` (same math as `std.cn` fused).
-import std.io.{println}
-import std.linalg.{
+/// Composed PC nucleus + Hebbian via `lumi.linalg` (same math as `lumi.cn` fused).
+import lumi.io.{println}
+import lumi.linalg.{
     zeros, copy, checksum, sub, scale, gemv, axpy, clamp, l2Normalize, addmm, mul
 }
 

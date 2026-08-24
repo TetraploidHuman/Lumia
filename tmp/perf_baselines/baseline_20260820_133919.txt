@@ -1,0 +1,1061 @@
+Lumia env: LLVM_SYS_211_PREFIX=/nix/store/rfx89pjxx0dzlw8rbl9h5i1xsfv137kv-llvm-21.1.8-dev
+======== lumia bench_all (Release) ========
+RUNS(cn/memo)=5  BENCH_CPU_RUNS=5  BENCH_SHIELD=0
+
+######## bench_cpu ########
+Lumia env: LLVM_SYS_211_PREFIX=/nix/store/rfx89pjxx0dzlw8rbl9h5i1xsfv137kv-llvm-21.1.8-dev
+warning: unused import: `std::sync::Arc`
+  --> crates/lumia_codegen/src/emit_value/dense_f64_sr.rs:16:5
+   |
+16 | use std::sync::Arc;
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `entry_ssa` is never read
+   --> crates/lumia_codegen/src/emit_value/emit_control.rs:40:29
+    |
+ 40 |         let mut entry_ssa = self.frame.ssa_root_stack.clone();
+    |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this value is reassigned later and never used
+...
+117 |         entry_ssa = self.frame.ssa_root_stack.clone();
+    |         --------- `entry_ssa` is overwritten here before the previous value is read
+    |
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `pop_dead_ssa_roots_sim` is never used
+   --> crates/lumia_codegen/src/emit_fun/let_bind.rs:665:15
+    |
+665 | pub(crate) fn pop_dead_ssa_roots_sim(
+    |               ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `pop_unused_ssa_roots_sim` is never used
+   --> crates/lumia_codegen/src/emit_fun/let_bind.rs:699:15
+    |
+699 | pub(crate) fn pop_unused_ssa_roots_sim(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `slot_known_eq`, `load_slot_i64`, and `store_slot_i64` are never used
+   --> crates/lumia_codegen/src/emit_fun/slots.rs:164:19
+    |
+  9 | impl<'ctx> Codegen<'ctx> {
+    | ------------------------ methods in this implementation
+...
+164 |     pub(crate) fn slot_known_eq(&self, name: &Sym, expect: i64) -> bool {
+    |                   ^^^^^^^^^^^^^
+...
+168 |     pub(crate) fn load_slot_i64(&mut self, name: &Sym) -> Result<inkwell::values::IntValue<'ctx>> {
+    |                   ^^^^^^^^^^^^^
+...
+173 |     pub(crate) fn store_slot_i64(
+    |                   ^^^^^^^^^^^^^^
+
+warning: unused import: `std::sync::Arc`
+ --> crates/lumia_opt/src/lib.rs:7:5
+  |
+7 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+== affinity ==
+  primary CPUs: 12,13,14,15 (BENCH_CORES=4)
+  SMT siblings:  28,29,30,31
+  mode: taskset pin only (set BENCH_SHIELD=1 after sudo -v for full shield)
+== build Release ==
+    Finished `release` profile [optimized] target(s) in 0.05s
+wrote /tmp/lumia_bench_cpu/bench_cpu
+== checksums (single run) ==
+  primes(800k):          63951
+  matmul(2000):          1998964270721
+  mandelbrot(450):       2872327
+  collatzTotal(2.5M):    352279148
+  collatzStrided(3M/3):  142794532
+  fib(40):               102334155
+  poly(12k):             720427763375
+  gcd(1400):             9122320
+  divisorSum(12M):       197458334
+  productRem(9k):        405134546788
+  floatOrbit(100k×50):  3920082
+  rangeFold(5M):         25014941572
+  memTraffic(1.5M):      860371869
+checksums ok (13 scenarios)
+== timing + peak RSS (5 samples, whole suite) ==
+bench_cpu  time(s)  min/med/max  0.1352  0.1374  0.1577
+bench_cpu  rss(KB)  min/med/max  14448  14492  14560  (14.1MiB / 14.2MiB / 14.2MiB)
+(13 scenarios: primes + matmul + mandel + collatz×2 + fib + poly + gcd + div + prodRem + floatOrbit + rangeFold + memTraffic)
+OK bench_cpu
+
+######## bench_memo ########
+Lumia env: LLVM_SYS_211_PREFIX=/nix/store/rfx89pjxx0dzlw8rbl9h5i1xsfv137kv-llvm-21.1.8-dev
+warning: unused import: `std::sync::Arc`
+  --> crates/lumia_codegen/src/emit_value/dense_f64_sr.rs:16:5
+   |
+16 | use std::sync::Arc;
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `entry_ssa` is never read
+   --> crates/lumia_codegen/src/emit_value/emit_control.rs:40:29
+    |
+ 40 |         let mut entry_ssa = self.frame.ssa_root_stack.clone();
+    |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this value is reassigned later and never used
+...
+117 |         entry_ssa = self.frame.ssa_root_stack.clone();
+    |         --------- `entry_ssa` is overwritten here before the previous value is read
+    |
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `pop_dead_ssa_roots_sim` is never used
+   --> crates/lumia_codegen/src/emit_fun/let_bind.rs:665:15
+    |
+665 | pub(crate) fn pop_dead_ssa_roots_sim(
+    |               ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `pop_unused_ssa_roots_sim` is never used
+   --> crates/lumia_codegen/src/emit_fun/let_bind.rs:699:15
+    |
+699 | pub(crate) fn pop_unused_ssa_roots_sim(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `slot_known_eq`, `load_slot_i64`, and `store_slot_i64` are never used
+   --> crates/lumia_codegen/src/emit_fun/slots.rs:164:19
+    |
+  9 | impl<'ctx> Codegen<'ctx> {
+    | ------------------------ methods in this implementation
+...
+164 |     pub(crate) fn slot_known_eq(&self, name: &Sym, expect: i64) -> bool {
+    |                   ^^^^^^^^^^^^^
+...
+168 |     pub(crate) fn load_slot_i64(&mut self, name: &Sym) -> Result<inkwell::values::IntValue<'ctx>> {
+    |                   ^^^^^^^^^^^^^
+...
+173 |     pub(crate) fn store_slot_i64(
+    |                   ^^^^^^^^^^^^^^
+
+warning: unused import: `std::sync::Arc`
+ --> crates/lumia_opt/src/lib.rs:7:5
+  |
+7 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+== build Release + Memo T_f ==
+    Finished `release` profile [optimized] target(s) in 0.05s
+wrote /tmp/lumia_bench_memo/with_memo
+== build Release + --no-memo ==
+    Finished `release` profile [optimized] target(s) in 0.05s
+wrote /tmp/lumia_bench_memo/without_memo
+== IR memo flag ==
+fun readStdin() effect.io=true memo=None {
+fun println(x) effect.io=true memo=None {
+fun assert(c) effect.io=false memo=None {
+fun readStdin() effect.io=true memo=None {
+fun println(x) effect.io=true memo=None {
+fun assert(c) effect.io=false memo=None {
+checksum ok: 167100243426012
+== timing + peak RSS (RUNS=5) ==
+memo_on    time(s)  min/med/max  0.0028  0.0030  0.0038
+memo_on    rss(KB)  min/med/max  2520  2728  2740  (2.5MiB / 2.7MiB / 2.7MiB)
+memo_off   time(s)  min/med/max  0.0209  0.0216  0.0219
+memo_off   rss(KB)  min/med/max  2448  2504  2760  (2.4MiB / 2.4MiB / 2.7MiB)
+speedup  7.20x  (memo_off_med_time / memo_on_med_time)
+rss_ratio 0.92x  (memo_off_med_rss / memo_on_med_rss)
+OK bench_memo
+
+######## bench_cn_hot ########
+Lumia env: LLVM_SYS_211_PREFIX=/nix/store/rfx89pjxx0dzlw8rbl9h5i1xsfv137kv-llvm-21.1.8-dev
+warning: unused import: `std::sync::Arc`
+  --> crates/lumia_codegen/src/emit_value/dense_f64_sr.rs:16:5
+   |
+16 | use std::sync::Arc;
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `entry_ssa` is never read
+   --> crates/lumia_codegen/src/emit_value/emit_control.rs:40:29
+    |
+ 40 |         let mut entry_ssa = self.frame.ssa_root_stack.clone();
+    |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this value is reassigned later and never used
+...
+117 |         entry_ssa = self.frame.ssa_root_stack.clone();
+    |         --------- `entry_ssa` is overwritten here before the previous value is read
+    |
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `pop_dead_ssa_roots_sim` is never used
+   --> crates/lumia_codegen/src/emit_fun/let_bind.rs:665:15
+    |
+665 | pub(crate) fn pop_dead_ssa_roots_sim(
+    |               ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `pop_unused_ssa_roots_sim` is never used
+   --> crates/lumia_codegen/src/emit_fun/let_bind.rs:699:15
+    |
+699 | pub(crate) fn pop_unused_ssa_roots_sim(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `slot_known_eq`, `load_slot_i64`, and `store_slot_i64` are never used
+   --> crates/lumia_codegen/src/emit_fun/slots.rs:164:19
+    |
+  9 | impl<'ctx> Codegen<'ctx> {
+    | ------------------------ methods in this implementation
+...
+164 |     pub(crate) fn slot_known_eq(&self, name: &Sym, expect: i64) -> bool {
+    |                   ^^^^^^^^^^^^^
+...
+168 |     pub(crate) fn load_slot_i64(&mut self, name: &Sym) -> Result<inkwell::values::IntValue<'ctx>> {
+    |                   ^^^^^^^^^^^^^
+...
+173 |     pub(crate) fn store_slot_i64(
+    |                   ^^^^^^^^^^^^^^
+
+warning: unused import: `std::sync::Arc`
+ --> crates/lumia_opt/src/lib.rs:7:5
+  |
+7 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+== build ==
+    Finished `release` profile [optimized] target(s) in 0.05s
+wrote /tmp/lumia_bench_cn_hot/kernel
+    Finished `release` profile [optimized] target(s) in 0.05s
+wrote /tmp/lumia_bench_cn_hot/naive
+== checksum parity ==
+kernel:
+320000
+62267113
+naive (--no-dense-f64-sr):
+320000
+62267113
+== wall time + peak RSS  RUNS=5  STEPS=100000 ==
+kernel     time(s)  min/med/max  0.2424  0.2508  0.2538
+kernel     rss(KB)  min/med/max  2436  2728  2776  (2.4MiB / 2.7MiB / 2.7MiB)
+naive_nosr time(s)  min/med/max  41.3964  41.8033  41.8864
+naive_nosr rss(KB)  min/med/max  673880  673924  674752  (658.1MiB / 658.1MiB / 658.9MiB)
+speedup  166.68x  (naive_nosr_med_time / kernel_med_time)
+rss_ratio 247.04x  (naive_nosr_med_rss / kernel_med_rss)
+(skip torch)
+OK
+OK bench_cn_hot
+
+######## bench_cn_step ########
+Lumia env: LLVM_SYS_211_PREFIX=/nix/store/rfx89pjxx0dzlw8rbl9h5i1xsfv137kv-llvm-21.1.8-dev
+warning: unused import: `std::sync::Arc`
+ --> crates/lumia_opt/src/lib.rs:7:5
+  |
+7 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `std::sync::Arc`
+  --> crates/lumia_codegen/src/emit_value/dense_f64_sr.rs:16:5
+   |
+16 | use std::sync::Arc;
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `entry_ssa` is never read
+   --> crates/lumia_codegen/src/emit_value/emit_control.rs:40:29
+    |
+ 40 |         let mut entry_ssa = self.frame.ssa_root_stack.clone();
+    |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this value is reassigned later and never used
+...
+117 |         entry_ssa = self.frame.ssa_root_stack.clone();
+    |         --------- `entry_ssa` is overwritten here before the previous value is read
+    |
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `pop_dead_ssa_roots_sim` is never used
+   --> crates/lumia_codegen/src/emit_fun/let_bind.rs:665:15
+    |
+665 | pub(crate) fn pop_dead_ssa_roots_sim(
+    |               ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `pop_unused_ssa_roots_sim` is never used
+   --> crates/lumia_codegen/src/emit_fun/let_bind.rs:699:15
+    |
+699 | pub(crate) fn pop_unused_ssa_roots_sim(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `slot_known_eq`, `load_slot_i64`, and `store_slot_i64` are never used
+   --> crates/lumia_codegen/src/emit_fun/slots.rs:164:19
+    |
+  9 | impl<'ctx> Codegen<'ctx> {
+    | ------------------------ methods in this implementation
+...
+164 |     pub(crate) fn slot_known_eq(&self, name: &Sym, expect: i64) -> bool {
+    |                   ^^^^^^^^^^^^^
+...
+168 |     pub(crate) fn load_slot_i64(&mut self, name: &Sym) -> Result<inkwell::values::IntValue<'ctx>> {
+    |                   ^^^^^^^^^^^^^
+...
+173 |     pub(crate) fn store_slot_i64(
+    |                   ^^^^^^^^^^^^^^
+
+== build ==
+    Finished `release` profile [optimized] target(s) in 0.05s
+wrote /tmp/lumia_bench_cn_step/kernel
+    Finished `release` profile [optimized] target(s) in 0.05s
+wrote /tmp/lumia_bench_cn_step/naive
+== checksum parity ==
+kernel:
+153810
+3836734
+160000
+naive (--no-dense-f64-sr):
+153810
+3836734
+160000
+== wall time + peak RSS  RUNS=5  STEPS=100000 ==
+kernel     time(s)  min/med/max  0.2847  0.2890  0.3327
+kernel     rss(KB)  min/med/max  2712  2728  2756  (2.6MiB / 2.7MiB / 2.7MiB)
+naive_nosr time(s)  min/med/max  49.1896  49.2957  52.4953
+naive_nosr rss(KB)  min/med/max  1149212  1150716  1151244  (1122.3MiB / 1123.7MiB / 1124.3MiB)
+speedup  170.57x  (naive_nosr_med_time / kernel_med_time)
+rss_ratio 421.82x  (naive_nosr_med_rss / kernel_med_rss)
+OK
+OK bench_cn_step
+
+######## bench_cn_efe ########
+Lumia env: LLVM_SYS_211_PREFIX=/nix/store/rfx89pjxx0dzlw8rbl9h5i1xsfv137kv-llvm-21.1.8-dev
+warning: unused import: `std::sync::Arc`
+ --> crates/lumia_opt/src/lib.rs:7:5
+  |
+7 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `std::sync::Arc`
+  --> crates/lumia_codegen/src/emit_value/dense_f64_sr.rs:16:5
+   |
+16 | use std::sync::Arc;
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `entry_ssa` is never read
+   --> crates/lumia_codegen/src/emit_value/emit_control.rs:40:29
+    |
+ 40 |         let mut entry_ssa = self.frame.ssa_root_stack.clone();
+    |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this value is reassigned later and never used
+...
+117 |         entry_ssa = self.frame.ssa_root_stack.clone();
+    |         --------- `entry_ssa` is overwritten here before the previous value is read
+    |
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `pop_dead_ssa_roots_sim` is never used
+   --> crates/lumia_codegen/src/emit_fun/let_bind.rs:665:15
+    |
+665 | pub(crate) fn pop_dead_ssa_roots_sim(
+    |               ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `pop_unused_ssa_roots_sim` is never used
+   --> crates/lumia_codegen/src/emit_fun/let_bind.rs:699:15
+    |
+699 | pub(crate) fn pop_unused_ssa_roots_sim(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `slot_known_eq`, `load_slot_i64`, and `store_slot_i64` are never used
+   --> crates/lumia_codegen/src/emit_fun/slots.rs:164:19
+    |
+  9 | impl<'ctx> Codegen<'ctx> {
+    | ------------------------ methods in this implementation
+...
+164 |     pub(crate) fn slot_known_eq(&self, name: &Sym, expect: i64) -> bool {
+    |                   ^^^^^^^^^^^^^
+...
+168 |     pub(crate) fn load_slot_i64(&mut self, name: &Sym) -> Result<inkwell::values::IntValue<'ctx>> {
+    |                   ^^^^^^^^^^^^^
+...
+173 |     pub(crate) fn store_slot_i64(
+    |                   ^^^^^^^^^^^^^^
+
+== build ==
+    Finished `release` profile [optimized] target(s) in 0.05s
+wrote /tmp/lumia_bench_cn_efe/kernel
+    Finished `release` profile [optimized] target(s) in 0.05s
+wrote /tmp/lumia_bench_cn_efe/naive
+== checksum parity ==
+kernel:
+187735000
+naive:
+187735000
+== wall time + peak RSS  RUNS=5  STEPS=50000 HORIZON=2 ==
+kernel     time(s)  min/med/max  0.0591  0.0616  0.0640
+kernel     rss(KB)  min/med/max  2520  2728  2796  (2.5MiB / 2.7MiB / 2.7MiB)
+naive      time(s)  min/med/max  2.5975  2.6558  2.7276
+naive      rss(KB)  min/med/max  412036  412416  412456  (402.4MiB / 402.8MiB / 402.8MiB)
+speedup  43.11x  (naive_med_time / kernel_med_time)
+rss_ratio 151.18x  (naive_med_rss / kernel_med_rss)
+OK
+OK bench_cn_efe
+
+######## bench_cn_fuse ########
+Lumia env: LLVM_SYS_211_PREFIX=/nix/store/rfx89pjxx0dzlw8rbl9h5i1xsfv137kv-llvm-21.1.8-dev
+warning: unused import: `std::sync::Arc`
+ --> crates/lumia_opt/src/lib.rs:7:5
+  |
+7 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `std::sync::Arc`
+  --> crates/lumia_codegen/src/emit_value/dense_f64_sr.rs:16:5
+   |
+16 | use std::sync::Arc;
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `entry_ssa` is never read
+   --> crates/lumia_codegen/src/emit_value/emit_control.rs:40:29
+    |
+ 40 |         let mut entry_ssa = self.frame.ssa_root_stack.clone();
+    |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this value is reassigned later and never used
+...
+117 |         entry_ssa = self.frame.ssa_root_stack.clone();
+    |         --------- `entry_ssa` is overwritten here before the previous value is read
+    |
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `pop_dead_ssa_roots_sim` is never used
+   --> crates/lumia_codegen/src/emit_fun/let_bind.rs:665:15
+    |
+665 | pub(crate) fn pop_dead_ssa_roots_sim(
+    |               ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `pop_unused_ssa_roots_sim` is never used
+   --> crates/lumia_codegen/src/emit_fun/let_bind.rs:699:15
+    |
+699 | pub(crate) fn pop_unused_ssa_roots_sim(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `slot_known_eq`, `load_slot_i64`, and `store_slot_i64` are never used
+   --> crates/lumia_codegen/src/emit_fun/slots.rs:164:19
+    |
+  9 | impl<'ctx> Codegen<'ctx> {
+    | ------------------------ methods in this implementation
+...
+164 |     pub(crate) fn slot_known_eq(&self, name: &Sym, expect: i64) -> bool {
+    |                   ^^^^^^^^^^^^^
+...
+168 |     pub(crate) fn load_slot_i64(&mut self, name: &Sym) -> Result<inkwell::values::IntValue<'ctx>> {
+    |                   ^^^^^^^^^^^^^
+...
+173 |     pub(crate) fn store_slot_i64(
+    |                   ^^^^^^^^^^^^^^
+
+== build ==
+    Finished `release` profile [optimized] target(s) in 0.05s
+wrote /tmp/lumia_bench_cn_fuse/kernel
+    Finished `release` profile [optimized] target(s) in 0.05s
+wrote /tmp/lumia_bench_cn_fuse/naive
+== checksum parity ==
+kernel:
+496
+-181
+496
+naive:
+496
+-181
+496
+== wall time + peak RSS  RUNS=5  STEPS=50000 SIZE=32 ==
+kernel     time(s)  min/med/max  0.0911  0.0946  0.1009
+kernel     rss(KB)  min/med/max  2564  2684  2740  (2.5MiB / 2.6MiB / 2.7MiB)
+naive      time(s)  min/med/max  0.1409  0.1458  0.1527
+naive      rss(KB)  min/med/max  2692  2724  2752  (2.6MiB / 2.7MiB / 2.7MiB)
+speedup  1.54x  (naive_med_time / kernel_med_time)
+rss_ratio 1.01x  (naive_med_rss / kernel_med_rss)
+OK
+OK bench_cn_fuse
+
+######## bench_cn_forward ########
+Lumia env: LLVM_SYS_211_PREFIX=/nix/store/rfx89pjxx0dzlw8rbl9h5i1xsfv137kv-llvm-21.1.8-dev
+warning: unused import: `std::sync::Arc`
+  --> crates/lumia_codegen/src/emit_value/dense_f64_sr.rs:16:5
+   |
+16 | use std::sync::Arc;
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `entry_ssa` is never read
+   --> crates/lumia_codegen/src/emit_value/emit_control.rs:40:29
+    |
+ 40 |         let mut entry_ssa = self.frame.ssa_root_stack.clone();
+    |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this value is reassigned later and never used
+...
+117 |         entry_ssa = self.frame.ssa_root_stack.clone();
+    |         --------- `entry_ssa` is overwritten here before the previous value is read
+    |
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `pop_dead_ssa_roots_sim` is never used
+   --> crates/lumia_codegen/src/emit_fun/let_bind.rs:665:15
+    |
+665 | pub(crate) fn pop_dead_ssa_roots_sim(
+    |               ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `pop_unused_ssa_roots_sim` is never used
+   --> crates/lumia_codegen/src/emit_fun/let_bind.rs:699:15
+    |
+699 | pub(crate) fn pop_unused_ssa_roots_sim(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `slot_known_eq`, `load_slot_i64`, and `store_slot_i64` are never used
+   --> crates/lumia_codegen/src/emit_fun/slots.rs:164:19
+    |
+  9 | impl<'ctx> Codegen<'ctx> {
+    | ------------------------ methods in this implementation
+...
+164 |     pub(crate) fn slot_known_eq(&self, name: &Sym, expect: i64) -> bool {
+    |                   ^^^^^^^^^^^^^
+...
+168 |     pub(crate) fn load_slot_i64(&mut self, name: &Sym) -> Result<inkwell::values::IntValue<'ctx>> {
+    |                   ^^^^^^^^^^^^^
+...
+173 |     pub(crate) fn store_slot_i64(
+    |                   ^^^^^^^^^^^^^^
+
+warning: unused import: `std::sync::Arc`
+ --> crates/lumia_opt/src/lib.rs:7:5
+  |
+7 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+== build ==
+    Finished `release` profile [optimized] target(s) in 0.05s
+wrote /tmp/lumia_bench_cn_forward/kernel
+    Finished `release` profile [optimized] target(s) in 0.05s
+wrote /tmp/lumia_bench_cn_forward/naive
+== checksum parity ==
+kernel:
+96151035
+403
+240
+60
+naive:
+96151035
+403
+240
+60
+== wall time + peak RSS  RUNS=5  STEPS=20000 triad+EFE ==
+kernel     time(s)  min/med/max  0.2655  0.2746  0.3510
+kernel     rss(KB)  min/med/max  2824  2936  3036  (2.8MiB / 2.9MiB / 3.0MiB)
+naive      time(s)  min/med/max  0.4673  0.4817  0.5314
+naive      rss(KB)  min/med/max  2748  2960  3028  (2.7MiB / 2.9MiB / 3.0MiB)
+speedup  1.75x  (naive_med_time / kernel_med_time)
+rss_ratio 1.01x  (naive_med_rss / kernel_med_rss)
+OK
+OK bench_cn_forward
+
+######## bench_cn_strict ########
+Lumia env: LLVM_SYS_211_PREFIX=/nix/store/rfx89pjxx0dzlw8rbl9h5i1xsfv137kv-llvm-21.1.8-dev
+warning: unused import: `std::sync::Arc`
+  --> crates/lumia_codegen/src/emit_value/dense_f64_sr.rs:16:5
+   |
+16 | use std::sync::Arc;
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `entry_ssa` is never read
+   --> crates/lumia_codegen/src/emit_value/emit_control.rs:40:29
+    |
+ 40 |         let mut entry_ssa = self.frame.ssa_root_stack.clone();
+    |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this value is reassigned later and never used
+...
+117 |         entry_ssa = self.frame.ssa_root_stack.clone();
+    |         --------- `entry_ssa` is overwritten here before the previous value is read
+    |
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `pop_dead_ssa_roots_sim` is never used
+   --> crates/lumia_codegen/src/emit_fun/let_bind.rs:665:15
+    |
+665 | pub(crate) fn pop_dead_ssa_roots_sim(
+    |               ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `pop_unused_ssa_roots_sim` is never used
+   --> crates/lumia_codegen/src/emit_fun/let_bind.rs:699:15
+    |
+699 | pub(crate) fn pop_unused_ssa_roots_sim(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `slot_known_eq`, `load_slot_i64`, and `store_slot_i64` are never used
+   --> crates/lumia_codegen/src/emit_fun/slots.rs:164:19
+    |
+  9 | impl<'ctx> Codegen<'ctx> {
+    | ------------------------ methods in this implementation
+...
+164 |     pub(crate) fn slot_known_eq(&self, name: &Sym, expect: i64) -> bool {
+    |                   ^^^^^^^^^^^^^
+...
+168 |     pub(crate) fn load_slot_i64(&mut self, name: &Sym) -> Result<inkwell::values::IntValue<'ctx>> {
+    |                   ^^^^^^^^^^^^^
+...
+173 |     pub(crate) fn store_slot_i64(
+    |                   ^^^^^^^^^^^^^^
+
+warning: unused import: `std::sync::Arc`
+ --> crates/lumia_opt/src/lib.rs:7:5
+  |
+7 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+== build ==
+    Finished `release` profile [optimized] target(s) in 0.05s
+wrote /tmp/lumia_bench_cn_strict/kernel
+    Finished `release` profile [optimized] target(s) in 0.05s
+wrote /tmp/lumia_bench_cn_strict/naive
+== checksum parity ==
+kernel:
+932
+220
+1960
+0
+naive:
+932
+220
+1960
+0
+== wall time + peak RSS  RUNS=5  STEPS=50000 SIZE=32 ==
+kernel     time(s)  min/med/max  0.2902  0.2917  0.3189
+kernel     rss(KB)  min/med/max  2704  2748  2784  (2.6MiB / 2.7MiB / 2.7MiB)
+naive      time(s)  min/med/max  0.5321  0.5456  0.5850
+naive      rss(KB)  min/med/max  2536  2712  2760  (2.5MiB / 2.6MiB / 2.7MiB)
+speedup  1.87x  (naive_med_time / kernel_med_time)
+rss_ratio 0.99x  (naive_med_rss / kernel_med_rss)
+OK
+OK bench_cn_strict
+
+######## bench_task ########
+Lumia env: LLVM_SYS_211_PREFIX=/nix/store/rfx89pjxx0dzlw8rbl9h5i1xsfv137kv-llvm-21.1.8-dev
+warning: unused import: `std::sync::Arc`
+  --> crates/lumia_codegen/src/emit_value/dense_f64_sr.rs:16:5
+   |
+16 | use std::sync::Arc;
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `entry_ssa` is never read
+   --> crates/lumia_codegen/src/emit_value/emit_control.rs:40:29
+    |
+ 40 |         let mut entry_ssa = self.frame.ssa_root_stack.clone();
+    |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this value is reassigned later and never used
+...
+117 |         entry_ssa = self.frame.ssa_root_stack.clone();
+    |         --------- `entry_ssa` is overwritten here before the previous value is read
+    |
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `pop_dead_ssa_roots_sim` is never used
+   --> crates/lumia_codegen/src/emit_fun/let_bind.rs:665:15
+    |
+665 | pub(crate) fn pop_dead_ssa_roots_sim(
+    |               ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `pop_unused_ssa_roots_sim` is never used
+   --> crates/lumia_codegen/src/emit_fun/let_bind.rs:699:15
+    |
+699 | pub(crate) fn pop_unused_ssa_roots_sim(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `slot_known_eq`, `load_slot_i64`, and `store_slot_i64` are never used
+   --> crates/lumia_codegen/src/emit_fun/slots.rs:164:19
+    |
+  9 | impl<'ctx> Codegen<'ctx> {
+    | ------------------------ methods in this implementation
+...
+164 |     pub(crate) fn slot_known_eq(&self, name: &Sym, expect: i64) -> bool {
+    |                   ^^^^^^^^^^^^^
+...
+168 |     pub(crate) fn load_slot_i64(&mut self, name: &Sym) -> Result<inkwell::values::IntValue<'ctx>> {
+    |                   ^^^^^^^^^^^^^
+...
+173 |     pub(crate) fn store_slot_i64(
+    |                   ^^^^^^^^^^^^^^
+
+warning: unused import: `std::sync::Arc`
+ --> crates/lumia_opt/src/lib.rs:7:5
+  |
+7 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+======== lumia bench_task (Release) ========
+building examples/bench/bench_task.lm → /tmp/lumia_bench_task/bench_task
+    Finished `release` profile [optimized] target(s) in 0.05s
+wrote /tmp/lumia_bench_task/bench_task
+OK checksum WORKERS=0
+OK checksum WORKERS=1
+OK checksum WORKERS=2
+task_w0    time(s)  min/med/max  0.0067  0.0070  0.0096
+task_w0    rss(KB)  min/med/max  3184  3264  3484  (3.1MiB / 3.2MiB / 3.4MiB)
+task_w1    time(s)  min/med/max  0.0112  0.0116  0.0122
+task_w1    rss(KB)  min/med/max  3484  3544  3568  (3.4MiB / 3.5MiB / 3.5MiB)
+task_w2    time(s)  min/med/max  0.0154  0.0161  0.0176
+task_w2    rss(KB)  min/med/max  3032  3260  3292  (3.0MiB / 3.2MiB / 3.2MiB)
+======== RT stress (Release lib tests) ========
+
+running 9 tests
+........task_stress timing: spawn_join_200=23.58ms fan_in_100=11.66ms
+.
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 215 filtered out; finished in 0.16s
+
+bench_task: OK
+OK bench_task
+
+######## bench_app ########
+Lumia env: LLVM_SYS_211_PREFIX=/nix/store/rfx89pjxx0dzlw8rbl9h5i1xsfv137kv-llvm-21.1.8-dev
+warning: unused import: `std::sync::Arc`
+  --> crates/lumia_codegen/src/emit_value/dense_f64_sr.rs:16:5
+   |
+16 | use std::sync::Arc;
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `entry_ssa` is never read
+   --> crates/lumia_codegen/src/emit_value/emit_control.rs:40:29
+    |
+ 40 |         let mut entry_ssa = self.frame.ssa_root_stack.clone();
+    |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this value is reassigned later and never used
+...
+117 |         entry_ssa = self.frame.ssa_root_stack.clone();
+    |         --------- `entry_ssa` is overwritten here before the previous value is read
+    |
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `pop_dead_ssa_roots_sim` is never used
+   --> crates/lumia_codegen/src/emit_fun/let_bind.rs:665:15
+    |
+665 | pub(crate) fn pop_dead_ssa_roots_sim(
+    |               ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `pop_unused_ssa_roots_sim` is never used
+   --> crates/lumia_codegen/src/emit_fun/let_bind.rs:699:15
+    |
+699 | pub(crate) fn pop_unused_ssa_roots_sim(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `slot_known_eq`, `load_slot_i64`, and `store_slot_i64` are never used
+   --> crates/lumia_codegen/src/emit_fun/slots.rs:164:19
+    |
+  9 | impl<'ctx> Codegen<'ctx> {
+    | ------------------------ methods in this implementation
+...
+164 |     pub(crate) fn slot_known_eq(&self, name: &Sym, expect: i64) -> bool {
+    |                   ^^^^^^^^^^^^^
+...
+168 |     pub(crate) fn load_slot_i64(&mut self, name: &Sym) -> Result<inkwell::values::IntValue<'ctx>> {
+    |                   ^^^^^^^^^^^^^
+...
+173 |     pub(crate) fn store_slot_i64(
+    |                   ^^^^^^^^^^^^^^
+
+warning: unused import: `std::sync::Arc`
+ --> crates/lumia_opt/src/lib.rs:7:5
+  |
+7 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+======== lumia bench_app (Release) ========
+building examples/bench/bench_app.lm → /tmp/lumia_bench_app/bench_app
+    Finished `release` profile [optimized] target(s) in 0.05s
+wrote /tmp/lumia_bench_app/bench_app
+== checksums (app) ==
+  word_freq(20k/8):      869387490
+  pipe_hof(2M):          965428807
+  map_bulk(20k):         498702828
+  set_churn(100k):       1433426
+checksums ok (4 scenarios)
+== timing + peak RSS (app, RUNS=5) ==
+bench_app  time(s)  min/med/max  1.0382  1.0534  1.1079
+bench_app  rss(KB)  min/med/max  152224  152760  152808  (148.7MiB / 149.2MiB / 149.2MiB)
+building examples/bench/bench_str.lm → /tmp/lumia_bench_app/bench_str
+    Finished `release` profile [optimized] target(s) in 0.05s
+wrote /tmp/lumia_bench_app/bench_str
+== checksums (str) ==
+  str_pipeline(8k):      384000
+checksums ok (1 scenario)
+== timing + peak RSS (str, RUNS=5) ==
+bench_str  time(s)  min/med/max  0.0354  0.0362  0.0373
+bench_str  rss(KB)  min/med/max  9172  9336  9388  (9.0MiB / 9.1MiB / 9.2MiB)
+bench_app: OK
+OK bench_app
+
+######## bench_gc ########
+Lumia env: LLVM_SYS_211_PREFIX=/nix/store/rfx89pjxx0dzlw8rbl9h5i1xsfv137kv-llvm-21.1.8-dev
+warning: unused import: `std::sync::Arc`
+  --> crates/lumia_codegen/src/emit_value/dense_f64_sr.rs:16:5
+   |
+16 | use std::sync::Arc;
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `entry_ssa` is never read
+   --> crates/lumia_codegen/src/emit_value/emit_control.rs:40:29
+    |
+ 40 |         let mut entry_ssa = self.frame.ssa_root_stack.clone();
+    |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this value is reassigned later and never used
+...
+117 |         entry_ssa = self.frame.ssa_root_stack.clone();
+    |         --------- `entry_ssa` is overwritten here before the previous value is read
+    |
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `pop_dead_ssa_roots_sim` is never used
+   --> crates/lumia_codegen/src/emit_fun/let_bind.rs:665:15
+    |
+665 | pub(crate) fn pop_dead_ssa_roots_sim(
+    |               ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `pop_unused_ssa_roots_sim` is never used
+   --> crates/lumia_codegen/src/emit_fun/let_bind.rs:699:15
+    |
+699 | pub(crate) fn pop_unused_ssa_roots_sim(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `slot_known_eq`, `load_slot_i64`, and `store_slot_i64` are never used
+   --> crates/lumia_codegen/src/emit_fun/slots.rs:164:19
+    |
+  9 | impl<'ctx> Codegen<'ctx> {
+    | ------------------------ methods in this implementation
+...
+164 |     pub(crate) fn slot_known_eq(&self, name: &Sym, expect: i64) -> bool {
+    |                   ^^^^^^^^^^^^^
+...
+168 |     pub(crate) fn load_slot_i64(&mut self, name: &Sym) -> Result<inkwell::values::IntValue<'ctx>> {
+    |                   ^^^^^^^^^^^^^
+...
+173 |     pub(crate) fn store_slot_i64(
+    |                   ^^^^^^^^^^^^^^
+
+warning: unused import: `std::sync::Arc`
+ --> crates/lumia_opt/src/lib.rs:7:5
+  |
+7 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+======== lumia bench_gc (Release) ========
+building examples/bench/bench_gc.lm → /tmp/lumia_bench_gc/bench_gc
+    Finished `release` profile [optimized] target(s) in 0.06s
+wrote /tmp/lumia_bench_gc/bench_gc
+== checksums (churn) ==
+  list_churn(8k×32):    32380020
+  map_churn(4k×6):      105033750
+checksums ok (2 scenarios)
+== timing + peak RSS (churn, RUNS=5) ==
+gc_churn   time(s)  min/med/max  0.1703  0.1768  0.2007
+gc_churn   rss(KB)  min/med/max  36496  36528  36564  (35.6MiB / 35.7MiB / 35.7MiB)
+building examples/bench/bench_gc_retain.lm → /tmp/lumia_bench_gc/bench_gc_retain
+    Finished `release` profile [optimized] target(s) in 0.05s
+wrote /tmp/lumia_bench_gc/bench_gc_retain
+== checksums (retain) ==
+  nest_retain(120×16):  231840
+  cow_traffic(100k):     100050755
+checksums ok (2 scenarios)
+== timing + peak RSS (retain, RUNS=5) ==
+gc_retain  time(s)  min/med/max  0.0084  0.0089  0.0091
+gc_retain  rss(KB)  min/med/max  6156  6300  6340  (6.0MiB / 6.2MiB / 6.2MiB)
+bench_gc: OK
+OK bench_gc
+
+######## bench_task_load ########
+Lumia env: LLVM_SYS_211_PREFIX=/nix/store/rfx89pjxx0dzlw8rbl9h5i1xsfv137kv-llvm-21.1.8-dev
+warning: unused import: `std::sync::Arc`
+ --> crates/lumia_opt/src/lib.rs:7:5
+  |
+7 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `std::sync::Arc`
+  --> crates/lumia_codegen/src/emit_value/dense_f64_sr.rs:16:5
+   |
+16 | use std::sync::Arc;
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `entry_ssa` is never read
+   --> crates/lumia_codegen/src/emit_value/emit_control.rs:40:29
+    |
+ 40 |         let mut entry_ssa = self.frame.ssa_root_stack.clone();
+    |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this value is reassigned later and never used
+...
+117 |         entry_ssa = self.frame.ssa_root_stack.clone();
+    |         --------- `entry_ssa` is overwritten here before the previous value is read
+    |
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `pop_dead_ssa_roots_sim` is never used
+   --> crates/lumia_codegen/src/emit_fun/let_bind.rs:665:15
+    |
+665 | pub(crate) fn pop_dead_ssa_roots_sim(
+    |               ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `pop_unused_ssa_roots_sim` is never used
+   --> crates/lumia_codegen/src/emit_fun/let_bind.rs:699:15
+    |
+699 | pub(crate) fn pop_unused_ssa_roots_sim(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `slot_known_eq`, `load_slot_i64`, and `store_slot_i64` are never used
+   --> crates/lumia_codegen/src/emit_fun/slots.rs:164:19
+    |
+  9 | impl<'ctx> Codegen<'ctx> {
+    | ------------------------ methods in this implementation
+...
+164 |     pub(crate) fn slot_known_eq(&self, name: &Sym, expect: i64) -> bool {
+    |                   ^^^^^^^^^^^^^
+...
+168 |     pub(crate) fn load_slot_i64(&mut self, name: &Sym) -> Result<inkwell::values::IntValue<'ctx>> {
+    |                   ^^^^^^^^^^^^^
+...
+173 |     pub(crate) fn store_slot_i64(
+    |                   ^^^^^^^^^^^^^^
+
+======== lumia bench_task_load (Release) ========
+building examples/bench/bench_task_load.lm → /tmp/lumia_bench_task_load/bench_task_load
+    Finished `release` profile [optimized] target(s) in 0.05s
+wrote /tmp/lumia_bench_task_load/bench_task_load
+OK checksum WORKERS=0
+OK checksum WORKERS=1
+OK checksum WORKERS=2
+task_load_w0 time(s)  min/med/max  0.0307  0.0316  0.0523
+task_load_w0 rss(KB)  min/med/max  4216  4276  4488  (4.1MiB / 4.2MiB / 4.4MiB)
+task_load_w1 time(s)  min/med/max  0.0869  0.0921  0.1060
+task_load_w1 rss(KB)  min/med/max  10940  11180  11484  (10.7MiB / 10.9MiB / 11.2MiB)
+task_load_w2 time(s)  min/med/max  0.1037  0.1115  0.1214
+task_load_w2 rss(KB)  min/med/max  10976  11200  11436  (10.7MiB / 10.9MiB / 11.2MiB)
+bench_task_load: OK
+OK bench_task_load
+
+######## bench_compile ########
+Lumia env: LLVM_SYS_211_PREFIX=/nix/store/rfx89pjxx0dzlw8rbl9h5i1xsfv137kv-llvm-21.1.8-dev
+warning: unused import: `std::sync::Arc`
+ --> crates/lumia_opt/src/lib.rs:7:5
+  |
+7 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `std::sync::Arc`
+  --> crates/lumia_codegen/src/emit_value/dense_f64_sr.rs:16:5
+   |
+16 | use std::sync::Arc;
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `entry_ssa` is never read
+   --> crates/lumia_codegen/src/emit_value/emit_control.rs:40:29
+    |
+ 40 |         let mut entry_ssa = self.frame.ssa_root_stack.clone();
+    |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this value is reassigned later and never used
+...
+117 |         entry_ssa = self.frame.ssa_root_stack.clone();
+    |         --------- `entry_ssa` is overwritten here before the previous value is read
+    |
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `pop_dead_ssa_roots_sim` is never used
+   --> crates/lumia_codegen/src/emit_fun/let_bind.rs:665:15
+    |
+665 | pub(crate) fn pop_dead_ssa_roots_sim(
+    |               ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `pop_unused_ssa_roots_sim` is never used
+   --> crates/lumia_codegen/src/emit_fun/let_bind.rs:699:15
+    |
+699 | pub(crate) fn pop_unused_ssa_roots_sim(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `slot_known_eq`, `load_slot_i64`, and `store_slot_i64` are never used
+   --> crates/lumia_codegen/src/emit_fun/slots.rs:164:19
+    |
+  9 | impl<'ctx> Codegen<'ctx> {
+    | ------------------------ methods in this implementation
+...
+164 |     pub(crate) fn slot_known_eq(&self, name: &Sym, expect: i64) -> bool {
+    |                   ^^^^^^^^^^^^^
+...
+168 |     pub(crate) fn load_slot_i64(&mut self, name: &Sym) -> Result<inkwell::values::IntValue<'ctx>> {
+    |                   ^^^^^^^^^^^^^
+...
+173 |     pub(crate) fn store_slot_i64(
+    |                   ^^^^^^^^^^^^^^
+
+======== lumia bench_compile (Release host) ========
+== check guide batch (8 files, RUNS=5) ==
+check_batch time(s)  min/med/max  0.1433  0.1498  0.1669
+check_batch rss(KB)  min/med/max  41912  41988  42012  (40.9MiB / 41.0MiB / 41.0MiB)
+== check word_count ==
+check_wc   time(s)  min/med/max  0.0173  0.0178  0.0181
+check_wc   rss(KB)  min/med/max  41744  41800  41916  (40.8MiB / 40.8MiB / 40.9MiB)
+== build --release bench_app ==
+build_app  time(s)  min/med/max  8.4313  8.6292  8.8940
+build_app  rss(KB)  min/med/max  81908  82116  82148  (80.0MiB / 80.2MiB / 80.2MiB)
+== build --release bench_task_load ==
+build_task time(s)  min/med/max  8.3308  8.6488  8.6818
+build_task rss(KB)  min/med/max  80988  81324  81364  (79.1MiB / 79.4MiB / 79.5MiB)
+== build --release fuse_hof ==
+build_fuse time(s)  min/med/max  8.1512  8.3961  8.5747
+build_fuse rss(KB)  min/med/max  82264  82720  82876  (80.3MiB / 80.8MiB / 80.9MiB)
+bench_compile: OK
+OK bench_compile
+
+bench_all: OK
+EXIT=0

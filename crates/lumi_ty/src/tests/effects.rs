@@ -4,7 +4,7 @@ use super::*;
 fn pure_may_construct_io_thunk() {
     let src = r#"
 module T
-import std.io.{println}
+import lumi.io.{println}
 val make() = { { -> println(1) } }
 val main = { make()() }
 "#;
@@ -22,7 +22,7 @@ val main = { make()() }
 fn calling_io_thunk_marks_caller_io() {
     let src = r#"
 module T
-import std.io.{println}
+import lumi.io.{println}
 val apply(f) = f()
 val compute() = {
     apply({ -> println(1) })
@@ -56,7 +56,7 @@ val main = { compute() }
 fn reject_println_inside_pure_lambda_used_as_value() {
     let src = r#"
 module Bad
-import std.io.{println}
+import lumi.io.{println}
 val compute() = {
     println(1)
     0
@@ -79,7 +79,7 @@ val main = {
 fn module_val_rejects_io() {
     let src = r#"
 module Bad
-import std.io.{println}
+import lumi.io.{println}
 val xs = println(1)
 val main = {
     0
@@ -94,7 +94,7 @@ val main = {
 fn hof_picks_up_callback_io() {
     let src = r#"
 module Hof
-import std.io.{println}
+import lumi.io.{println}
 val apply(f, x) = f(x)
 val boom(x) = {
     println(1)
@@ -143,7 +143,7 @@ val main = {
 fn if_branches_io_vs_pure_fun_marks_caller_or_rejects() {
     let src = r#"
 module Hole
-import std.io.{println}
+import lumi.io.{println}
 val id(x) = x
 val boom(x) = {
     println(x + 0)
@@ -176,7 +176,7 @@ val main = {
 fn assign_io_fun_into_pure_var_marks_caller_or_rejects() {
     let src = r#"
 module Hole
-import std.io.{println}
+import lumi.io.{println}
 val sneak(x) = {
     var f = { y -> y }
     f = { y ->
@@ -208,7 +208,7 @@ val main = {
 fn hof_two_callbacks_union_preserves_io() {
     let src = r#"
 module Both
-import std.io.{println}
+import lumi.io.{println}
 val both(f, g, x) = {
     f(x)
     g(x)

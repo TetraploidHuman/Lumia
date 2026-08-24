@@ -1,7 +1,7 @@
 /// Regression: mono must not sitofp IEEE bits from product float fields when
 /// call sites erase the product to ABI Int (`learnSteps`-class bug).
 module mono_adt_float_field
-import std.io.{println}
+import lumi.io.{println}
 
 type Wide {
     val f0

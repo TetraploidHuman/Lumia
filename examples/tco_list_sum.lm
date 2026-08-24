@@ -1,6 +1,6 @@
 module TcoListSum
 
-import std.io.{println}
+import lumi.io.{println}
 
 /// Pure List+Int self-recursion in tail position — must get TCO (heap param).
 /// Without musttail + root_pop, ~2e6 frames would overflow.

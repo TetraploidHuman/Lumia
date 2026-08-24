@@ -57,7 +57,7 @@ mod tests {
     fn semantic_tokens_nonempty_for_simple_program() {
         let src = r#"
 module Demo
-import std.io.{println}
+import lumi.io.{println}
 type Color {
     Red,
     Green
@@ -98,7 +98,7 @@ val main = {
         // bound as callables — only paint the import AST (path + local name).
         let src = r#"
 module Demo
-import std.io.{println as log}
+import lumi.io.{println as log}
 val main = { 1 }
 "#;
         let typed = check_source(src, true).expect("typecheck");

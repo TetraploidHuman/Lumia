@@ -1,6 +1,6 @@
 module UsePathDep
 
-import std.io.{println}
+import lumi.io.{println}
 import demo.{answer, bump}
 
 val main = {

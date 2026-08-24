@@ -1,6 +1,6 @@
 module ParMap
 
-import std.io.{println}
+import lumi.io.{println}
 
 val main = {
     val xs = range(0, 200)

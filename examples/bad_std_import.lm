@@ -1,6 +1,6 @@
 module BadStd
 
-import std.nonsense.{foo}
+import lumi.nonsense.{foo}
 
 val main = {
     0

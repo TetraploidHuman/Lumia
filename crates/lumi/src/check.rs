@@ -276,7 +276,7 @@ mod tests {
     fn recovering_keeps_later_item_types() {
         let src = r#"
 module Main
-import std.io.{println}
+import lumi.io.{println}
 val add = { a, b -> a + b
 val main = {
     println(1)

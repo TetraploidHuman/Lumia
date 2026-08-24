@@ -1,0 +1,9 @@
+date: 2026-08-20T13:39:19+08:00
+commit: 3de7c9c07faa5692772b4661ff4cc19ae211fa19
+branch: feature/task-channel-coroutines
+host: nixos
+kernel: 7.0.11
+cpu: Intel(R) Xeon(R) CPU E5-2698B v3 @ 2.00GHz
+cpus: 32
+mem_kb: 32754812
+RUNS=5 BENCH_SHIELD=0

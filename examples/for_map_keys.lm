@@ -1,6 +1,6 @@
 module ForMapKeys
 
-import std.io.{println}
+import lumi.io.{println}
 
 // Regression: `for x in map` iterates keys (not map.get(index) → Option).
 val main = {

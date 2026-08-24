@@ -1,6 +1,6 @@
 module BadParMapIo
 
-import std.io.{println}
+import lumi.io.{println}
 
 val boom(x) = {
     println(x + 0)

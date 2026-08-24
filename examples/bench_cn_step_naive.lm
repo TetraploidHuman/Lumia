@@ -2,8 +2,8 @@ module BenchCnStepNaive
 
 /// Full CogniNucleus-ish step: sensory inject + PC update + gate + decay + Hebbian.
 /// Extra helpers (`fill`/`scale`/`mul`/`add`) are intentional SR targets beyond gemv/axpy.
-import std.io.{println}
-import std.linalg.{checksum, l2Normalize}
+import lumi.io.{println}
+import lumi.linalg.{checksum, l2Normalize}
 
 val VIS = 16
 val PFC = 32

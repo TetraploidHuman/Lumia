@@ -1,5 +1,5 @@
 module syntax_extras
-import std.io.{println}
+import lumi.io.{println}
 
 /// Gaps beyond syntax_surface: else-if, when-match, or-patterns, interpolation,
 /// `it`, effect block, block arms, comments, mixed-arity user sum.

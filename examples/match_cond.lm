@@ -1,6 +1,6 @@
 module MatchCond
 
-import std.io.{println}
+import lumi.io.{println}
 
 val classify(n) = {
     match {

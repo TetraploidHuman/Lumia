@@ -1,5 +1,5 @@
 module empty_float_list
-import std.io.{println}
+import lumi.io.{println}
 
 /// Reassigning `listOf()` into a List[Float] slot must keep the F64 type tag.
 val main = {

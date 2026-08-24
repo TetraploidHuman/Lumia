@@ -1,6 +1,6 @@
 module TcoFunRef
 
-import std.io.{println}
+import lumi.io.{println}
 
 /// Mutual pure Int recursion via a FunRef local — musttail after FunRef directize
 /// (and codegen IndirectCall peer path as fallback).

@@ -1,7 +1,7 @@
 module StdOption
 
-import std.io.{println}
-import std.option.{unwrapOr, optionMap, andThen, isSome, isNone}
+import lumi.io.{println}
+import lumi.option.{unwrapOr, optionMap, andThen, isSome, isNone}
 
 val dbl(x) = { x + x }
 val half(n) = {

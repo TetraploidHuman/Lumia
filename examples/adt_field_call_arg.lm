@@ -1,8 +1,8 @@
 /// Regression: `f(eco, eco.listField, n)` must retain the AdtField list extract.
 /// Skipping retain let the parent drop and zeroed nearest-threat obs in CN eco.
 module adt_field_call_arg
-import std.io.{println}
-import std.linalg.{zeros, fill, hypotF}
+import lumi.io.{println}
+import lumi.linalg.{zeros, fill, hypotF}
 
 type Eco {
     val ecoX

@@ -1,6 +1,6 @@
 module ForMapSet
 
-import std.io.{println}
+import lumi.io.{println}
 
 val main = {
     var sum = 0

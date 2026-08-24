@@ -1,4 +1,4 @@
-/// Dense `List[Float]` linear algebra (`import std.linalg.{…}`).
+/// Dense `List[Float]` linear algebra (`import lumi.linalg.{…}`).
 ///
 /// Matrices are **flat row-major** float lists. Dest buffers that are uniquely
 /// owned are updated in place (zero-alloc); shared ones COW-clone.

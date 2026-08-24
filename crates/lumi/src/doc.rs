@@ -219,7 +219,7 @@ mod tests {
 /// @exports foo
 module Demo
 
-import std.io.{println}
+import lumi.io.{println}
 
 /// Adds one.
 val inc(x) = x + 1

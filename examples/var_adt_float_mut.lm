@@ -1,7 +1,7 @@
 /// Regression: `var s = adt.floatField` must keep IEEE bits (native f64 mut slot),
 /// not `sitofp` the bit pattern as a numeric Int (broke CogniNucleus LCG seeds).
 module var_adt_float_mut
-import std.io.{println}
+import lumi.io.{println}
 
 type SeedBox {
     val seed

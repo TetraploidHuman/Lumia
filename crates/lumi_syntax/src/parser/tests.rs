@@ -22,7 +22,7 @@ counts
 fn parse_hello() {
     let src = r#"
 module Hello
-import std.io.{println}
+import lumi.io.{println}
 val main = {
 println(42)
 }
@@ -324,7 +324,7 @@ fn parse_zero_arg_lambda_without_arrow() {
     let m = parse_module(
         r#"
 module T
-import std.io.{println}
+import lumi.io.{println}
 val make = {
     { println(1) }
 }

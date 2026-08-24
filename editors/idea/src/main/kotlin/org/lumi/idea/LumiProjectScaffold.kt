@@ -31,7 +31,7 @@ object LumiProjectScaffold {
         """
         module $moduleName
 
-        import std.io.{println}
+        import lumi.io.{println}
 
         val main = {
             println(42)

@@ -1,6 +1,6 @@
 module makeobs_nofill
-import std.io.{println}
-import std.linalg.{zeros, hypotF}
+import lumi.io.{println}
+import lumi.linalg.{zeros, hypotF}
 
 type Eco {
     val ecoX

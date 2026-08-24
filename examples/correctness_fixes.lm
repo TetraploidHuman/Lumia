@@ -1,6 +1,6 @@
 module CorrectnessFixes
 
-import std.io.{println}
+import lumi.io.{println}
 
 val side = {
     println(99)

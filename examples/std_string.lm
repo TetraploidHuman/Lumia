@@ -1,9 +1,9 @@
 module StdString
 
-import std.io.{println}
-import std.string.{trim, toLower, split, join, startsWith}
+import lumi.io.{println}
+import lumi.string.{trim, toLower, split, join, startsWith}
 
-/// Exercise `std.string` Source wrappers (runtime `lumi_str_*` via foreign).
+/// Exercise `lumi.string` Source wrappers (runtime `lumi_str_*` via foreign).
 val main = {
     val t = trim("  Hello  ")
     println(t)

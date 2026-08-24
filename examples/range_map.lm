@@ -1,6 +1,6 @@
 module RangeMap
 
-import std.io.{println}
+import lumi.io.{println}
 
 val main = {
     // Counter map/filter — range itself is not HeapList-materialized.

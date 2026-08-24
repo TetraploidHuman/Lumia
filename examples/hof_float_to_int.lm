@@ -1,6 +1,6 @@
 module HofFloatToInt
 
-import std.io.{println}
+import lumi.io.{println}
 
 // Regression: IndirectCall must not treat float args as implying float return.
 val toInt(x) = {

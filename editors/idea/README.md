@@ -4,7 +4,7 @@ Language support for Lumi (`.lm`) using the JetBrains native LSP API (`lumi lsp`
 
 ## Features
 
-- Syntax highlighting (hand-written lexer), braces, quotes, Enter auto-indent (4 spaces)
+- Syntax highlighting (hand-written lexer), braces, quotes, smart Enter indent (4 spaces)
 - LSP: diagnostics, hover, go-to-definition, completion, formatting, outline, inlay hints
 - Live templates (`module`, `val`, `match`, `trait`, …)
 - **File → New → Project → Lumi** (sidebar, alongside Java/Kotlin)

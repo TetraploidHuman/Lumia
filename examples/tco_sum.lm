@@ -1,6 +1,6 @@
 module TcoSum
 
-import std.io.{println}
+import lumi.io.{println}
 
 /// Pure Int self-recursion in tail position — must get TCO (DESIGN §4.4).
 /// Without musttail, ~2e6 frames would overflow a typical stack.

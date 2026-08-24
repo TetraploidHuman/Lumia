@@ -1,5 +1,5 @@
 module AdtWithAlias
-import std.io.{println}
+import lumi.io.{println}
 
 type Point {
     val x

@@ -1,6 +1,6 @@
 module FfiAbs
 
-import std.io.{println}
+import lumi.io.{println}
 
 foreign "C" pure fn llabs(x: Int) -> Int
 

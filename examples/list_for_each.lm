@@ -1,0 +1,19 @@
+module ListForEach
+
+import lumi.io.{println}
+
+val main = {
+    var acc = 0
+    listOf(10, 20, 30).forEach { x ->
+        acc = acc + x
+    }
+    println(acc)
+
+    listOf(1, 2, 3) >> forEach { x ->
+        println(x)
+    }
+
+    (1..3).forEach { i ->
+        println(i)
+    }
+}

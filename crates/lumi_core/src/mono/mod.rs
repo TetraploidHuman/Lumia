@@ -118,7 +118,7 @@ mod tests {
         let core = compile_source_to_core(
             r#"
 module M
-import std.io.{println}
+import lumi.io.{println}
 val nearest = { pts, n ->
     println(pts.get(0))
     pts.get(0) + pts.get(1)
@@ -394,7 +394,7 @@ val main = {
         let core = compile_source_to_core(
             r#"
 module M
-import std.io.{println}
+import lumi.io.{println}
 type Parts {
     val a
     val b
@@ -484,7 +484,7 @@ val main = {
         let core = compile_source_to_core(
             r#"
 module M
-import std.io.{println}
+import lumi.io.{println}
 type Eco { val ecoX }
 type Parts { val pX }
 type Roll {
@@ -554,7 +554,7 @@ val main = {
         let core = compile_source_to_core(
             r#"
 module M
-import std.io.{println}
+import lumi.io.{println}
 val main = {
     val xs = listOf(1.5, 2.5).map({ x -> x + x })
     println(xs.get(0))
@@ -601,7 +601,7 @@ val main = {
         let core = compile_source_to_core(
             r#"
 module MapFold
-import std.io.{println}
+import lumi.io.{println}
 val dbl = { x -> x + x }
 val add = { a, b -> a + b }
 val main = {
@@ -629,7 +629,7 @@ val main = {
         let core = compile_source_to_core(
             r#"
 module M
-import std.io.{println}
+import lumi.io.{println}
 val dbl = { x -> x + x }
 val add = { a, b -> a + b }
 val main = {

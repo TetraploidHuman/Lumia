@@ -1,6 +1,6 @@
 module NestedShow
 
-import std.io.{println}
+import lumi.io.{println}
 
 type Color {
     A,

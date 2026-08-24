@@ -1,6 +1,6 @@
 module ContainsPoly
 
-import std.io.{println}
+import lumi.io.{println}
 
 // Regression: unconstrained `.contains` must not force Map (rejecting Set).
 val has_set(xs, x) = {

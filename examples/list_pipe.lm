@@ -1,6 +1,6 @@
 module ListPipe
 
-import std.io.{println}
+import lumi.io.{println}
 
 val main = {
     val xs = [1, 2, 3, 4, 5]

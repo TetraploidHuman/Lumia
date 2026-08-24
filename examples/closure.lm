@@ -1,6 +1,6 @@
 module Closure
 
-import std.io.{println}
+import lumi.io.{println}
 
 val add1(x) = {
     x + 1

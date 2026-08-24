@@ -1,6 +1,6 @@
 module ResultErrPayload
 
-import std.io.{println}
+import lumi.io.{println}
 
 // Regression: Err(e) payload must be typed as E, not T.
 val pick(b) = {

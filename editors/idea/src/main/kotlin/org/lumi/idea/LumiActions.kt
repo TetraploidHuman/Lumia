@@ -41,10 +41,14 @@ class LumiCheckFileAction : AnAction(), DumbAware {
     override fun actionPerformed(e: AnActionEvent) {
         val path = currentLmPath(e) ?: return
         val project = e.project ?: return
-        val cmd = GeneralCommandLine(LumiPaths.resolveLumi(), "check", path)
-            .withWorkDirectory(File(path).parent)
+        val lumi = LumiPaths.resolveLumi(project)
+        val cmd = LumiPaths.applyRuntimeEnvironment(
+            GeneralCommandLine(lumi, "check", path),
+            project,
+            lumi,
+        )
+            .withWorkDirectory(project.basePath ?: File(path).parent)
             .withCharset(Charsets.UTF_8)
-            .withEnvironment("PATH", LumiPaths.pathWithExtras())
         runInConsole(project, "Lumi Check", cmd)
     }
 }
@@ -54,10 +58,14 @@ class LumiBuildFileAction : AnAction(), DumbAware {
         val path = currentLmPath(e) ?: return
         val project = e.project ?: return
         val out = File(File(path).parent, File(path).nameWithoutExtension).path
-        val cmd = GeneralCommandLine(LumiPaths.resolveLumi(), "build", path, "-o", out)
-            .withWorkDirectory(File(path).parent)
+        val lumi = LumiPaths.resolveLumi(project)
+        val cmd = LumiPaths.applyRuntimeEnvironment(
+            GeneralCommandLine(lumi, "build", path, "-o", out),
+            project,
+            lumi,
+        )
+            .withWorkDirectory(project.basePath ?: File(path).parent)
             .withCharset(Charsets.UTF_8)
-            .withEnvironment("PATH", LumiPaths.pathWithExtras())
         runInConsole(project, "Lumi Build", cmd)
     }
 }

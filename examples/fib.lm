@@ -1,6 +1,6 @@
 module Fib
 
-import std.io.{println}
+import lumi.io.{println}
 
 val fib(n) = {
     n match {

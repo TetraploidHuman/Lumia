@@ -1,6 +1,6 @@
 module PolyResultMap
 
-import std.io.{println}
+import lumi.io.{println}
 
 type Result {
     Ok(value)

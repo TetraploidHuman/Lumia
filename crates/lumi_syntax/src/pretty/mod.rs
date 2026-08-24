@@ -354,7 +354,7 @@ val main = 0
         roundtrip(
             r#"
 module Hello
-import std.io.{println}
+import lumi.io.{println}
 val main = {
     println(42)
 }

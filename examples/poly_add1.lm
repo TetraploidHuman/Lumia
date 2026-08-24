@@ -1,6 +1,6 @@
 module PolyAdd1
 
-import std.io.{println}
+import lumi.io.{println}
 
 /// `{ x -> x + 1 }` monomorphized at Int and Float sites.
 val main = {

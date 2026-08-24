@@ -1,6 +1,6 @@
 module BadLetDestructure
 
-import std.io.{println}
+import lumi.io.{println}
 
 type Option {
     Some(Int)

@@ -1,6 +1,6 @@
 module BenchMemo
 
-import std.io.{println}
+import lumi.io.{println}
 
 /// Expensive pure work — Release Memo `T_f` (Slots) caches by argument.
 /// Static duplicate const calls give the cost model reuse evidence (§7.5.2);

@@ -1,6 +1,6 @@
 module PreludeOption
 
-import std.io.{println}
+import lumi.io.{println}
 
 // No local `type Option` — uses injected prelude.
 val main = {

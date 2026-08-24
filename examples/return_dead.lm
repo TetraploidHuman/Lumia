@@ -1,6 +1,6 @@
 module ReturnDead
 
-import std.io.{println}
+import lumi.io.{println}
 
 /// Code after `return` is unreachable; must not run or change the result.
 val f(n) = {

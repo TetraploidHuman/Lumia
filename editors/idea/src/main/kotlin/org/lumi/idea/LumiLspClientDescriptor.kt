@@ -14,10 +14,13 @@ class LumiLspClientDescriptor(project: Project) :
     override fun getLanguageId(file: VirtualFile): String = "lumi"
 
     override fun createCommandLine(): GeneralCommandLine {
-        val path = LumiPaths.resolveLumi()
-        return GeneralCommandLine(path, "lsp")
+        val path = LumiPaths.resolveLumi(project)
+        return LumiPaths.applyRuntimeEnvironment(
+            GeneralCommandLine(path, "lsp"),
+            project,
+            path,
+        )
             .withCharset(Charsets.UTF_8)
             .withParentEnvironmentType(GeneralCommandLine.ParentEnvironmentType.CONSOLE)
-            .withEnvironment("PATH", LumiPaths.pathWithExtras())
     }
 }

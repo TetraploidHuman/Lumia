@@ -1,6 +1,6 @@
 module EffectBlock
 
-import std.io.{println}
+import lumi.io.{println}
 
 val main = {
     // `effect { }` is a visual region; same as a normal block (DESIGN §2.2.1).

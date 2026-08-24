@@ -1,6 +1,6 @@
 module ParMapFn
 
-import std.io.{println}
+import lumi.io.{println}
 
 val double(x) = {
     x * 2

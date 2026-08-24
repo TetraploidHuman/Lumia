@@ -1,6 +1,6 @@
 module TraitEqOrdMethod
 
-import std.io.{println}
+import lumi.io.{println}
 
 type Pair {
     val a

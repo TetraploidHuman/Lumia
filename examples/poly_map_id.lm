@@ -1,6 +1,6 @@
 module PolyMapId
 
-import std.io.{println}
+import lumi.io.{println}
 
 /// Identity at Map[Int,Int] / Map[String,Int] → `$Map_*` clones.
 val id(m) = { m }

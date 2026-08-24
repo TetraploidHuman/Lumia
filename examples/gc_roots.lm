@@ -1,6 +1,6 @@
 module GcRoots
 
-import std.io.{println}
+import lumi.io.{println}
 
 /// Keep an early heap object live across many allocations that trip soft GC.
 /// Loop-body temps must not stay rooted for the whole function (precise scopes).

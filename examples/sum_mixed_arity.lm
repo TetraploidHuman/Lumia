@@ -1,5 +1,5 @@
 module sum_mixed_arity
-import std.io.{println}
+import lumi.io.{println}
 
 /// Variants with different payload arities share one ADT param vector.
 type Shape {

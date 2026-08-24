@@ -1,6 +1,6 @@
 module syntax_hof_match
-import std.io.{println}
-import std.string.{startsWith}
+import lumi.io.{println}
+import lumi.string.{startsWith}
 
 /// Extra syntax: nested match, closures, Option/Result, string helpers.
 type Shape {

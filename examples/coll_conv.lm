@@ -1,6 +1,6 @@
 module CollConv
 
-import std.io.{println}
+import lumi.io.{println}
 
 val main = {
     val xs = listOf(1, 2, 2, 3)

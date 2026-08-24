@@ -1,6 +1,6 @@
 module TupleFields
 
-import std.io.{println}
+import lumi.io.{println}
 
 val main = {
     val p = (10, 20, 30)

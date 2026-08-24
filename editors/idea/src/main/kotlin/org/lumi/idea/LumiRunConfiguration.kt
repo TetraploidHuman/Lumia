@@ -114,10 +114,10 @@ class LumiRunConfiguration(
         if (!File(filePath).isFile) {
             throw RuntimeConfigurationError("Lumi file not found: $filePath")
         }
-        val lumi = LumiPaths.resolveLumi()
-        if (!File(lumi).canExecute() && lumi.contains(File.separator)) {
+        val lumi = LumiPaths.resolveLumi(project)
+        if (!File(lumi).canExecute()) {
             throw RuntimeConfigurationError(
-                "lumi not found ($lumi). Build with: cargo build -p lumi --release",
+                "lumi not found ($lumi). Build with: source scripts/env.sh && cargo build -p lumi --release",
             )
         }
     }
@@ -125,7 +125,7 @@ class LumiRunConfiguration(
     override fun getState(executor: Executor, environment: ExecutionEnvironment): RunProfileState {
         return object : CommandLineState(environment) {
             override fun startProcess(): ProcessHandler {
-                val lumi = LumiPaths.resolveLumi()
+                val lumi = LumiPaths.resolveLumi(project)
                 val workDir = project.basePath ?: File(filePath).parent ?: "."
                 val commandLine = when (mode) {
                     LumiRunMode.CHECK ->
@@ -138,11 +138,14 @@ class LumiRunConfiguration(
                         outDir.mkdirs()
                         val out = File(outDir, stem).path
                         // Build then exec: no shell — run build first, then return binary handler.
-                        val build = GeneralCommandLine(lumi, "build", filePath, "-o", out)
+                        val build = LumiPaths.applyRuntimeEnvironment(
+                            GeneralCommandLine(lumi, "build", filePath, "-o", out),
+                            project,
+                            lumi,
+                        )
                             .withWorkDirectory(workDir)
                             .withCharset(Charsets.UTF_8)
                             .withParentEnvironmentType(GeneralCommandLine.ParentEnvironmentType.CONSOLE)
-                            .withEnvironment("PATH", LumiPaths.pathWithExtras())
                         val buildProc = build.createProcess()
                         val code = buildProc.waitFor()
                         val err = buildProc.errorStream.bufferedReader().readText()
@@ -155,11 +158,10 @@ class LumiRunConfiguration(
                         GeneralCommandLine(out)
                     }
                 }
-                commandLine
+                LumiPaths.applyRuntimeEnvironment(commandLine, project, lumi)
                     .withWorkDirectory(workDir)
                     .withCharset(Charsets.UTF_8)
                     .withParentEnvironmentType(GeneralCommandLine.ParentEnvironmentType.CONSOLE)
-                    .withEnvironment("PATH", LumiPaths.pathWithExtras())
                 val handler = ProcessHandlerFactory.getInstance()
                     .createColoredProcessHandler(commandLine)
                 ProcessTerminatedListener.attach(handler)

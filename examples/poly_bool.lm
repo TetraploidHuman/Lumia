@@ -1,6 +1,6 @@
 module PolyBool
 
-import std.io.{println}
+import lumi.io.{println}
 
 /// Top-level poly fun — Bool call sites get `{name}$Bool`.
 val id(x) = { x }

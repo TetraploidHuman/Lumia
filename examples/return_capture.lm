@@ -1,6 +1,6 @@
 module ReturnCapture
 
-import std.io.{println}
+import lumi.io.{println}
 
 /// Nested closure returns a captured local via `return` (exercises Core
 /// use-collect / local remap on `Op::Return`).

@@ -1,6 +1,6 @@
 module ReadStdinDemo
 
-import std.io.{println}
+import lumi.io.{println}
 
 val main = {
     val text = readStdin()

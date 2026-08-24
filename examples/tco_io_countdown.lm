@@ -1,6 +1,6 @@
 module TcoIoCountdown
 
-import std.io.{println}
+import lumi.io.{println}
 
 /// IO on the base case; recursive arm is still musttail (DESIGN §4.4 allows,
 /// does not require, TCO for IO). Without TCO, ~2e6 frames overflow.

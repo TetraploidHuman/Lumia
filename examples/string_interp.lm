@@ -1,6 +1,6 @@
 module StringInterp
 
-import std.io.{println}
+import lumi.io.{println}
 
 val main = {
     val name = "Lumi"

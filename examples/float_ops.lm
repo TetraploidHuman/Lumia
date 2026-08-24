@@ -1,6 +1,6 @@
 module FloatOps
 
-import std.io.{println}
+import lumi.io.{println}
 
 val main = {
     val a = 1.5

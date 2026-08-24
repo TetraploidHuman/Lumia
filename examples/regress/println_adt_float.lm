@@ -1,5 +1,5 @@
 module println_adt_float
-import std.io.{println}
+import lumi.io.{println}
 type Eco {
     val ecoX
     val ecoY

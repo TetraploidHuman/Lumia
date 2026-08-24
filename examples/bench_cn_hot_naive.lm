@@ -3,8 +3,8 @@ module BenchCnHotNaive
 /// Same algorithm as `bench_cn_hot_kernel.lm`, with GEMV/addmm/axpy/sub/clamp
 /// as nested Lumi `List[Float]` get/set loops (linalg only for L2 + checksum).
 /// Codegen should SR these helpers to `lumi_f64_*` RT kernels.
-import std.io.{println}
-import std.linalg.{checksum, l2Normalize}
+import lumi.io.{println}
+import lumi.linalg.{checksum, l2Normalize}
 
 val VIS = 16
 val PFC = 32

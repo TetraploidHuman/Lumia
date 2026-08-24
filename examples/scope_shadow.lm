@@ -1,6 +1,6 @@
 module ScopeShadow
 
-import std.io.{println}
+import lumi.io.{println}
 
 // Regression: Core lowering must restore bindings after nested vals / if arms,
 // and `val` must be able to shadow an outer `var`.

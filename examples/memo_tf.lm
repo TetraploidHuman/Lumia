@@ -1,6 +1,6 @@
 module MemoTf
 
-import std.io.{println}
+import lumi.io.{println}
 
 /// Non-trivial pure function — Release builds attach transparent Memo `T_f`
 /// (4-slot hot cache). Calling twice with the same argument reuses the result.

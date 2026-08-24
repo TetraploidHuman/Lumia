@@ -1,7 +1,7 @@
 module DenseFloatKernels
 
-import std.io.{println}
-import std.linalg.{zeros, gemv, gemvT, addmm, l2Normalize, checksum}
+import lumi.io.{println}
+import lumi.linalg.{zeros, gemv, gemvT, addmm, l2Normalize, checksum}
 
 /// Dense float kernels: tiny GEMV, Aᵀx, Hebbian addmm, L2 normalize.
 val main = {

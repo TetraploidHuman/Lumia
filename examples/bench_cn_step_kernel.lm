@@ -1,8 +1,8 @@
 module BenchCnStepKernel
 
-/// Same full step as `bench_cn_step_naive.lm`, via `std.linalg` kernels.
-import std.io.{println}
-import std.linalg.{zeros, fill, scale, mul, add, gemv, gemvT, addmm, axpy, sub, clamp, l2Normalize, copy, checksum}
+/// Same full step as `bench_cn_step_naive.lm`, via `lumi.linalg` kernels.
+import lumi.io.{println}
+import lumi.linalg.{zeros, fill, scale, mul, add, gemv, gemvT, addmm, axpy, sub, clamp, l2Normalize, copy, checksum}
 
 val VIS = 16
 val PFC = 32

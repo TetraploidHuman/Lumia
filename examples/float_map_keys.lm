@@ -1,6 +1,6 @@
 module FloatMapKeys
 
-import std.io.{println}
+import lumi.io.{println}
 
 /// Float Map/Set keys follow IEEE: ±0 collide; NaN never equals itself.
 val main = {

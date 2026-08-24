@@ -2,9 +2,9 @@ module BenchCnStrictKernel
 
 /// Strict-PE shape: cluster rates → projectError → nucleus → learnGenerative.
 /// Mirrors CogniNucleus defaults (`strict_pe` + `enable_cluster_rates`).
-import std.io.{println}
-import std.linalg.{zeros, copy, checksum}
-import std.cn.{nucleusStep, projectError, clusterRates, learnGenerative}
+import lumi.io.{println}
+import lumi.linalg.{zeros, copy, checksum}
+import lumi.cn.{nucleusStep, projectError, clusterRates, learnGenerative}
 
 val SIZE = 32
 val FROM = 16

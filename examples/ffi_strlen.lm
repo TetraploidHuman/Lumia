@@ -1,6 +1,6 @@
 module FfiStrlen
 
-import std.io.{println}
+import lumi.io.{println}
 
 foreign "C" pure fn strlen(s: String) -> Int
 

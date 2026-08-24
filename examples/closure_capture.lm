@@ -1,6 +1,6 @@
 module ClosureCapture
 
-import std.io.{println}
+import lumi.io.{println}
 
 val make_adder(n) = {
     { x ->

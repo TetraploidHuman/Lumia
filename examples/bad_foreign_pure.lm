@@ -1,6 +1,6 @@
 module BadForeignPure
 
-import std.io.{println}
+import lumi.io.{println}
 
 /// `pure` without `--trust-foreign-pure` must be rejected.
 foreign "C" pure fn llabs(x: Int) -> Int

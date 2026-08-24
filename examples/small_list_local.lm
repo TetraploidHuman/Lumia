@@ -1,6 +1,6 @@
 module SmallListLocal
 
-import std.io.{println}
+import lumi.io.{println}
 
 /// Non-escaping small `listOf` → stack LitList (Escape + ReprSelect).
 val main = {

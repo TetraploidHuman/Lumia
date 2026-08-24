@@ -1,6 +1,6 @@
 module MapSetDemo
 
-import std.io.{println}
+import lumi.io.{println}
 
 val main = {
     val s = setOf(1, 2, 3)

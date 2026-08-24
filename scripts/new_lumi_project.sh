@@ -33,7 +33,7 @@ EOF
 cat >"$DIR/src/main.lm" <<EOF
 module $MODULE
 
-import std.io.{println}
+import lumi.io.{println}
 
 val main = {
     println(42)

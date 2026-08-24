@@ -554,7 +554,7 @@ n = n + 1
 ```lumi
 module MyApp
 
-import std.io.{println}
+import lumi.io.{println}
 
 val square = { x ->
     x * x
@@ -1020,7 +1020,7 @@ opt match {
 ```lumi
 module MatchDemo
 
-import std.io.{println}
+import lumi.io.{println}
 
 type Point {
     val x
@@ -2101,8 +2101,8 @@ import a.{b as bee, c}  // 多选中的别名
 ```lumi
 module WordCount
 
-import std.io.{readStdin, println}
-import std.string.{split, trim}
+import lumi.io.{readStdin, println}
+import lumi.string.{split, trim}
 
 val normalize = { line ->
     line

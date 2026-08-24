@@ -1,4 +1,4 @@
-/// CogniNucleus fused kernels (`import std.cn.{…}`).
+/// CogniNucleus fused kernels (`import lumi.cn.{…}`).
 ///
 /// Hot-path helpers matching `cogninucleus/{nucleus,connection,cluster,agent}.py`
 /// for tiny dense float (dim ≤ 64). Matrices are flat row-major `List[Float]`.

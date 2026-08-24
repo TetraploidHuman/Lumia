@@ -4,7 +4,7 @@ use super::*;
 fn infer_hello() {
     let src = r#"
 module Hello
-import std.io.{println}
+import lumi.io.{println}
 val main = {
     println(42)
 }
@@ -20,7 +20,7 @@ val main = {
 fn let_polymorphism_identity() {
     let src = r#"
 module LetPoly
-import std.io.{println}
+import lumi.io.{println}
 val main = {
     val id = { x -> x }
     println(id(1))
@@ -67,7 +67,7 @@ val main = {
 fn if_and_add() {
     let src = r#"
 module I
-import std.io.{println}
+import lumi.io.{println}
 val main = {
     val x = if true { 1 } else { 2 }
     println(x + 40)
@@ -83,7 +83,7 @@ val main = {
 fn type_ascription_val_and_lambda() {
     let src = r#"
 module Ann
-import std.io.{println}
+import lumi.io.{println}
 val k: Int = 42
 val add = { a: Int, b: Int -> a + b }
 val main = {
@@ -118,7 +118,7 @@ val main = { 0 }
 fn sum_mixed_arity_shared_params() {
     let src = r#"
 module ShapeMix
-import std.io.{println}
+import lumi.io.{println}
 type Shape {
     Circle(r)
     Rect(w, h)
@@ -144,7 +144,7 @@ val main = {
 fn match_int_arms() {
     let src = r#"
 module MatchDemo
-import std.io.{println}
+import lumi.io.{println}
 val main = {
     val n = 1
     val s = n match {
@@ -165,7 +165,7 @@ val main = {
 fn println_does_not_freeze_var_to_int() {
     let src = r#"
 module M
-import std.io.{println}
+import lumi.io.{println}
 val f = { x ->
     println(x)
     x
@@ -221,7 +221,7 @@ fn builtin_arity_from_info_rejects_get() {
 fn typecheck_hir_runs_effects_and_parallel() {
     let src = r#"
 module Ok
-import std.io.{println}
+import lumi.io.{println}
 val main = { println(1) }
 "#;
     let ast = parse_module(src).unwrap();
@@ -236,7 +236,7 @@ val main = { println(1) }
 
     let bad = r#"
 module Bad
-import std.io.{println}
+import lumi.io.{println}
 val xs = println(1)
 val main = { 0 }
 "#;

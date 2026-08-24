@@ -1,6 +1,6 @@
 module TraitNum
 
-import std.io.{println}
+import lumi.io.{println}
 
 type Vec2 {
     val x

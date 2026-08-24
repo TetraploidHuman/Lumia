@@ -79,8 +79,14 @@ pub fn var_names_for(ty: &Type) -> HashMap<u32, String> {
         .collect()
 }
 
-/// Pretty-print with an explicit var→name map (shared across Fun params + return).
-pub fn pretty_type_with(ty: &Type, names: &HashMap<u32, String>) -> String {
+fn fun_chain_has_io(ty: &Type) -> bool {
+    match ty {
+        Type::Fun(_, r, e) => e.has_io() || fun_chain_has_io(r),
+        _ => false,
+    }
+}
+
+fn pretty_type_with_effect(ty: &Type, names: &HashMap<u32, String>, emit_effect: bool) -> String {
     match ty {
         Type::Var(v) => names.get(v).cloned().unwrap_or_else(|| format!("?{v}")),
         Type::Int => "Int".into(),
@@ -89,17 +95,17 @@ pub fn pretty_type_with(ty: &Type, names: &HashMap<u32, String>) -> String {
         Type::String => "String".into(),
         Type::Char => "Char".into(),
         Type::Unit => "Unit".into(),
-        Type::List(t) => format!("List[{}]", pretty_type_with(t, names)),
-        Type::Set(t) => format!("Set[{}]", pretty_type_with(t, names)),
+        Type::List(t) => format!("List[{}]", pretty_type_with_effect(t, names, false)),
+        Type::Set(t) => format!("Set[{}]", pretty_type_with_effect(t, names, false)),
         Type::Map(k, v) => format!(
             "Map[{}, {}]",
-            pretty_type_with(k, names),
-            pretty_type_with(v, names)
+            pretty_type_with_effect(k, names, false),
+            pretty_type_with_effect(v, names, false)
         ),
         Type::Tuple(ts) => {
             let inner = ts
                 .iter()
-                .map(|t| pretty_type_with(t, names))
+                .map(|t| pretty_type_with_effect(t, names, false))
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("({inner})")
@@ -107,7 +113,7 @@ pub fn pretty_type_with(ty: &Type, names: &HashMap<u32, String>) -> String {
         Type::TuplePrefix(ts) => {
             let inner = ts
                 .iter()
-                .map(|t| pretty_type_with(t, names))
+                .map(|t| pretty_type_with_effect(t, names, false))
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("({inner}, …)")
@@ -118,22 +124,32 @@ pub fn pretty_type_with(ty: &Type, names: &HashMap<u32, String>) -> String {
             } else {
                 let inner = params
                     .iter()
-                    .map(|t| pretty_type_with(t, names))
+                    .map(|t| pretty_type_with_effect(t, names, false))
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!("{name}[{inner}]")
             }
         }
-        Type::Fun(ps, r, e) => {
+        Type::Fun(ps, r, _) => {
             let args = ps
                 .iter()
-                .map(|t| pretty_type_with(t, names))
+                .map(|t| pretty_type_with_effect(t, names, false))
                 .collect::<Vec<_>>()
                 .join(", ");
-            let eff = if e.has_io() { " / IO" } else { "" };
-            format!("({args}) -> {}{eff}", pretty_type_with(r, names))
+            let ret = pretty_type_with_effect(r, names, false);
+            let eff = if emit_effect && fun_chain_has_io(ty) {
+                " / IO"
+            } else {
+                ""
+            };
+            format!("({args}) -> {ret}{eff}")
         }
     }
+}
+
+/// Pretty-print with an explicit var→name map (shared across Fun params + return).
+pub fn pretty_type_with(ty: &Type, names: &HashMap<u32, String>) -> String {
+    pretty_type_with_effect(ty, names, true)
 }
 
 /// IDE display: ground Num vars to Int, then name remaining vars `T`/`U`/….
@@ -157,5 +173,19 @@ mod tests {
         );
         assert_eq!(display_type(&ty, &[0]), "(Int, T) -> Int");
         assert_eq!(display_type(&ty, &[]), "(T, U) -> T");
+    }
+
+    #[test]
+    fn display_nested_io_effect_once() {
+        let inner = Type::Fun(
+            vec![Type::Var(0)],
+            Box::new(Type::Unit),
+            Effect::io(),
+        );
+        let outer = Type::Fun(vec![], Box::new(inner), Effect::io());
+        assert_eq!(display_type(&outer, &[]), "() -> (T) -> Unit / IO");
+
+        let inner_only = Type::Fun(vec![], Box::new(Type::Unit), Effect::io());
+        assert_eq!(display_type(&inner_only, &[]), "() -> Unit / IO");
     }
 }

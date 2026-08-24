@@ -1,4 +1,4 @@
-/// Standard I/O surface (`import std.io.{println, …}`).
+/// Standard I/O surface (`import lumi.io.{println, …}`).
 ///
 /// Thin wrappers: bodies lower to compiler builtins (`println` / `assert` /
 /// `readStdin`) so polymorphic show / assert messages stay intact. Importing

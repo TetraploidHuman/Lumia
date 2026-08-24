@@ -35,7 +35,7 @@ class LumiLanguageCodeStyleSettingsProvider : LanguageCodeStyleSettingsProvider(
         """
         |module Demo
         |
-        |import std.io.{println}
+        |import lumi.io.{println}
         |
         |val main = {
         |    println(42)

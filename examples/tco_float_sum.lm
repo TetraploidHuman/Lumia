@@ -1,6 +1,6 @@
 module TcoFloatSum
 
-import std.io.{println}
+import lumi.io.{println}
 
 /// Pure Float self-recursion in tail position — must get TCO (DESIGN §4.4).
 val sumTo(n, acc) = {

@@ -1,6 +1,6 @@
 module RangeFold
 
-import std.io.{println}
+import lumi.io.{println}
 
 val main = {
     // Counter fold: no million-element HeapList.

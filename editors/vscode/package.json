@@ -14,7 +14,7 @@
     "onLanguage:lumi",
     "workspaceContains:Cargo.toml",
     "workspaceContains:Lumi.toml",
-    "workspaceContains:std/*.lm",
+    "workspaceContains:lumi/*.lm",
     "workspaceContains:examples/*.lm",
     "onCommand:lumi.run",
     "onCommand:lumi.buildRun",

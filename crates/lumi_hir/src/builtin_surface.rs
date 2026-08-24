@@ -165,6 +165,10 @@ const HOF_SURFACE: &[SurfaceName] = &[
         role: SurfaceRole::Method,
     },
     SurfaceName {
+        name: "forEach",
+        role: SurfaceRole::Method,
+    },
+    SurfaceName {
         name: "sortBy",
         role: SurfaceRole::Method,
     },

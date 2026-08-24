@@ -1,5 +1,5 @@
 module poly_list_float_get
-import std.io.{println}
+import lumi.io.{println}
 
 /// Poly callee must monomorphize on `List[Float]` from a `var` slot so
 /// `get` stays Float (not IEEE bits printed as Int).

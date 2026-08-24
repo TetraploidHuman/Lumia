@@ -1,6 +1,6 @@
 module PrivSiblingVal
 
-import std.io.{println}
+import lumi.io.{println}
 import priv_const.{exposed}
 
 val main = {

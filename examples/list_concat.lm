@@ -1,6 +1,6 @@
 module ListConcat
 
-import std.io.{println}
+import lumi.io.{println}
 
 val main = {
     val a = listOf(1, 2)

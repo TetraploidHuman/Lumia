@@ -1,6 +1,6 @@
 module SetHash
 
-import std.io.{println}
+import lumi.io.{println}
 
 /// Build a set large enough to promote past SmallSet into HashOrdered.
 val main = {

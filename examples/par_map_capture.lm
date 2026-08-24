@@ -1,6 +1,6 @@
 module ParMapCapture
 
-import std.io.{println}
+import lumi.io.{println}
 
 // Capturing lambdas stay sequential under `--parallel` (FunRef-only parallel map).
 val main = {

@@ -1,6 +1,6 @@
 module OptSrCorrectness
 
-import std.io.{println}
+import lumi.io.{println}
 
 /// Correctness harness for SR / perf opts (Debug≡Release + RT oracles).
 /// Each printed line is a checksum so Debug/Release and reruns stay comparable.

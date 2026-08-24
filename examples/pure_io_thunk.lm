@@ -1,6 +1,6 @@
 module PureIoThunk
 
-import std.io.{println}
+import lumi.io.{println}
 
 /// Constructing an IO closure is pure; calling it is effectful (DESIGN §3.7).
 val makePrinter = {

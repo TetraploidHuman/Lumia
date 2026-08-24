@@ -1,6 +1,6 @@
 module MatchDemo
 
-import std.io.{println}
+import lumi.io.{println}
 
 val main = {
     val n = 1

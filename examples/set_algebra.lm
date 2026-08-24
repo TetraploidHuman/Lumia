@@ -1,6 +1,6 @@
 module SetAlgebra
 
-import std.io.{println}
+import lumi.io.{println}
 
 val main = {
     val a = setOf(1, 2, 3)

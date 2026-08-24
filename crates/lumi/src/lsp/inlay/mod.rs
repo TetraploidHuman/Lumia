@@ -51,7 +51,7 @@ mod tests {
     fn inlay_hints_binding_param_and_call() {
         let src = r#"
 module Demo
-import std.io.{println}
+import lumi.io.{println}
 val add = { x, y ->
     x + y
 }
@@ -88,7 +88,7 @@ val main = {
         // Call site appears *before* `val fun` — binding hint must not stick to the call.
         let src = r#"
 module Demo
-import std.io.{println}
+import lumi.io.{println}
 val main = {
     println(fun(1, 2))
 }
@@ -163,7 +163,7 @@ val add = { x, y -> x + y }
     fn inlay_skips_unit_and_fun_call_results() {
         let src = r#"
 module Demo
-import std.io.{println}
+import lumi.io.{println}
 val id = { x -> x }
 val main = {
     println(1)

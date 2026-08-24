@@ -1,6 +1,6 @@
 module MapAdtHash
 
-import std.io.{println}
+import lumi.io.{println}
 
 /// With `instance Hash`, large ADT-key maps may promote to HashOrdered.
 type Key {

@@ -1,6 +1,6 @@
 module TcoEvenOdd
 
-import std.io.{println}
+import lumi.io.{println}
 
 /// Mutual pure Int recursion — musttail across the SCC (DESIGN §4.4).
 val even(n) = {

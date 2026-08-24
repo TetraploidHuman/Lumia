@@ -1,6 +1,6 @@
 module ListHofFn
 
-import std.io.{println}
+import lumi.io.{println}
 
 val make_mul(n) = {
     { x ->

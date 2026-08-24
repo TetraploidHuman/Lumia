@@ -1,6 +1,6 @@
 module BreakDemo
 
-import std.io.{println}
+import lumi.io.{println}
 
 val main = {
     var acc = 0

@@ -1,6 +1,6 @@
 module ListMatch
 
-import std.io.{println}
+import lumi.io.{println}
 
 val head_or_zero(xs) = {
     xs match {

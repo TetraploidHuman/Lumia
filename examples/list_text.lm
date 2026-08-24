@@ -1,5 +1,5 @@
 module ListText
-import std.io.{println}
+import lumi.io.{println}
 
 val main = {
     val nums = listOf(3, 1, 2)

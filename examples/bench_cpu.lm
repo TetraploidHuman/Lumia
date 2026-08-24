@@ -1,6 +1,6 @@
 module BenchCpu
 
-import std.io.{println}
+import lumi.io.{println}
 
 /// CPU-bound kernels for Release timing (`scripts/bench_cpu.sh`).
 /// Each printed line is a checksum so Debug/Release and reruns stay comparable.

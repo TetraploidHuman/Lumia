@@ -1,4 +1,4 @@
-//! Multi-file module loading: resolve non-`std` imports relative to the entry file.
+//! Multi-file module loading: resolve non-`lumi` imports relative to the entry file.
 //!
 //! Entire dependency modules are inlined so private callees of public APIs remain
 //! linkable, but [`lumi_ty::NameVisibility`] ensures `priv` names cannot be

@@ -1,6 +1,6 @@
 module EqHashConsistent
 
-import std.io.{println}
+import lumi.io.{println}
 
 type Key {
     Mk(Int)

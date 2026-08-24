@@ -1,6 +1,6 @@
 module ResultBranch
 
-import std.io.{println}
+import lumi.io.{println}
 
 // Regression: Result[T, E] must unify Ok(T) with Err(E).
 val pick(b) = {

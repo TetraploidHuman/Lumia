@@ -1,6 +1,6 @@
 module UsePriv
 
-import std.io.{println}
+import lumi.io.{println}
 import math_priv.{add, inc}
 
 val main = {

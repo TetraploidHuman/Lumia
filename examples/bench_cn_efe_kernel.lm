@@ -1,9 +1,9 @@
 module BenchCnEfeKernel
 
-/// Same EFE workload as `bench_cn_efe_naive.lm`, via `std.efe.actionScores`.
-import std.io.{println}
-import std.linalg.{zeros, copy, checksum}
-import std.efe.{actionScores}
+/// Same EFE workload as `bench_cn_efe_naive.lm`, via `lumi.efe.actionScores`.
+import lumi.io.{println}
+import lumi.linalg.{zeros, copy, checksum}
+import lumi.efe.{actionScores}
 
 val OBS = 16
 val N_ACTIONS = 4

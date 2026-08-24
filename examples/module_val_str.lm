@@ -1,6 +1,6 @@
 module ModuleValStr
 
-import std.io.{println}
+import lumi.io.{println}
 
 // Regression: module-level String vals must be typed so GC roots the getter result.
 val greeting = "hello"

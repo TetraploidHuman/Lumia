@@ -1,6 +1,6 @@
 module MemoDense
 
-import std.io.{println}
+import lumi.io.{println}
 
 /// Unary Int structural recursion — Release attaches dense `T_f` (index table).
 val fib(n) = {

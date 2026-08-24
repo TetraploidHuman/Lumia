@@ -1,5 +1,5 @@
 module syntax_surface
-import std.io.{println}
+import lumi.io.{println}
 
 /// Broad surface-syntax smoke: literals, ops, control, patterns, collections, pipe.
 type Point { val x, val y }

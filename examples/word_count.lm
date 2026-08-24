@@ -1,6 +1,6 @@
 module WordCount
 
-import std.io.{println}
+import lumi.io.{println}
 
 /// DESIGN §14 flagship: read stdin, count words, print sorted by word.
 val normalize(line) = {

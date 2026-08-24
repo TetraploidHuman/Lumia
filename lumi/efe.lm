@@ -1,4 +1,4 @@
-/// CogniNucleus expected free energy (`import std.efe.{…}`).
+/// CogniNucleus expected free energy (`import lumi.efe.{…}`).
 ///
 /// @exports actionScores, embodiedActionScores, applyEmbodiedReflexes
 module efe

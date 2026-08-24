@@ -1,6 +1,6 @@
 module makeobs_threat
-import std.io.{println}
-import std.linalg.{zeros, fill, hypotF}
+import lumi.io.{println}
+import lumi.linalg.{zeros, fill, hypotF}
 
 type Eco {
     val ecoX

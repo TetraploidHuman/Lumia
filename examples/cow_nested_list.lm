@@ -1,5 +1,5 @@
 module cow_nested_list
-import std.io.{println}
+import lumi.io.{println}
 
 /// Nested List in a List must retain so outer alias does not see in-place append.
 val main = {

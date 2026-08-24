@@ -2,12 +2,12 @@ module BenchCnForwardNaive
 
 /// Same strict-PE triad as `bench_cn_forward_kernel.lm`, with composed linalg
 /// for project/cluster/updateState/learnGenerative (nucleus/hebbian still fused).
-import std.io.{println}
-import std.linalg.{
+import lumi.io.{println}
+import lumi.linalg.{
     zeros, copy, sub, scale, add, gemv, gemvT, axpy, clamp, addmm, checksum
 }
-import std.cn.{nucleusStep, hebbian, argMax}
-import std.efe.{actionScores}
+import lumi.cn.{nucleusStep, hebbian, argMax}
+import lumi.efe.{actionScores}
 
 val VIS = 16
 val PFC = 32

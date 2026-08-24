@@ -1,6 +1,6 @@
 module WideFloatAdtGc
 
-import std.io.{println}
+import lumi.io.{println}
 
 /// 33 Int pads + trailing Float — exercises ADT float_mask bit ≥ 32 (GC skip).
 type Wide {

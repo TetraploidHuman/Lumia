@@ -1,6 +1,6 @@
 module MapAdtAssoc
 
-import std.io.{println}
+import lumi.io.{println}
 
 /// ADT keys without `instance Hash` stay on the assoc-list path (no hash promote).
 type Key {

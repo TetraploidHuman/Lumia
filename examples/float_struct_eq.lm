@@ -1,6 +1,6 @@
 module FloatStructEq
 
-import std.io.{println}
+import lumi.io.{println}
 
 type Option {
     Some(Float)

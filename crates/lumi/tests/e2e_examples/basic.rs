@@ -105,7 +105,7 @@ fn e2e_map_adt_hash() {
 
 #[test]
 fn e2e_std_option() {
-    // Source-backed `std.option` combinators (inlined from std/option.lm).
+    // Source-backed `lumi.option` combinators (inlined from lumi/option.lm).
     run_example(
         "examples/std_option.lm",
         &["21", "-1", "3", "5", "-1", "true", "true"],
@@ -121,6 +121,8 @@ fn e2e_std_result() {
 }
 
 e2e_ok!(e2e_list_for, "examples/list_for.lm", "60");
+
+e2e_ok!(e2e_list_for_each, "examples/list_for_each.lm", "60", "1", "2", "3", "1", "2", "3");
 
 e2e_ok!(e2e_break, "examples/break.lm", "4");
 
@@ -143,7 +145,7 @@ e2e_ok!(e2e_use_math, "examples/use_math.lm", "42", "42");
 #[test]
 fn e2e_doc_std_io() {
     let root = workspace_root();
-    let src = root.join("std/io.lm");
+    let src = root.join("lumi/io.lm");
     let out = Command::new(lumi_bin())
         .current_dir(&root)
         .args(["doc", src.to_str().unwrap()])

@@ -11,7 +11,7 @@
   "import": {
     "prefix": "import",
     "body": [
-      "import ${1:std.io}.{${2:println}}"
+      "import ${1:lumi.io}.{${2:println}}"
     ],
     "description": "Import selective names"
   },
@@ -141,7 +141,7 @@
     "body": [
       "module ${1:Main}",
       "",
-      "import std.io.{println}",
+      "import lumi.io.{println}",
       "",
       "val main = {",
       "    $0",

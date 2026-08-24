@@ -1,6 +1,6 @@
 module PrivLeak
 
-import std.io.{println}
+import lumi.io.{println}
 import math_priv.{add}
 
 val main = {
