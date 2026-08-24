@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "org.lumia"
-version = "0.3.0"
+version = "0.3.4"
 
 repositories {
     mavenCentral()

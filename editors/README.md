@@ -55,6 +55,8 @@ cd editors/idea
 
 Configure **Settings → Languages & Frameworks → Lumia** if `lumia` is not on `PATH`.
 
+**File → New → Project → Lumia** appears in the left sidebar (with Java/Kotlin). It creates `Lumia.toml` + `src/main.lm` using the name/location fields from the wizard.
+
 Community-only IDEs without LSP: use the VS Code extension instead.
 
 ## Syncing shared assets

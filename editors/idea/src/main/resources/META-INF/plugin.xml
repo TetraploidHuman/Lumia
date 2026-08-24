@@ -1,12 +1,13 @@
 <idea-plugin>
   <id>org.lumia.idea</id>
   <name>Lumia</name>
-  <version>0.3.0</version>
+  <version>0.3.4</version>
   <vendor>Lumia</vendor>
   <description><![CDATA[
     Lumia language support: syntax highlighting, Check / Build &amp; Run configurations,
-    New File, live templates, and LSP (diagnostics, completion, hover, go-to-definition,
-    formatting, outline) via <code>lumia lsp</code>.
+    New Project / New Lumia Project (Lumia.toml + src/main.lm), New File, live templates,
+    and LSP (diagnostics, completion, hover, go-to-definition, formatting, outline)
+    via <code>lumia lsp</code>.
     <br/>Build the compiler: <code>source scripts/env.sh &amp;&amp; cargo build -p lumia --release</code>
   ]]></description>
 
@@ -23,6 +24,9 @@
         fieldName="INSTANCE"
         language="Lumia"
         extensions="lm"/>
+    <lang.parserDefinition
+        language="Lumia"
+        implementationClass="org.lumia.idea.LumiaParserDefinition"/>
     <lang.syntaxHighlighterFactory
         language="Lumia"
         implementationClass="org.lumia.idea.LumiaSyntaxHighlighterFactory"/>
@@ -48,6 +52,8 @@
         implementation="org.lumia.idea.LumiaLspServerSupportProvider"/>
     <postStartupActivity implementation="org.lumia.idea.LumiaProjectActivity"/>
 
+    <newProjectWizard.languageGenerator implementation="org.lumia.idea.LumiaLanguageProjectWizard"/>
+
     <configurationType implementation="org.lumia.idea.LumiaRunConfigurationType"/>
     <runConfigurationProducer implementation="org.lumia.idea.LumiaCheckConfigurationProducer"/>
     <runConfigurationProducer implementation="org.lumia.idea.LumiaBuildConfigurationProducer"/>
@@ -55,15 +61,37 @@
 
   <actions>
     <action
+        id="Lumia.CreateProject"
+        class="org.lumia.idea.LumiaCreateProjectAction"
+        text="New Lumia Project…"
+        description="Create a Lumia package (Lumia.toml + src/main.lm) and open it"
+        icon="org.lumia.idea.LumiaIcons.FILE">
+      <add-to-group group-id="WelcomeScreen.QuickStart" anchor="last"/>
+      <add-to-group group-id="FileMenu" anchor="before" relative-to-action="Exit"/>
+    </action>
+    <action
+        id="Lumia.InitProject"
+        class="org.lumia.idea.LumiaInitProjectAction"
+        text="Lumia Project"
+        description="Create Lumia.toml and src/main.lm in the project root"
+        icon="org.lumia.idea.LumiaIcons.FILE">
+      <add-to-group group-id="NewGroup" anchor="before" relative-to-action="Kotlin.NewScript"/>
+    </action>
+    <action
         id="Lumia.NewFile"
         class="org.lumia.idea.LumiaNewFileAction"
         text="Lumia File"
         description="Create a new Lumia (.lm) file"
         icon="org.lumia.idea.LumiaIcons.FILE">
-      <add-to-group group-id="NewGroup" anchor="before" relative-to-action="Kotlin.NewScript"/>
+      <add-to-group group-id="NewGroup" anchor="after" relative-to-action="Lumia.InitProject"/>
     </action>
     <group id="Lumia.Menu" text="Lumia" popup="true">
       <add-to-group group-id="ToolsMenu" anchor="last"/>
+      <action
+          id="Lumia.InitProjectTools"
+          class="org.lumia.idea.LumiaInitProjectAction"
+          text="New Lumia Project"
+          description="Create Lumia.toml and src/main.lm in the project root"/>
       <action
           id="Lumia.CheckFile"
           class="org.lumia.idea.LumiaCheckFileAction"

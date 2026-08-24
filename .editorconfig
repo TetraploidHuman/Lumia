@@ -1,0 +1,12 @@
+# Lumia sources — keep in sync with IDEA LumiaLanguageCodeStyleSettingsProvider
+# and editors/shared/language-configuration.json comment prefixes
+# (see scripts/check_editor_assets.sh).
+root = true
+
+[*.lm]
+indent_style = space
+indent_size = 4
+tab_width = 4
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true

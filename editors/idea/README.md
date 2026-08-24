@@ -7,6 +7,9 @@ Language support for Lumia (`.lm`) using the JetBrains native LSP API (`lumia ls
 - Syntax highlighting (hand-written lexer), braces, quotes, 4-space indent
 - LSP: diagnostics, hover, go-to-definition, completion, formatting, outline, inlay hints
 - Live templates (`module`, `val`, `match`, `trait`, …)
+- **File → New → Project → Lumia** (sidebar, alongside Java/Kotlin)
+- **New Lumia Project…** (Welcome / File menu alternative) — creates `Lumia.toml` + `src/main.lm` and opens the project
+- New → **Lumia Project** (initialize an open empty project)
 - New → Lumia File
 - Run configurations: **Check** / **Build & Run**
 - Tools → Lumia: Check / Build / Format / Restart Language Server
@@ -30,10 +33,23 @@ Build & Run also needs the LLVM environment from `scripts/env.sh` in the IDE pro
 ```bash
 cd editors/idea
 ./gradlew buildPlugin
-# ZIP: build/distributions/lumia-idea-0.3.0.zip
+# ZIP: build/distributions/lumia-idea-0.3.3.zip
 ```
 
 Install from disk: **Settings → Plugins → ⚙ → Install Plugin from Disk…**
+
+### JetBrains Client / Remote Development (Gateway)
+
+Your About dialog shows **JetBrains Client** (远程开发控制器). In that mode:
+
+1. Install the plugin **on the remote backend** while connected to a project.
+   Settings → Plugins → the row must show **Remote Host** (远程主机).
+2. **File → New → Project** runs on the thin client; custom **Lumia** may **not** appear in the left sidebar. This is a Remote Development limitation.
+3. Use instead (on the remote workspace):
+   - **New → Lumia Project**
+   - **Tools → Lumia → New Lumia Project**
+   - Terminal: `scripts/new_lumia_project.sh my_app ~/projects` then Gateway → Open that folder
+4. For **New Project → Lumia** in the sidebar, use **local** IntelliJ IDEA Ultimate (not Gateway Client).
 
 Debug: `./gradlew runIde`
 
