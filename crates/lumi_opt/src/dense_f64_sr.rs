@@ -8,9 +8,10 @@
 //! calls unlock the latter norms).
 
 use lumi_core::{
-    collect_leaf_defs, first_assign_from_local, for_each_let, header_lt_bound, is_list_get,
-    is_list_set, is_nontrivial_add_or_sub, is_nontrivial_arith, list_arg_is, max_local_in_fun,
-    mentions_local, name_of, same_local, Block, CoreFun, CoreModule, Local, Op, Value,
+    collect_leaf_defs, first_assign_from_local, for_each_def_and_let, for_each_let, header_lt_bound,
+    is_list_get, is_list_set, is_nontrivial_add_or_sub, is_nontrivial_arith, list_arg_is,
+    max_local_in_fun, mentions_local, name_of, same_local, Block, CoreFun, CoreModule, Local, Op,
+    Value,
 };
 use lumi_hir::Builtin;
 use lumi_syntax::BinOp;
@@ -390,7 +391,7 @@ fn fun_has_sum_sq_shape(body: &Block, defs: &HashMap<u32, Value>, xs: Local) -> 
     let mut add = false;
     let mut set = false;
     let mut div = false;
-    for v in defs.values() {
+    for_each_def_and_let(body, defs, &mut |v| {
         if let Some((lst, _)) = is_list_get(v) {
             if list_arg_is(lst, xs, defs) {
                 get = true;
@@ -406,27 +407,6 @@ fn fun_has_sum_sq_shape(body: &Block, defs: &HashMap<u32, Value>, xs: Local) -> 
             div = true;
         }
         if is_list_set(v).is_some() {
-            set = true;
-        }
-    }
-    for_each_let(body, &mut |val| {
-        if let Some((lst, _)) = is_list_get(val) {
-            if list_arg_is(lst, xs, defs) {
-                get = true;
-            }
-        }
-        if matches!(val, Value::Binary { op: BinOp::Mul, .. }) {
-            mul = true;
-        }
-        if is_nontrivial_add_or_sub(val, defs)
-            && matches!(val, Value::Binary { op: BinOp::Add, .. })
-        {
-            add = true;
-        }
-        if matches!(val, Value::Binary { op: BinOp::Div, .. }) {
-            div = true;
-        }
-        if is_list_set(val).is_some() {
             set = true;
         }
     });
@@ -439,7 +419,7 @@ fn fun_has_mean_shape(body: &Block, defs: &HashMap<u32, Value>, xs: Local) -> bo
     let mut div = false;
     let mut mul = false;
     let mut set = false;
-    for v in defs.values() {
+    for_each_def_and_let(body, defs, &mut |v| {
         if let Some((lst, _)) = is_list_get(v) {
             if list_arg_is(lst, xs, defs) {
                 get = true;
@@ -457,27 +437,6 @@ fn fun_has_mean_shape(body: &Block, defs: &HashMap<u32, Value>, xs: Local) -> bo
         if is_list_set(v).is_some() {
             set = true;
         }
-    }
-    for_each_let(body, &mut |val| {
-        if let Some((lst, _)) = is_list_get(val) {
-            if list_arg_is(lst, xs, defs) {
-                get = true;
-            }
-        }
-        if is_nontrivial_add_or_sub(val, defs)
-            && matches!(val, Value::Binary { op: BinOp::Add, .. })
-        {
-            add = true;
-        }
-        if matches!(val, Value::Binary { op: BinOp::Div, .. }) {
-            div = true;
-        }
-        if matches!(val, Value::Binary { op: BinOp::Mul, .. }) {
-            mul = true;
-        }
-        if is_list_set(val).is_some() {
-            set = true;
-        }
     });
     get && add && div && !mul && !set
 }
@@ -488,7 +447,7 @@ fn fun_has_std_shape(body: &Block, defs: &HashMap<u32, Value>, xs: Local) -> boo
     let mut mul = false;
     let mut div = false;
     let mut set = false;
-    for v in defs.values() {
+    for_each_def_and_let(body, defs, &mut |v| {
         if let Some((lst, _)) = is_list_get(v) {
             if list_arg_is(lst, xs, defs) {
                 get = true;
@@ -506,25 +465,6 @@ fn fun_has_std_shape(body: &Block, defs: &HashMap<u32, Value>, xs: Local) -> boo
         if is_list_set(v).is_some() {
             set = true;
         }
-    }
-    for_each_let(body, &mut |val| {
-        if let Some((lst, _)) = is_list_get(val) {
-            if list_arg_is(lst, xs, defs) {
-                get = true;
-            }
-        }
-        if matches!(val, Value::Binary { op: BinOp::Sub, .. }) {
-            sub = true;
-        }
-        if matches!(val, Value::Binary { op: BinOp::Mul, .. }) {
-            mul = true;
-        }
-        if matches!(val, Value::Binary { op: BinOp::Div, .. }) {
-            div = true;
-        }
-        if is_list_set(val).is_some() {
-            set = true;
-        }
     });
     get && sub && mul && div && !set && body_calls_any(body, &["lumi_f64_sqrt", "sqrtF", "sqrt"])
 }
@@ -539,7 +479,7 @@ fn fun_has_l2_normalize_shape(
     let mut set = false;
     let mut mul = false;
     let mut uses_eps = false;
-    for v in defs.values() {
+    for_each_def_and_let(body, defs, &mut |v| {
         if let Some((lst, _)) = is_list_get(v) {
             if name_of(lst, defs).as_deref() == Some(out_slot) {
                 get = true;
@@ -554,19 +494,6 @@ fn fun_has_l2_normalize_shape(
         if mentions_local(v, eps) {
             uses_eps = true;
         }
-    }
-    for_each_let(body, &mut |val| {
-        if let Some((lst, _)) = is_list_get(val) {
-            if name_of(lst, defs).as_deref() == Some(out_slot) {
-                get = true;
-            }
-        }
-        if is_list_set(val).is_some() {
-            set = true;
-        }
-        if matches!(val, Value::Binary { op: BinOp::Mul, .. }) {
-            mul = true;
-        }
     });
     get && set && mul && uses_eps && body_calls_any(body, &["lumi_f64_sqrt", "sqrtF", "sqrt"])
 }
@@ -576,7 +503,7 @@ fn fun_has_softmax_shape(body: &Block, defs: &HashMap<u32, Value>, out_slot: &st
     let mut set = false;
     let mut div = false;
     let mut gt = false;
-    for v in defs.values() {
+    for_each_def_and_let(body, defs, &mut |v| {
         if let Some((lst, _)) = is_list_get(v) {
             if name_of(lst, defs).as_deref() == Some(out_slot) {
                 get = true;
@@ -591,24 +518,8 @@ fn fun_has_softmax_shape(body: &Block, defs: &HashMap<u32, Value>, out_slot: &st
         if matches!(v, Value::Binary { op: BinOp::Gt, .. }) {
             gt = true;
         }
-    }
-    for_each_let(body, &mut |val| {
-        if let Some((lst, _)) = is_list_get(val) {
-            if name_of(lst, defs).as_deref() == Some(out_slot) {
-                get = true;
-            }
-        }
-        if is_list_set(val).is_some() {
-            set = true;
-        }
-        if matches!(val, Value::Binary { op: BinOp::Div, .. }) {
-            div = true;
-        }
-        if matches!(val, Value::Binary { op: BinOp::Gt, .. }) {
-            gt = true;
-        }
-        if matches!(val, Value::If { .. }) {
-            // max-pass update often uses If
+        // max-pass update often uses If
+        if matches!(v, Value::If { .. }) {
             gt = true;
         }
     });

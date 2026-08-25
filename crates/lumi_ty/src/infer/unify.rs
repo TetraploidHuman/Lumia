@@ -145,56 +145,23 @@ impl Infer {
         // Do not prune `Var` roots: params stay as `Var(v)` so later constraints
         // (TuplePrefix extension, Num/Ord binds) can rebind `v`. Callers prune
         // when they need the concrete shape.
-        match ty {
+        ty.map(&mut |t| match t {
             Type::Var(v) => ty_map.get(v).cloned().unwrap_or(Type::Var(*v)),
             Type::Fun(ps, r, e) => {
                 let e = match self.prune_eff(*e) {
                     Effect::Var(v) => eff_map.get(&v).copied().unwrap_or(Effect::Var(v)),
                     other => other,
                 };
-                Type::Fun(
-                    ps.iter()
-                        .map(|p| self.apply_scheme_subst(p, ty_map, eff_map))
-                        .collect(),
-                    Box::new(self.apply_scheme_subst(r, ty_map, eff_map)),
-                    e,
-                )
+                Type::Fun(ps.clone(), r.clone(), e)
             }
-            Type::List(t) => Type::List(Box::new(self.apply_scheme_subst(t, ty_map, eff_map))),
-            Type::Set(t) => Type::Set(Box::new(self.apply_scheme_subst(t, ty_map, eff_map))),
-            Type::Map(k, v) => Type::Map(
-                Box::new(self.apply_scheme_subst(k, ty_map, eff_map)),
-                Box::new(self.apply_scheme_subst(v, ty_map, eff_map)),
-            ),
-            Type::Adt { name, params } => Type::Adt {
-                name: name.clone(),
-                params: params
-                    .iter()
-                    .map(|p| self.apply_scheme_subst(p, ty_map, eff_map))
-                    .collect(),
-            },
-            Type::Tuple(ts) => Type::Tuple(
-                ts.iter()
-                    .map(|t| self.apply_scheme_subst(t, ty_map, eff_map))
-                    .collect(),
-            ),
-            Type::TuplePrefix(ts) => Type::TuplePrefix(
-                ts.iter()
-                    .map(|t| self.apply_scheme_subst(t, ty_map, eff_map))
-                    .collect(),
-            ),
-            Type::Int => Type::Int,
-            Type::Float => Type::Float,
-            Type::Bool => Type::Bool,
-            Type::String => Type::String,
-            Type::Char => Type::Char,
-            Type::Unit => Type::Unit,
-        }
+            other => other.clone(),
+        })
     }
 
     pub(crate) fn prune(&mut self, ty: Type) -> Type {
-        match ty {
+        ty.map(&mut |t| match t {
             Type::Var(v) => {
+                let v = *v;
                 if let Some(t) = self.uni.subst.get(&v).cloned() {
                     let t = self.prune(t);
                     self.uni.subst.insert(v, t.clone());
@@ -203,24 +170,9 @@ impl Infer {
                     Type::Var(v)
                 }
             }
-            Type::Fun(ps, r, e) => Type::Fun(
-                ps.into_iter().map(|p| self.prune(p)).collect(),
-                Box::new(self.prune(*r)),
-                self.prune_eff(e),
-            ),
-            Type::List(t) => Type::List(Box::new(self.prune(*t))),
-            Type::Map(k, v) => Type::Map(Box::new(self.prune(*k)), Box::new(self.prune(*v))),
-            Type::Set(t) => Type::Set(Box::new(self.prune(*t))),
-            Type::Adt { name, params } => Type::Adt {
-                name,
-                params: params.into_iter().map(|p| self.prune(p)).collect(),
-            },
-            Type::Tuple(ts) => Type::Tuple(ts.into_iter().map(|t| self.prune(t)).collect()),
-            Type::TuplePrefix(ts) => {
-                Type::TuplePrefix(ts.into_iter().map(|t| self.prune(t)).collect())
-            }
-            other => other,
-        }
+            Type::Fun(ps, r, e) => Type::Fun(ps.clone(), r.clone(), self.prune_eff(*e)),
+            other => other.clone(),
+        })
     }
 
     pub(crate) fn prune_eff(&mut self, e: Effect) -> Effect {
@@ -247,27 +199,10 @@ impl Infer {
     }
 
     pub(crate) fn zonk_type(&mut self, ty: Type) -> Type {
-        match self.prune(ty) {
-            Type::Fun(ps, r, e) => Type::Fun(
-                ps.into_iter().map(|p| self.zonk_type(p)).collect(),
-                Box::new(self.zonk_type(*r)),
-                self.zonk_eff(e),
-            ),
-            Type::List(t) => Type::List(Box::new(self.zonk_type(*t))),
-            Type::Map(k, v) => {
-                Type::Map(Box::new(self.zonk_type(*k)), Box::new(self.zonk_type(*v)))
-            }
-            Type::Set(t) => Type::Set(Box::new(self.zonk_type(*t))),
-            Type::Adt { name, params } => Type::Adt {
-                name,
-                params: params.into_iter().map(|p| self.zonk_type(p)).collect(),
-            },
-            Type::Tuple(ts) => Type::Tuple(ts.into_iter().map(|t| self.zonk_type(t)).collect()),
-            Type::TuplePrefix(ts) => {
-                Type::TuplePrefix(ts.into_iter().map(|t| self.zonk_type(t)).collect())
-            }
-            other => other,
-        }
+        self.prune(ty).map(&mut |t| match t {
+            Type::Fun(ps, r, e) => Type::Fun(ps.clone(), r.clone(), self.zonk_eff(*e)),
+            other => other.clone(),
+        })
     }
 
     /// Least upper bound of effects, linking distinct open vars so either becoming

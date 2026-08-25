@@ -20,10 +20,10 @@ pub use pipeline::{
     compile_source_to_core_with_parallel, FrontendOptions,
 };
 pub use dense_f64_match::{
-    body_has_gemv_inner, for_each_let, fun_has_add_shape, fun_has_addmm_shape, fun_has_axpy_shape,
-    fun_has_clamp_shape, fun_has_copy_shape, fun_has_fill_shape, fun_has_gemv_t_shape,
-    fun_has_mul_shape, fun_has_scale_shape, fun_has_sub_shape, is_list_get, is_list_set,
-    is_nontrivial_add_or_sub, is_nontrivial_arith, is_unit_inc_value, list_arg_is,
+    body_has_gemv_inner, for_each_def_and_let, for_each_let, fun_has_add_shape, fun_has_addmm_shape,
+    fun_has_axpy_shape, fun_has_clamp_shape, fun_has_copy_shape, fun_has_fill_shape,
+    fun_has_gemv_t_shape, fun_has_mul_shape, fun_has_scale_shape, fun_has_sub_shape, is_list_get,
+    is_list_set, is_nontrivial_add_or_sub, is_nontrivial_arith, is_unit_inc_value, list_arg_is,
     match_add_fun, match_addmm_fun, match_axpy_fun, match_clamp_fun, match_copy_fun, match_fill_fun,
     match_gemv_fun, match_gemv_t_fun, match_mul_fun, match_scale_fun, match_sub_fun, mentions_local,
     DenseAddmm, DenseAxpy, DenseBin3, DenseClamp, DenseCopy, DenseFill, DenseGemv, DenseScale,

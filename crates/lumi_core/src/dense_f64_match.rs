@@ -273,12 +273,11 @@ pub fn fun_has_axpy_shape(
     let mut get_y = false;
     let mut set = false;
     let mut uses_alpha = false;
-    for v in defs.values() {
+    for_each_def_and_let(body, defs, &mut |v| {
         if let Some((lst, _)) = is_list_get(v) {
             if list_arg_is(lst, x, defs) {
                 get_x = true;
             }
-            // y is out_slot Name
             if name_of(lst, defs).as_deref() == Some(out_slot) {
                 get_y = true;
             }
@@ -288,19 +287,6 @@ pub fn fun_has_axpy_shape(
         }
         if mentions_local(v, alpha) {
             uses_alpha = true;
-        }
-    }
-    for_each_let(body, &mut |val| {
-        if is_list_set(val).is_some() {
-            set = true;
-        }
-        if let Some((lst, _)) = is_list_get(val) {
-            if list_arg_is(lst, x, defs) {
-                get_x = true;
-            }
-            if name_of(lst, defs).as_deref() == Some(out_slot) {
-                get_y = true;
-            }
         }
     });
     get_x && get_y && set && uses_alpha
@@ -317,7 +303,7 @@ pub fn fun_has_sub_shape(
     let mut get_b = false;
     let mut sub = false;
     let mut set = false;
-    for v in defs.values() {
+    for_each_def_and_let(body, defs, &mut |v| {
         if let Some((lst, _)) = is_list_get(v) {
             if list_arg_is(lst, a, defs) {
                 get_a = true;
@@ -331,14 +317,6 @@ pub fn fun_has_sub_shape(
         }
         if is_list_set(v).is_some() {
             set = true;
-        }
-    }
-    for_each_let(body, &mut |val| {
-        if is_list_set(val).is_some() {
-            set = true;
-        }
-        if matches!(val, Value::Binary { op: BinOp::Sub, .. }) {
-            sub = true;
         }
     });
     let _ = out_slot;
@@ -357,7 +335,7 @@ pub fn fun_has_mul_shape(
     let mut mul = false;
     let mut set = false;
     let mut add_or_sub = false;
-    for v in defs.values() {
+    for_each_def_and_let(body, defs, &mut |v| {
         if let Some((lst, _)) = is_list_get(v) {
             if list_arg_is(lst, a, defs) {
                 get_a = true;
@@ -375,17 +353,6 @@ pub fn fun_has_mul_shape(
         if is_list_set(v).is_some() {
             set = true;
         }
-    }
-    for_each_let(body, &mut |val| {
-        if is_list_set(val).is_some() {
-            set = true;
-        }
-        if matches!(val, Value::Binary { op: BinOp::Mul, .. }) {
-            mul = true;
-        }
-        if is_nontrivial_add_or_sub(val, defs) {
-            add_or_sub = true;
-        }
     });
     let _ = out_slot;
     get_a && get_b && mul && set && !add_or_sub
@@ -402,7 +369,7 @@ pub fn fun_has_scale_shape(
     let mut set = false;
     let mut uses_alpha = false;
     let mut add_or_sub = false;
-    for v in defs.values() {
+    for_each_def_and_let(body, defs, &mut |v| {
         if let Some((lst, _)) = is_list_get(v) {
             if name_of(lst, defs).as_deref() == Some(out_slot) {
                 get_y = true;
@@ -419,22 +386,6 @@ pub fn fun_has_scale_shape(
         }
         if mentions_local(v, alpha) {
             uses_alpha = true;
-        }
-    }
-    for_each_let(body, &mut |val| {
-        if is_list_set(val).is_some() {
-            set = true;
-        }
-        if let Some((lst, _)) = is_list_get(val) {
-            if name_of(lst, defs).as_deref() == Some(out_slot) {
-                get_y = true;
-            }
-        }
-        if matches!(val, Value::Binary { op: BinOp::Mul, .. }) {
-            mul = true;
-        }
-        if is_nontrivial_add_or_sub(val, defs) {
-            add_or_sub = true;
         }
     });
     get_y && mul && set && uses_alpha && !add_or_sub
@@ -492,7 +443,7 @@ pub fn fun_has_copy_shape(
     let mut get_src = false;
     let mut set = false;
     let mut saw_arith = false;
-    for v in defs.values() {
+    for_each_def_and_let(body, defs, &mut |v| {
         if let Some((lst, _)) = is_list_get(v) {
             if list_arg_is(lst, src, defs) {
                 get_src = true;
@@ -501,34 +452,15 @@ pub fn fun_has_copy_shape(
         if is_list_set(v).is_some() {
             set = true;
         }
+        // Index `i*n+j` style shouldn't appear; soft: any Mul/Div/Sub is suspicious.
         if matches!(
             v,
             Value::Binary {
-                op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div,
+                op: BinOp::Mul | BinOp::Div | BinOp::Sub,
                 ..
             }
         ) {
-            // Index `i*n+j` style shouldn't appear; len() compares are elsewhere.
-            // Allow only if not feeding the set value — soft: any Mul/Div is suspicious.
-            if matches!(
-                v,
-                Value::Binary {
-                    op: BinOp::Mul | BinOp::Div | BinOp::Sub,
-                    ..
-                }
-            ) {
-                saw_arith = true;
-            }
-        }
-    }
-    for_each_let(body, &mut |val| {
-        if is_list_set(val).is_some() {
-            set = true;
-        }
-        if let Some((lst, _)) = is_list_get(val) {
-            if list_arg_is(lst, src, defs) {
-                get_src = true;
-            }
+            saw_arith = true;
         }
     });
     let _ = out_slot;
@@ -547,7 +479,7 @@ pub fn fun_has_add_shape(
     let mut add = false;
     let mut set = false;
     let mut mul = false;
-    for v in defs.values() {
+    for_each_def_and_let(body, defs, &mut |v| {
         if let Some((lst, _)) = is_list_get(v) {
             if list_arg_is(lst, a, defs) || name_of(lst, defs).as_deref() == Some(out_slot) {
                 get_a = true;
@@ -565,25 +497,6 @@ pub fn fun_has_add_shape(
         if is_list_set(v).is_some() {
             set = true;
         }
-    }
-    for_each_let(body, &mut |val| {
-        if is_list_set(val).is_some() {
-            set = true;
-        }
-        if let Some((lst, _)) = is_list_get(val) {
-            if list_arg_is(lst, a, defs) || name_of(lst, defs).as_deref() == Some(out_slot) {
-                get_a = true;
-            }
-            if list_arg_is(lst, b, defs) {
-                get_b = true;
-            }
-        }
-        if matches!(val, Value::Binary { op: BinOp::Add, .. }) {
-            add = true;
-        }
-        if matches!(val, Value::Binary { op: BinOp::Mul, .. }) {
-            mul = true;
-        }
     });
     // Exclude axpy-like `y + α*x` (has Mul).
     get_a && get_b && add && set && !mul
@@ -594,26 +507,15 @@ pub fn fun_has_fill_shape(body: &Block, defs: &HashMap<u32, Value>, out_slot: &s
     let mut uses_v = false;
     let mut get_any = false;
     let mut arith = false;
-    for vdef in defs.values() {
-        if is_list_get(vdef).is_some() {
+    for_each_def_and_let(body, defs, &mut |val| {
+        if is_list_get(val).is_some() {
             get_any = true;
         }
-        if is_list_set(vdef).is_some() {
-            set = true;
-        }
-        if mentions_local(vdef, v) {
-            uses_v = true;
-        }
-        if is_nontrivial_arith(vdef, defs) {
-            arith = true;
-        }
-    }
-    for_each_let(body, &mut |val| {
         if is_list_set(val).is_some() {
             set = true;
         }
-        if is_list_get(val).is_some() {
-            get_any = true;
+        if mentions_local(val, v) {
+            uses_v = true;
         }
         if is_nontrivial_arith(val, defs) {
             arith = true;
@@ -934,5 +836,17 @@ pub fn for_each_let(body: &Block, f: &mut dyn FnMut(&Value)) {
             }
         }
     }
+}
+
+/// Visit leaf `defs` then every `Let` value under `body` (same predicate over both).
+pub fn for_each_def_and_let(
+    body: &Block,
+    defs: &HashMap<u32, Value>,
+    f: &mut dyn FnMut(&Value),
+) {
+    for v in defs.values() {
+        f(v);
+    }
+    for_each_let(body, f);
 }
 
