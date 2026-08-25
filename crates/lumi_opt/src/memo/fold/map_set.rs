@@ -20,7 +20,7 @@ pub(super) fn fold(
             // must not be folded to `false` (false negative).
             if let Some(k) = env.known_int.get(key.0) {
                 if let Some(pairs) = env.known_map.get(&col.0) {
-                    let keys: Vec<_> = pairs.chunks_exact(2).map(|kv| kv[0]).collect();
+                    let keys: Vec<_> = pairs.as_chunks::<2>().0.iter().map(|kv| kv[0]).collect();
                     if keys.iter().all(|kk| env.known_int.contains(kk.0)) {
                         let found = keys.iter().any(|kk| env.known_int.get(kk.0) == Some(k));
                         *value = Value::Bool(found);
@@ -39,12 +39,14 @@ pub(super) fn fold(
         (Builtin::MapSet, [col, k, v]) => {
             if let Some(pairs) = env.known_map.get(&col.0).cloned() {
                 let keys_known = pairs
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .all(|kv| env.known_int.contains(kv[0].0))
                     && env.known_int.contains(k.0);
                 let mut out = Vec::with_capacity(pairs.len() + 2);
                 let mut replaced = false;
-                for kv in pairs.chunks_exact(2) {
+                for kv in pairs.as_chunks::<2>().0 {
                     let same = kv[0] == *k
                         || (keys_known && env.known_int.get(kv[0].0) == env.known_int.get(k.0));
                     if same && !replaced {

@@ -59,7 +59,7 @@ pub(super) fn fold(
             if let (Some(pairs), Some(k)) =
                 (env.known_map.get(&xs.0).cloned(), env.known_int.get(idx.0))
             {
-                let keys: Vec<_> = pairs.chunks_exact(2).map(|kv| kv[0]).collect();
+                let keys: Vec<_> = pairs.as_chunks::<2>().0.iter().map(|kv| kv[0]).collect();
                 if all_int_keys(env, &keys) {
                     let found = keys.iter().enumerate().find_map(|(i, kk)| {
                         if env.known_int.get(kk.0) == Some(k) {
