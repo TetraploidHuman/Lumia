@@ -21,50 +21,36 @@ impl Infer {
     /// language does not expose reference equality). Containers/ADTs are Eq
     /// only when every element/field type is Eq.
     pub(crate) fn is_eq(&mut self, t: &Type) -> bool {
-        match self.prune(t.clone()) {
+        let t = self.prune(t.clone());
+        match &t {
             Type::Fun(_, _, _) => false,
-            Type::Var(_) => true,
-            Type::List(e) | Type::Set(e) => self.is_eq(&e),
-            Type::Map(k, v) => {
-                let ek = self.is_eq(&k);
-                let ev = self.is_eq(&v);
-                ek && ev
-            }
-            Type::Adt { params, .. } => {
-                for p in params {
-                    if !self.is_eq(&p) {
-                        return false;
-                    }
-                }
-                true
-            }
-            Type::Tuple(ts) | Type::TuplePrefix(ts) => {
-                for p in ts {
-                    if !self.is_eq(&p) {
-                        return false;
-                    }
-                }
-                true
-            }
-            Type::Int | Type::Float | Type::Bool | Type::String | Type::Char | Type::Unit => true,
-        }
-    }
-
-    pub(crate) fn type_mentions_fun(t: &Type) -> bool {
-        match t {
-            Type::Fun(_, _, _) => true,
-            Type::List(e) | Type::Set(e) => Self::type_mentions_fun(e),
-            Type::Map(k, v) => Self::type_mentions_fun(k) || Self::type_mentions_fun(v),
-            Type::Adt { params, .. } => params.iter().any(Self::type_mentions_fun),
-            Type::Tuple(ts) | Type::TuplePrefix(ts) => ts.iter().any(Self::type_mentions_fun),
             Type::Var(_)
             | Type::Int
             | Type::Float
             | Type::Bool
             | Type::String
             | Type::Char
-            | Type::Unit => false,
+            | Type::Unit => true,
+            _ => {
+                let mut ok = true;
+                t.for_each_child(&mut |c| {
+                    if ok && !self.is_eq(c) {
+                        ok = false;
+                    }
+                });
+                ok
+            }
         }
+    }
+
+    pub(crate) fn type_mentions_fun(t: &Type) -> bool {
+        let mut hit = false;
+        t.for_each(&mut |n| {
+            if matches!(n, Type::Fun(_, _, _)) {
+                hit = true;
+            }
+        });
+        hit
     }
 
     pub(crate) fn mark_num(&mut self, t: &Type) {

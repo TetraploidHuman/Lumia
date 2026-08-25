@@ -195,14 +195,11 @@ pub fn lower_hir_with_schemes(
 }
 
 fn type_is_open(t: &Type) -> bool {
-    match t {
-        Type::Var(_) => true,
-        Type::Fun(ps, r, _) => ps.iter().any(type_is_open) || type_is_open(r),
-        Type::List(e) | Type::Set(e) => type_is_open(e),
-        Type::Map(k, v) => type_is_open(k) || type_is_open(v),
-        Type::Tuple(ts) | Type::TuplePrefix(ts) | Type::Adt { params: ts, .. } => {
-            ts.iter().any(type_is_open)
+    let mut hit = false;
+    t.for_each(&mut |n| {
+        if matches!(n, Type::Var(_)) {
+            hit = true;
         }
-        _ => false,
-    }
+    });
+    hit
 }

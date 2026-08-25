@@ -87,10 +87,6 @@ impl MonoKind {
     }
 }
 
-fn type_is_heap_structure(t: &Type) -> bool {
-    t.is_heap_structure()
-}
-
 /// Build a [`MonoKey`] from concrete types (e.g. ListParMap callback ABI).
 pub(crate) fn types_mono_key(tys: &[Type]) -> Option<MonoKey> {
     let mut kinds = Vec::with_capacity(tys.len());
@@ -156,7 +152,7 @@ pub(crate) fn restore_mono_param_ty(key_ty: &mut Type, formal: Option<&Type>) {
         return;
     };
     match (&*key_ty, formal) {
-        (Type::Int, t) if type_is_heap_structure(t) => {
+        (Type::Int, t) if Type::is_heap_structure(t) => {
             *key_ty = t.clone();
         }
         (
@@ -365,7 +361,7 @@ pub(crate) fn args_mono_key(
         let mut ty = local_tys.get(&a.0)?.clone();
         if matches!(ty, Type::Int) {
             if let Some(formal) = formals.and_then(|f| f.get(i)) {
-                if type_is_heap_structure(formal) {
+                if Type::is_heap_structure(formal) {
                     // ABI-erased product: key by ADT name only so Int field
                     // guesses never enter the clone layout; materialize restores
                     // the generic formals. Call-site Adt{…, [Float,…]} keeps params.

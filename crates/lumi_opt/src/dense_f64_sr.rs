@@ -319,7 +319,7 @@ fn match_zeros_fun(fun: &lumi_core::CoreFun, defs: &HashMap<u32, Value>) -> Opti
     let mut seed = false;
     let mut append0 = false;
     let mut bound_n = false;
-    for v in defs.values() {
+    for_each_def_and_let(body, defs, &mut |v| {
         if let Value::AllocList { elems, .. } = v {
             if elems.len() <= 1
                 && elems
@@ -349,28 +349,7 @@ fn match_zeros_fun(fun: &lumi_core::CoreFun, defs: &HashMap<u32, Value>) -> Opti
                 bound_n = true;
             }
         }
-    }
-    for_each_let(body, &mut |val| {
-        if let Value::AllocList { elems, .. } = val {
-            if elems.len() <= 1
-                && elems
-                    .iter()
-                    .all(|e| matches!(defs.get(&e.0), Some(Value::Float(f)) if *f == 0.0))
-            {
-                seed = true;
-            }
-        }
-        if let Value::Builtin {
-            name: Builtin::ListAppend,
-            args,
-        } = val
-        {
-            if args.len() == 2 && matches!(defs.get(&args[1].0), Some(Value::Float(f)) if *f == 0.0)
-            {
-                append0 = true;
-            }
-        }
-        if let Value::Loop { header, .. } = val {
+        if let Value::Loop { header, .. } = v {
             if let Some((_, bound)) = header_lt_bound(header, defs) {
                 if same_local(bound, n, defs) {
                     bound_n = true;

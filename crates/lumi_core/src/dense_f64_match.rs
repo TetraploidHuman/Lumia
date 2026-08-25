@@ -153,7 +153,7 @@ pub fn fun_has_gemv_t_shape(
     let mut mul = false;
     let mut set = false;
     let mut zero_fill = false;
-    for_each_let(body, &mut |v| {
+    for_each_def_and_let(body, defs, &mut |v| {
         if let Value::Binary {
             op: BinOp::Mul,
             left,
@@ -171,11 +171,8 @@ pub fn fun_has_gemv_t_shape(
                 }
             }
         }
-        if is_list_set(v).is_some() {
-            set = true;
-        }
-        // Zero-fill: set(j, 0.0) or set(j, Float(0))
         if let Some((_, _, val)) = is_list_set(v) {
+            set = true;
             if matches!(defs.get(&val.0), Some(Value::Float(f)) if *f == 0.0)
                 || matches!(defs.get(&val.0), Some(Value::Int(0)))
             {
@@ -184,34 +181,6 @@ pub fn fun_has_gemv_t_shape(
         }
         let _ = (m, n, out_slot);
     });
-    // Also scan leaf_defs for MapSet / Mul (lets may be inlined into Assigns)
-    for v in defs.values() {
-        if let Value::Binary {
-            op: BinOp::Mul,
-            left,
-            right,
-            ..
-        } = v
-        {
-            let lg = defs.get(&left.0).and_then(is_list_get);
-            let rg = defs.get(&right.0).and_then(is_list_get);
-            if let (Some((la, _)), Some((lb, _))) = (lg, rg) {
-                if (list_arg_is(la, a, defs) && list_arg_is(lb, x, defs))
-                    || (list_arg_is(la, x, defs) && list_arg_is(lb, a, defs))
-                {
-                    mul = true;
-                }
-            }
-        }
-        if is_list_set(v).is_some() {
-            set = true;
-        }
-        if let Some((_, _, val)) = is_list_set(v) {
-            if matches!(defs.get(&val.0), Some(Value::Float(f)) if *f == 0.0) {
-                zero_fill = true;
-            }
-        }
-    }
     mul && set && zero_fill
 }
 
@@ -229,7 +198,7 @@ pub fn fun_has_addmm_shape(
     let mut get_v = false;
     let mut set = false;
     let mut uses_alpha = false;
-    for vdef in defs.values() {
+    for_each_def_and_let(body, defs, &mut |vdef| {
         if let Some((lst, _)) = is_list_get(vdef) {
             if list_arg_is(lst, u, defs) {
                 get_u = true;
@@ -243,19 +212,6 @@ pub fn fun_has_addmm_shape(
         }
         if mentions_local(vdef, alpha) {
             uses_alpha = true;
-        }
-    }
-    for_each_let(body, &mut |val| {
-        if is_list_set(val).is_some() {
-            set = true;
-        }
-        if let Some((lst, _)) = is_list_get(val) {
-            if list_arg_is(lst, u, defs) {
-                get_u = true;
-            }
-            if list_arg_is(lst, v, defs) {
-                get_v = true;
-            }
         }
     });
     let _ = (out_slot, m, n);

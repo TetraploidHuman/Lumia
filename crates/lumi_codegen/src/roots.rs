@@ -18,7 +18,15 @@ impl<'ctx> Codegen<'ctx> {
             | Type::Set(_)
             | Type::Adt { .. }
             | Type::Fun(_, _, _) => true,
-            Type::Tuple(ts) | Type::TuplePrefix(ts) => ts.iter().any(Self::type_may_heap),
+            Type::Tuple(_) | Type::TuplePrefix(_) => {
+                let mut hit = false;
+                ty.for_each_child(&mut |c| {
+                    if Self::type_may_heap(c) {
+                        hit = true;
+                    }
+                });
+                hit
+            }
             _ => false,
         }
     }

@@ -355,18 +355,14 @@ fn scan_value_slots(
     }
 }
 
-fn is_ref_ty(t: &Type) -> bool {
-    t.is_gc_ref()
-}
-
 fn merge_slot_ty(prev: Option<Type>, next: Type) -> Type {
     match (prev, next) {
         (None, t) => t,
         (Some(p), n) if p == n => p,
         // Pointer-carrying slots win over unboxed numeric — never store a
         // List/ADT pointer as Float (XMM NaN canonicalization / missed GC root).
-        (Some(p), n) if is_ref_ty(&p) && !is_ref_ty(&n) => p,
-        (Some(p), n) if !is_ref_ty(&p) && is_ref_ty(&n) => n,
+        (Some(p), n) if p.is_gc_ref() && !n.is_gc_ref() => p,
+        (Some(p), n) if !p.is_gc_ref() && n.is_gc_ref() => n,
         (Some(Type::Float), _) | (_, Type::Float) => Type::Float,
         (Some(p), _) => p,
     }
