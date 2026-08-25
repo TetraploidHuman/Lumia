@@ -9,8 +9,9 @@
 
 use lumi_core::{
     collect_leaf_defs, first_assign_from_local, for_each_def_and_let, for_each_let,
-    header_lt_bound, is_list_get, is_list_set, is_nontrivial_add_or_sub, list_arg_is, max_local_in_fun, mentions_local, name_of, same_local, Block, CoreFun, CoreModule,
-    Local, Op, Value,
+    header_lt_bound, is_list_get, is_list_set, is_nontrivial_add_or_sub, list_arg_is,
+    max_local_in_fun, mentions_local, name_of, same_local, Block, CoreFun, CoreModule, Local, Op,
+    Value,
 };
 use lumi_hir::Builtin;
 use lumi_syntax::BinOp;
