@@ -13,9 +13,10 @@
 
 use inkwell::values::FunctionValue;
 use lumi_core::{
-    match_add_fun, match_addmm_fun, match_axpy_fun, match_clamp_fun, match_copy_fun, match_fill_fun,
-    match_gemv_fun, match_gemv_t_fun, match_mul_fun, match_scale_fun, match_sub_fun, DenseAddmm,
-    DenseAxpy, DenseBin3, DenseClamp, DenseCopy, DenseFill, DenseGemv, DenseScale, Op, Value,
+    match_add_fun, match_addmm_fun, match_axpy_fun, match_clamp_fun, match_copy_fun,
+    match_fill_fun, match_gemv_fun, match_gemv_t_fun, match_mul_fun, match_scale_fun,
+    match_sub_fun, DenseAddmm, DenseAxpy, DenseBin3, DenseClamp, DenseCopy, DenseFill, DenseGemv,
+    DenseScale, Op, Value,
 };
 
 use super::super::Codegen;

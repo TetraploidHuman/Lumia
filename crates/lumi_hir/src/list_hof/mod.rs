@@ -11,9 +11,9 @@ use crate::lower::{counter_for_in, for_each_elem, LowerCtx};
 use lumi_syntax::Span;
 
 pub(crate) use filter::{lower_list_filter, lower_list_flat_map};
-pub(crate) use for_each::lower_list_for_each;
 pub use fold::desugar_list_fold_sequential;
 pub(crate) use fold::{lower_list_fold, syntax_fold_body_is_associative};
+pub(crate) use for_each::lower_list_for_each;
 pub use map::desugar_list_map_sequential;
 pub(crate) use map::{lower_list_map, lower_list_sort_by};
 pub(crate) use search::{lower_list_all, lower_list_any, lower_list_find};

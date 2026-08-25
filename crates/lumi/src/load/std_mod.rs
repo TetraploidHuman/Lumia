@@ -90,15 +90,15 @@ fn known_lumi_list() -> String {
 /// Resolve `lumi.<name>` → relative path under workspace `lumi/`.
 pub(super) fn lumi_module(path: &[String]) -> Result<&'static str> {
     match path {
-        [root, name] if root.as_str() == "lumi" => find_lumi_mod(name)
-            .map(|m| m.file)
-            .ok_or_else(|| {
+        [root, name] if root.as_str() == "lumi" => {
+            find_lumi_mod(name).map(|m| m.file).ok_or_else(|| {
                 anyhow::anyhow!(
                     "unknown standard module `{}` (known: {})",
                     path.join("."),
                     known_lumi_list()
                 )
-            }),
+            })
+        }
         _ => bail!(
             "unknown standard module `{}` (known: {})",
             path.join("."),
@@ -201,7 +201,9 @@ pub(super) fn validate_lumi_import(imp: &Import) -> Result<()> {
         // Visibility for `*` is filtered to `@exports` in `resolve` (FFI stays
         // inlined for wrapper callees but is not entry-visible).
         ImportNames::All => Ok(()),
-        ImportNames::Single(n) => ensure_exported(n.name.as_str(), &imp.path, &exports, &export_set),
+        ImportNames::Single(n) => {
+            ensure_exported(n.name.as_str(), &imp.path, &exports, &export_set)
+        }
         ImportNames::Selective(names) => {
             for n in names {
                 ensure_exported(n.name.as_str(), &imp.path, &exports, &export_set)?;

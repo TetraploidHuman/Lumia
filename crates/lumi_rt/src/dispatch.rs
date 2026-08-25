@@ -5,9 +5,7 @@ use crate::common::{
     TYPE_STRING,
 };
 use crate::gc::{list_payload_bytes, lumi_alloc};
-use crate::list::{
-    force_heap_list, list_len_of, lumi_list_concat, lumi_list_get, lumi_list_set,
-};
+use crate::list::{force_heap_list, list_len_of, lumi_list_concat, lumi_list_get, lumi_list_set};
 use crate::map_set::{
     lumi_map_contains, lumi_map_get, lumi_map_keys, lumi_map_remove, lumi_map_set,
     lumi_set_contains, lumi_set_remove, map_count, set_elem_at,

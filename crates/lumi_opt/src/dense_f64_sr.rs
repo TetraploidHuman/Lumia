@@ -8,10 +8,10 @@
 //! calls unlock the latter norms).
 
 use lumi_core::{
-    collect_leaf_defs, first_assign_from_local, for_each_def_and_let, for_each_let, header_lt_bound,
-    is_list_get, is_list_set, is_nontrivial_add_or_sub, is_nontrivial_arith, list_arg_is,
-    max_local_in_fun, mentions_local, name_of, same_local, Block, CoreFun, CoreModule, Local, Op,
-    Value,
+    collect_leaf_defs, first_assign_from_local, for_each_def_and_let, for_each_let,
+    header_lt_bound, is_list_get, is_list_set, is_nontrivial_add_or_sub, is_nontrivial_arith,
+    list_arg_is, max_local_in_fun, mentions_local, name_of, same_local, Block, CoreFun, CoreModule,
+    Local, Op, Value,
 };
 use lumi_hir::Builtin;
 use lumi_syntax::BinOp;
@@ -180,7 +180,6 @@ fn rewrite_body_to_call(fun: &mut CoreFun, sym: &str) {
     // Keep typed as list/float so codegen roots / ABI stay correct.
     fun.effect = Effect::pure();
 }
-
 
 fn match_gemv_fun(fun: &lumi_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<()> {
     lumi_core::match_gemv_fun(fun, defs).map(|_| ())

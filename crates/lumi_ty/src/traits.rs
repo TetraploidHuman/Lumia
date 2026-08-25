@@ -267,10 +267,7 @@ pub(crate) fn apply_ufcs_rewrites(
     }
 }
 
-pub(crate) fn rewrite_ufcs_in_expr(
-    expr: &mut Expr,
-    rewrites: &HashMap<lumi_syntax::Span, String>,
-) {
+pub(crate) fn rewrite_ufcs_in_expr(expr: &mut Expr, rewrites: &HashMap<lumi_syntax::Span, String>) {
     match expr {
         Expr::Call { callee, args, span } => {
             for a in args.iter_mut() {

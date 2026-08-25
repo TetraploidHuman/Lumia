@@ -237,7 +237,11 @@ val main = {
 "#,
     )
     .expect("core");
-    let dbl = core.functions.iter().find(|f| f.name == "dbl").expect("dbl");
+    let dbl = core
+        .functions
+        .iter()
+        .find(|f| f.name == "dbl")
+        .expect("dbl");
     assert!(dbl.scheme_poly, "dbl should be scheme_poly");
     let apply_clone = core
         .functions
@@ -252,7 +256,10 @@ val main = {
     );
     let println_calls = main_println_calls(&core);
     assert_eq!(
-        println_calls.iter().filter(|c| c.contains("$Float")).count(),
+        println_calls
+            .iter()
+            .filter(|c| c.contains("$Float"))
+            .count(),
         3,
         "all three println sites should be $Float, got {println_calls:?}"
     );

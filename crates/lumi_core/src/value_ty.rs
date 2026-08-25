@@ -203,9 +203,7 @@ pub fn infer_value_ty_ctx(
             let site_ty = call_ret.as_mut().and_then(|f| f(fun, args));
             let ret = match (tab_ty, site_ty) {
                 // Erased `Int` on a poly FunRef must not beat call-site mono (`dbl(1.5)`).
-                (Some(Type::Int), Some(site)) if !matches!(site, Type::Int | Type::Var(_)) => {
-                    site
-                }
+                (Some(Type::Int), Some(site)) if !matches!(site, Type::Int | Type::Var(_)) => site,
                 (Some(t), _) => t,
                 (None, Some(site)) => site,
                 (None, None) => Type::Int,
@@ -256,7 +254,10 @@ pub fn infer_value_ty_ctx(
                     .and_then(|name| ctx.fun_ret_tys.and_then(|m| m.get(name).cloned()))
                     .unwrap_or(Type::Int),
             };
-            let fun_name = ctx.funref_locals.and_then(|m| m.get(&callee.0)).map(|s| s.as_str());
+            let fun_name = ctx
+                .funref_locals
+                .and_then(|m| m.get(&callee.0))
+                .map(|s| s.as_str());
             identity_float_call_ret(ret, fun_name, args, ctx)
         }
         Value::Loop { .. } | Value::Lambda { .. } => Type::Int,

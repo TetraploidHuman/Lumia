@@ -596,9 +596,7 @@ mod tests {
     fn emit_par_map_verifies() {
         let ir = emit_example("examples/par_map.lm", false);
         assert!(
-            ir.contains("lumi_list_par_map")
-                || ir.contains("par_map")
-                || ir.contains("ListParMap"),
+            ir.contains("lumi_list_par_map") || ir.contains("par_map") || ir.contains("ListParMap"),
             "expected parallel map-related IR; snip:\n{}",
             &ir[..ir.len().min(2500)]
         );

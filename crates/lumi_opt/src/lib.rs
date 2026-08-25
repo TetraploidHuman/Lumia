@@ -266,7 +266,10 @@ val main = {
             })
             .collect();
         assert_eq!(
-            println_calls.iter().filter(|c| c.contains("$Float")).count(),
+            println_calls
+                .iter()
+                .filter(|c| c.contains("$Float"))
+                .count(),
             3,
             "optimize must keep println$Float, got {println_calls:?}"
         );

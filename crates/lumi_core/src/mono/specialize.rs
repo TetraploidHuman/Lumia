@@ -249,10 +249,7 @@ fn call_site_mono_ret(fun: &CoreFun, inferred: &Type) -> Type {
         Type::Var(_) => inferred.clone(),
         Type::Int => match inferred {
             t if t.is_heap_structure()
-                || matches!(
-                    t,
-                    Type::String | Type::Bool | Type::Char | Type::Unit
-                ) =>
+                || matches!(t, Type::String | Type::Bool | Type::Char | Type::Unit) =>
             {
                 fun.ret_ty.clone()
             }
@@ -309,7 +306,12 @@ fn scan_mono_block(
             Op::Let { local, value, .. } => {
                 note_mono_call(value, local_tys, index, needed, &env.funref_of);
                 let ty = mono_value_ty_with_funrefs(
-                    value, local_tys, slot_tys, int_consts, index, &env.funref_of,
+                    value,
+                    local_tys,
+                    slot_tys,
+                    int_consts,
+                    index,
+                    &env.funref_of,
                 );
                 local_tys.insert(local.0, ty);
                 if let Value::Int(n) = value {
@@ -575,7 +577,13 @@ fn rewrite_mono_block(
                     env.funref_of.insert(cb_local, new_name);
                 }
                 let ty = mono_value_ty_rewrite(
-                    value, local_tys, slot_tys, int_consts, renames, &env.funref_of, index,
+                    value,
+                    local_tys,
+                    slot_tys,
+                    int_consts,
+                    renames,
+                    &env.funref_of,
+                    index,
                 );
                 local_tys.insert(local.0, ty);
                 if let Value::Int(n) = value {

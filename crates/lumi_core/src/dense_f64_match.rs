@@ -458,7 +458,12 @@ pub fn fun_has_add_shape(
     get_a && get_b && add && set && !mul
 }
 
-pub fn fun_has_fill_shape(body: &Block, defs: &HashMap<u32, Value>, out_slot: &str, v: Local) -> bool {
+pub fn fun_has_fill_shape(
+    body: &Block,
+    defs: &HashMap<u32, Value>,
+    out_slot: &str,
+    v: Local,
+) -> bool {
     let mut set = false;
     let mut uses_v = false;
     let mut get_any = false;
@@ -795,14 +800,9 @@ pub fn for_each_let(body: &Block, f: &mut dyn FnMut(&Value)) {
 }
 
 /// Visit leaf `defs` then every `Let` value under `body` (same predicate over both).
-pub fn for_each_def_and_let(
-    body: &Block,
-    defs: &HashMap<u32, Value>,
-    f: &mut dyn FnMut(&Value),
-) {
+pub fn for_each_def_and_let(body: &Block, defs: &HashMap<u32, Value>, f: &mut dyn FnMut(&Value)) {
     for v in defs.values() {
         f(v);
     }
     for_each_let(body, f);
 }
-

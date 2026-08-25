@@ -342,7 +342,10 @@ val main = { make()() }
     let Item::Val(make) = &m.items[0] else {
         panic!("expected val make");
     };
-    let Expr::Block { tail: Some(inner), .. } = &make.body else {
+    let Expr::Block {
+        tail: Some(inner), ..
+    } = &make.body
+    else {
         panic!("expected block body for make, got {:?}", make.body);
     };
     assert!(
@@ -367,4 +370,3 @@ val main = { make()() }
         block.body
     );
 }
-

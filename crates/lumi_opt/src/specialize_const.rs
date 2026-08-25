@@ -166,11 +166,7 @@ fn build_const_clone(orig: &CoreFun, args: &[i64], name: String) -> CoreFun {
     for (i, p) in orig.params.iter().enumerate() {
         let fresh = Local(base + i as u32);
         remap.insert(p.0, fresh.0);
-        let ty = orig
-            .param_tys
-            .get(i)
-            .cloned()
-            .unwrap_or(lumi_ty::Type::Int);
+        let ty = orig.param_tys.get(i).cloned().unwrap_or(lumi_ty::Type::Int);
         preamble.push(Op::Let {
             local: fresh,
             value: bake_const_value(&ty, args[i]),

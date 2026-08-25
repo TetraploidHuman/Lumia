@@ -142,11 +142,7 @@ mod tests {
 
     #[test]
     fn display_nested_io_effect_once() {
-        let inner = Type::Fun(
-            vec![Type::Var(0)],
-            Box::new(Type::Unit),
-            Effect::io(),
-        );
+        let inner = Type::Fun(vec![Type::Var(0)], Box::new(Type::Unit), Effect::io());
         let outer = Type::Fun(vec![], Box::new(inner), Effect::io());
         assert_eq!(display_type(&outer, &[]), "( ) -> (T) -> Unit / IO");
 

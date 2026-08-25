@@ -58,11 +58,11 @@ pub use cn_kernels::{
 };
 pub use collatz::{lumi_collatz_strided, lumi_collatz_total};
 pub use dense_f64::{
-    lumi_f64_add, lumi_f64_addmm, lumi_f64_atan2, lumi_f64_axpy, lumi_f64_checksum,
-    lumi_f64_clamp, lumi_f64_copy, lumi_f64_cos, lumi_f64_exp, lumi_f64_fill, lumi_f64_gemv,
-    lumi_f64_gemv_t, lumi_f64_hypot, lumi_f64_l2_norm, lumi_f64_l2_normalize, lumi_f64_mean,
-    lumi_f64_mul, lumi_f64_scale, lumi_f64_sin, lumi_f64_softmax, lumi_f64_sqrt,
-    lumi_f64_std, lumi_f64_sub, lumi_f64_sum_sq, lumi_list_f64_zeros,
+    lumi_f64_add, lumi_f64_addmm, lumi_f64_atan2, lumi_f64_axpy, lumi_f64_checksum, lumi_f64_clamp,
+    lumi_f64_copy, lumi_f64_cos, lumi_f64_exp, lumi_f64_fill, lumi_f64_gemv, lumi_f64_gemv_t,
+    lumi_f64_hypot, lumi_f64_l2_norm, lumi_f64_l2_normalize, lumi_f64_mean, lumi_f64_mul,
+    lumi_f64_scale, lumi_f64_sin, lumi_f64_softmax, lumi_f64_sqrt, lumi_f64_std, lumi_f64_sub,
+    lumi_f64_sum_sq, lumi_list_f64_zeros,
 };
 pub use dict::{
     lumi_dict_lookup, lumi_dict_register, lumi_dict_show, TRAIT_EQ, TRAIT_HASH, TRAIT_NUM,

@@ -393,7 +393,11 @@ mod tests {
     #[test]
     fn import_completion_lists_local_modules() {
         let dir = temp_dir("local");
-        fs::write(dir.join("math.lm"), "module Math\nval add(a, b) = { a + b }\n").unwrap();
+        fs::write(
+            dir.join("math.lm"),
+            "module Math\nval add(a, b) = { a + b }\n",
+        )
+        .unwrap();
         fs::create_dir_all(dir.join("pkg")).unwrap();
         fs::write(
             dir.join("pkg/helpers.lm"),

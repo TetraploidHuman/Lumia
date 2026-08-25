@@ -179,7 +179,9 @@ val main = {
         let hints = hints_for_analysis(&a, None);
         let labels: Vec<_> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
         assert!(
-            labels.iter().all(|l| *l != "Unit" && *l != "( )" && !l.ends_with("Unit")),
+            labels
+                .iter()
+                .all(|l| *l != "Unit" && *l != "( )" && !l.ends_with("Unit")),
             "Unit call results must not appear as hints, got {labels:?}"
         );
         // Bare `id` is not a Call — but if a Call returned Fun it must be filtered.
