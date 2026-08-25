@@ -3,6 +3,9 @@
 //! Multi-file load, import visibility, and assert-message annotation remain
 //! CLI-only ([`lumi`] crate). Effect-boundary checks mirror the CLI via
 //! [`lumi_ty::typecheck_hir`].
+//!
+//! Source-only compilation rewrites `import lumi.io.{…}` into local intrinsic
+//! wrappers so examples compile without the package loader.
 
 use crate::ir::CoreModule;
 use crate::lower::lower_hir_with_schemes;
@@ -16,6 +19,78 @@ pub type FrontendOptions = TypecheckOptions;
 /// Format a staged pipeline failure (`parse: …`, `lower: …`, …).
 fn stage<T, E: std::fmt::Display>(name: &str, r: Result<T, E>) -> Result<T, String> {
     r.map_err(|e| format!("{name}: {e}"))
+}
+
+/// Rewrite `import lumi.io.{…}` / `import lumi.io.*` into local vals that call
+/// `__println` / `__readStdin` / `__assert`. The CLI loader inlines real
+/// `lumi/io.lm`; this keeps the source-only test pipeline working.
+fn rewrite_lumi_io_imports_for_source_pipeline(src: &str) -> String {
+    let mut wrappers: Vec<String> = Vec::new();
+    let mut body: Vec<&str> = Vec::new();
+    for line in src.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("import lumi.io.") {
+            if rest == "*" {
+                push_io_wrapper(&mut wrappers, "println", "println");
+                push_io_wrapper(&mut wrappers, "readStdin", "readStdin");
+                push_io_wrapper(&mut wrappers, "assert", "assert");
+                continue;
+            }
+            if let Some(inner) = rest.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
+                for part in inner.split(',') {
+                    let part = part.trim();
+                    if part.is_empty() {
+                        continue;
+                    }
+                    let (export, local) = match part.split_once(" as ") {
+                        Some((n, a)) => (n.trim(), a.trim()),
+                        None => (part, part),
+                    };
+                    push_io_wrapper(&mut wrappers, export, local);
+                }
+                continue;
+            }
+        }
+        body.push(line);
+    }
+    if wrappers.is_empty() {
+        return src.to_string();
+    }
+    let mut out = String::with_capacity(src.len() + wrappers.len() * 40);
+    let mut inserted = false;
+    for (i, line) in body.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(line);
+        if !inserted && line.trim_start().starts_with("module ") {
+            out.push('\n');
+            for w in &wrappers {
+                out.push('\n');
+                out.push_str(w);
+            }
+            inserted = true;
+        }
+    }
+    if !inserted {
+        let mut prefix = wrappers.join("\n");
+        prefix.push('\n');
+        prefix.push_str(&out);
+        return prefix;
+    }
+    if src.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+fn push_io_wrapper(out: &mut Vec<String>, export: &str, local: &str) {
+    match export {
+        "println" => out.push(format!("val {local}(x) = {{ __println(x) }}")),
+        "readStdin" => out.push(format!("val {local} = {{ __readStdin() }}")),
+        "assert" => out.push(format!("val {local}(c) = {{ __assert(c) }}")),
+        _ => {}
+    }
 }
 
 /// Parse → HIR → [`typecheck_hir`] → Core (incl. mono).
@@ -42,7 +117,8 @@ pub fn compile_source_to_core_with_options(
     src: &str,
     opts: &FrontendOptions,
 ) -> Result<CoreModule, String> {
-    let ast = stage("parse", parse_module(src))?;
+    let src = rewrite_lumi_io_imports_for_source_pipeline(src);
+    let ast = stage("parse", parse_module(&src))?;
     let hir = stage("lower", lower_module(&ast))?;
     let typed = stage(
         "typecheck",
@@ -76,6 +152,23 @@ mod tests {
                 _ => false,
             })
         })
+    }
+
+    #[test]
+    fn rewrite_io_import_injects_println_wrapper() {
+        let src = "module M\nimport lumi.io.{println}\nval main = { println(1) }\n";
+        let out = rewrite_lumi_io_imports_for_source_pipeline(src);
+        assert!(out.contains("val println(x) = { __println(x) }"), "{out}");
+        assert!(!out.contains("import lumi.io"), "{out}");
+        compile_source_to_core(src).expect("core");
+    }
+
+    #[test]
+    fn rewrite_io_import_alias() {
+        let src = "module M\nimport lumi.io.{println as log}\nval main = { log(1) }\n";
+        let out = rewrite_lumi_io_imports_for_source_pipeline(src);
+        assert!(out.contains("val log(x) = { __println(x) }"), "{out}");
+        compile_source_to_core(src).expect("core");
     }
 
     #[test]

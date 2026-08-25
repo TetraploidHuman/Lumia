@@ -4,59 +4,19 @@ use super::Type;
 use rustc_hash::FxHashMap as HashMap;
 
 fn collect_vars(ty: &Type, out: &mut Vec<u32>) {
-    match ty {
-        Type::Var(v) => out.push(*v),
-        Type::List(t) | Type::Set(t) => collect_vars(t, out),
-        Type::Map(k, v) => {
-            collect_vars(k, out);
-            collect_vars(v, out);
+    ty.for_each(&mut |t| {
+        if let Type::Var(v) = t {
+            out.push(*v);
         }
-        Type::Tuple(ts) | Type::TuplePrefix(ts) => {
-            for t in ts {
-                collect_vars(t, out);
-            }
-        }
-        Type::Adt { params, .. } => {
-            for p in params {
-                collect_vars(p, out);
-            }
-        }
-        Type::Fun(ps, r, _) => {
-            for p in ps {
-                collect_vars(p, out);
-            }
-            collect_vars(r, out);
-        }
-        Type::Int | Type::Float | Type::Bool | Type::String | Type::Char | Type::Unit => {}
-    }
+    });
 }
 
 /// Num MVP: arithmetic type vars default to Int in IDE display (DESIGN: numeric default Int).
 pub fn subst_num_vars(ty: &Type, num_vars: &[u32]) -> Type {
-    match ty {
+    ty.map(&mut |t| match t {
         Type::Var(v) if num_vars.contains(v) => Type::Int,
-        Type::Var(v) => Type::Var(*v),
-        Type::List(t) => Type::List(Box::new(subst_num_vars(t, num_vars))),
-        Type::Set(t) => Type::Set(Box::new(subst_num_vars(t, num_vars))),
-        Type::Map(k, v) => Type::Map(
-            Box::new(subst_num_vars(k, num_vars)),
-            Box::new(subst_num_vars(v, num_vars)),
-        ),
-        Type::Tuple(ts) => Type::Tuple(ts.iter().map(|t| subst_num_vars(t, num_vars)).collect()),
-        Type::TuplePrefix(ts) => {
-            Type::TuplePrefix(ts.iter().map(|t| subst_num_vars(t, num_vars)).collect())
-        }
-        Type::Adt { name, params } => Type::Adt {
-            name: name.clone(),
-            params: params.iter().map(|t| subst_num_vars(t, num_vars)).collect(),
-        },
-        Type::Fun(ps, r, e) => Type::Fun(
-            ps.iter().map(|t| subst_num_vars(t, num_vars)).collect(),
-            Box::new(subst_num_vars(r, num_vars)),
-            *e,
-        ),
         other => other.clone(),
-    }
+    })
 }
 
 /// Stable letter names for free type vars (`T`, `U`, …) instead of `?0`.

@@ -5,6 +5,7 @@ mod lambda_lift;
 mod lower;
 mod mono;
 mod pipeline;
+mod sr_pattern;
 mod value_ty;
 mod visit;
 
@@ -16,6 +17,9 @@ pub use lower::{lower_hir, lower_hir_with_schemes};
 pub use pipeline::{
     compile_file_to_core, compile_source_to_core, compile_source_to_core_with_options,
     compile_source_to_core_with_parallel, FrontendOptions,
+};
+pub use sr_pattern::{
+    first_assign_from_local, first_loop, header_lt_bound, is_unit_inc, name_of, same_local,
 };
 pub use value_ty::{
     infer_value_ty, infer_value_ty_ctx, list_par_map_elem_ty, value_alloc_may_heap,

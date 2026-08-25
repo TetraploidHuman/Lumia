@@ -8,8 +8,8 @@
 //! calls unlock the latter norms).
 
 use lumi_core::{
-    collect_leaf_defs, max_local_in_fun, Block, CoreFun, CoreModule, Local, Op,
-    Value,
+    collect_leaf_defs, first_assign_from_local, first_loop, header_lt_bound, is_unit_inc,
+    max_local_in_fun, name_of, same_local, Block, CoreFun, CoreModule, Local, Op, Value,
 };
 use lumi_hir::Builtin;
 use lumi_syntax::BinOp;
@@ -506,86 +506,6 @@ fn match_zeros_fun(fun: &lumi_core::CoreFun, defs: &HashMap<u32, Value>) -> Opti
     } else {
         None
     }
-}
-
-fn first_assign_from_local(body: &Block, src: Local) -> Option<String> {
-    for op in &body.ops {
-        if let Op::Assign { name, value } = op {
-            if *value == src {
-                return Some(name.clone());
-            }
-        }
-    }
-    None
-}
-
-fn first_loop(body: &Block) -> Option<(&Block, &Block, &Block)> {
-    for op in &body.ops {
-        if let Op::Let {
-            value:
-                Value::Loop {
-                    header,
-                    body,
-                    latch,
-                },
-            ..
-        } = op
-        {
-            return Some((header, body, latch));
-        }
-    }
-    None
-}
-
-fn header_lt_bound(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String, Local)> {
-    let res = header.result?;
-    let Value::Binary {
-        op: BinOp::Lt,
-        left,
-        right,
-        ..
-    } = defs.get(&res.0)?
-    else {
-        return None;
-    };
-    let iv = name_of(*left, defs)?;
-    Some((iv, *right))
-}
-
-fn name_of(l: Local, defs: &HashMap<u32, Value>) -> Option<String> {
-    match defs.get(&l.0)? {
-        Value::Name(n) => Some(n.clone()),
-        _ => None,
-    }
-}
-
-/// Resolve `Local` / `Name` load / param identity through leaf defs.
-fn same_local(got: Local, want: Local, defs: &HashMap<u32, Value>) -> bool {
-    if got == want {
-        return true;
-    }
-    match defs.get(&got.0) {
-        Some(Value::Local(l)) => same_local(*l, want, defs),
-        Some(Value::Name(_)) => false, // slot load ≠ param unless assigned from it
-        _ => false,
-    }
-}
-
-fn is_unit_inc(dest: u32, iv: &str, defs: &HashMap<u32, Value>) -> bool {
-    let Some(Value::Binary {
-        op: BinOp::Add,
-        left,
-        right,
-        ..
-    }) = defs.get(&dest)
-    else {
-        return false;
-    };
-    let one_l = matches!(defs.get(&left.0), Some(Value::Int(1)));
-    let one_r = matches!(defs.get(&right.0), Some(Value::Int(1)));
-    let name_l = name_of(*left, defs).as_deref() == Some(iv);
-    let name_r = name_of(*right, defs).as_deref() == Some(iv);
-    (name_l && one_r) || (name_r && one_l)
 }
 
 fn is_list_get(v: &Value) -> Option<(Local, Local)> {

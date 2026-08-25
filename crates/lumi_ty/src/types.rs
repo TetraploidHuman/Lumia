@@ -96,6 +96,64 @@ impl Type {
             Type::String | Type::Bool | Type::Float | Type::Char | Type::Unit
         )
     }
+
+    /// Visit every node in this type tree (pre-order).
+    pub fn for_each<'a>(&'a self, f: &mut impl FnMut(&'a Type)) {
+        f(self);
+        match self {
+            Type::List(t) | Type::Set(t) => t.for_each(f),
+            Type::Map(k, v) => {
+                k.for_each(f);
+                v.for_each(f);
+            }
+            Type::Tuple(ts) | Type::TuplePrefix(ts) | Type::Adt { params: ts, .. } => {
+                for t in ts {
+                    t.for_each(f);
+                }
+            }
+            Type::Fun(ps, r, _) => {
+                for p in ps {
+                    p.for_each(f);
+                }
+                r.for_each(f);
+            }
+            Type::Int
+            | Type::Float
+            | Type::Bool
+            | Type::String
+            | Type::Char
+            | Type::Unit
+            | Type::Var(_) => {}
+        }
+    }
+
+    /// Rebuild this type by mapping every node (leaves first via recursive map).
+    pub fn map(&self, f: &mut impl FnMut(&Type) -> Type) -> Type {
+        let rebuilt = match self {
+            Type::List(t) => Type::List(Box::new(t.map(f))),
+            Type::Set(t) => Type::Set(Box::new(t.map(f))),
+            Type::Map(k, v) => Type::Map(Box::new(k.map(f)), Box::new(v.map(f))),
+            Type::Tuple(ts) => Type::Tuple(ts.iter().map(|t| t.map(f)).collect()),
+            Type::TuplePrefix(ts) => Type::TuplePrefix(ts.iter().map(|t| t.map(f)).collect()),
+            Type::Adt { name, params } => Type::Adt {
+                name: name.clone(),
+                params: params.iter().map(|t| t.map(f)).collect(),
+            },
+            Type::Fun(ps, r, e) => Type::Fun(
+                ps.iter().map(|t| t.map(f)).collect(),
+                Box::new(r.map(f)),
+                *e,
+            ),
+            Type::Int
+            | Type::Float
+            | Type::Bool
+            | Type::String
+            | Type::Char
+            | Type::Unit
+            | Type::Var(_) => self.clone(),
+        };
+        f(&rebuilt)
+    }
 }
 
 /// Effect set ε — empty = pure; `Var` is open during inference (zonked to Pure if unconstrained).
