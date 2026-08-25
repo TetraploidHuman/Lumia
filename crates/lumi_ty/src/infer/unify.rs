@@ -534,14 +534,11 @@ impl Infer {
 }
 
 pub(crate) fn occurs(v: u32, ty: &Type) -> bool {
-    match ty {
-        Type::Var(u) => *u == v,
-        Type::Fun(ps, r, _) => ps.iter().any(|p| occurs(v, p)) || occurs(v, r),
-        Type::List(t) => occurs(v, t),
-        Type::Set(t) => occurs(v, t),
-        Type::Map(k, t) => occurs(v, k) || occurs(v, t),
-        Type::Adt { params, .. } => params.iter().any(|p| occurs(v, p)),
-        Type::Tuple(ts) | Type::TuplePrefix(ts) => ts.iter().any(|p| occurs(v, p)),
-        _ => false,
-    }
+    let mut hit = false;
+    ty.for_each(&mut |t| {
+        if matches!(t, Type::Var(u) if *u == v) {
+            hit = true;
+        }
+    });
+    hit
 }

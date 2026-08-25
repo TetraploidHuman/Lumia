@@ -1,10 +1,12 @@
-//! Shared dense `List[Float]` SR pattern predicates (opt rewrite + codegen emit).
+//! Shared dense `List[Float]` SR pattern matchers (opt rewrite + codegen emit).
 //!
-//! Whole-function `match_*` wrappers stay in opt/codegen (return `()` vs Pats);
-//! the structural shape checks below are identical and live here.
+//! Whole-function `match_*` return param bundles; opt maps to `()` / symbol,
+//! codegen uses the same structs for RT kernel emission.
 
-use crate::sr_pattern::{header_lt_bound, is_unit_inc, name_of, same_local};
-use crate::{Block, Local, Op, Value};
+use crate::sr_pattern::{
+    first_assign_from_local, first_loop, header_lt_bound, is_unit_inc, name_of, same_local,
+};
+use crate::{Block, CoreFun, Local, Op, Value};
 use lumi_hir::Builtin;
 use lumi_syntax::BinOp;
 use rustc_hash::FxHashMap as HashMap;
@@ -531,6 +533,370 @@ pub fn fun_has_copy_shape(
     });
     let _ = out_slot;
     get_src && set && !saw_arith
+}
+
+pub fn fun_has_add_shape(
+    body: &Block,
+    defs: &HashMap<u32, Value>,
+    out_slot: &str,
+    a: Local,
+    b: Local,
+) -> bool {
+    let mut get_a = false;
+    let mut get_b = false;
+    let mut add = false;
+    let mut set = false;
+    let mut mul = false;
+    for v in defs.values() {
+        if let Some((lst, _)) = is_list_get(v) {
+            if list_arg_is(lst, a, defs) || name_of(lst, defs).as_deref() == Some(out_slot) {
+                get_a = true;
+            }
+            if list_arg_is(lst, b, defs) {
+                get_b = true;
+            }
+        }
+        if matches!(v, Value::Binary { op: BinOp::Add, .. }) {
+            add = true;
+        }
+        if matches!(v, Value::Binary { op: BinOp::Mul, .. }) {
+            mul = true;
+        }
+        if is_list_set(v).is_some() {
+            set = true;
+        }
+    }
+    for_each_let(body, &mut |val| {
+        if is_list_set(val).is_some() {
+            set = true;
+        }
+        if let Some((lst, _)) = is_list_get(val) {
+            if list_arg_is(lst, a, defs) || name_of(lst, defs).as_deref() == Some(out_slot) {
+                get_a = true;
+            }
+            if list_arg_is(lst, b, defs) {
+                get_b = true;
+            }
+        }
+        if matches!(val, Value::Binary { op: BinOp::Add, .. }) {
+            add = true;
+        }
+        if matches!(val, Value::Binary { op: BinOp::Mul, .. }) {
+            mul = true;
+        }
+    });
+    // Exclude axpy-like `y + α*x` (has Mul).
+    get_a && get_b && add && set && !mul
+}
+
+pub fn fun_has_fill_shape(body: &Block, defs: &HashMap<u32, Value>, out_slot: &str, v: Local) -> bool {
+    let mut set = false;
+    let mut uses_v = false;
+    let mut get_any = false;
+    let mut arith = false;
+    for vdef in defs.values() {
+        if is_list_get(vdef).is_some() {
+            get_any = true;
+        }
+        if is_list_set(vdef).is_some() {
+            set = true;
+        }
+        if mentions_local(vdef, v) {
+            uses_v = true;
+        }
+        if is_nontrivial_arith(vdef, defs) {
+            arith = true;
+        }
+    }
+    for_each_let(body, &mut |val| {
+        if is_list_set(val).is_some() {
+            set = true;
+        }
+        if is_list_get(val).is_some() {
+            get_any = true;
+        }
+        if is_nontrivial_arith(val, defs) {
+            arith = true;
+        }
+    });
+    let _ = out_slot;
+    set && uses_v && !get_any && !arith
+}
+
+pub fn fun_has_clamp_shape(
+    body: &Block,
+    defs: &HashMap<u32, Value>,
+    out_slot: &str,
+    lo: Local,
+    hi: Local,
+) -> bool {
+    let mut set = false;
+    let mut uses_lo = false;
+    let mut uses_hi = false;
+    let mut saw_if = false;
+    for_each_let(body, &mut |val| {
+        if is_list_set(val).is_some() {
+            set = true;
+        }
+        // Require a real `If` — loop `i < n` alone must not look like clamp.
+        if matches!(val, Value::If { .. }) {
+            saw_if = true;
+        }
+    });
+    for v in defs.values() {
+        if mentions_local(v, lo) {
+            uses_lo = true;
+        }
+        if mentions_local(v, hi) {
+            uses_hi = true;
+        }
+        if is_list_set(v).is_some() {
+            set = true;
+        }
+    }
+    for op in &body.ops {
+        if let Op::Assign { name, .. } = op {
+            if name == out_slot {
+                set = true;
+            }
+        }
+    }
+    set && saw_if && uses_lo && uses_hi
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DenseGemv {
+    pub m: Local,
+    pub n: Local,
+    pub a: Local,
+    pub x: Local,
+    pub y: Local,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DenseAddmm {
+    pub m: Local,
+    pub n: Local,
+    pub w: Local,
+    pub u: Local,
+    pub v: Local,
+    pub alpha: Local,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DenseAxpy {
+    pub y: Local,
+    pub alpha: Local,
+    pub x: Local,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DenseBin3 {
+    pub out: Local,
+    pub a: Local,
+    pub b: Local,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DenseClamp {
+    pub xs: Local,
+    pub lo: Local,
+    pub hi: Local,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DenseScale {
+    pub xs: Local,
+    pub alpha: Local,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DenseFill {
+    pub xs: Local,
+    pub v: Local,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DenseCopy {
+    pub dst: Local,
+    pub src: Local,
+}
+
+pub fn match_gemv_fun(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<DenseGemv> {
+    if fun.params.len() != 5 {
+        return None;
+    }
+    let (m, n, a, x, y) = (
+        fun.params[0],
+        fun.params[1],
+        fun.params[2],
+        fun.params[3],
+        fun.params[4],
+    );
+    let body = &fun.body;
+    let out_slot = first_assign_from_local(body, y)?;
+    let (header, loop_body, latch) = first_loop(body)?;
+    if !latch.ops.is_empty() {
+        return None;
+    }
+    let (i_slot, bound) = header_lt_bound(header, defs)?;
+    if !same_local(bound, m, defs) {
+        return None;
+    }
+    if !body_has_gemv_inner(loop_body, defs, &out_slot, &i_slot, a, x, n) {
+        return None;
+    }
+    Some(DenseGemv { m, n, a, x, y })
+}
+
+pub fn match_gemv_t_fun(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<DenseGemv> {
+    if fun.params.len() != 5 {
+        return None;
+    }
+    let (m, n, a, x, y) = (
+        fun.params[0],
+        fun.params[1],
+        fun.params[2],
+        fun.params[3],
+        fun.params[4],
+    );
+    let body = &fun.body;
+    let out_slot = first_assign_from_local(body, y)?;
+    if !fun_has_gemv_t_shape(body, defs, &out_slot, a, x, m, n) {
+        return None;
+    }
+    Some(DenseGemv { m, n, a, x, y })
+}
+
+pub fn match_addmm_fun(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<DenseAddmm> {
+    if fun.params.len() != 6 {
+        return None;
+    }
+    let (m, n, w, u, v, alpha) = (
+        fun.params[0],
+        fun.params[1],
+        fun.params[2],
+        fun.params[3],
+        fun.params[4],
+        fun.params[5],
+    );
+    let body = &fun.body;
+    let out_slot = first_assign_from_local(body, w)?;
+    if !fun_has_addmm_shape(body, defs, &out_slot, u, v, alpha, m, n) {
+        return None;
+    }
+    Some(DenseAddmm {
+        m,
+        n,
+        w,
+        u,
+        v,
+        alpha,
+    })
+}
+
+pub fn match_axpy_fun(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<DenseAxpy> {
+    if fun.params.len() != 3 {
+        return None;
+    }
+    let (y, alpha, x) = (fun.params[0], fun.params[1], fun.params[2]);
+    let body = &fun.body;
+    let out_slot = first_assign_from_local(body, y)?;
+    if !fun_has_axpy_shape(body, defs, &out_slot, x, alpha) {
+        return None;
+    }
+    Some(DenseAxpy { y, alpha, x })
+}
+
+pub fn match_sub_fun(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<DenseBin3> {
+    if fun.params.len() != 3 {
+        return None;
+    }
+    let (out, a, b) = (fun.params[0], fun.params[1], fun.params[2]);
+    let body = &fun.body;
+    let out_slot = first_assign_from_local(body, out)?;
+    if !fun_has_sub_shape(body, defs, &out_slot, a, b) {
+        return None;
+    }
+    Some(DenseBin3 { out, a, b })
+}
+
+pub fn match_add_fun(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<DenseBin3> {
+    if fun.params.len() != 3 {
+        return None;
+    }
+    let (out, a, b) = (fun.params[0], fun.params[1], fun.params[2]);
+    let body = &fun.body;
+    let out_slot = first_assign_from_local(body, out)?;
+    if !fun_has_add_shape(body, defs, &out_slot, a, b) {
+        return None;
+    }
+    Some(DenseBin3 { out, a, b })
+}
+
+pub fn match_mul_fun(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<DenseBin3> {
+    if fun.params.len() != 3 {
+        return None;
+    }
+    let (out, a, b) = (fun.params[0], fun.params[1], fun.params[2]);
+    let body = &fun.body;
+    let out_slot = first_assign_from_local(body, out)?;
+    if !fun_has_mul_shape(body, defs, &out_slot, a, b) {
+        return None;
+    }
+    Some(DenseBin3 { out, a, b })
+}
+
+pub fn match_clamp_fun(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<DenseClamp> {
+    if fun.params.len() != 3 {
+        return None;
+    }
+    let (xs, lo, hi) = (fun.params[0], fun.params[1], fun.params[2]);
+    let body = &fun.body;
+    let out_slot = first_assign_from_local(body, xs)?;
+    if !fun_has_clamp_shape(body, defs, &out_slot, lo, hi) {
+        return None;
+    }
+    Some(DenseClamp { xs, lo, hi })
+}
+
+pub fn match_scale_fun(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<DenseScale> {
+    if fun.params.len() != 2 {
+        return None;
+    }
+    let (xs, alpha) = (fun.params[0], fun.params[1]);
+    let body = &fun.body;
+    let out_slot = first_assign_from_local(body, xs)?;
+    if !fun_has_scale_shape(body, defs, &out_slot, alpha) {
+        return None;
+    }
+    Some(DenseScale { xs, alpha })
+}
+
+pub fn match_fill_fun(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<DenseFill> {
+    if fun.params.len() != 2 {
+        return None;
+    }
+    let (xs, v) = (fun.params[0], fun.params[1]);
+    let body = &fun.body;
+    let out_slot = first_assign_from_local(body, xs)?;
+    if !fun_has_fill_shape(body, defs, &out_slot, v) {
+        return None;
+    }
+    Some(DenseFill { xs, v })
+}
+
+pub fn match_copy_fun(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<DenseCopy> {
+    if fun.params.len() != 2 {
+        return None;
+    }
+    let (dst, src) = (fun.params[0], fun.params[1]);
+    let body = &fun.body;
+    let out_slot = first_assign_from_local(body, dst)?;
+    if !fun_has_copy_shape(body, defs, &out_slot, src) {
+        return None;
+    }
+    Some(DenseCopy { dst, src })
 }
 
 pub fn mentions_local(v: &Value, target: Local) -> bool {
