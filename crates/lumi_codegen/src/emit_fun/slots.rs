@@ -151,6 +151,26 @@ impl<'ctx> Codegen<'ctx> {
         self.frame.slot_i64_const.insert(name.to_string(), known);
     }
 
+    pub(crate) fn load_slot_i64(&mut self, name: &str) -> Result<inkwell::values::IntValue<'ctx>> {
+        let v = self.load_slot(name)?;
+        self.as_i64(v)
+    }
+
+    pub(crate) fn store_slot_i64(
+        &mut self,
+        name: &str,
+        v: inkwell::values::IntValue<'ctx>,
+    ) -> Result<()> {
+        let ptr = *self
+            .frame
+            .slots
+            .get(name)
+            .with_context(|| format!("missing slot {name}"))?;
+        crate::error::llvm(self.llvm.builder.build_store(ptr, v))?;
+        self.note_slot_i64_const(name, v);
+        Ok(())
+    }
+
     /// True when the slot's last store was exactly the const `expect`.
     pub(crate) fn slot_known_eq(&self, name: &str, expect: i64) -> bool {
         self.frame.slot_i64_const.get(name) == Some(&Some(expect))

@@ -341,44 +341,8 @@ fn is_unit_inc(dest: u32, name: &str, defs: &HashMap<u32, Value>) -> bool {
 #[cfg(test)]
 mod match_tests {
     use super::*;
+    use lumi_core::collect_loop_triples;
     use lumi_opt::{compile_source_to_optimized, OptOptions};
-
-    fn find_loops(b: &Block, out: &mut Vec<(Block, Block, Block)>) {
-        for op in &b.ops {
-            if let Op::Let {
-                value:
-                    Value::Loop {
-                        header,
-                        body,
-                        latch,
-                    },
-                ..
-            } = op
-            {
-                out.push((
-                    header.as_ref().clone(),
-                    body.as_ref().clone(),
-                    latch.as_ref().clone(),
-                ));
-                find_loops(body, out);
-                find_loops(header, out);
-                find_loops(latch, out);
-            }
-            if let Op::Let {
-                value:
-                    Value::If {
-                        then_block,
-                        else_block,
-                        ..
-                    },
-                ..
-            } = op
-            {
-                find_loops(then_block, out);
-                find_loops(else_block, out);
-            }
-        }
-    }
 
     #[test]
     fn matches_poly_checksum() {
@@ -395,7 +359,7 @@ mod match_tests {
             }
             let defs = crate::nsw_iv::collect_leaf_defs(&f.body);
             let mut loops = vec![];
-            find_loops(&f.body, &mut loops);
+            collect_loop_triples(&f.body, &mut loops);
             for (h, b, l) in &loops {
                 if let Some(p) = match_affine2_rem_sum(h, b, l, &defs) {
                     assert_eq!(p.n, 12_000);

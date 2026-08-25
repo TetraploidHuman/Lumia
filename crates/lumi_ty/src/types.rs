@@ -60,6 +60,44 @@ pub enum Type {
     TuplePrefix(Vec<Type>),
 }
 
+impl Type {
+    /// Product / container shapes that carry heap layout in the mono key.
+    pub fn is_heap_structure(&self) -> bool {
+        matches!(
+            self,
+            Type::Adt { .. }
+                | Type::List(_)
+                | Type::Map(_, _)
+                | Type::Set(_)
+                | Type::Tuple(_)
+                | Type::TuplePrefix(_)
+        )
+    }
+
+    /// Types that may hold GC roots (slots must not demote these to Float).
+    pub fn is_gc_ref(&self) -> bool {
+        matches!(
+            self,
+            Type::List(_)
+                | Type::Map(_, _)
+                | Type::Set(_)
+                | Type::Adt { .. }
+                | Type::String
+                | Type::Fun(_, _, _)
+                | Type::Tuple(_)
+                | Type::TuplePrefix(_)
+        )
+    }
+
+    /// Scalar / string rets that are never ABI-erased by arg MonoKeys.
+    pub fn is_abi_concrete_ret(&self) -> bool {
+        matches!(
+            self,
+            Type::String | Type::Bool | Type::Float | Type::Char | Type::Unit
+        )
+    }
+}
+
 /// Effect set ε — empty = pure; `Var` is open during inference (zonked to Pure if unconstrained).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Effect {

@@ -7,7 +7,7 @@ use super::uri::uri_to_path;
 use crate::check::{
     check_program_with_overlays, check_source_recovering, OverlayCheckError, PartialCheck,
 };
-use crate::load::{LoadedProgram, SourceFile};
+use crate::load::{normalize_overlays, LoadedProgram, SourceFile};
 use anyhow::Result;
 use lumi_ty::TypedModule;
 use rustc_hash::FxHashMap as HashMap;
@@ -101,11 +101,13 @@ fn current_overlays() -> HashMap<PathBuf, String> {
     let Some(state) = st.as_ref() else {
         return HashMap::default();
     };
-    state
-        .docs
-        .iter()
-        .map(|(uri, text)| (uri_to_path(uri), text.clone()))
-        .collect()
+    normalize_overlays(
+        &state
+            .docs
+            .iter()
+            .map(|(uri, text)| (uri_to_path(uri), text.clone()))
+            .collect(),
+    )
 }
 
 /// Prefer multi-file load with overlays when the path exists; else buffer-only.

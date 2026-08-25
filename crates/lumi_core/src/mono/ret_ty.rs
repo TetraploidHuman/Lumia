@@ -356,17 +356,7 @@ fn scan_value_slots(
 }
 
 fn is_ref_ty(t: &Type) -> bool {
-    matches!(
-        t,
-        Type::List(_)
-            | Type::Map(_, _)
-            | Type::Set(_)
-            | Type::Adt { .. }
-            | Type::String
-            | Type::Fun(_, _, _)
-            | Type::Tuple(_)
-            | Type::TuplePrefix(_)
-    )
+    t.is_gc_ref()
 }
 
 fn merge_slot_ty(prev: Option<Type>, next: Type) -> Type {

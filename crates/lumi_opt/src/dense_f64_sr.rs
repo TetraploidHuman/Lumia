@@ -8,7 +8,8 @@
 //! calls unlock the latter norms).
 
 use lumi_core::{
-    for_each_block_dfs, max_local_in_fun, Block, CoreFun, CoreModule, Local, Op, Value,
+    collect_leaf_defs, max_local_in_fun, Block, CoreFun, CoreModule, Local, Op,
+    Value,
 };
 use lumi_hir::Builtin;
 use lumi_syntax::BinOp;
@@ -176,28 +177,6 @@ fn rewrite_body_to_call(fun: &mut CoreFun, sym: &str) {
     };
     // Keep typed as list/float so codegen roots / ABI stay correct.
     fun.effect = Effect::pure();
-}
-
-fn collect_leaf_defs(body: &Block) -> HashMap<u32, Value> {
-    let mut all_defs: HashMap<u32, Value> = HashMap::default();
-    for_each_block_dfs(body, &mut |b| {
-        for op in &b.ops {
-            if let Op::Let { local, value, .. } = op {
-                if matches!(
-                    value,
-                    Value::Int(_)
-                        | Value::Float(_)
-                        | Value::Name(_)
-                        | Value::Binary { .. }
-                        | Value::Builtin { .. }
-                        | Value::AllocList { .. }
-                ) {
-                    all_defs.insert(local.0, value.clone());
-                }
-            }
-        }
-    });
-    all_defs
 }
 
 fn match_gemv_fun(fun: &lumi_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<()> {

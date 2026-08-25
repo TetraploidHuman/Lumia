@@ -11,6 +11,7 @@
 
 mod analyze;
 mod completion;
+mod completion_item;
 mod cursor;
 mod definition;
 mod diagnostics;

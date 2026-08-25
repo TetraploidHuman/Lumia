@@ -297,6 +297,72 @@ pub fn for_each_block_dfs(block: &Block, f: &mut impl FnMut(&Block)) {
     }
 }
 
+/// SSA locals defined by simple/computable `Let` RHS (constants, names, small builtins).
+/// Used by SR pattern matchers and NSW IV analysis.
+pub fn collect_leaf_defs(body: &Block) -> HashMap<u32, Value> {
+    let mut all_defs = HashMap::default();
+    for_each_block_dfs(body, &mut |b| {
+        for op in &b.ops {
+            if let Op::Let { local, value, .. } = op {
+                if is_leaf_def_value(value) {
+                    all_defs.insert(local.0, value.clone());
+                }
+            }
+        }
+    });
+    all_defs
+}
+
+fn is_leaf_def_value(value: &Value) -> bool {
+    matches!(
+        value,
+        Value::Int(_)
+            | Value::Float(_)
+            | Value::Name(_)
+            | Value::Binary { .. }
+            | Value::Builtin { .. }
+            | Value::AllocList { .. }
+    )
+}
+
+/// Collect every `(header, body, latch)` from nested `Loop` values (SR test/match helper).
+pub fn collect_loop_triples(block: &Block, out: &mut Vec<(Block, Block, Block)>) {
+    for op in &block.ops {
+        if let Op::Let {
+            value:
+                Value::Loop {
+                    header,
+                    body,
+                    latch,
+                },
+            ..
+        } = op
+        {
+            out.push((
+                header.as_ref().clone(),
+                body.as_ref().clone(),
+                latch.as_ref().clone(),
+            ));
+            collect_loop_triples(body, out);
+            collect_loop_triples(header, out);
+            collect_loop_triples(latch, out);
+        }
+        if let Op::Let {
+            value:
+                Value::If {
+                    then_block,
+                    else_block,
+                    ..
+                },
+            ..
+        } = op
+        {
+            collect_loop_triples(then_block, out);
+            collect_loop_triples(else_block, out);
+        }
+    }
+}
+
 /// Total SSA op count in `block` and nested If/Loop/Lambda bodies.
 pub fn count_ops(block: &Block) -> usize {
     let mut n = 0;

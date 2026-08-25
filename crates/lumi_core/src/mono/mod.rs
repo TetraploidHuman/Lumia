@@ -1,6 +1,7 @@
 //! Monomorphization, FunRef directization, and trait-method resolve.
 
 mod fun_index;
+mod funref_env;
 mod key;
 mod ret_ty;
 mod specialize;

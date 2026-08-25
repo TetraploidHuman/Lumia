@@ -758,45 +758,8 @@ fn const_i64(defs: &HashMap<u32, Value>, l: Local) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lumi_core::{Op, Value};
+    use lumi_core::collect_loop_triples;
     use lumi_opt::{compile_source_to_optimized, OptOptions};
-
-    fn find_loops(block: &Block, out: &mut Vec<(Block, Block, Block)>) {
-        for op in &block.ops {
-            if let Op::Let {
-                value:
-                    Value::Loop {
-                        header,
-                        body,
-                        latch,
-                    },
-                ..
-            } = op
-            {
-                out.push((
-                    header.as_ref().clone(),
-                    body.as_ref().clone(),
-                    latch.as_ref().clone(),
-                ));
-                find_loops(body, out);
-                find_loops(header, out);
-                find_loops(latch, out);
-            }
-            if let Op::Let {
-                value:
-                    Value::If {
-                        then_block,
-                        else_block,
-                        ..
-                    },
-                ..
-            } = op
-            {
-                find_loops(then_block, out);
-                find_loops(else_block, out);
-            }
-        }
-    }
 
     #[test]
     fn matches_float_orbit_and_mandelbrot_in_bench() {
@@ -811,7 +774,7 @@ mod tests {
         for f in &core.functions {
             let defs = crate::nsw_iv::collect_leaf_defs(&f.body);
             let mut loops = vec![];
-            find_loops(&f.body, &mut loops);
+            collect_loop_triples(&f.body, &mut loops);
             for (h, b, l) in &loops {
                 if match_float_orbit(h, b, l, &defs).is_some() {
                     fo += 1;
@@ -838,7 +801,7 @@ mod tests {
         for f in &core.functions {
             let defs = crate::nsw_iv::collect_leaf_defs(&f.body);
             let mut loops = vec![];
-            find_loops(&f.body, &mut loops);
+            collect_loop_triples(&f.body, &mut loops);
             for (h, b, l) in &loops {
                 if match_float_orbit(h, b, l, &defs).is_some() {
                     fo += 1;

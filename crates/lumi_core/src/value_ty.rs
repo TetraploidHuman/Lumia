@@ -210,7 +210,7 @@ pub fn infer_value_ty_ctx(
                 (None, Some(site)) => site,
                 (None, None) => Type::Int,
             };
-            identity_float_call_ret(ret, fun, args, ctx)
+            identity_float_call_ret(ret, Some(fun.as_str()), args, ctx)
         }
         Value::Builtin {
             name: Builtin::ListParMap,
@@ -256,28 +256,22 @@ pub fn infer_value_ty_ctx(
                     .and_then(|name| ctx.fun_ret_tys.and_then(|m| m.get(name).cloned()))
                     .unwrap_or(Type::Int),
             };
-            if matches!(&ret, Type::List(e) if matches!(e.as_ref(), Type::Int)) {
-                if let Some(name) = ctx.funref_locals.and_then(|m| m.get(&callee.0)) {
-                    let ptys = ctx
-                        .fun_param_tys
-                        .and_then(|m| m.get(name).cloned())
-                        .unwrap_or_default();
-                    if args.len() == 1
-                        && ptys.len() == 1
-                        && matches!(ptys[0], Type::Int)
-                        && matches!(ctx.local_tys.get(&args[0].0), Some(Type::Float))
-                    {
-                        return Type::Float;
-                    }
-                }
-            }
-            ret
+            let fun_name = ctx.funref_locals.and_then(|m| m.get(&callee.0)).map(|s| s.as_str());
+            identity_float_call_ret(ret, fun_name, args, ctx)
         }
         Value::Loop { .. } | Value::Lambda { .. } => Type::Int,
     }
 }
 
-fn identity_float_call_ret(ret: Type, fun: &str, args: &[Local], ctx: InferValueCtx<'_>) -> Type {
+fn identity_float_call_ret(
+    ret: Type,
+    fun: Option<&str>,
+    args: &[Local],
+    ctx: InferValueCtx<'_>,
+) -> Type {
+    let Some(fun) = fun else {
+        return ret;
+    };
     if matches!(&ret, Type::List(e) if matches!(e.as_ref(), Type::Int)) {
         let ptys = ctx
             .fun_param_tys

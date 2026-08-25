@@ -1,6 +1,8 @@
 //! Shared program typecheck + assert annotation for CLI and LSP.
 
-use crate::load::{load_program, load_program_with_overlays, LoadedProgram, SourceFile};
+use crate::load::{
+    load_program, load_program_with_overlays, path_label, LoadedProgram, SourceFile,
+};
 use anyhow::Result;
 use lumi_hir::lower_module;
 use lumi_syntax::{parse_module_recovering, stamp_module, Span};
@@ -156,9 +158,7 @@ fn annotate_assert_expr(e: &mut lumi_hir::Expr, loaded: &LoadedProgram) {
             for a in args.iter_mut() {
                 annotate_assert_expr(a, loaded);
             }
-            if args.len() == 1 {
-                push_assert_message(args, *span, loaded);
-            }
+            ensure_assert_message(args, *span, loaded);
         }
         Expr::Call { callee, args, span } => {
             if let Expr::Var(name, _) = callee.as_ref() {
@@ -168,17 +168,11 @@ fn annotate_assert_expr(e: &mut lumi_hir::Expr, loaded: &LoadedProgram) {
                     }
                     if args.len() == 1 {
                         let cond = args.remove(0);
-                        let file = loaded.file(span.file);
-                        let starts = lumi_syntax::line_starts(&file.src);
-                        let (line, _) = lumi_syntax::byte_to_line_col(&starts, span.start);
-                        let msg = format!(
-                            "{}:{}: assert failed",
-                            path_label(&file.path),
-                            line
-                        );
+                        let mut assert_args = vec![cond];
+                        ensure_assert_message(&mut assert_args, *span, loaded);
                         *e = Expr::BuiltinCall {
                             name: Builtin::Assert,
-                            args: vec![cond, Expr::String(msg, *span)],
+                            args: assert_args,
                             span: *span,
                         };
                     }
@@ -254,19 +248,20 @@ fn annotate_assert_expr(e: &mut lumi_hir::Expr, loaded: &LoadedProgram) {
     }
 }
 
-fn push_assert_message(args: &mut Vec<lumi_hir::Expr>, span: lumi_syntax::Span, loaded: &LoadedProgram) {
+/// Append `path:line: assert failed` when the assert has only a condition.
+fn ensure_assert_message(
+    args: &mut Vec<lumi_hir::Expr>,
+    span: lumi_syntax::Span,
+    loaded: &LoadedProgram,
+) {
+    if args.len() != 1 {
+        return;
+    }
     let file = loaded.file(span.file);
     let starts = lumi_syntax::line_starts(&file.src);
     let (line, _) = lumi_syntax::byte_to_line_col(&starts, span.start);
     let msg = format!("{}:{}: assert failed", path_label(&file.path), line);
     args.push(lumi_hir::Expr::String(msg, span));
-}
-
-fn path_label(path: &Path) -> String {
-    path.file_name()
-        .and_then(|s| s.to_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| path.display().to_string())
 }
 
 fn diag_err(loaded: &LoadedProgram, span: Span, kind: &str, message: &str) -> anyhow::Error {

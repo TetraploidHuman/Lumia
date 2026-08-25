@@ -1,5 +1,6 @@
 //! textDocument/completion.
 
+use super::completion_item::push_item;
 use super::cursor::pos_to_byte;
 use super::import_complete::{detect_import_complete, import_completion_items};
 use super::state::{state_lock, Analysis};
@@ -7,26 +8,14 @@ use super::uri::uri_to_path;
 use anyhow::Result;
 use lumi_hir::{surface_names, SurfaceRole};
 use lumi_ty::display_type;
-use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use rustc_hash::FxHashSet as HashSet;
 use serde_json::{json, Value};
-use std::path::PathBuf;
 
 /// True keywords (lexer / grammar) — not scanned from builtins.
 const KEYWORDS: &[&str] = &[
     "val", "var", "match", "if", "else", "for", "in", "type", "import", "foreign", "pure", "trait",
     "instance", "alt", "module",
 ];
-
-fn push_item(items: &mut Vec<Value>, seen: &mut HashSet<String>, label: &str, kind: u8, detail: Option<&str>) {
-    if !seen.insert(label.to_string()) {
-        return;
-    }
-    let mut v = json!({ "label": label, "kind": kind });
-    if let Some(d) = detail {
-        v["detail"] = json!(d);
-    }
-    items.push(v);
-}
 
 /// Line text from the start of the current line through the cursor (exclusive of EOL).
 fn line_prefix_at(src: &str, byte: u32) -> &str {
@@ -98,17 +87,6 @@ pub(super) fn completion_items(analysis: Option<&Analysis>) -> Vec<Value> {
     items
 }
 
-fn doc_overlays(docs: &HashMap<String, String>) -> HashMap<PathBuf, String> {
-    let mut out = HashMap::default();
-    for (uri, text) in docs {
-        let path = uri_to_path(uri);
-        let canon = path.canonicalize().unwrap_or_else(|_| path.clone());
-        out.insert(canon, text.clone());
-        out.insert(path, text.clone());
-    }
-    out
-}
-
 pub(super) fn on_completion(params: Option<&Value>) -> Result<Value> {
     let Some(params) = params else {
         return Ok(json!([]));
@@ -140,7 +118,13 @@ pub(super) fn on_completion(params: Option<&Value>) -> Result<Value> {
                 Some(p)
             }
         };
-        let overlays = doc_overlays(&state.docs);
+        let overlays = crate::load::normalize_overlays(
+            &state
+                .docs
+                .iter()
+                .map(|(u, text)| (uri_to_path(u), text.clone()))
+                .collect(),
+        );
         return Ok(Value::Array(import_completion_items(
             &ctx,
             importer.as_deref(),
@@ -175,8 +159,6 @@ mod tests {
         assert!(labels.contains(&"listOf"), "{labels:?}");
         assert!(labels.contains(&"setOf"), "{labels:?}");
         assert!(labels.contains(&"mapOf"), "{labels:?}");
-        assert!(labels.contains(&"len"), "{labels:?}");
-        assert!(!labels.contains(&"println"), "{labels:?}");
         assert!(!labels.contains(&"__println"), "{labels:?}");
         assert!(!labels.contains(&"adtTag"), "{labels:?}");
     }

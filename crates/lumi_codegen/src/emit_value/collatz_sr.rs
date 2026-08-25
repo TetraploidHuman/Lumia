@@ -10,7 +10,7 @@
 //! Even runs become `k = cttz(x); x >>= k; steps += k`.
 //!
 //! Note: LICM may hoist `Int` literals outside the loop; matching therefore uses
-//! function-wide [`crate::nsw_iv::collect_leaf_defs`].
+//! function-wide [`lumi_core::collect_leaf_defs`].
 
 use inkwell::values::{BasicValueEnum, FunctionValue, IntValue};
 use inkwell::IntPredicate;
@@ -252,22 +252,6 @@ impl<'ctx> Codegen<'ctx> {
             .basic()
             .context("cttz result")?
             .into_int_value())
-    }
-
-    pub(crate) fn load_slot_i64(&mut self, name: &str) -> Result<IntValue<'ctx>> {
-        let v = self.load_slot(name)?;
-        self.as_i64(v)
-    }
-
-    pub(crate) fn store_slot_i64(&mut self, name: &str, v: IntValue<'ctx>) -> Result<()> {
-        let ptr = *self
-            .frame
-            .slots
-            .get(name)
-            .with_context(|| format!("missing slot {name}"))?;
-        crate::error::llvm(self.llvm.builder.build_store(ptr, v))?;
-        self.note_slot_i64_const(name, v);
-        Ok(())
     }
 }
 
@@ -692,44 +676,8 @@ fn is_unit_inc(dest: u32, name: &str, defs: &HashMap<u32, Value>) -> bool {
 #[cfg(test)]
 mod match_tests {
     use super::*;
+    use lumi_core::collect_loop_triples;
     use lumi_opt::{compile_source_to_optimized, OptOptions};
-
-    fn find_loops(b: &Block, out: &mut Vec<(Block, Block, Block)>) {
-        for op in &b.ops {
-            if let Op::Let {
-                value:
-                    Value::Loop {
-                        header,
-                        body,
-                        latch,
-                    },
-                ..
-            } = op
-            {
-                out.push((
-                    header.as_ref().clone(),
-                    body.as_ref().clone(),
-                    latch.as_ref().clone(),
-                ));
-                find_loops(body, out);
-                find_loops(header, out);
-                find_loops(latch, out);
-            }
-            if let Op::Let {
-                value:
-                    Value::If {
-                        then_block,
-                        else_block,
-                        ..
-                    },
-                ..
-            } = op
-            {
-                find_loops(then_block, out);
-                find_loops(else_block, out);
-            }
-        }
-    }
 
     #[test]
     fn matches_collatz_steps_loop() {
@@ -748,7 +696,7 @@ mod match_tests {
             }
             let defs = crate::nsw_iv::collect_leaf_defs(&f.body);
             let mut loops = vec![];
-            find_loops(&f.body, &mut loops);
+            collect_loop_triples(&f.body, &mut loops);
             for (h, b, l) in &loops {
                 if let Some(p) = match_collatz_loop(h, b, l, &defs) {
                     assert!(!p.x.is_empty() && !p.steps.is_empty());

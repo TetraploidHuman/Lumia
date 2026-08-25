@@ -389,7 +389,7 @@ fn inline_lumi_imports_buffer(
     Ok(out)
 }
 
-pub(super) fn path_label(path: &Path) -> String {
+pub(crate) fn path_label(path: &Path) -> String {
     path.file_name()
         .and_then(|s| s.to_str())
         .map(|s| s.to_string())

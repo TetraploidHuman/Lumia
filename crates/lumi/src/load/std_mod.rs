@@ -8,22 +8,59 @@ use std::path::{Path, PathBuf};
 
 use crate::vis::item_name;
 
-/// Submodules auto-imported into every entry module (Kotlin-style core stdlib).
-/// Domain modules (`linalg`, `cn`, `efe`) use explicit `import` — their short
-/// names (`add`, `mul`, …) would collide with user packages.
-pub(crate) const LUMI_STD_SUBMODULES: &[&str] = &["io", "string", "option", "result"];
+/// One known `lumi.<name>` module.
+#[derive(Debug, Clone, Copy)]
+struct LumiMod {
+    name: &'static str,
+    /// Relative path under workspace `lumi/`.
+    file: &'static str,
+    /// Auto-imported into every entry module (Kotlin-style core).
+    auto_import: bool,
+}
 
-/// All known `lumi.<name>` modules (auto-import core + domain). Used by the loader
-/// and LSP import-path completion — keep in sync with [`lumi_module`].
-pub(crate) const KNOWN_LUMI_MODULES: &[&str] =
-    &["io", "string", "option", "result", "linalg", "efe", "cn"];
+/// Single registry: auto-import core first, then domain modules that need an
+/// explicit `import` (short names like `add`/`mul` would collide with user pkgs).
+macro_rules! define_lumi_modules {
+    (
+        auto: [$(($an:literal, $af:literal)),* $(,)?];
+        domain: [$(($dn:literal, $df:literal)),* $(,)?];
+    ) => {
+        const LUMI_MODULES: &[LumiMod] = &[
+            $(LumiMod { name: $an, file: $af, auto_import: true },)*
+            $(LumiMod { name: $dn, file: $df, auto_import: false },)*
+        ];
+        /// Submodules auto-imported into every entry module.
+        pub(crate) const LUMI_STD_SUBMODULES: &[&str] = &[$($an),*];
+        /// All known `lumi.<name>` modules (auto-import core + domain).
+        pub(crate) const KNOWN_LUMI_MODULES: &[&str] = &[$($an,)* $($dn),*];
+    };
+}
 
-/// Synthetic `import lumi.<mod>.*` for each known stdlib submodule.
+define_lumi_modules! {
+    auto: [
+        ("io", "io.lm"),
+        ("string", "string.lm"),
+        ("option", "option.lm"),
+        ("result", "result.lm"),
+    ];
+    domain: [
+        ("linalg", "linalg.lm"),
+        ("efe", "efe.lm"),
+        ("cn", "cn.lm"),
+    ];
+}
+
+fn find_lumi_mod(name: &str) -> Option<&'static LumiMod> {
+    LUMI_MODULES.iter().find(|m| m.name == name)
+}
+
+/// Synthetic `import lumi.<mod>.*` for each auto-imported stdlib submodule.
 pub(super) fn default_std_imports() -> Vec<Import> {
-    LUMI_STD_SUBMODULES
+    LUMI_MODULES
         .iter()
+        .filter(|m| m.auto_import)
         .map(|m| Import {
-            path: vec!["lumi".into(), (*m).into()],
+            path: vec!["lumi".into(), m.name.into()],
             names: ImportNames::All,
             span: Span::dummy(),
         })
@@ -42,25 +79,30 @@ pub(super) fn is_lumi(path: &[String]) -> bool {
     path.first().map(|s| s.as_str() == "lumi").unwrap_or(false)
 }
 
+fn known_lumi_list() -> String {
+    LUMI_MODULES
+        .iter()
+        .map(|m| format!("lumi.{}", m.name))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Resolve `lumi.<name>` → relative path under workspace `lumi/`.
 pub(super) fn lumi_module(path: &[String]) -> Result<&'static str> {
-    let key: Vec<&str> = path.iter().map(|s| s.as_str()).collect();
-    match key.as_slice() {
-        ["lumi", "io"] => Ok("io.lm"),
-        ["lumi", "string"] => Ok("string.lm"),
-        ["lumi", "option"] => Ok("option.lm"),
-        ["lumi", "result"] => Ok("result.lm"),
-        ["lumi", "linalg"] => Ok("linalg.lm"),
-        ["lumi", "efe"] => Ok("efe.lm"),
-        ["lumi", "cn"] => Ok("cn.lm"),
+    match path {
+        [root, name] if root.as_str() == "lumi" => find_lumi_mod(name)
+            .map(|m| m.file)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "unknown standard module `{}` (known: {})",
+                    path.join("."),
+                    known_lumi_list()
+                )
+            }),
         _ => bail!(
             "unknown standard module `{}` (known: {})",
             path.join("."),
-            KNOWN_LUMI_MODULES
-                .iter()
-                .map(|m| format!("lumi.{m}"))
-                .collect::<Vec<_>>()
-                .join(", ")
+            known_lumi_list()
         ),
     }
 }
@@ -85,7 +127,7 @@ pub(super) fn workspace_lumi_dir() -> PathBuf {
 }
 
 pub(super) fn is_stdlib_module_name(name: &str) -> bool {
-    LUMI_STD_SUBMODULES.contains(&name)
+    find_lumi_mod(name).is_some_and(|m| m.auto_import)
 }
 
 /// User modules get default std imports; stdlib sources under `lumi/` do not.
@@ -134,6 +176,24 @@ pub(super) fn drop_entry_shadowed(items: Vec<Item>, reserved: &HashSet<String>) 
         .collect()
 }
 
+fn ensure_exported(
+    name: &str,
+    path: &[String],
+    exports: &[String],
+    export_set: &HashSet<&str>,
+) -> Result<()> {
+    if export_set.contains(name) {
+        Ok(())
+    } else {
+        bail!(
+            "`{}` is not exported by `{}` (exports: {})",
+            name,
+            path.join("."),
+            exports.join(", ")
+        )
+    }
+}
+
 pub(super) fn validate_lumi_import(imp: &Import) -> Result<()> {
     let exports = lumi_exports(&imp.path)?;
     let export_set: HashSet<&str> = exports.iter().map(|s| s.as_str()).collect();
@@ -141,28 +201,10 @@ pub(super) fn validate_lumi_import(imp: &Import) -> Result<()> {
         // Visibility for `*` is filtered to `@exports` in `resolve` (FFI stays
         // inlined for wrapper callees but is not entry-visible).
         ImportNames::All => Ok(()),
-        ImportNames::Single(n) => {
-            if export_set.contains(n.name.as_str()) {
-                Ok(())
-            } else {
-                bail!(
-                    "`{}` is not exported by `{}` (exports: {})",
-                    n.name,
-                    imp.path.join("."),
-                    exports.join(", ")
-                )
-            }
-        }
+        ImportNames::Single(n) => ensure_exported(n.name.as_str(), &imp.path, &exports, &export_set),
         ImportNames::Selective(names) => {
             for n in names {
-                if !export_set.contains(n.name.as_str()) {
-                    bail!(
-                        "`{}` is not exported by `{}` (exports: {})",
-                        n.name,
-                        imp.path.join("."),
-                        exports.join(", ")
-                    );
-                }
+                ensure_exported(n.name.as_str(), &imp.path, &exports, &export_set)?;
             }
             Ok(())
         }

@@ -14,14 +14,35 @@ use lumi_ty::NameVisibility;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::path::{Path, PathBuf};
 
-use resolve::{load_module_file, path_label};
+use resolve::load_module_file;
 
 pub use resolve::apply_default_stdlib_to_module;
-pub(crate) use resolve::path_candidates;
+pub(crate) use resolve::{path_candidates, path_label};
 pub(crate) use std_mod::{lumi_exports, KNOWN_LUMI_MODULES, LUMI_STD_SUBMODULES};
 
 pub(crate) fn std_is_auto_imported(name: &str) -> bool {
     LUMI_STD_SUBMODULES.contains(&name)
+}
+
+/// Search roots for local imports: entry directory + `Lumi.toml` dependency roots.
+pub(crate) fn search_roots_for(entry: &Path) -> Vec<PathBuf> {
+    let package_root = entry
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let mut roots = vec![package_root];
+    if let Some(manifest_path) = crate::pkg::find_manifest(entry) {
+        if let Ok(m) = crate::pkg::load_manifest(&manifest_path) {
+            if let Ok(dep_roots) = crate::pkg::dependency_roots(&manifest_path, &m) {
+                for r in dep_roots {
+                    if !roots.iter().any(|x| x == &r) {
+                        roots.push(r);
+                    }
+                }
+            }
+        }
+    }
+    roots
 }
 
 pub(super) fn item_file_id(it: &Item) -> u32 {
@@ -186,11 +207,14 @@ pub fn load_program_with_overlays(
     })
 }
 
-pub(super) fn normalize_overlays(overlays: &HashMap<PathBuf, String>) -> HashMap<PathBuf, String> {
+/// Index overlays by both canonical and original paths so lookups succeed
+/// whether callers pass `uri_to_path` results or already-canonical paths.
+pub(crate) fn normalize_overlays(overlays: &HashMap<PathBuf, String>) -> HashMap<PathBuf, String> {
     let mut out = HashMap::default();
     for (p, src) in overlays {
-        let key = p.canonicalize().unwrap_or_else(|_| p.clone());
-        out.insert(key, src.clone());
+        let canon = p.canonicalize().unwrap_or_else(|_| p.clone());
+        out.insert(canon, src.clone());
+        out.insert(p.clone(), src.clone());
     }
     out
 }

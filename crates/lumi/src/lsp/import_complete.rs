@@ -1,13 +1,16 @@
 //! Import-path / selective-export completion helpers (stdlib + local modules).
 
-use crate::load::{lumi_exports, path_candidates, std_is_auto_imported, KNOWN_LUMI_MODULES};
-use crate::pkg::{dependency_roots, find_manifest, load_manifest};
+use crate::load::{
+    lumi_exports, path_candidates, search_roots_for, std_is_auto_imported, KNOWN_LUMI_MODULES,
+};
 use crate::vis::{item_is_priv, item_name};
 use lumi_syntax::parse_module;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+use super::completion_item::push_item;
 
 /// Completion inside an incomplete `import` line.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,44 +96,6 @@ pub(super) fn detect_import_complete(line: &str) -> Option<ImportComplete> {
 
 fn matches_prefix(name: &str, prefix: &str) -> bool {
     prefix.is_empty() || name.starts_with(prefix)
-}
-
-fn push_item(
-    items: &mut Vec<Value>,
-    seen: &mut HashSet<String>,
-    label: &str,
-    kind: u8,
-    detail: Option<&str>,
-) {
-    if !seen.insert(label.to_string()) {
-        return;
-    }
-    let mut v = json!({ "label": label, "kind": kind });
-    if let Some(d) = detail {
-        v["detail"] = json!(d);
-    }
-    items.push(v);
-}
-
-/// Search roots for local imports: entry directory + `Lumi.toml` dependency roots.
-pub(super) fn search_roots_for(entry: &Path) -> Vec<PathBuf> {
-    let package_root = entry
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
-    let mut roots = vec![package_root];
-    if let Some(manifest_path) = find_manifest(entry) {
-        if let Ok(m) = load_manifest(&manifest_path) {
-            if let Ok(dep_roots) = dependency_roots(&manifest_path, &m) {
-                for r in dep_roots {
-                    if !roots.iter().any(|x| x == &r) {
-                        roots.push(r);
-                    }
-                }
-            }
-        }
-    }
-    roots
 }
 
 fn dir_looks_like_package(dir: &Path) -> bool {

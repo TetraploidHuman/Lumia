@@ -1,4 +1,5 @@
 use super::fun_index::FunIndex;
+use super::funref_env::FunRefEnv;
 use super::key::{args_mono_key, materialize_mono_param_tys, types_mono_key, MonoKey, MonoKind};
 use super::ret_ty::{block_result_fixed_ty, param_ty_map, refine_mono_container_ret};
 use super::traits::directize_block;
@@ -107,20 +108,8 @@ fn refresh_erased_mono_return_types(module: &mut CoreModule) {
             .filter_map(|(i, fun)| {
                 let params = param_ty_map(fun);
                 let t = block_result_fixed_ty(&fun.body, snap, traits, &params)?;
-                let upgrade = matches!(
-                    (&fun.ret_ty, &t),
-                    (
-                        Type::Int | Type::Var(_),
-                        Type::Float
-                            | Type::Bool
-                            | Type::String
-                            | Type::Char
-                            | Type::Adt { .. }
-                            | Type::List(_)
-                            | Type::Map(_, _)
-                            | Type::Set(_),
-                    )
-                );
+                let upgrade = matches!(&fun.ret_ty, Type::Int | Type::Var(_))
+                    && (t.is_abi_concrete_ret() || t.is_heap_structure());
                 upgrade.then_some((i, t))
             })
             .collect()
@@ -238,20 +227,12 @@ fn mono_clone_ret_ty(
         Type::List(e) if matches!(e.as_ref(), Type::Int) => inferred.clone(),
         Type::Var(_) => inferred.clone(),
         Type::Int | Type::Float | Type::Char | Type::Unit => match inferred {
-            Type::Adt { .. }
-            | Type::List(_)
-            | Type::Map(_, _)
-            | Type::Set(_)
-            | Type::String
-            | Type::Bool => fun.ret_ty.clone(),
+            t if t.is_heap_structure() || matches!(t, Type::String | Type::Bool) => {
+                fun.ret_ty.clone()
+            }
             _ => inferred.clone(),
         },
-        Type::Adt { .. }
-        | Type::List(_)
-        | Type::Map(_, _)
-        | Type::Set(_)
-        | Type::Tuple(_)
-        | Type::TuplePrefix(_) => refine_mono_container_ret(&fun.ret_ty, inferred),
+        t if t.is_heap_structure() => refine_mono_container_ret(&fun.ret_ty, inferred),
         _ => inferred.clone(),
     }
 }
@@ -263,31 +244,53 @@ fn call_site_mono_ret(fun: &CoreFun, inferred: &Type) -> Type {
     match &fun.ret_ty {
         // Concrete scalar / string rets are never ABI-erased by arg keys
         // (`headSum(List[Float], Int)` must stay Float, not last-arg Int).
-        Type::String | Type::Bool | Type::Float | Type::Char | Type::Unit => fun.ret_ty.clone(),
+        t if t.is_abi_concrete_ret() => fun.ret_ty.clone(),
         Type::List(e) if matches!(e.as_ref(), Type::Int) => inferred.clone(),
         Type::Var(_) => inferred.clone(),
         Type::Int => match inferred {
-            Type::Adt { .. }
-            | Type::List(_)
-            | Type::Map(_, _)
-            | Type::Set(_)
-            | Type::String
-            | Type::Bool
-            | Type::Char
-            | Type::Unit => fun.ret_ty.clone(),
+            t if t.is_heap_structure()
+                || matches!(
+                    t,
+                    Type::String | Type::Bool | Type::Char | Type::Unit
+                ) =>
+            {
+                fun.ret_ty.clone()
+            }
             // Num-poly / HOF erased Int: allow Float from MonoKey (`dbl`, `apply`).
             Type::Float if fun.scheme_poly => Type::Float,
             Type::Float => fun.ret_ty.clone(),
             _ => inferred.clone(),
         },
-        Type::Adt { .. }
-        | Type::List(_)
-        | Type::Map(_, _)
-        | Type::Set(_)
-        | Type::Tuple(_)
-        | Type::TuplePrefix(_) => refine_mono_container_ret(&fun.ret_ty, inferred),
+        t if t.is_heap_structure() => refine_mono_container_ret(&fun.ret_ty, inferred),
         _ => inferred.clone(),
     }
+}
+
+/// Prefer an existing clone's ret_ty; else [`call_site_mono_ret`] on the key.
+/// Erased `Int`/`Var` on the clone still consults MonoKey so HOF Float upgrades
+/// are not stuck behind a stale clone ret (`apply$Fn_dbl_Float` before refresh).
+fn keyed_call_ret(fun: &str, key: &MonoKey, index: &FunIndex<'_>) -> Type {
+    let mangled = format!("{fun}{}", key.suffix());
+    if let Some(clone) = index.get(&mangled) {
+        if !matches!(clone.ret_ty, Type::Int | Type::Var(_)) {
+            return clone.ret_ty.clone();
+        }
+    } else if callee_is_mono_clone(fun, index) {
+        if let Some(f) = index.get(fun) {
+            if !matches!(f.ret_ty, Type::Int | Type::Var(_)) {
+                return f.ret_ty.clone();
+            }
+        }
+    }
+    let inferred = key.ret_ty(index.funs());
+    if let Some(f) = index.get(fun) {
+        return call_site_mono_ret(f, &inferred);
+    }
+    inferred
+}
+
+fn clone_stored_ret_is_usable(t: &Type) -> bool {
+    t.is_abi_concrete_ret() || t.is_heap_structure()
 }
 
 fn scan_mono_block(
@@ -300,14 +303,13 @@ fn scan_mono_block(
     parent_funrefs: &HashMap<u32, String>,
     parent_slot_funrefs: &HashMap<String, String>,
 ) {
-    let mut funref_of = parent_funrefs.clone();
-    let mut slot_funrefs = parent_slot_funrefs.clone();
+    let mut env = FunRefEnv::from_parents(parent_funrefs, parent_slot_funrefs);
     for op in &block.ops {
         match op {
             Op::Let { local, value, .. } => {
-                note_mono_call(value, local_tys, index, needed, &funref_of);
+                note_mono_call(value, local_tys, index, needed, &env.funref_of);
                 let ty = mono_value_ty_with_funrefs(
-                    value, local_tys, slot_tys, int_consts, index, &funref_of,
+                    value, local_tys, slot_tys, int_consts, index, &env.funref_of,
                 );
                 local_tys.insert(local.0, ty);
                 if let Value::Int(n) = value {
@@ -315,28 +317,7 @@ fn scan_mono_block(
                 } else {
                     int_consts.remove(&local.0);
                 }
-                match value {
-                    Value::FunRef(name) => {
-                        funref_of.insert(local.0, name.clone());
-                    }
-                    Value::Local(Local(src)) => {
-                        if let Some(n) = funref_of.get(src).cloned() {
-                            funref_of.insert(local.0, n);
-                        } else {
-                            funref_of.remove(&local.0);
-                        }
-                    }
-                    Value::Name(n) => {
-                        if let Some(fr) = slot_funrefs.get(n).cloned() {
-                            funref_of.insert(local.0, fr);
-                        } else {
-                            funref_of.remove(&local.0);
-                        }
-                    }
-                    _ => {
-                        funref_of.remove(&local.0);
-                    }
-                }
+                env.note_let(local.0, value);
                 walk_mono_nested_scan(
                     value,
                     local_tys,
@@ -344,22 +325,18 @@ fn scan_mono_block(
                     int_consts,
                     index,
                     needed,
-                    &funref_of,
-                    &slot_funrefs,
+                    &env.funref_of,
+                    &env.slot_funrefs,
                 );
             }
             Op::Assign { name, value } => {
                 if let Some(ty) = local_tys.get(&value.0).cloned() {
                     slot_tys.insert(name.clone(), ty);
                 }
-                if let Some(fr) = funref_of.get(&value.0).cloned() {
-                    slot_funrefs.insert(name.clone(), fr);
-                } else {
-                    slot_funrefs.remove(name);
-                }
+                env.note_assign(name, *value);
             }
             Op::Effect { value } => {
-                note_mono_call(value, local_tys, index, needed, &funref_of);
+                note_mono_call(value, local_tys, index, needed, &env.funref_of);
                 walk_mono_nested_scan(
                     value,
                     local_tys,
@@ -367,8 +344,8 @@ fn scan_mono_block(
                     int_consts,
                     index,
                     needed,
-                    &funref_of,
-                    &slot_funrefs,
+                    &env.funref_of,
+                    &env.slot_funrefs,
                 );
             }
             _ => {}
@@ -525,23 +502,7 @@ fn mono_value_ty_with_funrefs(
         // `dbl$Float` clone exists (ListAppend / fold otherwise keep List[Int]).
         if let Some(key) = args_mono_key(args, local_tys, funref_of, formals) {
             if key.worth_cloning() || callee_is_mono_clone(fun, index) {
-                // Once a clone exists, use its ret_ty (product Float fields, etc.)
-                // — `call_site_mono_ret` cannot place Float into ADT field slots
-                // from a scalar MonoKey alone (`mk(1.25).f` → println$Float).
-                let mangled = format!("{fun}{}", key.suffix());
-                if let Some(clone) = index.get(&mangled) {
-                    return Some(clone.ret_ty.clone());
-                }
-                if callee_is_mono_clone(fun, index) {
-                    if let Some(f) = index.get(fun) {
-                        return Some(f.ret_ty.clone());
-                    }
-                }
-                let inferred = key.ret_ty(funs);
-                if let Some(f) = index.get(fun) {
-                    return Some(call_site_mono_ret(f, &inferred));
-                }
-                return Some(inferred);
+                return Some(keyed_call_ret(fun, &key, index));
             }
         }
         if let Some(f) = index.get(fun) {
@@ -592,30 +553,29 @@ fn rewrite_mono_block(
     parent_slot_funrefs: &HashMap<String, String>,
     index: &FunIndex<'_>,
 ) {
-    let mut funref_of = parent_funrefs.clone();
-    let mut slot_funrefs = parent_slot_funrefs.clone();
+    let mut env = FunRefEnv::from_parents(parent_funrefs, parent_slot_funrefs);
     for i in 0..block.ops.len() {
         let (before, rest) = block.ops.split_at_mut(i);
         let op = &mut rest[0];
         match op {
             Op::Let { local, value, .. } => {
-                let patch = par_hof_funref_patch(value, local_tys, renames, &funref_of);
+                let patch = par_hof_funref_patch(value, local_tys, renames, &env.funref_of);
                 rewrite_mono_value(
                     value,
                     local_tys,
                     slot_tys,
                     int_consts,
                     renames,
-                    &funref_of,
-                    &slot_funrefs,
+                    &env.funref_of,
+                    &env.slot_funrefs,
                     index,
                 );
                 if let Some((cb_local, new_name)) = patch {
                     patch_funref_let(before, cb_local, &new_name);
-                    funref_of.insert(cb_local, new_name);
+                    env.funref_of.insert(cb_local, new_name);
                 }
                 let ty = mono_value_ty_rewrite(
-                    value, local_tys, slot_tys, int_consts, renames, &funref_of, index,
+                    value, local_tys, slot_tys, int_consts, renames, &env.funref_of, index,
                 );
                 local_tys.insert(local.0, ty);
                 if let Value::Int(n) = value {
@@ -623,54 +583,29 @@ fn rewrite_mono_block(
                 } else {
                     int_consts.remove(&local.0);
                 }
-                match value {
-                    Value::FunRef(name) => {
-                        funref_of.insert(local.0, name.clone());
-                    }
-                    Value::Local(Local(src)) => {
-                        if let Some(n) = funref_of.get(src).cloned() {
-                            funref_of.insert(local.0, n);
-                        } else {
-                            funref_of.remove(&local.0);
-                        }
-                    }
-                    Value::Name(n) => {
-                        if let Some(fr) = slot_funrefs.get(n).cloned() {
-                            funref_of.insert(local.0, fr);
-                        } else {
-                            funref_of.remove(&local.0);
-                        }
-                    }
-                    _ => {
-                        funref_of.remove(&local.0);
-                    }
-                }
+                env.note_let(local.0, value);
             }
             Op::Assign { name, value } => {
                 if let Some(ty) = local_tys.get(&value.0).cloned() {
                     slot_tys.insert(name.clone(), ty);
                 }
-                if let Some(fr) = funref_of.get(&value.0).cloned() {
-                    slot_funrefs.insert(name.clone(), fr);
-                } else {
-                    slot_funrefs.remove(name);
-                }
+                env.note_assign(name, *value);
             }
             Op::Effect { value } => {
-                let patch = par_hof_funref_patch(value, local_tys, renames, &funref_of);
+                let patch = par_hof_funref_patch(value, local_tys, renames, &env.funref_of);
                 rewrite_mono_value(
                     value,
                     local_tys,
                     slot_tys,
                     int_consts,
                     renames,
-                    &funref_of,
-                    &slot_funrefs,
+                    &env.funref_of,
+                    &env.slot_funrefs,
                     index,
                 );
                 if let Some((cb_local, new_name)) = patch {
                     patch_funref_let(before, cb_local, &new_name);
-                    funref_of.insert(cb_local, new_name);
+                    env.funref_of.insert(cb_local, new_name);
                 }
             }
             _ => {}
@@ -800,23 +735,10 @@ fn mono_value_ty_rewrite(
             // Prefer the clone's stored ret_ty (ADT field layouts, etc.) over
             // MonoKey::ret_ty which collapses `mk(Float)` to scalar Float.
             if let Some(f) = index.get(fun) {
-                if callee_is_mono_clone(fun, index)
-                    || renames.values().any(|n| n == fun)
+                if (callee_is_mono_clone(fun, index) || renames.values().any(|n| n == fun))
+                    && clone_stored_ret_is_usable(&f.ret_ty)
                 {
-                    match &f.ret_ty {
-                        Type::Bool
-                        | Type::String
-                        | Type::Unit
-                        | Type::Char
-                        | Type::Float
-                        | Type::Adt { .. }
-                        | Type::List(_)
-                        | Type::Map(_, _)
-                        | Type::Set(_) => {
-                            return f.ret_ty.clone();
-                        }
-                        _ => {}
-                    }
+                    return f.ret_ty.clone();
                 }
             }
             let formals = index.get(fun).map(|f| f.param_tys.as_slice());
@@ -828,15 +750,7 @@ fn mono_value_ty_rewrite(
                     return key.ret_ty(funs);
                 }
                 if callee_is_mono_clone(fun, index) || key.worth_cloning() {
-                    let mangled = format!("{fun}{}", key.suffix());
-                    if let Some(clone) = index.get(&mangled) {
-                        return clone.ret_ty.clone();
-                    }
-                    let inferred = key.ret_ty(funs);
-                    if let Some(f) = index.get(fun) {
-                        return call_site_mono_ret(f, &inferred);
-                    }
-                    return inferred;
+                    return keyed_call_ret(fun, &key, index);
                 }
             }
             if let Some(f) = index.get(fun) {

@@ -21,6 +21,8 @@ use lumi_core::{for_each_block_dfs, Block, Local, Op, Value};
 use lumi_syntax::BinOp;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
+pub(crate) use lumi_core::collect_leaf_defs;
+
 /// Max loop bound for IV×bound arith trees (products must fit i64 with margin).
 const NSW_BOUND_MAX: i64 = 30_000;
 /// Cap for recording IV uppers used only to prove `d*d ≤ n` NSW.
@@ -646,27 +648,6 @@ fn const_i64(l: Local, defs: &HashMap<u32, Value>) -> Option<i64> {
         Value::Int(n) => Some(*n),
         _ => None,
     }
-}
-
-pub(crate) fn collect_leaf_defs(body: &Block) -> HashMap<u32, Value> {
-    let mut all_defs: HashMap<u32, Value> = HashMap::default();
-    for_each_block_dfs(body, &mut |b| {
-        for op in &b.ops {
-            if let Op::Let { local, value, .. } = op {
-                if matches!(
-                    value,
-                    Value::Int(_)
-                        | Value::Float(_)
-                        | Value::Name(_)
-                        | Value::Binary { .. }
-                        | Value::Builtin { .. }
-                ) {
-                    all_defs.insert(local.0, value.clone());
-                }
-            }
-        }
-    });
-    all_defs
 }
 
 /// Locals safe as signed `div`/`rem` RHS: `Int` ∉ {0,-1}, or loads of slots that

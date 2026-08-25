@@ -3,6 +3,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use lumi::check::check_program;
+use lumi::load::path_label;
 use lumi::pkg;
 use lumi::{doc, lsp};
 use lumi_syntax::{format_diagnostic, parse_module, stamp_module};
@@ -341,13 +342,6 @@ fn ensure_runtime_built(release: bool) -> Result<()> {
         anyhow::bail!("failed to build lumi_rt");
     }
     Ok(())
-}
-
-fn path_label(path: &Path) -> String {
-    path.file_name()
-        .and_then(|s| s.to_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| path.display().to_string())
 }
 
 fn fmt_file(path: &Path, check: bool) -> Result<()> {

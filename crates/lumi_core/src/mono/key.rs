@@ -88,15 +88,7 @@ impl MonoKind {
 }
 
 fn type_is_heap_structure(t: &Type) -> bool {
-    matches!(
-        t,
-        Type::Adt { .. }
-            | Type::List(_)
-            | Type::Map(_, _)
-            | Type::Set(_)
-            | Type::Tuple(_)
-            | Type::TuplePrefix(_)
-    )
+    t.is_heap_structure()
 }
 
 /// Build a [`MonoKey`] from concrete types (e.g. ListParMap callback ABI).

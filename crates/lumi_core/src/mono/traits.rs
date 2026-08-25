@@ -1,4 +1,5 @@
 use super::fun_index::FunIndex;
+use super::funref_env::FunRefEnv;
 use super::specialize::mono_value_ty;
 use crate::ir::{Block, CoreFun, CoreModule, Local, Op, Value};
 use lumi_hir::Builtin;
@@ -311,43 +312,20 @@ fn directize_block_with_slots(
     parent_funrefs: &HashMap<u32, String>,
     parent_slot_funrefs: &HashMap<String, String>,
 ) {
-    // Inherit FunRef bindings from the enclosing block so `val f = g; if … { f(x) }`
-    // inside nested If/Loop still becomes a direct `Call`.
-    let mut funref_of = parent_funrefs.clone();
-    let mut slot_funrefs = parent_slot_funrefs.clone();
+    let mut env = FunRefEnv::from_parents(parent_funrefs, parent_slot_funrefs);
     for op in &mut block.ops {
         match op {
             Op::Let { local, value, .. } => {
-                directize_value(value, &funref_of);
-                walk_nested_blocks_directize(value, &funref_of, &slot_funrefs);
-                if let Value::FunRef(name) = value {
-                    funref_of.insert(local.0, name.clone());
-                } else if let Value::Local(Local(src)) = value {
-                    if let Some(n) = funref_of.get(src).cloned() {
-                        funref_of.insert(local.0, n);
-                    } else {
-                        funref_of.remove(&local.0);
-                    }
-                } else if let Value::Name(n) = value {
-                    if let Some(fr) = slot_funrefs.get(n).cloned() {
-                        funref_of.insert(local.0, fr);
-                    } else {
-                        funref_of.remove(&local.0);
-                    }
-                } else {
-                    funref_of.remove(&local.0);
-                }
+                directize_value(value, &env.funref_of);
+                walk_nested_blocks_directize(value, &env.funref_of, &env.slot_funrefs);
+                env.note_let(local.0, value);
             }
             Op::Effect { value } => {
-                directize_value(value, &funref_of);
-                walk_nested_blocks_directize(value, &funref_of, &slot_funrefs);
+                directize_value(value, &env.funref_of);
+                walk_nested_blocks_directize(value, &env.funref_of, &env.slot_funrefs);
             }
             Op::Assign { name, value } => {
-                if let Some(fr) = funref_of.get(&value.0).cloned() {
-                    slot_funrefs.insert(name.clone(), fr);
-                } else {
-                    slot_funrefs.remove(name);
-                }
+                env.note_assign(name, *value);
             }
             Op::Break | Op::Continue | Op::Return { .. } => {}
         }

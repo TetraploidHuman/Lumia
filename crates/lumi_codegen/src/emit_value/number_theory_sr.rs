@@ -1070,29 +1070,8 @@ fn is_add_name_plus_any(dest: u32, s_name: &str, defs: &HashMap<u32, Value>) -> 
 #[cfg(test)]
 mod match_tests {
     use super::*;
+    use lumi_core::collect_loop_triples;
     use lumi_opt::{compile_source_to_optimized, OptOptions};
-
-    fn find_loops(b: &Block, out: &mut Vec<(Block, Block, Block)>) {
-        for op in &b.ops {
-            if let Op::Let {
-                value:
-                    Value::Loop {
-                        header,
-                        body,
-                        latch,
-                    },
-                ..
-            } = op
-            {
-                out.push((
-                    header.as_ref().clone(),
-                    body.as_ref().clone(),
-                    latch.as_ref().clone(),
-                ));
-                find_loops(body, out);
-            }
-        }
-    }
 
     #[test]
     fn matches_new_bench_srs() {
@@ -1110,7 +1089,7 @@ mod match_tests {
         for f in &core.functions {
             let defs = crate::nsw_iv::collect_leaf_defs(&f.body);
             let mut loops = vec![];
-            find_loops(&f.body, &mut loops);
+            collect_loop_triples(&f.body, &mut loops);
             for (h, b, l) in &loops {
                 if match_gcd_sum(h, b, l, &defs).is_some() {
                     gcd += 1;
