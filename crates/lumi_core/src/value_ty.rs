@@ -199,14 +199,15 @@ pub fn infer_value_ty_ctx(
             }
         }
         Value::Call { fun, args } => {
-            let ret = match (
-                ctx.fun_ret_tys.and_then(|m| m.get(fun).cloned()),
-                call_ret.as_mut(),
-            ) {
-                // Prefer an explicit table entry when present (mono clones / FunRefs).
+            let tab_ty = ctx.fun_ret_tys.and_then(|m| m.get(fun).cloned());
+            let site_ty = call_ret.as_mut().and_then(|f| f(fun, args));
+            let ret = match (tab_ty, site_ty) {
+                // Erased `Int` on a poly FunRef must not beat call-site mono (`dbl(1.5)`).
+                (Some(Type::Int), Some(site)) if !matches!(site, Type::Int | Type::Var(_)) => {
+                    site
+                }
                 (Some(t), _) => t,
-                // Otherwise ask the call-site mono / index callback.
-                (None, Some(f)) => f(fun, args).unwrap_or(Type::Int),
+                (None, Some(site)) => site,
                 (None, None) => Type::Int,
             };
             identity_float_call_ret(ret, fun, args, ctx)

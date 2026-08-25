@@ -3,7 +3,7 @@
 //! - textDocument/didOpen|didChange|didClose → publishDiagnostics (editor overlays)
 //! - textDocument/hover → type from TypedModule.type_at / fun_types
 //! - textDocument/definition → decls (cross-file via Span.file)
-//! - textDocument/completion → in-scope names + common methods
+//! - textDocument/completion → import paths / exports + in-scope names
 //! - textDocument/formatting → `lumi fmt` pretty-print
 //! - textDocument/documentSymbol → outline from module items
 //! - textDocument/inlayHint → binding / param / call-return types
@@ -16,6 +16,7 @@ mod definition;
 mod diagnostics;
 mod formatting;
 mod hover;
+mod import_complete;
 mod inlay;
 mod protocol;
 mod semantic;
@@ -72,7 +73,7 @@ fn handle_message(msg: Value) -> Result<Option<Value>> {
                     "hoverProvider": true,
                     "definitionProvider": true,
                     "completionProvider": {
-                        "triggerCharacters": [".", "("],
+                        "triggerCharacters": [".", "(", "{"],
                         "resolveProvider": false
                     },
                     "documentFormattingProvider": true,

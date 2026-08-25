@@ -71,6 +71,380 @@ val main = {
     }
 
     #[test]
+    fn isok_ret_ty_is_bool() {
+        let core = compile_source_to_core(
+            r#"
+module M
+val println(x) = { __println(x) }
+val isOk(r) = {
+    r match {
+        Ok(_) -> true
+        Err(_) -> false
+    }
+}
+val main = { println(isOk(Ok(1))) }
+"#,
+        )
+        .expect("core");
+        let is_ok = core
+            .functions
+            .iter()
+            .find(|f| f.name.starts_with("isOk"))
+            .expect("isOk");
+        assert_eq!(is_ok.ret_ty, Type::Bool, "isOk ret_ty={:?}", is_ok.ret_ty);
+        let is_ok_mono = core
+            .functions
+            .iter()
+            .find(|f| f.name == "isOk$Result_Int")
+            .expect("isOk mono");
+        assert_eq!(
+            is_ok_mono.ret_ty,
+            Type::Bool,
+            "isOk mono ret_ty={:?}",
+            is_ok_mono.ret_ty
+        );
+        let println_names: Vec<_> = core
+            .functions
+            .iter()
+            .filter(|f| f.name.contains("println"))
+            .map(|f| f.name.clone())
+            .collect();
+        assert!(
+            println_names.iter().any(|n| n.contains("$Bool")),
+            "println clones: {println_names:?}"
+        );
+        let main = core.functions.iter().find(|f| f.is_main).expect("main");
+        let calls: Vec<_> = main
+            .body
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::Let {
+                    value: Value::Call { fun, .. },
+                    ..
+                } => Some(fun.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            calls.iter().any(|c| c.contains("$Bool")),
+            "main println calls: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn wide_product_float_field_println() {
+        let core = compile_source_to_core(
+            r#"
+module M
+val println(x) = { __println(x) }
+type Wide {
+    val i0
+    val i1
+    val i2
+    val f
+}
+val mk(x) = { Wide { i0 = 0, i1 = 0, i2 = 0, f = x } }
+val main = {
+    println(mk(1.25).f)
+}
+"#,
+        )
+        .expect("core");
+        let mk = core
+            .functions
+            .iter()
+            .find(|f| f.name.starts_with("mk$"))
+            .expect("mk mono");
+        assert!(
+            matches!(
+                &mk.ret_ty,
+                Type::Adt { params, .. }
+                    if params.get(3).is_some_and(|p| matches!(p, Type::Float))
+            ),
+            "mk$Float ret should have Float at field 3, got {:?}",
+            mk.ret_ty
+        );
+        let println_clones: Vec<_> = core
+            .functions
+            .iter()
+            .filter(|f| f.name.contains("println"))
+            .map(|f| f.name.clone())
+            .collect();
+        assert!(
+            println_clones.iter().any(|n| n.contains("$Float")),
+            "expected println$Float clone, funs={println_clones:?}"
+        );
+        let main = core.functions.iter().find(|f| f.is_main).expect("main");
+        let calls: Vec<_> = main
+            .body
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::Let {
+                    value: Value::Call { fun, .. },
+                    ..
+                } if fun.starts_with("println") => Some(fun.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            calls.iter().any(|c| c.contains("$Float")),
+            "println calls={calls:?}"
+        );
+    }
+
+    #[test]
+    fn headsum_float_ret_specializes_println() {
+        let core = compile_source_to_core(
+            r#"
+module M
+val println(x) = { __println(x) }
+val zeros(n) = {
+    var xs = listOf()
+    var i = 0
+    for i < n {
+        xs = xs.append(0.0)
+        i = i + 1
+    }
+    xs
+}
+val headSum(xs, n) = {
+    var s = 0.0
+    var i = 0
+    for i < n {
+        s = s + xs.get(i)
+        i = i + 1
+    }
+    s
+}
+val main = {
+    var xs = zeros(2)
+    xs = xs.set(0, 0.668)
+    xs = xs.set(1, 0.460)
+    println(headSum(xs, 2))
+}
+"#,
+        )
+        .expect("core");
+        let hs = core
+            .functions
+            .iter()
+            .find(|f| f.name == "headSum")
+            .expect("headSum");
+        assert!(
+            matches!(hs.ret_ty, Type::Float),
+            "headSum.ret_ty={:?}",
+            hs.ret_ty
+        );
+        let main = core.functions.iter().find(|f| f.is_main).expect("main");
+        let calls: Vec<_> = main
+            .body
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::Let {
+                    value: Value::Call { fun, .. },
+                    ..
+                } if fun.starts_with("println") => Some(fun.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            calls.iter().any(|c| c.contains("$Float")),
+            "println calls={calls:?}"
+        );
+    }
+
+    #[test]
+    fn println_mono_after_hof_apply_float_exact_example() {
+        // Mirrors examples/hof_float_apply.lm (local println stand-in for lumi.io).
+        let core = compile_source_to_core(
+            r#"
+module HofFloatApply
+val println(x) = { __println(x) }
+val dbl(x) = x + x
+val apply(f, x) = f(x)
+val main = {
+    println(dbl(1.5))
+    println(apply(dbl, 1.5))
+    println(apply(dbl, 2.0))
+}
+"#,
+        )
+        .expect("core");
+        let dbl = core.functions.iter().find(|f| f.name == "dbl").expect("dbl");
+        assert!(dbl.scheme_poly, "dbl should be scheme_poly");
+        let apply_clone = core
+            .functions
+            .iter()
+            .find(|f| f.name.starts_with("apply$"))
+            .expect("apply mono");
+        assert!(
+            matches!(apply_clone.ret_ty, Type::Float),
+            "apply ret={:?} name={}",
+            apply_clone.ret_ty,
+            apply_clone.name
+        );
+        let main = core.functions.iter().find(|f| f.is_main).expect("main");
+        let println_calls: Vec<_> = main
+            .body
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::Let {
+                    value: Value::Call { fun, .. },
+                    ..
+                } if fun.starts_with("println") => Some(fun.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            println_calls.iter().filter(|c| c.contains("$Float")).count(),
+            3,
+            "all three println sites should be $Float, got {println_calls:?}"
+        );
+    }
+
+    #[test]
+    fn println_mono_after_hof_apply_float() {
+        let core = compile_source_to_core(
+            r#"
+module M
+val println(x) = { __println(x) }
+val dbl(x) = x + x
+val apply(f, x) = f(x)
+val main = {
+    println(apply(dbl, 1.5))
+}
+"#,
+        )
+        .expect("core");
+        let apply_clone = core
+            .functions
+            .iter()
+            .find(|f| f.name.starts_with("apply$"))
+            .expect("apply mono");
+        assert!(
+            matches!(apply_clone.ret_ty, Type::Float),
+            "apply clone ret={:?}",
+            apply_clone.ret_ty
+        );
+        let main = core.functions.iter().find(|f| f.is_main).expect("main");
+        let calls: Vec<_> = main
+            .body
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::Let {
+                    value: Value::Call { fun, .. },
+                    ..
+                } => Some(fun.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            calls.iter().any(|c| c.contains("println$Float")),
+            "expected println$Float after apply, calls={calls:?}; funs={:?}",
+            core.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn println_mono_clones_for_float_hof() {
+        let core = compile_source_to_core(
+            r#"
+module M
+val println(x) = { __println(x) }
+val main = {
+    val dbl = { x -> x + x }
+    println(dbl(1))
+    println(dbl(1.5))
+}
+"#,
+        )
+        .expect("core");
+        let names: Vec<_> = core
+            .functions
+            .iter()
+            .filter(|f| f.name.contains("println"))
+            .map(|f| f.name.clone())
+            .collect();
+        assert!(
+            names.iter().any(|n| n.contains("$Float")),
+            "expected println$Float, got {names:?}"
+        );
+        let main = core.functions.iter().find(|f| f.is_main).expect("main");
+        let calls: Vec<_> = main
+            .body
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::Let {
+                    value: Value::Call { fun, .. },
+                    ..
+                } => Some(fun.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            calls.iter().any(|c| c.contains("$Float")),
+            "main println calls: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn println_mono_clones_for_unit_and_bool() {
+        let core = compile_source_to_core(
+            r#"
+module M
+val println(x) = { __println(x) }
+val side(x) = { println(x) }
+val main = {
+    println(side(1))
+    println(true)
+}
+"#,
+        )
+        .expect("core");
+        let names: Vec<_> = core
+            .functions
+            .iter()
+            .filter(|f| f.name.contains("println"))
+            .map(|f| f.name.clone())
+            .collect();
+        assert!(
+            names.iter().any(|n| n.contains("$Bool")),
+            "expected println$Bool mono clone, got {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n.contains("$Unit")),
+            "expected println$Unit mono clone, got {names:?}"
+        );
+        let main = core.functions.iter().find(|f| f.is_main).expect("main");
+        let calls: Vec<_> = main
+            .body
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::Let {
+                    value: Value::Call { fun, .. },
+                    ..
+                } => Some(fun.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            calls.iter().any(|c| c.contains("$Bool")),
+            "main should call println$Bool, calls={calls:?}"
+        );
+        assert!(
+            calls.iter().any(|c| c.contains("$Unit")),
+            "main should call println$Unit, calls={calls:?}"
+        );
+    }
+
+    #[test]
     fn scheme_poly_top_level_dbl() {
         let src = r#"
 module M

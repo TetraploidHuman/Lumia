@@ -24,9 +24,11 @@ pub(crate) fn specialize_mono_calls(module: &mut CoreModule) {
     if renames.is_empty() {
         return;
     }
+    // Upgrade erased Int rets before rewriting call sites so `println(apply(dbl, 1.5))`
+    // sees Float and clones `println$Float` (rewrite uses local_tys from ret_ty).
+    refresh_erased_mono_return_types(module);
     rewrite_all_mono_call_sites(module, &renames);
-    // After all clones exist, upgrade erased Int rets on HOF wrappers whose
-    // bodies now `Call(dbl$Float, …)` (directize order within a round varies).
+    // Second pass: rewrite may have directized more Call targets.
     refresh_erased_mono_return_types(module);
     // Toehold: thin FunRef wrappers that only forward to a concrete Call share
     // that target at call sites (avoid an extra frame / duplicate body emit).
@@ -259,17 +261,23 @@ fn mono_clone_ret_ty(
 /// `var p` slot (next call would mono as `$Float`).
 fn call_site_mono_ret(fun: &CoreFun, inferred: &Type) -> Type {
     match &fun.ret_ty {
-        Type::String => Type::String,
-        Type::Bool => Type::Bool,
+        // Concrete scalar / string rets are never ABI-erased by arg keys
+        // (`headSum(List[Float], Int)` must stay Float, not last-arg Int).
+        Type::String | Type::Bool | Type::Float | Type::Char | Type::Unit => fun.ret_ty.clone(),
         Type::List(e) if matches!(e.as_ref(), Type::Int) => inferred.clone(),
         Type::Var(_) => inferred.clone(),
-        Type::Int | Type::Float | Type::Char | Type::Unit => match inferred {
+        Type::Int => match inferred {
             Type::Adt { .. }
             | Type::List(_)
             | Type::Map(_, _)
             | Type::Set(_)
             | Type::String
-            | Type::Bool => fun.ret_ty.clone(),
+            | Type::Bool
+            | Type::Char
+            | Type::Unit => fun.ret_ty.clone(),
+            // Num-poly / HOF erased Int: allow Float from MonoKey (`dbl`, `apply`).
+            Type::Float if fun.scheme_poly => Type::Float,
+            Type::Float => fun.ret_ty.clone(),
             _ => inferred.clone(),
         },
         Type::Adt { .. }
@@ -517,6 +525,18 @@ fn mono_value_ty_with_funrefs(
         // `dbl$Float` clone exists (ListAppend / fold otherwise keep List[Int]).
         if let Some(key) = args_mono_key(args, local_tys, funref_of, formals) {
             if key.worth_cloning() || callee_is_mono_clone(fun, index) {
+                // Once a clone exists, use its ret_ty (product Float fields, etc.)
+                // — `call_site_mono_ret` cannot place Float into ADT field slots
+                // from a scalar MonoKey alone (`mk(1.25).f` → println$Float).
+                let mangled = format!("{fun}{}", key.suffix());
+                if let Some(clone) = index.get(&mangled) {
+                    return Some(clone.ret_ty.clone());
+                }
+                if callee_is_mono_clone(fun, index) {
+                    if let Some(f) = index.get(fun) {
+                        return Some(f.ret_ty.clone());
+                    }
+                }
                 let inferred = key.ret_ty(funs);
                 if let Some(f) = index.get(fun) {
                     return Some(call_site_mono_ret(f, &inferred));
@@ -777,18 +797,46 @@ fn mono_value_ty_rewrite(
     let funs = index.funs();
     match value {
         Value::Call { fun, args } => {
-            if let Some(((_, mk), _)) = renames.iter().find(|(_, n)| *n == fun) {
-                return mk.ret_ty(funs);
+            // Prefer the clone's stored ret_ty (ADT field layouts, etc.) over
+            // MonoKey::ret_ty which collapses `mk(Float)` to scalar Float.
+            if let Some(f) = index.get(fun) {
+                if callee_is_mono_clone(fun, index)
+                    || renames.values().any(|n| n == fun)
+                {
+                    match &f.ret_ty {
+                        Type::Bool
+                        | Type::String
+                        | Type::Unit
+                        | Type::Char
+                        | Type::Float
+                        | Type::Adt { .. }
+                        | Type::List(_)
+                        | Type::Map(_, _)
+                        | Type::Set(_) => {
+                            return f.ret_ty.clone();
+                        }
+                        _ => {}
+                    }
+                }
             }
             let formals = index.get(fun).map(|f| f.param_tys.as_slice());
             if let Some(key) = args_mono_key(args, local_tys, funref_of, formals) {
                 if let Some(new) = renames.get(&(fun.clone(), key.clone())) {
-                    if let Some(((_, mk), _)) = renames.iter().find(|(_, n)| *n == new) {
-                        return mk.ret_ty(funs);
+                    if let Some(clone) = index.get(new) {
+                        return clone.ret_ty.clone();
                     }
+                    return key.ret_ty(funs);
                 }
                 if callee_is_mono_clone(fun, index) || key.worth_cloning() {
-                    return key.ret_ty(funs);
+                    let mangled = format!("{fun}{}", key.suffix());
+                    if let Some(clone) = index.get(&mangled) {
+                        return clone.ret_ty.clone();
+                    }
+                    let inferred = key.ret_ty(funs);
+                    if let Some(f) = index.get(fun) {
+                        return call_site_mono_ret(f, &inferred);
+                    }
+                    return inferred;
                 }
             }
             if let Some(f) = index.get(fun) {

@@ -150,7 +150,10 @@ impl<'ctx> Codegen<'ctx> {
     }
 
     pub(crate) fn infer_value_ty(&self, value: &Value) -> Type {
-        lumi_core::infer_value_ty_ctx(value, self.infer_ctx(), None)
+        let mut call_ret = |fun: &str, _args: &[Local]| {
+            self.funs.fun_ret_tys.get(fun).cloned()
+        };
+        lumi_core::infer_value_ty_ctx(value, self.infer_ctx(), Some(&mut call_ret))
     }
 
     /// Best-effort expected type for empty container literals (Float tags).

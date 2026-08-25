@@ -10,6 +10,7 @@ pub(crate) enum MonoKind {
     Bool,
     String,
     Char,
+    Unit,
     List(Box<MonoKind>),
     Map(Box<MonoKind>, Box<MonoKind>),
     Set(Box<MonoKind>),
@@ -29,6 +30,7 @@ impl MonoKind {
             MonoKind::Bool => "Bool".into(),
             MonoKind::String => "String".into(),
             MonoKind::Char => "Char".into(),
+            MonoKind::Unit => "Unit".into(),
             MonoKind::List(e) => format!("List_{}", e.encode()),
             MonoKind::Map(k, v) => format!("Map_{}_{}", k.encode(), v.encode()),
             MonoKind::Set(e) => format!("Set_{}", e.encode()),
@@ -71,6 +73,7 @@ impl MonoKind {
             MonoKind::Bool => Type::Bool,
             MonoKind::String => Type::String,
             MonoKind::Char => Type::Char,
+            MonoKind::Unit => Type::Unit,
             MonoKind::List(e) => Type::List(Box::new(e.to_type())),
             MonoKind::Map(k, v) => Type::Map(Box::new(k.to_type()), Box::new(v.to_type())),
             MonoKind::Set(e) => Type::Set(Box::new(e.to_type())),
@@ -112,6 +115,7 @@ fn type_to_mono(t: &Type) -> Option<MonoKind> {
         Type::Bool => Some(MonoKind::Bool),
         Type::String => Some(MonoKind::String),
         Type::Char => Some(MonoKind::Char),
+        Type::Unit => Some(MonoKind::Unit),
         Type::List(e) => type_to_mono(e).map(|k| MonoKind::List(Box::new(k))),
         Type::Map(k, v) => Some(MonoKind::Map(
             Box::new(type_to_mono(k)?),
@@ -300,7 +304,32 @@ impl MonoKey {
                     params: vec![ok, err],
                 })
             }
-            _ => None,
+            // apply(f, x): concrete callback ret wins (`toInt` → Int). Num-poly
+            // erased Int uses the data arg (`dbl` + Float → Float).
+            _ => {
+                let fr = self.0.iter().find_map(|k| match k {
+                    MonoKind::FunRef(n) => functions.iter().find(|f| f.name == *n),
+                    _ => None,
+                });
+                if !matches!(fun_ret, Type::Int | Type::Var(_)) {
+                    return Some(fun_ret);
+                }
+                if let Some(f) = fr {
+                    if !f.scheme_poly {
+                        return Some(fun_ret);
+                    }
+                    if let Some(d) = self
+                        .0
+                        .iter()
+                        .rev()
+                        .find(|k| !matches!(k, MonoKind::FunRef(_)))
+                        .map(MonoKind::to_type)
+                    {
+                        return Some(d);
+                    }
+                }
+                Some(fun_ret)
+            }
         }
     }
 

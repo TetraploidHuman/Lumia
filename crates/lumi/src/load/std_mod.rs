@@ -11,7 +11,12 @@ use crate::vis::item_name;
 /// Submodules auto-imported into every entry module (Kotlin-style core stdlib).
 /// Domain modules (`linalg`, `cn`, `efe`) use explicit `import` — their short
 /// names (`add`, `mul`, …) would collide with user packages.
-pub(super) const LUMI_STD_SUBMODULES: &[&str] = &["io", "string", "option", "result"];
+pub(crate) const LUMI_STD_SUBMODULES: &[&str] = &["io", "string", "option", "result"];
+
+/// All known `lumi.<name>` modules (auto-import core + domain). Used by the loader
+/// and LSP import-path completion — keep in sync with [`lumi_module`].
+pub(crate) const KNOWN_LUMI_MODULES: &[&str] =
+    &["io", "string", "option", "result", "linalg", "efe", "cn"];
 
 /// Synthetic `import lumi.<mod>.*` for each known stdlib submodule.
 pub(super) fn default_std_imports() -> Vec<Import> {
@@ -49,14 +54,19 @@ pub(super) fn lumi_module(path: &[String]) -> Result<&'static str> {
         ["lumi", "efe"] => Ok("efe.lm"),
         ["lumi", "cn"] => Ok("cn.lm"),
         _ => bail!(
-            "unknown standard module `{}` (known: lumi.io, lumi.string, lumi.option, lumi.result, lumi.linalg, lumi.efe, lumi.cn)",
-            path.join(".")
+            "unknown standard module `{}` (known: {})",
+            path.join("."),
+            KNOWN_LUMI_MODULES
+                .iter()
+                .map(|m| format!("lumi.{m}"))
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
     }
 }
 
 /// Export sets are read from `lumi/<mod>.lm` `@exports` lines — no hardcoded dual list.
-pub(super) fn lumi_exports(path: &[String]) -> Result<Vec<String>> {
+pub(crate) fn lumi_exports(path: &[String]) -> Result<Vec<String>> {
     let rel = lumi_module(path)?;
     let file = workspace_lumi_dir().join(rel);
     let src = fs::read_to_string(&file).with_context(|| {

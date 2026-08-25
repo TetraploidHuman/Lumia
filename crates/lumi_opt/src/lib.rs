@@ -230,6 +230,49 @@ mod tests {
     use rustc_hash::FxHashSet as HashSet;
 
     #[test]
+    fn println_mono_survives_debug_optimize() {
+        let mut core = lumi_core::compile_source_to_core(
+            r#"
+module HofFloatApply
+val println(x) = { __println(x) }
+val dbl(x) = x + x
+val apply(f, x) = f(x)
+val main = {
+    println(dbl(1.5))
+    println(apply(dbl, 1.5))
+    println(apply(dbl, 2.0))
+}
+"#,
+        )
+        .expect("core");
+        optimize(
+            &mut core,
+            &OptOptions {
+                release: false,
+                memo_tf: false,
+            },
+        );
+        let main = core.functions.iter().find(|f| f.is_main).expect("main");
+        let println_calls: Vec<_> = main
+            .body
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::Let {
+                    value: Value::Call { fun, .. },
+                    ..
+                } if fun.starts_with("println") => Some(fun.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            println_calls.iter().filter(|c| c.contains("$Float")).count(),
+            3,
+            "optimize must keep println$Float, got {println_calls:?}"
+        );
+    }
+
+    #[test]
     fn defaults() {
         assert_eq!(default_list_repr(), ListRepr::HeapList);
         assert_eq!(default_map_repr(), MapRepr::HashOrdered);

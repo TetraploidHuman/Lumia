@@ -157,14 +157,40 @@ fn annotate_assert_expr(e: &mut lumi_hir::Expr, loaded: &LoadedProgram) {
                 annotate_assert_expr(a, loaded);
             }
             if args.len() == 1 {
-                let file = loaded.file(span.file);
-                let starts = lumi_syntax::line_starts(&file.src);
-                let (line, _) = lumi_syntax::byte_to_line_col(&starts, span.start);
-                let msg = format!("{}:{}: assert failed", path_label(&file.path), line);
-                args.push(Expr::String(msg, *span));
+                push_assert_message(args, *span, loaded);
             }
         }
-        Expr::BuiltinCall { args, .. } | Expr::Call { args, .. } | Expr::AdtNew { args, .. } => {
+        Expr::Call { callee, args, span } => {
+            if let Expr::Var(name, _) = callee.as_ref() {
+                if name == "assert" {
+                    for a in args.iter_mut() {
+                        annotate_assert_expr(a, loaded);
+                    }
+                    if args.len() == 1 {
+                        let cond = args.remove(0);
+                        let file = loaded.file(span.file);
+                        let starts = lumi_syntax::line_starts(&file.src);
+                        let (line, _) = lumi_syntax::byte_to_line_col(&starts, span.start);
+                        let msg = format!(
+                            "{}:{}: assert failed",
+                            path_label(&file.path),
+                            line
+                        );
+                        *e = Expr::BuiltinCall {
+                            name: Builtin::Assert,
+                            args: vec![cond, Expr::String(msg, *span)],
+                            span: *span,
+                        };
+                    }
+                    return;
+                }
+            }
+            annotate_assert_expr(callee, loaded);
+            for a in args {
+                annotate_assert_expr(a, loaded);
+            }
+        }
+        Expr::BuiltinCall { args, .. } | Expr::AdtNew { args, .. } => {
             for a in args {
                 annotate_assert_expr(a, loaded);
             }
@@ -228,6 +254,14 @@ fn annotate_assert_expr(e: &mut lumi_hir::Expr, loaded: &LoadedProgram) {
     }
 }
 
+fn push_assert_message(args: &mut Vec<lumi_hir::Expr>, span: lumi_syntax::Span, loaded: &LoadedProgram) {
+    let file = loaded.file(span.file);
+    let starts = lumi_syntax::line_starts(&file.src);
+    let (line, _) = lumi_syntax::byte_to_line_col(&starts, span.start);
+    let msg = format!("{}:{}: assert failed", path_label(&file.path), line);
+    args.push(lumi_hir::Expr::String(msg, span));
+}
+
 fn path_label(path: &Path) -> String {
     path.file_name()
         .and_then(|s| s.to_str())
@@ -276,7 +310,7 @@ pub fn loaded_from_source(path: &str, src: &str) -> LoadedProgram {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lumi_hir::{Builtin, Expr, Item, Module as HirModule};
+    use lumi_hir::{Expr, Item, Module as HirModule};
     use lumi_syntax::Span;
     use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -311,8 +345,8 @@ val main = {
             name: "M".into(),
             items: vec![Item::Val {
                 name: "main".into(),
-                body: Expr::BuiltinCall {
-                    name: Builtin::Assert,
+                body: Expr::Call {
+                    callee: Box::new(Expr::Var("assert".into(), assert_span)),
                     args: vec![Expr::Bool(false, assert_span)],
                     span: assert_span,
                 },

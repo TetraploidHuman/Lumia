@@ -5,6 +5,7 @@ use anyhow::{Context as AnyhowContext, Result};
 use inkwell::values::BasicValueEnum;
 use inkwell::AddressSpace;
 use lumi_core::Local;
+use lumi_core::Value;
 use lumi_hir::Builtin;
 use lumi_ty::Type;
 
@@ -17,12 +18,12 @@ impl<'ctx> Codegen<'ctx> {
         match name {
             Builtin::Println => {
                 let arg = self.local(args[0])?;
-                let arg_ty = self
-                    .frame
-                    .local_tys
-                    .get(&args[0].0)
-                    .cloned()
-                    .unwrap_or(Type::Int);
+                let mut arg_ty = self.infer_value_ty(&Value::Local(args[0]));
+                if matches!(arg_ty, Type::Var(_)) {
+                    if let Some(ty) = self.frame.local_tys.get(&args[0].0) {
+                        arg_ty = ty.clone();
+                    }
+                }
                 self.emit_println_value(arg, &arg_ty)?;
                 Ok(self.llvm.i64_ty.const_int(0, false).into())
             }

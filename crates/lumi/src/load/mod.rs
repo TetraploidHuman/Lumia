@@ -17,6 +17,12 @@ use std::path::{Path, PathBuf};
 use resolve::{load_module_file, path_label};
 
 pub use resolve::apply_default_stdlib_to_module;
+pub(crate) use resolve::path_candidates;
+pub(crate) use std_mod::{lumi_exports, KNOWN_LUMI_MODULES, LUMI_STD_SUBMODULES};
+
+pub(crate) fn std_is_auto_imported(name: &str) -> bool {
+    LUMI_STD_SUBMODULES.contains(&name)
+}
 
 pub(super) fn item_file_id(it: &Item) -> u32 {
     match it {

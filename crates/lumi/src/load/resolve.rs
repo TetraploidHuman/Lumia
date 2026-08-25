@@ -18,7 +18,7 @@ use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub(super) fn path_candidates(base: &Path, rel: &[&str]) -> Vec<PathBuf> {
+pub(crate) fn path_candidates(base: &Path, rel: &[&str]) -> Vec<PathBuf> {
     let mut out = Vec::new();
     if rel.is_empty() {
         return out;
