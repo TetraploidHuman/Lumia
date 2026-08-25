@@ -5,6 +5,7 @@ mod lambda_lift;
 mod lower;
 mod mono;
 mod pipeline;
+mod dense_f64_match;
 mod sr_pattern;
 mod value_ty;
 mod visit;
@@ -17,6 +18,12 @@ pub use lower::{lower_hir, lower_hir_with_schemes};
 pub use pipeline::{
     compile_file_to_core, compile_source_to_core, compile_source_to_core_with_options,
     compile_source_to_core_with_parallel, FrontendOptions,
+};
+pub use dense_f64_match::{
+    body_has_gemv_inner, for_each_let, fun_has_addmm_shape, fun_has_axpy_shape, fun_has_copy_shape,
+    fun_has_gemv_t_shape, fun_has_mul_shape, fun_has_scale_shape, fun_has_sub_shape, is_list_get,
+    is_list_set, is_nontrivial_add_or_sub, is_nontrivial_arith, is_unit_inc_value, list_arg_is,
+    mentions_local,
 };
 pub use sr_pattern::{
     first_assign_from_local, first_loop, header_lt_bound, is_unit_inc, name_of, same_local,

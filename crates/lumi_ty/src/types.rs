@@ -100,22 +100,27 @@ impl Type {
     /// Visit every node in this type tree (pre-order).
     pub fn for_each<'a>(&'a self, f: &mut impl FnMut(&'a Type)) {
         f(self);
+        self.for_each_child(&mut |c| c.for_each(f));
+    }
+
+    /// Visit immediate child types only (not `self`).
+    pub fn for_each_child<'a>(&'a self, f: &mut impl FnMut(&'a Type)) {
         match self {
-            Type::List(t) | Type::Set(t) => t.for_each(f),
+            Type::List(t) | Type::Set(t) => f(t),
             Type::Map(k, v) => {
-                k.for_each(f);
-                v.for_each(f);
+                f(k);
+                f(v);
             }
             Type::Tuple(ts) | Type::TuplePrefix(ts) | Type::Adt { params: ts, .. } => {
                 for t in ts {
-                    t.for_each(f);
+                    f(t);
                 }
             }
             Type::Fun(ps, r, _) => {
                 for p in ps {
-                    p.for_each(f);
+                    f(p);
                 }
-                r.for_each(f);
+                f(r);
             }
             Type::Int
             | Type::Float

@@ -13,37 +13,23 @@ impl Infer {
     }
 
     pub(crate) fn collect_ty_vars(&mut self, ty: &Type, acc: &mut HashSet<u32>) {
-        match ty {
-            Type::Var(v) => {
-                if let Some(t) = self.uni.subst.get(v).cloned() {
-                    let t = self.prune(t);
-                    self.collect_ty_vars(&t, acc);
-                } else {
-                    acc.insert(*v);
-                }
+        if let Type::Var(v) = ty {
+            if let Some(t) = self.uni.subst.get(v).cloned() {
+                let t = self.prune(t);
+                self.collect_ty_vars(&t, acc);
+            } else {
+                acc.insert(*v);
             }
-            Type::Fun(ps, r, _) => {
-                for p in ps {
-                    self.collect_ty_vars(p, acc);
-                }
-                self.collect_ty_vars(r, acc);
-            }
-            Type::List(t) | Type::Set(t) => self.collect_ty_vars(t, acc),
-            Type::Map(k, v) => {
-                self.collect_ty_vars(k, acc);
-                self.collect_ty_vars(v, acc);
-            }
-            Type::Adt { params, .. } => {
-                for p in params {
-                    self.collect_ty_vars(p, acc);
-                }
-            }
-            Type::Tuple(ts) | Type::TuplePrefix(ts) => {
-                for t in ts {
-                    self.collect_ty_vars(t, acc);
-                }
-            }
-            _ => {}
+            return;
+        }
+        // Follow children; Var leaves are handled above when recursing.
+        let children: Vec<Type> = {
+            let mut cs = Vec::new();
+            ty.for_each_child(&mut |c| cs.push(c.clone()));
+            cs
+        };
+        for c in children {
+            self.collect_ty_vars(&c, acc);
         }
     }
 
