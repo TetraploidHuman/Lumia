@@ -12,7 +12,9 @@
 
 use inkwell::values::{BasicValueEnum, FunctionValue};
 use inkwell::IntPredicate;
-use lumi_core::{const_int, for_each_block_dfs, is_unit_inc, name_of, Block, Local, Op, Value};
+use lumi_core::{
+    const_int, for_each_block_dfs, header_le_const, is_unit_inc, name_of, Block, Local, Op, Value,
+};
 use lumi_syntax::BinOp;
 use rustc_hash::FxHashMap as HashMap;
 
@@ -182,7 +184,7 @@ fn match_count_primes_loop(
     if !latch.ops.is_empty() {
         return None;
     }
-    let (n, limit) = header_le_const(header, defs)?;
+    let (n, limit) = header_le_const(header, defs, true)?;
     if limit < 2 {
         return None;
     }
@@ -285,29 +287,6 @@ fn match_count_primes_loop(
         })
     } else {
         None
-    }
-}
-
-fn header_le_const(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String, i64)> {
-    let res = header.result?;
-    let Value::Binary {
-        op, left, right, ..
-    } = defs.get(&res.0)?
-    else {
-        return None;
-    };
-    match op {
-        BinOp::Le => {
-            let n = name_of(*left, defs)?;
-            let k = const_int(*right, defs)?;
-            Some((n, k))
-        }
-        BinOp::Ge => {
-            let n = name_of(*right, defs)?;
-            let k = const_int(*left, defs)?;
-            Some((n, k))
-        }
-        _ => None,
     }
 }
 

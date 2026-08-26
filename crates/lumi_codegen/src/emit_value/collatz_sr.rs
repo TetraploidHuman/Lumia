@@ -14,7 +14,7 @@
 
 use inkwell::values::{BasicValueEnum, FunctionValue, IntValue};
 use inkwell::IntPredicate;
-use lumi_core::{const_int, is_unit_inc, name_of, Block, Local, Op, Value};
+use lumi_core::{const_int, header_le_const, is_unit_inc, name_of, Block, Local, Op, Value};
 use lumi_syntax::BinOp;
 use rustc_hash::FxHashMap as HashMap;
 
@@ -283,7 +283,7 @@ fn match_collatz_total_loop(
     if !latch.ops.is_empty() {
         return None;
     }
-    let (n, limit) = header_le_const(header, defs)?;
+    let (n, limit) = header_le_const(header, defs, true)?;
     if limit < 1 {
         return None;
     }
@@ -345,7 +345,7 @@ fn match_collatz_strided_loop(
     if !latch.ops.is_empty() {
         return None;
     }
-    let (n, limit) = header_le_const(header, defs)?;
+    let (n, limit) = header_le_const(header, defs, true)?;
     if limit < 1 {
         return None;
     }
@@ -414,30 +414,6 @@ fn const_add_inc(dest: u32, name: &str, defs: &HashMap<u32, Value>) -> Option<i6
         const_int(*left, defs)
     } else {
         None
-    }
-}
-
-/// Header result is `Name(n) <= K` (const).
-fn header_le_const(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String, i64)> {
-    let res = header.result?;
-    let Value::Binary {
-        op, left, right, ..
-    } = defs.get(&res.0)?
-    else {
-        return None;
-    };
-    match op {
-        BinOp::Le => {
-            let n = name_of(*left, defs)?;
-            let k = const_int(*right, defs)?;
-            Some((n, k))
-        }
-        BinOp::Ge => {
-            let n = name_of(*right, defs)?;
-            let k = const_int(*left, defs)?;
-            Some((n, k))
-        }
-        _ => None,
     }
 }
 

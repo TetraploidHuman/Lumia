@@ -284,6 +284,16 @@ pub fn for_each_nested_block(value: &Value, f: &mut impl FnMut(&Block)) {
     }
 }
 
+/// Visit every `Let` value in `body`, recursing into If/Loop bodies.
+pub fn for_each_let(body: &Block, f: &mut dyn FnMut(&Value)) {
+    for op in &body.ops {
+        if let Op::Let { value, .. } = op {
+            f(value);
+            for_each_nested_block(value, &mut |nested| for_each_let(nested, f));
+        }
+    }
+}
+
 /// Depth-first over a block and every nested If/Loop/Lambda body reached from its ops.
 pub fn for_each_block_dfs(block: &Block, f: &mut impl FnMut(&Block)) {
     f(block);

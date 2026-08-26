@@ -6,7 +6,10 @@
 
 use inkwell::values::{BasicValueEnum, FloatValue, FunctionValue, IntValue};
 use inkwell::{FloatPredicate, IntPredicate};
-use lumi_core::{const_int, for_each_block_dfs, is_unit_inc, name_of, Block, Local, Op, Value};
+use lumi_core::{
+    body_assigns_const, const_int, for_each_block_dfs, is_unit_inc, name_of, Block, Local, Op,
+    Value,
+};
 use lumi_syntax::BinOp;
 use rustc_hash::FxHashMap as HashMap;
 
@@ -708,21 +711,6 @@ fn header_lt_bound(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String
         return Some((iv, OrbitBound::Const(c)));
     }
     Some((iv, OrbitBound::Local(*right)))
-}
-
-fn body_assigns_const(body: &Block, slot: &str, expect: i64, defs: &HashMap<u32, Value>) -> bool {
-    for op in &body.ops {
-        if let Op::Assign {
-            name,
-            value: Local(v),
-        } = op
-        {
-            if name == slot && const_int(Local(*v), defs) == Some(expect) {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 #[cfg(test)]

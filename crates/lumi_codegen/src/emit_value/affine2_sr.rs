@@ -9,7 +9,9 @@
 //! → `lumi_affine2_rem_sum(N, a, b, c, m)`.
 
 use inkwell::values::{BasicValueEnum, FunctionValue};
-use lumi_core::{const_int, is_unit_inc, name_of, Block, Local, Op, Value};
+use lumi_core::{
+    const_int, header_lt_const, is_unit_inc, name_of, split_acc_add, Block, Local, Op, Value,
+};
 use lumi_syntax::BinOp;
 use rustc_hash::FxHashMap as HashMap;
 
@@ -70,7 +72,7 @@ fn match_affine2_rem_sum(
     if !latch.ops.is_empty() {
         return None;
     }
-    let (i, n) = header_lt_const(header, defs)?;
+    let (i, n) = header_lt_const(header, defs, true)?;
     if n < 2 {
         return None;
     }
@@ -94,7 +96,7 @@ fn match_affine2_rem_sum(
     if !il.ops.is_empty() {
         return None;
     }
-    let (j, n2) = header_lt_const(ih, defs)?;
+    let (j, n2) = header_lt_const(ih, defs, true)?;
     if n2 != n || j == i {
         return None;
     }
@@ -169,29 +171,6 @@ fn match_affine2_rem_sum(
     })
 }
 
-fn header_lt_const(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String, i64)> {
-    let res = header.result?;
-    let Value::Binary {
-        op, left, right, ..
-    } = defs.get(&res.0)?
-    else {
-        return None;
-    };
-    match op {
-        BinOp::Lt => {
-            let iv = name_of(*left, defs)?;
-            let k = const_int(*right, defs)?;
-            Some((iv, k))
-        }
-        BinOp::Gt => {
-            let iv = name_of(*right, defs)?;
-            let k = const_int(*left, defs)?;
-            Some((iv, k))
-        }
-        _ => None,
-    }
-}
-
 /// `acc = acc + ((a*i + b*j + c) % m)` — returns `(a,b,c,m)`.
 fn parse_acc_affine_rem(
     dest: u32,
@@ -200,23 +179,7 @@ fn parse_acc_affine_rem(
     j: &str,
     defs: &HashMap<u32, Value>,
 ) -> Option<(i64, i64, i64, i64)> {
-    let Value::Binary {
-        op: BinOp::Add,
-        left,
-        right,
-        ..
-    } = defs.get(&dest)?
-    else {
-        return None;
-    };
-    let (acc_l, rem_l) = if name_of(*left, defs).as_deref() == Some(acc) {
-        (*left, *right)
-    } else if name_of(*right, defs).as_deref() == Some(acc) {
-        (*right, *left)
-    } else {
-        return None;
-    };
-    let _ = acc_l;
+    let rem_l = split_acc_add(dest, acc, defs)?;
     let Value::Binary {
         op: BinOp::Rem,
         left: num,

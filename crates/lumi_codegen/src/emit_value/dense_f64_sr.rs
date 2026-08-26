@@ -11,7 +11,7 @@
 //! - fill:    `xs[i] = v`
 //! - clamp:   `xs[i] = clamp(xs[i], lo, hi)`
 
-use inkwell::values::FunctionValue;
+use inkwell::values::{BasicMetadataValueEnum, FunctionValue};
 use lumi_core::{
     match_add_fun, match_addmm_fun, match_axpy_fun, match_clamp_fun, match_copy_fun,
     match_fill_fun, match_gemv_fun, match_gemv_t_fun, match_mul_fun, match_scale_fun,
@@ -76,115 +76,14 @@ impl<'ctx> Codegen<'ctx> {
         Ok(None)
     }
 
-    fn emit_gemv_fun(&mut self, p: &GemvPat) -> Result<()> {
-        let rt = self.runtime_fn("lumi_f64_gemv")?;
-        let m = self.coerce_i64(self.local(p.m)?)?;
-        let n = self.coerce_i64(self.local(p.n)?)?;
-        let a = self.i64_as_ptr(self.coerce_i64(self.local(p.a)?)?, "a")?;
-        let x = self.i64_as_ptr(self.coerce_i64(self.local(p.x)?)?, "x")?;
-        let y = self.i64_as_ptr(self.coerce_i64(self.local(p.y)?)?, "y")?;
-        let call = crate::error::llvm(self.llvm.builder.build_call(
-            rt,
-            &[m.into(), n.into(), a.into(), x.into(), y.into()],
-            "gemv",
-        ))?;
-        let out = call
-            .try_as_basic_value()
-            .basic()
-            .context("gemv")?
-            .into_pointer_value();
-        let out_i = self.ptr_as_i64(out, "gemv_i64")?.into_int_value();
-        // No frame/roots were pushed for this trampoline.
-        crate::error::llvm(self.llvm.builder.build_return(Some(&out_i)))?;
-        Ok(())
-    }
-
-    fn emit_gemv_t_fun(&mut self, p: &GemvTPat) -> Result<()> {
-        let rt = self.runtime_fn("lumi_f64_gemv_t")?;
-        let m = self.coerce_i64(self.local(p.m)?)?;
-        let n = self.coerce_i64(self.local(p.n)?)?;
-        let a = self.i64_as_ptr(self.coerce_i64(self.local(p.a)?)?, "a")?;
-        let x = self.i64_as_ptr(self.coerce_i64(self.local(p.x)?)?, "x")?;
-        let y = self.i64_as_ptr(self.coerce_i64(self.local(p.y)?)?, "y")?;
-        let call = crate::error::llvm(self.llvm.builder.build_call(
-            rt,
-            &[m.into(), n.into(), a.into(), x.into(), y.into()],
-            "gemvt",
-        ))?;
-        let out = call
-            .try_as_basic_value()
-            .basic()
-            .context("gemv_t")?
-            .into_pointer_value();
-        let out_i = self.ptr_as_i64(out, "gemvt_i64")?.into_int_value();
-        crate::error::llvm(self.llvm.builder.build_return(Some(&out_i)))?;
-        Ok(())
-    }
-
-    fn emit_addmm_fun(&mut self, p: &AddmmPat) -> Result<()> {
-        let rt = self.runtime_fn("lumi_f64_addmm")?;
-        let m = self.coerce_i64(self.local(p.m)?)?;
-        let n = self.coerce_i64(self.local(p.n)?)?;
-        let w = self.i64_as_ptr(self.coerce_i64(self.local(p.w)?)?, "w")?;
-        let u = self.i64_as_ptr(self.coerce_i64(self.local(p.u)?)?, "u")?;
-        let v = self.i64_as_ptr(self.coerce_i64(self.local(p.v)?)?, "v")?;
-        let alpha = self.promote_f64(self.local(p.alpha)?)?;
-        let call = crate::error::llvm(self.llvm.builder.build_call(
-            rt,
-            &[
-                m.into(),
-                n.into(),
-                w.into(),
-                u.into(),
-                v.into(),
-                alpha.into(),
-            ],
-            "addmm",
-        ))?;
-        let out = call
-            .try_as_basic_value()
-            .basic()
-            .context("addmm")?
-            .into_pointer_value();
-        let out_i = self.ptr_as_i64(out, "addmm_i64")?.into_int_value();
-        crate::error::llvm(self.llvm.builder.build_return(Some(&out_i)))?;
-        Ok(())
-    }
-
-    fn emit_axpy_fun(&mut self, p: &AxpyPat) -> Result<()> {
-        let rt = self.runtime_fn("lumi_f64_axpy")?;
-        let y = self.i64_as_ptr(self.coerce_i64(self.local(p.y)?)?, "y")?;
-        let alpha = self.promote_f64(self.local(p.alpha)?)?;
-        let x = self.i64_as_ptr(self.coerce_i64(self.local(p.x)?)?, "x")?;
-        let call = crate::error::llvm(self.llvm.builder.build_call(
-            rt,
-            &[y.into(), alpha.into(), x.into()],
-            "axpy",
-        ))?;
-        let out = call
-            .try_as_basic_value()
-            .basic()
-            .context("axpy")?
-            .into_pointer_value();
-        let out_i = self.ptr_as_i64(out, "axpy_i64")?.into_int_value();
-        crate::error::llvm(self.llvm.builder.build_return(Some(&out_i)))?;
-        Ok(())
-    }
-
-    fn emit_sub_fun(&mut self, p: &SubPat) -> Result<()> {
-        self.emit_binop3_fun("lumi_f64_sub", "fsub", p)
-    }
-
-    fn emit_binop3_fun(&mut self, sym: &str, label: &str, p: &SubPat) -> Result<()> {
+    fn emit_f64_kernel_return_ptr(
+        &mut self,
+        sym: &str,
+        label: &str,
+        args: &[BasicMetadataValueEnum<'ctx>],
+    ) -> Result<()> {
         let rt = self.runtime_fn(sym)?;
-        let o = self.i64_as_ptr(self.coerce_i64(self.local(p.out)?)?, "o")?;
-        let a = self.i64_as_ptr(self.coerce_i64(self.local(p.a)?)?, "a")?;
-        let b = self.i64_as_ptr(self.coerce_i64(self.local(p.b)?)?, "b")?;
-        let call = crate::error::llvm(self.llvm.builder.build_call(
-            rt,
-            &[o.into(), a.into(), b.into()],
-            label,
-        ))?;
+        let call = crate::error::llvm(self.llvm.builder.build_call(rt, args, label))?;
         let out = call
             .try_as_basic_value()
             .basic()
@@ -197,81 +96,102 @@ impl<'ctx> Codegen<'ctx> {
         Ok(())
     }
 
+    fn emit_gemv_fun(&mut self, p: &GemvPat) -> Result<()> {
+        let m = self.coerce_i64(self.local(p.m)?)?;
+        let n = self.coerce_i64(self.local(p.n)?)?;
+        let a = self.i64_as_ptr(self.coerce_i64(self.local(p.a)?)?, "a")?;
+        let x = self.i64_as_ptr(self.coerce_i64(self.local(p.x)?)?, "x")?;
+        let y = self.i64_as_ptr(self.coerce_i64(self.local(p.y)?)?, "y")?;
+        self.emit_f64_kernel_return_ptr(
+            "lumi_f64_gemv",
+            "gemv",
+            &[m.into(), n.into(), a.into(), x.into(), y.into()],
+        )
+    }
+
+    fn emit_gemv_t_fun(&mut self, p: &GemvTPat) -> Result<()> {
+        let m = self.coerce_i64(self.local(p.m)?)?;
+        let n = self.coerce_i64(self.local(p.n)?)?;
+        let a = self.i64_as_ptr(self.coerce_i64(self.local(p.a)?)?, "a")?;
+        let x = self.i64_as_ptr(self.coerce_i64(self.local(p.x)?)?, "x")?;
+        let y = self.i64_as_ptr(self.coerce_i64(self.local(p.y)?)?, "y")?;
+        self.emit_f64_kernel_return_ptr(
+            "lumi_f64_gemv_t",
+            "gemvt",
+            &[m.into(), n.into(), a.into(), x.into(), y.into()],
+        )
+    }
+
+    fn emit_addmm_fun(&mut self, p: &AddmmPat) -> Result<()> {
+        let m = self.coerce_i64(self.local(p.m)?)?;
+        let n = self.coerce_i64(self.local(p.n)?)?;
+        let w = self.i64_as_ptr(self.coerce_i64(self.local(p.w)?)?, "w")?;
+        let u = self.i64_as_ptr(self.coerce_i64(self.local(p.u)?)?, "u")?;
+        let v = self.i64_as_ptr(self.coerce_i64(self.local(p.v)?)?, "v")?;
+        let alpha = self.promote_f64(self.local(p.alpha)?)?;
+        self.emit_f64_kernel_return_ptr(
+            "lumi_f64_addmm",
+            "addmm",
+            &[
+                m.into(),
+                n.into(),
+                w.into(),
+                u.into(),
+                v.into(),
+                alpha.into(),
+            ],
+        )
+    }
+
+    fn emit_axpy_fun(&mut self, p: &AxpyPat) -> Result<()> {
+        let y = self.i64_as_ptr(self.coerce_i64(self.local(p.y)?)?, "y")?;
+        let alpha = self.promote_f64(self.local(p.alpha)?)?;
+        let x = self.i64_as_ptr(self.coerce_i64(self.local(p.x)?)?, "x")?;
+        self.emit_f64_kernel_return_ptr(
+            "lumi_f64_axpy",
+            "axpy",
+            &[y.into(), alpha.into(), x.into()],
+        )
+    }
+
+    fn emit_sub_fun(&mut self, p: &SubPat) -> Result<()> {
+        self.emit_binop3_fun("lumi_f64_sub", "fsub", p)
+    }
+
+    fn emit_binop3_fun(&mut self, sym: &str, label: &str, p: &SubPat) -> Result<()> {
+        let o = self.i64_as_ptr(self.coerce_i64(self.local(p.out)?)?, "o")?;
+        let a = self.i64_as_ptr(self.coerce_i64(self.local(p.a)?)?, "a")?;
+        let b = self.i64_as_ptr(self.coerce_i64(self.local(p.b)?)?, "b")?;
+        self.emit_f64_kernel_return_ptr(sym, label, &[o.into(), a.into(), b.into()])
+    }
+
     fn emit_clamp_fun(&mut self, p: &ClampPat) -> Result<()> {
-        let rt = self.runtime_fn("lumi_f64_clamp")?;
         let xs = self.i64_as_ptr(self.coerce_i64(self.local(p.xs)?)?, "xs")?;
         let lo = self.promote_f64(self.local(p.lo)?)?;
         let hi = self.promote_f64(self.local(p.hi)?)?;
-        let call = crate::error::llvm(self.llvm.builder.build_call(
-            rt,
-            &[xs.into(), lo.into(), hi.into()],
+        self.emit_f64_kernel_return_ptr(
+            "lumi_f64_clamp",
             "fclamp",
-        ))?;
-        let out = call
-            .try_as_basic_value()
-            .basic()
-            .context("clamp")?
-            .into_pointer_value();
-        let out_i = self.ptr_as_i64(out, "clamp_i64")?.into_int_value();
-        crate::error::llvm(self.llvm.builder.build_return(Some(&out_i)))?;
-        Ok(())
+            &[xs.into(), lo.into(), hi.into()],
+        )
     }
 
     fn emit_scale_fun(&mut self, p: &ScalePat) -> Result<()> {
-        let rt = self.runtime_fn("lumi_f64_scale")?;
         let xs = self.i64_as_ptr(self.coerce_i64(self.local(p.xs)?)?, "xs")?;
         let alpha = self.promote_f64(self.local(p.alpha)?)?;
-        let call = crate::error::llvm(self.llvm.builder.build_call(
-            rt,
-            &[xs.into(), alpha.into()],
-            "fscale",
-        ))?;
-        let out = call
-            .try_as_basic_value()
-            .basic()
-            .context("scale")?
-            .into_pointer_value();
-        let out_i = self.ptr_as_i64(out, "scale_i64")?.into_int_value();
-        crate::error::llvm(self.llvm.builder.build_return(Some(&out_i)))?;
-        Ok(())
+        self.emit_f64_kernel_return_ptr("lumi_f64_scale", "fscale", &[xs.into(), alpha.into()])
     }
 
     fn emit_fill_fun(&mut self, p: &FillPat) -> Result<()> {
-        let rt = self.runtime_fn("lumi_f64_fill")?;
         let xs = self.i64_as_ptr(self.coerce_i64(self.local(p.xs)?)?, "xs")?;
         let v = self.promote_f64(self.local(p.v)?)?;
-        let call = crate::error::llvm(self.llvm.builder.build_call(
-            rt,
-            &[xs.into(), v.into()],
-            "ffill",
-        ))?;
-        let out = call
-            .try_as_basic_value()
-            .basic()
-            .context("fill")?
-            .into_pointer_value();
-        let out_i = self.ptr_as_i64(out, "fill_i64")?.into_int_value();
-        crate::error::llvm(self.llvm.builder.build_return(Some(&out_i)))?;
-        Ok(())
+        self.emit_f64_kernel_return_ptr("lumi_f64_fill", "ffill", &[xs.into(), v.into()])
     }
 
     fn emit_copy_fun(&mut self, p: &CopyPat) -> Result<()> {
-        let rt = self.runtime_fn("lumi_f64_copy")?;
         let dst = self.i64_as_ptr(self.coerce_i64(self.local(p.dst)?)?, "dst")?;
         let src = self.i64_as_ptr(self.coerce_i64(self.local(p.src)?)?, "src")?;
-        let call = crate::error::llvm(self.llvm.builder.build_call(
-            rt,
-            &[dst.into(), src.into()],
-            "fcopy",
-        ))?;
-        let out = call
-            .try_as_basic_value()
-            .basic()
-            .context("copy")?
-            .into_pointer_value();
-        let out_i = self.ptr_as_i64(out, "copy_i64")?.into_int_value();
-        crate::error::llvm(self.llvm.builder.build_return(Some(&out_i)))?;
-        Ok(())
+        self.emit_f64_kernel_return_ptr("lumi_f64_copy", "fcopy", &[dst.into(), src.into()])
     }
 }
 
@@ -369,7 +289,6 @@ val main = {
                     }] if fun == "lumi_f64_axpy"
                 )
         });
-        // May be fully inlined into main; then the foreign must exist / main calls it.
         let hit = hit
             || core
                 .functions

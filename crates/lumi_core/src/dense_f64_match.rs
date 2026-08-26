@@ -249,60 +249,44 @@ pub fn fun_has_axpy_shape(
     get_x && get_y && set && uses_alpha
 }
 
-pub fn fun_has_sub_shape(
-    body: &Block,
-    defs: &HashMap<u32, Value>,
-    out_slot: &str,
-    a: Local,
-    b: Local,
-) -> bool {
-    let mut get_a = false;
-    let mut get_b = false;
-    let mut sub = false;
-    let mut set = false;
-    for_each_def_and_let(body, defs, &mut |v| {
-        if let Some((lst, _)) = is_list_get(v) {
-            if list_arg_is(lst, a, defs) {
-                get_a = true;
-            }
-            if list_arg_is(lst, b, defs) {
-                get_b = true;
-            }
-        }
-        if matches!(v, Value::Binary { op: BinOp::Sub, .. }) {
-            sub = true;
-        }
-        if is_list_set(v).is_some() {
-            set = true;
-        }
-    });
-    let _ = out_slot;
-    get_a && get_b && sub && set
+#[derive(Clone, Copy)]
+struct Bin3ShapeFlags {
+    require_op: BinOp,
+    forbid_mul: bool,
+    forbid_nontrivial_add_sub: bool,
+    out_slot_as_get_a: bool,
 }
 
-pub fn fun_has_mul_shape(
+fn fun_has_bin3_shape(
     body: &Block,
     defs: &HashMap<u32, Value>,
     out_slot: &str,
     a: Local,
     b: Local,
+    flags: Bin3ShapeFlags,
 ) -> bool {
     let mut get_a = false;
     let mut get_b = false;
-    let mut mul = false;
+    let mut has_op = false;
     let mut set = false;
+    let mut has_mul = false;
     let mut add_or_sub = false;
     for_each_def_and_let(body, defs, &mut |v| {
         if let Some((lst, _)) = is_list_get(v) {
-            if list_arg_is(lst, a, defs) {
+            if list_arg_is(lst, a, defs)
+                || (flags.out_slot_as_get_a && name_of(lst, defs).as_deref() == Some(out_slot))
+            {
                 get_a = true;
             }
             if list_arg_is(lst, b, defs) {
                 get_b = true;
             }
         }
+        if matches!(v, Value::Binary { op, .. } if *op == flags.require_op) {
+            has_op = true;
+        }
         if matches!(v, Value::Binary { op: BinOp::Mul, .. }) {
-            mul = true;
+            has_mul = true;
         }
         if is_nontrivial_add_or_sub(v, defs) {
             add_or_sub = true;
@@ -312,7 +296,78 @@ pub fn fun_has_mul_shape(
         }
     });
     let _ = out_slot;
-    get_a && get_b && mul && set && !add_or_sub
+    get_a
+        && get_b
+        && has_op
+        && set
+        && (!flags.forbid_mul || !has_mul)
+        && (!flags.forbid_nontrivial_add_sub || !add_or_sub)
+}
+
+pub fn fun_has_sub_shape(
+    body: &Block,
+    defs: &HashMap<u32, Value>,
+    out_slot: &str,
+    a: Local,
+    b: Local,
+) -> bool {
+    fun_has_bin3_shape(
+        body,
+        defs,
+        out_slot,
+        a,
+        b,
+        Bin3ShapeFlags {
+            require_op: BinOp::Sub,
+            forbid_mul: false,
+            forbid_nontrivial_add_sub: false,
+            out_slot_as_get_a: false,
+        },
+    )
+}
+
+pub fn fun_has_mul_shape(
+    body: &Block,
+    defs: &HashMap<u32, Value>,
+    out_slot: &str,
+    a: Local,
+    b: Local,
+) -> bool {
+    fun_has_bin3_shape(
+        body,
+        defs,
+        out_slot,
+        a,
+        b,
+        Bin3ShapeFlags {
+            require_op: BinOp::Mul,
+            forbid_mul: false,
+            forbid_nontrivial_add_sub: true,
+            out_slot_as_get_a: false,
+        },
+    )
+}
+
+pub fn fun_has_add_shape(
+    body: &Block,
+    defs: &HashMap<u32, Value>,
+    out_slot: &str,
+    a: Local,
+    b: Local,
+) -> bool {
+    fun_has_bin3_shape(
+        body,
+        defs,
+        out_slot,
+        a,
+        b,
+        Bin3ShapeFlags {
+            require_op: BinOp::Add,
+            forbid_mul: true,
+            forbid_nontrivial_add_sub: false,
+            out_slot_as_get_a: true,
+        },
+    )
 }
 
 pub fn fun_has_scale_shape(
@@ -422,41 +477,6 @@ pub fn fun_has_copy_shape(
     });
     let _ = out_slot;
     get_src && set && !saw_arith
-}
-
-pub fn fun_has_add_shape(
-    body: &Block,
-    defs: &HashMap<u32, Value>,
-    out_slot: &str,
-    a: Local,
-    b: Local,
-) -> bool {
-    let mut get_a = false;
-    let mut get_b = false;
-    let mut add = false;
-    let mut set = false;
-    let mut mul = false;
-    for_each_def_and_let(body, defs, &mut |v| {
-        if let Some((lst, _)) = is_list_get(v) {
-            if list_arg_is(lst, a, defs) || name_of(lst, defs).as_deref() == Some(out_slot) {
-                get_a = true;
-            }
-            if list_arg_is(lst, b, defs) {
-                get_b = true;
-            }
-        }
-        if matches!(v, Value::Binary { op: BinOp::Add, .. }) {
-            add = true;
-        }
-        if matches!(v, Value::Binary { op: BinOp::Mul, .. }) {
-            mul = true;
-        }
-        if is_list_set(v).is_some() {
-            set = true;
-        }
-    });
-    // Exclude axpy-like `y + α*x` (has Mul).
-    get_a && get_b && add && set && !mul
 }
 
 pub fn fun_has_fill_shape(
@@ -667,43 +687,32 @@ pub fn match_axpy_fun(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<Dense
     Some(DenseAxpy { y, alpha, x })
 }
 
-pub fn match_sub_fun(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<DenseBin3> {
+fn match_bin3_fun(
+    fun: &CoreFun,
+    defs: &HashMap<u32, Value>,
+    shape: fn(&Block, &HashMap<u32, Value>, &str, Local, Local) -> bool,
+) -> Option<DenseBin3> {
     if fun.params.len() != 3 {
         return None;
     }
     let (out, a, b) = (fun.params[0], fun.params[1], fun.params[2]);
-    let body = &fun.body;
-    let out_slot = first_assign_from_local(body, out)?;
-    if !fun_has_sub_shape(body, defs, &out_slot, a, b) {
+    let out_slot = first_assign_from_local(&fun.body, out)?;
+    if !shape(&fun.body, defs, &out_slot, a, b) {
         return None;
     }
     Some(DenseBin3 { out, a, b })
+}
+
+pub fn match_sub_fun(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<DenseBin3> {
+    match_bin3_fun(fun, defs, fun_has_sub_shape)
 }
 
 pub fn match_add_fun(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<DenseBin3> {
-    if fun.params.len() != 3 {
-        return None;
-    }
-    let (out, a, b) = (fun.params[0], fun.params[1], fun.params[2]);
-    let body = &fun.body;
-    let out_slot = first_assign_from_local(body, out)?;
-    if !fun_has_add_shape(body, defs, &out_slot, a, b) {
-        return None;
-    }
-    Some(DenseBin3 { out, a, b })
+    match_bin3_fun(fun, defs, fun_has_add_shape)
 }
 
 pub fn match_mul_fun(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<DenseBin3> {
-    if fun.params.len() != 3 {
-        return None;
-    }
-    let (out, a, b) = (fun.params[0], fun.params[1], fun.params[2]);
-    let body = &fun.body;
-    let out_slot = first_assign_from_local(body, out)?;
-    if !fun_has_mul_shape(body, defs, &out_slot, a, b) {
-        return None;
-    }
-    Some(DenseBin3 { out, a, b })
+    match_bin3_fun(fun, defs, fun_has_mul_shape)
 }
 
 pub fn match_clamp_fun(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<DenseClamp> {
@@ -760,7 +769,7 @@ pub fn match_copy_fun(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<Dense
 
 fn body_calls_any(body: &Block, names: &[&str]) -> bool {
     let mut found = false;
-    for_each_let(body, &mut |val| {
+    crate::visit::for_each_let(body, &mut |val| {
         if let Value::Call { fun, .. } = val {
             if names.iter().any(|n| fun == n) {
                 found = true;
@@ -1056,31 +1065,46 @@ pub fn mentions_local(v: &Value, target: Local) -> bool {
     }
 }
 
-pub fn for_each_let(body: &Block, f: &mut dyn FnMut(&Value)) {
-    for op in &body.ops {
-        if let Op::Let { value, .. } = op {
-            f(value);
-            match value {
-                Value::Loop {
-                    header,
-                    body,
-                    latch,
-                } => {
-                    for_each_let(header, f);
-                    for_each_let(body, f);
-                    for_each_let(latch, f);
-                }
-                Value::If {
-                    then_block,
-                    else_block,
-                    ..
-                } => {
-                    for_each_let(then_block, f);
-                    for_each_let(else_block, f);
-                }
-                _ => {}
-            }
-        }
+/// Opt rewrite symbol for a whole-function dense kernel (order-sensitive).
+pub fn dense_f64_rt_symbol(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<&'static str> {
+    if match_gemv_fun(fun, defs).is_some() {
+        Some("lumi_f64_gemv")
+    } else if match_gemv_t_fun(fun, defs).is_some() {
+        Some("lumi_f64_gemv_t")
+    } else if match_addmm_fun(fun, defs).is_some() {
+        Some("lumi_f64_addmm")
+    } else if match_axpy_fun(fun, defs).is_some() {
+        Some("lumi_f64_axpy")
+    } else if match_sub_fun(fun, defs).is_some() {
+        Some("lumi_f64_sub")
+    } else if match_add_fun(fun, defs).is_some() {
+        Some("lumi_f64_add")
+    } else if match_mul_fun(fun, defs).is_some() {
+        Some("lumi_f64_mul")
+    } else if match_clamp_fun(fun, defs).is_some() {
+        Some("lumi_f64_clamp")
+    } else if match_scale_fun(fun, defs).is_some() {
+        Some("lumi_f64_scale")
+    } else if match_fill_fun(fun, defs).is_some() {
+        Some("lumi_f64_fill")
+    } else if match_copy_fun(fun, defs).is_some() {
+        Some("lumi_f64_copy")
+    } else if match_zeros_fun(fun, defs).is_some() {
+        Some("lumi_list_f64_zeros")
+    } else if match_l2_normalize_fun(fun, defs).is_some() {
+        Some("lumi_f64_l2_normalize")
+    } else if match_softmax_fun(fun, defs).is_some() {
+        Some("lumi_f64_softmax")
+    } else if match_l2_norm_fun(fun, defs).is_some() {
+        Some("lumi_f64_l2_norm")
+    } else if match_std_fun(fun, defs).is_some() {
+        Some("lumi_f64_std")
+    } else if match_sum_sq_fun(fun, defs).is_some() {
+        Some("lumi_f64_sum_sq")
+    } else if match_mean_fun(fun, defs).is_some() {
+        Some("lumi_f64_mean")
+    } else {
+        None
     }
 }
 
@@ -1089,5 +1113,5 @@ pub fn for_each_def_and_let(body: &Block, defs: &HashMap<u32, Value>, f: &mut dy
     for v in defs.values() {
         f(v);
     }
-    for_each_let(body, f);
+    crate::visit::for_each_let(body, f);
 }

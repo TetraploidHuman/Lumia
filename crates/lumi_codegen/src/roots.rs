@@ -87,46 +87,37 @@ impl<'ctx> Codegen<'ctx> {
 
     /// Bump List COW refcount when aliasing a heap list as i64 bits.
     pub(crate) fn list_retain_i64(&self, bits: IntValue<'ctx>) -> Result<()> {
-        let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
-        let p = self
-            .llvm
-            .builder
-            .build_int_to_ptr(bits, ptr_ty, "list_rc_ptr")
-            .map_err(|e| anyhow::anyhow!("int_to_ptr retain: {e}"))?;
-        self.call_rt_void("lumi_list_retain", &[p.into()], "list_retain")
+        self.cow_rc_i64(bits, "lumi_list_retain", "list_rc_ptr")
     }
 
     /// Drop a List alias when overwriting a mut slot (no-op for non-lists).
     pub(crate) fn list_release_i64(&self, bits: IntValue<'ctx>) -> Result<()> {
-        let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
-        let p = self
-            .llvm
-            .builder
-            .build_int_to_ptr(bits, ptr_ty, "list_rc_ptr")
-            .map_err(|e| anyhow::anyhow!("int_to_ptr release: {e}"))?;
-        self.call_rt_void("lumi_list_release", &[p.into()], "list_release")
+        self.cow_rc_i64(bits, "lumi_list_release", "list_rc_ptr")
     }
 
     /// Bump List **or** ADT COW refcount (`val a = p`, nested `AdtField`).
     pub(crate) fn adt_retain_i64(&self, bits: IntValue<'ctx>) -> Result<()> {
-        let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
-        let p = self
-            .llvm
-            .builder
-            .build_int_to_ptr(bits, ptr_ty, "adt_rc_ptr")
-            .map_err(|e| anyhow::anyhow!("int_to_ptr adt_retain: {e}"))?;
-        self.call_rt_void("lumi_adt_retain", &[p.into()], "adt_retain")
+        self.cow_rc_i64(bits, "lumi_adt_retain", "adt_rc_ptr")
     }
 
     /// Drop List **or** ADT alias (mut-slot overwrite).
     pub(crate) fn adt_release_i64(&self, bits: IntValue<'ctx>) -> Result<()> {
+        self.cow_rc_i64(bits, "lumi_adt_release", "adt_rc_rel")
+    }
+
+    fn cow_rc_i64(
+        &self,
+        bits: IntValue<'ctx>,
+        rt_sym: &'static str,
+        ptr_label: &str,
+    ) -> Result<()> {
         let ptr_ty = self.llvm.context.ptr_type(AddressSpace::default());
         let p = self
             .llvm
             .builder
-            .build_int_to_ptr(bits, ptr_ty, "adt_rc_rel")
-            .map_err(|e| anyhow::anyhow!("int_to_ptr adt_release: {e}"))?;
-        self.call_rt_void("lumi_adt_release", &[p.into()], "adt_release")
+            .build_int_to_ptr(bits, ptr_ty, ptr_label)
+            .map_err(|e| anyhow::anyhow!("int_to_ptr {ptr_label}: {e}"))?;
+        self.call_rt_void(rt_sym, &[p.into()], ptr_label)
     }
 
     /// Heap COW types that need retain on alias / extract.

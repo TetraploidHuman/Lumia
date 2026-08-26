@@ -17,7 +17,7 @@
 //! - Fib-style `match { 0|1 → …; _ → …(n-1)/(n-2) }`: mark `n-1`/`n-2` NSW
 //!   in the residual arm (add of recursive results stays checked — fib(93)+ overflows)
 
-use lumi_core::{for_each_block_dfs, Block, Local, Op, Value};
+use lumi_core::{const_int, for_each_block_dfs, name_of, Block, Local, Op, Value};
 use lumi_syntax::BinOp;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
@@ -175,10 +175,10 @@ fn iv_bound_info(header: &Block, all_defs: &HashMap<u32, Value>) -> IvBoundInfo 
     if !strict && !matches!(op, BinOp::Le | BinOp::Ge) {
         return empty;
     }
-    let l_name = name_of_local(*left, all_defs);
-    let r_name = name_of_local(*right, all_defs);
-    let l_c = const_i64(*left, all_defs);
-    let r_c = const_i64(*right, all_defs);
+    let l_name = name_of(*left, all_defs);
+    let r_name = name_of(*right, all_defs);
+    let l_c = const_int(*left, all_defs);
+    let r_c = const_int(*right, all_defs);
     let (iv, bound_const) = match op {
         // `iv < K` / `iv <= K` — K is an upper bound.
         BinOp::Lt | BinOp::Le if r_c.is_some() && l_name.is_some() => (l_name, r_c),
@@ -220,8 +220,8 @@ fn square_bound(
     if !matches!(op, BinOp::Le | BinOp::Lt) {
         return None;
     }
-    let c = const_i64(*right, all_defs)
-        .or_else(|| name_of_local(*right, all_defs).and_then(|n| iv_upper.get(&n).copied()))?;
+    let c = const_int(*right, all_defs)
+        .or_else(|| name_of(*right, all_defs).and_then(|n| iv_upper.get(&n).copied()))?;
     let Value::Binary {
         op: BinOp::Mul,
         left: a,
@@ -231,8 +231,8 @@ fn square_bound(
     else {
         return None;
     };
-    let na = name_of_local(*a, all_defs)?;
-    let nb = name_of_local(*b, all_defs)?;
+    let na = name_of(*a, all_defs)?;
+    let nb = name_of(*b, all_defs)?;
     if na == nb {
         Some((na, c))
     } else {
@@ -261,8 +261,8 @@ fn mark_square_mul(
                 ..
             } = op
             {
-                let la = name_of_local(*left, all_defs);
-                let ra = name_of_local(*right, all_defs);
+                let la = name_of(*left, all_defs);
+                let ra = name_of(*right, all_defs);
                 if la.as_deref() == Some(iv) && ra.as_deref() == Some(iv) {
                     out.insert(local.0);
                 }
@@ -278,8 +278,8 @@ fn mark_square_mul(
             ..
         } = v
         {
-            let la = name_of_local(*left, all_defs);
-            let ra = name_of_local(*right, all_defs);
+            let la = name_of(*left, all_defs);
+            let ra = name_of(*right, all_defs);
             if la.as_deref() == Some(iv) && ra.as_deref() == Some(iv) {
                 out.insert(*id);
             }
@@ -324,10 +324,10 @@ fn is_unit_step_of(dest: u32, iv: &str, all_defs: &HashMap<u32, Value>) -> bool 
         BinOp::Sub => -1i64,
         _ => return false,
     };
-    let l_iv = name_of_local(*left, all_defs).as_deref() == Some(iv);
-    let r_iv = name_of_local(*right, all_defs).as_deref() == Some(iv);
-    let l_c = const_i64(*left, all_defs);
-    let r_c = const_i64(*right, all_defs);
+    let l_iv = name_of(*left, all_defs).as_deref() == Some(iv);
+    let r_iv = name_of(*right, all_defs).as_deref() == Some(iv);
+    let l_c = const_int(*left, all_defs);
+    let r_c = const_int(*right, all_defs);
     match step {
         1 => (l_iv && r_c == Some(1)) || (r_iv && l_c == Some(1)),
         -1 => l_iv && r_c == Some(1),
@@ -350,7 +350,7 @@ fn mark_small_factor_muls(
         else {
             continue;
         };
-        let (lc, rc) = (const_i64(*left, all_defs), const_i64(*right, all_defs));
+        let (lc, rc) = (const_int(*left, all_defs), const_int(*right, all_defs));
         let ok = matches!(
             (lc, rc),
             (Some(c), _) if (1..=NSW_SMALL_FACTOR).contains(&c) && nonneg_loads.contains(&right.0)
@@ -380,9 +380,9 @@ fn mark_small_factor_muls(
                 continue;
             }
             let l_ok = out.contains(&left.0)
-                && const_i64(*right, all_defs).is_some_and(|c| (0..=NSW_SMALL_FACTOR).contains(&c));
+                && const_int(*right, all_defs).is_some_and(|c| (0..=NSW_SMALL_FACTOR).contains(&c));
             let r_ok = out.contains(&right.0)
-                && const_i64(*left, all_defs).is_some_and(|c| (0..=NSW_SMALL_FACTOR).contains(&c));
+                && const_int(*left, all_defs).is_some_and(|c| (0..=NSW_SMALL_FACTOR).contains(&c));
             if l_ok || r_ok {
                 out.insert(*id);
                 changed = true;
@@ -418,10 +418,10 @@ fn collect_unit_counter_slots(body: &Block, all_defs: &HashMap<u32, Value>) -> H
                     right,
                     ..
                 }) => {
-                    let l_self = name_of_local(*left, all_defs).as_deref() == Some(name.as_str());
-                    let r_self = name_of_local(*right, all_defs).as_deref() == Some(name.as_str());
-                    let l_one = const_i64(*left, all_defs) == Some(1);
-                    let r_one = const_i64(*right, all_defs) == Some(1);
+                    let l_self = name_of(*left, all_defs).as_deref() == Some(name.as_str());
+                    let r_self = name_of(*right, all_defs).as_deref() == Some(name.as_str());
+                    let l_one = const_int(*left, all_defs) == Some(1);
+                    let r_one = const_int(*right, all_defs) == Some(1);
                     if !((l_self && r_one) || (r_self && l_one)) {
                         ok = false;
                         break;
@@ -452,7 +452,7 @@ fn mark_acc_plus_bounded_rem(all_defs: &HashMap<u32, Value>, out: &mut HashSet<u
             ..
         } = v
         {
-            let c = const_i64(*right, all_defs);
+            let c = const_int(*right, all_defs);
             if c.is_some_and(|c| (2..=NSW_REM_MOD_MAX).contains(&c))
                 && (out.contains(&left.0) || out.contains(id))
             {
@@ -525,8 +525,8 @@ fn mark_acc_plus_unit_counter(
             else {
                 continue;
             };
-            let ln = name_of_local(*left, all_defs);
-            let rn = name_of_local(*right, all_defs);
+            let ln = name_of(*left, all_defs);
+            let rn = name_of(*right, all_defs);
             let l_ctr = ln.as_ref().is_some_and(|n| counters.contains(n));
             let r_ctr = rn.as_ref().is_some_and(|n| counters.contains(n));
             // Other side must already be NSW (not an unbounded parameter `Name`).
@@ -580,7 +580,7 @@ fn mark_bounded_arith_tree(
 
     let allow_acc = bound <= NSW_ACC_BOUND_MAX;
     let in_seed = |id: u32, seed: &HashSet<u32>, names: &HashSet<String>| {
-        seed.contains(&id) || name_of_local(Local(id), all_defs).is_some_and(|n| names.contains(&n))
+        seed.contains(&id) || name_of(Local(id), all_defs).is_some_and(|n| names.contains(&n))
     };
     let mut changed = true;
     while changed {
@@ -605,13 +605,10 @@ fn mark_bounded_arith_tree(
             // pull arbitrary mut slots into the NSW seed.
             let acc_add = allow_acc
                 && matches!(op, BinOp::Add | BinOp::Sub)
-                && ((l
-                    && name_of_local(*right, all_defs).is_some_and(|n| seed_names.contains(&n)))
-                    || (r
-                        && name_of_local(*left, all_defs)
-                            .is_some_and(|n| seed_names.contains(&n))));
+                && ((l && name_of(*right, all_defs).is_some_and(|n| seed_names.contains(&n)))
+                    || (r && name_of(*left, all_defs).is_some_and(|n| seed_names.contains(&n))));
             let rem_ok =
-                matches!(op, BinOp::Rem) && l && const_i64(*right, all_defs).is_some_and(|c| c > 1);
+                matches!(op, BinOp::Rem) && l && const_int(*right, all_defs).is_some_and(|c| c > 1);
             if both || acc_add || rem_ok {
                 seed.insert(*id);
                 out.insert(*id);
@@ -633,20 +630,6 @@ fn mark_name_loads_multi(block: &Block, names: &HashSet<String>, out: &mut HashS
                 out.insert(local.0);
             }
         }
-    }
-}
-
-fn name_of_local(l: Local, defs: &HashMap<u32, Value>) -> Option<String> {
-    match defs.get(&l.0)? {
-        Value::Name(n) => Some(n.clone()),
-        _ => None,
-    }
-}
-
-fn const_i64(l: Local, defs: &HashMap<u32, Value>) -> Option<i64> {
-    match defs.get(&l.0)? {
-        Value::Int(n) => Some(*n),
-        _ => None,
     }
 }
 
@@ -709,10 +692,10 @@ fn nonneg_iv_names(header: &Block, all_defs: &HashMap<u32, Value>) -> HashSet<St
         return names;
     };
     // Only `Name(iv) ▷ const` (IV on the left).
-    let Some(iv) = name_of_local(*left, all_defs) else {
+    let Some(iv) = name_of(*left, all_defs) else {
         return names;
     };
-    let Some(k) = const_i64(*right, all_defs) else {
+    let Some(k) = const_int(*right, all_defs) else {
         return names;
     };
     let ok = match op {
@@ -771,10 +754,10 @@ fn collect_ge2_unit_slots(body: &Block, all_defs: &HashMap<u32, Value>) -> HashS
                     right,
                     ..
                 }) => {
-                    let l_self = name_of_local(*left, all_defs).as_deref() == Some(name.as_str());
-                    let r_self = name_of_local(*right, all_defs).as_deref() == Some(name.as_str());
-                    let l_one = const_i64(*left, all_defs) == Some(1);
-                    let r_one = const_i64(*right, all_defs) == Some(1);
+                    let l_self = name_of(*left, all_defs).as_deref() == Some(name.as_str());
+                    let r_self = name_of(*right, all_defs).as_deref() == Some(name.as_str());
+                    let l_one = const_int(*left, all_defs) == Some(1);
+                    let r_one = const_int(*right, all_defs) == Some(1);
                     if !((l_self && r_one) || (r_self && l_one)) {
                         ok = false;
                         break;

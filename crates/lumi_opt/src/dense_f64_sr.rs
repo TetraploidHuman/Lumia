@@ -8,11 +8,8 @@
 //! calls unlock the latter norms).
 
 use lumi_core::{
-    collect_leaf_defs, match_add_fun, match_addmm_fun, match_axpy_fun, match_clamp_fun,
-    match_copy_fun, match_fill_fun, match_gemv_fun, match_gemv_t_fun, match_l2_norm_fun,
-    match_l2_normalize_fun, match_mean_fun, match_mul_fun, match_scale_fun, match_softmax_fun,
-    match_std_fun, match_sub_fun, match_sum_sq_fun, match_zeros_fun, max_local_in_fun, Block,
-    CoreFun, CoreModule, Local, Op, Value,
+    collect_leaf_defs, dense_f64_rt_symbol, max_local_in_fun, Block, CoreFun, CoreModule, Local,
+    Op, Value,
 };
 use lumi_ty::{Effect, Type};
 use rustc_hash::FxHashSet as HashSet;
@@ -35,47 +32,8 @@ fn dense_f64_sr_module(module: &mut CoreModule) {
             continue;
         }
         let defs = collect_leaf_defs(&fun.body);
-        let sym = if match_gemv_fun(fun, &defs).is_some() {
-            Some("lumi_f64_gemv")
-        } else if match_gemv_t_fun(fun, &defs).is_some() {
-            Some("lumi_f64_gemv_t")
-        } else if match_addmm_fun(fun, &defs).is_some() {
-            Some("lumi_f64_addmm")
-        } else if match_axpy_fun(fun, &defs).is_some() {
-            Some("lumi_f64_axpy")
-        } else if match_sub_fun(fun, &defs).is_some() {
-            Some("lumi_f64_sub")
-        } else if match_add_fun(fun, &defs).is_some() {
-            Some("lumi_f64_add")
-        } else if match_mul_fun(fun, &defs).is_some() {
-            Some("lumi_f64_mul")
-        } else if match_clamp_fun(fun, &defs).is_some() {
-            Some("lumi_f64_clamp")
-        } else if match_scale_fun(fun, &defs).is_some() {
-            Some("lumi_f64_scale")
-        } else if match_fill_fun(fun, &defs).is_some() {
-            Some("lumi_f64_fill")
-        } else if match_copy_fun(fun, &defs).is_some() {
-            Some("lumi_f64_copy")
-        } else if match_zeros_fun(fun, &defs).is_some() {
-            Some("lumi_list_f64_zeros")
-        } else if match_l2_normalize_fun(fun, &defs).is_some() {
-            Some("lumi_f64_l2_normalize")
-        } else if match_softmax_fun(fun, &defs).is_some() {
-            Some("lumi_f64_softmax")
-        } else if match_l2_norm_fun(fun, &defs).is_some() {
-            Some("lumi_f64_l2_norm")
-        } else if match_std_fun(fun, &defs).is_some() {
-            Some("lumi_f64_std")
-        } else if match_sum_sq_fun(fun, &defs).is_some() {
-            Some("lumi_f64_sum_sq")
-        } else if match_mean_fun(fun, &defs).is_some() {
-            Some("lumi_f64_mean")
-        } else {
-            None
-        };
-        if let Some(s) = sym {
-            rewrites.push((i, s));
+        if let Some(sym) = dense_f64_rt_symbol(fun, &defs) {
+            rewrites.push((i, sym));
         }
     }
     if rewrites.is_empty() {

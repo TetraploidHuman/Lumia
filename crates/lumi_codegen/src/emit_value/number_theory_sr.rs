@@ -6,7 +6,10 @@
 //! - `range` + `get(i)` affine rem fold
 
 use inkwell::values::{BasicValueEnum, FunctionValue};
-use lumi_core::{const_int, is_unit_inc, name_of, Block, Local, Op, Value};
+use lumi_core::{
+    body_assigns_const, const_int, first_loop, header_le_const, header_lt_const,
+    is_affine_row_col_plus1, is_unit_inc, name_of, split_acc_add, Block, Local, Op, Value,
+};
 use lumi_hir::Builtin;
 use lumi_syntax::BinOp;
 use rustc_hash::FxHashMap as HashMap;
@@ -55,6 +58,32 @@ struct MatmulAffine {
 }
 
 impl<'ctx> Codegen<'ctx> {
+    fn emit_n_acc_rt_loop(
+        &mut self,
+        rt_sym: &str,
+        call_label: &str,
+        ctx_label: &str,
+        s_slot: &str,
+        i_slot: &str,
+        n: i64,
+    ) -> Result<BasicValueEnum<'ctx>> {
+        let rt = self.runtime_fn(rt_sym)?;
+        let n_val = self.llvm.i64_ty.const_int(n as u64, true);
+        let call = crate::error::llvm(self.llvm.builder.build_call(
+            rt,
+            &[n_val.into()],
+            call_label,
+        ))?;
+        let s = call
+            .try_as_basic_value()
+            .basic()
+            .with_context(|| ctx_label.to_string())?
+            .into_int_value();
+        self.store_slot_i64(s_slot, s)?;
+        self.store_slot_i64(i_slot, self.llvm.i64_ty.const_int((n + 1) as u64, true))?;
+        Ok(self.llvm.i64_ty.const_int(0, false).into())
+    }
+
     pub(crate) fn try_emit_gcd_sum_loop(
         &mut self,
         header: &Block,
@@ -68,17 +97,14 @@ impl<'ctx> Codegen<'ctx> {
         if !self.slot_known_eq(&pat.i, 1) || !self.slot_known_eq(&pat.s, 0) {
             return Ok(None);
         }
-        let rt = self.runtime_fn("lumi_gcd_sum")?;
-        let n = self.llvm.i64_ty.const_int(pat.n as u64, true);
-        let call = crate::error::llvm(self.llvm.builder.build_call(rt, &[n.into()], "gcd_sum"))?;
-        let s = call
-            .try_as_basic_value()
-            .basic()
-            .context("gcd_sum")?
-            .into_int_value();
-        self.store_slot_i64(&pat.s, s)?;
-        self.store_slot_i64(&pat.i, self.llvm.i64_ty.const_int((pat.n + 1) as u64, true))?;
-        Ok(Some(self.llvm.i64_ty.const_int(0, false).into()))
+        Ok(Some(self.emit_n_acc_rt_loop(
+            "lumi_gcd_sum",
+            "gcd_sum",
+            "gcd_sum",
+            &pat.s,
+            &pat.i,
+            pat.n,
+        )?))
     }
 
     pub(crate) fn try_emit_divisor_sum_loop(
@@ -94,17 +120,14 @@ impl<'ctx> Codegen<'ctx> {
         if !self.slot_known_eq(&pat.i, 1) || !self.slot_known_eq(&pat.s, 0) {
             return Ok(None);
         }
-        let rt = self.runtime_fn("lumi_divisor_sum")?;
-        let n = self.llvm.i64_ty.const_int(pat.n as u64, true);
-        let call = crate::error::llvm(self.llvm.builder.build_call(rt, &[n.into()], "div_sum"))?;
-        let s = call
-            .try_as_basic_value()
-            .basic()
-            .context("divisor_sum")?
-            .into_int_value();
-        self.store_slot_i64(&pat.s, s)?;
-        self.store_slot_i64(&pat.i, self.llvm.i64_ty.const_int((pat.n + 1) as u64, true))?;
-        Ok(Some(self.llvm.i64_ty.const_int(0, false).into()))
+        Ok(Some(self.emit_n_acc_rt_loop(
+            "lumi_divisor_sum",
+            "div_sum",
+            "divisor_sum",
+            &pat.s,
+            &pat.i,
+            pat.n,
+        )?))
     }
 
     pub(crate) fn try_emit_product_rem_sum_loop(
@@ -210,15 +233,15 @@ fn match_gcd_sum(
     if !latch.ops.is_empty() {
         return None;
     }
-    let (i, n) = header_le_const(header, defs)?;
+    let (i, n) = header_le_const(header, defs, false)?;
     if n < 2 {
         return None;
     }
-    let (ih, ib, il) = find_inner_loop(body)?;
+    let (ih, ib, il) = first_loop(body)?;
     if !il.ops.is_empty() {
         return None;
     }
-    let (j, n2) = header_le_const(ih, defs)?;
+    let (j, n2) = header_le_const(ih, defs, false)?;
     if n2 != n || j == i {
         return None;
     }
@@ -329,7 +352,7 @@ fn match_divisor_sum(
     if !latch.ops.is_empty() {
         return None;
     }
-    let (i, n) = header_le_const(header, defs)?;
+    let (i, n) = header_le_const(header, defs, false)?;
     if n < 2 {
         return None;
     }
@@ -365,23 +388,7 @@ fn parse_acc_div_const(
     n: i64,
     defs: &HashMap<u32, Value>,
 ) -> Option<String> {
-    let Value::Binary {
-        op: BinOp::Add,
-        left,
-        right,
-        ..
-    } = defs.get(&dest)?
-    else {
-        return None;
-    };
-    let (acc, term) = if name_of(*left, defs).as_deref() == Some(s_name) {
-        (*right, *left)
-    } else if name_of(*right, defs).as_deref() == Some(s_name) {
-        (*left, *right)
-    } else {
-        return None;
-    };
-    let _ = term;
+    let acc = split_acc_add(dest, s_name, defs)?;
     let Value::Binary {
         op: BinOp::Div,
         left: dl,
@@ -409,15 +416,15 @@ fn match_product_rem_sum(
     if !latch.ops.is_empty() {
         return None;
     }
-    let (i, n) = header_lt_const(header, defs)?;
+    let (i, n) = header_lt_const(header, defs, false)?;
     if n < 2 {
         return None;
     }
-    let (ih, ib, il) = find_inner_loop(body)?;
+    let (ih, ib, il) = first_loop(body)?;
     if !il.ops.is_empty() {
         return None;
     }
-    let (j, n2) = header_lt_const(ih, defs)?;
+    let (j, n2) = header_lt_const(ih, defs, false)?;
     if n2 != n || j == i {
         return None;
     }
@@ -473,22 +480,7 @@ fn parse_acc_ij1_rem(
     j: &str,
     defs: &HashMap<u32, Value>,
 ) -> Option<(String, i64)> {
-    let Value::Binary {
-        op: BinOp::Add,
-        left,
-        right,
-        ..
-    } = defs.get(&dest)?
-    else {
-        return None;
-    };
-    let term = if name_of(*left, defs).as_deref() == Some(s_name) {
-        *right
-    } else if name_of(*right, defs).as_deref() == Some(s_name) {
-        *left
-    } else {
-        return None;
-    };
+    let term = split_acc_add(dest, s_name, defs)?;
     let Value::Binary {
         op: BinOp::Rem,
         left: num,
@@ -546,7 +538,7 @@ fn match_range_affine1(
     if !latch.ops.is_empty() {
         return None;
     }
-    let (i, n) = header_lt_const(header, defs)?;
+    let (i, n) = header_lt_const(header, defs, false)?;
     if n < 2 {
         return None;
     }
@@ -592,22 +584,7 @@ fn parse_acc_get_affine_rem(
     n: i64,
     defs: &HashMap<u32, Value>,
 ) -> Option<(i64, i64, i64)> {
-    let Value::Binary {
-        op: BinOp::Add,
-        left,
-        right,
-        ..
-    } = defs.get(&dest)?
-    else {
-        return None;
-    };
-    let term = if name_of(*left, defs).as_deref() == Some(s_name) {
-        *right
-    } else if name_of(*right, defs).as_deref() == Some(s_name) {
-        *left
-    } else {
-        return None;
-    };
+    let term = split_acc_add(dest, s_name, defs)?;
     let Value::Binary {
         op: BinOp::Rem,
         left: num,
@@ -692,15 +669,15 @@ fn match_matmul_affine(
     if !latch.ops.is_empty() {
         return None;
     }
-    let (i, n) = header_lt_const(header, defs)?;
+    let (i, n) = header_lt_const(header, defs, false)?;
     if n < 2 {
         return None;
     }
-    let (jh, jb, jl) = find_inner_loop(body)?;
+    let (jh, jb, jl) = first_loop(body)?;
     if !jl.ops.is_empty() {
         return None;
     }
-    let (j, n2) = header_lt_const(jh, defs)?;
+    let (j, n2) = header_lt_const(jh, defs, false)?;
     if n2 != n || j == i {
         return None;
     }
@@ -708,11 +685,11 @@ fn match_matmul_affine(
     if !body_assigns_const(body, &j, 0, defs) {
         return None;
     }
-    let (kh, kb, kl) = find_inner_loop(jb)?;
+    let (kh, kb, kl) = first_loop(jb)?;
     if !kl.ops.is_empty() {
         return None;
     }
-    let (k, n3) = header_lt_const(kh, defs)?;
+    let (k, n3) = header_lt_const(kh, defs, false)?;
     if n3 != n || k == i || k == j {
         return None;
     }
@@ -812,105 +789,8 @@ fn is_matmul_cell_acc(
     else {
         return false;
     };
-    is_affine_ik1(*a, i, k, n, defs) && is_affine_kj1(*b, k, j, n, defs)
-        || is_affine_ik1(*b, i, k, n, defs) && is_affine_kj1(*a, k, j, n, defs)
-}
-
-/// `i*n + k + 1`
-fn is_affine_ik1(l: Local, i: &str, k: &str, n: i64, defs: &HashMap<u32, Value>) -> bool {
-    let Some(Value::Binary {
-        op: BinOp::Add,
-        left,
-        right,
-        ..
-    }) = defs.get(&l.0)
-    else {
-        return false;
-    };
-    let (rest, one) = if const_int(*left, defs) == Some(1) {
-        (*right, true)
-    } else if const_int(*right, defs) == Some(1) {
-        (*left, true)
-    } else {
-        return false;
-    };
-    if !one {
-        return false;
-    }
-    let Some(Value::Binary {
-        op: BinOp::Add,
-        left: a,
-        right: b,
-        ..
-    }) = defs.get(&rest.0)
-    else {
-        return false;
-    };
-    // (i*n) + k
-    matches!(
-        (
-            is_name_mul_const(*a, i, n, defs),
-            name_of(*b, defs).as_deref() == Some(k),
-            is_name_mul_const(*b, i, n, defs),
-            name_of(*a, defs).as_deref() == Some(k),
-        ),
-        (true, true, _, _) | (_, _, true, true)
-    )
-}
-
-/// `k*n + j + 1`
-fn is_affine_kj1(l: Local, k: &str, j: &str, n: i64, defs: &HashMap<u32, Value>) -> bool {
-    let Some(Value::Binary {
-        op: BinOp::Add,
-        left,
-        right,
-        ..
-    }) = defs.get(&l.0)
-    else {
-        return false;
-    };
-    let (rest, one) = if const_int(*left, defs) == Some(1) {
-        (*right, true)
-    } else if const_int(*right, defs) == Some(1) {
-        (*left, true)
-    } else {
-        return false;
-    };
-    if !one {
-        return false;
-    }
-    let Some(Value::Binary {
-        op: BinOp::Add,
-        left: a,
-        right: b,
-        ..
-    }) = defs.get(&rest.0)
-    else {
-        return false;
-    };
-    matches!(
-        (
-            is_name_mul_const(*a, k, n, defs),
-            name_of(*b, defs).as_deref() == Some(j),
-            is_name_mul_const(*b, k, n, defs),
-            name_of(*a, defs).as_deref() == Some(j),
-        ),
-        (true, true, _, _) | (_, _, true, true)
-    )
-}
-
-fn is_name_mul_const(l: Local, name: &str, n: i64, defs: &HashMap<u32, Value>) -> bool {
-    let Some(Value::Binary {
-        op: BinOp::Mul,
-        left,
-        right,
-        ..
-    }) = defs.get(&l.0)
-    else {
-        return false;
-    };
-    (name_of(*left, defs).as_deref() == Some(name) && const_int(*right, defs) == Some(n))
-        || (name_of(*right, defs).as_deref() == Some(name) && const_int(*left, defs) == Some(n))
+    is_affine_row_col_plus1(*a, i, k, n, defs) && is_affine_row_col_plus1(*b, k, j, n, defs)
+        || is_affine_row_col_plus1(*b, i, k, n, defs) && is_affine_row_col_plus1(*a, k, j, n, defs)
 }
 
 fn parse_acc_rem_name(
@@ -919,22 +799,7 @@ fn parse_acc_rem_name(
     cell: &str,
     defs: &HashMap<u32, Value>,
 ) -> Option<i64> {
-    let Value::Binary {
-        op: BinOp::Add,
-        left,
-        right,
-        ..
-    } = defs.get(&dest)?
-    else {
-        return None;
-    };
-    let term = if name_of(*left, defs).as_deref() == Some(s_name) {
-        *right
-    } else if name_of(*right, defs).as_deref() == Some(s_name) {
-        *left
-    } else {
-        return None;
-    };
+    let term = split_acc_add(dest, s_name, defs)?;
     let Value::Binary {
         op: BinOp::Rem,
         left: num,
@@ -952,75 +817,6 @@ fn parse_acc_rem_name(
         None
     } else {
         Some(m)
-    }
-}
-
-fn find_inner_loop(body: &Block) -> Option<(&Block, &Block, &Block)> {
-    for op in &body.ops {
-        if let Op::Let {
-            value:
-                Value::Loop {
-                    header,
-                    body,
-                    latch,
-                },
-            ..
-        } = op
-        {
-            return Some((header, body, latch));
-        }
-    }
-    None
-}
-
-fn body_assigns_const(body: &Block, slot: &str, expect: i64, defs: &HashMap<u32, Value>) -> bool {
-    for op in &body.ops {
-        if let Op::Assign {
-            name,
-            value: Local(v),
-        } = op
-        {
-            if name == slot && const_int(Local(*v), defs) == Some(expect) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-fn header_lt_const(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String, i64)> {
-    let res = header.result?;
-    let Value::Binary {
-        op, left, right, ..
-    } = defs.get(&res.0)?
-    else {
-        return None;
-    };
-    match op {
-        BinOp::Lt => {
-            let name = name_of(*left, defs)?;
-            let n = const_int(*right, defs)?;
-            Some((name, n))
-        }
-        _ => None,
-    }
-}
-
-fn header_le_const(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String, i64)> {
-    let res = header.result?;
-    let Value::Binary {
-        op, left, right, ..
-    } = defs.get(&res.0)?
-    else {
-        return None;
-    };
-    match op {
-        BinOp::Le => {
-            let name = name_of(*left, defs)?;
-            let n = const_int(*right, defs)?;
-            Some((name, n))
-        }
-        _ => None,
     }
 }
 
