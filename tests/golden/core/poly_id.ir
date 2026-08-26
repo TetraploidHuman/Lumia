@@ -16,17 +16,32 @@ fun main() effect.io=true memo=None {
   %1 = funref __lam_0  // pure
   %2 = i64 2  // pure
   %3 = call __lam_0(%2)  // effect
-  %4 = builtin Println(%3)  // effect
+  %4 = call println$List_Int(%3)  // effect
   %5 = f64 1.5  // pure
   %6 = call __lam_0$Float(%5)  // effect
-  %7 = builtin Println(%6)  // effect
+  %7 = call println$Float(%6)  // effect
   %8 = str "hi"  // pure
   %9 = call __lam_0$String(%8)  // effect
-  %10 = builtin Println(%9)  // effect
+  %10 = call println(%9)  // effect
   %11 = %5  // pure
   %12 = call __lam_0$Float(%5)  // effect
   %13 = f64 2  // pure
   %14 = %12 + %13  // pure
-  %15 = builtin Println(%14)  // effect
+  %15 = call println$Float(%14)  // effect
   return %15
+}
+
+fun println(x) effect.io=true memo=None {
+  %1 = builtin Println(%0)  // effect
+  return %1
+}
+
+fun println$Float(x) effect.io=true memo=None {
+  %1 = builtin Println(%0)  // effect
+  return %1
+}
+
+fun println$List_Int(x) effect.io=true memo=None {
+  %1 = builtin Println(%0)  // effect
+  return %1
 }

@@ -17,7 +17,8 @@ use std::path::{Path, PathBuf};
 use resolve::load_module_file;
 
 pub use resolve::apply_default_stdlib_to_module;
-pub(crate) use resolve::{path_candidates, path_label};
+pub(crate) use resolve::path_candidates;
+pub use resolve::path_label;
 pub(crate) use std_mod::{lumi_exports, KNOWN_LUMI_MODULES, LUMI_STD_SUBMODULES};
 
 pub(crate) fn std_is_auto_imported(name: &str) -> bool {

@@ -31,10 +31,20 @@ fun main() effect.io=true memo=None {
   %4 = i64 2  // pure
   %5 = alloc_adt(Point, tag=0, n=2)  // pure
   %6 = call __lam_0$Point_Int_Int(%5)  // effect
-  %7 = builtin Println(%6)  // effect
+  %7 = call println(%6)  // effect
   %8 = i64 3  // pure
   %9 = alloc_adt(Box, tag=0, n=1)  // pure
   %10 = call __lam_0$Box_Int(%9)  // effect
-  %11 = builtin Println(%10)  // effect
+  %11 = call println(%10)  // effect
   return %11
+}
+
+fun println(x) effect.io=true memo=None {
+  %1 = builtin Println(%0)  // effect
+  return %1
+}
+
+fun println$List_Int(x) effect.io=true memo=None {
+  %1 = builtin Println(%0)  // effect
+  return %1
 }

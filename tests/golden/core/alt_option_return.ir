@@ -16,15 +16,20 @@ fun main() effect.io=true memo=None {
   %3 = i64 0  // pure
   %4 = %2 == %3  // pure
   %14 = if ...  // pure
-  %15 = builtin Println(%14)  // effect
+  %15 = call println(%14)  // effect
   %16 = i64 7  // pure
   %17 = call twice_even(%16)  // pure
   %18 = builtin AdtTag(%17)  // pure
   %19 = %3  // pure
   %20 = %18 == %3  // pure
   %30 = if ...  // pure
-  %31 = builtin Println(%30)  // effect
+  %31 = call println(%30)  // effect
   return %31
+}
+
+fun println(x) effect.io=true memo=None {
+  %1 = builtin Println(%0)  // effect
+  return %1
 }
 
 fun twice_even(n) effect.io=false memo=None {

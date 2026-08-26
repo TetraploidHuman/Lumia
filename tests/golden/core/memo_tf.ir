@@ -5,26 +5,31 @@ fun main() effect.io=true memo=None {
   %12 = i64 200  // pure
   %19 = i64 0  // pure
   $inl0_a := %19
-  $inl0___i_221 := %19
+  $inl0___i_232 := %19
   %20 = loop ...  // effect
   %17 = load $inl0_a  // pure
-  %2 = builtin Println(%17)  // effect
-  %5 = builtin Println(%17)  // effect
+  %2 = call println(%17)  // effect
+  %5 = call println(%17)  // effect
   %6 = i64 10  // pure
   %26 = i64 10  // pure
   %33 = i64 0  // pure
   $inl1_a := %33
-  $inl1___i_221 := %33
+  $inl1___i_232 := %33
   %34 = loop ...  // effect
   %31 = load $inl1_a  // pure
-  %8 = builtin Println(%31)  // effect
+  %8 = call println(%31)  // effect
   return %8
+}
+
+fun println(x) effect.io=true memo=None {
+  %1 = builtin Println(%0)  // effect
+  return %1
 }
 
 fun sqsum(n) effect.io=false memo=Some(Slots { id: 0 }) {
   %1 = i64 0  // pure
   a := %1
-  __i_221 := %1
+  __i_232 := %1
   %12 = loop ...  // effect
   %13 = load a  // pure
   return %13
@@ -34,7 +39,7 @@ fun sqsum$c_10() effect.io=false memo=None {
   %14 = i64 10  // pure
   %1 = i64 0  // pure
   a := %1
-  __i_221 := %1
+  __i_232 := %1
   %12 = loop ...  // effect
   %13 = load a  // pure
   return %13
@@ -44,7 +49,7 @@ fun sqsum$c_200() effect.io=false memo=None {
   %14 = i64 200  // pure
   %1 = i64 0  // pure
   a := %1
-  __i_221 := %1
+  __i_232 := %1
   %12 = loop ...  // effect
   %13 = load a  // pure
   return %13

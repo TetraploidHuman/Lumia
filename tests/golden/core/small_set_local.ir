@@ -6,12 +6,22 @@ fun main() effect.io=true memo=None {
   %2 = i64 30  // pure
   %3 = alloc_set[LitSet](n=3)  // pure
   %4 = i64 3  // pure
-  %5 = builtin Println(%4)  // effect
+  %5 = call println(%4)  // effect
   %6 = %1  // pure
   %7 = bool true  // pure
-  %8 = builtin Println(%7)  // effect
+  %8 = call println$Bool(%7)  // effect
   %9 = i64 99  // pure
   %10 = bool false  // pure
-  %11 = builtin Println(%10)  // effect
+  %11 = call println$Bool(%10)  // effect
   return %11
+}
+
+fun println(x) effect.io=true memo=None {
+  %1 = builtin Println(%0)  // effect
+  return %1
+}
+
+fun println$Bool(x) effect.io=true memo=None {
+  %1 = builtin Println(%0)  // effect
+  return %1
 }

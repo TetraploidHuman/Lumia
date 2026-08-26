@@ -29,12 +29,22 @@ fun main() effect.io=true memo=None {
   %1 = i64 20  // pure
   %2 = alloc_adt(Point, tag=0, n=2)  // pure
   %3 = call getx$Point_Int_Int(%2)  // pure
-  %4 = builtin Println(%3)  // effect
+  %4 = call println(%3)  // effect
   %5 = call gety$Point_Int_Int(%2)  // pure
-  %6 = builtin Println(%5)  // effect
+  %6 = call println(%5)  // effect
   %7 = %3  // pure
   %8 = %5  // pure
   %9 = %3 + %5  // pure
-  %10 = builtin Println(%9)  // effect
+  %10 = call println(%9)  // effect
   return %10
+}
+
+fun println(x) effect.io=true memo=None {
+  %1 = builtin Println(%0)  // effect
+  return %1
+}
+
+fun println$Point_Int_Int(x) effect.io=true memo=None {
+  %1 = builtin Println(%0)  // effect
+  return %1
 }

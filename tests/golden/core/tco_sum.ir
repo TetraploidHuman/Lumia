@@ -4,8 +4,13 @@ fun main() effect.io=true memo=None {
   %0 = i64 2000000  // pure
   %1 = i64 0  // pure
   %2 = call sumTo(%0, %1)  // pure
-  %3 = builtin Println(%2)  // effect
+  %3 = call println(%2)  // effect
   return %3
+}
+
+fun println(x) effect.io=true memo=None {
+  %1 = builtin Println(%0)  // effect
+  return %1
 }
 
 fun sumTo(n, acc) effect.io=false memo=None {

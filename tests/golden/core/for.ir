@@ -4,10 +4,10 @@ fun main() effect.io=true memo=None {
   %0 = i64 0  // pure
   acc := %0
   %1 = i64 1  // pure
-  __i_74 := %1
+  __i_85 := %1
   %15 = loop ...  // effect
   %16 = load acc  // pure
-  %17 = builtin Println(%16)  // effect
+  %17 = call println(%16)  // effect
   %18 = %0  // pure
   j := %0
   %19 = %0  // pure
@@ -15,6 +15,11 @@ fun main() effect.io=true memo=None {
   %27 = i64 1  // pure
   %29 = loop ...  // effect
   %30 = load sum  // pure
-  %31 = builtin Println(%30)  // effect
+  %31 = call println(%30)  // effect
   return %31
+}
+
+fun println(x) effect.io=true memo=None {
+  %1 = builtin Println(%0)  // effect
+  return %1
 }

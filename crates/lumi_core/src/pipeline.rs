@@ -53,6 +53,7 @@ fn rewrite_lumi_io_imports_for_source_pipeline(src: &str) -> String {
         }
         body.push(line);
     }
+    inject_default_io_wrappers_if_needed(src, &mut wrappers);
     if wrappers.is_empty() {
         return src.to_string();
     }
@@ -90,6 +91,23 @@ fn push_io_wrapper(out: &mut Vec<String>, export: &str, local: &str) {
         "readStdin" => out.push(format!("val {local} = {{ __readStdin() }}")),
         "assert" => out.push(format!("val {local}(c) = {{ __assert(c) }}")),
         _ => {}
+    }
+}
+
+/// When no `import lumi.io.*` was present, mirror CLI auto-import of `lumi.io`
+/// for examples/tests that call `println` / `readStdin` / `assert` directly.
+fn inject_default_io_wrappers_if_needed(src: &str, wrappers: &mut Vec<String>) {
+    if !wrappers.is_empty() {
+        return;
+    }
+    if src.contains("println(") && !src.contains("val println") {
+        push_io_wrapper(wrappers, "println", "println");
+    }
+    if src.contains("readStdin(") && !src.contains("val readStdin") {
+        push_io_wrapper(wrappers, "readStdin", "readStdin");
+    }
+    if src.contains("assert(") && !src.contains("val assert") {
+        push_io_wrapper(wrappers, "assert", "assert");
     }
 }
 
@@ -168,6 +186,14 @@ mod tests {
         let src = "module M\nimport lumi.io.{println as log}\nval main = { log(1) }\n";
         let out = rewrite_lumi_io_imports_for_source_pipeline(src);
         assert!(out.contains("val log(x) = { __println(x) }"), "{out}");
+        compile_source_to_core(src).expect("core");
+    }
+
+    #[test]
+    fn auto_inject_println_without_import() {
+        let src = "module M\nval main = { println(1) }\n";
+        let out = rewrite_lumi_io_imports_for_source_pipeline(src);
+        assert!(out.contains("val println(x) = { __println(x) }"), "{out}");
         compile_source_to_core(src).expect("core");
     }
 

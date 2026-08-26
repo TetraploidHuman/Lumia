@@ -13,14 +13,19 @@ fun main() effect.io=true memo=None {
   %9 = %0  // pure
   %10 = i64 -1  // pure
   %11 = call unwrap_or$Option_Int_Int(%8, %10)  // pure
-  %12 = builtin Println(%11)  // effect
+  %12 = call println(%11)  // effect
   %13 = i64 9  // pure
   %14 = alloc_adt(Option, tag=1, n=0)  // pure
   %15 = %0  // pure
   %16 = i64 -1  // pure
   %17 = call unwrap_or$Option_Int_Int(%14, %16)  // pure
-  %18 = builtin Println(%17)  // effect
+  %18 = call println(%17)  // effect
   return %18
+}
+
+fun println(x) effect.io=true memo=None {
+  %1 = builtin Println(%0)  // effect
+  return %1
 }
 
 fun unwrap_or(opt, d) effect.io=false memo=None {

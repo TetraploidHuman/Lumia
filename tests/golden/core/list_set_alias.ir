@@ -19,9 +19,14 @@ fun main() effect.io=true memo=None {
   %12 = load xs  // pure
   %13 = %0  // pure
   %14 = builtin ListGet(%12, %0)  // pure
-  %15 = builtin Println(%14)  // effect
+  %15 = call println(%14)  // effect
   %16 = %0  // pure
   %17 = builtin ListGet(%11, %0)  // pure
-  %18 = builtin Println(%17)  // effect
+  %18 = call println(%17)  // effect
   return %18
+}
+
+fun println(x) effect.io=true memo=None {
+  %1 = builtin Println(%0)  // effect
+  return %1
 }

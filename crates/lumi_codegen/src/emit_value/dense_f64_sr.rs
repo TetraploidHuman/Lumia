@@ -278,6 +278,7 @@ impl<'ctx> Codegen<'ctx> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lumi_core::{Op, Value};
     use lumi_opt::{compile_source_to_optimized, OptOptions};
 
     fn is_dense_call(f: &lumi_core::CoreFun, sym: &str) -> bool {

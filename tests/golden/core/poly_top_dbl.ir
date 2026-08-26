@@ -25,9 +25,19 @@ fun dbl$c_1() effect.io=false memo=None {
 fun main() effect.io=true memo=None {
   %0 = i64 1  // pure
   %1 = call dbl$c_1()  // pure
-  %2 = builtin Println(%1)  // effect
+  %2 = call println(%1)  // effect
   %3 = f64 1.5  // pure
   %4 = call dbl$Float$c_x3ff8000000000000()  // pure
-  %5 = builtin Println(%4)  // effect
+  %5 = call println$Float(%4)  // effect
   return %5
+}
+
+fun println(x) effect.io=true memo=None {
+  %1 = builtin Println(%0)  // effect
+  return %1
+}
+
+fun println$Float(x) effect.io=true memo=None {
+  %1 = builtin Println(%0)  // effect
+  return %1
 }

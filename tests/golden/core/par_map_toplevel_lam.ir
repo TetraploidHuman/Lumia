@@ -18,12 +18,22 @@ fun main() effect.io=true memo=None {
   %5 = funref __lam_0  // pure
   %6 = builtin ListParMap(%2, %5)  // pure
   %7 = builtin ListLen(%6)  // pure
-  %8 = builtin Println(%7)  // effect
+  %8 = call println(%7)  // effect
   %9 = %0  // pure
   %10 = builtin ListGet(%6, %0)  // pure
-  %11 = builtin Println(%10)  // effect
+  %11 = call println(%10)  // effect
   %12 = i64 49  // pure
   %13 = builtin ListGet(%6, %12)  // pure
-  %14 = builtin Println(%13)  // effect
+  %14 = call println(%13)  // effect
   return %14
+}
+
+fun println(x) effect.io=true memo=None {
+  %1 = builtin Println(%0)  // effect
+  return %1
+}
+
+fun println$List_Int(x) effect.io=true memo=None {
+  %1 = builtin Println(%0)  // effect
+  return %1
 }

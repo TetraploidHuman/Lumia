@@ -7,23 +7,23 @@ fun main() effect.io=true memo=None {
   %3 = %0  // pure
   %4 = Neg %0  // pure
   %5 = builtin Contains(%2, %4)  // pure
-  %6 = builtin Println(%5)  // effect
+  %6 = call println$Bool(%5)  // effect
   %7 = %0  // pure
   %8 = %0  // pure
   %9 = Neg %0  // pure
   %10 = %0 == %9  // pure
   %13 = if ...  // pure
-  %14 = builtin Println(%13)  // effect
+  %14 = call println(%13)  // effect
   %15 = %0  // pure
   %16 = %0  // pure
   %17 = %0 / %0  // pure
   %18 = i64 2  // pure
   %19 = alloc_map[LitMap](n=1)  // pure
   %20 = builtin Contains(%19, %17)  // pure
-  %21 = builtin Println(%20)  // effect
+  %21 = call println$Bool(%20)  // effect
   %22 = %17 == %17  // pure
   %25 = if ...  // pure
-  %26 = builtin Println(%25)  // effect
+  %26 = call println(%25)  // effect
   %27 = alloc_map[SmallMap](n=0)  // pure
   %28 = %0  // pure
   %29 = i64 3  // pure
@@ -31,12 +31,22 @@ fun main() effect.io=true memo=None {
   %31 = %0  // pure
   %32 = Neg %0  // pure
   %33 = builtin Contains(%30, %32)  // pure
-  %34 = builtin Println(%33)  // effect
+  %34 = call println$Bool(%33)  // effect
   %35 = %0  // pure
   %36 = alloc_set[LitSet](n=1)  // pure
   %37 = %0  // pure
   %38 = Neg %0  // pure
   %39 = builtin Contains(%36, %38)  // pure
-  %40 = builtin Println(%39)  // effect
+  %40 = call println$Bool(%39)  // effect
   return %40
+}
+
+fun println(x) effect.io=true memo=None {
+  %1 = builtin Println(%0)  // effect
+  return %1
+}
+
+fun println$Bool(x) effect.io=true memo=None {
+  %1 = builtin Println(%0)  // effect
+  return %1
 }

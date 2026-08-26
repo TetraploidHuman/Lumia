@@ -16,9 +16,14 @@ fun main() effect.io=true memo=None {
   %2 = i64 30  // pure
   %3 = alloc_list[LitList](n=3)  // pure
   %4 = call len$List_Int(%3)  // pure
-  %5 = builtin Println(%4)  // effect
+  %5 = call println(%4)  // effect
   %6 = i64 1  // pure
   %7 = %1  // pure
-  %8 = builtin Println(%1)  // effect
+  %8 = call println(%1)  // effect
   return %8
+}
+
+fun println(x) effect.io=true memo=None {
+  %1 = builtin Println(%0)  // effect
+  return %1
 }

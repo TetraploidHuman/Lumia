@@ -6,15 +6,20 @@ fun main() effect.io=true memo=None {
   %2 = alloc_adt(Point, tag=0, n=2)  // pure
   %3 = i64 0  // pure
   %4 = %0  // pure
-  %5 = builtin Println(%0)  // effect
+  %5 = call println(%0)  // effect
   %6 = i64 1  // pure
   %7 = %1  // pure
-  %8 = builtin Println(%1)  // effect
+  %8 = call println(%1)  // effect
   %9 = %3  // pure
   %10 = %0  // pure
   %11 = %6  // pure
   %12 = %1  // pure
   %13 = i64 30  // pure
-  %14 = builtin Println(%13)  // effect
+  %14 = call println(%13)  // effect
   return %14
+}
+
+fun println(x) effect.io=true memo=None {
+  %1 = builtin Println(%0)  // effect
+  return %1
 }

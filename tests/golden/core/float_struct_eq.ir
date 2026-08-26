@@ -16,7 +16,7 @@ fun main() effect.io=true memo=None {
   %4 = alloc_list[HeapList](n=1)  // pure
   %5 = %1 == %4  // pure
   %8 = if ...  // pure
-  %9 = builtin Println(%8)  // effect
+  %9 = call println(%8)  // effect
   %10 = %0  // pure
   %11 = %0  // pure
   %12 = %0 / %0  // pure
@@ -24,7 +24,7 @@ fun main() effect.io=true memo=None {
   %14 = alloc_list[HeapList](n=1)  // pure
   %15 = %13 == %14  // pure
   %18 = if ...  // pure
-  %19 = builtin Println(%18)  // effect
+  %19 = call println(%18)  // effect
   %20 = %0  // pure
   %21 = alloc_adt(Option, tag=0, n=1)  // pure
   %22 = %0  // pure
@@ -32,12 +32,12 @@ fun main() effect.io=true memo=None {
   %24 = alloc_adt(Option, tag=0, n=1)  // pure
   %25 = %21 == %24  // pure
   %28 = if ...  // pure
-  %29 = builtin Println(%28)  // effect
+  %29 = call println(%28)  // effect
   %30 = alloc_adt(Option, tag=0, n=1)  // pure
   %31 = alloc_adt(Option, tag=0, n=1)  // pure
   %32 = %30 == %31  // pure
   %35 = if ...  // pure
-  %36 = builtin Println(%35)  // effect
+  %36 = call println(%35)  // effect
   %37 = i64 1  // pure
   %38 = %0  // pure
   %39 = alloc_map[SmallMap](n=1)  // pure
@@ -47,19 +47,24 @@ fun main() effect.io=true memo=None {
   %43 = alloc_map[SmallMap](n=1)  // pure
   %44 = %39 == %43  // pure
   %47 = if ...  // pure
-  %48 = builtin Println(%47)  // effect
+  %48 = call println(%47)  // effect
   %49 = %37  // pure
   %50 = alloc_map[SmallMap](n=1)  // pure
   %51 = %37  // pure
   %52 = alloc_map[SmallMap](n=1)  // pure
   %53 = %50 == %52  // pure
   %56 = if ...  // pure
-  %57 = builtin Println(%56)  // effect
+  %57 = call println(%56)  // effect
   %58 = alloc_list[HeapList](n=1)  // pure
   %60 = funref __lam_0$Float  // pure
   %61 = builtin ListParMap(%58, %60)  // pure
   %62 = %61 == %61  // pure
   %65 = if ...  // pure
-  %66 = builtin Println(%65)  // effect
+  %66 = call println(%65)  // effect
   return %66
+}
+
+fun println(x) effect.io=true memo=None {
+  %1 = builtin Println(%0)  // effect
+  return %1
 }

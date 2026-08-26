@@ -26,13 +26,13 @@ fun even$c_x1e8480() effect.io=false memo=None {
 fun main() effect.io=true memo=None {
   %0 = i64 2000000  // pure
   %1 = call even$c_x1e8480()  // pure
-  %2 = builtin Println(%1)  // effect
+  %2 = call println$Bool(%1)  // effect
   %3 = %0  // pure
   %4 = call odd$c_x1e8480()  // pure
-  %5 = builtin Println(%4)  // effect
+  %5 = call println$Bool(%4)  // effect
   %6 = i64 7  // pure
   %7 = call even$c_7()  // pure
-  %8 = builtin Println(%7)  // effect
+  %8 = call println$Bool(%7)  // effect
   return %8
 }
 
@@ -49,4 +49,14 @@ fun odd$c_x1e8480() effect.io=false memo=None {
   %2 = bool false  // pure
   %7 = if ...  // pure
   return %7
+}
+
+fun println(x) effect.io=true memo=None {
+  %1 = builtin Println(%0)  // effect
+  return %1
+}
+
+fun println$Bool(x) effect.io=true memo=None {
+  %1 = builtin Println(%0)  // effect
+  return %1
 }

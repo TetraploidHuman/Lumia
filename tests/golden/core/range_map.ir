@@ -13,38 +13,43 @@ fun main() effect.io=true memo=None {
   %6 = funref __lam_0  // pure
   %7 = builtin ListParMap(%2, %6)  // pure
   %8 = builtin ListLen(%7)  // pure
-  %9 = builtin Println(%8)  // effect
+  %9 = call println(%8)  // effect
   %10 = i64 0  // pure
   %11 = builtin ListGet(%7, %10)  // pure
-  %12 = builtin Println(%11)  // effect
+  %12 = call println(%11)  // effect
   %13 = i64 4  // pure
   %14 = builtin ListGet(%7, %13)  // pure
-  %15 = builtin Println(%14)  // effect
+  %15 = call println(%14)  // effect
   %16 = alloc_list[LitList](n=0)  // pure
-  __flt_acc_273 := %16
+  __flt_acc_284 := %16
   %17 = %10  // pure
-  __i_273 := %10
+  __i_284 := %10
   %22 = i64 2  // pure
   %24 = i64 1  // pure
   %32 = loop ...  // effect
-  %33 = load __flt_acc_273  // pure
+  %33 = load __flt_acc_284  // pure
   %34 = builtin ListLen(%33)  // pure
-  %35 = builtin Println(%34)  // effect
+  %35 = call println(%34)  // effect
   %36 = %10  // pure
   %37 = builtin ListGet(%33, %10)  // pure
-  %38 = builtin Println(%37)  // effect
+  %38 = call println(%37)  // effect
   %39 = %13  // pure
   %40 = builtin ListGet(%33, %13)  // pure
-  %41 = builtin Println(%40)  // effect
+  %41 = call println(%40)  // effect
   %42 = i64 1000000  // pure
   %43 = %10  // pure
-  __fuse_acc_505 := %10
+  __fuse_acc_516 := %10
   %44 = %10  // pure
-  __i_505 := %10
+  __i_516 := %10
   %48 = i64 2  // pure
   %50 = i64 0  // pure
   %58 = loop ...  // effect
-  %59 = load __fuse_acc_505  // pure
-  %60 = builtin Println(%59)  // effect
+  %59 = load __fuse_acc_516  // pure
+  %60 = call println(%59)  // effect
   return %60
+}
+
+fun println(x) effect.io=true memo=None {
+  %1 = builtin Println(%0)  // effect
+  return %1
 }

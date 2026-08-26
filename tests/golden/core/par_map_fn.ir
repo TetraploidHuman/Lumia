@@ -13,12 +13,17 @@ fun main() effect.io=true memo=None {
   %3 = funref double  // pure
   %4 = builtin ListParMap(%2, %3)  // pure
   %5 = builtin ListLen(%4)  // pure
-  %6 = builtin Println(%5)  // effect
+  %6 = call println(%5)  // effect
   %7 = %0  // pure
   %8 = builtin ListGet(%4, %0)  // pure
-  %9 = builtin Println(%8)  // effect
+  %9 = call println(%8)  // effect
   %10 = i64 49  // pure
   %11 = builtin ListGet(%4, %10)  // pure
-  %12 = builtin Println(%11)  // effect
+  %12 = call println(%11)  // effect
   return %12
+}
+
+fun println(x) effect.io=true memo=None {
+  %1 = builtin Println(%0)  // effect
+  return %1
 }

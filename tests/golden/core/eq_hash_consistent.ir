@@ -12,14 +12,14 @@ fun main() effect.io=true memo=None {
   %3 = alloc_adt(Key, tag=0, n=1)  // pure
   %4 = %1 == %3  // pure
   %7 = if ...  // pure
-  %8 = builtin Println(%7)  // effect
+  %8 = call println(%7)  // effect
   %9 = i64 10  // pure
   %10 = alloc_map[SmallMap](n=1)  // pure
   %11 = %0  // pure
   %12 = alloc_adt(Key, tag=0, n=1)  // pure
   %13 = builtin Contains(%10, %12)  // pure
   %16 = if ...  // pure
-  %17 = builtin Println(%16)  // effect
+  %17 = call println(%16)  // effect
   %18 = %0  // pure
   %19 = alloc_adt(Key, tag=0, n=1)  // pure
   %20 = builtin ListGet(%10, %19)  // pure
@@ -27,6 +27,11 @@ fun main() effect.io=true memo=None {
   %22 = i64 0  // pure
   %23 = %21 == %22  // pure
   %33 = if ...  // pure
-  %34 = builtin Println(%33)  // effect
+  %34 = call println(%33)  // effect
   return %34
+}
+
+fun println(x) effect.io=true memo=None {
+  %1 = builtin Println(%0)  // effect
+  return %1
 }
