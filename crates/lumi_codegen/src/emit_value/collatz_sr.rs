@@ -14,7 +14,7 @@
 
 use inkwell::values::{BasicValueEnum, FunctionValue, IntValue};
 use inkwell::IntPredicate;
-use lumi_core::{Block, Local, Op, Value};
+use lumi_core::{const_int, is_unit_inc, name_of, Block, Local, Op, Value};
 use lumi_syntax::BinOp;
 use rustc_hash::FxHashMap as HashMap;
 
@@ -409,9 +409,9 @@ fn const_add_inc(dest: u32, name: &str, defs: &HashMap<u32, Value>) -> Option<i6
         return None;
     };
     if name_of(*left, defs).as_deref() == Some(name) {
-        const_of(*right, defs)
+        const_int(*right, defs)
     } else if name_of(*right, defs).as_deref() == Some(name) {
-        const_of(*left, defs)
+        const_int(*left, defs)
     } else {
         None
     }
@@ -429,12 +429,12 @@ fn header_le_const(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String
     match op {
         BinOp::Le => {
             let n = name_of(*left, defs)?;
-            let k = const_of(*right, defs)?;
+            let k = const_int(*right, defs)?;
             Some((n, k))
         }
         BinOp::Ge => {
             let n = name_of(*right, defs)?;
-            let k = const_of(*left, defs)?;
+            let k = const_int(*left, defs)?;
             Some((n, k))
         }
         _ => None,
@@ -457,20 +457,6 @@ fn is_add_name_plus_name(dest: u32, a: &str, b: &str, defs: &HashMap<u32, Value>
         || (ln.as_deref() == Some(b) && rn.as_deref() == Some(a))
 }
 
-fn name_of(l: Local, defs: &HashMap<u32, Value>) -> Option<String> {
-    match defs.get(&l.0)? {
-        Value::Name(n) => Some(n.clone()),
-        _ => None,
-    }
-}
-
-fn const_of(l: Local, defs: &HashMap<u32, Value>) -> Option<i64> {
-    match defs.get(&l.0)? {
-        Value::Int(n) => Some(*n),
-        _ => None,
-    }
-}
-
 /// Header result is `Name(x) > 1` (or `1 < Name(x)`).
 fn header_gt1_iv(header: &Block, defs: &HashMap<u32, Value>) -> Option<String> {
     let res = header.result?;
@@ -483,7 +469,7 @@ fn header_gt1_iv(header: &Block, defs: &HashMap<u32, Value>) -> Option<String> {
     match op {
         BinOp::Gt => {
             let x = name_of(*left, defs)?;
-            if const_of(*right, defs) == Some(1) {
+            if const_int(*right, defs) == Some(1) {
                 Some(x)
             } else {
                 None
@@ -491,7 +477,7 @@ fn header_gt1_iv(header: &Block, defs: &HashMap<u32, Value>) -> Option<String> {
         }
         BinOp::Lt => {
             let x = name_of(*right, defs)?;
-            if const_of(*left, defs) == Some(1) {
+            if const_int(*left, defs) == Some(1) {
                 Some(x)
             } else {
                 None
@@ -553,11 +539,11 @@ fn cond_is_even(cond: &Local, x: &str, defs: &HashMap<u32, Value>) -> bool {
     else {
         return false;
     };
-    let zero_side = const_of(left, defs) == Some(0) || const_of(right, defs) == Some(0);
+    let zero_side = const_int(left, defs) == Some(0) || const_int(right, defs) == Some(0);
     if !zero_side {
         return false;
     }
-    let rem = if const_of(left, defs) == Some(0) {
+    let rem = if const_int(left, defs) == Some(0) {
         right
     } else {
         left
@@ -571,9 +557,9 @@ fn cond_is_even(cond: &Local, x: &str, defs: &HashMap<u32, Value>) -> bool {
     else {
         return false;
     };
-    let (xv, two) = if const_of(b, defs) == Some(2) {
+    let (xv, two) = if const_int(b, defs) == Some(2) {
         (a, true)
-    } else if const_of(a, defs) == Some(2) {
+    } else if const_int(a, defs) == Some(2) {
         (b, true)
     } else {
         (a, false)
@@ -599,9 +585,9 @@ fn block_assigns_div2(block: &Block, x: &str, defs: &HashMap<u32, Value>) -> boo
             }) = defs.get(v)
             {
                 let ok = (name_of(*left, defs).as_deref() == Some(x)
-                    && const_of(*right, defs) == Some(2))
+                    && const_int(*right, defs) == Some(2))
                     || (name_of(*right, defs).as_deref() == Some(x)
-                        && const_of(*left, defs) == Some(2));
+                        && const_int(*left, defs) == Some(2));
                 if ok {
                     return true;
                 }
@@ -633,9 +619,9 @@ fn block_assigns_triple_plus1(block: &Block, x: &str, defs: &HashMap<u32, Value>
         else {
             continue;
         };
-        let mul_l = if const_of(*right, defs) == Some(1) {
+        let mul_l = if const_int(*right, defs) == Some(1) {
             *left
-        } else if const_of(*left, defs) == Some(1) {
+        } else if const_int(*left, defs) == Some(1) {
             *right
         } else {
             continue;
@@ -649,28 +635,13 @@ fn block_assigns_triple_plus1(block: &Block, x: &str, defs: &HashMap<u32, Value>
         else {
             continue;
         };
-        let ok = (const_of(*a, defs) == Some(3) && name_of(*b, defs).as_deref() == Some(x))
-            || (const_of(*b, defs) == Some(3) && name_of(*a, defs).as_deref() == Some(x));
+        let ok = (const_int(*a, defs) == Some(3) && name_of(*b, defs).as_deref() == Some(x))
+            || (const_int(*b, defs) == Some(3) && name_of(*a, defs).as_deref() == Some(x));
         if ok {
             return true;
         }
     }
     false
-}
-
-fn is_unit_inc(dest: u32, name: &str, defs: &HashMap<u32, Value>) -> bool {
-    let Some(Value::Binary {
-        op: BinOp::Add,
-        left,
-        right,
-        ..
-    }) = defs.get(&dest)
-    else {
-        return false;
-    };
-    let l = name_of(*left, defs).as_deref() == Some(name);
-    let r = name_of(*right, defs).as_deref() == Some(name);
-    (l && const_of(*right, defs) == Some(1)) || (r && const_of(*left, defs) == Some(1))
 }
 
 #[cfg(test)]

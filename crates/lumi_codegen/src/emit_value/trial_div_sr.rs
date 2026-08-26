@@ -12,7 +12,7 @@
 
 use inkwell::values::{BasicValueEnum, FunctionValue};
 use inkwell::IntPredicate;
-use lumi_core::{for_each_block_dfs, Block, Local, Op, Value};
+use lumi_core::{const_int, for_each_block_dfs, is_unit_inc, name_of, Block, Local, Op, Value};
 use lumi_syntax::BinOp;
 use rustc_hash::FxHashMap as HashMap;
 
@@ -299,12 +299,12 @@ fn header_le_const(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String
     match op {
         BinOp::Le => {
             let n = name_of(*left, defs)?;
-            let k = const_of(*right, defs)?;
+            let k = const_int(*right, defs)?;
             Some((n, k))
         }
         BinOp::Ge => {
             let n = name_of(*right, defs)?;
-            let k = const_of(*left, defs)?;
+            let k = const_int(*left, defs)?;
             Some((n, k))
         }
         _ => None,
@@ -323,7 +323,7 @@ fn is_truthy_ok_cond(cond: &Local, ok: &str, defs: &HashMap<u32, Value>) -> bool
         ..
     }) = defs.get(&cond.0)
     {
-        let zero = const_of(*left, defs) == Some(0) || const_of(*right, defs) == Some(0);
+        let zero = const_int(*left, defs) == Some(0) || const_int(*right, defs) == Some(0);
         let ok_side = name_of(*left, defs).as_deref() == Some(ok)
             || name_of(*right, defs).as_deref() == Some(ok);
         return zero && ok_side;
@@ -353,20 +353,6 @@ fn local_defined_as_if(local: Local, block: &Block) -> bool {
         }
     });
     found
-}
-
-fn name_of(l: Local, defs: &HashMap<u32, Value>) -> Option<String> {
-    match defs.get(&l.0)? {
-        Value::Name(n) => Some(n.clone()),
-        _ => None,
-    }
-}
-
-fn const_of(l: Local, defs: &HashMap<u32, Value>) -> Option<i64> {
-    match defs.get(&l.0)? {
-        Value::Int(n) => Some(*n),
-        _ => None,
-    }
 }
 
 /// Header result is `d * d <= n`.
@@ -430,7 +416,7 @@ fn body_trial_parts(body: &Block, d: &str, n: &str, defs: &HashMap<u32, Value>) 
                         Op::Assign {
                             name,
                             value: Local(v),
-                        } if const_of(Local(*v), &then_defs) == Some(0)
+                        } if const_int(Local(*v), &then_defs) == Some(0)
                             || matches!(then_defs.get(v), Some(Value::Bool(false))) =>
                         {
                             ok_name = Some(name.clone());
@@ -485,11 +471,11 @@ fn cond_is_divisible(cond: &Local, n: &str, d: &str, defs: &HashMap<u32, Value>)
     else {
         return false;
     };
-    let zero_side = const_of(left, defs) == Some(0) || const_of(right, defs) == Some(0);
+    let zero_side = const_int(left, defs) == Some(0) || const_int(right, defs) == Some(0);
     if !zero_side {
         return false;
     }
-    let rem = if const_of(left, defs) == Some(0) {
+    let rem = if const_int(left, defs) == Some(0) {
         right
     } else {
         left
@@ -505,21 +491,6 @@ fn cond_is_divisible(cond: &Local, n: &str, d: &str, defs: &HashMap<u32, Value>)
     };
     (name_of(a, defs).as_deref() == Some(n) && name_of(b, defs).as_deref() == Some(d))
         || (name_of(a, defs).as_deref() == Some(d) && name_of(b, defs).as_deref() == Some(n))
-}
-
-fn is_unit_inc(dest: u32, name: &str, defs: &HashMap<u32, Value>) -> bool {
-    let Some(Value::Binary {
-        op: BinOp::Add,
-        left,
-        right,
-        ..
-    }) = defs.get(&dest)
-    else {
-        return false;
-    };
-    let l = name_of(*left, defs).as_deref() == Some(name);
-    let r = name_of(*right, defs).as_deref() == Some(name);
-    (l && const_of(*right, defs) == Some(1)) || (r && const_of(*left, defs) == Some(1))
 }
 
 #[cfg(test)]

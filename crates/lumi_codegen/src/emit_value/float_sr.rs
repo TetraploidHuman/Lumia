@@ -6,7 +6,7 @@
 
 use inkwell::values::{BasicValueEnum, FloatValue, FunctionValue, IntValue};
 use inkwell::{FloatPredicate, IntPredicate};
-use lumi_core::{for_each_block_dfs, Block, Local, Op, Value};
+use lumi_core::{const_int, for_each_block_dfs, is_unit_inc, name_of, Block, Local, Op, Value};
 use lumi_syntax::BinOp;
 use rustc_hash::FxHashMap as HashMap;
 
@@ -629,8 +629,8 @@ fn match_mandelbrot(
                     ..
                 }) = defs.get(v)
                 {
-                    let l = name_of(defs, *left);
-                    let r = name_of(defs, *right);
+                    let l = name_of(*left, defs);
+                    let r = name_of(*right, defs);
                     if l.as_deref() == Some(name.as_str()) || r.as_deref() == Some(name.as_str()) {
                         acc = Some(name.clone());
                     }
@@ -703,28 +703,11 @@ fn header_lt_bound(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String
     else {
         return None;
     };
-    let iv = name_of(defs, *left)?;
-    if let Some(c) = const_i64(defs, *right) {
+    let iv = name_of(*left, defs)?;
+    if let Some(c) = const_int(*right, defs) {
         return Some((iv, OrbitBound::Const(c)));
     }
     Some((iv, OrbitBound::Local(*right)))
-}
-
-fn is_unit_inc(dest: u32, iv: &str, defs: &HashMap<u32, Value>) -> bool {
-    let Some(Value::Binary {
-        op: BinOp::Add,
-        left,
-        right,
-        ..
-    }) = defs.get(&dest)
-    else {
-        return false;
-    };
-    let l = name_of(defs, *left);
-    let r = name_of(defs, *right);
-    let lc = const_i64(defs, *left);
-    let rc = const_i64(defs, *right);
-    (l.as_deref() == Some(iv) && rc == Some(1)) || (r.as_deref() == Some(iv) && lc == Some(1))
 }
 
 fn body_assigns_const(body: &Block, slot: &str, expect: i64, defs: &HashMap<u32, Value>) -> bool {
@@ -734,7 +717,7 @@ fn body_assigns_const(body: &Block, slot: &str, expect: i64, defs: &HashMap<u32,
             value: Local(v),
         } = op
         {
-            if name == slot && const_i64(defs, Local(*v)) == Some(expect) {
+            if name == slot && const_int(Local(*v), defs) == Some(expect) {
                 return true;
             }
         }
@@ -742,19 +725,6 @@ fn body_assigns_const(body: &Block, slot: &str, expect: i64, defs: &HashMap<u32,
     false
 }
 
-fn name_of(defs: &HashMap<u32, Value>, l: Local) -> Option<String> {
-    match defs.get(&l.0)? {
-        Value::Name(n) => Some(n.clone()),
-        _ => None,
-    }
-}
-
-fn const_i64(defs: &HashMap<u32, Value>, l: Local) -> Option<i64> {
-    match defs.get(&l.0)? {
-        Value::Int(n) => Some(*n),
-        _ => None,
-    }
-}
 #[cfg(test)]
 mod tests {
     use super::*;

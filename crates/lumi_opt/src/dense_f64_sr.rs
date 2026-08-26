@@ -10,8 +10,10 @@
 use lumi_core::{
     collect_leaf_defs, first_assign_from_local, for_each_def_and_let, for_each_let,
     header_lt_bound, is_list_get, is_list_set, is_nontrivial_add_or_sub, list_arg_is,
-    max_local_in_fun, mentions_local, name_of, same_local, Block, CoreFun, CoreModule, Local, Op,
-    Value,
+    match_add_fun, match_addmm_fun, match_axpy_fun, match_clamp_fun, match_copy_fun,
+    match_fill_fun, match_gemv_fun, match_gemv_t_fun, match_mul_fun, match_scale_fun,
+    match_sub_fun, max_local_in_fun, mentions_local, name_of, same_local, Block, CoreFun,
+    CoreModule, Local, Op, Value,
 };
 use lumi_hir::Builtin;
 use lumi_syntax::BinOp;
@@ -179,50 +181,6 @@ fn rewrite_body_to_call(fun: &mut CoreFun, sym: &str) {
     };
     // Keep typed as list/float so codegen roots / ABI stay correct.
     fun.effect = Effect::pure();
-}
-
-fn match_gemv_fun(fun: &lumi_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<()> {
-    lumi_core::match_gemv_fun(fun, defs).map(|_| ())
-}
-
-fn match_gemv_t_fun(fun: &lumi_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<()> {
-    lumi_core::match_gemv_t_fun(fun, defs).map(|_| ())
-}
-
-fn match_addmm_fun(fun: &lumi_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<()> {
-    lumi_core::match_addmm_fun(fun, defs).map(|_| ())
-}
-
-fn match_axpy_fun(fun: &lumi_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<()> {
-    lumi_core::match_axpy_fun(fun, defs).map(|_| ())
-}
-
-fn match_sub_fun(fun: &lumi_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<()> {
-    lumi_core::match_sub_fun(fun, defs).map(|_| ())
-}
-
-fn match_add_fun(fun: &lumi_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<()> {
-    lumi_core::match_add_fun(fun, defs).map(|_| ())
-}
-
-fn match_mul_fun(fun: &lumi_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<()> {
-    lumi_core::match_mul_fun(fun, defs).map(|_| ())
-}
-
-fn match_clamp_fun(fun: &lumi_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<()> {
-    lumi_core::match_clamp_fun(fun, defs).map(|_| ())
-}
-
-fn match_scale_fun(fun: &lumi_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<()> {
-    lumi_core::match_scale_fun(fun, defs).map(|_| ())
-}
-
-fn match_fill_fun(fun: &lumi_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<()> {
-    lumi_core::match_fill_fun(fun, defs).map(|_| ())
-}
-
-fn match_copy_fun(fun: &lumi_core::CoreFun, defs: &HashMap<u32, Value>) -> Option<()> {
-    lumi_core::match_copy_fun(fun, defs).map(|_| ())
 }
 
 /// `∑ xᵢ²` — get + self-mul + add, no set/div/sqrt.

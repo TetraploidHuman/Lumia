@@ -88,3 +88,11 @@ pub fn is_unit_inc(dest: u32, iv: &str, defs: &HashMap<u32, Value>) -> bool {
     let name_r = name_of(*right, defs).as_deref() == Some(iv);
     (name_l && one_r) || (name_r && one_l)
 }
+
+/// Known `Int` constant for a leaf-def local.
+pub fn const_int(l: Local, defs: &HashMap<u32, Value>) -> Option<i64> {
+    match defs.get(&l.0)? {
+        Value::Int(n) => Some(*n),
+        _ => None,
+    }
+}

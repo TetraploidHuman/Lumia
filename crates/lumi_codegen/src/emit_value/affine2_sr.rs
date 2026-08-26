@@ -9,7 +9,7 @@
 //! → `lumi_affine2_rem_sum(N, a, b, c, m)`.
 
 use inkwell::values::{BasicValueEnum, FunctionValue};
-use lumi_core::{Block, Local, Op, Value};
+use lumi_core::{const_int, is_unit_inc, name_of, Block, Local, Op, Value};
 use lumi_syntax::BinOp;
 use rustc_hash::FxHashMap as HashMap;
 
@@ -106,7 +106,7 @@ fn match_affine2_rem_sum(
             value: Local(v),
         } = op
         {
-            if name == &j && const_of(Local(*v), defs) == Some(0) {
+            if name == &j && const_int(Local(*v), defs) == Some(0) {
                 saw_j_zero = true;
             }
         }
@@ -180,12 +180,12 @@ fn header_lt_const(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String
     match op {
         BinOp::Lt => {
             let iv = name_of(*left, defs)?;
-            let k = const_of(*right, defs)?;
+            let k = const_int(*right, defs)?;
             Some((iv, k))
         }
         BinOp::Gt => {
             let iv = name_of(*right, defs)?;
-            let k = const_of(*left, defs)?;
+            let k = const_int(*left, defs)?;
             Some((iv, k))
         }
         _ => None,
@@ -226,7 +226,7 @@ fn parse_acc_affine_rem(
     else {
         return None;
     };
-    let m = const_of(*den, defs).filter(|m| *m >= 2)?;
+    let m = const_int(*den, defs).filter(|m| *m >= 2)?;
     parse_affine3(*num, i, j, defs).map(|(a, b, c)| (a, b, c, m))
 }
 
@@ -275,8 +275,8 @@ fn parse_affine3(
                 right,
                 ..
             }) => {
-                let (cl, nl) = (const_of(*left, defs), name_of(*left, defs));
-                let (cr, nr) = (const_of(*right, defs), name_of(*right, defs));
+                let (cl, nl) = (const_int(*left, defs), name_of(*left, defs));
+                let (cr, nr) = (const_int(*right, defs), name_of(*right, defs));
                 if let (Some(k), Some(n)) = (cl, nr.as_deref()) {
                     if n == i {
                         *a = a.saturating_add(k);
@@ -307,35 +307,6 @@ fn parse_affine3(
     } else {
         None
     }
-}
-
-fn name_of(l: Local, defs: &HashMap<u32, Value>) -> Option<String> {
-    match defs.get(&l.0)? {
-        Value::Name(n) => Some(n.clone()),
-        _ => None,
-    }
-}
-
-fn const_of(l: Local, defs: &HashMap<u32, Value>) -> Option<i64> {
-    match defs.get(&l.0)? {
-        Value::Int(n) => Some(*n),
-        _ => None,
-    }
-}
-
-fn is_unit_inc(dest: u32, name: &str, defs: &HashMap<u32, Value>) -> bool {
-    let Some(Value::Binary {
-        op: BinOp::Add,
-        left,
-        right,
-        ..
-    }) = defs.get(&dest)
-    else {
-        return false;
-    };
-    let l = name_of(*left, defs).as_deref() == Some(name);
-    let r = name_of(*right, defs).as_deref() == Some(name);
-    (l && const_of(*right, defs) == Some(1)) || (r && const_of(*left, defs) == Some(1))
 }
 
 #[cfg(test)]

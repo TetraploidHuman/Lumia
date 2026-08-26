@@ -497,26 +497,21 @@ pub fn fun_has_clamp_shape(
     let mut uses_lo = false;
     let mut uses_hi = false;
     let mut saw_if = false;
-    for_each_let(body, &mut |val| {
-        if is_list_set(val).is_some() {
+    for_each_def_and_let(body, defs, &mut |v| {
+        if is_list_set(v).is_some() {
             set = true;
         }
-        // Require a real `If` — loop `i < n` alone must not look like clamp.
-        if matches!(val, Value::If { .. }) {
-            saw_if = true;
-        }
-    });
-    for v in defs.values() {
         if mentions_local(v, lo) {
             uses_lo = true;
         }
         if mentions_local(v, hi) {
             uses_hi = true;
         }
-        if is_list_set(v).is_some() {
-            set = true;
+        // Require a real `If` — loop `i < n` alone must not look like clamp.
+        if matches!(v, Value::If { .. }) {
+            saw_if = true;
         }
-    }
+    });
     for op in &body.ops {
         if let Op::Assign { name, .. } = op {
             if name == out_slot {

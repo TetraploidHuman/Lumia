@@ -6,7 +6,7 @@
 //! - `range` + `get(i)` affine rem fold
 
 use inkwell::values::{BasicValueEnum, FunctionValue};
-use lumi_core::{Block, Local, Op, Value};
+use lumi_core::{const_int, is_unit_inc, name_of, Block, Local, Op, Value};
 use lumi_hir::Builtin;
 use lumi_syntax::BinOp;
 use rustc_hash::FxHashMap as HashMap;
@@ -294,9 +294,9 @@ fn is_euclid_loop(header: &Block, body: &Block, latch: &Block, defs: &HashMap<u3
     else {
         return false;
     };
-    let y = match (name_of(*left, defs), const_of(*right, defs)) {
+    let y = match (name_of(*left, defs), const_int(*right, defs)) {
         (Some(n), Some(0)) => n,
-        (Some(_), _) => match (name_of(*right, defs), const_of(*left, defs)) {
+        (Some(_), _) => match (name_of(*right, defs), const_int(*left, defs)) {
             (Some(n), Some(0)) => n,
             _ => return false,
         },
@@ -392,7 +392,7 @@ fn parse_acc_div_const(
         return None;
     };
     // Only `N / i` (floor-divisor sum). `i / N` is a different series.
-    let ok = const_of(*dl, defs) == Some(n) && name_of(*dr, defs).as_deref() == Some(i);
+    let ok = const_int(*dl, defs) == Some(n) && name_of(*dr, defs).as_deref() == Some(i);
     if ok {
         Some(s_name.to_string())
     } else {
@@ -498,7 +498,7 @@ fn parse_acc_ij1_rem(
     else {
         return None;
     };
-    let m = const_of(*den, defs)?;
+    let m = const_int(*den, defs)?;
     if m < 2 {
         return None;
     }
@@ -512,9 +512,9 @@ fn parse_acc_ij1_rem(
     else {
         return None;
     };
-    let (mul_l, one_l) = if const_of(*a, defs) == Some(1) {
+    let (mul_l, one_l) = if const_int(*a, defs) == Some(1) {
         (*b, *a)
-    } else if const_of(*b, defs) == Some(1) {
+    } else if const_int(*b, defs) == Some(1) {
         (*a, *b)
     } else {
         return None;
@@ -617,7 +617,7 @@ fn parse_acc_get_affine_rem(
     else {
         return None;
     };
-    let m = const_of(*den, defs)?;
+    let m = const_int(*den, defs)?;
     // num = get*a + c
     let Value::Binary {
         op: BinOp::Add,
@@ -628,10 +628,10 @@ fn parse_acc_get_affine_rem(
     else {
         return None;
     };
-    let (mul_side, c) = if let Some(k) = const_of(*l, defs) {
+    let (mul_side, c) = if let Some(k) = const_int(*l, defs) {
         (*r, k)
     } else {
-        let k = const_of(*r, defs)?;
+        let k = const_int(*r, defs)?;
         (*l, k)
     };
     let Value::Binary {
@@ -643,10 +643,10 @@ fn parse_acc_get_affine_rem(
     else {
         return None;
     };
-    let (get_l, a) = if let Some(k) = const_of(*ml, defs) {
+    let (get_l, a) = if let Some(k) = const_int(*ml, defs) {
         (*mr, k)
     } else {
-        let k = const_of(*mr, defs)?;
+        let k = const_int(*mr, defs)?;
         (*ml, k)
     };
     // get_l must be ListGet(range(0,n), i)
@@ -673,10 +673,10 @@ fn parse_acc_get_affine_rem(
     if rargs.len() != 2 {
         return None;
     }
-    if const_of(rargs[0], defs) != Some(0) {
+    if const_int(rargs[0], defs) != Some(0) {
         return None;
     }
-    if const_of(rargs[1], defs) != Some(n) {
+    if const_int(rargs[1], defs) != Some(n) {
         return None;
     }
     Some((a, c, m))
@@ -827,9 +827,9 @@ fn is_affine_ik1(l: Local, i: &str, k: &str, n: i64, defs: &HashMap<u32, Value>)
     else {
         return false;
     };
-    let (rest, one) = if const_of(*left, defs) == Some(1) {
+    let (rest, one) = if const_int(*left, defs) == Some(1) {
         (*right, true)
-    } else if const_of(*right, defs) == Some(1) {
+    } else if const_int(*right, defs) == Some(1) {
         (*left, true)
     } else {
         return false;
@@ -869,9 +869,9 @@ fn is_affine_kj1(l: Local, k: &str, j: &str, n: i64, defs: &HashMap<u32, Value>)
     else {
         return false;
     };
-    let (rest, one) = if const_of(*left, defs) == Some(1) {
+    let (rest, one) = if const_int(*left, defs) == Some(1) {
         (*right, true)
-    } else if const_of(*right, defs) == Some(1) {
+    } else if const_int(*right, defs) == Some(1) {
         (*left, true)
     } else {
         return false;
@@ -909,8 +909,8 @@ fn is_name_mul_const(l: Local, name: &str, n: i64, defs: &HashMap<u32, Value>) -
     else {
         return false;
     };
-    (name_of(*left, defs).as_deref() == Some(name) && const_of(*right, defs) == Some(n))
-        || (name_of(*right, defs).as_deref() == Some(name) && const_of(*left, defs) == Some(n))
+    (name_of(*left, defs).as_deref() == Some(name) && const_int(*right, defs) == Some(n))
+        || (name_of(*right, defs).as_deref() == Some(name) && const_int(*left, defs) == Some(n))
 }
 
 fn parse_acc_rem_name(
@@ -947,7 +947,7 @@ fn parse_acc_rem_name(
     if name_of(*num, defs).as_deref() != Some(cell) {
         return None;
     }
-    let m = const_of(*den, defs)?;
+    let m = const_int(*den, defs)?;
     if m < 2 {
         None
     } else {
@@ -980,7 +980,7 @@ fn body_assigns_const(body: &Block, slot: &str, expect: i64, defs: &HashMap<u32,
             value: Local(v),
         } = op
         {
-            if name == slot && const_of(Local(*v), defs) == Some(expect) {
+            if name == slot && const_int(Local(*v), defs) == Some(expect) {
                 return true;
             }
         }
@@ -999,7 +999,7 @@ fn header_lt_const(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String
     match op {
         BinOp::Lt => {
             let name = name_of(*left, defs)?;
-            let n = const_of(*right, defs)?;
+            let n = const_int(*right, defs)?;
             Some((name, n))
         }
         _ => None,
@@ -1017,40 +1017,11 @@ fn header_le_const(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String
     match op {
         BinOp::Le => {
             let name = name_of(*left, defs)?;
-            let n = const_of(*right, defs)?;
+            let n = const_int(*right, defs)?;
             Some((name, n))
         }
         _ => None,
     }
-}
-
-fn name_of(l: Local, defs: &HashMap<u32, Value>) -> Option<String> {
-    match defs.get(&l.0)? {
-        Value::Name(n) => Some(n.clone()),
-        _ => None,
-    }
-}
-
-fn const_of(l: Local, defs: &HashMap<u32, Value>) -> Option<i64> {
-    match defs.get(&l.0)? {
-        Value::Int(n) => Some(*n),
-        _ => None,
-    }
-}
-
-fn is_unit_inc(dest: u32, name: &str, defs: &HashMap<u32, Value>) -> bool {
-    let Some(Value::Binary {
-        op: BinOp::Add,
-        left,
-        right,
-        ..
-    }) = defs.get(&dest)
-    else {
-        return false;
-    };
-    let l = name_of(*left, defs).as_deref() == Some(name);
-    let r = name_of(*right, defs).as_deref() == Some(name);
-    (l && const_of(*right, defs) == Some(1)) || (r && const_of(*left, defs) == Some(1))
 }
 
 fn is_add_name_plus_any(dest: u32, s_name: &str, defs: &HashMap<u32, Value>) -> bool {
