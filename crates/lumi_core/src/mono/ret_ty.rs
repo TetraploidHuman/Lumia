@@ -1,5 +1,6 @@
 use super::fun_index::FunIndex;
 use crate::ir::{Block, CoreFun, Local, Op, Value};
+use crate::type_join::join_adt_types;
 use lumi_hir::Builtin;
 use lumi_syntax::{BinOp, UnOp};
 use lumi_ty::Type;
@@ -463,79 +464,5 @@ fn join_fixed_ty(a: &Type, b: &Type) -> Option<Type> {
     if a == b {
         return Some(a.clone());
     }
-    match (a, b) {
-        (
-            Type::Adt {
-                name: n1,
-                params: p1,
-            },
-            Type::Adt {
-                name: n2,
-                params: p2,
-            },
-        ) if n1 == n2 => {
-            if n1 == "Result" {
-                let merge = |x: &Type, y: &Type| -> Type {
-                    match (x, y) {
-                        (Type::Int, other) | (Type::Var(_), other) => other.clone(),
-                        (other, Type::Int) | (other, Type::Var(_)) => other.clone(),
-                        (l, r) if l == r => l.clone(),
-                        (l, _) => l.clone(),
-                    }
-                };
-                let t = merge(
-                    p1.first().unwrap_or(&Type::Int),
-                    p2.first().unwrap_or(&Type::Int),
-                );
-                let e = merge(
-                    p1.get(1).unwrap_or(&Type::Int),
-                    p2.get(1).unwrap_or(&Type::Int),
-                );
-                Some(Type::Adt {
-                    name: "Result".into(),
-                    params: vec![t, e],
-                })
-            } else if n1 == "Option" {
-                let merge = |x: &Type, y: &Type| -> Type {
-                    match (x, y) {
-                        (Type::Int, other) | (Type::Var(_), other) => other.clone(),
-                        (other, Type::Int) | (other, Type::Var(_)) => other.clone(),
-                        (l, r) if l == r => l.clone(),
-                        (l, _) => l.clone(),
-                    }
-                };
-                let p = merge(
-                    p1.first().unwrap_or(&Type::Int),
-                    p2.first().unwrap_or(&Type::Int),
-                );
-                Some(Type::Adt {
-                    name: "Option".into(),
-                    params: vec![p],
-                })
-            } else {
-                // User sums / products: pad to max width (Circle vs Rect).
-                let merge = |x: &Type, y: &Type| -> Type {
-                    match (x, y) {
-                        (Type::Int, other) | (Type::Var(_), other) => other.clone(),
-                        (other, Type::Int) | (other, Type::Var(_)) => other.clone(),
-                        (l, r) if l == r => l.clone(),
-                        (l, _) => l.clone(),
-                    }
-                };
-                let n = p1.len().max(p2.len());
-                let mut params = Vec::with_capacity(n);
-                for i in 0..n {
-                    params.push(merge(
-                        p1.get(i).unwrap_or(&Type::Int),
-                        p2.get(i).unwrap_or(&Type::Int),
-                    ));
-                }
-                Some(Type::Adt {
-                    name: n1.clone(),
-                    params,
-                })
-            }
-        }
-        _ => None,
-    }
+    join_adt_types(a, b)
 }

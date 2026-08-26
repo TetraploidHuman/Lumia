@@ -1,5 +1,6 @@
 //! Shared Core `Value` → [`Type`] / heap-root helpers for mono + codegen.
 
+use crate::type_join::join_adt_types;
 use crate::{AdtRepr, ListRepr, Local, MapRepr, SetRepr, Value};
 use lumi_hir::Builtin;
 use lumi_syntax::{BinOp, UnOp};
@@ -371,38 +372,7 @@ fn join_value_tys(a: &Type, b: &Type) -> Option<Type> {
     if a == b {
         return Some(a.clone());
     }
-    match (a, b) {
-        (
-            Type::Adt {
-                name: n1,
-                params: p1,
-            },
-            Type::Adt {
-                name: n2,
-                params: p2,
-            },
-        ) if n1 == n2 => {
-            let n = p1.len().max(p2.len());
-            let mut params = Vec::with_capacity(n);
-            for i in 0..n {
-                let x = p1.get(i).cloned().unwrap_or(Type::Int);
-                let y = p2.get(i).cloned().unwrap_or(Type::Int);
-                params.push(if x == y {
-                    x
-                } else if matches!(x, Type::Int | Type::Var(_)) {
-                    y
-                } else {
-                    // Prefer left when both are concrete, or when y is erased.
-                    x
-                });
-            }
-            Some(Type::Adt {
-                name: n1.clone(),
-                params,
-            })
-        }
-        _ => None,
-    }
+    join_adt_types(a, b)
 }
 
 fn builtin_value_ty(name: Builtin, args: &[Local], ctx: InferValueCtx<'_>) -> Type {

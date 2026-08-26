@@ -7,15 +7,17 @@ mod lower;
 mod mono;
 mod pipeline;
 mod sr_pattern;
+mod type_join;
 mod value_ty;
 mod visit;
 
 pub use dense_f64_match::{
     for_each_def_and_let, for_each_let, is_list_get, is_list_set, is_nontrivial_add_or_sub,
     list_arg_is, match_add_fun, match_addmm_fun, match_axpy_fun, match_clamp_fun, match_copy_fun,
-    match_fill_fun, match_gemv_fun, match_gemv_t_fun, match_mul_fun, match_scale_fun,
-    match_sub_fun, mentions_local, DenseAddmm, DenseAxpy, DenseBin3, DenseClamp, DenseCopy,
-    DenseFill, DenseGemv, DenseScale,
+    match_fill_fun, match_gemv_fun, match_gemv_t_fun, match_l2_norm_fun, match_l2_normalize_fun,
+    match_mean_fun, match_mul_fun, match_scale_fun, match_softmax_fun, match_std_fun,
+    match_sub_fun, match_sum_sq_fun, match_zeros_fun, mentions_local, DenseAddmm, DenseAxpy,
+    DenseBin3, DenseClamp, DenseCopy, DenseFill, DenseGemv, DenseScale,
 };
 pub use ir::{
     format_module, max_local_in_block, max_local_in_fun, rewrite_block_locals, AdtRepr, Block,
