@@ -15,8 +15,9 @@
 use inkwell::values::{BasicValueEnum, FunctionValue, IntValue};
 use inkwell::IntPredicate;
 use lumi_core::{
-    acc_add_const_inc, body_iv_unit_inc, const_int, header_gt1_iv, header_le_const,
-    is_add_name_plus_name, is_unit_inc, name_of, Block, Local, Op, Value,
+    acc_add_const_inc, body_iv_unit_inc, cond_eq_zero_rem, const_int, header_gt1_iv,
+    header_le_const, is_add_name_plus_name, is_unit_inc, latch_empty, name_of, Block, Local, Op,
+    RemDen, Value,
 };
 use lumi_syntax::BinOp;
 use rustc_hash::FxHashMap as HashMap;
@@ -262,7 +263,7 @@ fn match_collatz_loop(
     defs: &HashMap<u32, Value>,
 ) -> Option<CollatzLoop> {
     // Latch should be empty (no ops) for the classic lowering.
-    if !latch.ops.is_empty() {
+    if !latch_empty(latch) {
         return None;
     }
     let x = header_gt1_iv(header, defs)?;
@@ -308,7 +309,7 @@ fn match_collatz_outer_acc_loop(
     defs: &HashMap<u32, Value>,
     strided: bool,
 ) -> Option<(String, String, i64, i64)> {
-    if !latch.ops.is_empty() {
+    if !latch_empty(latch) {
         return None;
     }
     let (n, limit) = header_le_const(header, defs, true)?;
@@ -407,42 +408,7 @@ fn body_collatz_parts(
 }
 
 fn cond_is_even(cond: &Local, x: &str, defs: &HashMap<u32, Value>) -> bool {
-    // (x % 2) == 0
-    let Value::Binary {
-        op: BinOp::Eq,
-        left,
-        right,
-        ..
-    } = defs.get(&cond.0).cloned().unwrap_or(Value::Unit)
-    else {
-        return false;
-    };
-    let zero_side = const_int(left, defs) == Some(0) || const_int(right, defs) == Some(0);
-    if !zero_side {
-        return false;
-    }
-    let rem = if const_int(left, defs) == Some(0) {
-        right
-    } else {
-        left
-    };
-    let Value::Binary {
-        op: BinOp::Rem,
-        left: a,
-        right: b,
-        ..
-    } = defs.get(&rem.0).cloned().unwrap_or(Value::Unit)
-    else {
-        return false;
-    };
-    let (xv, two) = if const_int(b, defs) == Some(2) {
-        (a, true)
-    } else if const_int(a, defs) == Some(2) {
-        (b, true)
-    } else {
-        (a, false)
-    };
-    two && name_of(xv, defs).as_deref() == Some(x)
+    cond_eq_zero_rem(cond, x, RemDen::Const(2), defs)
 }
 
 fn block_assigns_div2(block: &Block, x: &str, defs: &HashMap<u32, Value>) -> bool {

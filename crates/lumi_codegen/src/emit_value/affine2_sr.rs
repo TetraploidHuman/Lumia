@@ -10,7 +10,7 @@
 
 use inkwell::values::{BasicValueEnum, FunctionValue};
 use lumi_core::{
-    body_iv_unit_inc, const_int, header_lt_const, match_nested_loop, name_of, split_acc_add, Block,
+    body_iv_unit_inc, const_int, header_lt_const, match_nested_loop, name_of, split_acc_rem, Block,
     Local, Op, Value,
 };
 use lumi_syntax::BinOp;
@@ -116,18 +116,8 @@ fn parse_acc_affine_rem(
     j: &str,
     defs: &HashMap<u32, Value>,
 ) -> Option<(i64, i64, i64, i64)> {
-    let rem_l = split_acc_add(dest, acc, defs)?;
-    let Value::Binary {
-        op: BinOp::Rem,
-        left: num,
-        right: den,
-        ..
-    } = defs.get(&rem_l.0)?
-    else {
-        return None;
-    };
-    let m = const_int(*den, defs).filter(|m| *m >= 2)?;
-    parse_affine3(*num, i, j, defs).map(|(a, b, c)| (a, b, c, m))
+    let (num, m) = split_acc_rem(dest, acc, defs)?;
+    parse_affine3(num, i, j, defs).map(|(a, b, c)| (a, b, c, m))
 }
 
 /// `a*i + b*j + c` (any association / order of the three terms).

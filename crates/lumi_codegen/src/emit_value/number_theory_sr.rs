@@ -8,8 +8,8 @@
 use inkwell::values::{BasicValueEnum, FunctionValue};
 use lumi_core::{
     acc_add_has_name, body_assigns_const, body_iv_unit_inc, const_int, first_loop, header_le_const,
-    header_lt_const, is_affine_row_col_plus1, is_unit_inc, match_nested_loop, name_of,
-    split_acc_add, Block, Local, Op, Value,
+    header_lt_const, is_affine_row_col_plus1, is_ij_mul_plus1, latch_empty, match_nested_loop,
+    name_of, split_acc_add, split_acc_rem, Block, Local, Op, Value,
 };
 use lumi_hir::Builtin;
 use lumi_syntax::BinOp;
@@ -209,7 +209,6 @@ fn match_gcd_sum(
     let ib = nest.inner_body;
     let mut saw_euclid = false;
     let mut s_name: Option<String> = None;
-    let mut saw_j_inc = false;
     for op in &ib.ops {
         match op {
             Op::Let {
@@ -228,17 +227,13 @@ fn match_gcd_sum(
             Op::Assign {
                 name,
                 value: Local(v),
-            } => {
-                if name == &j && is_unit_inc(*v, &j, defs) {
-                    saw_j_inc = true;
-                } else if saw_euclid && acc_add_has_name(*v, name, defs) {
-                    s_name = Some(name.clone());
-                }
+            } if saw_euclid && acc_add_has_name(*v, name, defs) => {
+                s_name = Some(name.clone());
             }
             _ => {}
         }
     }
-    if saw_euclid && saw_j_inc && body_iv_unit_inc(body, &i, defs) {
+    if saw_euclid && body_iv_unit_inc(ib, &j, defs) && body_iv_unit_inc(body, &i, defs) {
         Some(GcdSum { s: s_name?, i, n })
     } else {
         None
@@ -246,7 +241,7 @@ fn match_gcd_sum(
 }
 
 fn is_euclid_loop(header: &Block, body: &Block, latch: &Block, defs: &HashMap<u32, Value>) -> bool {
-    if !latch.ops.is_empty() {
+    if !latch_empty(latch) {
         return false;
     }
     // header: y != 0
@@ -294,7 +289,7 @@ fn match_divisor_sum(
     latch: &Block,
     defs: &HashMap<u32, Value>,
 ) -> Option<DivisorSum> {
-    if !latch.ops.is_empty() {
+    if !latch_empty(latch) {
         return None;
     }
     let (i, n) = header_le_const(header, defs, false)?;
@@ -302,7 +297,6 @@ fn match_divisor_sum(
         return None;
     }
     let mut s_name: Option<String> = None;
-    let mut saw_i_inc = false;
     let mut saw_div = false;
     for op in &body.ops {
         if let Op::Assign {
@@ -310,15 +304,13 @@ fn match_divisor_sum(
             value: Local(v),
         } = op
         {
-            if name == &i && is_unit_inc(*v, &i, defs) {
-                saw_i_inc = true;
-            } else if let Some(s) = parse_acc_div_const(*v, name, &i, n, defs) {
+            if let Some(s) = parse_acc_div_const(*v, name, &i, n, defs) {
                 s_name = Some(s);
                 saw_div = true;
             }
         }
     }
-    if saw_div && saw_i_inc {
+    if saw_div && body_iv_unit_inc(body, &i, defs) {
         Some(DivisorSum { s: s_name?, i, n })
     } else {
         None
@@ -365,22 +357,19 @@ fn match_product_rem_sum(
     let ib = nest.inner_body;
     let mut s_name: Option<String> = None;
     let mut m_val: Option<i64> = None;
-    let mut saw_j_inc = false;
     for op in &ib.ops {
         if let Op::Assign {
             name,
             value: Local(v),
         } = op
         {
-            if name == &j && is_unit_inc(*v, &j, defs) {
-                saw_j_inc = true;
-            } else if let Some((s, m)) = parse_acc_ij1_rem(*v, name, &i, &j, defs) {
+            if let Some((s, m)) = parse_acc_ij1_rem(*v, name, &i, &j, defs) {
                 s_name = Some(s);
                 m_val = Some(m);
             }
         }
     }
-    if saw_j_inc && body_iv_unit_inc(body, &i, defs) {
+    if body_iv_unit_inc(ib, &j, defs) && body_iv_unit_inc(body, &i, defs) {
         Some(ProductRemSum {
             s: s_name?,
             i,
@@ -399,49 +388,8 @@ fn parse_acc_ij1_rem(
     j: &str,
     defs: &HashMap<u32, Value>,
 ) -> Option<(String, i64)> {
-    let term = split_acc_add(dest, s_name, defs)?;
-    let Value::Binary {
-        op: BinOp::Rem,
-        left: num,
-        right: den,
-        ..
-    } = defs.get(&term.0)?
-    else {
-        return None;
-    };
-    let m = const_int(*den, defs)?;
-    if m < 2 {
-        return None;
-    }
-    // num = (i*j + 1)
-    let Value::Binary {
-        op: BinOp::Add,
-        left: a,
-        right: b,
-        ..
-    } = defs.get(&num.0)?
-    else {
-        return None;
-    };
-    let (mul_l, one_l) = if const_int(*a, defs) == Some(1) {
-        (*b, *a)
-    } else if const_int(*b, defs) == Some(1) {
-        (*a, *b)
-    } else {
-        return None;
-    };
-    let _ = one_l;
-    let Value::Binary {
-        op: BinOp::Mul,
-        left: ml,
-        right: mr,
-        ..
-    } = defs.get(&mul_l.0)?
-    else {
-        return None;
-    };
-    let names = (name_of(*ml, defs)?, name_of(*mr, defs)?);
-    if (names.0 == i && names.1 == j) || (names.0 == j && names.1 == i) {
+    let (num, m) = split_acc_rem(dest, s_name, defs)?;
+    if is_ij_mul_plus1(num, i, j, defs) {
         Some((s_name.to_string(), m))
     } else {
         None
@@ -454,7 +402,7 @@ fn match_range_affine1(
     latch: &Block,
     defs: &HashMap<u32, Value>,
 ) -> Option<RangeAffine1> {
-    if !latch.ops.is_empty() {
+    if !latch_empty(latch) {
         return None;
     }
     let (i, n) = header_lt_const(header, defs, false)?;
@@ -465,22 +413,19 @@ fn match_range_affine1(
     // feeding ListGet with index i.
     let mut s_name: Option<String> = None;
     let mut coeffs: Option<(i64, i64, i64)> = None;
-    let mut saw_i_inc = false;
     for op in &body.ops {
         if let Op::Assign {
             name,
             value: Local(v),
         } = op
         {
-            if name == &i && is_unit_inc(*v, &i, defs) {
-                saw_i_inc = true;
-            } else if let Some(t) = parse_acc_get_affine_rem(*v, name, &i, n, defs) {
+            if let Some(t) = parse_acc_get_affine_rem(*v, name, &i, n, defs) {
                 s_name = Some(name.clone());
                 coeffs = Some(t);
             }
         }
     }
-    if saw_i_inc {
+    if body_iv_unit_inc(body, &i, defs) {
         let (a, c, m) = coeffs?;
         Some(RangeAffine1 {
             s: s_name?,
@@ -503,17 +448,7 @@ fn parse_acc_get_affine_rem(
     n: i64,
     defs: &HashMap<u32, Value>,
 ) -> Option<(i64, i64, i64)> {
-    let term = split_acc_add(dest, s_name, defs)?;
-    let Value::Binary {
-        op: BinOp::Rem,
-        left: num,
-        right: den,
-        ..
-    } = defs.get(&term.0)?
-    else {
-        return None;
-    };
-    let m = const_int(*den, defs)?;
+    let (num, m) = split_acc_rem(dest, s_name, defs)?;
     // num = get*a + c
     let Value::Binary {
         op: BinOp::Add,
@@ -603,16 +538,13 @@ fn match_matmul_affine(
     }
     // k-body: cell += (i*n+k+1)*(k*n+j+1); k += 1
     let mut cell_name: Option<String> = None;
-    let mut saw_k_inc = false;
     for op in &kb.ops {
         if let Op::Assign {
             name,
             value: Local(v),
         } = op
         {
-            if name == &k && is_unit_inc(*v, &k, defs) {
-                saw_k_inc = true;
-            } else if is_matmul_cell_acc(*v, name, &i, &j, &k, n, defs) {
+            if is_matmul_cell_acc(*v, name, &i, &j, &k, n, defs) {
                 cell_name = Some(name.clone());
             }
         }
@@ -633,7 +565,10 @@ fn match_matmul_affine(
             }
         }
     }
-    if saw_k_inc && body_iv_unit_inc(jb, &j, defs) && body_iv_unit_inc(body, &i, defs) {
+    if body_iv_unit_inc(kb, &k, defs)
+        && body_iv_unit_inc(jb, &j, defs)
+        && body_iv_unit_inc(body, &i, defs)
+    {
         Some(MatmulAffine {
             sum: sum_name?,
             i,
@@ -689,24 +624,11 @@ fn parse_acc_rem_name(
     cell: &str,
     defs: &HashMap<u32, Value>,
 ) -> Option<i64> {
-    let term = split_acc_add(dest, s_name, defs)?;
-    let Value::Binary {
-        op: BinOp::Rem,
-        left: num,
-        right: den,
-        ..
-    } = defs.get(&term.0)?
-    else {
-        return None;
-    };
-    if name_of(*num, defs).as_deref() != Some(cell) {
-        return None;
-    }
-    let m = const_int(*den, defs)?;
-    if m < 2 {
-        None
-    } else {
+    let (num, m) = split_acc_rem(dest, s_name, defs)?;
+    if name_of(num, defs).as_deref() == Some(cell) {
         Some(m)
+    } else {
+        None
     }
 }
 

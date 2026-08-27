@@ -7,8 +7,8 @@
 use inkwell::values::{BasicValueEnum, FloatValue, FunctionValue, IntValue};
 use inkwell::{FloatPredicate, IntPredicate};
 use lumi_core::{
-    body_assigns_const, const_int, for_each_block_dfs, is_unit_inc, name_of, Block, Local, Op,
-    Value,
+    body_assigns_const, body_iv_unit_inc, const_int, for_each_block_dfs, is_unit_inc, latch_empty,
+    name_of, Block, Local, Op, Value,
 };
 use lumi_syntax::BinOp;
 use rustc_hash::FxHashMap as HashMap;
@@ -467,7 +467,6 @@ fn match_float_orbit(
         return None;
     }
     let mut h_name: Option<String> = None;
-    let mut saw_k_inc = false;
     let mut saw_thresh_if = false;
     for_each_block_dfs(ib, &mut |b| {
         for op in &b.ops {
@@ -476,9 +475,7 @@ fn match_float_orbit(
                     name,
                     value: Local(v),
                 } => {
-                    if name == &k && is_unit_inc(*v, &k, defs) {
-                        saw_k_inc = true;
-                    } else if is_unit_inc(*v, name, defs) && name != &i && name != &k {
+                    if is_unit_inc(*v, name, defs) && name != &i && name != &k {
                         h_name = Some(name.clone());
                     }
                 }
@@ -492,19 +489,7 @@ fn match_float_orbit(
             }
         }
     });
-    let mut saw_i_inc = false;
-    for op in &body.ops {
-        if let Op::Assign {
-            name,
-            value: Local(v),
-        } = op
-        {
-            if name == &i && is_unit_inc(*v, &i, defs) {
-                saw_i_inc = true;
-            }
-        }
-    }
-    if !saw_i_inc || !saw_k_inc || !saw_thresh_if {
+    if !body_iv_unit_inc(body, &i, defs) || !body_iv_unit_inc(ib, &k, defs) || !saw_thresh_if {
         return None;
     }
     Some(FloatOrbit {
@@ -521,7 +506,7 @@ fn match_mandelbrot(
     latch: &Block,
     defs: &HashMap<u32, Value>,
 ) -> Option<Mandelbrot> {
-    if !latch.ops.is_empty() {
+    if !latch_empty(latch) {
         return None;
     }
     let (y, h_bound) = header_lt_const(header, defs)?;
@@ -598,19 +583,7 @@ fn match_mandelbrot(
         return None;
     }
     let mut acc: Option<String> = None;
-    let mut saw_y_inc = false;
     let mut saw_x_inc = false;
-    for op in &body.ops {
-        if let Op::Assign {
-            name,
-            value: Local(v),
-        } = op
-        {
-            if name == &y && is_unit_inc(*v, &y, defs) {
-                saw_y_inc = true;
-            }
-        }
-    }
     for_each_block_dfs(xb, &mut |b| {
         for op in &b.ops {
             if let Op::Assign {
@@ -641,7 +614,7 @@ fn match_mandelbrot(
             }
         }
     });
-    if !saw_y_inc || !saw_x_inc {
+    if !body_iv_unit_inc(body, &y, defs) || !saw_x_inc {
         return None;
     }
     Some(Mandelbrot {

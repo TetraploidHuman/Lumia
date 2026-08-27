@@ -418,3 +418,125 @@ pub fn header_dd_le_n(header: &Block, defs: &HashMap<u32, Value>) -> Option<(Str
     }
     Some((da, n))
 }
+
+/// Loop latch has no trailing assigns (classic SR lowering).
+pub fn latch_empty(latch: &Block) -> bool {
+    latch.ops.is_empty()
+}
+
+/// `acc = acc + (num % den)` → `(num, den_const)` when `den ≥ 2`.
+pub fn split_acc_rem(
+    dest: u32,
+    acc_name: &str,
+    defs: &HashMap<u32, Value>,
+) -> Option<(Local, i64)> {
+    let term = split_acc_add(dest, acc_name, defs)?;
+    let Value::Binary {
+        op: BinOp::Rem,
+        left: num,
+        right: den,
+        ..
+    } = defs.get(&term.0)?
+    else {
+        return None;
+    };
+    let m = const_int(*den, defs)?;
+    if m < 2 {
+        return None;
+    }
+    Some((*num, m))
+}
+
+/// `(i * j + 1)` under any `+`/`Mul` association.
+pub fn is_ij_mul_plus1(num: Local, i: &str, j: &str, defs: &HashMap<u32, Value>) -> bool {
+    let Some(Value::Binary {
+        op: BinOp::Add,
+        left: a,
+        right: b,
+        ..
+    }) = defs.get(&num.0)
+    else {
+        return false;
+    };
+    let (mul_l, one_l) = if const_int(*a, defs) == Some(1) {
+        (*b, *a)
+    } else if const_int(*b, defs) == Some(1) {
+        (*a, *b)
+    } else {
+        return false;
+    };
+    let _ = one_l;
+    let Some(Value::Binary {
+        op: BinOp::Mul,
+        left: ml,
+        right: mr,
+        ..
+    }) = defs.get(&mul_l.0)
+    else {
+        return false;
+    };
+    let names = (name_of(*ml, defs), name_of(*mr, defs));
+    matches!(
+        (&names.0, &names.1),
+        (Some(a), Some(b)) if (a == i && b == j) || (a == j && b == i)
+    )
+}
+
+/// Rem denominator in `(a % b) == 0` style conditions.
+pub enum RemDen<'a> {
+    Name(&'a str),
+    Const(i64),
+}
+
+/// `(num % den) == 0` with zero on either side of `Eq`.
+pub fn cond_eq_zero_rem(
+    cond: &Local,
+    num: &str,
+    den: RemDen<'_>,
+    defs: &HashMap<u32, Value>,
+) -> bool {
+    let Value::Binary {
+        op: BinOp::Eq,
+        left,
+        right,
+        ..
+    } = defs.get(&cond.0).cloned().unwrap_or(Value::Unit)
+    else {
+        return false;
+    };
+    let zero_side = const_int(left, defs) == Some(0) || const_int(right, defs) == Some(0);
+    if !zero_side {
+        return false;
+    }
+    let rem = if const_int(left, defs) == Some(0) {
+        right
+    } else {
+        left
+    };
+    let Value::Binary {
+        op: BinOp::Rem,
+        left: a,
+        right: b,
+        ..
+    } = defs.get(&rem.0).cloned().unwrap_or(Value::Unit)
+    else {
+        return false;
+    };
+    match den {
+        RemDen::Name(d) => {
+            (name_of(a, defs).as_deref() == Some(num) && name_of(b, defs).as_deref() == Some(d))
+                || (name_of(a, defs).as_deref() == Some(d)
+                    && name_of(b, defs).as_deref() == Some(num))
+        }
+        RemDen::Const(k) => {
+            let (xv, ok) = if const_int(b, defs) == Some(k) {
+                (a, true)
+            } else if const_int(a, defs) == Some(k) {
+                (b, true)
+            } else {
+                (a, false)
+            };
+            ok && name_of(xv, defs).as_deref() == Some(num)
+        }
+    }
+}

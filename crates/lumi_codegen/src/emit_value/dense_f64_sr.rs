@@ -20,16 +20,6 @@ use lumi_core::{
 use super::super::Codegen;
 use anyhow::{Context as AnyhowContext, Result};
 
-type GemvPat = DenseGemv;
-type GemvTPat = DenseGemv;
-type AddmmPat = DenseAddmm;
-type AxpyPat = DenseAxpy;
-type SubPat = DenseBin3;
-type ClampPat = DenseClamp;
-type CopyPat = DenseCopy;
-type ScalePat = DenseScale;
-type FillPat = DenseFill;
-
 impl<'ctx> Codegen<'ctx> {
     /// Whole-function SR for dense float helpers (params = pattern args).
     pub(crate) fn try_emit_dense_f64_fun(
@@ -78,33 +68,28 @@ impl<'ctx> Codegen<'ctx> {
         Ok(())
     }
 
-    fn emit_gemv_fun(&mut self, p: &GemvPat) -> Result<()> {
+    fn emit_gemv_fun(&mut self, p: &DenseGemv) -> Result<()> {
+        self.emit_gemv_kernel("lumi_f64_gemv", "gemv", p)
+    }
+
+    fn emit_gemv_t_fun(&mut self, p: &DenseGemv) -> Result<()> {
+        self.emit_gemv_kernel("lumi_f64_gemv_t", "gemvt", p)
+    }
+
+    fn emit_gemv_kernel(&mut self, sym: &str, label: &str, p: &DenseGemv) -> Result<()> {
         let m = self.coerce_i64(self.local(p.m)?)?;
         let n = self.coerce_i64(self.local(p.n)?)?;
         let a = self.i64_as_ptr(self.coerce_i64(self.local(p.a)?)?, "a")?;
         let x = self.i64_as_ptr(self.coerce_i64(self.local(p.x)?)?, "x")?;
         let y = self.i64_as_ptr(self.coerce_i64(self.local(p.y)?)?, "y")?;
         self.emit_f64_kernel_return_ptr(
-            "lumi_f64_gemv",
-            "gemv",
+            sym,
+            label,
             &[m.into(), n.into(), a.into(), x.into(), y.into()],
         )
     }
 
-    fn emit_gemv_t_fun(&mut self, p: &GemvTPat) -> Result<()> {
-        let m = self.coerce_i64(self.local(p.m)?)?;
-        let n = self.coerce_i64(self.local(p.n)?)?;
-        let a = self.i64_as_ptr(self.coerce_i64(self.local(p.a)?)?, "a")?;
-        let x = self.i64_as_ptr(self.coerce_i64(self.local(p.x)?)?, "x")?;
-        let y = self.i64_as_ptr(self.coerce_i64(self.local(p.y)?)?, "y")?;
-        self.emit_f64_kernel_return_ptr(
-            "lumi_f64_gemv_t",
-            "gemvt",
-            &[m.into(), n.into(), a.into(), x.into(), y.into()],
-        )
-    }
-
-    fn emit_addmm_fun(&mut self, p: &AddmmPat) -> Result<()> {
+    fn emit_addmm_fun(&mut self, p: &DenseAddmm) -> Result<()> {
         let m = self.coerce_i64(self.local(p.m)?)?;
         let n = self.coerce_i64(self.local(p.n)?)?;
         let w = self.i64_as_ptr(self.coerce_i64(self.local(p.w)?)?, "w")?;
@@ -125,7 +110,7 @@ impl<'ctx> Codegen<'ctx> {
         )
     }
 
-    fn emit_axpy_fun(&mut self, p: &AxpyPat) -> Result<()> {
+    fn emit_axpy_fun(&mut self, p: &DenseAxpy) -> Result<()> {
         let y = self.i64_as_ptr(self.coerce_i64(self.local(p.y)?)?, "y")?;
         let alpha = self.promote_f64(self.local(p.alpha)?)?;
         let x = self.i64_as_ptr(self.coerce_i64(self.local(p.x)?)?, "x")?;
@@ -136,18 +121,18 @@ impl<'ctx> Codegen<'ctx> {
         )
     }
 
-    fn emit_sub_fun(&mut self, p: &SubPat) -> Result<()> {
+    fn emit_sub_fun(&mut self, p: &DenseBin3) -> Result<()> {
         self.emit_binop3_fun("lumi_f64_sub", "fsub", p)
     }
 
-    fn emit_binop3_fun(&mut self, sym: &str, label: &str, p: &SubPat) -> Result<()> {
+    fn emit_binop3_fun(&mut self, sym: &str, label: &str, p: &DenseBin3) -> Result<()> {
         let o = self.i64_as_ptr(self.coerce_i64(self.local(p.out)?)?, "o")?;
         let a = self.i64_as_ptr(self.coerce_i64(self.local(p.a)?)?, "a")?;
         let b = self.i64_as_ptr(self.coerce_i64(self.local(p.b)?)?, "b")?;
         self.emit_f64_kernel_return_ptr(sym, label, &[o.into(), a.into(), b.into()])
     }
 
-    fn emit_clamp_fun(&mut self, p: &ClampPat) -> Result<()> {
+    fn emit_clamp_fun(&mut self, p: &DenseClamp) -> Result<()> {
         let xs = self.i64_as_ptr(self.coerce_i64(self.local(p.xs)?)?, "xs")?;
         let lo = self.promote_f64(self.local(p.lo)?)?;
         let hi = self.promote_f64(self.local(p.hi)?)?;
@@ -158,19 +143,19 @@ impl<'ctx> Codegen<'ctx> {
         )
     }
 
-    fn emit_scale_fun(&mut self, p: &ScalePat) -> Result<()> {
+    fn emit_scale_fun(&mut self, p: &DenseScale) -> Result<()> {
         let xs = self.i64_as_ptr(self.coerce_i64(self.local(p.xs)?)?, "xs")?;
         let alpha = self.promote_f64(self.local(p.alpha)?)?;
         self.emit_f64_kernel_return_ptr("lumi_f64_scale", "fscale", &[xs.into(), alpha.into()])
     }
 
-    fn emit_fill_fun(&mut self, p: &FillPat) -> Result<()> {
+    fn emit_fill_fun(&mut self, p: &DenseFill) -> Result<()> {
         let xs = self.i64_as_ptr(self.coerce_i64(self.local(p.xs)?)?, "xs")?;
         let v = self.promote_f64(self.local(p.v)?)?;
         self.emit_f64_kernel_return_ptr("lumi_f64_fill", "ffill", &[xs.into(), v.into()])
     }
 
-    fn emit_copy_fun(&mut self, p: &CopyPat) -> Result<()> {
+    fn emit_copy_fun(&mut self, p: &DenseCopy) -> Result<()> {
         let dst = self.i64_as_ptr(self.coerce_i64(self.local(p.dst)?)?, "dst")?;
         let src = self.i64_as_ptr(self.coerce_i64(self.local(p.src)?)?, "src")?;
         self.emit_f64_kernel_return_ptr("lumi_f64_copy", "fcopy", &[dst.into(), src.into()])

@@ -13,8 +13,8 @@
 use inkwell::values::{BasicValueEnum, FunctionValue};
 use inkwell::IntPredicate;
 use lumi_core::{
-    const_int, for_each_block_dfs, header_dd_le_n, header_le_const, is_unit_inc, name_of, Block,
-    Local, Op, Value,
+    body_iv_unit_inc, cond_eq_zero_rem, const_int, for_each_block_dfs, header_dd_le_n,
+    header_le_const, is_unit_inc, latch_empty, name_of, Block, Local, Op, RemDen, Value,
 };
 use lumi_syntax::BinOp;
 use rustc_hash::FxHashMap as HashMap;
@@ -167,7 +167,7 @@ fn match_trial_div_loop(
     latch: &Block,
     defs: &HashMap<u32, Value>,
 ) -> Option<TrialDivLoop> {
-    if !latch.ops.is_empty() {
+    if !latch_empty(latch) {
         return None;
     }
     let (d, n) = header_dd_le_n(header, defs)?;
@@ -182,7 +182,7 @@ fn match_count_primes_loop(
     latch: &Block,
     defs: &HashMap<u32, Value>,
 ) -> Option<CountPrimesLoop> {
-    if !latch.ops.is_empty() {
+    if !latch_empty(latch) {
         return None;
     }
     let (n, limit) = header_le_const(header, defs, true)?;
@@ -239,48 +239,37 @@ fn match_count_primes_loop(
     }
     let ok = ok_name?;
     let mut count_name: Option<String> = None;
-    let mut saw_n_inc = false;
     for op in &body.ops {
-        match op {
-            Op::Assign {
-                name,
-                value: Local(v),
-            } => {
-                if name == &n && is_unit_inc(*v, &n, defs) {
-                    saw_n_inc = true;
-                }
+        if let Op::Let {
+            value: Value::If {
+                cond, then_block, ..
+            },
+            ..
+        } = op
+        {
+            // `if ok { c += 1 }` — cond may be Name(ok), `ok != 0`, or the
+            // SSA result of an inlined `isPrime` `If` (`Value::If` is not in
+            // leaf_defs, so look it up on the block graph).
+            let cond_ok = name_of(*cond, defs).as_deref() == Some(ok.as_str())
+                || is_truthy_ok_cond(cond, &ok, defs)
+                || local_defined_as_if(*cond, body);
+            if !cond_ok {
+                continue;
             }
-            Op::Let {
-                value: Value::If {
-                    cond, then_block, ..
-                },
-                ..
-            } => {
-                // `if ok { c += 1 }` — cond may be Name(ok), `ok != 0`, or the
-                // SSA result of an inlined `isPrime` `If` (`Value::If` is not in
-                // leaf_defs, so look it up on the block graph).
-                let cond_ok = name_of(*cond, defs).as_deref() == Some(ok.as_str())
-                    || is_truthy_ok_cond(cond, &ok, defs)
-                    || local_defined_as_if(*cond, body);
-                if !cond_ok {
-                    continue;
-                }
-                for top in &then_block.ops {
-                    if let Op::Assign {
-                        name,
-                        value: Local(v),
-                    } = top
-                    {
-                        if name != &n && name != &ok && is_unit_inc(*v, name, defs) {
-                            count_name = Some(name.clone());
-                        }
+            for top in &then_block.ops {
+                if let Op::Assign {
+                    name,
+                    value: Local(v),
+                } = top
+                {
+                    if name != &n && name != &ok && is_unit_inc(*v, name, defs) {
+                        count_name = Some(name.clone());
                     }
                 }
             }
-            _ => {}
         }
     }
-    if saw_n_inc {
+    if body_iv_unit_inc(body, &n, defs) {
         Some(CountPrimesLoop {
             count: count_name?,
             n,
@@ -375,7 +364,7 @@ fn body_trial_parts(body: &Block, d: &str, n: &str, defs: &HashMap<u32, Value>) 
                         _ => {}
                     }
                 }
-                if block_unit_incs(else_block, d, defs) {
+                if body_iv_unit_inc(else_block, d, defs) {
                     saw_step = true;
                 }
             }
@@ -396,51 +385,8 @@ fn body_trial_parts(body: &Block, d: &str, n: &str, defs: &HashMap<u32, Value>) 
     }
 }
 
-fn block_unit_incs(block: &Block, name: &str, defs: &HashMap<u32, Value>) -> bool {
-    for op in &block.ops {
-        if let Op::Assign {
-            name: n,
-            value: Local(v),
-        } = op
-        {
-            if n == name && is_unit_inc(*v, name, defs) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 fn cond_is_divisible(cond: &Local, n: &str, d: &str, defs: &HashMap<u32, Value>) -> bool {
-    let Value::Binary {
-        op: BinOp::Eq,
-        left,
-        right,
-        ..
-    } = defs.get(&cond.0).cloned().unwrap_or(Value::Unit)
-    else {
-        return false;
-    };
-    let zero_side = const_int(left, defs) == Some(0) || const_int(right, defs) == Some(0);
-    if !zero_side {
-        return false;
-    }
-    let rem = if const_int(left, defs) == Some(0) {
-        right
-    } else {
-        left
-    };
-    let Value::Binary {
-        op: BinOp::Rem,
-        left: a,
-        right: b,
-        ..
-    } = defs.get(&rem.0).cloned().unwrap_or(Value::Unit)
-    else {
-        return false;
-    };
-    (name_of(a, defs).as_deref() == Some(n) && name_of(b, defs).as_deref() == Some(d))
-        || (name_of(a, defs).as_deref() == Some(d) && name_of(b, defs).as_deref() == Some(n))
+    cond_eq_zero_rem(cond, n, RemDen::Name(d), defs)
 }
 
 #[cfg(test)]

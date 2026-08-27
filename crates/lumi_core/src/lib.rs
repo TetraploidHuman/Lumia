@@ -29,11 +29,11 @@ pub use pipeline::{
     compile_source_to_core_with_parallel, FrontendOptions,
 };
 pub use sr_pattern::{
-    acc_add_const_inc, acc_add_has_name, body_assigns_const, body_iv_unit_inc, const_int,
-    first_assign_from_local, first_loop, header_dd_le_n, header_gt1_iv, header_le_const,
+    acc_add_const_inc, acc_add_has_name, body_assigns_const, body_iv_unit_inc, cond_eq_zero_rem,
+    const_int, first_assign_from_local, first_loop, header_dd_le_n, header_gt1_iv, header_le_const,
     header_lt_bound, header_lt_const, is_add_name_plus_name, is_affine_row_col_plus1,
-    is_name_mul_const, is_unit_inc, match_nested_loop, name_of, same_local, split_acc_add,
-    HeaderConstFn, NestedLoop,
+    is_ij_mul_plus1, is_name_mul_const, is_unit_inc, latch_empty, match_nested_loop, name_of,
+    same_local, split_acc_add, split_acc_rem, HeaderConstFn, NestedLoop, RemDen,
 };
 pub use value_ty::{
     infer_value_ty, infer_value_ty_ctx, list_par_map_elem_ty, value_alloc_may_heap,

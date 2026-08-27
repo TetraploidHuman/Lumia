@@ -90,6 +90,94 @@ pub fn for_each_local(value: &Value, f: &mut impl FnMut(Local)) {
     visit_value_locals!(value, |l| f(*l));
 }
 
+macro_rules! visit_nested_regions {
+    ($value:expr, |$b:pat_param| $body:expr) => {
+        match $value {
+            Value::If {
+                then_block,
+                else_block,
+                ..
+            } => {
+                {
+                    let $b = then_block;
+                    $body
+                }
+                {
+                    let $b = else_block;
+                    $body
+                }
+            }
+            Value::Loop {
+                header,
+                body,
+                latch,
+            } => {
+                {
+                    let $b = header;
+                    $body
+                }
+                {
+                    let $b = body;
+                    $body
+                }
+                {
+                    let $b = latch;
+                    $body
+                }
+            }
+            Value::Lambda { body, .. } => {
+                let $b = body;
+                $body
+            }
+            _ => {}
+        }
+    };
+}
+
+macro_rules! visit_nested_regions_mut {
+    ($value:expr, |$b:pat_param| $body:expr) => {
+        match $value {
+            Value::If {
+                then_block,
+                else_block,
+                ..
+            } => {
+                {
+                    let $b = then_block.as_mut();
+                    $body
+                }
+                {
+                    let $b = else_block.as_mut();
+                    $body
+                }
+            }
+            Value::Loop {
+                header,
+                body,
+                latch,
+            } => {
+                {
+                    let $b = header.as_mut();
+                    $body
+                }
+                {
+                    let $b = body.as_mut();
+                    $body
+                }
+                {
+                    let $b = latch.as_mut();
+                    $body
+                }
+            }
+            Value::Lambda { body, .. } => {
+                let $b = body.as_mut();
+                $body
+            }
+            _ => {}
+        }
+    };
+}
+
 /// Remap locals on this node, then recurse into nested blocks via `on_block`.
 pub fn map_value_locals(
     value: &mut Value,
@@ -97,27 +185,7 @@ pub fn map_value_locals(
     on_block: &mut impl FnMut(&mut Block),
 ) {
     for_each_local_mut(value, map_l);
-    match value {
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            on_block(then_block);
-            on_block(else_block);
-        }
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => {
-            on_block(header);
-            on_block(body);
-            on_block(latch);
-        }
-        Value::Lambda { body, .. } => on_block(body),
-        _ => {}
-    }
+    visit_nested_regions_mut!(value, |b| on_block(b));
 }
 
 /// Apply `remap` to every local in `value` and nested blocks (via [`rewrite_block_locals`]).
@@ -140,31 +208,9 @@ pub fn rewrite_value_locals(value: &mut Value, remap: &HashMap<u32, u32>) {
 pub fn max_local_in_value(value: &Value) -> u32 {
     let mut max = 0u32;
     for_each_local(value, &mut |l| max = max.max(l.0));
-    match value {
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            max = max
-                .max(crate::max_local_in_block(then_block))
-                .max(crate::max_local_in_block(else_block));
-        }
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => {
-            max = max
-                .max(crate::max_local_in_block(header))
-                .max(crate::max_local_in_block(body))
-                .max(crate::max_local_in_block(latch));
-        }
-        Value::Lambda { body, .. } => {
-            max = max.max(crate::max_local_in_block(body));
-        }
-        _ => {}
-    }
+    visit_nested_regions!(value, |b| {
+        max = max.max(crate::max_local_in_block(b));
+    });
     max
 }
 
@@ -180,29 +226,7 @@ pub fn collect_uses_in_value(
     if let Value::Name(n) = value {
         names.insert(n.clone());
     }
-    match value {
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            collect_uses(then_block, locals, names);
-            collect_uses(else_block, locals, names);
-        }
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => {
-            collect_uses(header, locals, names);
-            collect_uses(body, locals, names);
-            collect_uses(latch, locals, names);
-        }
-        Value::Lambda { body, .. } => {
-            collect_uses(body, locals, names);
-        }
-        _ => {}
-    }
+    visit_nested_regions!(value, |b| collect_uses(b, locals, names));
 }
 
 /// Collect SSA uses (and `Name` loads) across a whole block, including nested regions.
@@ -225,52 +249,11 @@ pub(crate) fn collect_uses(block: &Block, locals: &mut HashSet<u32>, names: &mut
 
 /// Walk nested region blocks only (If/Loop/Lambda), for defined-local collection etc.
 pub fn for_each_nested_block_mut(value: &mut Value, f: &mut impl FnMut(&mut Block)) {
-    match value {
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            f(then_block);
-            f(else_block);
-        }
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => {
-            f(header);
-            f(body);
-            f(latch);
-        }
-        Value::Lambda { body, .. } => f(body),
-        _ => {}
-    }
+    visit_nested_regions_mut!(value, |b| f(b));
 }
 
 pub fn for_each_nested_block(value: &Value, f: &mut impl FnMut(&Block)) {
-    let mut visit = |b: &Block| f(b);
-    match value {
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            visit(then_block);
-            visit(else_block);
-        }
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => {
-            visit(header);
-            visit(body);
-            visit(latch);
-        }
-        Value::Lambda { body, .. } => visit(body),
-        _ => {}
-    }
+    visit_nested_regions!(value, |b| f(b));
 }
 
 /// Visit every `Let` value in `body`, recursing into If/Loop bodies.
@@ -440,23 +423,17 @@ fn value_has_eager_io(value: &Value, io_callees: &HashSet<String>) -> bool {
         Value::Builtin { name, .. } if name.is_io() => true,
         // Indirect call may invoke an IO Fun; opt must not treat it as pure.
         Value::IndirectCall { .. } => true,
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => block_has_io(then_block, io_callees) || block_has_io(else_block, io_callees),
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => {
-            block_has_io(header, io_callees)
-                || block_has_io(body, io_callees)
-                || block_has_io(latch, io_callees)
-        }
         // Constructing a nested IO thunk is pure; that body is analyzed when lifted.
         Value::Lambda { .. } => false,
-        _ => false,
+        v => {
+            let mut found = false;
+            visit_nested_regions!(v, |b| {
+                if !found && block_has_io(b, io_callees) {
+                    found = true;
+                }
+            });
+            found
+        }
     }
 }
 
@@ -475,21 +452,16 @@ pub fn has_assign_or_name(block: &Block) -> bool {
 }
 
 fn value_has_assign_or_name(value: &Value) -> bool {
-    match value {
-        Value::Name(_) => true,
-        Value::If {
-            then_block,
-            else_block,
-            ..
-        } => has_assign_or_name(then_block) || has_assign_or_name(else_block),
-        Value::Loop {
-            header,
-            body,
-            latch,
-        } => has_assign_or_name(header) || has_assign_or_name(body) || has_assign_or_name(latch),
-        Value::Lambda { body, .. } => has_assign_or_name(body),
-        _ => false,
+    if matches!(value, Value::Name(_)) {
+        return true;
     }
+    let mut found = false;
+    visit_nested_regions!(value, |b| {
+        if !found && has_assign_or_name(b) {
+            found = true;
+        }
+    });
+    found
 }
 
 /// Mutating walk: for each `Let`/`Effect` value, call `on_value` then recurse into nested blocks.
