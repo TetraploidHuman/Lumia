@@ -10,8 +10,8 @@
 
 use inkwell::values::{BasicValueEnum, FunctionValue};
 use lumi_core::{
-    body_assigns_const, const_int, first_loop, header_lt_const, is_unit_inc, name_of,
-    split_acc_add, Block, Local, Op, Value,
+    body_iv_unit_inc, const_int, header_lt_const, match_nested_loop, name_of, split_acc_add, Block,
+    Local, Op, Value,
 };
 use lumi_syntax::BinOp;
 use rustc_hash::FxHashMap as HashMap;
@@ -69,61 +69,27 @@ fn match_affine2_rem_sum(
     latch: &Block,
     defs: &HashMap<u32, Value>,
 ) -> Option<Affine2RemSum> {
-    if !latch.ops.is_empty() {
-        return None;
-    }
-    let (i, n) = header_lt_const(header, defs, true)?;
-    if n < 2 {
-        return None;
-    }
-    let (ih, ib, il) = first_loop(body)?;
-    if !il.ops.is_empty() {
-        return None;
-    }
-    let (j, n2) = header_lt_const(ih, defs, true)?;
-    if n2 != n || j == i {
-        return None;
-    }
-    if !body_assigns_const(body, &j, 0, defs) {
-        return None;
-    }
+    let nest = match_nested_loop(header, body, latch, defs, header_lt_const, true, 0)?;
+    let i = nest.outer_iv;
+    let j = nest.inner_iv;
+    let n = nest.n;
+    let ib = nest.inner_body;
     // Inner body: s = s + ((a*i + b*j + c) % m); j += 1
     let mut s_name: Option<String> = None;
     let mut coeffs: Option<(i64, i64, i64, i64)> = None;
-    let mut saw_j_inc = false;
     for op in &ib.ops {
         if let Op::Assign {
             name,
             value: Local(v),
         } = op
         {
-            if name == &j && is_unit_inc(*v, &j, defs) {
-                saw_j_inc = true;
-            } else if let Some(t) = parse_acc_affine_rem(*v, name, &i, &j, defs) {
+            if let Some(t) = parse_acc_affine_rem(*v, name, &i, &j, defs) {
                 s_name = Some(name.clone());
                 coeffs = Some(t);
             }
         }
     }
-    // Outer latch step may be in body after inner loop: i += 1
-    let mut saw_i_inc = false;
-    for op in &body.ops {
-        if let Op::Assign {
-            name,
-            value: Local(v),
-        } = op
-        {
-            if name == &i && is_unit_inc(*v, &i, defs) {
-                saw_i_inc = true;
-            }
-        }
-    }
-    // i+=1 often sits after the inner loop in the outer body (same as poly).
-    if !saw_i_inc {
-        // May be on the outer latch — empty latch means it's in body after Loop.
-        return None;
-    }
-    if !saw_j_inc {
+    if !body_iv_unit_inc(ib, &j, defs) || !body_iv_unit_inc(body, &i, defs) {
         return None;
     }
     let (a, b, c, m) = coeffs?;

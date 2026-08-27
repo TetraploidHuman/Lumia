@@ -13,7 +13,8 @@
 use inkwell::values::{BasicValueEnum, FunctionValue};
 use inkwell::IntPredicate;
 use lumi_core::{
-    const_int, for_each_block_dfs, header_le_const, is_unit_inc, name_of, Block, Local, Op, Value,
+    const_int, for_each_block_dfs, header_dd_le_n, header_le_const, is_unit_inc, name_of, Block,
+    Local, Op, Value,
 };
 use lumi_syntax::BinOp;
 use rustc_hash::FxHashMap as HashMap;
@@ -332,36 +333,6 @@ fn local_defined_as_if(local: Local, block: &Block) -> bool {
         }
     });
     found
-}
-
-/// Header result is `d * d <= n`.
-fn header_dd_le_n(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String, String)> {
-    let res = header.result?;
-    let Value::Binary {
-        op: BinOp::Le,
-        left,
-        right,
-        ..
-    } = defs.get(&res.0)?
-    else {
-        return None;
-    };
-    let n = name_of(*right, defs)?;
-    let Value::Binary {
-        op: BinOp::Mul,
-        left: a,
-        right: b,
-        ..
-    } = defs.get(&left.0)?
-    else {
-        return None;
-    };
-    let da = name_of(*a, defs)?;
-    let db = name_of(*b, defs)?;
-    if da != db {
-        return None;
-    }
-    Some((da, n))
 }
 
 fn body_trial_parts(body: &Block, d: &str, n: &str, defs: &HashMap<u32, Value>) -> Option<String> {

@@ -15,8 +15,8 @@
 use inkwell::values::{BasicValueEnum, FunctionValue, IntValue};
 use inkwell::IntPredicate;
 use lumi_core::{
-    acc_add_const_inc, const_int, header_gt1_iv, header_le_const, is_add_name_plus_name,
-    is_unit_inc, name_of, Block, Local, Op, Value,
+    acc_add_const_inc, body_iv_unit_inc, const_int, header_gt1_iv, header_le_const,
+    is_add_name_plus_name, is_unit_inc, name_of, Block, Local, Op, Value,
 };
 use lumi_syntax::BinOp;
 use rustc_hash::FxHashMap as HashMap;
@@ -280,59 +280,8 @@ fn match_collatz_total_loop(
     latch: &Block,
     defs: &HashMap<u32, Value>,
 ) -> Option<CollatzTotalLoop> {
-    if !latch.ops.is_empty() {
-        return None;
-    }
-    let (n, limit) = header_le_const(header, defs, true)?;
-    if limit < 1 {
-        return None;
-    }
-    let mut steps_name: Option<String> = None;
-    let mut total_name: Option<String> = None;
-    let mut saw_n_inc = false;
-
-    for op in &body.ops {
-        match op {
-            Op::Let {
-                value:
-                    Value::Loop {
-                        header: ih,
-                        body: ib,
-                        latch: il,
-                    },
-                ..
-            } => {
-                if let Some(p) = match_collatz_loop(ih, ib, il, defs) {
-                    steps_name = Some(p.steps);
-                }
-            }
-            Op::Assign {
-                name,
-                value: Local(v),
-            } => {
-                if name == &n && is_unit_inc(*v, &n, defs) {
-                    saw_n_inc = true;
-                }
-                if let Some(ref steps) = steps_name {
-                    // total = total + steps
-                    if name != steps && is_add_name_plus_name(*v, name, steps, defs) {
-                        total_name = Some(name.clone());
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    if saw_n_inc {
-        Some(CollatzTotalLoop {
-            total: total_name?,
-            n,
-            limit,
-        })
-    } else {
-        None
-    }
+    let (total, n, limit, _) = match_collatz_outer_acc_loop(header, body, latch, defs, false)?;
+    Some(CollatzTotalLoop { total, n, limit })
 }
 
 /// Like [`match_collatz_total_loop`] but `n += stride` with const `stride ≥ 2`.
@@ -342,6 +291,23 @@ fn match_collatz_strided_loop(
     latch: &Block,
     defs: &HashMap<u32, Value>,
 ) -> Option<CollatzStridedLoop> {
+    let (total, n, limit, stride) = match_collatz_outer_acc_loop(header, body, latch, defs, true)?;
+    Some(CollatzStridedLoop {
+        total,
+        n,
+        limit,
+        stride,
+    })
+}
+
+/// Shared outer `total += collatzSteps(n); n += step` matcher.
+fn match_collatz_outer_acc_loop(
+    header: &Block,
+    body: &Block,
+    latch: &Block,
+    defs: &HashMap<u32, Value>,
+    strided: bool,
+) -> Option<(String, String, i64, i64)> {
     if !latch.ops.is_empty() {
         return None;
     }
@@ -351,7 +317,7 @@ fn match_collatz_strided_loop(
     }
     let mut steps_name: Option<String> = None;
     let mut total_name: Option<String> = None;
-    let mut stride: Option<i64> = None;
+    let mut step: Option<i64> = None;
 
     for op in &body.ops {
         match op {
@@ -372,10 +338,10 @@ fn match_collatz_strided_loop(
                 name,
                 value: Local(v),
             } => {
-                if name == &n {
+                if strided && name == &n {
                     if let Some(k) = acc_add_const_inc(*v, &n, defs) {
                         if k >= 2 {
-                            stride = Some(k);
+                            step = Some(k);
                         }
                     }
                 }
@@ -389,12 +355,14 @@ fn match_collatz_strided_loop(
         }
     }
 
-    Some(CollatzStridedLoop {
-        total: total_name?,
-        n,
-        limit,
-        stride: stride?,
-    })
+    let step = if strided {
+        step?
+    } else if body_iv_unit_inc(body, &n, defs) {
+        1
+    } else {
+        return None;
+    };
+    Some((total_name?, n, limit, step))
 }
 
 fn body_collatz_parts(

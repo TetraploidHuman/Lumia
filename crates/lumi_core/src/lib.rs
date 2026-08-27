@@ -14,10 +14,10 @@ mod visit;
 pub use dense_f64_match::{
     dense_f64_rt_symbol, for_each_def_and_let, is_list_get, is_list_set, is_nontrivial_add_or_sub,
     list_arg_is, match_add_fun, match_addmm_fun, match_axpy_fun, match_clamp_fun, match_copy_fun,
-    match_fill_fun, match_gemv_fun, match_gemv_t_fun, match_l2_norm_fun, match_l2_normalize_fun,
-    match_mean_fun, match_mul_fun, match_scale_fun, match_softmax_fun, match_std_fun,
-    match_sub_fun, match_sum_sq_fun, match_zeros_fun, mentions_local, DenseAddmm, DenseAxpy,
-    DenseBin3, DenseClamp, DenseCopy, DenseFill, DenseGemv, DenseScale,
+    match_dense_f64_fun, match_fill_fun, match_gemv_fun, match_gemv_t_fun, match_l2_norm_fun,
+    match_l2_normalize_fun, match_mean_fun, match_mul_fun, match_scale_fun, match_softmax_fun,
+    match_std_fun, match_sub_fun, match_sum_sq_fun, match_zeros_fun, mentions_local, DenseAddmm,
+    DenseAxpy, DenseBin3, DenseClamp, DenseCopy, DenseF64Match, DenseFill, DenseGemv, DenseScale,
 };
 pub use ir::{
     format_module, max_local_in_block, max_local_in_fun, rewrite_block_locals, AdtRepr, Block,
@@ -29,10 +29,11 @@ pub use pipeline::{
     compile_source_to_core_with_parallel, FrontendOptions,
 };
 pub use sr_pattern::{
-    acc_add_const_inc, acc_add_has_name, body_assigns_const, const_int, first_assign_from_local,
-    first_loop, header_gt1_iv, header_le_const, header_lt_bound, header_lt_const,
-    is_add_name_plus_name, is_affine_row_col_plus1, is_name_mul_const, is_unit_inc, name_of,
-    same_local, split_acc_add,
+    acc_add_const_inc, acc_add_has_name, body_assigns_const, body_iv_unit_inc, const_int,
+    first_assign_from_local, first_loop, header_dd_le_n, header_gt1_iv, header_le_const,
+    header_lt_bound, header_lt_const, is_add_name_plus_name, is_affine_row_col_plus1,
+    is_name_mul_const, is_unit_inc, match_nested_loop, name_of, same_local, split_acc_add,
+    HeaderConstFn, NestedLoop,
 };
 pub use value_ty::{
     infer_value_ty, infer_value_ty_ctx, list_par_map_elem_ty, value_alloc_may_heap,

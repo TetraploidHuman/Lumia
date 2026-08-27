@@ -6,100 +6,88 @@
 use crate::{Block, Local, Op, Value};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
+macro_rules! visit_value_locals {
+    ($value:expr, |$l:pat_param| $body:expr) => {
+        match $value {
+            Value::Local(l) => {
+                let $l = l;
+                $body
+            }
+            Value::Binary { left, right, .. } => {
+                {
+                    let $l = left;
+                    $body
+                }
+                {
+                    let $l = right;
+                    $body
+                }
+            }
+            Value::Unary { operand, .. } => {
+                let $l = operand;
+                $body
+            }
+            Value::Call { args, .. }
+            | Value::Builtin { args, .. }
+            | Value::AllocList { elems: args, .. }
+            | Value::AllocSet { elems: args, .. }
+            | Value::AllocMap {
+                flat_pairs: args, ..
+            }
+            | Value::AllocAdt { fields: args, .. }
+            | Value::AllocClosure { captures: args, .. } => {
+                for a in args {
+                    let $l = a;
+                    $body
+                }
+            }
+            Value::IndirectCall { callee, args } => {
+                {
+                    let $l = callee;
+                    $body
+                }
+                for a in args {
+                    let $l = a;
+                    $body
+                }
+            }
+            Value::If { cond, .. } => {
+                let $l = cond;
+                $body
+            }
+            Value::Lambda { params, .. } => {
+                for p in params {
+                    let $l = p;
+                    $body
+                }
+            }
+            Value::ClosureCap { env, .. } => {
+                let $l = env;
+                $body
+            }
+            Value::Loop { .. }
+            | Value::Int(_)
+            | Value::Float(_)
+            | Value::Bool(_)
+            | Value::String(_)
+            | Value::Char(_)
+            | Value::Unit
+            | Value::Name(_)
+            | Value::FunRef(_) => {}
+        }
+    };
+}
+
 /// Visit every `Local` operand stored directly on this `Value` node.
 /// Does **not** enter nested [`Block`]s (`If`/`Loop`/`Lambda` bodies).
 /// `If.cond`, `Lambda.params`, and `ClosureCap.env` are included.
 pub fn for_each_local_mut(value: &mut Value, f: &mut impl FnMut(&mut Local)) {
-    match value {
-        Value::Local(l) => f(l),
-        Value::Binary { left, right, .. } => {
-            f(left);
-            f(right);
-        }
-        Value::Unary { operand, .. } => f(operand),
-        Value::Call { args, .. }
-        | Value::Builtin { args, .. }
-        | Value::AllocList { elems: args, .. }
-        | Value::AllocSet { elems: args, .. }
-        | Value::AllocMap {
-            flat_pairs: args, ..
-        }
-        | Value::AllocAdt { fields: args, .. }
-        | Value::AllocClosure { captures: args, .. } => {
-            for a in args {
-                f(a);
-            }
-        }
-        Value::IndirectCall { callee, args } => {
-            f(callee);
-            for a in args {
-                f(a);
-            }
-        }
-        Value::If { cond, .. } => f(cond),
-        Value::Lambda { params, .. } => {
-            for p in params {
-                f(p);
-            }
-        }
-        Value::ClosureCap { env, .. } => f(env),
-        Value::Loop { .. }
-        | Value::Int(_)
-        | Value::Float(_)
-        | Value::Bool(_)
-        | Value::String(_)
-        | Value::Char(_)
-        | Value::Unit
-        | Value::Name(_)
-        | Value::FunRef(_) => {}
-    }
+    visit_value_locals!(value, |l| f(l));
 }
 
 /// Immutable counterpart of [`for_each_local_mut`].
 pub fn for_each_local(value: &Value, f: &mut impl FnMut(Local)) {
-    match value {
-        Value::Local(l) => f(*l),
-        Value::Binary { left, right, .. } => {
-            f(*left);
-            f(*right);
-        }
-        Value::Unary { operand, .. } => f(*operand),
-        Value::Call { args, .. }
-        | Value::Builtin { args, .. }
-        | Value::AllocList { elems: args, .. }
-        | Value::AllocSet { elems: args, .. }
-        | Value::AllocMap {
-            flat_pairs: args, ..
-        }
-        | Value::AllocAdt { fields: args, .. }
-        | Value::AllocClosure { captures: args, .. } => {
-            for a in args {
-                f(*a);
-            }
-        }
-        Value::IndirectCall { callee, args } => {
-            f(*callee);
-            for a in args {
-                f(*a);
-            }
-        }
-        Value::If { cond, .. } => f(*cond),
-        Value::Lambda { params, .. } => {
-            for p in params {
-                f(*p);
-            }
-        }
-        Value::ClosureCap { env, .. } => f(*env),
-        Value::Loop { .. }
-        | Value::Int(_)
-        | Value::Float(_)
-        | Value::Bool(_)
-        | Value::String(_)
-        | Value::Char(_)
-        | Value::Unit
-        | Value::Name(_)
-        | Value::FunRef(_) => {}
-    }
+    visit_value_locals!(value, |l| f(*l));
 }
 
 /// Remap locals on this node, then recurse into nested blocks via `on_block`.

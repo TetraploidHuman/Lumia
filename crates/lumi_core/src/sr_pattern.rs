@@ -323,3 +323,98 @@ pub fn header_gt1_iv(header: &Block, defs: &HashMap<u32, Value>) -> Option<Strin
         _ => None,
     }
 }
+
+/// Parse loop header as `(iv, const)` — `header_lt_const` or `header_le_const`.
+pub type HeaderConstFn = fn(&Block, &HashMap<u32, Value>, bool) -> Option<(String, i64)>;
+
+/// Outer `iv <(=) n { inner_iv reset; Loop { inner_iv <(=) n; … } }`.
+pub struct NestedLoop<'a> {
+    pub outer_iv: String,
+    pub n: i64,
+    pub inner_iv: String,
+    pub inner_header: &'a Block,
+    pub inner_body: &'a Block,
+    pub inner_latch: &'a Block,
+}
+
+pub fn match_nested_loop<'a>(
+    header: &Block,
+    body: &'a Block,
+    latch: &Block,
+    defs: &HashMap<u32, Value>,
+    parse_bound: HeaderConstFn,
+    allow_swap: bool,
+    inner_reset: i64,
+) -> Option<NestedLoop<'a>> {
+    if !latch.ops.is_empty() {
+        return None;
+    }
+    let (outer_iv, n) = parse_bound(header, defs, allow_swap)?;
+    if n < 2 {
+        return None;
+    }
+    let (ih, ib, il) = first_loop(body)?;
+    if !il.ops.is_empty() {
+        return None;
+    }
+    let (inner_iv, n2) = parse_bound(ih, defs, allow_swap)?;
+    if n2 != n || inner_iv == outer_iv {
+        return None;
+    }
+    if !body_assigns_const(body, &inner_iv, inner_reset, defs) {
+        return None;
+    }
+    Some(NestedLoop {
+        outer_iv,
+        n,
+        inner_iv,
+        inner_header: ih,
+        inner_body: ib,
+        inner_latch: il,
+    })
+}
+
+pub fn body_iv_unit_inc(body: &Block, iv: &str, defs: &HashMap<u32, Value>) -> bool {
+    for op in &body.ops {
+        if let Op::Assign {
+            name,
+            value: Local(v),
+        } = op
+        {
+            if name == iv && is_unit_inc(*v, iv, defs) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Header result is `Name(d) * Name(d) <= Name(n)`.
+pub fn header_dd_le_n(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String, String)> {
+    let res = header.result?;
+    let Value::Binary {
+        op: BinOp::Le,
+        left,
+        right,
+        ..
+    } = defs.get(&res.0)?
+    else {
+        return None;
+    };
+    let n = name_of(*right, defs)?;
+    let Value::Binary {
+        op: BinOp::Mul,
+        left: a,
+        right: b,
+        ..
+    } = defs.get(&left.0)?
+    else {
+        return None;
+    };
+    let da = name_of(*a, defs)?;
+    let db = name_of(*b, defs)?;
+    if da != db {
+        return None;
+    }
+    Some((da, n))
+}

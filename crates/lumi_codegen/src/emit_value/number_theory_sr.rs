@@ -7,8 +7,9 @@
 
 use inkwell::values::{BasicValueEnum, FunctionValue};
 use lumi_core::{
-    acc_add_has_name, body_assigns_const, const_int, first_loop, header_le_const, header_lt_const,
-    is_affine_row_col_plus1, is_unit_inc, name_of, split_acc_add, Block, Local, Op, Value,
+    acc_add_has_name, body_assigns_const, body_iv_unit_inc, const_int, first_loop, header_le_const,
+    header_lt_const, is_affine_row_col_plus1, is_unit_inc, match_nested_loop, name_of,
+    split_acc_add, Block, Local, Op, Value,
 };
 use lumi_hir::Builtin;
 use lumi_syntax::BinOp;
@@ -201,26 +202,11 @@ fn match_gcd_sum(
     latch: &Block,
     defs: &HashMap<u32, Value>,
 ) -> Option<GcdSum> {
-    if !latch.ops.is_empty() {
-        return None;
-    }
-    let (i, n) = header_le_const(header, defs, false)?;
-    if n < 2 {
-        return None;
-    }
-    let (ih, ib, il) = first_loop(body)?;
-    if !il.ops.is_empty() {
-        return None;
-    }
-    let (j, n2) = header_le_const(ih, defs, false)?;
-    if n2 != n || j == i {
-        return None;
-    }
-    // Outer body must reset `j := 1` (RT / closed form assume j∈[1,n]).
-    if !body_assigns_const(body, &j, 1, defs) {
-        return None;
-    }
-    // Inner: inlined Euclid on two temps copied from i,j; then s += x; j += 1
+    let nest = match_nested_loop(header, body, latch, defs, header_le_const, false, 1)?;
+    let i = nest.outer_iv;
+    let j = nest.inner_iv;
+    let n = nest.n;
+    let ib = nest.inner_body;
     let mut saw_euclid = false;
     let mut s_name: Option<String> = None;
     let mut saw_j_inc = false;
@@ -245,26 +231,14 @@ fn match_gcd_sum(
             } => {
                 if name == &j && is_unit_inc(*v, &j, defs) {
                     saw_j_inc = true;
-                } else if saw_euclid && is_add_name_plus_any(*v, name, defs) {
+                } else if saw_euclid && acc_add_has_name(*v, name, defs) {
                     s_name = Some(name.clone());
                 }
             }
             _ => {}
         }
     }
-    let mut saw_i_inc = false;
-    for op in &body.ops {
-        if let Op::Assign {
-            name,
-            value: Local(v),
-        } = op
-        {
-            if name == &i && is_unit_inc(*v, &i, defs) {
-                saw_i_inc = true;
-            }
-        }
-    }
-    if saw_euclid && saw_j_inc && saw_i_inc {
+    if saw_euclid && saw_j_inc && body_iv_unit_inc(body, &i, defs) {
         Some(GcdSum { s: s_name?, i, n })
     } else {
         None
@@ -384,25 +358,11 @@ fn match_product_rem_sum(
     latch: &Block,
     defs: &HashMap<u32, Value>,
 ) -> Option<ProductRemSum> {
-    if !latch.ops.is_empty() {
-        return None;
-    }
-    let (i, n) = header_lt_const(header, defs, false)?;
-    if n < 2 {
-        return None;
-    }
-    let (ih, ib, il) = first_loop(body)?;
-    if !il.ops.is_empty() {
-        return None;
-    }
-    let (j, n2) = header_lt_const(ih, defs, false)?;
-    if n2 != n || j == i {
-        return None;
-    }
-    // Outer body must reset `j := 0` (RT assumes j∈[0,n)).
-    if !body_assigns_const(body, &j, 0, defs) {
-        return None;
-    }
+    let nest = match_nested_loop(header, body, latch, defs, header_lt_const, false, 0)?;
+    let i = nest.outer_iv;
+    let j = nest.inner_iv;
+    let n = nest.n;
+    let ib = nest.inner_body;
     let mut s_name: Option<String> = None;
     let mut m_val: Option<i64> = None;
     let mut saw_j_inc = false;
@@ -420,19 +380,7 @@ fn match_product_rem_sum(
             }
         }
     }
-    let mut saw_i_inc = false;
-    for op in &body.ops {
-        if let Op::Assign {
-            name,
-            value: Local(v),
-        } = op
-        {
-            if name == &i && is_unit_inc(*v, &i, defs) {
-                saw_i_inc = true;
-            }
-        }
-    }
-    if saw_j_inc && saw_i_inc {
+    if saw_j_inc && body_iv_unit_inc(body, &i, defs) {
         Some(ProductRemSum {
             s: s_name?,
             i,
@@ -637,25 +585,11 @@ fn match_matmul_affine(
     latch: &Block,
     defs: &HashMap<u32, Value>,
 ) -> Option<MatmulAffine> {
-    if !latch.ops.is_empty() {
-        return None;
-    }
-    let (i, n) = header_lt_const(header, defs, false)?;
-    if n < 2 {
-        return None;
-    }
-    let (jh, jb, jl) = first_loop(body)?;
-    if !jl.ops.is_empty() {
-        return None;
-    }
-    let (j, n2) = header_lt_const(jh, defs, false)?;
-    if n2 != n || j == i {
-        return None;
-    }
-    // Outer body resets `j := 0`; j-body resets `k := 0` (and usually `cell := 0`).
-    if !body_assigns_const(body, &j, 0, defs) {
-        return None;
-    }
+    let nest = match_nested_loop(header, body, latch, defs, header_lt_const, false, 0)?;
+    let i = nest.outer_iv;
+    let j = nest.inner_iv;
+    let n = nest.n;
+    let jb = nest.inner_body;
     let (kh, kb, kl) = first_loop(jb)?;
     if !kl.ops.is_empty() {
         return None;
@@ -687,34 +621,19 @@ fn match_matmul_affine(
     // j-body after k-loop: sum += cell % M; j += 1
     let mut sum_name: Option<String> = None;
     let mut modulus: Option<i64> = None;
-    let mut saw_j_inc = false;
     for op in &jb.ops {
         if let Op::Assign {
             name,
             value: Local(v),
         } = op
         {
-            if name == &j && is_unit_inc(*v, &j, defs) {
-                saw_j_inc = true;
-            } else if let Some(m) = parse_acc_rem_name(*v, name, &cell, defs) {
+            if let Some(m) = parse_acc_rem_name(*v, name, &cell, defs) {
                 sum_name = Some(name.clone());
                 modulus = Some(m);
             }
         }
     }
-    let mut saw_i_inc = false;
-    for op in &body.ops {
-        if let Op::Assign {
-            name,
-            value: Local(v),
-        } = op
-        {
-            if name == &i && is_unit_inc(*v, &i, defs) {
-                saw_i_inc = true;
-            }
-        }
-    }
-    if saw_k_inc && saw_j_inc && saw_i_inc {
+    if saw_k_inc && body_iv_unit_inc(jb, &j, defs) && body_iv_unit_inc(body, &i, defs) {
         Some(MatmulAffine {
             sum: sum_name?,
             i,
@@ -789,10 +708,6 @@ fn parse_acc_rem_name(
     } else {
         Some(m)
     }
-}
-
-fn is_add_name_plus_any(dest: u32, s_name: &str, defs: &HashMap<u32, Value>) -> bool {
-    acc_add_has_name(dest, s_name, defs)
 }
 
 #[cfg(test)]

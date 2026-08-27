@@ -1084,38 +1084,92 @@ pub fn mentions_local(v: &Value, target: Local) -> bool {
     }
 }
 
+/// Unified dense kernel match (order-sensitive; shared by opt + codegen).
+pub enum DenseF64Match {
+    Gemv(DenseGemv),
+    GemvT(DenseGemv),
+    Addmm(DenseAddmm),
+    Axpy(DenseAxpy),
+    Sub(DenseBin3),
+    Add(DenseBin3),
+    Mul(DenseBin3),
+    Clamp(DenseClamp),
+    Scale(DenseScale),
+    Fill(DenseFill),
+    Copy(DenseCopy),
+    Zeros,
+    L2Normalize,
+    Softmax,
+    L2Norm,
+    Std,
+    SumSq,
+    Mean,
+}
+
+pub fn match_dense_f64_fun(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<DenseF64Match> {
+    if let Some(p) = match_gemv_fun(fun, defs) {
+        Some(DenseF64Match::Gemv(p))
+    } else if let Some(p) = match_gemv_t_fun(fun, defs) {
+        Some(DenseF64Match::GemvT(p))
+    } else if let Some(p) = match_addmm_fun(fun, defs) {
+        Some(DenseF64Match::Addmm(p))
+    } else if let Some(p) = match_axpy_fun(fun, defs) {
+        Some(DenseF64Match::Axpy(p))
+    } else if let Some(p) = match_sub_fun(fun, defs) {
+        Some(DenseF64Match::Sub(p))
+    } else if let Some(p) = match_add_fun(fun, defs) {
+        Some(DenseF64Match::Add(p))
+    } else if let Some(p) = match_mul_fun(fun, defs) {
+        Some(DenseF64Match::Mul(p))
+    } else if let Some(p) = match_clamp_fun(fun, defs) {
+        Some(DenseF64Match::Clamp(p))
+    } else if let Some(p) = match_scale_fun(fun, defs) {
+        Some(DenseF64Match::Scale(p))
+    } else if let Some(p) = match_fill_fun(fun, defs) {
+        Some(DenseF64Match::Fill(p))
+    } else if let Some(p) = match_copy_fun(fun, defs) {
+        Some(DenseF64Match::Copy(p))
+    } else if match_zeros_fun(fun, defs).is_some() {
+        Some(DenseF64Match::Zeros)
+    } else if match_l2_normalize_fun(fun, defs).is_some() {
+        Some(DenseF64Match::L2Normalize)
+    } else if match_softmax_fun(fun, defs).is_some() {
+        Some(DenseF64Match::Softmax)
+    } else if match_l2_norm_fun(fun, defs).is_some() {
+        Some(DenseF64Match::L2Norm)
+    } else if match_std_fun(fun, defs).is_some() {
+        Some(DenseF64Match::Std)
+    } else if match_sum_sq_fun(fun, defs).is_some() {
+        Some(DenseF64Match::SumSq)
+    } else if match_mean_fun(fun, defs).is_some() {
+        Some(DenseF64Match::Mean)
+    } else {
+        None
+    }
+}
+
 /// Opt rewrite symbol for a whole-function dense kernel (order-sensitive).
 pub fn dense_f64_rt_symbol(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<&'static str> {
-    const KERNELS: &[(&str, fn(&CoreFun, &HashMap<u32, Value>) -> bool)] = &[
-        ("lumi_f64_gemv", |f, d| match_gemv_fun(f, d).is_some()),
-        ("lumi_f64_gemv_t", |f, d| match_gemv_t_fun(f, d).is_some()),
-        ("lumi_f64_addmm", |f, d| match_addmm_fun(f, d).is_some()),
-        ("lumi_f64_axpy", |f, d| match_axpy_fun(f, d).is_some()),
-        ("lumi_f64_sub", |f, d| match_sub_fun(f, d).is_some()),
-        ("lumi_f64_add", |f, d| match_add_fun(f, d).is_some()),
-        ("lumi_f64_mul", |f, d| match_mul_fun(f, d).is_some()),
-        ("lumi_f64_clamp", |f, d| match_clamp_fun(f, d).is_some()),
-        ("lumi_f64_scale", |f, d| match_scale_fun(f, d).is_some()),
-        ("lumi_f64_fill", |f, d| match_fill_fun(f, d).is_some()),
-        ("lumi_f64_copy", |f, d| match_copy_fun(f, d).is_some()),
-        ("lumi_list_f64_zeros", |f, d| {
-            match_zeros_fun(f, d).is_some()
-        }),
-        ("lumi_f64_l2_normalize", |f, d| {
-            match_l2_normalize_fun(f, d).is_some()
-        }),
-        ("lumi_f64_softmax", |f, d| match_softmax_fun(f, d).is_some()),
-        ("lumi_f64_l2_norm", |f, d| match_l2_norm_fun(f, d).is_some()),
-        ("lumi_f64_std", |f, d| match_std_fun(f, d).is_some()),
-        ("lumi_f64_sum_sq", |f, d| match_sum_sq_fun(f, d).is_some()),
-        ("lumi_f64_mean", |f, d| match_mean_fun(f, d).is_some()),
-    ];
-    for &(sym, matcher) in KERNELS {
-        if matcher(fun, defs) {
-            return Some(sym);
-        }
-    }
-    None
+    Some(match match_dense_f64_fun(fun, defs)? {
+        DenseF64Match::Gemv(_) => "lumi_f64_gemv",
+        DenseF64Match::GemvT(_) => "lumi_f64_gemv_t",
+        DenseF64Match::Addmm(_) => "lumi_f64_addmm",
+        DenseF64Match::Axpy(_) => "lumi_f64_axpy",
+        DenseF64Match::Sub(_) => "lumi_f64_sub",
+        DenseF64Match::Add(_) => "lumi_f64_add",
+        DenseF64Match::Mul(_) => "lumi_f64_mul",
+        DenseF64Match::Clamp(_) => "lumi_f64_clamp",
+        DenseF64Match::Scale(_) => "lumi_f64_scale",
+        DenseF64Match::Fill(_) => "lumi_f64_fill",
+        DenseF64Match::Copy(_) => "lumi_f64_copy",
+        DenseF64Match::Zeros => "lumi_list_f64_zeros",
+        DenseF64Match::L2Normalize => "lumi_f64_l2_normalize",
+        DenseF64Match::Softmax => "lumi_f64_softmax",
+        DenseF64Match::L2Norm => "lumi_f64_l2_norm",
+        DenseF64Match::Std => "lumi_f64_std",
+        DenseF64Match::SumSq => "lumi_f64_sum_sq",
+        DenseF64Match::Mean => "lumi_f64_mean",
+    })
 }
 
 /// Visit leaf `defs` then every `Let` value under `body` (same predicate over both).

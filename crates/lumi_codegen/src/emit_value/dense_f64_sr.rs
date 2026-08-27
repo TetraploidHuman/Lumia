@@ -13,10 +13,8 @@
 
 use inkwell::values::{BasicMetadataValueEnum, FunctionValue};
 use lumi_core::{
-    match_add_fun, match_addmm_fun, match_axpy_fun, match_clamp_fun, match_copy_fun,
-    match_fill_fun, match_gemv_fun, match_gemv_t_fun, match_mul_fun, match_scale_fun,
-    match_sub_fun, DenseAddmm, DenseAxpy, DenseBin3, DenseClamp, DenseCopy, DenseFill, DenseGemv,
-    DenseScale,
+    match_dense_f64_fun, DenseAddmm, DenseAxpy, DenseBin3, DenseClamp, DenseCopy, DenseF64Match,
+    DenseFill, DenseGemv, DenseScale,
 };
 
 use super::super::Codegen;
@@ -40,40 +38,24 @@ impl<'ctx> Codegen<'ctx> {
         _fv: FunctionValue<'ctx>,
     ) -> Result<Option<()>> {
         let defs = &self.frame.leaf_defs;
-        if let Some(p) = match_gemv_fun(fun, defs) {
-            return self.emit_gemv_fun(&p).map(Some);
+        match match_dense_f64_fun(fun, defs) {
+            Some(DenseF64Match::Gemv(p)) => self.emit_gemv_fun(&p).map(Some),
+            Some(DenseF64Match::GemvT(p)) => self.emit_gemv_t_fun(&p).map(Some),
+            Some(DenseF64Match::Addmm(p)) => self.emit_addmm_fun(&p).map(Some),
+            Some(DenseF64Match::Axpy(p)) => self.emit_axpy_fun(&p).map(Some),
+            Some(DenseF64Match::Sub(p)) => self.emit_sub_fun(&p).map(Some),
+            Some(DenseF64Match::Add(p)) => {
+                self.emit_binop3_fun("lumi_f64_add", "fadd", &p).map(Some)
+            }
+            Some(DenseF64Match::Mul(p)) => {
+                self.emit_binop3_fun("lumi_f64_mul", "fmul", &p).map(Some)
+            }
+            Some(DenseF64Match::Clamp(p)) => self.emit_clamp_fun(&p).map(Some),
+            Some(DenseF64Match::Scale(p)) => self.emit_scale_fun(&p).map(Some),
+            Some(DenseF64Match::Fill(p)) => self.emit_fill_fun(&p).map(Some),
+            Some(DenseF64Match::Copy(p)) => self.emit_copy_fun(&p).map(Some),
+            _ => Ok(None),
         }
-        if let Some(p) = match_gemv_t_fun(fun, defs) {
-            return self.emit_gemv_t_fun(&p).map(Some);
-        }
-        if let Some(p) = match_addmm_fun(fun, defs) {
-            return self.emit_addmm_fun(&p).map(Some);
-        }
-        if let Some(p) = match_axpy_fun(fun, defs) {
-            return self.emit_axpy_fun(&p).map(Some);
-        }
-        if let Some(p) = match_sub_fun(fun, defs) {
-            return self.emit_sub_fun(&p).map(Some);
-        }
-        if let Some(p) = match_add_fun(fun, defs) {
-            return self.emit_binop3_fun("lumi_f64_add", "fadd", &p).map(Some);
-        }
-        if let Some(p) = match_mul_fun(fun, defs) {
-            return self.emit_binop3_fun("lumi_f64_mul", "fmul", &p).map(Some);
-        }
-        if let Some(p) = match_clamp_fun(fun, defs) {
-            return self.emit_clamp_fun(&p).map(Some);
-        }
-        if let Some(p) = match_scale_fun(fun, defs) {
-            return self.emit_scale_fun(&p).map(Some);
-        }
-        if let Some(p) = match_fill_fun(fun, defs) {
-            return self.emit_fill_fun(&p).map(Some);
-        }
-        if let Some(p) = match_copy_fun(fun, defs) {
-            return self.emit_copy_fun(&p).map(Some);
-        }
-        Ok(None)
     }
 
     fn emit_f64_kernel_return_ptr(
@@ -198,7 +180,7 @@ impl<'ctx> Codegen<'ctx> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lumi_core::{Op, Value};
+    use lumi_core::{match_dense_f64_fun, match_gemv_fun, Op, Value};
     use lumi_opt::{compile_source_to_optimized, OptOptions};
 
     fn is_dense_call(f: &lumi_core::CoreFun, sym: &str) -> bool {
