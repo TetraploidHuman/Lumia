@@ -417,6 +417,17 @@ pub fn block_has_io(block: &Block, io_callees: &HashSet<String>) -> bool {
     false
 }
 
+/// Whether any nested region contains `Op::Break`.
+pub fn block_has_break(block: &Block) -> bool {
+    let mut found = false;
+    for_each_block_dfs(block, &mut |b| {
+        if !found && b.ops.iter().any(|op| matches!(op, Op::Break)) {
+            found = true;
+        }
+    });
+    found
+}
+
 fn value_has_eager_io(value: &Value, io_callees: &HashSet<String>) -> bool {
     match value {
         Value::Call { fun, .. } if io_callees.contains(fun) => true,

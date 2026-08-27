@@ -7,8 +7,9 @@
 use inkwell::values::{BasicValueEnum, FloatValue, FunctionValue, IntValue};
 use inkwell::{FloatPredicate, IntPredicate};
 use lumi_core::{
-    body_assigns_const, body_iv_unit_inc, const_int, for_each_block_dfs, is_unit_inc, latch_empty,
-    name_of, Block, Local, Op, Value,
+    block_has_break, body_assigns_const, body_iv_unit_inc, const_int, first_loop,
+    for_each_block_dfs, header_lt_const, is_unit_inc, latch_empty, name_of, Block, Local, Op,
+    Value,
 };
 use lumi_syntax::BinOp;
 use rustc_hash::FxHashMap as HashMap;
@@ -417,10 +418,10 @@ fn match_float_orbit(
     latch: &Block,
     defs: &HashMap<u32, Value>,
 ) -> Option<FloatOrbit> {
-    if !latch.ops.is_empty() {
+    if !latch_empty(latch) {
         return None;
     }
-    let (i, n) = header_lt_bound(header, defs)?;
+    let (i, n) = header_lt_orbit_bound(header, defs)?;
     // Hardcoded IR uses 0.1, 1e-8, 3.7, 1.0, 0.5 — require those literals.
     if !has_float_approx(defs, 3.7)
         || !has_float_approx(defs, 0.5)
@@ -439,26 +440,11 @@ fn match_float_orbit(
     {
         return None;
     }
-    let mut inner: Option<(&Block, &Block, &Block)> = None;
-    for op in &body.ops {
-        if let Op::Let {
-            value:
-                Value::Loop {
-                    header: ih,
-                    body: ib,
-                    latch: il,
-                },
-            ..
-        } = op
-        {
-            inner = Some((ih, ib, il));
-        }
-    }
-    let (ih, ib, il) = inner?;
-    if !il.ops.is_empty() {
+    let (ih, ib, il) = first_loop(body)?;
+    if !latch_empty(il) {
         return None;
     }
-    let (k, iters) = header_lt_const(ih, defs)?;
+    let (k, iters) = header_lt_const(ih, defs, false)?;
     if k == i || iters < 1 {
         return None;
     }
@@ -509,7 +495,7 @@ fn match_mandelbrot(
     if !latch_empty(latch) {
         return None;
     }
-    let (y, h_bound) = header_lt_const(header, defs)?;
+    let (y, h_bound) = header_lt_const(header, defs, false)?;
     if h_bound != 140 {
         return None;
     }
@@ -527,26 +513,11 @@ fn match_mandelbrot(
     {
         return None;
     }
-    let mut x_loop: Option<(&Block, &Block, &Block)> = None;
-    for op in &body.ops {
-        if let Op::Let {
-            value:
-                Value::Loop {
-                    header: xh,
-                    body: xb,
-                    latch: xl,
-                },
-            ..
-        } = op
-        {
-            x_loop = Some((xh, xb, xl));
-        }
-    }
-    let (xh, xb, xl) = x_loop?;
-    if !xl.ops.is_empty() {
+    let (xh, xb, xl) = first_loop(body)?;
+    if !latch_empty(xl) {
         return None;
     }
-    let (x, w_bound) = header_lt_const(xh, defs)?;
+    let (x, w_bound) = header_lt_const(xh, defs, false)?;
     if w_bound != 200 || x == y {
         return None;
     }
@@ -554,32 +525,9 @@ fn match_mandelbrot(
     if !body_assigns_const(body, &x, 0, defs) {
         return None;
     }
-    let mut it_loop: Option<(&Block, &Block, &Block)> = None;
-    for op in &xb.ops {
-        if let Op::Let {
-            value:
-                Value::Loop {
-                    header: th,
-                    body: tb,
-                    latch: tl,
-                },
-            ..
-        } = op
-        {
-            it_loop = Some((th, tb, tl));
-        }
-    }
-    let (th, tb, _tl) = it_loop?;
-    let (_it, max_it) = header_lt_bound(th, defs)?;
-    let mut saw_break = false;
-    for_each_block_dfs(tb, &mut |b| {
-        for op in &b.ops {
-            if matches!(op, Op::Break) {
-                saw_break = true;
-            }
-        }
-    });
-    if !saw_break {
+    let (th, tb, _tl) = first_loop(xb)?;
+    let (_it, max_it) = header_lt_orbit_bound(th, defs)?;
+    if !block_has_break(tb) {
         return None;
     }
     let mut acc: Option<String> = None;
@@ -627,6 +575,27 @@ fn match_mandelbrot(
     })
 }
 
+fn header_lt_orbit_bound(
+    header: &Block,
+    defs: &HashMap<u32, Value>,
+) -> Option<(String, OrbitBound)> {
+    let res = header.result?;
+    let Value::Binary {
+        op: BinOp::Lt,
+        left,
+        right,
+        ..
+    } = defs.get(&res.0)?
+    else {
+        return None;
+    };
+    let iv = name_of(*left, defs)?;
+    if let Some(c) = const_int(*right, defs) {
+        return Some((iv, OrbitBound::Const(c)));
+    }
+    Some((iv, OrbitBound::Local(*right)))
+}
+
 fn has_float_approx(defs: &HashMap<u32, Value>, target: f64) -> bool {
     defs.values().any(|v| match v {
         Value::Float(f) => (*f - target).abs() < 1e-12,
@@ -659,31 +628,6 @@ fn has_float_binop_with_const(defs: &HashMap<u32, Value>, op: BinOp, target: f64
         lf.is_some_and(|f| (f - target).abs() < 1e-12)
             || rf.is_some_and(|f| (f - target).abs() < 1e-12)
     })
-}
-
-fn header_lt_const(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String, i64)> {
-    match header_lt_bound(header, defs)? {
-        (iv, OrbitBound::Const(c)) => Some((iv, c)),
-        _ => None,
-    }
-}
-
-fn header_lt_bound(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String, OrbitBound)> {
-    let res = header.result?;
-    let Value::Binary {
-        op: BinOp::Lt,
-        left,
-        right,
-        ..
-    } = defs.get(&res.0)?
-    else {
-        return None;
-    };
-    let iv = name_of(*left, defs)?;
-    if let Some(c) = const_int(*right, defs) {
-        return Some((iv, OrbitBound::Const(c)));
-    }
-    Some((iv, OrbitBound::Local(*right)))
 }
 
 #[cfg(test)]

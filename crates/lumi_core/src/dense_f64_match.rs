@@ -4,7 +4,8 @@
 //! codegen uses the same structs for RT kernel emission.
 
 use crate::sr_pattern::{
-    first_assign_from_local, first_loop, header_lt_bound, is_unit_inc, name_of, same_local,
+    body_iv_unit_inc, first_assign_from_local, first_loop, header_lt_bound, latch_empty,
+    name_of, same_local,
 };
 use crate::{Block, CoreFun, Local, Op, Value};
 use lumi_hir::Builtin;
@@ -48,7 +49,6 @@ pub fn body_has_gemv_inner(
 ) -> bool {
     let mut saw_inner = false;
     let mut saw_set = false;
-    let mut saw_i_inc = false;
     for op in &body.ops {
         match op {
             Op::Let {
@@ -60,7 +60,7 @@ pub fn body_has_gemv_inner(
                     },
                 ..
             } => {
-                if !latch.ops.is_empty() {
+                if !latch_empty(latch) {
                     continue;
                 }
                 let Some((j_slot, bound)) = header_lt_bound(header, defs) else {
@@ -81,14 +81,11 @@ pub fn body_has_gemv_inner(
                         }
                     }
                 }
-                if name == i_slot && is_unit_inc(value.0, i_slot, defs) {
-                    saw_i_inc = true;
-                }
             }
             _ => {}
         }
     }
-    saw_inner && saw_set && saw_i_inc
+    saw_inner && saw_set && body_iv_unit_inc(body, i_slot, defs)
 }
 
 pub fn gemv_inner_accumulates(
@@ -101,13 +98,7 @@ pub fn gemv_inner_accumulates(
     i_slot: &str,
 ) -> bool {
     let mut saw_mul_gets = false;
-    let mut saw_j_inc = false;
     for op in &body.ops {
-        if let Op::Assign { name, value } = op {
-            if name == j_slot && is_unit_inc(value.0, j_slot, defs) {
-                saw_j_inc = true;
-            }
-        }
         if let Op::Let {
             value:
                 Value::Binary {
@@ -132,7 +123,7 @@ pub fn gemv_inner_accumulates(
             }
         }
     }
-    saw_mul_gets && saw_j_inc
+    saw_mul_gets && body_iv_unit_inc(body, j_slot, defs)
 }
 
 pub fn fun_has_gemv_t_shape(

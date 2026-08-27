@@ -8,8 +8,8 @@
 use inkwell::values::{BasicValueEnum, FunctionValue};
 use lumi_core::{
     acc_add_has_name, body_assigns_const, body_iv_unit_inc, const_int, first_loop, header_le_const,
-    header_lt_const, is_affine_row_col_plus1, is_ij_mul_plus1, latch_empty, match_nested_loop,
-    name_of, split_acc_add, split_acc_rem, Block, Local, Op, Value,
+    header_lt_const, is_affine_row_col_plus1, is_ij_mul_plus1, latch_empty, match_const_bound_loop,
+    match_nested_loop, name_of, split_acc_add, split_acc_rem, Block, Local, Op, Value,
 };
 use lumi_hir::Builtin;
 use lumi_syntax::BinOp;
@@ -59,6 +59,27 @@ struct MatmulAffine {
 }
 
 impl<'ctx> Codegen<'ctx> {
+    fn try_emit_i1_a0_nplus1_rt(
+        &mut self,
+        header: &Block,
+        body: &Block,
+        latch: &Block,
+        matcher: fn(&Block, &Block, &Block, &HashMap<u32, Value>) -> Option<(String, String, i64)>,
+        rt_sym: &str,
+        label: &str,
+        ctx: &str,
+    ) -> Result<Option<BasicValueEnum<'ctx>>> {
+        let Some((s, i, n)) = matcher(header, body, latch, &self.frame.leaf_defs) else {
+            return Ok(None);
+        };
+        if !self.slot_known_eq(&i, 1) || !self.slot_known_eq(&s, 0) {
+            return Ok(None);
+        }
+        Ok(Some(self.emit_rt_n_plus1_to_slots_and_zero(
+            rt_sym, label, ctx, &s, &i, n,
+        )?))
+    }
+
     pub(crate) fn try_emit_gcd_sum_loop(
         &mut self,
         header: &Block,
@@ -66,20 +87,15 @@ impl<'ctx> Codegen<'ctx> {
         latch: &Block,
         _fv: FunctionValue<'ctx>,
     ) -> Result<Option<BasicValueEnum<'ctx>>> {
-        let Some(pat) = match_gcd_sum(header, body, latch, &self.frame.leaf_defs) else {
-            return Ok(None);
-        };
-        if !self.slot_known_eq(&pat.i, 1) || !self.slot_known_eq(&pat.s, 0) {
-            return Ok(None);
-        }
-        Ok(Some(self.emit_rt_n_plus1_to_slots_and_zero(
+        self.try_emit_i1_a0_nplus1_rt(
+            header,
+            body,
+            latch,
+            |h, b, l, d| match_gcd_sum(h, b, l, d).map(|p| (p.s, p.i, p.n)),
             "lumi_gcd_sum",
             "gcd_sum",
             "gcd_sum",
-            &pat.s,
-            &pat.i,
-            pat.n,
-        )?))
+        )
     }
 
     pub(crate) fn try_emit_divisor_sum_loop(
@@ -89,20 +105,15 @@ impl<'ctx> Codegen<'ctx> {
         latch: &Block,
         _fv: FunctionValue<'ctx>,
     ) -> Result<Option<BasicValueEnum<'ctx>>> {
-        let Some(pat) = match_divisor_sum(header, body, latch, &self.frame.leaf_defs) else {
-            return Ok(None);
-        };
-        if !self.slot_known_eq(&pat.i, 1) || !self.slot_known_eq(&pat.s, 0) {
-            return Ok(None);
-        }
-        Ok(Some(self.emit_rt_n_plus1_to_slots_and_zero(
+        self.try_emit_i1_a0_nplus1_rt(
+            header,
+            body,
+            latch,
+            |h, b, l, d| match_divisor_sum(h, b, l, d).map(|p| (p.s, p.i, p.n)),
             "lumi_divisor_sum",
             "div_sum",
             "divisor_sum",
-            &pat.s,
-            &pat.i,
-            pat.n,
-        )?))
+        )
     }
 
     pub(crate) fn try_emit_product_rem_sum_loop(
@@ -289,13 +300,7 @@ fn match_divisor_sum(
     latch: &Block,
     defs: &HashMap<u32, Value>,
 ) -> Option<DivisorSum> {
-    if !latch_empty(latch) {
-        return None;
-    }
-    let (i, n) = header_le_const(header, defs, false)?;
-    if n < 2 {
-        return None;
-    }
+    let (i, n) = match_const_bound_loop(header, latch, defs, header_le_const, 2)?;
     let mut s_name: Option<String> = None;
     let mut saw_div = false;
     for op in &body.ops {
@@ -402,13 +407,7 @@ fn match_range_affine1(
     latch: &Block,
     defs: &HashMap<u32, Value>,
 ) -> Option<RangeAffine1> {
-    if !latch_empty(latch) {
-        return None;
-    }
-    let (i, n) = header_lt_const(header, defs, false)?;
-    if n < 2 {
-        return None;
-    }
+    let (i, n) = match_const_bound_loop(header, latch, defs, header_lt_const, 2)?;
     // Function body must define `xs = range(0, n)` — look in leaf_defs for Range builtin
     // feeding ListGet with index i.
     let mut s_name: Option<String> = None;

@@ -32,18 +32,20 @@ pub use sr_pattern::{
     acc_add_const_inc, acc_add_has_name, body_assigns_const, body_iv_unit_inc, cond_eq_zero_rem,
     const_int, first_assign_from_local, first_loop, header_dd_le_n, header_gt1_iv, header_le_const,
     header_lt_bound, header_lt_const, is_add_name_plus_name, is_affine_row_col_plus1,
-    is_ij_mul_plus1, is_name_mul_const, is_unit_inc, latch_empty, match_nested_loop, name_of,
-    same_local, split_acc_add, split_acc_rem, HeaderConstFn, NestedLoop, RemDen,
+    is_ij_mul_plus1, is_name_mul_const, is_unit_inc, latch_empty, match_const_bound_loop,
+    match_nested_loop, name_of, same_local, split_acc_add, split_acc_rem, HeaderConstFn,
+    NestedLoop, RemDen,
 };
 pub use value_ty::{
     infer_value_ty, infer_value_ty_ctx, list_par_map_elem_ty, value_alloc_may_heap,
     CodegenTypeTables, HeapPolicy, InferValueCtx,
 };
 pub use visit::{
-    block_calls, block_has_io, collect_leaf_defs, collect_loop_triples, collect_uses_in_value,
-    count_ops, for_each_block_dfs, for_each_let, for_each_local, for_each_local_mut,
-    for_each_nested_block, for_each_nested_block_mut, for_each_op_value_mut, has_assign_or_name,
-    has_early_return, map_value_locals, max_local_in_value, rewrite_value_locals,
+    block_calls, block_has_break, block_has_io, collect_leaf_defs, collect_loop_triples,
+    collect_uses_in_value, count_ops, for_each_block_dfs, for_each_let, for_each_local,
+    for_each_local_mut, for_each_nested_block, for_each_nested_block_mut, for_each_op_value_mut,
+    has_assign_or_name, has_early_return, map_value_locals, max_local_in_value,
+    rewrite_value_locals,
 };
 
 #[cfg(test)]

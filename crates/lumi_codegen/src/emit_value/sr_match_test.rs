@@ -17,28 +17,26 @@ pub fn count_loop_matches<F>(core: &CoreModule, pred: F) -> usize
 where
     F: Fn(&Block, &Block, &Block, &HashMap<u32, Value>) -> bool,
 {
-    let mut count = 0;
-    for fun in &core.functions {
-        let defs = collect_leaf_defs(&fun.body);
-        let mut loops = vec![];
-        collect_loop_triples(&fun.body, &mut loops);
-        for (h, b, l) in &loops {
-            if pred(h, b, l, &defs) {
-                count += 1;
-            }
-        }
-    }
-    count
+    count_loop_matches_named(core, None, pred)
 }
 
 pub fn count_fun_name_matches<F>(core: &CoreModule, name_hint: &str, pred: F) -> usize
 where
     F: Fn(&Block, &Block, &Block, &HashMap<u32, Value>) -> bool,
 {
+    count_loop_matches_named(core, Some(name_hint), pred)
+}
+
+fn count_loop_matches_named<F>(core: &CoreModule, name_hint: Option<&str>, pred: F) -> usize
+where
+    F: Fn(&Block, &Block, &Block, &HashMap<u32, Value>) -> bool,
+{
     let mut count = 0;
     for fun in &core.functions {
-        if !fun.name.contains(name_hint) && fun.name != "main" {
-            continue;
+        if let Some(hint) = name_hint {
+            if !fun.name.contains(hint) && fun.name != "main" {
+                continue;
+            }
         }
         let defs = collect_leaf_defs(&fun.body);
         let mut loops = vec![];

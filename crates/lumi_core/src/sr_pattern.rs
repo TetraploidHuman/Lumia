@@ -419,6 +419,24 @@ pub fn header_dd_le_n(header: &Block, defs: &HashMap<u32, Value>) -> Option<(Str
     Some((da, n))
 }
 
+/// Single loop with empty latch and const bound: `(iv, n)`.
+pub fn match_const_bound_loop(
+    header: &Block,
+    latch: &Block,
+    defs: &HashMap<u32, Value>,
+    parse_bound: HeaderConstFn,
+    min_n: i64,
+) -> Option<(String, i64)> {
+    if !latch_empty(latch) {
+        return None;
+    }
+    let (iv, n) = parse_bound(header, defs, false)?;
+    if n < min_n {
+        return None;
+    }
+    Some((iv, n))
+}
+
 /// Loop latch has no trailing assigns (classic SR lowering).
 pub fn latch_empty(latch: &Block) -> bool {
     latch.ops.is_empty()
