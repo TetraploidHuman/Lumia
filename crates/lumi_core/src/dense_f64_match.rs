@@ -4,8 +4,8 @@
 //! codegen uses the same structs for RT kernel emission.
 
 use crate::sr_pattern::{
-    body_iv_unit_inc, first_assign_from_local, first_loop, header_lt_bound, latch_empty,
-    name_of, same_local,
+    body_iv_unit_inc, first_assign_from_local, first_loop, header_lt_bound, latch_empty, name_of,
+    same_local,
 };
 use crate::{Block, CoreFun, Local, Op, Value};
 use lumi_hir::Builtin;
