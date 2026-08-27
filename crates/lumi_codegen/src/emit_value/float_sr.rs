@@ -716,34 +716,18 @@ fn header_lt_bound(header: &Block, defs: &HashMap<u32, Value>) -> Option<(String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lumi_core::collect_loop_triples;
+    use crate::emit_value::sr_match_test::count_loop_matches;
     use lumi_opt::{compile_source_to_optimized, OptOptions};
 
     #[test]
     fn matches_float_orbit_and_mandelbrot_in_bench() {
-        let src = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../examples/bench_cpu.lm"
-        ))
-        .unwrap();
-        let core = compile_source_to_optimized(&src, &OptOptions::for_build(true)).unwrap();
-        let mut fo = 0;
-        let mut mb = 0;
-        for f in &core.functions {
-            let defs = crate::nsw_iv::collect_leaf_defs(&f.body);
-            let mut loops = vec![];
-            collect_loop_triples(&f.body, &mut loops);
-            for (h, b, l) in &loops {
-                if match_float_orbit(h, b, l, &defs).is_some() {
-                    fo += 1;
-                }
-                if match_mandelbrot(h, b, l, &defs).is_some() {
-                    mb += 1;
-                }
-            }
-        }
-        assert!(fo >= 1, "floatOrbit matches={fo}");
-        assert!(mb >= 1, "mandelbrot matches={mb}");
+        let core = crate::emit_value::sr_match_test::bench_cpu_core();
+        assert!(
+            count_loop_matches(&core, |h, b, l, d| match_float_orbit(h, b, l, d).is_some()) >= 1
+        );
+        assert!(
+            count_loop_matches(&core, |h, b, l, d| match_mandelbrot(h, b, l, d).is_some()) >= 1
+        );
     }
 
     #[test]
@@ -754,22 +738,11 @@ mod tests {
         ))
         .unwrap();
         let core = compile_source_to_optimized(&src, &OptOptions::for_build(true)).unwrap();
-        let mut fo = 0;
-        let mut mb = 0;
-        for f in &core.functions {
-            let defs = crate::nsw_iv::collect_leaf_defs(&f.body);
-            let mut loops = vec![];
-            collect_loop_triples(&f.body, &mut loops);
-            for (h, b, l) in &loops {
-                if match_float_orbit(h, b, l, &defs).is_some() {
-                    fo += 1;
-                }
-                if match_mandelbrot(h, b, l, &defs).is_some() {
-                    mb += 1;
-                }
-            }
-        }
-        assert!(fo >= 1, "floatOrbit matches={fo}");
-        assert!(mb >= 1, "mandelbrot matches={mb}");
+        assert!(
+            count_loop_matches(&core, |h, b, l, d| match_float_orbit(h, b, l, d).is_some()) >= 1
+        );
+        assert!(
+            count_loop_matches(&core, |h, b, l, d| match_mandelbrot(h, b, l, d).is_some()) >= 1
+        );
     }
 }

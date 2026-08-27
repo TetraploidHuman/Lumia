@@ -2,7 +2,7 @@
 
 use super::super::Codegen;
 use anyhow::{Context as AnyhowContext, Result};
-use inkwell::values::{BasicValueEnum, PointerValue};
+use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum, IntValue, PointerValue};
 use lumi_ty::Type;
 
 impl<'ctx> Codegen<'ctx> {
@@ -174,5 +174,81 @@ impl<'ctx> Codegen<'ctx> {
     /// True when the slot's last store was exactly the const `expect`.
     pub(crate) fn slot_known_eq(&self, name: &str, expect: i64) -> bool {
         self.frame.slot_i64_const.get(name) == Some(&Some(expect))
+    }
+
+    /// Call an RT helper returning i64.
+    pub(crate) fn call_rt_i64(
+        &mut self,
+        rt_sym: &str,
+        label: &str,
+        ctx: &str,
+        args: &[BasicMetadataValueEnum<'ctx>],
+    ) -> Result<IntValue<'ctx>> {
+        let rt = self.runtime_fn(rt_sym)?;
+        let call = crate::error::llvm(self.llvm.builder.build_call(rt, args, label))?;
+        Ok(call
+            .try_as_basic_value()
+            .basic()
+            .with_context(|| ctx.to_string())?
+            .into_int_value())
+    }
+
+    pub(crate) fn sr_loop_zero(&self) -> BasicValueEnum<'ctx> {
+        self.llvm.i64_ty.const_int(0, false).into()
+    }
+
+    /// Store RT i64 result + extra slot writes; return loop latch `0`.
+    pub(crate) fn emit_rt_i64_stores_and_zero(
+        &mut self,
+        rt_sym: &str,
+        label: &str,
+        ctx: &str,
+        args: &[BasicMetadataValueEnum<'ctx>],
+        rt_result_slot: &str,
+        extra_stores: &[(&str, IntValue<'ctx>)],
+    ) -> Result<BasicValueEnum<'ctx>> {
+        let result = self.call_rt_i64(rt_sym, label, ctx, args)?;
+        self.store_slot_i64(rt_result_slot, result)?;
+        for &(name, val) in extra_stores {
+            self.store_slot_i64(name, val)?;
+        }
+        Ok(self.sr_loop_zero())
+    }
+
+    /// RT call → acc slot + IV slot := `n`; latch zero.
+    pub(crate) fn emit_rt_n_to_slots_and_zero(
+        &mut self,
+        rt_sym: &str,
+        label: &str,
+        ctx: &str,
+        acc_slot: &str,
+        iv_slot: &str,
+        n: i64,
+        args: &[BasicMetadataValueEnum<'ctx>],
+    ) -> Result<BasicValueEnum<'ctx>> {
+        let i_end = self.llvm.i64_ty.const_int(n as u64, true);
+        self.emit_rt_i64_stores_and_zero(rt_sym, label, ctx, args, acc_slot, &[(iv_slot, i_end)])
+    }
+
+    /// RT call with single `n` arg → acc slot + IV slot := `n + 1`; latch zero.
+    pub(crate) fn emit_rt_n_plus1_to_slots_and_zero(
+        &mut self,
+        rt_sym: &str,
+        label: &str,
+        ctx: &str,
+        acc_slot: &str,
+        iv_slot: &str,
+        n: i64,
+    ) -> Result<BasicValueEnum<'ctx>> {
+        let n_val = self.llvm.i64_ty.const_int(n as u64, true);
+        let i_end = self.llvm.i64_ty.const_int((n + 1) as u64, true);
+        self.emit_rt_i64_stores_and_zero(
+            rt_sym,
+            label,
+            ctx,
+            &[n_val.into()],
+            acc_slot,
+            &[(iv_slot, i_end)],
+        )
     }
 }

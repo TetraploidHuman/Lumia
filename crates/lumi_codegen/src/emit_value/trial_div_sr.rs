@@ -475,36 +475,20 @@ fn cond_is_divisible(cond: &Local, n: &str, d: &str, defs: &HashMap<u32, Value>)
 #[cfg(test)]
 mod match_tests {
     use super::*;
-    use lumi_core::collect_loop_triples;
-    use lumi_opt::{compile_source_to_optimized, OptOptions};
+    use crate::emit_value::sr_match_test::{bench_cpu_core, count_fun_name_matches};
 
     #[test]
     fn matches_is_prime_trial_loop() {
-        let src = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../examples/bench_cpu.lm"
-        ))
-        .unwrap();
-        let core = compile_source_to_optimized(&src, &OptOptions::for_build(true)).unwrap();
-        let mut found = 0;
-        let mut found_cp = 0;
-        for f in &core.functions {
-            if !f.name.contains("Prime") && f.name != "main" {
-                continue;
-            }
-            let defs = crate::nsw_iv::collect_leaf_defs(&f.body);
-            let mut loops = vec![];
-            collect_loop_triples(&f.body, &mut loops);
-            for (h, b, l) in &loops {
-                if match_trial_div_loop(h, b, l, &defs).is_some() {
-                    found += 1;
-                }
-                if match_count_primes_loop(h, b, l, &defs).is_some() {
-                    found_cp += 1;
-                }
-            }
-        }
-        assert!(found >= 1, "expected trial-div match, got {found}");
-        assert!(found_cp >= 1, "expected count-primes match, got {found_cp}");
+        let core = bench_cpu_core();
+        assert!(
+            count_fun_name_matches(&core, "Prime", |h, b, l, d| {
+                match_trial_div_loop(h, b, l, d).is_some()
+            }) >= 1
+        );
+        assert!(
+            count_fun_name_matches(&core, "Prime", |h, b, l, d| {
+                match_count_primes_loop(h, b, l, d).is_some()
+            }) >= 1
+        );
     }
 }

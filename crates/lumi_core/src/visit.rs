@@ -261,25 +261,26 @@ pub fn for_each_nested_block_mut(value: &mut Value, f: &mut impl FnMut(&mut Bloc
 }
 
 pub fn for_each_nested_block(value: &Value, f: &mut impl FnMut(&Block)) {
+    let mut visit = |b: &Block| f(b);
     match value {
         Value::If {
             then_block,
             else_block,
             ..
         } => {
-            f(then_block);
-            f(else_block);
+            visit(then_block);
+            visit(else_block);
         }
         Value::Loop {
             header,
             body,
             latch,
         } => {
-            f(header);
-            f(body);
-            f(latch);
+            visit(header);
+            visit(body);
+            visit(latch);
         }
-        Value::Lambda { body, .. } => f(body),
+        Value::Lambda { body, .. } => visit(body),
         _ => {}
     }
 }

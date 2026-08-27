@@ -12,6 +12,9 @@ mod float_sr;
 mod number_theory_sr;
 mod trial_div_sr;
 
+#[cfg(test)]
+mod sr_match_test;
+
 use super::Codegen;
 use anyhow::{bail, Result};
 use inkwell::values::{BasicValueEnum, FunctionValue};

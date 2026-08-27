@@ -10,13 +10,14 @@
 
 use inkwell::values::{BasicValueEnum, FunctionValue};
 use lumi_core::{
-    const_int, header_lt_const, is_unit_inc, name_of, split_acc_add, Block, Local, Op, Value,
+    body_assigns_const, const_int, first_loop, header_lt_const, is_unit_inc, name_of,
+    split_acc_add, Block, Local, Op, Value,
 };
 use lumi_syntax::BinOp;
 use rustc_hash::FxHashMap as HashMap;
 
 use super::super::Codegen;
-use anyhow::{Context as AnyhowContext, Result};
+use anyhow::Result;
 
 #[derive(Debug)]
 struct Affine2RemSum {
@@ -43,7 +44,6 @@ impl<'ctx> Codegen<'ctx> {
         if !self.slot_known_eq(&pat.i, 0) || !self.slot_known_eq(&pat.s, 0) {
             return Ok(None);
         }
-        let rt = self.runtime_fn("lumi_affine2_rem_sum")?;
         let args = [
             self.llvm.i64_ty.const_int(pat.n as u64, true).into(),
             self.llvm.i64_ty.const_int(pat.a as u64, true).into(),
@@ -51,15 +51,15 @@ impl<'ctx> Codegen<'ctx> {
             self.llvm.i64_ty.const_int(pat.c as u64, true).into(),
             self.llvm.i64_ty.const_int(pat.m as u64, true).into(),
         ];
-        let call = crate::error::llvm(self.llvm.builder.build_call(rt, &args, "aff2"))?;
-        let s = call
-            .try_as_basic_value()
-            .basic()
-            .context("affine2_rem_sum result")?
-            .into_int_value();
-        self.store_slot_i64(&pat.s, s)?;
-        self.store_slot_i64(&pat.i, self.llvm.i64_ty.const_int(pat.n as u64, true))?;
-        Ok(Some(self.llvm.i64_ty.const_int(0, false).into()))
+        Ok(Some(self.emit_rt_n_to_slots_and_zero(
+            "lumi_affine2_rem_sum",
+            "aff2",
+            "affine2_rem_sum result",
+            &pat.s,
+            &pat.i,
+            pat.n,
+            &args,
+        )?))
     }
 }
 
@@ -76,23 +76,7 @@ fn match_affine2_rem_sum(
     if n < 2 {
         return None;
     }
-    // Body should be: j := 0; Loop { j < n; …; j += 1 }
-    let mut inner: Option<(&Block, &Block, &Block)> = None;
-    for op in &body.ops {
-        if let Op::Let {
-            value:
-                Value::Loop {
-                    header: ih,
-                    body: ib,
-                    latch: il,
-                },
-            ..
-        } = op
-        {
-            inner = Some((ih, ib, il));
-        }
-    }
-    let (ih, ib, il) = inner?;
+    let (ih, ib, il) = first_loop(body)?;
     if !il.ops.is_empty() {
         return None;
     }
@@ -100,20 +84,7 @@ fn match_affine2_rem_sum(
     if n2 != n || j == i {
         return None;
     }
-    // Outer body must reset `j := 0` before the inner loop (RT assumes j∈[0,n)).
-    let mut saw_j_zero = false;
-    for op in &body.ops {
-        if let Op::Assign {
-            name,
-            value: Local(v),
-        } = op
-        {
-            if name == &j && const_int(Local(*v), defs) == Some(0) {
-                saw_j_zero = true;
-            }
-        }
-    }
-    if !saw_j_zero {
+    if !body_assigns_const(body, &j, 0, defs) {
         return None;
     }
     // Inner body: s = s + ((a*i + b*j + c) % m); j += 1
@@ -275,25 +246,19 @@ fn parse_affine3(
 #[cfg(test)]
 mod match_tests {
     use super::*;
-    use lumi_core::collect_loop_triples;
-    use lumi_opt::{compile_source_to_optimized, OptOptions};
+    use crate::emit_value::sr_match_test::bench_cpu_core;
 
     #[test]
     fn matches_poly_checksum() {
-        let src = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../examples/bench_cpu.lm"
-        ))
-        .unwrap();
-        let core = compile_source_to_optimized(&src, &OptOptions::for_build(true)).unwrap();
+        let core = bench_cpu_core();
         let mut found = 0;
-        for f in &core.functions {
-            if !f.name.contains("poly") && f.name != "main" {
+        for fun in &core.functions {
+            if !fun.name.contains("poly") && fun.name != "main" {
                 continue;
             }
-            let defs = crate::nsw_iv::collect_leaf_defs(&f.body);
+            let defs = crate::nsw_iv::collect_leaf_defs(&fun.body);
             let mut loops = vec![];
-            collect_loop_triples(&f.body, &mut loops);
+            lumi_core::collect_loop_triples(&fun.body, &mut loops);
             for (h, b, l) in &loops {
                 if let Some(p) = match_affine2_rem_sum(h, b, l, &defs) {
                     assert_eq!(p.n, 12_000);

@@ -33,14 +33,7 @@ pub fn is_list_set(v: &Value) -> Option<(Local, Local, Local)> {
 }
 
 pub fn list_arg_is(list: Local, want: Local, defs: &HashMap<u32, Value>) -> bool {
-    if list == want {
-        return true;
-    }
-    match defs.get(&list.0) {
-        Some(Value::Local(l)) => list_arg_is(*l, want, defs),
-        Some(Value::Name(_)) => false,
-        _ => false,
-    }
+    same_local(list, want, defs)
 }
 
 /// Inner body of gemv: s accumulates A[i*n+j]*x[j]; then out.set(i,s); i+=1.
@@ -779,66 +772,28 @@ fn body_calls_any(body: &Block, names: &[&str]) -> bool {
     found
 }
 
-fn fun_has_sum_sq_shape(body: &Block, defs: &HashMap<u32, Value>, xs: Local) -> bool {
+#[derive(Clone, Copy)]
+struct ListScanFlags {
+    need_mul: bool,
+    need_add: bool,
+    need_sub: bool,
+    need_div: bool,
+    forbid_mul: bool,
+    forbid_set: bool,
+    forbid_div: bool,
+    need_sqrt: bool,
+}
+
+fn fun_has_list_scan_shape(
+    body: &Block,
+    defs: &HashMap<u32, Value>,
+    xs: Local,
+    flags: ListScanFlags,
+) -> bool {
     let mut get = false;
     let mut mul = false;
     let mut add = false;
-    let mut set = false;
-    let mut div = false;
-    for_each_def_and_let(body, defs, &mut |v| {
-        if let Some((lst, _)) = is_list_get(v) {
-            if list_arg_is(lst, xs, defs) {
-                get = true;
-            }
-        }
-        if matches!(v, Value::Binary { op: BinOp::Mul, .. }) {
-            mul = true;
-        }
-        if is_nontrivial_add_or_sub(v, defs) && matches!(v, Value::Binary { op: BinOp::Add, .. }) {
-            add = true;
-        }
-        if matches!(v, Value::Binary { op: BinOp::Div, .. }) {
-            div = true;
-        }
-        if is_list_set(v).is_some() {
-            set = true;
-        }
-    });
-    get && mul && add && !set && !div
-}
-
-fn fun_has_mean_shape(body: &Block, defs: &HashMap<u32, Value>, xs: Local) -> bool {
-    let mut get = false;
-    let mut add = false;
-    let mut div = false;
-    let mut mul = false;
-    let mut set = false;
-    for_each_def_and_let(body, defs, &mut |v| {
-        if let Some((lst, _)) = is_list_get(v) {
-            if list_arg_is(lst, xs, defs) {
-                get = true;
-            }
-        }
-        if is_nontrivial_add_or_sub(v, defs) && matches!(v, Value::Binary { op: BinOp::Add, .. }) {
-            add = true;
-        }
-        if matches!(v, Value::Binary { op: BinOp::Div, .. }) {
-            div = true;
-        }
-        if matches!(v, Value::Binary { op: BinOp::Mul, .. }) {
-            mul = true;
-        }
-        if is_list_set(v).is_some() {
-            set = true;
-        }
-    });
-    get && add && div && !mul && !set
-}
-
-fn fun_has_std_shape(body: &Block, defs: &HashMap<u32, Value>, xs: Local) -> bool {
-    let mut get = false;
     let mut sub = false;
-    let mut mul = false;
     let mut div = false;
     let mut set = false;
     for_each_def_and_let(body, defs, &mut |v| {
@@ -846,13 +801,16 @@ fn fun_has_std_shape(body: &Block, defs: &HashMap<u32, Value>, xs: Local) -> boo
             if list_arg_is(lst, xs, defs) {
                 get = true;
             }
+        }
+        if matches!(v, Value::Binary { op: BinOp::Mul, .. }) {
+            mul = true;
+        }
+        if is_nontrivial_add_or_sub(v, defs) && matches!(v, Value::Binary { op: BinOp::Add, .. }) {
+            add = true;
         }
         if matches!(v, Value::Binary { op: BinOp::Sub, .. }) {
             sub = true;
         }
-        if matches!(v, Value::Binary { op: BinOp::Mul, .. }) {
-            mul = true;
-        }
         if matches!(v, Value::Binary { op: BinOp::Div, .. }) {
             div = true;
         }
@@ -860,7 +818,68 @@ fn fun_has_std_shape(body: &Block, defs: &HashMap<u32, Value>, xs: Local) -> boo
             set = true;
         }
     });
-    get && sub && mul && div && !set && body_calls_any(body, &["lumi_f64_sqrt", "sqrtF", "sqrt"])
+    get && (!flags.need_mul || mul)
+        && (!flags.need_add || add)
+        && (!flags.need_sub || sub)
+        && (!flags.need_div || div)
+        && (!flags.forbid_mul || !mul)
+        && (!flags.forbid_set || !set)
+        && (!flags.forbid_div || !div)
+        && (!flags.need_sqrt || body_calls_any(body, &["lumi_f64_sqrt", "sqrtF", "sqrt"]))
+}
+
+fn fun_has_sum_sq_shape(body: &Block, defs: &HashMap<u32, Value>, xs: Local) -> bool {
+    fun_has_list_scan_shape(
+        body,
+        defs,
+        xs,
+        ListScanFlags {
+            need_mul: true,
+            need_add: true,
+            need_sub: false,
+            need_div: false,
+            forbid_mul: false,
+            forbid_set: true,
+            forbid_div: true,
+            need_sqrt: false,
+        },
+    )
+}
+
+fn fun_has_mean_shape(body: &Block, defs: &HashMap<u32, Value>, xs: Local) -> bool {
+    fun_has_list_scan_shape(
+        body,
+        defs,
+        xs,
+        ListScanFlags {
+            need_mul: false,
+            need_add: true,
+            need_sub: false,
+            need_div: true,
+            forbid_mul: true,
+            forbid_set: true,
+            forbid_div: false,
+            need_sqrt: false,
+        },
+    )
+}
+
+fn fun_has_std_shape(body: &Block, defs: &HashMap<u32, Value>, xs: Local) -> bool {
+    fun_has_list_scan_shape(
+        body,
+        defs,
+        xs,
+        ListScanFlags {
+            need_mul: true,
+            need_add: false,
+            need_sub: true,
+            need_div: true,
+            forbid_mul: false,
+            forbid_set: true,
+            forbid_div: false,
+            need_sqrt: true,
+        },
+    )
 }
 
 fn fun_has_l2_normalize_shape(
@@ -1067,45 +1086,36 @@ pub fn mentions_local(v: &Value, target: Local) -> bool {
 
 /// Opt rewrite symbol for a whole-function dense kernel (order-sensitive).
 pub fn dense_f64_rt_symbol(fun: &CoreFun, defs: &HashMap<u32, Value>) -> Option<&'static str> {
-    if match_gemv_fun(fun, defs).is_some() {
-        Some("lumi_f64_gemv")
-    } else if match_gemv_t_fun(fun, defs).is_some() {
-        Some("lumi_f64_gemv_t")
-    } else if match_addmm_fun(fun, defs).is_some() {
-        Some("lumi_f64_addmm")
-    } else if match_axpy_fun(fun, defs).is_some() {
-        Some("lumi_f64_axpy")
-    } else if match_sub_fun(fun, defs).is_some() {
-        Some("lumi_f64_sub")
-    } else if match_add_fun(fun, defs).is_some() {
-        Some("lumi_f64_add")
-    } else if match_mul_fun(fun, defs).is_some() {
-        Some("lumi_f64_mul")
-    } else if match_clamp_fun(fun, defs).is_some() {
-        Some("lumi_f64_clamp")
-    } else if match_scale_fun(fun, defs).is_some() {
-        Some("lumi_f64_scale")
-    } else if match_fill_fun(fun, defs).is_some() {
-        Some("lumi_f64_fill")
-    } else if match_copy_fun(fun, defs).is_some() {
-        Some("lumi_f64_copy")
-    } else if match_zeros_fun(fun, defs).is_some() {
-        Some("lumi_list_f64_zeros")
-    } else if match_l2_normalize_fun(fun, defs).is_some() {
-        Some("lumi_f64_l2_normalize")
-    } else if match_softmax_fun(fun, defs).is_some() {
-        Some("lumi_f64_softmax")
-    } else if match_l2_norm_fun(fun, defs).is_some() {
-        Some("lumi_f64_l2_norm")
-    } else if match_std_fun(fun, defs).is_some() {
-        Some("lumi_f64_std")
-    } else if match_sum_sq_fun(fun, defs).is_some() {
-        Some("lumi_f64_sum_sq")
-    } else if match_mean_fun(fun, defs).is_some() {
-        Some("lumi_f64_mean")
-    } else {
-        None
+    const KERNELS: &[(&str, fn(&CoreFun, &HashMap<u32, Value>) -> bool)] = &[
+        ("lumi_f64_gemv", |f, d| match_gemv_fun(f, d).is_some()),
+        ("lumi_f64_gemv_t", |f, d| match_gemv_t_fun(f, d).is_some()),
+        ("lumi_f64_addmm", |f, d| match_addmm_fun(f, d).is_some()),
+        ("lumi_f64_axpy", |f, d| match_axpy_fun(f, d).is_some()),
+        ("lumi_f64_sub", |f, d| match_sub_fun(f, d).is_some()),
+        ("lumi_f64_add", |f, d| match_add_fun(f, d).is_some()),
+        ("lumi_f64_mul", |f, d| match_mul_fun(f, d).is_some()),
+        ("lumi_f64_clamp", |f, d| match_clamp_fun(f, d).is_some()),
+        ("lumi_f64_scale", |f, d| match_scale_fun(f, d).is_some()),
+        ("lumi_f64_fill", |f, d| match_fill_fun(f, d).is_some()),
+        ("lumi_f64_copy", |f, d| match_copy_fun(f, d).is_some()),
+        ("lumi_list_f64_zeros", |f, d| {
+            match_zeros_fun(f, d).is_some()
+        }),
+        ("lumi_f64_l2_normalize", |f, d| {
+            match_l2_normalize_fun(f, d).is_some()
+        }),
+        ("lumi_f64_softmax", |f, d| match_softmax_fun(f, d).is_some()),
+        ("lumi_f64_l2_norm", |f, d| match_l2_norm_fun(f, d).is_some()),
+        ("lumi_f64_std", |f, d| match_std_fun(f, d).is_some()),
+        ("lumi_f64_sum_sq", |f, d| match_sum_sq_fun(f, d).is_some()),
+        ("lumi_f64_mean", |f, d| match_mean_fun(f, d).is_some()),
+    ];
+    for &(sym, matcher) in KERNELS {
+        if matcher(fun, defs) {
+            return Some(sym);
+        }
     }
+    None
 }
 
 /// Visit leaf `defs` then every `Let` value under `body` (same predicate over both).

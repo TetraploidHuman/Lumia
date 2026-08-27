@@ -14,7 +14,10 @@
 
 use inkwell::values::{BasicValueEnum, FunctionValue, IntValue};
 use inkwell::IntPredicate;
-use lumi_core::{const_int, header_le_const, is_unit_inc, name_of, Block, Local, Op, Value};
+use lumi_core::{
+    acc_add_const_inc, const_int, header_gt1_iv, header_le_const, is_add_name_plus_name,
+    is_unit_inc, name_of, Block, Local, Op, Value,
+};
 use lumi_syntax::BinOp;
 use rustc_hash::FxHashMap as HashMap;
 
@@ -58,20 +61,17 @@ impl<'ctx> Codegen<'ctx> {
         if !self.slot_known_eq(&pat.n, 1) || !self.slot_known_eq(&pat.total, 0) {
             return Ok(None);
         }
-        let rt = self.runtime_fn("lumi_collatz_total")?;
         let lim = self.llvm.i64_ty.const_int(pat.limit as u64, true);
-        let call = crate::error::llvm(self.llvm.builder.build_call(rt, &[lim.into()], "col_tot"))?;
-        let total = call
-            .try_as_basic_value()
-            .basic()
-            .context("collatz_total result")?
-            .into_int_value();
-        self.store_slot_i64(&pat.total, total)?;
-        // Match post-loop `n` (dead for the bench, but keep SSA slots consistent).
         let n_end = self.llvm.i64_ty.const_int((pat.limit + 1) as u64, true);
-        self.store_slot_i64(&pat.n, n_end)?;
         let _ = fv;
-        Ok(Some(self.llvm.i64_ty.const_int(0, false).into()))
+        Ok(Some(self.emit_rt_i64_stores_and_zero(
+            "lumi_collatz_total",
+            "col_tot",
+            "collatz_total result",
+            &[lim.into()],
+            &pat.total,
+            &[(&pat.n, n_end)],
+        )?))
     }
 
     /// Outer `total += collatzSteps(n); n += stride` with const `stride ≥ 2`.
@@ -373,7 +373,7 @@ fn match_collatz_strided_loop(
                 value: Local(v),
             } => {
                 if name == &n {
-                    if let Some(k) = const_add_inc(*v, &n, defs) {
+                    if let Some(k) = acc_add_const_inc(*v, &n, defs) {
                         if k >= 2 {
                             stride = Some(k);
                         }
@@ -395,72 +395,6 @@ fn match_collatz_strided_loop(
         limit,
         stride: stride?,
     })
-}
-
-/// `Name(n) + K` with const `K`, else `None`.
-fn const_add_inc(dest: u32, name: &str, defs: &HashMap<u32, Value>) -> Option<i64> {
-    let Value::Binary {
-        op: BinOp::Add,
-        left,
-        right,
-        ..
-    } = defs.get(&dest)?
-    else {
-        return None;
-    };
-    if name_of(*left, defs).as_deref() == Some(name) {
-        const_int(*right, defs)
-    } else if name_of(*right, defs).as_deref() == Some(name) {
-        const_int(*left, defs)
-    } else {
-        None
-    }
-}
-
-fn is_add_name_plus_name(dest: u32, a: &str, b: &str, defs: &HashMap<u32, Value>) -> bool {
-    let Some(Value::Binary {
-        op: BinOp::Add,
-        left,
-        right,
-        ..
-    }) = defs.get(&dest)
-    else {
-        return false;
-    };
-    let ln = name_of(*left, defs);
-    let rn = name_of(*right, defs);
-    (ln.as_deref() == Some(a) && rn.as_deref() == Some(b))
-        || (ln.as_deref() == Some(b) && rn.as_deref() == Some(a))
-}
-
-/// Header result is `Name(x) > 1` (or `1 < Name(x)`).
-fn header_gt1_iv(header: &Block, defs: &HashMap<u32, Value>) -> Option<String> {
-    let res = header.result?;
-    let Value::Binary {
-        op, left, right, ..
-    } = defs.get(&res.0)?
-    else {
-        return None;
-    };
-    match op {
-        BinOp::Gt => {
-            let x = name_of(*left, defs)?;
-            if const_int(*right, defs) == Some(1) {
-                Some(x)
-            } else {
-                None
-            }
-        }
-        BinOp::Lt => {
-            let x = name_of(*right, defs)?;
-            if const_int(*left, defs) == Some(1) {
-                Some(x)
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
 }
 
 fn body_collatz_parts(
@@ -623,55 +557,27 @@ fn block_assigns_triple_plus1(block: &Block, x: &str, defs: &HashMap<u32, Value>
 #[cfg(test)]
 mod match_tests {
     use super::*;
-    use lumi_core::collect_loop_triples;
-    use lumi_opt::{compile_source_to_optimized, OptOptions};
+    use crate::emit_value::sr_match_test::{bench_cpu_core, count_fun_name_matches};
 
     #[test]
     fn matches_collatz_steps_loop() {
-        let src = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../examples/bench_cpu.lm"
-        ))
-        .unwrap();
-        let core = compile_source_to_optimized(&src, &OptOptions::for_build(true)).unwrap();
-        let mut found = 0;
-        let mut found_total = 0;
-        let mut found_strided = 0;
-        for f in &core.functions {
-            if !f.name.contains("collatz") && f.name != "main" {
-                continue;
-            }
-            let defs = crate::nsw_iv::collect_leaf_defs(&f.body);
-            let mut loops = vec![];
-            collect_loop_triples(&f.body, &mut loops);
-            for (h, b, l) in &loops {
-                if let Some(p) = match_collatz_loop(h, b, l, &defs) {
-                    assert!(!p.x.is_empty() && !p.steps.is_empty());
-                    found += 1;
-                }
-                if let Some(p) = match_collatz_total_loop(h, b, l, &defs) {
-                    assert_eq!(p.limit, 2_500_000);
-                    assert!(!p.total.is_empty());
-                    found_total += 1;
-                }
-                if let Some(p) = match_collatz_strided_loop(h, b, l, &defs) {
-                    assert_eq!(p.limit, 3_000_000);
-                    assert_eq!(p.stride, 3);
-                    found_strided += 1;
-                }
-            }
-        }
+        let core = bench_cpu_core();
         assert!(
-            found >= 1,
-            "expected at least one collatz loop match, got {found}"
+            count_fun_name_matches(&core, "collatz", |h, b, l, d| {
+                match_collatz_loop(h, b, l, d).is_some()
+            }) >= 1
         );
         assert!(
-            found_total >= 1,
-            "expected at least one collatz-total loop match, got {found_total}"
+            count_fun_name_matches(&core, "collatz", |h, b, l, d| {
+                match_collatz_total_loop(h, b, l, d)
+                    .is_some_and(|p| p.limit == 2_500_000 && !p.total.is_empty())
+            }) >= 1
         );
         assert!(
-            found_strided >= 1,
-            "expected at least one collatz-strided loop match, got {found_strided}"
+            count_fun_name_matches(&core, "collatz", |h, b, l, d| {
+                match_collatz_strided_loop(h, b, l, d)
+                    .is_some_and(|p| p.limit == 3_000_000 && p.stride == 3)
+            }) >= 1
         );
     }
 }

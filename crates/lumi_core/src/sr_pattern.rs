@@ -251,3 +251,75 @@ pub fn is_name_mul_const(l: Local, name: &str, n: i64, defs: &HashMap<u32, Value
     (name_of(*left, defs).as_deref() == Some(name) && const_int(*right, defs) == Some(n))
         || (name_of(*right, defs).as_deref() == Some(name) && const_int(*left, defs) == Some(n))
 }
+
+/// `dest = Name(name) + const` → increment.
+pub fn acc_add_const_inc(dest: u32, name: &str, defs: &HashMap<u32, Value>) -> Option<i64> {
+    let Value::Binary {
+        op: BinOp::Add,
+        left,
+        right,
+        ..
+    } = defs.get(&dest)?
+    else {
+        return None;
+    };
+    if name_of(*left, defs).as_deref() == Some(name) {
+        const_int(*right, defs)
+    } else if name_of(*right, defs).as_deref() == Some(name) {
+        const_int(*left, defs)
+    } else {
+        None
+    }
+}
+
+/// `dest = acc + _`-shaped update mentioning `acc`.
+pub fn acc_add_has_name(dest: u32, acc_name: &str, defs: &HashMap<u32, Value>) -> bool {
+    split_acc_add(dest, acc_name, defs).is_some()
+}
+
+/// `dest = Name(a) + Name(b)` (either order).
+pub fn is_add_name_plus_name(dest: u32, a: &str, b: &str, defs: &HashMap<u32, Value>) -> bool {
+    let Some(Value::Binary {
+        op: BinOp::Add,
+        left,
+        right,
+        ..
+    }) = defs.get(&dest)
+    else {
+        return false;
+    };
+    let ln = name_of(*left, defs);
+    let rn = name_of(*right, defs);
+    (ln.as_deref() == Some(a) && rn.as_deref() == Some(b))
+        || (ln.as_deref() == Some(b) && rn.as_deref() == Some(a))
+}
+
+/// Header result is `Name(x) > 1` (or `1 < Name(x)`).
+pub fn header_gt1_iv(header: &Block, defs: &HashMap<u32, Value>) -> Option<String> {
+    let res = header.result?;
+    let Value::Binary {
+        op, left, right, ..
+    } = defs.get(&res.0)?
+    else {
+        return None;
+    };
+    match op {
+        BinOp::Gt => {
+            let x = name_of(*left, defs)?;
+            if const_int(*right, defs) == Some(1) {
+                Some(x)
+            } else {
+                None
+            }
+        }
+        BinOp::Lt => {
+            let x = name_of(*right, defs)?;
+            if const_int(*left, defs) == Some(1) {
+                Some(x)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}

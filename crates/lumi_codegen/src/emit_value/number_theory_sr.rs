@@ -7,7 +7,7 @@
 
 use inkwell::values::{BasicValueEnum, FunctionValue};
 use lumi_core::{
-    body_assigns_const, const_int, first_loop, header_le_const, header_lt_const,
+    acc_add_has_name, body_assigns_const, const_int, first_loop, header_le_const, header_lt_const,
     is_affine_row_col_plus1, is_unit_inc, name_of, split_acc_add, Block, Local, Op, Value,
 };
 use lumi_hir::Builtin;
@@ -15,7 +15,7 @@ use lumi_syntax::BinOp;
 use rustc_hash::FxHashMap as HashMap;
 
 use super::super::Codegen;
-use anyhow::{Context as AnyhowContext, Result};
+use anyhow::Result;
 
 #[derive(Debug)]
 struct GcdSum {
@@ -58,32 +58,6 @@ struct MatmulAffine {
 }
 
 impl<'ctx> Codegen<'ctx> {
-    fn emit_n_acc_rt_loop(
-        &mut self,
-        rt_sym: &str,
-        call_label: &str,
-        ctx_label: &str,
-        s_slot: &str,
-        i_slot: &str,
-        n: i64,
-    ) -> Result<BasicValueEnum<'ctx>> {
-        let rt = self.runtime_fn(rt_sym)?;
-        let n_val = self.llvm.i64_ty.const_int(n as u64, true);
-        let call = crate::error::llvm(self.llvm.builder.build_call(
-            rt,
-            &[n_val.into()],
-            call_label,
-        ))?;
-        let s = call
-            .try_as_basic_value()
-            .basic()
-            .with_context(|| ctx_label.to_string())?
-            .into_int_value();
-        self.store_slot_i64(s_slot, s)?;
-        self.store_slot_i64(i_slot, self.llvm.i64_ty.const_int((n + 1) as u64, true))?;
-        Ok(self.llvm.i64_ty.const_int(0, false).into())
-    }
-
     pub(crate) fn try_emit_gcd_sum_loop(
         &mut self,
         header: &Block,
@@ -97,7 +71,7 @@ impl<'ctx> Codegen<'ctx> {
         if !self.slot_known_eq(&pat.i, 1) || !self.slot_known_eq(&pat.s, 0) {
             return Ok(None);
         }
-        Ok(Some(self.emit_n_acc_rt_loop(
+        Ok(Some(self.emit_rt_n_plus1_to_slots_and_zero(
             "lumi_gcd_sum",
             "gcd_sum",
             "gcd_sum",
@@ -120,7 +94,7 @@ impl<'ctx> Codegen<'ctx> {
         if !self.slot_known_eq(&pat.i, 1) || !self.slot_known_eq(&pat.s, 0) {
             return Ok(None);
         }
-        Ok(Some(self.emit_n_acc_rt_loop(
+        Ok(Some(self.emit_rt_n_plus1_to_slots_and_zero(
             "lumi_divisor_sum",
             "div_sum",
             "divisor_sum",
@@ -143,20 +117,19 @@ impl<'ctx> Codegen<'ctx> {
         if !self.slot_known_eq(&pat.i, 0) || !self.slot_known_eq(&pat.s, 0) {
             return Ok(None);
         }
-        let rt = self.runtime_fn("lumi_product_rem_sum")?;
         let args = [
             self.llvm.i64_ty.const_int(pat.n as u64, true).into(),
             self.llvm.i64_ty.const_int(pat.m as u64, true).into(),
         ];
-        let call = crate::error::llvm(self.llvm.builder.build_call(rt, &args, "prod_rem"))?;
-        let s = call
-            .try_as_basic_value()
-            .basic()
-            .context("product_rem_sum")?
-            .into_int_value();
-        self.store_slot_i64(&pat.s, s)?;
-        self.store_slot_i64(&pat.i, self.llvm.i64_ty.const_int(pat.n as u64, true))?;
-        Ok(Some(self.llvm.i64_ty.const_int(0, false).into()))
+        Ok(Some(self.emit_rt_n_to_slots_and_zero(
+            "lumi_product_rem_sum",
+            "prod_rem",
+            "product_rem_sum",
+            &pat.s,
+            &pat.i,
+            pat.n,
+            &args,
+        )?))
     }
 
     pub(crate) fn try_emit_range_affine1_loop(
@@ -176,22 +149,21 @@ impl<'ctx> Codegen<'ctx> {
         {
             return Ok(None);
         }
-        let rt = self.runtime_fn("lumi_affine1_rem_sum")?;
         let args = [
             self.llvm.i64_ty.const_int(pat.n as u64, true).into(),
             self.llvm.i64_ty.const_int(pat.a as u64, true).into(),
             self.llvm.i64_ty.const_int(pat.c as u64, true).into(),
             self.llvm.i64_ty.const_int(pat.m as u64, true).into(),
         ];
-        let call = crate::error::llvm(self.llvm.builder.build_call(rt, &args, "aff1"))?;
-        let s = call
-            .try_as_basic_value()
-            .basic()
-            .context("affine1_rem_sum")?
-            .into_int_value();
-        self.store_slot_i64(&pat.s, s)?;
-        self.store_slot_i64(&pat.i, self.llvm.i64_ty.const_int(pat.n as u64, true))?;
-        Ok(Some(self.llvm.i64_ty.const_int(0, false).into()))
+        Ok(Some(self.emit_rt_n_to_slots_and_zero(
+            "lumi_affine1_rem_sum",
+            "aff1",
+            "affine1_rem_sum",
+            &pat.s,
+            &pat.i,
+            pat.n,
+            &args,
+        )?))
     }
 
     pub(crate) fn try_emit_matmul_affine_loop(
@@ -207,20 +179,19 @@ impl<'ctx> Codegen<'ctx> {
         if !self.slot_known_eq(&pat.i, 0) || !self.slot_known_eq(&pat.sum, 0) {
             return Ok(None);
         }
-        let rt = self.runtime_fn("lumi_matmul_affine_checksum")?;
         let args = [
             self.llvm.i64_ty.const_int(pat.n as u64, true).into(),
             self.llvm.i64_ty.const_int(pat.modulus as u64, true).into(),
         ];
-        let call = crate::error::llvm(self.llvm.builder.build_call(rt, &args, "matmul_aff"))?;
-        let s = call
-            .try_as_basic_value()
-            .basic()
-            .context("matmul_affine_checksum")?
-            .into_int_value();
-        self.store_slot_i64(&pat.sum, s)?;
-        self.store_slot_i64(&pat.i, self.llvm.i64_ty.const_int(pat.n as u64, true))?;
-        Ok(Some(self.llvm.i64_ty.const_int(0, false).into()))
+        Ok(Some(self.emit_rt_n_to_slots_and_zero(
+            "lumi_matmul_affine_checksum",
+            "matmul_aff",
+            "matmul_affine_checksum",
+            &pat.sum,
+            &pat.i,
+            pat.n,
+            &args,
+        )?))
     }
 }
 
@@ -821,64 +792,42 @@ fn parse_acc_rem_name(
 }
 
 fn is_add_name_plus_any(dest: u32, s_name: &str, defs: &HashMap<u32, Value>) -> bool {
-    let Some(Value::Binary {
-        op: BinOp::Add,
-        left,
-        right,
-        ..
-    }) = defs.get(&dest)
-    else {
-        return false;
-    };
-    name_of(*left, defs).as_deref() == Some(s_name)
-        || name_of(*right, defs).as_deref() == Some(s_name)
+    acc_add_has_name(dest, s_name, defs)
 }
 
 #[cfg(test)]
 mod match_tests {
     use super::*;
-    use lumi_core::collect_loop_triples;
-    use lumi_opt::{compile_source_to_optimized, OptOptions};
+    use crate::emit_value::sr_match_test::{bench_cpu_core, count_loop_matches};
 
     #[test]
     fn matches_new_bench_srs() {
-        let src = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../examples/bench_cpu.lm"
-        ))
-        .unwrap();
-        let core = compile_source_to_optimized(&src, &OptOptions::for_build(true)).unwrap();
-        let mut gcd = 0;
-        let mut div = 0;
-        let mut prod = 0;
-        let mut range = 0;
-        let mut matmul = 0;
-        for f in &core.functions {
-            let defs = crate::nsw_iv::collect_leaf_defs(&f.body);
-            let mut loops = vec![];
-            collect_loop_triples(&f.body, &mut loops);
-            for (h, b, l) in &loops {
-                if match_gcd_sum(h, b, l, &defs).is_some() {
-                    gcd += 1;
-                }
-                if match_divisor_sum(h, b, l, &defs).is_some() {
-                    div += 1;
-                }
-                if match_product_rem_sum(h, b, l, &defs).is_some() {
-                    prod += 1;
-                }
-                if match_range_affine1(h, b, l, &defs).is_some() {
-                    range += 1;
-                }
-                if match_matmul_affine(h, b, l, &defs).is_some() {
-                    matmul += 1;
-                }
-            }
-        }
-        assert!(gcd >= 1, "gcd matches={gcd}");
-        assert!(div >= 1, "div matches={div}");
-        assert!(prod >= 1, "prod matches={prod}");
-        assert!(range >= 1, "range matches={range}");
-        assert!(matmul >= 1, "matmul matches={matmul}");
+        let core = bench_cpu_core();
+        assert!(
+            count_loop_matches(&core, |h, b, l, d| match_gcd_sum(h, b, l, d).is_some()) >= 1,
+            "gcd"
+        );
+        assert!(
+            count_loop_matches(&core, |h, b, l, d| match_divisor_sum(h, b, l, d).is_some()) >= 1,
+            "div"
+        );
+        assert!(
+            count_loop_matches(&core, |h, b, l, d| {
+                match_product_rem_sum(h, b, l, d).is_some()
+            }) >= 1,
+            "prod"
+        );
+        assert!(
+            count_loop_matches(&core, |h, b, l, d| {
+                match_range_affine1(h, b, l, d).is_some()
+            }) >= 1,
+            "range"
+        );
+        assert!(
+            count_loop_matches(&core, |h, b, l, d| match_matmul_affine(h, b, l, d)
+                .is_some())
+                >= 1,
+            "matmul"
+        );
     }
 }
