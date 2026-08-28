@@ -5,7 +5,7 @@ use super::super::collections::{
 };
 use super::super::ctx::LowerCtx;
 use super::super::hof_fuse::{
-    try_fuse_hof_build_filter, try_fuse_hof_build_map, try_fuse_hof_fold,
+    maybe_fuse_hof_build_filter, maybe_fuse_hof_build_map, maybe_fuse_hof_fold,
 };
 use super::lower_expr;
 use crate::ast::{Builtin, Expr};
@@ -23,17 +23,17 @@ pub(super) fn lower_call(
 ) -> Expr {
     if let lumi_syntax::Expr::Ident(name, name_span) = callee {
         if name == "fold" && args.len() == 3 {
-            if let Some(fused) = try_fuse_hof_fold(ctx, &args[0], &args[1], &args[2], span) {
+            if let Some(fused) = maybe_fuse_hof_fold(ctx, &args[0], &args[1], &args[2], span) {
                 return fused;
             }
         }
         if name == "map" && args.len() == 2 {
-            if let Some(fused) = try_fuse_hof_build_map(ctx, &args[0], &args[1], span) {
+            if let Some(fused) = maybe_fuse_hof_build_map(ctx, &args[0], &args[1], span) {
                 return fused;
             }
         }
         if name == "filter" && args.len() == 2 {
-            if let Some(fused) = try_fuse_hof_build_filter(ctx, &args[0], &args[1], span) {
+            if let Some(fused) = maybe_fuse_hof_build_filter(ctx, &args[0], &args[1], span) {
                 return fused;
             }
         }
@@ -52,17 +52,17 @@ pub(super) fn lower_call(
     // Method call: fuse `….map(…).filter(…).fold(z, g)` on the syntax tree.
     if let lumi_syntax::Expr::Field { base, field, .. } = callee {
         if field == "fold" && args.len() == 2 {
-            if let Some(fused) = try_fuse_hof_fold(ctx, base, &args[0], &args[1], span) {
+            if let Some(fused) = maybe_fuse_hof_fold(ctx, base, &args[0], &args[1], span) {
                 return fused;
             }
         }
         if field == "map" && args.len() == 1 {
-            if let Some(fused) = try_fuse_hof_build_map(ctx, base, &args[0], span) {
+            if let Some(fused) = maybe_fuse_hof_build_map(ctx, base, &args[0], span) {
                 return fused;
             }
         }
         if field == "filter" && args.len() == 1 {
-            if let Some(fused) = try_fuse_hof_build_filter(ctx, base, &args[0], span) {
+            if let Some(fused) = maybe_fuse_hof_build_filter(ctx, base, &args[0], span) {
                 return fused;
             }
         }

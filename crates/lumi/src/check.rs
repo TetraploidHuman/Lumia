@@ -1,15 +1,13 @@
 //! Shared program typecheck + assert annotation for CLI and LSP.
 
+use crate::caps::CapabilitySet;
 use crate::load::{
     load_program, load_program_with_overlays, path_label, LoadedProgram, SourceFile,
 };
 use anyhow::Result;
-use lumi_hir::lower_module;
+use lumi_hir::lower_module_with_options;
 use lumi_syntax::{parse_module_recovering, stamp_module, Span};
-use lumi_ty::{
-    typecheck_hir, typecheck_hir_recovering, NameVisibility, TypeError, TypecheckOptions,
-    TypedModule,
-};
+use lumi_ty::{typecheck_hir, typecheck_hir_recovering, NameVisibility, TypeError, TypedModule};
 use rustc_hash::FxHashMap as HashMap;
 use std::path::{Path, PathBuf};
 
@@ -19,13 +17,23 @@ pub fn check_program(
     auto_parallel: bool,
     trust_foreign_pure: bool,
 ) -> Result<(TypedModule, LoadedProgram)> {
+    check_program_with_caps(
+        file,
+        &CapabilitySet::stock().with_auto_parallel(auto_parallel),
+        trust_foreign_pure,
+    )
+}
+
+/// Same as [`check_program`] with an explicit [`CapabilitySet`] (Phase C).
+pub fn check_program_with_caps(
+    file: &Path,
+    caps: &CapabilitySet,
+    trust_foreign_pure: bool,
+) -> Result<(TypedModule, LoadedProgram)> {
     let loaded = load_program(file)?;
-    let hir =
-        lower_module(&loaded.module).map_err(|e| diag_err(&loaded, e.span, "lower", &e.message))?;
-    let opts = TypecheckOptions {
-        auto_parallel,
-        trust_foreign_pure: trust_foreign_pure || loaded.trust_foreign_pure,
-    };
+    let hir = lower_module_with_options(&loaded.module, &caps.to_lower_options())
+        .map_err(|e| diag_err(&loaded, e.span, "lower", &e.message))?;
+    let opts = caps.to_typecheck_options(trust_foreign_pure || loaded.trust_foreign_pure);
     let typed =
         typecheck_hir(&hir, loaded.visibility.clone(), &opts).map_err(|e| type_err(&loaded, e))?;
     Ok((typed, loaded))
@@ -48,16 +56,16 @@ pub fn check_program_with_overlays(
     auto_parallel: bool,
     trust_foreign_pure: bool,
 ) -> Result<(LoadedProgram, TypedModule), OverlayCheckError> {
+    let caps = CapabilitySet::stock().with_auto_parallel(auto_parallel);
     let loaded = load_program_with_overlays(path, overlays)
         .map_err(|e| OverlayCheckError::Load(format!("{e}")))?;
-    let hir = lower_module(&loaded.module).map_err(|e| OverlayCheckError::Analyze {
-        loaded: Box::new(loaded.clone()),
-        err: e.into(),
+    let hir = lower_module_with_options(&loaded.module, &caps.to_lower_options()).map_err(|e| {
+        OverlayCheckError::Analyze {
+            loaded: Box::new(loaded.clone()),
+            err: e.into(),
+        }
     })?;
-    let opts = TypecheckOptions {
-        auto_parallel,
-        trust_foreign_pure: trust_foreign_pure || loaded.trust_foreign_pure,
-    };
+    let opts = caps.to_typecheck_options(trust_foreign_pure || loaded.trust_foreign_pure);
     match typecheck_hir(&hir, loaded.visibility.clone(), &opts) {
         Ok(typed) => Ok((loaded, typed)),
         Err(err) => Err(OverlayCheckError::Analyze {
@@ -116,7 +124,8 @@ pub fn check_source_recovering(text: &str, auto_parallel: bool) -> PartialCheck 
             diagnostics,
         };
     }
-    let hir = match lower_module(&m) {
+    let caps = CapabilitySet::stock().with_auto_parallel(auto_parallel);
+    let hir = match lower_module_with_options(&m, &caps.to_lower_options()) {
         Ok(h) => h,
         Err(e) => {
             diagnostics.push((e.span, format!("lower: {}", e.message)));
@@ -126,10 +135,7 @@ pub fn check_source_recovering(text: &str, auto_parallel: bool) -> PartialCheck 
             };
         }
     };
-    let opts = TypecheckOptions {
-        auto_parallel,
-        trust_foreign_pure: false,
-    };
+    let opts = caps.to_typecheck_options(false);
     let (typed, ty_errs) = typecheck_hir_recovering(&hir, visibility, &opts);
     for e in ty_errs {
         diagnostics.push((e.span().unwrap_or_default(), e.message().to_string()));

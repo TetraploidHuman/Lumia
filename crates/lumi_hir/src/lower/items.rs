@@ -1,6 +1,6 @@
 //! Module item scanning and lowering driver.
 
-use super::ctx::{LowerCtx, LowerError};
+use super::ctx::{LowerCtx, LowerError, LowerOptions};
 use super::expr::push_lowered_val;
 use crate::ast::{AdtDef, AdtVariant, CtorInfo, Expr, Fun, Item, Module, ProductDef};
 use crate::match_check::check_module_matches;
@@ -277,6 +277,13 @@ fn collect_fold_assoc(m: &lumi_syntax::Module) -> HashSet<String> {
 }
 
 pub fn lower_module(m: &lumi_syntax::Module) -> Result<Module, LowerError> {
+    lower_module_with_options(m, &LowerOptions::default())
+}
+
+pub fn lower_module_with_options(
+    m: &lumi_syntax::Module,
+    opts: &LowerOptions,
+) -> Result<Module, LowerError> {
     let TypeScan {
         adts,
         products,
@@ -339,6 +346,7 @@ pub fn lower_module(m: &lumi_syntax::Module) -> Result<Module, LowerError> {
         ambiguous_product_fields,
         toplevel_funs,
         toplevel_fold_assoc,
+        opts,
     );
 
     let mut items = Vec::new();

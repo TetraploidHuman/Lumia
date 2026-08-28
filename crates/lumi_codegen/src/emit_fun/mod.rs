@@ -39,7 +39,11 @@ impl<'ctx> Codegen<'ctx> {
         self.frame.slot_tys.clear();
         self.frame.emit_dest = None;
         self.frame.expect_alloc_ty = None;
-        self.frame.nsw_binop_locals = crate::nsw_iv::collect_nsw_binop_locals(&fun.body);
+        self.frame.nsw_binop_locals = if self.nsw_iv {
+            crate::nsw_iv::collect_nsw_binop_locals(&fun.body)
+        } else {
+            Default::default()
+        };
         self.frame.safe_divisor_locals = crate::nsw_iv::collect_safe_divisor_locals(&fun.body);
         self.frame.nonneg_iv_load_locals = crate::nsw_iv::collect_nonneg_iv_load_locals(&fun.body);
         self.frame.leaf_defs = crate::nsw_iv::collect_leaf_defs(&fun.body);

@@ -15,7 +15,9 @@ pub use ast::{
 pub use builtin_info::{BuiltinEffect, BuiltinEmit, BuiltinInfo, ResultHeap};
 pub use builtin_surface::{surface_names, SurfaceName, SurfaceRole, PRELUDE_CTORS};
 pub use list_hof::{desugar_list_fold_sequential, desugar_list_map_sequential};
-pub use lower::{expand_with_known, lower_module, LowerCtx, LowerError};
+pub use lower::{
+    expand_with_known, lower_module, lower_module_with_options, LowerCtx, LowerError, LowerOptions,
+};
 pub use mangle::mangle_trait_method;
 pub use visit::{all_free_vars, fold, for_each_expr, free_vars_expr};
 

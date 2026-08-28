@@ -11,9 +11,7 @@ use interp::lower_interp;
 use product::{lower_struct_lit, lower_with};
 
 use super::ctx::LowerCtx;
-use super::hof_fuse::{
-    try_fuse_hof_build_filter, try_fuse_hof_build_map, try_fuse_hof_fold,
-};
+use super::hof_fuse::{maybe_fuse_hof_build_filter, maybe_fuse_hof_build_map, maybe_fuse_hof_fold};
 use super::match_arms::{lower_match, lower_match_cond};
 use crate::ast::{Builtin, Expr, Fun, Item};
 use lumi_syntax::BinOp;
@@ -178,18 +176,19 @@ pub(crate) fn lower_expr(ctx: &LowerCtx, e: &lumi_syntax::Expr) -> Expr {
             if let lumi_syntax::Expr::Call { callee, args, .. } = right.as_ref() {
                 if let lumi_syntax::Expr::Ident(name, _) = callee.as_ref() {
                     if name == "fold" && args.len() == 2 {
-                        if let Some(fused) = try_fuse_hof_fold(ctx, left, &args[0], &args[1], *span)
+                        if let Some(fused) =
+                            maybe_fuse_hof_fold(ctx, left, &args[0], &args[1], *span)
                         {
                             return fused;
                         }
                     }
                     if name == "map" && args.len() == 1 {
-                        if let Some(fused) = try_fuse_hof_build_map(ctx, left, &args[0], *span) {
+                        if let Some(fused) = maybe_fuse_hof_build_map(ctx, left, &args[0], *span) {
                             return fused;
                         }
                     }
                     if name == "filter" && args.len() == 1 {
-                        if let Some(fused) = try_fuse_hof_build_filter(ctx, left, &args[0], *span)
+                        if let Some(fused) = maybe_fuse_hof_build_filter(ctx, left, &args[0], *span)
                         {
                             return fused;
                         }

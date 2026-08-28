@@ -84,41 +84,54 @@ impl<'ctx> Codegen<'ctx> {
                 body,
                 latch,
             } => {
-                if let Some(v) = self.try_emit_collatz_total_loop(header, body, latch, fv)? {
-                    Ok(v)
-                } else if let Some(v) =
-                    self.try_emit_collatz_strided_loop(header, body, latch, fv)?
-                {
-                    Ok(v)
-                } else if let Some(v) = self.try_emit_count_primes_loop(header, body, latch, fv)? {
-                    Ok(v)
-                } else if let Some(v) =
-                    self.try_emit_affine2_rem_sum_loop(header, body, latch, fv)?
-                {
-                    Ok(v)
-                } else if let Some(v) = self.try_emit_gcd_sum_loop(header, body, latch, fv)? {
-                    Ok(v)
-                } else if let Some(v) = self.try_emit_divisor_sum_loop(header, body, latch, fv)? {
-                    Ok(v)
-                } else if let Some(v) =
-                    self.try_emit_product_rem_sum_loop(header, body, latch, fv)?
-                {
-                    Ok(v)
-                } else if let Some(v) = self.try_emit_range_affine1_loop(header, body, latch, fv)? {
-                    Ok(v)
-                } else if let Some(v) = self.try_emit_matmul_affine_loop(header, body, latch, fv)? {
-                    Ok(v)
-                } else if let Some(v) = self.try_emit_float_orbit_loop(header, body, latch, fv)? {
-                    Ok(v)
-                } else if let Some(v) = self.try_emit_mandelbrot_loop(header, body, latch, fv)? {
-                    Ok(v)
-                } else if let Some(v) = self.try_emit_collatz_loop(header, body, latch, fv)? {
-                    Ok(v)
-                } else if let Some(v) = self.try_emit_trial_div_loop(header, body, latch, fv)? {
-                    Ok(v)
-                } else {
-                    self.emit_value_loop(header, body, latch, fv)
+                if self.loop_sr {
+                    if let Some(v) = self.try_emit_collatz_total_loop(header, body, latch, fv)? {
+                        return Ok(v);
+                    } else if let Some(v) =
+                        self.try_emit_collatz_strided_loop(header, body, latch, fv)?
+                    {
+                        return Ok(v);
+                    } else if let Some(v) =
+                        self.try_emit_count_primes_loop(header, body, latch, fv)?
+                    {
+                        return Ok(v);
+                    } else if let Some(v) =
+                        self.try_emit_affine2_rem_sum_loop(header, body, latch, fv)?
+                    {
+                        return Ok(v);
+                    } else if let Some(v) = self.try_emit_gcd_sum_loop(header, body, latch, fv)? {
+                        return Ok(v);
+                    } else if let Some(v) =
+                        self.try_emit_divisor_sum_loop(header, body, latch, fv)?
+                    {
+                        return Ok(v);
+                    } else if let Some(v) =
+                        self.try_emit_product_rem_sum_loop(header, body, latch, fv)?
+                    {
+                        return Ok(v);
+                    } else if let Some(v) =
+                        self.try_emit_range_affine1_loop(header, body, latch, fv)?
+                    {
+                        return Ok(v);
+                    } else if let Some(v) =
+                        self.try_emit_matmul_affine_loop(header, body, latch, fv)?
+                    {
+                        return Ok(v);
+                    } else if let Some(v) =
+                        self.try_emit_float_orbit_loop(header, body, latch, fv)?
+                    {
+                        return Ok(v);
+                    } else if let Some(v) =
+                        self.try_emit_mandelbrot_loop(header, body, latch, fv)?
+                    {
+                        return Ok(v);
+                    } else if let Some(v) = self.try_emit_collatz_loop(header, body, latch, fv)? {
+                        return Ok(v);
+                    } else if let Some(v) = self.try_emit_trial_div_loop(header, body, latch, fv)? {
+                        return Ok(v);
+                    }
                 }
+                self.emit_value_loop(header, body, latch, fv)
             }
             Value::Lambda { .. } => bail!("lambda should have been lifted to FunRef/AllocClosure"),
             Value::AllocClosure { fun, captures } => self.emit_value_alloc_closure(fun, captures),

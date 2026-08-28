@@ -76,6 +76,12 @@ pub struct CodegenOptions {
     pub option_none_tag: i64,
     /// Auto-parallel pure list maps (DESIGN §11.1).
     pub parallel: bool,
+    /// Loop pattern SR (collatz / number theory / float / …). Default on.
+    pub loop_sr: bool,
+    /// Musttail SCC TCO. Default on.
+    pub tco: bool,
+    /// Proven-safe NSW arithmetic annotations. Default on.
+    pub nsw_iv: bool,
     /// Extra linker args, e.g. `["-lm", "-L/opt/lib", "-lfoo"]`.
     pub link_args: Vec<String>,
 }
@@ -100,9 +106,15 @@ fn emit_llvm_module<'ctx>(
         opts.option_some_tag,
         opts.option_none_tag,
         opts.release,
+        opts.loop_sr,
+        opts.nsw_iv,
     );
     declare_runtime(context, &cg.llvm.module);
-    cg.funs.tco_sccs = compute_tco_sccs(core);
+    cg.funs.tco_sccs = if opts.tco {
+        compute_tco_sccs(core)
+    } else {
+        Default::default()
+    };
     cg.funs.hash_adts = core.hash_adts.clone();
     cg.funs.adt_variant_names = core.adt_variant_names.clone();
     cg.funs.sum_max_arity = core.sum_max_arity.clone();
@@ -400,6 +412,8 @@ pub(crate) struct Codegen<'ctx> {
     pub(crate) option_none_tag: i64,
     /// Release builds omit trap backtrace frames (hot-path call overhead).
     pub(crate) release: bool,
+    pub(crate) loop_sr: bool,
+    pub(crate) nsw_iv: bool,
 }
 
 impl<'ctx> Codegen<'ctx> {
@@ -409,6 +423,8 @@ impl<'ctx> Codegen<'ctx> {
         option_some_tag: i64,
         option_none_tag: i64,
         release: bool,
+        loop_sr: bool,
+        nsw_iv: bool,
     ) -> Self {
         Self {
             llvm: LlvmTypes {
@@ -423,6 +439,8 @@ impl<'ctx> Codegen<'ctx> {
             option_some_tag,
             option_none_tag,
             release,
+            loop_sr,
+            nsw_iv,
         }
     }
 
@@ -509,6 +527,9 @@ mod tests {
             option_some_tag: 0,
             option_none_tag: 1,
             parallel: true,
+            loop_sr: true,
+            tco: true,
+            nsw_iv: true,
             link_args: vec![],
         }
     }
@@ -607,7 +628,7 @@ mod tests {
     #[test]
     fn runtime_fn_missing_returns_err_not_panic() {
         let context = Context::create();
-        let cg = Codegen::new(&context, "empty", 0, 1, false);
+        let cg = Codegen::new(&context, "empty", 0, 1, false, true, true);
         let err = cg
             .runtime_fn("lumi_definitely_missing_symbol_zz")
             .expect_err("missing runtime symbol");

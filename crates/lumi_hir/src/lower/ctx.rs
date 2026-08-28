@@ -8,6 +8,19 @@ use std::cell::RefCell;
 /// Lowering / exhaustiveness failure (shared [`LocatedError`] shape).
 pub type LowerError = LocatedError;
 
+/// Options for syntax → HIR lowering (Phase C capabilities).
+#[derive(Debug, Clone)]
+pub struct LowerOptions {
+    /// Fuse `map`/`filter`/`fold` pipelines (deforestation). Default on.
+    pub hof_fuse: bool,
+}
+
+impl Default for LowerOptions {
+    fn default() -> Self {
+        Self { hof_fuse: true }
+    }
+}
+
 /// Explicit lowering context (ctors, products, parallel-safety sets).
 pub struct LowerCtx {
     pub(crate) ctors: HashMap<String, CtorInfo>,
@@ -19,6 +32,7 @@ pub struct LowerCtx {
     err: RefCell<Option<LowerError>>,
     pub(crate) toplevel_funs: HashSet<String>,
     pub(crate) toplevel_fold_assoc: HashSet<String>,
+    pub(crate) hof_fuse: bool,
 }
 
 impl LowerCtx {
@@ -34,6 +48,7 @@ impl LowerCtx {
             err: RefCell::new(None),
             toplevel_funs: HashSet::default(),
             toplevel_fold_assoc: HashSet::default(),
+            hof_fuse: true,
         }
     }
 
@@ -45,6 +60,7 @@ impl LowerCtx {
         ambiguous_product_fields: HashSet<String>,
         toplevel_funs: HashSet<String>,
         toplevel_fold_assoc: HashSet<String>,
+        opts: &LowerOptions,
     ) -> Self {
         Self {
             ctors,
@@ -55,6 +71,7 @@ impl LowerCtx {
             err: RefCell::new(None),
             toplevel_funs,
             toplevel_fold_assoc,
+            hof_fuse: opts.hof_fuse,
         }
     }
 

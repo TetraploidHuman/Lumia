@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use lumi::caps::CapabilitySet;
 use lumi::check::check_program;
 use lumi::load::path_label;
 use lumi::pkg;
@@ -13,7 +14,7 @@ use std::path::{Path, PathBuf};
 #[cfg(not(feature = "codegen"))]
 use anyhow::bail;
 #[cfg(feature = "codegen")]
-use lumi::check::annotate_assert_messages;
+use lumi::check::{annotate_assert_messages, check_program_with_caps};
 #[cfg(feature = "codegen")]
 use lumi_codegen::{compile_module, find_runtime_lib_prefer, CodegenOptions};
 #[cfg(feature = "codegen")]
@@ -249,7 +250,8 @@ fn build_file(
     show_ir: bool,
     emit_llvm: bool,
 ) -> Result<()> {
-    let (mut typed, loaded) = check_program(file, auto_parallel, trust_foreign_pure)?;
+    let caps = CapabilitySet::stock().with_auto_parallel(auto_parallel);
+    let (mut typed, loaded) = check_program_with_caps(file, &caps, trust_foreign_pure)?;
     annotate_assert_messages(&mut typed.module, &loaded);
     let option_tags = option_ctor_tags(&typed.module.adts);
     let mut core = lower_hir_with_schemes(&typed.module, &typed.fun_types, &typed.fun_schemes);
@@ -275,19 +277,21 @@ fn build_file(
             link.push(a.clone());
         }
     }
-    compile_module(
-        &core,
-        &CodegenOptions {
-            release,
-            output: output.to_path_buf(),
-            runtime_lib,
-            emit_ir: emit_llvm,
-            option_some_tag: option_tags.0,
-            option_none_tag: option_tags.1,
-            parallel: auto_parallel,
-            link_args: link,
-        },
-    )?;
+    let mut cg_opts = CodegenOptions {
+        release,
+        output: output.to_path_buf(),
+        runtime_lib,
+        emit_ir: emit_llvm,
+        option_some_tag: option_tags.0,
+        option_none_tag: option_tags.1,
+        parallel: caps.auto_parallel,
+        loop_sr: true,
+        tco: true,
+        nsw_iv: true,
+        link_args: link,
+    };
+    caps.apply_codegen(&mut cg_opts);
+    compile_module(&core, &cg_opts)?;
     Ok(())
 }
 

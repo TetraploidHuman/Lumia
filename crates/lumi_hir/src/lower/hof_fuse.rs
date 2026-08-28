@@ -242,6 +242,44 @@ pub(crate) fn try_fuse_hof_build_filter(
     try_fuse_hof_build_extend(ctx, base, HofStage::Filter(f), span)
 }
 
+/// Capability-gated wrappers (Phase C `hof_fuse`).
+pub(crate) fn maybe_fuse_hof_fold(
+    ctx: &LowerCtx,
+    source: &lumi_syntax::Expr,
+    init: &lumi_syntax::Expr,
+    f: &lumi_syntax::Expr,
+    span: Span,
+) -> Option<Expr> {
+    if !ctx.hof_fuse {
+        return None;
+    }
+    try_fuse_hof_fold(ctx, source, init, f, span)
+}
+
+pub(crate) fn maybe_fuse_hof_build_map(
+    ctx: &LowerCtx,
+    base: &lumi_syntax::Expr,
+    f: &lumi_syntax::Expr,
+    span: Span,
+) -> Option<Expr> {
+    if !ctx.hof_fuse {
+        return None;
+    }
+    try_fuse_hof_build_map(ctx, base, f, span)
+}
+
+pub(crate) fn maybe_fuse_hof_build_filter(
+    ctx: &LowerCtx,
+    base: &lumi_syntax::Expr,
+    f: &lumi_syntax::Expr,
+    span: Span,
+) -> Option<Expr> {
+    if !ctx.hof_fuse {
+        return None;
+    }
+    try_fuse_hof_build_filter(ctx, base, f, span)
+}
+
 fn fuse_hof_build_stages(
     ctx: &LowerCtx,
     source: &lumi_syntax::Expr,
