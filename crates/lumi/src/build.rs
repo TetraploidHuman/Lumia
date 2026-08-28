@@ -192,13 +192,64 @@ fn runtime_build_stamp(release: bool) -> PathBuf {
     workspace_target_dir().join(format!(".lumi_rt_built_{profile}_{feat_key}"))
 }
 
+/// Fingerprint `lumi_rt` sources + manifest so stamp invalidates on edits.
+#[cfg(feature = "codegen")]
+fn lumi_rt_source_fingerprint(root: &Path) -> Result<String> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    use std::time::SystemTime;
+
+    let rt_root = root.join("crates/lumi_rt");
+    let mut hasher = DefaultHasher::new();
+    let mut paths = vec![rt_root.join("Cargo.toml")];
+    if let Ok(rd) = std::fs::read_dir(rt_root.join("src")) {
+        for ent in rd.flatten() {
+            let p = ent.path();
+            if p.extension().is_some_and(|e| e == "rs") {
+                paths.push(p);
+            }
+        }
+    }
+    paths.sort();
+    for p in paths {
+        p.to_string_lossy().hash(&mut hasher);
+        let meta = std::fs::metadata(&p)
+            .with_context(|| format!("stat {}", p.display()))?;
+        if let Ok(modified) = meta.modified() {
+            if let Ok(d) = modified.duration_since(SystemTime::UNIX_EPOCH) {
+                d.as_nanos().hash(&mut hasher);
+            }
+        }
+        meta.len().hash(&mut hasher);
+    }
+    Ok(format!("{:016x}", hasher.finish()))
+}
+
+#[cfg(feature = "codegen")]
+fn runtime_stamp_is_fresh(stamp_path: &Path, fingerprint: &str) -> bool {
+    std::fs::read_to_string(stamp_path)
+        .ok()
+        .is_some_and(|s| s.trim() == fingerprint)
+}
+
+#[cfg(feature = "codegen")]
+fn write_runtime_stamp(stamp_path: &Path, fingerprint: &str) -> Result<()> {
+    if let Some(parent) = stamp_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(stamp_path, fingerprint)
+        .with_context(|| format!("write {}", stamp_path.display()))?;
+    Ok(())
+}
+
 #[cfg(feature = "codegen")]
 fn ensure_runtime_built(release: bool) -> Result<()> {
+    let root = compiler_workspace_root();
+    let fingerprint = lumi_rt_source_fingerprint(&root)?;
     let stamp = runtime_build_stamp(release);
-    if stamp.is_file() {
+    if runtime_stamp_is_fresh(&stamp, &fingerprint) {
         return Ok(());
     }
-    let root = compiler_workspace_root();
     let mut cmd = Command::new("cargo");
     cmd.current_dir(&root);
     cmd.arg("build")
@@ -223,9 +274,6 @@ fn ensure_runtime_built(release: bool) -> Result<()> {
     if !status.success() {
         anyhow::bail!("failed to build lumi_rt");
     }
-    if let Some(parent) = stamp.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let _ = std::fs::write(&stamp, "ok");
+    write_runtime_stamp(&stamp, &fingerprint)?;
     Ok(())
 }
