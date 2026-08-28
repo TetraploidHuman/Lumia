@@ -534,7 +534,11 @@ mod tests {
         }
     }
 
-    fn emit_example(rel: &str, release: bool) -> String {
+    fn emit_example_cg(
+        rel: &str,
+        release: bool,
+        patch: impl FnOnce(&mut CodegenOptions),
+    ) -> String {
         let path = workspace_root().join(rel);
         let opts = if release {
             OptOptions::for_build(true)
@@ -542,7 +546,13 @@ mod tests {
             OptOptions::default()
         };
         let core = compile_file_to_optimized(&path, &opts).expect("optimize");
-        emit_verified_llvm_ir(&core, &test_opts()).expect("emit+verify")
+        let mut cg = test_opts();
+        patch(&mut cg);
+        emit_verified_llvm_ir(&core, &cg).expect("emit+verify")
+    }
+
+    fn emit_example(rel: &str, release: bool) -> String {
+        emit_example_cg(rel, release, |_| {})
     }
 
     #[test]
@@ -552,6 +562,100 @@ mod tests {
             ir.contains("musttail") || ir.contains("tailcc") || ir.contains("tail "),
             "expected musttail-related IR in tco_sum; ir snip:\n{}",
             &ir[..ir.len().min(2000)]
+        );
+    }
+
+    #[test]
+    fn emit_tco_sum_without_tco_no_musttail() {
+        let ir = emit_example_cg("examples/tco_sum.lm", false, |cg| cg.tco = false);
+        assert!(
+            !ir.contains("musttail"),
+            "expected no musttail when tco=false; ir snip:\n{}",
+            &ir[..ir.len().min(2000)]
+        );
+    }
+
+    fn ir_calls_runtime(ir: &str, name: &str) -> bool {
+        ir.lines()
+            .any(|line| line.contains("call") && line.contains(name))
+    }
+
+    #[test]
+    fn emit_opt_sr_loop_sr_off_changes_ir() {
+        let on = emit_example_cg("examples/opt_sr_correctness.lm", false, |cg| {
+            cg.loop_sr = true;
+        });
+        let off = emit_example_cg("examples/opt_sr_correctness.lm", false, |cg| {
+            cg.loop_sr = false;
+        });
+        assert_ne!(
+            on, off,
+            "loop_sr=false should change emitted IR for opt_sr_correctness"
+        );
+    }
+
+    #[test]
+    fn emit_opt_sr_without_loop_sr_no_collatz_rt_call() {
+        let ir = emit_example_cg("examples/opt_sr_correctness.lm", false, |cg| {
+            cg.loop_sr = false;
+        });
+        assert!(
+            !ir_calls_runtime(&ir, "lumi_collatz_total")
+                && !ir_calls_runtime(&ir, "lumi_collatz_strided"),
+            "expected no collatz RT call when loop_sr=false; ir snip:\n{}",
+            &ir[..ir.len().min(4000)]
+        );
+    }
+
+    #[test]
+    fn emit_iv_loop_nsw_iv_on_uses_nsw_add() {
+        let src = r#"
+module M
+import lumi.io.{println}
+val main = {
+  var i = 0
+  var s = 0
+  for i < 100 {
+    s = s + i
+    i = i + 1
+  }
+  println(s)
+}
+"#;
+        let core = lumi_opt::compile_source_to_optimized(src, &OptOptions::default()).unwrap();
+        let mut cg = test_opts();
+        cg.nsw_iv = true;
+        let ir = emit_verified_llvm_ir(&core, &cg).expect("emit");
+        assert!(
+            ir.contains("nsw"),
+            "expected NSW add when nsw_iv=true; snip:\n{}",
+            &ir[..ir.len().min(3000)]
+        );
+    }
+
+    #[test]
+    fn emit_iv_loop_nsw_iv_off_uses_checked_add() {
+        let src = r#"
+module M
+import lumi.io.{println}
+val main = {
+  var i = 0
+  var s = 0
+  for i < 100 {
+    s = s + i
+    i = i + 1
+  }
+  println(s)
+}
+"#;
+        let core = lumi_opt::compile_source_to_optimized(src, &OptOptions::default()).unwrap();
+        let mut cg = test_opts();
+        cg.nsw_iv = false;
+        let ir = emit_verified_llvm_ir(&core, &cg).expect("emit");
+        assert!(
+            ir.contains("with.overflow"),
+            "expected checked sadd when nsw_iv=false; snip:\n{}",
+            &ir[..ir.len().min(3000)]
         );
     }
 

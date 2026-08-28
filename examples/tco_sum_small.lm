@@ -1,0 +1,17 @@
+module TcoSumSmall
+
+import lumi.io.{println}
+
+/// Small pure tail recursion — correct with or without musttail TCO.
+val sumTo(n, acc) = {
+    if n == 0 {
+        acc
+    } else {
+        sumTo(n - 1, acc + n)
+    }
+}
+
+val main = {
+    // 5000 * 5001 / 2 = 12_502_500
+    println(sumTo(5000, 0))
+}

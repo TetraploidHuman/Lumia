@@ -13,17 +13,11 @@ use std::path::{Path, PathBuf};
 #[cfg(not(feature = "codegen"))]
 use anyhow::bail;
 #[cfg(feature = "codegen")]
+use lumi::build::{compile_prepared, prepare_with_caps, BuildOptions};
+#[cfg(feature = "codegen")]
 use lumi::caps::CapabilitySet;
 #[cfg(feature = "codegen")]
-use lumi::check::{annotate_assert_messages, check_program_with_caps};
-#[cfg(feature = "codegen")]
-use lumi_codegen::{compile_module, find_runtime_lib_prefer, CodegenOptions};
-#[cfg(feature = "codegen")]
-use lumi_core::{format_module, lower_hir_with_schemes};
-#[cfg(feature = "codegen")]
-use lumi_opt::{optimize, OptOptions};
-#[cfg(feature = "codegen")]
-use std::process::Command;
+use lumi_core::format_module;
 
 #[derive(Parser, Debug)]
 #[command(name = "lumi", version, about = "Lumi compiler")]
@@ -252,113 +246,18 @@ fn build_file(
     emit_llvm: bool,
 ) -> Result<()> {
     let caps = CapabilitySet::stock().with_auto_parallel(auto_parallel);
-    let (mut typed, loaded) = check_program_with_caps(file, &caps, trust_foreign_pure)?;
-    annotate_assert_messages(&mut typed.module, &loaded);
-    let option_tags = option_ctor_tags(&typed.module.adts);
-    let mut core = lower_hir_with_schemes(&typed.module, &typed.fun_types, &typed.fun_schemes);
-    optimize(
-        &mut core,
-        &OptOptions {
-            release,
-            memo_tf: release && memo_tf,
-        },
-    );
-    if show_ir {
-        print!("{}", format_module(&core));
-    }
-
-    ensure_runtime_built(release)?;
-
-    let target_dir = workspace_target_dir();
-    let runtime_lib = find_runtime_lib_prefer(&target_dir, release)?;
-
-    let mut link = link_args;
-    for a in &loaded.link_args {
-        if !link.iter().any(|x| x == a) {
-            link.push(a.clone());
-        }
-    }
-    let mut cg_opts = CodegenOptions {
+    let build_opts = BuildOptions {
         release,
-        output: output.to_path_buf(),
-        runtime_lib,
+        memo_tf,
+        trust_foreign_pure,
         emit_ir: emit_llvm,
-        option_some_tag: option_tags.0,
-        option_none_tag: option_tags.1,
-        parallel: false,
-        loop_sr: false,
-        tco: false,
-        nsw_iv: false,
-        link_args: link,
+        link_args,
     };
-    caps.apply_codegen(&mut cg_opts);
-    compile_module(&core, &cg_opts)?;
-    Ok(())
-}
-
-#[cfg(feature = "codegen")]
-fn option_ctor_tags(adts: &[lumi_hir::AdtDef]) -> (i64, i64) {
-    for a in adts {
-        if a.name == "Option" {
-            let mut some = 0i64;
-            let mut none = 1i64;
-            for v in &a.variants {
-                if v.name == "Some" {
-                    some = v.tag;
-                }
-                if v.name == "None" {
-                    none = v.tag;
-                }
-            }
-            return (some, none);
-        }
+    let prepared = prepare_with_caps(file, &caps, &build_opts)?;
+    if show_ir {
+        print!("{}", format_module(&prepared.core));
     }
-    (0, 1)
-}
-
-/// Workspace root that contains this compiler (`…/Lumi`), baked in at build time.
-/// Used so `lumi build` works outside the repo (e.g. `~/文档`) without hunting cwd.
-#[cfg(feature = "codegen")]
-fn compiler_workspace_root() -> PathBuf {
-    lumi_abi::workspace_root(env!("CARGO_MANIFEST_DIR"))
-}
-
-#[cfg(feature = "codegen")]
-fn workspace_target_dir() -> PathBuf {
-    if let Ok(t) = std::env::var("CARGO_TARGET_DIR") {
-        return PathBuf::from(t);
-    }
-    compiler_workspace_root().join("target")
-}
-
-#[cfg(feature = "codegen")]
-fn ensure_runtime_built(release: bool) -> Result<()> {
-    let root = compiler_workspace_root();
-    let mut cmd = Command::new("cargo");
-    cmd.current_dir(&root);
-    cmd.arg("build")
-        .arg("-p")
-        .arg("lumi_rt")
-        .arg("--no-default-features");
-    // Keep C ABI symbols aligned with this `lumi` binary's opt-* features.
-    let feats: &[&str] = &[
-        #[cfg(feature = "opt-memo")]
-        "opt-memo",
-        #[cfg(feature = "opt-dense-f64")]
-        "opt-dense-f64",
-    ];
-    if !feats.is_empty() {
-        cmd.arg("--features").arg(feats.join(","));
-    }
-    if release {
-        cmd.arg("--release");
-    }
-    let status = cmd
-        .status()
-        .with_context(|| format!("spawn cargo build -p lumi_rt in {}", root.display()))?;
-    if !status.success() {
-        anyhow::bail!("failed to build lumi_rt");
-    }
+    compile_prepared(&prepared, output, &caps, &build_opts)?;
     Ok(())
 }
 

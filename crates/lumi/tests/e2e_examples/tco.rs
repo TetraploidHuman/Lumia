@@ -32,3 +32,8 @@ fn e2e_tco_float_sum() {
     // Pure Float musttail — same closed form as Int `tco_sum`.
     run_example("examples/tco_float_sum.lm", &["2000001000000"]);
 }
+
+#[test]
+fn e2e_tco_sum_small() {
+    run_example("examples/tco_sum_small.lm", &["12502500"]);
+}
