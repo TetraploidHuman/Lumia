@@ -187,6 +187,7 @@ jobs:
               cargo test -p lumi --test cap_regress --no-default-features --features codegen,llvm-dynamic -q
               cargo test -p lumi --test pass_regress --no-default-features --features codegen,llvm-dynamic -q
               cargo test -p lumi --test profile_api --no-default-features --features codegen,llvm-dynamic -q
+              cargo test -p lumi --test repr_regress --no-default-features --features codegen,llvm-dynamic -q
           - label: minus-opt-memo
             run: |
               cargo check -p lumi --no-default-features --features codegen,llvm-dynamic,opt-dense-f64,opt-inline,opt-repr-stack
