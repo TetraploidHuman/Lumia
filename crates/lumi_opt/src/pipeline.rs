@@ -197,11 +197,15 @@ pub struct PassSet {
 }
 
 impl PassSet {
+    fn from_ids(mut ids: Vec<&'static str>) -> Self {
+        ids.sort_unstable();
+        ids.dedup();
+        Self { enabled: ids }
+    }
+
     /// Every builtin pass id (including `memo_tf`).
     pub fn all() -> Self {
-        Self {
-            enabled: registry::ALL.iter().map(|p| p.id).collect(),
-        }
+        Self::from_ids(registry::ALL.iter().map(|p| p.id).collect())
     }
 
     /// Default enabled set for a profile (matches today's Debug/Release content).
@@ -213,13 +217,11 @@ impl PassSet {
         if matches!(profile, OptProfile::Release) {
             ids.push("memo_tf");
         }
-        ids.sort_unstable();
-        ids.dedup();
-        Self { enabled: ids }
+        Self::from_ids(ids)
     }
 
     pub fn contains(&self, id: &str) -> bool {
-        self.enabled.iter().any(|&e| e == id)
+        self.enabled.binary_search_by(|&e| e.cmp(id)).is_ok()
     }
 
     pub fn without(mut self, id: &str) -> Self {
@@ -227,11 +229,10 @@ impl PassSet {
         self
     }
 
-    pub fn with(mut self, id: &'static str) -> Self {
-        if !self.contains(id) {
-            self.enabled.push(id);
-        }
-        self
+    pub fn with(self, id: &'static str) -> Self {
+        let mut ids = self.enabled;
+        ids.push(id);
+        Self::from_ids(ids)
     }
 
     pub fn ids(&self) -> &[&'static str] {
@@ -378,5 +379,54 @@ mod tests {
             }
         }
         assert_eq!(registry::MEMO_TF.stage, PassStage::Plan);
+    }
+
+    #[test]
+    fn schedule_ids_are_registered_and_covered() {
+        for sched in [DEBUG_SCHEDULE, RELEASE_SCHEDULE] {
+            for p in sched {
+                assert!(
+                    registry::info(p.name()).is_some(),
+                    "schedule pass `{}` missing from registry",
+                    p.name()
+                );
+            }
+        }
+        let mut scheduled = std::collections::BTreeSet::new();
+        for sched in [DEBUG_SCHEDULE, RELEASE_SCHEDULE] {
+            for p in sched {
+                scheduled.insert(p.name());
+            }
+        }
+        scheduled.insert("memo_tf");
+        for info in registry::ALL {
+            assert!(
+                scheduled.contains(info.id),
+                "registry pass `{}` never appears in Debug/Release schedule (or memo_tf)",
+                info.id
+            );
+        }
+    }
+
+    #[test]
+    fn all_equals_release_enablement() {
+        assert_eq!(PassSet::all(), PassSet::for_profile(OptProfile::Release));
+    }
+
+    #[test]
+    fn with_without_roundtrip_keeps_stock() {
+        let stock = PassSet::for_profile(OptProfile::Release);
+        let round = stock.clone().without("inline").with("inline");
+        assert!(round.is_stock(OptProfile::Release));
+    }
+
+    #[test]
+    fn custom_set_without_memo_disables_even_if_flag() {
+        let set = PassSet::for_profile(OptProfile::Release).without("memo_tf");
+        assert!(!set.contains("memo_tf"));
+        assert!(!set.is_stock(OptProfile::Release));
+        // Mirrors optimize_with gate: flag alone is not enough once set is custom.
+        let do_memo = true && (set.contains("memo_tf") || set.is_stock(OptProfile::Release));
+        assert!(!do_memo);
     }
 }

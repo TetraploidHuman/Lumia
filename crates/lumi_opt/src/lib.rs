@@ -1,10 +1,10 @@
 //! Optimization pass pipeline (§7.1 / §7.1.1).
 //!
-//! Transparent result reuse lives in [`memo`] (DESIGN §7.5):
+//! Transparent result reuse lives in the `memo` module (DESIGN §7.5):
 //! local CSE/fold/LICM + runtime `T_f` (`memo_tf`).
-//! Escape analysis + small pure inlining live in [`escape`] / [`inline`].
+//! Escape analysis + small pure inlining: [`EscapePass`] / [`InlinePass`].
 //!
-//! Pass inventory and schedules: [`registry`] / [`pipeline`] (Phase A modular assembly).
+//! Pass inventory and schedules: [`ALL_PASSES`] / [`PassSet`] / [`OptProfile`].
 
 mod copy_elim;
 mod dense_f64_sr;
@@ -91,13 +91,15 @@ pub fn compile_file_to_optimized(
 pub fn optimize(module: &mut CoreModule, opts: &OptOptions) {
     let profile = opts.profile();
     let set = PassSet::for_profile(profile);
-    // Stock path: static slice, no allocation.
+    // Stock path: static schedule slice (no allocation).
     optimize_with(module, profile, &set, opts.memo_tf).expect("stock PassSet must validate");
 }
 
 /// Assemble from [`OptProfile`] + [`PassSet`].
 ///
-/// `memo_tf` is applied before CSE when requested **and** `memo_tf` ∈ set.
+/// Memo planning runs when `memo_tf` is true and either the set enables `memo_tf`
+/// or this is a stock profile (Debug omits the id from the set for naming, but
+/// still honors [`OptOptions::memo_tf`] for tooling compatibility).
 /// Filtered sets allocate a schedule `Vec`; stock sets use a static slice.
 pub fn optimize_with(
     module: &mut CoreModule,
@@ -107,7 +109,7 @@ pub fn optimize_with(
 ) -> Result<(), String> {
     validate_pass_set(set)?;
 
-    let do_memo = memo_tf && set.contains("memo_tf");
+    let do_memo = memo_tf && (set.contains("memo_tf") || set.is_stock(profile));
     // Plan transparent Memo on the pre-CSE module (reuse evidence needs duplicate calls).
     let memo_plan = if do_memo {
         Some(plan_memo_tf(module))
