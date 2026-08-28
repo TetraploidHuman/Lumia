@@ -190,6 +190,60 @@ fn heap_shared_mirror_membership() {
 }
 
 #[test]
+fn arc_map_overlay_retains_parent() {
+    use crate::common::{cow_rc_is_unique, header_from_payload, TYPE_MAP};
+    use crate::map_set::{map_alloc_overlay, map_is_overlay, map_overlay_parent};
+    lumi_set_mm_mode(1);
+    let parent = lumi_alloc(8, TYPE_MAP);
+    unsafe {
+        *(parent as *mut i64) = 0; // empty linear
+        // Alloc starts rc=1 under Arc; retain so overlay + external alias both live.
+        crate::common::cow_rc_retain(parent, false);
+        assert!(!cow_rc_is_unique(parent, false)); // rc≥2
+        let overlay = map_alloc_overlay(parent, &[(1, 2)]);
+        assert!(map_is_overlay(overlay));
+        assert_eq!(map_overlay_parent(overlay), parent);
+        // Overlay retain bumped parent again (rc≥3).
+        assert!((*header_from_payload(parent)).rc >= 3);
+        // Drop overlay via Arc free-on-zero (rc starts at 1).
+        crate::common::cow_rc_release(overlay, false);
+        assert!(
+            crate::common::is_heap_payload(parent),
+            "parent must survive overlay free"
+        );
+        // Drop the extra external retain + final alloc retain.
+        crate::common::cow_rc_release(parent, false);
+        crate::common::cow_rc_release(parent, false);
+        assert!(!crate::common::is_heap_payload(parent));
+    }
+    lumi_set_mm_mode(0);
+}
+
+#[test]
+fn arc_sweep_dead_slice_releases_parent_without_panic() {
+    use crate::common::TYPE_LIST;
+    use crate::list::lumi_list_slice;
+    lumi_set_mm_mode(1);
+    let parent = lumi_alloc(list_payload_bytes(2), TYPE_LIST);
+    unsafe {
+        *(parent as *mut i64) = 2;
+        *(parent as *mut i64).add(1) = 10;
+        *(parent as *mut i64).add(2) = 20;
+        crate::common::list_rc_retain(parent); // rc=2
+    }
+    let slice = lumi_list_slice(parent, 0);
+    // Drop external parent alias; parent kept alive by slice retain.
+    crate::common::list_rc_release(parent);
+    assert!(crate::common::is_heap_payload(parent));
+    // Neither rooted — STW collect must reclaim both without RefCell panic.
+    let _ = (slice, parent);
+    lumi_gc_collect();
+    assert!(!crate::common::is_heap_payload(slice));
+    assert!(!crate::common::is_heap_payload(parent));
+    lumi_set_mm_mode(0);
+}
+
+#[test]
 fn parallel_mark_drain_collects() {
     use crate::gc::{gc_reset_stats_for_test, lumi_gc_full_count};
     gc_reset_stats_for_test();

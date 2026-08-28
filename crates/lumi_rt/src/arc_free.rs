@@ -16,6 +16,21 @@ use crate::map_set::{
 use crate::mm::{current_mm_mode, MmMode};
 use lumi_abi::{list_elem_is_float, map_key_is_float, map_val_is_float, set_elem_is_float, tid_base};
 use std::alloc::dealloc;
+use std::cell::Cell;
+
+thread_local! {
+    /// When set, [`maybe_free_on_zero`] only skips (sweep will dealloc the doomed set).
+    static IN_SWEEP_RECLAIM: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Enter / leave sweep reclaim so nested `rc→0` does not free mid-pass.
+pub(crate) fn sweep_reclaim_enter() {
+    IN_SWEEP_RECLAIM.set(true);
+}
+
+pub(crate) fn sweep_reclaim_leave() {
+    IN_SWEEP_RECLAIM.set(false);
+}
 
 /// After `rc` drops to 0 in Arc mode, release children then unregister + dealloc.
 ///
@@ -26,7 +41,7 @@ pub(crate) fn maybe_free_on_zero(payload: *mut u8, _adt_ok: bool) {
     if current_mm_mode() != MmMode::Arc || payload.is_null() {
         return;
     }
-    if crate::gc::is_full_marking() {
+    if IN_SWEEP_RECLAIM.get() || crate::gc::is_full_marking() {
         return;
     }
     if !is_heap_payload(payload) {
@@ -52,6 +67,12 @@ unsafe fn free_heap_object(obj: *mut ObjectHeader) {
     crate::cycle_cand::arc_free_leave();
     // Children may have armed PENDING while IN_ARC_FREE blocked flush.
     crate::gc::collect_if_cycle_pending();
+}
+
+/// Release child aliases of a doomed object **without** unregister/dealloc.
+/// Used by sweep after `HEAP_*` borrows are dropped (avoids RefCell re-entry).
+pub(crate) unsafe fn release_children_for_sweep(obj: *mut ObjectHeader) {
+    release_children(obj);
 }
 
 unsafe fn release_children(obj: *mut ObjectHeader) {
@@ -244,26 +265,36 @@ unsafe fn unregister_header(obj: *mut ObjectHeader, nbytes: usize) {
         r.borrow_mut().remove(&obj);
     });
     if from_old {
-        HEAP_OLD.with(|h| {
+        let removed = HEAP_OLD.with(|h| {
             let mut v = h.borrow_mut();
             if let Some(i) = v.iter().position(|&x| x == obj) {
                 v.swap_remove(i);
+                true
+            } else {
+                false
             }
         });
-        BYTES_OLD.with(|b| {
-            let mut live = b.borrow_mut();
-            *live = live.saturating_sub(nbytes);
-        });
+        if removed {
+            BYTES_OLD.with(|b| {
+                let mut live = b.borrow_mut();
+                *live = live.saturating_sub(nbytes);
+            });
+        }
     } else {
-        HEAP_YOUNG.with(|h| {
+        let removed = HEAP_YOUNG.with(|h| {
             let mut v = h.borrow_mut();
             if let Some(i) = v.iter().position(|&x| x == obj) {
                 v.swap_remove(i);
+                true
+            } else {
+                false
             }
         });
-        BYTES_YOUNG.with(|b| {
-            let mut live = b.borrow_mut();
-            *live = live.saturating_sub(nbytes);
-        });
+        if removed {
+            BYTES_YOUNG.with(|b| {
+                let mut live = b.borrow_mut();
+                *live = live.saturating_sub(nbytes);
+            });
+        }
     }
 }

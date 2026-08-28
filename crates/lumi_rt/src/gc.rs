@@ -206,21 +206,23 @@ impl MarkSweep {
         promote_survivors: bool,
         // When sweeping the old generation, also drop `HEAP_OLD_SET` entries.
         from_old: bool,
-    ) -> (usize /*freed*/, usize /*promoted*/) {
+    ) -> (
+        usize,                 /*freed*/
+        usize,                 /*promoted*/
+        Vec<*mut ObjectHeader>, /*doomed — reclaim after borrow drops*/
+    ) {
         let mut freed = 0usize;
         let mut promoted = 0usize;
         let mut survivors: Vec<*mut ObjectHeader> = Vec::new();
+        let mut doomed: Vec<*mut ObjectHeader> = Vec::new();
         let mut i = 0;
         while i < heap.len() {
             let obj = heap[i];
             unsafe {
                 if (*obj).marked == 0 {
                     freed = freed.saturating_add((*obj).size as usize);
-                    // Slice views bump the parent's COW RC; drop that alias on free.
-                    if tid_base((*obj).type_id) == TYPE_LIST_SLICE {
-                        let parent = *(payload_ptr(obj) as *const i64) as *mut u8;
-                        crate::common::list_rc_release(parent);
-                    }
+                    // Unregister only — child RC / dealloc happens in [`reclaim_doomed`]
+                    // after this `HEAP_*` borrow ends (Arc free-on-zero must not re-enter).
                     HEAP_SET.with(|s| {
                         s.borrow_mut().remove(&obj);
                     });
@@ -233,9 +235,8 @@ impl MarkSweep {
                     REMEMBERED.with(|r| {
                         r.borrow_mut().remove(&obj);
                     });
-                    let layout = header_layout((*obj).size as usize);
-                    dealloc(obj as *mut u8, layout);
                     heap.swap_remove(i);
+                    doomed.push(obj);
                     continue;
                 }
                 (*obj).marked = 0;
@@ -257,7 +258,41 @@ impl MarkSweep {
             });
             HEAP_OLD.with(|old| old.borrow_mut().extend(survivors));
         }
-        (freed, promoted)
+        (freed, promoted, doomed)
+    }
+
+    /// Drop child aliases then dealloc doomed headers (call only when `HEAP_*` unlocked).
+    fn reclaim_doomed(doomed: Vec<*mut ObjectHeader>) {
+        let arc = crate::mm::current_mm_mode() == crate::mm::MmMode::Arc;
+        crate::arc_free::sweep_reclaim_enter();
+        for &obj in &doomed {
+            unsafe {
+                if arc {
+                    crate::arc_free::release_children_for_sweep(obj);
+                } else {
+                    // MS: only drop explicit view retains (slice / map overlay parent).
+                    let tid = tid_base((*obj).type_id);
+                    let payload = payload_ptr(obj);
+                    if tid == TYPE_LIST_SLICE {
+                        let parent = *(payload as *const i64) as *mut u8;
+                        crate::common::list_rc_release(parent);
+                    } else if tid == TYPE_MAP {
+                        let n0 = *(payload as *const i64);
+                        if n0 == crate::map_set::MAP_OVERLAY_MARK {
+                            let parent = crate::map_set::map_overlay_parent(payload);
+                            crate::common::cow_rc_release(parent, false);
+                        }
+                    }
+                }
+            }
+        }
+        crate::arc_free::sweep_reclaim_leave();
+        for obj in doomed {
+            unsafe {
+                let layout = header_layout((*obj).size as usize);
+                dealloc(obj as *mut u8, layout);
+            }
+        }
     }
 
     fn minor_collect() {
@@ -266,10 +301,11 @@ impl MarkSweep {
             Self::drain_full_mark();
         }
         Self::mark_from_roots_minor();
-        let (freed, promoted) = HEAP_YOUNG.with(|h| {
+        let (freed, promoted, doomed) = HEAP_YOUNG.with(|h| {
             let mut young = h.borrow_mut();
             Self::sweep_vec(&mut young, true, false)
         });
+        Self::reclaim_doomed(doomed);
         HEAP_OLD.with(|h| Self::clear_marks(&h.borrow()));
         REMEMBERED.with(|r| r.borrow_mut().clear());
         BYTES_YOUNG.with(|y| {
@@ -293,16 +329,19 @@ impl MarkSweep {
     }
 
     fn sweep_after_full_mark() {
-        let freed_y = HEAP_YOUNG.with(|h| {
+        let (freed_y, doomed_y) = HEAP_YOUNG.with(|h| {
             let mut young = h.borrow_mut();
-            let (freed, _) = Self::sweep_vec(&mut young, false, false);
-            freed
+            let (freed, _, doomed) = Self::sweep_vec(&mut young, false, false);
+            (freed, doomed)
         });
-        let freed_o = HEAP_OLD.with(|h| {
+        let (freed_o, doomed_o) = HEAP_OLD.with(|h| {
             let mut old = h.borrow_mut();
-            let (freed, _) = Self::sweep_vec(&mut old, false, true);
-            freed
+            let (freed, _, doomed) = Self::sweep_vec(&mut old, false, true);
+            (freed, doomed)
         });
+        let mut doomed = doomed_y;
+        doomed.extend(doomed_o);
+        Self::reclaim_doomed(doomed);
         REMEMBERED.with(|r| r.borrow_mut().clear());
         BYTES_YOUNG.with(|y| {
             let mut live = y.borrow_mut();

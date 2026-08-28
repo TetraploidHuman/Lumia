@@ -248,6 +248,8 @@ pub(crate) unsafe fn map_alloc_overlay(parent: *mut u8, pairs: &[(i64, i64)]) ->
     *dst = MAP_OVERLAY_MARK;
     *dst.add(1) = parent as i64;
     *dst.add(2) = dn;
+    // Retain parent like list slices — Arc free-on-zero / sweep must release it.
+    crate::common::cow_rc_retain(parent, /*adt_ok=*/ false);
     for (i, (k, v)) in pairs.iter().enumerate() {
         *dst.add(3 + i * 2) = *k;
         *dst.add(4 + i * 2) = *v;

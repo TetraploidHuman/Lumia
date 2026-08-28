@@ -371,13 +371,21 @@ pub(crate) enum HeapGen {
 }
 
 /// Single membership probe: TLS `HEAP_SET`, then optional process-global mirror.
+///
+/// Gen classification uses **local** `HEAP_OLD_SET` only. Cross-thread Arc free of
+/// another thread's objects is unsupported (nursery vectors stay TLS).
 pub(crate) fn heap_gen(payload: *mut u8) -> Option<HeapGen> {
     if payload.is_null() {
         return None;
     }
     let h = header_from_payload(payload);
     let in_tls = HEAP_SET.with(|set| set.borrow().contains(&h));
-    if !in_tls && !crate::heap_shared::heap_shared_contains(h) {
+    if !in_tls {
+        // Shared-only hit: treat as heap for retain/release probes, but do not
+        // invent Young/Old for write-barrier accounting on a foreign nursery.
+        if crate::heap_shared::heap_shared_contains(h) {
+            return Some(HeapGen::Old);
+        }
         return None;
     }
     if HEAP_OLD_SET.with(|set| set.borrow().contains(&h)) {

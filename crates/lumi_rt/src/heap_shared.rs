@@ -75,8 +75,11 @@ pub(crate) fn heap_shared_insert(h: *mut ObjectHeader) {
     if !heap_shared_enabled() || h.is_null() {
         return;
     }
-    if let Ok(mut g) = shared_set().lock() {
-        g.insert(SharedHdr(h));
+    match shared_set().lock() {
+        Ok(mut g) => {
+            g.insert(SharedHdr(h));
+        }
+        Err(_) => crate::common::trap_abort("lumi: heap_shared insert lock poisoned"),
     }
 }
 
@@ -84,8 +87,11 @@ pub(crate) fn heap_shared_remove(h: *mut ObjectHeader) {
     if !heap_shared_enabled() || h.is_null() {
         return;
     }
-    if let Ok(mut g) = shared_set().lock() {
-        g.remove(&SharedHdr(h));
+    match shared_set().lock() {
+        Ok(mut g) => {
+            g.remove(&SharedHdr(h));
+        }
+        Err(_) => crate::common::trap_abort("lumi: heap_shared remove lock poisoned"),
     }
 }
 
@@ -100,11 +106,21 @@ pub(crate) fn heap_shared_contains(h: *mut ObjectHeader) -> bool {
 }
 
 /// Snapshot for STW parallel mark when the shared mirror is active.
+/// Always unions the calling thread's TLS `HEAP_SET` so a dual-write miss cannot
+/// under-mark local objects.
 pub(crate) fn heap_shared_snapshot() -> Option<FxHashSet<*mut ObjectHeader>> {
     if !heap_shared_enabled() {
         return None;
     }
-    shared_set().lock().ok().map(|g| g.iter().map(|h| h.as_ptr()).collect())
+    let mut snap: FxHashSet<*mut ObjectHeader> = shared_set()
+        .lock()
+        .ok()
+        .map(|g| g.iter().map(|h| h.as_ptr()).collect())
+        .unwrap_or_default();
+    crate::common::HEAP_SET.with(|s| {
+        snap.extend(s.borrow().iter().copied());
+    });
+    Some(snap)
 }
 
 #[cfg(test)]
