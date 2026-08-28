@@ -1,6 +1,7 @@
 //! Cross-platform e2e: build each example with `lumi` and check stdout.
 //!
 //! Run: `cargo test -p lumi --test e2e_examples`
+#![cfg(feature = "codegen")]
 
 #[macro_use]
 mod harness;

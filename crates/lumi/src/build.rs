@@ -37,7 +37,7 @@ impl Default for BuildOptions {
     fn default() -> Self {
         Self {
             release: false,
-            memo_tf: false,
+            memo_tf: true,
             trust_foreign_pure: false,
             emit_ir: false,
             link_args: Vec::new(),

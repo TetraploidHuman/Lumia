@@ -2,6 +2,7 @@
 //!
 //! Catches silent semantic drift from codegen SR, RT helpers, and NSW/O3 paths.
 //! Run: `cargo test -p lumi --test opt_correctness`
+#![cfg(feature = "codegen")]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

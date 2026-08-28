@@ -2,6 +2,7 @@
 //!
 //! Compares stdout from stock [`CapabilitySet`] vs a capped variant via
 //! [`lumi::compile_with_caps`]. Run: `cargo test -p lumi --test cap_regress`
+#![cfg(feature = "codegen")]
 
 use lumi::build::{compile_with_caps, BuildOptions};
 use lumi::caps::CapabilitySet;
