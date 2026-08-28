@@ -51,7 +51,10 @@ pub use common::{
     TYPE_SET_F64, TYPE_STRING,
 };
 
-pub use gc::{lumi_alloc, lumi_gc_collect, lumi_root_pop, lumi_root_push, lumi_write_barrier};
+pub use gc::{
+    lumi_alloc, lumi_gc_collect, lumi_gc_full_count, lumi_gc_minor_count, lumi_gc_print_stats,
+    lumi_root_pop, lumi_root_push, lumi_write_barrier,
+};
 pub use mm::{lumi_mm_mode, lumi_set_mm_mode, MmMode};
 
 pub use affine2::lumi_affine2_rem_sum;

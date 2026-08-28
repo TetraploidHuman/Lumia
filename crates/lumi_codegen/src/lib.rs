@@ -86,6 +86,8 @@ pub struct CodegenOptions {
     pub show_memo_stats: bool,
     /// Runtime memory manager mode passed to `lumi_set_mm_mode` (0=ms, 1=arc stub).
     pub mm_mode: i64,
+    /// Print GC collection stats at process exit (`--show-gc-stats`).
+    pub show_gc_stats: bool,
 }
 
 /// Emit LLVM IR for `core`, run `module.verify()`, and return the IR text.
@@ -184,6 +186,7 @@ fn emit_llvm_module<'ctx>(
         &cg.funs.adt_show_kinds,
         &cg.funs.adt_variant_names,
         opts.show_memo_stats,
+        opts.show_gc_stats,
         opts.mm_mode,
     );
 
@@ -272,6 +275,7 @@ fn emit_c_main<'ctx>(
     adt_show_kinds: &HashMap<String, u16>,
     adt_variant_names: &HashMap<String, Vec<String>>,
     show_memo_stats: bool,
+    show_gc_stats: bool,
     mm_mode: i64,
 ) {
     let i32_ty = context.i32_type();
@@ -300,6 +304,14 @@ fn emit_c_main<'ctx>(
             print_stats,
             &[context.i64_type().const_int(force as u64, false).into()],
             "memo_stats",
+        );
+    }
+    if let Some(print_gc) = module.get_function("lumi_gc_print_stats") {
+        let force = if show_gc_stats { 1 } else { 0 };
+        let _ = builder.build_call(
+            print_gc,
+            &[context.i64_type().const_int(force as u64, false).into()],
+            "gc_stats",
         );
     }
     let _ = builder.build_return(Some(&i32_ty.const_int(0, false)));
@@ -555,6 +567,7 @@ mod tests {
             nsw_iv: true,
             link_args: vec![],
             show_memo_stats: false,
+            show_gc_stats: false,
             mm_mode: 0,
         }
     }

@@ -37,6 +37,12 @@ thread_local! {
     /// When false, old pressure still does a classic STW full collect.
     /// Overridden by `LUMI_GC_INCREMENTAL=0|false|off|stw`.
     static INCREMENTAL_FULL: Cell<bool> = const { Cell::new(true) };
+    /// Observability: collection counts / bytes reclaimed.
+    static GC_MINOR_COUNT: Cell<u64> = const { Cell::new(0) };
+    static GC_FULL_COUNT: Cell<u64> = const { Cell::new(0) };
+    static GC_BYTES_FREED: Cell<u64> = const { Cell::new(0) };
+    /// Parallel mark worker count (1 = sequential). Set via `LUMI_GC_MARK_THREADS`.
+    static MARK_THREADS: Cell<usize> = const { Cell::new(1) };
 }
 
 fn incremental_full_enabled() -> bool {
@@ -52,12 +58,17 @@ fn incremental_full_enabled() -> bool {
     }
 }
 
-/// Scale incremental mark quantum when `LUMI_GC_MARK_THREADS>1` (stub for future parallel mark).
+/// Scale incremental mark quantum / worker count when `LUMI_GC_MARK_THREADS>1`.
 pub(crate) fn configure_mark_parallelism(threads: usize) {
     let n = threads.max(1);
+    MARK_THREADS.with(|c| c.set(n));
     if n > 1 {
         MARK_QUANTUM.with(|c| c.set(c.get().saturating_mul(n)));
     }
+}
+
+fn note_gc_freed(bytes: usize) {
+    GC_BYTES_FREED.with(|c| c.set(c.get().saturating_add(bytes as u64)));
 }
 
 impl MarkSweep {
@@ -218,6 +229,8 @@ impl MarkSweep {
             let mut live = o.borrow_mut();
             *live = live.saturating_add(promoted);
         });
+        note_gc_freed(freed);
+        GC_MINOR_COUNT.with(|c| c.set(c.get() + 1));
     }
 
     fn full_collect_stw() {
@@ -247,6 +260,8 @@ impl MarkSweep {
             let mut live = o.borrow_mut();
             *live = live.saturating_sub(freed_o);
         });
+        note_gc_freed(freed_y.saturating_add(freed_o));
+        GC_FULL_COUNT.with(|c| c.set(c.get() + 1));
     }
 
     fn begin_full_mark() {
@@ -582,6 +597,48 @@ pub extern "C" fn lumi_write_barrier(obj: *mut u8, field: u32, new_ptr: *mut u8)
 #[no_mangle]
 pub extern "C" fn lumi_gc_collect() {
     BACKEND.with(|b| b.borrow_mut().collect());
+}
+
+fn gc_stats_wanted(force: bool) -> bool {
+    if force {
+        return true;
+    }
+    match std::env::var("LUMI_GC_STATS") {
+        Ok(v) => matches!(v.trim(), "1" | "true" | "yes" | "on"),
+        Err(_) => false,
+    }
+}
+
+/// Print GC collection counters to stderr when `force != 0` or `LUMI_GC_STATS=1`.
+#[no_mangle]
+pub extern "C" fn lumi_gc_print_stats(force: i64) {
+    if !gc_stats_wanted(force != 0) {
+        return;
+    }
+    eprintln!(
+        "lumi gc: minor={} full={} bytes_freed={} mark_threads={}",
+        GC_MINOR_COUNT.with(|c| c.get()),
+        GC_FULL_COUNT.with(|c| c.get()),
+        GC_BYTES_FREED.with(|c| c.get()),
+        MARK_THREADS.with(|c| c.get()),
+    );
+}
+
+#[no_mangle]
+pub extern "C" fn lumi_gc_minor_count() -> i64 {
+    GC_MINOR_COUNT.with(|c| c.get() as i64)
+}
+
+#[no_mangle]
+pub extern "C" fn lumi_gc_full_count() -> i64 {
+    GC_FULL_COUNT.with(|c| c.get() as i64)
+}
+
+#[cfg(test)]
+pub(crate) fn gc_reset_stats_for_test() {
+    GC_MINOR_COUNT.with(|c| c.set(0));
+    GC_FULL_COUNT.with(|c| c.set(0));
+    GC_BYTES_FREED.with(|c| c.set(0));
 }
 
 #[cfg(test)]

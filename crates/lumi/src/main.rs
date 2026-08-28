@@ -134,6 +134,9 @@ enum Commands {
         /// Memory manager: `ms` (mark-sweep, default) or `arc` (stub; same backend today).
         #[arg(long = "mm", default_value = "ms")]
         mm: String,
+        /// Print GC collection stats to stderr at exit.
+        #[arg(long = "show-gc-stats")]
+        show_gc_stats: bool,
         /// List Phase C capabilities (and CoreOpt catalog), then exit.
         #[arg(long = "list-caps")]
         list_caps: bool,
@@ -233,6 +236,7 @@ fn main() -> Result<()> {
             show_memo_stats,
             no_memo_dense,
             mm,
+            show_gc_stats,
             list_caps,
             list_passes,
         } => {
@@ -252,6 +256,7 @@ fn main() -> Result<()> {
                     show_memo_stats,
                     no_memo_dense,
                     mm,
+                    show_gc_stats,
                     list_caps,
                     list_passes,
                 );
@@ -273,6 +278,7 @@ fn main() -> Result<()> {
                     show_memo_stats,
                     no_memo_dense,
                     mm,
+                    show_gc_stats,
                     link,
                 )?;
                 if list_caps {
@@ -359,6 +365,7 @@ fn build_profile(
     show_memo_stats: bool,
     no_memo_dense: bool,
     mm: String,
+    show_gc_stats: bool,
     link: Vec<String>,
 ) -> Result<CompileProfile> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -381,6 +388,7 @@ fn build_profile(
     )
     .map(|p| {
         p.with_show_memo_stats(show_memo_stats)
+            .with_show_gc_stats(show_gc_stats)
             .with_memo_prefer_dense(prefer_dense)
             .with_mm_mode(mm_mode)
     })

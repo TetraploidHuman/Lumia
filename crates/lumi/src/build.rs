@@ -148,6 +148,7 @@ pub fn compile_prepared(
         nsw_iv: false,
         link_args: link,
         show_memo_stats: profile.show_memo_stats,
+        show_gc_stats: profile.show_gc_stats,
         mm_mode: profile.mm_mode,
     };
     profile.caps.apply_codegen(&mut cg_opts);

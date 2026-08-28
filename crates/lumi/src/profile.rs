@@ -31,6 +31,8 @@ pub struct CompileProfile {
     pub memo_prefer_dense: bool,
     /// Memory manager: 0 = mark-sweep (default), 1 = arc stub (`--mm arc`).
     pub mm_mode: i64,
+    /// Print GC stats at exit (`--show-gc-stats` / `LUMI_GC_STATS`).
+    pub show_gc_stats: bool,
     #[cfg(feature = "codegen")]
     pass_set: PassSet,
 }
@@ -54,6 +56,7 @@ impl CompileProfile {
             show_memo_stats: false,
             memo_prefer_dense: true,
             mm_mode: 0,
+            show_gc_stats: false,
             #[cfg(feature = "codegen")]
             pass_set: PassSet::for_profile(OptProfile::from_release(release)),
         }
@@ -112,6 +115,11 @@ impl CompileProfile {
 
     pub fn with_mm_mode(mut self, mode: i64) -> Self {
         self.mm_mode = mode;
+        self
+    }
+
+    pub fn with_show_gc_stats(mut self, on: bool) -> Self {
+        self.show_gc_stats = on;
         self
     }
 

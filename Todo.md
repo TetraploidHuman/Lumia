@@ -49,7 +49,7 @@
 ## 工具链
 
 - [x] **`lumi doc`**：CLI 生成 Markdown（`///`、公开 `val`/`type`/`foreign`、`@exports`）；`priv` 默认隐藏。
-- [~] **并发 GC**：分代 STW minor 不变；**增量并发 full mark**（worklist + Dijkstra 写屏障着色 + 黑分配 + 收尾 remark）已落地。`LUMI_GC_MARK_THREADS` / `--mm arc` 为 hook（quantum 放大 / 模式 stub）；真并行 mark 与共享堆、真正 ARC 后端仍待。
+- [~] **并发 GC**：分代 STW minor 不变；**增量并发 full mark**（worklist + Dijkstra 写屏障着色 + 黑分配 + 收尾 remark）已落地。`LUMI_GC_MARK_THREADS` / `--mm arc` 为 hook（quantum 放大 / 模式 stub）；`--show-gc-stats` / `LUMI_GC_STATS` 已可观测。**真并行 mark** 受阻于堆成员集 TLS（`HEAP_SET` 等）——需先共享堆元数据再拆 worker；真正 ARC 后端仍待。
 
 ## 架构清理（已落地，详见 git 历史）
 
