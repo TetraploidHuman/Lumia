@@ -10,13 +10,19 @@ pub mod doc;
 pub mod load;
 pub mod lsp;
 pub mod pkg;
+pub mod profile;
 pub mod vis;
 
 #[cfg(feature = "codegen")]
-pub use build::{compile_prepared, compile_with_caps, prepare_with_caps, BuildOptions, PreparedProgram};
+pub use build::{
+    compile_prepared, compile_with_caps, compile_with_profile, prepare_with_caps,
+    prepare_with_profile, BuildOptions, PreparedProgram,
+};
 pub use caps::{cap_info, CapInfo, CapPhase, CapabilitySet, INVENTORY as CAP_INVENTORY};
+pub use profile::{caps_from_cli, CompileProfile};
 pub use check::{
-    annotate_assert_messages, check_program, check_program_with_caps, check_program_with_overlays,
-    check_source, check_source_recovering, OverlayCheckError, PartialCheck,
+    annotate_assert_messages, check_program, check_program_with_caps,
+    check_program_with_overlays, check_program_with_profile, check_source,
+    check_source_recovering, OverlayCheckError, PartialCheck,
 };
 pub use load::{load_program, load_program_with_overlays, LoadedProgram, SourceFile};

@@ -1,10 +1,11 @@
 //! Lumi CLI — thin front-end over the `lumi` library.
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
-use lumi::check::check_program;
+use clap::{Args, Parser, Subcommand};
+use lumi::check::check_program_with_profile;
 use lumi::load::path_label;
 use lumi::pkg;
+use lumi::profile::{caps_from_cli, CompileProfile};
 use lumi::{doc, lsp};
 use lumi_syntax::{format_diagnostic, parse_module, stamp_module};
 use std::fs;
@@ -13,11 +14,41 @@ use std::path::{Path, PathBuf};
 #[cfg(not(feature = "codegen"))]
 use anyhow::bail;
 #[cfg(feature = "codegen")]
-use lumi::build::{compile_prepared, prepare_with_caps, BuildOptions};
-#[cfg(feature = "codegen")]
-use lumi::caps::CapabilitySet;
+use lumi::build::{compile_prepared, prepare_with_profile};
 #[cfg(feature = "codegen")]
 use lumi_core::format_module;
+
+/// Phase C capability toggles (CLI `--no-*`; default = all on).
+#[derive(Args, Debug, Clone, Default)]
+struct CapFlags {
+    /// Disable auto-parallel `List.map` / `List.fold` (DESIGN §11.1).
+    #[arg(long = "no-parallel")]
+    no_parallel: bool,
+    /// Disable HIR map/filter/fold deforestation.
+    #[arg(long = "no-hof-fuse")]
+    no_hof_fuse: bool,
+    /// Disable codegen loop pattern SR (collatz / number theory / …).
+    #[arg(long = "no-loop-sr")]
+    no_loop_sr: bool,
+    /// Disable musttail SCC tail-call optimization.
+    #[arg(long = "no-tco")]
+    no_tco: bool,
+    /// Disable proven-safe NSW arithmetic annotations.
+    #[arg(long = "no-nsw-iv")]
+    no_nsw_iv: bool,
+}
+
+impl CapFlags {
+    fn to_caps(&self) -> lumi::CapabilitySet {
+        caps_from_cli(
+            self.no_parallel,
+            self.no_hof_fuse,
+            self.no_loop_sr,
+            self.no_tco,
+            self.no_nsw_iv,
+        )
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "lumi", version, about = "Lumi compiler")]
@@ -31,12 +62,14 @@ enum Commands {
     /// Type- and effect-check only
     Check {
         file: PathBuf,
-        /// Disable auto-parallel `List.map` (default: on when safe).
-        #[arg(long = "no-parallel")]
-        no_parallel: bool,
+        #[command(flatten)]
+        caps: CapFlags,
         /// Trust `foreign "C" pure` (FFI purity is not verified).
         #[arg(long = "trust-foreign-pure")]
         trust_foreign_pure: bool,
+        /// List Phase C capabilities (and CoreOpt catalog), then exit.
+        #[arg(long = "list-caps")]
+        list_caps: bool,
     },
     /// Compile to a native executable
     Build {
@@ -48,9 +81,8 @@ enum Commands {
         /// Disable transparent Memo `T_f` even in `--release` (for benchmarks).
         #[arg(long = "no-memo", alias = "no-memo-l2")]
         no_memo: bool,
-        /// Disable auto-parallel `List.map` (default: on when safe; DESIGN §11.1).
-        #[arg(long = "no-parallel")]
-        no_parallel: bool,
+        #[command(flatten)]
+        caps: CapFlags,
         /// Trust `foreign "C" pure` (FFI purity is not verified).
         #[arg(long = "trust-foreign-pure")]
         trust_foreign_pure: bool,
@@ -61,6 +93,12 @@ enum Commands {
         show_ir: bool,
         #[arg(long)]
         emit_llvm: bool,
+        /// List Phase C capabilities (and CoreOpt catalog), then exit.
+        #[arg(long = "list-caps")]
+        list_caps: bool,
+        /// List mid-end pass enablement for this profile, then exit.
+        #[arg(long = "list-passes")]
+        list_passes: bool,
     },
     /// Format source files (basic pretty-printer)
     Fmt {
@@ -116,10 +154,18 @@ fn main() -> Result<()> {
     match cli.cmd {
         Commands::Check {
             file,
-            no_parallel,
+            caps,
             trust_foreign_pure,
+            list_caps,
         } => {
-            let _ = check_program(&file, !no_parallel, trust_foreign_pure)?;
+            let profile = CompileProfile::stock(false)
+                .with_caps(caps.to_caps())
+                .with_trust_foreign_pure(trust_foreign_pure);
+            if list_caps {
+                print!("{}", profile.format_list_caps());
+                return Ok(());
+            }
+            let _ = check_program_with_profile(&file, &profile)?;
             println!("ok");
             Ok(())
         }
@@ -128,11 +174,13 @@ fn main() -> Result<()> {
             output,
             release,
             no_memo,
-            no_parallel,
+            caps,
             trust_foreign_pure,
             link,
             show_ir,
             emit_llvm,
+            list_caps,
+            list_passes,
         } => {
             #[cfg(not(feature = "codegen"))]
             {
@@ -141,11 +189,13 @@ fn main() -> Result<()> {
                     output,
                     release,
                     no_memo,
-                    no_parallel,
+                    caps,
                     trust_foreign_pure,
                     link,
                     show_ir,
                     emit_llvm,
+                    list_caps,
+                    list_passes,
                 );
                 bail!(
                     "`lumi build` needs a codegen-enabled binary \
@@ -154,27 +204,28 @@ fn main() -> Result<()> {
             }
             #[cfg(feature = "codegen")]
             {
+                let profile = build_profile(
+                    release,
+                    !no_memo,
+                    caps,
+                    trust_foreign_pure,
+                    emit_llvm,
+                    link,
+                )?;
+                if list_caps {
+                    print!("{}", profile.format_list_caps());
+                    return Ok(());
+                }
+                if list_passes {
+                    print!("{}", profile.format_list_passes());
+                    return Ok(());
+                }
                 let out = output.unwrap_or_else(|| {
                     file.file_stem()
                         .map(PathBuf::from)
                         .unwrap_or_else(|| PathBuf::from("a.out"))
                 });
-                let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-                let mut validated_link = Vec::with_capacity(link.len());
-                for a in &link {
-                    validated_link.push(pkg::validate_cli_link_arg(&cwd, a)?);
-                }
-                build_file(
-                    &file,
-                    &out,
-                    release,
-                    !no_memo,
-                    !no_parallel,
-                    trust_foreign_pure,
-                    validated_link,
-                    show_ir,
-                    emit_llvm,
-                )?;
+                build_file(&file, &out, &profile, show_ir)?;
                 println!("wrote {}", out.display());
                 Ok(())
             }
@@ -234,31 +285,34 @@ fn main() -> Result<()> {
 }
 
 #[cfg(feature = "codegen")]
-fn build_file(
-    file: &Path,
-    output: &Path,
+fn build_profile(
     release: bool,
     memo_tf: bool,
-    auto_parallel: bool,
+    caps: CapFlags,
     trust_foreign_pure: bool,
-    link_args: Vec<String>,
-    show_ir: bool,
-    emit_llvm: bool,
-) -> Result<()> {
-    let caps = CapabilitySet::stock().with_auto_parallel(auto_parallel);
-    let build_opts = BuildOptions {
-        release,
-        memo_tf,
-        trust_foreign_pure,
-        emit_ir: emit_llvm,
-        link_args,
-    };
-    let prepared = prepare_with_caps(file, &caps, &build_opts)?;
+    emit_ir: bool,
+    link: Vec<String>,
+) -> Result<CompileProfile> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut validated_link = Vec::with_capacity(link.len());
+    for a in &link {
+        validated_link.push(pkg::validate_cli_link_arg(&cwd, a)?);
+    }
+    Ok(CompileProfile::stock(release)
+        .with_caps(caps.to_caps())
+        .with_memo_tf(memo_tf)
+        .with_trust_foreign_pure(trust_foreign_pure)
+        .with_emit_ir(emit_ir)
+        .with_link_args(validated_link))
+}
+
+#[cfg(feature = "codegen")]
+fn build_file(file: &Path, output: &Path, profile: &CompileProfile, show_ir: bool) -> Result<()> {
+    let prepared = prepare_with_profile(file, profile)?;
     if show_ir {
         print!("{}", format_module(&prepared.core));
     }
-    compile_prepared(&prepared, output, &caps, &build_opts)?;
-    Ok(())
+    compile_prepared(&prepared, output, profile)
 }
 
 fn fmt_file(path: &Path, check: bool) -> Result<()> {

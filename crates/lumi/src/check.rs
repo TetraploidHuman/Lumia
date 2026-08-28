@@ -1,6 +1,7 @@
 //! Shared program typecheck + assert annotation for CLI and LSP.
 
 use crate::caps::CapabilitySet;
+use crate::profile::CompileProfile;
 use crate::load::{
     load_program, load_program_with_overlays, path_label, LoadedProgram, SourceFile,
 };
@@ -30,10 +31,25 @@ pub fn check_program_with_caps(
     caps: &CapabilitySet,
     trust_foreign_pure: bool,
 ) -> Result<(TypedModule, LoadedProgram)> {
+    check_program_with_profile(
+        file,
+        &CompileProfile::stock(false)
+            .with_caps(caps.clone())
+            .with_trust_foreign_pure(trust_foreign_pure),
+    )
+}
+
+/// Typecheck with a full [`CompileProfile`] (Phase E).
+pub fn check_program_with_profile(
+    file: &Path,
+    profile: &CompileProfile,
+) -> Result<(TypedModule, LoadedProgram)> {
     let loaded = load_program(file)?;
-    let hir = lower_module_with_options(&loaded.module, &caps.to_lower_options())
+    let hir = lower_module_with_options(&loaded.module, &profile.caps.to_lower_options())
         .map_err(|e| diag_err(&loaded, e.span, "lower", &e.message))?;
-    let opts = caps.to_typecheck_options(trust_foreign_pure || loaded.trust_foreign_pure);
+    let opts = profile
+        .caps
+        .to_typecheck_options(profile.trust_foreign_pure || loaded.trust_foreign_pure);
     let typed =
         typecheck_hir(&hir, loaded.visibility.clone(), &opts).map_err(|e| type_err(&loaded, e))?;
     Ok((typed, loaded))

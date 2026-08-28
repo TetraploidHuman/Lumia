@@ -169,3 +169,78 @@ jobs:
 
       - name: Cargo test (lumi CLI + e2e + opt correctness)
         run: cargo test -p lumi --tests ${{ matrix.lumi_features }}
+
+  # Phase E: slim / codegen-only / opt-* subset compile matrix (Linux).
+  feature-matrix:
+    name: features (${{ matrix.label }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: slim
+            run: cargo build -p lumi --no-default-features && cargo test -p lumi --lib --no-default-features -q
+          - label: codegen-only
+            run: cargo check -p lumi --no-default-features --features codegen,llvm-dynamic
+          - label: minus-opt-memo
+            run: cargo check -p lumi --no-default-features --features codegen,llvm-dynamic,opt-dense-f64,opt-inline,opt-repr-stack
+          - label: minus-opt-dense-f64
+            run: cargo check -p lumi --no-default-features --features codegen,llvm-dynamic,opt-memo,opt-inline,opt-repr-stack
+          - label: minus-opt-inline
+            run: cargo check -p lumi --no-default-features --features codegen,llvm-dynamic,opt-memo,opt-dense-f64,opt-repr-stack
+          - label: minus-opt-repr-stack
+            run: cargo check -p lumi --no-default-features --features codegen,llvm-dynamic,opt-memo,opt-dense-f64,opt-inline
+          - label: lumi_opt-features
+            run: |
+              cargo check -p lumi_opt --no-default-features
+              cargo check -p lumi_opt --no-default-features --features opt-memo
+              cargo check -p lumi_opt --no-default-features --features opt-dense-f64
+              cargo check -p lumi_opt --no-default-features --features opt-inline
+              cargo check -p lumi_opt --no-default-features --features opt-repr-stack
+              cargo check -p lumi_opt --no-default-features --features opt-memo,opt-dense-f64,opt-inline,opt-repr-stack
+          - label: lumi_codegen-features
+            run: |
+              cargo check -p lumi_codegen --no-default-features
+              cargo check -p lumi_codegen --no-default-features --features opt-memo
+              cargo check -p lumi_codegen --no-default-features --features opt-dense-f64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          key: feature-matrix-${{ matrix.label }}
+
+      - name: Install LLVM 21 (Linux)
+        run: |
+          set -euxo pipefail
+          expected_sha=03878e08f47b66cc95bc4b544b0db3c6d9ce8d60e6cf2492ae357984330a9eae
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          echo "${expected_sha}  /tmp/llvm.sh" | sha256sum -c -
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 21
+          sudo apt-get install -y llvm-21-dev libllvm21 clang-21 lld-21
+
+      - name: Configure LLVM env (Linux)
+        run: |
+          set -euxo pipefail
+          prefix=/usr/lib/llvm-21
+          test -x "$prefix/bin/llvm-config"
+          if [[ ! -e "$prefix/lib/libLLVM.so" ]]; then
+            so=$(find "$prefix/lib" /usr/lib/x86_64-linux-gnu -maxdepth 1 \
+              \( -name 'libLLVM-21.so*' -o -name 'libLLVM.so.*' \) 2>/dev/null | head -n 1 || true)
+            sudo ln -sfn "$so" "$prefix/lib/libLLVM.so"
+          fi
+          echo "LLVM_SYS_211_PREFIX=$prefix" >> "$GITHUB_ENV"
+          echo "LLVM_PATH=$prefix" >> "$GITHUB_ENV"
+          echo "$prefix/bin" >> "$GITHUB_PATH"
+          echo "LD_LIBRARY_PATH=$prefix/lib:/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+
+      - name: Feature matrix check
+        run: ${{ matrix.run }}

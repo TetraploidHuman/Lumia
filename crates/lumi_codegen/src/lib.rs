@@ -74,8 +74,6 @@ pub struct CodegenOptions {
     /// Tags for `Option::{Some, None}` from the source module (defaults 0/1).
     pub option_some_tag: i64,
     pub option_none_tag: i64,
-    /// Auto-parallel pure list maps (DESIGN §11.1).
-    pub parallel: bool,
     /// Loop pattern SR (collatz / number theory / float / …). Default on.
     pub loop_sr: bool,
     /// Musttail SCC TCO. Default on.
@@ -526,7 +524,6 @@ mod tests {
             runtime_lib: PathBuf::from("/tmp/unused_rt"),
             option_some_tag: 0,
             option_none_tag: 1,
-            parallel: true,
             loop_sr: true,
             tco: true,
             nsw_iv: true,

@@ -97,6 +97,8 @@ impl CapabilitySet {
         }
     }
 
+    /// Enabled Phase C capability ids (`enabled_ids` does not list CoreOpt
+    /// passes — use [`CompileProfile::pass_names`] or `--list-passes`).
     pub fn enabled_ids(&self) -> Vec<&'static str> {
         INVENTORY
             .iter()
@@ -118,10 +120,9 @@ impl CapabilitySet {
         }
     }
 
-    /// Overlay Phase C flags onto an existing [`CodegenOptions`] skeleton.
+    /// Overlay Phase C codegen flags onto [`CodegenOptions`].
     #[cfg(feature = "codegen")]
     pub fn apply_codegen(&self, opts: &mut CodegenOptions) {
-        opts.parallel = self.auto_parallel;
         opts.loop_sr = self.loop_sr;
         opts.tco = self.tco;
         opts.nsw_iv = self.nsw_iv;

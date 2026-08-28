@@ -1,9 +1,11 @@
 //! Check → lower → opt → codegen pipeline for embedders and tests.
 
 #[cfg(feature = "codegen")]
+use crate::profile::CompileProfile;
+#[cfg(feature = "codegen")]
 use crate::caps::CapabilitySet;
 #[cfg(feature = "codegen")]
-use crate::check::{annotate_assert_messages, check_program_with_caps};
+use crate::check::{annotate_assert_messages, check_program_with_profile};
 #[cfg(feature = "codegen")]
 use crate::load::LoadedProgram;
 #[cfg(feature = "codegen")]
@@ -14,8 +16,6 @@ use lumi_codegen::{compile_module, find_runtime_lib_prefer, CodegenOptions};
 use lumi_core::{lower_hir_with_schemes, CoreModule};
 #[cfg(feature = "codegen")]
 use lumi_hir::AdtDef;
-#[cfg(feature = "codegen")]
-use lumi_opt::{optimize, OptOptions};
 #[cfg(feature = "codegen")]
 use std::path::{Path, PathBuf};
 #[cfg(feature = "codegen")]
@@ -56,22 +56,14 @@ pub struct PreparedProgram {
 
 /// Typecheck, lower, and optimize — stops before codegen (for `--show-ir`).
 #[cfg(feature = "codegen")]
-pub fn prepare_with_caps(
-    file: &Path,
-    caps: &CapabilitySet,
-    opts: &BuildOptions,
-) -> Result<PreparedProgram> {
-    let (mut typed, loaded) = check_program_with_caps(file, caps, opts.trust_foreign_pure)?;
+pub fn prepare_with_profile(file: &Path, profile: &CompileProfile) -> Result<PreparedProgram> {
+    let (mut typed, loaded) = check_program_with_profile(file, profile)?;
     annotate_assert_messages(&mut typed.module, &loaded);
     let option_tags = option_ctor_tags(&typed.module.adts);
     let mut core = lower_hir_with_schemes(&typed.module, &typed.fun_types, &typed.fun_schemes);
-    optimize(
-        &mut core,
-        &OptOptions {
-            release: opts.release,
-            memo_tf: opts.release && opts.memo_tf,
-        },
-    );
+    profile
+        .optimize_core(&mut core)
+        .map_err(|e| anyhow::anyhow!("optimize: {e}"))?;
     Ok(PreparedProgram {
         core,
         loaded,
@@ -80,7 +72,28 @@ pub fn prepare_with_caps(
     })
 }
 
-/// Full compile: typecheck with `caps`, optimize, link executable at `output`.
+/// Full compile with an explicit [`CompileProfile`].
+#[cfg(feature = "codegen")]
+pub fn compile_with_profile(
+    file: &Path,
+    output: &Path,
+    profile: &CompileProfile,
+) -> Result<()> {
+    let prepared = prepare_with_profile(file, profile)?;
+    compile_prepared(&prepared, output, profile)
+}
+
+/// Typecheck, lower, and optimize with a [`CapabilitySet`] (legacy helper).
+#[cfg(feature = "codegen")]
+pub fn prepare_with_caps(
+    file: &Path,
+    caps: &CapabilitySet,
+    opts: &BuildOptions,
+) -> Result<PreparedProgram> {
+    prepare_with_profile(file, &CompileProfile::from_build_options(opts, caps.clone()))
+}
+
+/// Full compile with caps + build options (legacy helper).
 #[cfg(feature = "codegen")]
 pub fn compile_with_caps(
     file: &Path,
@@ -88,8 +101,11 @@ pub fn compile_with_caps(
     caps: &CapabilitySet,
     opts: &BuildOptions,
 ) -> Result<()> {
-    let prepared = prepare_with_caps(file, caps, opts)?;
-    compile_prepared(&prepared, output, caps, opts)
+    compile_with_profile(
+        file,
+        output,
+        &CompileProfile::from_build_options(opts, caps.clone()),
+    )
 }
 
 /// Codegen + link for an already-optimized module.
@@ -97,34 +113,32 @@ pub fn compile_with_caps(
 pub fn compile_prepared(
     prepared: &PreparedProgram,
     output: &Path,
-    caps: &CapabilitySet,
-    opts: &BuildOptions,
+    profile: &CompileProfile,
 ) -> Result<()> {
-    ensure_runtime_built(opts.release)?;
+    ensure_runtime_built(profile.release)?;
 
     let target_dir = workspace_target_dir();
-    let runtime_lib = find_runtime_lib_prefer(&target_dir, opts.release)?;
+    let runtime_lib = find_runtime_lib_prefer(&target_dir, profile.release)?;
 
-    let mut link = opts.link_args.clone();
+    let mut link = profile.link_args.clone();
     for a in &prepared.loaded.link_args {
         if !link.iter().any(|x| x == a) {
             link.push(a.clone());
         }
     }
     let mut cg_opts = CodegenOptions {
-        release: opts.release,
+        release: profile.release,
         output: output.to_path_buf(),
-        emit_ir: opts.emit_ir,
+        emit_ir: profile.emit_ir,
         runtime_lib,
         option_some_tag: prepared.option_some_tag,
         option_none_tag: prepared.option_none_tag,
-        parallel: false,
         loop_sr: false,
         tco: false,
         nsw_iv: false,
         link_args: link,
     };
-    caps.apply_codegen(&mut cg_opts);
+    profile.caps.apply_codegen(&mut cg_opts);
     compile_module(&prepared.core, &cg_opts)
 }
 
