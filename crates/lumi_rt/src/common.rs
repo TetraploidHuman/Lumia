@@ -19,8 +19,9 @@ pub use lumi_abi::{
 /// Stack Lit* layouts must use **3** `i64` header words so `header_from_payload` matches:
 /// word0 = `type_id|size`, word1 = `marked|rc`, word2 = `_pad`.
 ///
-/// - `rc`: COW refcount for List / Slice / ADT / Map / Set
-///   (`RC_SHARED` = immortal; alloc starts at 1). Other type_ids leave `rc` at 0.
+/// - `rc`: COW / Arc refcount for List / Slice / Iota / ADT / Map / Set
+///   (`RC_SHARED` = immortal; those types start at 1). Under `--mm arc`, all
+///   heap objects start at 1. Otherwise non-COW type_ids leave `rc` at 0.
 /// - `_pad`: **type_id-dependent**
 ///   - `TYPE_ADT`: 64-bit per-field Float layout mask (bit `i` ⇒ field `i` is Float)
 ///   - All other type_ids: initialized to 0 (lists no longer store RC here)
@@ -162,6 +163,7 @@ pub(crate) fn list_rc_is_unique(payload: *mut u8) -> bool {
 pub(crate) fn cow_tid_ok(tid: u32, adt_ok: bool) -> bool {
     let b = tid_base(tid);
     b == TYPE_LIST
+        || b == TYPE_LIST_IOTA
         || b == TYPE_LIST_SLICE
         || b == TYPE_MAP
         || b == TYPE_SET

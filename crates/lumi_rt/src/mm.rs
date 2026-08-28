@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MmMode {
     MarkSweep = 0,
-    /// Eager free-on-zero for COW types + mark-sweep cycle collection.
+    /// Eager free-on-zero for heap objects + mark-sweep cycle collection.
     Arc = 1,
 }
 

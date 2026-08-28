@@ -685,7 +685,7 @@ pub(crate) unsafe fn finish_alloc(mem: *mut u8, nbytes: usize, type_id: u32) -> 
     (*header).rc = if crate::mm::current_mm_mode() == MmMode::Arc
         || matches!(
             tid_base(type_id),
-            TYPE_LIST | TYPE_LIST_SLICE | TYPE_ADT | TYPE_MAP | TYPE_SET
+            TYPE_LIST | TYPE_LIST_IOTA | TYPE_LIST_SLICE | TYPE_ADT | TYPE_MAP | TYPE_SET
         )
     {
         1

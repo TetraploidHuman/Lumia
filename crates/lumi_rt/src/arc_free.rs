@@ -8,7 +8,7 @@ use crate::common::{
     cow_rc_release, cow_tid_ok, header_from_payload, header_layout, heap_rc_release,
     is_heap_payload, payload_ptr, ObjectHeader, BYTES_OLD, BYTES_YOUNG, HEAP_OLD, HEAP_OLD_SET,
     HEAP_SET, HEAP_YOUNG, REMEMBERED, TYPE_ADT, TYPE_BYTES, TYPE_CHAR, TYPE_CLOSURE, TYPE_LIST,
-    TYPE_LIST_SLICE, TYPE_MAP, TYPE_SET, TYPE_STRING,
+    TYPE_LIST_IOTA, TYPE_LIST_SLICE, TYPE_MAP, TYPE_SET, TYPE_STRING,
 };
 use crate::mm::{current_mm_mode, MmMode};
 use lumi_abi::{list_elem_is_float, map_key_is_float, map_val_is_float, set_elem_is_float, tid_base};
@@ -47,6 +47,8 @@ unsafe fn free_heap_object(obj: *mut ObjectHeader) {
     let layout = header_layout(nbytes);
     dealloc(obj as *mut u8, layout);
     crate::cycle_cand::arc_free_leave();
+    // Children may have armed PENDING while IN_ARC_FREE blocked flush.
+    crate::cycle_cand::try_flush_cycle_collect();
 }
 
 unsafe fn release_children(obj: *mut ObjectHeader) {
@@ -66,6 +68,7 @@ unsafe fn release_children(obj: *mut ObjectHeader) {
                 }
             }
         }
+        TYPE_LIST_IOTA => {}
         TYPE_LIST_SLICE => {
             let parent = *(payload as *const i64) as *mut u8;
             cow_rc_release(parent, false);
