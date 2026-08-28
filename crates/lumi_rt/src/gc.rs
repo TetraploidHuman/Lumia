@@ -10,6 +10,8 @@
 
 use std::alloc::{alloc, dealloc};
 use std::cell::{Cell, RefCell};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 
 use crate::common::{
     header_from_payload, header_layout, is_heap_payload, is_old_header, is_young_payload,
@@ -24,6 +26,7 @@ use crate::memo;
 use lumi_abi::{
     list_elem_is_float, map_key_is_float, map_val_is_float, set_elem_is_float, tid_base,
 };
+use rustc_hash::FxHashSet;
 
 thread_local! {
     /// When true, [`mark_value`] / map-set markers only follow young payloads.
@@ -43,6 +46,26 @@ thread_local! {
     static GC_BYTES_FREED: Cell<u64> = const { Cell::new(0) };
     /// Parallel mark worker count (1 = sequential). Set via `LUMI_GC_MARK_THREADS`.
     static MARK_THREADS: Cell<usize> = const { Cell::new(1) };
+    /// When set, [`mark_value`] / [`shade`] use a shared heap snapshot (parallel drain).
+    static PAR_MARK_ACTIVE: Cell<bool> = const { Cell::new(false) };
+    static PAR_MARK_SNAP: RefCell<Option<Arc<SendHdrSet>>> = const { RefCell::new(None) };
+    static PAR_MARK_GREYS: RefCell<Vec<SendHdr>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Raw header pointer for STW parallel mark (mutator stopped; workers only shade).
+struct SendHdr(*mut ObjectHeader);
+// SAFETY: drain is STW; workers only touch `marked` via CAS and read object fields.
+unsafe impl Send for SendHdr {}
+
+struct SendHdrSet(FxHashSet<*mut ObjectHeader>);
+// SAFETY: snapshot is immutable after construction during STW parallel drain.
+unsafe impl Send for SendHdrSet {}
+unsafe impl Sync for SendHdrSet {}
+
+impl SendHdrSet {
+    fn contains(&self, h: *mut ObjectHeader) -> bool {
+        self.0.contains(&h)
+    }
 }
 
 fn incremental_full_enabled() -> bool {
@@ -306,7 +329,65 @@ impl MarkSweep {
         if !FULL_MARKING.get() {
             return;
         }
-        while Self::mark_quantum(usize::MAX / 4) {}
+        let threads = MARK_THREADS.with(|c| c.get());
+        if threads > 1 {
+            Self::drain_full_mark_parallel(threads);
+        } else {
+            while Self::mark_quantum(usize::MAX / 4) {}
+        }
+    }
+
+    /// STW parallel drain: snapshot `HEAP_SET`, scan greys on worker threads, merge
+    /// newly shaded children on the collector thread. Mutator is stopped.
+    fn drain_full_mark_parallel(threads: usize) {
+        let n_workers = threads.min(8).max(2);
+        loop {
+            if !FULL_MARKING.get() {
+                return;
+            }
+            let batch = MARK_WORK.with(|w| std::mem::take(&mut *w.borrow_mut()));
+            if batch.is_empty() {
+                Self::mark_from_roots_full();
+                remark_black_objects();
+                if MARK_WORK.with(|w| w.borrow().is_empty()) {
+                    FULL_MARKING.set(false);
+                    Self::sweep_after_full_mark();
+                    return;
+                }
+                continue;
+            }
+            let snap = HEAP_SET.with(|s| Arc::new(SendHdrSet(s.borrow().clone())));
+            let chunk_size = (batch.len() / n_workers).max(1);
+            let chunks: Vec<Vec<SendHdr>> = batch
+                .chunks(chunk_size)
+                .map(|c| c.iter().copied().map(SendHdr).collect())
+                .collect();
+            std::thread::scope(|scope| {
+                let mut joins = Vec::with_capacity(chunks.len());
+                for chunk in chunks {
+                    let snap = Arc::clone(&snap);
+                    joins.push(scope.spawn(move || {
+                        PAR_MARK_SNAP.with(|s| *s.borrow_mut() = Some(snap));
+                        PAR_MARK_ACTIVE.set(true);
+                        for SendHdr(obj) in chunk {
+                            scan_fields(obj);
+                        }
+                        PAR_MARK_ACTIVE.set(false);
+                        let greys = PAR_MARK_GREYS.with(|g| std::mem::take(&mut *g.borrow_mut()));
+                        PAR_MARK_SNAP.with(|s| *s.borrow_mut() = None);
+                        greys
+                    }));
+                }
+                for j in joins {
+                    if let Ok(greys) = j.join() {
+                        MARK_WORK.with(|w| {
+                            w.borrow_mut()
+                                .extend(greys.into_iter().map(|SendHdr(p)| p));
+                        });
+                    }
+                }
+            });
+        }
     }
 
     fn full_collect() {
@@ -362,11 +443,22 @@ fn shade(obj: *mut ObjectHeader) {
         return;
     }
     unsafe {
-        if (*obj).marked != 0 {
+        // Atomic CAS so parallel drain workers do not race on `marked`.
+        let marked_ptr = std::ptr::addr_of_mut!((*obj).marked);
+        // SAFETY: `marked` is a plain `u32` field; exclusive access during STW drain
+        // except for concurrent CAS among mark workers (intended).
+        let atom = AtomicU32::from_ptr(marked_ptr);
+        if atom
+            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
             return;
         }
-        (*obj).marked = 1;
-        MARK_WORK.with(|w| w.borrow_mut().push(obj));
+        if PAR_MARK_ACTIVE.get() {
+            PAR_MARK_GREYS.with(|g| g.borrow_mut().push(SendHdr(obj)));
+        } else {
+            MARK_WORK.with(|w| w.borrow_mut().push(obj));
+        }
     }
 }
 
@@ -452,6 +544,22 @@ fn remark_black_objects() {
 /// Used by `map_set` mark helpers; respects [`MARK_MINOR`] / [`FULL_MARKING`].
 pub(crate) fn mark_value(x: i64) {
     let p = x as *mut u8;
+    if PAR_MARK_ACTIVE.get() {
+        if p.is_null() {
+            return;
+        }
+        let h = header_from_payload(p);
+        let ok = PAR_MARK_SNAP.with(|s| {
+            s.borrow()
+                .as_ref()
+                .map(|snap| snap.contains(h))
+                .unwrap_or(false)
+        });
+        if ok {
+            mark(h);
+        }
+        return;
+    }
     if MARK_MINOR.get() {
         if is_young_payload(p) {
             mark(header_from_payload(p));
@@ -463,15 +571,18 @@ pub(crate) fn mark_value(x: i64) {
 
 pub(crate) fn mark(obj: *mut ObjectHeader) {
     unsafe {
-        if obj.is_null() || (*obj).marked != 0 {
+        if obj.is_null() {
+            return;
+        }
+        // Parallel workers use shade (CAS) even though FULL_MARKING is TLS-local.
+        if PAR_MARK_ACTIVE.get() || FULL_MARKING.get() {
+            shade(obj);
+            return;
+        }
+        if (*obj).marked != 0 {
             return;
         }
         if MARK_MINOR.get() && is_old_header(obj) {
-            return;
-        }
-        if FULL_MARKING.get() {
-            // Worklist mode: paint black and enqueue; fields scanned when popped.
-            shade(obj);
             return;
         }
         (*obj).marked = 1;
