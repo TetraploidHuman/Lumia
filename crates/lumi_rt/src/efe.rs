@@ -762,7 +762,7 @@ unsafe fn f64_elems_mut(list: *mut u8) -> (*mut f64, usize) {
     ((list as *mut i64).add(1) as *mut f64, n)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "opt-dense-f64"))]
 mod tests {
     use super::*;
     use crate::dense_f64::lumi_list_f64_zeros;

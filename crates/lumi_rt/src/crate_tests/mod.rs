@@ -38,4 +38,5 @@ mod eq;
 mod gc;
 mod list;
 mod map_set;
+#[cfg(feature = "opt-memo")]
 mod memo;

@@ -4,10 +4,15 @@ version.workspace = true
 edition.workspace = true
 
 [features]
+default = ["opt-memo", "opt-dense-f64", "opt-repr-stack"]
 # Prefer shared libLLVM over static archives (much faster link).
 # Linux CI (apt.llvm.org) and local Nix prefixes ship libLLVM.so; enable via
 # `--features lumi_codegen/llvm-dynamic`. Windows CI stays prefer-static.
 llvm-dynamic = ["inkwell/llvm21-1-force-dynamic"]
+# Must match lumi_rt / lumi_opt same-named features when linking.
+opt-memo = []
+opt-dense-f64 = []
+opt-repr-stack = []
 
 [dependencies]
 lumi_abi.workspace = true
@@ -21,7 +26,12 @@ rustc-hash = { workspace = true }
 thiserror.workspace = true
 
 [dev-dependencies]
-lumi_opt.workspace = true
+lumi_opt = { workspace = true, features = [
+    "opt-memo",
+    "opt-dense-f64",
+    "opt-inline",
+    "opt-repr-stack",
+] }
 
 [lints]
 workspace = true

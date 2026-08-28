@@ -19,6 +19,7 @@ use crate::common::{
     TYPE_LIST_SLICE, TYPE_MAP, TYPE_SET, YOUNG_LIMIT,
 };
 use crate::map_set::{map_mark_payload, set_mark_payload};
+#[cfg(feature = "opt-memo")]
 use crate::memo;
 use lumi_abi::{
     list_elem_is_float, map_key_is_float, map_val_is_float, set_elem_is_float, tid_base,
@@ -71,6 +72,7 @@ impl MarkSweep {
                 }
             }
         });
+        #[cfg(feature = "opt-memo")]
         memo::for_each_memo_i64(|bits| {
             let p = bits as *mut u8;
             if is_heap_payload(p) {
@@ -102,6 +104,7 @@ impl MarkSweep {
                 }
             }
         });
+        #[cfg(feature = "opt-memo")]
         memo::for_each_memo_i64(|bits| {
             let p = bits as *mut u8;
             if is_young_payload(p) {

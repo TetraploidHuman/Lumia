@@ -5,12 +5,16 @@
 //! hard requires (e.g. `repr_select` ⇒ `escape`).
 
 use crate::copy_elim::CopyElimPass;
+#[cfg(feature = "opt-dense-f64")]
 use crate::dense_f64_sr::DenseF64SrPass;
+#[cfg(feature = "opt-repr-stack")]
 use crate::escape::EscapePass;
 use crate::fusion::ConcatIdentPass;
+#[cfg(feature = "opt-inline")]
 use crate::inline::InlinePass;
 use crate::memo::{cse_module, ConstFoldPass, LicmPass};
 use crate::registry;
+#[cfg(feature = "opt-repr-stack")]
 use crate::repr_select::ReprSelect;
 use crate::specialize_const::SpecializeConstPass;
 use crate::Pass;
@@ -103,10 +107,14 @@ pub(crate) enum PipelinePass {
     ConstFold,
     SpecializeConst,
     Licm,
+    #[cfg(feature = "opt-repr-stack")]
     Escape,
+    #[cfg(feature = "opt-dense-f64")]
     DenseF64Sr,
+    #[cfg(feature = "opt-inline")]
     Inline,
     ConcatIdent,
+    #[cfg(feature = "opt-repr-stack")]
     ReprSelect,
     CopyElim,
 }
@@ -118,10 +126,14 @@ impl PipelinePass {
             Self::ConstFold => "const_fold",
             Self::SpecializeConst => "specialize_const",
             Self::Licm => "licm",
+            #[cfg(feature = "opt-repr-stack")]
             Self::Escape => "escape",
+            #[cfg(feature = "opt-dense-f64")]
             Self::DenseF64Sr => "dense_f64_sr",
+            #[cfg(feature = "opt-inline")]
             Self::Inline => "inline",
             Self::ConcatIdent => "concat_ident",
+            #[cfg(feature = "opt-repr-stack")]
             Self::ReprSelect => "repr_select",
             Self::CopyElim => "copy_elim",
         }
@@ -133,10 +145,14 @@ impl PipelinePass {
             Self::ConstFold => ConstFoldPass.run(module),
             Self::SpecializeConst => SpecializeConstPass.run(module),
             Self::Licm => LicmPass.run(module),
+            #[cfg(feature = "opt-repr-stack")]
             Self::Escape => EscapePass.run(module),
+            #[cfg(feature = "opt-dense-f64")]
             Self::DenseF64Sr => DenseF64SrPass.run(module),
+            #[cfg(feature = "opt-inline")]
             Self::Inline => InlinePass.run(module),
             Self::ConcatIdent => ConcatIdentPass.run(module),
+            #[cfg(feature = "opt-repr-stack")]
             Self::ReprSelect => ReprSelect.run(module),
             Self::CopyElim => CopyElimPass.run(module),
         }
@@ -153,7 +169,7 @@ impl Pass for CsePass {
     }
 }
 
-/// Debug schedule — exact historical order.
+/// Debug schedule — exact historical order (slots omit disabled features).
 pub(crate) const DEBUG_SCHEDULE: &[PipelinePass] = &[
     PipelinePass::Cse,
     PipelinePass::ConstFold,
@@ -162,12 +178,15 @@ pub(crate) const DEBUG_SCHEDULE: &[PipelinePass] = &[
     PipelinePass::ConstFold,
     PipelinePass::Licm,
     // Same dense-float SR as Release so Debug matches hot RT kernels (no Inline).
+    #[cfg(feature = "opt-dense-f64")]
     PipelinePass::DenseF64Sr,
+    #[cfg(feature = "opt-repr-stack")]
     PipelinePass::Escape,
+    #[cfg(feature = "opt-repr-stack")]
     PipelinePass::ReprSelect,
 ];
 
-/// Release schedule — exact historical order.
+/// Release schedule — exact historical order (slots omit disabled features).
 pub(crate) const RELEASE_SCHEDULE: &[PipelinePass] = &[
     PipelinePass::Cse,
     PipelinePass::ConstFold,
@@ -175,17 +194,22 @@ pub(crate) const RELEASE_SCHEDULE: &[PipelinePass] = &[
     PipelinePass::SpecializeConst,
     PipelinePass::ConstFold,
     PipelinePass::Licm,
+    #[cfg(feature = "opt-dense-f64")]
     PipelinePass::DenseF64Sr,
+    #[cfg(feature = "opt-inline")]
     PipelinePass::Inline,
     // Inlined nests / composed helpers — second SR before fold/specialize.
+    #[cfg(feature = "opt-dense-f64")]
     PipelinePass::DenseF64Sr,
     // Inline exposes fresh literals / builtins — fold, specialize, then escape.
     PipelinePass::ConstFold,
     PipelinePass::SpecializeConst,
     PipelinePass::ConstFold,
+    #[cfg(feature = "opt-repr-stack")]
     PipelinePass::Escape,
     PipelinePass::ConcatIdent,
     PipelinePass::ConstFold,
+    #[cfg(feature = "opt-repr-stack")]
     PipelinePass::ReprSelect,
     PipelinePass::CopyElim,
 ];
@@ -214,7 +238,7 @@ impl PassSet {
             OptProfile::Debug => DEBUG_SCHEDULE.iter().map(|p| p.name()).collect(),
             OptProfile::Release => RELEASE_SCHEDULE.iter().map(|p| p.name()).collect(),
         };
-        if matches!(profile, OptProfile::Release) {
+        if cfg!(feature = "opt-memo") && matches!(profile, OptProfile::Release) {
             ids.push("memo_tf");
         }
         Self::from_ids(ids)
@@ -333,6 +357,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "opt-repr-stack")]
     fn repr_select_requires_escape() {
         let set = PassSet::for_profile(OptProfile::Release).without("escape");
         let err = validate_pass_set(&set).expect_err("must fail");
@@ -341,6 +366,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "opt-repr-stack")]
     fn disable_escape_and_repr_is_ok() {
         let set = PassSet::for_profile(OptProfile::Release)
             .without("escape")
@@ -353,11 +379,14 @@ mod tests {
 
     #[test]
     fn escape_before_repr_in_both_schedules() {
-        for sched in [DEBUG_SCHEDULE, RELEASE_SCHEDULE] {
-            let escape_i = sched.iter().position(|p| *p == PipelinePass::Escape);
-            let repr_i = sched.iter().position(|p| *p == PipelinePass::ReprSelect);
-            assert!(escape_i.is_some() && repr_i.is_some());
-            assert!(escape_i.unwrap() < repr_i.unwrap());
+        #[cfg(feature = "opt-repr-stack")]
+        {
+            for sched in [DEBUG_SCHEDULE, RELEASE_SCHEDULE] {
+                let escape_i = sched.iter().position(|p| *p == PipelinePass::Escape);
+                let repr_i = sched.iter().position(|p| *p == PipelinePass::ReprSelect);
+                assert!(escape_i.is_some() && repr_i.is_some());
+                assert!(escape_i.unwrap() < repr_i.unwrap());
+            }
         }
     }
 
@@ -366,11 +395,15 @@ mod tests {
         for p in RELEASE_SCHEDULE {
             let info = registry::info(p.name()).expect(p.name());
             match p {
+                #[cfg(feature = "opt-repr-stack")]
                 PipelinePass::Escape => assert_eq!(info.stage, PassStage::Escape),
+                #[cfg(feature = "opt-repr-stack")]
                 PipelinePass::ReprSelect => assert_eq!(info.stage, PassStage::Repr),
+                #[cfg(feature = "opt-inline")]
                 PipelinePass::Inline => assert_eq!(info.stage, PassStage::Size),
                 PipelinePass::CopyElim => assert_eq!(info.stage, PassStage::CleanupLate),
                 PipelinePass::Licm => assert_eq!(info.stage, PassStage::Loop),
+                #[cfg(feature = "opt-dense-f64")]
                 PipelinePass::DenseF64Sr => assert_eq!(info.stage, PassStage::PatternSr),
                 PipelinePass::ConcatIdent => assert_eq!(info.stage, PassStage::CleanupMid),
                 PipelinePass::Cse => assert_eq!(info.stage, PassStage::LocalReuse),
@@ -378,6 +411,7 @@ mod tests {
                 PipelinePass::SpecializeConst => assert_eq!(info.stage, PassStage::Specialize),
             }
         }
+        #[cfg(feature = "opt-memo")]
         assert_eq!(registry::MEMO_TF.stage, PassStage::Plan);
     }
 
@@ -398,6 +432,7 @@ mod tests {
                 scheduled.insert(p.name());
             }
         }
+        #[cfg(feature = "opt-memo")]
         scheduled.insert("memo_tf");
         for info in registry::ALL {
             assert!(
@@ -415,18 +450,23 @@ mod tests {
 
     #[test]
     fn with_without_roundtrip_keeps_stock() {
-        let stock = PassSet::for_profile(OptProfile::Release);
-        let round = stock.clone().without("inline").with("inline");
-        assert!(round.is_stock(OptProfile::Release));
+        #[cfg(feature = "opt-inline")]
+        {
+            let stock = PassSet::for_profile(OptProfile::Release);
+            let round = stock.clone().without("inline").with("inline");
+            assert!(round.is_stock(OptProfile::Release));
+        }
     }
 
     #[test]
     fn custom_set_without_memo_disables_even_if_flag() {
-        let set = PassSet::for_profile(OptProfile::Release).without("memo_tf");
-        assert!(!set.contains("memo_tf"));
-        assert!(!set.is_stock(OptProfile::Release));
-        // Mirrors optimize_with gate: flag alone is not enough once set is custom.
-        let do_memo = true && (set.contains("memo_tf") || set.is_stock(OptProfile::Release));
-        assert!(!do_memo);
+        #[cfg(feature = "opt-memo")]
+        {
+            let set = PassSet::for_profile(OptProfile::Release).without("memo_tf");
+            assert!(!set.contains("memo_tf"));
+            assert!(!set.is_stock(OptProfile::Release));
+            let do_memo = true && (set.contains("memo_tf") || set.is_stock(OptProfile::Release));
+            assert!(!do_memo);
+        }
     }
 }

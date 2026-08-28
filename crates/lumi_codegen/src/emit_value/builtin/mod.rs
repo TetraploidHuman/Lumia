@@ -76,8 +76,7 @@ impl<'ctx> Codegen<'ctx> {
                 obj = self.ensure_float_container(b, args, obj)?;
                 // List/Map `set`: retain source when the old binding stays live.
                 // Skipped for proven `xs = xs.set(…)` so unique RC can write in place.
-                let cow_retain_src =
-                    matches!(b, Builtin::MapSet) && !self.frame.cow_consume_unique;
+                let cow_retain_src = matches!(b, Builtin::MapSet) && !self.frame.cow_consume_unique;
                 if cow_retain_src {
                     self.list_retain_i64(obj_i)?;
                 }
@@ -97,7 +96,8 @@ impl<'ctx> Codegen<'ctx> {
                 } else {
                     Self::builtin_symbol(b)?
                 };
-                let out = self.call_rt_ptr_as_i64(sym, &[obj.into(), a.into(), b_i.into()], label)?;
+                let out =
+                    self.call_rt_ptr_as_i64(sym, &[obj.into(), a.into(), b_i.into()], label)?;
                 if cow_retain_src {
                     self.list_release_i64(obj_i)?;
                 }
@@ -252,8 +252,8 @@ impl<'ctx> Codegen<'ctx> {
         let mut obj = self.i64_as_ptr(obj_i, "obj")?;
         obj = self.ensure_float_container(b, args, obj)?;
         // List append / Set insert: temporary retain when old binding stays live.
-        let cow_retain_src = matches!(b, Builtin::ListAppend | Builtin::SetInsert)
-            && !self.frame.cow_consume_unique;
+        let cow_retain_src =
+            matches!(b, Builtin::ListAppend | Builtin::SetInsert) && !self.frame.cow_consume_unique;
         if cow_retain_src {
             self.list_retain_i64(obj_i)?;
         }
@@ -292,8 +292,7 @@ impl<'ctx> Codegen<'ctx> {
         let b_i = self.coerce_i64(self.local(args[1])?)?;
         let a = self.i64_as_ptr(a_i, "a")?;
         let bb = self.i64_as_ptr(b_i, "b")?;
-        let cow_retain_a =
-            matches!(b, Builtin::ListConcat) && !self.frame.cow_consume_unique;
+        let cow_retain_a = matches!(b, Builtin::ListConcat) && !self.frame.cow_consume_unique;
         if cow_retain_a {
             self.list_retain_i64(a_i)?;
         }

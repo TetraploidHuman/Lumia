@@ -14,12 +14,30 @@ use lumi_core::CoreModule;
 mod cse;
 mod fold;
 mod licm;
+#[cfg(feature = "opt-memo")]
 mod plan;
 
 pub use cse::cse_module;
+
+#[cfg(feature = "opt-memo")]
 pub use plan::{apply_memo_plan, plan_memo_tf};
 
+#[cfg(not(feature = "opt-memo"))]
+pub fn plan_memo_tf(
+    _module: &lumi_core::CoreModule,
+) -> rustc_hash::FxHashMap<String, lumi_core::MemoTf> {
+    rustc_hash::FxHashMap::default()
+}
+
+#[cfg(not(feature = "opt-memo"))]
+pub fn apply_memo_plan(
+    _module: &mut lumi_core::CoreModule,
+    _plan: &rustc_hash::FxHashMap<String, lumi_core::MemoTf>,
+) {
+}
+
 /// Planner-facing widths (IDs stored as `u32` on [`MemoTf`](lumi_core::MemoTf)).
+#[cfg(feature = "opt-memo")]
 pub const MEMO_TF_MAX_FUNS_U32: u32 = lumi_abi::MEMO_TF_MAX_FUNS as u32;
 pub const MEMO_IDX_MAX_FUNS: u32 = lumi_abi::MEMO_IDX_MAX_FUNS as u32;
 /// Keys outside `0..MEMO_IDX_CAP` are never cached (DESIGN §7.5 hard bound).

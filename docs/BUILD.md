@@ -164,6 +164,7 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumi_rt` 内�
 ## 6. 优化与表示选择
 
 - Pass 接口在 `lumi_opt`：`cse` / `const_fold` / `licm`（Debug+Release，局部消重）+ Release 的 `memo_tf`（有界 `T_f`：Slots / DenseInt；**CSE 前**做建表规划，非 pass 循环内空跑）；`--no-memo`（别名 `--no-memo-l2`）可关 runtime Memo 做对比。运行时 C 符号仍为 `lumi_memo_l2_*`（ABI 冻结）。
+  - **Cargo `opt-*` features（阶段 B）**：`opt-memo` / `opt-dense-f64` / `opt-inline` / `opt-repr-stack`；`lumi` 默认全开。关掉时 schedule 不含对应 Pass，且 codegen/rt 成对剔除声明与 C ABI（`ensure_runtime_built` 按同名 feature 编 `lumi_rt`）。仅 `codegen`、不要优化时：`cargo build -p lumi --no-default-features --features codegen`。
   - **`memo/` 模块 = §7.5 reuse 族**（非单一 pass）：CSE + PE fold + LICM + `T_f` plan/apply；标量环境统一为 `KnownScalars`（与 `SpecializeConst` 共享）。
 - 测试/工具前端：`lumi_core::FrontendOptions`（`auto_parallel` / `trust_foreign_pure`）经 `compile_source_to_core_with_options`；多文件加载、visibility、assert 消息注解仍仅 CLI。
   - **Inline**：小纯函数直调内联（跳过 `main` / `foreign` / memo / 递归 / 效应）；Release 在 Inline 后再跑 `ConstFold` → `SpecializeConst` → `Escape` → `ReprSelect`（内联露出的字面量可栈分配）。

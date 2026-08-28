@@ -3,6 +3,17 @@ name = "lumi_opt"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = ["opt-memo", "opt-dense-f64", "opt-inline", "opt-repr-stack"]
+# Transparent Memo T_f planner (paired with lumi_codegen/lumi_rt opt-memo).
+opt-memo = []
+# Dense List[Float] → lumi_f64_* rewrite (paired with codegen/rt).
+opt-dense-f64 = []
+# Small pure leaf inlining (opt-only).
+opt-inline = []
+# Escape + Lit* repr select (paired with codegen stack layout).
+opt-repr-stack = []
+
 [dependencies]
 lumi_abi.workspace = true
 lumi_core.workspace = true

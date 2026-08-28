@@ -1,6 +1,8 @@
 //! List type_id helpers and Float-elem ensure.
 
-use crate::common::{header_from_payload, list_elem_is_float, tid_base, TYPE_LIST, TYPE_LIST_IOTA, TYPE_LIST_SLICE};
+use crate::common::{
+    header_from_payload, list_elem_is_float, tid_base, TYPE_LIST, TYPE_LIST_IOTA, TYPE_LIST_SLICE,
+};
 use crate::ensure::ensure_empty_float_retag;
 use lumi_abi::list_type_id;
 

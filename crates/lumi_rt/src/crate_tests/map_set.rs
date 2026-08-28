@@ -33,7 +33,10 @@ fn map_unique_hash_upsert_in_place() {
     assert_eq!(m, before, "unique hash update should not allocate overlay");
     assert!(!map_is_overlay(m));
     m = lumi_map_set(m, 100, 1);
-    assert_eq!(m, before, "unique hash insert should upsert in place when load allows");
+    assert_eq!(
+        m, before,
+        "unique hash insert should upsert in place when load allows"
+    );
     assert_eq!(map_count(m), 13);
     lumi_root_pop();
 }

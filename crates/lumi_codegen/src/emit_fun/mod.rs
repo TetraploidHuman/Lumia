@@ -7,7 +7,9 @@ mod slots;
 use super::Codegen;
 use anyhow::{Context as AnyhowContext, Result};
 use inkwell::values::{BasicValueEnum, FunctionValue};
-use lumi_core::{Block, CoreFun, Local, MemoTf, Op, Value};
+#[cfg(feature = "opt-memo")]
+use lumi_core::MemoTf;
+use lumi_core::{Block, CoreFun, Local, Op, Value};
 use lumi_hir::Builtin;
 use lumi_ty::Type;
 
@@ -68,6 +70,7 @@ impl<'ctx> Codegen<'ctx> {
                     self.frame.locals.insert(p.0, av);
                 }
             }
+            #[cfg(feature = "opt-dense-f64")]
             if self.try_emit_dense_f64_fun(fun, fv)?.is_some() {
                 return Ok(());
             }
@@ -105,13 +108,16 @@ impl<'ctx> Codegen<'ctx> {
             }
         }
 
-        let compute_bb = match fun.memo {
-            Some(MemoTf::DenseInt { id }) => self.emit_memo_idx_prologue(fun, fv, id)?,
-            Some(MemoTf::Slots { id }) => self.emit_memo_tf_prologue(fun, fv, id)?,
-            None => entry,
-        };
-        if fun.memo.is_some() {
-            self.llvm.builder.position_at_end(compute_bb);
+        #[cfg(feature = "opt-memo")]
+        {
+            let compute_bb = match fun.memo {
+                Some(MemoTf::DenseInt { id }) => self.emit_memo_idx_prologue(fun, fv, id)?,
+                Some(MemoTf::Slots { id }) => self.emit_memo_tf_prologue(fun, fv, id)?,
+                None => entry,
+            };
+            if fun.memo.is_some() {
+                self.llvm.builder.position_at_end(compute_bb);
+            }
         }
 
         let result = self.emit_block(&fun.body, fv)?;
@@ -140,6 +146,7 @@ impl<'ctx> Codegen<'ctx> {
             self.coerce_i64(ret)?
         };
 
+        #[cfg(feature = "opt-memo")]
         match fun.memo {
             Some(MemoTf::DenseInt { id }) => self.emit_memo_idx_store(id, ret_i)?,
             Some(MemoTf::Slots { id }) => self.emit_memo_tf_store(id, ret_i)?,
@@ -768,6 +775,7 @@ impl<'ctx> Codegen<'ctx> {
                     } else {
                         self.coerce_i64(v)?
                     };
+                    #[cfg(feature = "opt-memo")]
                     match self.memo.current_memo {
                         Some(MemoTf::DenseInt { id }) => self.emit_memo_idx_store(id, ret_i)?,
                         Some(MemoTf::Slots { id }) => self.emit_memo_tf_store(id, ret_i)?,

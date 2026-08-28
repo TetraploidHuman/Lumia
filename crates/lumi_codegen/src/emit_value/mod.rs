@@ -3,6 +3,7 @@
 mod affine2_sr;
 mod builtin;
 mod collatz_sr;
+#[cfg(feature = "opt-dense-f64")]
 mod dense_f64_sr;
 mod emit_alloc;
 mod emit_arith;

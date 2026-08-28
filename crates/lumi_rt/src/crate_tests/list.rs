@@ -186,7 +186,11 @@ fn list_reverse_unique_in_place() {
     let mut ys = lumi_list_reverse(xs);
     lumi_root_push(&mut ys as *mut *mut u8);
     assert_ne!(ys, xs);
-    assert_eq!(lumi_list_get(xs, 0), 4, "xs must stay reversed after shared reverse");
+    assert_eq!(
+        lumi_list_get(xs, 0),
+        4,
+        "xs must stay reversed after shared reverse"
+    );
     assert_eq!(lumi_list_get(ys, 0), 0);
     lumi_root_pop();
     lumi_root_pop();
@@ -275,8 +279,8 @@ fn list_slice_consume_unique_dense_large_becomes_slice() {
 #[test]
 fn list_slice_consume_unique_slice_bumps_offset() {
     use crate::list::{
-        lumi_list_append, lumi_list_empty, lumi_list_get, lumi_list_len,
-        lumi_list_slice_consume, lumi_list_take,
+        lumi_list_append, lumi_list_empty, lumi_list_get, lumi_list_len, lumi_list_slice_consume,
+        lumi_list_take,
     };
     use crate::{tid_base, TYPE_LIST_SLICE};
     let mut xs = lumi_list_empty();
@@ -308,7 +312,8 @@ fn list_slice_consume_unique_slice_bumps_offset() {
 #[test]
 fn list_take_slice_shares_and_protects_parent() {
     use crate::list::{
-        lumi_list_append, lumi_list_empty, lumi_list_get, lumi_list_len, lumi_list_set, lumi_list_take,
+        lumi_list_append, lumi_list_empty, lumi_list_get, lumi_list_len, lumi_list_set,
+        lumi_list_take,
     };
     use crate::{tid_base, TYPE_LIST_SLICE};
     let mut xs = lumi_list_empty();
@@ -374,9 +379,7 @@ fn unique_slice_append_releases_parent_early() {
 
 #[test]
 fn list_sort_consume_unique_in_place() {
-    use crate::list::{
-        lumi_list_append, lumi_list_empty, lumi_list_get, lumi_list_sort_consume,
-    };
+    use crate::list::{lumi_list_append, lumi_list_empty, lumi_list_get, lumi_list_sort_consume};
     let mut xs = lumi_list_empty();
     lumi_root_push(&mut xs as *mut *mut u8);
     for i in [3i64, 1, 4, 1, 5] {

@@ -6,6 +6,13 @@ edition.workspace = true
 [lib]
 crate-type = ["staticlib", "rlib"]
 
+[features]
+default = ["opt-memo", "opt-dense-f64"]
+# C ABI lumi_memo_* (paired with codegen emit_memo / opt plan).
+opt-memo = []
+# C ABI lumi_f64_* / lumi_list_f64_zeros (do not gate f64_simd — cn_kernels needs it).
+opt-dense-f64 = []
+
 [dependencies]
 lumi_abi.workspace = true
 rustc-hash.workspace = true

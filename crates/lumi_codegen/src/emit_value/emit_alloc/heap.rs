@@ -73,7 +73,10 @@ impl<'ctx> Codegen<'ctx> {
             .into());
         }
         if matches!(repr, lumi_core::ListRepr::LitList) {
-            return self.emit_stack_array(elems, list_tid as u64);
+            #[cfg(feature = "opt-repr-stack")]
+            {
+                return self.emit_stack_array(elems, list_tid as u64);
+            }
         }
         self.emit_heap_array(elems, list_tid as u64)
     }
@@ -95,7 +98,10 @@ impl<'ctx> Codegen<'ctx> {
         let no_hash = !self.key_type_has_hash(&elem_ty);
         let tid = set_type_id(float_elems, no_hash);
         if !elems.is_empty() && matches!(repr, lumi_core::SetRepr::LitSet) {
-            return self.emit_stack_array(elems, tid as u64);
+            #[cfg(feature = "opt-repr-stack")]
+            {
+                return self.emit_stack_array(elems, tid as u64);
+            }
         }
         let v = self.emit_heap_array(elems, tid as u64)?;
         if elems.len() > 8 && !no_hash {
@@ -159,7 +165,10 @@ impl<'ctx> Codegen<'ctx> {
         // AssocList (+ Float tags) stays linear forever; Hash maps use 4/10/15/16.
         let tid = map_type_id(float_keys, float_vals, no_hash);
         if n_pairs > 0 && matches!(repr, lumi_core::MapRepr::LitMap) {
-            return self.emit_stack_map(flat_pairs, tid as u64);
+            #[cfg(feature = "opt-repr-stack")]
+            {
+                return self.emit_stack_map(flat_pairs, tid as u64);
+            }
         }
         let nbytes = self
             .llvm
@@ -236,7 +245,10 @@ impl<'ctx> Codegen<'ctx> {
         repr: lumi_core::AdtRepr,
     ) -> Result<BasicValueEnum<'ctx>> {
         if matches!(repr, lumi_core::AdtRepr::LitAdt) {
-            return self.emit_stack_adt(adt_name, tag, fields);
+            #[cfg(feature = "opt-repr-stack")]
+            {
+                return self.emit_stack_adt(adt_name, tag, fields);
+            }
         }
         // `slot = slot with { f = … }` on a heap product: consume alias + field stores.
         if let Some((slot, updates)) = self.frame.adt_with_inplace.take() {

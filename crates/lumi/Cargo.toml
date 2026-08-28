@@ -12,10 +12,17 @@ name = "lumi"
 path = "src/main.rs"
 
 [features]
-default = ["codegen"]
+default = ["codegen", "opt-memo", "opt-dense-f64", "opt-inline", "opt-repr-stack"]
 # Pulls inkwell/LLVM (~100MB+). LSP / check / fmt do not need this.
+# Opt crates are pulled with default-features = false; enable opt-* explicitly.
 codegen = ["dep:lumi_codegen", "dep:lumi_opt"]
 llvm-dynamic = ["codegen", "lumi_codegen/llvm-dynamic"]
+# Forwarded to lumi_opt / lumi_codegen (and to `cargo build -p lumi_rt` at link time).
+# Each opt-* pulls `codegen` so optional deps are present.
+opt-memo = ["codegen", "lumi_opt/opt-memo", "lumi_codegen/opt-memo"]
+opt-dense-f64 = ["codegen", "lumi_opt/opt-dense-f64", "lumi_codegen/opt-dense-f64"]
+opt-inline = ["codegen", "lumi_opt/opt-inline"]
+opt-repr-stack = ["codegen", "lumi_opt/opt-repr-stack", "lumi_codegen/opt-repr-stack"]
 
 [dependencies]
 lumi_syntax.workspace = true
@@ -23,8 +30,8 @@ lumi_hir.workspace = true
 lumi_ty.workspace = true
 lumi_core.workspace = true
 lumi_abi.workspace = true
-lumi_opt = { workspace = true, optional = true }
-lumi_codegen = { workspace = true, optional = true }
+lumi_opt = { workspace = true, optional = true, default-features = false }
+lumi_codegen = { workspace = true, optional = true, default-features = false }
 anyhow.workspace = true
 clap.workspace = true
 thiserror.workspace = true

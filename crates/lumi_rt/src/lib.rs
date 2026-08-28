@@ -20,6 +20,7 @@ mod affine2;
 mod cn_kernels;
 mod collatz;
 mod common;
+#[cfg(feature = "opt-dense-f64")]
 mod dense_f64;
 mod dict;
 mod dispatch;
@@ -32,6 +33,7 @@ mod gc;
 mod hash_ord;
 mod list;
 mod map_set;
+#[cfg(feature = "opt-memo")]
 mod memo;
 mod number_theory;
 mod primes;
@@ -43,9 +45,9 @@ pub use common::{
     tid_base, MarkSweep, MmBackend, ObjectHeader, MEMO_IDX_CAP, MEMO_IDX_MAX_FUNS,
     MEMO_IDX_TABLE_BYTES, MEMO_PROCESS_BYTE_CAP, MEMO_TF_MAX_ARGS, MEMO_TF_MAX_FUNS, MEMO_TF_SLOTS,
     TYPE_ADT, TYPE_BYTES, TYPE_CHAR, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_F64, TYPE_LIST_IOTA,
-    TYPE_LIST_SLICE, TYPE_MAP, TYPE_MAP_ASSOC, TYPE_MAP_ASSOC_F64, TYPE_MAP_ASSOC_F64V, TYPE_MAP_ASSOC_VF64,
-    TYPE_MAP_F64, TYPE_MAP_F64V, TYPE_MAP_VF64, TYPE_SET, TYPE_SET_ASSOC, TYPE_SET_F64,
-    TYPE_STRING,
+    TYPE_LIST_SLICE, TYPE_MAP, TYPE_MAP_ASSOC, TYPE_MAP_ASSOC_F64, TYPE_MAP_ASSOC_F64V,
+    TYPE_MAP_ASSOC_VF64, TYPE_MAP_F64, TYPE_MAP_F64V, TYPE_MAP_VF64, TYPE_SET, TYPE_SET_ASSOC,
+    TYPE_SET_F64, TYPE_STRING,
 };
 
 pub use gc::{lumi_alloc, lumi_gc_collect, lumi_root_pop, lumi_root_push, lumi_write_barrier};
@@ -57,6 +59,7 @@ pub use cn_kernels::{
     lumi_cn_update_state,
 };
 pub use collatz::{lumi_collatz_strided, lumi_collatz_total};
+#[cfg(feature = "opt-dense-f64")]
 pub use dense_f64::{
     lumi_f64_add, lumi_f64_addmm, lumi_f64_atan2, lumi_f64_axpy, lumi_f64_checksum, lumi_f64_clamp,
     lumi_f64_copy, lumi_f64_cos, lumi_f64_exp, lumi_f64_fill, lumi_f64_gemv, lumi_f64_gemv_t,
@@ -77,6 +80,7 @@ pub use float_kernels::lumi_mandelbrot_checksum;
 pub use hash_ord::*;
 pub use list::*;
 pub use map_set::*;
+#[cfg(feature = "opt-memo")]
 pub use memo::*;
 pub use number_theory::{
     lumi_affine1_rem_sum, lumi_divisor_sum, lumi_gcd_sum, lumi_matmul_affine_checksum,

@@ -52,11 +52,7 @@ pub extern "C" fn lumi_map_set(map: *mut u8, key: i64, val: i64) -> *mut u8 {
                     if key_eq(*base.add(3 + i * 2), key, float_keys) {
                         *base.add(4 + i * 2) = val;
                         if !map_float_vals_of(map, parent) {
-                            crate::lumi_write_barrier(
-                                map,
-                                (4 + i * 2) as u32,
-                                val as *mut u8,
-                            );
+                            crate::lumi_write_barrier(map, (4 + i * 2) as u32, val as *mut u8);
                         }
                         return map;
                     }

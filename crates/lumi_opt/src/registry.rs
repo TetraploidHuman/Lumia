@@ -3,9 +3,13 @@
 //! Adding a pass: implement `Pass`, add a `PipelinePass` arm, append a schedule
 //! slot, and register a [`PassInfo`] here. Removing: drop the schedule slot and
 //! this entry; consumers must already treat missing annotations as defaults.
+//!
+//! Optional passes are behind Cargo features (`opt-memo`, `opt-dense-f64`,
+//! `opt-inline`, `opt-repr-stack`).
 
 use crate::pipeline::{IrAnno, PassInfo, PassKind, PassStage};
 
+#[cfg(feature = "opt-memo")]
 pub const MEMO_TF: PassInfo = PassInfo {
     id: "memo_tf",
     kind: PassKind::Plan,
@@ -51,6 +55,7 @@ pub const LICM: PassInfo = PassInfo {
     reads: &[],
 };
 
+#[cfg(feature = "opt-dense-f64")]
 pub const DENSE_F64_SR: PassInfo = PassInfo {
     id: "dense_f64_sr",
     kind: PassKind::Transform,
@@ -60,6 +65,7 @@ pub const DENSE_F64_SR: PassInfo = PassInfo {
     reads: &[],
 };
 
+#[cfg(feature = "opt-inline")]
 pub const INLINE: PassInfo = PassInfo {
     id: "inline",
     kind: PassKind::Transform,
@@ -70,6 +76,7 @@ pub const INLINE: PassInfo = PassInfo {
     reads: &[IrAnno::Memo, IrAnno::FunBodies],
 };
 
+#[cfg(feature = "opt-repr-stack")]
 pub const ESCAPE: PassInfo = PassInfo {
     id: "escape",
     kind: PassKind::Analysis,
@@ -88,6 +95,7 @@ pub const CONCAT_IDENT: PassInfo = PassInfo {
     reads: &[],
 };
 
+#[cfg(feature = "opt-repr-stack")]
 pub const REPR_SELECT: PassInfo = PassInfo {
     id: "repr_select",
     kind: PassKind::Transform,
@@ -107,17 +115,22 @@ pub const COPY_ELIM: PassInfo = PassInfo {
     reads: &[],
 };
 
-/// All builtin passes (order is documentation only; schedules own run order).
+/// All builtin passes enabled in this build (order is documentation only).
 pub const ALL: &[PassInfo] = &[
+    #[cfg(feature = "opt-memo")]
     MEMO_TF,
     CSE,
     CONST_FOLD,
     SPECIALIZE_CONST,
     LICM,
+    #[cfg(feature = "opt-dense-f64")]
     DENSE_F64_SR,
+    #[cfg(feature = "opt-inline")]
     INLINE,
+    #[cfg(feature = "opt-repr-stack")]
     ESCAPE,
     CONCAT_IDENT,
+    #[cfg(feature = "opt-repr-stack")]
     REPR_SELECT,
     COPY_ELIM,
 ];

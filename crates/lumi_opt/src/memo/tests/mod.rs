@@ -32,4 +32,5 @@ mod fold_iota;
 mod fold_list;
 mod fold_map_set;
 mod licm;
+#[cfg(feature = "opt-memo")]
 mod memo_tf;

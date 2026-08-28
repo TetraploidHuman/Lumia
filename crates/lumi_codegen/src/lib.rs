@@ -3,6 +3,7 @@
 mod attrs;
 mod emit_eq;
 mod emit_fun;
+#[cfg(feature = "opt-memo")]
 mod emit_memo;
 mod emit_value;
 mod error;
@@ -534,6 +535,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "opt-memo")]
     fn emit_memo_tf_has_lookup_and_store() {
         let ir = emit_example("examples/memo_tf.lm", true);
         // C ABI symbols stay `lumi_memo_l2_*` (frozen); planner name is `T_f`.

@@ -18,6 +18,7 @@ impl KnownScalars {
         self.map.insert(local, n);
     }
 
+    #[cfg_attr(not(feature = "opt-memo"), allow(dead_code))]
     pub(crate) fn remove(&mut self, local: u32) {
         self.map.remove(&local);
     }

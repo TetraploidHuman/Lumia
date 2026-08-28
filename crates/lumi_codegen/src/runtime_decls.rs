@@ -532,106 +532,127 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         args: &[RtTy::I64, RtTy::I64],
     },
     // Dense List[Float] kernels (flat row-major; unique buffers stay in-place).
+    #[cfg(feature = "opt-dense-f64")]
     RtDecl {
         name: "lumi_list_f64_zeros",
         ret: RtTy::Ptr,
         args: &[RtTy::I64],
     },
+    #[cfg(feature = "opt-dense-f64")]
     RtDecl {
         name: "lumi_f64_fill",
         ret: RtTy::Ptr,
         args: &[RtTy::Ptr, RtTy::F64],
     },
+    #[cfg(feature = "opt-dense-f64")]
     RtDecl {
         name: "lumi_f64_scale",
         ret: RtTy::Ptr,
         args: &[RtTy::Ptr, RtTy::F64],
     },
+    #[cfg(feature = "opt-dense-f64")]
     RtDecl {
         name: "lumi_f64_sqrt",
         ret: RtTy::F64,
         args: &[RtTy::F64],
     },
+    #[cfg(feature = "opt-dense-f64")]
     RtDecl {
         name: "lumi_f64_exp",
         ret: RtTy::F64,
         args: &[RtTy::F64],
     },
+    #[cfg(feature = "opt-dense-f64")]
     RtDecl {
         name: "lumi_f64_sin",
         ret: RtTy::F64,
         args: &[RtTy::F64],
     },
+    #[cfg(feature = "opt-dense-f64")]
     RtDecl {
         name: "lumi_f64_cos",
         ret: RtTy::F64,
         args: &[RtTy::F64],
     },
+    #[cfg(feature = "opt-dense-f64")]
     RtDecl {
         name: "lumi_f64_atan2",
         ret: RtTy::F64,
         args: &[RtTy::F64, RtTy::F64],
     },
+    #[cfg(feature = "opt-dense-f64")]
     RtDecl {
         name: "lumi_f64_hypot",
         ret: RtTy::F64,
         args: &[RtTy::F64, RtTy::F64],
     },
+    #[cfg(feature = "opt-dense-f64")]
     RtDecl {
         name: "lumi_f64_mul",
         ret: RtTy::Ptr,
         args: &[RtTy::Ptr, RtTy::Ptr, RtTy::Ptr],
     },
+    #[cfg(feature = "opt-dense-f64")]
     RtDecl {
         name: "lumi_f64_add",
         ret: RtTy::Ptr,
         args: &[RtTy::Ptr, RtTy::Ptr, RtTy::Ptr],
     },
+    #[cfg(feature = "opt-dense-f64")]
     RtDecl {
         name: "lumi_f64_l2_norm",
         ret: RtTy::F64,
         args: &[RtTy::Ptr],
     },
+    #[cfg(feature = "opt-dense-f64")]
     RtDecl {
         name: "lumi_f64_sum_sq",
         ret: RtTy::F64,
         args: &[RtTy::Ptr],
     },
+    #[cfg(feature = "opt-dense-f64")]
     RtDecl {
         name: "lumi_f64_mean",
         ret: RtTy::F64,
         args: &[RtTy::Ptr],
     },
+    #[cfg(feature = "opt-dense-f64")]
     RtDecl {
         name: "lumi_f64_std",
         ret: RtTy::F64,
         args: &[RtTy::Ptr],
     },
+    #[cfg(feature = "opt-dense-f64")]
     RtDecl {
         name: "lumi_f64_softmax",
         ret: RtTy::Ptr,
         args: &[RtTy::Ptr],
     },
+    #[cfg(feature = "opt-dense-f64")]
     RtDecl {
         name: "lumi_f64_l2_normalize",
         ret: RtTy::Ptr,
         args: &[RtTy::Ptr, RtTy::F64],
     },
+    #[cfg(feature = "opt-dense-f64")]
     RtDecl {
         name: "lumi_f64_clamp",
         ret: RtTy::Ptr,
         args: &[RtTy::Ptr, RtTy::F64, RtTy::F64],
     },
+    #[cfg(feature = "opt-dense-f64")]
     RtDecl {
         name: "lumi_f64_gemv",
         ret: RtTy::Ptr,
         args: &[RtTy::I64, RtTy::I64, RtTy::Ptr, RtTy::Ptr, RtTy::Ptr],
     },
+    #[cfg(feature = "opt-dense-f64")]
     RtDecl {
         name: "lumi_f64_gemv_t",
         ret: RtTy::Ptr,
         args: &[RtTy::I64, RtTy::I64, RtTy::Ptr, RtTy::Ptr, RtTy::Ptr],
     },
+    #[cfg(feature = "opt-dense-f64")]
     RtDecl {
         name: "lumi_f64_addmm",
         ret: RtTy::Ptr,
@@ -644,21 +665,25 @@ const RUNTIME_DECLS: &[RtDecl] = &[
             RtTy::F64,
         ],
     },
+    #[cfg(feature = "opt-dense-f64")]
     RtDecl {
         name: "lumi_f64_axpy",
         ret: RtTy::Ptr,
         args: &[RtTy::Ptr, RtTy::F64, RtTy::Ptr],
     },
+    #[cfg(feature = "opt-dense-f64")]
     RtDecl {
         name: "lumi_f64_sub",
         ret: RtTy::Ptr,
         args: &[RtTy::Ptr, RtTy::Ptr, RtTy::Ptr],
     },
+    #[cfg(feature = "opt-dense-f64")]
     RtDecl {
         name: "lumi_f64_copy",
         ret: RtTy::Ptr,
         args: &[RtTy::Ptr, RtTy::Ptr],
     },
+    #[cfg(feature = "opt-dense-f64")]
     RtDecl {
         name: "lumi_f64_checksum",
         ret: RtTy::I64,
@@ -843,6 +868,7 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         args: &[RtTy::Ptr, RtTy::Ptr],
     },
     // Frozen C ABI names (`T_f` planner; DESIGN vocabulary is not "L2").
+    #[cfg(feature = "opt-memo")]
     RtDecl {
         name: "lumi_memo_l2_lookup",
         ret: RtTy::I64,
@@ -856,6 +882,7 @@ const RUNTIME_DECLS: &[RtDecl] = &[
             RtTy::Ptr,
         ],
     },
+    #[cfg(feature = "opt-memo")]
     RtDecl {
         name: "lumi_memo_l2_store",
         ret: RtTy::Void,
@@ -869,11 +896,13 @@ const RUNTIME_DECLS: &[RtDecl] = &[
             RtTy::I64,
         ],
     },
+    #[cfg(feature = "opt-memo")]
     RtDecl {
         name: "lumi_memo_idx_lookup",
         ret: RtTy::I64,
         args: &[RtTy::I64, RtTy::I64, RtTy::Ptr],
     },
+    #[cfg(feature = "opt-memo")]
     RtDecl {
         name: "lumi_memo_idx_store",
         ret: RtTy::Void,

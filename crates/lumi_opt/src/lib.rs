@@ -2,25 +2,32 @@
 //!
 //! Transparent result reuse lives in the `memo` module (DESIGN §7.5):
 //! local CSE/fold/LICM + runtime `T_f` (`memo_tf`).
-//! Escape analysis + small pure inlining: [`EscapePass`] / [`InlinePass`].
+//! Escape analysis + small pure inlining live behind `opt-repr-stack` / `opt-inline`.
 //!
 //! Pass inventory and schedules: [`ALL_PASSES`] / [`PassSet`] / [`OptProfile`].
 
 mod copy_elim;
+#[cfg(feature = "opt-dense-f64")]
 mod dense_f64_sr;
+#[cfg(feature = "opt-repr-stack")]
 mod escape;
 mod fusion;
+#[cfg(feature = "opt-inline")]
 mod inline;
 mod ir_util;
 mod memo;
 mod pipeline;
 mod registry;
+#[cfg(feature = "opt-repr-stack")]
 mod repr_select;
 mod specialize_const;
+#[cfg(feature = "opt-repr-stack")]
 mod use_summary;
 
+#[cfg(feature = "opt-repr-stack")]
 pub use escape::{escaping_locals, EscapePass};
 pub use fusion::ConcatIdentPass;
+#[cfg(feature = "opt-inline")]
 pub use inline::InlinePass;
 pub use memo::{
     apply_memo_plan, plan_memo_tf, ConstFoldPass, LicmPass, MEMO_IDX_CAP, MEMO_IDX_MAX_FUNS,
@@ -155,9 +162,12 @@ pub fn default_list_repr() -> ListRepr {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "opt-repr-stack")]
+    use super::EscapePass;
     use super::*;
     use crate::copy_elim::CopyElimPass;
     use crate::pipeline::{PipelinePass, DEBUG_SCHEDULE, RELEASE_SCHEDULE};
+    #[cfg(feature = "opt-repr-stack")]
     use crate::repr_select::ReprSelect;
     use lumi_core::{Block, CoreFun, Local, Op, Value};
     use lumi_ty::{Effect, Type};
@@ -217,20 +227,34 @@ val main = {
 
     #[test]
     fn pass_pipeline_names() {
-        assert!(pass_names(true).contains(&"inline"));
-        assert!(pass_names(true).contains(&"escape"));
         assert!(pass_names(true).contains(&"copy_elim"));
         assert!(pass_names(true).contains(&"const_fold"));
         assert!(pass_names(true).contains(&"specialize_const"));
         assert!(pass_names(true).contains(&"licm"));
         assert!(pass_names(true).contains(&"concat_ident"));
-        assert!(pass_names(true).contains(&"memo_tf"));
-        assert!(!pass_names(false).contains(&"inline"));
         assert!(pass_names(false).contains(&"specialize_const"));
-        assert!(!pass_names(false).contains(&"memo_tf"));
+        #[cfg(feature = "opt-inline")]
+        {
+            assert!(pass_names(true).contains(&"inline"));
+            assert!(!pass_names(false).contains(&"inline"));
+        }
+        #[cfg(feature = "opt-repr-stack")]
+        assert!(pass_names(true).contains(&"escape"));
+        #[cfg(feature = "opt-memo")]
+        {
+            assert!(pass_names(true).contains(&"memo_tf"));
+            assert!(!pass_names(false).contains(&"memo_tf"));
+        }
+        #[cfg(not(feature = "opt-memo"))]
+        assert!(!pass_names(true).contains(&"memo_tf"));
     }
 
     #[test]
+    #[cfg(all(
+        feature = "opt-dense-f64",
+        feature = "opt-inline",
+        feature = "opt-repr-stack"
+    ))]
     fn pass_pipeline_exact_order() {
         // Debug: CSE → fold → specialize → fold → LICM → dense_f64_sr → Escape → ReprSelect
         // (no inline/memo).
@@ -277,7 +301,6 @@ val main = {
         let escape_i = release.iter().position(|&n| n == "escape").unwrap();
         let repr_i = release.iter().position(|&n| n == "repr_select").unwrap();
         assert!(escape_i < repr_i);
-        // No second Escape after the Escape→ReprSelect pair today.
         assert_eq!(
             RELEASE_SCHEDULE
                 .iter()
@@ -288,6 +311,11 @@ val main = {
     }
 
     #[test]
+    #[cfg(all(
+        feature = "opt-inline",
+        feature = "opt-repr-stack",
+        feature = "opt-memo"
+    ))]
     fn optimize_with_filtered_drops_inline() {
         let set = PassSet::for_profile(OptProfile::Release).without("inline");
         validate_pass_set(&set).unwrap();
@@ -339,6 +367,7 @@ val main = {
     }
 
     #[test]
+    #[cfg(feature = "opt-repr-stack")]
     fn repr_select_marks_nonescaping_small_list_lit() {
         let mut module = CoreModule::with_functions(
             "M",
@@ -394,6 +423,7 @@ val main = {
     }
 
     #[test]
+    #[cfg(feature = "opt-repr-stack")]
     fn repr_select_escaping_small_list_stays_heap() {
         let mut module = CoreModule::with_functions(
             "M",
@@ -443,6 +473,7 @@ val main = {
     }
 
     #[test]
+    #[cfg(feature = "opt-repr-stack")]
     fn repr_select_end_to_end_small_listof() {
         use lumi_hir::lower_module;
         use lumi_syntax::parse_module;
@@ -477,6 +508,7 @@ val main = {
     }
 
     #[test]
+    #[cfg(feature = "opt-repr-stack")]
     fn repr_select_list_field_of_wide_product_is_heap() {
         use lumi_hir::lower_module;
         use lumi_syntax::parse_module;
@@ -528,6 +560,7 @@ val main = {
     }
 
     #[test]
+    #[cfg(feature = "opt-repr-stack")]
     fn repr_select_empty_list_is_lit() {
         let mut module = CoreModule::with_functions(
             "M",

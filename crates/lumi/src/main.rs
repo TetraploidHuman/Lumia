@@ -331,7 +331,20 @@ fn ensure_runtime_built(release: bool) -> Result<()> {
     let root = compiler_workspace_root();
     let mut cmd = Command::new("cargo");
     cmd.current_dir(&root);
-    cmd.arg("build").arg("-p").arg("lumi_rt");
+    cmd.arg("build")
+        .arg("-p")
+        .arg("lumi_rt")
+        .arg("--no-default-features");
+    // Keep C ABI symbols aligned with this `lumi` binary's opt-* features.
+    let feats: &[&str] = &[
+        #[cfg(feature = "opt-memo")]
+        "opt-memo",
+        #[cfg(feature = "opt-dense-f64")]
+        "opt-dense-f64",
+    ];
+    if !feats.is_empty() {
+        cmd.arg("--features").arg(feats.join(","));
+    }
     if release {
         cmd.arg("--release");
     }
