@@ -21,6 +21,7 @@ mod arc_free;
 mod cn_kernels;
 mod collatz;
 mod common;
+mod cycle_cand;
 #[cfg(feature = "opt-dense-f64")]
 mod dense_f64;
 mod dict;

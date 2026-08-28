@@ -270,6 +270,7 @@ impl MarkSweep {
     }
 
     fn full_collect_stw() {
+        crate::cycle_cand::clear_cycle_candidates();
         Self::clear_all_marks();
         MARK_WORK.with(|w| w.borrow_mut().clear());
         Self::mark_from_roots_full();
@@ -298,6 +299,7 @@ impl MarkSweep {
         });
         note_gc_freed(freed_y.saturating_add(freed_o));
         GC_FULL_COUNT.with(|c| c.set(c.get() + 1));
+        crate::cycle_cand::clear_cycle_candidates();
     }
 
     fn begin_full_mark() {
@@ -437,6 +439,10 @@ impl MarkSweep {
                 Self::minor_collect();
             }
             return;
+        }
+        // Arc cycle-candidate threshold: STW full collect at the next alloc.
+        if GC_INHIBIT.get() == 0 && crate::cycle_cand::take_cycle_collect_pending() {
+            Self::full_collect();
         }
         let young_limit = YOUNG_LIMIT.with(|c| c.get());
         let old_limit = HEAP_LIMIT.with(|c| c.get());

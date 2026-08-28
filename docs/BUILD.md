@@ -169,7 +169,7 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumi_rt` 内�
   - **统一编译配置（阶段 E）**：`lumi::CompileProfile` = `CapabilitySet` + `PassSet` + build 旋钮；`compile_with_profile` / `check_program_with_profile`；CLI `--no-hof-fuse` / `--no-loop-sr` / `--no-tco` / `--no-nsw-iv`；`lumi build --list-caps` / `--list-passes`。
   - **阶段 F**：CLI pass 开关 `--no-inline` / `--no-dense-f64` / `--no-repr-select` / `--no-escape`；`Lumi.toml` `[compiler]` 与 `.lumi/settings.toml` + 环境变量（`LUMI_NO_PARALLEL` 等）合并进 profile；LSP 经 `CompileProfile::for_lsp_at(path)` 读取工作区配置。
   - **阶段 G**：legacy `compile_with_caps` / `check_program` 标 `deprecated`；`ensure_runtime_built` stamp 按 `lumi_rt` 源码指纹失效；LSP `initializationOptions` / `didChangeConfiguration` 合并进 profile；CI `feature-matrix` 各 `minus-opt-*` leg 跑定向 `cap_regress` / `pass_regress`；`--show-memo-stats` / `LUMI_MEMO_STATS`；`repr_regress`。
-  - **阶段 H（部分）**：`--no-memo-dense` / `memo_prefer_dense`；`--mm ms|arc`（Arc：COW + String 等 `lumi_heap_retain`/`release`；free-on-zero；**STW full GC** 破环，禁止与 concurrent mark 竞态）；`LUMI_GC_MARK_THREADS>1` STW 并行 mark（共享 `HEAP_SET` 视图）。
+  - **阶段 H（部分）**：`--no-memo-dense` / `memo_prefer_dense`；`--mm ms|arc`（Arc：COW + String `lumi_heap_*`；free-on-zero；STW full GC；**环候选缓冲** `LUMI_ARC_CYCLE_THRESH`）；`LUMI_GC_MARK_THREADS>1` STW 并行 mark（共享 `HEAP_SET` 视图）。
   - **LSP / 工具前端**：`CompileProfile::for_lsp_at(file)` + `lumi_core::PipelineOptions`；`check_program_with_overlays` / `compile_source_to_core_with_pipeline` 与 CLI 同 caps 语义。
   - **`memo/` 模块 = §7.5 reuse 族**（非单一 pass）：CSE + PE fold + LICM + `T_f` plan/apply；标量环境统一为 `KnownScalars`（与 `SpecializeConst` 共享）。
   - CI `feature-matrix` job 守护 slim / `codegen`-only / 逐个关 `opt-*` 的编译 + `cap_regress` / `pass_regress` / `repr_regress`。
@@ -255,7 +255,7 @@ no_inline = true
 | **已完成骨架**       | parse 子集 → 推断 + 效应 → Core → LLVM → 链 `lumi_rt` → `main` + `println` + `Int`；`listOf`→`AllocList`；CSE + ReprSelect 默认路径                       |
 | **已完成下一步（部分）**  | …；**sortBy / assert+行号**；**定位诊断（多文件）**；**Map Overlay**；**WordCount**；**lumi fmt**；…                                                          |
 | **已完成（相对原「下一里程碑」）** | Trait / instance + 运行时字典；非逃逸小对象栈分配（Lit* / LitAdt + 晋升）；`std.option` / `std.result` / `std.string` / `std.io` 源文件正文；逃逸分析 / 融合 / TCO SCC / 自动并行 / 透明 Memo；local `Map.get` PE (§7.5.1-A) + Release 二次 `const_fold`；**Int/Bool/Char call-site specialization**（`SpecializeConstPass`）+ 字面 `ListTake`/`ListSlice`/`ListReverse`/`AdtTag`/`Map.set`/`Set.insert` PE |
-| **仍待** | 专用 Arc 环缓冲 / trial-delete；进程级长期共享堆（测试仍用 TLS 隔离） |
+| **仍待** | Bacon–Rajan / trial-delete；进程级长期共享堆（测试仍用 TLS 隔离） |
 | **工具链已落地** | **自动并行**（默认 `ListParMap` + 不安全回退；`--no-parallel`）；**包管理**（`Lumi.toml` / `lumi pkg`）；**LSP**（`lumi lsp`）；**FFI**（`foreign "C" fn`）；`priv` 跨文件可见性；`effect { }` 块；Map/Set `finish` 晋升；`lumi fmt` / `lumi doc` |
 
 

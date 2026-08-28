@@ -200,6 +200,9 @@ pub(crate) fn cow_rc_release(payload: *mut u8, adt_ok: bool) {
             (*h).rc = rc - 1;
             if (*h).rc == 0 {
                 crate::arc_free::maybe_free_on_zero(payload, adt_ok);
+            } else {
+                crate::cycle_cand::note_cycle_candidate(h);
+                crate::cycle_cand::try_flush_cycle_collect();
             }
         }
     }
@@ -239,6 +242,8 @@ pub(crate) fn cow_rc_drop_alias(payload: *mut u8, adt_ok: bool) {
         let rc = (*h).rc;
         if rc != RC_SHARED && rc > 1 {
             (*h).rc = rc - 1;
+            crate::cycle_cand::note_cycle_candidate(h);
+            crate::cycle_cand::try_flush_cycle_collect();
         }
     }
 }
@@ -282,6 +287,9 @@ pub(crate) fn heap_rc_release(payload: *mut u8) {
             (*h).rc = rc - 1;
             if (*h).rc == 0 {
                 crate::arc_free::maybe_free_on_zero(payload, /*adt_ok=*/ true);
+            } else {
+                crate::cycle_cand::note_cycle_candidate(h);
+                crate::cycle_cand::try_flush_cycle_collect();
             }
         }
     }

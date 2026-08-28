@@ -125,6 +125,53 @@ fn arc_mode_cycle_reclaimed_by_stw_collect() {
 }
 
 #[test]
+fn arc_cycle_candidate_threshold_triggers_collect() {
+    use crate::common::{header_from_payload, value_rc_release, TYPE_ADT};
+    use crate::cycle_cand::{
+        cycle_cand_len_for_test, cycle_cand_set_threshold_for_test, cycle_collect_pending_for_test,
+    };
+    use crate::gc::{gc_reset_stats_for_test, lumi_gc_full_count};
+    lumi_set_mm_mode(1);
+    cycle_cand_set_threshold_for_test(1);
+    gc_reset_stats_for_test();
+    let a = lumi_alloc(16, TYPE_ADT);
+    let b = lumi_alloc(16, TYPE_ADT);
+    unsafe {
+        *(a as *mut i64) = 0;
+        *(a as *mut i64).add(1) = b as i64;
+        *(b as *mut i64) = 0;
+        *(b as *mut i64).add(1) = a as i64;
+        // Cycle edges + one external alias on `a` (rc=2).
+        (*header_from_payload(a)).rc = 2;
+        (*header_from_payload(b)).rc = 1;
+    }
+    // Drop the external alias: rc 2→1 notes candidate; thresh=1 → STW collect.
+    value_rc_release(a);
+    assert!(
+        !crate::common::is_heap_payload(a) && !crate::common::is_heap_payload(b),
+        "cycle-candidate flush should reclaim unreachable cycle without explicit collect"
+    );
+    assert!(lumi_gc_full_count() >= 1);
+    assert_eq!(cycle_cand_len_for_test(), 0);
+    assert!(!cycle_collect_pending_for_test());
+    cycle_cand_set_threshold_for_test(64);
+    lumi_set_mm_mode(0);
+}
+
+#[test]
+fn arc_cycle_candidate_skips_bytes() {
+    use crate::cycle_cand::{cycle_cand_len_for_test, cycle_cand_set_threshold_for_test};
+    lumi_set_mm_mode(1);
+    cycle_cand_set_threshold_for_test(64);
+    let p = lumi_alloc(16, TYPE_BYTES);
+    lumi_heap_retain(p); // rc 1→2
+    lumi_heap_release(p); // rc 2→1 — Bytes must not enqueue
+    assert_eq!(cycle_cand_len_for_test(), 0);
+    lumi_heap_release(p); // free
+    lumi_set_mm_mode(0);
+}
+
+#[test]
 fn parallel_mark_drain_collects() {
     use crate::gc::{gc_reset_stats_for_test, lumi_gc_full_count};
     gc_reset_stats_for_test();

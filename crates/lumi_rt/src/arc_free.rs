@@ -39,12 +39,14 @@ pub(crate) fn maybe_free_on_zero(payload: *mut u8, _adt_ok: bool) {
 }
 
 unsafe fn free_heap_object(obj: *mut ObjectHeader) {
+    crate::cycle_cand::arc_free_enter();
     // Drop child aliases first (may recursively free).
     release_children(obj);
     let nbytes = (*obj).size as usize;
     unregister_header(obj, nbytes);
     let layout = header_layout(nbytes);
     dealloc(obj as *mut u8, layout);
+    crate::cycle_cand::arc_free_leave();
 }
 
 unsafe fn release_children(obj: *mut ObjectHeader) {
