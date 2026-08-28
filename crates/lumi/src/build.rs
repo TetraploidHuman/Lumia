@@ -91,6 +91,7 @@ pub fn compile_with_profile(
     since = "0.3.2",
     note = "use `prepare_with_profile` and `CompileProfile` instead"
 )]
+#[allow(deprecated)]
 pub fn prepare_with_caps(
     file: &Path,
     caps: &CapabilitySet,
@@ -105,6 +106,7 @@ pub fn prepare_with_caps(
     since = "0.3.2",
     note = "use `compile_with_profile` and `CompileProfile` instead"
 )]
+#[allow(deprecated)]
 pub fn compile_with_caps(
     file: &Path,
     output: &Path,
