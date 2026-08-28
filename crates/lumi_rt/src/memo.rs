@@ -23,6 +23,7 @@ impl MemoTfSlot {
         result: 0,
     };
 
+    #[inline]
     fn matches(&self, nargs: u8, args: &[i64; MEMO_TF_MAX_ARGS]) -> bool {
         self.valid && self.nargs == nargs && self.args[..nargs as usize] == args[..nargs as usize]
     }

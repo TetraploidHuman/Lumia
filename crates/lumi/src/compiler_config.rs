@@ -28,6 +28,9 @@ pub struct CompilerConfig {
     pub no_repr_select: Option<bool>,
     #[serde(default)]
     pub no_escape: Option<bool>,
+    /// When `false`, Memo planner uses slot tables only (no DenseInt `T_f`).
+    #[serde(default)]
+    pub prefer_dense_memo: Option<bool>,
 }
 
 /// CLI `--no-*` pass disables (codegen builds only).
@@ -144,6 +147,7 @@ pub fn merge_config(mut base: CompilerConfig, overlay: CompilerConfig) -> Compil
     merge_opt!(no_dense_f64);
     merge_opt!(no_repr_select);
     merge_opt!(no_escape);
+    merge_opt!(prefer_dense_memo);
     base
 }
 
@@ -157,6 +161,11 @@ fn merge_env(cfg: &mut CompilerConfig) {
     env_flag("LUMI_NO_DENSE_F64", &mut cfg.no_dense_f64);
     env_flag("LUMI_NO_REPR_SELECT", &mut cfg.no_repr_select);
     env_flag("LUMI_NO_ESCAPE", &mut cfg.no_escape);
+    if let Ok(v) = std::env::var("LUMI_NO_MEMO_DENSE") {
+        if truthy(&v) {
+            cfg.prefer_dense_memo = Some(false);
+        }
+    }
 }
 
 fn env_flag(name: &str, slot: &mut Option<bool>) {

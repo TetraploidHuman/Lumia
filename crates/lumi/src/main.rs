@@ -128,6 +128,9 @@ enum Commands {
         /// Print Memo `T_f` hit/miss stats to stderr at exit.
         #[arg(long = "show-memo-stats")]
         show_memo_stats: bool,
+        /// Use slot-based Memo `T_f` only (disable DenseInt tables).
+        #[arg(long = "no-memo-dense")]
+        no_memo_dense: bool,
         /// List Phase C capabilities (and CoreOpt catalog), then exit.
         #[arg(long = "list-caps")]
         list_caps: bool,
@@ -225,6 +228,7 @@ fn main() -> Result<()> {
             show_ir,
             emit_llvm,
             show_memo_stats,
+            no_memo_dense,
             list_caps,
             list_passes,
         } => {
@@ -242,6 +246,7 @@ fn main() -> Result<()> {
                     show_ir,
                     emit_llvm,
                     show_memo_stats,
+                    no_memo_dense,
                     list_caps,
                     list_passes,
                 );
@@ -261,6 +266,7 @@ fn main() -> Result<()> {
                     trust_foreign_pure,
                     emit_llvm,
                     show_memo_stats,
+                    no_memo_dense,
                     link,
                 )?;
                 if list_caps {
@@ -345,6 +351,7 @@ fn build_profile(
     trust_foreign_pure: bool,
     emit_ir: bool,
     show_memo_stats: bool,
+    no_memo_dense: bool,
     link: Vec<String>,
 ) -> Result<CompileProfile> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -353,6 +360,7 @@ fn build_profile(
         validated_link.push(pkg::validate_cli_link_arg(&cwd, a)?);
     }
     let config = load_for_file(file);
+    let prefer_dense = config.prefer_dense_memo.unwrap_or(true) && !no_memo_dense;
     CompileProfile::assemble(
         release,
         memo_tf,
@@ -363,7 +371,10 @@ fn build_profile(
         &caps.to_disables(),
         &passes.to_disables(),
     )
-    .map(|p| p.with_show_memo_stats(show_memo_stats))
+    .map(|p| {
+        p.with_show_memo_stats(show_memo_stats)
+            .with_memo_prefer_dense(prefer_dense)
+    })
     .map_err(|e| anyhow::anyhow!("profile: {e}"))
 }
 

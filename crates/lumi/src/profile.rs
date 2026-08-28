@@ -27,6 +27,8 @@ pub struct CompileProfile {
     pub link_args: Vec<String>,
     /// Print Memo hit/miss stats at exit (`--show-memo-stats` / `LUMI_MEMO_STATS`).
     pub show_memo_stats: bool,
+    /// Prefer DenseInt Memo `T_f` over slot tables when planning (§7.5.3).
+    pub memo_prefer_dense: bool,
     #[cfg(feature = "codegen")]
     pass_set: PassSet,
 }
@@ -48,6 +50,7 @@ impl CompileProfile {
             emit_ir: false,
             link_args: Vec::new(),
             show_memo_stats: false,
+            memo_prefer_dense: true,
             #[cfg(feature = "codegen")]
             pass_set: PassSet::for_profile(OptProfile::from_release(release)),
         }
@@ -96,6 +99,11 @@ impl CompileProfile {
 
     pub fn with_show_memo_stats(mut self, on: bool) -> Self {
         self.show_memo_stats = on;
+        self
+    }
+
+    pub fn with_memo_prefer_dense(mut self, on: bool) -> Self {
+        self.memo_prefer_dense = on;
         self
     }
 
@@ -153,11 +161,18 @@ impl CompileProfile {
                 &OptOptions {
                     release: self.release,
                     memo_tf: memo,
+                    memo_prefer_dense: self.memo_prefer_dense,
                 },
             );
             Ok(())
         } else {
-            optimize_with(core, profile, &self.pass_set, memo)
+            optimize_with(
+                core,
+                profile,
+                &self.pass_set,
+                memo,
+                self.memo_prefer_dense,
+            )
         }
     }
 

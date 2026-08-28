@@ -25,6 +25,7 @@ pub use plan::{apply_memo_plan, plan_memo_tf};
 #[cfg(not(feature = "opt-memo"))]
 pub fn plan_memo_tf(
     _module: &lumi_core::CoreModule,
+    _prefer_dense: bool,
 ) -> rustc_hash::FxHashMap<String, lumi_core::MemoTf> {
     rustc_hash::FxHashMap::default()
 }

@@ -44,11 +44,23 @@ pub use registry::{info as pass_info, ALL as ALL_PASSES};
 use lumi_core::{CoreModule, ListRepr, MapRepr};
 use pipeline::{build_schedule, run_schedule, schedule_for};
 
-#[derive(Default)]
+#[derive(Debug, Clone)]
 pub struct OptOptions {
     pub release: bool,
     /// Transparent Memo `T_f` (DESIGN §7.5). Defaults to `release`.
     pub memo_tf: bool,
+    /// Prefer DenseInt `T_f` tables over slot tables when eligible (§7.5.3).
+    pub memo_prefer_dense: bool,
+}
+
+impl Default for OptOptions {
+    fn default() -> Self {
+        Self {
+            release: false,
+            memo_tf: false,
+            memo_prefer_dense: true,
+        }
+    }
 }
 
 impl OptOptions {
@@ -56,6 +68,7 @@ impl OptOptions {
         Self {
             release,
             memo_tf: release,
+            memo_prefer_dense: true,
         }
     }
 
@@ -115,7 +128,8 @@ pub fn optimize(module: &mut CoreModule, opts: &OptOptions) {
     let profile = opts.profile();
     let set = PassSet::for_profile(profile);
     // Stock path: static schedule slice (no allocation).
-    optimize_with(module, profile, &set, opts.memo_tf).expect("stock PassSet must validate");
+    optimize_with(module, profile, &set, opts.memo_tf, opts.memo_prefer_dense)
+        .expect("stock PassSet must validate");
 }
 
 /// Assemble from [`OptProfile`] + [`PassSet`].
@@ -129,13 +143,14 @@ pub fn optimize_with(
     profile: OptProfile,
     set: &PassSet,
     memo_tf: bool,
+    memo_prefer_dense: bool,
 ) -> Result<(), String> {
     validate_pass_set(set)?;
 
     let do_memo = memo_tf && (set.contains("memo_tf") || set.is_stock(profile));
     // Plan transparent Memo on the pre-CSE module (reuse evidence needs duplicate calls).
     let memo_plan = if do_memo {
-        Some(plan_memo_tf(module))
+        Some(plan_memo_tf(module, memo_prefer_dense))
     } else {
         None
     };
@@ -210,6 +225,7 @@ val main = {
             &OptOptions {
                 release: false,
                 memo_tf: false,
+                memo_prefer_dense: true,
             },
         );
         let main = core.functions.iter().find(|f| f.is_main).expect("main");

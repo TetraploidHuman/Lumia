@@ -30,6 +30,7 @@ val main = { println(1) }
         OptProfile::Release,
         p.pass_set(),
         true,
+        true,
     )
     .expect("optimize_with");
 }

@@ -46,7 +46,7 @@ fn memo_tf_marks_dense_int() {
     );
     fib.param_names = vec!["n".into()];
     let module = CoreModule::with_functions("M", vec![fib]);
-    let plan = plan_memo_tf(&module);
+    let plan = plan_memo_tf(&module, true);
     assert!(
         matches!(plan.get("fib"), Some(MemoTf::DenseInt { .. })),
         "expected DenseInt, got {:?}",
@@ -137,7 +137,7 @@ fn memo_tf_marks_slots() {
         mono_of: None,
     };
     let module = CoreModule::with_functions("M", vec![sq, main]);
-    let plan = plan_memo_tf(&module);
+    let plan = plan_memo_tf(&module, true);
     assert!(
         matches!(plan.get("sq"), Some(MemoTf::Slots { .. })),
         "expected Slots, got {:?}",
@@ -182,7 +182,7 @@ fn memo_tf_increasing_recursion_not_dense() {
     );
     f.param_names = vec!["n".into()];
     let module = CoreModule::with_functions("M", vec![f]);
-    let plan = plan_memo_tf(&module);
+    let plan = plan_memo_tf(&module, true);
     assert!(
         !matches!(plan.get("inc"), Some(MemoTf::DenseInt { .. })),
         "increasing self-recursion must not use dense index T_f, got {:?}",

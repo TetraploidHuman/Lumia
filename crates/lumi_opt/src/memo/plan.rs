@@ -8,13 +8,14 @@ use super::{
     MEMO_TF_MAX_ARGS, MEMO_TF_MAX_FUNS_U32,
 };
 
-pub fn plan_memo_tf(module: &CoreModule) -> HashMap<String, MemoTf> {
+pub fn plan_memo_tf(module: &CoreModule, prefer_dense: bool) -> HashMap<String, MemoTf> {
     let mut next_slots = 0u32;
     let mut next_dense = 0u32;
     let mut bytes_used: usize = 0;
     let mut plan = HashMap::default();
     for f in &module.functions {
-        if eligible_dense(f)
+        if prefer_dense
+            && eligible_dense(f)
             && next_dense < MEMO_IDX_MAX_FUNS
             && bytes_used + MEMO_IDX_TABLE_BYTES <= MEMO_PROCESS_BYTE_CAP
         {
