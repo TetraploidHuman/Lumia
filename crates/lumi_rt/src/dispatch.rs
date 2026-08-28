@@ -2,7 +2,7 @@
 
 use crate::common::{
     header_from_payload, tid_base, trap_abort, GcInhibitGuard, TYPE_LIST, TYPE_LIST_IOTA,
-    TYPE_STRING,
+    TYPE_LIST_SLICE, TYPE_STRING,
 };
 use crate::gc::{list_payload_bytes, lumi_alloc};
 use crate::list::{force_heap_list, list_len_of, lumi_list_concat, lumi_list_get, lumi_list_set};
@@ -74,7 +74,9 @@ pub extern "C" fn lumi_elems(obj: *mut u8) -> *mut u8 {
     let tid = unsafe { (*header_from_payload(obj)).type_id };
     match tid {
         tid if tid_base(tid) == TYPE_LIST => obj,
-        TYPE_LIST_IOTA => force_heap_list(obj),
+        tid if tid_base(tid) == TYPE_LIST_IOTA || tid_base(tid) == TYPE_LIST_SLICE => {
+            force_heap_list(obj)
+        }
         tid if is_set_tid(tid) => unsafe {
             let n = *(obj as *const i64);
             let nbytes = list_payload_bytes(n);

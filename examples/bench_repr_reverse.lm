@@ -1,0 +1,20 @@
+module BenchReprReverse
+
+import lumi.io.{println}
+
+/// Unique reverse on a large HeapList — in-place swap vs allocate+copy.
+val revOnce(n, rounds) = {
+    var xs = (0..<n).toList()
+    var i = 0
+    var s = 0
+    for i < rounds {
+        xs = xs.reverse()
+        s = s + xs.get(0) + xs.get(n - 1)
+        i = i + 1
+    }
+    s + xs.len()
+}
+
+val main = {
+    println(revOnce(200_000, 40))
+}

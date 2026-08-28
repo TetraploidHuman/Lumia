@@ -1,0 +1,22 @@
+module BenchReprSort
+
+import lumi.io.{println}
+
+/// Unique `xs = xs.sort()` — in-place consume path.
+val sortConsume(n, rounds) = {
+    var xs = (0..<n).toList()
+    var r = 0
+    var s = 0
+    for r < rounds {
+        // Reverse then sort so work is non-trivial each round.
+        xs = xs.reverse()
+        xs = xs.sort()
+        s = s + xs.get(0) + xs.get(n - 1)
+        r = r + 1
+    }
+    s
+}
+
+val main = {
+    println(sortConsume(8_000, 40))
+}

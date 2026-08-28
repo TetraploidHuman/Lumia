@@ -1,0 +1,22 @@
+module BenchReprAppend
+
+import lumi.io.{println}
+
+/// Shared take → append on the slice: one-shot bulk materialize+append
+/// (avoids materialize-exact then grow/copy again).
+val takeAppend(rangeLen, iters, takeLen) = {
+    var xs = (0..<rangeLen).toList()
+    var i = 0
+    var s = 0
+    for i < iters {
+        val snap = xs.take(takeLen)
+        val ys = snap.append(i)
+        s = s + ys.get(0) + ys.get(takeLen)
+        i = i + 1
+    }
+    s
+}
+
+val main = {
+    println(takeAppend(200_000, 400, 50_000))
+}

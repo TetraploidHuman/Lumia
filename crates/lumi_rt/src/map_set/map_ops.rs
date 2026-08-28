@@ -7,10 +7,11 @@ use crate::gc::{list_payload_bytes, lumi_alloc};
 use crate::list::force_heap_list;
 
 use super::map_core::{
-    alloc_adt, map_alloc_hash_tid, map_alloc_overlay, map_find, map_from_linear_to_hash,
-    map_hash_find_slot, map_hash_nbytes, map_hash_put_new, map_is_hash, map_is_overlay,
-    map_linear_nbytes, map_lookup_val, map_materialize, map_overlay_dn, map_overlay_parent,
-    map_pair_at, MAP_OVERLAY_MAX, MAP_SMALL_MAX,
+    alloc_adt, map_alloc_hash_tid, map_alloc_overlay, map_clone_hash_upsert, map_find,
+    map_from_linear_to_hash, map_hash_find_slot, map_hash_nbytes, map_hash_put_new,
+    map_hash_upsert_build, map_is_hash, map_is_overlay, map_linear_nbytes, map_lookup_val,
+    map_materialize, map_overlay_dn, map_overlay_parent, map_pair_at, map_rc_is_unique,
+    MAP_OVERLAY_MAX, MAP_SMALL_MAX,
 };
 use super::tid::{key_eq, map_float_keys, map_is_assoc, map_tid};
 
@@ -43,9 +44,40 @@ pub extern "C" fn lumi_map_set(map: *mut u8, key: i64, val: i64) -> *mut u8 {
         if map_is_overlay(map) {
             let parent = map_overlay_parent(map);
             let dn = map_overlay_dn(map);
-            let base = map as *const i64;
-            // Replace existing delta key in-place in a new overlay copy.
+            let base = map as *mut i64;
             let float_keys = map_float_keys(parent) || map_float_keys(map);
+            // Unique overlay → mutate / append in place (capacity = MAP_OVERLAY_MAX).
+            if map_rc_is_unique(map) {
+                for i in (0..dn as usize).rev() {
+                    if key_eq(*base.add(3 + i * 2), key, float_keys) {
+                        *base.add(4 + i * 2) = val;
+                        if !map_float_vals_of(map, parent) {
+                            crate::lumi_write_barrier(
+                                map,
+                                (4 + i * 2) as u32,
+                                val as *mut u8,
+                            );
+                        }
+                        return map;
+                    }
+                }
+                if dn < MAP_OVERLAY_MAX {
+                    let i = dn as usize;
+                    *base.add(3 + i * 2) = key;
+                    *base.add(4 + i * 2) = val;
+                    *base.add(2) = dn + 1;
+                    if !map_float_keys(parent) && !map_float_keys(map) {
+                        crate::lumi_write_barrier(map, (3 + i * 2) as u32, key as *mut u8);
+                    }
+                    if !map_float_vals_of(map, parent) {
+                        crate::lumi_write_barrier(map, (4 + i * 2) as u32, val as *mut u8);
+                    }
+                    return map;
+                }
+                let flat = map_materialize(map);
+                return lumi_map_set(flat, key, val);
+            }
+            // Shared overlay → copy delta into a fresh overlay.
             for i in (0..dn as usize).rev() {
                 if key_eq(*base.add(3 + i * 2), key, float_keys) {
                     let mut pairs = Vec::with_capacity(dn as usize);
@@ -65,7 +97,6 @@ pub extern "C" fn lumi_map_set(map: *mut u8, key: i64, val: i64) -> *mut u8 {
                 pairs.push((key, val));
                 return map_alloc_overlay(parent, &pairs);
             }
-            // Delta full → flatten then upsert.
             let flat = map_materialize(map);
             return lumi_map_set(flat, key, val);
         }
@@ -76,6 +107,15 @@ pub extern "C" fn lumi_map_set(map: *mut u8, key: i64, val: i64) -> *mut u8 {
                 (*(map as *const i64), map as *const i64)
             };
             if let Some(i) = map_find(map, key) {
+                // Unique linear → update value in place.
+                if !map.is_null() && map_rc_is_unique(map) {
+                    let dst = map as *mut i64;
+                    *dst.add(2 + i * 2) = val;
+                    if !super::tid::map_float_vals(map) {
+                        crate::lumi_write_barrier(map, (2 + i * 2) as u32, val as *mut u8);
+                    }
+                    return map;
+                }
                 let nbytes = map_linear_nbytes(n) as u64;
                 let dest = lumi_alloc(nbytes, map_tid(map));
                 let dst = dest as *mut i64;
@@ -101,9 +141,27 @@ pub extern "C" fn lumi_map_set(map: *mut u8, key: i64, val: i64) -> *mut u8 {
             *dst.add(2 + n as usize * 2) = val;
             return dest;
         }
-        // HashOrdered → Overlay (avoid full table clone on each set).
+        // HashOrdered: unique → upsert in place (grow once if needed);
+        // shared → Overlay (avoid full table clone).
+        if map_rc_is_unique(map) {
+            let base = map as *const i64;
+            let n = *base;
+            let cap = *base.add(1) as usize;
+            let replacing = map_hash_find_slot(map, key).is_some();
+            let n2 = if replacing { n } else { n + 1 };
+            if !replacing && (n2 as usize) * 2 > cap {
+                return map_clone_hash_upsert(map, key, val);
+            }
+            map_hash_upsert_build(map, key, val);
+            return map;
+        }
         map_alloc_overlay(map, &[(key, val)])
     }
+}
+
+#[inline]
+fn map_float_vals_of(map: *mut u8, parent: *mut u8) -> bool {
+    super::tid::map_float_vals(map) || super::tid::map_float_vals(parent)
 }
 #[no_mangle]
 pub extern "C" fn lumi_map_remove(map: *mut u8, key: i64) -> *mut u8 {

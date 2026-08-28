@@ -264,16 +264,21 @@ pub(crate) unsafe fn set_from_linear_to_hash(src: *mut u8, extra: Option<i64>) -
 }
 
 /// Immutable insert: new Set with `elem` (no-op copy if already present).
+/// Unique set → in-place when possible (COW consume `s = s.insert(e)`).
 #[no_mangle]
 pub extern "C" fn lumi_set_insert(set: *mut u8, elem: i64) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
     unsafe {
         let tid = set_tid(set);
         if lumi_set_contains(set, elem) != 0 {
+            // Already present: unique → identity; shared → clone.
             if set.is_null() {
                 let dest = lumi_alloc(8, tid);
                 *(dest as *mut i64) = 0;
                 return dest;
+            }
+            if crate::common::cow_rc_is_unique(set, false) {
+                return set;
             }
             let nbytes = (*header_from_payload(set)).size as u64;
             let dest = lumi_alloc(nbytes, tid);
@@ -304,11 +309,15 @@ pub extern "C" fn lumi_set_insert(set: *mut u8, elem: i64) -> *mut u8 {
             return dest;
         }
         // Hash insert
-        let base = set as *const i64;
+        let base = set as *mut i64;
         let n = *base;
         let cap = *base.add(1) as usize;
         let n2 = n + 1;
         let need_grow = (n2 as usize * 2) > cap;
+        if crate::common::cow_rc_is_unique(set, false) && !need_grow {
+            set_hash_insert_build(set, elem);
+            return set;
+        }
         let new_cap = if need_grow { cap * 2 } else { cap };
         let dest = set_alloc_hash_tid(new_cap, n2, tid);
         for i in 0..n as usize {

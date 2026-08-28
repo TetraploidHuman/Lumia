@@ -1,6 +1,8 @@
 //! List map / sortBy desugaring.
 
-use super::{append_assign, list_accum, resolve_unary_callback, with_fun_bind, UnaryCallback};
+use super::{
+    append_assign, list_accum, range_accum, resolve_unary_callback, with_fun_bind, UnaryCallback,
+};
 use crate::ast::{Builtin, Expr};
 use crate::lower::{empty_list, LowerCtx};
 use crate::visit::free_vars_expr;
@@ -8,6 +10,7 @@ use lumi_syntax::Span;
 
 /// `xs.map(f)` → `ListParMap` when FunRef-safe; else sequential accumulate.
 /// Type checking may demote `ListParMap` back to sequential (IO / non-scalar).
+/// Non-parallel `range(a,b).map(f)` → counter loop (no Iota→HeapList via `get`).
 pub(crate) fn lower_list_map(ctx: &LowerCtx, list: Expr, f: Expr, span: Span) -> Expr {
     if map_callback_is_parallel_safe(ctx, &f) {
         return Expr::BuiltinCall {
@@ -16,7 +19,90 @@ pub(crate) fn lower_list_map(ctx: &LowerCtx, list: Expr, f: Expr, span: Span) ->
             span,
         };
     }
+    if let Expr::BuiltinCall { name, args, .. } = &list {
+        if matches!(name, Builtin::Range | Builtin::RangeInclusive) && args.len() == 2 {
+            let inclusive = matches!(name, Builtin::RangeInclusive);
+            let start = args[0].clone();
+            let end = args[1].clone();
+            return match resolve_unary_callback(f, span, "map") {
+                UnaryCallback::Inline {
+                    param,
+                    param_ty,
+                    body,
+                } => range_map_inline(ctx, start, end, inclusive, param, param_ty, body, span),
+                UnaryCallback::Bound { f, f_name, x } => {
+                    range_map_call(ctx, start, end, inclusive, f, f_name, x, span)
+                }
+            };
+        }
+    }
     desugar_list_map_sequential(ctx, list, f, span)
+}
+
+fn range_map_inline(
+    ctx: &LowerCtx,
+    start: Expr,
+    end: Expr,
+    inclusive: bool,
+    param: String,
+    param_ty: Option<String>,
+    body: Expr,
+    span: Span,
+) -> Expr {
+    let acc = format!("__map_acc_{}", span.start.0);
+    let el = format!("__map_x_{}", span.start.0);
+    let mapped = Expr::Let {
+        name: param,
+        value: Box::new(Expr::Var(el.clone(), span)),
+        body: Box::new(body),
+        mutable: false,
+        ty: param_ty,
+    };
+    let step = append_assign(&acc, mapped, span);
+    range_accum(
+        ctx,
+        acc,
+        empty_list(span),
+        &el,
+        start,
+        end,
+        inclusive,
+        step,
+        span,
+    )
+}
+
+fn range_map_call(
+    ctx: &LowerCtx,
+    start: Expr,
+    end: Expr,
+    inclusive: bool,
+    f: Expr,
+    f_name: String,
+    x: String,
+    span: Span,
+) -> Expr {
+    let acc = format!("__map_acc_{}", span.start.0);
+    let mapped = Expr::Call {
+        callee: Box::new(Expr::Var(f_name.clone(), span)),
+        args: vec![Expr::Var(x.clone(), span)],
+        span,
+    };
+    let step = append_assign(&acc, mapped, span);
+    with_fun_bind(
+        Some((f_name, f)),
+        range_accum(
+            ctx,
+            acc,
+            empty_list(span),
+            &x,
+            start,
+            end,
+            inclusive,
+            step,
+            span,
+        ),
+    )
 }
 
 /// Sequential `map` loop (also used when auto-parallel demotes `ListParMap`).

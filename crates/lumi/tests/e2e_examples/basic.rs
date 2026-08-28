@@ -350,7 +350,7 @@ fn e2e_range_iota() {
     );
 }
 
-e2e_ok!(e2e_fuse_hof, "examples/fuse_hof.lm", "24", "250500");
+e2e_ok!(e2e_fuse_hof, "examples/fuse_hof.lm", "24", "250500", "3", "30");
 
 e2e_ok!(e2e_result_match, "examples/result_match.lm", "5", "-1", "3");
 

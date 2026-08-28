@@ -1,6 +1,6 @@
 //! List type_id helpers and Float-elem ensure.
 
-use crate::common::{header_from_payload, list_elem_is_float, tid_base, TYPE_LIST, TYPE_LIST_IOTA};
+use crate::common::{header_from_payload, list_elem_is_float, tid_base, TYPE_LIST, TYPE_LIST_IOTA, TYPE_LIST_SLICE};
 use crate::ensure::ensure_empty_float_retag;
 use lumi_abi::list_type_id;
 
@@ -35,6 +35,9 @@ pub(crate) fn ensure_list_f64(list: *mut u8) -> *mut u8 {
         }
         if tid_base(tid) == TYPE_LIST_IOTA {
             return Err("lumi: ensure_list_f64 on Iota".into());
+        }
+        if tid_base(tid) == TYPE_LIST_SLICE {
+            return Err("lumi: ensure_list_f64 on Slice".into());
         }
         Err(format!("lumi: ensure_list_f64 on type_id={tid}"))
     })

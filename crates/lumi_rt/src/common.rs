@@ -9,7 +9,7 @@ pub use lumi_abi::{
     list_elem_is_float, tid_base, tid_f_key, tid_f_val, MEMO_IDX_CAP, MEMO_IDX_MAX_FUNS,
     MEMO_IDX_TABLE_BYTES, MEMO_PROCESS_BYTE_CAP, MEMO_TF_MAX_ARGS, MEMO_TF_MAX_FUNS, MEMO_TF_SLOTS,
     TYPE_ADT, TYPE_BYTES, TYPE_CHAR, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_F64, TYPE_LIST_IOTA,
-    TYPE_MAP, TYPE_MAP_ASSOC, TYPE_MAP_ASSOC_F64, TYPE_MAP_ASSOC_F64V, TYPE_MAP_ASSOC_VF64,
+    TYPE_LIST_SLICE, TYPE_MAP, TYPE_MAP_ASSOC, TYPE_MAP_ASSOC_F64, TYPE_MAP_ASSOC_F64V, TYPE_MAP_ASSOC_VF64,
     TYPE_MAP_F64, TYPE_MAP_F64V, TYPE_MAP_VF64, TYPE_SET, TYPE_SET_ASSOC, TYPE_SET_F64,
     TYPE_STRING,
 };
@@ -19,7 +19,7 @@ pub use lumi_abi::{
 /// Stack Lit* layouts must use **3** `i64` header words so `header_from_payload` matches:
 /// word0 = `type_id|size`, word1 = `marked|rc`, word2 = `_pad`.
 ///
-/// - `rc`: COW refcount for `TYPE_LIST` / `TYPE_LIST_F64` / `TYPE_ADT`
+/// - `rc`: COW refcount for List / Slice / ADT / Map / Set
 ///   (`RC_SHARED` = immortal; alloc starts at 1). Other type_ids leave `rc` at 0.
 /// - `_pad`: **type_id-dependent**
 ///   - `TYPE_ADT`: 64-bit per-field Float layout mask (bit `i` ⇒ field `i` is Float)
@@ -29,7 +29,7 @@ pub struct ObjectHeader {
     pub type_id: u32,
     pub size: u32,
     pub marked: u32,
-    /// COW refcount for List / ADT (see struct contract).
+    /// COW refcount for List / ADT / Map / Set (see struct contract).
     pub rc: u32,
     /// ADT float-field mask; otherwise 0.
     pub _pad: u64,
@@ -161,7 +161,11 @@ pub(crate) fn list_rc_is_unique(payload: *mut u8) -> bool {
 #[inline]
 fn cow_tid_ok(tid: u32, adt_ok: bool) -> bool {
     let b = tid_base(tid);
-    b == TYPE_LIST || (adt_ok && b == TYPE_ADT)
+    b == TYPE_LIST
+        || b == TYPE_LIST_SLICE
+        || b == TYPE_MAP
+        || b == TYPE_SET
+        || (adt_ok && b == TYPE_ADT)
 }
 
 #[inline]

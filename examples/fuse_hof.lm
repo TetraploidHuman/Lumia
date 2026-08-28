@@ -12,4 +12,9 @@ val main = {
         .filter({ x -> x % 2 == 0 })
         .fold(0, { acc, x -> acc + x })
     println(t)
+
+    // Fused build (map+filter → one pass, no intermediate list).
+    val ys = xs.map({ x -> x * 10 }).filter({ x -> x > 20 })
+    println(ys.len)
+    println(ys.get(0))
 }

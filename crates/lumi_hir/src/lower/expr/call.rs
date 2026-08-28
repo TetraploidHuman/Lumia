@@ -4,7 +4,9 @@ use super::super::collections::{
     lower_set_diff, lower_set_intersect, lower_set_union, lower_to_list, lower_to_map, lower_to_set,
 };
 use super::super::ctx::LowerCtx;
-use super::super::hof_fuse::try_fuse_hof_fold;
+use super::super::hof_fuse::{
+    try_fuse_hof_build_filter, try_fuse_hof_build_map, try_fuse_hof_fold,
+};
 use super::lower_expr;
 use crate::ast::{Builtin, Expr};
 use crate::list_hof::{
@@ -25,6 +27,16 @@ pub(super) fn lower_call(
                 return fused;
             }
         }
+        if name == "map" && args.len() == 2 {
+            if let Some(fused) = try_fuse_hof_build_map(ctx, &args[0], &args[1], span) {
+                return fused;
+            }
+        }
+        if name == "filter" && args.len() == 2 {
+            if let Some(fused) = try_fuse_hof_build_filter(ctx, &args[0], &args[1], span) {
+                return fused;
+            }
+        }
         // Free call to a top-level `val`/`foreign` (e.g. `trim(s)`, `println`, `>> trim`):
         // prefer that binding over builtins / method desugar.
         if ctx.is_toplevel_fun(name) {
@@ -41,6 +53,16 @@ pub(super) fn lower_call(
     if let lumi_syntax::Expr::Field { base, field, .. } = callee {
         if field == "fold" && args.len() == 2 {
             if let Some(fused) = try_fuse_hof_fold(ctx, base, &args[0], &args[1], span) {
+                return fused;
+            }
+        }
+        if field == "map" && args.len() == 1 {
+            if let Some(fused) = try_fuse_hof_build_map(ctx, base, &args[0], span) {
+                return fused;
+            }
+        }
+        if field == "filter" && args.len() == 1 {
+            if let Some(fused) = try_fuse_hof_build_filter(ctx, base, &args[0], span) {
                 return fused;
             }
         }

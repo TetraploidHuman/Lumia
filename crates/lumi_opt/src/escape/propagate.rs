@@ -135,7 +135,7 @@ fn mark_inputs_escaping(
                 Builtin::ListGet | Builtin::AdtField | Builtin::ListTake | Builtin::ListSlice
             ) {
                 // Escaping get/field/take/slice result ⇒ container escapes
-                // (take/slice copy element pointers into a fresh list).
+                // (take/slice share the parent buffer via Slice views).
                 if let Some(c) = args.first() {
                     mark(*c);
                 }

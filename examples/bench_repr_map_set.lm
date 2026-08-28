@@ -1,0 +1,45 @@
+module BenchReprMapSet
+
+import lumi.io.{println}
+
+type Option {
+    Some(value)
+    None
+}
+
+val unwrap_or(opt, d) = {
+    opt match {
+        None -> d
+        Some(n) -> n
+    }
+}
+
+/// Unique `m = m.set` on a hash table — in-place upsert (no Overlay).
+val mapUniqueSet(nPairs, rounds) = {
+    var m = mapOf()
+    var i = 0
+    for i < nPairs {
+        m = m.set(i, i)
+        i = i + 1
+    }
+    var r = 0
+    for r < rounds {
+        var k = 0
+        for k < nPairs {
+            m = m.set(k, k + r)
+            k = k + 1
+        }
+        r = r + 1
+    }
+    var s = 0
+    var j = 0
+    for j < nPairs {
+        s = s + unwrap_or(m.get(j), 0)
+        j = j + 1
+    }
+    s
+}
+
+val main = {
+    println(mapUniqueSet(256, 200))
+}

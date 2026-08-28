@@ -1,0 +1,42 @@
+module BenchReprMap
+
+import lumi.io.{println}
+
+type Option {
+    Some(value)
+    None
+}
+
+val unwrap_or(opt, d) = {
+    opt match {
+        None -> d
+        Some(n) -> n
+    }
+}
+
+val buildMap(nPairs) = {
+    var m = mapOf()
+    var i = 0
+    for i < nPairs {
+        m = m.set(i, i * 131 + 17)
+        i = i + 1
+    }
+    m
+}
+
+/// Large map built once; caller only `.get`s — ReprSelect keeps SmallMap (skip hash finish).
+val mapLookup(nPairs, lookups) = {
+    val m = buildMap(nPairs)
+    var s = 0
+    var k = 0
+    for k < lookups {
+        val key = (k * 1103515245 + 12345) % nPairs
+        s = s + unwrap_or(m.get(key), 0)
+        k = k + 1
+    }
+    s
+}
+
+val main = {
+    println(mapLookup(128, 80_000))
+}

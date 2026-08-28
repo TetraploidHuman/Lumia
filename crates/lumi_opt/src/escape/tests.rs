@@ -333,7 +333,8 @@ fn returned_take_escapes_source_list() {
 #[test]
 fn dead_take_does_not_force_source_escape() {
     // Take/Slice are not may_capture: a non-escaping take result must not force
-    // the source list onto the heap (GC mark_value no-ops non-heap elem bits).
+    // the source list onto the heap. Escaping take still marks the source
+    // (Slice retains the parent buffer).
     let body = Block {
         params: vec![],
         ops: vec![

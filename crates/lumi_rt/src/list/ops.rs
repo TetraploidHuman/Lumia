@@ -1,8 +1,14 @@
 //! List transforms: take/slice/concat/sort and ranges.
 
-use super::core::{force_heap_list, list_len_of, lumi_list_empty, lumi_list_promote};
+use super::core::{
+    alloc_list_slice, copy_list_elems, force_heap_list, list_capacity_elems, list_grow_cap,
+    list_len_of, lumi_list_empty, lumi_list_promote,
+};
 use super::tid::{heap_list_tid, list_float_elems, list_tid};
-use crate::common::{list_rc_is_unique, trap_abort, GcInhibitGuard, TYPE_LIST, TYPE_LIST_IOTA};
+use crate::common::{
+    list_rc_is_unique, list_rc_retain, tid_base, trap_abort, GcInhibitGuard, TYPE_LIST,
+    TYPE_LIST_IOTA, TYPE_LIST_SLICE,
+};
 use crate::gc::{list_payload_bytes, lumi_alloc};
 use crate::hash_ord::lumi_ord_cmp;
 use crate::string_io::{lumi_alloc_string, with_str_bytes};
@@ -30,62 +36,131 @@ pub extern "C" fn lumi_list_take(list: *mut u8, n: i64) -> *mut u8 {
             return lumi_range(start, end);
         }
     }
-    let _gc = GcInhibitGuard::enter();
-    unsafe {
-        let len = if list.is_null() {
-            0i64
-        } else {
-            *(list as *const i64)
-        };
-        let take = if n < 0 {
-            0
-        } else if n > len {
-            len
-        } else {
-            n
-        };
-        let dest = lumi_alloc(list_payload_bytes(take), heap_list_tid(list));
-        if dest.is_null() {
-            trap_abort("lumi: list take OOM");
-        }
-        let dst = dest as *mut i64;
-        *dst = take;
-        if !list.is_null() && take > 0 {
-            let src = list as *const i64;
-            for i in 0..take as usize {
-                *dst.add(1 + i) = *src.add(1 + i);
-            }
-        }
-        dest
+    let len = list_len_of(list);
+    let take = if n < 0 {
+        0
+    } else if n > len {
+        len
+    } else {
+        n
+    };
+    if take == 0 {
+        return lumi_list_empty();
     }
+    // Unique in-place shrink is only safe for `xs = xs.take(…)` (codegen
+    // `lumi_list_take_consume`). Plain `take` must not mutate a live parent.
+    // Full prefix → share identity (retain).
+    if take == len && tid_base(list_tid(list)) != TYPE_LIST_IOTA {
+        let p = if tid_base(list_tid(list)) == TYPE_LIST && !is_heap_payload_list(list) {
+            lumi_list_promote(list)
+        } else {
+            list
+        };
+        list_rc_retain(p);
+        return p;
+    }
+    // Shared / prefix → Slice view; parent retain for COW.
+    alloc_list_slice(list, 0, take)
 }
 
-/// Reverse element order into a new list.
+/// `xs = xs.take(n)` when RC-unique: shrink dense/slice in place (no new alloc).
+#[no_mangle]
+pub extern "C" fn lumi_list_take_consume(list: *mut u8, n: i64) -> *mut u8 {
+    if list_tid(list) == TYPE_LIST_IOTA {
+        return lumi_list_take(list, n);
+    }
+    let len = list_len_of(list);
+    let take = if n < 0 {
+        0
+    } else if n > len {
+        len
+    } else {
+        n
+    };
+    if take == 0 {
+        return lumi_list_empty();
+    }
+    if tid_base(list_tid(list)) == TYPE_LIST
+        && is_heap_payload_list(list)
+        && list_rc_is_unique(list)
+    {
+        unsafe {
+            *(list as *mut i64) = take;
+        }
+        return list;
+    }
+    if tid_base(list_tid(list)) == TYPE_LIST_SLICE && list_rc_is_unique(list) {
+        unsafe {
+            *(list as *mut i64).add(2) = take;
+        }
+        return list;
+    }
+    lumi_list_take(list, n)
+}
+
+fn is_heap_payload_list(list: *mut u8) -> bool {
+    crate::common::is_heap_payload(list)
+}
+
+/// Reverse element order into a fresh list (never mutates a live binding).
 #[no_mangle]
 pub extern "C" fn lumi_list_reverse(list: *mut u8) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
-    let list = force_heap_list(list);
-    unsafe {
-        let len = if list.is_null() {
-            0i64
-        } else {
-            *(list as *const i64)
-        };
-        let dest = lumi_alloc(list_payload_bytes(len), heap_list_tid(list));
-        if dest.is_null() {
-            trap_abort("lumi: list reverse OOM");
+    let n = list_len_of(list);
+    if n <= 1 {
+        if n == 0 {
+            return lumi_list_empty();
         }
+        // Single element: share identity (retain).
+        let p = lumi_list_promote(list);
+        list_rc_retain(p);
+        return p;
+    }
+    let dest = lumi_alloc(list_payload_bytes(n), heap_list_tid(list));
+    if dest.is_null() {
+        trap_abort("lumi: list reverse OOM");
+    }
+    unsafe {
         let dst = dest as *mut i64;
-        *dst = len;
-        if !list.is_null() && len > 0 {
-            let src = list as *const i64;
-            let n = len as usize;
-            for i in 0..n {
-                *dst.add(1 + i) = *src.add(n - i);
+        *dst = n;
+        copy_list_elems(dst.add(1), list, n);
+        let half = (n as usize) / 2;
+        for i in 0..half {
+            let a = dst.add(1 + i);
+            let b = dst.add(n as usize - i);
+            let tmp = *a;
+            *a = *b;
+            *b = tmp;
+        }
+    }
+    dest
+}
+
+/// `xs = xs.reverse()` when RC-unique: swap in place (no alloc).
+#[no_mangle]
+pub extern "C" fn lumi_list_reverse_consume(list: *mut u8) -> *mut u8 {
+    let n = list_len_of(list);
+    if n <= 1 {
+        return lumi_list_reverse(list);
+    }
+    if tid_base(list_tid(list)) == TYPE_LIST
+        && is_heap_payload_list(list)
+        && list_rc_is_unique(list)
+    {
+        unsafe {
+            let dst = list as *mut i64;
+            let half = (n as usize) / 2;
+            for i in 0..half {
+                let a = dst.add(1 + i);
+                let b = dst.add(n as usize - i);
+                let tmp = *a;
+                *a = *b;
+                *b = tmp;
             }
         }
-        dest
+        return list;
     }
+    lumi_list_reverse(list)
 }
 
 /// Sort `List[Int]` ascending (stable via slice::sort).
@@ -93,36 +168,54 @@ pub extern "C" fn lumi_list_reverse(list: *mut u8) -> *mut u8 {
 #[no_mangle]
 pub extern "C" fn lumi_list_sort(list: *mut u8) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
-    let list = force_heap_list(list);
+    let n = list_len_of(list);
     if !list.is_null() && list_float_elems(list) {
         trap_abort("lumi: list.sort is not defined for List[Float]");
     }
+    if n <= 1 {
+        if n == 0 {
+            return lumi_list_empty();
+        }
+        let p = lumi_list_promote(list);
+        list_rc_retain(p);
+        return p;
+    }
+    let dest = lumi_alloc(list_payload_bytes(n), heap_list_tid(list));
+    if dest.is_null() {
+        trap_abort("lumi: list sort OOM");
+    }
     unsafe {
-        let len = if list.is_null() {
-            0i64
-        } else {
-            *(list as *const i64)
-        };
-        if len < 0 {
-            trap_abort("lumi: list sort negative length");
-        }
-        let n = len as usize;
-        let dest = lumi_alloc(list_payload_bytes(len), heap_list_tid(list));
-        if dest.is_null() {
-            trap_abort("lumi: list sort OOM");
-        }
         let dst = dest as *mut i64;
-        *dst = len;
-        if !list.is_null() && n > 0 {
-            let src = list as *const i64;
-            for i in 0..n {
-                *dst.add(1 + i) = *src.add(1 + i);
-            }
-            let slice = std::slice::from_raw_parts_mut(dst.add(1), n);
+        *dst = n;
+        copy_list_elems(dst.add(1), list, n);
+        let slice = std::slice::from_raw_parts_mut(dst.add(1), n as usize);
+        slice.sort();
+    }
+    dest
+}
+
+/// `xs = xs.sort()` when RC-unique: sort the buffer in place.
+#[no_mangle]
+pub extern "C" fn lumi_list_sort_consume(list: *mut u8) -> *mut u8 {
+    let n = list_len_of(list);
+    if n <= 1 {
+        return lumi_list_sort(list);
+    }
+    if !list.is_null() && list_float_elems(list) {
+        trap_abort("lumi: list.sort is not defined for List[Float]");
+    }
+    if tid_base(list_tid(list)) == TYPE_LIST
+        && is_heap_payload_list(list)
+        && list_rc_is_unique(list)
+    {
+        unsafe {
+            let dst = list as *mut i64;
+            let slice = std::slice::from_raw_parts_mut(dst.add(1), n as usize);
             slice.sort();
         }
-        dest
+        return list;
     }
+    lumi_list_sort(list)
 }
 
 /// Stable permute of `values` by parallel Ord keys (Int / String / Char).
@@ -206,39 +299,46 @@ pub extern "C" fn lumi_list_join(list: *mut u8, sep: *mut u8) -> *mut u8 {
 #[no_mangle]
 pub extern "C" fn lumi_list_set(list: *mut u8, index: i64, elem: i64) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
-    let list = force_heap_list(list);
-    unsafe {
-        if list.is_null() || index < 0 {
-            trap_abort("lumi: list set out of bounds");
-        }
-        let n = *(list as *const i64);
-        if index >= n {
-            trap_abort("lumi: list set out of bounds");
-        }
-        let idx = index as usize;
-        if list_rc_is_unique(list) {
+    if list.is_null() || index < 0 {
+        trap_abort("lumi: list set out of bounds");
+    }
+    let n = list_len_of(list);
+    if index >= n {
+        trap_abort("lumi: list set out of bounds");
+    }
+    let idx = index as usize;
+    let base = tid_base(list_tid(list));
+
+    // Unique dense → in-place.
+    if base == TYPE_LIST && is_heap_payload_list(list) && list_rc_is_unique(list) {
+        unsafe {
             let dst = list as *mut i64;
             *dst.add(1 + idx) = elem;
-            // Float elems are unboxed bits, not GC pointers (TYPE_LIST_F64).
             if !list_float_elems(list) {
                 crate::lumi_write_barrier(list, (1 + idx) as u32, elem as *mut u8);
             }
-            return list;
         }
-        let nbytes = list_payload_bytes(n);
-        let dest = lumi_alloc(nbytes, heap_list_tid(list));
-        if dest.is_null() {
-            trap_abort("lumi: list set OOM");
-        }
-        let src = list as *const i64;
-        let dst = dest as *mut i64;
-        ptr::copy_nonoverlapping(src, dst, (n as usize) + 1);
-        *dst.add(1 + idx) = elem;
-        dest
+        return list;
     }
+
+    // Shared dense / slice / iota → one bulk copy + write.
+    let nbytes = list_payload_bytes(n);
+    let dest = lumi_alloc(nbytes, heap_list_tid(list));
+    if dest.is_null() {
+        trap_abort("lumi: list set OOM");
+    }
+    unsafe {
+        let dst = dest as *mut i64;
+        *dst = n;
+        copy_list_elems(dst.add(1), list, n);
+        *dst.add(1 + idx) = elem;
+    }
+    dest
 }
 
 /// Return a new HeapList that is `a` followed by `b`.
+/// Unique dense `a` with spare capacity → extend in place (like append).
+/// Unique dense without spare → geometric grow (amortized concat loops).
 #[no_mangle]
 pub extern "C" fn lumi_list_concat(a: *mut u8, b: *mut u8) -> *mut u8 {
     let _gc = GcInhibitGuard::enter();
@@ -258,26 +358,56 @@ pub extern "C" fn lumi_list_concat(a: *mut u8, b: *mut u8) -> *mut u8 {
         if nb == 0 {
             return lumi_list_promote(a);
         }
-        let a = force_heap_list(a);
-        let b = force_heap_list(b);
         let n = na
             .checked_add(nb)
             .unwrap_or_else(|| trap_abort("lumi: list concat length overflow"));
-        let nbytes = list_payload_bytes(n);
-        let tid = list_type_id(list_float_elems(a) || list_float_elems(b));
-        let dest = lumi_alloc(nbytes, tid);
+        let a_base = tid_base(list_tid(a));
+        let float = list_float_elems(a) || list_float_elems(b);
+        let tid = list_type_id(float);
+
+        // Unique dense left → in-place or geometric grow (COW consume path).
+        if a_base == TYPE_LIST && is_heap_payload_list(a) && list_rc_is_unique(a) {
+            if list_capacity_elems(a) >= n {
+                let dst = a as *mut i64;
+                copy_list_elems(dst.add(1 + na as usize), b, nb);
+                *dst = n;
+                if !float {
+                    for i in 0..nb as usize {
+                        let e = *dst.add(1 + na as usize + i);
+                        crate::lumi_write_barrier(a, (1 + na as usize + i) as u32, e as *mut u8);
+                    }
+                }
+                return a;
+            }
+            let cap = list_grow_cap(n.max(list_capacity_elems(a).saturating_mul(2)));
+            let dest = lumi_alloc(list_payload_bytes(cap), tid);
+            if dest.is_null() {
+                trap_abort("lumi: list concat OOM");
+            }
+            let dst = dest as *mut i64;
+            *dst = n;
+            copy_list_elems(dst.add(1), a, na);
+            copy_list_elems(dst.add(1 + na as usize), b, nb);
+            return dest;
+        }
+
+        let dest = lumi_alloc(list_payload_bytes(n), tid);
         if dest.is_null() {
             trap_abort("lumi: list concat OOM");
         }
         let dst = dest as *mut i64;
         *dst = n;
-        let src = a as *const i64;
-        for i in 0..na as usize {
-            *dst.add(1 + i) = *src.add(1 + i);
-        }
-        let src = b as *const i64;
-        for i in 0..nb as usize {
-            *dst.add(1 + na as usize + i) = *src.add(1 + i);
+        // Bulk copy from dense/slice/iota — no intermediate materialize.
+        copy_list_elems(dst.add(1), a, na);
+        copy_list_elems(dst.add(1 + na as usize), b, nb);
+        // Unique Slice left: release parent retain after bulk copy.
+        if a_base == TYPE_LIST_SLICE && list_rc_is_unique(a) {
+            let sbase = a as *mut i64;
+            let parent = *sbase as *mut u8;
+            *sbase = 0;
+            if !parent.is_null() {
+                crate::common::list_rc_release(parent);
+            }
         }
         dest
     }
@@ -304,23 +434,71 @@ pub extern "C" fn lumi_list_slice(list: *mut u8, start: i64) -> *mut u8 {
             return lumi_range(abs, end);
         }
     }
-    let _gc = GcInhibitGuard::enter();
-    unsafe {
-        let len = *(list as *const i64);
-        let start = if start < 0 { 0 } else { start };
-        let n = if start >= len { 0i64 } else { len - start };
-        let dest = lumi_alloc(list_payload_bytes(n), heap_list_tid(list));
-        if dest.is_null() {
-            trap_abort("lumi: slice OOM");
-        }
-        *(dest as *mut i64) = n;
-        let src = list as *const i64;
-        let dst = dest as *mut i64;
-        for i in 0..n as usize {
-            *dst.add(1 + i) = *src.add(1 + start as usize + i);
-        }
-        dest
+    let len = list_len_of(list);
+    let start = if start < 0 { 0 } else { start };
+    if start >= len {
+        return lumi_list_empty();
     }
+    let n = len - start;
+    if start == 0 && n == len {
+        let p = if tid_base(list_tid(list)) == TYPE_LIST && !is_heap_payload_list(list) {
+            lumi_list_promote(list)
+        } else {
+            list
+        };
+        list_rc_retain(p);
+        return p;
+    }
+    // Never mutate a live parent — views only (consume path can shrink later).
+    alloc_list_slice(list, start, n)
+}
+
+/// `xs = xs.slice(n)` / `xs = xs.drop(n)` when RC-unique:
+/// dense → memmove+shrink in place; slice → bump offset in place.
+/// Iota has no RC (alias shares the pointer), so always allocate a fresh range.
+#[no_mangle]
+pub extern "C" fn lumi_list_slice_consume(list: *mut u8, start: i64) -> *mut u8 {
+    if list.is_null() || list_tid(list) == TYPE_LIST_IOTA {
+        return lumi_list_slice(list, start);
+    }
+    let len = list_len_of(list);
+    let start = if start < 0 { 0 } else { start };
+    if start >= len {
+        return lumi_list_empty();
+    }
+    if start == 0 {
+        return list;
+    }
+    let n = len - start;
+    if tid_base(list_tid(list)) == TYPE_LIST
+        && is_heap_payload_list(list)
+        && list_rc_is_unique(list)
+    {
+        // Small remainder → memmove+shrink so later unique append keeps spare capacity.
+        // Large remainder → Slice view (O(1)); memmove would dominate.
+        if n <= 64 {
+            unsafe {
+                let base = list as *mut i64;
+                ptr::copy(base.add(1 + start as usize), base.add(1), n as usize);
+                *base = n;
+            }
+            return list;
+        }
+        return alloc_list_slice(list, start, n);
+    }
+    if tid_base(list_tid(list)) == TYPE_LIST_SLICE && list_rc_is_unique(list) {
+        unsafe {
+            let base = list as *mut i64;
+            let off0 = *base.add(1);
+            let abs = off0
+                .checked_add(start)
+                .unwrap_or_else(|| trap_abort("lumi: slice offset overflow"));
+            *base.add(1) = abs;
+            *base.add(2) = n;
+        }
+        return list;
+    }
+    lumi_list_slice(list, start)
 }
 
 /// Build `[start, end)` as Iota (`TYPE_LIST_IOTA`) — O(1), no element materialization.

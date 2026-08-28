@@ -1,0 +1,24 @@
+module BenchReprTakeIota
+
+import lumi.io.{println}
+
+/// Iota `range` + take stays virtual (O(1) interval shrink) — regression guard only.
+val takeAliasIota(rangeLen, iters, takeLen, scanLen) = {
+    var xs = range(0, rangeLen)
+    var i = 0
+    var s = 0
+    for i < iters {
+        val snap = xs.take(takeLen)
+        var j = 0
+        for j < scanLen {
+            s = s + snap.get(j)
+            j = j + 1
+        }
+        i = i + 1
+    }
+    s
+}
+
+val main = {
+    println(takeAliasIota(500_000, 2000, 100_000, 1000))
+}

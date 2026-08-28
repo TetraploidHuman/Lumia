@@ -1,6 +1,60 @@
 use super::*;
 
 #[test]
+fn map_unique_linear_update_in_place() {
+    use crate::map_set::{lumi_map_get, lumi_map_set, map_count};
+    let mut m = ptr::null_mut();
+    lumi_root_push(&mut m as *mut *mut u8);
+    m = lumi_map_set(m, 1, 10);
+    m = lumi_map_set(m, 2, 20);
+    let before = m;
+    m = lumi_map_set(m, 1, 99);
+    assert_eq!(m, before, "unique linear update should reuse buffer");
+    assert_eq!(map_count(m), 2);
+    let opt = lumi_map_get(m, 1, 0, 1);
+    unsafe {
+        assert_eq!(*(opt as *const i64), 0);
+        assert_eq!(*(opt as *const i64).add(1), 99);
+    }
+    lumi_root_pop();
+}
+
+#[test]
+fn map_unique_hash_upsert_in_place() {
+    use crate::map_set::{lumi_map_set, map_count, map_is_hash, map_is_overlay};
+    let mut m = ptr::null_mut();
+    lumi_root_push(&mut m as *mut *mut u8);
+    for i in 0..12 {
+        m = lumi_map_set(m, i, i);
+    }
+    assert!(map_is_hash(m));
+    let before = m;
+    m = lumi_map_set(m, 3, 333);
+    assert_eq!(m, before, "unique hash update should not allocate overlay");
+    assert!(!map_is_overlay(m));
+    m = lumi_map_set(m, 100, 1);
+    assert_eq!(m, before, "unique hash insert should upsert in place when load allows");
+    assert_eq!(map_count(m), 13);
+    lumi_root_pop();
+}
+
+#[test]
+fn map_shared_hash_still_uses_overlay() {
+    use crate::common::list_rc_retain;
+    use crate::map_set::{lumi_map_set, map_is_hash, map_is_overlay};
+    let mut m = ptr::null_mut();
+    lumi_root_push(&mut m as *mut *mut u8);
+    for i in 0..10 {
+        m = lumi_map_set(m, i, i);
+    }
+    assert!(map_is_hash(m));
+    list_rc_retain(m); // simulate alias
+    m = lumi_map_set(m, 100, 1);
+    assert!(map_is_overlay(m), "shared hash set must use overlay");
+    lumi_root_pop();
+}
+
+#[test]
 fn map_promotes_to_hash_and_looks_up() {
     let mut m: *mut u8 = ptr::null_mut();
     lumi_root_push(&mut m as *mut *mut u8);
@@ -35,6 +89,7 @@ fn map_promotes_to_hash_and_looks_up() {
 
 #[test]
 fn map_overlay_set_avoids_full_clone() {
+    use crate::common::list_rc_retain;
     let mut m: *mut u8 = ptr::null_mut();
     lumi_root_push(&mut m as *mut *mut u8);
     for i in 0..9 {
@@ -44,12 +99,14 @@ fn map_overlay_set_avoids_full_clone() {
         map_is_hash(m),
         "expected hash after promoting past small max"
     );
+    // Overlay is for *shared* hash tables; unique owners upsert in place.
+    list_rc_retain(m);
     m = lumi_map_set(m, 100, 42);
     assert!(map_is_overlay(m));
     assert_eq!(map_count(m), 10);
     assert_eq!(lumi_map_contains(m, 100), 1);
     assert_eq!(lumi_map_contains(m, 3), 1);
-    // Another set extends delta (still overlay).
+    // Another set on a unique overlay extends delta in place.
     m = lumi_map_set(m, 101, 7);
     assert!(map_is_overlay(m));
     unsafe {

@@ -13,6 +13,7 @@ mod ir_util;
 mod memo;
 mod repr_select;
 mod specialize_const;
+mod use_summary;
 
 pub use escape::{escaping_locals, EscapePass};
 pub use fusion::ConcatIdentPass;

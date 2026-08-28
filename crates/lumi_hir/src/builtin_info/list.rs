@@ -38,7 +38,8 @@ pub(crate) fn info_list(b: Builtin) -> BuiltinInfo {
             Some("lumi_list_slice"),
             NO_F,
             ObjI64Ptr,
-            // Escape only when the slice result escapes (propagate), not every use.
+            // Not may_capture: seed must not force the source when the view is
+            // local-only. Propagate marks the parent if the slice result escapes.
             false,
             Always,
         ),
@@ -72,7 +73,8 @@ pub(crate) fn info_list(b: Builtin) -> BuiltinInfo {
             Some("lumi_list_take"),
             NO_F,
             ObjI64Ptr,
-            // Same as ListSlice: copy elem pointers only if result escapes.
+            // Slice view retains parent at runtime; escape of the take result
+            // (not every use) marks the source via propagate.
             false,
             Always,
         ),

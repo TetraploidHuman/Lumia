@@ -62,6 +62,11 @@ pub(crate) fn map_is_overlay(map: *mut u8) -> bool {
     unsafe { *(map as *const i64) == MAP_OVERLAY_MARK }
 }
 
+#[inline]
+pub(crate) fn map_rc_is_unique(map: *mut u8) -> bool {
+    crate::common::cow_rc_is_unique(map, /*adt_ok=*/ false)
+}
+
 pub(crate) fn map_is_hash(map: *mut u8) -> bool {
     if map.is_null() || map_is_overlay(map) {
         return false;
@@ -235,7 +240,9 @@ pub(crate) unsafe fn map_clone_hash_upsert_or_linear(map: *mut u8, key: i64, val
 
 pub(crate) unsafe fn map_alloc_overlay(parent: *mut u8, pairs: &[(i64, i64)]) -> *mut u8 {
     let dn = pairs.len() as i64;
-    let nbytes = map_overlay_nbytes(dn) as u64;
+    // Always reserve MAP_OVERLAY_MAX slots so a unique overlay can append
+    // in place until the delta is full (DESIGN §3.5 Overlay).
+    let nbytes = map_overlay_nbytes(MAP_OVERLAY_MAX) as u64;
     let dest = lumi_alloc(nbytes, map_tid(parent));
     let dst = dest as *mut i64;
     *dst = MAP_OVERLAY_MARK;

@@ -308,8 +308,14 @@ impl<'ctx> Codegen<'ctx> {
             return false;
         };
         let list_arg = match name {
-            lumi_hir::Builtin::MapSet | lumi_hir::Builtin::ListAppend => args.first(),
-            lumi_hir::Builtin::ListConcat => args.first(),
+            lumi_hir::Builtin::MapSet
+            | lumi_hir::Builtin::ListAppend
+            | lumi_hir::Builtin::ListConcat
+            | lumi_hir::Builtin::ListTake
+            | lumi_hir::Builtin::ListSlice
+            | lumi_hir::Builtin::ListReverse
+            | lumi_hir::Builtin::ListSort
+            | lumi_hir::Builtin::SetInsert => args.first(),
             _ => None,
         };
         let Some(list_arg) = list_arg else {

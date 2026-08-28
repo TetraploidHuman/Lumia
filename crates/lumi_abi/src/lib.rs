@@ -34,6 +34,9 @@ pub const TYPE_CHAR: u32 = 7;
 pub const TYPE_CLOSURE: u32 = 8;
 /// Virtual Int range list: payload `[start:i64][end_exclusive:i64]` (DESIGN §3.5 Iota).
 pub const TYPE_LIST_IOTA: u32 = 9;
+/// Shared prefix view: payload `[parent:i64][offset:i64][len:i64]` (DESIGN §7.1.1 Slice).
+/// Parent is retained for COW uniqueness; released when the slice is swept.
+pub const TYPE_LIST_SLICE: u32 = 10;
 
 /// Mask / flags for packed container `type_id`s.
 pub const TID_BASE_MASK: u32 = 0xFF;
@@ -170,10 +173,13 @@ pub fn is_set_tid(tid: u32) -> bool {
     tid_base(tid) == TYPE_SET
 }
 
-/// True if `tid` is a list (dense or Float-tagged or iota).
+/// True if `tid` is a list (dense, Float-tagged, iota, or slice view).
 #[inline]
 pub fn is_list_tid(tid: u32) -> bool {
-    matches!(tid_base(tid), TYPE_LIST | TYPE_LIST_IOTA)
+    matches!(
+        tid_base(tid),
+        TYPE_LIST | TYPE_LIST_IOTA | TYPE_LIST_SLICE
+    )
 }
 
 #[inline]
@@ -201,10 +207,10 @@ pub fn set_tid_is_assoc(tid: u32) -> bool {
     is_set_tid(tid) && tid_assoc(tid)
 }
 
-/// List elems are unboxed Float bits.
+/// List elems are unboxed Float bits (dense or slice of float list).
 #[inline]
 pub fn list_elem_is_float(tid: u32) -> bool {
-    tid_base(tid) == TYPE_LIST && tid_f_key(tid)
+    matches!(tid_base(tid), TYPE_LIST | TYPE_LIST_SLICE) && tid_f_key(tid)
 }
 
 #[cfg(test)]
@@ -223,6 +229,7 @@ mod tests {
             TYPE_CHAR,
             TYPE_CLOSURE,
             TYPE_LIST_IOTA,
+            TYPE_LIST_SLICE,
         ];
         let mut sorted = ids;
         sorted.sort_unstable();
@@ -230,7 +237,7 @@ mod tests {
             assert_ne!(w[0], w[1], "duplicate type base");
         }
         assert_eq!(sorted[0], 1);
-        assert_eq!(*sorted.last().unwrap(), TYPE_LIST_IOTA);
+        assert_eq!(*sorted.last().unwrap(), TYPE_LIST_SLICE);
         assert_eq!(TID_F_KEY & TID_BASE_MASK, 0);
         assert_eq!(TID_F_VAL & TID_BASE_MASK, 0);
         assert_eq!(TID_ASSOC & TID_BASE_MASK, 0);

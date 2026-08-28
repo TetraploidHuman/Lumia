@@ -1,0 +1,28 @@
+module BenchReprDrop
+
+import lumi.io.{println}
+
+/// Unique `xs = xs.drop(1)` many times — slice_consume bumps offset in place;
+/// without consume each drop allocates a new Slice header.
+val dropConsume(rangeLen, drops, scanLen) = {
+    var xs = (0..<rangeLen).toList()
+    var i = 0
+    var s = 0
+    for i < drops {
+        xs = xs.drop(1)
+        var j = 0
+        val n = xs.len()
+        val lim = if n < scanLen { n } else { scanLen }
+        for j < lim {
+            s = s + xs.get(j)
+            j = j + 1
+        }
+        i = i + 1
+    }
+    s + xs.len()
+}
+
+val main = {
+    // 250k elems; 20_000 unique drop(1); light scan keeps get path honest.
+    println(dropConsume(250_000, 20_000, 8))
+}

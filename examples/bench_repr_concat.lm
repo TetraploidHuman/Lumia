@@ -1,0 +1,20 @@
+module BenchReprConcat
+
+import lumi.io.{println}
+
+/// Unique `xs = xs.concat(piece)` loop — geometric grow + in-place extend.
+val concatLoop(pieceLen, iters) = {
+    var xs = listOf(0)
+    val piece = (1..(pieceLen)).toList()
+    var i = 0
+    for i < iters {
+        xs = xs.concat(piece)
+        i = i + 1
+    }
+    xs.len() + xs.get(0) + xs.get(xs.len() - 1)
+}
+
+val main = {
+    // 500 × concat of 200 elems → ~100k elems; without unique grow this is O(n²).
+    println(concatLoop(200, 500))
+}

@@ -1,0 +1,25 @@
+module BenchReprTake
+
+import lumi.io.{println}
+
+/// Shared `val snap = xs.take(k)` on a materialized HeapList — exercises Slice COW views.
+/// (`range` alone stays Iota and would not measure slice; see bench_repr_take_iota.lm.)
+val takeAlias(rangeLen, iters, takeLen, scanLen) = {
+    var xs = (0..<rangeLen).toList()
+    var i = 0
+    var s = 0
+    for i < iters {
+        val snap = xs.take(takeLen)
+        var j = 0
+        for j < scanLen {
+            s = s + snap.get(j)
+            j = j + 1
+        }
+        i = i + 1
+    }
+    s
+}
+
+val main = {
+    println(takeAlias(500_000, 2000, 100_000, 1000))
+}

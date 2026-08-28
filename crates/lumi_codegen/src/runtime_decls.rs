@@ -237,6 +237,11 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         args: &[RtTy::Ptr, RtTy::I64],
     },
     RtDecl {
+        name: "lumi_list_slice_consume",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr, RtTy::I64],
+    },
+    RtDecl {
         name: "lumi_list_append",
         ret: RtTy::Ptr,
         args: &[RtTy::Ptr, RtTy::I64],
@@ -407,12 +412,27 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         args: &[RtTy::Ptr, RtTy::I64],
     },
     RtDecl {
+        name: "lumi_list_take_consume",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr, RtTy::I64],
+    },
+    RtDecl {
         name: "lumi_list_reverse",
         ret: RtTy::Ptr,
         args: &[RtTy::Ptr],
     },
     RtDecl {
+        name: "lumi_list_reverse_consume",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr],
+    },
+    RtDecl {
         name: "lumi_list_sort",
+        ret: RtTy::Ptr,
+        args: &[RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumi_list_sort_consume",
         ret: RtTy::Ptr,
         args: &[RtTy::Ptr],
     },

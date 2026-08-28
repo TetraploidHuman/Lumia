@@ -15,8 +15,8 @@ use crate::common::{
     header_from_payload, header_layout, is_heap_payload, is_old_header, is_young_payload,
     payload_ptr, remember_old_to_young, trap_abort, MarkSweep, MmBackend, ObjectHeader, BYTES_OLD,
     BYTES_YOUNG, GC_INHIBIT, HEAP_LIMIT, HEAP_OLD, HEAP_OLD_SET, HEAP_SET, HEAP_YOUNG, PAR_WORKER,
-    PERM_OBJECTS, REMEMBERED, ROOTS, TYPE_ADT, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_IOTA, TYPE_MAP,
-    TYPE_SET, YOUNG_LIMIT,
+    PERM_OBJECTS, REMEMBERED, ROOTS, TYPE_ADT, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_IOTA,
+    TYPE_LIST_SLICE, TYPE_MAP, TYPE_SET, YOUNG_LIMIT,
 };
 use crate::map_set::{map_mark_payload, set_mark_payload};
 use crate::memo;
@@ -144,6 +144,11 @@ impl MarkSweep {
             unsafe {
                 if (*obj).marked == 0 {
                     freed = freed.saturating_add((*obj).size as usize);
+                    // Slice views bump the parent's COW RC; drop that alias on free.
+                    if tid_base((*obj).type_id) == TYPE_LIST_SLICE {
+                        let parent = *(payload_ptr(obj) as *const i64) as *mut u8;
+                        crate::common::list_rc_release(parent);
+                    }
                     HEAP_SET.with(|s| {
                         s.borrow_mut().remove(&obj);
                     });
@@ -367,6 +372,11 @@ fn scan_fields(obj: *mut ObjectHeader) {
                 }
             }
             TYPE_LIST_IOTA => {}
+            TYPE_LIST_SLICE => {
+                // payload: [parent][offset][len] — keep parent alive.
+                let base = payload as *const i64;
+                mark_value(*base);
+            }
             TYPE_SET => {
                 set_mark_payload(payload, (*obj).size as usize, set_elem_is_float(tid));
             }
@@ -509,7 +519,10 @@ pub(crate) unsafe fn finish_alloc(mem: *mut u8, nbytes: usize, type_id: u32) -> 
     // Black allocation during concurrent mark: object is live; final remark
     // picks up fields filled without a write barrier (codegen alloc-init).
     (*header).marked = if FULL_MARKING.get() { 1 } else { 0 };
-    (*header).rc = if matches!(tid_base(type_id), TYPE_LIST | TYPE_ADT) {
+    (*header).rc = if matches!(
+        tid_base(type_id),
+        TYPE_LIST | TYPE_LIST_SLICE | TYPE_ADT | TYPE_MAP | TYPE_SET
+    ) {
         1
     } else {
         0

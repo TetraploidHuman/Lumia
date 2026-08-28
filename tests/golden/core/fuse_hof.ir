@@ -25,7 +25,20 @@ fun main() effect.io=true memo=None {
   %45 = loop ...  // effect
   %46 = load __fuse_acc_217  // pure
   %47 = call println(%46)  // effect
-  return %47
+  %48 = alloc_list[LitList](n=0)  // pure
+  __fuse_build_430 := %48
+  %49 = builtin Elems(%5)  // pure
+  %50 = builtin ListLen(%49)  // pure
+  __i_430 := %6
+  %56 = i64 10  // pure
+  %58 = i64 20  // pure
+  %66 = loop ...  // effect
+  %67 = load __fuse_build_430  // pure
+  %68 = builtin ListLen(%67)  // pure
+  %69 = call println(%68)  // effect
+  %71 = builtin ListGet(%67, %6)  // pure
+  %72 = call println(%71)  // effect
+  return %72
 }
 
 fun println(x) effect.io=true memo=None {

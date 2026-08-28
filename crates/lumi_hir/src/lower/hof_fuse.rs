@@ -211,3 +211,110 @@ pub(crate) fn try_fuse_hof_fold(
         ty: None,
     })
 }
+
+/// Single-pass fused `source.(map|filter)+` → one list build (DESIGN §7.1.1 Fused).
+fn try_fuse_hof_build_extend(
+    ctx: &LowerCtx,
+    base: &lumi_syntax::Expr,
+    trailing: HofStage<'_>,
+    span: Span,
+) -> Option<Expr> {
+    let (source, mut stages) = peel_hof_stages(base);
+    stages.push(trailing);
+    fuse_hof_build_stages(ctx, source, stages, span)
+}
+
+pub(crate) fn try_fuse_hof_build_map(
+    ctx: &LowerCtx,
+    base: &lumi_syntax::Expr,
+    f: &lumi_syntax::Expr,
+    span: Span,
+) -> Option<Expr> {
+    try_fuse_hof_build_extend(ctx, base, HofStage::Map(f), span)
+}
+
+pub(crate) fn try_fuse_hof_build_filter(
+    ctx: &LowerCtx,
+    base: &lumi_syntax::Expr,
+    f: &lumi_syntax::Expr,
+    span: Span,
+) -> Option<Expr> {
+    try_fuse_hof_build_extend(ctx, base, HofStage::Filter(f), span)
+}
+
+fn fuse_hof_build_stages(
+    ctx: &LowerCtx,
+    source: &lumi_syntax::Expr,
+    stages: Vec<HofStage<'_>>,
+    span: Span,
+) -> Option<Expr> {
+    if stages.len() < 2 {
+        return None;
+    }
+    let acc = format!("__fuse_build_{}", span.start.0);
+    let x0 = format!("__fuse_bx_{}", span.start.0);
+    let x_out = format!("__fuse_bm_{}", span.start.0);
+
+    let mut cur = Expr::Var(x0.clone(), span);
+    let mut guards: Vec<Expr> = Vec::new();
+    let mut lets: Vec<(String, Expr)> = Vec::new();
+    for (i, stage) in stages.iter().enumerate() {
+        match stage {
+            HofStage::Filter(p) => {
+                guards.push(apply_hof_fn(ctx, p, cur.clone(), span));
+            }
+            HofStage::Map(m) => {
+                let tmp = format!("__fuse_bm_{}_{}", span.start.0, i);
+                let mapped = apply_hof_fn(ctx, m, cur, span);
+                lets.push((tmp.clone(), mapped));
+                cur = Expr::Var(tmp, span);
+            }
+        }
+    }
+    lets.push((x_out.clone(), cur));
+
+    let append = Expr::Assign {
+        name: acc.clone(),
+        value: Box::new(Expr::BuiltinCall {
+            name: crate::ast::Builtin::ListAppend,
+            args: vec![Expr::Var(acc.clone(), span), Expr::Var(x_out, span)],
+            span,
+        }),
+        span,
+    };
+    let mut body = append;
+    if let Some(g0) = guards.into_iter().reduce(|a, b| and_guard(a, b, span)) {
+        body = Expr::If {
+            cond: Box::new(g0),
+            then_branch: Box::new(body),
+            else_branch: Box::new(Expr::Unit(span)),
+            span,
+        };
+    }
+
+    let mut step = body;
+    for (name, value) in lets.into_iter().rev() {
+        step = Expr::Let {
+            name,
+            value: Box::new(value),
+            body: Box::new(step),
+            mutable: false,
+            ty: None,
+        };
+    }
+
+    let source_e = lower_expr(ctx, source);
+    Some(Expr::Let {
+        name: acc.clone(),
+        value: Box::new(crate::lower::empty_list(span)),
+        body: Box::new(Expr::Seq {
+            stmts: vec![
+                for_each_elem(ctx, &x0, source_e, step, span),
+                Expr::Var(acc, span),
+            ],
+            span,
+        }),
+        mutable: true,
+        ty: None,
+    })
+}

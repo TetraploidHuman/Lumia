@@ -1,13 +1,32 @@
 //! List filter / flatMap desugaring.
 
 use super::{
-    append_assign, concat_assign, list_accum, resolve_unary_callback, with_fun_bind, UnaryCallback,
+    append_assign, concat_assign, list_accum, range_accum, resolve_unary_callback, with_fun_bind,
+    UnaryCallback,
 };
-use crate::ast::Expr;
+use crate::ast::{Builtin, Expr};
 use crate::lower::{empty_list, LowerCtx};
 use lumi_syntax::Span;
 
 pub(crate) fn lower_list_filter(ctx: &LowerCtx, list: Expr, f: Expr, span: Span) -> Expr {
+    // `range(a,b).filter(p)` → counter loop (no Iota materialization).
+    if let Expr::BuiltinCall { name, args, .. } = &list {
+        if matches!(name, Builtin::Range | Builtin::RangeInclusive) && args.len() == 2 {
+            let inclusive = matches!(name, Builtin::RangeInclusive);
+            let start = args[0].clone();
+            let end = args[1].clone();
+            return match resolve_unary_callback(f, span, "flt") {
+                UnaryCallback::Inline {
+                    param,
+                    param_ty,
+                    body,
+                } => range_filter_inline(ctx, start, end, inclusive, param, param_ty, body, span),
+                UnaryCallback::Bound { f, f_name, x } => {
+                    range_filter_call(ctx, start, end, inclusive, f, f_name, x, span)
+                }
+            };
+        }
+    }
     match resolve_unary_callback(f, span, "flt") {
         UnaryCallback::Inline {
             param,
@@ -18,6 +37,84 @@ pub(crate) fn lower_list_filter(ctx: &LowerCtx, list: Expr, f: Expr, span: Span)
             lower_list_filter_call(ctx, list, f, f_name, x, span)
         }
     }
+}
+
+fn range_filter_inline(
+    ctx: &LowerCtx,
+    start: Expr,
+    end: Expr,
+    inclusive: bool,
+    param: String,
+    param_ty: Option<String>,
+    body: Expr,
+    span: Span,
+) -> Expr {
+    let acc = format!("__flt_acc_{}", span.start.0);
+    let el = format!("__flt_x_{}", span.start.0);
+    let pred = Expr::Let {
+        name: param,
+        value: Box::new(Expr::Var(el.clone(), span)),
+        body: Box::new(body),
+        mutable: false,
+        ty: param_ty,
+    };
+    let append = append_assign(&acc, Expr::Var(el.clone(), span), span);
+    let step = Expr::If {
+        cond: Box::new(pred),
+        then_branch: Box::new(append),
+        else_branch: Box::new(Expr::Unit(span)),
+        span,
+    };
+    range_accum(
+        ctx,
+        acc,
+        empty_list(span),
+        &el,
+        start,
+        end,
+        inclusive,
+        step,
+        span,
+    )
+}
+
+fn range_filter_call(
+    ctx: &LowerCtx,
+    start: Expr,
+    end: Expr,
+    inclusive: bool,
+    f: Expr,
+    f_name: String,
+    x: String,
+    span: Span,
+) -> Expr {
+    let acc = format!("__flt_acc_{}", span.start.0);
+    let pred = Expr::Call {
+        callee: Box::new(Expr::Var(f_name.clone(), span)),
+        args: vec![Expr::Var(x.clone(), span)],
+        span,
+    };
+    let append = append_assign(&acc, Expr::Var(x.clone(), span), span);
+    let step = Expr::If {
+        cond: Box::new(pred),
+        then_branch: Box::new(append),
+        else_branch: Box::new(Expr::Unit(span)),
+        span,
+    };
+    with_fun_bind(
+        Some((f_name, f)),
+        range_accum(
+            ctx,
+            acc,
+            empty_list(span),
+            &x,
+            start,
+            end,
+            inclusive,
+            step,
+            span,
+        ),
+    )
 }
 
 fn lower_list_filter_inline(
