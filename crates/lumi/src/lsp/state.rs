@@ -1,6 +1,7 @@
 //! Shared LSP document state and cached analysis.
 
 use crate::load::SourceFile;
+use crate::compiler_config::CompilerConfig;
 use lumi_ty::TypedModule;
 use rustc_hash::FxHashMap as HashMap;
 use std::sync::mpsc::{self, Sender};
@@ -17,6 +18,8 @@ pub(super) struct State {
     pub(super) docs: HashMap<String, String>,
     /// uri → last successful analysis
     pub(super) analysis: HashMap<String, Analysis>,
+    /// IDE overlay from initializationOptions / didChangeConfiguration.
+    pub(super) lsp_compiler: CompilerConfig,
     /// Debounced re-analyze requests (didChange).
     pub(super) analyze_tx: Option<Sender<AnalyzeReq>>,
 }

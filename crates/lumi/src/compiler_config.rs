@@ -70,6 +70,32 @@ impl CapDisables {
     }
 }
 
+/// Load config for LSP: manifest + dot_lumi + env + IDE overlay (last wins).
+pub fn load_for_lsp(file: &Path, lsp_overlay: &CompilerConfig) -> CompilerConfig {
+    merge_config(load_for_file(file), lsp_overlay.clone())
+}
+
+/// Parse `initializationOptions` / `workspace/didChangeConfiguration.settings`.
+pub fn compiler_config_from_json(v: &serde_json::Value) -> CompilerConfig {
+    let mut cfg = CompilerConfig::default();
+    let compiler = v
+        .get("compiler")
+        .or_else(|| v.pointer("/lumi/compiler"))
+        .or_else(|| {
+            if v.get("no_parallel").is_some() || v.get("no_inline").is_some() {
+                Some(v)
+            } else {
+                None
+            }
+        });
+    if let Some(c) = compiler {
+        if let Ok(overlay) = serde_json::from_value::<CompilerConfig>(c.clone()) {
+            cfg = merge_config(cfg, overlay);
+        }
+    }
+    cfg
+}
+
 /// Load `[compiler]` from the nearest `Lumi.toml` for `file`, then merge `.lumi/settings.toml`.
 pub fn load_for_file(file: &Path) -> CompilerConfig {
     let mut cfg = CompilerConfig::default();
@@ -101,7 +127,7 @@ fn load_dot_lumi_settings(package_root: &Path) -> CompilerConfig {
         .unwrap_or_default()
 }
 
-fn merge_config(mut base: CompilerConfig, overlay: CompilerConfig) -> CompilerConfig {
+pub fn merge_config(mut base: CompilerConfig, overlay: CompilerConfig) -> CompilerConfig {
     macro_rules! merge_opt {
         ($field:ident) => {
             if overlay.$field.is_some() {
@@ -215,6 +241,21 @@ mod tests {
         let cfg = load_dot_lumi_settings(&dir);
         assert_eq!(cfg.no_parallel, Some(true));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn compiler_config_from_json_nested() {
+        let v = serde_json::json!({ "compiler": { "no_parallel": true } });
+        let cfg = compiler_config_from_json(&v);
+        assert_eq!(cfg.no_parallel, Some(true));
+    }
+
+    #[test]
+    fn load_for_lsp_overlay_wins() {
+        let mut overlay = CompilerConfig::default();
+        overlay.no_hof_fuse = Some(true);
+        let cfg = load_for_lsp(Path::new("/nonexistent/file.lm"), &overlay);
+        assert_eq!(cfg.no_hof_fuse, Some(true));
     }
 
     #[test]

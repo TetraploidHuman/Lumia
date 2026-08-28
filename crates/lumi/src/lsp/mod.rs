@@ -37,6 +37,7 @@ use rustc_hash::FxHashMap as HashMap;
 use semantic::{on_semantic_tokens, TOKEN_MODIFIERS, TOKEN_TYPES};
 use serde_json::{json, Value};
 use state::{spawn_analyze_worker, state_lock, State};
+use crate::compiler_config::{compiler_config_from_json, CompilerConfig};
 use std::io;
 use symbols::on_document_symbol;
 
@@ -45,6 +46,7 @@ pub fn run_lsp() -> Result<()> {
     *state_lock() = Some(State {
         docs: HashMap::default(),
         analysis: HashMap::default(),
+        lsp_compiler: CompilerConfig::default(),
         analyze_tx: Some(analyze_tx),
     });
     let stdin = io::stdin();
@@ -61,11 +63,25 @@ pub fn run_lsp() -> Result<()> {
     Ok(())
 }
 
+fn apply_lsp_compiler_overlay(overlay: CompilerConfig) {
+    let mut st = state_lock();
+    if let Some(s) = st.as_mut() {
+        s.lsp_compiler = crate::compiler_config::merge_config(
+            std::mem::take(&mut s.lsp_compiler),
+            overlay,
+        );
+    }
+}
+
 fn handle_message(msg: Value) -> Result<Option<Value>> {
     let method = msg.get("method").and_then(|m| m.as_str());
     let id = msg.get("id").cloned();
     match method {
-        Some("initialize") => Ok(Some(json!({
+        Some("initialize") => {
+            if let Some(opts) = msg.pointer("/params/initializationOptions") {
+                apply_lsp_compiler_overlay(compiler_config_from_json(opts));
+            }
+            Ok(Some(json!({
             "jsonrpc": "2.0",
             "id": id,
             "result": {
@@ -91,7 +107,14 @@ fn handle_message(msg: Value) -> Result<Option<Value>> {
                 },
                 "serverInfo": { "name": "lumi-lsp", "version": "0.3.1" }
             }
-        }))),
+            })))
+        },
+        Some("workspace/didChangeConfiguration") => {
+            if let Some(settings) = msg.pointer("/params/settings") {
+                apply_lsp_compiler_overlay(compiler_config_from_json(settings));
+            }
+            Ok(None)
+        },
         Some("initialized") | Some("shutdown") => {
             if id.is_some() {
                 Ok(Some(json!({ "jsonrpc": "2.0", "id": id, "result": null })))

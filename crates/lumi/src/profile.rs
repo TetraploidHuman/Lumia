@@ -163,7 +163,12 @@ impl CompileProfile {
 
     /// LSP / check path: nearest `Lumi.toml` + `.lumi/settings.toml` + env.
     pub fn for_lsp_at(file: &Path) -> Self {
-        let config = crate::compiler_config::load_for_file(file);
+        Self::for_lsp_with_overlay(file, &CompilerConfig::default())
+    }
+
+    /// LSP with IDE `initializationOptions` / workspace settings overlay.
+    pub fn for_lsp_with_overlay(file: &Path, lsp_overlay: &CompilerConfig) -> Self {
+        let config = crate::compiler_config::load_for_lsp(file, lsp_overlay);
         Self::assemble(
             false,
             true,

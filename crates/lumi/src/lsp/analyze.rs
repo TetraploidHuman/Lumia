@@ -118,7 +118,13 @@ fn analyze_buffer(
     overlays: &HashMap<PathBuf, String>,
 ) -> (Vec<Value>, Option<Analysis>) {
     let path = uri_to_path(uri);
-    let profile = CompileProfile::for_lsp_at(&path);
+    let lsp_overlay = {
+        let st = state_lock();
+        st.as_ref()
+            .map(|s| s.lsp_compiler.clone())
+            .unwrap_or_default()
+    };
+    let profile = CompileProfile::for_lsp_with_overlay(&path, &lsp_overlay);
     if path.is_file() || overlays.contains_key(&path) {
         let mut ov = overlays.clone();
         ov.insert(path.clone(), text.to_string());
