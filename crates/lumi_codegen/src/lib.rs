@@ -84,7 +84,7 @@ pub struct CodegenOptions {
     pub link_args: Vec<String>,
     /// Print Memo `T_f` hit/miss stats at process exit (`--show-memo-stats`).
     pub show_memo_stats: bool,
-    /// Runtime memory manager mode passed to `lumi_set_mm_mode` (0=ms, 1=arc stub).
+    /// Runtime memory manager mode passed to `lumi_set_mm_mode` (0=ms, 1=arc).
     pub mm_mode: i64,
     /// Print GC collection stats at process exit (`--show-gc-stats`).
     pub show_gc_stats: bool,
@@ -112,6 +112,7 @@ fn emit_llvm_module<'ctx>(
         opts.release,
         opts.loop_sr,
         opts.nsw_iv,
+        opts.mm_mode == 1,
     );
     declare_runtime(context, &cg.llvm.module);
     cg.funs.tco_sccs = if opts.tco {
@@ -450,6 +451,8 @@ pub(crate) struct Codegen<'ctx> {
     pub(crate) release: bool,
     pub(crate) loop_sr: bool,
     pub(crate) nsw_iv: bool,
+    /// When true, emit `lumi_heap_retain`/`release` for String (and similar).
+    pub(crate) mm_arc: bool,
 }
 
 impl<'ctx> Codegen<'ctx> {
@@ -461,6 +464,7 @@ impl<'ctx> Codegen<'ctx> {
         release: bool,
         loop_sr: bool,
         nsw_iv: bool,
+        mm_arc: bool,
     ) -> Self {
         Self {
             llvm: LlvmTypes {
@@ -477,6 +481,7 @@ impl<'ctx> Codegen<'ctx> {
             release,
             loop_sr,
             nsw_iv,
+            mm_arc,
         }
     }
 
@@ -591,6 +596,32 @@ mod tests {
 
     fn emit_example(rel: &str, release: bool) -> String {
         emit_example_cg(rel, release, |_| {})
+    }
+
+    #[test]
+    fn emit_arc_string_alias_calls_heap_rc() {
+        let arc = emit_example_cg("examples/arc_string_alias.lm", false, |cg| {
+            cg.mm_mode = 1;
+        });
+        assert!(
+            ir_calls_runtime(&arc, "lumi_heap_retain"),
+            "Arc mode should retain String aliases; snip:\n{}",
+            &arc[..arc.len().min(4000)]
+        );
+        assert!(
+            ir_calls_runtime(&arc, "lumi_heap_release"),
+            "Arc mode should release String on mut overwrite; snip:\n{}",
+            &arc[..arc.len().min(4000)]
+        );
+        let ms = emit_example_cg("examples/arc_string_alias.lm", false, |cg| {
+            cg.mm_mode = 0;
+        });
+        assert!(
+            !ir_calls_runtime(&ms, "lumi_heap_retain")
+                && !ir_calls_runtime(&ms, "lumi_heap_release"),
+            "mark-sweep should not emit heap rc for String; snip:\n{}",
+            &ms[..ms.len().min(4000)]
+        );
     }
 
     #[test]
@@ -770,7 +801,7 @@ val main = {
     #[test]
     fn runtime_fn_missing_returns_err_not_panic() {
         let context = Context::create();
-        let cg = Codegen::new(&context, "empty", 0, 1, false, true, true);
+        let cg = Codegen::new(&context, "empty", 0, 1, false, true, true, false);
         let err = cg
             .runtime_fn("lumi_definitely_missing_symbol_zz")
             .expect_err("missing runtime symbol");

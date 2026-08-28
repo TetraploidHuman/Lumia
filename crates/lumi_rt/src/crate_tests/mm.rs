@@ -80,6 +80,51 @@ fn arc_mode_free_on_zero_string() {
 }
 
 #[test]
+fn arc_mode_full_collect_completes_stw() {
+    use crate::gc::{
+        gc_full_marking_for_test, gc_reset_stats_for_test, gc_set_incremental_full_for_test,
+        lumi_gc_full_count,
+    };
+    // Prefer incremental in MS; Arc must still finish collect via STW.
+    gc_set_incremental_full_for_test(true);
+    lumi_set_mm_mode(1);
+    gc_reset_stats_for_test();
+    let p = lumi_alloc(16, TYPE_BYTES);
+    assert!(!p.is_null());
+    lumi_gc_collect();
+    assert!(lumi_gc_full_count() >= 1);
+    assert!(!gc_full_marking_for_test());
+    lumi_set_mm_mode(0);
+    gc_set_incremental_full_for_test(true);
+}
+
+#[test]
+fn arc_mode_cycle_reclaimed_by_stw_collect() {
+    use crate::common::{header_from_payload, TYPE_ADT};
+    lumi_set_mm_mode(1);
+    // Two ADTs forming a cycle: each holds the other as field word 1.
+    // payload layout: [tag:i64][field0:i64] — 16 bytes.
+    let a = lumi_alloc(16, TYPE_ADT);
+    let b = lumi_alloc(16, TYPE_ADT);
+    unsafe {
+        *(a as *mut i64) = 0;
+        *(a as *mut i64).add(1) = b as i64;
+        *(b as *mut i64) = 0;
+        *(b as *mut i64).add(1) = a as i64;
+        // Extra retains so free-on-zero won't fire when we drop roots (cycle rc≥1).
+        (*header_from_payload(a)).rc = 2;
+        (*header_from_payload(b)).rc = 2;
+    }
+    // No roots → STW mark-sweep must reclaim the cycle despite rc>0.
+    lumi_gc_collect();
+    assert!(
+        !crate::common::is_heap_payload(a) && !crate::common::is_heap_payload(b),
+        "Arc STW collect should reclaim cyclic ADTs"
+    );
+    lumi_set_mm_mode(0);
+}
+
+#[test]
 fn parallel_mark_drain_collects() {
     use crate::gc::{gc_reset_stats_for_test, lumi_gc_full_count};
     gc_reset_stats_for_test();

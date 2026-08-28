@@ -1,0 +1,12 @@
+module ArcStringAlias
+
+import lumi.io.{println}
+
+/// String alias + mut overwrite under `--mm arc` exercises heap retain/release.
+val main = {
+    var s = "hello"
+    val t = s
+    s = "world"
+    println(t)
+    println(s)
+}

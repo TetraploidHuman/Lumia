@@ -105,6 +105,16 @@ impl<'ctx> Codegen<'ctx> {
         self.cow_rc_i64(bits, "lumi_adt_release", "adt_rc_rel")
     }
 
+    /// Arc-mode retain for non-COW heap objects (String, …).
+    pub(crate) fn heap_retain_i64(&self, bits: IntValue<'ctx>) -> Result<()> {
+        self.cow_rc_i64(bits, "lumi_heap_retain", "heap_rc_ptr")
+    }
+
+    /// Arc-mode release for non-COW heap objects.
+    pub(crate) fn heap_release_i64(&self, bits: IntValue<'ctx>) -> Result<()> {
+        self.cow_rc_i64(bits, "lumi_heap_release", "heap_rc_rel")
+    }
+
     fn cow_rc_i64(
         &self,
         bits: IntValue<'ctx>,
@@ -126,6 +136,11 @@ impl<'ctx> Codegen<'ctx> {
             ty,
             Type::List(_) | Type::Map(_, _) | Type::Set(_) | Type::Adt { .. }
         )
+    }
+
+    /// Non-COW heap types that need retain/release under `--mm arc`.
+    pub(crate) fn type_needs_arc_heap_retain(ty: &Type) -> bool {
+        matches!(ty, Type::String)
     }
 
     /// `alloca` at function entry so loops do not grow the native stack.

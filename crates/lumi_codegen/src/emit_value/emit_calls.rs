@@ -343,9 +343,12 @@ impl<'ctx> Codegen<'ctx> {
             };
             crate::error::llvm(self.llvm.builder.build_store(slot, v))?;
             // Closure env aliases captured List/Map/Set/ADT — bump COW RC.
+            // Under Arc, also retain String captures.
             if let Some(ty) = self.frame.local_tys.get(&e.0) {
                 if Self::type_needs_cow_retain(ty) {
                     self.adt_retain_i64(v)?;
+                } else if self.mm_arc && Self::type_needs_arc_heap_retain(ty) {
+                    self.heap_retain_i64(v)?;
                 }
             }
         }

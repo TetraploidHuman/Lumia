@@ -15,8 +15,15 @@ use lumi_abi::{list_elem_is_float, map_key_is_float, map_val_is_float, set_elem_
 use std::alloc::dealloc;
 
 /// After `rc` drops to 0 in Arc mode, release children then unregister + dealloc.
+///
+/// Skipped while a full mark is in flight (object may still be grey); sweep or a
+/// later release after mark finishes reclaims it. Cycles are broken by STW
+/// mark-sweep (`--mm arc` forces STW full GC).
 pub(crate) fn maybe_free_on_zero(payload: *mut u8, _adt_ok: bool) {
     if current_mm_mode() != MmMode::Arc || payload.is_null() {
+        return;
+    }
+    if crate::gc::is_full_marking() {
         return;
     }
     if !is_heap_payload(payload) {

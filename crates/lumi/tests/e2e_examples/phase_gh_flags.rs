@@ -23,6 +23,17 @@ fn build_mm_arc_smoke() {
 }
 
 #[test]
+fn build_mm_arc_string_alias() {
+    run_example_build(
+        "examples/arc_string_alias.lm",
+        None,
+        &["hello", "world"],
+        false,
+        &["--mm", "arc"],
+    );
+}
+
+#[test]
 fn build_show_gc_stats_prints_stderr() {
     let root = workspace_root();
     let src = root.join("examples/gc_roots.lm");

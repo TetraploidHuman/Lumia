@@ -196,6 +196,16 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         args: &[RtTy::Ptr],
     },
     RtDecl {
+        name: "lumi_heap_retain",
+        ret: RtTy::Void,
+        args: &[RtTy::Ptr],
+    },
+    RtDecl {
+        name: "lumi_heap_release",
+        ret: RtTy::Void,
+        args: &[RtTy::Ptr],
+    },
+    RtDecl {
         name: "lumi_root_push",
         ret: RtTy::Void,
         args: &[RtTy::Ptr],

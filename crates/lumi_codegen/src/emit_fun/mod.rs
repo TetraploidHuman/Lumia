@@ -257,6 +257,12 @@ impl<'ctx> Codegen<'ctx> {
             if Self::type_needs_cow_retain(&ty) && Self::value_is_cow_alias(value) {
                 self.adt_retain_i64(bits)?;
             }
+            if self.mm_arc
+                && Self::type_needs_arc_heap_retain(&ty)
+                && Self::value_is_cow_alias(value)
+            {
+                self.heap_retain_i64(bits)?;
+            }
             if self.value_may_heap(value) || Self::type_may_heap(&ty) {
                 self.root_push_i64(bits)?;
             }

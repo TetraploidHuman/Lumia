@@ -49,7 +49,7 @@
 ## 工具链
 
 - [x] **`lumi doc`**：CLI 生成 Markdown（`///`、公开 `val`/`type`/`foreign`、`@exports`）；`priv` 默认隐藏。
-- [~] **并发 GC**：分代 STW minor 不变；**增量并发 full mark**已落地；`LUMI_GC_MARK_THREADS>1` 时 **STW 并行 drain**（共享 `HEAP_SET` 不可变视图、无 clone + `marked` CAS）。`--mm arc`：全部堆对象 `rc=1` 起步，`lumi_heap_retain`/`lumi_heap_release` + COW retain/release 在 `rc→0` 立即释放；环仍靠 mark-sweep。更完整的环策略仍待。
+- [~] **并发 GC**：分代 STW minor 不变；**增量并发 full mark**（MS 模式）已落地；`LUMI_GC_MARK_THREADS>1` 时 **STW 并行 drain**（共享 `HEAP_SET` 不可变视图）。`--mm arc`：堆对象 `rc=1` 起步 + codegen String `lumi_heap_*`；`rc→0` 立即释放；**full GC 强制 STW** 破环（禁止与 concurrent mark 竞态）。专用环缓冲 / 进程级共享堆仍待。
 
 ## 架构清理（已落地，详见 git 历史）
 

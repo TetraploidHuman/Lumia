@@ -73,6 +73,10 @@ impl SharedHeapView {
 }
 
 fn incremental_full_enabled() -> bool {
+    // Arc free-on-zero races with concurrent mark; keep full GC STW in Arc mode.
+    if crate::mm::current_mm_mode() == crate::mm::MmMode::Arc {
+        return false;
+    }
     match std::env::var("LUMI_GC_INCREMENTAL") {
         Ok(v) => {
             let v = v.trim();
@@ -83,6 +87,11 @@ fn incremental_full_enabled() -> bool {
         }
         Err(_) => INCREMENTAL_FULL.get(),
     }
+}
+
+/// True while an incremental/STW full mark is in flight (TLS).
+pub(crate) fn is_full_marking() -> bool {
+    FULL_MARKING.get()
 }
 
 /// Scale incremental mark quantum / worker count when `LUMI_GC_MARK_THREADS>1`.

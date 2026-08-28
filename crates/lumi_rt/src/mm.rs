@@ -1,8 +1,9 @@
 //! Memory manager mode selection (`LUMI_MM`, `lumi_set_mm_mode`).
 //!
 //! - **MarkSweep** (default): generational GC; COW `rc` is uniqueness only.
-//! - **Arc**: COW containers (`List`/`Map`/`Set`/`ADT`) free eagerly when `rc`
-//!   hits 0; mark-sweep remains for cycles and non-COW heap objects.
+//! - **Arc**: all heap objects start at `rc=1`; COW + `lumi_heap_retain`/`release`
+//!   free eagerly when `rc` hits 0. Full GC is STW (no concurrent mark) so
+//!   free-on-zero cannot race the marker; cycles still use mark-sweep.
 
 use std::cell::Cell;
 use std::sync::OnceLock;
