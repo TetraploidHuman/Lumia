@@ -150,6 +150,21 @@ impl CompileProfile {
         validate_pass_set(&self.pass_set)
     }
 
+    /// Default profile for LSP / IDE analysis (Debug stock caps, no codegen).
+    pub fn for_lsp() -> Self {
+        Self::stock(false)
+    }
+
+    /// Map Phase C caps onto [`lumi_core::PipelineOptions`] for test/tooling frontends.
+    pub fn to_pipeline_options(&self) -> lumi_core::PipelineOptions {
+        lumi_core::PipelineOptions {
+            lower: self.caps.to_lower_options(),
+            typecheck: self
+                .caps
+                .to_typecheck_options(self.trust_foreign_pure),
+        }
+    }
+
     /// Human-readable capability inventory (Phase C + CoreOpt catalog).
     pub fn format_list_caps(&self) -> String {
         let mut out = String::new();

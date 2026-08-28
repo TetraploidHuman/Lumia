@@ -1,6 +1,7 @@
 //! CompileProfile API smoke tests.
 #![cfg(feature = "codegen")]
 
+use lumi::caps::CapabilitySet;
 use lumi::profile::CompileProfile;
 use lumi_opt::{optimize_with, OptProfile, PassSet};
 
@@ -23,7 +24,6 @@ val main = { println(1) }
 "#;
     let mut core = lumi_opt::compile_source_to_optimized(src, &lumi_opt::OptOptions::for_build(true))
         .expect("frontend");
-    // Re-run optimize with custom set (inline off).
     optimize_with(
         &mut core,
         OptProfile::Release,
@@ -31,6 +31,18 @@ val main = { println(1) }
         true,
     )
     .expect("optimize_with");
+}
+
+#[test]
+fn to_pipeline_options_reflects_caps() {
+    let p = CompileProfile::stock(false).with_caps(
+        CapabilitySet::stock()
+            .with_hof_fuse(false)
+            .with_auto_parallel(false),
+    );
+    let pipe = p.to_pipeline_options();
+    assert!(!pipe.lower.hof_fuse);
+    assert!(!pipe.typecheck.auto_parallel);
 }
 
 #[test]

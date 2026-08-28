@@ -8,6 +8,7 @@ use crate::check::{
     check_program_with_overlays, check_source_recovering, OverlayCheckError, PartialCheck,
 };
 use crate::load::{normalize_overlays, LoadedProgram, SourceFile};
+use crate::profile::CompileProfile;
 use anyhow::Result;
 use lumi_ty::TypedModule;
 use rustc_hash::FxHashMap as HashMap;
@@ -116,11 +117,12 @@ fn analyze_buffer(
     text: &str,
     overlays: &HashMap<PathBuf, String>,
 ) -> (Vec<Value>, Option<Analysis>) {
+    let profile = CompileProfile::for_lsp();
     let path = uri_to_path(uri);
     if path.is_file() || overlays.contains_key(&path) {
         let mut ov = overlays.clone();
         ov.insert(path.clone(), text.to_string());
-        match load_and_typecheck(&path, &ov) {
+        match load_and_typecheck(&path, &ov, &profile) {
             Ok((loaded, typed)) => {
                 let entry_src = loaded
                     .files
@@ -138,7 +140,7 @@ fn analyze_buffer(
             }
             Err(load_diags) => {
                 // Recovering buffer check: keep later items after a local parse error.
-                let partial = check_source_recovering(text, true);
+                let partial = check_source_recovering(text, &profile);
                 if partial.typed.is_some() || !partial.diagnostics.is_empty() {
                     return partial_to_lsp(text, &path, partial);
                 }
@@ -149,7 +151,7 @@ fn analyze_buffer(
             }
         }
     }
-    partial_to_lsp(text, &path, check_source_recovering(text, true))
+    partial_to_lsp(text, &path, check_source_recovering(text, &profile))
 }
 
 fn partial_to_lsp(
@@ -177,8 +179,9 @@ fn partial_to_lsp(
 fn load_and_typecheck(
     path: &Path,
     overlays: &HashMap<PathBuf, String>,
+    profile: &CompileProfile,
 ) -> Result<(LoadedProgram, TypedModule), Vec<Value>> {
-    match check_program_with_overlays(path, overlays, true, false) {
+    match check_program_with_overlays(path, overlays, profile) {
         Ok(v) => Ok(v),
         Err(OverlayCheckError::Load(msg)) => Err(vec![diag_from_load_message(
             text_for_path(path, overlays),

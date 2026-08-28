@@ -9,11 +9,48 @@
 
 use crate::ir::CoreModule;
 use crate::lower::lower_hir_with_schemes;
-use lumi_hir::lower_module;
+use lumi_hir::{lower_module_with_options, LowerOptions};
 use lumi_syntax::parse_module;
 use lumi_ty::{typecheck_hir, NameVisibility, TypecheckOptions};
 
-/// Options for the test/tooling frontend — same as the shared typecheck path.
+/// Frontend pipeline options: HIR lower + typecheck (mirrors Phase C caps on the CLI path).
+#[derive(Debug, Clone)]
+pub struct PipelineOptions {
+    pub lower: LowerOptions,
+    pub typecheck: TypecheckOptions,
+}
+
+impl Default for PipelineOptions {
+    fn default() -> Self {
+        Self {
+            lower: LowerOptions::default(),
+            typecheck: TypecheckOptions::default(),
+        }
+    }
+}
+
+impl PipelineOptions {
+    pub fn stock() -> Self {
+        Self::default()
+    }
+
+    pub fn with_parallel(mut self, auto_parallel: bool) -> Self {
+        self.typecheck.auto_parallel = auto_parallel;
+        self
+    }
+
+    pub fn with_hof_fuse(mut self, on: bool) -> Self {
+        self.lower.hof_fuse = on;
+        self
+    }
+
+    pub fn with_trust_foreign_pure(mut self, on: bool) -> Self {
+        self.typecheck.trust_foreign_pure = on;
+        self
+    }
+}
+
+/// Typecheck-only view (legacy alias). Prefer [`PipelineOptions`] for new callers.
 pub type FrontendOptions = TypecheckOptions;
 
 /// Format a staged pipeline failure (`parse: …`, `lower: …`, …).
@@ -116,7 +153,7 @@ fn inject_default_io_wrappers_if_needed(src: &str, wrappers: &mut Vec<String>) {
 /// Mirrors the CLI path up to (but not including) `lumi_opt::optimize`,
 /// without multi-file load / visibility / assert annotation.
 pub fn compile_source_to_core(src: &str) -> Result<CoreModule, String> {
-    compile_source_to_core_with_options(src, &FrontendOptions::default())
+    compile_source_to_core_with_pipeline(src, &PipelineOptions::default())
 }
 
 /// Same as [`compile_source_to_core`] with explicit auto-parallel toggle.
@@ -124,29 +161,46 @@ pub fn compile_source_to_core_with_parallel(
     src: &str,
     auto_parallel: bool,
 ) -> Result<CoreModule, String> {
-    compile_source_to_core_with_options(
+    compile_source_to_core_with_pipeline(
         src,
-        &FrontendOptions::default().with_parallel(auto_parallel),
+        &PipelineOptions::default().with_parallel(auto_parallel),
     )
 }
 
 /// Parse → HIR → typecheck (infer + parallel finalize + effects) → Core.
-pub fn compile_source_to_core_with_options(
+pub fn compile_source_to_core_with_pipeline(
     src: &str,
-    opts: &FrontendOptions,
+    opts: &PipelineOptions,
 ) -> Result<CoreModule, String> {
     let src = rewrite_lumi_io_imports_for_source_pipeline(src);
     let ast = stage("parse", parse_module(&src))?;
-    let hir = stage("lower", lower_module(&ast))?;
+    let hir = stage(
+        "lower",
+        lower_module_with_options(&ast, &opts.lower),
+    )?;
     let typed = stage(
         "typecheck",
-        typecheck_hir(&hir, NameVisibility::default(), opts),
+        typecheck_hir(&hir, NameVisibility::default(), &opts.typecheck),
     )?;
     Ok(lower_hir_with_schemes(
         &typed.module,
         &typed.fun_types,
         &typed.fun_schemes,
     ))
+}
+
+/// Legacy: typecheck options only (`hof_fuse` stays at default).
+pub fn compile_source_to_core_with_options(
+    src: &str,
+    opts: &FrontendOptions,
+) -> Result<CoreModule, String> {
+    compile_source_to_core_with_pipeline(
+        src,
+        &PipelineOptions {
+            lower: LowerOptions::default(),
+            typecheck: opts.clone(),
+        },
+    )
 }
 
 /// Read a `.lm` file and compile through to Core.
@@ -217,6 +271,28 @@ val main = { add(1, 2) }
     }
 
     #[test]
+    fn hof_fuse_off_still_lowers() {
+        let src = r#"
+module M
+val println(x) = { __println(x) }
+val main = {
+    println(listOf(1, 2, 3).map({ x -> x + 1 }).len())
+}
+"#;
+        let on = compile_source_to_core_with_pipeline(
+            src,
+            &PipelineOptions::default().with_hof_fuse(true),
+        )
+        .expect("hof_fuse on");
+        let off = compile_source_to_core_with_pipeline(
+            src,
+            &PipelineOptions::default().with_hof_fuse(false),
+        )
+        .expect("hof_fuse off");
+        assert!(!on.functions.is_empty() && !off.functions.is_empty());
+    }
+
+    #[test]
     fn auto_parallel_off_demotes_list_par_map() {
         let src = r#"
 module M
@@ -225,14 +301,14 @@ val main = {
     println(listOf(1, 2, 3).map({ x -> x + 1 }).len())
 }
 "#;
-        let with_par = compile_source_to_core_with_options(
+        let with_par = compile_source_to_core_with_pipeline(
             src,
-            &FrontendOptions::default().with_parallel(true),
+            &PipelineOptions::default().with_parallel(true),
         )
         .expect("core");
-        let no_par = compile_source_to_core_with_options(
+        let no_par = compile_source_to_core_with_pipeline(
             src,
-            &FrontendOptions::default().with_parallel(false),
+            &PipelineOptions::default().with_parallel(false),
         )
         .expect("core");
         assert!(

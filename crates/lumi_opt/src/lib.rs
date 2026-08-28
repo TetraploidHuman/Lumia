@@ -71,18 +71,34 @@ pub trait Pass {
 
 /// Frontend → Core → optimize (for tests and tooling).
 pub fn compile_source_to_optimized(src: &str, opts: &OptOptions) -> Result<CoreModule, String> {
-    compile_source_to_optimized_with_frontend(src, opts, &lumi_core::FrontendOptions::default())
+    compile_source_to_optimized_with_pipeline(src, opts, &lumi_core::PipelineOptions::default())
 }
 
-/// Same as [`compile_source_to_optimized`] with explicit frontend options.
+/// Same as [`compile_source_to_optimized`] with explicit frontend pipeline options.
+pub fn compile_source_to_optimized_with_pipeline(
+    src: &str,
+    opts: &OptOptions,
+    frontend: &lumi_core::PipelineOptions,
+) -> Result<CoreModule, String> {
+    let mut core = lumi_core::compile_source_to_core_with_pipeline(src, frontend)?;
+    optimize(&mut core, opts);
+    Ok(core)
+}
+
+/// Same as [`compile_source_to_optimized`] with legacy typecheck-only frontend.
 pub fn compile_source_to_optimized_with_frontend(
     src: &str,
     opts: &OptOptions,
     frontend: &lumi_core::FrontendOptions,
 ) -> Result<CoreModule, String> {
-    let mut core = lumi_core::compile_source_to_core_with_options(src, frontend)?;
-    optimize(&mut core, opts);
-    Ok(core)
+    compile_source_to_optimized_with_pipeline(
+        src,
+        opts,
+        &lumi_core::PipelineOptions {
+            lower: lumi_hir::LowerOptions::default(),
+            typecheck: frontend.clone(),
+        },
+    )
 }
 
 /// Read a `.lm` file and compile through optimize.

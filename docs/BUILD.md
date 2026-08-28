@@ -167,9 +167,10 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumi_rt` 内�
   - **Cargo `opt-*` features（阶段 B）**：`opt-memo` / `opt-dense-f64` / `opt-inline` / `opt-repr-stack`；`lumi` 默认全开。关掉时 schedule 不含对应 Pass，且 codegen/rt 成对剔除声明与 C ABI（`ensure_runtime_built` 按同名 feature 编 `lumi_rt`）。仅 `codegen`、不要优化时：`cargo build -p lumi --no-default-features --features codegen`。
   - **跨 crate capabilities（阶段 C）**：`lumi::CapabilitySet` 统一挂 `hof_fuse`（HIR）/ `auto_parallel`（ty，CLI `--no-parallel`）/ `loop_sr`·`tco`·`nsw_iv`（codegen）；`build`/`check` 经此组装 `LowerOptions` / `TypecheckOptions` / `CodegenOptions`。
   - **统一编译配置（阶段 E）**：`lumi::CompileProfile` = `CapabilitySet` + `PassSet` + build 旋钮；`compile_with_profile` / `check_program_with_profile`；CLI `--no-hof-fuse` / `--no-loop-sr` / `--no-tco` / `--no-nsw-iv`；`lumi build --list-caps` / `--list-passes`。
-  - CI `feature-matrix` job 守护 slim / `codegen`-only / 逐个关 `opt-*` 的编译。
+  - **LSP / 工具前端**：`CompileProfile::for_lsp()` + `lumi_core::PipelineOptions`（`hof_fuse` + `auto_parallel`）；`check_program_with_overlays` / `compile_source_to_core_with_pipeline` 与 CLI 同 caps 语义。
   - **`memo/` 模块 = §7.5 reuse 族**（非单一 pass）：CSE + PE fold + LICM + `T_f` plan/apply；标量环境统一为 `KnownScalars`（与 `SpecializeConst` 共享）。
-- 测试/工具前端：`lumi_core::FrontendOptions`（`auto_parallel` / `trust_foreign_pure`）经 `compile_source_to_core_with_options`；多文件加载、visibility、assert 消息注解仍仅 CLI。
+  - CI `feature-matrix` job 守护 slim / `codegen`-only / 逐个关 `opt-*` 的编译。
+- 测试/工具前端：`lumi_core::PipelineOptions`（`hof_fuse` / `auto_parallel` / `trust_foreign_pure`）或 `CompileProfile::to_pipeline_options()`；多文件加载、visibility、assert 消息注解仍仅 CLI。
   - **Inline**：小纯函数直调内联（跳过 `main` / `foreign` / memo / 递归 / 效应）；Release 在 Inline 后再跑 `ConstFold` → `SpecializeConst` → `Escape` → `ReprSelect`（内联露出的字面量可栈分配）。
   - **Escape**：保守逃逸分析；标量/`Join`/字符串深拷贝投影可不 `may_capture`；`Take`/`Elems` 等共享或拷贝元素指针的仍捕获；逃逸的 `ListGet`/`AdtField` 会标容器。`ReprSelect` 对**未逃逸**小 `List`/`Map` 标 `LitList` / `SmallMap`（codegen 栈布局已接）。
   - **SpecializeConst**：Int/Bool/Char 调用点常量特化（`f$c_…`）；Release 在 Inline 前后各一轮。

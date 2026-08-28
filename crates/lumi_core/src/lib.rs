@@ -26,7 +26,8 @@ pub use ir::{
 pub use lower::{lower_hir, lower_hir_with_schemes};
 pub use pipeline::{
     compile_file_to_core, compile_source_to_core, compile_source_to_core_with_options,
-    compile_source_to_core_with_parallel, FrontendOptions,
+    compile_source_to_core_with_parallel, compile_source_to_core_with_pipeline, FrontendOptions,
+    PipelineOptions,
 };
 pub use sr_pattern::{
     acc_add_const_inc, acc_add_has_name, body_assigns_const, body_iv_unit_inc, cond_eq_zero_rem,

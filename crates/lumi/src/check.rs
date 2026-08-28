@@ -69,19 +69,19 @@ pub enum OverlayCheckError {
 pub fn check_program_with_overlays(
     path: &Path,
     overlays: &HashMap<PathBuf, String>,
-    auto_parallel: bool,
-    trust_foreign_pure: bool,
+    profile: &CompileProfile,
 ) -> Result<(LoadedProgram, TypedModule), OverlayCheckError> {
-    let caps = CapabilitySet::stock().with_auto_parallel(auto_parallel);
     let loaded = load_program_with_overlays(path, overlays)
         .map_err(|e| OverlayCheckError::Load(format!("{e}")))?;
-    let hir = lower_module_with_options(&loaded.module, &caps.to_lower_options()).map_err(|e| {
-        OverlayCheckError::Analyze {
+    let hir = lower_module_with_options(&loaded.module, &profile.caps.to_lower_options()).map_err(
+        |e| OverlayCheckError::Analyze {
             loaded: Box::new(loaded.clone()),
             err: e.into(),
-        }
-    })?;
-    let opts = caps.to_typecheck_options(trust_foreign_pure || loaded.trust_foreign_pure);
+        },
+    )?;
+    let opts = profile.caps.to_typecheck_options(
+        profile.trust_foreign_pure || loaded.trust_foreign_pure,
+    );
     match typecheck_hir(&hir, loaded.visibility.clone(), &opts) {
         Ok(typed) => Ok((loaded, typed)),
         Err(err) => Err(OverlayCheckError::Analyze {
@@ -93,7 +93,10 @@ pub fn check_program_with_overlays(
 
 /// Single-buffer typecheck (unsaved / no on-disk entry).
 pub fn check_source(text: &str, auto_parallel: bool) -> Result<TypedModule, (Span, String)> {
-    let partial = check_source_recovering(text, auto_parallel);
+    let profile = CompileProfile::stock(false).with_caps(
+        CapabilitySet::stock().with_auto_parallel(auto_parallel),
+    );
+    let partial = check_source_recovering(text, &profile);
     if let Some(typed) = partial.typed {
         if partial.diagnostics.is_empty() {
             return Ok(typed);
@@ -115,7 +118,7 @@ pub struct PartialCheck {
 }
 
 /// Parse with recovery, then lower/typecheck whatever items survived.
-pub fn check_source_recovering(text: &str, auto_parallel: bool) -> PartialCheck {
+pub fn check_source_recovering(text: &str, profile: &CompileProfile) -> PartialCheck {
     let outcome = parse_module_recovering(text);
     let mut diagnostics: Vec<(Span, String)> = outcome
         .errors
@@ -140,7 +143,7 @@ pub fn check_source_recovering(text: &str, auto_parallel: bool) -> PartialCheck 
             diagnostics,
         };
     }
-    let caps = CapabilitySet::stock().with_auto_parallel(auto_parallel);
+    let caps = &profile.caps;
     let hir = match lower_module_with_options(&m, &caps.to_lower_options()) {
         Ok(h) => h,
         Err(e) => {
@@ -151,7 +154,7 @@ pub fn check_source_recovering(text: &str, auto_parallel: bool) -> PartialCheck 
             };
         }
     };
-    let opts = caps.to_typecheck_options(false);
+    let opts = caps.to_typecheck_options(profile.trust_foreign_pure);
     let (typed, ty_errs) = typecheck_hir_recovering(&hir, visibility, &opts);
     for e in ty_errs {
         diagnostics.push((e.span().unwrap_or_default(), e.message().to_string()));
@@ -341,7 +344,7 @@ val main = {
     println(1)
 }
 "#;
-        let partial = check_source_recovering(src, true);
+        let partial = check_source_recovering(src, &CompileProfile::stock(false));
         assert!(!partial.diagnostics.is_empty(), "expected parse diagnostic");
         let typed = partial.typed.expect("typecheck recovered items");
         assert!(
