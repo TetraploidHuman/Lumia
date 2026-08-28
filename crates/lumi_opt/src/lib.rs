@@ -3,6 +3,8 @@
 //! Transparent result reuse lives in [`memo`] (DESIGN §7.5):
 //! local CSE/fold/LICM + runtime `T_f` (`memo_tf`).
 //! Escape analysis + small pure inlining live in [`escape`] / [`inline`].
+//!
+//! Pass inventory and schedules: [`registry`] / [`pipeline`] (Phase A modular assembly).
 
 mod copy_elim;
 mod dense_f64_sr;
@@ -11,6 +13,8 @@ mod fusion;
 mod inline;
 mod ir_util;
 mod memo;
+mod pipeline;
+mod registry;
 mod repr_select;
 mod specialize_const;
 mod use_summary;
@@ -23,13 +27,15 @@ pub use memo::{
     MEMO_IDX_TABLE_BYTES, MEMO_PROCESS_BYTE_CAP, MEMO_SLOTS_TABLE_BYTES, MEMO_TF_MAX_ARGS,
     MEMO_TF_MAX_FUNS, MEMO_TF_SLOTS,
 };
+pub use pipeline::{
+    pass_names_for, validate_pass_set, IrAnno, OptProfile, PassInfo, PassKind, PassSet, PassStage,
+};
 pub use specialize_const::SpecializeConstPass;
 
-use copy_elim::CopyElimPass;
-use dense_f64_sr::DenseF64SrPass;
+pub use registry::{info as pass_info, ALL as ALL_PASSES};
+
 use lumi_core::{CoreModule, ListRepr, MapRepr};
-use memo::cse_module;
-use repr_select::ReprSelect;
+use pipeline::{build_schedule, run_schedule, schedule_for};
 
 #[derive(Default)]
 pub struct OptOptions {
@@ -45,103 +51,16 @@ impl OptOptions {
             memo_tf: release,
         }
     }
+
+    pub fn profile(&self) -> OptProfile {
+        OptProfile::from_release(self.release)
+    }
 }
 
 pub trait Pass {
     fn name(&self) -> &str;
     fn run(&self, module: &mut CoreModule);
 }
-
-/// Fixed pipeline stages — no `Box<dyn Pass>` allocation on the hot path.
-#[derive(Clone, Copy)]
-enum PipelinePass {
-    Cse,
-    ConstFold,
-    SpecializeConst,
-    Licm,
-    Escape,
-    DenseF64Sr,
-    Inline,
-    ConcatIdent,
-    ReprSelect,
-    CopyElim,
-}
-
-impl PipelinePass {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Cse => "cse",
-            Self::ConstFold => "const_fold",
-            Self::SpecializeConst => "specialize_const",
-            Self::Licm => "licm",
-            Self::Escape => "escape",
-            Self::DenseF64Sr => "dense_f64_sr",
-            Self::Inline => "inline",
-            Self::ConcatIdent => "concat_ident",
-            Self::ReprSelect => "repr_select",
-            Self::CopyElim => "copy_elim",
-        }
-    }
-
-    fn run(self, module: &mut CoreModule) {
-        match self {
-            Self::Cse => CsePass.run(module),
-            Self::ConstFold => ConstFoldPass.run(module),
-            Self::SpecializeConst => SpecializeConstPass.run(module),
-            Self::Licm => LicmPass.run(module),
-            Self::Escape => EscapePass.run(module),
-            Self::DenseF64Sr => DenseF64SrPass.run(module),
-            Self::Inline => InlinePass.run(module),
-            Self::ConcatIdent => ConcatIdentPass.run(module),
-            Self::ReprSelect => ReprSelect.run(module),
-            Self::CopyElim => CopyElimPass.run(module),
-        }
-    }
-}
-
-struct CsePass;
-impl Pass for CsePass {
-    fn name(&self) -> &str {
-        "cse"
-    }
-    fn run(&self, module: &mut CoreModule) {
-        cse_module(module);
-    }
-}
-
-const DEBUG_PASSES: &[PipelinePass] = &[
-    PipelinePass::Cse,
-    PipelinePass::ConstFold,
-    // Light PE without Inline/memo — bake Int/Bool/Char into leaf clones.
-    PipelinePass::SpecializeConst,
-    PipelinePass::ConstFold,
-    PipelinePass::Licm,
-    // Same dense-float SR as Release so Debug matches hot RT kernels (no Inline).
-    PipelinePass::DenseF64Sr,
-    PipelinePass::Escape,
-    PipelinePass::ReprSelect,
-];
-const RELEASE_PASSES: &[PipelinePass] = &[
-    PipelinePass::Cse,
-    PipelinePass::ConstFold,
-    // Bake Int/Bool/Char call-site constants into leaf clones before inline/PE.
-    PipelinePass::SpecializeConst,
-    PipelinePass::ConstFold,
-    PipelinePass::Licm,
-    PipelinePass::DenseF64Sr,
-    PipelinePass::Inline,
-    // Inlined nests / composed helpers — second SR before fold/specialize.
-    PipelinePass::DenseF64Sr,
-    // Inline exposes fresh literals / builtins — fold, specialize, then escape.
-    PipelinePass::ConstFold,
-    PipelinePass::SpecializeConst,
-    PipelinePass::ConstFold,
-    PipelinePass::Escape,
-    PipelinePass::ConcatIdent,
-    PipelinePass::ConstFold,
-    PipelinePass::ReprSelect,
-    PipelinePass::CopyElim,
-];
 
 /// Frontend → Core → optimize (for tests and tooling).
 pub fn compile_source_to_optimized(src: &str, opts: &OptOptions) -> Result<CoreModule, String> {
@@ -168,10 +87,29 @@ pub fn compile_file_to_optimized(
     compile_source_to_optimized(&src, opts)
 }
 
-/// Run the standard pipeline. Uncertain → default stable paths (§7.1.1).
+/// Run the standard Debug/Release pipeline. Uncertain → default stable paths (§7.1.1).
 pub fn optimize(module: &mut CoreModule, opts: &OptOptions) {
+    let profile = opts.profile();
+    let set = PassSet::for_profile(profile);
+    // Stock path: static slice, no allocation.
+    optimize_with(module, profile, &set, opts.memo_tf).expect("stock PassSet must validate");
+}
+
+/// Assemble from [`OptProfile`] + [`PassSet`].
+///
+/// `memo_tf` is applied before CSE when requested **and** `memo_tf` ∈ set.
+/// Filtered sets allocate a schedule `Vec`; stock sets use a static slice.
+pub fn optimize_with(
+    module: &mut CoreModule,
+    profile: OptProfile,
+    set: &PassSet,
+    memo_tf: bool,
+) -> Result<(), String> {
+    validate_pass_set(set)?;
+
+    let do_memo = memo_tf && set.contains("memo_tf");
     // Plan transparent Memo on the pre-CSE module (reuse evidence needs duplicate calls).
-    let memo_plan = if opts.memo_tf {
+    let memo_plan = if do_memo {
         Some(plan_memo_tf(module))
     } else {
         None
@@ -183,14 +121,13 @@ pub fn optimize(module: &mut CoreModule, opts: &OptOptions) {
         apply_memo_plan(module, plan);
     }
 
-    let passes = if opts.release {
-        RELEASE_PASSES
+    if set.is_stock(profile) {
+        run_schedule(module, schedule_for(profile));
     } else {
-        DEBUG_PASSES
-    };
-    for p in passes {
-        p.run(module);
+        let passes = build_schedule(profile, set)?;
+        run_schedule(module, &passes);
     }
+    Ok(())
 }
 
 /// Named passes for tooling / diagnostics.
@@ -200,15 +137,8 @@ pub fn optimize(module: &mut CoreModule, opts: &OptOptions) {
 /// inline/specialize see `memo` and leave T_f callees intact. Re-planning after
 /// CSE would drop const-reuse evidence (§7.5.2).
 pub fn pass_names(release: bool) -> Vec<&'static str> {
-    let mut names: Vec<&'static str> = if release {
-        RELEASE_PASSES.iter().map(|p| p.name()).collect()
-    } else {
-        DEBUG_PASSES.iter().map(|p| p.name()).collect()
-    };
-    if release {
-        names.push("memo_tf");
-    }
-    names
+    let profile = OptProfile::from_release(release);
+    pass_names_for(profile, &PassSet::for_profile(profile))
 }
 
 /// Default Map representation when analysis cannot prove a better choice.
@@ -224,10 +154,11 @@ pub fn default_list_repr() -> ListRepr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use copy_elim::CopyElimPass;
-    use lumi_core::{Block, CoreFun, CoreModule, Local, Op, Value};
+    use crate::copy_elim::CopyElimPass;
+    use crate::pipeline::{PipelinePass, DEBUG_SCHEDULE, RELEASE_SCHEDULE};
+    use crate::repr_select::ReprSelect;
+    use lumi_core::{Block, CoreFun, Local, Op, Value};
     use lumi_ty::{Effect, Type};
-    use repr_select::ReprSelect;
     use rustc_hash::FxHashSet as HashSet;
 
     #[test]
@@ -302,7 +233,7 @@ val main = {
         // Debug: CSE → fold → specialize → fold → LICM → dense_f64_sr → Escape → ReprSelect
         // (no inline/memo).
         assert_eq!(
-            DEBUG_PASSES.iter().map(|p| p.name()).collect::<Vec<_>>(),
+            DEBUG_SCHEDULE.iter().map(|p| p.name()).collect::<Vec<_>>(),
             vec![
                 "cse",
                 "const_fold",
@@ -317,7 +248,10 @@ val main = {
         // Release interleaves specialize/fold/inline; Escape must immediately
         // precede ReprSelect (ConcatIdent/ConstFold in between do not allocate).
         assert_eq!(
-            RELEASE_PASSES.iter().map(|p| p.name()).collect::<Vec<_>>(),
+            RELEASE_SCHEDULE
+                .iter()
+                .map(|p| p.name())
+                .collect::<Vec<_>>(),
             vec![
                 "cse",
                 "const_fold",
@@ -343,12 +277,22 @@ val main = {
         assert!(escape_i < repr_i);
         // No second Escape after the Escape→ReprSelect pair today.
         assert_eq!(
-            RELEASE_PASSES
+            RELEASE_SCHEDULE
                 .iter()
                 .filter(|p| matches!(p, PipelinePass::Escape))
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn optimize_with_filtered_drops_inline() {
+        let set = PassSet::for_profile(OptProfile::Release).without("inline");
+        validate_pass_set(&set).unwrap();
+        let names = pass_names_for(OptProfile::Release, &set);
+        assert!(!names.contains(&"inline"));
+        assert!(names.contains(&"escape"));
+        assert!(names.contains(&"memo_tf"));
     }
 
     #[test]

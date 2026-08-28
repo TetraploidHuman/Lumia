@@ -9,9 +9,7 @@
 //! Not selected here (runtime / HIR defaults): Iota, List COW, Map Overlay,
 //! SortedTree (needs stronger Ord+scan proof — not yet).
 
-use crate::use_summary::{
-    collect_let_defs, prove_all_keys_no_hash, summarize_fun, LocalUse,
-};
+use crate::use_summary::{collect_let_defs, prove_all_keys_no_hash, summarize_fun, LocalUse};
 use crate::{default_map_repr, Pass};
 use lumi_core::{AdtRepr, CoreFun, CoreModule, ListRepr, Local, MapRepr, Op, SetRepr, Value};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
@@ -26,7 +24,7 @@ impl Pass for ReprSelect {
         let hash_adts = module.hash_adts.clone();
         for f in &mut module.functions {
             // EscapePass fills `f.escaping` and must run in the same pipeline
-            // pair immediately before ReprSelect (see DEBUG/RELEASE_PASSES).
+            // pair immediately before ReprSelect (see DEBUG/RELEASE_SCHEDULE).
             let escaping = f.escaping.clone();
             let uses = summarize_fun(f);
             let defs = collect_let_defs(f);

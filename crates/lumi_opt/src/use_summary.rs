@@ -203,9 +203,7 @@ fn prove_key_hash_value(
                 KeyHashProof::NoHash
             }
         }
-        Value::Local(Local(src)) => {
-            prove_key_hash_value(Local(*src), defs, hash_adts, depth + 1)
-        }
+        Value::Local(Local(src)) => prove_key_hash_value(Local(*src), defs, hash_adts, depth + 1),
         _ => KeyHashProof::Unknown,
     }
 }

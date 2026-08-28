@@ -6,7 +6,8 @@
 //! - **§7.5.1-A local**: [`cse`], const-fold / copy-prop ([`fold`]), [`licm`]
 //! - **§7.5.1-B `T_f`**: bounded cross-call table ([`plan`]); representation = slots | DenseInt
 //!
-//! Pipeline orchestration (pass order, Release interleaving) stays in `lumi_opt::optimize`.
+//! Pipeline orchestration (pass order, Release interleaving) stays in
+//! [`crate::pipeline`] / [`crate::optimize`].
 
 use lumi_core::CoreModule;
 
