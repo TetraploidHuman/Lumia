@@ -7,7 +7,7 @@
 mod harness;
 
 use crate::harness::{
-    e2e_exe, lumi_bin, run_check, run_example, run_example_trust_foreign_pure,
+    e2e_exe, lumi_bin, run_check, run_example, run_example_build, run_example_trust_foreign_pure,
     run_example_with_stdin, workspace_root,
 };
 use std::process::Command;
@@ -23,3 +23,4 @@ include!("reject.rs");
 include!("regress.rs");
 include!("syntax.rs");
 include!("pass_flags.rs");
+include!("phase_gh_flags.rs");

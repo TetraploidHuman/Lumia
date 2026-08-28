@@ -1,5 +1,4 @@
 // CLI `--no-inline` / pass flags smoke (stock semantics).
-use crate::harness::run_example_build;
 
 #[test]
 fn build_no_inline_poly_map_id() {
