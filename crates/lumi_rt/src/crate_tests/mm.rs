@@ -145,7 +145,8 @@ fn arc_cycle_candidate_threshold_triggers_collect() {
         (*header_from_payload(a)).rc = 2;
         (*header_from_payload(b)).rc = 1;
     }
-    // Drop the external alias: rc 2→1 notes candidate; thresh=1 → STW collect.
+    // Drop the external alias: rc 2→1 notes candidate; thresh=1 → STW collect
+    // via collect_if_cycle_pending (try_borrow BACKEND).
     value_rc_release(a);
     assert!(
         !crate::common::is_heap_payload(a) && !crate::common::is_heap_payload(b),
@@ -169,6 +170,23 @@ fn arc_cycle_candidate_skips_bytes() {
     assert_eq!(cycle_cand_len_for_test(), 0);
     lumi_heap_release(p); // free
     lumi_set_mm_mode(0);
+}
+
+#[test]
+fn heap_shared_mirror_membership() {
+    use crate::heap_shared::{
+        heap_shared_clear_for_test, heap_shared_contains, heap_shared_set_for_test,
+    };
+    heap_shared_set_for_test(true);
+    let p = lumi_alloc(16, TYPE_BYTES);
+    let h = crate::common::header_from_payload(p);
+    assert!(heap_shared_contains(h));
+    assert!(crate::common::is_heap_payload(p));
+    lumi_gc_collect();
+    // Unrooted → swept; mirror must drop membership.
+    assert!(!heap_shared_contains(h));
+    assert!(!crate::common::is_heap_payload(p));
+    heap_shared_clear_for_test();
 }
 
 #[test]

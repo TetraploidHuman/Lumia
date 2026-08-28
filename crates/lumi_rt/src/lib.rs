@@ -33,6 +33,7 @@ mod f64_simd;
 mod float_kernels;
 mod gc;
 mod hash_ord;
+mod heap_shared;
 mod list;
 mod map_set;
 mod mm;

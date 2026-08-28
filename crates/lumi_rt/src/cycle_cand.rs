@@ -1,12 +1,14 @@
 //! Deferred cycle-candidate buffer for `--mm arc`.
 //!
 //! When an Arc release leaves `rc > 0` on a pointer-bearing object, enqueue it.
-//! Crossing a threshold requests a STW full collect (Arc already disables
-//! concurrent mark). Not Bacon–Rajan trial-delete — reclaim is still mark-sweep.
+//! Crossing a threshold sets a **pending** STW full collect. The collect itself
+//! runs only at safe points ([`flush_cycle_collect_pending`] from alloc /
+//! inhibit-drop / explicit collect) so we never re-enter `BACKEND` from a
+//! nested `lumi_gc_collect` call.
 
 use crate::common::{
     tid_base, ObjectHeader, GC_INHIBIT, RC_SHARED, TYPE_ADT, TYPE_CLOSURE, TYPE_LIST,
-    TYPE_LIST_SLICE, TYPE_MAP, TYPE_SET,
+    TYPE_LIST_IOTA, TYPE_LIST_SLICE, TYPE_MAP, TYPE_SET,
 };
 use crate::mm::{current_mm_mode, MmMode};
 use rustc_hash::FxHashSet;
@@ -39,7 +41,13 @@ fn init_thresh_from_env() {
 fn can_hold_ptrs(tid: u32) -> bool {
     matches!(
         tid_base(tid),
-        TYPE_LIST | TYPE_LIST_SLICE | TYPE_MAP | TYPE_SET | TYPE_ADT | TYPE_CLOSURE
+        TYPE_LIST
+            | TYPE_LIST_IOTA
+            | TYPE_LIST_SLICE
+            | TYPE_MAP
+            | TYPE_SET
+            | TYPE_ADT
+            | TYPE_CLOSURE
     )
 }
 
@@ -89,15 +97,20 @@ pub(crate) fn take_cycle_collect_pending() -> bool {
     true
 }
 
-/// Run STW collect if a threshold flush is pending and it is safe to do so.
-pub(crate) fn try_flush_cycle_collect() {
-    if IN_ARC_FREE.get() > 0 || GC_INHIBIT.get() > 0 || crate::gc::is_full_marking() {
-        return;
-    }
-    if !take_cycle_collect_pending() {
-        return;
-    }
-    crate::gc::lumi_gc_collect();
+/// Arm pending without calling into GC (safe from any release path).
+pub(crate) fn request_cycle_collect() {
+    PENDING.set(true);
+    CANDS.with(|c| c.borrow_mut().clear());
+}
+
+/// Run STW collect if pending **and** it is safe (no inhibit / free / mark).
+///
+/// Must not be called while `BACKEND` is already mutably borrowed — prefer
+/// [`crate::gc::MarkSweep`]’s alloc path, which calls [`take_cycle_collect_pending`]
+/// directly. This helper is for inhibit-drop / post-free safe points via
+/// [`crate::gc::collect_if_cycle_pending`].
+pub(crate) fn can_flush_cycle_collect() -> bool {
+    IN_ARC_FREE.get() == 0 && GC_INHIBIT.get() == 0 && !crate::gc::is_full_marking() && PENDING.get()
 }
 
 #[cfg(test)]

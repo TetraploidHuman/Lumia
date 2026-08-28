@@ -204,7 +204,7 @@ pub(crate) fn cow_rc_release(payload: *mut u8, adt_ok: bool) {
                 crate::arc_free::maybe_free_on_zero(payload, adt_ok);
             } else {
                 crate::cycle_cand::note_cycle_candidate(h);
-                crate::cycle_cand::try_flush_cycle_collect();
+                crate::gc::collect_if_cycle_pending();
             }
         }
     }
@@ -245,7 +245,7 @@ pub(crate) fn cow_rc_drop_alias(payload: *mut u8, adt_ok: bool) {
         if rc != RC_SHARED && rc > 1 {
             (*h).rc = rc - 1;
             crate::cycle_cand::note_cycle_candidate(h);
-            crate::cycle_cand::try_flush_cycle_collect();
+            crate::gc::collect_if_cycle_pending();
         }
     }
 }
@@ -291,7 +291,7 @@ pub(crate) fn heap_rc_release(payload: *mut u8) {
                 crate::arc_free::maybe_free_on_zero(payload, /*adt_ok=*/ true);
             } else {
                 crate::cycle_cand::note_cycle_candidate(h);
-                crate::cycle_cand::try_flush_cycle_collect();
+                crate::gc::collect_if_cycle_pending();
             }
         }
     }
@@ -370,13 +370,14 @@ pub(crate) enum HeapGen {
     Old,
 }
 
-/// Single membership probe: `HEAP_SET` then `HEAP_OLD_SET` (at most two lookups).
+/// Single membership probe: TLS `HEAP_SET`, then optional process-global mirror.
 pub(crate) fn heap_gen(payload: *mut u8) -> Option<HeapGen> {
     if payload.is_null() {
         return None;
     }
     let h = header_from_payload(payload);
-    if !HEAP_SET.with(|set| set.borrow().contains(&h)) {
+    let in_tls = HEAP_SET.with(|set| set.borrow().contains(&h));
+    if !in_tls && !crate::heap_shared::heap_shared_contains(h) {
         return None;
     }
     if HEAP_OLD_SET.with(|set| set.borrow().contains(&h)) {
@@ -456,6 +457,10 @@ impl GcInhibitGuard {
 impl Drop for GcInhibitGuard {
     fn drop(&mut self) {
         GC_INHIBIT.set(GC_INHIBIT.get().saturating_sub(1));
+        // Safe point: pending Arc cycle collect may have been deferred under inhibit.
+        if GC_INHIBIT.get() == 0 {
+            crate::gc::collect_if_cycle_pending();
+        }
     }
 }
 

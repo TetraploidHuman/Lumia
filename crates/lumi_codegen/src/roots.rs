@@ -140,7 +140,7 @@ impl<'ctx> Codegen<'ctx> {
 
     /// Non-COW heap types that need retain/release under `--mm arc`.
     pub(crate) fn type_needs_arc_heap_retain(ty: &Type) -> bool {
-        matches!(ty, Type::String | Type::Fun(_, _, _))
+        matches!(ty, Type::String | Type::Char | Type::Fun(_, _, _))
     }
 
     /// `alloca` at function entry so loops do not grow the native stack.

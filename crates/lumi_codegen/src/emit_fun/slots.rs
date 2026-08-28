@@ -78,8 +78,7 @@ impl<'ctx> Codegen<'ctx> {
                 | Some(Type::Set(_))
                 | Some(Type::Adt { .. }) => true,
                 Some(t) if Self::is_bit_identity_scalar(t) || matches!(t, Type::Float) => false,
-                Some(Type::String) | Some(Type::Fun(_, _, _)) => self.mm_arc,
-                Some(Type::Char) => false,
+                Some(Type::String) | Some(Type::Char) | Some(Type::Fun(_, _, _)) => self.mm_arc,
                 Some(_) => true, // unknown heap-ish
                 None => true,    // unknown — conservative
             };
@@ -112,7 +111,9 @@ impl<'ctx> Codegen<'ctx> {
                 Some(Type::List(_)) | Some(Type::Map(_, _)) | Some(Type::Set(_)) => {
                     self.list_release_i64(old)?;
                 }
-                Some(Type::String) | Some(Type::Fun(_, _, _)) if self.mm_arc => {
+                Some(Type::String) | Some(Type::Char) | Some(Type::Fun(_, _, _))
+                    if self.mm_arc =>
+                {
                     self.heap_release_i64(old)?;
                 }
                 _ => {
