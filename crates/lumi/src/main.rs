@@ -2,7 +2,6 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use lumi::caps::CapabilitySet;
 use lumi::check::check_program;
 use lumi::load::path_label;
 use lumi::pkg;
@@ -13,6 +12,8 @@ use std::path::{Path, PathBuf};
 
 #[cfg(not(feature = "codegen"))]
 use anyhow::bail;
+#[cfg(feature = "codegen")]
+use lumi::caps::CapabilitySet;
 #[cfg(feature = "codegen")]
 use lumi::check::{annotate_assert_messages, check_program_with_caps};
 #[cfg(feature = "codegen")]
@@ -284,10 +285,10 @@ fn build_file(
         emit_ir: emit_llvm,
         option_some_tag: option_tags.0,
         option_none_tag: option_tags.1,
-        parallel: caps.auto_parallel,
-        loop_sr: true,
-        tco: true,
-        nsw_iv: true,
+        parallel: false,
+        loop_sr: false,
+        tco: false,
+        nsw_iv: false,
         link_args: link,
     };
     caps.apply_codegen(&mut cg_opts);

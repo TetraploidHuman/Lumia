@@ -4,6 +4,7 @@
 //! HirLower / Typecheck / Codegen capabilities and maps a [`CapabilitySet`] onto
 //! each crate's options so `build` / `check` enable them in one place.
 
+#[cfg(feature = "codegen")]
 use lumi_codegen::CodegenOptions;
 use lumi_hir::LowerOptions;
 use lumi_ty::TypecheckOptions;
@@ -118,6 +119,7 @@ impl CapabilitySet {
     }
 
     /// Overlay Phase C flags onto an existing [`CodegenOptions`] skeleton.
+    #[cfg(feature = "codegen")]
     pub fn apply_codegen(&self, opts: &mut CodegenOptions) {
         opts.parallel = self.auto_parallel;
         opts.loop_sr = self.loop_sr;
