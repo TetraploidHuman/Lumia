@@ -186,14 +186,23 @@ jobs:
               cargo check -p lumi --no-default-features --features codegen,llvm-dynamic
               cargo test -p lumi --test cap_regress --no-default-features --features codegen,llvm-dynamic -q
               cargo test -p lumi --test pass_regress --no-default-features --features codegen,llvm-dynamic -q
+              cargo test -p lumi --test profile_api --no-default-features --features codegen,llvm-dynamic -q
           - label: minus-opt-memo
-            run: cargo check -p lumi --no-default-features --features codegen,llvm-dynamic,opt-dense-f64,opt-inline,opt-repr-stack
+            run: |
+              cargo check -p lumi --no-default-features --features codegen,llvm-dynamic,opt-dense-f64,opt-inline,opt-repr-stack
+              cargo test -p lumi --test cap_regress --no-default-features --features codegen,llvm-dynamic,opt-dense-f64,opt-inline,opt-repr-stack -q -- hof_fuse_off_matches_stock
           - label: minus-opt-dense-f64
-            run: cargo check -p lumi --no-default-features --features codegen,llvm-dynamic,opt-memo,opt-inline,opt-repr-stack
+            run: |
+              cargo check -p lumi --no-default-features --features codegen,llvm-dynamic,opt-memo,opt-inline,opt-repr-stack
+              cargo test -p lumi --test pass_regress --no-default-features --features codegen,llvm-dynamic,opt-memo,opt-inline,opt-repr-stack -q -- dense_f64_off_matches_stock
           - label: minus-opt-inline
-            run: cargo check -p lumi --no-default-features --features codegen,llvm-dynamic,opt-memo,opt-dense-f64,opt-repr-stack
+            run: |
+              cargo check -p lumi --no-default-features --features codegen,llvm-dynamic,opt-memo,opt-dense-f64,opt-repr-stack
+              cargo test -p lumi --test pass_regress --no-default-features --features codegen,llvm-dynamic,opt-memo,opt-dense-f64,opt-repr-stack -q -- inline_off_matches_stock_debug
           - label: minus-opt-repr-stack
-            run: cargo check -p lumi --no-default-features --features codegen,llvm-dynamic,opt-memo,opt-dense-f64,opt-inline
+            run: |
+              cargo check -p lumi --no-default-features --features codegen,llvm-dynamic,opt-memo,opt-dense-f64,opt-inline
+              cargo test -p lumi --test pass_regress --no-default-features --features codegen,llvm-dynamic,opt-memo,opt-dense-f64,opt-inline -q -- repr_select_off_matches_stock
           - label: lumi_opt-features
             run: |
               cargo check -p lumi_opt --no-default-features
