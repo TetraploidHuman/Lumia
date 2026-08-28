@@ -131,6 +131,9 @@ enum Commands {
         /// Use slot-based Memo `T_f` only (disable DenseInt tables).
         #[arg(long = "no-memo-dense")]
         no_memo_dense: bool,
+        /// Memory manager: `ms` (mark-sweep, default) or `arc` (stub; same backend today).
+        #[arg(long = "mm", default_value = "ms")]
+        mm: String,
         /// List Phase C capabilities (and CoreOpt catalog), then exit.
         #[arg(long = "list-caps")]
         list_caps: bool,
@@ -229,6 +232,7 @@ fn main() -> Result<()> {
             emit_llvm,
             show_memo_stats,
             no_memo_dense,
+            mm,
             list_caps,
             list_passes,
         } => {
@@ -247,6 +251,7 @@ fn main() -> Result<()> {
                     emit_llvm,
                     show_memo_stats,
                     no_memo_dense,
+                    mm,
                     list_caps,
                     list_passes,
                 );
@@ -267,6 +272,7 @@ fn main() -> Result<()> {
                     emit_llvm,
                     show_memo_stats,
                     no_memo_dense,
+                    mm,
                     link,
                 )?;
                 if list_caps {
@@ -352,6 +358,7 @@ fn build_profile(
     emit_ir: bool,
     show_memo_stats: bool,
     no_memo_dense: bool,
+    mm: String,
     link: Vec<String>,
 ) -> Result<CompileProfile> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -361,6 +368,7 @@ fn build_profile(
     }
     let config = load_for_file(file);
     let prefer_dense = config.prefer_dense_memo.unwrap_or(true) && !no_memo_dense;
+    let mm_mode = parse_mm_mode(&mm)?;
     CompileProfile::assemble(
         release,
         memo_tf,
@@ -374,8 +382,18 @@ fn build_profile(
     .map(|p| {
         p.with_show_memo_stats(show_memo_stats)
             .with_memo_prefer_dense(prefer_dense)
+            .with_mm_mode(mm_mode)
     })
     .map_err(|e| anyhow::anyhow!("profile: {e}"))
+}
+
+#[cfg(feature = "codegen")]
+fn parse_mm_mode(s: &str) -> Result<i64> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "ms" | "marksweep" | "mark-sweep" => Ok(0),
+        "arc" | "refcount" => Ok(1),
+        other => anyhow::bail!("unknown --mm mode `{other}` (expected ms or arc)"),
+    }
 }
 
 #[cfg(feature = "codegen")]

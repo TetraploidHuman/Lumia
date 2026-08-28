@@ -161,6 +161,16 @@ const RUNTIME_DECLS: &[RtDecl] = &[
         args: &[],
     },
     RtDecl {
+        name: "lumi_set_mm_mode",
+        ret: RtTy::Void,
+        args: &[RtTy::I64],
+    },
+    RtDecl {
+        name: "lumi_mm_mode",
+        ret: RtTy::I64,
+        args: &[],
+    },
+    RtDecl {
         name: "lumi_list_retain",
         ret: RtTy::Void,
         args: &[RtTy::Ptr],

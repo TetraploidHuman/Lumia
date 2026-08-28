@@ -29,6 +29,8 @@ pub struct CompileProfile {
     pub show_memo_stats: bool,
     /// Prefer DenseInt Memo `T_f` over slot tables when planning (§7.5.3).
     pub memo_prefer_dense: bool,
+    /// Memory manager: 0 = mark-sweep (default), 1 = arc stub (`--mm arc`).
+    pub mm_mode: i64,
     #[cfg(feature = "codegen")]
     pass_set: PassSet,
 }
@@ -51,6 +53,7 @@ impl CompileProfile {
             link_args: Vec::new(),
             show_memo_stats: false,
             memo_prefer_dense: true,
+            mm_mode: 0,
             #[cfg(feature = "codegen")]
             pass_set: PassSet::for_profile(OptProfile::from_release(release)),
         }
@@ -104,6 +107,11 @@ impl CompileProfile {
 
     pub fn with_memo_prefer_dense(mut self, on: bool) -> Self {
         self.memo_prefer_dense = on;
+        self
+    }
+
+    pub fn with_mm_mode(mut self, mode: i64) -> Self {
+        self.mm_mode = mode;
         self
     }
 

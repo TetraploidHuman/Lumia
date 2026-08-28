@@ -52,6 +52,14 @@ fn incremental_full_enabled() -> bool {
     }
 }
 
+/// Scale incremental mark quantum when `LUMI_GC_MARK_THREADS>1` (stub for future parallel mark).
+pub(crate) fn configure_mark_parallelism(threads: usize) {
+    let n = threads.max(1);
+    if n > 1 {
+        MARK_QUANTUM.with(|c| c.set(c.get().saturating_mul(n)));
+    }
+}
+
 impl MarkSweep {
     fn mark_from_roots_full() {
         MARK_MINOR.set(false);
@@ -545,6 +553,7 @@ thread_local! {
 
 #[no_mangle]
 pub extern "C" fn lumi_alloc(nbytes: u64, type_id: u32) -> *mut u8 {
+    let _ = crate::mm::current_mm_mode();
     BACKEND.with(|b| b.borrow_mut().alloc(nbytes as usize, type_id))
 }
 

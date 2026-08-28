@@ -40,3 +40,4 @@ mod list;
 mod map_set;
 #[cfg(feature = "opt-memo")]
 mod memo;
+mod mm;

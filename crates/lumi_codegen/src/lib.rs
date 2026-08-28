@@ -84,6 +84,8 @@ pub struct CodegenOptions {
     pub link_args: Vec<String>,
     /// Print Memo `T_f` hit/miss stats at process exit (`--show-memo-stats`).
     pub show_memo_stats: bool,
+    /// Runtime memory manager mode passed to `lumi_set_mm_mode` (0=ms, 1=arc stub).
+    pub mm_mode: i64,
 }
 
 /// Emit LLVM IR for `core`, run `module.verify()`, and return the IR text.
@@ -182,6 +184,7 @@ fn emit_llvm_module<'ctx>(
         &cg.funs.adt_show_kinds,
         &cg.funs.adt_variant_names,
         opts.show_memo_stats,
+        opts.mm_mode,
     );
 
     if opts.emit_ir {
@@ -269,6 +272,7 @@ fn emit_c_main<'ctx>(
     adt_show_kinds: &HashMap<String, u16>,
     adt_variant_names: &HashMap<String, Vec<String>>,
     show_memo_stats: bool,
+    mm_mode: i64,
 ) {
     let i32_ty = context.i32_type();
     let main_ty = i32_ty.fn_type(&[], false);
@@ -277,6 +281,15 @@ fn emit_c_main<'ctx>(
     builder.position_at_end(entry);
     let _ = emit_trait_dict_registration(context, module, builder, core);
     let _ = emit_adt_show_registration(context, module, builder, adt_show_kinds, adt_variant_names);
+    if mm_mode != 0 {
+        if let Some(set_mm) = module.get_function("lumi_set_mm_mode") {
+            let _ = builder.build_call(
+                set_mm,
+                &[context.i64_type().const_int(mm_mode as u64, false).into()],
+                "set_mm",
+            );
+        }
+    }
     if let Some(user) = module.get_function("lumi_user_main") {
         let _ = builder.build_call(user, &[], "call_main");
     }
@@ -542,6 +555,7 @@ mod tests {
             nsw_iv: true,
             link_args: vec![],
             show_memo_stats: false,
+            mm_mode: 0,
         }
     }
 

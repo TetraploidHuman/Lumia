@@ -33,6 +33,7 @@ mod gc;
 mod hash_ord;
 mod list;
 mod map_set;
+mod mm;
 #[cfg(feature = "opt-memo")]
 mod memo;
 mod number_theory;
@@ -51,6 +52,7 @@ pub use common::{
 };
 
 pub use gc::{lumi_alloc, lumi_gc_collect, lumi_root_pop, lumi_root_push, lumi_write_barrier};
+pub use mm::{lumi_mm_mode, lumi_set_mm_mode, MmMode};
 
 pub use affine2::lumi_affine2_rem_sum;
 pub use cn_kernels::{
