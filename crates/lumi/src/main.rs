@@ -131,7 +131,7 @@ enum Commands {
         /// Use slot-based Memo `T_f` only (disable DenseInt tables).
         #[arg(long = "no-memo-dense")]
         no_memo_dense: bool,
-        /// Memory manager: `ms` (mark-sweep, default) or `arc` (stub; same backend today).
+        /// Memory manager: `ms` (mark-sweep, default) or `arc` (eager COW free-on-zero).
         #[arg(long = "mm", default_value = "ms")]
         mm: String,
         /// Print GC collection stats to stderr at exit.

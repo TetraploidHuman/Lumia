@@ -1,7 +1,8 @@
 //! Memory manager mode selection (`LUMI_MM`, `lumi_set_mm_mode`).
 //!
-//! `Arc` is a forward-compatible hook: allocation still uses generational
-//! mark-sweep until a refcount backend lands.
+//! - **MarkSweep** (default): generational GC; COW `rc` is uniqueness only.
+//! - **Arc**: COW containers (`List`/`Map`/`Set`/`ADT`) free eagerly when `rc`
+//!   hits 0; mark-sweep remains for cycles and non-COW heap objects.
 
 use std::cell::Cell;
 use std::sync::OnceLock;
@@ -9,7 +10,7 @@ use std::sync::OnceLock;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MmMode {
     MarkSweep = 0,
-    /// Future refcount / shared-heap path (currently aliases mark-sweep).
+    /// Eager free-on-zero for COW types + mark-sweep cycle collection.
     Arc = 1,
 }
 
@@ -46,7 +47,7 @@ pub(crate) fn current_mm_mode() -> MmMode {
     MM_MODE.with(|c| c.get())
 }
 
-/// Runtime hook for CLI `--mm` (0 = mark-sweep, 1 = arc stub).
+/// Runtime hook for CLI `--mm` (0 = mark-sweep, 1 = arc).
 #[no_mangle]
 pub extern "C" fn lumi_set_mm_mode(mode: i64) {
     let m = if mode == 1 {

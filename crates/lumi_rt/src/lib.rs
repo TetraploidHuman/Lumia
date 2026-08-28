@@ -17,6 +17,7 @@
 
 mod adt_show;
 mod affine2;
+mod arc_free;
 mod cn_kernels;
 mod collatz;
 mod common;

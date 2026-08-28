@@ -159,7 +159,7 @@ pub(crate) fn list_rc_is_unique(payload: *mut u8) -> bool {
 }
 
 #[inline]
-fn cow_tid_ok(tid: u32, adt_ok: bool) -> bool {
+pub(crate) fn cow_tid_ok(tid: u32, adt_ok: bool) -> bool {
     let b = tid_base(tid);
     b == TYPE_LIST
         || b == TYPE_LIST_SLICE
@@ -198,6 +198,9 @@ pub(crate) fn cow_rc_release(payload: *mut u8, adt_ok: bool) {
         let rc = (*h).rc;
         if rc != RC_SHARED && rc > 0 {
             (*h).rc = rc - 1;
+            if (*h).rc == 0 {
+                crate::arc_free::maybe_free_on_zero(payload, adt_ok);
+            }
         }
     }
 }

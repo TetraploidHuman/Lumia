@@ -23,8 +23,34 @@ fn gc_stats_increment_on_collect() {
 }
 
 #[test]
+fn arc_mode_free_on_zero_list() {
+    use crate::list::{
+        lumi_list_append, lumi_list_empty, lumi_list_len, lumi_list_release, lumi_list_retain,
+    };
+    lumi_set_mm_mode(1);
+    assert_eq!(lumi_mm_mode(), 1);
+    let mut xs = lumi_list_empty();
+    lumi_root_push(&mut xs as *mut *mut u8);
+    xs = lumi_list_append(xs, 1);
+    xs = lumi_list_append(xs, 2);
+    assert_eq!(lumi_list_len(xs), 2);
+    lumi_list_retain(xs);
+    lumi_list_release(xs);
+    // Second release drops rc to 0 → Arc free; pointer must leave HEAP_SET.
+    let doomed = xs;
+    lumi_list_release(doomed);
+    xs = ptr::null_mut();
+    lumi_root_pop();
+    assert!(
+        !crate::common::is_heap_payload(doomed),
+        "Arc free-on-zero should unregister list"
+    );
+    lumi_set_mm_mode(0);
+}
+
+#[test]
 fn parallel_mark_drain_collects() {
-    use crate::gc::{configure_mark_parallelism, gc_reset_stats_for_test, lumi_gc_full_count};
+    use crate::gc::{gc_reset_stats_for_test, lumi_gc_full_count};
     gc_reset_stats_for_test();
     configure_mark_parallelism(4);
     // Allocate a small graph then force full collect under parallel drain.
@@ -44,4 +70,14 @@ fn parallel_mark_drain_collects() {
     }
     configure_mark_parallelism(1);
     gc_reset_stats_for_test();
+}
+
+#[test]
+fn gc_mark_threads_scales_quantum() {
+    gc_set_mark_quantum_for_test(256);
+    configure_mark_parallelism(4);
+    let p = lumi_alloc(16, TYPE_BYTES);
+    assert!(!p.is_null());
+    lumi_gc_collect();
+    gc_set_mark_quantum_for_test(256);
 }

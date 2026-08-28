@@ -255,7 +255,7 @@ no_inline = true
 | **已完成骨架**       | parse 子集 → 推断 + 效应 → Core → LLVM → 链 `lumi_rt` → `main` + `println` + `Int`；`listOf`→`AllocList`；CSE + ReprSelect 默认路径                       |
 | **已完成下一步（部分）**  | …；**sortBy / assert+行号**；**定位诊断（多文件）**；**Map Overlay**；**WordCount**；**lumi fmt**；…                                                          |
 | **已完成（相对原「下一里程碑」）** | Trait / instance + 运行时字典；非逃逸小对象栈分配（Lit* / LitAdt + 晋升）；`std.option` / `std.result` / `std.string` / `std.io` 源文件正文；逃逸分析 / 融合 / TCO SCC / 自动并行 / 透明 Memo；local `Map.get` PE (§7.5.1-A) + Release 二次 `const_fold`；**Int/Bool/Char call-site specialization**（`SpecializeConstPass`）+ 字面 `ListTake`/`ListSlice`/`ListReverse`/`AdtTag`/`Map.set`/`Set.insert` PE |
-| **仍待** | 多线程**共享堆**；**真并行 mark**（`LUMI_GC_MARK_THREADS` 目前只放大 quantum）；`--mm=arc` 真正 refcount 后端（CLI/env stub 已接线，仍走 mark-sweep） |
+| **仍待** | 共享堆长期化（非仅 mark 快照）；Arc 对非 COW 堆对象的全路径 retain/release；更完整的环检测策略 |
 | **工具链已落地** | **自动并行**（默认 `ListParMap` + 不安全回退；`--no-parallel`）；**包管理**（`Lumi.toml` / `lumi pkg`）；**LSP**（`lumi lsp`）；**FFI**（`foreign "C" fn`）；`priv` 跨文件可见性；`effect { }` 块；Map/Set `finish` 晋升；`lumi fmt` / `lumi doc` |
 
 
