@@ -58,6 +58,18 @@ pub use gc::{
 };
 pub use mm::{lumi_mm_mode, lumi_set_mm_mode, MmMode};
 
+/// Retain a heap object refcount (no-op if not on heap).
+#[no_mangle]
+pub extern "C" fn lumi_heap_retain(payload: *mut u8) {
+    common::heap_rc_retain(payload);
+}
+
+/// Release a heap object; under `--mm arc`, frees when `rc` hits 0.
+#[no_mangle]
+pub extern "C" fn lumi_heap_release(payload: *mut u8) {
+    common::heap_rc_release(payload);
+}
+
 pub use affine2::lumi_affine2_rem_sum;
 pub use cn_kernels::{
     lumi_cn_argmax, lumi_cn_axpy_clamp, lumi_cn_backproj_clamp, lumi_cn_cluster_rates,

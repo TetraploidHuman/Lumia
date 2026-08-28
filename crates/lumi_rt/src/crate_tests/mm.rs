@@ -49,6 +49,37 @@ fn arc_mode_free_on_zero_list() {
 }
 
 #[test]
+fn arc_mode_free_on_zero_bytes() {
+    lumi_set_mm_mode(1);
+    let p = lumi_alloc(32, TYPE_BYTES);
+    assert!(!p.is_null());
+    assert!(crate::common::is_heap_payload(p));
+    // Alloc starts at rc=1 under Arc; retain+release leaves rc=1, then final release frees.
+    lumi_heap_retain(p);
+    lumi_heap_release(p);
+    let doomed = p;
+    lumi_heap_release(doomed);
+    assert!(
+        !crate::common::is_heap_payload(doomed),
+        "Arc free-on-zero should unregister non-COW Bytes"
+    );
+    lumi_set_mm_mode(0);
+}
+
+#[test]
+fn arc_mode_free_on_zero_string() {
+    lumi_set_mm_mode(1);
+    let p = lumi_alloc(16, TYPE_STRING);
+    assert!(!p.is_null());
+    lumi_heap_release(p);
+    assert!(
+        !crate::common::is_heap_payload(p),
+        "Arc free-on-zero should unregister String"
+    );
+    lumi_set_mm_mode(0);
+}
+
+#[test]
 fn parallel_mark_drain_collects() {
     use crate::gc::{gc_reset_stats_for_test, lumi_gc_full_count};
     gc_reset_stats_for_test();

@@ -1,18 +1,21 @@
-//! Eager free-on-zero for COW containers when `--mm arc` / `LUMI_MM=arc`.
+//! Eager free-on-zero when `--mm arc` / `LUMI_MM=arc`.
 //!
-//! Cycles are still reclaimed by mark-sweep [`crate::gc::lumi_gc_collect`].
+//! Applies to all heap objects whose `rc` hits 0 (COW containers and non-COW
+//! String/Bytes/Closure/…). Cycles are still reclaimed by mark-sweep
+//! [`crate::gc::lumi_gc_collect`].
 
 use crate::common::{
-    cow_rc_release, cow_tid_ok, header_from_payload, header_layout, is_heap_payload, payload_ptr,
-    ObjectHeader, BYTES_OLD, BYTES_YOUNG, HEAP_OLD, HEAP_OLD_SET, HEAP_SET, HEAP_YOUNG, REMEMBERED,
-    TYPE_ADT, TYPE_LIST, TYPE_LIST_SLICE, TYPE_MAP, TYPE_SET,
+    cow_rc_release, cow_tid_ok, header_from_payload, header_layout, heap_rc_release,
+    is_heap_payload, payload_ptr, ObjectHeader, BYTES_OLD, BYTES_YOUNG, HEAP_OLD, HEAP_OLD_SET,
+    HEAP_SET, HEAP_YOUNG, REMEMBERED, TYPE_ADT, TYPE_BYTES, TYPE_CHAR, TYPE_CLOSURE, TYPE_LIST,
+    TYPE_LIST_SLICE, TYPE_MAP, TYPE_SET, TYPE_STRING,
 };
 use crate::mm::{current_mm_mode, MmMode};
 use lumi_abi::{list_elem_is_float, map_key_is_float, map_val_is_float, set_elem_is_float, tid_base};
 use std::alloc::dealloc;
 
 /// After `rc` drops to 0 in Arc mode, release children then unregister + dealloc.
-pub(crate) fn maybe_free_on_zero(payload: *mut u8, adt_ok: bool) {
+pub(crate) fn maybe_free_on_zero(payload: *mut u8, _adt_ok: bool) {
     if current_mm_mode() != MmMode::Arc || payload.is_null() {
         return;
     }
@@ -21,14 +24,14 @@ pub(crate) fn maybe_free_on_zero(payload: *mut u8, adt_ok: bool) {
     }
     unsafe {
         let h = header_from_payload(payload);
-        if !cow_tid_ok((*h).type_id, adt_ok) || (*h).rc != 0 {
+        if (*h).rc != 0 {
             return;
         }
-        free_cow_object(h);
+        free_heap_object(h);
     }
 }
 
-unsafe fn free_cow_object(obj: *mut ObjectHeader) {
+unsafe fn free_heap_object(obj: *mut ObjectHeader) {
     // Drop child aliases first (may recursively free).
     release_children(obj);
     let nbytes = (*obj).size as usize;
@@ -71,13 +74,14 @@ unsafe fn release_children(obj: *mut ObjectHeader) {
                 map_val_is_float(tid),
             );
         }
-        TYPE_ADT => {
+        TYPE_ADT | TYPE_CLOSURE => {
             let words = ((*obj).size as usize) / 8;
             let base = payload as *const i64;
             for i in 1..words {
                 release_value(*base.add(i));
             }
         }
+        TYPE_STRING | TYPE_BYTES | TYPE_CHAR => {}
         _ => {}
     }
 }
@@ -89,14 +93,15 @@ unsafe fn release_value(bits: i64) {
     }
     let h = header_from_payload(p);
     let tid = tid_base((*h).type_id);
-    let adt_ok = tid == TYPE_ADT;
-    if cow_tid_ok((*h).type_id, adt_ok) {
-        cow_rc_release(p, adt_ok);
+    if cow_tid_ok((*h).type_id, tid == TYPE_ADT) {
+        cow_rc_release(p, tid == TYPE_ADT);
+    } else {
+        // Non-COW heap object under Arc (String / Bytes / Closure / …).
+        heap_rc_release(p);
     }
 }
 
 unsafe fn release_set_elems(payload: *mut u8, size: usize) {
-    // Assoc / hash layouts: first word is count or tag; reuse mark walker style.
     // Conservative: treat every aligned i64 in payload as a possible pointer.
     let words = size / 8;
     let base = payload as *const i64;

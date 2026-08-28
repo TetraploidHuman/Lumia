@@ -11,7 +11,6 @@
 use std::alloc::{alloc, dealloc};
 use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
 
 use crate::common::{
     header_from_payload, header_layout, is_heap_payload, is_old_header, is_young_payload,
@@ -20,6 +19,7 @@ use crate::common::{
     PERM_OBJECTS, REMEMBERED, ROOTS, TYPE_ADT, TYPE_CLOSURE, TYPE_LIST, TYPE_LIST_IOTA,
     TYPE_LIST_SLICE, TYPE_MAP, TYPE_SET, YOUNG_LIMIT,
 };
+use crate::mm::MmMode;
 use crate::map_set::{map_mark_payload, set_mark_payload};
 #[cfg(feature = "opt-memo")]
 use crate::memo;
@@ -46,9 +46,9 @@ thread_local! {
     static GC_BYTES_FREED: Cell<u64> = const { Cell::new(0) };
     /// Parallel mark worker count (1 = sequential). Set via `LUMI_GC_MARK_THREADS`.
     static MARK_THREADS: Cell<usize> = const { Cell::new(1) };
-    /// When set, [`mark_value`] / [`shade`] use a shared heap snapshot (parallel drain).
+    /// When set, [`mark_value`] / [`shade`] use a shared heap view (parallel drain).
     static PAR_MARK_ACTIVE: Cell<bool> = const { Cell::new(false) };
-    static PAR_MARK_SNAP: RefCell<Option<Arc<SendHdrSet>>> = const { RefCell::new(None) };
+    static PAR_MARK_VIEW: Cell<Option<SharedHeapView>> = const { Cell::new(None) };
     static PAR_MARK_GREYS: RefCell<Vec<SendHdr>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -57,14 +57,18 @@ struct SendHdr(*mut ObjectHeader);
 // SAFETY: drain is STW; workers only touch `marked` via CAS and read object fields.
 unsafe impl Send for SendHdr {}
 
-struct SendHdrSet(FxHashSet<*mut ObjectHeader>);
-// SAFETY: snapshot is immutable after construction during STW parallel drain.
-unsafe impl Send for SendHdrSet {}
-unsafe impl Sync for SendHdrSet {}
+/// Shared immutable view of TLS `HEAP_SET` during STW parallel mark (no clone).
+#[derive(Clone, Copy)]
+struct SharedHeapView {
+    ptr: *const FxHashSet<*mut ObjectHeader>,
+}
+// SAFETY: STW — `HEAP_SET` is not mutated while the view is live.
+unsafe impl Send for SharedHeapView {}
+unsafe impl Sync for SharedHeapView {}
 
-impl SendHdrSet {
-    fn contains(&self, h: *mut ObjectHeader) -> bool {
-        self.0.contains(&h)
+impl SharedHeapView {
+    fn contains(self, h: *mut ObjectHeader) -> bool {
+        unsafe { (*self.ptr).contains(&h) }
     }
 }
 
@@ -337,8 +341,8 @@ impl MarkSweep {
         }
     }
 
-    /// STW parallel drain: snapshot `HEAP_SET`, scan greys on worker threads, merge
-    /// newly shaded children on the collector thread. Mutator is stopped.
+    /// STW parallel drain: share TLS `HEAP_SET` by immutable borrow (no clone),
+    /// scan greys on worker threads, merge newly shaded children on the collector.
     fn drain_full_mark_parallel(threads: usize) {
         let n_workers = threads.min(8).max(2);
         loop {
@@ -347,6 +351,7 @@ impl MarkSweep {
             }
             let batch = MARK_WORK.with(|w| std::mem::take(&mut *w.borrow_mut()));
             if batch.is_empty() {
+                // Root/remark use TLS membership (`PAR_MARK_ACTIVE` is off).
                 Self::mark_from_roots_full();
                 remark_black_objects();
                 if MARK_WORK.with(|w| w.borrow().is_empty()) {
@@ -356,36 +361,42 @@ impl MarkSweep {
                 }
                 continue;
             }
-            let snap = HEAP_SET.with(|s| Arc::new(SendHdrSet(s.borrow().clone())));
-            let chunk_size = (batch.len() / n_workers).max(1);
-            let chunks: Vec<Vec<SendHdr>> = batch
-                .chunks(chunk_size)
-                .map(|c| c.iter().copied().map(SendHdr).collect())
-                .collect();
-            std::thread::scope(|scope| {
-                let mut joins = Vec::with_capacity(chunks.len());
-                for chunk in chunks {
-                    let snap = Arc::clone(&snap);
-                    joins.push(scope.spawn(move || {
-                        PAR_MARK_SNAP.with(|s| *s.borrow_mut() = Some(snap));
-                        PAR_MARK_ACTIVE.set(true);
-                        for SendHdr(obj) in chunk {
-                            scan_fields(obj);
-                        }
-                        PAR_MARK_ACTIVE.set(false);
-                        let greys = PAR_MARK_GREYS.with(|g| std::mem::take(&mut *g.borrow_mut()));
-                        PAR_MARK_SNAP.with(|s| *s.borrow_mut() = None);
-                        greys
-                    }));
-                }
-                for j in joins {
-                    if let Ok(greys) = j.join() {
-                        MARK_WORK.with(|w| {
-                            w.borrow_mut()
-                                .extend(greys.into_iter().map(|SendHdr(p)| p));
-                        });
+            // Hold an immutable borrow of `HEAP_SET` for this wave only — no clone.
+            HEAP_SET.with(|cell| {
+                let borrow = cell.borrow();
+                let view = SharedHeapView {
+                    ptr: &*borrow as *const FxHashSet<*mut ObjectHeader>,
+                };
+                let chunk_size = (batch.len() / n_workers).max(1);
+                let chunks: Vec<Vec<SendHdr>> = batch
+                    .chunks(chunk_size)
+                    .map(|c| c.iter().copied().map(SendHdr).collect())
+                    .collect();
+                std::thread::scope(|scope| {
+                    let mut joins = Vec::with_capacity(chunks.len());
+                    for chunk in chunks {
+                        joins.push(scope.spawn(move || {
+                            PAR_MARK_VIEW.set(Some(view));
+                            PAR_MARK_ACTIVE.set(true);
+                            for SendHdr(obj) in chunk {
+                                scan_fields(obj);
+                            }
+                            PAR_MARK_ACTIVE.set(false);
+                            let greys =
+                                PAR_MARK_GREYS.with(|g| std::mem::take(&mut *g.borrow_mut()));
+                            PAR_MARK_VIEW.set(None);
+                            greys
+                        }));
                     }
-                }
+                    for j in joins {
+                        if let Ok(greys) = j.join() {
+                            MARK_WORK.with(|w| {
+                                w.borrow_mut()
+                                    .extend(greys.into_iter().map(|SendHdr(p)| p));
+                            });
+                        }
+                    }
+                });
             });
         }
     }
@@ -549,12 +560,10 @@ pub(crate) fn mark_value(x: i64) {
             return;
         }
         let h = header_from_payload(p);
-        let ok = PAR_MARK_SNAP.with(|s| {
-            s.borrow()
-                .as_ref()
-                .map(|snap| snap.contains(h))
-                .unwrap_or(false)
-        });
+        let ok = PAR_MARK_VIEW
+            .get()
+            .map(|view| view.contains(h))
+            .unwrap_or(false);
         if ok {
             mark(h);
         }
@@ -656,10 +665,14 @@ pub(crate) unsafe fn finish_alloc(mem: *mut u8, nbytes: usize, type_id: u32) -> 
     // Black allocation during concurrent mark: object is live; final remark
     // picks up fields filled without a write barrier (codegen alloc-init).
     (*header).marked = if FULL_MARKING.get() { 1 } else { 0 };
-    (*header).rc = if matches!(
-        tid_base(type_id),
-        TYPE_LIST | TYPE_LIST_SLICE | TYPE_ADT | TYPE_MAP | TYPE_SET
-    ) {
+    // COW containers always start at rc=1; under `--mm arc` every heap object does
+    // so `lumi_heap_release` / COW release can free-on-zero.
+    (*header).rc = if crate::mm::current_mm_mode() == MmMode::Arc
+        || matches!(
+            tid_base(type_id),
+            TYPE_LIST | TYPE_LIST_SLICE | TYPE_ADT | TYPE_MAP | TYPE_SET
+        )
+    {
         1
     } else {
         0

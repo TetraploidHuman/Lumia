@@ -254,6 +254,39 @@ pub(crate) fn value_rc_release(payload: *mut u8) {
     cow_rc_release(payload, /*adt_ok=*/ true);
 }
 
+/// Retain any heap object (Arc mode path for String/Bytes/Closure/…).
+#[inline]
+pub(crate) fn heap_rc_retain(payload: *mut u8) {
+    if payload.is_null() || !is_heap_payload(payload) {
+        return;
+    }
+    unsafe {
+        let h = header_from_payload(payload);
+        let rc = (*h).rc;
+        if rc != RC_SHARED {
+            (*h).rc = rc.saturating_add(1);
+        }
+    }
+}
+
+/// Release any heap object; under Arc, `rc→0` frees immediately.
+#[inline]
+pub(crate) fn heap_rc_release(payload: *mut u8) {
+    if payload.is_null() || !is_heap_payload(payload) {
+        return;
+    }
+    unsafe {
+        let h = header_from_payload(payload);
+        let rc = (*h).rc;
+        if rc != RC_SHARED && rc > 0 {
+            (*h).rc = rc - 1;
+            if (*h).rc == 0 {
+                crate::arc_free::maybe_free_on_zero(payload, /*adt_ok=*/ true);
+            }
+        }
+    }
+}
+
 /// Retain a field word if it points at a heap List/ADT (skip floats / immediates).
 #[inline]
 pub(crate) fn value_rc_retain_bits(bits: i64) {
