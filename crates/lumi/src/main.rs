@@ -125,6 +125,9 @@ enum Commands {
         show_ir: bool,
         #[arg(long)]
         emit_llvm: bool,
+        /// Print Memo `T_f` hit/miss stats to stderr at exit.
+        #[arg(long = "show-memo-stats")]
+        show_memo_stats: bool,
         /// List Phase C capabilities (and CoreOpt catalog), then exit.
         #[arg(long = "list-caps")]
         list_caps: bool,
@@ -221,6 +224,7 @@ fn main() -> Result<()> {
             link,
             show_ir,
             emit_llvm,
+            show_memo_stats,
             list_caps,
             list_passes,
         } => {
@@ -237,6 +241,7 @@ fn main() -> Result<()> {
                     link,
                     show_ir,
                     emit_llvm,
+                    show_memo_stats,
                     list_caps,
                     list_passes,
                 );
@@ -255,6 +260,7 @@ fn main() -> Result<()> {
                     passes,
                     trust_foreign_pure,
                     emit_llvm,
+                    show_memo_stats,
                     link,
                 )?;
                 if list_caps {
@@ -338,6 +344,7 @@ fn build_profile(
     passes: PassFlags,
     trust_foreign_pure: bool,
     emit_ir: bool,
+    show_memo_stats: bool,
     link: Vec<String>,
 ) -> Result<CompileProfile> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -356,6 +363,7 @@ fn build_profile(
         &caps.to_disables(),
         &passes.to_disables(),
     )
+    .map(|p| p.with_show_memo_stats(show_memo_stats))
     .map_err(|e| anyhow::anyhow!("profile: {e}"))
 }
 

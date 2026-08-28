@@ -128,6 +128,31 @@ pub extern "C" fn lumi_memo_l2_store(
     });
 }
 
+fn memo_stats_wanted(force: bool) -> bool {
+    if force {
+        return true;
+    }
+    match std::env::var("LUMI_MEMO_STATS") {
+        Ok(v) => matches!(v.trim(), "1" | "true" | "yes" | "on"),
+        Err(_) => false,
+    }
+}
+
+/// Print Memo `T_f` hit/miss totals to stderr when `force != 0` or `LUMI_MEMO_STATS=1`.
+#[no_mangle]
+pub extern "C" fn lumi_memo_print_stats(force: i64) {
+    if !memo_stats_wanted(force != 0) {
+        return;
+    }
+    eprintln!(
+        "lumi memo: tf hits={} misses={} | idx hits={} misses={}",
+        lumi_memo_l2_hits(),
+        lumi_memo_l2_misses(),
+        lumi_memo_idx_hits(),
+        lumi_memo_idx_misses(),
+    );
+}
+
 /// Test / `--show-memo-stats` helper: total hits across tables.
 #[no_mangle]
 pub extern "C" fn lumi_memo_l2_hits() -> i64 {

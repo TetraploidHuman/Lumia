@@ -30,6 +30,7 @@ pub struct BuildOptions {
     pub trust_foreign_pure: bool,
     pub emit_ir: bool,
     pub link_args: Vec<String>,
+    pub show_memo_stats: bool,
 }
 
 #[cfg(feature = "codegen")]
@@ -41,6 +42,7 @@ impl Default for BuildOptions {
             trust_foreign_pure: false,
             emit_ir: false,
             link_args: Vec::new(),
+            show_memo_stats: false,
         }
     }
 }
@@ -145,6 +147,7 @@ pub fn compile_prepared(
         tco: false,
         nsw_iv: false,
         link_args: link,
+        show_memo_stats: profile.show_memo_stats,
     };
     profile.caps.apply_codegen(&mut cg_opts);
     compile_module(&prepared.core, &cg_opts)

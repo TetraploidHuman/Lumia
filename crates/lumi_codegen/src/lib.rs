@@ -82,6 +82,8 @@ pub struct CodegenOptions {
     pub nsw_iv: bool,
     /// Extra linker args, e.g. `["-lm", "-L/opt/lib", "-lfoo"]`.
     pub link_args: Vec<String>,
+    /// Print Memo `T_f` hit/miss stats at process exit (`--show-memo-stats`).
+    pub show_memo_stats: bool,
 }
 
 /// Emit LLVM IR for `core`, run `module.verify()`, and return the IR text.
@@ -179,6 +181,7 @@ fn emit_llvm_module<'ctx>(
         core,
         &cg.funs.adt_show_kinds,
         &cg.funs.adt_variant_names,
+        opts.show_memo_stats,
     );
 
     if opts.emit_ir {
@@ -265,6 +268,7 @@ fn emit_c_main<'ctx>(
     core: &CoreModule,
     adt_show_kinds: &HashMap<String, u16>,
     adt_variant_names: &HashMap<String, Vec<String>>,
+    show_memo_stats: bool,
 ) {
     let i32_ty = context.i32_type();
     let main_ty = i32_ty.fn_type(&[], false);
@@ -275,6 +279,15 @@ fn emit_c_main<'ctx>(
     let _ = emit_adt_show_registration(context, module, builder, adt_show_kinds, adt_variant_names);
     if let Some(user) = module.get_function("lumi_user_main") {
         let _ = builder.build_call(user, &[], "call_main");
+    }
+    #[cfg(feature = "opt-memo")]
+    if let Some(print_stats) = module.get_function("lumi_memo_print_stats") {
+        let force = if show_memo_stats { 1 } else { 0 };
+        let _ = builder.build_call(
+            print_stats,
+            &[context.i64_type().const_int(force as u64, false).into()],
+            "memo_stats",
+        );
     }
     let _ = builder.build_return(Some(&i32_ty.const_int(0, false)));
 }
@@ -528,6 +541,7 @@ mod tests {
             tco: true,
             nsw_iv: true,
             link_args: vec![],
+            show_memo_stats: false,
         }
     }
 

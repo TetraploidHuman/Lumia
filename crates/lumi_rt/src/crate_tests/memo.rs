@@ -20,6 +20,17 @@ fn memo_tf_hit_miss() {
 }
 
 #[test]
+fn memo_print_stats_respects_force() {
+    lumi_memo_l2_reset();
+    lumi_memo_l2_store(0, 1, 1, 0, 0, 0, 9);
+    let mut out = 0i64;
+    assert_eq!(lumi_memo_l2_lookup(0, 1, 1, 0, 0, 0, &mut out), 1);
+    // force=1 always prints (smoke: must not trap).
+    lumi_memo_print_stats(1);
+    lumi_memo_l2_reset();
+}
+
+#[test]
 fn memo_idx_hit_miss() {
     lumi_memo_idx_reset();
     let mut out = 0i64;

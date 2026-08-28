@@ -25,6 +25,8 @@ pub struct CompileProfile {
     pub trust_foreign_pure: bool,
     pub emit_ir: bool,
     pub link_args: Vec<String>,
+    /// Print Memo hit/miss stats at exit (`--show-memo-stats` / `LUMI_MEMO_STATS`).
+    pub show_memo_stats: bool,
     #[cfg(feature = "codegen")]
     pass_set: PassSet,
 }
@@ -45,6 +47,7 @@ impl CompileProfile {
             trust_foreign_pure: false,
             emit_ir: false,
             link_args: Vec::new(),
+            show_memo_stats: false,
             #[cfg(feature = "codegen")]
             pass_set: PassSet::for_profile(OptProfile::from_release(release)),
         }
@@ -62,6 +65,7 @@ impl CompileProfile {
         p.trust_foreign_pure = opts.trust_foreign_pure;
         p.emit_ir = opts.emit_ir;
         p.link_args = opts.link_args.clone();
+        p.show_memo_stats = opts.show_memo_stats;
         p
     }
 
@@ -87,6 +91,11 @@ impl CompileProfile {
 
     pub fn with_link_args(mut self, args: Vec<String>) -> Self {
         self.link_args = args;
+        self
+    }
+
+    pub fn with_show_memo_stats(mut self, on: bool) -> Self {
+        self.show_memo_stats = on;
         self
     }
 
@@ -120,6 +129,7 @@ impl CompileProfile {
             trust_foreign_pure: self.trust_foreign_pure,
             emit_ir: self.emit_ir,
             link_args: self.link_args.clone(),
+            show_memo_stats: self.show_memo_stats,
         }
     }
 

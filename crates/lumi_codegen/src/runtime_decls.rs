@@ -870,6 +870,12 @@ const RUNTIME_DECLS: &[RtDecl] = &[
     // Frozen C ABI names (`T_f` planner; DESIGN vocabulary is not "L2").
     #[cfg(feature = "opt-memo")]
     RtDecl {
+        name: "lumi_memo_print_stats",
+        ret: RtTy::Void,
+        args: &[RtTy::I64],
+    },
+    #[cfg(feature = "opt-memo")]
+    RtDecl {
         name: "lumi_memo_l2_lookup",
         ret: RtTy::I64,
         args: &[
