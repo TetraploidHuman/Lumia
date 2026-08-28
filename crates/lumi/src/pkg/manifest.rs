@@ -11,6 +11,9 @@ pub struct Manifest {
     pub package: PackageMeta,
     #[serde(default)]
     pub dependencies: BTreeMap<String, DepSpec>,
+    /// Optional compiler cap / pass toggles (`[compiler]`).
+    #[serde(default)]
+    pub compiler: crate::compiler_config::CompilerConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -177,6 +180,7 @@ pub fn init_manifest(dir: &Path, name: &str) -> Result<PathBuf> {
             trust_foreign_pure: false,
         },
         dependencies: BTreeMap::new(),
+        compiler: crate::compiler_config::CompilerConfig::default(),
     };
     write_manifest(&path, &m)?;
     Ok(path)

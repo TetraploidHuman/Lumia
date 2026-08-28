@@ -139,3 +139,33 @@ fn hof_fuse_and_codegen_caps_off_matches_stock() {
         .with_nsw_iv(false);
     assert_caps_match_stock("examples/fuse_hof.lm", &caps, false, "hof_cg_off");
 }
+
+#[test]
+fn hof_fuse_off_matches_stock_release() {
+    assert_caps_match_stock(
+        "examples/fuse_hof.lm",
+        &CapabilitySet::stock().with_hof_fuse(false),
+        true,
+        "hof_fuse_rel",
+    );
+}
+
+#[test]
+fn loop_sr_off_matches_stock_release() {
+    assert_caps_match_stock(
+        "examples/opt_sr_correctness.lm",
+        &CapabilitySet::stock().with_loop_sr(false),
+        true,
+        "loop_sr_rel",
+    );
+}
+
+#[test]
+fn tco_off_matches_stock_release() {
+    assert_caps_match_stock(
+        "examples/tco_sum_small.lm",
+        &CapabilitySet::stock().with_tco(false),
+        true,
+        "tco_rel",
+    );
+}

@@ -176,7 +176,28 @@ fn workspace_target_dir() -> PathBuf {
 }
 
 #[cfg(feature = "codegen")]
+fn runtime_build_stamp(release: bool) -> PathBuf {
+    let feats: Vec<&str> = vec![
+        #[cfg(feature = "opt-memo")]
+        "opt-memo",
+        #[cfg(feature = "opt-dense-f64")]
+        "opt-dense-f64",
+    ];
+    let profile = if release { "release" } else { "debug" };
+    let feat_key = if feats.is_empty() {
+        "none".to_string()
+    } else {
+        feats.join("+")
+    };
+    workspace_target_dir().join(format!(".lumi_rt_built_{profile}_{feat_key}"))
+}
+
+#[cfg(feature = "codegen")]
 fn ensure_runtime_built(release: bool) -> Result<()> {
+    let stamp = runtime_build_stamp(release);
+    if stamp.is_file() {
+        return Ok(());
+    }
     let root = compiler_workspace_root();
     let mut cmd = Command::new("cargo");
     cmd.current_dir(&root);
@@ -202,5 +223,9 @@ fn ensure_runtime_built(release: bool) -> Result<()> {
     if !status.success() {
         anyhow::bail!("failed to build lumi_rt");
     }
+    if let Some(parent) = stamp.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&stamp, "ok");
     Ok(())
 }

@@ -117,8 +117,8 @@ fn analyze_buffer(
     text: &str,
     overlays: &HashMap<PathBuf, String>,
 ) -> (Vec<Value>, Option<Analysis>) {
-    let profile = CompileProfile::for_lsp();
     let path = uri_to_path(uri);
+    let profile = CompileProfile::for_lsp_at(&path);
     if path.is_file() || overlays.contains_key(&path) {
         let mut ov = overlays.clone();
         ov.insert(path.clone(), text.to_string());

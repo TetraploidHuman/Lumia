@@ -1,7 +1,9 @@
 //! Unified compile profile: [`CapabilitySet`] + mid-end [`PassSet`] + build knobs.
 
 use crate::caps::{CapPhase, CapabilitySet, INVENTORY as CAP_INVENTORY};
+use crate::compiler_config::{caps_with_config, CapDisables, CompilerConfig, PassDisables};
 use std::fmt::Write;
+use std::path::Path;
 
 #[cfg(feature = "codegen")]
 use crate::build::BuildOptions;
@@ -153,6 +155,81 @@ impl CompileProfile {
     /// Default profile for LSP / IDE analysis (Debug stock caps, no codegen).
     pub fn for_lsp() -> Self {
         Self::stock(false)
+    }
+
+    /// LSP / check path: nearest `Lumi.toml` + `.lumi/settings.toml` + env.
+    pub fn for_lsp_at(file: &Path) -> Self {
+        let config = crate::compiler_config::load_for_file(file);
+        Self::assemble(
+            false,
+            true,
+            false,
+            false,
+            Vec::new(),
+            &config,
+            &CapDisables::default(),
+            &PassDisables::default(),
+        )
+        .unwrap_or_else(|e| panic!("invalid LSP profile for {}: {e}", file.display()))
+    }
+
+    /// Merge manifest / env / CLI into a full profile.
+    pub fn assemble(
+        release: bool,
+        memo_tf: bool,
+        trust_foreign_pure: bool,
+        emit_ir: bool,
+        link_args: Vec<String>,
+        config: &CompilerConfig,
+        cap_cli: &CapDisables,
+        pass_cli: &PassDisables,
+    ) -> Result<Self, String> {
+        let caps = caps_with_config(config, cap_cli);
+        let p = Self::stock(release)
+            .with_caps(caps)
+            .with_memo_tf(memo_tf)
+            .with_trust_foreign_pure(trust_foreign_pure)
+            .with_emit_ir(emit_ir)
+            .with_link_args(link_args);
+        #[cfg(feature = "codegen")]
+        {
+            let passes = PassDisables::from_config_and_cli(config, pass_cli);
+            return p.apply_pass_disables(&passes);
+        }
+        #[cfg(not(feature = "codegen"))]
+        {
+            let _ = pass_cli;
+            Ok(p)
+        }
+    }
+
+    /// Apply mid-end pass `--no-*` disables (validates requires edges).
+    #[cfg(feature = "codegen")]
+    pub fn apply_pass_disables(mut self, d: &PassDisables) -> Result<Self, String> {
+        if d.no_inline {
+            self = self.without_pass("inline");
+        }
+        if d.no_dense_f64 {
+            self = self.without_pass("dense_f64_sr");
+        }
+        if d.no_repr_select {
+            self = self.without_pass("repr_select");
+        }
+        if d.no_escape {
+            self = self.without_pass("escape").without_pass("repr_select");
+        }
+        self.validate_passes()?;
+        Ok(self)
+    }
+
+    /// Enabled CoreOpt pass ids from the current PassSet.
+    #[cfg(feature = "codegen")]
+    pub fn enabled_pass_ids(&self) -> Vec<&'static str> {
+        ALL_PASSES
+            .iter()
+            .filter(|p| self.pass_set.contains(p.id))
+            .map(|p| p.id)
+            .collect()
     }
 
     /// Map Phase C caps onto [`lumi_core::PipelineOptions`] for test/tooling frontends.

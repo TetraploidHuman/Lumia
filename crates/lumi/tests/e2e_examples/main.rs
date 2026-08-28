@@ -22,3 +22,4 @@ include!("ffi.rs");
 include!("reject.rs");
 include!("regress.rs");
 include!("syntax.rs");
+include!("pass_flags.rs");

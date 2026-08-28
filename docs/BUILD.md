@@ -167,10 +167,46 @@ Codegen 与所有 MmBackend 共用；换收集器时优先只改 `lumi_rt` 内�
   - **Cargo `opt-*` features（阶段 B）**：`opt-memo` / `opt-dense-f64` / `opt-inline` / `opt-repr-stack`；`lumi` 默认全开。关掉时 schedule 不含对应 Pass，且 codegen/rt 成对剔除声明与 C ABI（`ensure_runtime_built` 按同名 feature 编 `lumi_rt`）。仅 `codegen`、不要优化时：`cargo build -p lumi --no-default-features --features codegen`。
   - **跨 crate capabilities（阶段 C）**：`lumi::CapabilitySet` 统一挂 `hof_fuse`（HIR）/ `auto_parallel`（ty，CLI `--no-parallel`）/ `loop_sr`·`tco`·`nsw_iv`（codegen）；`build`/`check` 经此组装 `LowerOptions` / `TypecheckOptions` / `CodegenOptions`。
   - **统一编译配置（阶段 E）**：`lumi::CompileProfile` = `CapabilitySet` + `PassSet` + build 旋钮；`compile_with_profile` / `check_program_with_profile`；CLI `--no-hof-fuse` / `--no-loop-sr` / `--no-tco` / `--no-nsw-iv`；`lumi build --list-caps` / `--list-passes`。
-  - **LSP / 工具前端**：`CompileProfile::for_lsp()` + `lumi_core::PipelineOptions`（`hof_fuse` + `auto_parallel`）；`check_program_with_overlays` / `compile_source_to_core_with_pipeline` 与 CLI 同 caps 语义。
+  - **阶段 F**：CLI pass 开关 `--no-inline` / `--no-dense-f64` / `--no-repr-select` / `--no-escape`；`Lumi.toml` `[compiler]` 与 `.lumi/settings.toml` + 环境变量（`LUMI_NO_PARALLEL` 等）合并进 profile；LSP 经 `CompileProfile::for_lsp_at(path)` 读取工作区配置。
+  - **LSP / 工具前端**：`CompileProfile::for_lsp_at(file)` + `lumi_core::PipelineOptions`；`check_program_with_overlays` / `compile_source_to_core_with_pipeline` 与 CLI 同 caps 语义。
   - **`memo/` 模块 = §7.5 reuse 族**（非单一 pass）：CSE + PE fold + LICM + `T_f` plan/apply；标量环境统一为 `KnownScalars`（与 `SpecializeConst` 共享）。
   - CI `feature-matrix` job 守护 slim / `codegen`-only / 逐个关 `opt-*` 的编译。
 - 测试/工具前端：`lumi_core::PipelineOptions`（`hof_fuse` / `auto_parallel` / `trust_foreign_pure`）或 `CompileProfile::to_pipeline_options()`；多文件加载、visibility、assert 消息注解仍仅 CLI。
+
+**Embedder 示例（`CompileProfile`）**
+
+```rust
+use lumi::{CompileProfile, compile_with_profile};
+use lumi::compiler_config::{CompilerConfig, CapDisables, PassDisables};
+use std::path::Path;
+
+// Stock Release，关掉 inline pass（语义应与 stock 一致，见 cap/pass_regress）。
+let profile = CompileProfile::stock(true).without_pass("inline");
+compile_with_profile(Path::new("app.lm"), Path::new("app"), &profile)?;
+
+// 或从 manifest + CLI 合并：
+let config = lumi::compiler_config::load_for_file(Path::new("app.lm"));
+let profile = CompileProfile::assemble(
+    true,
+    true,  // memo_tf
+    false, // trust_foreign_pure
+    false, // emit_ir
+    vec![],
+    &config,
+    &CapDisables::default(),
+    &PassDisables { no_inline: true, ..Default::default() },
+)?;
+```
+
+`Lumi.toml` 片段：
+
+```toml
+[compiler]
+no_parallel = false
+no_inline = true
+```
+
+环境变量：`LUMI_NO_PARALLEL=1` 等与 `[compiler]` 同义（CLI `--no-*` 优先级最高）。
   - **Inline**：小纯函数直调内联（跳过 `main` / `foreign` / memo / 递归 / 效应）；Release 在 Inline 后再跑 `ConstFold` → `SpecializeConst` → `Escape` → `ReprSelect`（内联露出的字面量可栈分配）。
   - **Escape**：保守逃逸分析；标量/`Join`/字符串深拷贝投影可不 `may_capture`；`Take`/`Elems` 等共享或拷贝元素指针的仍捕获；逃逸的 `ListGet`/`AdtField` 会标容器。`ReprSelect` 对**未逃逸**小 `List`/`Map` 标 `LitList` / `SmallMap`（codegen 栈布局已接）。
   - **SpecializeConst**：Int/Bool/Char 调用点常量特化（`f$c_…`）；Release 在 Inline 前后各一轮。
@@ -290,7 +326,7 @@ cargo run -p lumi -- build examples/mapset.lm -o /tmp/ms && /tmp/ms
 | 命令                                                                                                         | 职责                                                                |
 | ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
 | `lumi check <file> [--no-parallel] [--no-hof-fuse] [--no-loop-sr] [--no-tco] [--no-nsw-iv] [--list-caps] [--trust-foreign-pure]` | 解析 + 类型 / 效应 |
-| `lumi build <file> [-o out] [--release] [--no-memo] [--no-parallel] [--no-hof-fuse] [--no-loop-sr] [--no-tco] [--no-nsw-iv] [--list-caps] [--list-passes] [--trust-foreign-pure] [--link ARG]… [--show-ir] [--emit-llvm]` | 原生二进制；cap 开关见上；`--list-caps` / `--list-passes` 列 inventory 后退出 |
+| `lumi build <file> [-o out] [--release] [--no-memo] [--no-parallel] [--no-hof-fuse] [--no-loop-sr] [--no-tco] [--no-nsw-iv] [--no-inline] [--no-dense-f64] [--no-repr-select] [--no-escape] [--list-caps] [--list-passes] [--trust-foreign-pure] [--link ARG]… [--show-ir] [--emit-llvm]` | 原生二进制；cap / pass 开关见上；`--list-caps` / `--list-passes` 列 inventory 后退出 |
 | `lumi fmt [files…] [--check]`                                                                             | 基础 pretty-print（4 空格）；`--check` 不写回                               |
 | `lumi doc <file> [-o out.md]`                                                                             | 从 `///` 与公开 API 生成 Markdown（DESIGN §13）                            |
 | `lumi lsp`                                                                                                | LSP（overlay 诊断 + hover + 跨文件定义 + 补全 + format）                     |

@@ -2,8 +2,9 @@
 #![cfg(feature = "codegen")]
 
 use lumi::caps::CapabilitySet;
+use lumi::compiler_config::{CapDisables, CompilerConfig, PassDisables};
 use lumi::profile::CompileProfile;
-use lumi_opt::{optimize_with, OptProfile, PassSet};
+use lumi_opt::{optimize_with, OptProfile};
 
 #[test]
 fn stock_profile_matches_optimize_stock() {
@@ -43,6 +44,35 @@ fn to_pipeline_options_reflects_caps() {
     let pipe = p.to_pipeline_options();
     assert!(!pipe.lower.hof_fuse);
     assert!(!pipe.typecheck.auto_parallel);
+}
+
+#[cfg(feature = "codegen")]
+#[test]
+fn enabled_pass_ids_lists_stock() {
+    let p = CompileProfile::stock(true);
+    let ids = p.enabled_pass_ids();
+    assert!(ids.iter().any(|id| *id == "cse"));
+    assert!(!ids.iter().any(|id| *id == "inline") || p.pass_set().contains("inline"));
+}
+
+#[cfg(feature = "codegen")]
+#[test]
+fn assemble_applies_pass_disables() {
+    let p = CompileProfile::assemble(
+        false,
+        true,
+        false,
+        false,
+        vec![],
+        &CompilerConfig::default(),
+        &CapDisables::default(),
+        &PassDisables {
+            no_inline: true,
+            ..Default::default()
+        },
+    )
+    .expect("assemble");
+    assert!(!p.pass_set().contains("inline"));
 }
 
 #[test]

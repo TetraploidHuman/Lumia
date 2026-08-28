@@ -5,7 +5,8 @@ use clap::{Args, Parser, Subcommand};
 use lumi::check::check_program_with_profile;
 use lumi::load::path_label;
 use lumi::pkg;
-use lumi::profile::{caps_from_cli, CompileProfile};
+use lumi::compiler_config::{load_for_file, CapDisables, PassDisables};
+use lumi::profile::CompileProfile;
 use lumi::{doc, lsp};
 use lumi_syntax::{format_diagnostic, parse_module, stamp_module};
 use std::fs;
@@ -39,14 +40,43 @@ struct CapFlags {
 }
 
 impl CapFlags {
-    fn to_caps(&self) -> lumi::CapabilitySet {
-        caps_from_cli(
-            self.no_parallel,
-            self.no_hof_fuse,
-            self.no_loop_sr,
-            self.no_tco,
-            self.no_nsw_iv,
-        )
+    fn to_disables(&self) -> CapDisables {
+        CapDisables {
+            no_parallel: self.no_parallel,
+            no_hof_fuse: self.no_hof_fuse,
+            no_loop_sr: self.no_loop_sr,
+            no_tco: self.no_tco,
+            no_nsw_iv: self.no_nsw_iv,
+        }
+    }
+}
+
+/// Mid-end pass toggles (CLI `--no-*`; default = all on).
+#[derive(Args, Debug, Clone, Default)]
+struct PassFlags {
+    /// Disable small pure-function inlining (`opt-inline`).
+    #[arg(long = "no-inline")]
+    no_inline: bool,
+    /// Disable dense `List[Float]` fast path (`opt-dense-f64`).
+    #[arg(long = "no-dense-f64")]
+    no_dense_f64: bool,
+    /// Disable escape + Lit* representation select (`opt-repr-stack`).
+    #[arg(long = "no-repr-select")]
+    no_repr_select: bool,
+    /// Disable escape analysis (also drops `repr_select`).
+    #[arg(long = "no-escape")]
+    no_escape: bool,
+}
+
+impl PassFlags {
+    #[cfg(feature = "codegen")]
+    fn to_disables(&self) -> PassDisables {
+        PassDisables {
+            no_inline: self.no_inline,
+            no_dense_f64: self.no_dense_f64,
+            no_repr_select: self.no_repr_select,
+            no_escape: self.no_escape,
+        }
     }
 }
 
@@ -83,6 +113,8 @@ enum Commands {
         no_memo: bool,
         #[command(flatten)]
         caps: CapFlags,
+        #[command(flatten)]
+        passes: PassFlags,
         /// Trust `foreign "C" pure` (FFI purity is not verified).
         #[arg(long = "trust-foreign-pure")]
         trust_foreign_pure: bool,
@@ -158,9 +190,18 @@ fn main() -> Result<()> {
             trust_foreign_pure,
             list_caps,
         } => {
-            let profile = CompileProfile::stock(false)
-                .with_caps(caps.to_caps())
-                .with_trust_foreign_pure(trust_foreign_pure);
+            let config = load_for_file(&file);
+            let profile = CompileProfile::assemble(
+                false,
+                true,
+                trust_foreign_pure,
+                false,
+                Vec::new(),
+                &config,
+                &caps.to_disables(),
+                &PassDisables::default(),
+            )
+            .map_err(|e| anyhow::anyhow!("profile: {e}"))?;
             if list_caps {
                 print!("{}", profile.format_list_caps());
                 return Ok(());
@@ -175,6 +216,7 @@ fn main() -> Result<()> {
             release,
             no_memo,
             caps,
+            passes,
             trust_foreign_pure,
             link,
             show_ir,
@@ -190,6 +232,7 @@ fn main() -> Result<()> {
                     release,
                     no_memo,
                     caps,
+                    passes,
                     trust_foreign_pure,
                     link,
                     show_ir,
@@ -205,9 +248,11 @@ fn main() -> Result<()> {
             #[cfg(feature = "codegen")]
             {
                 let profile = build_profile(
+                    &file,
                     release,
                     !no_memo,
                     caps,
+                    passes,
                     trust_foreign_pure,
                     emit_llvm,
                     link,
@@ -286,9 +331,11 @@ fn main() -> Result<()> {
 
 #[cfg(feature = "codegen")]
 fn build_profile(
+    file: &Path,
     release: bool,
     memo_tf: bool,
     caps: CapFlags,
+    passes: PassFlags,
     trust_foreign_pure: bool,
     emit_ir: bool,
     link: Vec<String>,
@@ -298,12 +345,18 @@ fn build_profile(
     for a in &link {
         validated_link.push(pkg::validate_cli_link_arg(&cwd, a)?);
     }
-    Ok(CompileProfile::stock(release)
-        .with_caps(caps.to_caps())
-        .with_memo_tf(memo_tf)
-        .with_trust_foreign_pure(trust_foreign_pure)
-        .with_emit_ir(emit_ir)
-        .with_link_args(validated_link))
+    let config = load_for_file(file);
+    CompileProfile::assemble(
+        release,
+        memo_tf,
+        trust_foreign_pure,
+        emit_ir,
+        validated_link,
+        &config,
+        &caps.to_disables(),
+        &passes.to_disables(),
+    )
+    .map_err(|e| anyhow::anyhow!("profile: {e}"))
 }
 
 #[cfg(feature = "codegen")]
