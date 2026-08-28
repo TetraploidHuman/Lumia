@@ -1,11 +1,12 @@
 //! Capability-off regression: disabling Phase C opts must not change semantics.
 //!
 //! Compares stdout from stock [`CapabilitySet`] vs a capped variant via
-//! [`lumi::compile_with_caps`]. Run: `cargo test -p lumi --test cap_regress`
+//! [`lumi::compile_with_profile`]. Run: `cargo test -p lumi --test cap_regress`
 #![cfg(feature = "codegen")]
 
-use lumi::build::{compile_with_caps, BuildOptions};
+use lumi::build::compile_with_profile;
 use lumi::caps::CapabilitySet;
+use lumi::profile::CompileProfile;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -50,16 +51,9 @@ fn build_and_run(rel: &str, caps: &CapabilitySet, release: bool, stem: &str) -> 
     let src = root.join(rel);
     assert!(src.is_file(), "missing {}", src.display());
     let exe = exe_path(stem);
-    compile_with_caps(
-        &src,
-        &exe,
-        caps,
-        &BuildOptions {
-            release,
-            ..BuildOptions::default()
-        },
-    )
-    .unwrap_or_else(|e| panic!("compile {rel} caps={caps:?}: {e}"));
+    let profile = CompileProfile::stock(release).with_caps(caps.clone());
+    compile_with_profile(&src, &exe, &profile)
+        .unwrap_or_else(|e| panic!("compile {rel} caps={caps:?}: {e}"));
     run_program(&exe)
 }
 

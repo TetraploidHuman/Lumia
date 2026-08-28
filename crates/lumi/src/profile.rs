@@ -51,6 +51,10 @@ impl CompileProfile {
     }
 
     #[cfg(feature = "codegen")]
+    #[deprecated(
+        since = "0.3.2",
+        note = "use `CompileProfile::assemble` or `with_caps` on `CompileProfile::stock`"
+    )]
     pub fn from_build_options(opts: &BuildOptions, caps: CapabilitySet) -> Self {
         let mut p = Self::stock(opts.release);
         p.caps = caps;
@@ -296,6 +300,10 @@ impl CompileProfile {
 }
 
 /// Build [`CapabilitySet`] from CLI `--no-*` negation flags (defaults = all on).
+#[deprecated(
+    since = "0.3.2",
+    note = "use `compiler_config::caps_with_config` or `CompileProfile::assemble`"
+)]
 pub fn caps_from_cli(
     no_parallel: bool,
     no_hof_fuse: bool,
@@ -326,6 +334,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn caps_from_cli_respects_flags() {
         let caps = caps_from_cli(true, true, false, true, false);
         assert!(!caps.auto_parallel && !caps.hof_fuse);

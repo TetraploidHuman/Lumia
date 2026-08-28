@@ -85,6 +85,10 @@ pub fn compile_with_profile(
 
 /// Typecheck, lower, and optimize with a [`CapabilitySet`] (legacy helper).
 #[cfg(feature = "codegen")]
+#[deprecated(
+    since = "0.3.2",
+    note = "use `prepare_with_profile` and `CompileProfile` instead"
+)]
 pub fn prepare_with_caps(
     file: &Path,
     caps: &CapabilitySet,
@@ -95,6 +99,10 @@ pub fn prepare_with_caps(
 
 /// Full compile with caps + build options (legacy helper).
 #[cfg(feature = "codegen")]
+#[deprecated(
+    since = "0.3.2",
+    note = "use `compile_with_profile` and `CompileProfile` instead"
+)]
 pub fn compile_with_caps(
     file: &Path,
     output: &Path,

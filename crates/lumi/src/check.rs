@@ -13,6 +13,10 @@ use rustc_hash::FxHashMap as HashMap;
 use std::path::{Path, PathBuf};
 
 /// Load a program from disk and typecheck it (CLI `check` / `build` path).
+#[deprecated(
+    since = "0.3.2",
+    note = "use `check_program_with_profile` and `CompileProfile` instead"
+)]
 pub fn check_program(
     file: &Path,
     auto_parallel: bool,
@@ -26,6 +30,10 @@ pub fn check_program(
 }
 
 /// Same as [`check_program`] with an explicit [`CapabilitySet`] (Phase C).
+#[deprecated(
+    since = "0.3.2",
+    note = "use `check_program_with_profile` and `CompileProfile` instead"
+)]
 pub fn check_program_with_caps(
     file: &Path,
     caps: &CapabilitySet,
